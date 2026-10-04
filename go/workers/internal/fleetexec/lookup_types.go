@@ -53,6 +53,7 @@ type LookupOperation struct {
 	Context                                             json.RawMessage
 	LegacySignature, LegacyMessageHash, LegacyBlockhash *string
 	LegacyLastValidBlockHeight                          *int64
+	PhysicalMutationEpoch                               int64
 }
 
 type LookupAttemptState string

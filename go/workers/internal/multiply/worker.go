@@ -31,6 +31,7 @@ type Worker struct {
 	// routeKey pins one route when the root composes a single-route worker.
 	routeKey        *string
 	runtimeReporter func(bool, uint64)
+	recoveryOnly    bool
 }
 
 // WorkerDeps carries the pool-injected store, the observation reader, the
@@ -46,17 +47,27 @@ type WorkerDeps struct {
 
 // NewWorker validates the dependency set. The signer capability is checked to
 // live inside the executor only.
-func NewWorker(deps WorkerDeps) (*Worker, error) {
+func NewWorker(deps WorkerDeps) (*Worker, error) { return newWorker(deps, false) }
+
+// NewRecoveryWorker has no signing capability. It can adopt landed exact wires,
+// reconcile, prove expiry and send an already signed durable attempt. It cannot
+// create, replace or sign a transaction.
+func NewRecoveryWorker(deps WorkerDeps) (*Worker, error) { return newWorker(deps, true) }
+
+func newWorker(deps WorkerDeps, recoveryOnly bool) (*Worker, error) {
+	if recoveryOnly && deps.Executor != nil && (len(deps.Executor.Signer) != 0 || len(deps.Executor.feePayer) != 0) {
+		return nil, errors.New("recovery worker must not hold private keys")
+	}
 	if deps.Store == nil || deps.Store.pool == nil {
 		return nil, errors.New("multiply worker requires a store")
 	}
 	if deps.Observer == nil {
 		return nil, errors.New("multiply worker requires an observation reader")
 	}
-	if deps.Executor == nil || len(deps.Executor.Signer) != ed25519.PrivateKeySize {
+	if deps.Executor == nil || deps.Executor.RPC == nil || (!recoveryOnly && len(deps.Executor.Signer) != ed25519.PrivateKeySize) {
 		return nil, errors.New("multiply worker requires an executor holding the delegate capability")
 	}
-	if deps.Quotes == nil {
+	if deps.Quotes == nil && !recoveryOnly {
 		return nil, errors.New("multiply worker requires a quote client for swap actions")
 	}
 	if deps.WorkerID == "" {
@@ -72,7 +83,7 @@ func NewWorker(deps WorkerDeps) (*Worker, error) {
 	}
 	return &Worker{
 		store: deps.Store, observer: deps.Observer, executor: deps.Executor,
-		quotes: deps.Quotes, workerID: deps.WorkerID, routeKey: routeKey,
+		quotes: deps.Quotes, workerID: deps.WorkerID, routeKey: routeKey, recoveryOnly: recoveryOnly,
 	}, nil
 }
 
@@ -180,9 +191,13 @@ func (w *Worker) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		// Bootstrap, lease acquisition and the recovery census share the same
+		// bounded cycle as route IO. A busy or locked database must not leave
+		// those unleased stages waiting on the process context indefinitely.
+		cycle, cancelCycle := context.WithTimeout(ctx, LeaseTTL)
 		bootstrapFailed := false
-		if w.routeKey == nil {
-			if key, err := w.BootstrapReadyRoute(ctx); err != nil {
+		if w.routeKey == nil && !w.recoveryOnly {
+			if key, err := w.BootstrapReadyRoute(cycle); err != nil {
 				bootstrapFailed = true
 				fmt.Printf("{\"condition\":\"earn_max_route_bootstrap_failed\"}\n")
 				_ = key
@@ -190,12 +205,13 @@ func (w *Worker) Run(ctx context.Context) error {
 				fmt.Printf("{\"condition\":\"earn_max_route_bootstrapped\",\"routeKey\":%q}\n", key)
 			}
 		}
-		result, err := w.Tick(ctx)
+		result, err := w.Tick(cycle)
 		if err != nil {
 			fmt.Printf("{\"condition\":\"multiply_tick_failed\"}\n")
 		} else {
 			encoded, err := jsonMarshal(result)
 			if err != nil {
+				cancelCycle()
 				return err
 			}
 			fmt.Printf("%s\n", encoded)
@@ -206,9 +222,11 @@ func (w *Worker) Run(ctx context.Context) error {
 			healthErr = errors.New("multiply bootstrap failed")
 		}
 		if healthErr == nil && w.runtimeReporter != nil {
-			slot, healthErr = w.runtimeRecoveryHealth(ctx, result)
+			slot, healthErr = w.runtimeRecoveryHealth(cycle, result)
 		}
-		w.reportRuntime(healthErr == nil && ctx.Err() == nil && slot > 0, slot)
+		ready := healthErr == nil && cycle.Err() == nil && slot > 0
+		cancelCycle()
+		w.reportRuntime(ready, slot)
 		if healthErr != nil && err == nil {
 			fmt.Printf("{\"condition\":\"multiply_recovery_health_unavailable\"}\n")
 		}
@@ -325,6 +343,9 @@ func (w *Worker) tickLeased(ctx context.Context, lease *Lease) (TickResult, erro
 	if stored.Operation != nil {
 		return w.recover(ctx, lease, stored, topology)
 	}
+	if w.recoveryOnly {
+		return TickResult{RouteKey: &stored.RouteKey, Condition: "recovery_only_no_operation"}, nil
+	}
 	ready, err := w.store.EarnMaxPolicySetReady(ctx, stored.Settings,
 		stored.State.VaultIndex, stored.State.PolicySeedBase)
 	if err != nil {
@@ -351,6 +372,13 @@ func (w *Worker) tickLeased(ctx context.Context, lease *Lease) (TickResult, erro
 	}
 	if !observed.ActiveStrategyIsCoherent() {
 		return TickResult{RouteKey: &stored.RouteKey, Condition: "awaiting_coherent_confirmed_observation"}, nil
+	}
+	if stored.State.Goal == GoalDeploy {
+		for _, position := range observed.Strategies {
+			if position.StrategyKey != SyrupUsdcUsdc && (position.CollateralDepositedRaw != 0 || position.DebtRaw != 0) {
+				return TickResult{RouteKey: &stored.RouteKey, Condition: "unsupported_deploy_active_strategy"}, nil
+			}
+		}
 	}
 	snapshot, err := snapshotInput(stored.State, observed)
 	if err != nil {
@@ -521,12 +549,26 @@ func (w *Worker) executeOperation(ctx context.Context, lease *Lease, route *Rout
 	if confirmedSlot == nil {
 		return nil, errors.New("transaction was not confirmed within the bounded wait")
 	}
+	persistedOperation, err := w.store.LoadOperation(ctx, operation.OperationID)
+	if err != nil {
+		return nil, err
+	}
+	if persistedOperation == nil {
+		return nil, errors.New("broadcast operation disappeared")
+	}
+	proof, err := w.executor.readReceipt(ctx, persistedOperation, topology)
+	if err != nil {
+		return nil, err
+	}
+	if proof.evidence.ConfirmedSlot != uint64(confirmedSlot.Slot) {
+		return nil, errors.New("actual receipt changed before confirmation publication")
+	}
 	if ok, err := w.store.MarkConfirmed(ctx, lease, operation.OperationID, uint64(confirmedSlot.Slot)); err != nil {
 		return nil, err
 	} else if !ok {
 		return nil, errors.New("lost operation before confirmed persistence")
 	}
-	persistedOperation, err := w.store.LoadOperation(ctx, operation.OperationID)
+	persistedOperation, err = w.store.LoadOperation(ctx, operation.OperationID)
 	if err != nil {
 		return nil, err
 	}
@@ -651,8 +693,7 @@ func (w *Worker) recover(ctx context.Context, lease *Lease, stored *StoredRoute,
 		}
 		_, err := w.reconcileOperation(ctx, lease, route, operation, *operation.ConfirmedSlot, topology)
 		if err != nil {
-			return w.enterManualRecovery(ctx, lease, route, operation,
-				fmt.Sprintf("confirmed reconciliation failed: %v", err))
+			return w.receiptRecoveryFailure(ctx, lease, route, operation, err)
 		}
 		return tickResult(route, operation, "confirmed_operation_reconciled"), nil
 	}
@@ -730,6 +771,13 @@ func operationExternalCustodies(operation *MultiplyOperation, topology *EarnMaxT
 
 func (w *Worker) confirmAndReconcile(ctx context.Context, lease *Lease, route *RouteState,
 	operation *MultiplyOperation, slot uint64, topology *EarnMaxTopology) (TickResult, error) {
+	proof, err := w.executor.readReceipt(ctx, operation, topology)
+	if err != nil {
+		return w.receiptRecoveryFailure(ctx, lease, route, operation, err)
+	}
+	if proof.evidence.ConfirmedSlot != slot {
+		return w.receiptRecoveryFailure(ctx, lease, route, operation, errors.New("signature status slot disagrees with actual receipt"))
+	}
 	if ok, err := w.store.MarkConfirmed(ctx, lease, operation.OperationID, slot); err != nil {
 		return TickResult{}, err
 	} else if !ok {
@@ -743,10 +791,39 @@ func (w *Worker) confirmAndReconcile(ctx context.Context, lease *Lease, route *R
 		return TickResult{}, errors.New("confirmed operation disappeared")
 	}
 	if _, err := w.reconcileOperation(ctx, lease, route, confirmed, slot, topology); err != nil {
-		return w.enterManualRecovery(ctx, lease, route, confirmed,
-			fmt.Sprintf("confirmed reconciliation failed: %v", err))
+		return w.receiptRecoveryFailure(ctx, lease, route, confirmed, err)
 	}
 	return tickResult(route, confirmed, "recovered_operation_reconciled"), nil
+}
+
+func (w *Worker) receiptRecoveryFailure(ctx context.Context, lease *Lease, route *RouteState, operation *MultiplyOperation, err error) (TickResult, error) {
+	if ctx.Err() != nil {
+		return TickResult{}, ctx.Err()
+	}
+	if errors.Is(err, errReceiptUnavailable) {
+		return tickResult(route, operation, "awaiting_confirmed_transaction_receipt"), nil
+	}
+	if errors.Is(err, errReconciliationBankUnavailable) {
+		return tickResult(route, operation, "awaiting_coherent_confirmed_observation"), nil
+	}
+	return w.enterManualRecovery(ctx, lease, route, operation, "confirmed transaction receipt or effects failed validation")
+}
+
+var errReconciliationBankUnavailable = errors.New("confirmed reconciliation bank is stale or incoherent")
+
+// Reject a stale provider frontier before decoding financial account state.
+// The confirmed receipt is the minimum bank context, not a before-balance.
+type reconciliationReader struct {
+	ObservationReader
+	minimumSlot uint64
+}
+
+func (r reconciliationReader) GetMultipleAccounts(ctx context.Context, keys []solana.PublicKey) (uint64, []*Account, error) {
+	slot, accounts, err := r.ObservationReader.GetMultipleAccounts(ctx, keys)
+	if err == nil && slot < r.minimumSlot {
+		return 0, nil, errReconciliationBankUnavailable
+	}
+	return slot, accounts, err
 }
 
 func (w *Worker) enterManualRecovery(ctx context.Context, lease *Lease, route *RouteState,
@@ -774,6 +851,13 @@ func (w *Worker) enterManualRecovery(ctx context.Context, lease *Lease, route *R
 // route position once.
 func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *RouteState,
 	operation *MultiplyOperation, confirmedSlot uint64, topology *EarnMaxTopology) (*RouteState, error) {
+	proof, err := w.executor.readReceipt(ctx, operation, topology)
+	if err != nil {
+		return nil, err
+	}
+	if proof.evidence.ConfirmedSlot != confirmedSlot {
+		return nil, errors.New("receipt confirmed slot drifted")
+	}
 	extra, err := operationExternalCustodies(operation, topology)
 	if err != nil {
 		return nil, err
@@ -781,13 +865,14 @@ func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *Ro
 	if route.Withdrawal != nil {
 		extra = append(extra, TokenBalance{Account: route.Withdrawal.DestinationAccount, Mint: USDCMint, TokenProgram: TokenProgram})
 	}
-	after, err := ObserveConfirmed(ctx, w.observer, topology, extra)
+	after, err := ObserveConfirmed(ctx, reconciliationReader{w.observer, confirmedSlot}, topology, extra)
 	if err != nil {
 		return nil, err
 	}
-	if after.Slot < confirmedSlot {
-		return nil, errors.New("confirmed reconciliation read is older than the transaction")
+	if after.Slot < confirmedSlot || !after.ActiveStrategyIsCoherent() {
+		return nil, errReconciliationBankUnavailable
 	}
+	proof.evidence.ObservationSlot = after.Slot
 	if operation.PolicyAccount == nil {
 		return nil, errors.New("operation omitted its policy account")
 	}
@@ -881,7 +966,7 @@ func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *Ro
 		return nil, errors.New("operation signature was not persisted")
 	}
 	reconciled, err := w.store.ReconcileOperation(ctx, lease, operation.OperationID,
-		*operation.TransactionSignature, fmt.Sprintf("%x", digest[:]), confirmedSlot, &next)
+		*operation.TransactionSignature, fmt.Sprintf("%x", digest[:]), confirmedSlot, &next, proof)
 	if err != nil {
 		return nil, err
 	}

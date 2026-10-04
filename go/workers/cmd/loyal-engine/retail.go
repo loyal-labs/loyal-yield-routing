@@ -34,6 +34,7 @@ type retailConfig struct {
 	crossMintEnabled                                                                      bool
 	crossMintMaxSlippageBPS, crossMintMaxValueLossBPS                                     uint16
 	jupiterBuildURL, jupiterAPIKey                                                        string
+	lookup                                                                                retailLookupConfig
 }
 
 // Configuration is scoped to this capability. Legacy/background writer flags
@@ -42,6 +43,11 @@ func loadRetailConfig() (retailConfig, error) {
 	var cfg retailConfig
 	if os.Getenv("RETAIL_MODE") != "active" {
 		return cfg, errors.New("RETAIL_MODE must explicitly be active; saved replay uses loyal-evidence")
+	}
+	var lookupErr error
+	cfg.lookup, lookupErr = loadRetailLookupConfig()
+	if lookupErr != nil {
+		return cfg, lookupErr
 	}
 	for _, name := range []string{"RETAIL_CROSS_MINT_ENABLED", "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER"} {
 		value := os.Getenv(name)
@@ -246,6 +252,10 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err := aStore.RequireSchema(startup); err != nil {
 		return retailError("Autodeposit schema", err)
 	}
+	if err := aStore.RequireDesiredSchema(startup); err != nil {
+		return retailError("Autodeposit desired controls schema", err)
+	}
+	aStore.EnableDesiredControlAdmission()
 	cStore, err := fleet.NewStoreFromPool(yieldPool)
 	if err != nil {
 		return retailError("fleet store", err)
@@ -290,7 +300,28 @@ func runRetail(ctx context.Context, owner, release string) error {
 		return retailError("Autodeposit controller", err)
 	}
 	health := retailHealth()
-	readiness := newRetailReadiness(health, "cross-mint")
+	readiness := newRetailReadiness(health, "cross-mint", "autodeposit-desired", "lookup-writer")
+	lookupRPC, err := fleetexec.NewLookupRPC(cfg.rpcURL, 10*time.Second)
+	if err != nil {
+		return retailError("lookup RPC", err)
+	}
+	lookupWorker, err := fleetexec.NewLookupWorker(dStore, lookupRPC, fleetexec.LookupWorkerConfig{
+		Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second,
+		TickDeadline: 20 * time.Second, PollInterval: time.Second,
+		Budget: cfg.lookup.budget, ReconcileOnly: !cfg.lookup.active,
+		OnHealth: func(err error) {
+			if err != nil {
+				log.Print("retail lookup writer requires attention")
+			}
+		},
+	}, cfg.lookup.managerKey())
+	if err != nil {
+		return retailError("lookup writer", err)
+	}
+	if err := dStore.RequireLookupSchema(startup); err != nil {
+		return retailError("lookup writer schema", err)
+	}
+	lookupWorker.SetRuntimeReporter(readiness.reporter("lookup-writer"))
 	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, OnError: func(error) { health.SetDomainReady("autodeposit", false); log.Print("retail autodeposit tick failed") }, OnAlert: func(autodeposit.ExecutorFailureAlert) {
 		health.SetDomainReady("autodeposit", false)
 		log.Print("retail autodeposit execution requires attention")
@@ -303,9 +334,12 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("Autodeposit artifact RPC", err)
 	}
-	artifacts := &autodeposit.ArtifactReconciler{Store: aStore, Reader: &autodeposit.ArtifactProofReader{Wires: wires, History: artifactRPC}}
+	artifactReader := &autodeposit.ArtifactProofReader{Wires: wires, History: artifactRPC}
+	artifacts := &autodeposit.ArtifactReconciler{Store: aStore, Reader: artifactReader}
 	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, RuntimeChain: chain, OnError: func(error) { log.Print("retail autodeposit control requires attention") }, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
 	control.SetRuntimeReporter(readiness.reporter("autodeposit-control"))
+	desired := &autodeposit.DesiredReconciler{Store: aStore, Reader: wires, Artifacts: artifactReader, RuntimeChain: chain, OnError: func(error) { log.Print("retail autodeposit desired controls require attention") }, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
+	desired.SetRuntimeReporter(readiness.reporter("autodeposit-desired"))
 	fleetRPC := fleet.NewRPCClient(cfg.rpcURL)
 	cConfig := cfg.fleetConfig()
 	cConfig.RevalidationOwner = owner
@@ -359,5 +393,5 @@ func runRetail(ctx context.Context, owner, release string) error {
 		return retailError("health listener", err)
 	}
 	defer server.Close()
-	return runRetailLanes(ctx, control, aWorker, planner, executor, crossMint, multiplyWorker, readiness, server)
+	return runRetailLanes(ctx, control, desired, aWorker, planner, executor, crossMint, lookupWorker, multiplyWorker, readiness, server)
 }

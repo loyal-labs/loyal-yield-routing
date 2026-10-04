@@ -22,6 +22,7 @@ type retailReadiness struct {
 	health   *observability.Health
 	families map[string]retailFamilyHealth
 	frontier uint64
+	closed   bool
 }
 
 func newRetailReadiness(health *observability.Health, additionalFamilies ...string) *retailReadiness {
@@ -46,6 +47,9 @@ func (r *retailReadiness) reporter(family string) func(bool, uint64) {
 func (r *retailReadiness) report(family string, ready bool, slot uint64, now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
 	f, ok := r.families[family]
 	if !ok {
 		return
@@ -68,6 +72,9 @@ func (r *retailReadiness) refresh(now time.Time) {
 }
 
 func (r *retailReadiness) refreshLocked(now time.Time) {
+	if r.closed {
+		return
+	}
 	allReady := true
 	for family, f := range r.families {
 		ready := f.slot > 0 && !f.lastSuccess.IsZero() && !now.Before(f.lastSuccess) && now.Sub(f.lastSuccess) <= f.maxAge
@@ -90,6 +97,9 @@ func (r *retailReadiness) Run(ctx context.Context) error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	defer func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.closed = true
 		r.health.SetReady(false)
 		r.health.SetConnected(false)
 		for family := range r.families {

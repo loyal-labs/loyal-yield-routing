@@ -57,9 +57,9 @@ for entry in app_schema:
     file = schema / entry["file"]
     if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
         raise SystemExit("Historical app schema fixture provenance drifted")
-default_families = ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "multiply", "lookup")
+default_families = ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "multiply", "lookup", "ata_projector")
 families = tuple(os.environ.get("WORKERS_V2_FIXTURE_FAMILIES", ",".join(default_families)).split(","))
-allowed_families = set(default_families) | {"fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture", "lookup"}
+allowed_families = set(default_families) | {"fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture", "lookup", "ata_projector", "autodeposit_intent"}
 if not families or len(set(families)) != len(families) or any(f not in allowed_families for f in families):
     raise SystemExit("Fixture families must be distinct allowlisted test scopes")
 def apply_yield_schema(url):
@@ -96,16 +96,32 @@ def apply_yield_schema(url):
         execute(url, sql="INSERT INTO loyal_yield.schema_migrations(version,name,checksum) "
                 f"VALUES({version},'{name}','{checksum}')")
 
+def apply_apps_autodeposit_schema(url):
+    for entry in json.loads((schema / "apps-autodeposit-manifest.json").read_text()):
+        file = schema / entry["file"]
+        if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
+            raise SystemExit("Actual Apps Autodeposit fixture provenance drifted")
+        sql = file.read_text()
+        # App 0006 predates Yield 0059's lifecycle column rename. This empty
+        # fixture applies its exact DDL; historical target-data backfill has no
+        # rows to convert and is not claimed as migration acceptance.
+        ddl, backfill = sql.split("INSERT INTO loyal_yield.balance_sweep_policies (", 1)
+        _, tail = backfill.split("DO $$", 1)
+        execute(url, sql=ddl + "DO $$" + tail)
+
 for family in families:
     name = family if family in {"fleet", "fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture"} else "workers_v2_" + family
     execute(base, sql='CREATE DATABASE "' + name + '"')
     url = urlunparse(parsed._replace(path="/" + name))
     apply_yield_schema(url)
+    if family == "autodeposit_intent":
+        apply_apps_autodeposit_schema(url)
     if family == "backyard":
         execute(url, file=schema / "backyard_route_lease.sql")
     urls[family] = url
 timescale = os.environ.get("WORKERS_V2_TIMESCALE_FIXTURE_URL")
 timescale_url = None
+ata_capture_url = None
 if timescale:
     timescale_parsed = allowlisted(timescale)
     timescale_registry = repo / "crates/loyal-timescale-migrations/src/main.rs"
@@ -118,6 +134,13 @@ if timescale:
     timescale_url = urlunparse(timescale_parsed._replace(path="/workers_v2_timescale"))
     for file in files:
         execute(timescale_url, file=file)
+    if "ata_projector" in urls:
+        execute(timescale, sql='CREATE DATABASE workers_v2_ata_capture')
+        ata_capture_url = urlunparse(timescale_parsed._replace(path="/workers_v2_ata_capture"))
+        stream_migration = repo / "crates/loyal-timescale-migrations/migrations/0004_split_balance_sweep_ata_streams.sql"
+        if stream_migration not in files:
+            raise SystemExit("Registered ATA stream migration missing")
+        execute(ata_capture_url, file=stream_migration)
     print(json.dumps({"gate": "timescale_fixture", "verdict": "PASS", "schema_files": len(files)}))
 # Full observer discovery uses real Yield schema and a separate Apps UUID
 # database. These fixtures deliberately prove the cross-database boundary.
@@ -155,6 +178,7 @@ if out:
                             ("FLEET_EXEC_TEST_DATABASE_URL", "fleetexec"),
                             ("FLEET_TEST_CROSS_MINT_CAPTURE_DATABASE_URL", "fleet_cross_mint_capture"),
                             ("LOOKUP_TEST_DATABASE_URL", "lookup"),
+                            ("ATA_PROJECTOR_TEST_DATABASE_URL", "ata_projector"),
                             ("AUTODEPOSIT_TEST_DATABASE_URL", "autodeposit"),
                             ("OBSERVER_TEST_DATABASE_URL", "observer"),
                             ("TEST_DATABASE_URL", "observer"),
@@ -162,5 +186,7 @@ if out:
                             ("MULTIPLY_TEST_DATABASE_URL", "multiply")):
             if family in urls:
                 target.write(key + "=" + urls[family] + "\n")
+        if ata_capture_url:
+            target.write("ATA_CAPTURE_TEST_DATABASE_URL=" + ata_capture_url + "\n")
         if timescale_url:
             target.write("TEST_TIMESCALE_DATABASE_URL=" + timescale_url + "\n")

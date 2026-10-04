@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/gagliardetto/solana-go"
 )
@@ -235,7 +236,7 @@ func indexedKey(table []solana.PublicKey, index uint8) (solana.PublicKey, error)
 
 // anchorAccountDiscriminator mirrors anchor_account_discriminator("Policy")
 // (sha256 of "account:<name>"). The Squads Policy discriminator is fixed.
-var squadsPolicyAccountDiscriminator = [8]byte{155, 23, 24, 219, 22, 33, 43, 240}
+var squadsPolicyAccountDiscriminator = [8]byte{222, 135, 7, 163, 235, 177, 33, 68}
 
 // DecodeProgramInteractionPolicyAccount is the Go port of
 // decode_program_interaction_policy_account: nil means "not a canonical
@@ -1053,7 +1054,18 @@ func dataValueEqual(left, right DataValueView) bool {
 // semantic contract: literal KLend lane pinning for collateral/debt families
 // and Jupiter SharedAccountsRoute lane pinning for swaps. Constraint indexes
 // line up with ConstraintIndexes in policy.go.
-func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) ([]InstructionConstraintView, error) {
+func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (constraints []InstructionConstraintView, err error) {
+	// Official semantic_program_interaction_constraints sorts each instruction's
+	// account clauses before serialization; compare that actual account view.
+	defer func() {
+		if err == nil {
+			for i := range constraints {
+				sort.Slice(constraints[i].AccountConstraints, func(a, b int) bool {
+					return constraints[i].AccountConstraints[a].AccountIndex < constraints[i].AccountConstraints[b].AccountIndex
+				})
+			}
+		}
+	}()
 	strategies := topology.StrategyCatalog()
 	if len(strategies) == 0 {
 		return nil, errors.New("earn max policy boundary has no lanes")

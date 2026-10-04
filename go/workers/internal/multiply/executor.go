@@ -318,6 +318,30 @@ func NewExecutor(rpc RPCSurface, signer ed25519.PrivateKey) (*Executor, error) {
 	return NewExecutorWithFeePayer(rpc, signer, signer)
 }
 
+// NewRecoveryExecutorContext pins the same chain identity without acquiring
+// private keys. Durable signed bytes are the only submission capability.
+func NewRecoveryExecutorContext(ctx context.Context, rpc RPCSurface) (*Executor, error) {
+	if ctx == nil || rpc == nil {
+		return nil, errors.New("recovery executor requires context and RPC")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	probe, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	genesis, err := rpc.GenesisHash(probe)
+	if probe.Err() != nil {
+		return nil, probe.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if genesis != mainnetGenesisHash {
+		return nil, errors.New("recovery RPC is not mainnet-beta")
+	}
+	return &Executor{RPC: rpc}, nil
+}
+
 func NewExecutorWithFeePayer(rpc RPCSurface, feePayer, signer ed25519.PrivateKey) (*Executor, error) {
 	return NewExecutorWithFeePayerContext(context.Background(), rpc, feePayer, signer)
 }
@@ -391,6 +415,14 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 	slot := blockhash.ContextSlot
 	if minContextSlot > slot {
 		slot = minContextSlot
+	}
+	if built.QuoteContextSlot != nil {
+		if *built.QuoteContextSlot == 0 {
+			return nil, 0, errors.New("swap quote omitted its context slot")
+		}
+		if *built.QuoteContextSlot > slot {
+			slot = *built.QuoteContextSlot
+		}
 	}
 	blockhashKey, err := solana.HashFromBase58(blockhash.RecentBlockhash)
 	if err != nil {
@@ -656,7 +688,25 @@ func (e *Executor) WaitConfirmed(ctx context.Context, signature string) (*Signat
 			return observation, fmt.Errorf("transaction failed on chain: %s", *observation.Err)
 		}
 		if observation.ConfirmationState == "confirmed" || observation.ConfirmationState == "finalized" {
-			return observation, nil
+			reader, ok := e.RPC.(confirmedTransactionReader)
+			if !ok {
+				return nil, errReceiptUnavailable
+			}
+			raw, err := reader.ConfirmedTransaction(ctx, signature)
+			if err != nil {
+				return nil, err
+			}
+			var receipt confirmedReceipt
+			if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				return nil, errReceiptUnavailable
+			}
+			if err := json.Unmarshal(raw, &receipt); err != nil {
+				return nil, err
+			}
+			if receipt.Slot == 0 || receipt.Slot > math.MaxInt64 || receipt.Meta == nil || !bytes.Equal(bytes.TrimSpace(receipt.Meta.Err), []byte("null")) {
+				return nil, errors.New("confirmed receipt omitted success or supported slot")
+			}
+			return &SignatureObservation{Slot: int64(receipt.Slot), ConfirmationState: observation.ConfirmationState}, nil
 		}
 	}
 	return nil, nil

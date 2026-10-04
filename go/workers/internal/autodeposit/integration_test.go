@@ -72,8 +72,8 @@ func seedIntegrationTarget(t *testing.T, store *Store, suffix string) integratio
 	if err := store.pool.QueryRow(ctx, `
 INSERT INTO loyal_yield.route_policies
     (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
-     threshold, route_modes, active, last_seen_slot, last_seen_signature)
-VALUES ($1, $2, 7, $3, 1, $4, 1, ARRAY['same_mint_kamino'], true, 1, 'itest')
+     threshold, route_modes, active, last_seen_slot, last_seen_signature, cluster)
+VALUES ($1, $2, 7, $3, 1, $4, 1, ARRAY['same_mint_kamino'], true, 1, 'itest', 'mainnet-beta')
 RETURNING id`, settings, authority, policyAccount, vaultPubkey).Scan(&policyID); err != nil {
 		t.Fatalf("seed route policy: %v", err)
 	}
@@ -90,9 +90,9 @@ INSERT INTO loyal_yield.balance_sweep_targets
     (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
      wallet, wallet_usdc_ata, vault_usdc_ata, wallet_token_ata, vault_token_ata, token_mint, threshold,
      max_amount_per_period, desired_active, chain_status, wallet_balance_floor_raw,
-     last_seen_slot, last_seen_signature)
+     last_seen_slot, last_seen_signature, cluster)
 VALUES ($1, $2, 7, $3, 1, $4, $5, $6, $7, $6, $7, $8, 1, 1000000000, true, 'active', 4000000,
-        1, 'itest-seed')
+        1, 'itest-seed', 'mainnet-beta')
 RETURNING id`,
 		settings, authority, policyAccount, vaultPubkey,
 		fmt.Sprintf("itest-wallet-%s", suffix),

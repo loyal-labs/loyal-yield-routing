@@ -163,34 +163,8 @@ func lookupFixturePortInvalid(port string) bool {
 	return err != nil || value < 1024 || value > 65535
 }
 func seedLookupJournal(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f lookupFixture, hash string, height, bank int64) (*Store, LookupOperation, LookupAttempt, LookupAttempt) {
-	t.Helper()
-	store, err := NewStore(ctx, pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = store.RequireLookupSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = pool.Exec(ctx, `TRUNCATE loyal_yield.lookup_table_families CASCADE`); err != nil {
-		t.Fatal(err)
-	}
-	intent := lookupFixtureIntent(f)
-	if err = pool.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_families(cluster,logical_name,kind,planner_version,catalog_version,provisioning_authority,payer,hard_capacity,largest_atomic_expansion,safety_margin,allocation_high_water) VALUES('localnet','lookup-fixture','vault_shards','v2-test','v2-test',$1,$1,256,20,8,228) RETURNING id`, f.Manager).Scan(&intent.FamilyID); err != nil {
-		t.Fatal(err)
-	}
-	if err = pool.QueryRow(ctx, `INSERT INTO loyal_yield.route_lookup_tables(cluster,scope,table_address,authority,payer,status,family_id,allocation_kind,generation,shard_ordinal,desired_state,accepting_allocations,allocation_high_water,reserved_address_count,usable_address_count,mutation_epoch) VALUES('localnet','lookup-fixture',$1,$2,$2,'warming',$3,'vault_shard',0,0,'preparing',false,228,2,0,0) RETURNING id`, f.Table, f.Manager, intent.FamilyID).Scan(&intent.TableID); err != nil {
-		t.Fatal(err)
-	}
-	contextBytes, _ := json.Marshal(map[string]any{"recent_slot": f.RecentSlot})
-	if err = pool.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_operations(idempotency_key,family_id,route_lookup_table_id,operation_kind,operation_state,target_generation,target_shard_ordinal,operation_context,mutation_epoch,lease_owner,lease_expires_at,fencing_token) VALUES('lookup-fixture-create',$1,$2,'create','leased',0,0,$3,0,'lookup-first',clock_timestamp()+interval '60 seconds',1) RETURNING id`, intent.FamilyID, intent.TableID, contextBytes).Scan(&intent.OperationID); err != nil {
-		t.Fatal(err)
-	}
-	for n, address := range intent.Extension {
-		if _, err = pool.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_operation_addresses(operation_id,address,ordinal) VALUES($1,$2,$3)`, intent.OperationID, address, n); err != nil {
-			t.Fatal(err)
-		}
-	}
-	operation := LookupOperation{Intent: intent, Lease: LookupLease{Owner: "lookup-first", FencingToken: 1}}
+	store, operation := seedLookupSource(t, ctx, pool, f)
+	intent := operation.Intent
 	prepared := LookupAttempt{Intent: intent, SigningContextSlot: bank, EstimatedFeeLamports: 5000, EstimatedRentLamports: 5000000}
 	// Existing source budget is deliberately reserved BEFORE invoking the key.
 	policy := LookupBudget{MaximumLamports: 5000000, RollingWindow: time.Hour}
@@ -207,6 +181,7 @@ func seedLookupJournal(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f 
 	if _, err := store.ReserveLookupBudget(ctx, operation, policy, 5001, 5000000); err == nil {
 		t.Fatal("budget fence replay changed accounting")
 	}
+	var err error
 	prepared.Wire, err = signLookupMutation(intent, hash, height, ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, 32)))
 	if err != nil {
 		t.Fatal(err)
@@ -215,8 +190,50 @@ func seedLookupJournal(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f 
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	return store, operation, prepared, owned
+}
+
+func seedLookupSource(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f lookupFixture, kinds ...string) (*Store, LookupOperation) {
+	t.Helper()
+	store, err := NewStore(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.RequireLookupSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `TRUNCATE loyal_yield.lookup_table_families CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioner_controls SET paused=false,control_epoch=control_epoch+1 WHERE cluster='localnet'`); err != nil {
+		t.Fatal(err)
+	}
+	intent := lookupFixtureIntent(f)
+	kind, allocation := "vault_shards", "vault_shard"
+	if len(kinds) > 0 {
+		kind = kinds[0]
+		if kind != "shared_market" {
+			t.Fatal("unsupported lookup fixture family")
+		}
+		allocation = "shared_market"
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_families(cluster,logical_name,kind,planner_version,catalog_version,provisioning_authority,payer,hard_capacity,largest_atomic_expansion,safety_margin,allocation_high_water) VALUES('localnet','lookup-fixture',$2,'v2-test','v2-test',$1,$1,256,20,8,228) RETURNING id`, f.Manager, kind).Scan(&intent.FamilyID); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO loyal_yield.route_lookup_tables(cluster,scope,table_address,authority,payer,status,family_id,allocation_kind,generation,shard_ordinal,desired_state,accepting_allocations,allocation_high_water,reserved_address_count,usable_address_count,mutation_epoch) VALUES('localnet','lookup-fixture',$1,$2,$2,'warming',$3,$4,0,0,'preparing',false,228,2,0,0) RETURNING id`, f.Table, f.Manager, intent.FamilyID, allocation).Scan(&intent.TableID); err != nil {
+		t.Fatal(err)
+	}
+	contextBytes, _ := json.Marshal(map[string]any{"recent_slot": f.RecentSlot})
+	if err = pool.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_operations(idempotency_key,family_id,route_lookup_table_id,operation_kind,operation_state,target_generation,target_shard_ordinal,operation_context,mutation_epoch,lease_owner,lease_expires_at,fencing_token) VALUES('lookup-fixture-create',$1,$2,'create','leased',0,0,$3,0,'lookup-first',clock_timestamp()+interval '60 seconds',1) RETURNING id`, intent.FamilyID, intent.TableID, contextBytes).Scan(&intent.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	for n, address := range intent.Extension {
+		if _, err = pool.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_operation_addresses(operation_id,address,ordinal) VALUES($1,$2,$3)`, intent.OperationID, address, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	operation := LookupOperation{Intent: intent, Lease: LookupLease{Owner: "lookup-first", FencingToken: 1}}
+	return store, operation
 }
 
 func TestLookupRegisteredJournalStructuralGuards(t *testing.T) {

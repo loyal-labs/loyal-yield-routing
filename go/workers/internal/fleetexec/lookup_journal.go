@@ -70,6 +70,12 @@ type lookupLockedSource struct {
 // in that order, then rechecks the live owner and fencing token. No RPC occurs
 // in this transaction. Packet ownership outlives control changes and leases.
 func lookupLockSource(ctx context.Context, tx pgx.Tx, i LookupIntent, lease LookupLease) (lookupLockedSource, error) {
+	return lookupLockSourceEpoch(ctx, tx, i, lease, i.MutationEpoch)
+}
+
+// Only finalized legacy adoption may use the separately committed physical
+// epoch. Its caller must prove exact projected membership and receipt lineage.
+func lookupLockSourceEpoch(ctx context.Context, tx pgx.Tx, i LookupIntent, lease LookupLease, physicalEpoch int64) (lookupLockedSource, error) {
 	var out lookupLockedSource
 	var cluster, authority, payer string
 	err := tx.QueryRow(ctx, `SELECT cluster,provisioning_authority,payer,desired_state,kind FROM loyal_yield.lookup_table_families WHERE id=$1 FOR UPDATE`, i.FamilyID).Scan(&cluster, &authority, &payer, &out.familyState, &out.familyKind)
@@ -86,7 +92,7 @@ func lookupLockSource(ctx context.Context, tx pgx.Tx, i LookupIntent, lease Look
 	if err != nil {
 		return out, err
 	}
-	if family != i.FamilyID || tableCluster != i.Cluster || address != i.TableAddress || tableAuthority != i.Authority || tablePayer != i.Payer || generation != i.Generation || epoch != i.MutationEpoch {
+	if family != i.FamilyID || tableCluster != i.Cluster || address != i.TableAddress || tableAuthority != i.Authority || tablePayer != i.Payer || generation != i.Generation || epoch != physicalEpoch {
 		return out, errors.New("lookup physical identity/epoch changed")
 	}
 	var sourceKind string

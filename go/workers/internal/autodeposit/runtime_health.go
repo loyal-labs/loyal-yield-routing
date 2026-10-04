@@ -55,9 +55,9 @@ func runtimeRecoveryHealth(ctx context.Context, store *Store, chain ConfirmedSlo
 	var blocked bool
 	err = store.pool.QueryRow(probe, `SELECT
  EXISTS(SELECT 1 FROM loyal_yield.autodeposit_reconciliation_requests
-        WHERE requested_slot>processed_slot)
+        WHERE requested_slot>processed_slot AND EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets target WHERE target.id=target_id AND target.cluster='mainnet-beta'))
  OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets t
-   WHERE t.token_mint=$1 AND t.desired_active AND (
+   WHERE t.cluster='mainnet-beta' AND t.token_mint=$1 AND t.desired_active AND t.chain_status<>'closed' AND (
     t.chain_status<>'active' OR t.chain_observation_slot<=0
     OR t.wallet_balance_floor_raw IS NULL
     OR t.bootstrap_generation IS DISTINCT FROM t.setup_generation
@@ -70,7 +70,7 @@ func runtimeRecoveryHealth(ctx context.Context, store *Store, chain ConfirmedSlo
     OR NULLIF(btrim(t.policy_signature),'') IS NULL OR COALESCE(t.policy_confirmed_slot,0)<=0
     OR NULLIF(btrim(t.recurring_delegation_signature),'') IS NULL
     OR COALESCE(t.recurring_delegation_confirmed_slot,0)<=0))
- OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets WHERE token_mint=$1 AND chain_observation_slot>$2)
+ OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets target WHERE target.cluster='mainnet-beta' AND target.chain_status<>'closed' AND target.token_mint=$1 AND (`+mainnetSourceAheadSQL+`))
 	OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims c
 	  WHERE c.status='selected' AND (
 	   c.autodeposit_executor_lease_expires_at IS NULL
@@ -86,7 +86,7 @@ func runtimeRecoveryHealth(ctx context.Context, store *Store, chain ConfirmedSlo
    WHERE attempt_state IN('prepared','submitted','unknown','ambiguous'))
  OR ($3 AND EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_wallet_balance_events e
    JOIN loyal_yield.balance_sweep_targets t ON t.id=e.target_id
-   WHERE t.token_mint=$1 AND e.mint=t.token_mint AND e.event_id>COALESCE(
+   WHERE t.cluster='mainnet-beta' AND t.token_mint=$1 AND e.mint=t.token_mint AND e.event_id>COALESCE(
     (SELECT last_event_id FROM loyal_yield.projection_offsets WHERE consumer_name=$4),0)))`,
 		USDCMint, slot, includeProjection, ConsumerName).Scan(&blocked)
 	if err != nil || blocked || probe.Err() != nil {

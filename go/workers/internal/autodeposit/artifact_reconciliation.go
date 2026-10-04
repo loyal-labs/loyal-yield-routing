@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/gagliardetto/solana-go"
@@ -51,6 +52,16 @@ type ArtifactHistory interface {
 	ArtifactReceipt(context.Context, string) (ArtifactReceipt, error)
 }
 
+type pagedArtifactHistory interface {
+	ArtifactHistoryPage(context.Context, string, int, string) ([]ArtifactHistoryEntry, error)
+}
+
+type artifactHistoryCursor struct {
+	account    string
+	generation int64
+	before     string
+}
+
 // Creation proof fields are deliberately private. Only the verifier below can
 // issue a proof to the Store; account touches and caller-supplied JSON cannot.
 type VerifiedArtifactCreationProof struct {
@@ -63,6 +74,8 @@ type VerifiedArtifactCreationProof struct {
 type ArtifactProofReader struct {
 	Wires   *SweepWireBuilder
 	History ArtifactHistory
+	mu      sync.Mutex
+	cursors map[string]artifactHistoryCursor
 }
 
 func (r *ArtifactProofReader) FindCreationProof(ctx context.Context, target ArtifactTarget, role ArtifactRole, minimumSlot int64) (VerifiedArtifactCreationProof, error) {
@@ -79,36 +92,114 @@ func (r *ArtifactProofReader) FindCreationProof(ctx context.Context, target Arti
 		return VerifiedArtifactCreationProof{}, errors.New("unknown artifact role")
 	}
 	const maximumHistory = 32
-	entries, err := r.History.ArtifactHistory(ctx, account, maximumHistory)
-	if err != nil {
-		return VerifiedArtifactCreationProof{}, err
+	const maximumPages = 4
+	key := fmt.Sprintf("%d:%s", target.TargetID, role)
+	r.mu.Lock()
+	cursor := r.cursors[key]
+	r.mu.Unlock()
+	before := ""
+	if cursor.account == account && cursor.generation == target.SetupGeneration {
+		before = cursor.before
 	}
-	if len(entries) > maximumHistory {
-		return VerifiedArtifactCreationProof{}, errors.New("artifact history exceeds bound")
+	paged, canPage := r.History.(pagedArtifactHistory)
+	if !canPage {
+		before = ""
 	}
-	for _, entry := range entries {
-		if entry.Failed || entry.Signature == "" || entry.Slot <= 0 {
-			continue
+	known := target.PolicySignature
+	if role == ArtifactDelegation {
+		known = target.DelegationSignature
+	}
+	if known != nil && *known != "" {
+		receipt, err := r.History.ArtifactReceipt(ctx, *known)
+		if err != nil && !errors.Is(err, ErrArtifactCreationProofPending) {
+			return VerifiedArtifactCreationProof{}, err
 		}
-		receipt, err := r.History.ArtifactReceipt(ctx, entry.Signature)
+		if err == nil {
+			if receipt.Signature != *known {
+				return VerifiedArtifactCreationProof{}, errors.New("known artifact receipt signature disagrees")
+			}
+			proof, err := r.Wires.verifyArtifactCreator(ctx, target, role, receipt)
+			if err == nil {
+				r.clearHistoryCursor(key)
+				return proof, nil
+			}
+			if !errors.Is(err, ErrArtifactCreationProofPending) {
+				return VerifiedArtifactCreationProof{}, err
+			}
+		}
+	}
+	for page := 0; page < maximumPages; page++ {
+		var entries []ArtifactHistoryEntry
+		var err error
+		if canPage {
+			entries, err = paged.ArtifactHistoryPage(ctx, account, maximumHistory, before)
+		} else {
+			entries, err = r.History.ArtifactHistory(ctx, account, maximumHistory)
+		}
 		if err != nil {
-			if errors.Is(err, ErrArtifactCreationProofPending) {
+			return VerifiedArtifactCreationProof{}, err
+		}
+		if len(entries) > maximumHistory {
+			return VerifiedArtifactCreationProof{}, errors.New("artifact history exceeds bound")
+		}
+		seen := map[string]bool{}
+		var previousSlot int64
+		for _, entry := range entries {
+			if entry.Signature == "" || entry.Signature == before || seen[entry.Signature] || entry.Slot <= 0 || previousSlot > 0 && entry.Slot > previousSlot {
+				return VerifiedArtifactCreationProof{}, errors.New("artifact history page identity or ordering invalid")
+			}
+			seen[entry.Signature] = true
+			previousSlot = entry.Slot
+			if entry.Failed || entry.Signature == "" || entry.Slot <= 0 {
 				continue
 			}
-			return VerifiedArtifactCreationProof{}, err
+			receipt, err := r.History.ArtifactReceipt(ctx, entry.Signature)
+			if err != nil {
+				if errors.Is(err, ErrArtifactCreationProofPending) {
+					continue
+				}
+				return VerifiedArtifactCreationProof{}, err
+			}
+			if receipt.Signature != entry.Signature || receipt.Slot != entry.Slot {
+				return VerifiedArtifactCreationProof{}, errors.New("artifact history and receipt identities disagree")
+			}
+			proof, err := r.Wires.verifyArtifactCreator(ctx, target, role, receipt)
+			if err == nil {
+				r.clearHistoryCursor(key)
+				return proof, nil
+			}
+			if !errors.Is(err, ErrArtifactCreationProofPending) {
+				return VerifiedArtifactCreationProof{}, err
+			}
 		}
-		if receipt.Signature != entry.Signature || receipt.Slot != entry.Slot {
-			return VerifiedArtifactCreationProof{}, errors.New("artifact history and receipt identities disagree")
+		if !canPage || len(entries) < maximumHistory {
+			r.clearHistoryCursor(key)
+			return VerifiedArtifactCreationProof{}, ErrArtifactCreationProofPending
 		}
-		proof, err := r.Wires.verifyArtifactCreator(ctx, target, role, receipt)
-		if err == nil {
-			return proof, nil
-		}
-		if !errors.Is(err, ErrArtifactCreationProofPending) {
-			return VerifiedArtifactCreationProof{}, err
+		before = entries[len(entries)-1].Signature
+	}
+	// This is a bounded read checkpoint, not financial evidence. Restart
+	// rescans from the head. Exhaustion clears it so unavailable receipts are
+	// revisited on the next pass rather than silently declared absent.
+	r.mu.Lock()
+	if r.cursors == nil {
+		r.cursors = make(map[string]artifactHistoryCursor)
+	}
+	if len(r.cursors) >= 1024 {
+		for k := range r.cursors {
+			delete(r.cursors, k)
+			break
 		}
 	}
+	r.cursors[key] = artifactHistoryCursor{account: account, generation: target.SetupGeneration, before: before}
+	r.mu.Unlock()
 	return VerifiedArtifactCreationProof{}, ErrArtifactCreationProofPending
+}
+
+func (r *ArtifactProofReader) clearHistoryCursor(key string) {
+	r.mu.Lock()
+	delete(r.cursors, key)
+	r.mu.Unlock()
 }
 
 func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target ArtifactTarget, minimumSlot int64) error {

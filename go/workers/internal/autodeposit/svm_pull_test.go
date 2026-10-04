@@ -272,7 +272,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	target := ArtifactTarget{ControlTarget: ControlTarget{TargetID: 1, SetupGeneration: 1, PolicySeed: f.PolicySeed, Settings: f.Settings, Wallet: f.Wallet, WalletTokenATA: f.WalletATA, Vault: f.Vault, VaultTokenATA: f.VaultATA, Mint: USDCMint, Policy: f.Policy, SubscriptionAuthority: f.SubscriptionAuthority, RecurringDelegation: f.RecurringDelegation, Nonce: &f.Nonce, MaxAmountPerPeriod: &f.BudgetRaw, StartTimestamp: &f.StartTimestamp}, RootAuthority: f.Wallet, PeriodLength: &f.PeriodLength, ExpiryTimestamp: &f.ExpiryTimestamp}
+	target := ArtifactTarget{ControlTarget: ControlTarget{Cluster: mainnetCluster, TargetID: 1, SetupGeneration: 1, PolicySeed: f.PolicySeed, Settings: f.Settings, Wallet: f.Wallet, WalletTokenATA: f.WalletATA, Vault: f.Vault, VaultTokenATA: f.VaultATA, Mint: USDCMint, Policy: f.Policy, SubscriptionAuthority: f.SubscriptionAuthority, RecurringDelegation: f.RecurringDelegation, Nonce: &f.Nonce, MaxAmountPerPeriod: &f.BudgetRaw, StartTimestamp: &f.StartTimestamp}, RootAuthority: f.Wallet, PeriodLength: &f.PeriodLength, ExpiryTimestamp: &f.ExpiryTimestamp}
 	if e = builder.proveArtifactAccounts(t.Context(), target, 1000); e != nil {
 		t.Fatalf("actual canonical source authorization accounts: %v", e)
 	}

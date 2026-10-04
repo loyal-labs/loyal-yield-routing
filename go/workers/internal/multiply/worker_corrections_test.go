@@ -287,7 +287,7 @@ func TestExpiredAmbiguousAttemptRetainsOwnership(t *testing.T) {
 func TestWorkerAcceptsExecutorPrivateKeyAndDepositRejectsWrap(t *testing.T) {
 	topology := testTopology(t)
 	dependencies := WorkerDeps{Store: &Store{pool: &pgxpool.Pool{}}, Observer: shortReviewReader{},
-		Executor: &Executor{Signer: testDelegateSeed()}, Quotes: fakeQuoteClient{topology}, WorkerID: "review"}
+		Executor: &Executor{RPC: &fakeRPC{}, Signer: testDelegateSeed()}, Quotes: fakeQuoteClient{topology}, WorkerID: "review"}
 	if _, err := NewWorker(dependencies); err != nil {
 		t.Fatal(err)
 	}

@@ -88,7 +88,7 @@ func (s *Store) LoadFrozenDepositPlan(ctx context.Context, claimToken string, ta
 	})
 	return plan, err
 }
-func (s *Store) PersistDestinationSetup(ctx context.Context, claimToken, leaseToken string, plan DestinationSetupPlan, wire BuiltWire) (SetupAttempt, error) {
+func (s *Store) PersistDestinationSetup(ctx context.Context, claimToken, leaseToken string, plan DestinationSetupPlan, wire BuiltWire, expectedDesiredRevision int64) (SetupAttempt, error) {
 	candidate := SetupAttempt{ClaimToken: claimToken, Plan: plan, Wire: wire, State: AttemptPrepared}
 	if _, err := persistedWireTransaction(candidate.durable()); err != nil {
 		return SetupAttempt{}, err
@@ -102,13 +102,17 @@ func (s *Store) PersistDestinationSetup(ctx context.Context, claimToken, leaseTo
 	}
 	var out SetupAttempt
 	err = WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		// Same lock ordering as the legacy idle handoff: advisory lock, then claim.
+		// Same advisory handoff, then target/control fence before claim.
 		tag, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('idle-vault-handoff:%s:%s',vault.id,target.token_mint),0::bigint)) FROM loyal_yield.balance_sweep_lot_claims claim JOIN loyal_yield.balance_sweep_targets target ON target.id=claim.target_id JOIN loyal_yield.managed_vaults vault ON vault.settings=target.settings AND vault.vault_index=target.vault_index AND vault.vault_pubkey=target.vault_pubkey WHERE claim.claim_token=$1`, claimToken)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() != 1 {
 			return ErrOwnershipLost
+		}
+		var targetID int64
+		if err = tx.QueryRow(ctx, `SELECT target.id FROM loyal_yield.balance_sweep_lot_claims claim JOIN loyal_yield.balance_sweep_targets target ON target.id=claim.target_id WHERE claim.claim_token=$1 FOR UPDATE OF target`, claimToken).Scan(&targetID); err != nil {
+			return err
 		}
 		if err = guardSetupClaim(ctx, tx, claimToken, leaseToken); err != nil {
 			return err
@@ -131,6 +135,22 @@ func (s *Store) PersistDestinationSetup(ctx context.Context, claimToken, leaseTo
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		}
+		if err := lockMainnetPolicy(ctx, tx, targetID); err != nil {
+			return err
+		}
+		if s.requireDesiredAdmission {
+			ready, err := desiredAdmissionApplied(ctx, tx, targetID)
+			if err != nil {
+				return err
+			}
+			var revision int64
+			if err := tx.QueryRow(ctx, `SELECT desired_revision FROM loyal_yield.balance_sweep_targets WHERE id=$1`, targetID).Scan(&revision); err != nil {
+				return err
+			}
+			if !ready || expectedDesiredRevision <= 0 || expectedDesiredRevision != revision {
+				return ErrDesiredControlsPending
+			}
 		}
 		var hasPull bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts WHERE claim_token=$1 AND operation_kind='pull' AND attempt_state IN('prepared','submitted','confirmed','unknown','ambiguous')) OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims claim JOIN loyal_yield.balance_sweep_targets target ON target.id=claim.target_id JOIN loyal_yield.managed_vaults vault ON vault.settings=target.settings AND vault.vault_index=target.vault_index AND vault.vault_pubkey=target.vault_pubkey JOIN loyal_yield.rebalance_decisions decision ON decision.vault_id=vault.id AND decision.liquidity_mint=target.token_mint AND decision.status::text IN('planned','simulating','ready','submitted','confirming') AND decision.execution_plan->>'kind'='idle_vault_deposit' WHERE claim.claim_token=$1)`, claimToken).Scan(&hasPull); err != nil {

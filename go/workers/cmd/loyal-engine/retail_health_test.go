@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -64,6 +65,40 @@ func TestRetailHealthLaneCancellationClosesAllGates(t *testing.T) {
 	if err := r.Run(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("health lane failed to join cancellation: %v", err)
 	}
+	assertRetailReady(t, r, false)
+	// A family can finish a cycle concurrently with joined shutdown. Its last
+	// healthy callback must never reopen the stopped runtime's public gate.
+	for family := range r.families {
+		r.report(family, true, 101, time.Now())
+	}
+	r.refresh(time.Now())
+	assertRetailReady(t, r, false)
+}
+
+func TestRetailShutdownJoinsConcurrentReadinessCallbacks(t *testing.T) {
+	r := newRetailReadiness(retailHealth(), "cross-mint", "lookup-writer")
+	var families []string
+	for family := range r.families {
+		families = append(families, family)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+	var reporters sync.WaitGroup
+	reporters.Add(len(families))
+	for _, family := range families {
+		go func() {
+			defer reporters.Done()
+			for slot := uint64(1); slot <= 1000; slot++ {
+				r.report(family, true, slot, time.Now())
+			}
+		}()
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("health shutdown failed: %v", err)
+	}
+	reporters.Wait()
 	assertRetailReady(t, r, false)
 }
 

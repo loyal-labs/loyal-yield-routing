@@ -15,6 +15,7 @@ type TargetExecutionContext struct {
 	SetupPolicyAccount string
 	SweepPolicyAccount string
 	TargetID           int64
+	DesiredRevision    int64
 	Settings           string
 	VaultIndex         int64
 	Wallet             string
@@ -64,6 +65,7 @@ func (s *Store) LoadTargetExecutionContext(ctx context.Context, targetID int64) 
 	rows, err := s.pool.Query(ctx, `
 SELECT
     target.id,
+    target.desired_revision,
     target.policy_account,
     target.settings,
     target.vault_index,
@@ -98,6 +100,7 @@ LEFT JOIN loyal_yield.managed_vaults AS setup_vault
 LEFT JOIN loyal_yield.route_policies AS setup_policy
   ON setup_policy.id=setup_vault.setup_policy_id
  AND setup_policy.active=true
+ AND setup_policy.cluster='mainnet-beta'
  AND setup_policy.authority=target.authority
  AND setup_policy.settings=target.settings
  AND setup_policy.vault_index=target.vault_index
@@ -109,6 +112,7 @@ LEFT JOIN LATERAL (
     JOIN loyal_yield.route_policies AS rp
       ON mv.active_policy_id = rp.id
      AND rp.active = true
+     AND rp.cluster = 'mainnet-beta'
      AND rp.authority = target.authority
      AND rp.settings = target.settings
      AND rp.vault_index = target.vault_index
@@ -132,6 +136,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) AS position ON TRUE
 WHERE target.id = $1
+  AND target.cluster = 'mainnet-beta'
   AND target.token_mint = $2`, targetID, USDCMint)
 	if err != nil {
 		return nil, fmt.Errorf("load autodeposit target context %d: %w", targetID, err)
@@ -154,7 +159,7 @@ WHERE target.id = $1
 		setupPolicy   *string
 	)
 	if err := rows.Scan(
-		&context.TargetID, &context.SweepPolicyAccount, &context.Settings, &context.VaultIndex, &context.Wallet,
+		&context.TargetID, &context.DesiredRevision, &context.SweepPolicyAccount, &context.Settings, &context.VaultIndex, &context.Wallet,
 		&context.WalletUsdcAta, &context.VaultPubkey, &context.VaultUsdcAta,
 		&context.TokenMint, &context.RecurringDelegation, &floor,
 		&context.MaxAmountPerPeriodRaw, &context.PeriodLengthSeconds, &context.StartTimestamp,

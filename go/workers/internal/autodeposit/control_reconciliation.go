@@ -18,6 +18,7 @@ import (
 // 0059. Missing wallet-authorized artifacts remain pending; this reconciler
 // never creates a delegation or changes the user's desired enablement/floor.
 type ControlTarget struct {
+	Cluster                                                      string
 	TargetID, SetupGeneration, PolicySeed                        int64
 	Settings, Wallet, WalletTokenATA, Vault, VaultTokenATA, Mint string
 	Policy, SubscriptionAuthority, RecurringDelegation           string
@@ -49,6 +50,9 @@ func (o ControlObservation) status() string {
 // a target. All four accounts come from one confirmed RPC context.
 func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTarget, minimumSlot int64) (ControlObservation, error) {
 	o := ControlObservation{Target: target}
+	if target.Cluster != mainnetCluster {
+		return o, ErrChainNamespace
+	}
 	if target.Nonce == nil || *target.Nonce < 0 || target.MaxAmountPerPeriod == nil || *target.MaxAmountPerPeriod <= 0 {
 		return o, errors.New("control target lacks confirmed delegation nonce or budget")
 	}

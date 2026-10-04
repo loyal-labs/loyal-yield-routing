@@ -110,17 +110,20 @@ func (r *Runtime) Close() {
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
-	currentWatch, targets, seedSlot, err := r.loadAndSeed(ctx)
+	startup, cancelStartup := context.WithTimeout(ctx, r.passTimeout())
+	defer cancelStartup()
+	r.health.SetDomainReady("watch", false)
+	currentWatch, targets, seedSlot, err := r.loadAndSeed(startup)
 	if err != nil {
 		return err
 	}
 	watchObservationConsumer := r.earn.ConsumerName() + ":watch-observation"
-	watchObservationSlot, err := r.earnStore.ReplayCursor(ctx, watchObservationConsumer)
+	watchObservationSlot, err := r.earnStore.ReplayCursor(startup, watchObservationConsumer)
 	if err != nil {
 		return err
 	}
 	firstWatchObservation := watchObservationSlot == 0
-	fromSlot, err := r.replayStart(ctx, seedSlot, currentWatch.ObservationStartSlot, watchObservationSlot)
+	fromSlot, err := r.replayStart(startup, seedSlot, currentWatch.ObservationStartSlot, watchObservationSlot)
 	if err != nil {
 		return err
 	}
@@ -128,13 +131,13 @@ func (r *Runtime) Run(ctx context.Context) error {
 		return err
 	}
 	if firstWatchObservation {
-		recovered, recoveryErr := r.recoverNewEarnBindings(ctx, nil, currentWatch)
+		recovered, recoveryErr := r.recoverNewEarnBindings(startup, nil, currentWatch)
 		if recoveryErr != nil {
 			return fmt.Errorf("recover initial Earn bindings: %w", recoveryErr)
 		}
 		r.logger.Info("recovered initial Earn binding state from confirmed RPC", "insertedJobs", recovered)
 		watchObservationSlot = fromSlot
-		if err = r.earnStore.AdvanceReplayCursor(ctx, watchObservationConsumer, watchObservationSlot); err != nil {
+		if err = r.earnStore.AdvanceReplayCursor(startup, watchObservationConsumer, watchObservationSlot); err != nil {
 			return fmt.Errorf("persist initial watch observation: %w", err)
 		}
 	}
@@ -142,6 +145,12 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := startup.Err(); err != nil {
+		return err
+	}
+	// Only initialization belongs to this deadline. The promoted stream must
+	// remain owned by the process context after startup succeeds.
+	cancelStartup()
 	r.health.ResetProgress()
 	manager := stream.NewManager(stream.GRPCConnector{Endpoint: r.cfg.LaserStreamEndpoint, APIKey: r.cfg.HeliusAPIKey}, r.handler, stream.Config{ReplayOverlapSlots: r.cfg.ReplayOverlapSlots, HandoffTimeout: r.cfg.HandoffTimeout})
 	if err = manager.Start(ctx, request); err != nil {
@@ -149,6 +158,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	defer func() { manager.Close() }()
 	r.health.SetConnected(true)
+	r.health.SetDomainReady("watch", true)
 	// Capture readiness is not application readiness: the Earn gate stays
 	// closed until the reconciliation health poll observes applied, healthy
 	// backlog state (see the earnHealthTicker case).
@@ -201,84 +211,100 @@ func (r *Runtime) Run(ctx context.Context) error {
 			r.health.SetDomainReady("earn", false)
 			sessionStarted = time.Now()
 		case <-watchRefresh:
-			scanBoundary := manager.ActiveFrontier()
-			if scanBoundary == 0 {
-				scanBoundary = watchObservationSlot
-			}
-			nextWatch, nextTargets, loadErr := r.load(ctx)
-			if loadErr != nil {
+			refreshErr := func() error {
+				passCtx, cancelPass := context.WithTimeout(ctx, r.passTimeout())
+				defer cancelPass()
 				r.health.SetDomainReady("watch", false)
-				r.metrics.RecordFailure(ctx, "watch_refresh")
-				r.logger.Error("failed to refresh combined LaserStream watch set", "error", loadErr)
-				continue
-			}
-			if anchorErr := nextWatch.AnchorNewEarnBindings(currentWatch, watchObservationSlot); anchorErr != nil {
-				return anchorErr
-			}
-			if retainErr := nextWatch.RetainPreviousEarnBindings(currentWatch); retainErr != nil {
-				return retainErr
-			}
-			if recovered, recoveryErr := r.recoverNewEarnBindings(ctx, currentWatch, nextWatch); recoveryErr != nil {
-				r.health.SetDomainReady("watch", false)
-				r.metrics.RecordFailure(ctx, "earn_binding_rpc_recovery")
-				r.logger.Error("failed to recover newly discovered Earn bindings; old stream retained", "event", "earn_binding_rpc_recovery_failed", "error", recoveryErr)
-				continue
-			} else if recovered > 0 {
-				r.logger.Info("recovered newly discovered Earn binding state from confirmed RPC", "insertedJobs", recovered)
-			}
-			if recovered, gapErr := r.recoverEarnMaxGaps(ctx, nextWatch); gapErr != nil {
-				r.metrics.RecordFailure(ctx, "earn_max_rpc_gap_recovery")
-				r.logger.Error("Earn MAX RPC gap recovery failed", "event", "earn_max_rpc_gap_recovery_failed", "error", gapErr)
-			} else if recovered > 0 {
-				r.logger.Info("enqueued Earn MAX RPC gap updates", "insertedJobs", recovered)
-			}
-			if nextWatch.Fingerprint() == currentWatch.Fingerprint() && targetFingerprint(nextTargets) == targetFingerprint(targets) {
+				scanBoundary := manager.ActiveFrontier()
+				if scanBoundary == 0 {
+					scanBoundary = watchObservationSlot
+				}
+				nextWatch, nextTargets, loadErr := r.load(passCtx)
+				if loadErr != nil {
+					r.health.SetDomainReady("watch", false)
+					r.metrics.RecordFailure(ctx, "watch_refresh")
+					r.logger.Error("failed to refresh combined LaserStream watch set", "error", loadErr)
+					return nil
+				}
+				if anchorErr := nextWatch.AnchorNewEarnBindings(currentWatch, watchObservationSlot); anchorErr != nil {
+					return anchorErr
+				}
+				if retainErr := nextWatch.RetainPreviousEarnBindings(currentWatch); retainErr != nil {
+					return retainErr
+				}
+				if recovered, recoveryErr := r.recoverNewEarnBindings(passCtx, currentWatch, nextWatch); recoveryErr != nil {
+					r.health.SetDomainReady("watch", false)
+					r.metrics.RecordFailure(ctx, "earn_binding_rpc_recovery")
+					r.logger.Error("failed to recover newly discovered Earn bindings; old stream retained", "event", "earn_binding_rpc_recovery_failed", "error", recoveryErr)
+					return nil
+				} else if recovered > 0 {
+					r.logger.Info("recovered newly discovered Earn binding state from confirmed RPC", "insertedJobs", recovered)
+				}
+				if recovered, gapErr := r.recoverEarnMaxGaps(passCtx, nextWatch); gapErr != nil {
+					r.metrics.RecordFailure(ctx, "earn_max_rpc_gap_recovery")
+					r.logger.Error("Earn MAX RPC gap recovery failed", "event", "earn_max_rpc_gap_recovery_failed", "error", gapErr)
+					return nil
+				} else if recovered > 0 {
+					r.logger.Info("enqueued Earn MAX RPC gap updates", "insertedJobs", recovered)
+				}
+				if nextWatch.Fingerprint() == currentWatch.Fingerprint() && targetFingerprint(nextTargets) == targetFingerprint(targets) {
+					if passCtx.Err() != nil {
+						return nil
+					}
+					r.kamino.SetTargets(nextTargets)
+					targets = nextTargets
+					if scanBoundary > watchObservationSlot {
+						if cursorErr := r.earnStore.AdvanceReplayCursor(passCtx, watchObservationConsumer, scanBoundary); cursorErr != nil {
+							return fmt.Errorf("persist watch observation: %w", cursorErr)
+						}
+						watchObservationSlot = scanBoundary
+					}
+					r.health.SetDomainReady("watch", passCtx.Err() == nil)
+					return nil
+				}
+				r.ata.SetTargets(nextWatch.ATAs)
+				r.earn.SetWatchSet(nextWatch)
 				r.kamino.SetTargets(nextTargets)
-				targets = nextTargets
+				requested := manager.ActiveFrontier()
+				bindingStart, anchorErr := nextWatch.NewEarnBindingStart(currentWatch)
+				if anchorErr != nil {
+					return anchorErr
+				}
+				if bindingStart != nil && *bindingStart < requested {
+					requested = *bindingStart
+				}
+				replacement, buildErr := r.request(nextWatch, nextTargets, requested)
+				if buildErr != nil {
+					return buildErr
+				}
+				if handoffErr := manager.Handoff(passCtx, replacement); handoffErr != nil {
+					r.health.SetDomainReady("watch", false)
+					r.metrics.RecordHandoff(ctx, "failed")
+					r.logger.Error("combined filter-set handoff failed; old stream retained", "error", handoffErr)
+					r.ata.SetTargets(currentWatch.ATAs)
+					r.earn.SetWatchSet(currentWatch)
+					r.kamino.SetTargets(targets)
+					return nil
+				}
 				if scanBoundary > watchObservationSlot {
-					if cursorErr := r.earnStore.AdvanceReplayCursor(ctx, watchObservationConsumer, scanBoundary); cursorErr != nil {
-						return fmt.Errorf("persist watch observation: %w", cursorErr)
+					if cursorErr := r.earnStore.AdvanceReplayCursor(passCtx, watchObservationConsumer, scanBoundary); cursorErr != nil {
+						return fmt.Errorf("persist watch observation after handoff: %w", cursorErr)
 					}
 					watchObservationSlot = scanBoundary
 				}
-				continue
+				r.metrics.RecordHandoff(ctx, "promoted")
+				request = replacement
+				currentWatch, targets = nextWatch, nextTargets
+				r.logger.Info("combined filter-set handoff promoted", "frontier", manager.ActiveFrontier(), "kaminoReserves", len(targets), "ataTargets", len(currentWatch.ATAs), "earnVaults", len(currentWatch.Vaults))
+				r.health.SetDomainReady("watch", passCtx.Err() == nil)
+				return nil
+			}()
+			if refreshErr != nil {
+				return refreshErr
 			}
-			r.ata.SetTargets(nextWatch.ATAs)
-			r.earn.SetWatchSet(nextWatch)
-			r.kamino.SetTargets(nextTargets)
-			requested := manager.ActiveFrontier()
-			bindingStart, anchorErr := nextWatch.NewEarnBindingStart(currentWatch)
-			if anchorErr != nil {
-				return anchorErr
-			}
-			if bindingStart != nil && *bindingStart < requested {
-				requested = *bindingStart
-			}
-			replacement, buildErr := r.request(nextWatch, nextTargets, requested)
-			if buildErr != nil {
-				return buildErr
-			}
-			if handoffErr := manager.Handoff(ctx, replacement); handoffErr != nil {
-				r.health.SetDomainReady("watch", false)
-				r.metrics.RecordHandoff(ctx, "failed")
-				r.logger.Error("combined filter-set handoff failed; old stream retained", "error", handoffErr)
-				r.ata.SetTargets(currentWatch.ATAs)
-				r.earn.SetWatchSet(currentWatch)
-				r.kamino.SetTargets(targets)
-				continue
-			}
-			if scanBoundary > watchObservationSlot {
-				if cursorErr := r.earnStore.AdvanceReplayCursor(ctx, watchObservationConsumer, scanBoundary); cursorErr != nil {
-					return fmt.Errorf("persist watch observation after handoff: %w", cursorErr)
-				}
-				watchObservationSlot = scanBoundary
-			}
-			r.metrics.RecordHandoff(ctx, "promoted")
-			request = replacement
-			currentWatch, targets = nextWatch, nextTargets
-			r.logger.Info("combined filter-set handoff promoted", "frontier", manager.ActiveFrontier(), "kaminoReserves", len(targets), "ataTargets", len(currentWatch.ATAs), "earnVaults", len(currentWatch.Vaults))
 		case <-verifyTicker.C:
-			if verifyErr := r.kamino.Verify(ctx); verifyErr != nil {
+			verifyErr := r.verifyPass(ctx)
+			if verifyErr != nil {
 				verificationFailures++
 				r.metrics.RecordFailure(ctx, "kamino_confirmed_verification")
 				if terminalErr := persistentVerificationError(verificationFailures, verifyErr); terminalErr != nil {
@@ -350,7 +376,6 @@ func (r *Runtime) load(ctx context.Context) (*watch.Set, []kamino.Target, error)
 	if err != nil {
 		return nil, nil, fmt.Errorf("refresh Kamino observation catalog: %w", err)
 	}
-	r.health.SetDomainReady("watch", true)
 	return set, targets, nil
 }
 func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target, uint64, error) {
@@ -364,6 +389,7 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 	if recovered, gapErr := r.recoverEarnMaxGaps(ctx, set); gapErr != nil {
 		r.metrics.RecordFailure(ctx, "earn_max_rpc_gap_recovery")
 		r.logger.Error("Earn MAX RPC gap recovery failed", "event", "earn_max_rpc_gap_recovery_failed", "error", gapErr)
+		return nil, nil, 0, fmt.Errorf("recover initial Earn MAX gaps: %w", gapErr)
 	} else if recovered > 0 {
 		r.logger.Info("enqueued Earn MAX RPC gap updates", "insertedJobs", recovered)
 	}
@@ -384,6 +410,18 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 		kaminoSlot = ataSlot
 	}
 	return set, targets, kaminoSlot, nil
+}
+
+// A whole pass gets one budget, including its SQL and every RPC batch. Leave
+// at least half the progress window for control/error processing between passes.
+func (r *Runtime) passTimeout() time.Duration {
+	return min(r.cfg.ProgressTimeout/2, 30*time.Second)
+}
+
+func (r *Runtime) verifyPass(ctx context.Context) error {
+	passCtx, cancel := context.WithTimeout(ctx, r.passTimeout())
+	defer cancel()
+	return r.kamino.Verify(passCtx)
 }
 func (r *Runtime) replayStart(ctx context.Context, seed uint64, observationStart *uint64, watchCursor uint64) (uint64, error) {
 	current, err := r.rpc.Slot(ctx, "confirmed")

@@ -1,7 +1,7 @@
 #![allow(unexpected_cfgs)]
 
 use solana_program::{
-    account_info::{AccountInfo, next_account_info},
+    account_info::{next_account_info, AccountInfo},
     entrypoint,
     entrypoint::ProgramResult,
     program::{invoke, invoke_signed},
@@ -73,6 +73,8 @@ enum JupiterInstruction {
 enum KaminoInstruction {
     Deposit { amount: u64 },
     Withdraw { amount: u64 },
+    Borrow { amount: u64 },
+    Repay { amount: u64 },
 }
 
 pub fn process_instruction(
@@ -81,6 +83,9 @@ pub fn process_instruction(
     data: &[u8],
 ) -> ProgramResult {
     if program_id == &JUPITER_V6_PROGRAM_ID {
+        if data.starts_with(&MULTIPLY_SHARED_ROUTE_DISCRIMINATOR) {
+            return process_multiply_shared_route(program_id, accounts, data);
+        }
         if accounts.len() == 24
             && data.len() == 40
             && data[..8] == JUPITER_ROUTER_USDC_PYUSD_DISCRIMINATOR
@@ -412,9 +417,10 @@ fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) ->
             || accounts[0].owner != program_id
             || !accounts[0].is_writable
             || accounts[1].owner != program_id
-            || accounts[2..]
-                .iter()
-                .any(|account| account.key != program_id)
+            || accounts[2..5].iter().any(|account| {
+                account.key != program_id || account.is_writable || account.is_signer
+            })
+            || !fixture_scope_refresh_account(&accounts[5], program_id)
         {
             return Err(ProgramError::InvalidAccountData);
         }
@@ -452,7 +458,22 @@ fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) ->
         KaminoInstruction::Withdraw { amount } => {
             process_kamino_withdraw(program_id, accounts, amount)
         }
+        KaminoInstruction::Borrow { amount } => {
+            process_multiply_debt(program_id, accounts, amount, true)
+        }
+        KaminoInstruction::Repay { amount } => {
+            process_multiply_debt(program_id, accounts, amount, false)
+        }
     }
+}
+
+// The Multiply fixture uses the source-pinned Scope address. This local model
+// does not evaluate prices or pretend to model mature Scope/KLend risk logic.
+const MULTIPLY_FIXTURE_SCOPE: Pubkey = pubkey!("3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH");
+fn fixture_scope_refresh_account(account: &AccountInfo, program_id: &Pubkey) -> bool {
+    !account.is_writable
+        && !account.is_signer
+        && (account.key == program_id || account.key == &MULTIPLY_FIXTURE_SCOPE)
 }
 
 fn parse_kamino_instruction(data: &[u8]) -> Result<KaminoInstruction, ProgramError> {
@@ -466,6 +487,14 @@ fn parse_kamino_instruction(data: &[u8]) -> Result<KaminoInstruction, ProgramErr
     }
     if data[..8] == KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR {
         return Ok(KaminoInstruction::Withdraw { amount });
+    }
+    // SHA256 global names and ordered accounts verified against locked
+    // KLend SDK 23b9f2b instructions/{borrow,repay}.rs by the Rust producer.
+    if data[..8] == [161, 128, 143, 245, 171, 199, 194, 6] {
+        return Ok(KaminoInstruction::Borrow { amount });
+    }
+    if data[..8] == [116, 174, 213, 76, 180, 53, 210, 144] {
+        return Ok(KaminoInstruction::Repay { amount });
     }
 
     Err(ProgramError::InvalidInstructionData)
@@ -548,6 +577,7 @@ fn process_kamino_withdraw(
     amount: u64,
 ) -> ProgramResult {
     let kamino = parse_kamino_redeem_accounts(program_id, accounts)?;
+    let amount = multiply_fixture_withdraw_amount(kamino.obligation, kamino.reserve, amount)?;
     let collateral_owner =
         spl_token::state::Account::unpack(&kamino.reserve_source_collateral.data.borrow())?.owner;
     if collateral_owner == *kamino.owner.key {
@@ -589,6 +619,290 @@ fn process_kamino_withdraw(
         ],
     )?;
     adjust_kamino_obligation(kamino.obligation, kamino.reserve.key, amount, false)
+}
+
+// Narrow fixed-price, zero-interest/fee Multiply bank model. It executes SPL
+// movements and checked source-layout liability writes; it does not implement
+// mature KLend pricing, accrual, elevation groups, farms, or liquidation.
+const MULTIPLY_MARKET: Pubkey = pubkey!("6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y");
+const MULTIPLY_USDC_RESERVE: Pubkey = pubkey!("Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo");
+const MULTIPLY_SYRUP_MINT: Pubkey = pubkey!("AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj");
+const MULTIPLY_DEBT_FARM: Pubkey = pubkey!("87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y");
+const MULTIPLY_FARMS: Pubkey = pubkey!("FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr");
+const MULTIPLY_SHARED_ROUTE_DISCRIMINATOR: [u8; 8] = [193, 32, 155, 51, 65, 214, 156, 129];
+
+fn multiply_debt_raw(obligation: &AccountInfo) -> Result<u64, ProgramError> {
+    let data = obligation.try_borrow_data()?;
+    if obligation.owner != &KAMINO_LEND_PROGRAM_ID
+        || data.len() != 3344
+        || !data.starts_with(&KAMINO_OBLIGATION_DISCRIMINATOR)
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let sf = u128::from_le_bytes(data[1296..1312].try_into().unwrap());
+    if sf & ((1u128 << 60) - 1) != 0 {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    u64::try_from(sf >> 60).map_err(|_| ProgramError::ArithmeticOverflow)
+}
+
+fn process_multiply_debt(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    requested: u64,
+    borrow: bool,
+) -> ProgramResult {
+    if accounts.len() != if borrow { 15 } else { 13 } || requested == 0 {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    let (reserve_i, mint_i, supply_i, custody_i, token_i, sysvar_i, farm_i, authority_i) = if borrow
+    {
+        (4, 5, 6, 8, 10, 11, 12, 3)
+    } else {
+        (3, 4, 5, 6, 7, 8, 9, 11)
+    };
+    let owner = &accounts[0];
+    let obligation = &accounts[1];
+    let market = &accounts[2];
+    let reserve = &accounts[reserve_i];
+    let mint = &accounts[mint_i];
+    let supply = &accounts[supply_i];
+    let custody = &accounts[custody_i];
+    let token = &accounts[token_i];
+    let authority = &accounts[authority_i];
+    require_common_kamino_accounts(program_id, owner, market, authority)?;
+    require_key(market, &MULTIPLY_MARKET)?;
+    require_key(reserve, &MULTIPLY_USDC_RESERVE)?;
+    require_key(mint, &USDC_MINT)?;
+    require_key(token, &spl_token::id())?;
+    require_key(
+        &accounts[sysvar_i],
+        &solana_program::sysvar::instructions::id(),
+    )?;
+    require_key(&accounts[farm_i + 1], &MULTIPLY_DEBT_FARM)?;
+    require_key(accounts.last().unwrap(), &MULTIPLY_FARMS)?;
+    let farm_user = Pubkey::find_program_address(
+        &[
+            b"user",
+            MULTIPLY_DEBT_FARM.as_ref(),
+            obligation.key.as_ref(),
+        ],
+        &MULTIPLY_FARMS,
+    )
+    .0;
+    require_key(&accounts[farm_i], &farm_user)?;
+    if accounts[farm_i].owner != &MULTIPLY_FARMS
+        || accounts[farm_i + 1].owner != &MULTIPLY_FARMS
+        || !accounts[farm_i].is_writable
+        || !accounts[farm_i + 1].is_writable
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    if reserve.owner != program_id
+        || market.owner != program_id
+        || !reserve.is_writable
+        || !obligation.is_writable
+        || !supply.is_writable
+        || !custody.is_writable
+        || accounts[1..].iter().any(|a| a.is_signer)
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let state = read_kamino_reserve_state(reserve)?;
+    require_key(market, &state.lending_market)?;
+    require_key(mint, &state.liquidity_mint)?;
+    require_key(supply, &state.liquidity_supply)?;
+    let data = obligation.try_borrow_data()?;
+    if data.len() != 3344
+        || data[32..64] != market.key.to_bytes()
+        || data[64..96] != owner.key.to_bytes()
+        || (data[1208..1240] != [0; 32] && data[1208..1240] != reserve.key.to_bytes())
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let collateral = read_u64(&data[128..136])?;
+    drop(data);
+    let old_debt = multiply_debt_raw(obligation)?;
+    let amount = if borrow {
+        requested
+    } else {
+        requested.min(old_debt)
+    };
+    if amount == 0 {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    let source = spl_token::state::Account::unpack(&supply.try_borrow_data()?)?;
+    let destination = spl_token::state::Account::unpack(&custody.try_borrow_data()?)?;
+    if source.mint != USDC_MINT
+        || source.owner != *authority.key
+        || destination.mint != USDC_MINT
+        || destination.owner != *owner.key
+        || supply.owner != token.key
+        || custody.owner != token.key
+        || mint.owner != token.key
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let next = if borrow {
+        old_debt
+            .checked_add(amount)
+            .ok_or(ProgramError::ArithmeticOverflow)?
+    } else {
+        old_debt
+            .checked_sub(amount)
+            .ok_or(ProgramError::ArithmeticOverflow)?
+    };
+    if borrow {
+        let reserve_data = reserve.try_borrow_data()?;
+        if reserve_data[96..128] != MULTIPLY_DEBT_FARM.to_bytes() {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        require_key(
+            &accounts[7],
+            &Pubkey::new_from_array(read_pubkey(&reserve_data[192..224])?),
+        )?;
+        require_key(&accounts[9], program_id)?;
+        let fee_account = spl_token::state::Account::unpack(&accounts[7].try_borrow_data()?)?;
+        let mint_account = spl_token::state::Mint::unpack(&mint.try_borrow_data()?)?;
+        if accounts[7].owner != token.key
+            || fee_account.mint != USDC_MINT
+            || fee_account.owner != *authority.key
+            || mint_account.decimals != 6
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        if !accounts[7].is_writable || next as u128 * 100 > collateral as u128 * 65 {
+            return Err(ProgramError::InvalidArgument);
+        }
+        drop(reserve_data);
+        transfer_checked_signed(
+            program_id,
+            supply,
+            mint,
+            custody,
+            authority,
+            token,
+            amount,
+            6,
+            &[KAMINO_LENDING_MARKET_AUTHORITY_SEED, market.key.as_ref()],
+        )?;
+    } else {
+        transfer_checked(custody, mint, supply, owner, token, amount, 6)?;
+    }
+    let mut data = obligation.try_borrow_mut_data()?;
+    data[1208..1240].copy_from_slice(if next == 0 {
+        &[0; 32]
+    } else {
+        reserve.key.as_ref()
+    });
+    data[1296..1312].copy_from_slice(&((next as u128) << 60).to_le_bytes());
+    Ok(())
+}
+
+fn multiply_fixture_withdraw_amount(
+    obligation: &AccountInfo,
+    reserve: &AccountInfo,
+    requested: u64,
+) -> Result<u64, ProgramError> {
+    if requested != u64::MAX {
+        return Ok(requested);
+    }
+    let data = obligation.try_borrow_data()?;
+    if data.len() != 3344 || data[32..64] != MULTIPLY_MARKET.to_bytes() {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let collateral = read_u64(&data[128..136])?;
+    drop(data);
+    let debt = multiply_debt_raw(obligation)?;
+    let reserve_data = reserve.try_borrow_data()?;
+    // Source ReserveConfig liquidation threshold offset (locked SDK 23b9f2b),
+    // explicitly initialized to80 by the public fixed-price fixture.
+    if reserve_data.len() < 4874 || reserve_data[4873] != 80 {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let locked = (debt as u128 * 100 + 79) / 80;
+    let amount = (collateral as u128)
+        .checked_sub(locked)
+        .ok_or(ProgramError::InsufficientFunds)?;
+    u64::try_from(amount).map_err(|_| ProgramError::ArithmeticOverflow)
+}
+
+fn process_multiply_shared_route(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    // Official Jupiter CPI IDL: id:u8, Vec<RoutePlanStep>; TokenSwap(enum3),
+    // percent100,input0,output1; followed by amounts/u16 slippage/u8 fee.
+    // Fixed-price model only: no real DEX/Jupiter routing or price claim.
+    if accounts.len() != 13
+        || data.len() != 36
+        || data[8..17] != [0, 1, 0, 0, 0, 3, 100, 0, 1]
+        || data[33..36] != [50, 0, 0]
+    {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    let amount = read_u64(&data[17..25])?;
+    let quoted = read_u64(&data[25..33])?;
+    if amount == 0 || quoted != amount {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+    require_key(&accounts[0], &spl_token::id())?;
+    let authority = Pubkey::find_program_address(&[JUPITER_SWAP_AUTHORITY_SEED], program_id).0;
+    require_key(&accounts[1], &authority)?;
+    require_signer(&accounts[2])?;
+    require_key(&accounts[9], program_id)?;
+    require_key(&accounts[10], program_id)?;
+    require_key(
+        &accounts[11],
+        &Pubkey::find_program_address(&[b"__event_authority"], program_id).0,
+    )?;
+    require_key(&accounts[12], program_id)?;
+    if accounts
+        .iter()
+        .enumerate()
+        .any(|(i, a)| i != 2 && a.is_signer)
+        || [3, 4, 5, 6].iter().any(|i| !accounts[*i].is_writable)
+        || !((accounts[7].key == &USDC_MINT && accounts[8].key == &MULTIPLY_SYRUP_MINT)
+            || (accounts[8].key == &USDC_MINT && accounts[7].key == &MULTIPLY_SYRUP_MINT))
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    for (i, mint_i, owner) in [
+        (3, 7, accounts[2].key),
+        (4, 7, &authority),
+        (5, 8, &authority),
+        (6, 8, accounts[2].key),
+    ] {
+        let token = spl_token::state::Account::unpack(&accounts[i].try_borrow_data()?)?;
+        if token.mint != *accounts[mint_i].key
+            || token.owner != *owner
+            || accounts[i].owner != &spl_token::id()
+            || accounts[mint_i].owner != &spl_token::id()
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+    }
+    transfer_checked(
+        &accounts[3],
+        &accounts[7],
+        &accounts[4],
+        &accounts[2],
+        &accounts[0],
+        amount,
+        6,
+    )?;
+    transfer_checked_signed(
+        program_id,
+        &accounts[5],
+        &accounts[8],
+        &accounts[6],
+        &accounts[1],
+        &accounts[0],
+        amount,
+        6,
+        &[JUPITER_SWAP_AUTHORITY_SEED],
+    )
 }
 
 fn parse_kamino_deposit_accounts<'a, 'info>(

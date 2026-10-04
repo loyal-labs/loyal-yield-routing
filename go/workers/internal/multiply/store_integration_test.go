@@ -92,7 +92,7 @@ func integrationOperation(routeKey string, cycle uint64, generation int64) *Mult
 	}
 }
 
-func TestStoreLifecyclePrepareThroughReconcile(t *testing.T) {
+func TestStoreLifecycleCannotReconcileWithoutActualReceipt(t *testing.T) {
 	store := integrationStore(t)
 	ctx := context.Background()
 	settings, vault := seedPolicySet(t, store)
@@ -204,7 +204,8 @@ func TestStoreLifecyclePrepareThroughReconcile(t *testing.T) {
 		t.Fatalf("confirm: %v %v", ok, err)
 	}
 
-	// Reconcile: clear the operation and advance the route generation.
+	// Intentional stronger contract: a generic fixture packet and a caller hash
+	// cannot stand in for an actual financial transaction receipt.
 	stored, err = store.LoadRouteState(ctx, routeKey)
 	if err != nil {
 		t.Fatal(err)
@@ -218,12 +219,18 @@ func TestStoreLifecyclePrepareThroughReconcile(t *testing.T) {
 		Mint: USDCMint, TokenProgram: TokenProgram, AmountRaw: 1_000_000})
 	digest := sha256.Sum256([]byte("reconciliation:" + operation.OperationID))
 	if ok, err := store.ReconcileOperation(ctx, lease, operation.OperationID,
-		signed.TransactionSignature, hex.EncodeToString(digest[:]), 331_895_500, next); err != nil || !ok {
-		t.Fatalf("reconcile: %v %v", ok, err)
+		signed.TransactionSignature, hex.EncodeToString(digest[:]), 331_895_500, next); err == nil || ok {
+		t.Fatalf("receipt-less reconcile: %v %v", ok, err)
 	}
-	reconciled, err := store.LoadOperation(ctx, operation.OperationID)
-	if err != nil || reconciled.Status != StatusReconciled || reconciled.SignedWire != nil {
-		t.Fatalf("reconciled operation kept its wire: %+v", reconciled)
+	held, err := store.LoadRouteState(ctx, routeKey)
+	if err != nil || held.Operation == nil || held.Operation.Status != StatusConfirmed || held.State.CurrentOperationID == nil || string(held.Operation.SignedWire) != string(wire) {
+		t.Fatalf("receipt-less reconciliation lost ownership/wire: %v", err)
+	}
+	next.Goal = GoalManualRecovery
+	reason := "generic store fixture has no financial transaction receipt"
+	next.ManualRecoveryReason = &reason
+	if ok, err := store.MarkManualRecovery(ctx, lease, operation.OperationID, next); err != nil || !ok {
+		t.Fatalf("fixture manual hold: %v %v", ok, err)
 	}
 	if exists, err := store.OperationExistsForSignature(ctx, routeKey, signed.TransactionSignature); err != nil || !exists {
 		t.Fatalf("signature lookup: %v %v", exists, err)

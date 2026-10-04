@@ -81,18 +81,29 @@ func (r *ArtifactRPC) read(ctx context.Context, method string, params any, out a
 	return nil
 }
 func (r *ArtifactRPC) ArtifactHistory(ctx context.Context, address string, limit int) ([]ArtifactHistoryEntry, error) {
+	return r.ArtifactHistoryPage(ctx, address, limit, "")
+}
+
+func (r *ArtifactRPC) ArtifactHistoryPage(ctx context.Context, address string, limit int, before string) ([]ArtifactHistoryEntry, error) {
 	if _, e := solana.PublicKeyFromBase58(address); e != nil {
 		return nil, e
 	}
 	if limit < 1 || limit > 32 {
 		return nil, errors.New("artifact history limit invalid")
 	}
+	options := map[string]any{"limit": limit, "commitment": "confirmed"}
+	if before != "" {
+		if _, err := solana.SignatureFromBase58(before); err != nil {
+			return nil, errors.New("artifact history cursor invalid")
+		}
+		options["before"] = before
+	}
 	var rows []struct {
 		Signature string          `json:"signature"`
 		Slot      int64           `json:"slot"`
 		Err       json.RawMessage `json:"err"`
 	}
-	if e := r.read(ctx, "getSignaturesForAddress", []any{address, map[string]any{"limit": limit, "commitment": "confirmed"}}, &rows); e != nil {
+	if e := r.read(ctx, "getSignaturesForAddress", []any{address, options}, &rows); e != nil {
 		return nil, e
 	}
 	if len(rows) > limit {

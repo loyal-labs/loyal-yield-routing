@@ -109,6 +109,9 @@ func NewController(deps ControllerDependencies) (*Controller, error) {
 // the legacy exit-code protocol. A nil exit code with an error means the run
 // never reached an exit.
 func (c *Controller) Execute(ctx context.Context, target ExecutableTarget) (*int, error) {
+	if err := c.store.requireMainnetTarget(ctx, target.TargetID); err != nil {
+		return exit(ExitRecoveryPending), err
+	}
 	if target.isRecovery() {
 		return c.executeRecovery(ctx, target)
 	}
@@ -144,10 +147,16 @@ type durableSettlement struct {
 }
 
 func (d durableSettlement) Observe(ctx context.Context, attempt DurableAttempt) (AttemptObservation, error) {
+	if err := d.store.requireMainnetClaim(ctx, attempt.ClaimToken); err != nil {
+		return AttemptObservation{}, err
+	}
 	return d.chain.Observe(ctx, attempt)
 }
 
 func (d durableSettlement) BroadcastExact(ctx context.Context, attempt DurableAttempt) (string, error) {
+	if err := d.store.requireMainnetClaim(ctx, attempt.ClaimToken); err != nil {
+		return "", err
+	}
 	return d.chain.BroadcastExact(ctx, attempt)
 }
 
@@ -155,6 +164,9 @@ func (d durableSettlement) RecordBroadcast(ctx context.Context, attempt DurableA
 	// First submission always simulates the exact persisted bytes. A transport
 	// or simulation error leaves the wire prepared, unsent and still claimed;
 	// it is not a chain failure and cannot release custody.
+	if err := d.store.requireMainnetClaim(ctx, attempt.ClaimToken); err != nil {
+		return DurableAttempt{}, err
+	}
 	if attempt.BroadcastCount == 0 {
 		if err := d.chain.SimulateExact(ctx, attempt); err != nil {
 			return DurableAttempt{}, err
@@ -307,6 +319,12 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string, target ExecutableTarget, frozen DepositPlan) (*int, error) {
 	ready, err := c.ensureDestinationSetup(scope, claimToken, frozen)
 	if err != nil {
+		if errors.Is(err, ErrDesiredControlsPending) {
+			if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
+				return exit(ExitRecoveryPending), releaseErr
+			}
+			return exit(ExitDeferred), nil
+		}
 		return exit(ExitPreflightBlocked), err
 	}
 	if !ready {
@@ -356,6 +374,15 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
 	}
+	if err = c.store.checkUnsignedDesiredAdmission(scope.ctx, target.TargetID, claimToken, scope.leaseToken); err != nil {
+		if errors.Is(err, ErrDesiredControlsPending) {
+			if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
+				return exit(ExitRecoveryPending), releaseErr
+			}
+			return exit(ExitDeferred), nil
+		}
+		return exit(ExitRecoveryPending), err
+	}
 	wire, err := c.wires.BuildPull(scope.ctx, PullWireRequest{
 		Plan: frozen, RecurringDelegation: targetContext.RecurringDelegation,
 		RecentBlockhash: blockhash, LastValidBlockHeight: lastValid,
@@ -376,6 +403,7 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 		SourcePreBalanceRaw:      walletBalance,
 		DestinationPreBalanceRaw: 0,
 		ProtectionFloorRaw:       &targetContext.WalletBalanceFloorRaw,
+		SourceDesiredRevision:    targetContext.DesiredRevision,
 		Signature:                wire.Signature,
 		SignedTransactionBase64:  wire.SignedTransactionBase64,
 		SignedTransactionSHA256:  wire.SignedTransactionSHA256,
@@ -383,6 +411,12 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 		LastValidBlockHeight:     wire.LastValidBlockHeight,
 	}, scope.leaseToken)
 	if err != nil {
+		if errors.Is(err, ErrDesiredControlsPending) {
+			if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
+				return exit(ExitRecoveryPending), releaseErr
+			}
+			return exit(ExitDeferred), nil
+		}
 		if errors.Is(err, ErrOwnershipLost) {
 			return exit(ExitRecoveryPending), err
 		}
@@ -416,6 +450,9 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 }
 
 func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken string, plan DepositPlan) (bool, error) {
+	if err := c.store.requireMainnetTarget(scope.ctx, plan.Target.ID); err != nil {
+		return false, err
+	}
 	builder, ok := c.wires.(DestinationSetupBuilder)
 	if !ok {
 		return true, nil
@@ -452,17 +489,23 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 			if err != nil {
 				return false, err
 			}
+			if err = c.store.checkUnsignedDesiredAdmission(scope.ctx, plan.Target.ID, claimToken, scope.leaseToken); err != nil {
+				return false, err
+			}
 			wire, err := builder.BuildDestinationSetup(scope.ctx, plan, *next, blockhash, height)
 			if err != nil {
 				return false, err
 			}
-			saved, err := c.store.PersistDestinationSetup(scope.ctx, claimToken, scope.leaseToken, *next, wire)
+			saved, err := c.store.PersistDestinationSetup(scope.ctx, claimToken, scope.leaseToken, *next, wire, current.DesiredRevision)
 			if err != nil {
 				return false, err
 			}
 			attempt = &saved
 		}
 		if err = builder.ProveDestinationSetup(scope.ctx, plan, *attempt); err != nil {
+			return false, err
+		}
+		if err := c.store.requireMainnetTarget(scope.ctx, plan.Target.ID); err != nil {
 			return false, err
 		}
 		observation, err := c.chain.Observe(scope.ctx, attempt.durable())
@@ -480,6 +523,9 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 				return false, err
 			}
 			attempt = &saved
+			if err := c.store.requireMainnetTarget(scope.ctx, plan.Target.ID); err != nil {
+				return false, err
+			}
 			returned, sendErr := c.chain.BroadcastExact(scope.ctx, attempt.durable())
 			if sendErr == nil && returned != attempt.Wire.Signature {
 				observation = AttemptObservation{State: AttemptAmbiguous, Err: errors.New("setup broadcast returned another signature")}
@@ -734,6 +780,9 @@ func (c *Controller) verifyTopUpEffects(ctx context.Context, plan DepositPlan, r
 // custody credited exactly the planned amount, in the frozen mint, at a slot
 // that does not precede the recorded confirmation.
 func (c *Controller) verifyPullEffects(ctx context.Context, plan DepositPlan, attempt DurableAttempt) error {
+	if err := c.store.requireMainnetTarget(ctx, plan.Target.ID); err != nil {
+		return err
+	}
 	if attempt.State != AttemptConfirmed {
 		return fmt.Errorf("pull %s is %s, not confirmed; its effects cannot be verified", attempt.Signature, attempt.State)
 	}

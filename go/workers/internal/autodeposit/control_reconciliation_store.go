@@ -10,16 +10,16 @@ import (
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-const controlTargetColumns = `id,setup_generation,policy_seed,settings,wallet,wallet_token_ata,vault_pubkey,COALESCE(vault_token_ata,vault_usdc_ata,''),token_mint,policy_account,subscription_authority,recurring_delegation,recurring_delegation_nonce,max_amount_per_period,start_timestamp`
+const controlTargetColumns = `id,setup_generation,policy_seed,settings,wallet,wallet_token_ata,vault_pubkey,COALESCE(vault_token_ata,vault_usdc_ata,''),token_mint,policy_account,subscription_authority,recurring_delegation,recurring_delegation_nonce,max_amount_per_period,start_timestamp,COALESCE(cluster,'')`
 
 func scanControlTarget(row pgx.Row) (ControlTarget, error) {
 	var t ControlTarget
-	err := row.Scan(&t.TargetID, &t.SetupGeneration, &t.PolicySeed, &t.Settings, &t.Wallet, &t.WalletTokenATA, &t.Vault, &t.VaultTokenATA, &t.Mint, &t.Policy, &t.SubscriptionAuthority, &t.RecurringDelegation, &t.Nonce, &t.MaxAmountPerPeriod, &t.StartTimestamp)
+	err := row.Scan(&t.TargetID, &t.SetupGeneration, &t.PolicySeed, &t.Settings, &t.Wallet, &t.WalletTokenATA, &t.Vault, &t.VaultTokenATA, &t.Mint, &t.Policy, &t.SubscriptionAuthority, &t.RecurringDelegation, &t.Nonce, &t.MaxAmountPerPeriod, &t.StartTimestamp, &t.Cluster)
 	return t, err
 }
 
 func (s *Store) LoadControlTarget(ctx context.Context, targetID int64) (*ControlTarget, error) {
-	t, err := scanControlTarget(s.pool.QueryRow(ctx, `SELECT `+controlTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 AND subscription_authority IS NOT NULL AND recurring_delegation IS NOT NULL AND recurring_delegation_nonce IS NOT NULL AND max_amount_per_period>0`, targetID))
+	t, err := scanControlTarget(s.pool.QueryRow(ctx, `SELECT `+controlTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 AND cluster='mainnet-beta' AND subscription_authority IS NOT NULL AND recurring_delegation IS NOT NULL AND recurring_delegation_nonce IS NOT NULL AND max_amount_per_period>0`, targetID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -53,6 +53,9 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 		} else if err != nil {
 			return err
 		}
+		if target.Cluster != mainnetCluster {
+			return ErrChainNamespace
+		}
 		if !reflect.DeepEqual(target, o.Target) {
 			return errors.New("control target generation or identity changed during observation")
 		}
@@ -68,6 +71,16 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 			// App floor rebasing depends on this projection. A coherent decoded
 			// snapshot may advance it; absent accounts never become zero balances.
 			if sha256HexPattern.MatchString(o.WalletAccountDataSHA256) {
+				var walletSlot, walletAmount int64
+				var walletHash *string
+				var walletCommitment string
+				walletErr := tx.QueryRow(ctx, `SELECT observed_slot,amount_raw,account_data_hash,source_commitment FROM loyal_yield.balance_sweep_wallet_balances_current WHERE target_id=$1 AND mint=$2 FOR UPDATE`, target.TargetID, target.Mint).Scan(&walletSlot, &walletAmount, &walletHash, &walletCommitment)
+				if walletErr != nil && !errors.Is(walletErr, pgx.ErrNoRows) {
+					return walletErr
+				}
+				if walletSlot == o.ObservedSlot && (walletCommitment == "confirmed" || walletCommitment == "finalized") && (walletAmount != o.WalletBalanceRaw || walletHash != nil && *walletHash != o.WalletAccountDataSHA256) {
+					return errors.New("control wallet proof contradicts same-slot projection")
+				}
 				if _, err = tx.Exec(ctx, `INSERT INTO loyal_yield.balance_sweep_wallet_balances_current(target_id,wallet,wallet_usdc_ata,wallet_token_ata,amount_raw,owner,mint,observed_slot,observed_at,source,source_commitment,account_data_hash,raw_evidence,updated_at)VALUES($1,$2,$3,$3,$4,$2,$5,$6,now(),'go_autodeposit_control_snapshot','confirmed',$7,jsonb_build_object('setupGeneration',$8::bigint),now())ON CONFLICT(target_id,mint)DO UPDATE SET wallet=EXCLUDED.wallet,wallet_usdc_ata=EXCLUDED.wallet_usdc_ata,wallet_token_ata=EXCLUDED.wallet_token_ata,amount_raw=EXCLUDED.amount_raw,owner=EXCLUDED.owner,observed_slot=EXCLUDED.observed_slot,observed_at=EXCLUDED.observed_at,source=EXCLUDED.source,source_commitment=EXCLUDED.source_commitment,account_data_hash=EXCLUDED.account_data_hash,raw_evidence=EXCLUDED.raw_evidence,updated_at=now()WHERE loyal_yield.balance_sweep_wallet_balances_current.observed_slot<EXCLUDED.observed_slot OR (loyal_yield.balance_sweep_wallet_balances_current.observed_slot=EXCLUDED.observed_slot AND loyal_yield.balance_sweep_wallet_balances_current.source_commitment<>'finalized')`, target.TargetID, target.Wallet, target.WalletTokenATA, o.WalletBalanceRaw, target.Mint, o.ObservedSlot, o.WalletAccountDataSHA256, target.SetupGeneration); err != nil {
 					return err
 				}

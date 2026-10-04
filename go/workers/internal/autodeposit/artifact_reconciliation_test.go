@@ -41,7 +41,7 @@ func artifactFixture(t *testing.T) (artifactGolden, ArtifactTarget, *SweepWireBu
 	if f.SourceCommit != "45de590113312d54de7585a710620a8a80b504db" {
 		t.Fatal("unexpected source pin")
 	}
-	target := ArtifactTarget{ControlTarget: ControlTarget{TargetID: 1, SetupGeneration: 3, PolicySeed: f.PolicySeed, Settings: f.Settings, Wallet: f.Wallet, WalletTokenATA: f.WalletATA, Vault: f.Vault, VaultTokenATA: f.VaultATA, Mint: USDCMint, Policy: f.Policy, SubscriptionAuthority: f.SubscriptionAuthority, RecurringDelegation: f.RecurringDelegation, Nonce: &f.Nonce, MaxAmountPerPeriod: &f.MaxAmountPerPeriod, StartTimestamp: &f.StartTimestamp}, RootAuthority: f.RootAuthority, PeriodLength: &f.PeriodLength, ExpiryTimestamp: &f.ExpiryTimestamp}
+	target := ArtifactTarget{ControlTarget: ControlTarget{Cluster: mainnetCluster, TargetID: 1, SetupGeneration: 3, PolicySeed: f.PolicySeed, Settings: f.Settings, Wallet: f.Wallet, WalletTokenATA: f.WalletATA, Vault: f.Vault, VaultTokenATA: f.VaultATA, Mint: USDCMint, Policy: f.Policy, SubscriptionAuthority: f.SubscriptionAuthority, RecurringDelegation: f.RecurringDelegation, Nonce: &f.Nonce, MaxAmountPerPeriod: &f.MaxAmountPerPeriod, StartTimestamp: &f.StartTimestamp}, RootAuthority: f.RootAuthority, PeriodLength: &f.PeriodLength, ExpiryTimestamp: &f.ExpiryTimestamp}
 	b, e := NewSweepWireBuilder(setupProxy(t), ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, 32)), func(context.Context, []string, ...string) (int64, []backyard.ConfirmedAccount, error) {
 		return 0, nil, errors.New("unexpected account read")
 	})

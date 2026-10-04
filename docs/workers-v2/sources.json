@@ -19,7 +19,9 @@
     "Selected observer transport retains the Rust Earn domain bridge until equivalent Go application evidence passes",
     "Autodeposit and fleet use the official locked loyal-klend-proxy for KLend instruction construction",
     "Additive branch-only 0087 setup attempt journal and 0088 immutable Multiply evidence side table preserve existing attempt/effects contracts",
-    "Additive branch-only 0089 imports retained Apps floor_rebaseline classification; corrected bounded 0069 event sequence remains unchanged."
+    "Additive branch-only 0089 imports retained Apps floor_rebaseline classification; corrected bounded 0069 event sequence remains unchanged.",
+    "Additive branch-only 0090 protects immutable ALT packets and unresolved source ownership; autonomous planning retains existing family/catalog/binding/operation schemas.",
+    "Additive branch-only 0091 separates desired control revisions, coalesced demand generations and applied scheduling eligibility from chain slots; the Apps v2 adapter records intent and the Go engine owns scheduling."
   ],
   "intentional_corrections": [
     "collateral-liquidity units",
@@ -37,10 +39,12 @@
     "Retained observer Claim admission requires exact saved requested amount and actual signed Squads Transaction-mode SDK envelope; a partial transfer cannot close a withdrawal."
   ],
   "proof_classification": {
-    "postgresql": "Task-owned loopback PostgreSQL 17; baseline 77 actual registered schema files plus pinned Apps baseline. Additive0089 separately applied to A fixture and its source SQL compatibility passes. Fresh fixture runner now resolves 78 schemas; no production-bound0071 activation or ledger entry.",
+    "postgresql": "Task-owned loopback PostgreSQL 17 and hash-pinned Apps schema fixtures; the current registered source contains 80 schema files, including 0090/0091. Fresh fixtures exclude production-bound 0071 data activation and its ledger entry. Existing proof databases retain their recorded migration ledger and are not implicitly reset or upgraded.",
     "timescale": "real extension in branch CI; local extension-backed tests skipped",
     "multiply_abi": "44 independently generated pinned Rust SDK recipe cases, including farm and token-program variants",
     "multiply_claim_svm": "actual checked-in Squads SBF plus SPL Token execution in LiteSVM; root payout succeeds, delegate fails",
+    "multiply_controller_svm": "current Go Worker.Tick leveraged deploy/unwind to exact claimable payout, immutable receipts and keyless recovery; actual Squads/SPL with strictly validated fixed-price mock KLend/Jupiter envelopes. No mature lending, real swap price, interest or consensus claim.",
+    "ata_projection": "actual separate capture/Yield databases with exact registered source DDL; local PostgreSQL omits extension/hypertable calls, which are required in branch Timescale CI. Capture ID allocation is serialized through commit; old-producer quiescence remains a cutover requirement.",
     "fleet_connected_svm": "separate gate using actual Squads SBF with mock KLend/Jupiter protocol SBF; no mature KLend execution claim",
     "serialization_only": "testdata/multiply/route_state_schema9.json is a synthetic serialization fixture, not independent financial proof",
     "planner_oracle": "independent greedy enumeration and bounded exhaustive cumulative marginal-gain study; no global NAV optimum claim",

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -673,8 +674,12 @@ func (s *Store) MarkManualRecovery(ctx context.Context, lease *Lease, operationI
 	return true, nil
 }
 
-// ReconcileOperation mirrors reconcile_multiply_operation.
-func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationID, transactionSignature, reconciliationSHA256 string, confirmedSlot uint64, route *RouteState) (bool, error) {
+// ReconcileOperation requires exact transaction evidence and appends it in the
+// same fenced transaction as terminal operation/route publication.
+func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationID, transactionSignature, reconciliationSHA256 string, confirmedSlot uint64, route *RouteState, proofs ...*ReconciledReceiptProof) (bool, error) {
+	if len(proofs) != 1 || proofs[0] == nil {
+		return false, errors.New("reconciliation requires an exact transaction receipt")
+	}
 	if err := validateHash(reconciliationSHA256); err != nil {
 		return false, err
 	}
@@ -697,6 +702,39 @@ func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationI
 		return false, err
 	}
 	defer tx.Rollback(ctx)
+	op, err := decodeOperation(tx.QueryRow(ctx, "SELECT "+operationColumns+" FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND route_key=$2 FOR UPDATE", operationID, lease.RouteKey))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if op.Status != StatusConfirmed && op.Status != StatusReconciliationPending {
+		return false, nil
+	}
+	topology, err := TopologyForRoute(route)
+	if err != nil {
+		return false, err
+	}
+	e := proofs[0].evidence
+	validated, err := validateConfirmedReceipt(op, topology, e.Transaction, e.LookupTables)
+	if err != nil {
+		return false, err
+	}
+	v := validated.evidence
+	if e.OperationID != op.OperationID || e.Signature != transactionSignature || e.Signature != v.Signature || e.WireSHA256 != v.WireSHA256 || e.FinancialAnchorsSHA256 != v.FinancialAnchorsSHA256 || e.ConfirmedSlot != confirmedSlot || e.ConfirmedSlot != v.ConfirmedSlot || e.ObservationSlot < e.ConfirmedSlot || e.ObservationSlot != route.ObservedSlot || e.ObservationSlot > math.MaxInt64 {
+		return false, errors.New("receipt evidence identity or observation slot drifted")
+	}
+	prestate, err := loadOperationPrestate(ctx, tx, op)
+	if err != nil {
+		return false, err
+	}
+	if prestate != nil && e.ConfirmedSlot < prestate.ObservedSlot {
+		return false, errors.New("receipt predates original prestate")
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.multiply_operation_evidence(operation_id,evidence_kind,signature,signed_wire_sha256,expected_effects_sha256,observed_slot,evidence) VALUES($1,'reconciled_receipt',$2,$3,$4,$5,$6)`, operationID, e.Signature, e.WireSHA256, e.FinancialAnchorsSHA256, int64(e.ObservationSlot), e); err != nil {
+		return false, err
+	}
 	var reconciledID string
 	err = tx.QueryRow(ctx,
 		"UPDATE loyal_yield.multiply_operations SET status='reconciled', signed_wire=NULL, confirmed_slot=$3, reconciliation_sha256=$4, updated_at=now() WHERE operation_id=$1 AND route_key=$2 AND status IN ('confirmed','reconciliation_pending') AND transaction_signature=$5 RETURNING operation_id",

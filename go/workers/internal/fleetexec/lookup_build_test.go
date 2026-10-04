@@ -3,7 +3,9 @@ package fleetexec
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"testing"
@@ -16,11 +18,54 @@ type lookupFixture struct {
 	RecentSlot     uint64 `json:"recent_slot"`
 	Addresses      []string
 	Accounts       map[string]json.RawMessage
+	SignedPackets  map[string]string `json:"signed_packets"`
 	Instructions   map[string]struct {
 		Program, Data string
 		Accounts      []struct {
 			Address          string
 			Signer, Writable bool
+		}
+	}
+}
+
+func lookupOfficialWire(t *testing.T, f lookupFixture, kind string) WireIdentity {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(f.SignedPackets[kind])
+	if err != nil || len(raw) == 0 {
+		t.Fatal("official Rust signed packet missing", kind, err)
+	}
+	tx, err := sdk.TransactionFromBytes(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := tx.Message.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wh, mh := sha256.Sum256(raw), sha256.Sum256(message)
+	return WireIdentity{SignedTransaction: raw, SignedTransactionHash: hex.EncodeToString(wh[:]), MessageHash: hex.EncodeToString(mh[:]), TransactionSignature: tx.Signatures[0].String(), RecentBlockhash: tx.Message.RecentBlockhash.String(), LastValidBlockHeight: 1150}
+}
+func TestLookupOriginalRustPacketsMatchExactGoIntentWithoutResigning(t *testing.T) {
+	f := readLookupFixture(t)
+	for _, kind := range []LookupKind{LookupCreate, LookupExtend, LookupDeactivate, LookupClose} {
+		i := lookupFixtureIntent(f)
+		i.Kind = kind
+		if kind != LookupCreate {
+			i.RecentSlot = nil
+			i.Prefix = append([]string{}, f.Addresses[:2]...)
+			i.Extension = append([]string{}, f.Addresses[2:]...)
+		}
+		if kind == LookupDeactivate || kind == LookupClose {
+			i.Extension = nil
+		}
+		if kind == LookupClose {
+			slot := uint64(1002)
+			i.ExpectedDeactivationSlot = &slot
+			i.Recipient = f.Manager
+		}
+		wire := lookupOfficialWire(t, f, string(kind))
+		if err := proveLookupWire(i, wire); err != nil {
+			t.Fatalf("original Rust %s wire compatibility: %v", kind, err)
 		}
 	}
 }

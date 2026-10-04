@@ -61,19 +61,22 @@ type Manager struct {
 	request *pb.SubscribeRequest
 	closed  bool
 
-	handoffMu sync.Mutex
-	fatal     chan error
+	handoffGate chan struct{}
+	fatal       chan error
 }
 
 func NewManager(connector Connector, handler Handler, config Config) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
 	return &Manager{
-		connector: connector,
-		handler:   handler,
-		config:    config.withDefaults(),
-		ctx:       ctx,
-		cancel:    cancel,
-		fatal:     make(chan error, 1),
+		connector:   connector,
+		handler:     handler,
+		config:      config.withDefaults(),
+		ctx:         ctx,
+		cancel:      cancel,
+		fatal:       make(chan error, 1),
+		handoffGate: gate,
 	}
 }
 
@@ -118,8 +121,14 @@ func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest)
 	if replacement == nil {
 		return errors.New("replacement subscription request is required")
 	}
-	m.handoffMu.Lock()
-	defer m.handoffMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, m.config.HandoffTimeout)
+	defer cancel()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.handoffGate:
+	}
+	defer func() { m.handoffGate <- struct{}{} }()
 
 	m.mu.RLock()
 	if m.closed {
@@ -141,14 +150,14 @@ func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest)
 		request.FromSlot,
 	))
 
-	candidate, err := m.openSession(root, request)
+	candidate, err := m.openSessionBounded(root, ctx, request)
 	if err != nil {
 		return fmt.Errorf("open handoff candidate: %w", err)
 	}
 	promoted := false
 	defer func() {
 		if !promoted {
-			candidate.Stop()
+			candidate.stopAndWait()
 		}
 	}()
 	// A promoted handoff owns the old session's shutdown: cancel AND join its
@@ -162,15 +171,16 @@ func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest)
 		}
 	}()
 
-	deadline := time.NewTimer(m.config.HandoffTimeout)
-	defer deadline.Stop()
-
 	// Freeze the old stream at an application-durable boundary before candidate
 	// replay reaches domain handlers. Its receive goroutine may have one frame
 	// waiting behind this gate, while HTTP/2 flow control safely backpressures
 	// subsequent frames.
-	old.deliveryMu.Lock()
-	defer old.deliveryMu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-old.deliveryGate:
+	}
+	defer func() { old.deliveryGate <- struct{}{} }()
 	target := old.Frontier()
 	// Start durable candidate delivery only after old delivery is frozen. The
 	// two network subscriptions overlap, but domain handlers never receive old
@@ -184,12 +194,10 @@ func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest)
 		case err := <-candidate.Done():
 			return fmt.Errorf("handoff candidate stopped before slot %d: %w", target, err)
 		case <-candidate.Progress():
-		case <-deadline.C:
-			return fmt.Errorf(
-				"handoff candidate timed out at slot %d while old stream was durable through %d",
-				candidate.Frontier(), target,
-			)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	select {
 	case err := <-candidate.Done():
@@ -236,21 +244,41 @@ func (m *Manager) Close() {
 }
 
 func (m *Manager) openSession(ctx context.Context, request *pb.SubscribeRequest) (*session, error) {
-	sessionCtx, cancel := context.WithCancel(ctx)
+	opening, cancel := context.WithTimeout(ctx, m.config.HandoffTimeout)
+	defer cancel()
+	return m.openSessionBounded(ctx, opening, request)
+}
+
+// Opening a replacement is bounded by its control pass, but the resulting
+// subscription belongs to the long-lived manager. Detach the temporary cancel
+// hook before publishing it so a successful pass's deadline cannot stop it.
+func (m *Manager) openSessionBounded(parent, opening context.Context, request *pb.SubscribeRequest) (*session, error) {
+	sessionCtx, cancel := context.WithCancel(parent)
+	stopOpening := context.AfterFunc(opening, cancel)
 	wire, err := m.connector.Open(sessionCtx, cloneRequest(request))
+	stopOpening()
+	if opening.Err() != nil {
+		cancel()
+		if wire != nil {
+			_ = wire.Close()
+		}
+		return nil, opening.Err()
+	}
 	if err != nil {
 		cancel()
 		return nil, err
 	}
 	s := &session{
-		ctx:      sessionCtx,
-		cancel:   cancel,
-		stream:   wire,
-		handler:  m.handler,
-		progress: make(chan struct{}, 1),
-		done:     make(chan error, 1),
-		start:    make(chan struct{}),
+		ctx:          sessionCtx,
+		cancel:       cancel,
+		stream:       wire,
+		handler:      m.handler,
+		progress:     make(chan struct{}, 1),
+		done:         make(chan error, 1),
+		start:        make(chan struct{}),
+		deliveryGate: make(chan struct{}, 1),
 	}
+	s.deliveryGate <- struct{}{}
 	go s.run(func(err error) {
 		m.sessionFinished(s, err)
 	})
@@ -299,14 +327,14 @@ type session struct {
 	stream  OpenStream
 	handler Handler
 
-	// deliveryMu turns the current frontier into a stable handoff boundary.
-	deliveryMu sync.Mutex
-	frontier   atomic.Uint64
-	progress   chan struct{}
-	done       chan error
-	start      chan struct{}
-	startOnce  sync.Once
-	stopOnce   sync.Once
+	// deliveryGate freezes a durable frontier without blocking cancellation.
+	deliveryGate chan struct{}
+	frontier     atomic.Uint64
+	progress     chan struct{}
+	done         chan error
+	start        chan struct{}
+	startOnce    sync.Once
+	stopOnce     sync.Once
 
 	// terminal and terminalErr are guarded by the owning Manager's mu so
 	// completion state and active-session promotion form one critical section.
@@ -356,19 +384,23 @@ func (s *session) receive() error {
 			continue
 		}
 
-		s.deliveryMu.Lock()
+		select {
+		case <-s.ctx.Done():
+			return context.Canceled
+		case <-s.deliveryGate:
+		}
 		if s.ctx.Err() != nil {
-			s.deliveryMu.Unlock()
+			s.deliveryGate <- struct{}{}
 			return context.Canceled
 		}
 		if err := s.handler.Handle(s.ctx, update); err != nil {
-			s.deliveryMu.Unlock()
+			s.deliveryGate <- struct{}{}
 			return fmt.Errorf("durably process LaserStream update: %w", err)
 		}
 		if slot, ok := updateSlot(update); ok {
 			s.advance(slot)
 		}
-		s.deliveryMu.Unlock()
+		s.deliveryGate <- struct{}{}
 	}
 }
 

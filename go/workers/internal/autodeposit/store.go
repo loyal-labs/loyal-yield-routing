@@ -17,8 +17,14 @@ import (
 // TypeScript executor use, so a Go worker and a legacy worker contend on real
 // rows rather than on a Go-private queue.
 type Store struct {
-	pool *pgxpool.Pool
+	pool                    *pgxpool.Pool
+	requireDesiredAdmission bool
 }
+
+// EnableDesiredControlAdmission is startup configuration, called once before
+// any worker starts. Production v2 composition always enables it; retained
+// source-parity tests can exercise the older scheduling boundary separately.
+func (s *Store) EnableDesiredControlAdmission() { s.requireDesiredAdmission = true }
 
 // NewStore wraps an existing pool. The runtime owns pool lifecycle; the store
 // only owns family SQL.
@@ -226,12 +232,14 @@ SELECT
     event.txn_signature,
     target.desired_active
         AND target.chain_status = 'active'
+        AND target.cluster = 'mainnet-beta'
         AND EXISTS (
             SELECT 1
             FROM loyal_yield.managed_vaults AS managed
             JOIN loyal_yield.route_policies AS policy
               ON policy.id = managed.active_policy_id
              AND policy.active = true
+             AND policy.cluster = 'mainnet-beta'
              AND policy.authority = target.authority
              AND policy.settings = target.settings
              AND policy.vault_index = target.vault_index
@@ -248,6 +256,7 @@ JOIN loyal_yield.balance_sweep_targets AS target
   ON target.id = event.target_id
 WHERE event.event_id > $1
   AND event.mint = target.token_mint
+  AND target.cluster = 'mainnet-beta'
   AND target.token_mint = $2
 ORDER BY event.event_id ASC
 LIMIT $3`, lastEventID, USDCMint, limit)
@@ -365,6 +374,7 @@ JOIN loyal_yield.balance_sweep_targets AS target
   ON target.id = lot.target_id
 WHERE lot.target_id = $1
   AND event.mint = target.token_mint
+  AND target.cluster = 'mainnet-beta'
   AND target.token_mint = $2
   AND lot.status = 'open'
   AND lot.remaining_amount_raw > 0

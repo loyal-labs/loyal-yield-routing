@@ -94,6 +94,14 @@ impl LocalChain {
             "getGenesisHash" => Ok(json!(
                 solana_sdk::hash::Hash::new_from_array([42; 32]).to_string()
             )),
+            // Explicit fixture-only bank operation. Unlike warp_to_slot,
+            // LiteSVM's own method advances its real recent-blockhash sysvar.
+            // It does not synthesize a signature, transaction or receipt.
+            "expireBlockhash" => {
+                let svm = self.svm.as_mut().unwrap();
+                svm.expire_blockhash();
+                Ok(json!(svm.latest_blockhash().to_string()))
+            }
             "advanceSlot" => {
                 let slot = params[0].as_u64().ok_or("missing slot")?;
                 if slot <= self.slot {
@@ -112,6 +120,10 @@ impl LocalChain {
             "getSlot" | "getBlockHeight" => Ok(json!(self.slot)),
             // No contention in the deterministic local chain.
             "getRecentPrioritizationFees" => Ok(json!([{"slot":1000,"prioritizationFee":0}])),
+            // This controlled bank starts at slot 1000 and retains every
+            // transaction submitted through this process. It does not import
+            // historical ledger blocks or model mainnet pruning/consensus.
+            "getFirstAvailableBlock" => Ok(json!(1000u64)),
             // Existing local slot-as-blockheight approximation; no PoH model.
             "getLatestBlockhash" => Ok(json!({"context":{"slot":self.slot},"value":{
                 "blockhash":self.svm.as_ref().unwrap().latest_blockhash().to_string(),"lastValidBlockHeight":self.slot.checked_add(150).ok_or("fixture height overflow")?
@@ -326,6 +338,17 @@ impl LocalChain {
                 Ok(
                     json!({"context":{"slot":self.slot},"value":{"amount":mint.supply.to_string(),"decimals":mint.decimals,"uiAmount":null,"uiAmountString":format!("{}", mint.supply as f64 / 10_f64.powi(i32::from(mint.decimals)))}}),
                 )
+            }
+            "getMinimumBalanceForRentExemption" => {
+                let size = params
+                    .get(0)
+                    .and_then(Value::as_u64)
+                    .ok_or("rent exemption account size missing")?;
+                let size = usize::try_from(size)?;
+                if size > 10 * 1024 * 1024 {
+                    return Err("rent exemption account size exceeds fixture bound".into());
+                }
+                Ok(json!(self.svm.as_ref().unwrap().minimum_balance_for_rent_exemption(size)))
             }
             "getBalance" => {
                 let key = Pubkey::from_str(params[0].as_str().ok_or("missing account")?)?;

@@ -37,6 +37,10 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer runtime.Close()
+	projector, err := runtime.NewATAProjector(ctx)
+	if err != nil {
+		return err
+	}
 	maintenance, err := runtime.NewMaintenance(ctx)
 	if err != nil {
 		return err
@@ -46,7 +50,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer server.Close()
-	return engine.Run(ctx, runtime, maintenance, server)
+	return engine.Run(ctx, runtime, projector, maintenance, server)
 }
 
 func main() {

@@ -87,3 +87,45 @@ func TestArtifactRPCHoldsFailedReceiptAndRedactsErrors(t *testing.T) {
 		t.Fatalf("query credential leaked: %v", err)
 	}
 }
+
+func TestArtifactRPCUsesExactBeforeCursor(t *testing.T) {
+	f, _, _ := artifactFixture(t)
+	receipt := goldenCreatorReceipt(t, f)
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request struct {
+			Method string
+			Params []json.RawMessage
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		var options struct {
+			Before     string
+			Limit      int
+			Commitment string
+		}
+		if err := json.Unmarshal(request.Params[1], &options); err != nil {
+			t.Error(err)
+		}
+		if request.Method != "getSignaturesForAddress" || options.Before != receipt.Signature || options.Limit != 32 || options.Commitment != "confirmed" {
+			t.Errorf("wrong history request: %+v", options)
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":[]}`))
+	}))
+	defer server.Close()
+	rpc, err := NewArtifactRPC(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = rpc.ArtifactHistoryPage(t.Context(), f.Policy, 32, receipt.Signature); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = rpc.ArtifactHistoryPage(t.Context(), f.Policy, 32, "invalid"); err == nil {
+		t.Fatal("invalid cursor accepted")
+	}
+	if calls != 1 {
+		t.Fatalf("invalid cursor reached RPC: %d", calls)
+	}
+}

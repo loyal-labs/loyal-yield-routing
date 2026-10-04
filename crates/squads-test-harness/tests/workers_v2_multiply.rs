@@ -1,5 +1,7 @@
 #[path = "workers_v2_multiply/abi.rs"]
 mod abi;
+#[path = "workers_v2_multiply/bank.rs"]
+mod bank;
 // Independent Squads/SPL execution receipt for the Go wallet-claim parser.
 // This executes the checked-in real Squads SBF, not a policy mock.
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};

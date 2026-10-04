@@ -146,7 +146,7 @@ First milestone acceptance: Autodeposit setup/funding/control changes/pause/clos
 
 Progress is measured by eliminated writers/services/repair callers, app-independent completion, proven restart behavior, bounded backlog/admission latency and the code that can actually be deleted. Avoid promising a percentage reduction before those deletions exist.
 
-Implementation status — 2026-10-03
+Implementation status — 2026-10-04 UTC
 
 The runtime goal remains active. Routing is on `codex/workers-v2`; Apps is on
 `codex/workers-v2-app-contract`. Main, production and migration resources remain
@@ -154,13 +154,25 @@ untouched. No legacy writer or service is counted as retired.
 
 | Responsibility | Reviewed branch state | Required remaining acceptance |
 | --- | --- | --- |
-| Shared runtime and Backyard | Retail A/C/D/G composed with borrowed pools, scoped keys, explicit active mode and joined shutdown; Backyard remains separate | Linux helper/bridge image and real schema CI pass at fdd6bbe1; full ownership acceptance remains; per-family fresh-cycle readiness is implemented and race tested |
-| Fleet planning | Independent greedy oracle matches 96 generated fixtures; wide-reference arithmetic and unsigned admission recovery pass | Assignment regret requires review; allocation frontier refactor preserves the full-rescore oracle and cuts synthetic allocation bytes by 79%; no global optimum claim |
-| Observer | Selected transport composed; capture/application, coalescing, abandonment and lifecycle corrections verified against registered PostgreSQL/Timescale | Actual independent Apps UUID/Yield watch schema, domain readiness and packaged Rust bridge pass; ATA projection ownership remains |
-| Autodeposit | Two-leg controller, destination setup/readback, control reconciliation and immutable accounting integrated; registered PostgreSQL race suite passes | Complete app-closed/observer ownership acceptance; actual Go pull and official top-up execute through real Squads, Subscriptions and SPL Token with an explicit KLend mock, including immutable-floor admission rejection |
+| Shared runtime and Backyard | Borrowed pools, scoped keys and joined shutdown; Backyard remains separately credentialed. Late retail callbacks cannot reopen readiness after shutdown; fresh root race gate passes | Re-run complete registered and locked Linux packaging gates on the next committed revision; no live writer ownership cutover |
+| Fleet planning | Independent greedy oracle and fresh locked admission pass. The allocation frontier refactor preserves exact full-rescore decisions and cuts synthetic allocation bytes by 79% | Reviewed policy choice: retain the verified greedy default; bounded assignment repair remains a shadow proposal. Measured assignment regret is explicit, with no global optimum claim |
+| Observer | Independent Apps UUID/Yield watch discovery and retained bridge are integrated. Go ATA application is joined; source capture allocation/commit is ordered; whole refresh/startup/verification passes and stream opening/gates are bounded and race tested | New ATA two-database races pass on local PostgreSQL; complete Timescale extension/hypertable and packaging proof awaits next committed CI. Earn application/Claim compatibility remains explicitly owned by the unsigned Rust bridge |
+| Autodeposit | Desired revisions/generations, pause/resume, policy/position return, unsigned repair, creator history, scoped namespace and captured-revision packet admission are integrated. Fresh registered SQL plus current Go pull/top-up bank suite passes in 10.111s with Apps closed | Complete combined gate at the next commit; real Squads/Subscriptions/SPL and explicit KLend mock scope, without migration or production cutover claims |
 | Fleet execution | Same-mint fused fresh admission, exact-wire recovery, real bank/receipt reconciliation and ALT selection fencing integrated; registered PostgreSQL race suite passes | Current Go cross-mint composition/fallback/full provider snapshots pass; autonomous ALT provisioning/cleanup remains; source activation/first-send validator and recovery-first runtime are implemented; independent current Go C-to-D canonical vault-1 connected lifecycle passes |
-| Multiply | Source-derived planner/math/wire/policy/quote/recovery integrated; registered PostgreSQL race suite and independent SDK/root-claim SVM proof pass | Full lifecycle coverage and packaging; external Claim source bridge compatibility and runtime health now tested; no full KLend SBF execution claim |
-| Read models | Go maintenance integrated, fixed mainnet catalog/namespace, price clocks, allocation coverage and modeled-return labels; four registered PostgreSQL SQL tests pass | Current increment real Timescale CI and complete consumer ownership before retiring App maintenance |
+| Multiply | Exact signed receipt attribution and fenced immutable receipt publication pass. Fresh full registered/current-Go local bank race suite passes in 28.517s, including leveraged deploy/unwind, claimable payout, lost response, keyless first-send, expiry and duplicate-packet refusal | Complete combined packaging gate at next commit. Fixed-price protocol mocks explicitly limit the bank proof; wallet signing/Claim admission and mature KLend/Jupiter behavior remain separate boundaries |
+| Read models and Apps | Go maintenance owns bounded hourly recording/public simulation. Apps branch 1ee615bc records intent-only floor/toggle writes; seven GET ownership handlers pass, with legacy compatibility tests | Next integrated schema/Timescale gate; retained TypeScript personal calculator/timezone formatting, identity lookup and authenticated wallet POST/withdrawal cleanup remain owned by Apps. No App cron or service is retired |
+
+The planner review resolves the earlier acceptance question: exact greedy parity
+is the rewrite's selection contract. Full rescoring handles priorities that rise
+or become eligible after shared-reserve changes. A dependency heap adds complexity
+without improving assignment quality; the measured frontier allocation reduction
+is retained, and a heap is deferred until profiling justifies it. The measured
+two-vault assignment regret remains a documented policy limitation. This choice
+does not silently introduce a new live allocation policy.
+
+Earlier verification checkpoints below are historical. The status matrix and
+latest executed/committed checkpoints identify current acceptance; an older green
+revision never verifies subsequent working changes.
 
 Last committed routing head before the controller increment is `5e1045f0`.
 Branch-only CI run 37097141373 passed its actual registered PostgreSQL/Timescale
@@ -330,3 +342,60 @@ The combined offline verifier passes after the cross-mint/lookup/ownership
 increment, as do dedicated lookup SQL races (1.747s), C/D cross-mint races
 (2.131s/6.664s), and observer ownership/namespace tests. Whole-goal acceptance
 remains open; main, migration resources and production remain unchanged.
+
+Integration progress — 2026-10-04 UTC
+
+Both jobs in branch CI
+[37173989790](https://github.com/loyal-labs/loyal-yield-routing/actions/runs/37173989790)
+pass at `6b3411d1`: registered-schema behavior and the locked Linux image,
+including inactive Go role probes and Rust compatibility tools. This covers the
+committed checkpoint; the following working changes require another full gate.
+
+Apps commit `1ee615bcb22f29b04af3864cf73264a3b11eca40` is pushed only to
+`codex/workers-v2-app-contract`. The v2 gate now makes floor and enablement writes
+intent-only, referencing migration 0091 before mutation and returning an additive
+pending-reconciliation reason. Its concrete SQL test passes 14 assertions against
+an independent registered Yield plus pinned historical Apps-DDL fixture. All
+seven GET ownership handlers pass 18 tests/132 assertions in three isolated Bun
+processes with automatic environment-file loading disabled. Legacy load-state
+tests pass 34/78 assertions, and a 40-test financial/configuration subset passes
+independently. Four new tests pass standalone compatible Biome; whole-web
+typechecking has 74 diagnostics and is not a full PASS. Baseline web principal
+rejections lack an HTTP envelope; identity lookup IO and user-signed POSTs remain
+outside the autonomous-financial-write proof. No frontend build or deployment ran.
+
+The observer's ATA capture/projector lane is integrated and joined, borrowing
+the existing pools. It commits immutable events, current balance patches and the
+retained stream cursor atomically, checks exact target/cluster identity, and holds
+conflicting or unknown evidence. New capture serializes ID allocation through
+commit. Its actual two-database race gate passes in 2.436s locally; the local
+capture fixture uses ordinary PostgreSQL with exact registered DDL except the
+Timescale extension/hypertable calls. Next branch CI will exercise the complete
+0004 stream migration on real Timescale. Retained capture cutover still requires
+quiescing in-flight old producers before accepting the scalar cursor frontier.
+
+Autodeposit now repairs conclusively unsigned stranded work and continues bounded
+creator-history pagination. Additive migration 0091 separates desired revisions,
+coalesced demand generations and application acknowledgments from chain slots.
+Its atomic trigger tracks control and authoritative identity changes, including
+namespace and delegation timing. Fresh pull/setup publication must bind the
+captured revision under the actual target lock; existing immutable signed work
+keeps its custody/recovery protocol. Mainnet target/policy scope is explicit and
+NULL is never inferred. Final regression/combined acceptance is still underway.
+
+The retail ALT writer is composed with a distinct scoped manager credential,
+explicit rolling budget and keyless recovery default. Its autonomous operation,
+actual-bank readiness, paused recovery, packet and PDA-refresh proofs pass at
+their reviewed increments. Request allocation, catalog rollover, binding
+publication, retirement queues and legacy partial-projection/accounting recovery
+are still being integrated; no complete replacement claim is made.
+
+Multiply now requires exact signed transaction/meta attribution and publishes an
+immutable receipt under its source operation fence. Current Go Worker.Tick local
+bank tests pass fresh deposit, withdrawal, lost-send keyless recovery, persisted
+unsent first-send, exact no-effect expiry, malformed receipt holds and stale
+terminal-CAS rollback. They use real Squads/SPL and explicit mock yield programs.
+The remaining levered borrow/swap/repay/conversion lifecycle is being exercised
+with narrowly validated official instruction envelopes in that local model;
+mature KLend/Jupiter behavior remains outside this proof. Whole-goal acceptance
+remains open; branch work never merges main or changes production/migration state.

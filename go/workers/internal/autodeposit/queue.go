@@ -23,13 +23,14 @@ func (s *Store) FailStaleRequestedSlots(ctx context.Context, limit int64) (int64
 	tag, err := s.pool.Exec(ctx, `
 WITH stale_slots AS (
     SELECT slot.id
-    FROM loyal_yield.balance_sweep_scheduled_slots AS slot
-    WHERE slot.status = 'requested'
+    FROM loyal_yield.balance_sweep_targets AS target
+    JOIN loyal_yield.balance_sweep_scheduled_slots AS slot ON slot.target_id=target.id
+    WHERE target.cluster='mainnet-beta' AND slot.status = 'requested'
       AND COALESCE(slot.requested_at, slot.updated_at)
             < now() - ($1::bigint * interval '1 second')
     ORDER BY COALESCE(slot.requested_at, slot.updated_at) ASC, slot.id ASC
     LIMIT $2
-    FOR UPDATE SKIP LOCKED
+    FOR UPDATE OF target,slot SKIP LOCKED
 )
 UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
 SET status = 'failed',
@@ -87,6 +88,7 @@ WITH stale_claims AS (
             AND setup.attempt_state IN('prepared','submitted','unknown','ambiguous')
       )
       AND target.token_mint = $3
+      AND target.cluster = 'mainnet-beta'
       AND target.wallet_balance_floor_raw IS NOT NULL
       AND balance.amount_raw - target.wallet_balance_floor_raw >= claim.amount_raw
       AND COALESCE((
@@ -216,6 +218,7 @@ WHERE claim.status='selected'
                        WHERE attempt.claim_token=claim.claim_token AND attempt.operation_kind='pull'))
   )
   AND target.token_mint = $2
+  AND target.cluster = 'mainnet-beta'
 ORDER BY claim.claim_token, claim.updated_at ASC
 LIMIT $1`, limit, USDCMint, AutomaticPullRecoveryStates)
 	if err != nil {
@@ -247,6 +250,7 @@ JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
 WHERE target.desired_active = true
   AND target.chain_status = 'active'
   AND target.token_mint = $2
+  AND target.cluster = 'mainnet-beta'
   AND target.wallet_balance_floor_raw IS NOT NULL
   AND balance.amount_raw > target.wallet_balance_floor_raw
   AND slot.token_mint = target.token_mint
@@ -258,6 +262,7 @@ WHERE target.desired_active = true
       JOIN loyal_yield.route_policies AS policy
         ON policy.id = managed.active_policy_id
        AND policy.active = true
+       AND policy.cluster = 'mainnet-beta'
        AND policy.authority = target.authority
        AND policy.settings = target.settings
        AND policy.vault_index = target.vault_index

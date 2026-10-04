@@ -173,6 +173,9 @@ func (w *Worker) Tick(ctx context.Context) (TickReport, error) {
 		return report, err
 	}
 	report.Outcome.StaleClaimsReleased = staleClaims
+	if err := w.store.RepairUnsignedSchedules(ctx, w.releaseBatchLimit); err != nil {
+		return report, err
+	}
 
 	var hints []int64
 	if w.hints != nil {

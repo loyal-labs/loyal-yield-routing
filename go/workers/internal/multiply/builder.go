@@ -274,6 +274,9 @@ func BuildOperation(plan *ActionPlan, observed *ObservedRoute, topology *EarnMax
 		if liquidityAmount == 0 {
 			return nil, errors.New("collateral withdrawal would redeem zero liquidity")
 		}
+		if expectedCollateralAmount > math.MaxInt64 || liquidityAmount > math.MaxInt64 {
+			return nil, errors.New("withdrawal amount exceeds signed expected-effect range")
+		}
 		instructions, err := withdrawInstructions(config, topology.Vault, wireCollateralAmount, position.DebtRaw > 0)
 		if err != nil {
 			return nil, err

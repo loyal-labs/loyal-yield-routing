@@ -14,7 +14,9 @@ import (
 
 	"github.com/gagliardetto/solana-go"
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	workersdb "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	"github.com/mr-tron/base58"
@@ -246,7 +248,21 @@ func (h *Handler) persist(ctx context.Context, observed observation) (Outcome, e
 		SELECT event_id,false FROM %s.balance_sweep_wallet_ata_observation_dedupe
 		WHERE dedupe_key=$1 AND NOT EXISTS(SELECT 1 FROM inserted) LIMIT 1`, sequence, h.schema, h.schema, h.schema)
 	outcome := Outcome{Slot: observed.slot}
-	if err := h.pool.QueryRow(ctx, query, dedupe, commitment, observed.pubkey, int64(observed.slot), hash, observed.target.Cluster, observed.target.ID, observed.target.Wallet, observed.target.Vault, observed.target.VaultATA, int64(observed.amount), observed.owner, observed.mint, observed.received, observed.source, observed.signature, rawBase64, evidence).Scan(&outcome.EventID, &outcome.Inserted); err != nil {
+	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	err = workersdb.WithTx(writeCtx, h.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		// Sequence allocation alone does not order commits. Take both stream
+		// writer locks before nextval and retain them through publication so a
+		// later committed ID cannot pass an earlier uncommitted v2 observation.
+		// This also waits for retained inserts; historical retained-only gaps
+		// require catch-up before transferring ownership of the scalar cursor.
+		lock := fmt.Sprintf("LOCK TABLE %s.balance_sweep_wallet_ata_observation_dedupe, %s.balance_sweep_wallet_ata_observations IN SHARE ROW EXCLUSIVE MODE", h.schema, h.schema)
+		if _, err := tx.Exec(writeCtx, lock); err != nil {
+			return err
+		}
+		return tx.QueryRow(writeCtx, query, dedupe, commitment, observed.pubkey, int64(observed.slot), hash, observed.target.Cluster, observed.target.ID, observed.target.Wallet, observed.target.Vault, observed.target.VaultATA, int64(observed.amount), observed.owner, observed.mint, observed.received, observed.source, observed.signature, rawBase64, evidence).Scan(&outcome.EventID, &outcome.Inserted)
+	})
+	if err != nil {
 		return Outcome{}, fmt.Errorf("persist ATA observation: %w", err)
 	}
 	return outcome, nil

@@ -380,10 +380,10 @@ func TestCanonicalConstraintsMatchRustRecipes(t *testing.T) {
 	}
 	// Borrow pins debt custody at index 8, repay at index 6; both require the
 	// obligation to be owned by the vault (account index 1, offset 64).
-	if debt[0].AccountConstraints[2].AccountIndex != 8 || debt[1].AccountConstraints[2].AccountIndex != 6 {
+	if debt[0].AccountConstraints[3].AccountIndex != 8 || debt[1].AccountConstraints[3].AccountIndex != 6 {
 		t.Fatalf("debt custody pin indexes drifted: %+v %+v", debt[0], debt[1])
 	}
-	owned := debt[0].AccountConstraints[3]
+	owned := debt[0].AccountConstraints[1]
 	if owned.AccountIndex != 1 || owned.Owner == nil || *owned.Owner != mustKey(KlendProgram) {
 		t.Fatalf("obligation ownership constraint drifted: %+v", owned)
 	}

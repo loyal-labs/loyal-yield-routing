@@ -36,6 +36,16 @@ Jupiter uses scoped `RETAIL_JUPITER_BUILD_URL` and `RETAIL_JUPITER_API_KEY`;
 optional `RETAIL_CROSS_MINT_MAX_SLIPPAGE_BPS` and
 `RETAIL_CROSS_MINT_MAX_VALUE_LOSS_BPS` each default to 50 and accept 1..1000.
 An inherited legacy cross-mint flag cannot grant fresh authority.
+ALT packet recovery defaults to `RETAIL_LOOKUP_MODE=reconcile-only` and never
+loads a manager key. Fresh ALT mutations require `RETAIL_LOOKUP_MODE=active`,
+the distinct `RETAIL_LOOKUP_MANAGER_KEYPAIR` matching the source standard policy
+authority, and an explicit positive `RETAIL_LOOKUP_MAX_LAMPORTS`. The optional
+`RETAIL_LOOKUP_BUDGET_WINDOW` defaults to `24h` and accepts whole seconds between
+one minute and 365 days. Source pause/family/table controls and durable budget
+reservations still fence each operation. Route delegate and fee-payer keys do
+not grant lookup authority. The writer is joined with the retail lanes and
+reports readiness from actual finalized RPC evidence. Autonomous catalog/request
+planning is a separate unsigned lane still being integrated.
 Do not enable this rewrite against shared resources.
 
 Observer retains its reviewed transport configuration in

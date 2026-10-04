@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
 const floorLockSeed int64 = 5_499_540_200_513_621
@@ -119,45 +120,43 @@ func (s *Store) Insert(ctx context.Context, record Record) (InsertOutcome, error
 		VALUES($1,nextval('%s'::regclass),$2,$3,$4) ON CONFLICT(dedupe_key) DO NOTHING RETURNING event_id)
 		INSERT INTO %s.reserve_updates(event_id,observed_at,slot,kind,source,reserve,market,market_name,symbol,liquidity_mint,mint_decimals,reserve_last_update_slot,reserve_last_update_stale,reserve_price_status,available_amount,borrowed_amount,borrowed_amount_sf,total_supply_amount,market_price_usd,market_price_last_updated_ts,cumulative_borrow_rate_bsf,total_supply_usd_estimate,total_borrow_usd_estimate,utilization,borrow_apr,supply_apr,borrow_apy,supply_apy,protocol_take_rate_pct,host_fixed_interest_rate_bps,diff_changed,changed_fields,diff_summary,diff,target,snapshot,record,raw_account_data_base64,api_supply_apy,api_borrow_apy,api_total_supply_usd,api_total_borrow_usd,source_commitment,account_data_hash,received_at,decoded_at,receive_to_decode_ms,decode_to_insert_ms)
 		SELECT event_id,$5,$3,'reserve_update',$6,$2,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$4,$44,$45,$46,GREATEST(0,EXTRACT(MILLISECONDS FROM now()-$45)::bigint) FROM inserted_dedupe RETURNING event_id`, s.schema, sequence, s.schema)
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return InsertOutcome{}, err
-	}
-	defer tx.Rollback(ctx)
 	cumulative := fmt.Sprintf("%d:%d:%d:%d", record.Snapshot.CumulativeBorrowRateBSF[0], record.Snapshot.CumulativeBorrowRateBSF[1], record.Snapshot.CumulativeBorrowRateBSF[2], record.Snapshot.CumulativeBorrowRateBSF[3])
 	args := []any{dedupe, record.Snapshot.Reserve, int64(record.Snapshot.Slot), record.AccountHash, record.Snapshot.ObservedAt, record.Source, record.Snapshot.Market, record.Target.MarketName, coalesce(record.Snapshot.Symbol, record.Target.Symbol), record.Snapshot.LiquidityMint, int32(record.Snapshot.MintDecimals), int64(record.Snapshot.ReserveLastUpdateSlot), record.Snapshot.ReserveLastUpdateStale, int16(record.Snapshot.ReservePriceStatus), record.Snapshot.AvailableAmount, record.Snapshot.BorrowedAmount, record.Snapshot.BorrowedAmountSF, record.Snapshot.TotalSupplyAmount, record.Snapshot.MarketPriceUSD, int64(record.Snapshot.MarketPriceLastUpdatedTS), cumulative, record.Snapshot.TotalSupplyUSDEstimate, record.Snapshot.TotalBorrowUSDEstimate, record.Snapshot.Utilization, record.Snapshot.BorrowAPR, record.Snapshot.SupplyAPR, record.Snapshot.BorrowAPY, record.Snapshot.SupplyAPY, int16(record.Snapshot.ProtocolTakeRatePct), int32(record.Snapshot.HostFixedInterestRateBPS), diffChanged, changedFields, record.DiffSummary, diffJSON, targetJSON, snapshotJSON, recordJSON, record.RawBase64, record.Target.APISupplyAPY, record.Target.APIBorrowAPY, record.Target.APITotalSupplyUSD, record.Target.APITotalBorrowUSD, record.SourceCommitment, record.ReceivedAt, record.DecodedAt, record.ReceiveToDecodeMS}
 	var outcome InsertOutcome
-	err = tx.QueryRow(ctx, query, args...).Scan(&outcome.EventID)
-	if err == pgx.ErrNoRows {
-		outcome.Inserted = false
-		if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT event_id FROM %s.reserve_update_dedupe WHERE dedupe_key=$1`, s.schema), dedupe).Scan(&outcome.EventID); err != nil {
-			return InsertOutcome{}, err
+	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, query, args...).Scan(&outcome.EventID)
+		if err == pgx.ErrNoRows {
+			outcome.Inserted = false
+			if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT event_id FROM %s.reserve_update_dedupe WHERE dedupe_key=$1`, s.schema), dedupe).Scan(&outcome.EventID); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return fmt.Errorf("insert Kamino reserve update: %w", err)
+		} else {
+			outcome.Inserted = true
 		}
-	} else if err != nil {
-		return InsertOutcome{}, fmt.Errorf("insert Kamino reserve update: %w", err)
-	} else {
-		outcome.Inserted = true
-	}
-	if strings.HasPrefix(record.Source, "http_") {
-		result, err := tx.Exec(ctx, s.upsertCurrentSQL(), record.Snapshot.Reserve, outcome.EventID, record.AccountHash, int64(record.Snapshot.Slot), record.Snapshot.ObservedAt, record.Source)
-		if err != nil {
-			return InsertOutcome{}, fmt.Errorf("advance Kamino current state: %w", err)
+		if strings.HasPrefix(record.Source, "http_") {
+			result, err := tx.Exec(ctx, s.upsertCurrentSQL(), record.Snapshot.Reserve, outcome.EventID, record.AccountHash, int64(record.Snapshot.Slot), record.Snapshot.ObservedAt, record.Source)
+			if err != nil {
+				return fmt.Errorf("advance Kamino current state: %w", err)
+			}
+			outcome.CurrentStateAdmitted = result.RowsAffected() > 0
+			if _, err = tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %[1]s.reserve_confirmed_verifications verification USING %[1]s.reserve_current_states state WHERE state.reserve=$1 AND verification.reserve=state.reserve AND (verification.state_event_id<>state.state_event_id OR verification.account_data_hash<>state.account_data_hash)`, s.schema), record.Snapshot.Reserve); err != nil {
+				return err
+			}
+			result, err = tx.Exec(ctx, s.upsertVerificationSQL(), record.Snapshot.Reserve, outcome.EventID, record.AccountHash, int64(record.Snapshot.Slot), record.ReceivedAt, record.SourceCommitment, record.Source)
+			if err != nil {
+				return fmt.Errorf("advance Kamino verification: %w", err)
+			}
+			outcome.VerificationAdmitted = result.RowsAffected() > 0
+		} else {
+			if _, err = tx.Exec(ctx, s.advanceFloorSQL(), record.Snapshot.Reserve, int64(record.Snapshot.Slot), record.AccountHash, true, record.Source, int16(1), record.Snapshot.ObservedAt); err != nil {
+				return fmt.Errorf("advance Kamino stream floor: %w", err)
+			}
 		}
-		outcome.CurrentStateAdmitted = result.RowsAffected() > 0
-		if _, err = tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %[1]s.reserve_confirmed_verifications verification USING %[1]s.reserve_current_states state WHERE state.reserve=$1 AND verification.reserve=state.reserve AND (verification.state_event_id<>state.state_event_id OR verification.account_data_hash<>state.account_data_hash)`, s.schema), record.Snapshot.Reserve); err != nil {
-			return InsertOutcome{}, err
-		}
-		result, err = tx.Exec(ctx, s.upsertVerificationSQL(), record.Snapshot.Reserve, outcome.EventID, record.AccountHash, int64(record.Snapshot.Slot), record.ReceivedAt, record.SourceCommitment, record.Source)
-		if err != nil {
-			return InsertOutcome{}, fmt.Errorf("advance Kamino verification: %w", err)
-		}
-		outcome.VerificationAdmitted = result.RowsAffected() > 0
-	} else {
-		if _, err = tx.Exec(ctx, s.advanceFloorSQL(), record.Snapshot.Reserve, int64(record.Snapshot.Slot), record.AccountHash, true, record.Source, int16(1), record.Snapshot.ObservedAt); err != nil {
-			return InsertOutcome{}, fmt.Errorf("advance Kamino stream floor: %w", err)
-		}
-	}
-	if err = tx.Commit(ctx); err != nil {
+		return nil
+	})
+	if err != nil {
 		return InsertOutcome{}, err
 	}
 	return outcome, nil

@@ -81,6 +81,16 @@ func (s *Store) ClaimEligibleLotsOnce(ctx context.Context, targetID int64, claim
 			outcome = noopClaim(targetID, "target_not_active")
 			return nil
 		}
+		if s.requireDesiredAdmission {
+			ready, err := desiredAdmissionApplied(ctx, tx, targetID)
+			if err != nil {
+				return err
+			}
+			if !ready {
+				outcome = noopClaim(targetID, "desired_controls_pending")
+				return nil
+			}
+		}
 		// The user can change protection settings after the RPC/context read.
 		// Read the authoritative settings while the target row stays locked.
 		var currentFloor, currentMax *int64
@@ -253,7 +263,8 @@ func noopClaim(targetID int64, reason string) ClaimOutcome {
 func lockActiveTarget(ctx context.Context, tx pgx.Tx, targetID int64) (bool, error) {
 	var active bool
 	err := tx.QueryRow(ctx, `
-SELECT desired_active AND chain_status = 'active'
+SELECT desired_active AND chain_status = 'active' AND cluster='mainnet-beta'
+AND EXISTS(SELECT 1 FROM loyal_yield.managed_vaults mv JOIN loyal_yield.route_policies rp ON rp.id=mv.active_policy_id WHERE mv.active AND mv.settings=balance_sweep_targets.settings AND mv.vault_index=balance_sweep_targets.vault_index AND mv.vault_pubkey=balance_sweep_targets.vault_pubkey AND rp.active AND rp.cluster='mainnet-beta' AND rp.authority=balance_sweep_targets.authority AND 'same_mint_kamino'=ANY(rp.route_modes))
 FROM loyal_yield.balance_sweep_targets
 WHERE id = $1
   AND token_mint = $2
@@ -696,6 +707,8 @@ restored AS (
 )
 UPDATE loyal_yield.balance_sweep_lot_claims
 SET status = 'released',
+	autodeposit_executor_lease_token = NULL,
+	autodeposit_executor_lease_expires_at = NULL,
     updated_at = now()
 WHERE claim_token = $1
   AND status = 'selected'

@@ -13,11 +13,11 @@ const artifactTargetColumns = controlTargetColumns + `,authority,period_length_s
 
 func scanArtifactTarget(row pgx.Row) (ArtifactTarget, error) {
 	var t ArtifactTarget
-	err := row.Scan(&t.TargetID, &t.SetupGeneration, &t.PolicySeed, &t.Settings, &t.Wallet, &t.WalletTokenATA, &t.Vault, &t.VaultTokenATA, &t.Mint, &t.Policy, &t.SubscriptionAuthority, &t.RecurringDelegation, &t.Nonce, &t.MaxAmountPerPeriod, &t.StartTimestamp, &t.RootAuthority, &t.PeriodLength, &t.ExpiryTimestamp, &t.PolicySignature, &t.DelegationSignature, &t.PolicyConfirmedSlot, &t.DelegationConfirmedSlot)
+	err := row.Scan(&t.TargetID, &t.SetupGeneration, &t.PolicySeed, &t.Settings, &t.Wallet, &t.WalletTokenATA, &t.Vault, &t.VaultTokenATA, &t.Mint, &t.Policy, &t.SubscriptionAuthority, &t.RecurringDelegation, &t.Nonce, &t.MaxAmountPerPeriod, &t.StartTimestamp, &t.Cluster, &t.RootAuthority, &t.PeriodLength, &t.ExpiryTimestamp, &t.PolicySignature, &t.DelegationSignature, &t.PolicyConfirmedSlot, &t.DelegationConfirmedSlot)
 	return t, err
 }
 func (s *Store) LoadArtifactTarget(ctx context.Context, targetID int64) (*ArtifactTarget, error) {
-	t, err := scanArtifactTarget(s.pool.QueryRow(ctx, `SELECT `+artifactTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 AND subscription_authority IS NOT NULL AND recurring_delegation IS NOT NULL AND recurring_delegation_nonce IS NOT NULL AND max_amount_per_period>0 AND period_length_seconds>0 AND start_timestamp IS NOT NULL AND recurring_delegation_expiry_timestamp IS NOT NULL`, targetID))
+	t, err := scanArtifactTarget(s.pool.QueryRow(ctx, `SELECT `+artifactTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 AND cluster='mainnet-beta' AND subscription_authority IS NOT NULL AND recurring_delegation IS NOT NULL AND recurring_delegation_nonce IS NOT NULL AND max_amount_per_period>0 AND period_length_seconds>0 AND start_timestamp IS NOT NULL AND recurring_delegation_expiry_timestamp IS NOT NULL`, targetID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -59,6 +59,9 @@ func (s *Store) BackfillArtifactCreationProof(ctx context.Context, request Recon
 			return ErrOwnershipLost
 		} else if err != nil {
 			return err
+		}
+		if target.Cluster != mainnetCluster {
+			return ErrChainNamespace
 		}
 		if !sameArtifactIdentity(target, proof.target) {
 			return errors.New("artifact target identity or generation changed before backfill")

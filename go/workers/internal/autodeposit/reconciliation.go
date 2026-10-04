@@ -55,7 +55,8 @@ func (s *Store) ClaimAutodepositReconciliationRequest(ctx context.Context, claim
 WITH candidate AS (
     SELECT target_id
     FROM loyal_yield.autodeposit_reconciliation_requests
-    WHERE processed_slot < requested_slot
+    WHERE EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets target WHERE target.id=target_id AND target.cluster='mainnet-beta')
+      AND processed_slot < requested_slot
       AND next_attempt_at <= NOW()
       AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
     ORDER BY requested_slot, target_id
