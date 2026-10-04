@@ -8,26 +8,27 @@ import (
 func setRequiredEnv(t *testing.T) {
 	t.Helper()
 	for name, value := range map[string]string{
-		"LASERSTREAM_ENDPOINT": "https://example.invalid",
-		"HELIUS_API_KEY":       "fixture",
-		"EARN_MAX_DELEGATE":    "11111111111111111111111111111111",
-		"SOLANA_RPC_URL":       "https://rpc.invalid",
-		"NEON_DATABASE_URL":    "postgresql://fixture",
-		"TIMESCALEDB_URL":      "postgresql://fixture",
+		"LASERSTREAM_ENDPOINT":       "https://example.invalid",
+		"HELIUS_API_KEY":             "fixture",
+		"EARN_MAX_DELEGATE":          "11111111111111111111111111111111",
+		"SOLANA_RPC_URL":             "https://rpc.invalid",
+		"NEON_DATABASE_URL":          "postgresql://fixture",
+		"OBSERVER_APPS_DATABASE_URL": "postgresql://apps-fixture",
+		"TIMESCALEDB_URL":            "postgresql://fixture",
 	} {
 		t.Setenv(name, value)
 	}
 }
 
 func TestFromEnvRequiresEveryProductionDependency(t *testing.T) {
-	for _, name := range []string{"LASERSTREAM_ENDPOINT", "HELIUS_API_KEY", "EARN_MAX_DELEGATE", "SOLANA_RPC_URL", "NEON_DATABASE_URL", "TIMESCALEDB_URL"} {
+	for _, name := range []string{"LASERSTREAM_ENDPOINT", "HELIUS_API_KEY", "EARN_MAX_DELEGATE", "SOLANA_RPC_URL", "NEON_DATABASE_URL", "TIMESCALEDB_URL", "OBSERVER_APPS_DATABASE_URL"} {
 		t.Setenv(name, "")
 	}
 	_, err := FromEnv()
 	if err == nil {
 		t.Fatal("missing production dependencies were accepted")
 	}
-	for _, name := range []string{"EARN_MAX_DELEGATE", "HELIUS_API_KEY", "LASERSTREAM_ENDPOINT", "NEON_DATABASE_URL", "SOLANA_RPC_URL", "TIMESCALEDB_URL"} {
+	for _, name := range []string{"EARN_MAX_DELEGATE", "HELIUS_API_KEY", "LASERSTREAM_ENDPOINT", "NEON_DATABASE_URL", "SOLANA_RPC_URL", "TIMESCALEDB_URL", "OBSERVER_APPS_DATABASE_URL"} {
 		if !strings.Contains(err.Error(), name) {
 			t.Fatalf("missing-variable error omitted %s: %v", name, err)
 		}
@@ -80,7 +81,7 @@ func TestBridgeEnvironmentIsAStrictAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(cfg.BridgeEnvironment(), "\n")
-	for _, forbidden := range []string{"POLICY_KEYPAIR", "signing-capability", "HELIUS_API_KEY"} {
+	for _, forbidden := range []string{"POLICY_KEYPAIR", "signing-capability", "HELIUS_API_KEY", "OBSERVER_APPS_DATABASE_URL", "apps-fixture"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("bridge environment leaked %s: %s", forbidden, joined)
 		}

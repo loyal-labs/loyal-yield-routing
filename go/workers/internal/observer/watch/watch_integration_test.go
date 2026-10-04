@@ -2,124 +2,165 @@ package watch
 
 import (
 	"context"
-	"net/url"
-	"os"
-	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestLoaderProductionSchemaCombinationFiltersAppSettings(t *testing.T) {
-	databaseURL := os.Getenv("TEST_WATCH_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("TEST_WATCH_DATABASE_URL is required")
+// These tests consume registered Yield and pinned Apps migrations. They never
+// create, replace or drop relations, and acceptance exercises the full Load.
+func TestLoaderRegisteredAppsAndYieldCompleteWatchCoverage(t *testing.T) {
+	f := registeredWatchFixture(t)
+	ready := f.app("ready", "mainnet")
+	pending := f.app("provisioning", "mainnet")
+	closed := f.app("failed", "mainnet")
+	foreign := f.app("ready", "devnet")
+	activePolicy, activeVault, _ := f.managed(ready, 1, true, "mainnet-beta", 200)
+	setup := f.policy(ready, 1, true, "mainnet-beta", 180)
+	if _, err := f.yield.Exec(f.ctx, `UPDATE loyal_yield.managed_vaults SET setup_policy_id=$2 WHERE vault_pubkey=$1`, activeVault, setup.id); err != nil {
+		t.Fatal(err)
 	}
-	endpoint, err := url.Parse(databaseURL)
-	if err != nil || endpoint.Hostname() != "127.0.0.1" || endpoint.User == nil || endpoint.User.Username() != "workers_v2" || endpoint.Path != "/workers_v2_observer_watch" {
-		t.Fatal("watch sample requires isolated disposable fixture")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	pool, err := pgxpool.New(ctx, databaseURL)
+	closedPolicy, closedVault, _ := f.managed(closed, 1, false, "mainnet-beta", 80)
+	f.managed(foreign, 1, true, "devnet", 300)
+	f.managed(f.identity(), 1, true, "mainnet-beta", 300)
+	f.onboarding(pending)
+	f.position(ready, activePolicy, activeVault)
+	crossPolicy := f.cross(ready, true, "mainnet-beta")
+	inactiveCross := f.cross(ready, false, "mainnet-beta")
+	foreignCross := f.cross(foreign, true, "devnet")
+	activeATA := f.autodeposit(ready, true, "active", "mainnet-beta", nil, nil)
+	delegation := f.key("delegation")
+	pausedATA := f.autodeposit(f.identity(), false, "pending", "mainnet-beta", nil, &delegation)
+	closedATA := f.autodeposit(f.identity(), false, "closed", "mainnet-beta", nil, nil)
+	foreignATA := f.autodeposit(foreign, true, "active", "devnet", nil, nil)
+	max := f.earnMax()
+	set, err := NewLoaderWithApps(f.yield, f.apps, "mainnet-beta").Load(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
-
-	_, sourceFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve test fixture path")
+	if len(set.Vaults) != 5 || len(set.Channels[EarnIdleTokenAccounts]) != 30 || len(set.Channels[EarnWalletTokenAccounts]) != 24 || len(set.Channels[EarnObligations]) != 25 {
+		t.Fatalf("full watch role coverage changed: vaults=%d idle=%d wallet_tokens=%d obligations=%d", len(set.Vaults), len(set.Channels[EarnIdleTokenAccounts]), len(set.Channels[EarnWalletTokenAccounts]), len(set.Channels[EarnObligations]))
 	}
-	fixturePath := filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "testdata", "observer", "earn-watch-schema-sample.sql")
-	fixture, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatal(err)
+	if len(set.ATAs) != 1 || set.ATAs[activeATA.walletATA].ID != activeATA.id {
+		t.Fatalf("enabled ATA coverage: %#v", set.ATAs)
 	}
-	if _, err := pool.Exec(ctx, string(fixture)); err != nil {
-		t.Fatal(err)
-	}
-
-	targets, err := NewLoader(pool, "mainnet-beta").loadEarnTargets(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(targets) != 4 {
-		t.Fatalf("target count = %d, want app, managed-vault, cross-mint, and Earn MAX targets", len(targets))
-	}
-	var appTargets, managedVaultTargets, crossMintTargets, earnMaxTargets int
-	for _, target := range targets {
-		if target.Settings != "settings-a" {
-			t.Fatalf("loaded non-app settings %q", target.Settings)
-		}
-		switch {
-		case target.EarnMax:
-			earnMaxTargets++
-		case target.Vault == "managed-vault-a":
-			managedVaultTargets++
-			if !slices.Equal(target.PolicyAccounts, []string{"managed-active-policy-a", "managed-setup-policy-a"}) ||
-				!slices.Equal(target.Markets, []string{"managed-market-a"}) ||
-				target.ObservationStartSlot == nil || *target.ObservationStartSlot != 89 {
-				t.Fatalf("managed-vault target = %#v", target)
-			}
-		case len(target.PolicyAccounts) > 0:
-			crossMintTargets++
-		default:
-			appTargets++
+	for _, omitted := range []string{pausedATA.walletATA, closedATA.walletATA, foreignATA.walletATA} {
+		if slices.Contains(set.Channels[BalanceSweepWalletATAs], omitted) {
+			t.Fatal("nonenabled ATA entered pull channel")
 		}
 	}
-	if appTargets != 1 || managedVaultTargets != 1 || crossMintTargets != 1 || earnMaxTargets != 1 {
-		t.Fatalf("targets app=%d managed_vault=%d cross_mint=%d earn_max=%d", appTargets, managedVaultTargets, crossMintTargets, earnMaxTargets)
+	for _, expected := range []Account{{ready.settings, "smart_account"}, {activeVault, "vault"}, {activePolicy.account, "policy"}, {setup.account, "policy"}, {crossPolicy, "policy"}, {pausedATA.vault, "vault"}, {delegation, "recurring_delegation"}, {max.policy, "policy"}} {
+		if !slices.Contains(set.Channels[ChannelForRole(expected.Role)], expected.Pubkey) {
+			t.Fatalf("full Load omitted %s %s", expected.Role, expected.Pubkey)
+		}
 	}
-
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO loyal_yield.balance_sweep_targets
-		    (id, cluster, settings, wallet, wallet_token_ata, vault_index,
-		     vault_pubkey, vault_token_ata, token_mint, policy_account,
-		     subscription_authority, recurring_delegation, desired_active, chain_status)
-		VALUES
-		    (1, 'mainnet-beta', 'settings-a', 'wallet-a', 'mainnet-wallet-ata', 1,
-		     'vault-a', 'mainnet-vault-ata', $1, 'autodeposit-policy-a',
-		     'subscription-a', 'delegation-a', TRUE, 'active'),
-		    (2, 'testnet', 'settings-test', 'wallet-test', 'testnet-wallet-ata', 1,
-		     'vault-test', 'testnet-vault-ata', $1, 'autodeposit-policy-test',
-		     'subscription-test', 'delegation-test', TRUE, 'active')`, stablecoins[3].Mint.String()); err != nil {
-		t.Fatal(err)
+	for _, omitted := range []string{closedPolicy.account, inactiveCross, foreignCross} {
+		if slices.Contains(set.Channels[EarnPolicyAccounts], omitted) {
+			t.Fatalf("closed/inactive/foreign policy still watched: %s", omitted)
+		}
 	}
-
-	productionLoader := NewLoader(pool, "mainnet-beta")
-	clusterTargets, err := productionLoader.loadEarnTargets(ctx)
-	if err != nil {
-		t.Fatal(err)
+	if slices.Contains(set.Channels[EarnSubscriptionAuthorities], delegation) {
+		t.Fatal("nullable subscription shifted delegation role")
 	}
-	var autodepositTargets int
-	for _, target := range clusterTargets {
-		if len(target.AutodepositAccounts) > 0 {
-			autodepositTargets++
-			if target.Settings != "settings-a" {
-				t.Fatalf("loaded cross-cluster Autodeposit settings %q", target.Settings)
+	if len(set.AffectedVaults(closedVault)) != 1 || len(set.AffectedVaults(foreign.settings)) != 0 {
+		t.Fatal("closed identity lost or foreign Apps environment leaked")
+	}
+	var sawMax, sawClosed bool
+	for _, vault := range set.Vaults {
+		if vault.Environment != "mainnet-beta" {
+			t.Fatal("Apps spelling changed durable namespace")
+		}
+		if vault.Vault == max.vault {
+			sawMax = vault.EarnMax && vault.VaultIndex == 0 && vault.ObservationStartSlot != nil && *vault.ObservationStartSlot == 400
+		}
+		if vault.Vault == closedVault {
+			sawClosed = vault.ObservationStartSlot == nil
+		}
+	}
+	if !sawMax || !sawClosed {
+		t.Fatal("EarnMax replay floor or closed identity policy floor changed")
+	}
+	for channel, addresses := range set.Channels {
+		for i := 1; i < len(addresses); i++ {
+			if addresses[i-1] >= addresses[i] {
+				t.Fatalf("channel %s not normalized", channel)
 			}
 		}
 	}
-	if autodepositTargets != 1 {
-		t.Fatalf("Autodeposit target count = %d, want 1 production target", autodepositTargets)
+	if _, err := NewLoaderWithApps(f.yield, f.yield, "mainnet-beta").Load(f.ctx); err == nil {
+		t.Fatal("wrong Apps pool declared complete watch coverage")
 	}
-	ataTargets, err := productionLoader.loadATATargets(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ataTargets) != 1 || ataTargets["mainnet-wallet-ata"].Cluster != "mainnet-beta" {
-		t.Fatalf("ATA targets were not cluster-filtered: %#v", ataTargets)
-	}
+}
 
-	unownedTargets, err := NewLoader(pool, "devnet").loadEarnTargets(ctx)
+func TestLoaderRegisteredCustodyAndReplayCorruptionHoldCoverage(t *testing.T) {
+	for _, corruption := range []string{"wallet_ata", "negative_max_slot", "foreign_vault", "invalid_policy", "invalid_market"} {
+		t.Run(corruption, func(t *testing.T) {
+			f := registeredWatchFixture(t)
+			owner := f.app("ready", "mainnet")
+			policy, vault, _ := f.managed(owner, 1, true, "mainnet-beta", 200)
+			var err error
+			switch corruption {
+			case "wallet_ata":
+				target := f.autodeposit(owner, true, "active", "mainnet-beta", nil, nil)
+				_, err = f.yield.Exec(f.ctx, `UPDATE loyal_yield.balance_sweep_targets SET wallet_token_ata=$2 WHERE id=$1`, target.id, f.key("foreign-ata"))
+			case "negative_max_slot":
+				max := f.earnMax()
+				_, err = f.yield.Exec(f.ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{observedSlot}','-1') WHERE route_key=$1`, max.route)
+			case "foreign_vault":
+				_, err = f.yield.Exec(f.ctx, `UPDATE loyal_yield.managed_vaults SET vault_pubkey=$2 WHERE vault_pubkey=$1`, vault, f.key("foreign-vault"))
+			case "invalid_policy":
+				_, err = f.yield.Exec(f.ctx, `UPDATE loyal_yield.route_policies SET policy_account='invalid-base58!' WHERE id=$1`, policy.id)
+			case "invalid_market":
+				_, err = f.yield.Exec(f.ctx, `UPDATE loyal_yield.route_policies SET kamino_markets=ARRAY['invalid-base58!'] WHERE id=$1`, policy.id)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := NewLoaderWithApps(f.yield, f.apps, "mainnet-beta").Load(f.ctx); err == nil {
+				t.Fatal("corrupt custody/coverage returned healthy watch set")
+			}
+		})
+	}
+}
+
+func TestLoaderRegisteredConfiguredMissingAppsAndCancelledReadHold(t *testing.T) {
+	f := registeredWatchFixture(t)
+	if _, err := NewLoaderWithApps(f.yield, nil, "mainnet-beta").Load(f.ctx); err == nil {
+		t.Fatal("configured Apps capability fell back to Yield")
+	}
+	ctx, cancel := context.WithCancel(f.ctx)
+	cancel()
+	if _, err := NewLoaderWithApps(f.yield, f.apps, "mainnet-beta").Load(ctx); err == nil {
+		t.Fatal("cancelled read returned positive watch set")
+	}
+}
+
+func TestLoaderRegisteredLegacyUnknownClusterNeedsActualAppsIdentity(t *testing.T) {
+	f := registeredWatchFixture(t)
+	owner := f.app("ready", "mainnet")
+	legacy, _, _ := f.managed(owner, 1, true, "unknown", 170)
+	unowned, _, _ := f.managed(f.identity(), 1, true, "unknown", 170)
+	foreign, foreignVault, _ := f.managed(owner, 2, true, "devnet", 170)
+	devnetOwner := f.app("ready", "devnet")
+	devnetUnknown, _, _ := f.managed(devnetOwner, 1, true, "unknown", 170)
+	set, err := NewLoaderWithApps(f.yield, f.apps, "mainnet-beta").Load(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(unownedTargets) != 0 {
-		t.Fatalf("loaded %d targets for an app environment with no settings", len(unownedTargets))
+	if !slices.Contains(set.Channels[EarnPolicyAccounts], legacy.account) || slices.Contains(set.Channels[EarnPolicyAccounts], unowned.account) || slices.Contains(set.Channels[EarnPolicyAccounts], foreign.account) || len(set.AffectedVaults(foreignVault)) != 0 {
+		t.Fatal("legacy observation coverage escaped current Apps ownership or admitted known foreign cluster")
+	}
+	compatibility, err := NewLoader(f.yield, "mainnet-beta").Load(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(compatibility.Channels[EarnPolicyAccounts], legacy.account) {
+		t.Fatal("compatibility constructor inferred legacy namespace without configured Apps ownership")
+	}
+	devnet, err := NewLoaderWithApps(f.yield, f.apps, "devnet").Load(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(devnet.Channels[EarnPolicyAccounts], devnetUnknown.account) {
+		t.Fatal("mainnet legacy recovery exception was inferred for another namespace")
 	}
 }

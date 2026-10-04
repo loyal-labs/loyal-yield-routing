@@ -35,6 +35,12 @@ being integrated. Do not enable this rewrite against shared resources.
 Observer retains its reviewed transport configuration in
 `internal/observer/config/config.go` and starts the separately supervised,
 unsigned Rust Earn bridge with an explicit environment allowlist. Each family
+requires its own database boundary: observer watches use `NEON_DATABASE_URL`
+for Yield and explicit `OBSERVER_APPS_DATABASE_URL` for Apps identities. The
+Apps connection is read-only in the observer and is excluded from the bridge
+environment. The fixed watch catalog verifies actual mainnet genesis before
+opening writers and on every watch refresh.
+Each family
 owns SQL beside its lifecycle code. Shared packages provide concrete pool,
 lease, amount and process-lifetime behavior; there is no workflow framework.
 

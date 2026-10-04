@@ -19,6 +19,7 @@ type Config struct {
 	EarnMaxDelegate       string
 	SolanaRPCURL          string
 	NeonDatabaseURL       string
+	AppsDatabaseURL       string
 	TimescaleDatabaseURL  string
 	KaminoAPIBase         string
 	Cluster               string
@@ -78,6 +79,7 @@ func FromEnv() (Config, error) {
 		EarnMaxDelegate:       strings.TrimSpace(os.Getenv("EARN_MAX_DELEGATE")),
 		SolanaRPCURL:          strings.TrimSpace(os.Getenv("SOLANA_RPC_URL")),
 		NeonDatabaseURL:       strings.TrimSpace(os.Getenv("NEON_DATABASE_URL")),
+		AppsDatabaseURL:       strings.TrimSpace(os.Getenv("OBSERVER_APPS_DATABASE_URL")),
 		TimescaleDatabaseURL:  strings.TrimSpace(os.Getenv("TIMESCALEDB_URL")),
 		KaminoAPIBase:         envOr("KAMINO_API_BASE", "https://api.kamino.finance"),
 		Cluster:               normalizeSolanaCluster(envOr("SOLANA_CLUSTER", "mainnet-beta")),
@@ -99,12 +101,13 @@ func FromEnv() (Config, error) {
 	}
 	var missing []string
 	for name, value := range map[string]string{
-		"LASERSTREAM_ENDPOINT": cfg.LaserStreamEndpoint,
-		"HELIUS_API_KEY":       cfg.HeliusAPIKey,
-		"EARN_MAX_DELEGATE":    cfg.EarnMaxDelegate,
-		"SOLANA_RPC_URL":       cfg.SolanaRPCURL,
-		"NEON_DATABASE_URL":    cfg.NeonDatabaseURL,
-		"TIMESCALEDB_URL":      cfg.TimescaleDatabaseURL,
+		"LASERSTREAM_ENDPOINT":       cfg.LaserStreamEndpoint,
+		"HELIUS_API_KEY":             cfg.HeliusAPIKey,
+		"EARN_MAX_DELEGATE":          cfg.EarnMaxDelegate,
+		"SOLANA_RPC_URL":             cfg.SolanaRPCURL,
+		"NEON_DATABASE_URL":          cfg.NeonDatabaseURL,
+		"OBSERVER_APPS_DATABASE_URL": cfg.AppsDatabaseURL,
+		"TIMESCALEDB_URL":            cfg.TimescaleDatabaseURL,
 	} {
 		if value == "" {
 			missing = append(missing, name)

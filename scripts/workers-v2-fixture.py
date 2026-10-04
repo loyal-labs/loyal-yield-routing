@@ -59,13 +59,10 @@ for entry in app_schema:
         raise SystemExit("Historical app schema fixture provenance drifted")
 default_families = ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "multiply")
 families = tuple(os.environ.get("WORKERS_V2_FIXTURE_FAMILIES", ",".join(default_families)).split(","))
-allowed_families = set(default_families) | {"fleet_go_same_mint", "fleet_same_mint"}
+allowed_families = set(default_families) | {"fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture", "lookup"}
 if not families or len(set(families)) != len(families) or any(f not in allowed_families for f in families):
     raise SystemExit("Fixture families must be distinct allowlisted test scopes")
-for family in families:
-    name = family if family in {"fleet", "fleet_go_same_mint", "fleet_same_mint"} else "workers_v2_" + family
-    execute(base, sql='CREATE DATABASE "' + name + '"')
-    url = urlunparse(parsed._replace(path="/" + name))
+def apply_yield_schema(url):
     for migration in migrations:
         version = int(migration.name.split("_", 1)[0])
         if version == 13:
@@ -98,12 +95,15 @@ for family in families:
             raise SystemExit("Unsafe migration ledger name")
         execute(url, sql="INSERT INTO loyal_yield.schema_migrations(version,name,checksum) "
                 f"VALUES({version},'{name}','{checksum}')")
+
+for family in families:
+    name = family if family in {"fleet", "fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture"} else "workers_v2_" + family
+    execute(base, sql='CREATE DATABASE "' + name + '"')
+    url = urlunparse(parsed._replace(path="/" + name))
+    apply_yield_schema(url)
     if family == "backyard":
         execute(url, file=schema / "backyard_route_lease.sql")
     urls[family] = url
-print(json.dumps({"gate": "fixture", "verdict": "PASS", "registry": str(registry.relative_to(repo)),
-                  "registered_schema_files": len(migrations), "databases": list(urls),
-                  "scope": "isolated behavior schema; historical app baseline plus registered Yield schema, excludes production-bound 0071 data activation"}))
 timescale = os.environ.get("WORKERS_V2_TIMESCALE_FIXTURE_URL")
 timescale_url = None
 if timescale:
@@ -119,20 +119,41 @@ if timescale:
     for file in files:
         execute(timescale_url, file=file)
     print(json.dumps({"gate": "timescale_fixture", "verdict": "PASS", "schema_files": len(files)}))
-# The candidate watch loader has a separately classified sampled Apps/schema
-# compatibility fixture. Its DROP/CREATE test never touches the registered DB.
+# Full observer discovery uses real Yield schema and a separate Apps UUID
+# database. These fixtures deliberately prove the cross-database boundary.
 watch_url = None
+watch_apps_url = None
 if "observer" in urls:
     execute(base, sql='CREATE DATABASE workers_v2_observer_watch')
     watch_url = urlunparse(parsed._replace(path="/workers_v2_observer_watch"))
+    apply_yield_schema(watch_url)
+    execute(base, sql='CREATE DATABASE workers_v2_observer_apps')
+    watch_apps_url = urlunparse(parsed._replace(path="/workers_v2_observer_apps"))
+    for entry in json.loads((schema / "apps-watch-manifest.json").read_text()):
+        file = schema / entry["file"]
+        if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
+            raise SystemExit("Actual Apps identity fixture provenance drifted")
+        execute(watch_apps_url, file=file)
+# The C capacity handoff has its own registered database; connected SVM
+# terminal-evidence databases are not reused or reset by these SQL tests.
+if "fleet" in urls and "fleet_cross_mint_capture" not in urls:
+    execute(base, sql='CREATE DATABASE fleet_cross_mint_capture')
+    urls["fleet_cross_mint_capture"] = urlunparse(parsed._replace(path="/fleet_cross_mint_capture"))
+    apply_yield_schema(urls["fleet_cross_mint_capture"])
+print(json.dumps({"gate": "fixture", "verdict": "PASS", "registry": str(registry.relative_to(repo)),
+                  "registered_schema_files": len(migrations), "databases": list(urls),
+                  "watch_yield_database": bool(watch_url), "watch_apps_database": bool(watch_apps_url),
+                  "scope": "isolated behavior schema; historical app baseline plus registered Yield schema, excludes production-bound 0071 data activation"}))
 out = os.environ.get("GITHUB_ENV")
 if out:
     with open(out, "a") as target:
         if watch_url:
             target.write("TEST_WATCH_DATABASE_URL=" + watch_url + "\n")
+            target.write("TEST_WATCH_APPS_DATABASE_URL=" + watch_apps_url + "\n")
             target.write("READMODELS_TEST_DATABASE_URL=" + urls["observer"] + "\n")
         for key, family in (("FLEET_TEST_DATABASE_URL", "fleet"),
                             ("FLEET_EXEC_TEST_DATABASE_URL", "fleetexec"),
+                            ("FLEET_TEST_CROSS_MINT_CAPTURE_DATABASE_URL", "fleet_cross_mint_capture"),
                             ("AUTODEPOSIT_TEST_DATABASE_URL", "autodeposit"),
                             ("OBSERVER_TEST_DATABASE_URL", "observer"),
                             ("TEST_DATABASE_URL", "observer"),

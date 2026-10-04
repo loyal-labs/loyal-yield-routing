@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -102,15 +103,37 @@ func (s *Set) Fingerprint() string {
 }
 
 type Loader struct {
-	pool    *pgxpool.Pool
-	cluster string
+	pool        *pgxpool.Pool
+	apps        *pgxpool.Pool
+	cluster     string
+	requireApps bool
 }
 
+// NewLoader retains the single-database fixture compatibility path. Production
+// uses NewLoaderWithApps so an absent Apps database cannot imply full coverage.
 func NewLoader(pool *pgxpool.Pool, cluster string) *Loader {
-	return &Loader{pool: pool, cluster: cluster}
+	return &Loader{pool: pool, apps: pool, cluster: cluster}
+}
+
+func NewLoaderWithApps(yieldPool, appsPool *pgxpool.Pool, cluster string) *Loader {
+	return &Loader{pool: yieldPool, apps: appsPool, cluster: cluster, requireApps: true}
 }
 
 func (l *Loader) Load(ctx context.Context) (*Set, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if l == nil || l.pool == nil || l.cluster == "" {
+		return nil, fmt.Errorf("watch loader requires Yield database and cluster")
+	}
+	for _, relation := range []string{"loyal_yield.balance_sweep_targets", "loyal_yield.managed_vaults", "loyal_yield.route_policies", "loyal_yield.earn_deposit_onboarding_attempts", "loyal_yield.user_yield_positions", "loyal_yield.cross_mint_swap_policies", "loyal_yield.multiply_route_states", "loyal_yield.earn_max_policy_sets"} {
+		exists, err := l.relationsExist(ctx, relation)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, fmt.Errorf("watch coverage requires registered Yield relation %s", relation)
+		}
+	}
 	atas, err := l.loadATATargets(ctx)
 	if err != nil {
 		return nil, err
@@ -135,6 +158,9 @@ func (l *Loader) Load(ctx context.Context) (*Set, error) {
 		if current := vaults[key]; current != nil {
 			if current.Settings != vault.Settings || current.VaultIndex != vault.VaultIndex {
 				return nil, fmt.Errorf("conflicting Earn identity for vault %s", vault.Vault)
+			}
+			if current.Wallet != "" && vault.Wallet != "" && current.Wallet != vault.Wallet {
+				return nil, fmt.Errorf("conflicting Earn wallet for vault %s", vault.Vault)
 			}
 			current.EarnMax = current.EarnMax || vault.EarnMax
 			if current.Wallet == "" {
@@ -323,6 +349,20 @@ func (l *Loader) loadATATargets(ctx context.Context) (map[string]ATATarget, erro
 		if err := rows.Scan(&target.ID, &target.Cluster, &target.Wallet, &target.WalletATA, &target.Vault, &target.VaultATA, &target.Mint); err != nil {
 			return nil, err
 		}
+		walletATA, err := USDCATA(target.Wallet)
+		if err != nil {
+			return nil, fmt.Errorf("ATA watch wallet identity: %w", err)
+		}
+		vaultATA, err := USDCATA(target.Vault)
+		if err != nil {
+			return nil, fmt.Errorf("ATA watch vault identity: %w", err)
+		}
+		if target.WalletATA != walletATA || target.VaultATA != vaultATA {
+			return nil, fmt.Errorf("ATA watch target %d has noncanonical wallet/vault custody", target.ID)
+		}
+		if previous, exists := targets[target.WalletATA]; exists && previous != target {
+			return nil, fmt.Errorf("ATA watch custody has conflicting target identities")
+		}
 		targets[target.WalletATA] = target
 	}
 	if err := rows.Err(); err != nil {
@@ -332,11 +372,12 @@ func (l *Loader) loadATATargets(ctx context.Context) (map[string]ATATarget, erro
 }
 
 type earnTarget struct {
-	Environment, Settings, Wallet, Vault         string
-	VaultIndex                                   int16
-	EarnMax                                      bool
-	PolicyAccounts, Markets, AutodepositAccounts []string
-	ObservationStartSlot                         *uint64
+	Environment, Settings, Wallet, Vault string
+	VaultIndex                           int16
+	EarnMax                              bool
+	PolicyAccounts, Markets              []string
+	AutodepositAccounts                  []Account
+	ObservationStartSlot                 *uint64
 }
 
 func appSettingsFilter(enabled bool, qualifiedColumn string) string {
@@ -345,30 +386,31 @@ func appSettingsFilter(enabled bool, qualifiedColumn string) string {
 	}
 	return fmt.Sprintf(`
 			  AND %s IN (
-			      SELECT app_smart.settings_pda
-			      FROM app_user_smart_accounts AS app_smart
-			      WHERE app_smart.solana_env = $1
+			      SELECT unnest($2::text[])
 			  )`, qualifiedColumn)
 }
 
 func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 	type watchQuery struct {
-		sql  string
-		scan func(rowScanner) (earnTarget, error)
+		sql        string
+		scan       func(rowScanner) (earnTarget, error)
+		filterApps bool
 	}
 	var queries []watchQuery
-	appReady, err := l.relationsExist(ctx, "app_user_smart_accounts", "app_users")
+	result, settings, appReady, err := l.loadAppTargets(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if appReady {
-		queries = append(queries, watchQuery{`SELECT smart.solana_env, smart.settings_pda, app.subject_address FROM app_user_smart_accounts smart JOIN app_users app ON app.id=smart.user_id WHERE smart.solana_env=$1 AND smart.state='ready'`, scanAppTarget})
 	}
 	onboardingFilter := appSettingsFilter(appReady, "onboarding.settings")
 	positionFilter := appSettingsFilter(appReady, "position.settings")
 	managedVaultFilter := appSettingsFilter(appReady, "vault.settings")
 	crossMintFilter := appSettingsFilter(appReady, "cross_mint_swap_policies.settings")
-	earnMaxFilter := appSettingsFilter(appReady, "route.settings")
+	legacyActiveCluster := ""
+	if l.requireApps && appReady && (l.cluster == "mainnet-beta" || l.cluster == "mainnet") {
+		// Legacy cluster='unknown' is observation coverage only, bounded by
+		// actual current-environment Apps ownership through the filter below.
+		legacyActiveCluster = " OR (active_policy.cluster='unknown' AND vault.active AND active_policy.active)"
+	}
 	managedVaultsReady, err := l.relationsExist(ctx, "loyal_yield.managed_vaults", "loyal_yield.route_policies")
 	if err != nil {
 		return nil, err
@@ -377,21 +419,22 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 		queries = append(queries, watchQuery{`
 			SELECT $1::text, active_policy.authority, vault.settings,
 			       vault.vault_index, vault.vault_pubkey,
-			       active_policy.policy_account,
-			       setup_policy.policy_account,
+		       CASE WHEN vault.active AND active_policy.active THEN active_policy.policy_account END,
+		       CASE WHEN vault.active AND active_policy.active AND setup_policy.active THEN setup_policy.policy_account END,
 			       active_policy.kamino_markets,
-			       LEAST(active_policy.last_seen_slot,
-			             setup_policy.last_seen_slot)
+		       CASE WHEN vault.active AND active_policy.active THEN LEAST(active_policy.last_seen_slot,
+		             setup_policy.last_seen_slot) END
 			FROM loyal_yield.managed_vaults AS vault
 			JOIN loyal_yield.route_policies AS active_policy
 			  ON active_policy.id = vault.active_policy_id
 			LEFT JOIN loyal_yield.route_policies AS setup_policy
 			  ON setup_policy.id = vault.setup_policy_id
-			WHERE vault.active AND active_policy.active` + managedVaultFilter, scanManagedVaultTarget})
+		WHERE (active_policy.cluster=$1 OR ($1='mainnet-beta' AND active_policy.cluster='mainnet')` + legacyActiveCluster + `)` + managedVaultFilter, scanManagedVaultTarget, appReady})
 	}
 	optional := []struct {
 		relation, sql string
 		scan          func(rowScanner) (earnTarget, error)
+		filterApps    bool
 	}{
 		{"loyal_yield.earn_deposit_onboarding_attempts", `
 			SELECT $1::text, onboarding.wallet_address, onboarding.settings,
@@ -399,7 +442,7 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			       onboarding.policy_account, onboarding.setup_policy_account,
 			       onboarding.market
 			FROM loyal_yield.earn_deposit_onboarding_attempts AS onboarding
-			WHERE onboarding.status <> 'complete'` + onboardingFilter, scanOnboardingTarget},
+		WHERE onboarding.status <> 'complete'` + onboardingFilter, scanOnboardingTarget, appReady},
 		{"loyal_yield.user_yield_positions", `
 			SELECT $1::text, position.wallet_address, position.settings,
 			       position.vault_index, position.vault_pubkey,
@@ -414,7 +457,7 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			  ON active_policy.id = vault.active_policy_id
 			LEFT JOIN loyal_yield.route_policies AS setup_policy
 			  ON setup_policy.id = vault.setup_policy_id
-			WHERE position.status = 'active'` + positionFilter, scanPositionTarget},
+		WHERE position.status = 'active'` + positionFilter, scanPositionTarget, appReady},
 		{"loyal_yield.cross_mint_swap_policies", `
 			SELECT $1::text, cross_mint_swap_policies.authority,
 			       cross_mint_swap_policies.settings,
@@ -429,14 +472,14 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			GROUP BY cross_mint_swap_policies.authority,
 			         cross_mint_swap_policies.settings,
 			         cross_mint_swap_policies.vault_index,
-			         cross_mint_swap_policies.vault_pubkey`, scanCrossMintTarget},
+		         cross_mint_swap_policies.vault_pubkey`, scanCrossMintTarget, appReady},
 		{"loyal_yield.balance_sweep_targets", `
 			SELECT $1::text, target.settings, target.wallet, target.vault_index,
 			       target.vault_pubkey, target.policy_account,
 			       target.subscription_authority, target.recurring_delegation
 			FROM loyal_yield.balance_sweep_targets AS target
 			WHERE target.cluster = $1
-			  AND target.chain_status <> 'closed'`, scanAutodepositTarget},
+		  AND target.chain_status <> 'closed'`, scanAutodepositTarget, false},
 		{"loyal_yield.multiply_route_states", `
 			SELECT $1::text, route.settings, route.vault_index, route.vault,
 			       ARRAY(
@@ -453,7 +496,7 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			 AND policy.vault = route.vault
 			WHERE route.state ->> 'engineVersion' = 'earn_max_v2'
 			  AND policy.manifest_version = 'earn-max-v2'
-			  AND policy.status = 'ready'` + earnMaxFilter, scanEarnMaxTarget},
+		  AND policy.status = 'ready'`, scanEarnMaxTarget, false},
 	}
 	for _, item := range optional {
 		exists, err := l.relationsExist(ctx, item.relation)
@@ -461,12 +504,15 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			return nil, err
 		}
 		if exists {
-			queries = append(queries, watchQuery{item.sql, item.scan})
+			queries = append(queries, watchQuery{item.sql, item.scan, item.filterApps})
 		}
 	}
-	var result []earnTarget
 	for _, query := range queries {
-		rows, err := l.pool.Query(ctx, query.sql, l.cluster)
+		args := []any{l.cluster}
+		if query.filterApps {
+			args = append(args, settings)
+		}
+		rows, err := l.pool.Query(ctx, query.sql, args...)
 		if err != nil {
 			return nil, fmt.Errorf("load Earn watch targets: %w", err)
 		}
@@ -554,14 +600,25 @@ func scanAutodepositTarget(row rowScanner) (earnTarget, error) {
 	var policy string
 	err := row.Scan(&t.Environment, &t.Settings, &t.Wallet, &t.VaultIndex, &t.Vault, &policy, &authority, &delegation)
 	t.PolicyAccounts = []string{policy}
-	t.AutodepositAccounts = nonNil(authority, delegation)
+	if authority != nil && *authority != "" {
+		t.AutodepositAccounts = append(t.AutodepositAccounts, Account{*authority, "subscription_authority"})
+	}
+	if delegation != nil && *delegation != "" {
+		t.AutodepositAccounts = append(t.AutodepositAccounts, Account{*delegation, "recurring_delegation"})
+	}
 	return t, err
 }
 func scanEarnMaxTarget(row rowScanner) (earnTarget, error) {
 	var t earnTarget
 	var slot *int64
 	err := row.Scan(&t.Environment, &t.Settings, &t.VaultIndex, &t.Vault, &t.PolicyAccounts, &slot)
+	if err != nil {
+		return t, err
+	}
 	t.EarnMax = true
+	if slot != nil && *slot < 0 {
+		return t, fmt.Errorf("Earn MAX observation start slot is negative")
+	}
 	if slot != nil && *slot > 0 {
 		v := uint64(*slot)
 		t.ObservationStartSlot = &v
@@ -612,7 +669,7 @@ func buildVault(target earnTarget) (Vault, error) {
 	for _, value := range markets {
 		market, err := solana.PublicKeyFromBase58(value)
 		if err != nil {
-			continue
+			return Vault{}, fmt.Errorf("invalid recorded Earn market %q: %w", value, err)
 		}
 		obligation, _, err := solana.FindProgramAddress([][]byte{{0}, {0}, vaultKey[:], market[:], make([]byte, 32), make([]byte, 32)}, kaminoProgram)
 		if err != nil {
@@ -622,15 +679,17 @@ func buildVault(target earnTarget) (Vault, error) {
 	}
 	for _, policy := range target.PolicyAccounts {
 		if strings.TrimSpace(policy) != "" {
+			if _, err := solana.PublicKeyFromBase58(policy); err != nil {
+				return Vault{}, fmt.Errorf("invalid recorded Earn policy %q: %w", policy, err)
+			}
 			result.Accounts = append(result.Accounts, Account{policy, "policy"})
 		}
 	}
-	for index, address := range target.AutodepositAccounts {
-		role := "recurring_delegation"
-		if index == 0 {
-			role = "subscription_authority"
+	for _, account := range target.AutodepositAccounts {
+		if _, err := solana.PublicKeyFromBase58(account.Pubkey); err != nil {
+			return Vault{}, fmt.Errorf("invalid Autodeposit %s: %w", account.Role, err)
 		}
-		result.Accounts = append(result.Accounts, Account{address, role})
+		result.Accounts = append(result.Accounts, account)
 	}
 	return result, nil
 }

@@ -30,6 +30,7 @@ type Runtime struct {
 	health        *observability.Health
 	metrics       *observability.Metrics
 	neon          *pgxpool.Pool
+	apps          *pgxpool.Pool
 	timescale     *pgxpool.Pool
 	rpc           *solanarpc.Client
 	watchLoader   *watch.Loader
@@ -46,6 +47,13 @@ type Runtime struct {
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger, health *observability.Health, metrics *observability.Metrics) (*Runtime, error) {
 	startup, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelStartup()
+	if cfg.AppsDatabaseURL == "" {
+		return nil, errors.New("observer requires explicit Apps database for complete watch coverage")
+	}
+	rpc := solanarpc.New(cfg.SolanaRPCURL, 30*time.Second)
+	if err := validateWatchNamespace(startup, cfg.Cluster, rpc); err != nil {
+		return nil, err
+	}
 	neon, err := db.Open(startup, cfg.NeonDatabaseURL, 8)
 	if err != nil {
 		return nil, fmt.Errorf("connect Neon: %w", err)
@@ -55,7 +63,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, health *ob
 		neon.Close()
 		return nil, fmt.Errorf("connect Timescale: %w", err)
 	}
-	rpc := solanarpc.New(cfg.SolanaRPCURL, 30*time.Second)
+	apps, err := db.Open(startup, cfg.AppsDatabaseURL, 2)
+	if err != nil {
+		neon.Close()
+		timescale.Close()
+		return nil, errors.New("connect observer Apps database failed")
+	}
 	kaminoStore := kamino.NewStore(timescale, "kamino")
 	kaminoCatalog := kamino.NewCatalogClient(cfg.KaminoAPIBase, 30*time.Second)
 	kaminoHandler := kamino.NewHandler(kaminoStore, rpc, logger, 400, false)
@@ -72,10 +85,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, health *ob
 	if err != nil {
 		neon.Close()
 		timescale.Close()
+		apps.Close()
 		return nil, err
 	}
-	runtime := &Runtime{cfg: cfg, logger: logger, health: health, metrics: metrics, neon: neon, timescale: timescale, rpc: rpc, watchLoader: watch.NewLoader(neon, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, bridge: bridge}
+	runtime := &Runtime{cfg: cfg, logger: logger, health: health, metrics: metrics, neon: neon, apps: apps, timescale: timescale, rpc: rpc, watchLoader: watch.NewLoaderWithApps(neon, apps, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, bridge: bridge}
 	runtime.handler = &DurableHandler{Kamino: kaminoHandler, ATA: ataHandler, Earn: earnHandler, Bridge: bridge, Health: health, Metrics: metrics}
+	health.SetDomainReady("watch", false)
 	return runtime, nil
 }
 
@@ -88,6 +103,9 @@ func (r *Runtime) Close() {
 	}
 	if r.timescale != nil {
 		r.timescale.Close()
+	}
+	if r.apps != nil {
+		r.apps.Close()
 	}
 }
 
@@ -189,6 +207,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 			}
 			nextWatch, nextTargets, loadErr := r.load(ctx)
 			if loadErr != nil {
+				r.health.SetDomainReady("watch", false)
 				r.metrics.RecordFailure(ctx, "watch_refresh")
 				r.logger.Error("failed to refresh combined LaserStream watch set", "error", loadErr)
 				continue
@@ -200,6 +219,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 				return retainErr
 			}
 			if recovered, recoveryErr := r.recoverNewEarnBindings(ctx, currentWatch, nextWatch); recoveryErr != nil {
+				r.health.SetDomainReady("watch", false)
 				r.metrics.RecordFailure(ctx, "earn_binding_rpc_recovery")
 				r.logger.Error("failed to recover newly discovered Earn bindings; old stream retained", "event", "earn_binding_rpc_recovery_failed", "error", recoveryErr)
 				continue
@@ -239,6 +259,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 				return buildErr
 			}
 			if handoffErr := manager.Handoff(ctx, replacement); handoffErr != nil {
+				r.health.SetDomainReady("watch", false)
 				r.metrics.RecordHandoff(ctx, "failed")
 				r.logger.Error("combined filter-set handoff failed; old stream retained", "error", handoffErr)
 				r.ata.SetTargets(currentWatch.ATAs)
@@ -311,6 +332,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 }
 
 func (r *Runtime) load(ctx context.Context) (*watch.Set, []kamino.Target, error) {
+	if err := validateWatchNamespace(ctx, r.cfg.Cluster, r.rpc); err != nil {
+		return nil, nil, err
+	}
 	set, err := r.watchLoader.Load(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -326,6 +350,7 @@ func (r *Runtime) load(ctx context.Context) (*watch.Set, []kamino.Target, error)
 	if err != nil {
 		return nil, nil, fmt.Errorf("refresh Kamino observation catalog: %w", err)
 	}
+	r.health.SetDomainReady("watch", true)
 	return set, targets, nil
 }
 func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target, uint64, error) {
