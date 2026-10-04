@@ -83,3 +83,22 @@ The branch workflow now checks this branch and forces `go test -race -count=1`.
 CI uses actual registered Yield/Timescale schemas and probes the local Linux image
 without publishing or deployment permissions. Exact revision results are recorded
 after completion; earlier v2 CI success is not substituted for this pass.
+
+## Exact revision verification
+
+Runtime/test/tooling revision: `3ffe46b5b853303c2b00442f1be99eae897de30d`.
+[Branch CI run 37189408987](https://github.com/loyal-labs/loyal-yield-routing/actions/runs/37189408987)
+checks this exact revision. Its `verify` job passed in 4m1s: the log records all
+80 registered Yield schema files and 8 Timescale schema files, the separate
+Apps/watch boundaries, and uncached race tests with database gates enabled.
+Autodeposit passed in 20.218s, Fleet in 8.646s, Fleet execution in 12.105s, and
+Multiply in 3.410s. These CI times include their enabled SQL tests; the local
+bank proofs listed above are separate and are not claimed to run in CI.
+
+The `image` job also passed (10m26s): scoped Linux/amd64 image build, all three
+Go role probes with networking/writers unavailable, artifact checksum/nonroot
+checks, and retained Rust tool loading without runtime credentials. Both jobs
+are SUCCESS for the exact runtime revision above. The final documentation-only
+commit records this result; it changes no proved runtime, tests or build tools.
+Production migration/cutover and the broader simplification objective remain
+separate work. No worker is retired by this pass.
