@@ -3752,6 +3752,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures-util",
+ "libc",
  "loyal-actions",
  "loyal-fleet-worker",
  "loyal-yield-store",

@@ -40,18 +40,21 @@ async fn main() -> Result<(), MonitorError> {
     if cli.mode == MonitorMode::Disabled {
         return Ok(());
     }
+    let health_path = std::env::var_os("POLICY_MONITOR_HEALTH_PATH").map(std::path::PathBuf::from);
     let config = MonitorConfig::new(cli.cluster, cli.commitment, cli.ws_url, cli.api_key)?;
     match (cli.mode, cli.postgres_url) {
         (MonitorMode::Fallback, Some(url)) => {
             let mut monitor =
-                PolicyMonitor::new(config, PostgresPolicyMatchSink::connect(url).await?);
+                PolicyMonitor::new(config, PostgresPolicyMatchSink::connect(url).await?)
+                    .with_health_path(health_path);
             monitor.run(cli.once).await
         }
         (MonitorMode::Fallback, None) => Err(MonitorError::Decode(
             "fallback policy monitor requires NEON_DATABASE_URL".to_owned(),
         )),
         (MonitorMode::Shadow, _) => {
-            let mut monitor = PolicyMonitor::new(config, StdoutPolicyMatchSink);
+            let mut monitor =
+                PolicyMonitor::new(config, StdoutPolicyMatchSink).with_health_path(health_path);
             monitor.run(cli.once).await
         }
         (MonitorMode::Disabled, _) => unreachable!("disabled mode exits before configuration"),

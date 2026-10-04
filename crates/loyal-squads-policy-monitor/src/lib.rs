@@ -1,5 +1,7 @@
 #![allow(clippy::result_large_err)]
 
+mod health;
+
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use clap::ValueEnum;
 use futures_util::{future::BoxFuture, SinkExt, StreamExt};
@@ -483,6 +485,8 @@ pub struct PolicyMonitor<S> {
     earn_max_rpc: Option<RpcClient>,
     earn_max_delegate: Option<Pubkey>,
     seen_signatures: HashSet<String>,
+    health: Option<health::Health>,
+    health_subscription: Option<u64>,
 }
 
 impl<S: PolicyMatchSink> PolicyMonitor<S> {
@@ -493,7 +497,15 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
             earn_max_rpc: None,
             earn_max_delegate: None,
             seen_signatures: HashSet::new(),
+            health: None,
+            health_subscription: None,
         }
+    }
+
+    /// Optional native telemetry. Reporting failures never fail business work.
+    pub fn with_health_path(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.health = path.and_then(health::Health::start);
+        self
     }
 
     pub fn with_earn_max_projection(mut self, rpc_url: String, delegate: Pubkey) -> Self {
@@ -508,7 +520,15 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
     pub async fn run(&mut self, once: bool) -> Result<(), MonitorError> {
         let mut backoff = Duration::from_secs(1);
         loop {
-            match self.run_connection(once).await {
+            let result = self.run_connection(once).await;
+            if let Some(health) = &self.health {
+                health.update(|state| {
+                    state.connected = false;
+                    state.subscription_acked = false;
+                    state.reconnecting = !once;
+                });
+            }
+            match result {
                 Ok(()) if once => return Ok(()),
                 Ok(()) => backoff = Duration::from_secs(1),
                 Err(error) if once => return Err(error),
@@ -522,7 +542,24 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
     }
 
     async fn run_connection(&mut self, once: bool) -> Result<(), MonitorError> {
+        self.health_subscription = None;
+        if let Some(health) = &self.health {
+            health.update(|state| {
+                state.connection_generation += 1;
+                state.subscription_acked = false;
+                state.connected = false;
+                state.reconnecting = true;
+                state.current_generation_pong_count = 0;
+            });
+        }
         let (mut ws, _) = connect_async(&self.config.ws_url).await?;
+        if let Some(health) = &self.health {
+            health.update(|state| {
+                state.connected = true;
+                state.reconnecting = false;
+            });
+        }
+        let mut pending_ping = false;
         ws.send(Message::Text(self.subscription_request().into()))
             .await?;
 
@@ -531,7 +568,10 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
 
         loop {
             tokio::select! {
-                _ = pings.tick() => ws.send(Message::Ping(Vec::new().into())).await?,
+                _ = pings.tick() => {
+                    ws.send(Message::Ping(Vec::new().into())).await?;
+                    pending_ping = true;
+                },
                 message = ws.next() => {
                     let Some(message) = message else {
                         return Ok(());
@@ -552,7 +592,13 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
                         }
                         Message::Ping(payload) => ws.send(Message::Pong(payload)).await?,
                         Message::Close(_) => return Ok(()),
-                        Message::Pong(_) | Message::Frame(_) => {}
+                        Message::Pong(payload) => {
+                            if pending_ping && payload.is_empty() {
+                                pending_ping = false;
+                                if let Some(health) = &self.health { health.pong(); }
+                            }
+                        }
+                        Message::Frame(_) => {}
                     }
                 }
             }
@@ -589,9 +635,45 @@ impl<S: PolicyMatchSink> PolicyMonitor<S> {
 
     async fn process_message_text(&mut self, text: &str) -> Result<(bool, usize), MonitorError> {
         let value: Value = serde_json::from_str(text)?;
+        if self.health.is_some()
+            && self.health_subscription.is_none()
+            && value.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+            && value.get("id").and_then(Value::as_u64) == Some(1)
+            && value.get("result").and_then(Value::as_u64).is_some()
+            && value.get("error").is_none()
+            && value.get("method").is_none()
+        {
+            if let Some(health) = &self.health {
+                self.health_subscription = value.get("result").and_then(Value::as_u64);
+                health.update(|state| state.subscription_acked = true);
+            }
+        }
         let processed =
             value.get("method").and_then(Value::as_str) == Some("transactionNotification");
+        let slot = if self.health_subscription.is_some()
+            && value.get("jsonrpc").and_then(Value::as_str) == Some("2.0")
+            && processed
+            && value
+                .pointer("/params/subscription")
+                .and_then(Value::as_u64)
+                == self.health_subscription
+        {
+            HeliusNotification::from_value(&value).map(|notification| notification.slot)
+        } else {
+            None
+        };
+        if let (Some(health), Some(slot)) = (&self.health, slot) {
+            health.update(|state| {
+                state.protocol_notification_count += 1;
+                state.last_protocol_notification_slot = Some(slot);
+            });
+        }
         let emitted = self.process_notification(&value).await?;
+        if emitted > 0 && self.config.commitment.finalized_eligible() {
+            if let (Some(health), Some(slot)) = (&self.health, slot) {
+                health.update(|state| state.last_finalized_output_slot = Some(slot));
+            }
+        }
         Ok((processed, emitted))
     }
 

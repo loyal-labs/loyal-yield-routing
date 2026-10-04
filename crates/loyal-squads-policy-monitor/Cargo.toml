@@ -22,3 +22,6 @@ spl-token.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

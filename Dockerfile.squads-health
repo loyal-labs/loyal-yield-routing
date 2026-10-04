@@ -1,0 +1,8 @@
+# Only the Squads executable changes from the actual deployed runtime.
+FROM ghcr.io/loyal-labs/loyal-yield-routing/light-workers@sha256:65527c530bd1802992cda63534de84511da9b42bce6ea4eacb53fd40aa2ed50b
+ARG LOYAL_IMAGE_VERSION
+LABEL org.opencontainers.image.source="https://github.com/loyal-labs/loyal-yield-routing"
+LABEL org.opencontainers.image.revision="${LOYAL_IMAGE_VERSION}"
+LABEL loyal.source-runtime-revision="0614fe5e697137a003aea6ad90811b92f70cff49"
+COPY --chmod=0755 build-artifacts/squads/loyal-squads-policy-monitor /usr/local/bin/loyal-squads-policy-monitor
+CMD ["/usr/local/bin/loyal-squads-policy-monitor", "--cluster", "mainnet", "--commitment", "finalized"]
