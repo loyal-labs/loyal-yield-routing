@@ -1,0 +1,85 @@
+name: Hetzner ATA monitor drain candidate
+on:
+  push:
+    branches: [migration/ata-monitor-drain-20261004]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    container: rust:1.89-bookworm
+    env:
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends clang pkg-config libssl-dev protobuf-compiler git ca-certificates python3
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+          key: cargo-deps-linux-amd64-rust-1.89-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-deps-linux-amd64-rust-1.89-
+      - uses: actions/cache/restore@v4
+        with:
+          path: target
+          key: ata-monitor-drain-linux-amd64-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            rust-target-linux-amd64-rust-1.89-v2-laserstream-workers-
+            rust-target-linux-amd64-rust-1.89-v1-
+            rust-release-linux-amd64-rust-1.89-
+      - name: Preserve existing replay contracts
+        run: cargo test --release --locked -p balance-sweep-ata-monitor --bin balance-sweep-ata-monitor
+      - name: Exercise real Linux shutdown components
+        run: |
+          cargo build --locked --manifest-path scripts/ata-monitor-shutdown-probe/Cargo.toml
+          useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin migration-probe
+          runuser -u migration-probe -- python3 scripts/ata-monitor-shutdown-probe/verify.py
+      - name: Build the sole changed executable
+        run: |
+          cargo build --release --locked -p balance-sweep-ata-monitor --bin balance-sweep-ata-monitor
+          mkdir -p build-artifacts/ata-monitor
+          cp target/release/balance-sweep-ata-monitor build-artifacts/ata-monitor/
+          cp Dockerfile.ata-monitor-drain build-artifacts/ata-monitor/Dockerfile
+          cd build-artifacts/ata-monitor
+          sha256sum balance-sweep-ata-monitor > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ata-monitor-drain-linux-amd64
+          path: build-artifacts/ata-monitor
+          retention-days: 3
+          compression-level: 0
+  image:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ata-monitor-drain-linux-amd64
+          path: build-artifacts/ata-monitor
+      - name: Verify binary transfer
+        working-directory: build-artifacts/ata-monitor
+        run: sha256sum --check SHA256SUMS
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Package dedicated immutable candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: build-artifacts/ata-monitor
+          file: build-artifacts/ata-monitor/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/loyal-labs/loyal-yield-routing/loyal-ata-monitor-drain:sha-${{ github.sha }}
+          build-args: CANDIDATE_COMMIT=${{ github.sha }}
+          provenance: false
+          sbom: false

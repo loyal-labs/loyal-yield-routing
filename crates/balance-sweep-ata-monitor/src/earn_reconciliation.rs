@@ -2999,6 +2999,12 @@ pub async fn run_earn_reconciliation_consumer(
             next_health_sample_at = now + EARN_RECONCILIATION_HEALTH_SAMPLE_INTERVAL;
         }
 
+        // A health query can await across shutdown. Do not start a fresh claim
+        // after that await when process admission has already closed.
+        if !running.load(Ordering::SeqCst) {
+            break;
+        }
+
         match process_next_earn_reconciliation_job_with_policy_monitor(
             &store,
             &consumer_name,

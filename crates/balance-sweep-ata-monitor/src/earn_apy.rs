@@ -80,6 +80,12 @@ pub struct EarnApySnapshotRefresher {
 }
 
 impl EarnApySnapshotRefresher {
+    /// Close both owned pools only after the admitted refresh has returned.
+    pub async fn close(&self) {
+        self.timescale_pool.close().await;
+        self.neon_pool.close().await;
+    }
+
     pub async fn connect(
         timescale_url: &str,
         neon_url: &str,

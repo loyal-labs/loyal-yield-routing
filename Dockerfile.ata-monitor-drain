@@ -1,0 +1,8 @@
+# Retain the deployed LaserStream runtime; replace only the ATA monitor.
+FROM ghcr.io/loyal-labs/loyal-yield-routing/laserstream-workers@sha256:70996ff12b9f75efb6bea0ec6c7e4bf2d2dea60fdd405f17dd43888bb9211438
+ARG CANDIDATE_COMMIT
+LABEL org.opencontainers.image.source="https://github.com/loyal-labs/loyal-yield-routing"
+LABEL org.opencontainers.image.revision="${CANDIDATE_COMMIT}"
+LABEL loyal.source-runtime-revision="28645a522c08d8aa898d17b658a52a6466e3e616"
+LABEL loyal.change-scope="ata-monitor-owned-task-drain-only"
+COPY --chmod=0755 balance-sweep-ata-monitor /usr/local/bin/balance-sweep-ata-monitor

@@ -1,3 +1,5 @@
+mod process_shutdown;
+
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -32,12 +34,13 @@ use loyal_squads_policy_monitor::{
 };
 use loyal_yield_store::{OrchestratorConfig, OrchestratorError, OrchestratorStore};
 use opentelemetry::metrics::Meter;
+use process_shutdown::{wait_for_stop, AbortOnDrop, ProcessShutdown};
 use solana_client::rpc_client::{GetConfirmedSignaturesForAddress2Config, RpcClient};
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature};
 use sqlx::postgres::PgListener;
 use tokio::{
     sync::{mpsc, Mutex, Notify, RwLock},
-    task::JoinHandle,
+    task::{AbortHandle, JoinHandle},
     time,
 };
 
@@ -152,7 +155,11 @@ struct MonitorSession {
     earn_watch_set: SubscriptionWatchSet,
     processed_frontier: Arc<AtomicU64>,
     running: Arc<AtomicBool>,
-    source_task: JoinHandle<()>,
+    source_abort: AbortHandle,
+    _source_guard: AbortOnDrop,
+    _event_guard: AbortOnDrop,
+    source_task: JoinHandle<Result<()>>,
+    source_stop_requested: Arc<AtomicBool>,
     event_loop_task: JoinHandle<Result<()>>,
     finished: mpsc::UnboundedReceiver<()>,
 }
@@ -189,6 +196,8 @@ async fn main() -> Result<()> {
 
 async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Result<()> {
     let args = Args::parse();
+    let earn_consumer_running = Arc::new(AtomicBool::new(true));
+    let shutdown = ProcessShutdown::install(earn_consumer_running.clone())?;
     tracing::info!(
         cluster = %args.cluster,
         ata_stream = %args.ata_stream,
@@ -228,17 +237,20 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
         return Ok(());
     }
 
-    if !args.disable_earn_apy_refresh {
+    let earn_apy_task = if !args.disable_earn_apy_refresh {
         let refresher = connect_earn_apy_refresher(&args).await?;
-        tokio::spawn(run_earn_apy_refresh_loop(
+        Some(tokio::spawn(run_earn_apy_refresh_loop(
             refresher,
             Duration::from_secs(args.earn_apy_refresh_interval_seconds),
-        ));
-    }
+            earn_consumer_running.clone(),
+        )))
+    } else {
+        None
+    };
 
     // Owned by the process, not the session, so rechecks queued by a session
     // still settle after that session is rebuilt.
-    let (recheck, _recheck_task) = spawn_ata_recheck_worker(
+    let (recheck, recheck_task) = spawn_ata_recheck_worker(
         args.rpc_url.clone(),
         observations.clone(),
         AtaRecheckConfig {
@@ -251,7 +263,6 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
     // Reconciliation belongs to the process, not a LaserStream session. A
     // transport reconnect must not cancel a proof already in flight, and a
     // proof failure must never participate in session supervision.
-    let earn_consumer_running = Arc::new(AtomicBool::new(true));
     let earn_wake = Arc::new(Notify::new());
     let earn_monitor_metrics = EarnMonitorMetrics::new(&meter, "earn-smart-account", &args.cluster);
     let policy_monitor = if args.update_source == UpdateSourceKind::Laserstream {
@@ -352,8 +363,8 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
     ));
     let result = supervise_monitor_sessions(
         args,
-        store,
-        observations,
+        store.clone(),
+        observations.clone(),
         config,
         targets,
         watch_set,
@@ -362,24 +373,43 @@ async fn run(meter: Meter, earn_rebalance_metrics: EarnRebalanceMetrics) -> Resu
         autodeposit_watch_wake,
         earn_rebalance_metrics,
         earn_monitor_metrics,
+        earn_consumer_running.clone(),
     )
     .await;
-    earn_consumer_running.store(false, Ordering::Relaxed);
+    shutdown.request();
     earn_wake.notify_waiters();
-    for task in earn_consumer_tasks {
-        task.abort();
-        let _ = task.await;
-    }
-    for task in autodeposit_consumer_tasks {
-        task.abort();
-        let _ = task.await;
-    }
-    if let Some(task) = policy_projection_task {
-        task.abort();
-        let _ = task.await;
-    }
+    // This listener only provides hints. Stop it before joining durable work.
     autodeposit_watch_task.abort();
     let _ = autodeposit_watch_task.await;
+    let mut join_failed = false;
+    for task in earn_consumer_tasks {
+        join_failed |= task.await.is_err();
+    }
+    for task in autodeposit_consumer_tasks {
+        join_failed |= task.await.is_err();
+    }
+    if let Some(task) = policy_projection_task {
+        join_failed |= task.await.is_err();
+    }
+    if let Some(task) = earn_apy_task {
+        join_failed |= task.await.is_err();
+    }
+    // The session has dropped all senders. Channel closure drains queued
+    // rechecks with their original retry rules rather than discarding them.
+    join_failed |= recheck_task.await.is_err();
+    store.pool().close().await;
+    observations.close().await;
+    shutdown.finish()?;
+    if join_failed {
+        anyhow::bail!(
+            "ATA monitor drain incomplete: an owned task failed; retain recovery custody"
+        );
+    }
+    if result.is_ok() {
+        tracing::info!(
+            "ATA monitor owned tasks joined and database pools closed; pending durable work remains recovery-owned"
+        );
+    }
     result
 }
 
@@ -438,6 +468,7 @@ fn parse_earn_apy_strategies(
 async fn refresh_earn_apy_once(args: &Args) -> Result<()> {
     let refresher = connect_earn_apy_refresher(args).await?;
     let outcome = refresher.refresh(Utc::now()).await?;
+    refresher.close().await;
     tracing::info!(
         generated_at = %outcome.generated_at,
         profiles = outcome.profiles,
@@ -452,9 +483,10 @@ async fn refresh_earn_apy_once(args: &Args) -> Result<()> {
 async fn run_earn_apy_refresh_loop(
     refresher: EarnApySnapshotRefresher,
     refresh_interval: Duration,
+    running: Arc<AtomicBool>,
 ) {
     let mut consecutive_failures = 0_u32;
-    loop {
+    while running.load(Ordering::SeqCst) {
         let now = Utc::now();
         match refresher.refresh(now).await {
             Ok(outcome) => {
@@ -484,8 +516,12 @@ async fn run_earn_apy_refresh_loop(
             }
         }
 
-        time::sleep(refresh_interval).await;
+        tokio::select! {
+            _ = time::sleep(refresh_interval) => {}
+            _ = wait_for_stop(&running) => {}
+        }
     }
+    refresher.close().await;
 }
 
 async fn supervise_monitor_sessions(
@@ -500,6 +536,7 @@ async fn supervise_monitor_sessions(
     autodeposit_watch_wake: Arc<Notify>,
     earn_rebalance_metrics: EarnRebalanceMetrics,
     earn_monitor_metrics: EarnMonitorMetrics,
+    process_running: Arc<AtomicBool>,
 ) -> Result<()> {
     let refresh_interval = Duration::from_secs(args.target_refresh_seconds);
     let mut session: Option<MonitorSession> = None;
@@ -509,9 +546,15 @@ async fn supervise_monitor_sessions(
         args.laserstream_cold_start_mode == LaserstreamColdStartMode::Finalized;
 
     loop {
+        if !process_running.load(Ordering::SeqCst) {
+            if let Some(existing) = session.take() {
+                drain_session(existing).await?;
+            }
+            return Ok(());
+        }
         if session.as_ref().is_some_and(MonitorSession::has_exited) {
             let finished = session.take().expect("checked session exists");
-            log_finished_session(finished).await;
+            log_finished_session(finished).await?;
             resume_from_durable_cursor = true;
         }
 
@@ -578,7 +621,7 @@ async fn supervise_monitor_sessions(
                 tracing::info!(
                     "stopping balance sweep ATA subscription because target set is empty"
                 );
-                stop_session(existing).await;
+                drain_session(existing).await?;
             }
             resume_from_durable_cursor = false;
             tracing::info!(
@@ -604,7 +647,7 @@ async fn supervise_monitor_sessions(
                     earn_changed,
                     "rebuilding balance sweep ATA subscription for refreshed target set"
                 );
-                stop_session(existing).await;
+                drain_session(existing).await?;
             }
 
             let added_targets = targets
@@ -612,6 +655,9 @@ async fn supervise_monitor_sessions(
                 .filter(|target| diff.added.contains(&target.wallet_usdc_ata))
                 .cloned()
                 .collect::<Vec<_>>();
+            if !process_running.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             seed_current_balances(&args.rpc_url, &added_targets, &observations).await?;
             tracing::info!(
                 seeded_target_count = added_targets.len(),
@@ -640,6 +686,9 @@ async fn supervise_monitor_sessions(
                 watch_set_replay_from_slot_override
             };
 
+            if !process_running.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             let started = start_session(
                 &args,
                 targets,
@@ -666,21 +715,24 @@ async fn supervise_monitor_sessions(
         }
 
         if let Some(existing) = session.as_mut() {
-            if wait_for_refresh_or_session_exit(
-                refresh_interval,
-                &mut existing.finished,
-                &autodeposit_watch_wake,
-            )
-            .await
-            {
+            let exited = tokio::select! {
+                _ = wait_for_stop(&process_running) => false,
+                exited = wait_for_refresh_or_session_exit(
+                    refresh_interval,
+                    &mut existing.finished,
+                    &autodeposit_watch_wake,
+                ) => exited,
+            };
+            if exited {
                 let finished = session.take().expect("session exit was observed");
-                log_finished_session(finished).await;
+                log_finished_session(finished).await?;
                 resume_from_durable_cursor = true;
             }
         } else {
             tokio::select! {
                 _ = time::sleep(refresh_interval) => {}
                 _ = autodeposit_watch_wake.notified() => {}
+                _ = wait_for_stop(&process_running) => {}
             }
         }
     }
@@ -944,13 +996,20 @@ async fn start_session(
         .spawn(accounts, tx, running.clone()),
     };
     let source_finished_tx = finished_tx.clone();
+    let source_abort = raw_source_task.abort_handle();
+    let source_stop_requested = Arc::new(AtomicBool::new(false));
+    let stop_requested = source_stop_requested.clone();
+    // Dropping/aborting the wrapper must also abort its owned provider task.
+    let raw_source_guard = AbortOnDrop::new(source_abort.clone());
     let source_task = tokio::spawn(async move {
-        if let Err(error) = raw_source_task.await {
-            if !error.is_cancelled() {
-                tracing::warn!(error = %error, "balance sweep ATA source task failed");
-            }
-        }
+        let _guard = raw_source_guard;
+        let result = match raw_source_task.await {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_cancelled() && stop_requested.load(Ordering::SeqCst) => Ok(()),
+            Err(_) => Err(anyhow::anyhow!("ATA provider task failed unexpectedly")),
+        };
         let _ = source_finished_tx.send(());
+        result
     });
     let consumer_name = format!("earn-smart-account:{}", args.cluster);
     let earn = (args.update_source == UpdateSourceKind::Laserstream).then(|| EarnUpdateContext {
@@ -978,12 +1037,18 @@ async fn start_session(
         let _ = event_finished_tx.send(());
         result
     });
+    let source_guard = AbortOnDrop::new(source_task.abort_handle());
+    let event_guard = AbortOnDrop::new(event_loop_task.abort_handle());
     drop(finished_tx);
     Ok(MonitorSession {
         target_atas,
         earn_watch_set: watch_set,
         processed_frontier,
         running,
+        source_abort,
+        source_stop_requested,
+        _source_guard: source_guard,
+        _event_guard: event_guard,
         source_task,
         event_loop_task,
         finished,
@@ -1092,15 +1157,42 @@ async fn earn_max_projection_replay_start_slot(
     ))
 }
 
-async fn stop_session(session: MonitorSession) {
-    session.running.store(false, Ordering::Relaxed);
-    session.source_task.abort();
-    session.event_loop_task.abort();
-    let _ = session.source_task.await;
-    let _ = session.event_loop_task.await;
+async fn drain_session(session: MonitorSession) -> Result<()> {
+    anyhow::ensure!(
+        session.running.load(Ordering::SeqCst),
+        "ATA session was already cancelled; queued work requires recovery"
+    );
+    // Only the input producer is cancelled. Its wrapper joins it and releases
+    // the final sender. Keep the event loop's running flag true so it persists
+    // all already admitted queue entries until channel closure.
+    // Use the same path for ordinary rebuilds, so a signal arriving during a
+    // refresh cannot race an event-loop abort and discard admitted entries.
+    time::timeout(Duration::from_secs(45), async move {
+        if !session.source_abort.is_finished() {
+            session.source_stop_requested.store(true, Ordering::SeqCst);
+            session.source_abort.abort();
+        }
+        let producer_result = session
+            .source_task
+            .await
+            .context("join ATA input producer")
+            .and_then(|result| result);
+        // A producer failure must still allow the healthy consumer to persist
+        // its already admitted finite queue before the error is propagated.
+        let event_result = session
+            .event_loop_task
+            .await
+            .context("join ATA queued observations")
+            .and_then(|result| result);
+        producer_result?;
+        event_result?;
+        Ok(())
+    })
+    .await
+    .context("ATA session drain incomplete: deadline reached")?
 }
 
-async fn log_finished_session(session: MonitorSession) {
+async fn log_finished_session(session: MonitorSession) -> Result<()> {
     OperationalError::new(
         "balance_sweep_ata_session_failed",
         "run_balance_sweep_ata_session",
@@ -1110,32 +1202,7 @@ async fn log_finished_session(session: MonitorSession) {
     .recovery_required(false)
     .emit();
     tracing::warn!("balance sweep ATA monitor session exited before refresh");
-    session.running.store(false, Ordering::Relaxed);
-
-    if session.source_task.is_finished() {
-        if let Err(error) = session.source_task.await {
-            if !error.is_cancelled() {
-                tracing::warn!(error = %error, "balance sweep ATA source task failed");
-            }
-        }
-    } else {
-        session.source_task.abort();
-        let _ = session.source_task.await;
-    }
-
-    if session.event_loop_task.is_finished() {
-        match session.event_loop_task.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::warn!(error = %error, "balance sweep ATA event loop failed"),
-            Err(error) if error.is_cancelled() => {}
-            Err(error) => {
-                tracing::warn!(error = %error, "balance sweep ATA event loop task failed")
-            }
-        }
-    } else {
-        session.event_loop_task.abort();
-        let _ = session.event_loop_task.await;
-    }
+    drain_session(session).await
 }
 
 #[cfg(test)]

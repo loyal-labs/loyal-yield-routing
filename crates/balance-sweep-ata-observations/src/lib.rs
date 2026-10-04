@@ -140,6 +140,11 @@ pub struct TimescaleAtaObservationSink {
 }
 
 impl TimescaleAtaObservationSink {
+    /// After every owned writer is joined, close the observation pool.
+    pub async fn close(&self) {
+        self.pool.close().await;
+    }
+
     pub async fn connect(config: TimescaleAtaConfig) -> Result<Self> {
         let options = PgConnectOptions::from_str(&config.url)?.statement_cache_capacity(0);
         let pool = PgPoolOptions::new()

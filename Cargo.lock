@@ -1086,6 +1086,7 @@ dependencies = [
  "futures-util",
  "helius-laserstream",
  "klend-interface",
+ "libc",
  "loyal-actions",
  "loyal-kamino-data",
  "loyal-observability",

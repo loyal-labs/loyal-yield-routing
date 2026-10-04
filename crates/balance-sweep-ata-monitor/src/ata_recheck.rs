@@ -228,12 +228,19 @@ async fn run_recheck_worker<S>(
     S: AtaObservationSink + Send + Sync + 'static,
 {
     let mut pending: HashMap<Pubkey, PendingRecheck> = HashMap::new();
+    let mut input_closed = false;
     loop {
+        if input_closed && pending.is_empty() {
+            break;
+        }
         let next_due = pending.values().map(|entry| entry.due_at).min();
         tokio::select! {
-            request = rx.recv() => {
+            request = rx.recv(), if !input_closed => {
                 let Some(request) = request else {
-                    break;
+                    // Stop admission while preserving already queued rechecks,
+                    // including their original delay/retry/maximum-attempt rules.
+                    input_closed = true;
+                    continue;
                 };
                 // A later update for the same ATA replaces the pending one: only
                 // the account's final state matters, and one read settles it.
