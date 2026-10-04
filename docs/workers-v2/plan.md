@@ -152,15 +152,39 @@ The runtime goal remains active. Routing is on `codex/workers-v2`; Apps is on
 `codex/workers-v2-app-contract`. Main, production and migration resources remain
 untouched. No legacy writer or service is counted as retired.
 
+Checkpoint `0d24ff3289b6a036067288e0053ff88abb030f88` passed
+[branch CI 37179183772](https://github.com/loyal-labs/loyal-yield-routing/actions/runs/37179183772):
+registered family databases, actual Timescale ATA extension/hypertables, complete
+offline/race/build verification, and the locked Linux image. All three Go roles
+and retained Rust tools passed network-disabled, read-only image probes as UID
+65532. Root also regenerated the Autodeposit initial bank fixture with this
+commit's mock source/artifact and reran its full registered/current-Go suite
+(8.629s). The active unsigned ALT planner increment is subsequent working source
+and requires its own reviewed commit and complete gate.
+
+The subsequent unsigned ALT planner is joined with independent retail readiness.
+Actual local PostgreSQL/ALT-program proofs pass for catalog create/extend/drift
+rollover (2.307s), retiring-table deactivation/cooldown/exact refund with keyless
+paused recovery (1.847s), and current request satisfaction plus rollback/usage/
+pause protection (2.089s). Census and leasing share live economic priorities;
+idle request loops avoid PDA probes, and cleanup runs before planning failures.
+The exact C waiting-ALT consumer wakeup passes through actual `Store.Publish`
+before/after Go satisfaction (1.994s). Waiting-state/consumer setup is a registered
+SQL fixture; this does not claim a new full revalidation-producer proof. Root's
+full fleet execution/ALT race suite with both dedicated databases and the actual
+local ALT program passes in 8.638s. Complete offline verification also passes
+after the runner and local-listener permission boundary recovered. The new
+committed registered-schema/Timescale/locked-image gate remains required.
+
 | Responsibility | Reviewed branch state | Required remaining acceptance |
 | --- | --- | --- |
 | Shared runtime and Backyard | Borrowed pools, scoped keys and joined shutdown; Backyard remains separately credentialed. Late retail callbacks cannot reopen readiness after shutdown; fresh root race gate passes | Re-run complete registered and locked Linux packaging gates on the next committed revision; no live writer ownership cutover |
 | Fleet planning | Independent greedy oracle and fresh locked admission pass. The allocation frontier refactor preserves exact full-rescore decisions and cuts synthetic allocation bytes by 79% | Reviewed policy choice: retain the verified greedy default; bounded assignment repair remains a shadow proposal. Measured assignment regret is explicit, with no global optimum claim |
-| Observer | Independent Apps UUID/Yield watch discovery and retained bridge are integrated. Go ATA application is joined; source capture allocation/commit is ordered; whole refresh/startup/verification passes and stream opening/gates are bounded and race tested | New ATA two-database races pass on local PostgreSQL; complete Timescale extension/hypertable and packaging proof awaits next committed CI. Earn application/Claim compatibility remains explicitly owned by the unsigned Rust bridge |
+| Observer | Independent Apps UUID/Yield watch discovery and retained bridge are integrated. Go ATA application is joined; source capture allocation/commit is ordered; whole refresh/startup/verification passes and stream opening/gates are bounded and race tested | Actual Timescale extension/hypertable and locked packaging proof passes at 0d24ff32; final ALT increment needs the complete gate. Earn application/Claim compatibility remains explicitly owned by the unsigned Rust bridge |
 | Autodeposit | Desired revisions/generations, pause/resume, policy/position return, unsigned repair, creator history, scoped namespace and captured-revision packet admission are integrated. Fresh registered SQL plus current Go pull/top-up bank suite passes in 10.111s with Apps closed | Complete combined gate at the next commit; real Squads/Subscriptions/SPL and explicit KLend mock scope, without migration or production cutover claims |
-| Fleet execution | Same-mint fused fresh admission, exact-wire recovery, real bank/receipt reconciliation and ALT selection fencing integrated; registered PostgreSQL race suite passes | Current Go cross-mint composition/fallback/full provider snapshots pass; autonomous ALT provisioning/cleanup remains; source activation/first-send validator and recovery-first runtime are implemented; independent current Go C-to-D canonical vault-1 connected lifecycle passes |
+| Fleet execution | Same-mint fused fresh admission, exact-wire recovery, cross-mint custody checkpoints and ALT selection fencing integrated; current Go C-to-D canonical vault-1 lifecycle passes. Unsigned ALT catalog/request planning, binding publication, satisfaction and expired rollback cleanup are joined; full registered SQL/local ALT-program race suite passes in 8.638s | Complete registered/Timescale/locked-image gate on the final commit; exact legacy adoption/draining and writer fencing remain production cutover requirements |
 | Multiply | Exact signed receipt attribution and fenced immutable receipt publication pass. Fresh full registered/current-Go local bank race suite passes in 28.517s, including leveraged deploy/unwind, claimable payout, lost response, keyless first-send, expiry and duplicate-packet refusal | Complete combined packaging gate at next commit. Fixed-price protocol mocks explicitly limit the bank proof; wallet signing/Claim admission and mature KLend/Jupiter behavior remain separate boundaries |
-| Read models and Apps | Go maintenance owns bounded hourly recording/public simulation. Apps branch 1ee615bc records intent-only floor/toggle writes; seven GET ownership handlers pass, with legacy compatibility tests | Next integrated schema/Timescale gate; retained TypeScript personal calculator/timezone formatting, identity lookup and authenticated wallet POST/withdrawal cleanup remain owned by Apps. No App cron or service is retired |
+| Read models and Apps | Go maintenance owns bounded hourly recording/public simulation. Apps branch 1ee615bc records intent-only floor/toggle writes; seven GET ownership handlers pass, with legacy compatibility tests | Registered schema/Timescale gate passes at 0d24ff32; final ALT increment needs the complete gate. Retained TypeScript personal calculator/timezone formatting, identity lookup and authenticated wallet POST/withdrawal cleanup remain owned by Apps. No App cron or service is retired |
 
 The planner review resolves the earlier acceptance question: exact greedy parity
 is the rewrite's selection contract. Full rescoring handles priorities that rise

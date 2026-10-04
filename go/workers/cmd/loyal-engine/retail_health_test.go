@@ -76,7 +76,7 @@ func TestRetailHealthLaneCancellationClosesAllGates(t *testing.T) {
 }
 
 func TestRetailShutdownJoinsConcurrentReadinessCallbacks(t *testing.T) {
-	r := newRetailReadiness(retailHealth(), "cross-mint", "lookup-writer")
+	r := newRetailReadiness(retailHealth(), "cross-mint", "lookup-planner", "lookup-writer")
 	var families []string
 	for family := range r.families {
 		families = append(families, family)
@@ -118,4 +118,29 @@ func TestRetailCrossMintRecoveryStallCannotBeMaskedByOtherFamilies(t *testing.T)
 	assertRetailReady(t, r, false)
 	r.report("cross-mint", true, 101, late)
 	assertRetailReady(t, r, true)
+}
+
+func TestRetailLookupPlanningAndRecoveryHaveIndependentReadiness(t *testing.T) {
+	for _, stalled := range []string{"lookup-planner", "lookup-writer"} {
+		t.Run(stalled, func(t *testing.T) {
+			r := newRetailReadiness(retailHealth(), "lookup-planner", "lookup-writer")
+			now := time.Now()
+			for family := range r.families {
+				r.report(family, true, 100, now)
+			}
+			assertRetailReady(t, r, true)
+			late := now.Add(31 * time.Second)
+			for family := range r.families {
+				if family != stalled {
+					r.report(family, true, 101, late)
+				}
+			}
+			assertRetailReady(t, r, false)
+			// An idle loop without a verified bank cannot conceal the stall.
+			r.report(stalled, true, 0, late)
+			assertRetailReady(t, r, false)
+			r.report(stalled, true, 101, late)
+			assertRetailReady(t, r, true)
+		})
+	}
 }

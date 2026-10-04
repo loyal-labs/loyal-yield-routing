@@ -300,7 +300,7 @@ func runRetail(ctx context.Context, owner, release string) error {
 		return retailError("Autodeposit controller", err)
 	}
 	health := retailHealth()
-	readiness := newRetailReadiness(health, "cross-mint", "autodeposit-desired", "lookup-writer")
+	readiness := newRetailReadiness(health, "cross-mint", "autodeposit-desired", "lookup-planner", "lookup-writer")
 	lookupRPC, err := fleetexec.NewLookupRPC(cfg.rpcURL, 10*time.Second)
 	if err != nil {
 		return retailError("lookup RPC", err)
@@ -322,6 +322,23 @@ func runRetail(ctx context.Context, owner, release string) error {
 		return retailError("lookup writer schema", err)
 	}
 	lookupWorker.SetRuntimeReporter(readiness.reporter("lookup-writer"))
+	// Retain the source provisioner's growth reservation (8) and vault cohort
+	// limit (16). This lane receives no manager key or broadcast capability.
+	lookupPlanner, err := fleetexec.NewLookupPlanner(dStore, lookupRPC, fleetexec.LookupPlannerConfig{
+		Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second,
+		TickDeadline: 20 * time.Second, PollInterval: time.Second,
+		CatalogInterval: time.Minute, GrowthReservation: 8, MaximumVaultCohort: 16,
+		ReconcileOnly: !cfg.lookup.active,
+		OnHealth: func(err error) {
+			if err != nil {
+				log.Print("retail lookup planner requires attention")
+			}
+		},
+	})
+	if err != nil {
+		return retailError("lookup planner", err)
+	}
+	lookupPlanner.SetRuntimeReporter(readiness.reporter("lookup-planner"))
 	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, OnError: func(error) { health.SetDomainReady("autodeposit", false); log.Print("retail autodeposit tick failed") }, OnAlert: func(autodeposit.ExecutorFailureAlert) {
 		health.SetDomainReady("autodeposit", false)
 		log.Print("retail autodeposit execution requires attention")
@@ -393,5 +410,5 @@ func runRetail(ctx context.Context, owner, release string) error {
 		return retailError("health listener", err)
 	}
 	defer server.Close()
-	return runRetailLanes(ctx, control, desired, aWorker, planner, executor, crossMint, lookupWorker, multiplyWorker, readiness, server)
+	return runRetailLanes(ctx, control, desired, aWorker, planner, executor, crossMint, lookupPlanner, lookupWorker, multiplyWorker, readiness, server)
 }

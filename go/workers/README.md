@@ -43,9 +43,14 @@ authority, and an explicit positive `RETAIL_LOOKUP_MAX_LAMPORTS`. The optional
 `RETAIL_LOOKUP_BUDGET_WINDOW` defaults to `24h` and accepts whole seconds between
 one minute and 365 days. Source pause/family/table controls and durable budget
 reservations still fence each operation. Route delegate and fee-payer keys do
-not grant lookup authority. The writer is joined with the retail lanes and
-reports readiness from actual finalized RPC evidence. Autonomous catalog/request
-planning is a separate unsigned lane still being integrated.
+not grant lookup authority. The unsigned planner and writer are joined retail
+lanes with independent readiness from actual finalized RPC evidence. Catalog
+reconciliation runs at a one-minute idle cadence; the one-second queue loop
+handles provisioning, mature binding publication and expired rollback cleanup.
+Packing retains the source defaults: eight reserved growth addresses per vault
+and at most sixteen vaults per shard. Reconcile-only mode repairs observed
+catalog state and publishes proved existing bindings; fresh provisioning and
+cleanup packets require active mode and independently fenced writer admission.
 Do not enable this rewrite against shared resources.
 
 Observer retains its reviewed transport configuration in
