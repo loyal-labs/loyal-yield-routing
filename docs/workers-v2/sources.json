@@ -50,5 +50,26 @@
     "serialization_only": "testdata/multiply/route_state_schema9.json is a synthetic serialization fixture, not independent financial proof",
     "planner_oracle": "independent greedy enumeration and bounded exhaustive cumulative marginal-gain study; no global NAV optimum claim",
     "autodeposit_creator": "Independent pinned Apps45 Solita legacy/v0 creator ABI bytes; exact canonical legacy creator executes through checked-in real Squads SBF with valid sequential policy seed. Program fixture authority initialization uses explicitly recorded low-rent profile followed by real lamport top-ups and default Rent restoration; no deployed rent correctness claim."
+  },
+  "implementation_acceptance": {
+    "scope": "Reviewed branch implementation and isolated contracts 1-9; no main merge, deployment, migration cutover, live activation or legacy service retirement.",
+    "runtime_revision": "85e92d0831d7e9aa0a66f45c54830a7ca16ab5f3",
+    "apps_revision": "1ee615bcb22f29b04af3864cf73264a3b11eca40",
+    "ci_run": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/37183509997",
+    "ci_conclusion": "success",
+    "ci_jobs": [
+      "verify",
+      "image"
+    ],
+    "local_financial_proofs": "Separately enabled registered SQL/current Go bank suites; real Squads/Subscriptions/SPL and actual ALT program, with explicit fixed-price KLend/Jupiter mocks. These are separate from generic CI package PASS.",
+    "apps_typecheck": "74 whole-web diagnostics, none in changed paths; no full typecheck PASS.",
+    "retained_owners": [
+      "unsigned Rust Earn application/Claim bridge",
+      "official Rust KLend instruction helper",
+      "Apps user-wallet POSTs and withdrawal cleanup",
+      "TypeScript personal calculator and timezone formatting",
+      "existing SSE and legacy services until explicit cutover"
+    ],
+    "planner_policy": "Exact greedy full-rescore reference retained; dependency heap deferred until profiling, bounded assignment repair shadow-only; no global optimum claim."
   }
 }
