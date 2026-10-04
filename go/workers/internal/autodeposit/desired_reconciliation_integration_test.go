@@ -52,7 +52,7 @@ func seedDesiredRuntime(t *testing.T, s *Store) (int64, *DesiredReconciler, *des
 	if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.managed_vaults SET settings=$2,vault_pubkey=$3 WHERE id=$1`, seeded.ManagedVaultID, target.Settings, target.Vault); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.route_policies SET settings=$2,authority=$3,vault_pubkey=$4 WHERE managed_vault_id=$1 OR id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, seeded.ManagedVaultID, target.Settings, target.RootAuthority, target.Vault); err != nil {
+	if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.route_policies SET settings=$2,authority=$3,vault_pubkey=$4 WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, seeded.ManagedVaultID, target.Settings, target.RootAuthority, target.Vault); err != nil {
 		t.Fatal(err)
 	}
 	seedRepairPosition(t, s, target.TargetID, USDCMint)

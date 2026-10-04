@@ -22,6 +22,7 @@ import (
 	"time"
 
 	solana "github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 )
 
 const (
@@ -824,7 +825,13 @@ func decodeStrictSwapPolicy(data []byte) (DecodedSquadsPolicy, []string, []swapS
 	}
 	c.skip(1)
 	start := c
-	_, legacyErr := decodeLegacyPolicyConstraints(&c)
+	legacyPayload, end, legacyErr := squadspolicy.DecodeConstraints(c.b, c.i, policy.AccountIndex, false, 128, 256)
+	if legacyErr == nil && len(legacyPayload.Constraints) == 0 {
+		legacyErr = errors.New("invalid legacy policy constraint count")
+	}
+	if legacyErr == nil {
+		c.i = end
+	}
 	compact := false
 	var table []string
 	if legacyErr != nil {
@@ -839,9 +846,15 @@ func decodeStrictSwapPolicy(data []byte) (DecodedSquadsPolicy, []string, []swapS
 			table[i] = encodeBase58(c.take(32))
 		}
 		c = start
-		if _, err = decodeCompactPolicyConstraints(&c); err != nil {
+		compactPayload, compactEnd, decodeErr := squadspolicy.DecodeConstraints(c.b, c.i, policy.AccountIndex, true, 128, 256)
+		err = decodeErr
+		if err == nil && len(compactPayload.Constraints) == 0 {
+			err = errors.New("invalid compact policy constraint count")
+		}
+		if err != nil {
 			return policy, nil, nil, err
 		}
+		c.i = compactEnd
 	}
 	if c.u8() != 0 || c.u8() != 0 {
 		return policy, nil, nil, errors.New("swap policy hooks are not allowed")
@@ -944,13 +957,13 @@ func validateCrossMintSwapPolicy(policy DecodedSquadsPolicy, table []string, lim
 	if len(table) > 0 {
 		referenced := map[string]bool{}
 		for _, constraint := range policy.Constraints {
-			referenced[constraint.Program] = true
-			for _, a := range constraint.Accounts {
+			referenced[constraint.ProgramID.String()] = true
+			for _, a := range constraint.AccountConstraints {
 				for _, k := range a.Pubkeys {
-					referenced[k] = true
+					referenced[k.String()] = true
 				}
-				if a.Owner != "" {
-					referenced[a.Owner] = true
+				if a.Owner != nil {
+					referenced[a.Owner.String()] = true
 				}
 			}
 		}
@@ -976,7 +989,7 @@ func validateCrossMintSwapPolicy(policy DecodedSquadsPolicy, table []string, lim
 	}
 
 	for i, constraint := range policy.Constraints {
-		if constraint.Program != jupiterProgram {
+		if constraint.ProgramID.String() != jupiterProgram {
 			return errors.New("finalized swap policy authorizes a non-Jupiter program")
 		}
 		expectedDisc := jupiterRouteV2Discriminator
@@ -985,7 +998,7 @@ func validateCrossMintSwapPolicy(policy DecodedSquadsPolicy, table []string, lim
 			expectedDisc = jupiterSharedV2Discriminator
 			offset = 25
 		}
-		if len(constraint.Accounts) != 2 || len(constraint.Data) != 3 || constraint.Accounts[0].Index != map[bool]uint8{true: 1, false: 0}[i == 1] || len(constraint.Accounts[0].Pubkeys) != 1 || constraint.Accounts[0].Pubkeys[0] != binding.VaultPubkey || constraint.Accounts[0].Owner != "" || len(constraint.Accounts[1].Pubkeys) != 6 || constraint.Accounts[1].Index != map[bool]uint8{true: 5, false: 2}[i == 1] || !exactKeySet(constraint.Accounts[1].Pubkeys, atas) || constraint.Accounts[1].Owner != "" || constraint.Data[0].Offset != 0 || constraint.Data[0].Kind != 5 || constraint.Data[0].Operator != 0 || !bytes.Equal(constraint.Data[0].Value, expectedDisc) || constraint.Data[1].Offset != offset || constraint.Data[1].Kind != 1 || constraint.Data[1].Operator != 5 || binary.LittleEndian.Uint16(constraint.Data[1].Value) != binding.Swap.MaxSlippageBPS || constraint.Data[2].Offset != offset+2 || constraint.Data[2].Kind != 0 || constraint.Data[2].Operator != 0 || len(constraint.Data[2].Value) != 1 || constraint.Data[2].Value[0] != 0 {
+		if len(constraint.AccountConstraints) != 2 || len(constraint.DataConstraints) != 3 || constraint.AccountConstraints[0].AccountIndex != map[bool]uint8{true: 1, false: 0}[i == 1] || len(constraint.AccountConstraints[0].Pubkeys) != 1 || constraint.AccountConstraints[0].Pubkeys[0].String() != binding.VaultPubkey || constraint.AccountConstraints[0].Owner != nil || len(constraint.AccountConstraints[1].Pubkeys) != 6 || constraint.AccountConstraints[1].AccountIndex != map[bool]uint8{true: 5, false: 2}[i == 1] || !exactKeySet(constraint.AccountConstraints[1].Pubkeys, atas) || constraint.AccountConstraints[1].Owner != nil || constraint.DataConstraints[0].DataOffset != 0 || constraint.DataConstraints[0].DataValue.Kind != 5 || constraint.DataConstraints[0].Operator != 0 || !bytes.Equal(constraint.DataConstraints[0].DataValue.Bytes, expectedDisc) || constraint.DataConstraints[1].DataOffset != offset || constraint.DataConstraints[1].DataValue.Kind != 1 || constraint.DataConstraints[1].Operator != 5 || constraint.DataConstraints[1].DataValue.U16 != binding.Swap.MaxSlippageBPS || constraint.DataConstraints[2].DataOffset != offset+2 || constraint.DataConstraints[2].DataValue.Kind != 0 || constraint.DataConstraints[2].Operator != 0 || constraint.DataConstraints[2].DataValue.U8 != 0 {
 			return errors.New("finalized swap policy constraints differ from canonical manifest")
 		}
 	}
@@ -1009,12 +1022,13 @@ func swapSourceMint(ix RouteInstruction) string {
 	return ""
 }
 
-func exactKeySet(values []string, expected map[string]bool) bool {
+func exactKeySet(values []solana.PublicKey, expected map[string]bool) bool {
 	if len(values) != len(expected) {
 		return false
 	}
 	seen := map[string]bool{}
-	for _, v := range values {
+	for _, key := range values {
+		v := key.String()
 		if !expected[v] || seen[v] {
 			return false
 		}

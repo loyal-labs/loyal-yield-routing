@@ -106,11 +106,10 @@ func NewController(deps ControllerDependencies) (*Controller, error) {
 }
 
 // Execute resolves one dispatchable target and reports its end state through
-// the legacy exit-code protocol. A nil exit code with an error means the run
-// never reached an exit.
-func (c *Controller) Execute(ctx context.Context, target ExecutableTarget) (*int, error) {
+// a typed family outcome. Errors retain the outcome reached before the failure.
+func (c *Controller) Execute(ctx context.Context, target ExecutableTarget) (ExecutorResult, error) {
 	if err := c.store.requireMainnetTarget(ctx, target.TargetID); err != nil {
-		return exit(ExitRecoveryPending), err
+		return ResultRecoveryPending, err
 	}
 	if target.isRecovery() {
 		return c.executeRecovery(ctx, target)
@@ -183,31 +182,24 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 	return SettleDurableAttempt(scope.ctx, attempt, durableSettlement{store: c.store, chain: c.chain, leaseToken: scope.leaseToken})
 }
 
-// exit returns an executor exit code for a code value.
-func exit(code int) *int { return &code }
-
-func exitCodeIfNotNil(code *int, err error) (*int, error) {
-	return code, err
-}
-
 // executeRecovery resumes a claim whose pull already holds custody. It runs
 // even when the target's desired enablement is off: the funds are already out
 // of the wallet.
-func (c *Controller) executeRecovery(ctx context.Context, target ExecutableTarget) (*int, error) {
+func (c *Controller) executeRecovery(ctx context.Context, target ExecutableTarget) (ExecutorResult, error) {
 	scope, err := c.holdClaimLease(ctx, target.ClaimToken, target.TargetID)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitRecoveryPending), err)
+		return ResultRecoveryPending, err
 	}
 	defer scope.release()
 
 	recovery, err := c.store.LoadPullRecoveryContext(scope.ctx, target.ClaimToken, target.TargetID, target.ScheduledSlotID)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitRecoveryPending), err)
+		return ResultRecoveryPending, err
 	}
 	if recovery == nil {
 		plan, err := c.store.LoadFrozenDepositPlan(scope.ctx, target.ClaimToken, target.TargetID, scope.leaseToken)
 		if err != nil {
-			return exit(ExitRecoveryPending), err
+			return ResultRecoveryPending, err
 		}
 		return c.executeFrozenClaim(scope, target.ClaimToken, target, plan)
 	}
@@ -215,25 +207,25 @@ func (c *Controller) executeRecovery(ctx context.Context, target ExecutableTarge
 		// Verify the persisted pull's exact effects before treating custody as
 		// owned: the wallet debited and the frozen custody credited.
 		if err := c.verifyPullEffects(scope.ctx, recovery.Plan, recovery.Attempt); err != nil {
-			return exitCodeIfNotNil(exit(ExitTransactionEffectAmbig), err)
+			return ResultTransactionEffectAmbig, err
 		}
 	}
 
 	settlement, err := c.settle(scope, recovery.Attempt)
 	if err != nil {
 		if errors.Is(err, ErrOwnershipLost) {
-			return exit(ExitRecoveryPending), err
+			return ResultRecoveryPending, err
 		}
-		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+		return ResultDependencyUnavailable, err
 	}
 	if alert := AlertForAttemptState(settlement.Attempt.State); alert != nil {
-		return exit(ExitTransactionEffectAmbig), nil
+		return ResultTransactionEffectAmbig, nil
 	}
 	if settlement.Attempt.State == AttemptUnknown || settlement.Attempt.State == AttemptSubmitted ||
 		settlement.Attempt.State == AttemptPrepared {
 		// Unknown is never released and never retried generically: only the
 		// settlement protocol may resolve it.
-		return exit(ExitRecoveryPending), nil
+		return ResultRecoveryPending, nil
 	}
 	if !AttemptAllowsSafeRequeue(settlement.Attempt.State) {
 		// Confirmed: the pull landed. The top-up leg decides the rest.
@@ -241,74 +233,74 @@ func (c *Controller) executeRecovery(ctx context.Context, target ExecutableTarge
 	}
 	// Conclusive pull failure or expiry: the funds provably never left.
 	if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, target.ClaimToken, scope.leaseToken); releaseErr != nil {
-		return exitCodeIfNotNil(exit(ExitRecoveryPending), releaseErr)
+		return ResultRecoveryPending, releaseErr
 	}
-	return exit(ExitDeferred), nil
+	return ResultDeferred, nil
 }
 
 // executeFresh claims and sweeps one scheduled slot.
-func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) (*int, error) {
+func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) (ExecutorResult, error) {
 	targetContext, err := c.store.LoadTargetExecutionContext(ctx, target.TargetID)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+		return ResultDependencyUnavailable, err
 	}
 	if targetContext == nil {
-		return exit(ExitNotActionable), nil
+		return ResultNotActionable, nil
 	}
 	// The delegated authority is validated separately from its allowance: a
 	// target without a delegation can never be pulled, but that is a
 	// configuration fault, not an exhausted allowance.
 	if targetContext.RecurringDelegation == "" {
-		return exit(ExitNotActionable), fmt.Errorf("autodeposit target %d has no recurring delegation", target.TargetID)
+		return ResultNotActionable, fmt.Errorf("autodeposit target %d has no recurring delegation", target.TargetID)
 	}
 	if !targetContext.hasRouteIdentity() {
 		// The route is unexecutable and no funds moved; waiting for the
 		// observer may clear it.
-		return exit(ExitPreflightBlocked), fmt.Errorf("autodeposit target %d has no active same_mint_kamino policy", target.TargetID)
+		return ResultPreflightBlocked, fmt.Errorf("autodeposit target %d has no active same_mint_kamino policy", target.TargetID)
 	}
 
 	walletBalance, err := c.chain.ConfirmedTokenBalanceRaw(ctx, targetContext.WalletUsdcAta, targetContext.Wallet)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+		return ResultDependencyUnavailable, err
 	}
 	remainingAllowance, err := c.readRemainingAllowance(ctx, targetContext)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitDeferred), err)
+		return ResultDeferred, err
 	}
 
 	claimToken, err := newClaimToken()
 	if err != nil {
-		return nil, err
+		return ResultUnknown, err
 	}
 	claim, err := c.store.ClaimEligibleLotsOnce(ctx, target.TargetID, claimToken, &target.ScheduledSlotID,
 		walletBalance, targetContext.WalletBalanceFloorRaw, targetContext.MaxAmountPerPeriodRaw, remainingAllowance)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), err)
+		return ResultYieldPersistenceFailed, err
 	}
 	if claim.Status != ClaimSelected {
-		return exit(ExitNoop), nil
+		return ResultNoop, nil
 	}
 
 	scope, err := c.holdClaimLease(ctx, claimToken, target.TargetID)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitRecoveryPending), err)
+		return ResultRecoveryPending, err
 	}
 	defer scope.release()
 
 	// Freeze amount and destination before any pull wire exists.
 	if !targetContext.hasReserveIdentity() {
 		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), releaseErr)
+			return ResultYieldPersistenceFailed, releaseErr
 		}
-		return exit(ExitPreflightBlocked), fmt.Errorf("autodeposit target %d has no observed reserve identity", target.TargetID)
+		return ResultPreflightBlocked, fmt.Errorf("autodeposit target %d has no observed reserve identity", target.TargetID)
 	}
 	plan := targetContext.depositPlan(claim.AmountRaw)
 	frozen, err := c.store.FreezeDepositPlan(scope.ctx, claimToken, scope.leaseToken, plan)
 	if err != nil {
 		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), releaseErr)
+			return ResultYieldPersistenceFailed, releaseErr
 		}
-		return exitCodeIfNotNil(exit(ExitRecoveryPending), err)
+		return ResultRecoveryPending, err
 	}
 
 	return c.executeFrozenClaim(scope, claimToken, target, frozen)
@@ -316,72 +308,72 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 
 // An unsigned claim may need account setup. Signed setup remains owned until
 // its exact confirmation and decoded account readback, before a pull exists.
-func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string, target ExecutableTarget, frozen DepositPlan) (*int, error) {
+func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string, target ExecutableTarget, frozen DepositPlan) (ExecutorResult, error) {
 	ready, err := c.ensureDestinationSetup(scope, claimToken, frozen)
 	if err != nil {
 		if errors.Is(err, ErrDesiredControlsPending) {
 			if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-				return exit(ExitRecoveryPending), releaseErr
+				return ResultRecoveryPending, releaseErr
 			}
-			return exit(ExitDeferred), nil
+			return ResultDeferred, nil
 		}
-		return exit(ExitPreflightBlocked), err
+		return ResultPreflightBlocked, err
 	}
 	if !ready {
-		return exit(ExitRecoveryPending), nil
+		return ResultRecoveryPending, nil
 	}
 	targetContext, err := c.store.LoadTargetExecutionContext(scope.ctx, target.TargetID)
 	if err != nil {
-		return exit(ExitDependencyUnavailable), err
+		return ResultDependencyUnavailable, err
 	}
 	if targetContext == nil || !targetContext.FreshActionable || targetContext.RecurringDelegation == "" || targetContext.SweepPolicyAccount != frozen.Target.SweepPolicyAccount || targetContext.Wallet != frozen.Target.Wallet || targetContext.VaultPubkey != frozen.Target.VaultPubkey {
 		_, err = c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken)
-		return exit(ExitDeferred), err
+		return ResultDeferred, err
 	}
 	walletBalance, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, frozen.Target.WalletUsdcAta, frozen.Target.Wallet)
 	if err != nil {
-		return exit(ExitDependencyUnavailable), err
+		return ResultDependencyUnavailable, err
 	}
 	allowance, err := c.readRemainingAllowance(scope.ctx, targetContext)
 	if err != nil {
-		return exit(ExitDeferred), err
+		return ResultDeferred, err
 	}
 	if walletBalance < frozen.AmountRaw || targetContext.WalletBalanceFloorRaw < 0 || walletBalance-frozen.AmountRaw < targetContext.WalletBalanceFloorRaw || *allowance < frozen.AmountRaw || (targetContext.MaxAmountPerPeriodRaw != nil && *targetContext.MaxAmountPerPeriodRaw < frozen.AmountRaw) {
 		_, err = c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken)
-		return exit(ExitDeferred), err
+		return ResultDeferred, err
 	}
 	// Preflight the destination BEFORE the pull: the top-up must be executable
 	// against the frozen reserve, obligation and custody, or the wallet never
 	// moves. No funds have moved when this fails.
 	if _, err := c.wires.ConfirmTopUpRoute(scope.ctx, frozen); err != nil {
 		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), releaseErr)
+			return ResultYieldPersistenceFailed, releaseErr
 		}
-		return exit(ExitPreflightBlocked), err
+		return ResultPreflightBlocked, err
 	}
 
 	custodyBefore, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, frozen.Target.VaultUsdcAta, frozen.Target.VaultPubkey)
 	if err != nil {
-		return exit(ExitDependencyUnavailable), err
+		return ResultDependencyUnavailable, err
 	}
 	if custodyBefore != 0 {
 		if _, err := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); err != nil {
-			return exit(ExitYieldPersistenceFailed), err
+			return ResultYieldPersistenceFailed, err
 		}
-		return exit(ExitPreflightBlocked), errors.New("direct autodeposit requires empty idle custody before pull")
+		return ResultPreflightBlocked, errors.New("direct autodeposit requires empty idle custody before pull")
 	}
 	blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+		return ResultDependencyUnavailable, err
 	}
 	if err = c.store.checkUnsignedDesiredAdmission(scope.ctx, target.TargetID, claimToken, scope.leaseToken); err != nil {
 		if errors.Is(err, ErrDesiredControlsPending) {
 			if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-				return exit(ExitRecoveryPending), releaseErr
+				return ResultRecoveryPending, releaseErr
 			}
-			return exit(ExitDeferred), nil
+			return ResultDeferred, nil
 		}
-		return exit(ExitRecoveryPending), err
+		return ResultRecoveryPending, err
 	}
 	wire, err := c.wires.BuildPull(scope.ctx, PullWireRequest{
 		Plan: frozen, RecurringDelegation: targetContext.RecurringDelegation,
@@ -390,9 +382,9 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		// A wire that was never signed never moved funds: release the claim.
 		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), releaseErr)
+			return ResultYieldPersistenceFailed, releaseErr
 		}
-		return exit(ExitPreflightBlocked), err
+		return ResultPreflightBlocked, err
 	}
 	prepared, err := c.store.PersistPreparedAttempt(scope.ctx, PreparedAttempt{
 		ClaimToken:               claimToken,
@@ -413,38 +405,38 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		if errors.Is(err, ErrDesiredControlsPending) {
 			if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-				return exit(ExitRecoveryPending), releaseErr
+				return ResultRecoveryPending, releaseErr
 			}
-			return exit(ExitDeferred), nil
+			return ResultDeferred, nil
 		}
 		if errors.Is(err, ErrOwnershipLost) {
-			return exit(ExitRecoveryPending), err
+			return ResultRecoveryPending, err
 		}
-		return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), err)
+		return ResultYieldPersistenceFailed, err
 	}
 
 	settlement, err := c.settle(scope, prepared)
 	if err != nil {
 		if errors.Is(err, ErrOwnershipLost) {
-			return exit(ExitRecoveryPending), err
+			return ResultRecoveryPending, err
 		}
-		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+		return ResultDependencyUnavailable, err
 	}
 	switch {
 	case AttemptAllowsSafeRequeue(settlement.Attempt.State):
 		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), releaseErr)
+			return ResultYieldPersistenceFailed, releaseErr
 		}
-		return exit(ExitDeferred), nil
+		return ResultDeferred, nil
 	case !AttemptHoldsClaim(settlement.Attempt.State):
-		return exit(ExitRecoveryPending), nil
+		return ResultRecoveryPending, nil
 	case settlement.Attempt.State != AttemptConfirmed:
-		return exit(ExitRecoveryPending), nil
+		return ResultRecoveryPending, nil
 	}
 	// The pull receipt must prove the exact integer movement before custody is
 	// treated as owned.
 	if err := c.verifyPullEffects(scope.ctx, frozen, settlement.Attempt); err != nil {
-		return exitCodeIfNotNil(exit(ExitTransactionEffectAmbig), err)
+		return ResultTransactionEffectAmbig, err
 	}
 	return c.finishTopUpLeg(scope, claimToken, target, frozen, settlement)
 }
@@ -567,22 +559,22 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 // execution the pull owns, reconcile the persisted top-up when one holds the
 // claim, verify the persisted wire and its exact receipt, and finalize the
 // claim atomically through the shared accounting function.
-func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, target ExecutableTarget, plan DepositPlan, pull Settlement) (*int, error) {
+func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, target ExecutableTarget, plan DepositPlan, pull Settlement) (ExecutorResult, error) {
 	// The confirmed pull owns the execution row: it is keyed to the pull's
 	// signature, slot and amount, exactly the legacy accounted-recovery key.
 	confirmedPull := pull.Attempt
 	if err := c.verifyPullEffects(scope.ctx, plan, confirmedPull); err != nil {
-		return exit(ExitTransactionEffectAmbig), err
+		return ResultTransactionEffectAmbig, err
 	}
 	// The custody that the pull funded is the vault's USDC ATA, never the
 	// wallet ATA: every top-up read below is against the pulled account.
 	custody, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, plan.Target.VaultUsdcAta, plan.Target.VaultPubkey)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+		return ResultDependencyUnavailable, err
 	}
 	existingTopUp, err := c.store.LoadLatestAttempt(scope.ctx, claimToken, OperationTopUp)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+		return ResultDependencyUnavailable, err
 	}
 	var existingState *AttemptState
 	var persistedPreBalance *int64
@@ -593,47 +585,47 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	}
 	siblingDeposits, err := c.store.LoadConfirmedSiblingTopUpsSince(scope.ctx, target.TargetID, claimToken, attemptIDOrZero(existingTopUp))
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+		return ResultDependencyUnavailable, err
 	}
 
 	switch ClassifyDirectTopUpRecovery(existingState, custody, plan.AmountRaw, persistedPreBalance, siblingDeposits) {
 	case TopUpEffectAmbiguous:
-		return exit(ExitTransactionEffectAmbig), nil
+		return ResultTransactionEffectAmbig, nil
 	case TopUpReconcilePersisted:
 		settlement, err := c.settle(scope, *existingTopUp)
 		if err != nil {
 			if errors.Is(err, ErrOwnershipLost) {
-				return exit(ExitRecoveryPending), err
+				return ResultRecoveryPending, err
 			}
-			return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+			return ResultDependencyUnavailable, err
 		}
 		if alert := AlertForAttemptState(settlement.Attempt.State); alert != nil {
-			return exit(ExitTransactionEffectAmbig), nil
+			return ResultTransactionEffectAmbig, nil
 		}
 		if settlement.Attempt.State != AttemptConfirmed {
-			return exit(ExitRecoveryPending), nil
+			return ResultRecoveryPending, nil
 		}
 		pull = settlement
 	case TopUpPrepareOrRequeue:
 		if err := c.assertOwnership(scope, claimToken); err != nil {
-			return exit(ExitRecoveryPending), err
+			return ResultRecoveryPending, err
 		}
 		executionID, err := c.ensurePullExecution(scope, claimToken, target, plan, confirmedPull)
 		if err != nil {
 			if errors.Is(err, ErrOwnershipLost) {
-				return exit(ExitRecoveryPending), err
+				return ResultRecoveryPending, err
 			}
-			return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), err)
+			return ResultYieldPersistenceFailed, err
 		}
 		blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
 		if err != nil {
-			return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+			return ResultDependencyUnavailable, err
 		}
 		wire, err := c.wires.BuildTopUp(scope.ctx, TopUpWireRequest{Plan: plan, RecentBlockhash: blockhash, LastValidBlockHeight: lastValid})
 		if err != nil {
 			// The pulled custody stays claimed for recovery; it must never be
 			// released while only the deposit leg failed.
-			return exitCodeIfNotNil(exit(ExitKaminoTopUpFailed), err)
+			return ResultKaminoTopUpFailed, err
 		}
 		prepared, err := c.store.PersistPreparedAttempt(scope.ctx, PreparedAttempt{
 			ClaimToken:               claimToken,
@@ -652,23 +644,23 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		}, scope.leaseToken)
 		if err != nil {
 			if errors.Is(err, ErrOwnershipLost) {
-				return exit(ExitRecoveryPending), err
+				return ResultRecoveryPending, err
 			}
-			return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), err)
+			return ResultYieldPersistenceFailed, err
 		}
 		settlement, err := c.settle(scope, prepared)
 		if err != nil {
 			if errors.Is(err, ErrOwnershipLost) {
-				return exit(ExitRecoveryPending), err
+				return ResultRecoveryPending, err
 			}
-			return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+			return ResultDependencyUnavailable, err
 		}
 		if alert := AlertForAttemptState(settlement.Attempt.State); alert != nil {
-			return exit(ExitTransactionEffectAmbig), nil
+			return ResultTransactionEffectAmbig, nil
 		}
 		if settlement.Attempt.State != AttemptConfirmed {
 			// Unknown or submitted custody stays claimed; it is never released.
-			return exit(ExitRecoveryPending), nil
+			return ResultRecoveryPending, nil
 		}
 		pull = settlement
 	}
@@ -676,14 +668,14 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	// The execution id belongs to the immutable prepared top-up. A missing id
 	// cannot be repaired by mutating signed custody evidence after confirmation.
 	if pull.Attempt.ExecutionID == nil {
-		return exit(ExitTransactionEffectAmbig), &EffectAmbiguousError{Detail: "persisted top-up has no immutable execution identity"}
+		return ResultTransactionEffectAmbig, &EffectAmbiguousError{Detail: "persisted top-up has no immutable execution identity"}
 	}
 
 	// The persisted wire is the deposit's proof; the receipt is checked
 	// against it. Both must agree on the frozen identity and exact amount.
 	route, err := c.wires.ConfirmTopUpRoute(scope.ctx, plan)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitKaminoTopUpFailed), err)
+		return ResultKaminoTopUpFailed, err
 	}
 	var proofErr error
 	if contextual, ok := c.wires.(interface {
@@ -694,30 +686,30 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		proofErr = c.wires.ProveTopUpWire(plan, pull.Attempt, route)
 	}
 	if err := proofErr; err != nil {
-		return exitCodeIfNotNil(exit(ExitTransactionEffectAmbig), err)
+		return ResultTransactionEffectAmbig, err
 	}
 	if err := c.verifyTopUpEffects(scope.ctx, plan, route, pull); err != nil {
-		return exitCodeIfNotNil(exit(ExitTransactionEffectAmbig), err)
+		return ResultTransactionEffectAmbig, err
 	}
 
 	// Finalization re-proves ownership and completes claim, slot, execution
 	// and yield accounting in one atomic database call. There is no permanent
 	// pending here: the execution row already exists.
 	if err := c.assertOwnership(scope, claimToken); err != nil {
-		return exit(ExitRecoveryPending), err
+		return ResultRecoveryPending, err
 	}
 	positionAmountRaw, observedSlot, err := c.chain.ConfirmedVaultPositionRaw(scope.ctx, plan, route)
 	if err != nil {
-		return exitCodeIfNotNil(exit(ExitDependencyUnavailable), err)
+		return ResultDependencyUnavailable, err
 	}
 	if _, err := c.store.FinalizeConfirmedAutodeposit(scope.ctx, claimToken, *pull.Attempt.ExecutionID, target.ScheduledSlotID,
 		scope.leaseToken, positionAmountRaw, observedSlot); err != nil {
 		if errors.Is(err, ErrOwnershipLost) {
-			return exit(ExitRecoveryPending), err
+			return ResultRecoveryPending, err
 		}
-		return exitCodeIfNotNil(exit(ExitYieldPersistenceFailed), err)
+		return ResultYieldPersistenceFailed, err
 	}
-	return exit(ExitCompleted), nil
+	return ResultCompleted, nil
 }
 
 // ensurePullExecution creates the execution row a confirmed pull owns, from

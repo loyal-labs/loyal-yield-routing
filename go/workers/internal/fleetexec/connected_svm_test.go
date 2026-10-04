@@ -37,8 +37,11 @@ func TestConnectedGoSameMintExecution(t *testing.T) {
 		t.Skip("requires the registered dedicated connected Go fixture")
 	}
 	dbURL, err := url.Parse(database)
-	if err != nil || dbURL.Scheme != "postgresql" || dbURL.Hostname() != "127.0.0.1" || dbURL.Port() != "51913" || dbURL.User == nil || dbURL.User.Username() != "workers_v2" || dbURL.Path != "/fleet_go_same_mint" || dbURL.RawQuery != "" || dbURL.Fragment != "" {
+	if err != nil || dbURL.Scheme != "postgresql" || dbURL.Hostname() != "127.0.0.1" || dbURL.Port() != "51913" || dbURL.User == nil || dbURL.User.Username() != "workers_v2" || (dbURL.Path != "/fleet_go_same_mint" && dbURL.Path != "/fleet_go_same_mint_simplify") || dbURL.RawQuery != "" || dbURL.Fragment != "" {
 		t.Fatal("refusing database outside the dedicated registered loopback fixture")
+	}
+	if _, hasPassword := dbURL.User.Password(); hasPassword {
+		t.Fatal("fixture database URL must not contain a password")
 	}
 	producerPath := os.Getenv("KAMINO_CONNECTED_GO_PLANNER_PATH")
 	if producerPath == "" {
@@ -57,7 +60,7 @@ func TestConnectedGoSameMintExecution(t *testing.T) {
 	}
 	defer pool.Close()
 	var actualDB, role string
-	if err := pool.QueryRow(ctx, `SELECT current_database(),current_user`).Scan(&actualDB, &role); err != nil || actualDB != "fleet_go_same_mint" || role != "workers_v2" {
+	if err := pool.QueryRow(ctx, `SELECT current_database(),current_user`).Scan(&actualDB, &role); err != nil || actualDB != dbURL.Path[1:] || role != "workers_v2" {
 		t.Fatalf("unexpected fixture identity %q/%q: %v", actualDB, role, err)
 	}
 	store, err := NewStore(ctx, pool)

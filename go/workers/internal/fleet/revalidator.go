@@ -18,6 +18,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 )
 
 const (
@@ -532,24 +535,7 @@ type DecodedSquadsPolicy struct {
 	InstructionPrograms   []string
 	InstructionData       [][]byte
 	AllowedIndexes        []uint8
-	Constraints           []policyInstructionConstraint
-}
-
-type policyInstructionConstraint struct {
-	Program  string
-	Accounts []policyAccountConstraint
-	Data     []policyDataConstraint
-}
-type policyAccountConstraint struct {
-	Index   uint8
-	Pubkeys []string
-	Owner   string
-}
-type policyDataConstraint struct {
-	Offset   uint64
-	Kind     uint8
-	Value    []byte
-	Operator uint8
+	Constraints           []squadspolicy.InstructionConstraintView
 }
 
 func ValidateFreshRouteEvidence(e FreshRouteEvidence, now time.Time, expectedOpportunityKey, expectedEpochFingerprint, delegatedSigner string, protected []RouteInstruction) (DecodedSquadsPolicy, error) {
@@ -651,43 +637,35 @@ func contains(v []string, s string) bool {
 // Squads' compact pubkey-table layout, while retaining every account and data
 // constraint for exact instruction-index validation.
 func DecodeSquadsPolicy(data []byte) (DecodedSquadsPolicy, error) {
-	c := wireCursor{b: data}
-	if !bytes.Equal(c.take(8), []byte{222, 135, 7, 163, 235, 177, 33, 68}) {
-		return DecodedSquadsPolicy{}, errors.New("not a Squads policy account")
+	h, offset, err := squadspolicy.DecodeHeader(data)
+	if err != nil {
+		return DecodedSquadsPolicy{}, err
 	}
-	p := DecodedSquadsPolicy{Settings: encodeBase58(c.take(32)), PolicySeed: c.u64(), Bump: c.u8()}
-	p.TransactionIndex = c.u64()
-	p.StaleTransactionIndex = c.u64()
-	n := c.u32()
-	if c.err != nil || n == 0 || n > 32 {
-		return DecodedSquadsPolicy{}, errors.New("invalid policy signer count")
+	p := DecodedSquadsPolicy{Settings: h.Settings.String(), PolicySeed: h.PolicySeed, Bump: h.Bump, TransactionIndex: h.TransactionIndex, StaleTransactionIndex: h.StaleTransactionIndex, TimeLock: h.TimeLock, AccountIndex: h.VaultIndex, SignerPermissions: h.Permissions}
+	if len(h.Signers) == 0 {
+		return p, errors.New("invalid policy signer count")
 	}
-	for i := uint32(0); i < n; i++ {
-		p.DelegatedSigners = append(p.DelegatedSigners, encodeBase58(c.take(32)))
-		p.SignerPermissions = append(p.SignerPermissions, c.u8())
+	for _, signer := range h.Signers {
+		p.DelegatedSigners = append(p.DelegatedSigners, signer.String())
 	}
-	threshold := c.u16()
-	p.TimeLock = c.u32()
-	if threshold != 1 || c.u8() != 3 {
+	if h.Threshold != 1 || h.Kind != 3 {
 		return p, errors.New("policy is not threshold-one ProgramInteraction")
 	}
-	p.AccountIndex = c.u8()
-	start := c
-	constraints, err := decodeLegacyPolicyConstraints(&c)
-	if err != nil {
-		c = start
-		constraints, err = decodeCompactPolicyConstraints(&c)
+	payload, _, err := squadspolicy.DecodeConstraints(data, offset, h.VaultIndex, false, 128, 256)
+	if err != nil || len(payload.Constraints) == 0 {
+		payload, _, err = squadspolicy.DecodeConstraints(data, offset, h.VaultIndex, true, 128, 256)
 	}
-	if err != nil || c.err != nil || len(constraints) == 0 {
+	if err != nil || len(payload.Constraints) == 0 {
 		return p, fmt.Errorf("decode ProgramInteraction constraints: %w", err)
 	}
+	constraints := payload.Constraints
 	p.Constraints = constraints
 	for _, constraint := range constraints {
-		p.InstructionPrograms = append(p.InstructionPrograms, constraint.Program)
+		p.InstructionPrograms = append(p.InstructionPrograms, constraint.ProgramID.String())
 		var exact []byte
-		for _, value := range constraint.Data {
-			if value.Offset == 0 && value.Kind == 5 && value.Operator == 0 {
-				exact = append([]byte(nil), value.Value...)
+		for _, value := range constraint.DataConstraints {
+			if value.DataOffset == 0 && value.DataValue.Kind == 5 && value.Operator == 0 {
+				exact = append([]byte(nil), value.DataValue.Bytes...)
 				break
 			}
 		}
@@ -696,204 +674,19 @@ func DecodeSquadsPolicy(data []byte) (DecodedSquadsPolicy, error) {
 	return p, nil
 }
 
-func decodeLegacyPolicyConstraints(c *wireCursor) ([]policyInstructionConstraint, error) {
-	count := c.u32()
-	if c.err != nil || count == 0 || count > 128 {
-		return nil, errors.New("invalid legacy policy constraint count")
-	}
-	out := make([]policyInstructionConstraint, 0, count)
-	for i := uint32(0); i < count; i++ {
-		constraint := policyInstructionConstraint{Program: encodeBase58(c.take(32))}
-		accountCount := c.u32()
-		if accountCount > 128 {
-			return nil, errors.New("legacy account constraint count exceeds 128")
-		}
-		for j := uint32(0); j < accountCount; j++ {
-			account := policyAccountConstraint{Index: c.u8()}
-			switch c.u8() {
-			case 0:
-				n := c.u32()
-				if n > 128 {
-					return nil, errors.New("legacy pubkey constraint count exceeds 128")
-				}
-				for k := uint32(0); k < n; k++ {
-					account.Pubkeys = append(account.Pubkeys, encodeBase58(c.take(32)))
-				}
-			case 1:
-				n := c.u32()
-				if n > 128 {
-					return nil, errors.New("legacy account-data constraint count exceeds 128")
-				}
-				for k := uint32(0); k < n; k++ {
-					if _, err := decodePolicyDataConstraint(c); err != nil {
-						return nil, err
-					}
-				}
-			default:
-				return nil, errors.New("unknown legacy account constraint kind")
-			}
-			switch c.u8() {
-			case 0:
-			case 1:
-				account.Owner = encodeBase58(c.take(32))
-			default:
-				return nil, errors.New("invalid legacy owner option")
-			}
-			constraint.Accounts = append(constraint.Accounts, account)
-		}
-		dataCount := c.u32()
-		if dataCount > 128 {
-			return nil, errors.New("legacy data constraint count exceeds 128")
-		}
-		for j := uint32(0); j < dataCount; j++ {
-			value, err := decodePolicyDataConstraint(c)
-			if err != nil {
-				return nil, err
-			}
-			constraint.Data = append(constraint.Data, value)
-		}
-		out = append(out, constraint)
-	}
-	if c.err != nil {
-		return nil, c.err
-	}
-	return out, nil
-}
-
-func decodeCompactPolicyConstraints(c *wireCursor) ([]policyInstructionConstraint, error) {
-	tableCount := int(c.u8())
-	if tableCount > 240 {
-		return nil, errors.New("compact pubkey table exceeds 240")
-	}
-	table := make([]string, tableCount)
-	for i := range table {
-		table[i] = encodeBase58(c.take(32))
-	}
-	key := func(index uint8) (string, error) {
-		if int(index) >= len(table) {
-			return "", errors.New("compact pubkey index out of bounds")
-		}
-		return table[index], nil
-	}
-	count := int(c.u8())
-	if count == 0 || count > 128 {
-		return nil, errors.New("invalid compact policy constraint count")
-	}
-	out := make([]policyInstructionConstraint, 0, count)
-	for i := 0; i < count; i++ {
-		program, err := key(c.u8())
-		if err != nil {
-			return nil, err
-		}
-		constraint := policyInstructionConstraint{Program: program}
-		accountCount := int(c.u8())
-		if accountCount > 128 {
-			return nil, errors.New("compact account constraint count exceeds 128")
-		}
-		for j := 0; j < accountCount; j++ {
-			account := policyAccountConstraint{Index: c.u8()}
-			switch c.u8() {
-			case 0:
-				n := int(c.u8())
-				if n > 128 {
-					return nil, errors.New("compact pubkey constraint count exceeds 128")
-				}
-				for k := 0; k < n; k++ {
-					v, e := key(c.u8())
-					if e != nil {
-						return nil, e
-					}
-					account.Pubkeys = append(account.Pubkeys, v)
-				}
-			case 1:
-				n := int(c.u8())
-				if n > 128 {
-					return nil, errors.New("compact account-data constraint count exceeds 128")
-				}
-				for k := 0; k < n; k++ {
-					if _, err := decodePolicyDataConstraint(c); err != nil {
-						return nil, err
-					}
-				}
-			default:
-				return nil, errors.New("unknown compact account constraint kind")
-			}
-			switch c.u8() {
-			case 0:
-			case 1:
-				account.Owner, err = key(c.u8())
-				if err != nil {
-					return nil, err
-				}
-			default:
-				return nil, errors.New("invalid compact owner option")
-			}
-			constraint.Accounts = append(constraint.Accounts, account)
-		}
-		dataCount := int(c.u8())
-		if dataCount > 128 {
-			return nil, errors.New("compact data constraint count exceeds 128")
-		}
-		for j := 0; j < dataCount; j++ {
-			value, err := decodePolicyDataConstraint(c)
-			if err != nil {
-				return nil, err
-			}
-			constraint.Data = append(constraint.Data, value)
-		}
-		out = append(out, constraint)
-	}
-	if c.err != nil {
-		return nil, c.err
-	}
-	return out, nil
-}
-
-func decodePolicyDataConstraint(c *wireCursor) (policyDataConstraint, error) {
-	value := policyDataConstraint{Offset: c.u64(), Kind: c.u8()}
-	switch value.Kind {
-	case 0:
-		value.Value = append([]byte(nil), c.take(1)...)
-	case 1:
-		value.Value = append([]byte(nil), c.take(2)...)
-	case 2:
-		value.Value = append([]byte(nil), c.take(4)...)
-	case 3:
-		value.Value = append([]byte(nil), c.take(8)...)
-	case 4:
-		value.Value = append([]byte(nil), c.take(16)...)
-	case 5:
-		n := c.u32()
-		if n > 256 {
-			return value, errors.New("policy byte constraint exceeds 256")
-		}
-		value.Value = append([]byte(nil), c.take(int(n))...)
-	default:
-		return value, errors.New("unknown policy data value kind")
-	}
-	value.Operator = c.u8()
-	if value.Operator > 5 {
-		return value, errors.New("unknown policy data operator")
-	}
-	if c.err != nil {
-		return value, c.err
-	}
-	return value, nil
-}
-
-func policyConstraintMatches(constraint policyInstructionConstraint, instruction RouteInstruction) bool {
-	if constraint.Program != instruction.Program {
+func policyConstraintMatches(constraint squadspolicy.InstructionConstraintView, instruction RouteInstruction) bool {
+	if constraint.ProgramID.String() != instruction.Program {
 		return false
 	}
-	for _, account := range constraint.Accounts {
-		if int(account.Index) >= len(instruction.Accounts) {
+	for _, account := range constraint.AccountConstraints {
+		if int(account.AccountIndex) >= len(instruction.Accounts) {
 			return false
 		}
-		if len(account.Pubkeys) > 0 && !contains(account.Pubkeys, instruction.Accounts[account.Index].Address) {
+		if len(account.Pubkeys) > 0 && !policyContainsKey(account.Pubkeys, instruction.Accounts[account.AccountIndex].Address) {
 			return false
 		}
 	}
-	for _, data := range constraint.Data {
+	for _, data := range constraint.DataConstraints {
 		if !policyDataMatches(data, instruction.Data) {
 			return false
 		}
@@ -901,24 +694,25 @@ func policyConstraintMatches(constraint policyInstructionConstraint, instruction
 	return true
 }
 
-func policyDataMatches(constraint policyDataConstraint, data []byte) bool {
-	offset := constraint.Offset
-	if offset > uint64(len(data)) || uint64(len(constraint.Value)) > uint64(len(data))-offset {
+func policyDataMatches(constraint squadspolicy.DataConstraintView, data []byte) bool {
+	offset := constraint.DataOffset
+	value := policyValueBytes(constraint.DataValue)
+	if offset > uint64(len(data)) || uint64(len(value)) > uint64(len(data))-offset {
 		return false
 	}
-	actual := data[int(offset) : int(offset)+len(constraint.Value)]
+	actual := data[int(offset) : int(offset)+len(value)]
 	compare := 0
 	for i := len(actual) - 1; i >= 0; i-- {
-		if actual[i] < constraint.Value[i] {
+		if actual[i] < value[i] {
 			compare = -1
 			break
 		}
-		if actual[i] > constraint.Value[i] {
+		if actual[i] > value[i] {
 			compare = 1
 			break
 		}
 	}
-	if constraint.Kind == 5 && constraint.Operator > 1 {
+	if constraint.DataValue.Kind == 5 && constraint.Operator > 1 {
 		return false
 	}
 	switch constraint.Operator {
@@ -936,6 +730,35 @@ func policyDataMatches(constraint policyDataConstraint, data []byte) bool {
 		return compare <= 0
 	}
 	return false
+}
+
+func policyContainsKey(keys []solana.PublicKey, address string) bool {
+	for _, key := range keys {
+		if key.String() == address {
+			return true
+		}
+	}
+	return false
+}
+
+// Numeric variants retain their wire width and little-endian ordering. The
+// variant tag is checked before selecting its union field.
+func policyValueBytes(value squadspolicy.DataValueView) []byte {
+	switch value.Kind {
+	case 0:
+		return []byte{value.U8}
+	case 1:
+		return appendU16x(nil, value.U16)
+	case 2:
+		return appendU32x(nil, value.U32)
+	case 3:
+		return appendU64x(nil, value.U64)
+	case 4:
+		return value.U128[:]
+	case 5:
+		return value.Bytes
+	}
+	return nil
 }
 
 // BuildExactPolicyFixture is exported only to deterministic verification. It

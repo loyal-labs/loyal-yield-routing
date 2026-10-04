@@ -112,11 +112,24 @@ func TestMainnetReadinessIgnoresUnrelatedUnsignedNamespacesAndClosedBaseline(t *
 	s := integrationStore(t)
 	id, r, _ := seedDesiredRuntime(t, s)
 	control := &ControlReconciler{Store: s, Reader: r.Reader, Artifacts: &ArtifactReconciler{Store: s, Reader: r.Artifacts}}
-	if _, err := control.Tick(t.Context()); err != nil {
+	// Desired demand does not enqueue observed-control work. Request real bootstrap proof.
+	if _, err := s.EnqueueAutodepositReconciliationRequest(t.Context(), id, 200); err != nil {
 		t.Fatal(err)
+	}
+	if worked, err := control.Tick(t.Context()); err != nil || !worked {
+		t.Fatalf("control tick worked=%v err=%v", worked, err)
 	}
 	if _, err := r.Tick(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+	// Control/desired reconciliation can publish confirmed mainnet wallet events.
+	// Apply them through the actual projector before requiring financial readiness.
+	if _, err := s.ProjectSurplusLotsOnce(t.Context(), 1000); err != nil {
+		t.Fatal(err)
+	}
+	chain := runtimeRPCFixture(t, 200)
+	if slot, err := runtimeRecoveryHealth(t.Context(), s, chain, true); err != nil || slot != 200 {
+		t.Fatalf("baseline financial frontier=%d %v", slot, err)
 	}
 	for _, kind := range []string{"closed", "devnet", "null"} {
 		other := seedIntegrationTarget(t, s, "health-unrelated-"+kind)
@@ -146,7 +159,6 @@ func TestMainnetReadinessIgnoresUnrelatedUnsignedNamespacesAndClosedBaseline(t *
 			s.insertIntegrationEvent(t, other.TargetID, 1000+other.TargetID, 9_000_000, nil, time.Now())
 		}
 	}
-	chain := runtimeRPCFixture(t, 200)
 	if slot, err := s.desiredRuntimeHealth(t.Context(), chain); err != nil || slot != 200 {
 		t.Fatalf("desired frontier=%d %v", slot, err)
 	}
@@ -243,7 +255,7 @@ func TestNamespaceChangedBeforeSetupPersistenceHoldsNewPacket(t *testing.T) {
 				t.Fatalf("foreign setup publication=%v", err)
 			}
 			var attempts int
-			if err = s.pool.QueryRow(t.Context(), `SELECT count(*) FROM loyal_yield.balance_sweep_destination_setup_attempts WHERE target_id=$1`, target.TargetID).Scan(&attempts); err != nil || attempts != 0 {
+			if err = s.pool.QueryRow(t.Context(), `SELECT count(*) FROM loyal_yield.balance_sweep_destination_setup_attempts WHERE claim_token=$1`, claim).Scan(&attempts); err != nil || attempts != 0 {
 				t.Fatalf("setup journal=%d %v", attempts, err)
 			}
 		})

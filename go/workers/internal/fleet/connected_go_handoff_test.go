@@ -33,8 +33,11 @@ func TestConnectedGoSameMintAdmissionProducer(t *testing.T) {
 	}
 	database := os.Getenv("FLEET_TEST_GO_SAME_MINT_DATABASE_URL")
 	dbURL, err := url.Parse(database)
-	if err != nil || dbURL.Scheme != "postgresql" || dbURL.Hostname() != "127.0.0.1" || dbURL.Port() != "51913" || dbURL.User == nil || dbURL.User.Username() != "workers_v2" || dbURL.Path != "/fleet_go_same_mint" || dbURL.RawQuery != "" || dbURL.Fragment != "" {
+	if err != nil || dbURL.Scheme != "postgresql" || dbURL.Hostname() != "127.0.0.1" || dbURL.Port() != "51913" || dbURL.User == nil || dbURL.User.Username() != "workers_v2" || (dbURL.Path != "/fleet_go_same_mint" && dbURL.Path != "/fleet_go_same_mint_simplify") || dbURL.RawQuery != "" || dbURL.Fragment != "" {
 		t.Fatal("Go handoff requires the registered dedicated fixture database")
+	}
+	if _, hasPassword := dbURL.User.Password(); hasPassword {
+		t.Fatal("fixture database URL must not contain a password")
 	}
 	for _, name := range []string{"KAMINO_TEST_KLEND_PROXY_PATH", "KAMINO_CONNECTED_SVM_PATH", "KAMINO_CONNECTED_WORKER_PATH"} {
 		if os.Getenv(name) == "" {

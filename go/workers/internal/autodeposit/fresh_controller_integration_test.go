@@ -66,8 +66,8 @@ FROM loyal_yield.balance_sweep_targets WHERE id=$1`, seeded.TargetID, USDCMint);
 		t.Fatal(err)
 	}
 	code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot})
-	if err != nil || code == nil || *code != ExitCompleted {
-		t.Fatalf("fresh controller exit=%v error=%v", code, err)
+	if err != nil || code != ResultCompleted {
+		t.Fatalf("fresh controller outcome=%v error=%v", code, err)
 	}
 	if len(wires.built) != 2 || wires.built[0] != "pull" || wires.built[1] != "top_up" {
 		t.Fatalf("transaction legs = %v", wires.built)

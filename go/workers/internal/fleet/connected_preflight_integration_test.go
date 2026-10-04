@@ -192,7 +192,7 @@ func runConnectedLaneWithHandoff(t *testing.T, sameMint bool, handoff *connected
 		t.Skip("requires disposable database and real KLend proxy")
 	}
 	u, err := url.Parse(databaseURL)
-	if err != nil || u.Hostname() != "127.0.0.1" || (u.Path != "/fleet" && u.Path != "/fleet_same_mint" && !(handoff != nil && u.Path == "/fleet_go_same_mint") && !(crossMintBank != nil && u.Path == "/fleet_go_cross_mint")) {
+	if err != nil || u.Hostname() != "127.0.0.1" || (u.Path != "/fleet" && u.Path != "/fleet_same_mint" && !(handoff != nil && (u.Path == "/fleet_go_same_mint" || u.Path == "/fleet_go_same_mint_simplify")) && !(crossMintBank != nil && (u.Path == "/fleet_go_cross_mint" || u.Path == "/fleet_go_cross_mint_simplify"))) {
 		t.Fatal("requires disposable loopback /fleet database")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

@@ -230,7 +230,7 @@ func (s *Store) applyDesiredObservation(ctx context.Context, request desiredRequ
 				}
 			}
 			var held bool
-			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims WHERE target_id=$1 AND (status='selected' OR autodeposit_executor_lease_expires_at>now())) OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts a JOIN loyal_yield.balance_sweep_lot_claims c ON c.claim_token=a.claim_token WHERE c.target_id=$1 AND c.status<>'executed' AND a.attempt_state=ANY($2::text[])) OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_destination_setup_attempts WHERE target_id=$1 AND attempt_state IN('prepared','submitted','unknown','ambiguous'))`, request.TargetID, ClaimHoldingPullAttemptStates).Scan(&held); err != nil {
+			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims WHERE target_id=$1 AND (status='selected' OR autodeposit_executor_lease_expires_at>now())) OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts a JOIN loyal_yield.balance_sweep_lot_claims c ON c.claim_token=a.claim_token WHERE c.target_id=$1 AND c.status<>'executed' AND a.attempt_state=ANY($2::text[])) OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_destination_setup_attempts setup JOIN loyal_yield.balance_sweep_lot_claims c ON c.claim_token=setup.claim_token WHERE c.target_id=$1 AND setup.attempt_state IN('prepared','submitted','unknown','ambiguous'))`, request.TargetID, ClaimHoldingPullAttemptStates).Scan(&held); err != nil {
 				return err
 			}
 			if held {

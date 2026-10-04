@@ -158,7 +158,7 @@ func TestRuntimeSignedCustodyCannotBeAdoptedByRestart(t *testing.T) {
 				}
 			}
 			for i := 0; i < 2; i++ {
-				w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{exits: []*int{exitCodePtr(ExitRecoveryPending)}}, RuntimeChain: chain, PollInterval: time.Millisecond})
+				w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{results: []ExecutorResult{ResultRecoveryPending}}, RuntimeChain: chain, PollInterval: time.Millisecond})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -337,12 +337,12 @@ func TestRuntimeLiveUnsignedLeaseIsHealthyButExpiredWorkHolds(t *testing.T) {
 func TestRuntimeExecutorFailuresHoldDespiteHealthyDurableCensus(t *testing.T) {
 	for _, test := range []struct {
 		name string
-		code *int
+		code ExecutorResult
 		err  error
 	}{
-		{"alert", nil, errors.New("private RPC provider failure")},
-		{"nonfatal_exit_error", exitCodePtr(ExitRecoveryPending), errors.New("proof not yet available")},
-		{"unclassified_process_success", exitCodePtr(0), nil},
+		{"alert", ResultUnknown, errors.New("private RPC provider failure")},
+		{"recovery_outcome_error", ResultRecoveryPending, errors.New("proof not yet available")},
+		{"unknown_outcome", ResultUnknown, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := integrationStore(t)
@@ -352,7 +352,7 @@ func TestRuntimeExecutorFailuresHoldDespiteHealthyDurableCensus(t *testing.T) {
 			if _, err := s.pool.Exec(ctx, `INSERT INTO loyal_yield.balance_sweep_wallet_balances_current(target_id,wallet,wallet_usdc_ata,wallet_token_ata,amount_raw,mint,observed_slot,source,source_commitment) VALUES($1,'itest-wallet','itest-wallet-usdc','itest-wallet-usdc',9000000,$2,100,'itest','confirmed')`, target.TargetID, USDCMint); err != nil {
 				t.Fatal(err)
 			}
-			executor := &scriptedExecutor{exits: []*int{test.code}, errs: []error{test.err}}
+			executor := &scriptedExecutor{results: []ExecutorResult{test.code}, errs: []error{test.err}}
 			chain := runtimeRPCFixture(t, 777)
 			w, err := NewWorker(WorkerDependencies{Store: s, Executor: executor, RuntimeChain: chain})
 			if err != nil {

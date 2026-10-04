@@ -53,8 +53,11 @@ func TestConnectedRetailGoCrossMintExecution(t *testing.T) {
 		t.Skip("requires registered dedicated current Go cross-mint fixture")
 	}
 	u, err := url.Parse(database)
-	if err != nil || u.Scheme != "postgresql" || u.Hostname() != "127.0.0.1" || u.Port() != "51913" || u.User == nil || u.User.Username() != "workers_v2" || u.Path != "/fleet_go_cross_mint" || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Scheme != "postgresql" || u.Hostname() != "127.0.0.1" || u.Port() != "51913" || u.User == nil || u.User.Username() != "workers_v2" || (u.Path != "/fleet_go_cross_mint" && u.Path != "/fleet_go_cross_mint_simplify") || u.RawQuery != "" || u.Fragment != "" {
 		t.Fatal("refusing unregistered cross-mint fixture database")
+	}
+	if _, hasPassword := u.User.Password(); hasPassword {
+		t.Fatal("fixture database URL must not contain a password")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -69,7 +72,7 @@ func TestConnectedRetailGoCrossMintExecution(t *testing.T) {
 	}
 	defer pool.Close()
 	var db, role, address string
-	if err := pool.QueryRow(ctx, `SELECT current_database(),current_user,host(inet_server_addr())`).Scan(&db, &role, &address); err != nil || db != "fleet_go_cross_mint" || role != "workers_v2" || address != "127.0.0.1" {
+	if err := pool.QueryRow(ctx, `SELECT current_database(),current_user,host(inet_server_addr())`).Scan(&db, &role, &address); err != nil || db != u.Path[1:] || role != "workers_v2" || address != "127.0.0.1" {
 		t.Fatalf("unexpected actual fixture identity %q/%q/%q: %v", db, role, address, err)
 	}
 	store, err := fleetexec.NewStore(ctx, pool)

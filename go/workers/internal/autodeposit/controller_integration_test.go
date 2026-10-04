@@ -530,7 +530,7 @@ func TestControllerRecoversConfirmedPull(t *testing.T) {
 	}
 
 	target := ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slotID, ClaimToken: claimToken}
-	exitCodeResult, err := controller.Execute(ctx, target)
+	result, err := controller.Execute(ctx, target)
 	if err != nil {
 		t.Fatalf("execute recovery: %v", err)
 	}
@@ -564,8 +564,8 @@ WHERE claim_token = $1 AND operation_kind = 'pull'`, claimToken).Scan(&pullExecu
 	if err := store.pool.QueryRow(ctx, `SELECT status::text FROM loyal_yield.balance_sweep_lot_claims WHERE claim_token = $1`, claimToken).Scan(&claimStatus); err != nil {
 		t.Fatal(err)
 	}
-	if exitCodeResult == nil || *exitCodeResult != ExitCompleted || claimStatus != "executed" {
-		t.Fatalf("recovery exit %v claim %s, want completed/executed with registered accounting schema", exitCodeResult, claimStatus)
+	if result != ResultCompleted || claimStatus != "executed" {
+		t.Fatalf("recovery outcome %v claim %s, want completed/executed with registered accounting schema", result, claimStatus)
 	}
 }
 
@@ -624,12 +624,12 @@ func TestControllerRefusesWrongTopUpReceipt(t *testing.T) {
 			if err != nil {
 				t.Fatalf("build controller: %v", err)
 			}
-			exitCodeResult, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slotID, ClaimToken: claimToken})
+			result, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slotID, ClaimToken: claimToken})
 			if err == nil {
 				t.Fatal("contradictory receipt must report an error")
 			}
-			if exitCodeResult == nil || *exitCodeResult != ExitTransactionEffectAmbig {
-				t.Fatalf("exit %v, want %d: a disagreeing top-up receipt is ambiguous", exitCodeResult, ExitTransactionEffectAmbig)
+			if result != ResultTransactionEffectAmbig {
+				t.Fatalf("outcome %v, want %s: a disagreeing top-up receipt is ambiguous", result, ResultTransactionEffectAmbig)
 			}
 			var claimStatus string
 			if err := store.pool.QueryRow(ctx, `
@@ -675,12 +675,12 @@ func TestControllerSimulationFailureKeepsCustodyClaimed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build controller: %v", err)
 	}
-	exitCodeResult, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slotID, ClaimToken: claimToken})
+	result, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slotID, ClaimToken: claimToken})
 	if !errors.Is(err, chain.simulateErr) {
 		t.Fatalf("simulation error = %v", err)
 	}
-	if exitCodeResult == nil || *exitCodeResult != ExitDependencyUnavailable {
-		t.Fatalf("exit %v, want %d", exitCodeResult, ExitDependencyUnavailable)
+	if result != ResultDependencyUnavailable {
+		t.Fatalf("result %v, want %s", result, ResultDependencyUnavailable)
 	}
 	var topUpState string
 	if err := store.pool.QueryRow(ctx, `

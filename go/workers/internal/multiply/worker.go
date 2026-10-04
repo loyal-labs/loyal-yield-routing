@@ -144,29 +144,34 @@ func (w *Worker) runtimeRecoveryHealth(ctx context.Context, result TickResult) (
 	// A completed, wallet-owned Claim wait may retain its actual payout snapshot
 	// past the worker refresh age: the source does not poll claimable withdrawals.
 	// Exact payout coverage and zero exposure remain required, including shortfall.
-	err = w.store.pool.QueryRow(ctx, `SELECT EXISTS(
+	err = w.store.pool.QueryRow(ctx, `WITH routes AS (
+ SELECT r.*, r.state->>'currentOperationId' AS current_operation,
+ r.state->>'goal'='withdraw' AND r.state #>> '{withdrawal,status}'='claimable' AS claimable
+ FROM loyal_yield.multiply_route_states r WHERE ($1::text IS NULL OR r.route_key=$1)
+)
+SELECT EXISTS(
  SELECT 1 FROM loyal_yield.multiply_operations o WHERE ($1::text IS NULL OR o.route_key=$1)
  AND o.status NOT IN ('reconciled','expired') AND NOT COALESCE((o.operation_id=$2
  AND o.status IN ('signed_persisted','broadcast_intent') AND o.last_valid_block_height>$3
- AND EXISTS(SELECT 1 FROM loyal_yield.multiply_route_states r WHERE r.route_key=o.route_key
- AND r.state->>'currentOperationId'=o.operation_id AND r.state->>'engineVersion'='earn_max_v2')),false))
- OR EXISTS(SELECT 1 FROM loyal_yield.multiply_route_states r WHERE ($1::text IS NULL OR r.route_key=$1)
- AND (r.state->>'goal'='manual_recovery'
- OR (COALESCE(r.state->>'currentOperationId','')<>'' AND NOT EXISTS(
- SELECT 1 FROM loyal_yield.multiply_operations o WHERE o.operation_id=r.state->>'currentOperationId' AND o.route_key=r.route_key
+ AND EXISTS(SELECT 1 FROM routes r WHERE r.route_key=o.route_key
+ AND r.current_operation=o.operation_id AND r.state->>'engineVersion'='earn_max_v2')),false))
+ OR EXISTS(SELECT 1 FROM routes r WHERE (r.state->>'goal'='manual_recovery'
+ OR (COALESCE(r.current_operation,'')<>'' AND NOT EXISTS(
+ SELECT 1 FROM loyal_yield.multiply_operations o WHERE o.operation_id=r.current_operation AND o.route_key=r.route_key
  AND o.status IN ('prepared','signed_persisted','broadcast_intent','confirmed','reconciliation_pending')))
  OR (r.state->>'goal' IN ('deploy','move','withdraw') AND NOT EXISTS(
  SELECT 1 FROM loyal_yield.earn_max_policy_sets p WHERE p.settings=r.settings AND p.vault_index=r.vault_index
  AND p.status='ready' AND p.manifest_version='earn-max-v2' AND p.policy_seed_base=(r.state->>'policySeedBase')::bigint))
- OR NOT EXISTS(SELECT 1 FROM loyal_yield.multiply_position_snapshots snap WHERE snap.route_key=r.route_key
+ OR NOT EXISTS(SELECT 1 FROM loyal_yield.multiply_position_snapshots snap
+ CROSS JOIN LATERAL (SELECT CASE WHEN r.claimable THEN
+ snap.claim_raw>=(r.state #>> '{withdrawal,amountRaw}')::numeric
+ AND snap.collateral_raw=0 AND snap.debt_raw=0 ELSE false END AS claim_covered) evidence
+ WHERE snap.route_key=r.route_key
  AND snap.observed_slot=(SELECT max(latest.observed_slot) FROM loyal_yield.multiply_position_snapshots latest WHERE latest.route_key=r.route_key)
- AND (NOT COALESCE((r.state->>'goal'='withdraw' AND r.state #>> '{withdrawal,status}'='claimable'),false)
- OR (snap.claim_raw>=(r.state #>> '{withdrawal,amountRaw}')::numeric AND snap.collateral_raw=0 AND snap.debt_raw=0))
- AND (snap.observed_at>clock_timestamp()-interval '5 minutes' OR (r.state->>'goal'='withdraw'
- AND r.state #>> '{withdrawal,status}'='claimable' AND COALESCE(r.state->>'currentOperationId','')=''
+ AND (NOT COALESCE(r.claimable,false) OR evidence.claim_covered)
+ AND (snap.observed_at>clock_timestamp()-interval '5 minutes' OR (r.claimable AND COALESCE(r.current_operation,'')=''
  AND r.state #>> '{withdrawal,unwindCompletedAt}' IS NOT NULL
- AND snap.claim_raw>=(r.state #>> '{withdrawal,amountRaw}')::numeric
- AND snap.collateral_raw=0 AND snap.debt_raw=0)))))`, scope, current, int64(height)).Scan(&blocked)
+ AND evidence.claim_covered)))))`, scope, current, int64(height)).Scan(&blocked)
 	if err != nil {
 		return 0, err
 	}

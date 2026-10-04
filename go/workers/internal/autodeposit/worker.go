@@ -12,13 +12,12 @@ import (
 // sweep, and when a wire may be rebroadcast are all owned by this family's
 // typed functions and Store SQL. The implementation owns only the effects this
 // package cannot do — chain reads, wire construction, broadcast — and reports
-// its end state through the legacy exit-code protocol.
+// its typed family outcome.
 type TargetExecutor interface {
 	// Execute resolves one executable target: recovering a claim whose pull
 	// already holds custody, or claiming and sweeping a fresh scheduled slot.
-	// A nil exit code with an error means the run never reached an exit and is
-	// classified as failed.
-	Execute(ctx context.Context, target ExecutableTarget) (*int, error)
+	// An unknown outcome never proves completion; with an error it is failed.
+	Execute(ctx context.Context, target ExecutableTarget) (ExecutorResult, error)
 }
 
 // WorkerDependencies are the worker's explicit dependencies and bounds.
@@ -33,7 +32,7 @@ type WorkerDependencies struct {
 	// SlotHints carries externally signalled slot ids (for example realtime
 	// events) that should be dispatched first. Optional; drained every tick.
 	SlotHints *SlotHintQueue
-	// OnAlert receives the alerts a tick's exits deserve. Optional.
+	// OnAlert receives the alerts a tick's outcomes deserve. Optional.
 	OnAlert func(ExecutorFailureAlert)
 	// OnError receives each Tick's housekeeping failure. Run keeps the family's
 	// recovery model — the next tick re-reads durable state — but a projection
@@ -133,8 +132,8 @@ type TickReport struct {
 	Outcome    ExecutorOutcome
 	Dispatched []ExecutableTarget
 	Alerts     []ExecutorFailureAlert
-	// ExecutorErrors includes errors accompanying a legacy nonfatal exit code.
-	// Such an exit can retain custody safely without proving runtime health.
+	// ExecutorErrors includes errors accompanying a nonfatal family outcome.
+	// Such an outcome can retain custody safely without proving runtime health.
 	ExecutorErrors int
 }
 
@@ -144,12 +143,12 @@ type TickReport struct {
 //  2. fail requested slots that were never picked up,
 //  3. release selected claims that provably never pulled,
 //  4. load executable targets — pull recovery first, fresh sweeps after,
-//  5. dispatch each through the executor and classify its exit.
+//  5. dispatch each through the executor and record its outcome.
 //
 // A recovery pass runs even while a target's desired_active is false: custody
 // that already left the wallet must be resolved regardless of enablement. The
 // error return covers only this pass's own housekeeping failures; executor
-// exits are tallied as outcomes, never aborted the scan.
+// outcomes are tallied, never aborted the scan.
 func (w *Worker) Tick(ctx context.Context) (TickReport, error) {
 	var report TickReport
 	if err := ctx.Err(); err != nil {
@@ -209,18 +208,18 @@ func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outco
 			return alerts
 		}
 		outcome.ExecutionsAttempted++
-		exitCode, err := w.executor.Execute(ctx, target)
+		result, err := w.executor.Execute(ctx, target)
 		if err != nil {
 			w.executionErrors++
-			if exitCode == nil {
+			if result == ResultUnknown {
 				alert := genericExecutorAlert()
-				alert.Summary = "autodeposit executor run errored before an exit: " + err.Error()
+				alert.Summary = "autodeposit executor run errored without a classified outcome: " + err.Error()
 				alerts = append(alerts, *alert)
 				outcome.ExecutionsFailed++
 				continue
 			}
 		}
-		if alert := outcome.RecordExecutorExit(exitCode); alert != nil {
+		if alert := outcome.RecordExecutorResult(result); alert != nil {
 			alerts = append(alerts, *alert)
 		}
 	}
@@ -248,7 +247,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		report, err := w.Tick(cycle)
 		var slot uint64
 		if err == nil && w.runtimeReporter != nil {
-			if len(report.Alerts) != 0 || report.ExecutorErrors != 0 || report.Outcome.ExecutionsProcessSuccessUnclassifd != 0 {
+			if len(report.Alerts) != 0 || report.ExecutorErrors != 0 || report.Outcome.ExecutionsUnknown != 0 {
 				err = errRuntimeProofUnavailable
 			} else {
 				slot, err = runtimeRecoveryHealth(cycle, w.store, w.runtimeChain, true)

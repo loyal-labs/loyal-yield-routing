@@ -279,7 +279,14 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
         || connection.get_username() != "workers_v2"
         || !matches!(
             connection.get_database(),
-            Some("fleet" | "fleet_same_mint" | "fleet_go_same_mint" | "fleet_go_cross_mint")
+            Some(
+                "fleet"
+                    | "fleet_same_mint"
+                    | "fleet_go_same_mint"
+                    | "fleet_go_cross_mint"
+                    | "fleet_go_same_mint_simplify"
+                    | "fleet_go_cross_mint_simplify"
+            )
         )
     {
         return Err("connected worker requires disposable loopback /fleet database".into());

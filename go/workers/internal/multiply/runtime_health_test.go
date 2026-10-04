@@ -100,11 +100,31 @@ func TestRuntimeCensusCannotHidePreparedWorkOrMissingSnapshots(t *testing.T) {
 	if slot, err := w.runtimeRecoveryHealth(ctx, idle); err != nil || slot != 800 {
 		t.Fatalf("source-completed wallet wait %d %v", slot, err)
 	}
+	for i, exposure := range []struct {
+		name, claim, collateral, debt string
+	}{
+		{"stale payout shortfall", "0", "0", "0"},
+		{"stale residual collateral", "1", "1", "0"},
+		{"stale residual debt", "1", "0", "1"},
+	} {
+		if _, err := store.RecordPositionSnapshot(ctx, &PositionSnapshotInput{RouteKey: state.RouteKey, Generation: state.Generation, ObservedSlot: uint64(502 + i), ObservedAt: completed, ClaimRaw: exposure.claim, CollateralRaw: exposure.collateral, DebtRaw: exposure.debt, EquityUSD: "1", CollateralValueUSD: "0", DebtValueUSD: "0", ValuationSource: "confirmed_kamino_reserve_curve_500ms"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.runtimeRecoveryHealth(ctx, idle); err == nil {
+			t.Fatalf("%s became healthy through an older covered snapshot", exposure.name)
+		}
+	}
 	state.Generation++
 	state.Goal = GoalIdle
 	state.Withdrawal = nil
 	if ok, err := store.SaveRouteState(ctx, lease, state); err != nil || !ok {
 		t.Fatalf("reset source health fixture %v %v", ok, err)
+	}
+	if _, err := store.RecordPositionSnapshot(ctx, &PositionSnapshotInput{RouteKey: state.RouteKey, Generation: state.Generation, ObservedSlot: 505, ObservedAt: time.Now().UTC(), ClaimRaw: "0", CollateralRaw: "0", DebtRaw: "0", EquityUSD: "0", CollateralValueUSD: "0", DebtValueUSD: "0", ValuationSource: "confirmed_kamino_reserve_curve_500ms"}); err != nil {
+		t.Fatal(err)
+	}
+	if slot, err := w.runtimeRecoveryHealth(ctx, idle); err != nil || slot != 800 {
+		t.Fatalf("fresh idle before prepared work %d %v", slot, err)
 	}
 	operation := integrationOperation(state.RouteKey, state.Cycle, lease.Version+1)
 	state.Generation++

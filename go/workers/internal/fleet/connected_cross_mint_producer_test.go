@@ -54,8 +54,11 @@ func connectedCrossMintBankRequest(t *testing.T) *connectedCrossMintBankHandoff 
 	}
 	database := os.Getenv("FLEET_TEST_GO_CROSS_MINT_DATABASE_URL")
 	u, err = url.Parse(database)
-	if err != nil || u.Scheme != "postgresql" || u.Hostname() != "127.0.0.1" || u.Port() != "51913" || u.User == nil || u.User.Username() != "workers_v2" || u.Path != "/fleet_go_cross_mint" || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Scheme != "postgresql" || u.Hostname() != "127.0.0.1" || u.Port() != "51913" || u.User == nil || u.User.Username() != "workers_v2" || (u.Path != "/fleet_go_cross_mint" && u.Path != "/fleet_go_cross_mint_simplify") || u.RawQuery != "" || u.Fragment != "" {
 		t.Fatal("cross-mint bank requires its registered dedicated database")
+	}
+	if _, hasPassword := u.User.Password(); hasPassword {
+		t.Fatal("fixture database URL must not contain a password")
 	}
 	return &connectedCrossMintBankHandoff{callback, token, database}
 }

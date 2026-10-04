@@ -36,6 +36,11 @@ func TestSVMCurrentFloorMutationRejectsActualSignedPullBeforeBroadcast(t *testin
 	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET settings=$2,authority=$3,wallet=$3,vault_pubkey=$4,policy_seed=$5,policy_account=$6,wallet_usdc_ata=$7,wallet_token_ata=$7,vault_usdc_ata=$8,vault_token_ata=$8,wallet_balance_floor_raw=400000 WHERE id=$1`, seeded.TargetID, f.Settings, f.Wallet, f.Vault, f.PolicySeed, f.Policy, f.WalletATA, f.VaultATA); err != nil {
 		t.Fatal(err)
 	}
+	// Keep the active route policy in the same admission namespace as its vault
+	// and target so this fixture reaches the protection-floor boundary.
+	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.route_policies SET settings=$2,authority=$3,vault_pubkey=$4 WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, seeded.ManagedVaultID, f.Settings, f.Wallet, f.Vault); err != nil {
+		t.Fatal(err)
+	}
 	plan := svmPullPlan(f)
 	plan.Target.ID, plan.Target.ManagedVaultID = seeded.TargetID, seeded.ManagedVaultID
 	if _, err = store.FreezeDepositPlan(ctx, claim, "lease-current", plan); err != nil {

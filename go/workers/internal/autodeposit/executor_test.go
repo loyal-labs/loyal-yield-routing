@@ -1,79 +1,35 @@
 package autodeposit
 
-import (
-	"encoding/json"
-	"testing"
-)
+import "testing"
 
-type executorExitFixture struct {
-	Description string `json:"description"`
-	Cases       []struct {
-		ExitCode *int `json:"exitCode"`
-		Expect   struct {
-			Result         string  `json:"result"`
-			AlertCode      *string `json:"alertCode"`
-			Retryable      bool    `json:"retryable"`
-			SelfRecovering bool    `json:"selfRecovering"`
-		} `json:"expect"`
-	} `json:"cases"`
-}
-
-func TestExecutorExitContract(t *testing.T) {
-	var fixture executorExitFixture
-	if err := json.Unmarshal(mustReadFixture(t, "executor_exits.json"), &fixture); err != nil {
-		t.Fatal(err)
-	}
-	for _, testCase := range fixture.Cases {
-		result := ExecutorResultFromExitCode(testCase.ExitCode)
-		if string(result) != testCase.Expect.Result {
-			t.Fatalf("exit %v classified %q, want %q", testCase.ExitCode, result, testCase.Expect.Result)
-		}
-		alert := ExecutorFailureAlertFor(testCase.ExitCode)
-		if testCase.Expect.AlertCode == nil {
-			if alert != nil {
-				t.Fatalf("exit %v alerted %q, want no alert: a correct decision must not page", testCase.ExitCode, alert.Code)
-			}
-			continue
-		}
-		if alert == nil {
-			t.Fatalf("exit %v produced no alert, want %q", testCase.ExitCode, *testCase.Expect.AlertCode)
-		}
-		if alert.Code != *testCase.Expect.AlertCode {
-			t.Fatalf("exit %v alerted %q, want %q", testCase.ExitCode, alert.Code, *testCase.Expect.AlertCode)
-		}
-		if alert.Retryable != testCase.Expect.Retryable {
-			t.Fatalf("exit %v alert retryable=%v, want %v", testCase.ExitCode, alert.Retryable, testCase.Expect.Retryable)
-		}
-		if alert.SelfRecovering != testCase.Expect.SelfRecovering {
-			t.Fatalf("exit %v alert selfRecovering=%v, want %v", testCase.ExitCode, alert.SelfRecovering, testCase.Expect.SelfRecovering)
+func TestExecutorFailureContract(t *testing.T) {
+	for _, test := range []struct {
+		result                    ExecutorResult
+		code, operation           string
+		retryable, selfRecovering bool
+	}{
+		{ResultKaminoTopUpFailed, "kamino_top_up_failed", "top_up_autodeposit_to_kamino", false, false},
+		{ResultYieldPersistenceFailed, "yield_persistence_failed", "persist_autodeposit_yield_position", false, false},
+		{ResultPreflightBlocked, "autodeposit_preflight_blocked", "preflight_autodeposit_route", true, false},
+		{ResultFeePayerExhausted, "autodeposit_fee_payer_exhausted", "fund_autodeposit_fee_payer", true, false},
+		{ResultTransactionEffectAmbig, "autodeposit_transaction_effect_ambiguous", "reconcile_autodeposit_transaction", false, false},
+		{ResultIdleHandoffFailed, "autodeposit_idle_handoff_failed", "publish_autodeposit_idle_vault_balance", true, false},
+		{ResultDependencyUnavailable, "autodeposit_dependency_unavailable", "retry_autodeposit_after_dependency_recovers", true, true},
+	} {
+		var outcome ExecutorOutcome
+		alert := outcome.RecordExecutorResult(test.result)
+		if outcome.ExecutionsFailed != 1 || alert == nil || alert.Code != test.code || alert.Operation != test.operation || alert.Retryable != test.retryable || alert.SelfRecovering != test.selfRecovering {
+			t.Fatalf("result %q: outcome %+v alert %+v", test.result, outcome, alert)
 		}
 	}
 }
-
-// An unclassified exit zero must never count as completed work: legacy
-// executors exit zero while funds are still pending.
-func TestUnclassifiedExitZeroIsNotCompletion(t *testing.T) {
-	zero := 0
-	var outcome ExecutorOutcome
-	if alert := outcome.RecordExecutorExit(&zero); alert != nil {
-		t.Fatalf("unclassified success alerted %q", alert.Code)
-	}
-	if outcome.ExecutionsCompleted != 0 {
-		t.Fatalf("unclassified exit zero counted as %d completions", outcome.ExecutionsCompleted)
-	}
-	if outcome.ExecutionsProcessSuccessUnclassifd != 1 {
-		t.Fatal("unclassified exit zero was not counted separately")
-	}
-}
-
-func TestSignalTerminationStaysGenericAndActionable(t *testing.T) {
-	var outcome ExecutorOutcome
-	alert := outcome.RecordExecutorExit(nil)
-	if alert == nil || alert.Code != "autodeposit_executor_failed" {
-		t.Fatalf("signal termination alert %v must stay the generic executor failure", alert)
-	}
-	if outcome.ExecutionsFailed != 1 {
-		t.Fatal("signal termination was not counted as a failed execution")
+func TestUnknownOutcomeNeverProvesCompletion(t *testing.T) {
+	for _, result := range []ExecutorResult{ResultUnknown, "future_outcome"} {
+		var outcome ExecutorOutcome
+		alert := outcome.RecordExecutorResult(result)
+		if outcome.ExecutionsCompleted != 0 || alert == nil || alert.Code != "autodeposit_executor_failed" || outcome.ExecutionsUnknown+outcome.ExecutionsFailed != 1 {
+			t.Fatalf("unknown result %q: %+v, alert %v", result, outcome, alert)
+		}
 	}
 }
 

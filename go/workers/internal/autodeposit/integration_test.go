@@ -343,7 +343,7 @@ VALUES ($1, 'itest-wallet', 'itest-wallet-usdc', 'itest-wallet-usdc', 9000000, $
 		t.Fatalf("seed current wallet balance: %v", err)
 	}
 
-	executor := &scriptedExecutor{exits: []*int{exitCodePtr(ExitNoop)}}
+	executor := &scriptedExecutor{results: []ExecutorResult{ResultNoop}}
 	worker, err := NewWorker(WorkerDependencies{Store: store, Executor: executor})
 	if err != nil {
 		t.Fatalf("build worker: %v", err)
@@ -362,7 +362,7 @@ VALUES ($1, 'itest-wallet', 'itest-wallet-usdc', 'itest-wallet-usdc', 9000000, $
 		t.Fatalf("dispatched target %d, want %d", report.Dispatched[0].TargetID, seeded.TargetID)
 	}
 	if report.Outcome.ExecutionsNoop != 1 || len(report.Alerts) != 0 {
-		t.Fatalf("noop exit tallied %+v with alerts %v", report.Outcome, report.Alerts)
+		t.Fatalf("noop outcome tallied %+v with alerts %v", report.Outcome, report.Alerts)
 	}
 	if executor.order[0].ScheduledSlotID == 0 {
 		t.Fatal("executor received a target without its scheduled slot")

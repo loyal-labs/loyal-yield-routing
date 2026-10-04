@@ -59,7 +59,7 @@ for entry in app_schema:
         raise SystemExit("Historical app schema fixture provenance drifted")
 default_families = ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "multiply", "lookup", "ata_projector")
 families = tuple(os.environ.get("WORKERS_V2_FIXTURE_FAMILIES", ",".join(default_families)).split(","))
-allowed_families = set(default_families) | {"fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture", "lookup", "ata_projector", "autodeposit_intent"}
+allowed_families = set(default_families) | {"fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture", "lookup", "ata_projector", "autodeposit_intent", "fleet_go_same_mint_simplify", "fleet_go_cross_mint_simplify"}
 if not families or len(set(families)) != len(families) or any(f not in allowed_families for f in families):
     raise SystemExit("Fixture families must be distinct allowlisted test scopes")
 def apply_yield_schema(url):
@@ -110,7 +110,7 @@ def apply_apps_autodeposit_schema(url):
         execute(url, sql=ddl + "DO $$" + tail)
 
 for family in families:
-    name = family if family in {"fleet", "fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture"} else "workers_v2_" + family
+    name = family if family in {"fleet", "fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture", "fleet_go_same_mint_simplify", "fleet_go_cross_mint_simplify"} else "workers_v2_" + family
     execute(base, sql='CREATE DATABASE "' + name + '"')
     url = urlunparse(parsed._replace(path="/" + name))
     apply_yield_schema(url)

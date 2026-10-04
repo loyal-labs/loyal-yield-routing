@@ -263,8 +263,8 @@ func noopClaim(targetID int64, reason string) ClaimOutcome {
 func lockActiveTarget(ctx context.Context, tx pgx.Tx, targetID int64) (bool, error) {
 	var active bool
 	err := tx.QueryRow(ctx, `
-SELECT desired_active AND chain_status = 'active' AND cluster='mainnet-beta'
-AND EXISTS(SELECT 1 FROM loyal_yield.managed_vaults mv JOIN loyal_yield.route_policies rp ON rp.id=mv.active_policy_id WHERE mv.active AND mv.settings=balance_sweep_targets.settings AND mv.vault_index=balance_sweep_targets.vault_index AND mv.vault_pubkey=balance_sweep_targets.vault_pubkey AND rp.active AND rp.cluster='mainnet-beta' AND rp.authority=balance_sweep_targets.authority AND 'same_mint_kamino'=ANY(rp.route_modes))
+SELECT COALESCE(desired_active AND chain_status = 'active' AND cluster='mainnet-beta'
+AND EXISTS(SELECT 1 FROM loyal_yield.managed_vaults mv JOIN loyal_yield.route_policies rp ON rp.id=mv.active_policy_id WHERE mv.active AND mv.settings=balance_sweep_targets.settings AND mv.vault_index=balance_sweep_targets.vault_index AND mv.vault_pubkey=balance_sweep_targets.vault_pubkey AND rp.active AND rp.cluster='mainnet-beta' AND rp.authority=balance_sweep_targets.authority AND 'same_mint_kamino'=ANY(rp.route_modes)), false)
 FROM loyal_yield.balance_sweep_targets
 WHERE id = $1
   AND token_mint = $2

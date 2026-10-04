@@ -2,89 +2,51 @@ package autodeposit
 
 import "fmt"
 
-// Executor exit-code protocol. Unmarked exit zero is only process success:
-// legacy executors also return zero while funds are still pending, so a caller
-// that treats zero as completion invents progress.
-const (
-	ExitKaminoTopUpFailed      = 20
-	ExitYieldPersistenceFailed = 21
-	ExitPreflightBlocked       = 22
-	ExitNotActionable          = 23
-	ExitFeePayerExhausted      = 24
-	ExitTransactionEffectAmbig = 25
-	ExitIdleHandoffFailed      = 26
-	ExitDependencyUnavailable  = 27
-	ExitCompleted              = 28
-	ExitDeferred               = 29
-	ExitRecoveryPending        = 30
-	ExitNoop                   = 31
-)
-
-// ExecutorResult classifies one executor run.
+// ExecutorResult is the family's durable execution outcome, independent of process status.
 type ExecutorResult string
 
 const (
-	ResultCompleted                 ExecutorResult = "completed"
-	ResultDeferred                  ExecutorResult = "deferred"
-	ResultRecoveryPending           ExecutorResult = "recovery_pending"
-	ResultNotActionable             ExecutorResult = "not_actionable"
-	ResultNoop                      ExecutorResult = "noop"
-	ResultProcessSuccessUnclassifed ExecutorResult = "process_success_unclassified"
-	ResultFailed                    ExecutorResult = "failed"
+	ResultUnknown                ExecutorResult = ""
+	ResultCompleted              ExecutorResult = "completed"
+	ResultDeferred               ExecutorResult = "deferred"
+	ResultRecoveryPending        ExecutorResult = "recovery_pending"
+	ResultNotActionable          ExecutorResult = "not_actionable"
+	ResultNoop                   ExecutorResult = "noop"
+	ResultFailed                 ExecutorResult = "failed"
+	ResultKaminoTopUpFailed      ExecutorResult = "kamino_top_up_failed"
+	ResultYieldPersistenceFailed ExecutorResult = "yield_persistence_failed"
+	ResultPreflightBlocked       ExecutorResult = "preflight_blocked"
+	ResultFeePayerExhausted      ExecutorResult = "fee_payer_exhausted"
+	ResultTransactionEffectAmbig ExecutorResult = "transaction_effect_ambiguous"
+	ResultIdleHandoffFailed      ExecutorResult = "idle_handoff_failed"
+	ResultDependencyUnavailable  ExecutorResult = "dependency_unavailable"
 )
 
-// ExecutorResultFromExitCode maps an executor exit code to its outcome. A nil
-// code means the process was killed by a signal.
-func ExecutorResultFromExitCode(exitCode *int) ExecutorResult {
-	if exitCode == nil {
-		return ResultFailed
-	}
-	switch *exitCode {
-	case ExitCompleted:
-		return ResultCompleted
-	case ExitDeferred:
-		return ResultDeferred
-	case ExitRecoveryPending:
-		return ResultRecoveryPending
-	case ExitNotActionable:
-		return ResultNotActionable
-	case ExitNoop:
-		return ResultNoop
-	case 0:
-		return ResultProcessSuccessUnclassifed
-	default:
-		return ResultFailed
-	}
-}
-
-// ExecutorFailureAlert is the operator-facing meaning of an executor exit.
+// ExecutorFailureAlert is the operator-facing meaning of an execution outcome.
 type ExecutorFailureAlert struct {
 	Code      string
 	Operation string
 	Summary   string
 	Retryable bool
-	// SelfRecovering marks an exit whose executor already scheduled its own
+	// SelfRecovering marks an outcome whose executor already scheduled its own
 	// retry: visible at WARN, never paging.
 	SelfRecovering bool
 }
 
-// ExecutorFailureAlertFor returns the alert an exit deserves, or nil when the
-// exit reports a correct decision rather than a fault. A target whose vault is
+// ExecutorFailureAlertFor returns the alert an outcome deserves, or nil when the
+// outcome reports a correct decision rather than a fault. A target whose vault is
 // confirmed empty, or whose missing token delegate was safely quarantined, has
 // nothing the executor can act on; paging on it trains real failures to be
 // ignored.
-func ExecutorFailureAlertFor(exitCode *int) *ExecutorFailureAlert {
-	if exitCode == nil {
-		return genericExecutorAlert()
-	}
-	switch *exitCode {
-	case ExitKaminoTopUpFailed:
+func ExecutorFailureAlertFor(result ExecutorResult) *ExecutorFailureAlert {
+	switch result {
+	case ResultKaminoTopUpFailed:
 		return &ExecutorFailureAlert{
 			Code:      "kamino_top_up_failed",
 			Operation: "top_up_autodeposit_to_kamino",
 			Summary:   "autodeposit pull succeeded but Kamino top-up failed",
 		}
-	case ExitYieldPersistenceFailed:
+	case ResultYieldPersistenceFailed:
 		return &ExecutorFailureAlert{
 			Code:      "yield_persistence_failed",
 			Operation: "persist_autodeposit_yield_position",
@@ -92,7 +54,7 @@ func ExecutorFailureAlertFor(exitCode *int) *ExecutorFailureAlert {
 		}
 	// The route itself is unexecutable and no funds moved. Waiting cannot clear
 	// it, so it must not page as a lookup-table or top-up fault.
-	case ExitPreflightBlocked:
+	case ResultPreflightBlocked:
 		return &ExecutorFailureAlert{
 			Code:      "autodeposit_preflight_blocked",
 			Operation: "preflight_autodeposit_route",
@@ -100,27 +62,27 @@ func ExecutorFailureAlertFor(exitCode *int) *ExecutorFailureAlert {
 			Retryable: true,
 		}
 	// Names the remedy rather than the symptom: the answer is to send SOL.
-	case ExitFeePayerExhausted:
+	case ResultFeePayerExhausted:
 		return &ExecutorFailureAlert{
 			Code:      "autodeposit_fee_payer_exhausted",
 			Operation: "fund_autodeposit_fee_payer",
 			Summary:   "autodeposit fee payer is out of SOL; top up the delegated signer",
 			Retryable: true,
 		}
-	case ExitTransactionEffectAmbig:
+	case ResultTransactionEffectAmbig:
 		return &ExecutorFailureAlert{
 			Code:      "autodeposit_transaction_effect_ambiguous",
 			Operation: "reconcile_autodeposit_transaction",
 			Summary:   "autodeposit transaction effect remains ambiguous after blockhash expiry",
 		}
-	case ExitIdleHandoffFailed:
+	case ResultIdleHandoffFailed:
 		return &ExecutorFailureAlert{
 			Code:      "autodeposit_idle_handoff_failed",
 			Operation: "publish_autodeposit_idle_vault_balance",
 			Summary:   "confirmed autodeposit pull could not be published to idle-vault recovery",
 			Retryable: true,
 		}
-	case ExitDependencyUnavailable:
+	case ResultDependencyUnavailable:
 		return &ExecutorFailureAlert{
 			Code:           "autodeposit_dependency_unavailable",
 			Operation:      "retry_autodeposit_after_dependency_recovers",
@@ -128,7 +90,7 @@ func ExecutorFailureAlertFor(exitCode *int) *ExecutorFailureAlert {
 			Retryable:      true,
 			SelfRecovering: true,
 		}
-	case 0, ExitNotActionable, ExitCompleted, ExitDeferred, ExitRecoveryPending, ExitNoop:
+	case ResultNotActionable, ResultCompleted, ResultDeferred, ResultRecoveryPending, ResultNoop:
 		return nil
 	default:
 		return genericExecutorAlert()
@@ -146,22 +108,22 @@ func genericExecutorAlert() *ExecutorFailureAlert {
 
 // ExecutorOutcome is one scan's executor tallies.
 type ExecutorOutcome struct {
-	TargetsScanned                     int
-	ExecutionsAttempted                int
-	ExecutionsCompleted                int
-	ExecutionsDeferred                 int
-	ExecutionsRecoveryPending          int
-	ExecutionsNoop                     int
-	ExecutionsProcessSuccessUnclassifd int
-	ExecutionsFailed                   int
-	ExecutionsNotActionable            int
-	StaleRequestedSlotsFailed          int64
-	StaleClaimsReleased                int64
+	TargetsScanned            int
+	ExecutionsAttempted       int
+	ExecutionsCompleted       int
+	ExecutionsDeferred        int
+	ExecutionsRecoveryPending int
+	ExecutionsNoop            int
+	ExecutionsUnknown         int
+	ExecutionsFailed          int
+	ExecutionsNotActionable   int
+	StaleRequestedSlotsFailed int64
+	StaleClaimsReleased       int64
 }
 
-// RecordExecutorExit tallies an exit and returns the alert it deserves.
-func (o *ExecutorOutcome) RecordExecutorExit(exitCode *int) *ExecutorFailureAlert {
-	switch ExecutorResultFromExitCode(exitCode) {
+// RecordExecutorResult tallies a family outcome and returns its operator alert.
+func (o *ExecutorOutcome) RecordExecutorResult(result ExecutorResult) *ExecutorFailureAlert {
+	switch result {
 	case ResultCompleted:
 		o.ExecutionsCompleted++
 	case ResultDeferred:
@@ -172,12 +134,12 @@ func (o *ExecutorOutcome) RecordExecutorExit(exitCode *int) *ExecutorFailureAler
 		o.ExecutionsNotActionable++
 	case ResultNoop:
 		o.ExecutionsNoop++
-	case ResultProcessSuccessUnclassifed:
-		o.ExecutionsProcessSuccessUnclassifd++
-	case ResultFailed:
+	case ResultUnknown:
+		o.ExecutionsUnknown++
+	default:
 		o.ExecutionsFailed++
 	}
-	return ExecutorFailureAlertFor(exitCode)
+	return ExecutorFailureAlertFor(result)
 }
 
 // ResidualOpenLotReason is the legacy classification value written for lots the

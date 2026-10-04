@@ -2,7 +2,7 @@ name: Workers v2 branch verification
 
 on:
   push:
-    branches: [codex/workers-v2]
+    branches: [codex/workers-v2, codex/workers-v2-simplify]
     paths:
       - go/workers/**
       - scripts/verify-workers-v2.sh

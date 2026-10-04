@@ -81,40 +81,37 @@ func mustMarshal(t *testing.T, value any) []byte {
 	return raw
 }
 
-// scriptedExecutor records dispatch order and replays exit codes.
+// scriptedExecutor records dispatch order and replays family outcomes.
 type scriptedExecutor struct {
-	exits     []*int
+	results   []ExecutorResult
 	errs      []error
 	order     []ExecutableTarget
 	calls     int
 	afterCall func(index int)
 }
 
-func exitCodePtr(code int) *int { return &code }
-
-func (s *scriptedExecutor) Execute(ctx context.Context, target ExecutableTarget) (*int, error) {
+func (s *scriptedExecutor) Execute(ctx context.Context, target ExecutableTarget) (ExecutorResult, error) {
 	index := s.calls
 	s.calls++
 	s.order = append(s.order, target)
 	if s.afterCall != nil {
 		s.afterCall(index)
 	}
-	var exit *int
-	if index < len(s.exits) {
-		exit = s.exits[index]
+	var result ExecutorResult
+	if index < len(s.results) {
+		result = s.results[index]
 	}
 	var err error
 	if index < len(s.errs) {
 		err = s.errs[index]
 	}
-	return exit, err
+	return result, err
 }
 
-// TestWorkerDispatchKeepsRecoveryFirstAndClassifiesExits pins the dispatch
+// TestWorkerDispatchKeepsRecoveryFirstAndClassifiesOutcomes pins the dispatch
 // contract the scan's ordering guarantees depend on: the prioritized order is
-// executed as given, exits map onto the legacy classification, and an executor
-// that dies without an exit is a failure with an alert, not silent progress.
-func TestWorkerDispatchKeepsRecoveryFirstAndClassifiesExits(t *testing.T) {
+// executed as given, and an executor that fails without an outcome alerts.
+func TestWorkerDispatchKeepsRecoveryFirstAndClassifiesOutcomes(t *testing.T) {
 	deps := WorkerDependencies{
 		Store:    &Store{},
 		Executor: nil,
@@ -129,8 +126,8 @@ func TestWorkerDispatchKeepsRecoveryFirstAndClassifiesExits(t *testing.T) {
 	recovery := ExecutableTarget{TargetID: 1, ScheduledSlotID: 11, ClaimToken: "claim-a"}
 	fresh := ExecutableTarget{TargetID: 2, ScheduledSlotID: 22}
 	executor := &scriptedExecutor{
-		exits: []*int{exitCodePtr(ExitCompleted), exitCodePtr(ExitRecoveryPending), nil},
-		errs:  []error{nil, nil, errors.New("rpc connection reset")},
+		results: []ExecutorResult{ResultCompleted, ResultRecoveryPending, ResultUnknown},
+		errs:    []error{nil, nil, errors.New("rpc connection reset")},
 	}
 	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor})
 	if err != nil {
@@ -143,25 +140,43 @@ func TestWorkerDispatchKeepsRecoveryFirstAndClassifiesExits(t *testing.T) {
 		t.Fatalf("dispatch order started with %v; recovery rows must execute first", executor.order[0])
 	}
 	if outcome.ExecutionsAttempted != 3 || outcome.ExecutionsCompleted != 1 || outcome.ExecutionsRecoveryPending != 1 || outcome.ExecutionsFailed != 1 {
-		t.Fatalf("outcome tallies %+v do not match the three exits", outcome)
+		t.Fatalf("outcome tallies %+v do not match the three outcomes", outcome)
 	}
 	if len(alerts) != 1 || !strings.Contains(alerts[0].Summary, "rpc connection reset") {
-		t.Fatalf("alerts %v must name the executor error that never reached an exit", alerts)
+		t.Fatalf("alerts %v must name the executor error that returned no outcome", alerts)
 	}
 
-	// Exit zero without a completion marker is process success only: it must
-	// stay unclassified instead of being counted as finished work.
-	zeroExecutor := &scriptedExecutor{exits: []*int{exitCodePtr(0)}}
+	// An unknown result cannot prove finished work or healthy execution.
+	zeroExecutor := &scriptedExecutor{results: []ExecutorResult{ResultUnknown}}
 	worker, err = NewWorker(WorkerDependencies{Store: &Store{}, Executor: zeroExecutor})
 	if err != nil {
 		t.Fatalf("rebuild worker: %v", err)
 	}
 	outcome = ExecutorOutcome{}
 	alerts = worker.dispatch(context.Background(), []ExecutableTarget{fresh}, &outcome)
-	if outcome.ExecutionsProcessSuccessUnclassifd != 1 || outcome.ExecutionsCompleted != 0 {
-		t.Fatalf("unclassified exit zero tallied %+v", outcome)
+	if outcome.ExecutionsUnknown != 1 || outcome.ExecutionsCompleted != 0 {
+		t.Fatalf("unknown outcome tallied %+v", outcome)
 	}
-	if len(alerts) != 0 {
-		t.Fatalf("unclassified exit zero must not page: %v", alerts)
+	if len(alerts) != 1 || alerts[0].Code != "autodeposit_executor_failed" {
+		t.Fatalf("unknown outcome must fail closed: %v", alerts)
+	}
+}
+
+func TestWorkerDispatchRetainsDecisionsAndRecoveryErrors(t *testing.T) {
+	executor := &scriptedExecutor{
+		results: []ExecutorResult{ResultDeferred, ResultRecoveryPending, ResultNotActionable, ResultNoop, ResultDependencyUnavailable, "future_outcome"},
+		errs:    []error{errors.New("allowance unknown"), errors.New("ownership lost")},
+	}
+	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcome ExecutorOutcome
+	alerts := worker.dispatch(context.Background(), []ExecutableTarget{{TargetID: 1}, {TargetID: 2}, {TargetID: 3}, {TargetID: 4}, {TargetID: 5}, {TargetID: 6}}, &outcome)
+	if outcome.ExecutionsAttempted != 6 || outcome.ExecutionsDeferred != 1 || outcome.ExecutionsRecoveryPending != 1 || outcome.ExecutionsNotActionable != 1 || outcome.ExecutionsNoop != 1 || outcome.ExecutionsFailed != 2 || outcome.ExecutionsCompleted != 0 || worker.executionErrors != 2 {
+		t.Fatalf("outcome %+v, errors %d", outcome, worker.executionErrors)
+	}
+	if len(alerts) != 2 || alerts[0].Code != "autodeposit_dependency_unavailable" || !alerts[0].SelfRecovering || alerts[1].Code != "autodeposit_executor_failed" {
+		t.Fatalf("alerts %+v", alerts)
 	}
 }
