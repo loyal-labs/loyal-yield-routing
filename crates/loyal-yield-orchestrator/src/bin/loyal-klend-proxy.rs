@@ -1,22 +1,31 @@
 use klend_interface::{
-    KLEND_PROGRAM_ID,
     instructions::{
         deposit::{
-            DepositReserveLiquidityAndObligationCollateralV2Accounts,
             deposit_reserve_liquidity_and_obligation_collateral_v2,
+            DepositReserveLiquidityAndObligationCollateralV2Accounts,
         },
+        obligation::{
+            init_obligation, init_obligation_farms_for_reserve, InitObligationAccounts,
+            InitObligationFarmsForReserveAccounts,
+        },
+        referrer::{init_user_metadata, InitUserMetadataAccounts},
         refresh::{
-            RefreshObligationAccounts, RefreshReserveAccounts, refresh_obligation, refresh_reserve,
+            refresh_obligation, refresh_reserve, RefreshObligationAccounts, RefreshReserveAccounts,
         },
         withdraw::{
-            WithdrawObligationCollateralAndRedeemReserveCollateralV2Accounts,
             withdraw_obligation_collateral_and_redeem_reserve_collateral_v2,
+            WithdrawObligationCollateralAndRedeemReserveCollateralV2Accounts,
         },
     },
-    pda::{farms_user_state, lending_market_authority, obligation},
+    pda::{farms_user_state, lending_market_authority, obligation, user_metadata},
+    types::InitObligationArgs,
+    KLEND_PROGRAM_ID,
 };
 use serde::{Deserialize, Serialize};
-use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+use solana_sdk::{
+    instruction::{AccountMeta, Instruction},
+    pubkey::Pubkey,
+};
 use std::{
     error::Error,
     io::{self, Read},
@@ -74,6 +83,18 @@ struct OutputInstruction {
 #[derive(Deserialize)]
 #[serde(tag = "operation", deny_unknown_fields)]
 enum ProxyRequest {
+    #[serde(rename = "buildCanonicalSubscriptionPolicy")]
+    CanonicalSubscriptionPolicy {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u8,
+        request: CanonicalSubscriptionPolicyRequest,
+    },
+    #[serde(rename = "buildDestinationSetup")]
+    DestinationSetup {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u8,
+        request: DestinationSetupRequest,
+    },
     #[serde(rename = "buildSameMintRoute")]
     SameMint {
         #[serde(rename = "schemaVersion")]
@@ -92,6 +113,170 @@ enum ProxyRequest {
         schema_version: u8,
         request: IdleDepositRequest,
     },
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DestinationSetupRequest {
+    stage: String,
+    vault: String,
+    payer: String,
+    target: Position,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CanonicalSubscriptionPolicyRequest {
+    settings: String,
+    root_authority: String,
+    payer: String,
+    delegated_signer: String,
+    policy_seed: u64,
+    wallet: String,
+    vault: String,
+    max_amount_per_period: u64,
+    policy_data_hex: String,
+}
+
+fn build_canonical_subscription_policy_json(
+    r: CanonicalSubscriptionPolicyRequest,
+) -> Result<String, Box<dyn Error>> {
+    let settings = key(&r.settings)?;
+    let signer = key(&r.delegated_signer)?;
+    let ix = loyal_actions::build_canonical_subscription_sweep_policy_create(
+        settings,
+        key(&r.root_authority)?,
+        key(&r.payer)?,
+        signer,
+        r.policy_seed,
+        key(&r.wallet)?,
+        key(&r.vault)?,
+        r.max_amount_per_period,
+    )?;
+    if !r.policy_data_hex.is_empty() {
+        if r.policy_data_hex.len() > 65536 || r.policy_data_hex.len() % 2 != 0 {
+            return Err("policy account hex exceeds bound or has odd length".into());
+        }
+        let raw = r
+            .policy_data_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|chunk| -> Result<u8, Box<dyn Error>> {
+                Ok(u8::from_str_radix(std::str::from_utf8(chunk)?, 16)?)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let Some(mut current) = loyal_actions::decode_program_interaction_policy_account(&raw)?
+        else {
+            return Err(
+                "current subscription policy lacks complete canonical security properties".into(),
+            );
+        };
+        let expected = loyal_actions::decode_squads_policy_create_actions(&ix)?;
+        if expected.len() != 1
+            || current.settings != settings
+            || current.policy_seed != r.policy_seed
+            || current.policy_account != ix.accounts[5].pubkey
+            || current.delegated_signer != signer
+            || current.threshold != 1
+        {
+            return Err("current subscription policy header differs from canonical target".into());
+        }
+        // The strict account decoder already validates tight compact tables;
+        // account/data predicates have resolved pubkeys, so compare semantics.
+        current.payload.pubkey_table.clear();
+        if current.payload != expected[0].payload {
+            return Err(
+                "current subscription policy full constraint matrix differs from canonical target"
+                    .into(),
+            );
+        }
+    }
+    Ok(serde_json::to_string(&ProxyOutput {
+        schema_version: 1,
+        operation: "buildCanonicalSubscriptionPolicy",
+        route: RouteOutput {
+            public: vec![],
+            protected: vec![encoded("canonical_subscription_policy_create", ix)],
+        },
+    })?)
+}
+
+fn build_destination_setup_json(mut r: DestinationSetupRequest) -> Result<String, Box<dyn Error>> {
+    let vault = key(&r.vault)?;
+    let payer = key(&r.payer)?;
+    bind_pdas(&mut r.target, vault)?;
+    let metadata = user_metadata(&KLEND_PROGRAM_ID, &vault).0;
+    let ix = match r.stage.as_str() {
+        // This is the same source-owned idempotent ATA instruction as
+        // autonomous-vaults/src/kamino.rs, with the executor paying rent.
+        "ata" => {
+            let ata = loyal_actions::derive_associated_token_account(
+                vault,
+                key(&r.target.liquidity_mint)?,
+                key(&r.target.liquidity_token_program)?,
+            );
+            if ata.to_string() != r.target.vault_liquidity_ata {
+                return Err("setup custody is not vault ATA".into());
+            }
+            Instruction {
+                program_id: key("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")?,
+                accounts: vec![
+                    AccountMeta::new(payer, true),
+                    AccountMeta::new(ata, false),
+                    AccountMeta::new_readonly(vault, false),
+                    AccountMeta::new_readonly(key(&r.target.liquidity_mint)?, false),
+                    AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+                    AccountMeta::new_readonly(key(&r.target.liquidity_token_program)?, false),
+                ],
+                data: vec![1],
+            }
+        }
+        "metadata" => init_user_metadata(
+            InitUserMetadataAccounts {
+                owner: vault,
+                fee_payer: vault,
+                user_metadata: metadata,
+                referrer_user_metadata: None,
+            },
+            Pubkey::default(),
+        ),
+        "obligation" => init_obligation(
+            InitObligationAccounts {
+                obligation_owner: vault,
+                fee_payer: vault,
+                obligation: key(&r.target.obligation)?,
+                lending_market: key(&r.target.market)?,
+                seed1_account: Pubkey::default(),
+                seed2_account: Pubkey::default(),
+                owner_user_metadata: metadata,
+            },
+            InitObligationArgs { tag: 0, id: 0 },
+        ),
+        "farm" => init_obligation_farms_for_reserve(
+            InitObligationFarmsForReserveAccounts {
+                payer,
+                owner: vault,
+                obligation: key(&r.target.obligation)?,
+                lending_market_authority: key(&r.target.market_authority)?,
+                reserve: key(&r.target.reserve)?,
+                reserve_farm_state: key(&r.target.reserve_farm_state)?,
+                obligation_farm: key(&r.target.obligation_farm_user_state)?,
+                lending_market: key(&r.target.market)?,
+            },
+            0,
+        ),
+        _ => return Err("unsupported destination setup stage".into()),
+    };
+    let ix = encoded(&format!("kamino_setup_{}", r.stage), ix);
+    let (public, protected) = if matches!(r.stage.as_str(), "metadata" | "obligation") {
+        (vec![], vec![ix])
+    } else {
+        (vec![ix], vec![])
+    };
+    Ok(serde_json::to_string(&ProxyOutput {
+        schema_version: 1,
+        operation: "buildDestinationSetup",
+        route: RouteOutput { public, protected },
+    })?)
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -285,6 +470,14 @@ fn build_idle_json(mut r: IdleDepositRequest) -> Result<String, Box<dyn Error>> 
 pub fn build_json(raw: &str) -> Result<String, Box<dyn Error>> {
     let input: ProxyRequest = serde_json::from_str(raw)?;
     let (operation, mut r) = match input {
+        ProxyRequest::CanonicalSubscriptionPolicy {
+            schema_version: 1,
+            request,
+        } => return build_canonical_subscription_policy_json(request),
+        ProxyRequest::DestinationSetup {
+            schema_version: 1,
+            request,
+        } => return build_destination_setup_json(request),
         ProxyRequest::SameMint {
             schema_version: 1,
             request,

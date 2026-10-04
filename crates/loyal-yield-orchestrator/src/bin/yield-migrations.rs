@@ -461,6 +461,24 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0086_earn_fleet_allocations_hourly.sql"),
         expected_checksum: None,
     },
+    Migration {
+        version: 87,
+        name: "balance_sweep_destination_setup",
+        sql: include_str!("../../../loyal-yield-store/migrations/0087_balance_sweep_destination_setup.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 88,
+        name: "multiply_operation_evidence",
+        sql: include_str!("../../../loyal-yield-store/migrations/0088_multiply_operation_evidence.sql"),
+        expected_checksum: None,
+    },
+    Migration {
+        version: 89,
+        name: "autodeposit_floor_rebaseline_classification",
+        sql: include_str!("../../../loyal-yield-store/migrations/0089_autodeposit_floor_rebaseline_classification.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

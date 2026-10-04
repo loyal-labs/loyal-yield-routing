@@ -2,11 +2,223 @@ package fleet
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"math"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/gagliardetto/solana-go"
 )
+
+func TestRetainedManifestDurableRecordsKeepBase58OrdinalOrder(t *testing.T) {
+	input, policy, payer, ixs := manifestFixture()
+	manifest, err := BuildRouteALTManifest(input, "", policy, payer, ixs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Fingerprint != "7ae3fd571fb2842e7e8d64191083b1ab0bcc4a4d7dbc61a76418b13e51d1f07c" {
+		t.Fatal("typed export changed independent Rust-compatible hash golden")
+	}
+	sharedRoles := map[byte]string{10: "market", 11: "market_authority", 12: "reserve", 13: "liquidity_mint", 14: "liquidity_supply", 15: "collateral_mint", 16: "collateral_supply", 17: "reserve_farm_state", 18: "oracle,scope_prices", 19: "oracle", 20: "reserve", 21: "reserve", 22: "reserve", 23: "reserve_farm_state"}
+	vaultRoles := map[byte]string{30: "vault", 31: "policy", 32: "obligation", 33: "vault_token_account", 34: "farm_user_state", 35: "obligation", 36: "farm_user_state"}
+	for _, group := range []struct {
+		class string
+		roles map[byte]string
+		got   []ALTManifestAddress
+	}{{"shared_market", sharedRoles, manifest.SharedAddresses}, {"vault", vaultRoles, manifest.VaultAddresses}} {
+		var want []ALTManifestAddress
+		for n, role := range group.roles {
+			want = append(want, ALTManifestAddress{Address: manifestKey(n), SemanticClass: group.class, AccountRole: role, Writable: n%2 == 0})
+		}
+		sort.Slice(want, func(i, j int) bool { return want[i].Address < want[j].Address })
+		for i := range want {
+			want[i].Ordinal = int32(i)
+		}
+		if !reflect.DeepEqual(want, group.got) {
+			t.Fatalf("durable %s records differ: got=%+v want=%+v", group.class, group.got, want)
+		}
+	}
+	// Raw byte order starts at n=10; the durable base58 lexical order does not.
+	if manifest.SharedAddresses[0].Address == manifestKey(10) {
+		t.Fatal("persisted ordinal reused raw-pubkey hash ordering")
+	}
+}
+
+func TestRetainedManifestSettingsUsesMatureVaultRole(t *testing.T) {
+	input, policy, payer, ixs := manifestFixture()
+	settings := manifestKey(45)
+	ixs[0].Accounts = append(ixs[0].Accounts, InstructionAccount{Address: settings})
+	manifest, err := BuildRouteALTManifest(input, settings, policy, payer, ixs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Independent hashlib/struct oracle: existing golden rows plus vault
+	// (45,readonly,[Settings=0]), appended in raw-pubkey order.
+	if manifest.Fingerprint != "be2112f0171d5832a4f8a35d7703d9902dfc338e72c29e222e98194b9efc9f3c" {
+		t.Fatalf("settings hash drift: %s", manifest.Fingerprint)
+	}
+	found := false
+	for _, record := range manifest.VaultAddresses {
+		if record.Address == settings {
+			found = record.AccountRole == "settings" && !record.Writable
+		}
+	}
+	if !found {
+		t.Fatal("actual settings account omitted from durable vault records")
+	}
+}
+
+func TestRetainedManifestValidatedSwapUsesSourceProvenance(t *testing.T) {
+	body, plan := validJupiterBuildFixture(t)
+	vault := testPubkey(31)
+	swap, err := validateJupiterEnvelope(body, plan, vault, 50, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, payer, settings := manifestKey(91), manifestKey(92), manifestKey(93)
+	wrapped, err := wrapSquadsPolicy(policy, payer, 0, []uint8{0}, []RouteInstruction{swap.Swap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := KaminoSameMintRouteRequest{Vault: vault, Source: KaminoPositionAccounts{LiquidityMint: USDCMint}, Target: KaminoPositionAccounts{LiquidityMint: USDTMint}}
+	manifest, err := BuildRouteALTManifest(input, settings, policy, payer, []RouteInstruction{wrapped}, &swap.Swap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[string]ALTManifestAddress{}
+	for _, row := range manifest.SharedAddresses {
+		roles[row.Address] = row
+	}
+	if roles[USDCMint].AccountRole != "liquidity_mint" || roles[USDTMint].AccountRole != "liquidity_mint" || roles[testPubkey(33)].AccountRole != "infrastructure" || !roles[testPubkey(33)].Writable {
+		t.Fatal("Jupiter builder-owned mint/pool provenance changed")
+	}
+	if _, ok := roles[payer]; ok {
+		t.Fatal("delegated signer entered durable ALT records")
+	}
+	// A new outer account is not part of the validated swap and therefore has
+	// no source-owned semantic role, even if a reusable ALT happens to contain it.
+	wrapped.Accounts = append(wrapped.Accounts, InstructionAccount{Address: manifestKey(94)})
+	if _, err := BuildRouteALTManifest(input, settings, policy, payer, []RouteInstruction{wrapped}, &swap.Swap); err == nil {
+		t.Fatal("untyped outer aggregator account became durable infrastructure")
+	}
+}
+
+func TestRetainedManifestCompositeKeepsBothBuilderProvenanceSets(t *testing.T) {
+	q, plan, bank := crossMintPreparationFixture(t)
+	body, _ := jupiterBuildForVault(t, q.Movement.VaultPubkey, 999, 999, 1)
+	swap, err := validateJupiterEnvelope(body, plan, q.Movement.VaultPubkey, 50, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected := RouteInstruction{Program: KLendProgram, Accounts: []InstructionAccount{{Address: bank.source.Position.Reserve, Writable: true}, {Address: bank.source.Obligation, Writable: true}, {Address: bank.source.Position.VaultLiquidityATA, Writable: true}}}
+	withdraw, err := wrapSquadsPolicy(plan.Bindings.Withdraw.PolicyAccount, plan.Bindings.DelegatedSigner, 0, []uint8{0}, []RouteInstruction{protected})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrappedSwap, err := wrapSquadsPolicy(plan.Bindings.Swap.PolicyAccount, plan.Bindings.DelegatedSigner, 0, []uint8{0}, []RouteInstruction{swap.Swap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := BuildCrossMintPreflightALTManifest(KaminoSameMintRouteRequest{Vault: q.Movement.VaultPubkey, Source: bank.source.Position, Target: bank.target.Position}, plan.Bindings.Settings, plan.Bindings.Withdraw.PolicyAccount, plan.Bindings.Swap.PolicyAccount, plan.Bindings.DelegatedSigner, []RouteInstruction{withdraw, wrappedSwap}, swap.Swap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[string]string{}
+	for _, row := range append(append([]ALTManifestAddress{}, manifest.SharedAddresses...), manifest.VaultAddresses...) {
+		roles[row.Address] = row.AccountRole
+	}
+	if roles[bank.source.Position.Reserve] != "reserve" || roles[bank.source.Obligation] != "obligation" || roles[testPubkey(33)] != "infrastructure" || roles[plan.Bindings.Swap.PolicyAccount] != "policy" || roles[plan.Bindings.Withdraw.PolicyAccount] != "policy" {
+		t.Fatalf("composite lost a builder provenance set: %+v", roles)
+	}
+	if err := ValidateALTManifestIntegrity(&manifest); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRetainedManifestIntegrityRejectsMutatedPublicDTO(t *testing.T) {
+	input, policy, payer, ixs := manifestFixture()
+	for _, mutate := range []func(*ALTManifest){
+		func(m *ALTManifest) { m.SharedAddresses[0].Writable = !m.SharedAddresses[0].Writable },
+		func(m *ALTManifest) { m.VaultAddresses[0].AccountRole = "policy" },
+		func(m *ALTManifest) { m.Fingerprint = strings.Repeat("0", 64) },
+	} {
+		m, err := BuildRouteALTManifest(input, "", policy, payer, ixs, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateALTManifestIntegrity(&m); err != nil {
+			t.Fatal(err)
+		}
+		mutate(&m)
+		if err := ValidateALTManifestIntegrity(&m); err == nil {
+			t.Fatal("public manifest mutation retained source provenance")
+		}
+	}
+	if err := ValidateALTManifestIntegrity(&ALTManifest{Fingerprint: manifestHash(t, input, policy, payer, ixs)}); err == nil {
+		t.Fatal("bare public fingerprint became builder provenance")
+	}
+}
+
+func TestRetainedManifestExternalCoverageKeepsOriginalSourceIdentities(t *testing.T) {
+	input, policy, payer, instructions := manifestFixture()
+	original, err := BuildRouteALTManifest(input, "", policy, payer, instructions, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	covered := []string{input.Source.Reserve, policy}
+	table := LookupTable{Address: manifestKey(244), Addresses: covered, Active: true, Generation: 0}
+	data := make([]byte, 56+32*len(covered))
+	binary.LittleEndian.PutUint32(data, 1)
+	binary.LittleEndian.PutUint64(data[4:12], math.MaxUint64)
+	binary.LittleEndian.PutUint64(data[12:20], 900)
+	for i, address := range covered {
+		fixtureKey(t, data, 56+32*i, address)
+	}
+	reads := 0
+	r := &Revalidator{rpc: crossMintPrepareRPC(t, func(method string, params []json.RawMessage) any {
+		var options struct{ Commitment string }
+		_ = json.Unmarshal(params[1], &options)
+		if method != "getMultipleAccounts" || options.Commitment != "finalized" {
+			t.Fatal("external coverage was accepted without actual finalized reader")
+		}
+		reads++
+		return map[string]any{"context": map[string]any{"slot": 1000}, "value": []any{map[string]any{"owner": altProgram, "lamports": 1_000_000, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(data), "base64"}}}}
+	})}
+	filtered, err := r.filterFinalizedExternalALTManifest(context.Background(), original, []LookupTable{table}, 1000)
+	if err != nil || reads != 1 || filtered.Fingerprint != original.Fingerprint {
+		t.Fatalf("source external projection changed full v1 identity: reads=%d err=%v", reads, err)
+	}
+	if err := ValidateALTManifestIntegrity(&filtered); err != nil {
+		t.Fatal(err)
+	}
+	for _, records := range [][]ALTManifestAddress{filtered.SharedAddresses, filtered.VaultAddresses} {
+		for i, row := range records {
+			if row.Ordinal != int32(i) || row.Address == policy || row.Address == input.Source.Reserve {
+				t.Fatal("filtered durable vector kept external demand or ordinal gap")
+			}
+		}
+	}
+	shared, vault, err := ALTManifestSourceAddresses(&filtered)
+	if err != nil || !reflect.DeepEqual(shared, original.SharedAddresses) || !reflect.DeepEqual(vault, original.VaultAddresses) {
+		t.Fatal("filtered durable demand lost actual source identities")
+	}
+	shared[0].AccountRole = "altered-return-copy"
+	shared, _, err = ALTManifestSourceAddresses(&filtered)
+	if err != nil || shared[0].AccountRole == "altered-return-copy" {
+		t.Fatal("source accessor returned mutable private provenance")
+	}
+	// The provider-supplied member vector must equal actual chain bytes. A
+	// claimed replacement policy cannot be dropped from demand on assertion.
+	table.Addresses = []string{input.Source.Reserve, manifestKey(245)}
+	if _, err := r.filterFinalizedExternalALTManifest(context.Background(), original, []LookupTable{table}, 1000); err == nil {
+		t.Fatal("unverified external member vector became provisioning coverage")
+	}
+}
 
 func manifestKey(n byte) string {
 	var key solana.PublicKey

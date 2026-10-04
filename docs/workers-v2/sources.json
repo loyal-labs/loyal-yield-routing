@@ -2,17 +2,48 @@
   "routing_base": "05338bbb70ce2e5287956f6e3659964e37bfa2f6",
   "apps_base": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
   "observer_candidate": "36a6664c125eeecd5e0ab5ea9218e72432da055d",
+  "additional_reviewed_sources": [
+    {
+      "repository": "loyal-apps",
+      "revision": "45de590113312d54de7585a710620a8a80b504db",
+      "scope": "EarnMax exact saved payout amount and authenticated balance floor writer; source study only, not a wholesale import",
+      "integration": "Selected Apps floor SQL exercised against actual Go controller locks; exact saved Claim payout enforced in Go and retained Rust bridge; no wholesale source import."
+    }
+  ],
   "mechanical_imports": [
     "go/kamino-fleet-planner/internal/fleet",
     "go/backyard-rwa-worker/internal/backyardrwa"
   ],
   "changes": [
-    "Backyard package renamed to backyard; no financial behavior changes in seed"
+    "Backyard package renamed to backyard; no financial behavior changes in seed",
+    "Selected observer transport retains the Rust Earn domain bridge until equivalent Go application evidence passes",
+    "Autodeposit and fleet use the official locked loyal-klend-proxy for KLend instruction construction",
+    "Additive branch-only 0087 setup attempt journal and 0088 immutable Multiply evidence side table preserve existing attempt/effects contracts",
+    "Additive branch-only 0089 imports retained Apps floor_rebaseline classification; corrected bounded 0069 event sequence remains unchanged."
   ],
   "intentional_corrections": [
     "collateral-liquidity units",
     "continuous funded APY coverage",
     "desired-intent vs observed target vocabulary",
-    "heap priorities after shared-reserve effects"
-  ]
+    "heap priorities after shared-reserve effects",
+    "fresh same-mint admission is tied to exact normalized ALT generations and source collateral backing",
+    "expired unsigned admissions release capacity only when no signed attempt or decision exists; re-admission changes fences",
+    "cross-mint modeled profit uses wide intermediates before checked SQL BIGINT conversion",
+    "Multiply uses retained vault index 0 and exact root-wallet payout requests rather than delegated claim execution",
+    "Multiply orphan debt custody is swapped to collateral before claim unwinding; saved payout shortfalls remain held",
+    "KLend farm-absent instruction placeholders use the pinned SDK KLend program identity",
+    "modeled maintenance returns are labeled modeled and preserve actual reserve update clocks",
+    "legacy unscoped product projection namespace is checked at startup and before each maintenance pass",
+    "Retained observer Claim admission requires exact saved requested amount and actual signed Squads Transaction-mode SDK envelope; a partial transfer cannot close a withdrawal."
+  ],
+  "proof_classification": {
+    "postgresql": "Task-owned loopback PostgreSQL 17; baseline 77 actual registered schema files plus pinned Apps baseline. Additive0089 separately applied to A fixture and its source SQL compatibility passes. Fresh fixture runner now resolves 78 schemas; no production-bound0071 activation or ledger entry.",
+    "timescale": "real extension in branch CI; local extension-backed tests skipped",
+    "multiply_abi": "44 independently generated pinned Rust SDK recipe cases, including farm and token-program variants",
+    "multiply_claim_svm": "actual checked-in Squads SBF plus SPL Token execution in LiteSVM; root payout succeeds, delegate fails",
+    "fleet_connected_svm": "separate gate using actual Squads SBF with mock KLend/Jupiter protocol SBF; no mature KLend execution claim",
+    "serialization_only": "testdata/multiply/route_state_schema9.json is a synthetic serialization fixture, not independent financial proof",
+    "planner_oracle": "independent greedy enumeration and bounded exhaustive cumulative marginal-gain study; no global NAV optimum claim",
+    "autodeposit_creator": "Independent pinned Apps45 Solita legacy/v0 creator ABI bytes; exact canonical legacy creator executes through checked-in real Squads SBF with valid sequential policy seed. Program fixture authority initialization uses explicitly recorded low-rent profile followed by real lamport top-ups and default Rent restoration; no deployed rent correctness claim."
+  }
 }

@@ -41,7 +41,7 @@ func run(ctx context.Context) error {
 	case "backyard":
 		return runBackyard(ctx, owner, release)
 	case "retail":
-		return errors.New("retail transaction family integration incomplete")
+		return runRetail(ctx, owner, release)
 	default:
 		return errors.New("engine scope must be retail or backyard")
 	}

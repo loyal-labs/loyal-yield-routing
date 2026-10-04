@@ -122,13 +122,13 @@ func TestSettlementRebroadcastsExactBytesOnlyWhenUnresolved(t *testing.T) {
 	if settlement.Attempt.State != AttemptConfirmed || settlement.Attempt.BroadcastCount != 1 {
 		t.Fatalf("settled attempt state=%s broadcasts=%d, want confirmed after one exact rebroadcast", settlement.Attempt.State, settlement.Attempt.BroadcastCount)
 	}
-	want := []string{"observe", "broadcast", "record_broadcast", "observe", "record_observation"}
+	want := []string{"observe", "record_broadcast", "broadcast", "observe", "record_observation"}
 	if strings.Join(scripted.calls, ",") != strings.Join(want, ",") {
-		t.Fatalf("settlement call order %v, want %v", scripted.calls, want)
+		t.Fatalf("settlement call order %v, want %v: the durable broadcast intent must precede the send", scripted.calls, want)
 	}
 }
 
-func TestSettlementNeverResendsWhenSignatureIdentityDisagrees(t *testing.T) {
+func TestSettlementRecordsIntentBeforeSendEvenWhenSendNeverHappens(t *testing.T) {
 	ctx := context.Background()
 	attempt := persistedPullAttempt()
 	unknown := AttemptObservation{State: AttemptUnknown}
@@ -138,19 +138,20 @@ func TestSettlementNeverResendsWhenSignatureIdentityDisagrees(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a contradicting signature is recorded evidence, not a panic: %v", err)
 	}
+	// The cluster was asked to accept the exact bytes before the contradiction
+	// was visible, so the intent is durable evidence; it is never an observed
+	// submit and must not read as broadcast progress.
 	if settlement.Broadcasted {
-		t.Fatal("contradicting signature must not be recorded as a broadcast")
+		t.Fatal("contradicting signature must not be recorded as an observed broadcast")
+	}
+	if settlement.Attempt.BroadcastCount != 1 {
+		t.Fatalf("durable broadcast intent broadcast_count %d, want 1 recorded before the send", settlement.Attempt.BroadcastCount)
 	}
 	if settlement.Attempt.State != AttemptUnknown {
 		t.Fatalf("contradicting signature left state %s, want unknown pending reconciliation", settlement.Attempt.State)
 	}
 	if settlement.Observation.Err == nil {
 		t.Fatal("the signature contradiction must be preserved on the recorded observation")
-	}
-	for _, call := range scripted.calls {
-		if call == "record_broadcast" {
-			t.Fatal("contradicting signature must not advance broadcast_count")
-		}
 	}
 	if !AttemptHoldsClaim(settlement.Attempt.State) {
 		t.Fatal("an unproven attempt must keep holding the claim")

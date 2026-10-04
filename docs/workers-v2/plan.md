@@ -146,37 +146,129 @@ First milestone acceptance: Autodeposit setup/funding/control changes/pause/clos
 
 Progress is measured by eliminated writers/services/repair callers, app-independent completion, proven restart behavior, bounded backlog/admission latency and the code that can actually be deleted. Avoid promising a percentage reduction before those deletions exist.
 
-Implementation checkpoint — 2026-10-02
+Implementation status — 2026-10-03
 
-- Runtime goal active; all work remains on rewrite branches.
-- Seed commit `234a33bf` pushed to `origin/codex/workers-v2`.
-- GLM Flash live launch check passed; first-wave A/B/C/E/F implementation started in isolated worktrees with provider-only credential environments and nested agents disabled.
-- Offline seed gate passed: formatting, vet, race-tested imported family semantics/shared primitives and three binary builds. Runtime engine/observer entrypoints deliberately reject incomplete wiring; this is not overall implementation acceptance.
-- Full durable, builder, family integration, read-model and application acceptance remain outstanding.
-- Source branch reuse is selective: importing the full observer branch would discard newer main proof/schema files, so no whole-branch merge is permitted.
+The runtime goal remains active. Routing is on `codex/workers-v2`; Apps is on
+`codex/workers-v2-app-contract`. Main, production and migration resources remain
+untouched. No legacy writer or service is counted as retired.
 
-- Disposable PostgreSQL preparation is currently blocked by local kernel shared-memory allocation (`shmget`, ENOSPC) even with elevation. Existing processes/kernel settings were not modified. Offline implementation continues; durable acceptance cannot be claimed without a working isolated fixture.
+| Responsibility | Reviewed branch state | Required remaining acceptance |
+| --- | --- | --- |
+| Shared runtime and Backyard | Retail A/C/D/G composed with borrowed pools, scoped keys, explicit active mode and joined shutdown; Backyard remains separate | Current immutable Linux helper/bridge image CI and full ownership acceptance; per-family fresh-cycle readiness is implemented and race tested |
+| Fleet planning | Independent greedy oracle matches 96 generated fixtures; wide-reference arithmetic and unsigned admission recovery pass | Assignment regret requires review; allocation frontier refactor preserves the full-rescore oracle and cuts synthetic allocation bytes by 79%; no global optimum claim |
+| Observer | Selected transport composed; capture/application, coalescing, abandonment and lifecycle corrections verified against registered PostgreSQL/Timescale | Complete Apps watch schema, domain readiness and packaged Rust compatibility bridge |
+| Autodeposit | Two-leg controller, destination setup/readback, control reconciliation and immutable accounting integrated; registered PostgreSQL race suite passes | Complete app-closed/observer ownership acceptance; actual Go pull and official top-up execute through real Squads, Subscriptions and SPL Token with an explicit KLend mock, including immutable-floor admission rejection |
+| Fleet execution | Same-mint fused fresh admission, exact-wire recovery, real bank/receipt reconciliation and ALT selection fencing integrated; registered PostgreSQL race suite passes | Cross-mint composition, automatic fallback, external ALT snapshots and full ALT lifecycle; source activation/first-send validator and recovery-first runtime are implemented; independent current Go C-to-D canonical vault-1 connected lifecycle passes |
+| Multiply | Source-derived planner/math/wire/policy/quote/recovery integrated; registered PostgreSQL race suite and independent SDK/root-claim SVM proof pass | Full lifecycle coverage and packaging; external Claim source bridge compatibility and runtime health now tested; no full KLend SBF execution claim |
+| Read models | Go maintenance integrated, fixed mainnet catalog/namespace, price clocks, allocation coverage and modeled-return labels; four registered PostgreSQL SQL tests pass | Current increment real Timescale CI and complete consumer ownership before retiring App maintenance |
 
-- Branch-only PostgreSQL service schema and baseline durable fleet/Backyard lease checks passed in CI run 37092914451 at `b9ec448b`; this excludes production-bound migration 0071 data activation and connected SVM checks.
-- Reviewed Backyard explicit capability injection passed offline races. Root additionally rejects injected keys whose public half does not match their seed and takes ownership of the validated key.
-- Fleet correction uses sparse permitted-target enumeration and full rescore only after selected flows: O(wave limit * permitted candidates). It retains initially uneconomic candidates that can improve, existing hard limits and deterministic ordering. This is bounded greedy scheduling, not a globally optimal allocation claim.
-- Autodeposit lot/claim/scheduling/request/attempt SQL increment is integrated for verification. Actual two-leg production execution and complete app-independent acceptance remain unfinished. Root added exact wire digest/packet checks, checked eligible sums, and a lease guard on reused persisted attempts.
-- Observer selected Go source compiles and passes offline races on Go1.26.6 with Go1.25.1 language baseline; protobuf module split required the matching parent genproto revision. Its runtime/recovery/readiness audit continues before integration.
-- Narrow Rust observer bridge source and only its required visibility/stdio/dependency changes compile against current main proof libraries; the Go-produced protobuf fixture passes. No full source-branch merge was used.
+Last committed routing head before the controller increment is `5e1045f0`.
+Branch-only CI run 37097141373 passed its actual registered PostgreSQL/Timescale
+fixtures. The separate sampled watch fixture is not complete production-schema
+acceptance. Migration 0071 production-bound data activation is excluded.
 
-Implementation checkpoints (2026-10-02, branch only)
+The integrated controller/fleet/Multiply/read-model increment passes the offline
+combined verifier. A task-owned PostgreSQL 17 service on loopback port 51913
+applies the baseline 77 registered schema files and hash-pinned historical Apps schema; the retained floor enum dependency is separately verified through additive 0089 in the A fixture. Fresh CI fixtures resolve all 78 registered files and record only actually completed migrations in their ledger;
+it excludes production-bound 0071 activation. Family database races passed:
+Autodeposit 3.323s, fleet planning/admission 4.179s, same-mint execution 2.167s,
+Multiply 2.084s and read-model SQL 1.460s. These are isolated contract fixtures,
+not migration cutover or production fleet proof. Local Timescale gates remain
+skipped because its extension is unavailable; branch CI runs real Timescale.
+Root reused the Solana SDK and
+fleet policy matcher, preserved the complete signature, fenced claim release,
+re-read controls under the target lock, preflighted the official top-up before
+pull, simulated exact persisted bytes before broadcast intent, and accounted
+only exact receipt balances. Setup recovery now requires actual account readback
+at or beyond the confirmed receipt slot. Whole-family acceptance remains open.
 
-- Shared runtime and custody unit/wire primitives, reused fleet/Backyard Go implementations: integrated. Disposable baseline fleet/Backyard lease tests passed in run 37092914451; broader acceptance remains pending.
-- Fleet planner: bounded full-rescore correction integrated, including initially ineligible candidates becoming profitable after another selected flow. No global optimality claim.
-- Autodeposit lot/store/request/attempt increment integrated. Transaction controller/builder review continues in lane A; complete app-independent lifecycle acceptance is not passed.
-- Observer source reused selectively from pinned ASK-2169 candidate with lifecycle corrections, capture/application distinction, scoped Rust bridge environment, and abandoned-request restart. Offline race/build/verifier passed. Real registered-schema queue/Timescale tests and the separate sampled watch compatibility fixture are being exercised by branch-only CI. Rust domain bridge remains a deployment artifact requirement.
-- Fleet execution lane D is not integrated: review found unsafe send-before-intent ordering and missing durable runtime proof. Multiply lane G is implementing its distinct retail family. Routing read-model/maintenance consolidation is still outstanding.
-- Apps opt-in read-only GET changes are on the separate Apps worktree, under review. Legacy remains the default. No deployment, canary, custody adoption, migration acceptance or retirement gate is passed.
+The latest complete Autodeposit registered race suite passes in 6.702s, including
+concurrent retained Apps floor SQL versus Go control reconciliation. The native
+Claim bridge rejects partial payout and requires the exact signed root-permission
+Squads Transaction envelope before accounting. Its private proof still does not
+assert App subject identity absent from the saved request.
 
-Root review checkpoint (2026-10-02)
+The connected same-mint gate passes in 14.440s with fresh evidence run
+`workers-v2-same-mint-20261004T011754Z`: Go planning/preflight to retained Rust
+executor/confirmer/reconciler, real Squads SBF and explicitly mocked KLend/Jupiter.
+It proves pre/post persistence crashes, ambiguous broadcast recovery, stale-owner
+rejection, exact wire replay, reconciliation, terminal balances and capacity
+release. It is not new Go D lifecycle proof or canonical retail index-1 proof;
+the current independent Go execution gate is recorded below. Actual canonical Autodeposit
+creator bytes also execute through real Squads with valid sequential policy seed.
+The A fixture documents its authority-init low-rent profile and actual top-ups
+before restoring default Rent; no deployed rent correctness is asserted.
 
-- Registered PostgreSQL and Timescale observer/Autodeposit queue-lot tests passed in branch CI run 37095615808 at dc9d9613. The watch-loader compatibility fixture is separately sampled, not a complete production-schema proof.
-- Owned HTTP shutdown now has an active-request join/listener-close regression. Observer configuration rejects overflowed durations/slot counts, malformed public delegate keys, and concurrency above 64.
-- Fleet-wave evidence replay requires an explicit evaluation clock; the saved dilution correction chooses vaults 1,2 rather than the stale-priority 1,3. Exact proportional arithmetic passed 501,164 fuzz executions against a wide integer reference.
-- Synthetic one-shot scale probes on Apple M4 Pro, Darwin arm64, Go1.26.6: 4096 vaults/one permitted target each/max128 admitted originally allocated about672MB in837ms; cached conflicts plus checked arithmetic fast paths measured about237MB in229ms. These are local synthetic observations, not production sizing or a globally optimal allocation proof. Full rescoring remains a bounded baseline with visible allocation cost.
-- Fleet execution and Autodeposit controller are still under financial review; signature absence is not balance-effect proof. Main/prod/migration resources remain untouched. Resuming an external GLM lane was rejected by automatic approval review pending explicit Z.ai source-sharing approval; local review continues.
+The official KLend proxy built with locked offline Cargo inputs. Existing real
+proxy tests pass; connected fleet SVM proof remains a separate gate. Multiply's
+44 SDK instruction recipes cover farm variants and token programs, and its
+actual Squads/SPL local SVM proves root-authorized claim payment and rejection of
+the delegate. Neither fixture executes the mature KLend SBF.
+Fleet exact arithmetic passed 501,164 fuzz cases against a wide reference.
+Synthetic 4096-vault/one-target/max128 probes improved from approximately
+672MB/837ms to237MB/229ms on M4Pro/Darwin/Go1.26.6; these are synthetic local
+observations, not production sizing. A separate bounded eight-move, single-run
+oracle benchmark measured 4096 vaults × 16 targets at 300.04ms and 514MB cumulative
+allocation (2.90M allocations). A two-vault constrained-target counterexample
+produced $145.057876 greedy gain versus $274.655478 exhaustive cumulative
+marginal gain (47.19% regret). That objective differs from final NAV, and source
+economic-priority ordering is not a global assignment solver. The algorithm
+review must resolve this tradeoff explicitly before planner acceptance.
+
+Apps financial/config tests51, repository tests16 and actual mobile GET tests2
+passed in isolated test processes. New-file lint passed. Whole-web typecheck
+retains its baseline62 unique diagnostics with no new diagnostic; no whole-web
+PASS or zero writes across unchanged authentication helpers is claimed.
+
+GLM initial lanes ran with provider-only credentials. Automatic approval review
+rejected a later resume because private source/context would go to Z.ai;
+specific source-sharing approval is pending. Native Codex review/repair continues
+within the authorized local scope. A transient runner file-descriptor failure
+was recorded in [the review checkpoint](review-checkpoint-2026-10-02.md); commands
+subsequently resumed. All in-scope runtime/proof gaps keep the goal active.
+
+Reviewed controller checkpoint — 2026-10-04 UTC
+
+Current Go C admission → current Go D signing/broadcast/recovery/reconciliation
+passes the connected race gate in 1.770s on canonical Earn vault index 1. It
+executes through real Squads and explicitly mocked KLend, loses the successful
+broadcast response, restarts without a signer, reconciles the unchanged wire
+and exact balances, and releases capacity/conflicts only after fresh reserve
+telemetry. The retained Rust fixture contributes catalog setup only.
+
+The latest complete registered A race suite passes in 4.742s; G passes in
+2.174s, complete D in 3.364s, and four F SQL races in 1.427s. These local registered databases
+remain isolated from migration and production. The actual A pull/top-up plus
+mutable-floor SVM gate passes in 1.668s; its Rust producer uses real checked-in
+Squads/Subscriptions/SPL programs and an explicitly documented KLend mock.
+
+The exact greedy frontier refactor reduces allocated bytes from 514,019,846 to
+107,747,750 and allocation count from 2,895,457 to 2,305,953 for a synthetic
+4096-vault/16-target/max8 fixture. Five profiled local iterations measured
+276.4ms to 244.2ms. The unchanged oracle, immutable-input concurrency, output
+binding isolation and permutation checks pass; timings are noisy local
+observations, not a production sizing claim. The greedy assignment regret
+identified above remains explicit.
+
+Cross-mint root adapters, complete ALT provisioning/cleanup and registered
+Apps watch-schema integration remain separate unfinished increments. The
+source-derived cross-mint activation now captures an actual capacity frontier
+after finalized preparation; its new capture path still needs its dedicated
+database/adversarial proof. No production worker is retired and no main merge
+or activation is authorized by this branch checkpoint.
+
+Retained cross-mint connected contract gate passes in 58.221s: actual Go
+planning/preflight plus retained Rust withdrawal/swap/deposit, real Squads SBF
+and explicit mock protocols. Every leg reconciles once; custody ends at zero
+and capacity releases after fresh telemetry. Its disposable fixture now uses
+the exact latest registered function bodies after repair of historical
+overrides. This retained-executor proof does not substitute for the current Go
+cross-mint runtime gate. The root adapter's captured control generation now
+passes unchanged to D, which compares it to the locked live control generation.
+
+The D fallback and control-generation increment passes the complete registered
+race suite in 3.459s. A revoked then re-enabled generation cannot upgrade an
+older preparation, and actual generation zero remains valid. Exactly one
+fallback target uses the source ranking, current immutable market evidence,
+finalized reserve/custody/history proof and atomic capacity rebind. It still
+needs root market-source composition; unavailable evidence holds custody.

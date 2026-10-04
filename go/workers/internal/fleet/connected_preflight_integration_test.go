@@ -120,7 +120,11 @@ func connectedSwapPolicy(t *testing.T, binding CrossMintPolicyBindings, seed uin
 // Constrain actual instruction accounts as well as data. Both market keys are
 // authorized by the same Earn policy, as required by retained policy discovery.
 func connectedEarnPolicyData(settings, signer string, instructions []RouteInstruction, positions []KaminoPositionAccounts) ([]byte, error) {
-	b, err := BuildExactPolicyFixture(settings, signer, 0, nil)
+	return connectedEarnPolicyDataForIndex(settings, signer, 0, instructions, positions)
+}
+
+func connectedEarnPolicyDataForIndex(settings, signer string, vaultIndex uint8, instructions []RouteInstruction, positions []KaminoPositionAccounts) ([]byte, error) {
+	b, err := BuildExactPolicyFixture(settings, signer, vaultIndex, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -164,15 +168,22 @@ func TestConnectedCrossMintPreflight(t *testing.T) { runConnectedLane(t, false) 
 func TestConnectedSameMintLifecycle(t *testing.T)  { runConnectedLane(t, true) }
 
 func runConnectedLane(t *testing.T, sameMint bool) {
+	runConnectedLaneWithHandoff(t, sameMint, nil)
+}
+
+func runConnectedLaneWithHandoff(t *testing.T, sameMint bool, handoff *connectedGoHandoff) {
 	databaseURL, proxyPath := os.Getenv("FLEET_TEST_DATABASE_URL"), os.Getenv("KAMINO_TEST_KLEND_PROXY_PATH")
 	if sameMint {
 		databaseURL = os.Getenv("FLEET_TEST_SAME_MINT_DATABASE_URL")
+	}
+	if handoff != nil {
+		databaseURL = handoff.database
 	}
 	if databaseURL == "" || proxyPath == "" {
 		t.Skip("requires disposable database and real KLend proxy")
 	}
 	u, err := url.Parse(databaseURL)
-	if err != nil || u.Hostname() != "127.0.0.1" || (u.Path != "/fleet" && u.Path != "/fleet_same_mint") {
+	if err != nil || u.Hostname() != "127.0.0.1" || (u.Path != "/fleet" && u.Path != "/fleet_same_mint" && !(handoff != nil && u.Path == "/fleet_go_same_mint")) {
 		t.Fatal("requires disposable loopback /fleet database")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -182,6 +193,12 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if handoff != nil {
+		var database, role string
+		if err := store.pool.QueryRow(ctx, `SELECT current_database(),current_user`).Scan(&database, &role); err != nil || database != "fleet_go_same_mint" || role != "workers_v2" {
+			t.Fatalf("unexpected connected Go fixture identity %q/%q: %v", database, role, err)
+		}
+	}
 	raw, err := os.ReadFile(proxyPath)
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +210,11 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 	signer := encodeBase58(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32)).Public().(ed25519.PublicKey))
 	settings := testIdentity(12)
 	settingsKey := solana.MustPublicKeyFromBase58(settings)
-	vaultKey, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), settingsKey[:], []byte("smart_account"), {0}}, solana.MustPublicKeyFromBase58(SquadsProgram))
+	vaultIndex := uint8(0)
+	if handoff != nil {
+		vaultIndex = 1 // Classic Earn; Multiply keeps its independent vault0.
+	}
+	vaultKey, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), settingsKey[:], []byte("smart_account"), {vaultIndex}}, solana.MustPublicKeyFromBase58(SquadsProgram))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,30 +291,53 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 	// Deposit amount is finalized swap custody, not the preflight minimum.
 	// Authorize the deposit discriminator; retained custody checks bound amount.
 	policyInstructions[1].Data = policyInstructions[1].Data[:8]
-	policyData, err := connectedEarnPolicyData(settings, signer, policyInstructions, positions)
-	if err != nil {
-		t.Fatal(err)
+	targetPolicyInstructions := policyInstructions
+	if !sameMint {
+		// The source policy's deposit arm authorizes recovery to its source,
+		// not the unrelated target. The target has its own two-arm policy.
+		recovery, err := proxy.BuildIdleDeposit(ctx, KaminoIdleDepositRequest{Vault: vault, Target: positions[0], DepositLiquidityAmount: minimum})
+		if err != nil {
+			t.Fatal(err)
+		}
+		targetRoute, err := proxy.Build(ctx, KaminoSameMintRouteRequest{Vault: vault, Source: positions[1], Target: positions[1], WithdrawCollateralAmount: amount - 1, DepositLiquidityAmount: minimum})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recovery.Protected[0].Data = recovery.Protected[0].Data[:8]
+		targetPolicyInstructions = []RouteInstruction{targetRoute.Protected[0], policyInstructions[1]}
+		policyInstructions = []RouteInstruction{route.Protected[0], recovery.Protected[0]}
 	}
-	_, earnPolicy := connectedPolicyHeader(t, settings, signer, 1)
-	_, earnBump, _ := derivePolicyAccount(settings, 1)
-	binary.LittleEndian.PutUint64(policyData[40:48], 1)
-	policyData[48] = earnBump
-	// BuildExactPolicyFixture emits the constraint prefix used by decoder tests.
-	// An executable Squads account also needs hooks, spending limits, start,
-	// expiration and rent collector (the full account tail).
-	policyData = append(policyData, make([]byte, 2+4+8+1+32)...)
-	accounts[earnPolicy] = Account{Address: earnPolicy, Owner: SquadsProgram, Lamports: 1_000_000, Data: policyData}
+	installEarnPolicy := func(seed uint64, instructions []RouteInstruction) string {
+		policyData, err := connectedEarnPolicyDataForIndex(settings, signer, vaultIndex, instructions, positions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, address := connectedPolicyHeader(t, settings, signer, seed)
+		_, bump, _ := derivePolicyAccount(settings, seed)
+		binary.LittleEndian.PutUint64(policyData[40:48], seed)
+		policyData[48] = bump
+		// Executable policy accounts include the full tail beyond constraints.
+		policyData = append(policyData, make([]byte, 2+4+8+1+32)...)
+		accounts[address] = Account{Address: address, Owner: SquadsProgram, Lamports: 1_000_000, Data: policyData}
+		return address
+	}
+	earnPolicy := installEarnPolicy(1, policyInstructions)
+	targetPolicy := earnPolicy
+	if !sameMint {
+		targetPolicy = installEarnPolicy(2, targetPolicyInstructions)
+	}
 	_, swapPolicy := connectedPolicyHeader(t, settings, signer, 11)
-	binding := CrossMintPolicyBindings{Settings: settings, VaultPubkey: vault, DelegatedSigner: signer, Withdraw: CrossMintEarnPolicyBinding{earnPolicy, 999, "local-withdraw", "finalized", 0}, Deposit: CrossMintEarnPolicyBinding{earnPolicy, 999, "local-deposit", "finalized", 1}, Swap: CrossMintSwapPolicyBinding{PolicyAccount: swapPolicy, SourceShard: "classic", EnrollmentGeneration: 1, ObservedSlot: 999, ObservedSignature: "local-swap", SourceCommitment: "finalized", MaxSlippageBPS: 50, DailySourceMintSpendingCap: 10_000_000_000}}
+	binding := CrossMintPolicyBindings{Settings: settings, VaultIndex: vaultIndex, VaultPubkey: vault, DelegatedSigner: signer, Withdraw: CrossMintEarnPolicyBinding{earnPolicy, 999, "local-withdraw", "finalized", 0}, Deposit: CrossMintEarnPolicyBinding{targetPolicy, 999, "local-deposit", "finalized", 1}, Swap: CrossMintSwapPolicyBinding{PolicyAccount: swapPolicy, SourceShard: "classic", EnrollmentGeneration: 1, ObservedSlot: 999, ObservedSignature: "local-swap", SourceCommitment: "finalized", MaxSlippageBPS: 50, DailySourceMintSpendingCap: 10_000_000_000}}
 	binding.Swap.ManifestFingerprint = fingerprintCrossMintManifest(binding, []string{USDCMint, USDTMint, USDSMint}, tokenProgram)
 	swapData := connectedSwapPolicy(t, binding, 11)
 	accounts[swapPolicy] = Account{Address: swapPolicy, Owner: SquadsProgram, Lamports: 1_000_000, Data: swapData}
-	withdraw, err := wrapSquadsPolicy(earnPolicy, signer, 0, []uint8{0}, []RouteInstruction{route.Protected[0]})
+	withdraw, err := wrapSquadsPolicy(earnPolicy, signer, vaultIndex, []uint8{0}, []RouteInstruction{route.Protected[0]})
 	if err != nil {
 		t.Fatal(err)
 	}
 	withdrawCovered := requiredLookupTableAddresses(append(append([]RouteInstruction{}, route.Public...), withdraw))
 	coverage := map[string]bool{}
+	coverage[targetPolicy] = true
 	for _, key := range withdrawCovered {
 		coverage[key] = true
 	}
@@ -330,7 +374,7 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 		sharedAddresses = append(sharedAddresses, key)
 	}
 	sort.Strings(sharedAddresses)
-	vaultSet := map[string]bool{swapPolicy: true}
+	vaultSet := map[string]bool{swapPolicy: true, targetPolicy: true}
 	for _, key := range withdrawCovered {
 		if !sharedSet[key] {
 			vaultSet[key] = true
@@ -360,7 +404,7 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 		t.Fatal(err)
 	}
 	seedConnectedExecutionAccounts(t, accounts, positions, signer, vault)
-	if sameMint {
+	if sameMint && handoff == nil {
 		t.Run("idle-deposit-signed-wire", func(t *testing.T) {
 			verifyIdleDepositSignedWire(t, ctx, proxy, accounts, positions, earnPolicy, signer, vault, []string{sharedTable, vaultTable})
 		})
@@ -393,6 +437,7 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 	}
 	var simulated atomic.Int64
 	var ambiguousBroadcasts atomic.Int64
+	var sendCalls atomic.Int64
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/build" {
 			w.Header().Set("Content-Type", "application/json")
@@ -411,6 +456,9 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 		}
 		if request.Method == "simulateTransaction" {
 			simulated.Add(1)
+		}
+		if request.Method == "sendTransaction" {
+			sendCalls.Add(1)
 		}
 		// All chain reads and writes share the same SVM state. In particular,
 		// never serve seeded balances after a transaction has changed them.
@@ -449,6 +497,25 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 			t.Fatal(err)
 		}
 	}
+	if !sameMint {
+		// The actual SBF target policy is a separate seed2 policy. Project its
+		// finalized identity/scope just as the retained observer would; the
+		// movement admission joins this account independently of seed1.
+		// These are policy inputs, not fabricated queue or movement outcomes.
+		if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.route_policies(cluster,settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,delegated_signers,threshold,route_modes,stable_mints,kamino_markets,kamino_liquidity_mints,swap_lanes,active,source_commitment,finalized_eligible,last_seen_slot,last_seen_signature) VALUES($1,$2,$3,2,$4,$5,$6,ARRAY[$3]::text[],1,ARRAY['same_mint_kamino']::text[],ARRAY[$7]::text[],ARRAY[$8]::text[],ARRAY[$7]::text[],'[]',true,'finalized',true,$9,$10)`, cluster, settings, signer, binding.Deposit.PolicyAccount, int16(vaultIndex), vault, target.Mint, target.Market, binding.Deposit.ObservedSlot, binding.Deposit.ObservedSignature); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if handoff != nil {
+		// Fixture topology follows the actual route/policy index before C reads
+		// it. No queue rows or signed work are injected here.
+		if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.route_policies SET vault_index=$2 WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, vaultID, int16(vaultIndex)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.managed_vaults SET vault_index=$2 WHERE id=$1`, vaultID, int16(vaultIndex)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if sameMint {
 		if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.vault_reserve_positions_current SET planning_metadata=planning_metadata || '{"idle_vault_liquidity_amount_raw":"0"}'::jsonb WHERE vault_id=$1`, vaultID); err != nil {
 			t.Fatal(err)
@@ -462,16 +529,18 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 	}
 	// Seed enrollment/catalog inputs only; queue work still comes exclusively
 	// from Go publication. The sibling shard is not an execution lane here.
-	_, siblingPolicy := connectedPolicyHeader(t, settings, signer, 12)
-	if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.cross_mint_vault_opt_ins(cluster,settings,vault_index,vault_pubkey,enabled,classic_policy_account,classic_policy_seed,token_2022_policy_account,token_2022_policy_seed,max_slippage_bps,daily_source_mint_spending_cap,generation) VALUES($1,$2,0,$3,true,$4,11,$5,12,$6,$7,1)`, cluster, settings, vault, swapPolicy, siblingPolicy, binding.Swap.MaxSlippageBPS, int64(binding.Swap.DailySourceMintSpendingCap)); err != nil {
-		t.Fatal(err)
-	}
-	for _, shard := range []struct {
-		name, account string
-		seed          int64
-	}{{"classic", swapPolicy, 11}, {"token_2022", siblingPolicy, 12}} {
-		if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.cross_mint_swap_policies(cluster,settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,delegated_signer,source_shard,max_slippage_bps,daily_source_mint_spending_cap,manifest_fingerprint,active,start_eligible,last_mutation,source_commitment,last_seen_slot,last_seen_signature) VALUES($1,$2,$3,$4,$5,0,$6,$3,$7,$8,$9,$10,true,true,'create','finalized',999,'local-swap')`, cluster, settings, signer, shard.seed, shard.account, vault, shard.name, binding.Swap.MaxSlippageBPS, int64(binding.Swap.DailySourceMintSpendingCap), binding.Swap.ManifestFingerprint); err != nil {
+	if handoff == nil {
+		_, siblingPolicy := connectedPolicyHeader(t, settings, signer, 12)
+		if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.cross_mint_vault_opt_ins(cluster,settings,vault_index,vault_pubkey,enabled,classic_policy_account,classic_policy_seed,token_2022_policy_account,token_2022_policy_seed,max_slippage_bps,daily_source_mint_spending_cap,generation) VALUES($1,$2,0,$3,true,$4,11,$5,12,$6,$7,1)`, cluster, settings, vault, swapPolicy, siblingPolicy, binding.Swap.MaxSlippageBPS, int64(binding.Swap.DailySourceMintSpendingCap)); err != nil {
 			t.Fatal(err)
+		}
+		for _, shard := range []struct {
+			name, account string
+			seed          int64
+		}{{"classic", swapPolicy, 11}, {"token_2022", siblingPolicy, 12}} {
+			if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.cross_mint_swap_policies(cluster,settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,delegated_signer,source_shard,max_slippage_bps,daily_source_mint_spending_cap,manifest_fingerprint,active,start_eligible,last_mutation,source_commitment,last_seen_slot,last_seen_signature) VALUES($1,$2,$3,$4,$5,0,$6,$3,$7,$8,$9,$10,true,true,'create','finalized',999,'local-swap')`, cluster, settings, signer, shard.seed, shard.account, vault, shard.name, binding.Swap.MaxSlippageBPS, int64(binding.Swap.DailySourceMintSpendingCap), binding.Swap.ManifestFingerprint); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	seedConnectedLookupTable(t, ctx, store, cluster, signer, vaultID, sharedTable, sharedAddresses, "shared_market", "shared_market")
@@ -513,14 +582,36 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 		}
 		runConnectedRustWorker(t, ctx, databaseURL, map[string]any{"setupOnly": true, "sameMint": true, "fixturePolicyBindings": binding, "cluster": cluster, "opportunityId": published.OpportunityID, "epochId": published.EpochID, "executionPlan": json.RawMessage(initialPlan), "rpcUrl": workerRPC.URL})
 	}
-	revalidator, err := NewRevalidator(store, NewRPCClient(server.URL), proxy, RevalidatorConfig{Owner: "connected-go", DelegatedSigner: signer, LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: server.URL + "/build"})
+	if !sameMint {
+		if _, err := store.pool.Exec(ctx, `INSERT INTO loyal_yield.cross_mint_movement_controls(cluster,start_new_movements,continue_or_recover_existing,generation,updated_by) VALUES($1,true,true,1,'connected-local-verifier') ON CONFLICT(cluster) DO NOTHING`, cluster); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner := "connected-go"
+	if handoff != nil {
+		owner = "connected-go-d"
+	}
+	revalidator, err := NewRevalidator(store, NewRPCClient(server.URL), proxy, RevalidatorConfig{Owner: owner, FusedExecute: handoff != nil, DelegatedSigner: signer, LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: handoff == nil, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: server.URL + "/build"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Trust only this local test server while preserving production timeouts
 	// and the Jupiter client's same-origin redirect policy.
 	revalidator.rpc.client.Transport = server.Client().Transport
-	revalidator.jupiter.client.Transport = server.Client().Transport
+	if revalidator.jupiter != nil {
+		revalidator.jupiter.client.Transport = server.Client().Transport
+	}
+	if handoff != nil {
+		admission, worked, err := revalidator.PrepareExecution(ctx, cluster)
+		if err != nil || !worked || admission == nil {
+			t.Fatalf("actual fused Go admission worked=%v admission=%v: %v", worked, admission != nil, err)
+		}
+		postConnectedGoAdmission(t, ctx, *handoff, *admission, workerRPC.URL)
+		if ambiguousBroadcasts.Load() != 1 || sendCalls.Load() != 1 {
+			t.Fatal("Go executor did not recover exactly one executed response-loss broadcast")
+		}
+		return
+	}
 	claimed, err := revalidator.Cycle(ctx, cluster)
 	if err != nil || !claimed {
 		t.Fatalf("cycle claimed=%v error=%v", claimed, err)

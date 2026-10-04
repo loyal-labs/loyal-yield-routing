@@ -7,6 +7,37 @@ import (
 	"testing"
 )
 
+func TestMinimumDepositMintsOneCollateralWithoutUndershooting(t *testing.T) {
+	scale := new(big.Int).Lsh(big.NewInt(1), 60)
+	for supply := uint64(1); supply <= 31; supply++ {
+		for total := int64(1); total <= 47; total++ {
+			value := new(big.Int).Mul(big.NewInt(total), scale)
+			value.Add(value, big.NewInt(1)) // fractional exchange rates need ceiling
+			r := decodedKaminoReserve{totalLiquiditySF: value, collateralMintSupply: supply}
+			amount, err := r.minimumDepositRaw()
+			if err != nil {
+				t.Fatal(err)
+			}
+			denominator := new(big.Int).Mul(new(big.Int).SetUint64(supply), scale)
+			minted := new(big.Int).Mul(new(big.Int).SetUint64(amount), denominator)
+			previous := new(big.Int).Mul(new(big.Int).SetUint64(amount-1), denominator)
+			if minted.Cmp(value) < 0 || previous.Cmp(value) >= 0 {
+				t.Fatalf("supply=%d total=%d amount=%d not minimum", supply, total, amount)
+			}
+		}
+	}
+	for _, r := range []decodedKaminoReserve{{totalLiquiditySF: new(big.Int)}, {totalLiquiditySF: big.NewInt(1), collateralMintSupply: 0}} {
+		if n, err := r.minimumDepositRaw(); err != nil || n != 1 {
+			t.Fatalf("empty reserve: %d %v", n, err)
+		}
+	}
+	for _, value := range []*big.Int{nil, big.NewInt(-1), new(big.Int).Lsh(big.NewInt(1), 128)} {
+		if _, err := (decodedKaminoReserve{totalLiquiditySF: value, collateralMintSupply: 1}).minimumDepositRaw(); err == nil {
+			t.Fatal("unknown or overflowing exchange value accepted")
+		}
+	}
+}
+
 func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 	c := KaminoObservationConfig{
 		Program: kaminoProgram, Market: kaminoMarket, Obligation: bridgeSettings,

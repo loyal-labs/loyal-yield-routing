@@ -15,6 +15,8 @@ import (
 	"time"
 
 	solana "github.com/gagliardetto/solana-go"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 )
 
 const (
@@ -100,10 +102,15 @@ func newRevalidator(store revalidationStore, rpc *RPCClient, proxy *KLendProxy, 
 // deliberately separate transactions; CommitRevalidation rechecks every
 // mutable identity, lease, epoch, conflict, and capacity fence atomically.
 func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
+	if r.fusedExecute {
+		return false, errors.New("fused execution requires PrepareExecution and atomic signed publication")
+	}
 	lease, err := r.store.ClaimRevalidation(ctx, cluster, r.owner, r.leaseTTL, r.fusedExecute, r.crossMintEnabled, r.signer)
 	if err != nil || lease == nil {
 		return false, err
 	}
+	ctx, cancel := context.WithDeadline(ctx, lease.ExpiresAt.Add(-5*time.Second))
+	defer cancel()
 	if !contains(lease.DelegatedSigners, r.signer) {
 		return true, errors.New("claimed policy no longer delegates to configured signer")
 	}
@@ -135,15 +142,16 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 // sameMintPreparation is everything Cycle needs to commit and ShadowCycle
 // needs to log. Both paths run prepareSameMint so they cannot drift.
 type sameMintPreparation struct {
-	Evidence     FreshRouteEvidence
-	Preparation  RoutePreparation
-	WaitingALT   bool
-	Missing      []string
-	Compute      uint64
-	Fee          uint64
-	PriorityFee  uint64
-	Tables       []LookupTable
-	Instructions []RouteInstruction
+	LastValidBlockHeight int64
+	Evidence             FreshRouteEvidence
+	Preparation          RoutePreparation
+	WaitingALT           bool
+	Missing              []string
+	Compute              uint64
+	Fee                  uint64
+	PriorityFee          uint64
+	Tables               []LookupTable
+	Instructions         []RouteInstruction
 }
 
 // prepareSameMint runs the read-only same-mint preparation from fresh chain
@@ -184,6 +192,18 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if err != nil {
 		return out, "wrap_policy", err
 	}
+	decodedPolicy, err := DecodeSquadsPolicy(evidence.PolicyData)
+	if err != nil {
+		return out, "alt_manifest", err
+	}
+	// Static program identities participate in v1 requirements hashing. The
+	// final wire will carry compute-budget instructions; their data values do
+	// not change manifest identity, but omitting the program would change it.
+	manifestInstructions := append(computeBudgetInstructions(uint32(r.computeLimit), 0), instructions...)
+	manifest, err := BuildRouteALTManifest(input, decodedPolicy.Settings, lease.PolicyAccount, r.signer, manifestInstructions, nil)
+	if err != nil {
+		return out, "alt_manifest", err
+	}
 	requiredAddresses := requiredLookupTableAddresses(instructions)
 	tables, err := r.store.LoadReusableLookupTables(ctx, cluster, lease.VaultID, evidence.Slot, requiredAddresses)
 	if err != nil {
@@ -194,16 +214,20 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "lookup_tables", err
 	}
 	out.Tables = tables
-	blockhash, _, err := r.rpc.LatestBlockhash(ctx, evidence.Slot)
+	blockhash, lastValidBlockHeight, err := r.rpc.LatestBlockhash(ctx, evidence.Slot)
 	if err != nil {
 		return out, "blockhash", err
 	}
+	out.LastValidBlockHeight = lastValidBlockHeight
 	preview, missing, err := compileV0Transaction(r.signer, blockhash, instructions, tables, 1, r.computeLimit)
 	if err != nil {
 		return out, "compile", err
 	}
 	if len(missing) > 0 || len(preview.LookupTables) == 0 {
-		preparation := waitingALTPreparation(route, missing, r.computeLimit)
+		preparation := waitingALTPreparation(missing, r.computeLimit)
+		preparation.RouteFingerprint = retainedSameMintRouteFingerprint(lease)
+		preparation.RequirementsFingerprint = manifest.Fingerprint
+		preparation.Manifest = &manifest
 		if err := preserveCanonicalPlan(lease.ExecutionPlan, &preparation, "alt_readiness"); err != nil {
 			return out, "compile", err
 		}
@@ -257,6 +281,10 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if err != nil {
 		return out, "budgeted_compile", err
 	}
+	manifest, err = BuildRouteALTManifest(input, decodedPolicy.Settings, lease.PolicyAccount, r.signer, budgetInstructions, nil)
+	if err != nil {
+		return out, "budgeted_manifest", err
+	}
 	out.Instructions = budgetInstructions
 	budgetPreview, missing, err := compileV0Transaction(r.signer, blockhash, budgetInstructions, tables, 1, compute)
 	if err != nil {
@@ -278,7 +306,8 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	})
 	if err == nil {
 		preparation.RouteFingerprint = retainedSameMintRouteFingerprint(lease)
-		preparation.RequirementsFingerprint, err = retainedSameMintRequirementsFingerprint(input, lease.PolicyAccount, r.signer, instructions)
+		preparation.RequirementsFingerprint = manifest.Fingerprint
+		preparation.Manifest = &manifest
 	}
 	if err != nil {
 		return out, "prepare_route", err
@@ -442,19 +471,15 @@ func retainedSameMintRouteFingerprint(lease RevalidationLease) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func waitingALTPreparation(route KaminoSameMintRoute, missing []string, compute uint64) RoutePreparation {
-	routeBytes, _ := json.Marshal(route)
-	requirements, _ := json.Marshal(struct {
-		Missing []string `json:"missing"`
-		Compute uint64   `json:"compute"`
-	}{canonicalStrings(missing), compute})
-	routeHash, requirementHash := sha256.Sum256(routeBytes), sha256.Sum256(requirements)
+func waitingALTPreparation(missing []string, compute uint64) RoutePreparation {
 	plan, _ := json.Marshal(struct {
 		Kind    string   `json:"kind"`
 		Missing []string `json:"missing_alt_addresses"`
 		Compute uint64   `json:"compute_unit_limit"`
 	}{"same_mint_kamino_waiting_alt", canonicalStrings(missing), compute})
-	return RoutePreparation{RouteFingerprint: hex.EncodeToString(routeHash[:]), RequirementsFingerprint: hex.EncodeToString(requirementHash[:]), ExecutionPlan: plan}
+	// Source fingerprints come from the actual route and typed manifest; this
+	// metadata helper cannot invent them from missing keys or compute values.
+	return RoutePreparation{ExecutionPlan: plan}
 }
 
 type decodedRoutePosition struct {
@@ -517,8 +542,12 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if lease.SourceCollateralRaw > 0 && sourceCollateral != lease.SourceCollateralRaw {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("fresh source collateral amount differs from opportunity")
 	}
-	if _, err := decodeObligation(accounts[4], freshTarget.Position.Market, lease.VaultPubkey, "", &freshTarget.Position); err != nil {
+	targetCollateral, err := decodeObligation(accounts[4], freshTarget.Position.Market, lease.VaultPubkey, "", &freshTarget.Position)
+	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+	}
+	if freshSource.Position.LiquidityTokenProgram != freshTarget.Position.LiquidityTokenProgram || accounts[5].Owner != freshSource.Position.LiquidityTokenProgram {
+		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("same-mint reserve token programs differ from vault custody")
 	}
 	if err := validateVaultTokenAccount(accounts[5], lease.LiquidityMint, lease.VaultPubkey); err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
@@ -534,7 +563,24 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("decode fresh target economics: %w", err)
 	}
+	// A durable amount is a planning estimate. Recheck its backing against the
+	// same-bank collateral exchange value; a stale high estimate must never
+	// fund the target deposit by consuming pre-existing idle custody.
+	redeemable, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: accounts[1].Address, Owner: accounts[1].Owner, Lamports: accounts[1].Lamports, Data: accounts[1].Data, Executable: accounts[1].Executable}, freshSource.Position.Market, lease.LiquidityMint, sourceCollateral)
+	if err != nil {
+		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("fresh collateral backing: %w", err)
+	}
+	if lease.LiquidityAmountRaw == 0 || lease.LiquidityAmountRaw > redeemable || lease.PrincipalUSDMicros <= 0 || uint64(lease.PrincipalUSDMicros) != lease.LiquidityAmountRaw {
+		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("planned same-mint deposit exceeds fresh collateral backing or stable principal differs")
+	}
+	for i := 0; i < 8; i++ {
+		offset := 96 + i*136
+		if encodeBase58(accounts[4].Data[offset:offset+32]) == lease.TargetReserve {
+			targetCollateral = binary.LittleEndian.Uint64(accounts[4].Data[offset+32 : offset+40])
+		}
+	}
 	evidence := FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey, PolicyData: append([]byte(nil), accounts[6].Data...)}
+	evidence.Anchors = ExecutionBalanceAnchors{SourceObligation: source.Obligation, TargetObligation: target.Obligation, VaultLiquidityATA: source.Position.VaultLiquidityATA, SourceReserve: lease.SourceReserve, TargetReserve: lease.TargetReserve, SourceMarket: source.Position.Market, TargetMarket: target.Position.Market, SourceCollateralMint: source.Position.CollateralMint, TargetCollateralMint: target.Position.CollateralMint, LiquidityTokenProgram: source.Position.LiquidityTokenProgram, Owner: lease.VaultPubkey, Mint: lease.LiquidityMint, SourceCollateralRaw: sourceCollateral, TargetCollateralRaw: targetCollateral, IdleLiquidityRaw: binary.LittleEndian.Uint64(accounts[5].Data[64:72]), MinimumSlot: slot}
 	for index, account := range accounts {
 		hash := sha256.Sum256(account.Data)
 		evidence.Accounts = append(evidence.Accounts, FreshAccount{Kind: kinds[index], Address: account.Address, Owner: account.Owner, DataSHA256: hex.EncodeToString(hash[:]), Slot: slot, Executable: account.Executable, Exists: true})
@@ -629,13 +675,10 @@ func decodeObligation(account Account, expectedMarket, expectedOwner, expectedDe
 }
 
 func validateVaultTokenAccount(account Account, expectedMint, expectedOwner string) error {
-	if account.Owner != "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" && account.Owner != "TokenzQdYhDYEzV8znWVkuxHcQKoZbYGWvVGg9Lzc" {
-		return errors.New("vault token account has invalid program owner")
+	if account.Executable || account.Lamports == 0 {
+		return errors.New("vault token account is not funded token custody")
 	}
-	if len(account.Data) < 165 || encodeBase58(account.Data[:32]) != expectedMint || encodeBase58(account.Data[32:64]) != expectedOwner {
-		return errors.New("vault token account mint or authority mismatch")
-	}
-	return nil
+	return validateStableAccount(account, expectedMint, expectedOwner)
 }
 
 func requiredLookupTableAddresses(instructions []RouteInstruction) []string {
@@ -659,6 +702,12 @@ func requiredLookupTableAddresses(instructions []RouteInstruction) []string {
 }
 
 func (r *Revalidator) verifyLookupTables(ctx context.Context, tables []LookupTable, minimumSlot int64) ([]LookupTable, error) {
+	return r.verifyRouteLookupTables(ctx, tables, minimumSlot, false)
+}
+func (r *Revalidator) verifyFinalizedLookupTables(ctx context.Context, tables []LookupTable, minimumSlot int64) ([]LookupTable, error) {
+	return r.verifyRouteLookupTables(ctx, tables, minimumSlot, true)
+}
+func (r *Revalidator) verifyRouteLookupTables(ctx context.Context, tables []LookupTable, minimumSlot int64, finalized bool) ([]LookupTable, error) {
 	const maximumGetMultipleAccounts = 100
 	for start := 0; start < len(tables); start += maximumGetMultipleAccounts {
 		end := start + maximumGetMultipleAccounts
@@ -669,14 +718,21 @@ func (r *Revalidator) verifyLookupTables(ctx context.Context, tables []LookupTab
 		for i := start; i < end; i++ {
 			addresses[i-start] = tables[i].Address
 		}
-		_, accounts, err := r.rpc.ConfirmedAccounts(ctx, addresses, minimumSlot)
+		read := r.rpc.ConfirmedAccounts
+		if finalized {
+			read = r.rpc.FinalizedAccounts
+		}
+		observedSlot, accounts, err := read(ctx, addresses, minimumSlot)
 		if err != nil {
 			return nil, err
 		}
 		for offset, account := range accounts {
 			table := tables[start+offset]
-			if account.Owner != altProgram || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) {
+			if account.Address != table.Address || account.Executable || account.Lamports == 0 || account.Owner != altProgram || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) {
 				return nil, fmt.Errorf("lookup table %s has invalid or deactivated chain data", account.Address)
+			}
+			if observedSlot <= 0 || binary.LittleEndian.Uint64(account.Data[12:20]) >= uint64(observedSlot) {
+				return nil, fmt.Errorf("lookup table %s is not warm at observed slot", account.Address)
 			}
 			chain := make([]string, 0, (len(account.Data)-56)/32)
 			for offset := 56; offset < len(account.Data); offset += 32 {

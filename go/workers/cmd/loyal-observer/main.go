@@ -37,12 +37,16 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer runtime.Close()
+	maintenance, err := runtime.NewMaintenance(ctx)
+	if err != nil {
+		return err
+	}
 	server, err := engine.ListenHTTP(cfg.HTTPAddress, health.Handler(cfg.ProgressTimeout))
 	if err != nil {
 		return err
 	}
 	defer server.Close()
-	return engine.Run(ctx, runtime, server)
+	return engine.Run(ctx, runtime, maintenance, server)
 }
 
 func main() {

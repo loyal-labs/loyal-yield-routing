@@ -13,7 +13,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool     *pgxpool.Pool
+	ownsPool bool
+}
 
 func OpenStore(ctx context.Context, databaseURL string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
@@ -24,12 +27,20 @@ func OpenStore(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping fleet database: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, ownsPool: true}, nil
 }
 func (s *Store) Close() {
-	if s != nil && s.pool != nil {
+	if s != nil && s.pool != nil && s.ownsPool {
 		s.pool.Close()
 	}
+}
+
+// NewStoreFromPool borrows the runtime's scoped Yield pool.
+func NewStoreFromPool(pool *pgxpool.Pool) (*Store, error) {
+	if pool == nil {
+		return nil, errors.New("fleet requires a caller-owned pool")
+	}
+	return &Store{pool: pool}, nil
 }
 
 // RegisterFleetPlanningCluster ensures source-projection fan-out knows this

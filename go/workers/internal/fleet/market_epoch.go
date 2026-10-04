@@ -91,6 +91,7 @@ type MarketEpochFixture struct {
 // RPC observations must not invent monitor state_event_id values.
 type MarketEvidenceStore struct {
 	pool         *pgxpool.Pool
+	ownsPool     bool
 	schema       string
 	enabledMints []string
 }
@@ -112,6 +113,14 @@ func OpenMarketEvidenceStore(ctx context.Context, databaseURL, schema string) (*
 		pool.Close()
 		return nil, fmt.Errorf("ping market evidence database: %w", err)
 	}
+	return &MarketEvidenceStore{pool: pool, ownsPool: true, schema: schema, enabledMints: append([]string(nil), earnStableMints...)}, nil
+}
+
+// NewMarketEvidenceStoreFromPool borrows the runtime's read-only data pool.
+func NewMarketEvidenceStoreFromPool(pool *pgxpool.Pool, schema string) (*MarketEvidenceStore, error) {
+	if pool == nil || !validSQLIdentifier(schema) {
+		return nil, fmt.Errorf("market evidence requires scoped pool and valid schema")
+	}
 	return &MarketEvidenceStore{pool: pool, schema: schema, enabledMints: append([]string(nil), earnStableMints...)}, nil
 }
 
@@ -131,7 +140,7 @@ func (s *MarketEvidenceStore) SetEnabledMints(mints []string) error {
 }
 
 func (s *MarketEvidenceStore) Close() {
-	if s != nil && s.pool != nil {
+	if s != nil && s.pool != nil && s.ownsPool {
 		s.pool.Close()
 	}
 }

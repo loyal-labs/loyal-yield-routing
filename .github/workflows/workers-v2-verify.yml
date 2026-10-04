@@ -9,6 +9,11 @@ on:
       - scripts/workers-v2-fixture.py
       - crates/loyal-yield-store/migrations/**
       - crates/loyal-timescale-migrations/migrations/**
+      - crates/loyal-actions/**
+      - crates/balance-sweep-ata-monitor/**
+      - crates/loyal-yield-orchestrator/src/bin/loyal-klend-proxy.rs
+      - crates/squads-test-harness/**
+      - Cargo.lock
       - .github/workflows/workers-v2-verify.yml
 
 permissions:
@@ -63,3 +68,56 @@ jobs:
         run: python3 scripts/workers-v2-fixture.py
       - name: Verify offline and enabled database behavior
         run: bash scripts/verify-workers-v2.sh
+
+  image:
+    # This job only builds and probes a local CI image. No registry credentials,
+    # publishing, production environment or deployment permission is granted.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Build scoped runtime with locked Rust compatibility tools
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: go/workers/Dockerfile
+          platforms: linux/amd64
+          build-args: LOYAL_IMAGE_VERSION=${{ github.sha }}
+          tags: loyal-workers-v2:verification
+          push: false
+          load: true
+          cache-from: type=gha,scope=workers-v2-image
+          cache-to: type=gha,mode=min,scope=workers-v2-image
+      - name: Probe all Go roles with network and writers unavailable
+        run: |
+          for role in loyal-engine loyal-observer loyal-evidence; do
+            docker run --rm --network none --read-only --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --entrypoint /usr/local/bin/$role loyal-workers-v2:verification --role-probe
+          done
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint /bin/sh loyal-workers-v2:verification \
+            -ec 'cd /usr/local/bin; sha256sum -c /usr/local/share/loyal-workers/SHA256SUMS; test "$(id -u)" = 65532'
+      - name: Verify Rust tools load without runtime or credentials
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint /bin/sh loyal-workers-v2:verification \
+            -ec '
+              for tool in loyal-klend-proxy earn-domain-bridge; do
+                deps=$(ldd /usr/local/bin/$tool)
+                case "$deps" in *"not found"*) echo "Missing runtime library for $tool"; exit 1;; esac
+              done
+              set +e
+              bridge_output=$(/usr/local/bin/earn-domain-bridge 2>&1)
+              bridge_status=$?
+              proxy_output=$(printf "{}" | /usr/local/bin/loyal-klend-proxy 2>&1)
+              proxy_status=$?
+              set -e
+              test "$bridge_status" = 1
+              case "$bridge_output" in *"NEON_DATABASE_URL is required"*) ;; *) exit 1;; esac
+              test "$proxy_status" = 1
+              case "$proxy_output" in *"missing field"*) ;; *) exit 1;; esac
+            '

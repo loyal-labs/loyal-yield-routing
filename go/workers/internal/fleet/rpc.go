@@ -123,6 +123,13 @@ func (c *RPCClient) call(ctx context.Context, method string, params []any, outpu
 }
 
 func (c *RPCClient) LatestBlockhash(ctx context.Context, minimumSlot int64) (string, int64, error) {
+	return c.latestBlockhash(ctx, minimumSlot, "confirmed")
+}
+
+func (c *RPCClient) latestBlockhash(ctx context.Context, minimumSlot int64, commitment string) (string, int64, error) {
+	if commitment != "confirmed" && commitment != "finalized" {
+		return "", 0, errors.New("invalid blockhash commitment")
+	}
 	var result struct {
 		Context struct {
 			Slot int64 `json:"slot"`
@@ -132,7 +139,7 @@ func (c *RPCClient) LatestBlockhash(ctx context.Context, minimumSlot int64) (str
 			LastValidBlockHeight int64  `json:"lastValidBlockHeight"`
 		} `json:"value"`
 	}
-	if err := c.call(ctx, "getLatestBlockhash", []any{map[string]any{"commitment": "confirmed", "minContextSlot": minimumSlot}}, &result); err != nil {
+	if err := c.call(ctx, "getLatestBlockhash", []any{map[string]any{"commitment": commitment, "minContextSlot": minimumSlot}}, &result); err != nil {
 		return "", 0, err
 	}
 	if result.Context.Slot < minimumSlot || result.Value.Blockhash == "" || result.Value.LastValidBlockHeight <= 0 {
@@ -164,13 +171,20 @@ func (c *RPCClient) RecentPriorityFee(ctx context.Context, writable []string) (u
 }
 
 func (c *RPCClient) FeeForMessage(ctx context.Context, message []byte, minimumSlot int64) (uint64, error) {
+	return c.feeForMessage(ctx, message, minimumSlot, "confirmed")
+}
+
+func (c *RPCClient) feeForMessage(ctx context.Context, message []byte, minimumSlot int64, commitment string) (uint64, error) {
+	if commitment != "confirmed" && commitment != "finalized" {
+		return 0, errors.New("invalid fee commitment")
+	}
 	var result struct {
 		Context struct {
 			Slot int64 `json:"slot"`
 		} `json:"context"`
 		Value *uint64 `json:"value"`
 	}
-	if err := c.call(ctx, "getFeeForMessage", []any{base64.StdEncoding.EncodeToString(message), map[string]any{"commitment": "confirmed", "minContextSlot": minimumSlot}}, &result); err != nil {
+	if err := c.call(ctx, "getFeeForMessage", []any{base64.StdEncoding.EncodeToString(message), map[string]any{"commitment": commitment, "minContextSlot": minimumSlot}}, &result); err != nil {
 		return 0, err
 	}
 	if result.Context.Slot < minimumSlot || result.Value == nil || *result.Value == 0 {

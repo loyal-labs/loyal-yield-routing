@@ -38,6 +38,13 @@ func startConnectedSVM(t *testing.T, ctx context.Context, accounts map[string]Ac
 	t.Cleanup(cancel)
 	command := exec.CommandContext(processContext, path)
 	command.Env = []string{"LC_ALL=C"}
+	// Only local program artifacts are forwarded. The independent helper must
+	// not inherit provider credentials or production network configuration.
+	for _, name := range []string{"SQUADS_SMART_ACCOUNT_PROGRAM_SO", "MOCK_YIELD_PROTOCOLS_PROGRAM_SO"} {
+		if value := os.Getenv(name); value != "" {
+			command.Env = append(command.Env, name+"="+value)
+		}
+	}
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	input, err := command.StdinPipe()

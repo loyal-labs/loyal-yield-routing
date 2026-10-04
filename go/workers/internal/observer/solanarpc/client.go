@@ -79,6 +79,19 @@ func (c *Client) Slot(ctx context.Context, commitment string) (uint64, error) {
 	return slot, err
 }
 
+// GenesisHash is read-only network identity evidence for the fixed mainnet
+// product catalog. A configured URL is not evidence of the returned cluster.
+func (c *Client) GenesisHash(ctx context.Context) (string, error) {
+	var hash string
+	if err := c.call(ctx, "getGenesisHash", []any{}, &hash); err != nil {
+		return "", errors.New("Solana genesis identity lookup failed")
+	}
+	if hash == "" {
+		return "", errors.New("Solana genesis identity is missing")
+	}
+	return hash, nil
+}
+
 type Account struct {
 	Lamports   uint64
 	Owner      string

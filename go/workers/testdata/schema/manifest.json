@@ -8,6 +8,22 @@
     "use": "Historical application-owned starting schema for isolated fixtures only; not a migration runner"
   },
   {
+    "file": "0002_add_earn_forecast_snapshots.sql",
+    "source_repo": "loyal-apps",
+    "source_commit": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
+    "source_path": "apps/web/src/lib/yield-optimization/migrations/0002_add_earn_forecast_snapshots.sql",
+    "sha256": "64567a31b0cf01a0fd6b29ecf910092fba8d1b7a9ca64c82c137cfeb39f84cc8",
+    "use": "Historical application-owned forecast schema for isolated fixtures only; not a migration runner"
+  },
+  {
+    "file": "0003_add_earn_forecast_snapshot_series.sql",
+    "source_repo": "loyal-apps",
+    "source_commit": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
+    "source_path": "apps/web/src/lib/yield-optimization/migrations/0003_add_earn_forecast_snapshot_series.sql",
+    "sha256": "7cec8b8d0687a4b60399794137385a9a38f882221924dfe66f1a70d26e66f362",
+    "use": "Historical application-owned forecast schema for isolated fixtures only; not a migration runner"
+  },
+  {
     "file": "0004_add_verifiable_earn_holdings.sql",
     "source_repo": "loyal-apps",
     "source_commit": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",

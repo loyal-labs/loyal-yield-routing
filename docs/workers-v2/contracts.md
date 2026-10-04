@@ -53,8 +53,10 @@ Observer owns confirmed financial projections and verified market/policy facts.
 Retail engine owns Autodeposit, fleet and Multiply autonomous operations; Backyard
 has a separately credentialed engine instance. Apps own authenticated desired
 controls/revisions and external receipt verification, not autonomous progress.
-User deposits/withdrawals remain SDK/user-wallet signed; retail vault index 1 and
-legacy agent vault index 0 stay distinct. Observer/planner have no private key or
+User deposits/withdrawals remain SDK/user-wallet signed. Classic Earn and
+Autodeposit use vault index 1; Multiply/EarnMax uses its source-defined vault
+index 0. Backyard uses its fixed manifest. These custody scopes stay distinct.
+Observer/planner have no private key or
 broadcast client. SSE stays unchanged initially.
 
 Desired controls, observed chain state and effective eligibility are separate.

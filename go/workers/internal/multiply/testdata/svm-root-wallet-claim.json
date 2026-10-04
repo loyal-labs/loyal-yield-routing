@@ -1,0 +1,23 @@
+{
+  "amountRaw": 100000,
+  "confirmedSlot": 1000,
+  "destination": "A1tyJbhs7iQMBmbtfB8tD1E9FAaV3XiZ1MZeDyTYhyni",
+  "destinationAfterRaw": 225000,
+  "destinationBeforeRaw": 125000,
+  "provenance": {
+    "producer": "squads-test-harness workers_v2_multiply root_wallet_claim_pays_exact_request_and_rejects_delegate",
+    "program": "crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so",
+    "programSha256": "83234e417a0819006abdd0b4267e1f2fac697ef6584410f5bacb0c3f03c1dada",
+    "proof": "real Squads SBF plus SPL Token in LiteSVM; unauthorized delegate failed; exact root payout executed"
+  },
+  "requestId": "workers-v2-svm-claim",
+  "rootAuthority": "AvGLC9kBZ39ZkuovMH4F6aCwvyjAK5uSocRfb6WeYzs3",
+  "settings": "41gqrPgijYycTaCCzKyLfvqikMEH9fzGCwZYAKQHvMbd",
+  "signature": "5E9fNuP9VTKT6zmcEkwfCcKQ3qQrYoLvVzK3QLpBUBsvZz9LKFP6DFLxkPwgCm4gJRqnqTAjhGKQKVyenYwU5aYB",
+  "source": "HUsKfXMiC2RjaHkdz2N1yrQECpQXzQZ2FJWwPpvNPkbW",
+  "sourceAfterRaw": 900000,
+  "sourceBeforeRaw": 1000000,
+  "vault": "EdMSvMoHfsemd2s7eHCrRnuM1dzPu2CpUrHJN98XYC9y",
+  "vaultIndex": 0,
+  "wireBase64": "AdNoUOpfjpPc9Df+JSgjtoIaF+V38WX9NGqSfi3ldgI76QlC0lVcgLB1xwNM2cJmQwnL0V8NWknJaaqceILh8QQBAAUJk15Mx8LAjuRIwHVHt8ka4fIQlwQhugOoTWRO/Vk2v+IswBxOr0NjKbDs+PlLWHlAvc4C4exXKsMxHacP7LZJUIXz8iM5WgpJuF1u+esyhd9uNH46COqnjp+4JnWpizir9N6SWyaprcE32KWQ2vTyuTJnckDT1LcEHVfvKuoW4X0DBkZv5SEXMv/srbpyw5vnvIzlu8X3EmssQ5s6QAAAAAZ+nHraWi0mg8kxgywyiNpakUsc8wgWYUL7AQFv9BxBBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKnG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYcp39WNuTADJbq4UHnnuQSvArAmNJtAQuVj7E4AKpMgsIefYI4KcK2r6BRazpFJysL7pKl5G7+/O2b5EUHVf4U0DBAAFAoAaBgAEAAUBAOgDAAUIAQUAAwcCCAYiWlG7USdGgE4AAQATAAAAAQQEAAECAwoADKCGAQAAAAAABg=="
+}

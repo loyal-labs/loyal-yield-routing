@@ -2,16 +2,16 @@
 //! JSON lines on stdin/stdout; no network listener and no production credentials.
 //! Unknown operations fail closed. Account injection is permitted exactly once,
 //! before any simulation or submission. Transaction effects come from LiteSVM.
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use litesvm::LiteSVM;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use solana_sdk::{
     account::Account, message::VersionedMessage, pubkey::Pubkey, transaction::VersionedTransaction,
 };
 use spl_token::solana_program::program_pack::Pack;
 use squads_test_harness::{
     add_mock_jupiter_program, add_mock_kamino_lend_program,
-    add_squads_program_from_env_or_sibling_checkout,
+    add_squads_program_from_env_or_sibling_checkout, add_subscriptions_program_from_env_or_fixture,
 };
 use std::{
     collections::BTreeMap,
@@ -37,6 +37,8 @@ impl LocalChain {
         let mut svm = LiteSVM::new();
         add_squads_program_from_env_or_sibling_checkout(&mut svm)?
             .ok_or("required Squads SBF missing")?;
+        add_subscriptions_program_from_env_or_fixture(&mut svm)?
+            .ok_or("required Subscriptions SBF missing")?;
         add_mock_kamino_lend_program(&mut svm)?;
         add_mock_jupiter_program(&mut svm)?;
         svm.warp_to_slot(1000);

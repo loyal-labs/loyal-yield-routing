@@ -81,6 +81,35 @@ func (s *Store) ClaimEligibleLotsOnce(ctx context.Context, targetID int64, claim
 			outcome = noopClaim(targetID, "target_not_active")
 			return nil
 		}
+		// The user can change protection settings after the RPC/context read.
+		// Read the authoritative settings while the target row stays locked.
+		var currentFloor, currentMax *int64
+		if err := tx.QueryRow(ctx, `
+SELECT wallet_balance_floor_raw, max_amount_per_period
+FROM loyal_yield.balance_sweep_targets WHERE id = $1`, targetID).Scan(&currentFloor, &currentMax); err != nil {
+			return fmt.Errorf("read locked autodeposit protection settings: %w", err)
+		}
+		if currentFloor == nil || *currentFloor != walletBalanceFloorRaw {
+			outcome = noopClaim(targetID, "wallet_balance_floor_changed")
+			return nil
+		}
+		if currentMax != nil && (maxAmountPerPeriodRaw == nil || *currentMax < *maxAmountPerPeriodRaw) {
+			maxAmountPerPeriodRaw = currentMax
+		}
+		// The target row serializes independent claim tokens. A loader's
+		// earlier check is insufficient when two executors share a vault.
+		var selectedClaimExists bool
+		if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM loyal_yield.balance_sweep_lot_claims
+  WHERE target_id = $1 AND status = 'selected'
+)`, targetID).Scan(&selectedClaimExists); err != nil {
+			return fmt.Errorf("check selected autodeposit claim: %w", err)
+		}
+		if selectedClaimExists {
+			outcome = noopClaim(targetID, "target_has_selected_claim")
+			return nil
+		}
 
 		staleCheckEventID, err := currentTargetEventID(ctx, tx, targetID)
 		if err != nil {
@@ -582,12 +611,15 @@ WHERE claim_token = $1`, claimToken, executionID); err != nil {
 }
 
 // ReleaseClaimOnce returns an unspent claim's lots to the open pool and fails
-// the slot, so the surplus is rescheduled instead of stranded. Only a selected
-// claim with no completed execution can be released.
-func (s *Store) ReleaseClaimOnce(ctx context.Context, claimToken string) (ClaimOutcome, error) {
+// the slot. The locked claim must still belong to this live executor lease,
+// and no pull attempt or execution may hold custody.
+func (s *Store) ReleaseClaimOnce(ctx context.Context, claimToken, leaseToken string) (ClaimOutcome, error) {
 	var outcome ClaimOutcome
 	if s == nil || s.pool == nil {
 		return outcome, errors.New("autodeposit store has no database pool")
+	}
+	if leaseToken == "" {
+		return outcome, fmt.Errorf("%w: release requires the executor lease token", ErrOwnershipLost)
 	}
 	err := WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		existing, err := loadExistingClaimByToken(ctx, tx, claimToken)
@@ -602,6 +634,32 @@ func (s *Store) ReleaseClaimOnce(ctx context.Context, claimToken string) (ClaimO
 		if outcome.Status != ClaimSelected {
 			outcome.Reason = "claim_not_selected"
 			return nil
+		}
+		var ownsLease, unspent bool
+		if err := tx.QueryRow(ctx, `
+SELECT COALESCE(autodeposit_executor_lease_token = $2
+         AND autodeposit_executor_lease_expires_at > now(), false),
+       execution_id IS NULL AND NOT EXISTS (
+         SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+         WHERE attempt.claim_token = claim.claim_token
+           AND (attempt.execution_id IS NOT NULL
+                OR (attempt.operation_kind = 'pull'
+                    AND attempt.attempt_state = ANY($3::text[])))
+       )
+       AND NOT EXISTS(
+         SELECT 1 FROM loyal_yield.balance_sweep_destination_setup_attempts setup
+         WHERE setup.claim_token=claim.claim_token
+           AND setup.attempt_state IN('prepared','submitted','unknown','ambiguous')
+       )
+FROM loyal_yield.balance_sweep_lot_claims AS claim
+WHERE claim.claim_token = $1`, claimToken, leaseToken, ClaimHoldingPullAttemptStates).Scan(&ownsLease, &unspent); err != nil {
+			return fmt.Errorf("check autodeposit claim release authority: %w", err)
+		}
+		if !ownsLease {
+			return fmt.Errorf("%w: claim %s cannot be released by this executor", ErrOwnershipLost, claimToken)
+		}
+		if !unspent {
+			return fmt.Errorf("%w: claim %s has a holding pull attempt or execution", ErrClaimCustodyHeld, claimToken)
 		}
 		if len(outcome.Lots) == 0 {
 			outcome.Reason = "claim_has_no_supported_lots"
@@ -668,3 +726,6 @@ WHERE claim_token = $1`, claimToken); err != nil {
 	}
 	return outcome, nil
 }
+
+// ErrClaimCustodyHeld distinguishes a financial hold from executor ownership.
+var ErrClaimCustodyHeld = errors.New("autodeposit claim holds custody")

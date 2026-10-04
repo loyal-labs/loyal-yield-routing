@@ -111,7 +111,7 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 		h := sha256.Sum256(w)
 		return SimulationEvidence{Slot: 101, Succeeded: true, UnitsConsumed: 200000, WireSHA256: hex.EncodeToString(h[:])}, nil
 	}
-	prep, err := PrepareRoute(route, testPolicy, testVault, 0, []uint8{0, 1}, []LookupTable{{testALT, all, true, 99, 100}}, testMarket, 5000, 400000, sim)
+	prep, err := PrepareRoute(route, testPolicy, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, sim)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,14 +127,14 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	oversized := route
 	oversized.Public = append([]RouteInstruction(nil), route.Public...)
 	oversized.Public[0].Data = make([]byte, 1400)
-	if _, err := PrepareRoute(oversized, testPolicy, testVault, 0, []uint8{0, 1}, []LookupTable{{testALT, all, true, 99, 100}}, testMarket, 5000, 400000, sim); err == nil || !strings.Contains(err.Error(), "packet") {
+	if _, err := PrepareRoute(oversized, testPolicy, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, sim); err == nil || !strings.Contains(err.Error(), "packet") {
 		t.Fatalf("oversized packet accepted: %v", err)
 	}
 	failSim := func(w []byte) (SimulationEvidence, error) {
 		h := sha256.Sum256(w)
 		return SimulationEvidence{Slot: 101, Succeeded: false, UnitsConsumed: 1, WireSHA256: hex.EncodeToString(h[:])}, nil
 	}
-	if _, err := PrepareRoute(route, testPolicy, testVault, 0, []uint8{0, 1}, []LookupTable{{testALT, all, true, 99, 100}}, testMarket, 5000, 400000, failSim); err == nil {
+	if _, err := PrepareRoute(route, testPolicy, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, failSim); err == nil {
 		t.Fatal("simulation failure accepted")
 	}
 	e.OpportunityKey = "changed"
@@ -296,6 +296,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	source := ReserveIdentity{Address: testIdentity(43), Market: market, Mint: USDCMint}
 	target := ReserveIdentity{Address: testIdentity(44), Market: market, Mint: USDCMint}
 	vaultID := seedWorkerVault(t, ctx, store, suffix, market, source.Address)
+	manifestSettings, _, _ := bindWaitingFixtureVault(t, ctx, store, vaultID, suffix)
 	position, err := store.LoadVaultPosition(ctx, cluster, vaultID, source, target)
 	if err != nil {
 		t.Fatal(err)
@@ -325,7 +326,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey, "source-reserve:" + source.Address}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: 100, ObservedTargetAPYBPS: 900, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000}
-	if err = store.CommitRevalidation(ctx, *lease, commit); err != nil {
+	if err = store.commitRevalidation(ctx, *lease, commit, nil); err != nil {
 		t.Fatal(err)
 	}
 	var state, kind string
@@ -341,7 +342,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if state != "leased" || kind != "execute" || reservations != 1 || observedTargetAPY != 900 || projectedTargetAPY >= observedTargetAPY || admittedSourceAPY != 100 || !bytes.Contains(persisted, []byte("unsigned_wire_base64")) {
 		t.Fatalf("incomplete atomic handoff state=%s kind=%s reservations=%d observed=%d projected=%d source=%d plan=%s", state, kind, reservations, observedTargetAPY, projectedTargetAPY, admittedSourceAPY, persisted)
 	}
-	if err = store.CommitRevalidation(ctx, *lease, commit); err == nil {
+	if err = store.commitRevalidation(ctx, *lease, commit, nil); err == nil {
 		t.Fatal("lost revalidation lease was accepted after fused handoff")
 	}
 	// A live reservation remains the authoritative source/target commitment
@@ -376,16 +377,22 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err != nil || waitingLease == nil {
 		t.Fatalf("waiting claim: %+v %v", waitingLease, err)
 	}
-	waiting := waitingALTPreparation(testRoute(), []string{testTarget}, 400_000)
+	manifest := waitingManifestFixtureForRoute(t, manifestSettings, waitingLease.VaultPubkey, waitingLease.PolicyAccount, waitingLease.SourceReserve, waitingLease.TargetReserve)
+	seedWaitingCatalog(t, ctx, store, cluster, manifest.SharedAddresses)
+	missingVault := manifest.VaultAddresses[0].Address
+	waiting := waitingALTPreparation([]string{missingVault}, 400_000)
+	waiting.RouteFingerprint = retainedSameMintRouteFingerprint(*waitingLease)
+	waiting.Manifest = &manifest
+	waiting.RequirementsFingerprint = manifest.Fingerprint
 	if err := preserveCanonicalPlan(waitingLease.ExecutionPlan, &waiting, "alt_readiness"); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.CommitRevalidation(ctx, *waitingLease, RevalidationCommit{Disposition: "waiting_alt", Preparation: &waiting, MissingAddresses: []string{testTarget}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: waitingLease.IdempotencyKey}); err != nil {
+	if err = store.CommitRevalidation(ctx, *waitingLease, RevalidationCommit{Disposition: "waiting_alt", Preparation: &waiting, MissingAddresses: []string{missingVault}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: waitingLease.IdempotencyKey}); err != nil {
 		t.Fatal(err)
 	}
 	var requestStatus, requestAddress string
 	var requestSealed bool
-	if err = store.pool.QueryRow(ctx, `SELECT opportunity.opportunity_state,request.request_status,request.sealed_at IS NOT NULL,address.address FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.lookup_table_provisioning_request_consumers consumer ON consumer.opportunity_id=opportunity.id JOIN loyal_yield.lookup_table_provisioning_requests request ON request.id=consumer.provisioning_request_id JOIN loyal_yield.lookup_table_provisioning_request_addresses address ON address.request_id=request.id WHERE opportunity.id=$1`, lease.OpportunityID).Scan(&state, &requestStatus, &requestSealed, &requestAddress); err != nil || state != "waiting_alt" || requestStatus != "requested" || !requestSealed || requestAddress != testTarget {
+	if err = store.pool.QueryRow(ctx, `SELECT opportunity.opportunity_state,request.request_status,request.sealed_at IS NOT NULL,address.address FROM loyal_yield.rebalance_opportunities opportunity JOIN loyal_yield.lookup_table_provisioning_request_consumers consumer ON consumer.opportunity_id=opportunity.id JOIN loyal_yield.lookup_table_provisioning_requests request ON request.id=consumer.provisioning_request_id JOIN loyal_yield.lookup_table_provisioning_request_addresses address ON address.request_id=request.id WHERE opportunity.id=$1 AND address.address=$2`, lease.OpportunityID, missingVault).Scan(&state, &requestStatus, &requestSealed, &requestAddress); err != nil || state != "waiting_alt" || requestStatus != "requested" || !requestSealed || requestAddress != missingVault {
 		t.Fatalf("waiting_alt durable request: state=%s status=%s sealed=%t address=%s err=%v", state, requestStatus, requestSealed, requestAddress, err)
 	}
 	blockedLease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, true, false)
@@ -430,7 +437,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err != nil || finalLease == nil {
 		t.Fatalf("ready recovery claim: %+v %v", finalLease, err)
 	}
-	if err = store.CommitRevalidation(ctx, *finalLease, RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: finalLease.IdempotencyKey}); err != nil {
+	if err = store.commitRevalidation(ctx, *finalLease, RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: finalLease.IdempotencyKey}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Go must claim the cross-mint lane only when explicitly enabled. This is

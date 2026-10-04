@@ -34,13 +34,9 @@ func OpenStore(ctx context.Context, databaseURL string) (*Store, error) {
 	if databaseURL == "" {
 		return nil, errors.New("autodeposit store requires a database URL")
 	}
-	pool, err := pgxpool.New(ctx, databaseURL)
+	pool, err := WorkersDB.Open(ctx, databaseURL, 4)
 	if err != nil {
 		return nil, fmt.Errorf("open autodeposit database: %w", err)
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("ping autodeposit database: %w", err)
 	}
 	return NewStore(pool)
 }
@@ -57,7 +53,14 @@ func (s *Store) RequireSchema(ctx context.Context) error {
 		"loyal_yield.balance_sweep_lot_claims",
 		"loyal_yield.balance_sweep_lot_claim_items",
 		"loyal_yield.balance_sweep_transaction_attempts",
+		"loyal_yield.balance_sweep_destination_setup_attempts",
 		"loyal_yield.projection_offsets",
+		"loyal_yield.managed_vaults",
+		"loyal_yield.route_policies",
+		"loyal_yield.balance_sweep_executions",
+		"loyal_yield.user_yield_positions",
+		"loyal_yield.user_yield_position_deposits",
+		"loyal_yield.user_yield_position_holding_events",
 	)
 }
 

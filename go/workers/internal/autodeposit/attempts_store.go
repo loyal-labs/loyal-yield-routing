@@ -32,6 +32,8 @@ type DepositPlanTarget struct {
 	VaultTokenAta        string  `json:"vaultTokenAta"`
 	TokenMint            string  `json:"tokenMint"`
 	RoutePolicyAccount   string  `json:"routePolicyAccount"`
+	SweepPolicyAccount   string  `json:"sweepPolicyAccount,omitempty"`
+	SetupPolicyAccount   string  `json:"setupPolicyAccount,omitempty"`
 	RoutePolicySeed      int64   `json:"routePolicySeed,string"`
 	CurrentReserve       *string `json:"currentReserve"`
 	CurrentMarket        *string `json:"currentMarket"`
@@ -253,6 +255,9 @@ type PreparedAttempt struct {
 	SignedTransactionSHA256  string
 	RecentBlockhash          string
 	LastValidBlockHeight     int64
+	// Only fresh pull admission uses this protection revision. Existing signed
+	// attempts remain recoverable when controls change.
+	ProtectionFloorRaw *int64
 }
 
 // PersistPreparedAttempt stores one signed transaction before its first
@@ -302,6 +307,17 @@ WHERE target.id = $1`, prepared.TargetID)
 		if lock.RowsAffected() != 1 {
 			return fmt.Errorf("%w: autodeposit target %d has no managed vault for its idle handoff", ErrOwnershipLost, prepared.TargetID)
 		}
+		// Serialize user control changes with new signed pull publication. The
+		// fresh checks apply only to inserted wire, never adoption/recovery.
+		var admissionActive bool
+		var floor, maximum *int64
+		if err := tx.QueryRow(ctx, `SELECT desired_active AND chain_status='active',wallet_balance_floor_raw,max_amount_per_period
+ FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, prepared.TargetID).Scan(&admissionActive, &floor, &maximum); err != nil {
+			return fmt.Errorf("lock autodeposit pull controls: %w", err)
+		}
+		pullAllowed := prepared.OperationKind != OperationPull || (admissionActive && floor != nil && prepared.ProtectionFloorRaw != nil &&
+			*floor == *prepared.ProtectionFloorRaw && prepared.SourcePreBalanceRaw-prepared.AmountRaw >= *floor &&
+			(maximum == nil || prepared.AmountRaw <= *maximum))
 		rows, err := tx.Query(ctx, `
 WITH guarded_claim AS (
   UPDATE loyal_yield.balance_sweep_lot_claims
@@ -345,6 +361,11 @@ inserted AS (
   FROM next_attempt
   CROSS JOIN guarded_claim
   WHERE NOT EXISTS (SELECT 1 FROM existing_active)
+    AND $15::boolean
+    AND ($4 <> 'pull' OR NOT EXISTS (
+      SELECT 1 FROM loyal_yield.balance_sweep_destination_setup_attempts setup
+      WHERE setup.claim_token=$1 AND setup.attempt_state IN ('prepared','submitted','unknown','ambiguous')
+    ))
     AND ($4 <> 'pull' OR NOT EXISTS (
       SELECT 1
       FROM loyal_yield.balance_sweep_targets AS target
@@ -373,7 +394,7 @@ LIMIT 1`,
 			prepared.ScheduledSlotID, prepared.ExecutionID, prepared.AmountRaw,
 			prepared.SourcePreBalanceRaw, prepared.DestinationPreBalanceRaw,
 			prepared.Signature, prepared.SignedTransactionBase64, prepared.SignedTransactionSHA256,
-			prepared.RecentBlockhash, prepared.LastValidBlockHeight)
+			prepared.RecentBlockhash, prepared.LastValidBlockHeight, pullAllowed)
 		if err != nil {
 			return fmt.Errorf("persist prepared autodeposit %s attempt: %w", prepared.OperationKind, err)
 		}

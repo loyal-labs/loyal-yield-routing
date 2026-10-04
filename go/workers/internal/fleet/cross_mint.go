@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"math/bits"
 	"net/http"
 	"net/url"
@@ -581,19 +582,17 @@ func minimumProfitableCrossMintOutput(planJSON json.RawMessage, sourceAmount uin
 		if principal > uint64(math.MaxInt64) {
 			return 0, false
 		}
-		p := int64(principal)
-		if apy < 0 || p > 0 && apy > 0 && p > math.MaxInt64/apy {
+		if apy < 0 {
 			return 0, false
 		}
-		gain := p * apy
-		if gain > 0 && plan.Holding > math.MaxInt64/gain {
+		gain := new(big.Int).Mul(new(big.Int).SetUint64(principal), big.NewInt(apy))
+		gain.Mul(gain, big.NewInt(plan.Holding))
+		gain.Quo(gain, big.NewInt(year*10_000))
+		gain.Add(gain, new(big.Int).SetUint64(principal))
+		if !gain.IsInt64() {
 			return 0, false
 		}
-		accrued := gain * plan.Holding / (year * 10_000)
-		if accrued > math.MaxInt64-p {
-			return 0, false
-		}
-		return p + accrued, true
+		return gain.Int64(), true
 	}
 	source, ok := future(sourceAmount, sourceAPY)
 	if !ok {
@@ -1068,19 +1067,47 @@ func fingerprintCrossMintManifest(binding CrossMintPolicyBindings, mints []strin
 }
 
 func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLease) error {
+	ctx, cancel := context.WithDeadline(ctx, lease.ExpiresAt.Add(-5*time.Second))
+	defer cancel()
+	store, ok := r.store.(crossMintPreflightStore)
+	if !ok {
+		return errors.New("cross-mint source requires actual movement control checks")
+	}
+	generation, err := store.CheckCrossMintPreflightLease(ctx, lease)
+	if err != nil {
+		return err
+	}
+	out, err := r.prepareCrossMintPreflight(ctx, lease, false)
+	if err != nil {
+		return err
+	}
+	current, err := store.CheckCrossMintPreflightLease(ctx, lease)
+	if err != nil || current != generation {
+		if err == nil {
+			err = errors.New("cross-mint control generation changed during source preflight")
+		}
+		return err
+	}
+	if out.WaitingALT {
+		return r.store.CommitRevalidation(ctx, lease, RevalidationCommit{CrossMintControlGeneration: &generation, Disposition: "waiting_alt", Preparation: &out.PreflightPreparation, MissingAddresses: out.MissingAddresses, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey})
+	}
+	return r.store.CommitRevalidation(ctx, lease, RevalidationCommit{CrossMintControlGeneration: &generation, Disposition: "ready", Preparation: &out.PreflightPreparation, ConflictKeys: out.PreflightPreparation.Transaction.WritableAccounts, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: out.SourceAPYBPS, ObservedTargetAPYBPS: out.TargetAPYBPS, TargetObservedSupplyUSDMicros: out.TargetObservedSupplyUSDMicros, TargetObservedSlot: out.ObservedSlot})
+}
+
+func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease RevalidationLease, activation bool) (out CrossMintActivationPreparation, err error) {
 	if !r.crossMintEnabled || r.jupiter == nil {
-		return errors.New("cross-mint revalidation is disabled")
+		return out, errors.New("cross-mint revalidation is disabled")
 	}
 	var plan crossMintPlan
 	if err := json.Unmarshal(lease.ExecutionPlan, &plan); err != nil || plan.Kind != "cross_mint_jupiter" || plan.SourceMint != lease.SourceLiquidityMint || plan.TargetMint != lease.TargetLiquidityMint || plan.Amount != lease.LiquidityAmountRaw || plan.SourceMint == plan.TargetMint {
-		return errors.New("canonical cross-mint execution plan is invalid")
+		return out, errors.New("canonical cross-mint execution plan is invalid")
 	}
 	b := plan.Bindings
 	if b.VaultPubkey != lease.VaultPubkey || b.VaultIndex != lease.VaultIndex || b.DelegatedSigner != r.signer || b.Settings == "" || b.Withdraw.PolicyAccount != lease.PolicyAccount || b.Withdraw.SourceCommitment != "finalized" || b.Swap.SourceCommitment != "finalized" || b.Deposit.SourceCommitment != "finalized" || b.Swap.MaxSlippageBPS == 0 || b.Swap.MaxSlippageBPS > 10_000 || b.Swap.DailySourceMintSpendingCap < plan.Amount {
-		return errors.New("cross-mint policy bindings are invalid")
+		return out, errors.New("cross-mint policy bindings are invalid")
 	}
 	if plan.ValueLoss == 0 || plan.ValueLoss > 1_000 {
-		return errors.New("cross-mint plan value-loss cap is invalid")
+		return out, errors.New("cross-mint plan value-loss cap is invalid")
 	}
 	valueLoss := plan.ValueLoss
 	if valueLoss > r.crossMintMaxValueLossBPS {
@@ -1092,27 +1119,36 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 	}
 	minimumOutput, err := minimumEconomicOutput(plan.Amount, valueLoss)
 	if err != nil {
-		return err
+		return out, err
 	}
-	profitableOutput, err := minimumProfitableCrossMintOutput(lease.ExecutionPlan, plan.Amount, lease.SourceAPYBPS, lease.TargetAPYBPS)
+	q := crossMintActivationRequest(lease)
+	minimumSlot := int64(max(b.Withdraw.ObservedSlot, b.Swap.ObservedSlot, b.Deposit.ObservedSlot))
+	bank, err := r.loadCrossMintRouteBank(ctx, q, plan, nil, minimumSlot)
 	if err != nil {
-		return err
+		return out, err
+	}
+	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.TotalSupplyUSDMicros <= minimumReserveSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 {
+		return out, errors.New("finalized cross-mint target is no longer eligible")
+	}
+	profitableOutput, err := minimumProfitableCrossMintOutput(lease.ExecutionPlan, plan.Amount, bank.sourceEconomics.SupplyAPYBPS, bank.targetEconomics.SupplyAPYBPS)
+	if err != nil {
+		return out, err
 	}
 	if profitableOutput > minimumOutput {
 		minimumOutput = profitableOutput
 	}
 	body, err := r.jupiter.fetch(ctx, plan.SourceMint, plan.TargetMint, plan.Amount, lease.VaultPubkey, effectiveSlippage)
 	if err != nil {
-		return err
+		return out, err
 	}
 	var envelope rawJupiterBuild
 	if err = json.Unmarshal(body, &envelope); err != nil {
-		return err
+		return out, err
 	}
 	if threshold, e := parseAmount(envelope.OtherAmountThreshold); e != nil || threshold < minimumOutput {
 		quoted, e := parseAmount(envelope.OutAmount)
 		if e != nil || quoted < minimumOutput {
-			return errors.New("fresh Jupiter quote is below economic minimum")
+			return out, errors.New("fresh Jupiter quote is below economic minimum")
 		}
 		hi, lo := bits.Mul64(quoted-minimumOutput, 10_000)
 		available64, _ := bits.Div64(hi, lo, quoted)
@@ -1122,140 +1158,90 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 			tight = available
 		}
 		if tight <= 1 {
-			return errors.New("fresh Jupiter quote leaves no safe slippage budget")
+			return out, errors.New("fresh Jupiter quote leaves no safe slippage budget")
 		}
 		body, err = r.jupiter.fetch(ctx, plan.SourceMint, plan.TargetMint, plan.Amount, lease.VaultPubkey, tight-1)
 		if err != nil {
-			return err
+			return out, err
 		}
 		if err = json.Unmarshal(body, &envelope); err != nil {
-			return err
+			return out, err
 		}
 	}
-	minimumSlot := int64(b.Withdraw.ObservedSlot)
-	for _, slot := range []uint64{b.Swap.ObservedSlot, b.Deposit.ObservedSlot} {
-		if int64(slot) > minimumSlot {
-			minimumSlot = int64(slot)
-		}
-	}
+	minimumSlot = bank.slot
 	jupiterTables, err := r.loadFinalizedJupiterTables(ctx, envelope.AddressesByLookupTableAddress, minimumSlot)
 	if err != nil {
-		return err
+		return out, err
 	}
 	validated, err := validateJupiterEnvelope(body, plan, lease.VaultPubkey, effectiveSlippage, jupiterTables)
 	if err != nil {
-		return err
+		return out, err
 	}
 	if validated.MinimumOutput < minimumOutput {
-		return errors.New("signed Jupiter minimum output exceeds maximum value loss")
+		return out, errors.New("signed Jupiter minimum output exceeds maximum value loss")
 	}
 	blockHeight, err := r.rpc.BlockHeight(ctx, "finalized")
 	if err != nil {
-		return err
+		return out, err
 	}
 	if uint64(blockHeight) > validated.LastValidBlockHeight {
-		return errors.New("Jupiter certification blockhash expired")
+		return out, errors.New("Jupiter certification blockhash expired")
 	}
 	validated.ObservedBlockHeight = uint64(blockHeight)
-	sourceProgram, _ := stableTokenProgram(plan.SourceMint)
-	targetProgram, _ := stableTokenProgram(plan.TargetMint)
-	sourceATA, _ := deriveATA(lease.VaultPubkey, plan.SourceMint, sourceProgram)
-	targetATA, _ := deriveATA(lease.VaultPubkey, plan.TargetMint, targetProgram)
-	addresses := []string{lease.SourceReserve, lease.TargetReserve, plan.SourceMint, plan.TargetMint, sourceATA, targetATA, b.Withdraw.PolicyAccount, b.Swap.PolicyAccount, b.Deposit.PolicyAccount}
-	var additionalATAs []struct{ address, mint string }
+	var additionalMints []string
 	for _, mint := range earnStableMints {
 		if mint == plan.SourceMint || mint == plan.TargetMint {
 			continue
 		}
 		ata, e := deriveATA(lease.VaultPubkey, mint, mustStableProgram(mint))
 		if e != nil {
-			return e
+			return out, e
 		}
 		for _, meta := range validated.Swap.Accounts {
 			if meta.Address == ata {
-				additionalATAs = append(additionalATAs, struct{ address, mint string }{ata, mint})
-				addresses = append(addresses, ata)
+				additionalMints = append(additionalMints, mint)
 				break
 			}
 		}
 	}
-	slot, accounts, err := r.rpc.FinalizedAccounts(ctx, addresses, minimumSlot)
-	if err != nil {
-		return err
-	}
-	source, err := decodeRouteReserve(accounts[0], lease.VaultPubkey)
-	if err != nil {
-		return err
-	}
-	target, err := decodeRouteReserve(accounts[1], lease.VaultPubkey)
-	if err != nil {
-		return err
-	}
-	if source.Position.LiquidityMint != plan.SourceMint || target.Position.LiquidityMint != plan.TargetMint {
-		return errors.New("finalized reserve mints differ from cross-mint opportunity")
-	}
-	sourceEconomics, err := DecodeKaminoReserve(accounts[0], ReserveIdentity{Address: lease.SourceReserve, Market: source.Position.Market, Mint: plan.SourceMint}, slot, r.slotDuration)
-	if err != nil {
-		return fmt.Errorf("decode finalized cross-mint source economics: %w", err)
-	}
-	targetEconomics, err := DecodeKaminoReserve(accounts[1], ReserveIdentity{Address: lease.TargetReserve, Market: target.Position.Market, Mint: plan.TargetMint}, slot, r.slotDuration)
-	if err != nil {
-		return fmt.Errorf("decode finalized cross-mint target economics: %w", err)
-	}
-	if targetEconomics.LastUpdateStale || targetEconomics.EconomicLifetimeMillis <= 0 || targetEconomics.TotalSupplyUSDMicros <= minimumReserveSupplyUSDMicros || targetEconomics.SupplyAPYBPS < 0 || targetEconomics.SupplyAPYBPS >= 5_000 {
-		return errors.New("finalized cross-mint target is no longer eligible")
-	}
-	currentProfitable, err := minimumProfitableCrossMintOutput(lease.ExecutionPlan, plan.Amount, sourceEconomics.SupplyAPYBPS, targetEconomics.SupplyAPYBPS)
-	if err != nil || validated.MinimumOutput < currentProfitable {
-		return errors.New("fresh Jupiter minimum output does not beat finalized source recovery economics")
-	}
-	if err = validateStableMint(accounts[2], plan.SourceMint); err != nil {
-		return err
-	}
-	if err = validateStableMint(accounts[3], plan.TargetMint); err != nil {
-		return err
-	}
-	if err = validateStableAccount(accounts[4], plan.SourceMint, lease.VaultPubkey); err != nil {
-		return err
-	}
-	if err = validateStableAccount(accounts[5], plan.TargetMint, lease.VaultPubkey); err != nil {
-		return err
-	}
-	for _, i := range []int{6, 7, 8} {
-		if accounts[i].Owner != SquadsProgram {
-			return errors.New("finalized cross-mint policy owner mismatch")
+	if len(additionalMints) > 0 {
+		fresh, e := r.loadCrossMintRouteBank(ctx, q, plan, additionalMints, bank.slot)
+		if e != nil {
+			return out, e
+		}
+		if !sameCrossMintCoreBank(bank, fresh) {
+			return out, errors.New("prewithdraw finalized accounts changed during quote resolution")
+		}
+		bank = fresh
+		for _, mint := range additionalMints {
+			ata, _ := deriveATA(lease.VaultPubkey, mint, mustStableProgram(mint))
+			if e := validateVaultTokenAccount(bank.accounts[ata], mint, lease.VaultPubkey); e != nil {
+				return out, e
+			}
 		}
 	}
-	for i, ata := range additionalATAs {
-		if err = validateStableAccount(accounts[9+i], ata.mint, lease.VaultPubkey); err != nil {
-			return err
-		}
-	}
-	_, obligations, err := r.rpc.FinalizedAccounts(ctx, []string{source.Obligation, target.Obligation}, slot)
-	if err != nil {
-		return err
-	}
-	collateral, err := decodeObligation(obligations[0], source.Position.Market, lease.VaultPubkey, lease.SourceReserve, &source.Position)
-	if err != nil {
-		return err
-	}
+	source, target, slot := bank.source, bank.target, bank.slot
+	collateral := bank.sourceCollateral
 	if collateral <= 1 || lease.SourceCollateralRaw != collateral-1 {
-		return errors.New("finalized collateral anchor differs from opportunity")
+		return out, errors.New("finalized collateral anchor differs from opportunity")
 	}
-	if _, err = decodeObligation(obligations[1], target.Position.Market, lease.VaultPubkey, "", &target.Position); err != nil {
-		return err
+	accounts := []Account{bank.accounts[lease.SourceReserve], bank.accounts[lease.TargetReserve], bank.accounts[plan.SourceMint], bank.accounts[plan.TargetMint], bank.accounts[source.Position.VaultLiquidityATA], bank.accounts[target.Position.VaultLiquidityATA], bank.accounts[b.Withdraw.PolicyAccount], bank.accounts[b.Swap.PolicyAccount], bank.accounts[b.Deposit.PolicyAccount]}
+	for _, i := range []int{6, 7, 8} {
+		if accounts[i].Owner != SquadsProgram || accounts[i].Executable || accounts[i].Lamports == 0 {
+			return out, errors.New("finalized prewithdraw policy account is not funded Squads state")
+		}
 	}
 	route, err := r.proxy.BuildCrossMintLegs(ctx, KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: source.Position, Target: target.Position, WithdrawCollateralAmount: lease.SourceCollateralRaw, DepositLiquidityAmount: validated.MinimumOutput})
 	if err != nil {
-		return err
+		return out, err
 	}
 	if len(route.Protected) != 2 {
-		return errors.New("KLend cross-mint route did not return withdraw and deposit")
+		return out, errors.New("KLend cross-mint route did not return withdraw and deposit")
 	}
 	for i, policyIndex := range []int{6, 8} {
 		policy, err := DecodeSquadsPolicy(accounts[policyIndex].Data)
 		if err != nil {
-			return err
+			return out, err
 		}
 		binding := b.Withdraw
 		if i == 1 {
@@ -1263,23 +1249,32 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 		}
 		derived, bump, e := derivePolicyAccount(b.Settings, policy.PolicySeed)
 		if e != nil || derived != binding.PolicyAccount || bump != policy.Bump || policy.Settings != b.Settings || policy.AccountIndex != lease.VaultIndex || len(policy.DelegatedSigners) != 1 || len(policy.SignerPermissions) != 1 || policy.SignerPermissions[0] != 7 || policy.TimeLock != 0 || policy.StaleTransactionIndex > policy.TransactionIndex || policy.DelegatedSigners[0] != r.signer || binding.ConstraintIndex >= uint8(len(policy.Constraints)) || !policyConstraintMatches(policy.Constraints[binding.ConstraintIndex], route.Protected[i]) {
-			return errors.New("finalized Earn policy does not authorize exact KLend instruction")
+			return out, errors.New("finalized Earn policy does not authorize exact KLend instruction")
+		}
+		if i == 0 {
+			recovery, e := r.proxy.BuildIdleDeposit(ctx, KaminoIdleDepositRequest{Vault: lease.VaultPubkey, Target: source.Position, DepositLiquidityAmount: plan.Amount})
+			if e != nil {
+				return out, e
+			}
+			if len(policy.Constraints) < 2 || !policyConstraintMatches(policy.Constraints[1], recovery.Protected[0]) {
+				return out, errors.New("finalized source policy does not authorize immutable recovery index 1")
+			}
 		}
 	}
 	swapPolicy, swapTable, spendingLimits, err := decodeStrictSwapPolicy(accounts[7].Data)
 	if err != nil {
-		return err
+		return out, err
 	}
 	if err = validateCrossMintSwapPolicy(swapPolicy, swapTable, spendingLimits, b, validated.Swap, validated.Dialect); err != nil {
-		return err
+		return out, err
 	}
 	withdrawWrapped, err := wrapSquadsPolicy(b.Withdraw.PolicyAccount, r.signer, lease.VaultIndex, []uint8{b.Withdraw.ConstraintIndex}, []RouteInstruction{route.Protected[0]})
 	if err != nil {
-		return err
+		return out, err
 	}
 	swapWrapped, err := wrapSquadsPolicy(b.Swap.PolicyAccount, r.signer, lease.VaultIndex, []uint8{validated.ConstraintIndex}, []RouteInstruction{validated.Swap})
 	if err != nil {
-		return err
+		return out, err
 	}
 	firstObligation := -1
 	for i, ix := range route.Public {
@@ -1289,7 +1284,7 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 		}
 	}
 	if firstObligation < 0 {
-		return errors.New("cross-mint withdrawal lacks obligation refresh")
+		return out, errors.New("cross-mint withdrawal lacks obligation refresh")
 	}
 	managedInstructions := append([]RouteInstruction{}, route.Public[:firstObligation+1]...)
 	managedInstructions = append(managedInstructions, withdrawWrapped)
@@ -1313,20 +1308,29 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 	if len(required) > 0 {
 		managed, err = r.store.LoadReusableLookupTables(ctx, lease.Cluster, lease.VaultID, slot, required)
 		if err != nil {
-			return err
+			return out, err
 		}
-		managed, err = r.verifyLookupTables(ctx, managed, slot)
+		managed, err = r.verifyFinalizedLookupTables(ctx, managed, slot)
 		if err != nil {
-			return err
+			return out, err
 		}
 	}
 	instructions := append([]RouteInstruction{}, computeBudgetInstructions(uint32(r.computeLimit), validated.UnitPrice)...)
 	instructions = append(instructions, route.Public[:firstObligation+1]...)
 	instructions = append(instructions, withdrawWrapped, swapWrapped)
 	tables := append(append([]LookupTable{}, jupiterTables...), managed...)
+	manifestInput := KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: source.Position, Target: target.Position}
+	manifest, err := BuildCrossMintPreflightALTManifest(manifestInput, b.Settings, b.Withdraw.PolicyAccount, b.Swap.PolicyAccount, r.signer, instructions, validated.Swap)
+	if err != nil {
+		return out, err
+	}
+	manifest, err = r.filterFinalizedExternalALTManifest(ctx, manifest, jupiterTables, slot)
+	if err != nil {
+		return out, err
+	}
 	preview, allStatic, err := compileV0Transaction(r.signer, validated.Blockhash, instructions, tables, 1, r.computeLimit)
 	if err != nil {
-		return err
+		return out, err
 	}
 	requiredSet := map[string]bool{}
 	for _, address := range required {
@@ -1339,45 +1343,80 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 		}
 	}
 	if len(missing) > 0 {
-		prep := waitingALTPreparation(route, missing, r.computeLimit)
-		prep.ExecutionPlan = crossMintEvidence(validated, b, accounts, slot, preview, SimulationEvidence{}, minimumOutput, jupiterTables, managed)
-		if err = preserveCanonicalPlan(lease.ExecutionPlan, &prep, "cross_mint_preflight"); err != nil {
-			return err
-		}
-		return r.store.CommitRevalidation(ctx, lease, RevalidationCommit{Disposition: "waiting_alt", Preparation: &prep, MissingAddresses: missing, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey})
+		out.WaitingALT, out.MissingAddresses = true, canonicalStrings(missing)
+		out.PreflightPreparation = crossMintMissingALTPreparation(q, instructions, missing)
+		out.PreflightPreparation.RequirementsFingerprint = manifest.Fingerprint
+		out.PreflightPreparation.Manifest = &manifest
+		out.SharedAddresses, out.VaultAddresses = manifest.SharedAddresses, manifest.VaultAddresses
+		return out, nil
 	}
-	sim, err := r.rpc.SimulateExactTransaction(ctx, preview.UnsignedWire, slot)
+	if preview.PacketBytes > SolanaPacketLimit {
+		return out, errors.New("prewithdraw verifier exceeds Solana packet size")
+	}
+	sim, err := r.rpc.simulateExactTransaction(ctx, preview.UnsignedWire, slot, "finalized")
 	if err != nil || !sim.Succeeded || sim.UnitsConsumed > r.computeLimit {
 		if err != nil {
-			return fmt.Errorf("finalized cross-mint preflight simulation: %w", err)
+			return out, fmt.Errorf("finalized cross-mint preflight simulation: %w", err)
 		}
-		return errors.New("finalized cross-mint preflight simulation failed")
+		return out, errors.New("finalized cross-mint preflight simulation failed")
 	}
-	fee, err := r.rpc.FeeForMessage(ctx, preview.Message, slot)
+	fee, err := r.rpc.feeForMessage(ctx, preview.Message, slot, "finalized")
 	if err != nil {
-		return err
+		return out, err
 	}
 	if fee > uint64(lease.FeeCapLamports) {
-		return errors.New("cross-mint preflight fee exceeds opportunity cap")
+		return out, errors.New("cross-mint preflight fee exceeds opportunity cap")
 	}
 	preview.FeeLamports = fee
-	prep := RoutePreparation{Transaction: preview, Simulation: sim}
-	routeHasher := sha256.New()
-	routeHasher.Write(body)
-	routeHasher.Write(preview.Message)
-	req, _ := json.Marshal(struct {
-		Jupiter []string `json:"jupiter_lookup_tables"`
-		Managed []string `json:"loyal_lookup_tables"`
-		Minimum uint64   `json:"minimum_output"`
-	}{tableNames(jupiterTables), tableNames(managed), minimumOutput})
-	reqHash := sha256.Sum256(req)
-	prep.RouteFingerprint = hex.EncodeToString(routeHasher.Sum(nil))
-	prep.RequirementsFingerprint = hex.EncodeToString(reqHash[:])
-	prep.ExecutionPlan = crossMintEvidence(validated, b, accounts, slot, preview, sim, minimumOutput, jupiterTables, managed)
-	if err = preserveCanonicalPlan(lease.ExecutionPlan, &prep, "cross_mint_preflight"); err != nil {
-		return err
+	cert, err := crossMintSourceCertificate(lease, plan, bank, validated, swapPolicy, valueLoss, preview, sim, jupiterTables)
+	if err != nil {
+		return out, err
 	}
-	return r.store.CommitRevalidation(ctx, lease, RevalidationCommit{Disposition: "ready", Preparation: &prep, ConflictKeys: preview.WritableAccounts, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey})
+	certRaw, err := json.Marshal(cert)
+	if err != nil {
+		return out, err
+	}
+	routeHash := sha256.Sum256(preview.Message)
+	out.Certificate = cert
+	out.PreflightPreparation = RoutePreparation{RouteFingerprint: hex.EncodeToString(routeHash[:]), RequirementsFingerprint: manifest.Fingerprint, Transaction: preview, Simulation: sim, ExecutionPlan: certRaw}
+	out.PreflightPreparation.Manifest = &manifest
+	if err := preserveCanonicalPlan(lease.ExecutionPlan, &out.PreflightPreparation, "cross_mint_preflight"); err != nil {
+		return out, err
+	}
+	out.ObservedAt, out.ObservedSlot = bank.observedAt, bank.slot
+	out.SourceAPYBPS, out.TargetAPYBPS = bank.sourceEconomics.SupplyAPYBPS, bank.targetEconomics.SupplyAPYBPS
+	out.TargetObservedSupplyUSDMicros = bank.targetEconomics.TotalSupplyUSDMicros
+	out.SharedAddresses, out.VaultAddresses = manifest.SharedAddresses, manifest.VaultAddresses
+	if activation {
+		withdrawalTables, e := r.store.LoadReusableLookupTables(ctx, lease.Cluster, lease.VaultID, bank.slot, requiredLookupTableAddresses(managedInstructions))
+		if e != nil {
+			return out, e
+		}
+		withdrawalTables, e = r.verifyFinalizedLookupTables(ctx, withdrawalTables, bank.slot)
+		if e != nil {
+			return out, e
+		}
+		initial, e := r.finishCrossMintInitialWithdrawal(ctx, lease, q, bank, managedInstructions, withdrawalTables)
+		if e != nil {
+			return out, e
+		}
+		out.InitialWithdrawalPreparation = initial
+		if initial.WaitingALT {
+			out.WaitingALT, out.MissingAddresses = true, initial.MissingAddresses
+			out.PreflightPreparation = initial.Preparation
+			out.Certificate = CrossMintPreflightCertificate{}
+			out.SharedAddresses, out.VaultAddresses = initial.SharedAddresses, initial.VaultAddresses
+			return out, nil
+		}
+	}
+	finalBank, e := r.loadCrossMintRouteBank(ctx, q, plan, additionalMints, bank.slot)
+	if e != nil {
+		return out, e
+	}
+	if !sameCrossMintPreparationBank(bank, finalBank) {
+		return out, errors.New("prewithdraw finalized account bank changed during exact verifier simulation")
+	}
+	return out, nil
 }
 
 func tableNames(tables []LookupTable) []string {
@@ -1387,20 +1426,4 @@ func tableNames(tables []LookupTable) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-func crossMintEvidence(build validatedJupiterBuild, bindings CrossMintPolicyBindings, policies []Account, slot int64, tx PreparedTransaction, sim SimulationEvidence, minimum uint64, jupiterTables, managed []LookupTable) json.RawMessage {
-	hashes := map[string]any{}
-	for _, a := range policies[6:9] {
-		h := sha256.Sum256(a.Data)
-		hashes[a.Address] = map[string]any{"contextSlot": slot, "dataSha256": hex.EncodeToString(h[:])}
-	}
-	inputBalance, outputBalance := uint64(0), uint64(0)
-	if len(policies) > 5 && len(policies[4].Data) >= 72 {
-		inputBalance = binary.LittleEndian.Uint64(policies[4].Data[64:72])
-	}
-	if len(policies) > 5 && len(policies[5].Data) >= 72 {
-		outputBalance = binary.LittleEndian.Uint64(policies[5].Data[64:72])
-	}
-	raw, _ := json.Marshal(map[string]any{"kind": "cross_mint_preflight", "policyReadbackCommitment": "finalized", "simulationCommitment": "confirmed", "minimumOutputAmountRaw": strconv.FormatUint(minimum, 10), "effectiveSlippageBps": build.Slippage, "dialect": build.Dialect, "constraintIndex": build.ConstraintIndex, "routeStepCount": build.RouteSteps, "responseSha256": build.ResponseSHA256, "sourceShard": bindings.Swap.SourceShard, "manifestFingerprint": bindings.Swap.ManifestFingerprint, "dailySourceMintSpendingCap": strconv.FormatUint(bindings.Swap.DailySourceMintSpendingCap, 10), "lookupTables": map[string]any{"jupiter": tableNames(jupiterTables), "loyal": tableNames(managed)}, "finalizedPolicyReadbacks": hashes, "messageSha256": tx.MessageSHA256, "unsignedWireSha256": tx.WireSHA256, "packetSizeBytes": tx.PacketBytes, "inputPreBalanceRaw": strconv.FormatUint(inputBalance, 10), "outputPreBalanceRaw": strconv.FormatUint(outputBalance, 10), "simulation": sim, "simulationTopology": "withdraw_then_swap_atomic_preflight_only", "lastValidBlockHeight": build.LastValidBlockHeight, "observedBlockHeight": build.ObservedBlockHeight})
-	return raw
 }

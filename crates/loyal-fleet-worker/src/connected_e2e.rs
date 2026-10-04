@@ -158,7 +158,11 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
     let database = env::var("FLEET_TEST_DATABASE_URL")?;
     let connection: sqlx::postgres::PgConnectOptions = database.parse()?;
     if connection.get_host() != "127.0.0.1"
-        || !matches!(connection.get_database(), Some("fleet" | "fleet_same_mint"))
+        || connection.get_username() != "workers_v2"
+        || !matches!(
+            connection.get_database(),
+            Some("fleet" | "fleet_same_mint" | "fleet_go_same_mint")
+        )
     {
         return Err("connected worker requires disposable loopback /fleet database".into());
     }
@@ -453,8 +457,17 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
         return Err("connected fixture contains extra opportunities".into());
     }
     // Initial service controls are fixture input, never a queue/state shortcut.
-    sqlx::query("INSERT INTO loyal_yield.cross_mint_movement_controls(cluster,start_new_movements,continue_or_recover_existing,generation,updated_by) VALUES($1,true,true,1,'connected-local-verifier')")
+    sqlx::query("INSERT INTO loyal_yield.cross_mint_movement_controls(cluster,start_new_movements,continue_or_recover_existing,generation,updated_by) VALUES($1,true,true,1,'connected-local-verifier') ON CONFLICT(cluster) DO NOTHING")
         .bind(cluster).execute(client.pool()).await?;
+    let controls_match: bool = sqlx::query_scalar(
+        "SELECT start_new_movements AND continue_or_recover_existing AND generation=1 FROM loyal_yield.cross_mint_movement_controls WHERE cluster=$1",
+    )
+    .bind(cluster)
+    .fetch_one(client.pool())
+    .await?;
+    if !controls_match {
+        return Err("connected initial movement controls differ from fixture input".into());
+    }
     let options = FleetWorkerOptions {
         claim_kind: RebalanceOpportunityClaimKind::Execute,
         cluster: cluster.to_owned(),
@@ -478,10 +491,12 @@ async fn run_connected_cross_mint() -> Result<(), Box<dyn Error>> {
     connected_recovery::arm_initial_withdraw(lease.opportunity.id);
     let mut crash_options = options.clone();
     crash_options.lease_seconds = 10;
-    if activate_cross_mint_opportunity(&runtime, &crash_options, &config, &lease)
-        .await
-        .is_ok()
-    {
+    let activation_result =
+        activate_cross_mint_opportunity(&runtime, &crash_options, &config, &lease).await;
+    if let Err(error) = &activation_result {
+        eprintln!("connected initial activation stop: {error}");
+    }
+    if activation_result.is_ok() {
         return Err("initial withdrawal did not stop at the pre-persistence crash".into());
     }
     let result = connected_recovery::continue_after_pre_persistence_crash(

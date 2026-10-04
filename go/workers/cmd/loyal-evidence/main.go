@@ -75,6 +75,10 @@ func run() error {
 	return json.NewEncoder(os.Stdout).Encode(result)
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--role-probe" {
+		fmt.Println(`{"schemaVersion":1,"role":"evidence","networkAccessed":false,"secretsLoaded":false,"databaseMutated":false,"transactionSent":false}`)
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

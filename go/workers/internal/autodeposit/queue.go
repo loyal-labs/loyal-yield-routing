@@ -71,12 +71,20 @@ WITH stale_claims AS (
      AND balance.mint = target.token_mint
     WHERE claim.status = 'selected'
       AND claim.execution_id IS NULL
+      AND (claim.autodeposit_executor_lease_expires_at IS NULL
+           OR claim.autodeposit_executor_lease_expires_at <= now())
       AND NOT EXISTS (
           SELECT 1
           FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
           WHERE attempt.claim_token = claim.claim_token
-            AND attempt.operation_kind = 'pull'
-            AND attempt.attempt_state = ANY($5::text[])
+            AND (attempt.execution_id IS NOT NULL
+                 OR (attempt.operation_kind = 'pull'
+                     AND attempt.attempt_state = ANY($5::text[])))
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM loyal_yield.balance_sweep_destination_setup_attempts AS setup
+          WHERE setup.claim_token=claim.claim_token
+            AND setup.attempt_state IN('prepared','submitted','unknown','ambiguous')
       )
       AND target.token_mint = $3
       AND target.wallet_balance_floor_raw IS NOT NULL
@@ -188,23 +196,27 @@ func (s *Store) LoadExecutableTargets(ctx context.Context, limit int64, hintedSl
 
 func (s *Store) loadPullRecoveryTargets(ctx context.Context, limit int64) ([]ExecutableTarget, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT DISTINCT ON (attempt.claim_token)
+SELECT DISTINCT ON (claim.claim_token)
     target.id AS target_id,
     slot.id AS scheduled_slot_id,
     claim.claim_token
-FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
-JOIN loyal_yield.balance_sweep_lot_claims AS claim
-  ON claim.claim_token = attempt.claim_token
- AND claim.status = 'selected'
+FROM loyal_yield.balance_sweep_lot_claims AS claim
 JOIN loyal_yield.balance_sweep_scheduled_slots AS slot
   ON slot.claim_token = claim.claim_token
  AND slot.target_id = claim.target_id
 JOIN loyal_yield.balance_sweep_targets AS target
   ON target.id = claim.target_id
-WHERE attempt.operation_kind = 'pull'
-  AND attempt.attempt_state = ANY($3::text[])
+WHERE claim.status='selected'
+  AND (
+    EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts attempt
+           WHERE attempt.claim_token=claim.claim_token AND attempt.operation_kind='pull'
+             AND attempt.attempt_state=ANY($3::text[]))
+    OR (claim.autodeposit_deposit_plan IS NOT NULL
+        AND NOT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts attempt
+                       WHERE attempt.claim_token=claim.claim_token AND attempt.operation_kind='pull'))
+  )
   AND target.token_mint = $2
-ORDER BY attempt.claim_token, attempt.updated_at ASC, attempt.id ASC
+ORDER BY claim.claim_token, claim.updated_at ASC
 LIMIT $1`, limit, USDCMint, AutomaticPullRecoveryStates)
 	if err != nil {
 		return nil, fmt.Errorf("load autodeposit pull recovery targets: %w", err)

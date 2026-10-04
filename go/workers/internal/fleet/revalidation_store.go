@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
 type RevalidationLease struct {
+	SourceSnapshotID                *int64
 	OpportunityID, OptimizerEpochID int64
 	IdempotencyKey, Owner           string
 	FencingToken                    int64
@@ -47,6 +49,29 @@ func (s *Store) ClaimRevalidation(ctx context.Context, cluster, owner string, tt
 	if len(delegatedSigner) > 0 {
 		signer = delegatedSigner[0]
 	}
+	return s.claimRoutePreparation(ctx, cluster, owner, ttl, includeReady, crossMintEnabled, signer, "", "revalidate")
+}
+
+// ClaimCrossMintActivation only takes untouched cross-mint reserve candidates.
+// Same-mint fused admission and already signed movement custody remain owned by
+// their existing claims. Expired execute leases are recoverable only pre-decision.
+func (s *Store) ClaimCrossMintActivation(ctx context.Context, cluster, owner string, ttl time.Duration, signer string) (*RevalidationLease, error) {
+	if signer == "" {
+		return nil, errors.New("cross-mint activation requires delegated signer")
+	}
+	return s.claimRoutePreparation(ctx, cluster, owner, ttl, true, true, signer, "cross_mint_jupiter", "execute")
+}
+
+// ClaimCrossMintPreflight leaves every other family with its current owner.
+// Its revalidation lease cannot authorize a signed movement admission.
+func (s *Store) ClaimCrossMintPreflight(ctx context.Context, cluster, owner string, ttl time.Duration, signer string) (*RevalidationLease, error) {
+	if signer == "" {
+		return nil, errors.New("cross-mint preflight requires delegated signer")
+	}
+	return s.claimRoutePreparation(ctx, cluster, owner, ttl, false, true, signer, "cross_mint_jupiter", "revalidate")
+}
+
+func (s *Store) claimRoutePreparation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady, crossMintEnabled bool, signer, routeKind, leaseKind string) (*RevalidationLease, error) {
 	if s == nil || s.pool == nil || cluster == "" || owner == "" || ttl < time.Second {
 		return nil, errors.New("invalid revalidation claim")
 	}
@@ -73,7 +98,15 @@ WITH candidate AS (
   AND ($5='' OR $5=ANY(bound_withdraw_policy.delegated_signers))
  WHERE o.cluster=$1 AND o.available_at<=clock_timestamp()
    AND o.execution_plan->>'route_kind' IN ('same_mint','cross_mint_jupiter')
+   AND ($7='' OR o.execution_plan->>'route_kind'=$7)
    AND o.execution_plan->>'source_kind'='reserve_position'
+   AND ($7='' OR (o.decision_id IS NULL
+        AND ($8<>'execute' OR (NULLIF(btrim(o.route_fingerprint),'') IS NOT NULL
+          AND NULLIF(btrim(o.requirements_fingerprint),'') IS NOT NULL))
+        AND EXISTS(SELECT 1 FROM loyal_yield.cross_mint_movement_controls control
+          WHERE control.cluster=o.cluster AND control.start_new_movements AND control.continue_or_recover_existing)
+        AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions holding
+          WHERE holding.opportunity_id=o.id AND holding.submission_state IN ('signed','submitted','confirmed','needs_reconcile'))))
    AND (($6 AND o.execution_plan->>'route_kind'='cross_mint_jupiter'
          AND bound_withdraw_policy.id IS NOT NULL
          AND ($5='' OR o.execution_plan#>>'{policy_bindings,delegated_signer}'=$5))
@@ -92,13 +125,13 @@ WITH candidate AS (
    AND o.expires_at>clock_timestamp()+interval '60 seconds'
    AND e.expires_at>clock_timestamp()+interval '60 seconds'
    AND (o.opportunity_state='revalidate'
-        OR ($4 AND o.execution_plan->>'route_kind'='same_mint' AND o.opportunity_state='ready')
-        OR (o.opportunity_state='leased' AND o.lease_kind='revalidate' AND o.lease_expires_at<=clock_timestamp()))
+        OR ($4 AND (o.execution_plan->>'route_kind'='same_mint' OR $7='cross_mint_jupiter') AND o.opportunity_state='ready')
+        OR (o.opportunity_state='leased' AND o.lease_kind=$8 AND o.lease_expires_at<=clock_timestamp()))
    AND (o.lease_expires_at IS NULL OR o.lease_expires_at<=clock_timestamp())
  ORDER BY o.scheduler_priority_anchor DESC,o.economic_priority DESC,o.created_at,o.id
  FOR UPDATE OF o SKIP LOCKED LIMIT 1
 ), claimed AS (
- UPDATE loyal_yield.rebalance_opportunities o SET opportunity_state='leased',lease_kind='revalidate',lease_owner=$2,
+ UPDATE loyal_yield.rebalance_opportunities o SET opportunity_state='leased',lease_kind=$8,lease_owner=$2,
  lease_expires_at=clock_timestamp()+$3::interval,fencing_token=fencing_token+1,attempt_count=attempt_count+1,updated_at=clock_timestamp()
  FROM candidate WHERE o.id=candidate.id RETURNING o.*)
 SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fencing_token,
@@ -114,7 +147,7 @@ SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fen
        COALESCE((claimed.execution_plan->>'source_collateral_amount_raw')::bigint,0),
        claimed.principal_usd_micros,claimed.source_apy_bps,claimed.target_apy_bps,
        claimed.estimated_edge_bps,claimed.expected_net_gain_usd_micros,
-       claimed.estimated_cost_lamports,epoch.epoch_key,claimed.execution_plan
+       claimed.estimated_cost_lamports,epoch.epoch_key,claimed.execution_plan,claimed.source_snapshot_id
 FROM claimed
 JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=claimed.optimizer_epoch_id
 JOIN loyal_yield.managed_vaults vault ON vault.id=claimed.vault_id AND vault.active
@@ -127,14 +160,14 @@ LEFT JOIN loyal_yield.route_policies withdraw_policy
  AND withdraw_policy.settings=vault.settings AND withdraw_policy.vault_index=vault.vault_index
  AND withdraw_policy.vault_pubkey=vault.vault_pubkey
  AND 'same_mint_kamino'=ANY(withdraw_policy.route_modes)
- AND ($5='' OR $5=ANY(withdraw_policy.delegated_signers))`, cluster, owner, ttl.String(), includeReady, signer, crossMintEnabled).Scan(
+ AND ($5='' OR $5=ANY(withdraw_policy.delegated_signers))`, cluster, owner, ttl.String(), includeReady, signer, crossMintEnabled, routeKind, leaseKind).Scan(
 		&l.OpportunityID, &l.OptimizerEpochID, &l.IdempotencyKey, &l.FencingToken,
 		&l.ExpiresAt, &l.VaultID, &l.VaultPubkey, &l.VaultIndex, &l.PolicyAccount,
 		&l.DelegatedSigners, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,
 		&l.SourceLiquidityMint, &l.TargetLiquidityMint, &l.RouteKind,
 		&l.LiquidityAmountRaw, &l.SourceCollateralRaw, &l.PrincipalUSDMicros,
 		&l.SourceAPYBPS, &l.TargetAPYBPS, &l.EdgeBPS, &l.NetGainUSDMicros,
-		&l.FeeCapLamports, &l.OptimizerEpochKey, &l.ExecutionPlan)
+		&l.FeeCapLamports, &l.OptimizerEpochKey, &l.ExecutionPlan, &l.SourceSnapshotID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -218,7 +251,7 @@ SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fen
        COALESCE((claimed.execution_plan->>'source_collateral_amount_raw')::bigint,0),
        claimed.principal_usd_micros,claimed.source_apy_bps,claimed.target_apy_bps,
        claimed.estimated_edge_bps,claimed.expected_net_gain_usd_micros,
-       claimed.estimated_cost_lamports,epoch.epoch_key,claimed.execution_plan
+       claimed.estimated_cost_lamports,epoch.epoch_key,claimed.execution_plan,claimed.source_snapshot_id
 FROM loyal_yield.rebalance_opportunities claimed
 JOIN candidate ON candidate.id=claimed.id
 JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=claimed.optimizer_epoch_id
@@ -239,7 +272,7 @@ LEFT JOIN loyal_yield.route_policies withdraw_policy
 		&l.SourceLiquidityMint, &l.TargetLiquidityMint, &l.RouteKind,
 		&l.LiquidityAmountRaw, &l.SourceCollateralRaw, &l.PrincipalUSDMicros,
 		&l.SourceAPYBPS, &l.TargetAPYBPS, &l.EdgeBPS, &l.NetGainUSDMicros,
-		&l.FeeCapLamports, &l.OptimizerEpochKey, &l.ExecutionPlan)
+		&l.FeeCapLamports, &l.OptimizerEpochKey, &l.ExecutionPlan, &l.SourceSnapshotID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -280,7 +313,8 @@ func (s *Store) LoadReusableLookupTables(ctx context.Context, cluster string, va
 	// need not be from the current evidence slot because the caller reloads and
 	// verifies every scoped candidate from confirmed RPC immediately afterward.
 	rows, err := s.pool.Query(ctx, `
-SELECT route_table.table_address,
+SELECT route_table.id,route_table.mutation_epoch,route_table.family_id,route_table.generation,
+       CASE WHEN family.kind='vault_shards' THEN binding.id ELSE NULL END,route_table.table_address,
        array_agg(address.address ORDER BY address.ordinal),
        min(address.usable_after_slot),min(address.last_verified_slot)
 FROM loyal_yield.route_lookup_tables route_table
@@ -301,7 +335,7 @@ WHERE family.cluster=$1 AND family.desired_state='active'
     SELECT 1 FROM loyal_yield.lookup_table_addresses relevant
     WHERE relevant.route_lookup_table_id=route_table.id
       AND relevant.address=ANY($4) AND relevant.usable_after_slot<=$3)
-GROUP BY route_table.id,route_table.table_address
+GROUP BY route_table.id,route_table.table_address,family.kind,binding.id
 HAVING max(address.usable_after_slot)<=$3
    AND min(address.last_verified_slot) IS NOT NULL
    AND count(*)=route_table.address_count
@@ -314,7 +348,7 @@ ORDER BY route_table.table_address`, cluster, vaultID, minimumSlot, requiredAddr
 	var result []LookupTable
 	for rows.Next() {
 		var table LookupTable
-		if err := rows.Scan(&table.Address, &table.Addresses, &table.UsableAfterSlot, &table.LastVerifiedSlot); err != nil {
+		if err := rows.Scan(&table.ID, &table.MutationEpoch, &table.FamilyID, &table.Generation, &table.BindingID, &table.Address, &table.Addresses, &table.UsableAfterSlot, &table.LastVerifiedSlot); err != nil {
 			return nil, err
 		}
 		table.Active = true
@@ -350,7 +384,11 @@ func (s *Store) RefreshTargetCapacity(ctx context.Context, cluster, reserve, min
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(cleanup)
+	}()
 	if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.target_capacity_frontiers(cluster,target_reserve,liquidity_mint,observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(cluster,target_reserve,liquidity_mint) DO NOTHING`, cluster, reserve, mint, supply, slot, maximum); err != nil {
 		return err
 	}
@@ -376,6 +414,7 @@ func (s *Store) RefreshTargetCapacity(ctx context.Context, cluster, reserve, min
 }
 
 type RevalidationCommit struct {
+	CrossMintControlGeneration    *int64
 	Disposition                   string
 	Preparation                   *RoutePreparation
 	MissingAddresses              []string
@@ -394,6 +433,13 @@ type RevalidationCommit struct {
 // ready/execute becomes visible. A zero-row or changed identity is a fence,
 // never a retry with stale bytes.
 func (s *Store) CommitRevalidation(ctx context.Context, lease RevalidationLease, input RevalidationCommit) error {
+	if input.Disposition == "fused_execute" {
+		return errors.New("fused admission requires fresh typed execution evidence")
+	}
+	return s.commitRevalidation(ctx, lease, input, nil)
+}
+
+func (s *Store) commitRevalidation(ctx context.Context, lease RevalidationLease, input RevalidationCommit, admission *ExecutionAdmission) error {
 	if s == nil || s.pool == nil || lease.FencingToken <= 0 || input.ExpectedOpportunityKey != lease.IdempotencyKey {
 		return errors.New("invalid revalidation commit identity")
 	}
@@ -407,8 +453,27 @@ func (s *Store) CommitRevalidation(ctx context.Context, lease RevalidationLease,
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(cleanup)
+	}()
 	var currentKey, state, kind, owner string
+	if lease.RouteKind == "cross_mint_jupiter" {
+		if input.CrossMintControlGeneration == nil {
+			return errors.New("cross-mint publication requires captured movement control generation")
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "loyal-yield-cross-mint-control:"+lease.Cluster); err != nil {
+			return err
+		}
+		generation, err := checkCrossMintSourceLease(ctx, tx, lease, "revalidate", true)
+		if err != nil || generation != *input.CrossMintControlGeneration {
+			if err == nil {
+				err = errors.New("cross-mint control generation changed before source publication")
+			}
+			return err
+		}
+	}
 	var token, epochID int64
 	var leaseCurrent bool
 	err = tx.QueryRow(ctx, `SELECT o.idempotency_key,o.opportunity_state,COALESCE(o.lease_kind,''),COALESCE(o.lease_owner,''),o.fencing_token,o.optimizer_epoch_id,o.lease_expires_at>clock_timestamp() AND o.expires_at>clock_timestamp()
@@ -454,6 +519,11 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 		}
 		if len(prep.Transaction.Message) == 0 || len(prep.Transaction.UnsignedWire) == 0 || prep.Transaction.PacketBytes > SolanaPacketLimit || prep.Transaction.FeeLamports > uint64(lease.FeeCapLamports) || prep.Transaction.ComputeLimit == 0 || prep.Transaction.ComputeLimit > defaultComputeLimit || !prep.Simulation.Succeeded || prep.Simulation.WireSHA256 != prep.Transaction.WireSHA256 {
 			return errors.New("executable route bytes or simulation evidence is incomplete")
+		}
+	}
+	if admission != nil {
+		if err := lockExecutionALTs(ctx, tx, lease, admission); err != nil {
+			return err
 		}
 	}
 	var provisioningRequestID int64
@@ -516,11 +586,17 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 		if tag, err := tx.Exec(ctx, `UPDATE loyal_yield.target_capacity_frontiers SET reservation_generation=$4,updated_at=clock_timestamp() WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, lease.Cluster, lease.TargetReserve, lease.LiquidityMint, reservationGeneration); err != nil || tag.RowsAffected() != 1 {
 			return errors.New("capacity frontier generation fence failed")
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.target_capacity_reservations(cluster,target_reserve,liquidity_mint,opportunity_id,principal_usd_micros,admitted_observed_supply_usd_micros,admitted_observed_slot,admitted_maximum_inflight_usd_micros,admitted_telemetry_version,reservation_generation,admitted_observed_target_apy_bps,admitted_projected_target_apy_bps,admitted_source_apy_bps,admitted_edge_bps,admitted_net_holding_gain_usd_micros,admitted_fee_cap_lamports,reservation_fencing_token) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, lease.Cluster, lease.TargetReserve, lease.LiquidityMint, lease.OpportunityID, lease.PrincipalUSDMicros, observedSupply, observedSlot, max, telemetryVersion, reservationGeneration, economics.ObservedTargetAPYBPS, economics.ProjectedTargetAPYBPS, economics.SourceAPYBPS, economics.EdgeBPS, economics.NetGainUSDMicros, economics.FeeCapLamports, token); err != nil {
+		var reservationID int64
+		if err := tx.QueryRow(ctx, `INSERT INTO loyal_yield.target_capacity_reservations(cluster,target_reserve,liquidity_mint,opportunity_id,principal_usd_micros,admitted_observed_supply_usd_micros,admitted_observed_slot,admitted_maximum_inflight_usd_micros,admitted_telemetry_version,reservation_generation,admitted_observed_target_apy_bps,admitted_projected_target_apy_bps,admitted_source_apy_bps,admitted_edge_bps,admitted_net_holding_gain_usd_micros,admitted_fee_cap_lamports,reservation_fencing_token) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT(opportunity_id) DO UPDATE SET cluster=EXCLUDED.cluster,target_reserve=EXCLUDED.target_reserve,liquidity_mint=EXCLUDED.liquidity_mint,principal_usd_micros=EXCLUDED.principal_usd_micros,admitted_observed_supply_usd_micros=EXCLUDED.admitted_observed_supply_usd_micros,admitted_observed_slot=EXCLUDED.admitted_observed_slot,admitted_maximum_inflight_usd_micros=EXCLUDED.admitted_maximum_inflight_usd_micros,admitted_telemetry_version=EXCLUDED.admitted_telemetry_version,reservation_generation=EXCLUDED.reservation_generation,admitted_observed_target_apy_bps=EXCLUDED.admitted_observed_target_apy_bps,admitted_projected_target_apy_bps=EXCLUDED.admitted_projected_target_apy_bps,admitted_source_apy_bps=EXCLUDED.admitted_source_apy_bps,admitted_edge_bps=EXCLUDED.admitted_edge_bps,admitted_net_holding_gain_usd_micros=EXCLUDED.admitted_net_holding_gain_usd_micros,admitted_fee_cap_lamports=EXCLUDED.admitted_fee_cap_lamports,reservation_fencing_token=EXCLUDED.reservation_fencing_token,reservation_state='active',released_at=NULL,release_reason=NULL,movement_slot=NULL,state_version=loyal_yield.target_capacity_reservations.state_version+1,updated_at=clock_timestamp() WHERE loyal_yield.target_capacity_reservations.reservation_state='released' AND loyal_yield.target_capacity_reservations.decision_id IS NULL AND loyal_yield.target_capacity_reservations.signed_submission_id IS NULL AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions submission WHERE submission.opportunity_id=EXCLUDED.opportunity_id) RETURNING id`, lease.Cluster, lease.TargetReserve, lease.LiquidityMint, lease.OpportunityID, lease.PrincipalUSDMicros, observedSupply, observedSlot, max, telemetryVersion, reservationGeneration, economics.ObservedTargetAPYBPS, economics.ProjectedTargetAPYBPS, economics.SourceAPYBPS, economics.EdgeBPS, economics.NetGainUSDMicros, economics.FeeCapLamports, token).Scan(&reservationID); err != nil {
 			return fmt.Errorf("reserve target capacity: %w", err)
 		}
+		if admission != nil {
+			admission.CapacityReservationID, admission.ReservationGeneration, admission.CapacityFencingToken = reservationID, reservationGeneration, token
+			admission.Preparation = prep
+		}
 		for _, key := range keys {
-			tag, err := tx.Exec(ctx, `INSERT INTO loyal_yield.route_account_conflict_leases(cluster,writable_account_key,opportunity_id,lease_owner,fencing_token,expires_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(cluster,writable_account_key) DO NOTHING`, lease.Cluster, key, lease.OpportunityID, lease.Owner, token, lease.ExpiresAt)
+			tag, err := tx.Exec(ctx, `INSERT INTO loyal_yield.route_account_conflict_leases(cluster,writable_account_key,opportunity_id,lease_owner,fencing_token,expires_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(cluster,writable_account_key) DO UPDATE SET opportunity_id=EXCLUDED.opportunity_id,lease_owner=EXCLUDED.lease_owner,fencing_token=EXCLUDED.fencing_token,expires_at=EXCLUDED.expires_at,submission_id=NULL,updated_at=clock_timestamp()
+ WHERE loyal_yield.route_account_conflict_leases.submission_id IS NULL AND loyal_yield.route_account_conflict_leases.expires_at<=clock_timestamp()`, lease.Cluster, key, lease.OpportunityID, lease.Owner, token, lease.ExpiresAt)
 			if err != nil || tag.RowsAffected() != 1 {
 				return errors.New("atomic conflict lease acquisition failed")
 			}
@@ -550,28 +626,34 @@ type provisioningAddress struct {
 // address demand is inserted, sealed, and linked to its opportunity in the
 // same transaction that makes waiting_alt visible.
 func upsertWaitingALTRequest(ctx context.Context, tx pgx.Tx, lease RevalidationLease, prep RoutePreparation, missing []string) (int64, error) {
-	missing = canonicalStrings(missing)
-	if len(missing) == 0 {
-		return 0, errors.New("waiting_alt requires missing ALT addresses")
+	shared, vault, err := waitingALTManifestAddresses(prep, missing)
+	if err != nil {
+		return 0, err
 	}
-	addresses := make([]provisioningAddress, len(missing))
-	for i, address := range missing {
-		if address == "" {
-			return 0, errors.New("waiting_alt contains an empty ALT address")
-		}
-		addresses[i] = provisioningAddress{Address: address, SemanticClass: "vault", Ordinal: int32(i), AccountRole: "route", Writable: false}
+	// Finalized external tables can cover an identity account and remove it
+	// from durable demand. Bind the source lease to the builder's original
+	// full typed accounts; persist and catalog-check only the durable vectors.
+	sourceShared, sourceVault, err := ALTManifestSourceAddresses(prep.Manifest)
+	if err != nil {
+		return 0, err
 	}
-	emptyHash := provisioningAddressesHash(nil)
-	vaultHash := provisioningAddressesHash(addresses)
+	if err := lockWaitingALTIdentity(ctx, tx, lease, sourceShared, sourceVault); err != nil {
+		return 0, err
+	}
+	if err := lockWaitingALTSharedCatalog(ctx, tx, lease.Cluster, shared); err != nil {
+		return 0, err
+	}
+	sharedHash, vaultHash := provisioningAddressesHash(shared), provisioningAddressesHash(vault)
+	addresses := append(append([]provisioningAddress(nil), shared...), vault...)
 	var requestID int64
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 INSERT INTO loyal_yield.lookup_table_provisioning_requests(
  cluster,vault_id,route_fingerprint,requirements_fingerprint,
  desired_shared_hash,desired_vault_hash,desired_shared_address_count,
  desired_vault_address_count,request_status)
-VALUES($1,$2,$3,$4,$5,$6,0,$7,'requested')
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,'requested')
 ON CONFLICT(cluster,vault_id,requirements_fingerprint) DO NOTHING
-RETURNING id`, lease.Cluster, lease.VaultID, prep.RouteFingerprint, prep.RequirementsFingerprint, emptyHash, vaultHash, len(addresses)).Scan(&requestID)
+RETURNING id`, lease.Cluster, lease.VaultID, prep.RouteFingerprint, prep.RequirementsFingerprint, sharedHash, vaultHash, len(shared), len(vault)).Scan(&requestID)
 	if err == nil {
 		for _, address := range addresses {
 			if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_provisioning_request_addresses(request_id,address,semantic_class,ordinal,account_role,is_writable) VALUES($1,$2,$3,$4,$5,$6)`, requestID, address.Address, address.SemanticClass, address.Ordinal, address.AccountRole, address.Writable); err != nil {
@@ -599,7 +681,9 @@ WHERE cluster=$1 AND vault_id=$2 AND requirements_fingerprint=$3
 FOR UPDATE`, lease.Cluster, lease.VaultID, prep.RequirementsFingerprint).Scan(&requestID, &existingSharedHash, &existingVaultHash, &sharedCount, &vaultCount, &sealed, &status, &errorCode); err != nil {
 		return 0, fmt.Errorf("load existing ALT provisioning request: %w", err)
 	}
-	if !sealed || existingSharedHash != emptyHash || existingVaultHash != vaultHash || sharedCount != 0 || vaultCount != len(addresses) {
+	// Source lookup_tables.rs13217: identical requirements may serve different
+	// route shapes. Preserve the first route fingerprint as immutable audit data.
+	if !sealed || existingSharedHash != sharedHash || existingVaultHash != vaultHash || sharedCount != len(shared) || vaultCount != len(vault) {
 		return 0, errors.New("sealed ALT provisioning request idempotency collision")
 	}
 	rows, err := tx.Query(ctx, `SELECT address,semantic_class,ordinal,account_role,is_writable FROM loyal_yield.lookup_table_provisioning_request_addresses WHERE request_id=$1 ORDER BY semantic_class,ordinal`, requestID)
@@ -620,8 +704,13 @@ FOR UPDATE`, lease.Cluster, lease.VaultID, prep.RequirementsFingerprint).Scan(&r
 		return 0, err
 	}
 	rows.Close()
-	if provisioningAddressesHash(persisted) != vaultHash {
+	if len(persisted) != len(addresses) {
 		return 0, errors.New("sealed ALT provisioning request address collision")
+	}
+	for i := range persisted {
+		if persisted[i] != addresses[i] {
+			return 0, errors.New("sealed ALT provisioning request typed address collision")
+		}
 	}
 	if status == "failed" && errorCode == "terminal_lookup_table_operation" {
 		return 0, errors.New("ALT provisioning request has a terminal operation failure")
@@ -632,6 +721,315 @@ FOR UPDATE`, lease.Cluster, lease.VaultID, prep.RequirementsFingerprint).Scan(&r
 		}
 	}
 	return requestID, nil
+}
+
+// Fingerprints hash raw pubkey ordering including static accounts, while these
+// persisted vectors use base58 lexical ordering and restart ordinals per class.
+// They are different source contracts; never sort one to impersonate the other.
+func waitingALTManifestAddresses(prep RoutePreparation, missing []string) ([]provisioningAddress, []provisioningAddress, error) {
+	m := prep.Manifest
+	if err := ValidateALTManifestIntegrity(m); err != nil {
+		return nil, nil, err
+	}
+	validHash := func(s string) bool {
+		b, err := hex.DecodeString(s)
+		return err == nil && len(b) == sha256.Size && hex.EncodeToString(b) == s
+	}
+	if m == nil || m.Fingerprint != prep.RequirementsFingerprint || !validHash(m.Fingerprint) || !validHash(prep.RouteFingerprint) || len(m.VaultAddresses) == 0 || len(m.SharedAddresses)+len(m.VaultAddresses) > 256 || len(prep.Transaction.UnsignedWire) != 0 || len(prep.Transaction.Message) != 0 {
+		return nil, nil, errors.New("waiting ALT requires a bounded complete unsigned typed manifest")
+	}
+	wanted := make(map[string]bool, len(missing))
+	for _, key := range missing {
+		if key == "" || wanted[key] {
+			return nil, nil, errors.New("missing ALT keys must be nonempty and unique")
+		}
+		wanted[key] = true
+	}
+	if len(wanted) == 0 {
+		return nil, nil, errors.New("waiting ALT requires missing vault addresses")
+	}
+	seen := make(map[string]bool, len(m.SharedAddresses)+len(m.VaultAddresses))
+	sets := [][]ALTManifestAddress{m.SharedAddresses, m.VaultAddresses}
+	classes := []string{"shared_market", "vault"}
+	roles := [][]string{{"market", "market_authority", "reserve", "liquidity_mint", "liquidity_supply", "collateral_mint", "collateral_supply", "oracle", "scope_prices", "reserve_farm_state", "infrastructure"}, {"settings", "vault", "obligation", "policy", "action_account", "vault_token_account", "metadata", "farm_user_state"}}
+	result := [2][]provisioningAddress{}
+	for group, set := range sets {
+		for i, a := range set {
+			key, err := decodePublicKey(a.Address)
+			if err != nil || encodeBase58(key[:]) != a.Address || seen[a.Address] || a.SemanticClass != classes[group] || a.Ordinal != int32(i) || (i > 0 && set[i-1].Address >= a.Address) {
+				return nil, nil, errors.New("ALT manifest address class/order/ordinal or pubkey is invalid")
+			}
+			last := -1
+			for _, role := range strings.Split(a.AccountRole, ",") {
+				index := -1
+				for j, name := range roles[group] {
+					if role == name {
+						index = j
+						break
+					}
+				}
+				if index <= last {
+					return nil, nil, errors.New("ALT manifest role is unknown, duplicated or noncanonical")
+				}
+				last = index
+			}
+			seen[a.Address] = true
+			if wanted[a.Address] {
+				if group != 1 {
+					return nil, nil, errors.New("missing shared ALT keys require catalog reconciliation")
+				}
+				delete(wanted, a.Address)
+			}
+			result[group] = append(result[group], provisioningAddress{a.Address, a.SemanticClass, a.Ordinal, a.AccountRole, a.Writable})
+		}
+	}
+	if len(wanted) != 0 {
+		return nil, nil, errors.New("missing ALT keys are outside the complete vault manifest")
+	}
+	return result[0], result[1], nil
+}
+
+func lockWaitingALTIdentity(ctx context.Context, tx pgx.Tx, lease RevalidationLease, shared, vault []ALTManifestAddress) error {
+	hasRole := func(address, role string) bool {
+		for _, a := range shared {
+			if a.Address == address {
+				for _, tag := range strings.Split(a.AccountRole, ",") {
+					if tag == role {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+	if !hasRole(lease.SourceReserve, "reserve") || (lease.RouteKind != "cross_mint_jupiter" && !hasRole(lease.TargetReserve, "reserve")) {
+		return errors.New("ALT manifest omits actual route reserve identity")
+	}
+	for _, mint := range []string{lease.LiquidityMint, lease.SourceLiquidityMint, lease.TargetLiquidityMint} {
+		if mint != "" && !hasRole(mint, "liquidity_mint") {
+			return errors.New("ALT manifest omits actual route mint identity")
+		}
+	}
+	var settings, pubkey string
+	var index int16
+	if err := tx.QueryRow(ctx, `SELECT settings,vault_pubkey,vault_index FROM loyal_yield.managed_vaults WHERE id=$1 AND active FOR SHARE`, lease.VaultID).Scan(&settings, &pubkey, &index); err != nil {
+		return fmt.Errorf("ALT manifest vault identity: %w", err)
+	}
+	if pubkey != lease.VaultPubkey || index != int16(lease.VaultIndex) {
+		return errors.New("ALT manifest vault identity changed")
+	}
+	policies := map[string]bool{lease.PolicyAccount: true}
+	if lease.RouteKind == "cross_mint_jupiter" {
+		var plan crossMintPlan
+		if err := json.Unmarshal(lease.ExecutionPlan, &plan); err != nil || plan.Bindings.Settings != settings || plan.Bindings.VaultPubkey != pubkey || plan.Bindings.VaultIndex != lease.VaultIndex || plan.Bindings.Withdraw.PolicyAccount != lease.PolicyAccount {
+			return errors.New("ALT manifest canonical policy bindings changed")
+		}
+		policies[plan.Bindings.Swap.PolicyAccount] = true
+	}
+	foundVault, foundPolicy := false, false
+	for _, a := range vault {
+		for _, role := range strings.Split(a.AccountRole, ",") {
+			switch role {
+			case "settings":
+				if a.Address != settings {
+					return errors.New("ALT manifest names foreign settings")
+				}
+			case "vault":
+				if a.Address != pubkey {
+					return errors.New("ALT manifest names foreign vault")
+				}
+				foundVault = true
+			case "policy":
+				if !policies[a.Address] {
+					return errors.New("ALT manifest names unbound policy")
+				}
+				var actual string
+				if err := tx.QueryRow(ctx, `SELECT policy_account FROM loyal_yield.route_policies WHERE policy_account=$1 AND settings=$2 AND vault_pubkey=$3 AND vault_index=$4 AND active FOR SHARE`, a.Address, settings, pubkey, index).Scan(&actual); err != nil {
+					return fmt.Errorf("ALT manifest policy identity: %w", err)
+				}
+				if a.Address == lease.PolicyAccount {
+					foundPolicy = true
+				}
+			}
+		}
+	}
+	if !foundVault || !foundPolicy {
+		return errors.New("ALT manifest omits actual vault or bound source policy")
+	}
+	return nil
+}
+
+// LockSharedALTManifestCoverage ports lookup_tables.rs4051/10785/11111. The
+// caller owns its source fence and transaction. Arbitrary table membership is
+// insufficient: typed route requirements must fit the current catalog and its
+// exact active physical generation, with no append remnants or pending mutation.
+func LockSharedALTManifestCoverage(ctx context.Context, tx pgx.Tx, cluster string, addresses []ALTManifestAddress) error {
+	rows := make([]provisioningAddress, len(addresses))
+	for i, a := range addresses {
+		rows[i] = provisioningAddress{a.Address, a.SemanticClass, a.Ordinal, a.AccountRole, a.Writable}
+	}
+	return lockWaitingALTSharedCatalog(ctx, tx, cluster, rows)
+}
+
+func lockWaitingALTSharedCatalog(ctx context.Context, tx pgx.Tx, cluster string, required []provisioningAddress) error {
+	if cluster == "" || tx == nil {
+		return errors.New("shared ALT catalog requires source transaction and cluster")
+	}
+	for i, a := range required {
+		if _, err := decodePublicKey(a.Address); err != nil || a.SemanticClass != "shared_market" || a.Ordinal != int32(i) || a.AccountRole == "" || (i > 0 && required[i-1].Address >= a.Address) {
+			return errors.New("shared ALT demand is not normalized typed vector")
+		}
+	}
+	// Lock source hierarchy one level at a time: family -> head -> physical.
+	var familyID int64
+	var generation *int32
+	var highWater int32
+	var version string
+	if err := tx.QueryRow(ctx, `SELECT id,active_generation,allocation_high_water,catalog_version FROM loyal_yield.lookup_table_families WHERE cluster=$1 AND kind='shared_market' AND desired_state='active' FOR SHARE`, cluster).Scan(&familyID, &generation, &highWater, &version); err != nil {
+		return fmt.Errorf("shared ALT catalog family missing: %w", err)
+	}
+	if generation == nil || highWater <= 0 || highWater > 256 {
+		return errors.New("shared ALT catalog has no valid active generation")
+	}
+	var manifestID int64
+	var expectedCount int
+	if err := tx.QueryRow(ctx, `SELECT m.id,m.address_count FROM loyal_yield.lookup_table_shared_market_catalog_heads h
+ JOIN loyal_yield.lookup_table_shared_market_catalog_revisions r ON r.id=h.catalog_revision_id AND r.family_id=h.family_id
+ JOIN loyal_yield.lookup_table_manifests m ON m.id=r.manifest_id AND m.family_id=h.family_id
+ WHERE h.family_id=$1 AND h.readiness_state='active' AND h.target_generation=$2 AND h.activated_at IS NOT NULL
+ AND r.catalog_version=$3 AND m.catalog_version=r.catalog_version AND m.subject_kind='shared_market'
+ AND m.vault_id IS NULL AND m.sealed_at IS NOT NULL AND m.desired_set_hash=r.desired_set_hash
+ AND m.address_count=r.address_count FOR SHARE OF h,r,m`, familyID, *generation, version).Scan(&manifestID, &expectedCount); err != nil {
+		return fmt.Errorf("shared ALT catalog head not active: %w", err)
+	}
+	if expectedCount <= 0 {
+		return errors.New("shared ALT catalog is empty")
+	}
+	rows, err := tx.Query(ctx, `SELECT address,semantic_class,ordinal,account_role,is_writable FROM loyal_yield.lookup_table_manifest_addresses WHERE manifest_id=$1 ORDER BY ordinal FOR SHARE`, manifestID)
+	if err != nil {
+		return err
+	}
+	var catalog []provisioningAddress
+	byAddress := map[string]provisioningAddress{}
+	for rows.Next() {
+		var a provisioningAddress
+		if err := rows.Scan(&a.Address, &a.SemanticClass, &a.Ordinal, &a.AccountRole, &a.Writable); err != nil {
+			rows.Close()
+			return err
+		}
+		if a.SemanticClass != "shared_market" || a.Ordinal != int32(len(catalog)) || a.AccountRole == "" || byAddress[a.Address].Address != "" {
+			rows.Close()
+			return errors.New("shared ALT catalog typed rows inconsistent")
+		}
+		catalog = append(catalog, a)
+		byAddress[a.Address] = a
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if len(catalog) != expectedCount {
+		return errors.New("shared ALT catalog sealed count differs")
+	}
+	for _, a := range required {
+		stored, ok := byAddress[a.Address]
+		if !ok || (a.Writable && !stored.Writable) {
+			return errors.New("shared ALT catalog lacks route address/access")
+		}
+		roles := map[string]bool{}
+		for _, role := range strings.Split(stored.AccountRole, ",") {
+			roles[role] = true
+		}
+		for _, role := range strings.Split(a.AccountRole, ",") {
+			if role == "" || !roles[role] {
+				return errors.New("shared ALT catalog lacks route roles")
+			}
+		}
+	}
+	type shard struct {
+		id                               int64
+		ordinal, count, usable, capacity int32
+		verified                         *int64
+		desired, status                  string
+		durable                          bool
+		deactivated                      *int64
+	}
+	rows, err = tx.Query(ctx, `SELECT id,shard_ordinal,address_count,COALESCE(usable_address_count,-1),COALESCE(allocation_high_water,-1),last_verified_slot,desired_state,status,durable,deactivated_slot
+ FROM loyal_yield.route_lookup_tables WHERE family_id=$1 AND generation=$2 AND allocation_kind='shared_market'
+ AND desired_state NOT IN('deactivated','closed','failed') ORDER BY shard_ordinal,id FOR SHARE`, familyID, *generation)
+	if err != nil {
+		return err
+	}
+	var shards []shard
+	for rows.Next() {
+		var s shard
+		if err := rows.Scan(&s.id, &s.ordinal, &s.count, &s.usable, &s.capacity, &s.verified, &s.desired, &s.status, &s.durable, &s.deactivated); err != nil {
+			rows.Close()
+			return err
+		}
+		shards = append(shards, s)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if len(shards) != (len(catalog)-1)/int(highWater)+1 {
+		return errors.New("shared ALT catalog physical shard count differs")
+	}
+	for i, s := range shards {
+		start := i * int(highWater)
+		end := min(start+int(highWater), len(catalog))
+		if s.ordinal != int32(i) || s.count != int32(end-start) || s.usable != s.count || s.capacity != highWater || s.verified == nil || (s.desired != "active" && s.desired != "standby") || (s.status != "active" && s.status != "usable") || !s.durable || s.deactivated != nil {
+			return errors.New("shared ALT catalog physical shard not ready")
+		}
+		members, err := tx.Query(ctx, `SELECT address,ordinal,usable_after_slot,last_verified_slot FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id=$1 ORDER BY ordinal FOR SHARE`, s.id)
+		if err != nil {
+			return err
+		}
+		n := 0
+		for members.Next() {
+			var address string
+			var ordinal int32
+			var usable, verified int64
+			if err := members.Scan(&address, &ordinal, &usable, &verified); err != nil {
+				members.Close()
+				return err
+			}
+			if n >= end-start || ordinal != int32(n) || address != catalog[start+n].Address || usable > verified || usable > *s.verified {
+				members.Close()
+				return errors.New("shared ALT physical membership differs or not usable")
+			}
+			n++
+		}
+		err = members.Err()
+		members.Close()
+		if err != nil {
+			return err
+		}
+		if n != end-start {
+			return errors.New("shared ALT physical membership incomplete")
+		}
+	}
+	tableIDs := make([]int64, len(shards))
+	for i, s := range shards {
+		tableIDs[i] = s.id
+	}
+	rows, err = tx.Query(ctx, `SELECT id FROM loyal_yield.lookup_table_operations WHERE family_id=$1 AND (target_generation=$2 OR route_lookup_table_id=ANY($3::bigint[])) AND operation_state NOT IN('complete','permanent_failure','cancelled') FOR SHARE`, familyID, *generation, tableIDs)
+	if err != nil {
+		return err
+	}
+	pending := rows.Next()
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if pending {
+		return errors.New("shared ALT generation has pending mutation")
+	}
+	return ctx.Err()
 }
 
 func provisioningAddressesHash(addresses []provisioningAddress) string {
@@ -655,13 +1053,21 @@ func provisioningAddressesHash(addresses []provisioningAddress) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-type reservationEconomics struct {
+type ReservationEconomics struct {
 	ObservedTargetAPYBPS  int64
 	ProjectedTargetAPYBPS int64
 	SourceAPYBPS          int64
 	EdgeBPS               int64
 	NetGainUSDMicros      int64
 	FeeCapLamports        int64
+}
+
+// Reservation economics are pure. Publication callers must supply telemetry
+// and commitment totals from the locked frontier transaction.
+type reservationEconomics = ReservationEconomics
+
+func ComputeReservationEconomics(lease RevalidationLease, plan json.RawMessage, observedSupply, committed int64) (ReservationEconomics, error) {
+	return recomputeReservationEconomics(lease, plan, observedSupply, committed)
 }
 
 // recomputeReservationEconomics mirrors the Rust admission transaction. It is

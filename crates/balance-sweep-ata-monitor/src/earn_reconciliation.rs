@@ -124,6 +124,9 @@ enum EarnMaxExternalCashFlow {
 }
 
 struct ConfirmedCashFlowTransfer {
+    // Private confirmed RPC proof, retained until root-envelope validation.
+    transaction: VersionedTransaction,
+    account_keys: Vec<Pubkey>,
     signature: Signature,
     slot: u64,
     source: Pubkey,
@@ -569,6 +572,183 @@ async fn project_earn_max_account_update(
     Ok(())
 }
 
+// External wallet Claim still owns the saved exact payout. A fee/NAV
+// shortfall or a later custody debit cannot turn a partial transfer into completion.
+fn validate_earn_max_claim(
+    withdrawal: &loyal_yield_store::fleet_orchestration::Withdrawal,
+    request_id: &str,
+    destination: Pubkey,
+    amount: u64,
+    source_pre: u64,
+) -> Result<()> {
+    if withdrawal.status != WithdrawalStatus::Claimable
+        || withdrawal.request_id != request_id
+        || withdrawal.destination_account != destination.to_string()
+        || withdrawal.amount_raw != amount
+        || source_pre < withdrawal.amount_raw
+    {
+        bail!("Earn MAX claim did not match the exact claimable withdrawal");
+    }
+    Ok(())
+}
+
+// A successful confirmed Squads Transaction payload proves root-permission
+// execution at its slot. A delegated Policy payload is deliberately insufficient.
+// The saved request does not contain an App subject wallet: do not invent one.
+fn validate_earn_max_root_claim(
+    settings: Pubkey,
+    withdrawal: &loyal_yield_store::fleet_orchestration::Withdrawal,
+    transfer: &ConfirmedCashFlowTransfer,
+) -> Result<()> {
+    let transaction = &transfer.transaction;
+    transaction
+        .sanitize()
+        .context("Earn MAX root claim transaction is malformed")?;
+    transaction
+        .verify_and_hash_message()
+        .context("Earn MAX root claim signatures failed")?;
+    if transaction.signatures.first() != Some(&transfer.signature) || transfer.slot == 0 {
+        bail!("Earn MAX root claim receipt does not bind the signed transaction");
+    }
+    let vault = derive_squads_vault(&settings, 0).0;
+    let source = derive_associated_token_account(vault, USDC_MINT, spl_token::ID);
+    let destination = Pubkey::from_str(&withdrawal.destination_account)?;
+    let amount = withdrawal.amount_raw;
+    if amount == 0
+        || transfer.source != source
+        || transfer.destination != destination
+        || source == destination
+        || transfer.source_pre.checked_sub(amount) != Some(transfer.source_post)
+        || transfer.destination_pre.checked_add(amount) != Some(transfer.destination_post)
+    {
+        bail!("Earn MAX root claim receipt did not pay exact saved custody and amount");
+    }
+    let keys = &transfer.account_keys;
+    let static_keys = transaction.message.static_account_keys();
+    let expected_loaded = match &transaction.message {
+        solana_sdk::message::VersionedMessage::Legacy(_) => 0,
+        solana_sdk::message::VersionedMessage::V0(message) => message
+            .address_table_lookups
+            .iter()
+            .map(|lookup| lookup.writable_indexes.len() + lookup.readonly_indexes.len())
+            .sum(),
+    };
+    if keys.len() != static_keys.len() + expected_loaded
+        || keys[..static_keys.len()] != *static_keys
+    {
+        bail!("Earn MAX root claim loaded account proof is incomplete");
+    }
+    let header = transaction.message.header();
+    let signer_count = usize::from(header.num_required_signatures);
+    let loaded_writable = match &transaction.message {
+        solana_sdk::message::VersionedMessage::Legacy(_) => 0,
+        solana_sdk::message::VersionedMessage::V0(message) => message
+            .address_table_lookups
+            .iter()
+            .map(|lookup| lookup.writable_indexes.len())
+            .sum(),
+    };
+    let account_meta = |index: usize| -> Result<AccountMeta> {
+        let pubkey = *keys
+            .get(index)
+            .context("Earn MAX root claim account index is invalid")?;
+        let is_signer = index < signer_count;
+        let is_writable = if is_signer {
+            index < signer_count - usize::from(header.num_readonly_signed_accounts)
+        } else if index < static_keys.len() {
+            index < static_keys.len() - usize::from(header.num_readonly_unsigned_accounts)
+        } else {
+            index < static_keys.len() + loaded_writable
+        };
+        Ok(AccountMeta {
+            pubkey,
+            is_signer,
+            is_writable,
+        })
+    };
+    let mut found = false;
+    for compiled in transaction.message.instructions() {
+        let program = *keys
+            .get(usize::from(compiled.program_id_index))
+            .context("Earn MAX root claim program index is invalid")?;
+        if program == solana_sdk::compute_budget::id() {
+            continue;
+        }
+        if found || program != SQUADS_SMART_ACCOUNT_PROGRAM_ID {
+            bail!("Earn MAX root claim has an unexpected outer instruction");
+        }
+        found = true;
+        let accounts = compiled
+            .accounts
+            .iter()
+            .map(|index| account_meta(usize::from(*index)))
+            .collect::<Result<Vec<_>>>()?;
+        let authority = accounts
+            .get(2)
+            .context("Earn MAX root claim authority is absent")?;
+        if !authority.is_signer {
+            bail!("Earn MAX root claim authority did not sign the transaction");
+        }
+        let inner = spl_token::instruction::transfer_checked(
+            &spl_token::ID,
+            &source,
+            &USDC_MINT,
+            &destination,
+            &vault,
+            &[],
+            amount,
+            6,
+        )?;
+        // SDK compilers may order the same five inner accounts differently.
+        // Preserve that proven order, but require the exact custody key set.
+        let required_keys = [source, USDC_MINT, destination, vault, spl_token::ID];
+        let mut table = accounts
+            .get(3..)
+            .context("Earn MAX root claim table is absent")?
+            .to_vec();
+        if table.len() != required_keys.len()
+            || required_keys.iter().any(|key| {
+                table
+                    .iter()
+                    .filter(|account| account.pubkey == *key)
+                    .count()
+                    != 1
+            })
+        {
+            bail!("Earn MAX root claim account table has unrelated or missing custody");
+        }
+        let inner = loyal_actions::compile_squads_inner_instruction(&mut table, inner);
+        let expected = loyal_actions::execute_sync_transaction_instruction(
+            settings,
+            authority.pubkey,
+            0,
+            vec![inner],
+            table,
+        );
+        // Global Solana account flags may be promoted by another occurrence;
+        // compare exact ordered keys and require every required privilege.
+        if compiled.data != expected.data
+            || accounts.len() != expected.accounts.len()
+            || accounts
+                .iter()
+                .zip(&expected.accounts)
+                .any(|(actual, expected)| {
+                    actual.pubkey != expected.pubkey
+                        || (expected.is_writable && !actual.is_writable)
+                        || (expected.is_signer && !actual.is_signer)
+                })
+        {
+            bail!(
+                "Earn MAX claim must be the exact root Transaction payload for the saved request"
+            );
+        }
+    }
+    if !found {
+        bail!("Earn MAX root claim instruction is absent");
+    }
+    Ok(())
+}
+
 async fn project_earn_max_confirmed_cash_flow(
     store: &OrchestratorStore,
     settings: Pubkey,
@@ -673,17 +853,31 @@ async fn project_earn_max_confirmed_cash_flow(
             request_id,
             destination,
         } => {
+            if state.goal != RouteGoal::Withdraw
+                || state.current_operation_id.is_some()
+                || transfer.slot < state.observed_slot
+            {
+                bail!("Earn MAX root claim has no current wallet-owned request");
+            }
+            validate_earn_max_root_claim(
+                settings,
+                state
+                    .withdrawal
+                    .as_ref()
+                    .context("Earn MAX claim route omitted withdrawal")?,
+                &transfer,
+            )?;
             let withdrawal = state
                 .withdrawal
                 .as_mut()
                 .context("Earn MAX claim route omitted withdrawal")?;
-            if withdrawal.status != WithdrawalStatus::Claimable
-                || withdrawal.request_id != request_id
-                || withdrawal.destination_account != destination.to_string()
-                || withdrawal.amount_raw.min(transfer.source_pre) != amount
-            {
-                bail!("Earn MAX claim did not match the claimable withdrawal");
-            }
+            validate_earn_max_claim(
+                withdrawal,
+                &request_id,
+                destination,
+                amount,
+                transfer.source_pre,
+            )?;
             withdrawal.status = WithdrawalStatus::Claimed;
             withdrawal.claim_signature = Some(transfer.signature.to_string());
             state.generation += 1;
@@ -851,6 +1045,8 @@ async fn read_confirmed_earn_max_account_transfer(
         };
         Ok(if claim_increased {
             ConfirmedCashFlowTransfer {
+                transaction: decoded,
+                account_keys: keys,
                 signature,
                 slot: transaction.slot,
                 source: *peer,
@@ -861,7 +1057,20 @@ async fn read_confirmed_earn_max_account_transfer(
                 destination_post: claim_post,
             }
         } else {
+            // The exact root recipe only transfers between existing token
+            // accounts. Missing pre/post entries are unknown, not zero; a
+            // creation/close cannot be hidden behind this receipt.
+            let peer_index = account_index(&keys, *peer)?;
+            for index in [claim_index, peer_index] {
+                if token_amount_optional(&meta.pre_token_balances, index, &mint)?.is_none()
+                    || token_amount_optional(&meta.post_token_balances, index, &mint)?.is_none()
+                {
+                    bail!("Earn MAX root claim receipt omitted an actual account balance");
+                }
+            }
             ConfirmedCashFlowTransfer {
+                transaction: decoded,
+                account_keys: keys,
                 signature,
                 slot: transaction.slot,
                 source: claim_custody,
@@ -3643,6 +3852,158 @@ mod tests {
         },
         state::{Account as Token2022Account, AccountState as Token2022AccountState},
     };
+
+    #[test]
+    fn retained_earn_max_claim_requires_signed_root_sdk_envelope() {
+        use solana_sdk::{
+            signature::{Keypair, Signer},
+            transaction::Transaction,
+        };
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../go/workers/internal/multiply/testdata/svm-root-wallet-claim.json"
+        ))
+        .unwrap();
+        let text = |key: &str| fixture[key].as_str().unwrap();
+        let number = |key: &str| fixture[key].as_u64().unwrap();
+        let settings = Pubkey::from_str(text("settings")).unwrap();
+        let transaction = EncodedTransaction::Binary(
+            text("wireBase64").to_owned(),
+            solana_transaction_status_client_types::TransactionBinaryEncoding::Base64,
+        )
+        .decode()
+        .expect("independent real-Squads/SPL SVM fixture decodes");
+        let mut transfer = ConfirmedCashFlowTransfer {
+            signature: Signature::from_str(text("signature")).unwrap(),
+            slot: number("confirmedSlot"),
+            account_keys: transaction.message.static_account_keys().to_vec(),
+            transaction,
+            source: Pubkey::from_str(text("source")).unwrap(),
+            destination: Pubkey::from_str(text("destination")).unwrap(),
+            source_pre: number("sourceBeforeRaw"),
+            source_post: number("sourceAfterRaw"),
+            destination_pre: number("destinationBeforeRaw"),
+            destination_post: number("destinationAfterRaw"),
+        };
+        let withdrawal = loyal_yield_store::fleet_orchestration::Withdrawal {
+            request_id: text("requestId").to_owned(),
+            status: WithdrawalStatus::Claimable,
+            amount_raw: number("amountRaw"),
+            destination_account: text("destination").to_owned(),
+            requested_at: Utc::now(),
+            ready_by: Utc::now(),
+            unwind_completed_at: Some(Utc::now()),
+            claim_signature: None,
+        };
+        validate_earn_max_root_claim(settings, &withdrawal, &transfer).unwrap();
+        let original_signature = transfer.signature;
+        transfer.signature = Signature::default();
+        assert!(validate_earn_max_root_claim(settings, &withdrawal, &transfer).is_err());
+        transfer.signature = original_signature;
+        transfer.destination_post -= 1;
+        assert!(validate_earn_max_root_claim(settings, &withdrawal, &transfer).is_err());
+        transfer.destination_post += 1;
+        transfer.account_keys.push(Pubkey::new_unique());
+        assert!(validate_earn_max_root_claim(settings, &withdrawal, &transfer).is_err());
+        transfer.account_keys.pop();
+        transfer.transaction.signatures[0] = Signature::default();
+        assert!(validate_earn_max_root_claim(settings, &withdrawal, &transfer).is_err());
+
+        // Independently signed SDK negatives are wire rejection tests, not
+        // fabricated successful financial receipts. The positive above comes
+        // only from actual Squads SBF + SPL execution in the checked-in fixture.
+        let delegate = Keypair::new();
+        let vault = derive_squads_vault(&settings, 0).0;
+        let inner = spl_token::instruction::transfer_checked(
+            &spl_token::ID,
+            &transfer.source,
+            &USDC_MINT,
+            &transfer.destination,
+            &vault,
+            &[],
+            withdrawal.amount_raw,
+            6,
+        )
+        .unwrap();
+        let mut table = Vec::new();
+        let compiled = loyal_actions::compile_squads_inner_instruction(&mut table, inner);
+        let policy = loyal_actions::execute_program_interaction_policy_instruction(
+            Pubkey::new_unique(),
+            delegate.pubkey(),
+            0,
+            vec![compiled.clone()],
+            vec![0],
+            table.clone(),
+        );
+        let wrong_settings = loyal_actions::execute_sync_transaction_instruction(
+            Pubkey::new_unique(),
+            delegate.pubkey(),
+            0,
+            vec![compiled.clone()],
+            table.clone(),
+        );
+        let wrong_vault = loyal_actions::execute_sync_transaction_instruction(
+            settings,
+            delegate.pubkey(),
+            1,
+            vec![compiled.clone()],
+            table.clone(),
+        );
+        let extra_transfer = loyal_actions::execute_sync_transaction_instruction(
+            settings,
+            delegate.pubkey(),
+            0,
+            vec![compiled.clone(), compiled],
+            table,
+        );
+        for instruction in [policy, wrong_settings, wrong_vault, extra_transfer] {
+            let tx = Transaction::new_signed_with_payer(
+                &[instruction],
+                Some(&delegate.pubkey()),
+                &[&delegate],
+                solana_sdk::hash::Hash::new_unique(),
+            );
+            transfer.transaction = VersionedTransaction::from(tx);
+            transfer.signature = transfer.transaction.signatures[0];
+            transfer.account_keys = transfer.transaction.message.static_account_keys().to_vec();
+            assert!(transfer.transaction.verify_and_hash_message().is_ok());
+            assert!(validate_earn_max_root_claim(settings, &withdrawal, &transfer).is_err());
+        }
+    }
+
+    #[test]
+    fn earn_max_claim_preserves_exact_saved_payout_before_mutation() {
+        let destination = Pubkey::new_unique();
+        let now = Utc::now();
+        let withdrawal = loyal_yield_store::fleet_orchestration::Withdrawal {
+            request_id: "saved-request".to_owned(),
+            destination_account: destination.to_string(),
+            amount_raw: 10,
+            status: WithdrawalStatus::Claimable,
+            requested_at: now,
+            ready_by: now + ChronoDuration::minutes(10),
+            unwind_completed_at: Some(now),
+            claim_signature: None,
+        };
+        let original = withdrawal.clone();
+        assert!(validate_earn_max_claim(&withdrawal, "saved-request", destination, 9, 9).is_err());
+        assert!(validate_earn_max_claim(&withdrawal, "saved-request", destination, 9, 10).is_err());
+        assert!(validate_earn_max_claim(&withdrawal, "saved-request", destination, 10, 9).is_err());
+        assert!(
+            validate_earn_max_claim(&withdrawal, "other-request", destination, 10, 10).is_err()
+        );
+        assert!(validate_earn_max_claim(
+            &withdrawal,
+            "saved-request",
+            Pubkey::new_unique(),
+            10,
+            10
+        )
+        .is_err());
+        assert_eq!(withdrawal, original);
+        assert!(validate_earn_max_claim(&withdrawal, "saved-request", destination, 10, 10).is_ok());
+        assert!(validate_earn_max_claim(&withdrawal, "saved-request", destination, 10, 11).is_ok());
+        assert_eq!(withdrawal, original);
+    }
 
     #[test]
     fn idle_sweep_without_kamino_withdraw_is_not_a_reserve_withdrawal() {

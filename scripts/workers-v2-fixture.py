@@ -29,6 +29,17 @@ paths = re.findall(r'include_str!\(\s*"([^"]+)"\s*\)', definition)
 migrations = [(registry.parent / p).resolve() for p in paths]
 if not migrations or any(not p.is_file() or p.parent != repo / "crates/loyal-yield-store/migrations" for p in migrations):
     raise SystemExit("Actual Yield migration registry could not be resolved")
+entries = re.findall(
+    r'Migration\s*\{\s*version:\s*(\d+),\s*name:\s*"([^"]+)",\s*'
+    r'sql:\s*include_str!\(\s*"([^"]+)"\s*\),\s*'
+    r'expected_checksum:\s*(None|Some\("[0-9a-f]{64}"\)),\s*\}', definition)
+if len(entries) != len(migrations):
+    raise SystemExit("Actual Yield migration ledger definitions could not be resolved")
+ledger = {}
+for version, name, path, override in entries:
+    file = (registry.parent / path).resolve()
+    checksum = override[6:-2] if override.startswith('Some("') else hashlib.sha256(file.read_bytes()).hexdigest()
+    ledger[int(version)] = (name, checksum)
 
 def execute(url, *, sql=None, file=None):
     args = ["psql", url, "-X", "-v", "ON_ERROR_STOP=1", "-q"]
@@ -46,8 +57,13 @@ for entry in app_schema:
     file = schema / entry["file"]
     if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
         raise SystemExit("Historical app schema fixture provenance drifted")
-for family in ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "multiply"):
-    name = "fleet" if family == "fleet" else "workers_v2_" + family
+default_families = ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "multiply")
+families = tuple(os.environ.get("WORKERS_V2_FIXTURE_FAMILIES", ",".join(default_families)).split(","))
+allowed_families = set(default_families) | {"fleet_go_same_mint", "fleet_same_mint"}
+if not families or len(set(families)) != len(families) or any(f not in allowed_families for f in families):
+    raise SystemExit("Fixture families must be distinct allowlisted test scopes")
+for family in families:
+    name = family if family in {"fleet", "fleet_go_same_mint", "fleet_same_mint"} else "workers_v2_" + family
     execute(base, sql='CREATE DATABASE "' + name + '"')
     url = urlunparse(parsed._replace(path="/" + name))
     for migration in migrations:
@@ -71,8 +87,17 @@ for family in ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "mul
             if "Backyard Phase 1 canonical route cardinality drifted" not in activation:
                 raise SystemExit("Production-bound activation fixture contract drifted")
             execute(url, sql=ddl)
+            # Do not mark the production data activation as applied.
+            continue
         else:
             execute(url, file=migration)
+        # Retained runtime compatibility tools check this ledger at startup.
+        # Record only completed fixture migrations with the runner's checksum.
+        name, checksum = ledger[version]
+        if not re.fullmatch(r"[a-z0-9_]+", name):
+            raise SystemExit("Unsafe migration ledger name")
+        execute(url, sql="INSERT INTO loyal_yield.schema_migrations(version,name,checksum) "
+                f"VALUES({version},'{name}','{checksum}')")
     if family == "backyard":
         execute(url, file=schema / "backyard_route_lease.sql")
     urls[family] = url
@@ -96,12 +121,16 @@ if timescale:
     print(json.dumps({"gate": "timescale_fixture", "verdict": "PASS", "schema_files": len(files)}))
 # The candidate watch loader has a separately classified sampled Apps/schema
 # compatibility fixture. Its DROP/CREATE test never touches the registered DB.
-execute(base, sql='CREATE DATABASE workers_v2_observer_watch')
-watch_url = urlunparse(parsed._replace(path="/workers_v2_observer_watch"))
+watch_url = None
+if "observer" in urls:
+    execute(base, sql='CREATE DATABASE workers_v2_observer_watch')
+    watch_url = urlunparse(parsed._replace(path="/workers_v2_observer_watch"))
 out = os.environ.get("GITHUB_ENV")
 if out:
     with open(out, "a") as target:
-        target.write("TEST_WATCH_DATABASE_URL=" + watch_url + "\n")
+        if watch_url:
+            target.write("TEST_WATCH_DATABASE_URL=" + watch_url + "\n")
+            target.write("READMODELS_TEST_DATABASE_URL=" + urls["observer"] + "\n")
         for key, family in (("FLEET_TEST_DATABASE_URL", "fleet"),
                             ("FLEET_EXEC_TEST_DATABASE_URL", "fleetexec"),
                             ("AUTODEPOSIT_TEST_DATABASE_URL", "autodeposit"),
@@ -109,6 +138,7 @@ if out:
                             ("TEST_DATABASE_URL", "observer"),
                             ("BACKYARD_RWA_TEST_DATABASE_URL", "backyard"),
                             ("MULTIPLY_TEST_DATABASE_URL", "multiply")):
-            target.write(key + "=" + urls[family] + "\n")
+            if family in urls:
+                target.write(key + "=" + urls[family] + "\n")
         if timescale_url:
             target.write("TEST_TIMESCALE_DATABASE_URL=" + timescale_url + "\n")

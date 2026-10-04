@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -59,6 +60,23 @@ func NewRPCClient(rpcURL string) (*RPCClient, error) {
 		return nil, err
 	}
 	return &RPCClient{url: rpcURL, client: &http.Client{Timeout: 15 * time.Second}, retryBackoff: 200 * time.Millisecond}, nil
+}
+
+// MinimumBalanceForRentExemption reads the exact cluster rent quote used by
+// destination setup. A failed or missing quote never becomes a zero funding
+// requirement; the caller retains its pre-pull claim for a later attempt.
+func (c *RPCClient) MinimumBalanceForRentExemption(ctx context.Context, dataLength int) (uint64, error) {
+	if dataLength <= 0 || dataLength > 1<<20 {
+		return 0, errors.New("invalid rent-exempt account length")
+	}
+	var lamports *uint64
+	if err := c.call(ctx, "getMinimumBalanceForRentExemption", []any{dataLength, map[string]any{"commitment": "confirmed"}}, &lamports); err != nil {
+		return 0, err
+	}
+	if lamports == nil || *lamports == 0 {
+		return 0, errors.New("rent-exempt balance unavailable")
+	}
+	return *lamports, nil
 }
 
 func (c *RPCClient) call(ctx context.Context, method string, params []any, output any) error {
@@ -322,8 +340,9 @@ func (c *RPCClient) SignatureStatus(ctx context.Context, signature string) (Sign
 		return SignatureObservation{Found: false}, nil
 	}
 	status := result.Value[0]
-	failed := len(status.Err) > 0 && string(status.Err) != "null"
-	confirmed := !failed && status.Slot > 0 && (status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized")
+	reached := status.Slot > 0 && (status.ConfirmationStatus == "confirmed" || status.ConfirmationStatus == "finalized")
+	failed := reached && len(status.Err) > 0 && string(status.Err) != "null"
+	confirmed := reached && !failed
 	return SignatureObservation{Found: true, Confirmed: confirmed, ConfirmationSlot: status.Slot, Failed: failed}, nil
 }
 
@@ -428,12 +447,18 @@ func (c *RPCClient) ConfirmedTransaction(ctx context.Context, signature string) 
 }
 
 func (c *RPCClient) ConfirmedBlockHeight(ctx context.Context) (int64, error) {
+	return c.blockHeight(ctx, "confirmed")
+}
+func (c *RPCClient) FinalizedBlockHeight(ctx context.Context) (int64, error) {
+	return c.blockHeight(ctx, "finalized")
+}
+func (c *RPCClient) blockHeight(ctx context.Context, commitment string) (int64, error) {
 	var height int64
-	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": "confirmed"}}, &height); err != nil {
+	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": commitment}}, &height); err != nil {
 		return 0, err
 	}
 	if height <= 0 {
-		return 0, fmt.Errorf("confirmed block height unavailable")
+		return 0, fmt.Errorf("%s block height unavailable", commitment)
 	}
 	return height, nil
 }

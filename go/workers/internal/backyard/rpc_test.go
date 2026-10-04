@@ -225,3 +225,13 @@ func TestConfirmedTransactionParsesStaticAndLoadedTokenBalances(t *testing.T) {
 		t.Fatalf("receipt=%+v err=%v", receipt, err)
 	}
 }
+
+func TestProcessedErrorCannotReleaseCustodyAsFailed(t *testing.T) {
+	client := &RPCClient{url: "https://rpc.invalid", client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return response(`{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":45,"err":{"InstructionError":[0,"Custom"]},"confirmationStatus":"processed"}]}}`), nil
+	})}}
+	status, err := client.SignatureStatus(context.Background(), "signature")
+	if err != nil || !status.Found || status.Failed || status.Confirmed {
+		t.Fatalf("processed error became terminal: %+v / %v", status, err)
+	}
+}

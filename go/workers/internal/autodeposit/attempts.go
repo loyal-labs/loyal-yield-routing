@@ -127,10 +127,15 @@ func observationIsTerminal(observation AttemptObservation) bool {
 // immutable bytes whose deterministic signature is already stored; anything else
 // would be a new spend decided from a balance delta.
 //
-// Observe first: a terminal observation records and stops. Otherwise rebroadcast
-// the exact bytes, verify the cluster returned the persisted signature, and only
-// then record the broadcast; a broadcast that errors falls back to a fresh
-// observation so an already-landed submission is not mislabeled as failed.
+// Observe first: a terminal observation records and stops. Otherwise the
+// durable broadcast INTENT is committed before any send: RecordBroadcast
+// advances broadcast_count on the immutable wire, so a crash mid-submit leaves
+// durable evidence that the exact bytes may be in flight. Only then are the
+// bytes broadcast and the observed outcome recorded — an observed submit is the
+// confirmation evidence, never the count. A broadcast that errors falls back to
+// a fresh observation so an already-landed submission is not mislabeled as
+// failed; a signature the cluster returns that differs from the persisted one is
+// recorded as contradictory evidence, never as observed progress.
 func SettleDurableAttempt(ctx context.Context, attempt DurableAttempt, dependencies AttemptDependencies) (Settlement, error) {
 	if attempt.Signature == "" || attempt.SignedTransactionBase64 == "" {
 		return Settlement{}, errors.New("durable attempt has no persisted wire identity")
@@ -147,32 +152,37 @@ func SettleDurableAttempt(ctx context.Context, attempt DurableAttempt, dependenc
 		return Settlement{Attempt: recorded, Observation: observation}, nil
 	}
 
+	// Durable intent precedes the send: from here the wire is treated as
+	// possibly in flight by every recovery path.
+	intent, err := dependencies.RecordBroadcast(ctx, attempt)
+	if err != nil {
+		return Settlement{}, err
+	}
+	attempt = intent
+
 	broadcasted := false
-	returnedSignature, err := dependencies.BroadcastExact(ctx, attempt)
-	if err == nil {
+	returnedSignature, broadcastErr := dependencies.BroadcastExact(ctx, attempt)
+	if broadcastErr == nil {
 		if returnedSignature != attempt.Signature {
-			err = fmt.Errorf("RPC returned signature %s, expected persisted signature %s", returnedSignature, attempt.Signature)
+			broadcastErr = fmt.Errorf("RPC returned signature %s, expected persisted signature %s", returnedSignature, attempt.Signature)
 		}
 	}
-	if err == nil {
-		recorded, recordErr := dependencies.RecordBroadcast(ctx, attempt)
-		if recordErr != nil {
-			return Settlement{}, recordErr
-		}
-		attempt = recorded
+	if broadcastErr == nil {
 		broadcasted = true
 		observation, err = dependencies.Observe(ctx, attempt)
 		if err != nil {
 			return Settlement{}, err
 		}
 	} else {
+		// The error may mean the submission landed anyway; observe again and
+		// record chain truth rather than a transport verdict.
 		retryObservation, observeErr := dependencies.Observe(ctx, attempt)
 		if observeErr != nil {
 			return Settlement{}, observeErr
 		}
 		observation = retryObservation
 		if observation.State == AttemptUnknown && observation.Err == nil {
-			observation.Err = err
+			observation.Err = broadcastErr
 		}
 	}
 	recorded, err := dependencies.RecordObservation(ctx, attempt, observation)

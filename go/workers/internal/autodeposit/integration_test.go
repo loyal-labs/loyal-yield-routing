@@ -3,6 +3,7 @@ package autodeposit
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"sync"
 	"testing"
@@ -18,6 +19,16 @@ func integrationStore(t *testing.T) *Store {
 	if databaseURL == "" {
 		t.Skip("AUTODEPOSIT_TEST_DATABASE_URL is not set; database behavior tests need a disposable schema")
 	}
+	parsed, err := url.Parse(databaseURL)
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") ||
+		(parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "localhost") || parsed.Port() == "" ||
+		parsed.User == nil || parsed.User.Username() != "workers_v2" || parsed.Path != "/workers_v2_autodeposit" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		t.Fatal("AUTODEPOSIT_TEST_DATABASE_URL must identify the isolated loopback workers_v2 fixture before connection")
+	}
+	if _, hasPassword := parsed.User.Password(); hasPassword {
+		t.Fatal("disposable Autodeposit tests exclude password credentials")
+	}
 	store, err := OpenStore(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open integration database: %v", err)
@@ -25,6 +36,18 @@ func integrationStore(t *testing.T) *Store {
 	t.Cleanup(store.Close)
 	if err := store.RequireSchema(context.Background()); err != nil {
 		t.Fatalf("integration schema is not migrated: %v", err)
+	}
+	var databaseName, role string
+	if err := store.pool.QueryRow(context.Background(), `SELECT current_database(),current_user`).Scan(&databaseName, &role); err != nil || databaseName != "workers_v2_autodeposit" || role != "workers_v2" {
+		t.Fatalf("fixture database identity mismatch: database=%s role=%s error=%v", databaseName, role, err)
+	}
+	// This database belongs exclusively to the family test fixture. Reset at
+	// each test boundary: legacy RESTRICT FKs deliberately retain financial
+	// evidence, so best-effort cascading target cleanup is insufficient.
+	// Deposits are retained by signature without a position FK. They must be
+	// included explicitly or a later test replays an old accounting identity.
+	if _, err := store.pool.Exec(context.Background(), `TRUNCATE loyal_yield.balance_sweep_targets,loyal_yield.managed_vaults,loyal_yield.route_policies,loyal_yield.user_yield_positions,loyal_yield.user_yield_position_deposits,loyal_yield.projection_offsets RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("reset disposable family fixture: %v", err)
 	}
 	return store
 }

@@ -17,7 +17,9 @@ func DefaultWaveLimits() WaveLimits {
 }
 
 type waveCandidate struct {
-	vault     FleetVault
+	// The input frontier is immutable for this synchronous planning call.
+	// Keep one source view instead of copying its position for every edge.
+	vault     *FleetVault
 	target    string
 	d         Decision
 	conflicts []string

@@ -86,10 +86,22 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 	if limits.MaxOpportunities <= 0 || limits.MaxNotionalUSDMicros <= 0 || limits.MaxPerTenant <= 0 || limits.MaxPerWritableConflictKey <= 0 {
 		return FleetPlan{}, errors.New("invalid wave limits")
 	}
+	capacity := 0
 	for _, vault := range vaults {
 		if vault.IdleTokenAccount != "" && !allowIdle {
 			return FleetPlan{}, errors.New("idle shadow sources cannot enter executable fleet planning")
 		}
+		if vault.Position.BlockedReason != "" {
+			continue
+		}
+		// Targets absent from the snapshot cannot enter the frontier. This
+		// upper bound also accounts for overlaps and duplicate permissions.
+		edges := min(len(vault.AllowedTargets), len(snapshot.Reserves))
+		edges += min(len(vault.CrossMintTargets), len(snapshot.Reserves)-edges)
+		if edges > int(^uint(0)>>1)-capacity {
+			return FleetPlan{}, errors.New("fleet candidate count overflow")
+		}
+		capacity += edges
 	}
 	if len(snapshot.Reserves) == 0 || !allowIdle && len(snapshot.Reserves) < 2 {
 		return FleetPlan{}, errors.New("complete reserve frontier is required")
@@ -115,9 +127,10 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 			baseOutflow[reserve] = value
 		}
 	}
-	var candidates waveCandidates
+	candidates := make(waveCandidates, 0, capacity)
 	out := FleetPlan{Rejections: map[int64]string{}}
-	for _, vault := range vaults {
+	for sourceIndex := range vaults {
+		vault := &vaults[sourceIndex]
 		sourceKeyBytes, _ := json.Marshal([]any{vault.Position.VaultID, vault.Position.Mint, vault.Position.SourceReserve, vault.IdleTokenAccount})
 		sourceKey := string(sourceKeyBytes)
 		if vault.Position.VaultID <= 0 || seenSources[sourceKey] || !allowIdle && seen[vault.Position.VaultID] {
@@ -150,8 +163,11 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 			position := vault.Position
 			position.TargetCommittedInflowUSDMicros, position.TargetCommittedOutflowUSDMicros = baseInflow[target], baseOutflow[target]
 			position.SourceCommittedInflowUSDMicros, position.SourceCommittedOutflowUSDMicros = baseInflow[position.SourceReserve], baseOutflow[position.SourceReserve]
-			d := planWaveSource(snapshot, vault, position, target, now)
-			if binding, cross := vault.CrossMintTargets[target]; cross {
+			d := planWaveSource(snapshot, *vault, position, target, now)
+			if _, cross := vault.CrossMintTargets[target]; cross {
+				// Declare the escaping copy only for an actual cross-mint
+				// edge; a failed map lookup must not allocate a zero binding.
+				binding := vault.CrossMintTargets[target]
 				d.RouteKind = "cross_mint_jupiter"
 				d.SourceMint = position.Mint
 				d.TargetMint = snapshot.Reserves[target].Mint
@@ -256,7 +272,7 @@ func planFleet(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, 
 			continue
 		}
 		delete(out.Rejections, position.VaultID)
-		plan, err := canonicalExecutionPlan(snapshot, c.vault, d)
+		plan, err := canonicalExecutionPlan(snapshot, *c.vault, d)
 		if err != nil {
 			return FleetPlan{}, err
 		}
@@ -309,13 +325,15 @@ func rescoreCandidate(snapshot MarketSnapshot, c waveCandidate, baseInflow, base
 	if position.SourceCommittedOutflowUSDMicros, ok = sumInt64(baseOutflow[position.SourceReserve], outflow[position.SourceReserve]); !ok {
 		return c, false
 	}
-	d := planWaveSource(snapshot, c.vault, position, c.target, now)
-	if binding, cross := c.vault.CrossMintTargets[c.target]; cross {
+	d := planWaveSource(snapshot, *c.vault, position, c.target, now)
+	if c.d.RouteKind == "cross_mint_jupiter" {
 		d.RouteKind = "cross_mint_jupiter"
 		d.SourceMint = position.Mint
 		d.TargetMint = snapshot.Reserves[c.target].Mint
 		d.Mint = d.TargetMint
-		d.PolicyBindings = &binding
+		// Policy identity is frozen per permitted edge, independent of the
+		// changing reserve frontier. Reuse its one owned copy on rescoring.
+		d.PolicyBindings = c.d.PolicyBindings
 		d.CrossMintMaxValueLossBPS = c.vault.CrossMintMaxValueLossBPS
 	}
 	c.d = d
@@ -488,6 +506,7 @@ type FreshAccount struct {
 	Exists                           bool
 }
 type FreshRouteEvidence struct {
+	Anchors                       ExecutionBalanceAnchors
 	ObservedAt                    time.Time
 	Slot                          int64
 	ObservedSourceAPYBPS          int64
@@ -554,7 +573,7 @@ func ValidateFreshRouteEvidence(e FreshRouteEvidence, now time.Time, expectedOpp
 		case "farm":
 			expectedOwner = farmsProgram
 		case "token_account":
-			if a.Owner != "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" && a.Owner != "TokenzQdYhDYEzV8znWVkuxHcQKoZbYGWvVGg9Lzc" {
+			if a.Owner != "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" && a.Owner != token2022Program {
 				return DecodedSquadsPolicy{}, errors.New("fresh token account owner is invalid")
 			}
 		}
@@ -574,6 +593,10 @@ func ValidateFreshRouteEvidence(e FreshRouteEvidence, now time.Time, expectedOpp
 	if err != nil {
 		return p, err
 	}
+	return validateDelegatedInstructions(p, delegatedSigner, protected)
+}
+
+func validateDelegatedInstructions(p DecodedSquadsPolicy, delegatedSigner string, protected []RouteInstruction) (DecodedSquadsPolicy, error) {
 	if len(p.DelegatedSigners) != 1 || p.DelegatedSigners[0] != delegatedSigner || len(p.SignerPermissions) != 1 || p.SignerPermissions[0] != 7 || p.TimeLock != 0 || p.StaleTransactionIndex > p.TransactionIndex {
 		return p, errors.New("policy does not exclusively delegate full permissions to signer")
 	}
@@ -595,6 +618,25 @@ func ValidateFreshRouteEvidence(e FreshRouteEvidence, now time.Time, expectedOpp
 	}
 	return p, nil
 }
+
+// BuildPolicyEnvelope validates the actual deployed policy before wrapping its
+// exact protected instructions. Autodeposit and fleet share this ABI and the
+// constraint matcher; their journals and recovery protocols remain separate.
+func BuildPolicyEnvelope(policyAccount, settings, delegate string, data []byte, protected []RouteInstruction) (RouteInstruction, error) {
+	p, err := DecodeSquadsPolicy(data)
+	if err != nil {
+		return RouteInstruction{}, err
+	}
+	if settings == "" || p.Settings != settings {
+		return RouteInstruction{}, errors.New("policy settings do not match the frozen vault")
+	}
+	p, err = validateDelegatedInstructions(p, delegate, protected)
+	if err != nil {
+		return RouteInstruction{}, err
+	}
+	return wrapSquadsPolicy(policyAccount, delegate, p.AccountIndex, p.AllowedIndexes, protected)
+}
+
 func contains(v []string, s string) bool {
 	for _, x := range v {
 		if x == s {
@@ -940,11 +982,13 @@ type txMeta struct {
 }
 
 type LookupTable struct {
-	Address          string
-	Addresses        []string
-	Active           bool
-	UsableAfterSlot  int64
-	LastVerifiedSlot int64
+	ID, MutationEpoch, FamilyID, Generation int64
+	BindingID                               *int64
+	Address                                 string
+	Addresses                               []string
+	Active                                  bool
+	UsableAfterSlot                         int64
+	LastVerifiedSlot                        int64
 }
 type PreparedTransaction struct {
 	Message                   []byte
@@ -965,6 +1009,7 @@ type SimulationEvidence struct {
 
 type RoutePreparation struct {
 	RouteFingerprint, RequirementsFingerprint string
+	Manifest                                  *ALTManifest
 	Transaction                               PreparedTransaction
 	Simulation                                SimulationEvidence
 	ExecutionPlan                             json.RawMessage
@@ -1042,7 +1087,7 @@ func prepareRoute(route KaminoSameMintRoute, policy, signer string, policyAccoun
 		ComputeUnitLimit          uint64             `json:"compute_unit_limit"`
 		Simulation                SimulationEvidence `json:"simulation"`
 	}{kind, base64.StdEncoding.EncodeToString(tx.Message), tx.MessageSHA256, base64.StdEncoding.EncodeToString(tx.UnsignedWire), tx.WireSHA256, tx.LookupTables, tx.WritableAccounts, tx.PacketBytes, tx.FeeLamports, tx.ComputeLimit, sim})
-	return RoutePreparation{hex.EncodeToString(rf[:]), hex.EncodeToString(rq[:]), tx, sim, plan}, nil
+	return RoutePreparation{RouteFingerprint: hex.EncodeToString(rf[:]), RequirementsFingerprint: hex.EncodeToString(rq[:]), Transaction: tx, Simulation: sim, ExecutionPlan: plan}, nil
 }
 
 func interleaveMatureSameMintRoute(public, wrapped []RouteInstruction) ([]RouteInstruction, error) {

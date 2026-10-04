@@ -3,6 +3,7 @@ package autodeposit
 import (
 	"context"
 	"errors"
+	"log"
 	"time"
 )
 
@@ -12,10 +13,6 @@ import (
 // typed functions and Store SQL. The implementation owns only the effects this
 // package cannot do — chain reads, wire construction, broadcast — and reports
 // its end state through the legacy exit-code protocol.
-//
-// The production adapter (Solana RPC plus the exact Kamino pull/top-up
-// instruction construction) is not implemented in this module yet; it is the
-// remaining integration work for root.
 type TargetExecutor interface {
 	// Execute resolves one executable target: recovering a claim whose pull
 	// already holds custody, or claiming and sweeping a fresh scheduled slot.
@@ -30,11 +27,20 @@ type WorkerDependencies struct {
 	Store *Store
 	// Executor performs one target's chain effects. Required.
 	Executor TargetExecutor
+	// RuntimeChain supplies the actual confirmed RPC frontier for readiness.
+	// Optional until a runtime reporter is installed.
+	RuntimeChain ConfirmedSlotReader
 	// SlotHints carries externally signalled slot ids (for example realtime
 	// events) that should be dispatched first. Optional; drained every tick.
 	SlotHints *SlotHintQueue
 	// OnAlert receives the alerts a tick's exits deserve. Optional.
 	OnAlert func(ExecutorFailureAlert)
+	// OnError receives each Tick's housekeeping failure. Run keeps the family's
+	// recovery model — the next tick re-reads durable state — but a projection
+	// or release failure must reach an operator, not disappear into the loop.
+	// Optional; when nil, Run returns the first tick error it cannot recover
+	// from so the runtime still sees the failure.
+	OnError func(error)
 
 	PollInterval          time.Duration
 	ProjectionBatchLimit  int64
@@ -47,10 +53,14 @@ type WorkerDependencies struct {
 // Worker is the synchronous Autodeposit runtime: one Tick is one complete
 // reconcile-and-dispatch pass. Run repeats it until the context is cancelled.
 type Worker struct {
-	store    *Store
-	executor TargetExecutor
-	hints    *SlotHintQueue
-	onAlert  func(ExecutorFailureAlert)
+	store           *Store
+	executor        TargetExecutor
+	hints           *SlotHintQueue
+	onAlert         func(ExecutorFailureAlert)
+	onError         func(error)
+	runtimeChain    ConfirmedSlotReader
+	runtimeReporter func(bool, uint64)
+	executionErrors int
 
 	pollInterval          time.Duration
 	projectionBatchLimit  int64
@@ -81,12 +91,19 @@ func NewWorker(deps WorkerDependencies) (*Worker, error) {
 		executor:              deps.Executor,
 		hints:                 deps.SlotHints,
 		onAlert:               deps.OnAlert,
+		onError:               deps.OnError,
+		runtimeChain:          deps.RuntimeChain,
 		pollInterval:          deps.PollInterval,
 		projectionBatchLimit:  deps.ProjectionBatchLimit,
 		dispatchLimit:         deps.DispatchLimit,
 		staleRequestedSeconds: deps.StaleRequestedSeconds,
 		staleSelectedSeconds:  deps.StaleSelectedSeconds,
 		releaseBatchLimit:     deps.ReleaseBatchLimit,
+	}
+	if worker.runtimeChain == nil {
+		if controller, ok := deps.Executor.(*Controller); ok {
+			worker.runtimeChain, _ = controller.chain.(ConfirmedSlotReader)
+		}
 	}
 	if worker.pollInterval <= 0 {
 		worker.pollInterval = DefaultPollInterval
@@ -116,6 +133,9 @@ type TickReport struct {
 	Outcome    ExecutorOutcome
 	Dispatched []ExecutableTarget
 	Alerts     []ExecutorFailureAlert
+	// ExecutorErrors includes errors accompanying a legacy nonfatal exit code.
+	// Such an exit can retain custody safely without proving runtime health.
+	ExecutorErrors int
 }
 
 // Tick runs one complete pass:
@@ -132,6 +152,9 @@ type TickReport struct {
 // exits are tallied as outcomes, never aborted the scan.
 func (w *Worker) Tick(ctx context.Context) (TickReport, error) {
 	var report TickReport
+	if err := ctx.Err(); err != nil {
+		return report, err
+	}
 
 	projection, err := w.store.ProjectSurplusLotsOnce(ctx, w.projectionBatchLimit)
 	if err != nil {
@@ -163,6 +186,7 @@ func (w *Worker) Tick(ctx context.Context) (TickReport, error) {
 	report.Outcome.TargetsScanned = len(targets)
 
 	report.Alerts = w.dispatch(ctx, targets, &report.Outcome)
+	report.ExecutorErrors = w.executionErrors
 	for _, alert := range report.Alerts {
 		if w.onAlert != nil {
 			w.onAlert(alert)
@@ -176,6 +200,7 @@ func (w *Worker) Tick(ctx context.Context) (TickReport, error) {
 // even if the executor is slow, because dispatch is synchronous.
 func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outcome *ExecutorOutcome) []ExecutorFailureAlert {
 	var alerts []ExecutorFailureAlert
+	w.executionErrors = 0
 	for _, target := range targets {
 		if ctx.Err() != nil {
 			return alerts
@@ -183,6 +208,7 @@ func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outco
 		outcome.ExecutionsAttempted++
 		exitCode, err := w.executor.Execute(ctx, target)
 		if err != nil {
+			w.executionErrors++
 			if exitCode == nil {
 				alert := genericExecutorAlert()
 				alert.Summary = "autodeposit executor run errored before an exit: " + err.Error()
@@ -200,9 +226,13 @@ func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outco
 
 // Run repeats Tick until the context is cancelled. A failing tick is not fatal:
 // the next tick re-reads the durable state, which is the family's recovery
-// model. Cancellation is honored between ticks and between dispatches; Run
-// returns the context's error.
+// model. Sanitized failures reach OnError; standalone callers with neither an
+// OnError nor a runtime reporter retain the original fail-fast API.
+// Cancellation is honored between ticks and between dispatches; Run returns the
+// context's error.
 func (w *Worker) Run(ctx context.Context) error {
+	w.reportRuntime(false, 0)
+	defer w.reportRuntime(false, 0)
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -211,9 +241,28 @@ func (w *Worker) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-timer.C:
 		}
-		if _, err := w.Tick(ctx); err != nil {
+		cycle, cancel := context.WithTimeout(ctx, runtimeCycleTimeout)
+		report, err := w.Tick(cycle)
+		var slot uint64
+		if err == nil && w.runtimeReporter != nil {
+			if len(report.Alerts) != 0 || report.ExecutorErrors != 0 || report.Outcome.ExecutionsProcessSuccessUnclassifd != 0 {
+				err = errRuntimeProofUnavailable
+			} else {
+				slot, err = runtimeRecoveryHealth(cycle, w.store, w.runtimeChain, true)
+			}
+		}
+		cancel()
+		w.reportRuntime(err == nil && ctx.Err() == nil && slot > 0, slot)
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			if w.onError == nil && w.runtimeReporter == nil {
+				return err
+			}
+			log.Print("autodeposit cycle_or_readiness_proof_failed")
+			if w.onError != nil {
+				w.onError(errRuntimeProofUnavailable)
 			}
 		}
 		timer.Reset(w.pollInterval)

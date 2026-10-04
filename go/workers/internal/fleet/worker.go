@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,7 @@ type Worker struct {
 	shadowRevalidator *Revalidator
 	shadowSeen        shadowSeen
 	lastConfirmedSlot int64
+	runtimeReporter   func(bool, uint64)
 }
 
 func NewWorker(config Config, store *Store, rpc *RPCClient) (*Worker, error) {
@@ -65,35 +67,86 @@ func (w *Worker) SetMarketEvidence(source MarketEpochSource) error {
 	return nil
 }
 
+// SetRuntimeReporter must be called before Run. The slot is an actual complete
+// planning-cycle observation, never a loop heartbeat.
+func (w *Worker) SetRuntimeReporter(report func(bool, uint64)) { w.runtimeReporter = report }
+
+func (w *Worker) reportRuntime(ready bool, slot uint64) {
+	if w.runtimeReporter != nil {
+		w.runtimeReporter(ready, slot)
+	}
+}
+
+func (w *Worker) runtimeCycle(ctx context.Context) {
+	err := w.planningCycle(ctx)
+	if err == nil && w.config.Mode == ModePublish && w.runtimeReporter != nil {
+		err = w.runtimeRecoveryCensus(ctx)
+	}
+	ready := err == nil && ctx.Err() == nil && w.config.Mode == ModePublish && w.lastConfirmedSlot > 0
+	w.reportRuntime(ready, uint64(max(w.lastConfirmedSlot, 0)))
+	if err != nil {
+		logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "errorCategory": "cycle_or_recovery_health"})
+	}
+}
+
+// A bounded unsigned-admission sweep can leave expired custody behind. A
+// lease held by another owner cannot turn that remaining backlog into health.
+func (w *Worker) runtimeRecoveryCensus(ctx context.Context) error {
+	var blocked bool
+	err := w.store.pool.QueryRow(ctx, `SELECT EXISTS(
+ SELECT 1 FROM loyal_yield.target_capacity_reservations r
+ JOIN loyal_yield.rebalance_opportunities o ON o.id=r.opportunity_id
+ WHERE o.cluster=$1 AND r.reservation_state='active' AND r.signed_submission_id IS NULL
+ AND (o.opportunity_state='stale' OR (o.opportunity_state='leased' AND o.lease_kind='execute'
+ AND (o.lease_expires_at IS NULL OR o.lease_expires_at<=clock_timestamp())))
+ ) OR EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions
+ WHERE cluster=$1 AND submission_state IN ('effect_ambiguous','expiry_check_pending'))`, w.config.Cluster).Scan(&blocked)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return fmt.Errorf("fleet recovery holds remain")
+	}
+	return nil
+}
+
 func (w *Worker) Run(ctx context.Context) error {
+	w.reportRuntime(false, 0)
+	defer w.reportRuntime(false, 0)
+	var lanes sync.WaitGroup
+	defer lanes.Wait()
 	// Match the retained Rust route-revalidator service: sixteen independent
 	// claim loops polling every 250ms by default. Planning remains a singleton
 	// one-second loop and can never block recovery of already durable work.
 	if w.revalidator != nil {
 		for i := 0; i < w.config.RevalidationConcurrency; i++ {
-			go w.runRevalidator(ctx, i, "kamino_fleet_revalidation_failed", w.revalidator.Cycle)
+			lanes.Add(1)
+			go func(index int) {
+				defer lanes.Done()
+				w.runRevalidator(ctx, index, "kamino_fleet_revalidation_failed", w.revalidator.Cycle)
+			}(i)
 		}
 	}
 	if w.shadowRevalidator != nil {
 		for i := 0; i < w.config.RevalidationConcurrency; i++ {
-			go w.runRevalidator(ctx, i, "kamino_fleet_revalidation_shadow_failed", func(ctx context.Context, cluster string) (bool, error) {
-				return w.shadowRevalidator.ShadowCycle(ctx, cluster, &w.shadowSeen)
-			})
+			lanes.Add(1)
+			go func(index int) {
+				defer lanes.Done()
+				w.runRevalidator(ctx, index, "kamino_fleet_revalidation_shadow_failed", func(ctx context.Context, cluster string) (bool, error) {
+					return w.shadowRevalidator.ShadowCycle(ctx, cluster, &w.shadowSeen)
+				})
+			}(i)
 		}
 	}
 	poll := time.NewTicker(w.config.PollInterval)
 	defer poll.Stop()
-	if err := w.planningCycle(ctx); err != nil {
-		logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "error": err.Error()})
-	}
+	w.runtimeCycle(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-poll.C:
-			if err := w.planningCycle(ctx); err != nil {
-				logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "error": err.Error()})
-			}
+			w.runtimeCycle(ctx)
 		}
 	}
 }
@@ -109,7 +162,8 @@ func (w *Worker) runRevalidator(ctx context.Context, index int, failureEvent str
 		}
 		processed, err := cycle(ctx, w.config.Cluster)
 		if err != nil {
-			logEvent(map[string]any{"event": failureEvent, "workerIndex": index, "error": err.Error()})
+			w.reportRuntime(false, 0)
+			logEvent(map[string]any{"event": failureEvent, "workerIndex": index, "errorCategory": "cycle_failed"})
 		}
 		if processed {
 			continue
@@ -141,6 +195,9 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	// observing Go-specific successful-cycle logs, not the shared heartbeat.
 	if w.config.Mode == ModePublish {
 		if err := w.store.RegisterFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
+			return err
+		}
+		if _, err := w.store.RecoverUnsignedExecutionAdmissions(ctx, w.config.Cluster, 1000); err != nil {
 			return err
 		}
 		// Sweep before loading evidence: an RPC/Timescale outage must not leave
@@ -200,7 +257,7 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		// fatal in every mode. Route-level freshness is enforced later by
 		// simulation against confirmed chain state before publication.
 		observationDifferences = 1
-		logEvent(map[string]any{"event": "kamino_fleet_planner_observation_difference", "mode": w.config.Mode, "error": err.Error(), "planningEvidence": "durable_verified_epoch"})
+		logEvent(map[string]any{"event": "kamino_fleet_planner_observation_difference", "mode": w.config.Mode, "errorCategory": "cycle_failed", "planningEvidence": "durable_verified_epoch"})
 	}
 	snapshot, err := marketSnapshotFromEpoch(epoch, addresses...)
 	if err != nil {
@@ -338,7 +395,7 @@ func tolerableObservationDifference(err error) bool {
 func logEvent(event map[string]any) {
 	encoded, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("kamino_fleet_planner_log_error=%q", err)
+		log.Print("kamino_fleet_planner_log_encoding_failed")
 		return
 	}
 	log.Print(string(encoded))

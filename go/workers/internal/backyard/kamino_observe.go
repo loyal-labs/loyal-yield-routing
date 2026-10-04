@@ -367,6 +367,45 @@ func littleInt(value []byte) *big.Int {
 	return new(big.Int).SetBytes(reversed)
 }
 
+// KaminoRedeemableLiquidity converts collateral using the complete reserve
+// exchange value, including borrowed liquidity and all fee liabilities. Other
+// retail families share this decoder rather than value deposits from idle cash.
+func KaminoRedeemableLiquidity(account ConfirmedAccount, market, mint string, collateralRaw uint64) (uint64, error) {
+	reserve, err := decodeKaminoReserve(account, mint, KaminoObservationConfig{Program: kaminoProgram, Market: market})
+	if err != nil {
+		return 0, err
+	}
+	return reserve.redeemLiquidityRaw(collateralRaw)
+}
+
+// KaminoMinimumDepositAmount is the first raw liquidity amount that can mint
+// one collateral unit. It shares the full fee-aware reserve decoder with
+// redemption and matches the retained Rust ceiling calculation (lib.rs:20644).
+func KaminoMinimumDepositAmount(account ConfirmedAccount, market, mint string) (uint64, error) {
+	reserve, err := decodeKaminoReserve(account, mint, KaminoObservationConfig{Program: kaminoProgram, Market: market})
+	if err != nil {
+		return 0, err
+	}
+	return reserve.minimumDepositRaw()
+}
+
+func (r decodedKaminoReserve) minimumDepositRaw() (uint64, error) {
+	if r.totalLiquiditySF == nil || r.totalLiquiditySF.Sign() < 0 {
+		return 0, fmt.Errorf("Kamino collateral exchange value is unknown")
+	}
+	if r.totalLiquiditySF.Sign() == 0 || r.collateralMintSupply == 0 {
+		return 1, nil
+	}
+	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(r.collateralMintSupply), 60)
+	numerator := new(big.Int).Add(r.totalLiquiditySF, denominator)
+	numerator.Sub(numerator, big.NewInt(1))
+	amount := numerator.Quo(numerator, denominator)
+	if !amount.IsUint64() || amount.Sign() <= 0 {
+		return 0, fmt.Errorf("minimum Kamino deposit exceeds positive u64")
+	}
+	return amount.Uint64(), nil
+}
+
 func (r decodedKaminoReserve) redeemLiquidityRaw(collateralRaw uint64) (uint64, error) {
 	if collateralRaw == 0 {
 		return 0, nil
