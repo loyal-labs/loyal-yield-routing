@@ -5,6 +5,7 @@ edition = "2021"
 description = "Surplus lot scheduling for Loyal autodeposit triggers"
 
 [dependencies]
+libc = "0.2"
 anyhow.workspace = true
 chrono = { workspace = true, default-features = false, features = ["clock", "serde"] }
 clap = { workspace = true, features = ["derive", "env"] }

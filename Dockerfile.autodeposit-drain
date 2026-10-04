@@ -1,0 +1,8 @@
+# Only the trigger changes; retain the deployed executor scripts and dependencies.
+FROM ghcr.io/loyal-labs/loyal-yield-routing/light-workers@sha256:7c27ccaefa15762379e94c145628fc59cc27a9857a77ff9171d9a3fe888a1235
+ARG CANDIDATE_COMMIT
+LABEL org.opencontainers.image.source="https://github.com/loyal-labs/loyal-yield-routing"
+LABEL org.opencontainers.image.revision="${CANDIDATE_COMMIT}"
+LABEL loyal.source-runtime-revision="d4e11dd5c1f0d762371b8b49e5506b573b597731"
+LABEL loyal.change-scope="autodeposit-owned-executor-lifecycle-only"
+COPY --chmod=0755 balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger

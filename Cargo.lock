@@ -1145,6 +1145,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "libc",
  "loyal-observability",
  "loyal-yield-realtime-core",
  "loyal-yield-store",

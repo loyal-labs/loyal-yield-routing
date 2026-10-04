@@ -1,6 +1,8 @@
+mod executor_lifecycle;
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    process::{Command, ExitStatus},
+    process::ExitStatus,
     str::FromStr,
     time::Duration,
 };
@@ -257,7 +259,21 @@ struct ClaimedLot {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _observability = init_from_env("loyal-balance-sweep-autodeposit-trigger")?;
+    executor_lifecycle::install_shutdown_handlers()?;
     let args = Args::parse();
+    tokio::select! {
+        biased;
+        _ = executor_lifecycle::shutdown_requested() => {
+            // Dropping run cancels admission/DB futures and drains its owned child.
+            // No executor exit classification or journal transition runs here.
+            tracing::warn!("autodeposit shutdown: retained operations require original recovery");
+            Ok(())
+        }
+        result = run(args) => result,
+    }
+}
+
+async fn run(args: Args) -> Result<()> {
     let pool = connect(&args.postgres_url).await.inspect_err(|_| {
         OperationalError::new(
             "autodeposit_worker_startup_failed",
@@ -269,6 +285,9 @@ async fn main() -> Result<()> {
         .emit();
     })?;
 
+    if executor_lifecycle::stopping() {
+        return Ok(());
+    }
     if let Some(claim_token) = args.complete_claim_token.as_deref() {
         let execution_id = args
             .complete_execution_id
@@ -328,6 +347,9 @@ async fn main() -> Result<()> {
     let mut pending_slot_hints = SlotHintQueue::new(args.realtime_hint_queue_capacity);
     let mut next_progress_check = time::Instant::now();
     loop {
+        if executor_lifecycle::stopping() {
+            return Ok(());
+        }
         // Run independently of executable-target selection: ambiguous and otherwise
         // unrecoverable selected claims must remain visible even when not retried.
         if args.execute_eligible && time::Instant::now() >= next_progress_check {
@@ -585,6 +607,9 @@ async fn execute_eligible_targets_once(
     stale_selected_claim_seconds: i64,
     hinted_slot_ids: &[i64],
 ) -> Result<ExecutorOutcome> {
+    if executor_lifecycle::stopping() {
+        return Ok(ExecutorOutcome::default());
+    }
     let stale_requested_slots_failed = fail_stale_requested_slots_once(pool, limit)
         .await
         .inspect_err(|_| emit_execution_queue_preparation_failed())?;
@@ -602,6 +627,9 @@ async fn execute_eligible_targets_once(
         ..ExecutorOutcome::default()
     };
     for target in targets {
+        if executor_lifecycle::stopping() {
+            break;
+        }
         outcome.executions_attempted += 1;
         let claim_token = target.claim_token.unwrap_or_else(|| {
             format!(
@@ -613,7 +641,8 @@ async fn execute_eligible_targets_once(
                     .unwrap_or_else(|| Utc::now().timestamp_micros())
             )
         });
-        let status = Command::new("sh")
+        let mut command = std::process::Command::new("sh");
+        command
             .arg("-c")
             .arg(build_executor_shell_command(
                 executor_command,
@@ -653,19 +682,32 @@ async fn execute_eligible_targets_once(
                 AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE_ENV,
                 AUTODEPOSIT_DEPENDENCY_UNAVAILABLE_EXIT_CODE.to_string(),
             )
-            .envs(EXECUTOR_OUTCOME_ENV.map(|(key, value)| (key, value.to_string())))
-            .status()
-            .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))
-            .inspect_err(|_| {
-                OperationalError::new(
-                    "autodeposit_executor_spawn_failed",
-                    "spawn_autodeposit_executor",
-                    "autodeposit executor process could not be started",
-                )
-                .retryable(true)
-                .recovery_required(true)
-                .emit();
-            })?;
+            .envs(EXECUTOR_OUTCOME_ENV.map(|(key, value)| (key, value.to_string())));
+        let status = match executor_lifecycle::run_owned(command).await {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                outcome.executions_recovery_pending += 1;
+                tracing::warn!(
+                    "autodeposit owned executor interrupted; durable operation retained"
+                );
+                return Ok(outcome);
+            }
+            result => result,
+        }
+        .with_context(|| format!("spawn autodeposit executor for target {}", target.target_id))
+        .inspect_err(|_| {
+            OperationalError::new(
+                "autodeposit_executor_spawn_failed",
+                "spawn_autodeposit_executor",
+                "autodeposit executor process could not be started",
+            )
+            .retryable(true)
+            .recovery_required(true)
+            .emit();
+        })?;
+        if executor_lifecycle::stopping() {
+            outcome.executions_recovery_pending += 1;
+            return Ok(outcome);
+        }
         let executor_exit_code = status.code();
         let executor_signal = executor_termination_signal(&status);
         if let Some(alert) = record_executor_exit(&mut outcome, executor_exit_code) {
