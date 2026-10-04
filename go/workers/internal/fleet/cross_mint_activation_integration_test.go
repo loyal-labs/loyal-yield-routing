@@ -19,7 +19,7 @@ func crossMintActivationFixtureStore(t *testing.T) (*Store, context.Context) {
 		t.Skip("requires registered disposable C fleet database")
 	}
 	u, err := url.Parse(dsn)
-	if err != nil || u.Scheme != "postgresql" || u.Hostname() != "127.0.0.1" || u.Port() != "51913" || u.Path != "/fleet" || u.User == nil || u.User.Username() != "workers_v2" || u.Fragment != "" {
+	if err != nil || u.Scheme != "postgresql" || u.Hostname() != "127.0.0.1" || !registeredFleetFixturePort(u.Port()) || u.Path != "/fleet" || u.User == nil || u.User.Username() != "workers_v2" || u.Fragment != "" {
 		t.Fatal("requires root-registered loopback workers_v2 /fleet before connecting")
 	}
 	if _, present := u.User.Password(); present {

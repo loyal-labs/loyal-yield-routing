@@ -19,7 +19,7 @@ func TestCrossMintPreparationGuardRegisteredSchema(t *testing.T) {
 		t.Skip("requires root-registered disposable fleet execution database")
 	}
 	u, err := url.Parse(dsn)
-	if err != nil || u.Scheme != "postgresql" || u.Hostname() != "127.0.0.1" || u.Port() != "51913" || u.Path != "/workers_v2_fleetexec" || u.User == nil || u.User.Username() != "workers_v2" || u.Fragment != "" {
+	if err != nil || u.Scheme != "postgresql" || u.Hostname() != "127.0.0.1" || !registeredFleetFixturePort(u.Port()) || u.Path != "/workers_v2_fleetexec" || u.User == nil || u.User.Username() != "workers_v2" || u.Fragment != "" {
 		t.Fatal("requires registered loopback workers_v2 fixture before connecting")
 	}
 	if _, present := u.User.Password(); present {

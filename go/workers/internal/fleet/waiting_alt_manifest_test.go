@@ -147,7 +147,7 @@ func waitingALTStore(t *testing.T) (*Store, context.Context) {
 		t.Skip("registered disposable FLEET_TEST_DATABASE_URL is unset")
 	}
 	u, err := url.Parse(dsn)
-	if err != nil || u.Hostname() != "127.0.0.1" || u.Port() != "51913" || u.User == nil || u.User.Username() != "workers_v2" || (u.Path != "/fleet" && u.Path != "/fleet_same_mint") || u.RawQuery != "" {
+	if err != nil || u.Hostname() != "127.0.0.1" || !registeredFleetFixturePort(u.Port()) || u.User == nil || u.User.Username() != "workers_v2" || (u.Path != "/fleet" && u.Path != "/fleet_same_mint") || u.RawQuery != "" {
 		t.Fatal("ALT tests require the registered disposable loopback family database")
 	}
 	if _, password := u.User.Password(); password {
