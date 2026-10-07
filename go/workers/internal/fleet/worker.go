@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -25,6 +26,8 @@ type Worker struct {
 	shadowSeen        shadowSeen
 	lastConfirmedSlot int64
 	facts             *engine.Facts
+	voltr             *VoltrRoute
+	nextVoltr         time.Time
 }
 
 func NewWorker(config Config, store *Store, rpc *RPCClient, facts *engine.Facts) (*Worker, error) {
@@ -34,7 +37,15 @@ func NewWorker(config Config, store *Store, rpc *RPCClient, facts *engine.Facts)
 	if store == nil || rpc == nil || facts == nil {
 		return nil, fmt.Errorf("store, RPC client and facts are required")
 	}
-	return &Worker{config: config, store: store, rpc: rpc, facts: facts}, nil
+	w := &Worker{config: config, store: store, rpc: rpc, facts: facts}
+	if config.VoltrVaultID > 0 {
+		route, err := LoadVoltrRoute()
+		if err != nil {
+			return nil, err
+		}
+		w.voltr = &route
+	}
+	return w, nil
 }
 
 func (w *Worker) SetRevalidator(revalidator *Revalidator) error {
@@ -69,13 +80,66 @@ func (w *Worker) SetMarketEvidence(source MarketEpochSource) error {
 	return nil
 }
 
-// runtimeCycle plans once; a completed cycle is fleet progress.
+// runtimeCycle plans once; a completed cycle is fleet progress. The Voltr
+// vault is planned on its own five-second probe, as in the Rust planner.
 func (w *Worker) runtimeCycle(ctx context.Context) {
+	if w.voltr != nil && w.config.Mode == ModePublish && !time.Now().Before(w.nextVoltr) {
+		w.nextVoltr = time.Now().Add(5 * time.Second)
+		if status, err := w.voltrCycle(ctx); err != nil {
+			logEvent(map[string]any{"event": "backyard_voltr_planning_failed", "vaultId": w.config.VoltrVaultID, "errorCategory": "cycle"})
+		} else {
+			logEvent(map[string]any{"event": "backyard_voltr_planning", "vaultId": w.config.VoltrVaultID, "status": status})
+		}
+	}
 	if err := w.planningCycle(ctx); err != nil {
 		logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "errorCategory": "cycle"})
 		return
 	}
 	w.facts.Progress(engine.FamilyFleet)
+}
+
+// voltrCycle is run_backyard_voltr_planning_cycle: one confirmed observation
+// against the durable market epoch yields zero or one manager opportunity.
+// An observation that cannot be read coherently defers to the next probe.
+func (w *Worker) voltrCycle(ctx context.Context) (string, error) {
+	if w.marketEvidence == nil {
+		return "", fmt.Errorf("complete durable market evidence is required")
+	}
+	epoch, err := w.marketEvidence.LoadImmutableMarketEpoch(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err = epoch.Validate(); err != nil {
+		return "", err
+	}
+	epochID, err := w.store.EnsureOptimizerEpoch(ctx, w.config.Cluster, epoch)
+	if err != nil {
+		return "", err
+	}
+	minSlot := int64(1)
+	if epoch.MaximumMarketSlot != nil && *epoch.MaximumMarketSlot > 0 {
+		minSlot = *epoch.MaximumMarketSlot
+	}
+	observation, err := ObserveVoltr(ctx, w.rpc, *w.voltr, minSlot)
+	if err != nil {
+		return "deferred_observation", nil
+	}
+	pending, lastOptimization, err := w.store.VoltrPlanningState(ctx, w.config.VoltrVaultID)
+	if err != nil || pending {
+		return "recovery_precedes_planning", err
+	}
+	opportunity, err := PlanVoltr(*w.voltr, observation, epoch, w.config.VoltrVaultID, lastOptimization, time.Now().UTC())
+	if errors.Is(err, errVoltrMarketCoverage) {
+		return "deferred_market_coverage", nil
+	}
+	if err != nil || opportunity == nil {
+		return "noop", err
+	}
+	inserted, err := w.store.PublishVoltr(ctx, w.config.Cluster, epochID, *opportunity)
+	if err != nil || !inserted {
+		return "not_published", err
+	}
+	return "opportunity_upserted", nil
 }
 
 func (w *Worker) Run(ctx context.Context) error {

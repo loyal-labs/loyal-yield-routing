@@ -37,6 +37,7 @@ type retailConfig struct {
 	crossMintMaxSlippageBPS, crossMintMaxValueLossBPS                        uint16
 	jupiterBuildURL, jupiterAPIKey                                           string
 	lookup                                                                   retailLookupConfig
+	voltrVaultID                                                             int64
 }
 
 // Configuration is scoped to this capability. Legacy/background writer flags
@@ -64,6 +65,18 @@ func loadRetailConfig() (retailConfig, error) {
 			cfg.crossMintEnabled = enabled
 		} else if enabled && !cfg.crossMintEnabled {
 			return cfg, errors.New("cross-mint requires explicit RETAIL_CROSS_MINT_ENABLED=true")
+		}
+	}
+	// The Rust planner's switch and vault binding for the Backyard Voltr route.
+	if value := os.Getenv("BACKYARD_VOLTR_ORCHESTRATION_ENABLED"); value != "" {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return cfg, errors.New("BACKYARD_VOLTR_ORCHESTRATION_ENABLED must be a boolean")
+		}
+		if enabled {
+			if cfg.voltrVaultID, err = strconv.ParseInt(os.Getenv("BACKYARD_VOLTR_FLEET_VAULT_ID"), 10, 64); err != nil || cfg.voltrVaultID <= 0 {
+				return cfg, errors.New("BACKYARD_VOLTR_FLEET_VAULT_ID must be positive when Voltr orchestration is enabled")
+			}
 		}
 	}
 	cfg.jupiterBuildURL = strings.TrimSpace(os.Getenv("RETAIL_JUPITER_BUILD_URL"))
@@ -224,7 +237,7 @@ func parseRetailKey(material string) (ed25519.PrivateKey, error) {
 }
 
 func (c retailConfig) fleetConfig() fleet.Config {
-	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", Mode: fleet.ModePublish, PollInterval: time.Second, SlotDuration: c.slotDuration, KLendProxyPath: c.proxyPath, KLendProxySHA256: c.proxyHash, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey}
+	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", Mode: fleet.ModePublish, PollInterval: time.Second, SlotDuration: c.slotDuration, KLendProxyPath: c.proxyPath, KLendProxySHA256: c.proxyHash, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey, VoltrVaultID: c.voltrVaultID}
 }
 
 // The outer diagnostic retains error identity for cancellation and inspection
