@@ -31,7 +31,9 @@ type SignatureState struct {
 // once with maxRetries 0; it never retries on its own.
 type LandChain interface {
 	SendWire(ctx context.Context, wire []byte, skipPreflight bool) error
-	FinalizedBlockHeight(ctx context.Context) (uint64, error)
+	// FinalizedBlockHeight returns the finalized block height and the slot
+	// it belongs to, read together from one node.
+	FinalizedBlockHeight(ctx context.Context) (height, slot uint64, err error)
 	SignatureState(ctx context.Context, signature string) (SignatureState, error)
 }
 
@@ -60,16 +62,54 @@ const (
 )
 
 type Outcome struct {
+	// Kind is zero while the signature is still undecided.
 	Kind OutcomeKind
-	// Slot is the landed or failed slot.
-	Slot uint64
-	Err  string
+	// Slot is the landed or failed slot, Commitment the level it was read at.
+	Slot       uint64
+	Commitment Commitment
+	Err        string
 	// BlockHeight is the finalized height that proved expiry.
 	BlockHeight uint64
 	// ContextSlot is the slot at which the absent status was read.
 	ContextSlot uint64
 	// SendErr is the last send transport error, kept for the log only.
 	SendErr error
+}
+
+// Observe classifies the signature once, without sending. Height is read
+// before status: if the signature is still absent after a finalized height
+// beyond its expiry was read, it can never land. The absence counts only from
+// a node that has reached that finalized slot; a lagging node behind a load
+// balancer may not know the signature landed.
+func Observe(ctx context.Context, chain LandChain, attempt Attempt) (Outcome, error) {
+	out, _, err := observe(ctx, chain, attempt)
+	return out, err
+}
+
+// observe also reports whether resending the bytes can still help.
+func observe(ctx context.Context, chain LandChain, attempt Attempt) (Outcome, bool, error) {
+	height, finalizedSlot, err := chain.FinalizedBlockHeight(ctx)
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	status, err := chain.SignatureState(ctx, attempt.Signature)
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	switch {
+	case status.Found && status.Commitment >= Confirmed && status.Err != "":
+		return Outcome{Kind: Failed, Slot: status.Slot, Commitment: status.Commitment, Err: status.Err}, false, nil
+	case status.Found && status.Commitment >= attempt.Required && status.Err == "":
+		return Outcome{Kind: Landed, Slot: status.Slot, Commitment: status.Commitment}, false, nil
+	case !status.Found && height > attempt.LastValidBlockHeight && status.ContextSlot >= finalizedSlot:
+		return Outcome{Kind: Expired, BlockHeight: height, ContextSlot: status.ContextSlot}, false, nil
+	case !status.Found && height > attempt.LastValidBlockHeight:
+		// Expired bytes are not sent again; wait for a node that is caught up.
+		return Outcome{}, false, nil
+	}
+	// Not seen yet, or seen only on a fork that may be dropped. A processed
+	// error or a confirmed success awaiting finalization waits without sending.
+	return Outcome{}, !status.Found || status.Commitment == Processed && status.Err == "", nil
 }
 
 // Land resends the same bytes until the signature lands, fails on chain, or
@@ -89,25 +129,15 @@ func Land(ctx context.Context, chain LandChain, attempt Attempt, every time.Dura
 	}
 	var sendErr error
 	for {
-		// Height before status: if the signature is still absent after a
-		// finalized height beyond its expiry was read, it can never land.
-		height, err := chain.FinalizedBlockHeight(ctx)
+		out, send, err := observe(ctx, chain, attempt)
 		if err != nil {
 			return Outcome{}, err
 		}
-		status, err := chain.SignatureState(ctx, attempt.Signature)
-		if err != nil {
-			return Outcome{}, err
+		if out.Kind != 0 {
+			out.SendErr = sendErr
+			return out, nil
 		}
-		switch {
-		case status.Found && status.Commitment >= Confirmed && status.Err != "":
-			return Outcome{Kind: Failed, Slot: status.Slot, Err: status.Err}, nil
-		case status.Found && status.Commitment >= attempt.Required && status.Err == "":
-			return Outcome{Kind: Landed, Slot: status.Slot}, nil
-		case !status.Found && height > attempt.LastValidBlockHeight:
-			return Outcome{Kind: Expired, BlockHeight: height, ContextSlot: status.ContextSlot, SendErr: sendErr}, nil
-		case !status.Found || status.Commitment == Processed && status.Err == "":
-			// Not seen yet, or seen only on a fork that may be dropped.
+		if send {
 			if err := recordSend(ctx); err != nil {
 				return Outcome{}, err
 			}
@@ -117,8 +147,6 @@ func Land(ctx context.Context, chain LandChain, attempt Attempt, every time.Dura
 			}
 			attempt.Sends++
 		}
-		// A processed error or a confirmed success awaiting finalization
-		// waits without sending.
 		timer := time.NewTimer(every)
 		select {
 		case <-ctx.Done():

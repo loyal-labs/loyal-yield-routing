@@ -110,7 +110,7 @@ func TestLookupSignedPacketLivesOnItsOperationAcrossPauseResendAndRestart(t *tes
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET lease_owner='lookup-recovery',fencing_token=2,lease_expires_at=clock_timestamp()+interval '60 seconds' WHERE id=$1`, intent.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.deferLookupRecovery(ctx, operation, "stale sender"); !errors.Is(err, ErrStaleOwner) {
+	if err = store.deferLookupRecovery(ctx, operation, "stale sender", false); !errors.Is(err, ErrStaleOwner) {
 		t.Fatalf("old lease updated recovery: %v", err)
 	}
 	operation.Lease.Owner, operation.Lease.FencingToken = "lookup-recovery", 2

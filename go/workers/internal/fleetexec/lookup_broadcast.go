@@ -49,7 +49,7 @@ func (s *Store) RecordLookupSend(ctx context.Context, operation LookupOperation,
 				return ErrLookupPaused
 			}
 		}
-		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state='submitted',submitted_at=COALESCE(submitted_at,clock_timestamp()),operation_context=jsonb_set(operation_context,'{broadcastCount}',to_jsonb(COALESCE((operation_context->>'broadcastCount')::int,0)+1),true),updated_at=clock_timestamp() WHERE id=$1 AND transaction_signature=$2 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>clock_timestamp()`, attempt.Intent.OperationID, attempt.Wire.TransactionSignature, operation.Lease.Owner, operation.Lease.FencingToken)
+		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state=CASE WHEN operation_state='signed' THEN 'submitted' ELSE operation_state END,submitted_at=COALESCE(submitted_at,clock_timestamp()),operation_context=jsonb_set(operation_context,'{broadcastCount}',to_jsonb(COALESCE((operation_context->>'broadcastCount')::int,0)+1),true),updated_at=clock_timestamp() WHERE id=$1 AND transaction_signature=$2 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>clock_timestamp()`, attempt.Intent.OperationID, attempt.Wire.TransactionSignature, operation.Lease.Owner, operation.Lease.FencingToken)
 		if err != nil {
 			return err
 		}
@@ -60,12 +60,14 @@ func (s *Store) RecordLookupSend(ctx context.Context, operation LookupOperation,
 	})
 }
 
-// deferLookupRecovery changes only scheduling and retains the signed packet.
-func (s *Store) deferLookupRecovery(ctx context.Context, operation LookupOperation, reason string) error {
+// deferLookupRecovery changes only scheduling and retains the signed packet,
+// as Rust's poll deferral does. A pause also moves a never-sent packet to
+// needs_reconcile.
+func (s *Store) deferLookupRecovery(ctx context.Context, operation LookupOperation, reason string, paused bool) error {
 	if len(reason) > 500 {
 		reason = reason[:500]
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state=CASE WHEN operation_state='signed' THEN 'needs_reconcile' ELSE operation_state END,next_attempt_at=clock_timestamp()+interval '5 seconds',error_detail=$2,lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>clock_timestamp()`, operation.Intent.OperationID, reason, operation.Lease.Owner, operation.Lease.FencingToken)
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state=CASE WHEN $5 AND operation_state='signed' THEN 'needs_reconcile' ELSE operation_state END,next_attempt_at=clock_timestamp()+interval '5 seconds',error_detail=$2,lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>clock_timestamp()`, operation.Intent.OperationID, reason, operation.Lease.Owner, operation.Lease.FencingToken, paused)
 	if err != nil {
 		return err
 	}
@@ -73,4 +75,23 @@ func (s *Store) deferLookupRecovery(ctx context.Context, operation LookupOperati
 		return ErrStaleOwner
 	}
 	return nil
+}
+
+// markLookupDrift is Rust's NeedsManualReconcile: the packet's chain effect
+// does not match its intent, so it is neither retried nor applied.
+func (s *Store) markLookupDrift(ctx context.Context, operation LookupOperation, attempt LookupAttempt, reason string) error {
+	if len(reason) > 500 {
+		reason = reason[:500]
+	}
+	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state='needs_reconcile',error_code='chain_drift',error_detail=$2,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>clock_timestamp()`, operation.Intent.OperationID, reason, operation.Lease.Owner, operation.Lease.FencingToken)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrStaleOwner
+		}
+		_, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioner_broadcast_permits SET permit_state='needs_reconcile',resolution_detail=$3,resolved_at=clock_timestamp(),updated_at=clock_timestamp() WHERE operation_id=$1 AND transaction_signature=$2 AND resolved_at IS NULL`, operation.Intent.OperationID, attempt.Wire.TransactionSignature, reason)
+		return err
+	})
 }

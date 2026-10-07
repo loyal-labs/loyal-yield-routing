@@ -94,17 +94,6 @@ func loadLeasedLookup(ctx context.Context, tx pgx.Tx, id int64) (LookupOperation
 	return op, nil
 }
 
-func (s *Store) RenewLookupLease(ctx context.Context, op LookupOperation, ttl time.Duration) error {
-	if ttl < 10*time.Second || ttl > 5*time.Minute || ttl%time.Second != 0 {
-		return errors.New("lookup renewal duration invalid")
-	}
-	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET lease_expires_at=clock_timestamp()+$4::bigint*interval '1 second',updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp() AND operation_state NOT IN ('complete','permanent_failure','cancelled')`, op.Intent.OperationID, op.Lease.Owner, op.Lease.FencingToken, int64(ttl/time.Second))
-	if err == nil && tag.RowsAffected() != 1 {
-		return ErrStaleOwner
-	}
-	return err
-}
-
 // Unsigned deferral never clears retained source signatures or owned packets.
 func (s *Store) deferLookupUnsigned(ctx context.Context, op LookupOperation, reason string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state='retry_wait',next_attempt_at=clock_timestamp()+interval '5 seconds',lease_owner=NULL,lease_expires_at=NULL,error_detail=$4,updated_at=clock_timestamp()

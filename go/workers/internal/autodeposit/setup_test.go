@@ -155,21 +155,10 @@ func TestDestinationSetupUsesOfficialBuilderBeforePull(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			attempt := SetupAttempt{Plan: *setup, Wire: wire}
-			if err = builder.ProveDestinationSetup(t.Context(), plan, attempt); err != nil {
-				t.Fatal(err)
+			if wire.Signature == "" || wire.LastValidBlockHeight != 900 {
+				t.Fatalf("setup wire %+v", wire)
 			}
-			changed := attempt
-			changed.Wire.Signature = solana.Signature{}.String()
-			if builder.ProveDestinationSetup(t.Context(), plan, changed) == nil {
-				t.Fatal("signature substitution passed")
-			}
-			changed = attempt
-			changed.Plan.RentTopUpLamports++
-			if builder.ProveDestinationSetup(t.Context(), plan, changed) == nil {
-				t.Fatal("rent substitution passed")
-			}
-			if _, err = builder.ReadbackDestinationSetup(t.Context(), plan, *setup, 500); err == nil {
+			if err = builder.ReadbackDestinationSetup(t.Context(), plan, *setup, 500); err == nil {
 				t.Fatal("missing setup account was confirmed")
 			}
 		})
@@ -182,19 +171,15 @@ func TestSetupReadbackRejectsForeignIdentity(t *testing.T) {
 	foreign := mustKey(fixedKey("foreign"))
 	copy(data[80:112], foreign[:])
 	accounts[setup.Account] = backyard.ConfirmedAccount{Address: setup.Account, Owner: KLendProgramID, Data: data}
-	if _, err := builder.ReadbackDestinationSetup(t.Context(), plan, setup, 500); err == nil {
+	if err := builder.ReadbackDestinationSetup(t.Context(), plan, setup, 500); err == nil {
 		t.Fatal("foreign metadata owner passed readback")
 	}
 	owner := mustKey(plan.Target.VaultPubkey)
 	copy(data[80:112], owner[:])
-	proof, err := builder.ReadbackDestinationSetup(t.Context(), plan, setup, 500)
-	if err != nil {
+	if err := builder.ReadbackDestinationSetup(t.Context(), plan, setup, 500); err != nil {
 		t.Fatal(err)
 	}
-	if proof.Account != setup.Account || len(proof.DataSHA256) != 64 || proof.ObservedSlot != 500 {
-		t.Fatalf("readback %v", proof)
-	}
-	if _, err := builder.ReadbackDestinationSetup(t.Context(), plan, setup, 501); err == nil {
+	if err := builder.ReadbackDestinationSetup(t.Context(), plan, setup, 501); err == nil {
 		t.Fatal("readback older than confirmed transaction passed")
 	}
 }

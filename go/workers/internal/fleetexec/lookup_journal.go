@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/mr-tron/base58"
 )
 
 func (s *Store) RequireLookupSchema(ctx context.Context) error {
@@ -43,6 +44,12 @@ func lookupAttemptOf(op LookupOperation) (LookupAttempt, error) {
 	wire, err := base64.StdEncoding.DecodeString(c.SignedTransaction)
 	if err != nil {
 		return a, err
+	}
+	if len(wire) < 65 || wire[0] == 0 || base58.Encode(wire[1:65]) != *op.Signature {
+		// Rust re-signed this operation after a handover and never clears our
+		// keys: the stored bytes belong to an earlier packet. The columns are
+		// the packet; land it by signature alone.
+		return LookupAttempt{Intent: op.Intent, Wire: a.Wire}, nil
 	}
 	sum := sha256.Sum256(wire)
 	a.Wire.SignedTransaction, a.Wire.SignedTransactionHash = wire, hex.EncodeToString(sum[:])

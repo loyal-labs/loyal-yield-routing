@@ -16,7 +16,6 @@ import (
 // lookupProof can only be produced by verifying the actual packet, receipt and
 // coherent account effects. The store never accepts a caller's terminal flag.
 type lookupProof struct {
-	binding                     string
 	state                       LookupAttemptState
 	readbackSlot, finalizedSlot int64
 	readback, receipt           json.RawMessage
@@ -151,7 +150,7 @@ func recoverLookup(attempt LookupAttempt, status SignatureStatus, receipt *Looku
 	if snapshot.Slot < receipt.Slot {
 		return lookupRecovery{wait: "readback is below finalized receipt"}, nil
 	}
-	proof := &lookupProof{binding: lookupProofBinding(attempt), readbackSlot: snapshot.Slot, finalizedSlot: receipt.Slot, receipt: receiptProof}
+	proof := &lookupProof{readbackSlot: snapshot.Slot, finalizedSlot: receipt.Slot, receipt: receiptProof}
 	if receipt.Err != "" {
 		if !lookupUnchanged(attempt.Intent, snapshot) {
 			return lookupRecovery{}, errors.New("lookup failed receipt does not have unchanged table proof")
@@ -189,17 +188,4 @@ func recoverLookup(attempt LookupAttempt, status SignatureStatus, receipt *Looku
 	proof.state = LookupReconciled
 	proof.readback = lookupReadback(snapshot, "exact_finalized_effect")
 	return lookupRecovery{proof: proof}, nil
-}
-
-func lookupProofBinding(attempt LookupAttempt) string {
-	intent := attempt.Intent
-	intent.Prefix = append([]string{}, intent.Prefix...)
-	intent.Extension = append([]string{}, intent.Extension...)
-	encoded, _ := json.Marshal(struct {
-		SigningSlot         int64
-		Intent              LookupIntent
-		Signature, WireHash string
-	}{attempt.SigningContextSlot, intent, attempt.Wire.TransactionSignature, attempt.Wire.SignedTransactionHash})
-	h := sha256.Sum256(encoded)
-	return hex.EncodeToString(h[:])
 }

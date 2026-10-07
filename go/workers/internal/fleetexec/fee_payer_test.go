@@ -2,9 +2,11 @@ package fleetexec
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -84,12 +86,19 @@ func TestFreshFeeOnlyRoutePersistsRustSpendReservation(t *testing.T) {
 	tx.WritableAccounts = []string{payerKey.String(), a.SelectedALTs[0].Addresses[0]}
 	tx.FeeLamports = 10000
 	a.Preparation.Simulation.WireSHA256 = tx.WireSHA256
-	a.FeePayer, a.FeePayerBalance, a.FeePayerBalanceSlot = payerKey.String(), 50_000_000, 1000
+	a.FeePayer = payerKey.String()
 	signer.FeeOnly = []ed25519.PrivateKey{payer}
 	worker, err := NewWorker(Config{Cluster: a.Lease.Cluster, Owner: a.Lease.Owner, LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store, &countingChain{}, &fakeStatus{}, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Rust's admission: a balance that would end below the shard floor is a
+	// reselection, and nothing is persisted.
+	worker.balances = shardBalance(1_005_000)
+	if _, err := worker.ExecuteFresh(ctx, a); !errors.Is(err, errFeePayerReselection) {
+		t.Fatalf("below-floor shard admitted: %v", err)
+	}
+	worker.balances = shardBalance(50_000_000)
 	id, err := worker.ExecuteFresh(ctx, a)
 	if err != nil {
 		t.Fatal(err)
@@ -102,4 +111,15 @@ func TestFreshFeeOnlyRoutePersistsRustSpendReservation(t *testing.T) {
 	if kind != "fee_only_shard" || feePayer != payerKey.String() || reserved != 10000 || balance != 50_000_000 {
 		t.Fatalf("fee-only publication %s %s %d %d", kind, feePayer, reserved, balance)
 	}
+}
+
+// shardBalance answers every confirmed balance read with one lamport amount.
+type shardBalance uint64
+
+func (b shardBalance) ConfirmedAccounts(_ context.Context, addresses []string, slot int64) (int64, []fleet.Account, error) {
+	accounts := make([]fleet.Account, len(addresses))
+	for i, address := range addresses {
+		accounts[i] = fleet.Account{Address: address, Lamports: uint64(b)}
+	}
+	return slot + 1, accounts, nil
 }

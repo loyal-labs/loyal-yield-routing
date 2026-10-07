@@ -32,8 +32,8 @@ type WireIdentity struct {
 }
 
 // DelegateSigner holds the delegated policy signer, which also pays a route's
-// fee unless the route's vault maps to a fee-only payer (fleet.RouteFeePayer).
-// FeeOnly is the fixed fee-only payer list; a fee-only payer signs only for
+// fee unless the vault ranks a healthy fee-only registry shard first.
+// FeeOnly holds the mounted fee-only shard keys; a fee-only payer signs only for
 // the fee and holds no vault, policy or ALT authority.
 type DelegateSigner struct {
 	FeePayer ed25519.PrivateKey

@@ -60,8 +60,8 @@ func (s *runtimeSend) SendWire(_ context.Context, wire []byte, _ bool) error {
 	return s.err
 }
 
-func (s *runtimeSend) FinalizedBlockHeight(context.Context) (uint64, error) {
-	return uint64(s.status.status.BlockHeight), nil
+func (s *runtimeSend) FinalizedBlockHeight(context.Context) (uint64, uint64, error) {
+	return uint64(s.status.status.BlockHeight), 1, nil
 }
 
 func (s *runtimeSend) SignatureState(context.Context, string) (solana.SignatureState, error) {

@@ -459,7 +459,9 @@ func TestExpiredRouteIsTerminalAndReleasesItsReservations(t *testing.T) {
 	}
 	worker.wg.Wait()
 	state, count, _, height, effectSlot := durableRow(t, ctx, pool, id)
-	if state != string(StateExpired) || count != 1 || height == nil || *height != 4_001 || effectSlot == nil {
+	// Rust writes no effect-check slot for an expiry it proved by signature
+	// absence: that column is the floor of an account readback.
+	if state != string(StateExpired) || count != 1 || height == nil || *height != 4_001 || effectSlot != nil {
 		t.Fatalf("expired row state = %s count = %d height = %v slot = %v", state, count, height, effectSlot)
 	}
 	var reservation, opportunity, decision string
@@ -486,9 +488,9 @@ func (c *countingChain) SendWire(_ context.Context, wire []byte, _ bool) error {
 	return nil
 }
 
-func (c *countingChain) FinalizedBlockHeight(context.Context) (uint64, error) {
+func (c *countingChain) FinalizedBlockHeight(context.Context) (uint64, uint64, error) {
 	c.height += c.heightStep
-	return c.height, nil
+	return c.height, 1, nil
 }
 
 func (c *countingChain) SignatureState(context.Context, string) (solana.SignatureState, error) {

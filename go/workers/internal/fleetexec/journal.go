@@ -473,7 +473,6 @@ func scanSubmissionLease(rows rowScanner, owner string) (SubmissionLease, error)
 type Advance struct {
 	NextState                 SubmissionState
 	ConfirmedSlot             *int64
-	EffectCheckSlot           *int64
 	ExpiryObservedBlockHeight *int64
 	ErrorDetail               *string
 }
@@ -497,22 +496,21 @@ func (s *Store) AdvanceSubmission(ctx context.Context, lease SubmissionLease, ad
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions
 SET submission_state=$3,
     confirmed_slot=COALESCE($4, confirmed_slot),
-    effect_check_slot=COALESCE($5, effect_check_slot),
-    expiry_observed_block_height=COALESCE($6, expiry_observed_block_height),
-    error_detail=COALESCE($7, error_detail),
+    expiry_observed_block_height=COALESCE($5, expiry_observed_block_height),
+    error_detail=COALESCE($6, error_detail),
     last_status_checked_at=clock_timestamp(),
     confirmation_lease_owner=NULL,
     confirmation_lease_expires_at=NULL,
     updated_at=clock_timestamp()
 WHERE id=$1
   AND confirmation_lease_owner=$2
-  AND confirmation_fencing_token=$8
+  AND confirmation_fencing_token=$7
   AND confirmation_lease_expires_at > clock_timestamp()
-  AND submission_state=$9
+  AND submission_state=$8
   AND movement_leg='route'
-  AND ($3 <> 'expired' OR last_valid_block_height < $6)`,
+  AND ($3 <> 'expired' OR last_valid_block_height < $5)`,
 		lease.Submission.ID, lease.Owner, string(advance.NextState),
-		advance.ConfirmedSlot, advance.EffectCheckSlot, advance.ExpiryObservedBlockHeight,
+		advance.ConfirmedSlot, advance.ExpiryObservedBlockHeight,
 		advance.ErrorDetail, lease.FencingToken, string(lease.Submission.State))
 	if err != nil {
 		return err
@@ -550,17 +548,6 @@ WHERE reservation.cluster=frontier.cluster
 		return 0, err
 	}
 	return command.RowsAffected(), nil
-}
-
-// ReleasePreparedTransactionALTLeases releases the reusable-lookup-table usage
-// leases this submission held, exactly as the legacy terminal trigger does for
-// its own writers.
-func (s *Store) ReleasePreparedTransactionALTLeases(ctx context.Context, semanticKey string) error {
-	_, err := s.pool.Exec(ctx, `
-UPDATE loyal_yield.lookup_table_usage_leases
-SET released_at=COALESCE(released_at, now()), updated_at=now()
-WHERE lease_kind='prepared_transaction' AND reference_key=$1 AND released_at IS NULL`, semanticKey)
-	return err
 }
 
 func nullableJSON(raw json.RawMessage) any {

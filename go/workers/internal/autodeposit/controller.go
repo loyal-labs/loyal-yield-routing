@@ -195,21 +195,22 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 	if err != nil {
 		return Settlement{}, err
 	}
-	observation := AttemptObservation{State: AttemptExpired}
+	observation, code := AttemptObservation{State: AttemptExpired}, "blockhash_expired"
 	switch out.Kind {
 	case solana.Landed:
 		slot := int64(out.Slot)
-		observation = AttemptObservation{State: AttemptConfirmed, ConfirmedSlot: &slot}
-		c.facts.Landed(engine.FamilyAutodeposit)
+		observation, code = AttemptObservation{State: AttemptConfirmed, ConfirmedSlot: &slot}, ""
 	case solana.Failed:
-		observation = AttemptObservation{State: AttemptFailed, Err: errors.New("transaction failed on chain: " + out.Err)}
-		c.facts.Failed(engine.FamilyAutodeposit, "transaction_failed")
-	default:
-		c.facts.Failed(engine.FamilyAutodeposit, "blockhash_expired")
+		observation, code = AttemptObservation{State: AttemptFailed, Err: errors.New("transaction failed on chain: " + out.Err)}, "transaction_failed"
 	}
 	recorded, err := c.store.RecordAttemptObservation(scope.ctx, attempt, observation, scope.leaseToken)
 	if err != nil {
 		return Settlement{}, err
+	}
+	if code == "" {
+		c.facts.Landed(engine.FamilyAutodeposit)
+	} else {
+		c.facts.Failed(engine.FamilyAutodeposit, code)
 	}
 	return Settlement{Attempt: recorded}, nil
 }
@@ -483,9 +484,6 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 			return false, err
 		}
 		setup := SetupAttempt{ClaimToken: claimToken, Plan: *next, Wire: wire}
-		if err = builder.ProveDestinationSetup(scope.ctx, plan, setup); err != nil {
-			return false, err
-		}
 		if err = c.chain.SimulateExact(scope.ctx, setup.durable()); err != nil {
 			return false, err
 		}
@@ -508,7 +506,7 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 			// Not landed: the next dispatch inspects the chain again.
 			return false, nil
 		}
-		if _, err = builder.ReadbackDestinationSetup(scope.ctx, plan, *next, int64(out.Slot)); err != nil {
+		if err = builder.ReadbackDestinationSetup(scope.ctx, plan, *next, int64(out.Slot)); err != nil {
 			return false, err
 		}
 	}

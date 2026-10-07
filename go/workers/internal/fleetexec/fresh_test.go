@@ -10,6 +10,7 @@ import (
 	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/mr-tron/base58"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,7 @@ func seedFresh(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (fleet.Exe
 			t.Fatal(err)
 		}
 	}
+	a.FeePayer = base58.Encode(ed25519.PrivateKey(key)[32:])
 	return a, DelegateSigner{FeePayer: ed25519.PrivateKey(key)}
 }
 
@@ -154,7 +156,7 @@ func TestFreshPublicationRejectsChangedCustodyFencesWithoutSignedRows(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.PersistFreshAdmission(ctx, a, wire); err == nil {
+			if _, err := store.PersistFreshAdmission(ctx, a, wire, nil); err == nil {
 				t.Fatal("changed custody fence published signed wire")
 			}
 			var count int
@@ -175,7 +177,7 @@ func TestFirstSendRejectsExpiredOrMutatedALTWithoutIntent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			id, err := store.PersistFreshAdmission(ctx, a, wire)
+			id, err := store.PersistFreshAdmission(ctx, a, wire, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

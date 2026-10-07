@@ -26,12 +26,10 @@ import (
 )
 
 const (
-	mainnetGenesisHash   = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
-	computeUnitLimit     = uint32(400_000)
-	maxTransactionFee    = uint64(20_000)
-	confirmationAttempts = 60
-	confirmationInterval = 500 * time.Millisecond
-	solanaPacketBytes    = 1232
+	mainnetGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+	computeUnitLimit   = uint32(400_000)
+	maxTransactionFee  = uint64(20_000)
+	solanaPacketBytes  = 1232
 )
 
 // BlockhashAndHeight is the fetched blockhash binding.
@@ -653,63 +651,6 @@ func MessageSHA256(wire []byte) (string, error) {
 // keeps the operation in prepared.
 func (e *Executor) Simulate(ctx context.Context, signed *SignedOperation, minContextSlot uint64) (*SimulationOutcome, error) {
 	return e.RPC.SimulateTransaction(ctx, signed.Wire, minContextSlot)
-}
-
-// Broadcast performs the single un-retried send of the persisted wire. The
-// wire is never regenerated here; a hash mismatch is a hard stop.
-func (e *Executor) Broadcast(ctx context.Context, signed *SignedOperation) (string, error) {
-	if len(signed.Wire) == 0 {
-		return "", errors.New("refusing to broadcast an empty wire")
-	}
-	digest := sha256.Sum256(signed.Wire)
-	if hexEncode(digest[:]) != signed.WireSHA256 {
-		return "", errors.New("persisted wire hash drifted before broadcast")
-	}
-	return e.RPC.SendRawTransaction(ctx, signed.Wire)
-}
-
-// WaitConfirmed polls for confirmed status for 60 x 500ms like the Rust
-// wait_confirmed; nil means the signature was never seen.
-func (e *Executor) WaitConfirmed(ctx context.Context, signature string) (*SignatureObservation, error) {
-	for attempt := 0; attempt < confirmationAttempts; attempt++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(confirmationInterval):
-		}
-		observation, err := e.RPC.SignatureStatus(ctx, signature)
-		if err != nil {
-			return nil, err
-		}
-		if observation == nil {
-			continue
-		}
-		if observation.Err != nil && (observation.ConfirmationState == "confirmed" || observation.ConfirmationState == "finalized") {
-			return observation, fmt.Errorf("transaction failed on chain: %s", *observation.Err)
-		}
-		if observation.ConfirmationState == "confirmed" || observation.ConfirmationState == "finalized" {
-			reader, ok := e.RPC.(confirmedTransactionReader)
-			if !ok {
-				return nil, errReceiptUnavailable
-			}
-			raw, err := reader.ConfirmedTransaction(ctx, signature)
-			if err != nil {
-				return nil, err
-			}
-			var receipt confirmedReceipt
-			if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-				return nil, errReceiptUnavailable
-			}
-			if err := json.Unmarshal(raw, &receipt); err != nil {
-				return nil, err
-			}
-			if receipt.Slot == 0 || receipt.Slot > math.MaxInt64 || receipt.Meta == nil || !bytes.Equal(bytes.TrimSpace(receipt.Meta.Err), []byte("null")) {
-				return nil, errors.New("confirmed receipt omitted success or supported slot")
-			}
-			return &SignatureObservation{Slot: int64(receipt.Slot), ConfirmationState: observation.ConfirmationState}, nil
-		}
-	}
-	return nil, nil
 }
 
 // VerifyExpectedEffects compares confirmed balances against immutable persisted

@@ -704,9 +704,9 @@ func (s *Store) MarkManualRecovery(ctx context.Context, lease *Lease, operationI
 	return true, nil
 }
 
-// ReconcileOperation requires exact transaction evidence and records it on the
-// operation's reconciled_effects in the same fenced transaction as terminal
-// operation/route publication. Rust never reads that column for Multiply rows.
+// ReconcileOperation requires exact transaction evidence before the fenced
+// terminal operation/route publication. The proof is checked, not stored:
+// reconciliation_sha256 is the durable fact, as in Rust.
 func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationID, transactionSignature, reconciliationSHA256 string, confirmedSlot uint64, route *RouteState, proofs ...*ReconciledReceiptProof) (bool, error) {
 	if len(proofs) != 1 || proofs[0] == nil {
 		return false, errors.New("reconciliation requires an exact transaction receipt")
@@ -758,8 +758,8 @@ func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationI
 	}
 	var reconciledID string
 	err = tx.QueryRow(ctx,
-		"UPDATE loyal_yield.multiply_operations SET status='reconciled', signed_wire=NULL, confirmed_slot=$3, reconciliation_sha256=$4, reconciled_effects=$6, updated_at=now() WHERE operation_id=$1 AND route_key=$2 AND status IN ('confirmed','reconciliation_pending') AND transaction_signature=$5 RETURNING operation_id",
-		operationID, lease.RouteKey, slot, reconciliationSHA256, transactionSignature, e).Scan(&reconciledID)
+		"UPDATE loyal_yield.multiply_operations SET status='reconciled', signed_wire=NULL, confirmed_slot=$3, reconciliation_sha256=$4, updated_at=now() WHERE operation_id=$1 AND route_key=$2 AND status IN ('confirmed','reconciliation_pending') AND transaction_signature=$5 RETURNING operation_id",
+		operationID, lease.RouteKey, slot, reconciliationSHA256, transactionSignature).Scan(&reconciledID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

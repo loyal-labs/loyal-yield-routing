@@ -137,7 +137,8 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 		if err == nil && !bootstrapFailed {
 			var inflight int
-			if err = w.store.pool.QueryRow(cycle, `SELECT count(*) FROM loyal_yield.multiply_operations WHERE status IN ('signed_persisted','broadcast_intent','confirmed','reconciliation_pending')`).Scan(&inflight); err == nil {
+			// The landing may have used the whole cycle; the count is its own read.
+			if err = w.store.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.multiply_operations WHERE status IN ('signed_persisted','broadcast_intent','confirmed','reconciliation_pending')`).Scan(&inflight); err == nil {
 				w.facts.Inflight(engine.FamilyMultiply, inflight)
 				w.facts.Progress(engine.FamilyMultiply)
 			}
@@ -489,21 +490,27 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 	if err != nil {
 		return TickResult{}, err
 	}
+	// Facts count an outcome only once its row is written.
 	switch out.Kind {
 	case solanaland.Landed:
-		w.facts.Landed(engine.FamilyMultiply)
 		if unsent {
 			// Landed without a send of ours: a lost acknowledgement.
 			if err := intent(ctx); err != nil {
 				return TickResult{}, err
 			}
 		}
-		return w.confirmAndReconcile(ctx, lease, route, operation, out.Slot, topology)
+		result, err := w.confirmAndReconcile(ctx, lease, route, operation, out.Slot, topology)
+		if err == nil {
+			w.facts.Landed(engine.FamilyMultiply)
+		}
+		return result, err
 	case solanaland.Failed:
-		w.facts.Failed(engine.FamilyMultiply, "transaction_failed")
-		return w.enterManualRecovery(ctx, lease, route, operation, "stored signed transaction failed at confirmed commitment: "+out.Err)
+		result, err := w.enterManualRecovery(ctx, lease, route, operation, "stored signed transaction failed at confirmed commitment: "+out.Err)
+		if err == nil {
+			w.facts.Failed(engine.FamilyMultiply, "transaction_failed")
+		}
+		return result, err
 	}
-	w.facts.Failed(engine.FamilyMultiply, "blockhash_expired")
 	next := *route
 	next.Generation++
 	next.CurrentOperationID = nil
@@ -515,6 +522,7 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 	if !expired {
 		return TickResult{}, errors.New("expiry lost its route fence")
 	}
+	w.facts.Failed(engine.FamilyMultiply, "blockhash_expired")
 	return tickResult(&next, operation, "operation_expired_without_effect"), nil
 }
 
@@ -786,10 +794,10 @@ func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *Ro
 	return &next, nil
 }
 
-// A withdrawal is claimable once its unwind is complete, as in Rust's
-// Complete transition. The payout is computed when the Claim is built
-// (earn.ClaimPayout); the saved amount of a "max" withdrawal is a pre-unwind
-// estimate and cannot gate the claim.
+// The bridge (balance-sweep-ata-monitor validate_earn_max_claim) accepts only
+// the saved exact payout, so custody below it is a shortfall here. Once the
+// Claim is built and accepted with earn.ClaimPayout, a "max" withdrawal stops
+// being gated by its pre-unwind estimate.
 func withdrawalClaimCondition(route *RouteState, observed *ObservedRoute, topology *EarnMaxTopology) (string, error) {
 	if route == nil || route.Withdrawal == nil || observed == nil || topology == nil || observed.Slot == 0 || !observed.ActiveStrategyIsCoherent() {
 		return "", errors.New("withdrawal claim evidence is absent or incoherent")
@@ -820,8 +828,11 @@ func withdrawalClaimCondition(route *RouteState, observed *ObservedRoute, topolo
 	if !destinationKnown {
 		return "", errors.New("withdrawal destination observation is missing")
 	}
-	if observed.Claim.AmountRaw == 0 {
-		return "withdrawal_custody_empty", nil
+	if route.Withdrawal.AmountRaw == 0 {
+		return "", errors.New("withdrawal requested amount is invalid")
+	}
+	if observed.Claim.AmountRaw < route.Withdrawal.AmountRaw {
+		return "withdrawal_liquidity_shortfall", nil
 	}
 	return "withdrawal_claimable", nil
 }

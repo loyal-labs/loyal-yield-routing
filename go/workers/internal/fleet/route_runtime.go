@@ -34,6 +34,7 @@ type revalidationStore interface {
 	RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error
 	LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error)
 	CommitRevalidation(ctx context.Context, lease RevalidationLease, input RevalidationCommit) error
+	EligibleFeePayerShards(ctx context.Context, cluster, policySigner string, mounted []string) ([]FeePayerShard, error)
 }
 
 type Revalidator struct {
@@ -64,7 +65,7 @@ type RevalidatorConfig struct {
 	CrossMintMaxSlippageBPS  uint16
 	JupiterBuildURL          string
 	JupiterAPIKey            string
-	// FeeOnlyPayers is the fixed fee-only payer list (public keys).
+	// FeeOnlyPayers are the mounted fee-only keys (public); the registry says which are eligible.
 	FeeOnlyPayers []string
 }
 
@@ -156,10 +157,39 @@ type sameMintPreparation struct {
 	PriorityFee          uint64
 	Tables               []LookupTable
 	Instructions         []RouteInstruction
-	// FeePayer pays this route; a fee-only payer's balance is read at
-	// FeePayerBalanceSlot for its Rust spend reservation.
-	FeePayer                             string
-	FeePayerBalance, FeePayerBalanceSlot int64
+	// FeePayer pays this route: the policy signer or a fee-only shard.
+	FeePayer string
+}
+
+// feePayer is Rust's select_same_mint_route_fee_payer: a mature route goes
+// to the first healthy shard in the vault's rendezvous order; anything else,
+// or no healthy shard, falls back to the policy signer. Admission rechecks the
+// chosen shard's budget against a fresh balance under its row lock.
+func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease RevalidationLease, slot int64) string {
+	if !matureReservePosition(lease.ExecutionPlan) || len(r.feeOnlyPayers) == 0 {
+		return r.signer
+	}
+	shards, err := r.store.EligibleFeePayerShards(ctx, cluster, r.signer, r.feeOnlyPayers)
+	if err != nil || len(shards) == 0 {
+		return r.signer
+	}
+	byPayer := map[string]FeePayerShard{}
+	payers := []string{}
+	for _, shard := range shards {
+		byPayer[shard.Payer] = shard
+		payers = append(payers, shard.Payer)
+	}
+	ranked := RankFeePayers(cluster, lease.VaultPubkey, payers)
+	_, accounts, err := r.rpc.ConfirmedAccounts(ctx, ranked, slot)
+	if err != nil || len(accounts) != len(ranked) {
+		return r.signer
+	}
+	for i, payer := range ranked {
+		if accounts[i].Lamports <= math.MaxInt64 && byPayer[payer].healthy(int64(accounts[i].Lamports), lease.FeeCapLamports) {
+			return payer
+		}
+	}
+	return r.signer
 }
 
 // prepareSameMint runs the read-only same-mint preparation from fresh chain
@@ -227,17 +257,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "blockhash", err
 	}
 	out.LastValidBlockHeight = lastValidBlockHeight
-	out.FeePayer = r.signer
-	if matureReservePosition(lease.ExecutionPlan) {
-		out.FeePayer = RouteFeePayer(cluster, lease.VaultPubkey, r.signer, r.feeOnlyPayers)
-	}
-	if out.FeePayer != r.signer {
-		slot, accounts, err := r.rpc.ConfirmedAccounts(ctx, []string{out.FeePayer}, evidence.Slot)
-		if err != nil || len(accounts) != 1 || accounts[0].Lamports > math.MaxInt64 {
-			return out, "fee_payer", fmt.Errorf("fee-only payer balance unavailable: %v", err)
-		}
-		out.FeePayerBalance, out.FeePayerBalanceSlot = int64(accounts[0].Lamports), slot
-	}
+	out.FeePayer = r.feePayer(ctx, cluster, lease, evidence.Slot)
 	preview, missing, err := compileV0Transaction(out.FeePayer, blockhash, instructions, tables, 1, r.computeLimit)
 	if err != nil {
 		return out, "compile", err

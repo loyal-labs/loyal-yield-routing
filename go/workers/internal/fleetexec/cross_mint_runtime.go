@@ -278,13 +278,19 @@ func (r *CrossMintRuntime) land(workCtx, ctx context.Context, l SubmissionLease,
 	}
 	switch out.Kind {
 	case solana.Landed:
-		r.config.Facts.Landed(engine.FamilyFleet)
-		return r.store.markCrossMintFinalized(workCtx, l, int64(out.Slot))
+		if err = r.store.markCrossMintFinalized(workCtx, l, int64(out.Slot)); err == nil {
+			r.config.Facts.Landed(engine.FamilyFleet)
+		}
+		return err
 	case solana.Failed:
+		const reason = "finalized_failure_requires_manual_custody_proof"
+		if err = r.store.deferCrossMintStatus(workCtx, l, nil, nil, reason, true); err != nil {
+			return err
+		}
 		r.config.Facts.Failed(engine.FamilyFleet, "transaction_failed")
-		return r.hold(workCtx, l, "finalized_failure_requires_manual_custody_proof", errors.New(out.Err))
+		return fmt.Errorf("%s; custody and capacity retained: %s", reason, out.Err)
 	default:
-		r.config.Facts.Failed(engine.FamilyFleet, "blockhash_expired")
+		// Not terminal: the custody proof decides; its row is counted there.
 		height, slot := int64(out.BlockHeight), int64(out.ContextSlot)
 		return r.store.deferCrossMintStatus(workCtx, l, &slot, &height, "expiry_requires_finalized_custody_and_history", true)
 	}

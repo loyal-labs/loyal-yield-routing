@@ -521,7 +521,7 @@ func TestCurrentGoMultiplyRejectsIncompleteActualReceipt(t *testing.T) {
 		t.Fatal("malformed receipt became financial completion")
 	}
 	var n int
-	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operations o WHERE o.route_key=$1 AND o.reconciled_effects IS NOT NULL`, f.state.RouteKey).Scan(&n); err != nil || n != 0 {
+	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operations o WHERE o.route_key=$1 AND o.status='reconciled'`, f.state.RouteKey).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("malformed receipt published: %d %v", n, err)
 	}
 }
@@ -535,18 +535,13 @@ func (f *multiplySVMFixture) assertReconciled(t *testing.T, sends int) {
 	if saved.Operation != nil || saved.State.CurrentOperationID != nil {
 		t.Fatal("actual receipt failed terminal route CAS")
 	}
-	var status, wireHash string
-	var evidence []byte
+	var status, reconciliation string
 	var slot int64
-	if err := f.store.Pool().QueryRow(f.ctx, `SELECT o.status,o.signed_wire_sha256,o.reconciled_effects,o.confirmed_slot FROM loyal_yield.multiply_operations o WHERE o.route_key=$1 AND o.reconciled_effects IS NOT NULL ORDER BY o.created_at DESC LIMIT 1`, f.state.RouteKey).Scan(&status, &wireHash, &evidence, &slot); err != nil {
+	if err := f.store.Pool().QueryRow(f.ctx, `SELECT o.status,o.reconciliation_sha256,o.confirmed_slot FROM loyal_yield.multiply_operations o WHERE o.route_key=$1 AND o.status='reconciled' ORDER BY o.created_at DESC LIMIT 1`, f.state.RouteKey).Scan(&status, &reconciliation, &slot); err != nil {
 		t.Fatal(err)
 	}
-	var receipt ReconciledReceiptEvidence
-	if err := json.Unmarshal(evidence, &receipt); err != nil {
-		t.Fatal(err)
-	}
-	if status != "reconciled" || slot != 1000 || receipt.WireSHA256 != wireHash || receipt.ConfirmedSlot != 1000 || len(receipt.Transaction) == 0 {
-		t.Fatal("exact actual transaction evidence missing from atomic terminal")
+	if status != "reconciled" || slot != 1000 || reconciliation == "" {
+		t.Fatal("exact actual transaction reconciliation missing from atomic terminal")
 	}
 	after, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
 	if err != nil {

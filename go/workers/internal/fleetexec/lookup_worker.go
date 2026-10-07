@@ -222,49 +222,60 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 
 // land resends the operation's signed bytes until they finalize or expire,
 // then applies the finalized effect. A packet without bytes (signed by the
-// Rust provisioner) and reconcile-only mode resolve by signature status alone.
-// Expiry is the Rust retry: the operation gets a fresh packet.
+// Rust provisioner) and reconcile-only mode resolve by signature status alone,
+// with the same height-first classifier.
 func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt LookupAttempt) error {
-	if len(attempt.Wire.SignedTransaction) > 0 && !w.config.ReconcileOnly {
+	target := solana.Attempt{
+		Wire: attempt.Wire.SignedTransaction, Signature: attempt.Wire.TransactionSignature,
+		LastValidBlockHeight: uint64(attempt.Wire.LastValidBlockHeight), Sends: attempt.BroadcastCount,
+		Required: solana.Finalized,
+	}
+	var out solana.Outcome
+	var err error
+	if len(target.Wire) > 0 && !w.config.ReconcileOnly {
 		// Leave the tick time to record the outcome inside its own deadline.
 		landCtx, cancel := context.WithTimeout(ctx, w.config.TickDeadline/2)
-		out, err := solana.Land(landCtx, w.chain, solana.Attempt{
-			Wire: attempt.Wire.SignedTransaction, Signature: attempt.Wire.TransactionSignature,
-			LastValidBlockHeight: uint64(attempt.Wire.LastValidBlockHeight), Sends: attempt.BroadcastCount,
-			Required: solana.Finalized,
-		}, lookupResendEvery, func(sendCtx context.Context) error {
+		out, err = solana.Land(landCtx, w.chain, target, lookupResendEvery, func(sendCtx context.Context) error {
 			return w.store.RecordLookupSend(sendCtx, op, attempt)
 		})
 		cancel()
 		switch {
 		case errors.Is(err, ErrLookupPaused):
-			return w.store.deferLookupRecovery(ctx, op, "signed packet held by source controls")
+			return w.store.deferLookupRecovery(ctx, op, "signed packet held by source controls", true)
 		case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
-			return w.store.deferLookupRecovery(ctx, op, "landing continues")
-		case err != nil:
-			return err
-		case out.Kind == solana.Expired:
-			w.config.Facts.Failed(engine.FamilyLookup, "blockhash_expired")
-			return w.store.expireLookupOperation(ctx, op, attempt)
+			return w.store.deferLookupRecovery(ctx, op, "landing continues", false)
 		}
+	} else {
+		out, err = solana.Observe(ctx, w.chain, target)
 	}
-	status, err := w.chain.SignatureStatus(ctx, attempt.Wire.TransactionSignature)
 	if err != nil {
 		return err
 	}
-	if !status.Found && status.BlockHeight > attempt.Wire.LastValidBlockHeight {
-		w.config.Facts.Failed(engine.FamilyLookup, "blockhash_expired")
-		return w.store.expireLookupOperation(ctx, op, attempt)
-	}
-	if !status.Finalized {
-		return w.store.deferLookupRecovery(ctx, op, "signature not finalized")
+	switch out.Kind {
+	case 0:
+		return w.store.deferLookupRecovery(ctx, op, "signature not finalized", false)
+	case solana.Expired:
+		// Rust re-signs only when the mutation is also absent on chain; a
+		// landed packet the history has not indexed yet must not be archived.
+		snapshot, err := w.chain.LookupSnapshot(ctx, attempt.Intent.TableAddress, int64(out.ContextSlot))
+		if err != nil {
+			return err
+		}
+		if !lookupUnchanged(attempt.Intent, snapshot) {
+			return w.store.markLookupDrift(ctx, op, attempt, "signature absent after blockhash expiry but the table changed on chain")
+		}
+		return w.expire(ctx, op, attempt)
+	case solana.Failed:
+		if out.Commitment != solana.Finalized {
+			return w.store.deferLookupRecovery(ctx, op, "failed packet not finalized", false)
+		}
 	}
 	receipt, err := w.chain.LookupFinalizedReceipt(ctx, attempt.Wire.TransactionSignature)
 	if err != nil {
 		return err
 	}
 	if receipt == nil {
-		return w.store.deferLookupRecovery(ctx, op, "finalized packet history unavailable")
+		return w.store.deferLookupRecovery(ctx, op, "finalized packet history unavailable", false)
 	}
 	if len(attempt.Wire.SignedTransaction) == 0 {
 		hash := sha256.Sum256(receipt.Wire)
@@ -274,17 +285,29 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 	if err != nil {
 		return err
 	}
+	status := SignatureStatus{Found: true, Slot: int64(out.Slot), Confirmed: true, Finalized: true, Err: out.Err}
 	recovery, err := recoverLookup(attempt, status, receipt, snapshot)
 	if err != nil {
-		return err
+		return w.store.markLookupDrift(ctx, op, attempt, err.Error())
 	}
 	if recovery.proof == nil {
-		return w.store.deferLookupRecovery(ctx, op, recovery.wait)
+		return w.store.deferLookupRecovery(ctx, op, recovery.wait, false)
+	}
+	if err := w.store.commitLookupProof(ctx, op, attempt, recovery.proof); err != nil {
+		return err
 	}
 	if recovery.proof.state == LookupFailed {
 		w.config.Facts.Failed(engine.FamilyLookup, "transaction_failed")
 	} else {
 		w.config.Facts.Landed(engine.FamilyLookup)
 	}
-	return w.store.commitLookupProof(ctx, op, attempt, recovery.proof)
+	return nil
+}
+
+func (w *LookupWorker) expire(ctx context.Context, op LookupOperation, attempt LookupAttempt) error {
+	if err := w.store.expireLookupOperation(ctx, op, attempt); err != nil {
+		return err
+	}
+	w.config.Facts.Failed(engine.FamilyLookup, "blockhash_expired")
+	return nil
 }

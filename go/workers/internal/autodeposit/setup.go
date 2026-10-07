@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"fmt"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/programs/system"
@@ -41,15 +40,6 @@ type SetupAttempt struct {
 	Wire       BuiltWire
 }
 
-type SetupReadback struct {
-	Account      string `json:"account"`
-	Owner        string `json:"owner"`
-	DataSHA256   string `json:"dataSha256"`
-	ObservedSlot int64  `json:"observedSlot"`
-	MinimumSlot  int64  `json:"minimumSlot"`
-	Proof        string `json:"proof"`
-}
-
 func (a SetupAttempt) durable() DurableAttempt {
 	return DurableAttempt{ClaimToken: a.ClaimToken, OperationKind: OperationKind("setup_" + string(a.Plan.Stage)), Signature: a.Wire.Signature, SignedTransactionBase64: a.Wire.SignedTransactionBase64, SignedTransactionSHA256: a.Wire.SignedTransactionSHA256, RecentBlockhash: a.Wire.RecentBlockhash, LastValidBlockHeight: a.Wire.LastValidBlockHeight}
 }
@@ -58,8 +48,7 @@ type SetupRentReader func(context.Context, int) (uint64, error)
 type DestinationSetupBuilder interface {
 	InspectDestinationSetup(context.Context, DepositPlan) (*DestinationSetupPlan, error)
 	BuildDestinationSetup(context.Context, DepositPlan, DestinationSetupPlan, string, int64) (BuiltWire, error)
-	ProveDestinationSetup(context.Context, DepositPlan, SetupAttempt) error
-	ReadbackDestinationSetup(context.Context, DepositPlan, DestinationSetupPlan, int64) (SetupReadback, error)
+	ReadbackDestinationSetup(context.Context, DepositPlan, DestinationSetupPlan, int64) error
 }
 
 func NewSweepWireBuilderWithSetup(proxy *fleet.KLendProxy, key ed25519.PrivateKey, read AccountReader, rent SetupRentReader) (*SweepWireBuilder, error) {
@@ -387,65 +376,16 @@ func (b *SweepWireBuilder) BuildDestinationSetup(ctx context.Context, plan Depos
 	}
 	return b.sign(plan, hash, height, instructions)
 }
-func (b *SweepWireBuilder) ReadbackDestinationSetup(ctx context.Context, plan DepositPlan, setup DestinationSetupPlan, minSlot int64) (SetupReadback, error) {
+func (b *SweepWireBuilder) ReadbackDestinationSetup(ctx context.Context, plan DepositPlan, setup DestinationSetupPlan, minSlot int64) error {
 	if err := validateDestinationSetupPlan(plan, setup); err != nil {
-		return SetupReadback{}, err
+		return err
 	}
 	slot, accounts, err := b.read(ctx, []string{setup.Account})
 	if err != nil {
-		return SetupReadback{}, err
+		return err
 	}
 	if slot < minSlot || slot < setup.ObservedSlot || len(accounts) != 1 {
-		return SetupReadback{}, errors.New("setup readback is older than confirmed transaction")
+		return errors.New("setup readback is older than confirmed transaction")
 	}
-	if err = validateSetupAccount(plan, setup, accounts[0]); err != nil {
-		return SetupReadback{}, err
-	}
-	hash := sha256.Sum256(accounts[0].Data)
-	return SetupReadback{Account: accounts[0].Address, Owner: accounts[0].Owner, DataSHA256: fmt.Sprintf("%x", hash), ObservedSlot: slot, MinimumSlot: minSlot, Proof: "decoded_" + string(setup.Stage) + "_identity"}, nil
-}
-func (b *SweepWireBuilder) ProveDestinationSetup(ctx context.Context, plan DepositPlan, attempt SetupAttempt) error {
-	tx, err := persistedWireTransaction(attempt.durable())
-	if err != nil {
-		return err
-	}
-	message, err := decodeSignedWireMessageTransaction(tx)
-	if err != nil {
-		return err
-	}
-	if len(tx.Signatures) != 1 || len(message.accounts) == 0 || message.accounts[0] != b.delegate {
-		return errors.New("setup wire signer differs from executor")
-	}
-	expected, err := b.setupInstructions(ctx, plan, attempt.Plan, false)
-	if err != nil {
-		return err
-	}
-	if len(expected) != len(message.instructions) {
-		return errors.New("setup wire instruction count differs")
-	}
-	for i, want := range expected {
-		actual := message.instructions[i]
-		if actual.program == mustKey(squadsProgramID) {
-			if attempt.Plan.PolicyAccount == "" || len(actual.accounts) < 3 || !keyEqual(actual.accounts[0], attempt.Plan.PolicyAccount) || actual.accounts[1] != mustKey(squadsProgramID) || actual.accounts[2] != b.delegate || len(actual.data) < 24 || !bytes.Equal(actual.data[:8], squadsExecuteSyncV2Discriminator[:]) || int(actual.data[8]) != plan.Target.VaultIndex || !bytes.Equal(actual.data[9:13], []byte{1, 1, 1, 1}) || actual.data[18] != 1 || int(actual.data[19]) != plan.Target.VaultIndex {
-				return errors.New("setup policy wrapper identity differs")
-			}
-			actual, err = parseWrappedCompiledInstruction(actual)
-			if err != nil {
-				return err
-			}
-		} else if attempt.Plan.Stage == SetupMetadata || attempt.Plan.Stage == SetupObligation {
-			if i == len(expected)-1 {
-				return errors.New("setup vault-authorized instruction is not wrapped")
-			}
-		}
-		if actual.program != want.program || !bytes.Equal(actual.data, want.data) || len(actual.accounts) != len(want.accounts) {
-			return errors.New("setup wire ABI differs from official builder")
-		}
-		for j, a := range want.accounts {
-			if actual.accounts[j] != a.key {
-				return fmt.Errorf("setup account %d differs from official builder", j)
-			}
-		}
-	}
-	return nil
+	return validateSetupAccount(plan, setup, accounts[0])
 }

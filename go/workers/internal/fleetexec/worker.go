@@ -52,6 +52,8 @@ type Worker struct {
 	status   StatusClient
 	signer   DelegateSigner
 	recovery *sameMintRecovery
+	// balances reads a fee-only shard's balance right before admission.
+	balances confirmedAccountReader
 	fresh    *fleet.Revalidator
 	// landing counts claimed rows still being landed or reconciled; at most
 	// BatchSize run at once. Run joins them before returning.
@@ -72,7 +74,9 @@ func NewWorker(config Config, store *Store, chain solana.LandChain, status Statu
 		if config.SlotDuration <= 0 || config.SlotDuration > 10*time.Second {
 			return nil, errors.New("real fleet reconciliation requires explicit slot duration")
 		}
-		worker.recovery = &sameMintRecovery{store: store, accounts: fleet.NewRPCClient(adapter.url), slotDuration: config.SlotDuration}
+		accounts := fleet.NewRPCClient(adapter.url)
+		worker.recovery = &sameMintRecovery{store: store, accounts: accounts, slotDuration: config.SlotDuration}
+		worker.balances = accounts
 	}
 	return worker, nil
 }
@@ -209,22 +213,27 @@ func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) erro
 		}
 		return err
 	}
+	// Facts count an outcome only once its row is written.
 	switch out.Kind {
 	case solana.Landed:
-		w.config.Facts.Landed(engine.FamilyFleet)
-		return w.store.ConfirmSameMint(leaseCtx, lease, int64(out.Slot))
+		if err = w.store.ConfirmSameMint(leaseCtx, lease, int64(out.Slot)); err == nil {
+			w.config.Facts.Landed(engine.FamilyFleet)
+		}
 	case solana.Failed:
-		w.config.Facts.Failed(engine.FamilyFleet, "transaction_failed")
-		return w.store.AdvanceSubmission(leaseCtx, lease, Advance{
+		if err = w.store.AdvanceSubmission(leaseCtx, lease, Advance{
 			NextState: StateFailed, ConfirmedSlot: int64Ptr(int64(out.Slot)), ErrorDetail: errPtr("chain failure: " + out.Err),
-		})
+		}); err == nil {
+			w.config.Facts.Failed(engine.FamilyFleet, "transaction_failed")
+		}
 	default:
-		w.config.Facts.Failed(engine.FamilyFleet, "blockhash_expired")
-		return w.store.AdvanceSubmission(leaseCtx, lease, Advance{
+		if err = w.store.AdvanceSubmission(leaseCtx, lease, Advance{
 			NextState: StateExpired, ExpiryObservedBlockHeight: int64Ptr(int64(out.BlockHeight)),
-			EffectCheckSlot: int64Ptr(int64(out.ContextSlot)), ErrorDetail: errPtr("blockhash_expired_not_landed"),
-		})
+			ErrorDetail: errPtr(fmt.Sprintf("blockhash_expired_at_height_%d", out.BlockHeight)),
+		}); err == nil {
+			w.config.Facts.Failed(engine.FamilyFleet, "blockhash_expired")
+		}
 	}
+	return err
 }
 
 // reconcileFinalized verifies the exact finalized receipt identity and its

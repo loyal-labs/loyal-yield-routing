@@ -188,10 +188,9 @@ func TestObservationRefusesFutureAccountAndUnknownPlannerCustody(t *testing.T) {
 	}
 }
 
-func TestWithdrawalIsClaimableOnceUnwoundWhateverFeesRealized(t *testing.T) {
-	// A "max" withdrawal saved a pre-unwind estimate; fees and NAV loss used to
-	// hold it as a shortfall forever. The payout is built from the custody
-	// balance (earn.ClaimPayout), so the saved number cannot gate the claim.
+func TestWithdrawalExactPayoutRequiresEnoughConfirmedLiquidity(t *testing.T) {
+	// Exact-payout semantics are independently established by the App's
+	// persisted request and wallet-signed transfer_checked, not planner defaults.
 	topology := testTopology(t)
 	destination := fixtureKey(212).String()
 	for _, test := range []struct {
@@ -199,9 +198,8 @@ func TestWithdrawalIsClaimableOnceUnwoundWhateverFeesRealized(t *testing.T) {
 		claim uint64
 		want  string
 	}{
-		{"fee_loss", 9_990_000, "withdrawal_claimable"},
-		{"nav_loss", 8_000_000, "withdrawal_claimable"},
-		{"empty", 0, "withdrawal_custody_empty"},
+		{"fee_loss", 9_990_000, "withdrawal_liquidity_shortfall"},
+		{"nav_loss", 8_000_000, "withdrawal_liquidity_shortfall"},
 		{"exact", 10_000_000, "withdrawal_claimable"},
 		{"surplus", 11_000_000, "withdrawal_claimable"},
 	} {

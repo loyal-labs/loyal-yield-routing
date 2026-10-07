@@ -26,7 +26,7 @@ type lookupEffectReceipt struct {
 // commitLookupProof applies a verified finalized packet to its source
 // operation and physical table in one short transaction.
 func (s *Store) commitLookupProof(ctx context.Context, operation LookupOperation, attempt LookupAttempt, proof *lookupProof) error {
-	if proof == nil || proof.binding != lookupProofBinding(attempt) || proof.readbackSlot < attempt.SigningContextSlot || (proof.state != LookupReconciled && proof.state != LookupFailed) {
+	if proof == nil || proof.readbackSlot < attempt.SigningContextSlot || (proof.state != LookupReconciled && proof.state != LookupFailed) {
 		return errors.New("lookup terminal proof is missing or belongs to another packet")
 	}
 	var readback lookupEffectReadback
@@ -143,7 +143,7 @@ func finishLookupSourceTx(ctx context.Context, tx pgx.Tx, operation LookupOperat
 	// The Rust writer stores the current packet's actual accounting with
 	// COALESCE(new, old), not an accumulated operation history.
 	actualFee, actualRent, actualReclaimed := int64(receipt.Fee), int64(rent), int64(reclaimed)
-	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state=$2,finalized_slot=COALESCE($3,finalized_slot),finalized_at=CASE WHEN $3::bigint IS NOT NULL THEN clock_timestamp() ELSE finalized_at END,reconciled_slot=CASE WHEN $2='complete' THEN $4 ELSE reconciled_slot END,reconciled_at=CASE WHEN $2='complete' THEN clock_timestamp() ELSE reconciled_at END,completed_at=CASE WHEN $2='complete' THEN clock_timestamp() ELSE completed_at END,actual_fee_lamports=COALESCE($5::bigint,actual_fee_lamports),actual_rent_lamports=COALESCE($6::bigint,actual_rent_lamports),reclaimed_rent_lamports=COALESCE($7::bigint,reclaimed_rent_lamports),next_attempt_at=NULL,lease_owner=NULL,lease_expires_at=NULL,error_code=NULL,error_detail=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$8 AND fencing_token=$9 AND lease_expires_at>clock_timestamp()`, i.OperationID, state, finalized, proof.readbackSlot, actualFee, actualRent, actualReclaimed, operation.Lease.Owner, operation.Lease.FencingToken)
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state=$2,finalized_slot=COALESCE($3,finalized_slot),finalized_at=CASE WHEN $3::bigint IS NOT NULL THEN clock_timestamp() ELSE finalized_at END,reconciled_slot=CASE WHEN $2='complete' THEN $4 ELSE reconciled_slot END,reconciled_at=CASE WHEN $2='complete' THEN clock_timestamp() ELSE reconciled_at END,completed_at=CASE WHEN $2='complete' THEN clock_timestamp() ELSE completed_at END,actual_fee_lamports=COALESCE($5::bigint,actual_fee_lamports),actual_rent_lamports=COALESCE($6::bigint,actual_rent_lamports),reclaimed_rent_lamports=COALESCE($7::bigint,reclaimed_rent_lamports),next_attempt_at=NULL,lease_owner=NULL,lease_expires_at=NULL,error_code=CASE WHEN $2='permanent_failure' THEN 'transaction_failed' END,error_detail=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$8 AND fencing_token=$9 AND lease_expires_at>clock_timestamp()`, i.OperationID, state, finalized, proof.readbackSlot, actualFee, actualRent, actualReclaimed, operation.Lease.Owner, operation.Lease.FencingToken)
 	if err != nil {
 		return err
 	}

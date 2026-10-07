@@ -118,6 +118,8 @@ impl LocalChain {
                 Ok(json!(slot))
             }
             "getSlot" | "getBlockHeight" => Ok(json!(self.slot)),
+            // Height and its slot from one answer, as Go's landing reads them.
+            "getEpochInfo" => Ok(json!({"absoluteSlot":self.slot,"blockHeight":self.slot})),
             // No contention in the deterministic local chain.
             "getRecentPrioritizationFees" => Ok(json!([{"slot":1000,"prioritizationFee":0}])),
             // This controlled bank starts at slot 1000 and retains every

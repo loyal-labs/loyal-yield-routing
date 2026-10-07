@@ -34,6 +34,10 @@ func (f *fakeRevalidationStore) PeekRevalidation(_ context.Context, _, _ string,
 	}
 	return f.lease, nil
 }
+func (f *fakeRevalidationStore) EligibleFeePayerShards(context.Context, string, string, []string) ([]FeePayerShard, error) {
+	return nil, nil
+}
+
 func (f *fakeRevalidationStore) CheckRevalidationLease(context.Context, RevalidationLease) error {
 	f.check++
 	return nil

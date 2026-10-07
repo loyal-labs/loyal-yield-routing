@@ -333,8 +333,8 @@ func (s *scriptedControllerChain) LatestBlockhash(ctx context.Context) (string, 
 	return "itest-controller-blockhash", 900, nil
 }
 
-func (s *scriptedControllerChain) FinalizedBlockHeight(context.Context) (uint64, error) {
-	return s.height, nil
+func (s *scriptedControllerChain) FinalizedBlockHeight(context.Context) (uint64, uint64, error) {
+	return s.height, 1, nil
 }
 
 // SignatureState answers with the scripted observation; a controller-built

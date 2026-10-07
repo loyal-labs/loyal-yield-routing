@@ -2,12 +2,9 @@ package multiply
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"math"
 	"math/big"
 	"testing"
-	"time"
 
 	"github.com/gagliardetto/solana-go"
 )
@@ -43,22 +40,6 @@ func TestWithdrawalCannotReverseExpectedEffectSigns(t *testing.T) {
 	position.CollateralTotalLiquiditySF = new(big.Int).Lsh(new(big.Int).SetUint64(uint64(math.MaxInt64)+1), 60)
 	if _, err := BuildOperation(&ActionPlan{Action: ActionWithdrawRemainingCollateral, StrategyKey: SyrupUsdcUsdc, Amount: AmountExact(1)}, observed, topology, fakeQuoteClient{topology}, context.Background()); err == nil {
 		t.Fatal("liquidity conversion flipped signed custody effect")
-	}
-}
-
-type unavailableReceiptRPC struct{ fakeRPC }
-
-func (*unavailableReceiptRPC) ConfirmedTransaction(context.Context, string) (json.RawMessage, error) {
-	return nil, errReceiptUnavailable
-}
-
-func TestConfirmedStatusWithoutReceiptCannotBecomeConfirmation(t *testing.T) {
-	rpc := &unavailableReceiptRPC{fakeRPC: fakeRPC{statuses: []*SignatureObservation{{Slot: 500, ConfirmationState: "confirmed"}}}}
-	executor := &Executor{RPC: rpc}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if status, err := executor.WaitConfirmed(ctx, solana.Signature{}.String()); status != nil || !errors.Is(err, errReceiptUnavailable) {
-		t.Fatalf("status cache promoted to receipt: %v %v", status, err)
 	}
 }
 

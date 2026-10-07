@@ -839,7 +839,7 @@ type RoutePreparation struct {
 }
 
 // PrepareRoute compiles a mature same-mint route; payer pays its fee and is
-// the policy signer or that vault's fee-only payer (RouteFeePayer).
+// the policy signer or the fee-only shard ranked for that vault (feePayer).
 func PrepareRoute(route KaminoSameMintRoute, policy, signer, payer string, policyAccountIndex uint8, allowedIndexes []uint8, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error)) (RoutePreparation, error) {
 	return prepareRoute(route, policy, signer, payer, policyAccountIndex, allowedIndexes, tables, recentBlockhash, feeLamports, computeLimit, simulate, interleaveMatureSameMintRoute, "same_mint_kamino_v0")
 }

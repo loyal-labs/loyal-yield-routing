@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/mr-tron/base58"
 )
 
 // ExecuteFresh consumes a signer-free, freshly admitted route. The publication
@@ -42,7 +43,71 @@ func (w *Worker) ExecuteFresh(ctx context.Context, admission fleet.ExecutionAdmi
 	if err != nil {
 		return 0, err
 	}
-	return w.store.PersistFreshAdmission(ctx, admission, wire)
+	var balance *FeePayerBalance
+	if admission.FeePayer != base58.Encode(w.signer.FeePayer[32:]) {
+		// Rust admits a shard's spend against a balance read within two
+		// seconds of the admission, so it is read here, last.
+		if w.balances == nil {
+			return 0, errors.New("fee-only payer balance reader is not configured")
+		}
+		slot, accounts, err := w.balances.ConfirmedAccounts(ctx, []string{admission.FeePayer}, admission.Evidence.Slot)
+		if err != nil || len(accounts) != 1 || accounts[0].Lamports > math.MaxInt64 {
+			return 0, fmt.Errorf("fee-only payer balance unavailable: %v", err)
+		}
+		balance = &FeePayerBalance{Lamports: int64(accounts[0].Lamports), Slot: slot, At: time.Now()}
+	}
+	return w.store.PersistFreshAdmission(ctx, admission, wire, balance)
+}
+
+// FeePayerBalance is one confirmed balance read of a fee-only shard.
+type FeePayerBalance struct {
+	Lamports, Slot int64
+	At             time.Time
+}
+
+// errFeePayerReselection is Rust's fee_payer_reselection_required: the shard
+// cannot fund this route now; the next preparation ranks shards again.
+var errFeePayerReselection = errors.New("fee_payer_reselection_required")
+
+// admitFeeOnlySpend is Rust's reserve_fee_only_route_payer_spend under the
+// shard row lock: the balance read is current, the fee fits the per-
+// transaction and rolling-window budgets, and the balance stays within the
+// floor and ceiling after every fee it cannot yet reflect.
+func admitFeeOnlySpend(ctx context.Context, tx pgx.Tx, cluster, payer, semantic string, opportunityID, submissionID, fee int64, b FeePayerBalance) error {
+	var minimum, maximum, windowMax, txMax int64
+	var window int32
+	var checkedAt time.Time
+	err := tx.QueryRow(ctx, `SELECT s.minimum_balance_lamports,s.maximum_balance_lamports,s.rolling_window_seconds,s.maximum_window_spend_lamports,s.maximum_transaction_fee_lamports,clock_timestamp()
+  FROM loyal_yield.route_fee_payer_shards s
+  WHERE s.cluster=$1 AND s.fee_payer=$2 AND s.enabled
+   AND EXISTS(SELECT 1 FROM loyal_yield.route_fee_payer_shard_status v WHERE v.cluster=s.cluster AND v.fee_payer=s.fee_payer AND v.database_authority_separation_passes)
+  FOR UPDATE OF s`, cluster, payer).Scan(&minimum, &maximum, &window, &windowMax, &txMax, &checkedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: payer is not an enabled durable shard", errFeePayerReselection)
+	}
+	if err != nil {
+		return err
+	}
+	if b.At.Before(checkedAt.Add(-2*time.Second)) || b.At.After(checkedAt.Add(5*time.Second)) || fee > txMax {
+		return fmt.Errorf("%w: balance read is stale or fee exceeds the per-transaction budget", errFeePayerReselection)
+	}
+	var unreflected, spent int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(r.compiled_fee_lamports),0)::BIGINT FROM loyal_yield.route_fee_payer_spend_reservations r JOIN loyal_yield.signed_route_submissions s ON s.id=r.signed_submission_id
+  WHERE r.cluster=$1 AND r.fee_payer=$2 AND ((s.confirmed_slot IS NULL AND s.submission_state NOT IN ('reconciled','expired','failed')) OR s.confirmed_slot>$3)`, cluster, payer, b.Slot).Scan(&unreflected); err != nil {
+		return err
+	}
+	if b.Lamports < minimum || b.Lamports > maximum || b.Lamports-unreflected-fee < minimum {
+		return fmt.Errorf("%w: balance is outside the shard's floor and ceiling", errFeePayerReselection)
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(compiled_fee_lamports),0)::BIGINT FROM loyal_yield.route_fee_payer_spend_reservations WHERE cluster=$1 AND fee_payer=$2 AND created_at>=clock_timestamp()-$3*interval '1 second'`, cluster, payer, window).Scan(&spent); err != nil {
+		return err
+	}
+	if spent+fee > windowMax {
+		return fmt.Errorf("%w: rolling spend budget is exhausted", errFeePayerReselection)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.route_fee_payer_spend_reservations(cluster,fee_payer,semantic_key,opportunity_id,signed_submission_id,compiled_fee_lamports,observed_balance_lamports,observed_balance_slot,observed_balance_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		cluster, payer, semantic, opportunityID, submissionID, fee, b.Lamports, b.Slot, b.At)
+	return err
 }
 
 func validateFreshPreparation(a fleet.ExecutionAdmission) error {
@@ -142,7 +207,7 @@ func verifyPreparedWritables(tx *sdk.Transaction, a fleet.ExecutionAdmission) er
 // insert signed submission with decision=NULL, insert decision (links the
 // opportunity and submission), then bind capacity/conflicts/ALT usage, and
 // perform the final publication lifetime check before commit.
-func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmission, wire WireIdentity) (int64, error) {
+func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmission, wire WireIdentity, balance *FeePayerBalance) (int64, error) {
 	if err := validateFreshPreparation(a); err != nil {
 		return 0, err
 	}
@@ -171,7 +236,7 @@ func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmi
 	payerKind := "policy"
 	if len(decoded.Signatures) == 2 {
 		payerKind = "fee_only_shard"
-		if a.FeePayer != payer || a.FeePayerBalance < int64(a.Preparation.Transaction.FeeLamports) || a.FeePayerBalanceSlot <= 0 {
+		if a.FeePayer != payer || balance == nil || balance.Slot <= 0 {
 			return 0, errors.New("fee-only payer differs from admission or lacks its observed balance")
 		}
 	}
@@ -255,8 +320,7 @@ func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmi
 			return err
 		}
 		if payerKind == "fee_only_shard" {
-			if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.route_fee_payer_spend_reservations(cluster,fee_payer,semantic_key,opportunity_id,signed_submission_id,compiled_fee_lamports,observed_balance_lamports,observed_balance_slot,observed_balance_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp())`,
-				l.Cluster, payer, semantic, l.OpportunityID, submissionID, int64(p.Transaction.FeeLamports), a.FeePayerBalance, a.FeePayerBalanceSlot); err != nil {
+			if err := admitFeeOnlySpend(ctx, tx, l.Cluster, payer, semantic, l.OpportunityID, submissionID, int64(p.Transaction.FeeLamports), *balance); err != nil {
 				return err
 			}
 		}

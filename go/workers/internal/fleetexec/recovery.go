@@ -16,6 +16,10 @@ type finalizedAccountReader interface {
 	FinalizedAccounts(context.Context, []string, int64) (int64, []fleet.Account, error)
 }
 
+type confirmedAccountReader interface {
+	ConfirmedAccounts(context.Context, []string, int64) (int64, []fleet.Account, error)
+}
+
 // sameMintRecovery reconciles a landed same-mint route against finalized
 // account state.
 type sameMintRecovery struct {

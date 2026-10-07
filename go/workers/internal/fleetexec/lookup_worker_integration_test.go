@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/mr-tron/base58"
 )
 
 func TestLookupAutonomousTickSignsOnlyAfterBudgetAndRecoversWithoutKey(t *testing.T) {
@@ -104,6 +106,52 @@ func TestLookupAutonomousTickSignsOnlyAfterBudgetAndRecoversWithoutKey(t *testin
 	t.Log("real autonomous Go lease→simulation→source budget→key→immutable packet→single send→paused restart→actual warmed ALT receipt")
 }
 
+func TestLookupAbsentSignatureWithAChangedTableIsDriftNotARetry(t *testing.T) {
+	// Rust re-signs an expired packet only when the mutation is also absent
+	// on chain. A landed packet the signature index does not know must not be
+	// archived for a fresh one: that loops in retry_wait with the rent locked.
+	pool := lookupRegisteredPool(t)
+	f := readLookupFixture(t)
+	svm := startLookupSVM(t, f)
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+	store, op := seedLookupSource(t, ctx, pool, f)
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, op.Intent.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	config := LookupWorkerConfig{Cluster: "localnet", Owner: "lookup-drift", LeaseTTL: time.Minute, TickDeadline: 30 * time.Second, PollInterval: time.Second, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}, Facts: testFacts()}
+	worker, err := NewLookupWorker(store, svm.rpc, config, func(context.Context, string) (ed25519.PrivateKey, error) {
+		return ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, 32)), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worked, err := worker.Tick(ctx); err != nil || !worked {
+		t.Fatalf("fresh tick: %v/%v", worked, err)
+	}
+	// The row now names a signature the chain never saw, past its expiry,
+	// while the table carries the landed mutation.
+	absent := base58.Encode(bytes.Repeat([]byte{9}, 64))
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET transaction_signature=$2,last_valid_block_height=1,operation_context=operation_context-'signedTransaction',next_attempt_at=clock_timestamp()-interval '1 second',lease_owner=NULL,lease_expires_at=NULL WHERE id=$1`, op.Intent.OperationID, absent); err != nil {
+		t.Fatal(err)
+	}
+	config.Owner, config.ReconcileOnly = "lookup-drift-recovery", true
+	recovery, err := NewLookupWorker(store, svm.rpc, config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worked, err := recovery.Tick(ctx); err != nil || !worked {
+		t.Fatalf("recovery tick: %v/%v", worked, err)
+	}
+	var state, code string
+	if err := pool.QueryRow(ctx, `SELECT operation_state,COALESCE(error_code,'') FROM loyal_yield.lookup_table_operations WHERE id=$1`, op.Intent.OperationID).Scan(&state, &code); err != nil {
+		t.Fatal(err)
+	}
+	if state != "needs_reconcile" || code != "chain_drift" {
+		t.Fatalf("state %s code %s; a changed table must not be retried as expired", state, code)
+	}
+}
+
 func TestLookupWorkerTransportOutageReportsUnhealthyAndJoins(t *testing.T) {
 	pool := lookupRegisteredPool(t)
 	store, _ := seedLookupSource(t, t.Context(), pool, readLookupFixture(t))
@@ -177,8 +225,9 @@ func TestLookupRustSignedPacketWithoutBytesResolvesBySignature(t *testing.T) {
 		t.Fatal("unseen Rust packet not held", worked, err)
 	}
 	var state, signature string
-	if err = pool.QueryRow(ctx, `SELECT operation_state,transaction_signature FROM loyal_yield.lookup_table_operations WHERE id=$1`, op.Intent.OperationID).Scan(&state, &signature); err != nil || state != "needs_reconcile" || signature != wire.TransactionSignature {
-		t.Fatal("unseen packet reset its signature", state, signature, err)
+	if err = pool.QueryRow(ctx, `SELECT operation_state,transaction_signature FROM loyal_yield.lookup_table_operations WHERE id=$1`, op.Intent.OperationID).Scan(&state, &signature); err != nil || state != "signed" || signature != wire.TransactionSignature {
+		// Rust's poll deferral keeps the state; only scheduling changes.
+		t.Fatal("unseen packet reset its signature or state", state, signature, err)
 	}
 	// The Rust sender's packet reaches the bank.
 	if err = svm.rpc.SendWire(ctx, wire.SignedTransaction, true); err != nil {

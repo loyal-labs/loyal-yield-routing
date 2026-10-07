@@ -718,19 +718,6 @@ func TestPrepareAndSignWireShapeAndCapability(t *testing.T) {
 	if len(rpc.sent) != 0 {
 		t.Fatal("PrepareAndSign must never send")
 	}
-	// Broadcast refuses a drifted wire hash.
-	tampered := &SignedOperation{
-		Wire: append([]byte{0}, signed.Wire...), WireSHA256: signed.WireSHA256,
-	}
-	if _, err := executor.Broadcast(context.Background(), tampered); err == nil {
-		t.Fatal("drifted wire hash was broadcast")
-	}
-	if _, err := executor.Broadcast(context.Background(), signed); err != nil {
-		t.Fatalf("broadcast: %v", err)
-	}
-	if len(rpc.sent) != 1 || !equalBytes(rpc.sent[0], signed.Wire) {
-		t.Fatal("broadcast did not send the exact persisted wire")
-	}
 }
 
 func config_policy(t *testing.T, topology *EarnMaxTopology, plan *ActionPlan) PolicyConfig {

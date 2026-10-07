@@ -19,6 +19,9 @@ type fakeCluster struct {
 	preflight []bool
 	landedAt  uint64
 	processed string
+	// finalizedSlot is the slot of the finalized height; a status read
+	// below it comes from a lagging node.
+	finalizedSlot uint64
 }
 
 func (f *fakeCluster) SendWire(_ context.Context, wire []byte, skipPreflight bool) error {
@@ -31,9 +34,9 @@ func (f *fakeCluster) SendWire(_ context.Context, wire []byte, skipPreflight boo
 	return nil
 }
 
-func (f *fakeCluster) FinalizedBlockHeight(context.Context) (uint64, error) {
+func (f *fakeCluster) FinalizedBlockHeight(context.Context) (uint64, uint64, error) {
 	f.height += f.heightInc
-	return f.height, nil
+	return f.height, f.finalizedSlot, nil
 }
 
 func (f *fakeCluster) SignatureState(context.Context, string) (SignatureState, error) {
@@ -103,5 +106,17 @@ func TestLandWaitsOnProcessedErrorWithoutResending(t *testing.T) {
 	_, err := Land(ctx, chain, Attempt{Wire: []byte{1}, Signature: "sig", LastValidBlockHeight: 150, Required: Confirmed}, time.Millisecond, func(context.Context) error { return nil })
 	if !errors.Is(err, context.DeadlineExceeded) || len(chain.sent) != 0 {
 		t.Fatalf("err %v sent %d", err, len(chain.sent))
+	}
+}
+
+func TestLandDoesNotExpireOnALaggingNodesAbsence(t *testing.T) {
+	// Behind a load balancer the status node can trail the node that served
+	// the finalized height; its "absent" says nothing about a landed signature.
+	chain := &fakeCluster{drops: 1 << 30, height: 200, finalizedSlot: 10}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := Land(ctx, chain, Attempt{Wire: []byte{1}, Signature: "sig", LastValidBlockHeight: 150, Required: Confirmed}, time.Millisecond, func(context.Context) error { return nil })
+	if !errors.Is(err, context.DeadlineExceeded) || len(chain.sent) != 0 {
+		t.Fatalf("err %v sent %d; a lagging absence must neither expire nor resend expired bytes", err, len(chain.sent))
 	}
 }

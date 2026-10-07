@@ -26,8 +26,9 @@ func (c surfaceChain) SendWire(ctx context.Context, wire []byte, _ bool) error {
 	return err
 }
 
-func (c surfaceChain) FinalizedBlockHeight(ctx context.Context) (uint64, error) {
-	return c.rpc.BlockHeight(ctx)
+func (c surfaceChain) FinalizedBlockHeight(ctx context.Context) (uint64, uint64, error) {
+	height, err := c.rpc.BlockHeight(ctx)
+	return height, 1, err
 }
 
 func (c surfaceChain) SignatureState(ctx context.Context, signature string) (solanaland.SignatureState, error) {
