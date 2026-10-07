@@ -8,12 +8,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // restartJournalFixture is the reviewable signed-unsent restart journal kept in
@@ -58,8 +61,9 @@ func loadRestartJournal(t *testing.T) restartJournalFixture {
 	if hex.EncodeToString(digest[:]) != journal.Operation.SignedWireSHA256 {
 		t.Fatalf("restart journal wire hash is incoherent: %s", journal.Operation.SignedWireSHA256)
 	}
-	if !ValidLeaseOwner(journal.LeaseOwner) || !ValidLeaseOwner(journal.LegacyOwner) {
-		t.Fatalf("restart journal owner identities are not cutover-valid: %q %q", journal.LeaseOwner, journal.LegacyOwner)
+	// Drain-and-swap: the Go engine never adopts the Render-era owner dialect.
+	if !ValidLeaseOwner(journal.LeaseOwner) || ValidLeaseOwner(journal.LegacyOwner) {
+		t.Fatalf("restart journal owner identities drifted: %q %q", journal.LeaseOwner, journal.LegacyOwner)
 	}
 	if journal.RouteKey != productionRouteKey {
 		t.Fatalf("restart journal left the fixed production route: %s", journal.RouteKey)
@@ -170,15 +174,14 @@ func TestRestartJournalRecoveryPrecedesFreshDecisions(t *testing.T) {
 	}
 }
 
-func TestRunWithConfigFailsClosedWithoutInjectedDependencies(t *testing.T) {
+func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	validOwner := "worker:backyard:backyard-eu-1:sha-" + commit
 	unpinned := ed25519.NewKeyFromSeed([]byte(bytes32(1)))
 	base := EngineConfig{
-		Database:    &Database{},
+		Database:    &Database{pool: &pgxpool.Pool{}},
 		RPC:         &RPCClient{},
 		Credentials: Credentials{PolicyKey: unpinned},
-		RouteKey:    productionRouteKey,
 		Config:      DefaultConfig(),
 		Owner:       validOwner,
 	}
@@ -189,14 +192,15 @@ func TestRunWithConfigFailsClosedWithoutInjectedDependencies(t *testing.T) {
 		t.Fatalf("injected runtime accepted an unpinned signing capability: %v", err)
 	}
 	for name, mutate := range map[string]func(*EngineConfig){
-		"missing database":     func(c *EngineConfig) { c.Database = nil },
-		"missing rpc":          func(c *EngineConfig) { c.RPC = nil },
-		"missing credentials":  func(c *EngineConfig) { c.Credentials = Credentials{} },
-		"truncated capability": func(c *EngineConfig) { c.Credentials = Credentials{PolicyKey: unpinned[:ed25519.SeedSize]} },
-		"caller route key":     func(c *EngineConfig) { c.RouteKey = "caller-selected-route" },
-		"caller lease owner":   func(c *EngineConfig) { c.Owner = "developer-laptop" },
-		"retail lease owner":   func(c *EngineConfig) { c.Owner = "worker:retail:backyard-eu-1:sha-" + commit },
-		"invalid lease config": func(c *EngineConfig) { c.Config = Config{PollInterval: 0} },
+		"missing database":      func(c *EngineConfig) { c.Database = nil },
+		"missing rpc":           func(c *EngineConfig) { c.RPC = nil },
+		"missing credentials":   func(c *EngineConfig) { c.Credentials = Credentials{} },
+		"truncated capability":  func(c *EngineConfig) { c.Credentials = Credentials{PolicyKey: unpinned[:ed25519.SeedSize]} },
+		"selector without feed": func(c *EngineConfig) { c.Selector = SelectorLive },
+		"unknown selector":      func(c *EngineConfig) { c.Selector = "both" },
+		"caller lease owner":    func(c *EngineConfig) { c.Owner = "developer-laptop" },
+		"retail lease owner":    func(c *EngineConfig) { c.Owner = "worker:retail:backyard-eu-1:sha-" + commit },
+		"invalid lease config":  func(c *EngineConfig) { c.Config = Config{PollInterval: 0} },
 	} {
 		config := base
 		mutate(&config)
@@ -204,8 +208,8 @@ func TestRunWithConfigFailsClosedWithoutInjectedDependencies(t *testing.T) {
 			t.Fatalf("%s did not fail closed", name)
 		}
 	}
-	if err := RunWithConfig(context.Background(), EngineConfig{}); err == nil {
-		t.Fatal("RunWithConfig executed an uninjected runtime")
+	if _, err := NewEngine(EngineConfig{}); err == nil {
+		t.Fatal("NewEngine accepted an uninjected runtime")
 	}
 }
 
@@ -228,7 +232,7 @@ func directEngine(t *testing.T, leasing *fakeRouteLeaseRuntime, owner string) *E
 	t.Helper()
 	manifest := readyWorkerManifest(t)
 	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: manifest}
-	return &Engine{worker: worker, leases: leasing, owner: owner, config: Config{
+	return &Engine{worker: worker, leases: leasing, owner: owner, out: io.Discard, config: Config{
 		PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond,
 	}}
 }

@@ -2,77 +2,138 @@ package backyard
 
 import "fmt"
 
+// custodyDiscipline fails closed when the strategy custody balance is not
+// exactly the amount this worker last staged into Voltr for the route. Voltr
+// sweeps the entire custody on restore and books that balance into its own
+// total value, so an unexplained balance is manual recovery and never an
+// amount the planner may infer from a custody read.
+func custodyDiscipline(s Snapshot) (Decision, bool) {
+	if s.Nonterminal != "" || s.VoltrStrategyIdleRaw <= 0 {
+		return Decision{}, false
+	}
+	if !s.StagedAmountKnown || s.StagedAmountRaw != s.VoltrStrategyIdleRaw {
+		strategyKey := s.RouteLane
+		if strategyKey == "" {
+			strategyKey = RouteID
+		}
+		return Decision{Action: HoldManualRecovery, Reason: "custody_mismatch", AmountRaw: 0,
+			IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "custody_mismatch", s.VoltrStrategyIdleRaw),
+			StrategyKey:    strategyKey}, true
+	}
+	return Decision{}, false
+}
+
+// custodyResidueHold blocks every accounting refresh while a strategy custody
+// balance exists. A report moves no capital, so it must observe custody empty;
+// a residue has to be restored (or recovered manually) instead of being
+// silently reported as current book.
+func custodyResidueHold(s Snapshot) (Decision, bool) {
+	if s.VoltrStrategyIdleRaw == 0 {
+		return Decision{}, false
+	}
+	strategyKey := s.RouteLane
+	if strategyKey == "" {
+		strategyKey = RouteID
+	}
+	return Decision{Action: HoldManualRecovery, Reason: "custody_residue", AmountRaw: 0,
+		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "custody_residue", s.VoltrStrategyIdleRaw),
+		StrategyKey:    strategyKey}, true
+}
+
+// installedDecisionLane reports whether a confirmed observation frozen on
+// this lane may be resolved by Decide: the pinned legacy Prime route plus the
+// basic policy lanes. The remaining runtimeRoute catalog entries stay
+// observation-only, so they keep failing closed here instead of reusing the
+// legacy Prime decision path.
+func installedDecisionLane(lane string) bool {
+	if lane == RouteID {
+		return true
+	}
+	route, err := runtimeRoute(lane)
+	return err == nil && route.BasicPolicy
+}
+
 // Decide resolves the already-frozen lane carried by the confirmed
 // observation. It does not choose a lane; observations for any lane outside
-// the two manifest-approved routes fail closed.
+// the registered routes fail closed. Registration does not enable the live
+// selection manifest or replace policy/exit/admission checks.
 func Decide(s Snapshot) Decision {
-	if s.RouteLane == SelectedRouteID {
-		if s.CollateralIdleRaw >= 0 {
-			s.PrimeIdleRaw = s.CollateralIdleRaw
-		}
-		// Any genuine Voltr withdrawal receipt drains the entire Phase 2 lane.
-		// Keeping the receipt demand live until the selected position is flat
-		// prevents new risk and gives terminal reconciliation one stable state.
-		if s.WithdrawalDemandRaw > 0 {
-			s.CutoverDrain = true
-			if s.StrategyNAVRaw > s.WithdrawalDemandRaw {
-				s.WithdrawalDemandRaw = s.StrategyNAVRaw
-			}
-			// The custom adaptor withdraw consumes the complete strategy custody,
-			// even when Voltr's outer instruction carries a smaller amount. Never
-			// execute it with more than one transaction cap staged.
-			if s.VoltrStrategyIdleRaw > Phase2TransactionCapRaw {
-				return Decision{Action: HoldManualRecovery, Reason: "voltr_restore_actual_effect_exceeds_cap", AmountRaw: 0,
-					IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "voltr_restore_actual_effect_exceeds_cap"), StrategyKey: SelectedRouteID}
-			}
-			// The exact finalized restore incident is accepted as terminal
-			// restoration even though Voltr's reported strategy NAV remains stale.
-			// When every strategy custody and route position is flat, do not create
-			// new exposure merely to repair that historical accounting value.
-			if !s.HasPosition && s.StrategyNAVRaw == 0 && s.PriorReportedNAVRaw > 0 &&
-				s.SquadsIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0 && s.VoltrIdleRaw > 0 {
-				return Decision{Action: Hold, Reason: "withdrawal_covered_terminal_restore_accepted", AmountRaw: 0,
-					IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "withdrawal_covered_terminal_restore_accepted"), StrategyKey: SelectedRouteID}
-			}
-			if s.VoltrStrategyIdleRaw > 0 {
-				return Decision{Action: VoltrRestoreIdle, Reason: "withdrawal_staged", AmountRaw: s.VoltrStrategyIdleRaw,
-					IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "withdrawal_staged", s.VoltrStrategyIdleRaw), StrategyKey: SelectedRouteID}
-			}
-			if s.SquadsIdleRaw > 0 && !s.HasPosition && s.PrimeIdleRaw == 0 {
-				return Decision{Action: StageSquadsToVoltr, Reason: "withdrawal_terminal_residue", AmountRaw: s.SquadsIdleRaw,
-					IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "withdrawal_terminal_residue", s.SquadsIdleRaw), StrategyKey: SelectedRouteID}
-			}
-			if s.WithdrawalDemandRaw <= s.VoltrIdleRaw && s.StrategyNAVRaw == 0 && s.PriorReportedNAVRaw == 0 &&
-				!s.CapitalMutated && !s.PostMutationNAVRequired {
-				return Decision{Action: Hold, Reason: "withdrawal_covered_terminal_nav_current", AmountRaw: 0,
-					IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "withdrawal_covered_terminal_nav_current"), StrategyKey: SelectedRouteID}
-			}
-		}
-		decision := decideFixed(s)
-		decision = neutralizeRouteAction(decision)
-		if decision.AmountRaw > Phase2TransactionCapRaw {
-			decision.AmountRaw = Phase2TransactionCapRaw
-			decision.IdempotencyKey = fmt.Sprintf("%s:%s:%d:%s", s.ObservationID, decision.Action, decision.AmountRaw, decision.Reason)
-		}
-		decision.StrategyKey = SelectedRouteID
-		return decision
+	return decideSnapshot(s, initializationSnapshotReady)
+}
+
+// DecideOnManifest is the identical shared decision logic with one seam made
+// explicit: the initializer readiness check resolves the candidate AUTO lane
+// through the manifest's reviewed binding instead of the installed lane list.
+// Every other rule, ordering and hold is byte-identical, and the embedded
+// manifest keeps the installed closure.
+func (m RouteManifest) DecideOnManifest(s Snapshot) Decision {
+	return decideSnapshot(s, m.initializationSnapshotReady)
+}
+
+func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decision {
+	if hold, blocked := custodyDiscipline(s); blocked {
+		return hold
 	}
-	if s.RouteLane != "" && s.RouteLane != RouteID {
+	if hold, blocked := bridgeMonitorHold(s); blocked {
+		return hold
+	}
+	if route, err := runtimeRoute(s.RouteLane); err == nil && route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4 {
+		return decideNonUSDC(s, initializationReady)
+	}
+
+	if s.RouteLane != "" && !installedDecisionLane(s.RouteLane) {
 		return Decision{Action: HoldManualRecovery, Reason: "unsupported_runtime_lane", AmountRaw: 0,
 			IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "unsupported_runtime_lane"), StrategyKey: s.RouteLane}
 	}
-	if s.CutoverDrain && s.WithdrawalDemandRaw == 0 {
-		s.WithdrawalDemandRaw = s.StrategyNAVRaw
-		if s.WithdrawalDemandRaw == 0 {
-			s.WithdrawalDemandRaw = 1
-		}
+	// Legacy snapshots are normalized here; typed lanes use collateral directly.
+	if s.RouteLane == "" || s.RouteLane == RouteID {
+		s.CollateralIdleRaw = s.PrimeIdleRaw
 	}
-	decision := decideFixed(s)
-	decision.StrategyKey = RouteID
+	decision := decideUSDC(s, initializationReady)
+	decision.StrategyKey = s.RouteLane
+	if decision.StrategyKey == "" {
+		decision.StrategyKey = RouteID
+	}
+	if s.RouteLane == "" || s.RouteLane == RouteID {
+		decision.Action = legacyUSDCAction(decision.Action)
+	}
+	if !s.PilotActive && s.RouteLane == SelectedRouteID && decision.AmountRaw > Phase2TransactionCapRaw {
+		// Restore consumes all staged custody; never conceal its actual effect.
+		if decision.Action == VoltrRestoreIdle {
+			decision.Action, decision.Reason, decision.AmountRaw = HoldManualRecovery, "voltr_restore_actual_effect_exceeds_cap", 0
+		} else if decision.Action == StageSquadsToVoltr {
+			decision.Action, decision.Reason, decision.AmountRaw = HoldManualRecovery, "full_custody_exit_exceeds_transaction_cap", 0
+		} else {
+			decision.AmountRaw = Phase2TransactionCapRaw
+		}
+		decision.IdempotencyKey = fmt.Sprintf("%s:%s:%d:%s", s.ObservationID, decision.Action, decision.AmountRaw, decision.Reason)
+	}
 	return decision
 }
 
-func decideFixed(s Snapshot) Decision {
+// obligationAbsentHoldReason marks an observed prerequisite, never a policy
+// failure and never unexplained NAV drift: the lane's Kamino obligation account
+// does not exist, so Kamino refuses the deposit entry planning would fund. It
+// is a plain hold that clears by itself once the account exists.
+const obligationAbsentHoldReason = "obligation_absent"
+
+func obligationPrerequisiteHold(s Snapshot, initializationReady func(Snapshot) bool) (Decision, bool) {
+	if !s.ObligationPresenceKnown || s.ObligationPresent {
+		return Decision{}, false
+	}
+	strategyKey := s.RouteLane
+	if strategyKey == "" {
+		strategyKey = RouteID
+	}
+	if initializationReady(s) {
+		return Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: strategyKey,
+			IdempotencyKey: fmt.Sprintf("%s:initialize:%s", s.ObservationID, strategyKey)}, true
+	}
+	return Decision{Action: Hold, Reason: obligationAbsentHoldReason, AmountRaw: 0, StrategyKey: strategyKey,
+		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, obligationAbsentHoldReason, 0)}, true
+}
+
+func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	decision := func(action Action, reason string, amount int64) Decision {
 		return Decision{
 			Action:    action,
@@ -94,7 +155,7 @@ func decideFixed(s Snapshot) Decision {
 	if s.ManualReason != "" || s.RouteKind != RouteKind || !s.Fresh ||
 		s.ObservationID == "" || s.Slot <= 0 || s.LastReportAgeSeconds < 0 ||
 		s.WithdrawalDemandRaw < 0 || s.SquadsIdleRaw < 0 ||
-		s.PrimeIdleRaw < 0 || s.PositionCollateralRaw < 0 || s.PositionDebtRaw < 0 ||
+		s.CollateralIdleRaw < 0 || s.PositionCollateralRaw < 0 || s.PositionDebtRaw < 0 ||
 		s.PositionCollateralValueRaw < 0 || s.PositionDebtValueRaw < 0 || s.StrategyNAVRaw < 0 ||
 		s.VoltrStrategyIdleRaw < 0 || s.VoltrIdleRaw < 0 ||
 		s.LTVBPS < 0 || s.CapacityRaw < 0 || s.PolicyLimitRaw < 0 || s.MaxTargetLTVEntryRaw < 0 {
@@ -109,19 +170,48 @@ func decideFixed(s Snapshot) Decision {
 			return decision(HoldManualRecovery, "invalid_hard_ltv", 0)
 		}
 		if s.LTVBPS >= hard {
-			if s.PositionDebtRaw > 0 && s.SquadsIdleRaw > 0 {
-				return decision(DeleverPrimeUSDCStep, "hard_ltv_repay", min(s.PositionDebtRaw, s.SquadsIdleRaw))
+			if selectorLane(s.RouteLane) {
+				payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
+				if s.PositionDebtRaw > 0 && debtCashRaw(s) >= payoff {
+					return decision(DeleverRouteStep, "hard_ltv_repay", s.PositionDebtRaw)
+				}
+				if s.PilotActive && s.PositionDebtRaw > 1 && debtCashRaw(s) > 0 {
+					return decision(DeleverRouteStep, "hard_ltv_partial_repay", min(debtCashRaw(s), s.PositionDebtRaw-1))
+				}
+				if s.PositionDebtRaw > 0 {
+					action, amount := payoffFundingSource(s, uint64(payoff))
+					if amount > 0 {
+						return decision(action, "hard_ltv_buffer_swap", amount)
+					}
+				}
+				return decision(HoldManualRecovery, "hard_ltv_partial_repayment_requires_admission", 0)
 			}
-			if s.PositionDebtRaw > 0 && s.PrimeIdleRaw > 0 {
-				return decision(SwapPrimeToUSDCStep, "hard_ltv_buffer_swap", s.PrimeIdleRaw)
+			if s.PositionDebtRaw > 0 && s.SquadsIdleRaw > 0 {
+				return decision(DeleverRouteStep, "hard_ltv_repay", min(s.PositionDebtRaw, s.SquadsIdleRaw))
+			}
+			if s.PositionDebtRaw > 0 && s.CollateralIdleRaw > 0 {
+				return decision(SwapCollateralToDebtStep, "hard_ltv_buffer_swap", s.CollateralIdleRaw)
 			}
 			return decision(HoldManualRecovery, "hard_ltv_without_repayment_buffer", s.PositionDebtRaw)
 		}
 	}
+	if s.UnwindRefreshRequired {
+		return decision(Hold, "unwind_requires_fresh_admission", 0)
+	}
+	// Finish a journal-explained stage even if deposits or claims have since
+	// changed demand. Reporting cannot reconcile cash still in this custody.
+	if s.VoltrStrategyIdleRaw > 0 {
+		return decision(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
+	}
 	// A reconciled Jupiter/Kamino mutation must be accounted before any next
 	// lifecycle leg, including a withdrawal unwind. Hard-LTV safety above is the
 	// only action allowed to preempt this report.
-	if s.PostMutationNAVRequired {
+	if s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
+		// M4: a pending withdrawal queue that Voltr idle cannot cover makes a
+		// refresh-only tick inadmissible; the unwind legs below stay live.
+		if hold, blocked := custodyResidueHold(s); blocked {
+			return hold
+		}
 		return decision(ReportNAV, "post_mutation_nav_due", 0)
 	}
 	// A legacy position can sit at its maximum reviewed LTV, where withdrawing
@@ -131,30 +221,52 @@ func decideFixed(s Snapshot) Decision {
 	if s.CutoverDrain && s.PositionDebtRaw > 0 && s.SquadsIdleRaw == 0 && s.VoltrIdleRaw > 0 {
 		return decision(VoltrAllocateToSquads, "phase2_cutover_fund_repayment", min(s.PositionDebtRaw, s.VoltrIdleRaw))
 	}
-	if s.WithdrawalDemandRaw > 0 {
+	if partialWithdrawalInFlight(s) {
+		if action, reason, amount, ok := partialWithdrawalStep(s); ok {
+			return decision(action, reason, amount)
+		}
+	}
+	if s.WithdrawalDemandRaw > 0 || s.Unwind || s.CutoverDrain {
 		shortfall := s.WithdrawalDemandRaw - s.VoltrIdleRaw
-		if shortfall <= 0 {
+		if shortfall <= 0 && !s.Unwind && !s.CutoverDrain {
 			if s.CapitalMutated || s.PostMutationNAVRequired || s.LastReportAgeSeconds >= 60 {
+				if hold, blocked := custodyResidueHold(s); blocked {
+					return hold
+				}
 				return decision(ReportNAV, "withdrawal_covered_nav_due", 0)
 			}
 			return decision(Hold, "withdrawal_covered", 0)
 		}
-		if s.VoltrStrategyIdleRaw > 0 {
-			// Voltr sweeps the strategy custody after the adaptor validates the
-			// requested liquidity. Request and reconcile that full staged balance.
-			return decision(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
+
+		remaining := max(int64(0), shortfall-s.VoltrStrategyIdleRaw)
+		// Partial withdrawal: free only the shortfall and keep the level.
+		if action, reason, amount, ok := partialWithdrawalStep(s); ok {
+			return decision(action, reason, amount)
 		}
-		remaining := shortfall - s.VoltrStrategyIdleRaw
+		// B2 1.75x exit: repay the cycle's funding before another release.
+		if action, reason, amount, ok := exitCycleStep(s); ok {
+			return decision(action, reason, amount)
+		}
 		// Fully flatten Kamino before any Squads USDC is staged to Voltr. The
 		// single-loop borrowed PRIME is the repayment buffer.
 		if s.PositionDebtRaw > 0 {
+			if selectorLane(s.RouteLane) {
+				if debtCashRaw(s) >= max(s.PositionDebtRaw, s.PayoffDebtRaw) {
+					return decision(DeleverRouteStep, "withdrawal_repay_debt", s.PositionDebtRaw)
+				}
+				action, amount := payoffFundingSource(s, uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)))
+				if amount > 0 {
+					return decision(action, "withdrawal_swap_repayment_buffer", amount)
+				}
+				return decision(DeleverRouteStep, "withdrawal_release_repayment_collateral", 1)
+			}
 			if s.SquadsIdleRaw > 0 {
-				return decision(DeleverPrimeUSDCStep, "withdrawal_repay_debt", min(s.PositionDebtRaw, s.SquadsIdleRaw))
+				return decision(DeleverRouteStep, "withdrawal_repay_debt", min(s.PositionDebtRaw, s.SquadsIdleRaw))
 			}
-			if s.PrimeIdleRaw > 0 {
-				return decision(SwapPrimeToUSDCStep, "withdrawal_swap_repayment_buffer", s.PrimeIdleRaw)
+			if s.CollateralIdleRaw > 0 {
+				return decision(SwapCollateralToDebtStep, "withdrawal_swap_repayment_buffer", s.CollateralIdleRaw)
 			}
-			return decision(DeleverPrimeUSDCStep, "withdrawal_release_repayment_collateral", 1)
+			return decision(DeleverRouteStep, "withdrawal_release_repayment_collateral", 1)
 		}
 		if s.PositionCollateralRaw > 0 {
 			amount := int64(0)
@@ -163,63 +275,178 @@ func decideFixed(s Snapshot) Decision {
 				amount = min(s.PositionCollateralRaw, Phase2TransactionCapRaw)
 				reason = "phase2_cutover_withdraw_collateral"
 			}
-			return decision(DeleverPrimeUSDCStep, reason, amount)
+			return decision(DeleverRouteStep, reason, amount)
 		}
-		if s.PrimeIdleRaw > 0 {
-			return decision(SwapPrimeToUSDCStep, "withdrawal_swap_withdrawn_prime", s.PrimeIdleRaw)
+		if s.CollateralIdleRaw > 0 {
+			return decision(SwapCollateralToStableStep, "withdrawal_swap_withdrawn_prime", s.CollateralIdleRaw)
+		}
+		if (s.Unwind || s.CutoverDrain) && s.SquadsIdleRaw > 0 {
+			return decision(StageSquadsToVoltr, "unwind_return_cash", s.SquadsIdleRaw)
+		}
+		if remaining == 0 {
+			// A flat unwind still owes its terminal report: completion requires
+			// !CapitalMutated, so holding here first would never finish. Mirrors
+			// decide_debt's withdrawal_terminal_nav_due (2026-09-25 Maple unwind).
+			if s.Unwind && (s.CapitalMutated || s.PriorReportedNAVRaw != 0 || s.LastReportAgeSeconds >= 60) {
+				if hold, blocked := custodyResidueHold(s); blocked {
+					return hold
+				}
+				return decision(ReportNAV, "withdrawal_terminal_nav_due", 0)
+			}
+			return decision(Hold, "unwind_complete", 0)
 		}
 		if s.SquadsIdleRaw >= remaining {
+			if selectorLane(s.RouteLane) {
+				remaining = s.SquadsIdleRaw
+			} // Existing bridge admission returns full custody.
 			return decision(StageSquadsToVoltr, "withdrawal_demand", remaining)
 		}
 		remaining -= s.SquadsIdleRaw
 		if !s.HasPosition {
 			return decision(HoldManualRecovery, "withdrawal_conservation_shortfall", remaining)
 		}
-		return decision(DeleverPrimeUSDCStep, "withdrawal_shortfall", remaining)
+		return decision(DeleverRouteStep, "withdrawal_shortfall", remaining)
 	}
-	if s.CapitalMutated || s.PostMutationNAVRequired || s.LastReportAgeSeconds >= 60 {
+	// S1: an unexplained book drift stops the route instead of reporting it.
+	if hold, drifted := unexplainedNAVDriftHold(s); drifted {
+		return hold
+	}
+	// S2: a reconciled capital mutation reports only beyond the drift
+	// tolerance; the post-mutation requirement and the aging cadence report
+	// unconditionally.
+	if capitalMutationReports(s) || s.PostMutationNAVRequired || (scheduledNAVReportDue(s) && !admittedEntryAllocationReady(s)) {
+		if hold, blocked := custodyResidueHold(s); blocked {
+			return hold
+		}
 		return decision(ReportNAV, "nav_due", 0)
 	}
-	if s.VoltrIdleRaw > 0 {
+	// B2 down move to 1x: repay the position before any top-up or borrow.
+	if action, reason, amount, ok := leverageDownStep(s); ok {
+		return decision(action, reason, amount)
+	}
+	if action, reason, amount, ok := leverageDownPartialStep(s); ok {
+		return decision(action, reason, amount)
+	}
+	// Plan B3 top-up beside a funded debt-free OnRe position (B4). The USDC
+	// debt cash is Squads cash, so there is no separate residue leg. Every
+	// withdrawal, hard-LTV, unwind and report rule above has already run.
+	if s.RouteLane == onreONycUSDC {
+		if next, ok := topupStep(s, hard, decision); ok {
+			return next
+		}
+	}
+	// Returning flat working cash is an exit. It does not need a usable
+	// entry market, an obligation account, or an entry LTV threshold.
+	if selectorLane(s.RouteLane) && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.CollateralIdleRaw == 0 && s.SquadsIdleRaw > 0 &&
+		(s.CapacityRaw < s.SquadsIdleRaw || s.PolicyLimitRaw < s.SquadsIdleRaw || s.MaxTargetLTVEntryRaw < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
+		return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
+	}
+	// Entry planning funds a Kamino deposit. Without the obligation account that
+	// deposit is refused and the funded capital strands in custody, so no
+	// allocation, swap, or deposit is constructed. Withdrawal and reporting legs
+	// above stay live.
+	// B2: borrow only toward the stored level target (never an entry quote).
+	if action, reason, amount, ok := leverageBorrowStep(s, hard); ok {
+		return decision(action, reason, amount)
+	}
+	// The pause blocks new entries; a B2 leveraged loop on its own lane still
+	// swaps and redeposits its borrowed cash (no entry authority is needed).
+	if s.SelectorEntryPaused && !leverageLoopInProgress(s) {
+		return decision(Hold, "selector_entry_requires_fresh_admission", 0)
+	}
+	if hold, absent := obligationPrerequisiteHold(s, initializationReady); absent {
+		return hold
+	}
+	if s.VoltrIdleRaw > 0 && !selectorLane(s.RouteLane) {
 		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", s.VoltrIdleRaw)
 	}
-	if (s.SquadsIdleRaw > 0 || s.PrimeIdleRaw > 0 || s.PositionCollateralRaw > 0) && s.PolicyReady && s.ExitBuildable &&
+	// Keep undeployed capital in Voltr. Squads cash is working cash for one
+	// complete tranche, so a later deposit cannot be mistaken for borrowed cash.
+	if selectorLane(s.RouteLane) && s.VoltrIdleRaw > 0 && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.SquadsIdleRaw == 0 && s.CollateralIdleRaw == 0 {
+		if !s.PolicyReady || !s.ExitBuildable || s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
+			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
+		}
+		amount := min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw, workingTrancheCap(s))
+		if s.PilotActive {
+			if s.SelectorEntryEquityRaw <= 0 || s.SelectorEntryEquityRaw > amount {
+				return decision(Hold, "selector_entry_amount_requires_fresh_quote", 0)
+			}
+			amount = s.SelectorEntryEquityRaw
+		}
+		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", amount)
+	}
+	if (s.SquadsIdleRaw > 0 || s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) && s.PolicyReady && s.ExitBuildable &&
 		(s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
 		return decision(HoldManualRecovery, "invalid_entry_ltv", 0)
 	}
+	depositReady := s.CollateralIdleRaw > 0
+	if selectorLane(s.RouteLane) && depositReady {
+		if s.MinimumCollateralDepositRaw <= 0 {
+			return decision(Hold, "deposit_rounding_window_unavailable", 0)
+		}
+		// KLend may leave less than one receipt's liquidity in custody. Keep
+		// that value in NAV and the exit graph, but do not retry an input the
+		// same reserve-derived builder bound already refuses.
+		depositReady = s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw
+	}
 	if s.PositionDebtRaw > 0 {
 		if s.SquadsIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
-			return decision(SwapUSDCToPrimeStep, "borrowed_usdc_requires_prime_buffer", s.SquadsIdleRaw)
+			return decision(SwapDebtToCollateralStep, "borrowed_usdc_requires_prime_buffer", s.SquadsIdleRaw)
 		}
-		if s.PrimeIdleRaw > 0 {
-			return decision(OpenPrimeUSDCStep, "single_loop_redeposit", s.PrimeIdleRaw)
+		if depositReady {
+			return decision(OpenRouteStep, "single_loop_redeposit", s.CollateralIdleRaw)
 		}
 		return decision(Hold, "single_loop_position_ready", 0)
+	}
+	if selectorLane(s.RouteLane) && s.SquadsIdleRaw > 0 && (s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) {
+		return decision(HoldManualRecovery, "entry_tranche_contains_unassigned_cash", 0)
 	}
 	// PRIME is the collateral asset. Fresh USDC is converted before the only
 	// collateral deposit.
 	if s.SquadsIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
 		if s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
+			if selectorLane(s.RouteLane) {
+				return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
+			}
 			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
 		}
 		amount := s.SquadsIdleRaw
 		amount = min(amount, s.PolicyLimitRaw)
 		amount = min(amount, s.CapacityRaw)
 		amount = min(amount, s.MaxTargetLTVEntryRaw)
-		return decision(SwapUSDCToPrimeStep, "usdc_requires_prime_collateral", amount)
+		if selectorLane(s.RouteLane) && amount != s.SquadsIdleRaw {
+			return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
+		}
+		return decision(SwapStableToCollateralStep, "usdc_requires_prime_collateral", amount)
 	}
-	if s.PrimeIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
-		return decision(OpenPrimeUSDCStep, "prime_collateral_ready", s.PrimeIdleRaw)
+	if depositReady && s.PolicyReady && s.ExitBuildable {
+		return decision(OpenRouteStep, "prime_collateral_ready", s.CollateralIdleRaw)
 	}
 	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.BorrowUtilizationBlocked {
 		return decision(Hold, "debt_reserve_utilization_blocks_borrow", 0)
+	}
+	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && leverageLane(s.RouteLane) {
+		action, reason, amount := leverageDebtFreeStep(s)
+		return decision(action, reason, amount)
 	}
 	// A collateral-only intermediate state needs the borrow leg even though no
 	// idle token amount drives that instruction. The builder computes its exact
 	// amount from the refreshed reserve prices; AmountRaw=1 is only the durable
 	// state-transition marker and is never used as the borrow wire amount.
 	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.PolicyReady && s.ExitBuildable {
-		return decision(OpenPrimeUSDCStep, "prime_collateral_requires_borrow", 1)
+		return decision(OpenRouteStep, "prime_collateral_requires_borrow", 1)
 	}
 	return decision(Hold, "no_eligible_action", 0)
+}
+
+// admittedEntryAllocationReady lets a still-valid admitted selector entry
+// allocate before an age-only NAV report. The allocation carries its own
+// adaptor report, so the book is refreshed in the same transaction; reporting
+// first would outlive the entry's short quote window and pause every entry.
+// Drift, post-mutation and custody reports keep their priority, and only a
+// flat route whose sole working cash is Voltr idle qualifies.
+func admittedEntryAllocationReady(s Snapshot) bool {
+	return s.PilotActive && !s.SelectorEntryPaused && s.SelectorEntryEquityRaw > 0 &&
+		s.VoltrIdleRaw >= s.SelectorEntryEquityRaw && !s.CapitalMutated && !s.PostMutationNAVRequired &&
+		s.WithdrawalDemandRaw == 0 && !s.Unwind && !s.CutoverDrain && !hasWorkingCapital(s)
 }

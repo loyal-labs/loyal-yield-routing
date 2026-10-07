@@ -34,6 +34,29 @@ func bridgeTestRequest(action Action, amount uint64) BridgeBuildRequest {
 	}
 }
 
+func TestUnsignedBridgeMessageEqualsSignedMessage(t *testing.T) {
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{37}, ed25519.SeedSize))
+	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
+	for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
+		amount := uint64(100_000)
+		if action == ReportNAV {
+			amount = 0
+		}
+		request := bridgeTestRequest(action, amount)
+		unsigned, err := compileBridgeMessageForDelegate(request, delegate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signed, err := buildAndSignBridgeTransactionForDelegate(request, key, delegate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(unsigned, signed.message) || !ed25519.Verify(key.Public().(ed25519.PublicKey), unsigned, signed.signedWire[1:65]) {
+			t.Fatalf("%s fee message differs from signed bytes", action)
+		}
+	}
+}
+
 func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 	request := bridgeTestRequest(VoltrAllocateToSquads, 1_000_000)
 	inner, policy, constraintIndex, err := bridgeInstruction(request)
@@ -104,8 +127,8 @@ func TestBridgeTransactionSignsExactLegacyWireAndPersistsOnlyAfterSimulation(t *
 	if len(signed.signedWire) <= ed25519.SignatureSize || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:1+ed25519.SignatureSize]) {
 		t.Fatal("legacy wire did not contain a valid signature over its exact message")
 	}
-	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "df2641eb59c1a40d9b1894fb2ba9945d458eb9fdf6270f4827d51a98b6f54910" ||
-		signed.signedWireSHA256 != "d4312ecebf4125d77e9f76d4686cf70ce3957bc9df1b8ea9d43d684cc950566f" {
+	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "bbb62c1fb5addade3de05ebb2d1ffe561e70c544d748e837fefb4b2baf6b4dac" ||
+		signed.signedWireSHA256 != "2ba19228f900c10cf0c9668a88fbe55d190d133438310ca596ddcc90d242a41a" {
 		t.Fatalf("ticketed NAV packet fingerprint drifted: bytes=%d message=%s wire=%s", len(signed.signedWire), signed.messageSHA256, signed.signedWireSHA256)
 	}
 	if signed.transactionSignature != encodeBase58(signed.signedWire[1:1+ed25519.SignatureSize]) || len(signed.messageSHA256) != 64 || len(signed.signedWireSHA256) != 64 {

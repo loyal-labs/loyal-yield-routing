@@ -7,8 +7,8 @@ import (
 )
 
 func TestReportTicketV1ABIIsPinned(t *testing.T) {
-	if reportTicketPDA != "C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5" ||
-		reportTicketStateLength != 96 || reportTicketVersion != 1 || reportTicketBump != 254 ||
+	if reportTicketPDA != "8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq" ||
+		reportTicketStateLength != 96 || reportTicketVersion != 1 || reportTicketBump != 255 ||
 		!bytes.Equal(reportTicketStateDiscriminator, []byte{0xf5, 0x68, 0xb6, 0xc5, 0x3a, 0xe7, 0x74, 0xed}) ||
 		!bytes.Equal(armReportDiscriminator, []byte{0xa4, 0xaf, 0xf6, 0x29, 0xb2, 0x8c, 0x23, 0x03}) {
 		t.Fatal("report-ticket v1 identity or state layout drifted")

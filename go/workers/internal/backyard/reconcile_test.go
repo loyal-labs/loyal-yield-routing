@@ -109,3 +109,44 @@ func TestDecodeExpectedEffectsFromOperationEnvelope(t *testing.T) {
 		t.Fatal("unbuilt operation accepted as reconcilable effects")
 	}
 }
+
+// A user deposit (or claim) that lands between the worker's observation and a
+// REPORT_NAV must not fail reconciliation: Voltr idle is reconciled by this
+// transaction's own delta. Every other account, and a nonzero delta on idle,
+// stays exact. Regression for the 2026-09-24 out_of_band_crank halt (ASK-2304).
+func TestReconciliationToleratesConcurrentUserChangeOnVoltrIdleOnly(t *testing.T) {
+	strategyAuth, strategyATA := bridgeStrategyAuth, bridgeStrategyATA
+	effects := func(idleBefore, idleAfter uint64) ExpectedEffects {
+		return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{
+			{Address: bridgeIdleATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeIdleAuthority, BeforeRaw: idleBefore, AfterRaw: idleAfter},
+			{Address: strategyATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: strategyAuth, BeforeRaw: 0, AfterRaw: 0},
+		}}
+	}
+	receipt := func(idlePre, idlePost, strategyPre, strategyPost uint64) ConfirmedTransactionEvidence {
+		return ConfirmedTransactionEvidence{Signature: "report", Slot: 450085751,
+			PreTokenBalances: []TransactionTokenBalance{
+				{Address: bridgeIdleATA, OwnerProgram: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeIdleAuthority, Raw: idlePre},
+				{Address: strategyATA, OwnerProgram: classicTokenProgram, Mint: bridgeUSDC, Authority: strategyAuth, Raw: strategyPre},
+			},
+			PostTokenBalances: []TransactionTokenBalance{
+				{Address: bridgeIdleATA, OwnerProgram: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeIdleAuthority, Raw: idlePost},
+				{Address: strategyATA, OwnerProgram: classicTokenProgram, Mint: bridgeUSDC, Authority: strategyAuth, Raw: strategyPost},
+			}}
+	}
+	// The incident: observed 95,387,976; a 5 USDC deposit landed first.
+	if _, _, err := ReconcileConfirmedTransaction(effects(95_387_976, 95_387_976), receipt(100_387_976, 100_387_976, 0, 0)); err != nil {
+		t.Fatalf("zero-delta report after a concurrent user deposit was rejected: %v", err)
+	}
+	// The report itself must still not move idle.
+	if _, _, err := ReconcileConfirmedTransaction(effects(95_387_976, 95_387_976), receipt(100_387_976, 100_387_975, 0, 0)); err == nil {
+		t.Fatal("idle moved by the transaction itself was accepted")
+	}
+	// A capital move keeps its exact delta even when the base drifted.
+	if _, _, err := ReconcileConfirmedTransaction(effects(10, 7), receipt(15, 12, 0, 0)); err == nil {
+		t.Fatal("non-conserved allocation delta was accepted") // strategy did not receive the 3
+	}
+	// Non-idle accounts keep the exact precondition.
+	if _, _, err := ReconcileConfirmedTransaction(effects(95_387_976, 95_387_976), receipt(95_387_976, 95_387_976, 1, 1)); err == nil {
+		t.Fatal("strategy custody precondition drift was accepted")
+	}
+}

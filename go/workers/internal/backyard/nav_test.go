@@ -59,6 +59,38 @@ func TestDecodeTokenCustodyRejectsFrozenAndExtraAuthority(t *testing.T) {
 	}
 }
 
+func TestExtendedCustodySpendabilityBoundary(t *testing.T) {
+	var mint, authority [32]byte
+	mint[0], authority[0] = 1, 2
+	base := append(custodyFixture(mint, authority, 123, true), 2)
+	// SPL Token SDK ABI: ImmutableOwner, TransferFeeAmount, TransferHookAccount.
+	tlv := []byte{7, 0, 0, 0, 2, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0, 1, 0, 0}
+	valid := append(append([]byte(nil), base...), tlv...)
+	got, err := DecodeTokenCustody(token2022Program, valid, mint, authority)
+	if err != nil || got.Raw != 123 {
+		t.Fatalf("plain transferable extended custody rejected: %+v %v", got, err)
+	}
+	for name, mutate := range map[string]func([]byte) []byte{
+		"withheld":           func(b []byte) []byte { b[174] = 1; return b },
+		"transferring":       func(b []byte) []byte { b[len(b)-1] = 1; return b },
+		"wrong-account-type": func(b []byte) []byte { b[165] = 1; return b },
+		"unknown-extension":  func(b []byte) []byte { b[166] = 99; return b },
+		"duplicate":          func(b []byte) []byte { return append(b, 7, 0, 0, 0) },
+		"truncated-payload":  func(b []byte) []byte { return b[:len(b)-1] },
+		"truncated-header":   func(b []byte) []byte { return append(b, 7) },
+		"nonzero-padding":    func(b []byte) []byte { return append(b, 0, 0, 0, 0, 1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeTokenCustody(token2022Program, mutate(append([]byte(nil), valid...)), mint, authority); err == nil {
+				t.Fatal("unsafe or malformed custody accepted")
+			}
+		})
+	}
+	if _, err := DecodeTokenCustody(classicTokenProgram, valid, mint, authority); err == nil {
+		t.Fatal("classic owner accepted Token-2022 extensions")
+	}
+}
+
 func TestConservativeValuationRoundingAndObligationBound(t *testing.T) {
 	asset, err := ValueRawUSDC(1, 1, 15, false)
 	if err != nil || asset != 1 {

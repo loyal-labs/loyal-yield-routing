@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -56,55 +55,25 @@ func run(ctx context.Context) error {
 	return runRetail(ctx, owner, facts, metrics)
 }
 
-func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics engine.Lane) error {
-	databaseURL, err := engine.Credential("BACKYARD_DATABASE_URL")
-	if err != nil {
-		return err
-	}
-	rpcURL, err := engine.Credential("BACKYARD_SOLANA_RPC_URL")
-	if err != nil {
-		return err
-	}
-	material, err := engine.Credential("BACKYARD_POLICY_KEYPAIR")
-	if err != nil {
-		return err
-	}
-	credentials, err := backyard.ParseCredentials(material)
-	if err != nil {
-		return err
-	}
-	cfg := backyard.RuntimeConfig{DatabaseURL: databaseURL, RPCURL: rpcURL, RouteKey: backyard.FixedRouteKey}
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	database, err := backyard.OpenDatabase(ctx, databaseURL)
-	if err != nil {
-		return err
-	}
-	defer database.Close()
-	rpc, err := backyard.NewRPCClient(rpcURL)
-	if err != nil {
-		return err
-	}
-	lane, err := backyard.NewEngine(backyard.EngineConfig{Database: database, RPC: rpc, Credentials: credentials, RouteKey: cfg.RouteKey, Config: backyard.DefaultConfig(), Owner: owner, Out: os.Stdout, ImageVersion: engine.Release})
-	if err != nil {
-		return err
-	}
-	return engine.Run(ctx, lane, metrics)
-}
-
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if len(os.Args) == 2 && os.Args[1] == "--role-probe" {
 		fmt.Println(`{"schemaVersion":1,"role":"engine","networkAccessed":false,"secretsLoaded":false,"databaseMutated":false,"transactionSent":false}`)
 		return
 	}
-	if len(os.Args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: loyal-engine [--role-probe]")
-		os.Exit(2)
-	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if len(os.Args) > 1 && os.Args[1] == "backyard" {
+		if err := runBackyardOperator(ctx, os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "backyard operator command failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: loyal-engine [--role-probe | backyard <operator command>]")
+		os.Exit(2)
+	}
 	if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("engine failed", "error", err)
 		os.Exit(1)

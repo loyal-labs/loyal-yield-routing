@@ -10,19 +10,22 @@ import (
 )
 
 func TestEmbeddedManifestIsExactCheckedInManifest(t *testing.T) {
-	source, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "manifests", "backyard-rwa-v1.json"))
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "manifests", "backyard-rwa-v2.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(source, embeddedBackyardManifest) {
-		t.Fatal("embedded runtime manifest drifted from docs/manifests/backyard-rwa-v1.json")
+		t.Fatal("embedded runtime manifest drifted from docs/manifests/backyard-rwa-v2.json")
 	}
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.executionBlocker() != nil {
-		t.Fatal("installed Phase 1 manifest remained blocked")
+	// The basic policy set (seeds 141-144) is installed on mainnet and its
+	// readback is pinned into the manifest, so the v2 manifest must be
+	// executable: any blocker here means a hash or unresolved entry regressed.
+	if blocker := manifest.executionBlocker(); blocker != nil {
+		t.Fatalf("v2 manifest is blocked after the policy install readback: %v", blocker)
 	}
 }
 

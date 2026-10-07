@@ -8,10 +8,13 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func readyWorkerManifest(t *testing.T) RouteManifest {
 	t.Helper()
+	stringPtr := func(value string) *string { return &value }
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -21,7 +24,17 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 	manifest.PolicyCatalog.AddressesResolved = true
 	packing := int64(8)
 	manifest.PolicyCatalog.PackingRung = &packing
-	manifest.PolicyCatalog.PolicyAccounts = []string{bridgeAllocationPolicy}
+	manifest.PolicyCatalog.SHA256 = stringPtr(strings.Repeat("c", 64))
+	manifest.PolicyCatalog.PolicyAccounts = []string{
+		"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
+		"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
+		"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
+		"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
+	}
+	for index := range manifest.PolicyCatalog.Policies {
+		hash := strings.Repeat(string("def0"[index]), 64)
+		manifest.PolicyCatalog.Policies[index].DataSHA256 = &hash
+	}
 	commit := strings.Repeat("1", 40)
 	digest := "sha256:" + strings.Repeat("2", 64)
 	service := "loyal-backyard-rwa-worker"
@@ -30,8 +43,13 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 	manifest.Deployment.SingleWriterService = &service
 	for index := range manifest.RuntimeBindings.BridgePolicies {
 		hash := strings.Repeat(string(rune('a'+index)), 64)
-		manifest.RuntimeBindings.BridgePolicies[index].DataSHA256 = &hash
+		manifest.RuntimeBindings.BridgePolicies[index].NormalizedDigest = hash
+		manifest.RuntimeBindings.BridgePolicies[index].DataSHA256Raw = hash
 	}
+	manifest.RuntimeBindings.CollateralLifecycle.DataSHA256 = stringPtr(strings.Repeat("e", 64))
+	manifest.RuntimeBindings.DebtLifecycle.DataSHA256 = stringPtr(strings.Repeat("f", 64))
+	manifest.RuntimeBindings.SwapRoutesA.DataSHA256 = stringPtr(strings.Repeat("0", 64))
+	manifest.RuntimeBindings.SwapRoutesB.DataSHA256 = stringPtr(strings.Repeat("1", 64))
 	manifest.RuntimeBindings.PrimeUSDC.Packets = make([]struct {
 		Action                  Action                  `json:"action"`
 		Policy                  string                  `json:"policy"`
@@ -65,7 +83,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return observation, nil },
-		prepareBridge: func(_ context.Context, _ RouteManifest, got Decision) (Observation, BridgeExecutionEvidence, error) {
+		prepareBridge: func(_ context.Context, _ RouteManifest, got Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
 			order = append(order, "prepare")
 			if got != decision {
 				t.Fatalf("prepared wrong decision: %+v", got)
@@ -86,12 +104,38 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			}
 			return nil
 		},
+		admitBridge: func(_ context.Context, id string, got Observation, d Decision, _ BridgeExecutionEvidence) error {
+			order = append(order, "admit")
+			if id != "operation" || got != observation || d != decision {
+				t.Fatal("admission lost the recorded decision")
+			}
+			return nil
+		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare,record,build" {
+	if got := strings.Join(order, ","); got != "prepare,record,admit,build" {
 		t.Fatalf("decision was not persisted before build: %s", got)
+	}
+	// The same real dispatch path must preserve a typed admission rejection,
+	// not turn it into generic restart recovery or a successful build.
+	rejected := &BudgetHold{Reason: "transaction_cap_exceeded"}
+	worker.runtime.admitBridge = func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return rejected }
+	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
+		t.Fatal("admission rejection reached construction/signing")
+		return nil
+	}
+	journaled := false
+	worker.runtime.recordBudgetHold = func(_ context.Context, id string, hold *BudgetHold) error {
+		if id != "operation" || hold != rejected {
+			t.Fatal("budget HOLD lost its operation or type")
+		}
+		journaled = true
+		return nil
+	}
+	if err := worker.Tick(context.Background()); !errors.Is(err, rejected) || !journaled {
+		t.Fatalf("budget rejection did not remain a journaled stop: %v", err)
 	}
 }
 
@@ -100,6 +144,8 @@ func TestTickPreservesHoldJournalWhileManifestIsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	policyCatalogHash := strings.Repeat("c", 64)
+	manifest.PolicyCatalog.SHA256 = &policyCatalogHash
 	observation := tickObservation(Snapshot{ObservationID: "hold", Slot: 10, RouteKind: RouteKind, Fresh: true})
 	recorded := false
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
@@ -182,13 +228,25 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 			}
 			return nil
 		},
+		admitKamino: func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+			order = append(order, "admit-kamino")
+			return nil
+		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare-kamino,record,build-kamino" {
+	if got := strings.Join(order, ","); got != "prepare-kamino,record,admit-kamino,build-kamino" {
 		t.Fatalf("wrong Kamino dispatch order: %s", got)
 	}
+	worker.runtime.admitKamino = func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+		return budgetHold("complete_position_exit_admission_unavailable")
+	}
+	worker.runtime.buildKamino = func(context.Context, string, KaminoExecutionEvidence) error {
+		t.Fatal("rejected position admission reached signing")
+		return nil
+	}
+	assertBudgetHold(t, worker.Tick(context.Background()), "complete_position_exit_admission_unavailable")
 
 	loads := 0
 	reobserved := false
@@ -211,12 +269,9 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 	}
 }
 
-func TestNewWorkerRejectsRouteOverride(t *testing.T) {
-	if _, err := NewWorker(&Database{}, &RPCClient{}, "caller-selected-route", DefaultConfig(), Credentials{}); err == nil {
-		t.Fatal("worker accepted a route override")
-	}
-	if _, err := NewWorker(&Database{}, &RPCClient{}, productionRouteKey, DefaultConfig(), Credentials{}); err == nil {
-		t.Fatal("worker accepted an unconfigured signing capability")
+func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {
+	if _, err := NewWorker(&Database{pool: &pgxpool.Pool{}}, &RPCClient{}, DefaultConfig(), Credentials{}); err == nil {
+		t.Fatal("worker accepted a missing signing capability")
 	}
 }
 
@@ -324,7 +379,7 @@ func TestLeasedWorkerAcquiresBeforeTickAndReleasesOnCleanShutdown(t *testing.T) 
 		},
 	}}
 	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
-	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("a", 40), config)
+	err := worker.Run(ctx, leasing, "worker:backyard:test:sha-"+strings.Repeat("a", 40), config)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected clean cancellation, got %v", err)
 	}
@@ -354,7 +409,7 @@ func TestLeasedWorkerRetriesObservationWithoutDroppingTheFence(t *testing.T) {
 		},
 	}}
 	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
-	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("e", 40), config)
+	err := worker.Run(ctx, leasing, "worker:backyard:test:sha-"+strings.Repeat("e", 40), config)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected clean cancellation, got %v", err)
 	}
@@ -381,7 +436,7 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			observations++
 			return tickObservation(actionable), nil
 		},
-		prepareBridge: func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error) {
+		prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
 			preparations++
 			if preparations == 1 {
 				return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(errors.New("confirmed reads advanced"))
@@ -397,9 +452,10 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			cancel()
 			return nil
 		},
+		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
 	}}
 	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
-	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("f", 40), config)
+	err := worker.Run(ctx, leasing, "worker:backyard:test:sha-"+strings.Repeat("f", 40), config)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected clean cancellation, got %v", err)
 	}
@@ -419,7 +475,7 @@ func TestLeasedWorkerDoesNotRetryDatabaseObservationFailure(t *testing.T) {
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return Observation{}, databaseErr },
 	}}
-	err := worker.Run(context.Background(), leasing, "render:srv-test:sha-"+strings.Repeat("9", 40), Config{
+	err := worker.Run(context.Background(), leasing, "worker:backyard:test:sha-"+strings.Repeat("9", 40), Config{
 		PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond,
 	})
 	if !errors.Is(err, databaseErr) {
@@ -440,7 +496,7 @@ func TestLeasedWorkerFailsClosedWhenRefreshLosesFence(t *testing.T) {
 		},
 	}}
 	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
-	err := worker.Run(context.Background(), leasing, "render:srv-test:sha-"+strings.Repeat("b", 40), config)
+	err := worker.Run(context.Background(), leasing, "worker:backyard:test:sha-"+strings.Repeat("b", 40), config)
 	if !errors.Is(err, ErrRouteLeaseLost) {
 		t.Fatalf("refresh loss did not fence the active tick: %v", err)
 	}
@@ -450,7 +506,7 @@ func TestLeasedWorkerFailsClosedWhenRefreshLosesFence(t *testing.T) {
 		t.Fatal("lease was never refreshed")
 	}
 	events := leasing.snapshotEvents()
-	if strings.Join(events, ",") != "acquire:"+productionRouteKey+":render:srv-test:sha-"+strings.Repeat("b", 40)+",refresh,release" {
+	if strings.Join(events, ",") != "acquire:"+productionRouteKey+":worker:backyard:test:sha-"+strings.Repeat("b", 40)+",refresh,release" {
 		t.Fatalf("unexpected lost-lease lifecycle: %v", events)
 	}
 }
@@ -467,7 +523,7 @@ func TestLeasedWorkerPrefersRefreshFailureOverIdleTimerCancellation(t *testing.T
 			return DecisionRecord{Status: Held}, nil
 		},
 	}}
-	err := worker.Run(context.Background(), leasing, "render:srv-test:sha-"+strings.Repeat("a", 40), Config{PollInterval: time.Hour, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond})
+	err := worker.Run(context.Background(), leasing, "worker:backyard:test:sha-"+strings.Repeat("a", 40), Config{PollInterval: time.Hour, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond})
 	if !errors.Is(err, refreshErr) || errors.Is(err, context.Canceled) {
 		t.Fatalf("idle timer race hid refresh error: %v", err)
 	}
@@ -491,7 +547,7 @@ func TestLeasedWorkerDoesNotRunOrReleaseAfterFailedAcquisition(t *testing.T) {
 			return nil, nil
 		},
 	}}
-	err := worker.Run(context.Background(), leasing, "render:srv-test:sha-"+strings.Repeat("c", 40), DefaultConfig())
+	err := worker.Run(context.Background(), leasing, "worker:backyard:test:sha-"+strings.Repeat("c", 40), DefaultConfig())
 	if !errors.Is(err, ErrRouteLeaseUnavailable) || ticked {
 		t.Fatalf("failed acquisition did not fail closed: err=%v ticked=%v", err, ticked)
 	}
@@ -526,7 +582,7 @@ func TestLeasedWorkerWaitsForRollingDeployLeaseHandoffBeforeFirstTick(t *testing
 			},
 		},
 	}
-	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("d", 40), Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond})
+	err := worker.Run(ctx, leasing, "worker:backyard:test:sha-"+strings.Repeat("d", 40), Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond})
 	if !errors.Is(err, context.Canceled) || waits != 1 {
 		t.Fatalf("err=%v waits=%d", err, waits)
 	}
@@ -547,7 +603,7 @@ func TestLeasedWorkerLeaseHandoffTimeoutDoesNotTickOrRelease(t *testing.T) {
 		},
 		runtime: tickRuntime{loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { ticked = true; return nil, nil }},
 	}
-	err := worker.Run(context.Background(), leasing, "render:srv-test:sha-"+strings.Repeat("c", 40), Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond})
+	err := worker.Run(context.Background(), leasing, "worker:backyard:test:sha-"+strings.Repeat("c", 40), Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond})
 	if !errors.Is(err, ErrRouteLeaseUnavailable) || ticked {
 		t.Fatalf("timeout did not fail closed: err=%v ticked=%v", err, ticked)
 	}
@@ -565,7 +621,7 @@ func TestLeasedWorkerLeaseHandoffBoundsBlockingAcquire(t *testing.T) {
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { ticked = true; return nil, nil },
 	}}
 	started := time.Now()
-	err := worker.Run(context.Background(), leasing, "render:srv-test:sha-"+strings.Repeat("f", 40), Config{PollInterval: time.Millisecond, LeaseTTL: 30 * time.Millisecond, LeaseRefreshInterval: 10 * time.Millisecond})
+	err := worker.Run(context.Background(), leasing, "worker:backyard:test:sha-"+strings.Repeat("f", 40), Config{PollInterval: time.Millisecond, LeaseTTL: 30 * time.Millisecond, LeaseRefreshInterval: 10 * time.Millisecond})
 	if !errors.Is(err, ErrRouteLeaseUnavailable) || ticked {
 		t.Fatalf("blocking acquire escaped handoff bound: err=%v ticked=%v", err, ticked)
 	}
@@ -586,7 +642,7 @@ func TestLeasedWorkerLeaseHandoffHonorsCancellation(t *testing.T) {
 		now:  func() time.Time { return time.Unix(1_700_000_000, 0) },
 		wait: func(context.Context, time.Duration) error { cancel(); return context.Canceled },
 	}, runtime: tickRuntime{loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { ticked = true; return nil, nil }}}
-	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("e", 40), Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond})
+	err := worker.Run(ctx, leasing, "worker:backyard:test:sha-"+strings.Repeat("e", 40), Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond})
 	if !errors.Is(err, context.Canceled) || ticked {
 		t.Fatalf("canceled handoff ticked or hid cancellation: err=%v ticked=%v", err, ticked)
 	}
@@ -622,7 +678,7 @@ func TestLeasedWorkerSurfacesReleaseFailureOnCleanShutdown(t *testing.T) {
 			return DecisionRecord{Status: Held}, nil
 		},
 	}}
-	err := worker.Run(ctx, leasing, "render:srv-test:sha-"+strings.Repeat("f", 40), Config{
+	err := worker.Run(ctx, leasing, "worker:backyard:test:sha-"+strings.Repeat("f", 40), Config{
 		PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond,
 	})
 	if !errors.Is(err, releaseErr) {
@@ -630,87 +686,57 @@ func TestLeasedWorkerSurfacesReleaseFailureOnCleanShutdown(t *testing.T) {
 	}
 }
 
-func TestRuntimeLeaseOwnerUsesPlatformNeutralInstanceAndReleaseIdentity(t *testing.T) {
-	commit := strings.Repeat("d", 40)
-	config := RuntimeConfig{InstanceID: "backyard-eu-1", ImageVersion: "sha-" + commit}
-	owner, err := config.LeaseOwner()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if owner != "worker:backyard:backyard-eu-1:sha-"+commit {
-		t.Fatalf("unexpected platform-neutral lease owner: %s", owner)
-	}
-	for _, invalid := range []RuntimeConfig{
-		{InstanceID: "loyal backyard", ImageVersion: "sha-" + commit},
-		{InstanceID: strings.Repeat("x", 81), ImageVersion: "sha-" + commit},
-		{InstanceID: "backyard-eu-1", ImageVersion: "latest"},
-		{InstanceID: "backyard-eu-1", ImageVersion: "sha-notahash"},
-	} {
-		if _, err := invalid.LeaseOwner(); err == nil {
-			t.Fatalf("accepted invalid deployment identity: %+v", invalid)
-		}
-	}
-}
-
-func TestRuntimeLeaseOwnerInstanceComesFromPlatformNeutralVariableBeforeRender(t *testing.T) {
-	t.Setenv("LOYAL_WORKER_INSTANCE", "instance-primary")
-	t.Setenv("RENDER_SERVICE_ID", "srv-legacy")
-	config := RuntimeConfigFromEnvironment()
-	if config.InstanceID != "instance-primary" {
-		t.Fatalf("platform-neutral instance variable was ignored: %+v", config)
-	}
-	t.Setenv("LOYAL_WORKER_INSTANCE", "")
-	config = RuntimeConfigFromEnvironment()
-	if config.InstanceID != "srv-legacy" {
-		t.Fatalf("cutover instance fallback was ignored: %+v", config)
-	}
-}
-
-func TestLeasedWorkerAcceptsPlatformNeutralOwnerAndKeepsLegacyCutoverOwner(t *testing.T) {
-	commit := strings.Repeat("a", 40)
-	platformNeutral := "worker:backyard:backyard-eu-1:sha-" + commit
-	legacy := "render:srv-legacy:sha-" + commit
-	for _, owner := range []string{platformNeutral, legacy} {
-		if !ValidLeaseOwner(owner) {
-			t.Fatalf("accepted cutover owner %q was rejected", owner)
-		}
-		leasing := &fakeRouteLeaseRuntime{}
-		ctx, cancel := context.WithCancel(context.Background())
-		worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: readyWorkerManifest(t), runtime: tickRuntime{
-			loadNonterminal: func(context.Context, string) (*PersistedOperation, error) {
-				leasing.record("tick")
-				return nil, nil
-			},
-			observe: func(context.Context) (Observation, error) {
-				return tickObservation(Snapshot{ObservationID: "owner-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
-			},
-			recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
-				cancel()
-				return DecisionRecord{Status: Held}, nil
-			},
-		}}
-		if err := worker.Run(ctx, leasing, owner, DefaultConfig()); !errors.Is(err, context.Canceled) {
-			t.Fatalf("owner %q did not acquire and run: %v", owner, err)
-		}
-		events := leasing.snapshotEvents()
-		if len(events) != 3 || events[0] != "acquire:"+productionRouteKey+":"+owner || events[2] != "release" {
-			t.Fatalf("owner %q lost the exact acquire/release lifecycle: %v", owner, events)
-		}
-	}
-	for _, rejected := range []string{
-		"worker:retail:backyard-eu-1:sha-" + commit,
-		"worker:observer:backyard-eu-1:sha-" + commit,
-		"backyard-eu-1",
-		"developer-laptop",
-		"",
-	} {
-		leasing := &fakeRouteLeaseRuntime{}
-		worker := &Worker{routeKey: productionRouteKey}
-		if err := worker.Run(context.Background(), leasing, rejected, DefaultConfig()); err == nil {
-			t.Fatalf("invalid owner %q was accepted", rejected)
-		}
-		if events := leasing.snapshotEvents(); len(events) != 0 {
-			t.Fatalf("invalid owner %q reached the database: %v", rejected, events)
-		}
+func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
+	for _, after := range []OperationStatus{Signed, BroadcastIntent} {
+		t.Run(string(after), func(t *testing.T) {
+			o := tickObservation(Snapshot{ObservationID: "report", Slot: 10, RouteKind: RouteKind, Fresh: true, LastReportAgeSeconds: 3600})
+			d := Decide(o.Snapshot)
+			if d.Action != ReportNAV {
+				t.Fatalf("expected report fixture: %+v", d)
+			}
+			var persisted *PersistedOperation
+			advanced := 0
+			w := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
+				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return persisted, nil },
+				observe:         func(context.Context) (Observation, error) { return o, nil },
+				prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
+					return o, BridgeExecutionEvidence{}, nil
+				},
+				recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+					return DecisionRecord{OperationID: "report-op", Status: Decided}, nil
+				},
+				admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
+				buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+					persisted = &PersistedOperation{Operation: Operation{ID: "report-op"}, Status: after, SignedWire: []byte{1, 2, 3}}
+					return nil
+				},
+				advance: func(_ context.Context, op PersistedOperation) error {
+					if op.ID != "report-op" || string(op.SignedWire) != string([]byte{1, 2, 3}) {
+						t.Fatal("lost durable wire")
+					}
+					if op.Status == Signed {
+						advanced++
+						persisted.Status = Submitted
+					}
+					return nil
+				},
+			}}
+			if err := w.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if after == Signed {
+				want = 1
+			}
+			if advanced != want {
+				t.Fatalf("advanced %d times, want %d", advanced, want)
+			}
+			if err := w.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if advanced != want {
+				t.Fatal("recovery tried a second signed send")
+			}
+		})
 	}
 }

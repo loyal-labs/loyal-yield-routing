@@ -30,7 +30,9 @@ func DecodeTokenCustody(programOwner string, data []byte, expectedMint, expected
 		}
 	case token2022Program:
 		if len(data) != 165 {
-			return DecodedTokenCustody{}, fmt.Errorf("Token-2022 extensions are not supported by the plain custody MVP")
+			if err := validateCustodyExtensions(data); err != nil {
+				return DecodedTokenCustody{}, err
+			}
 		}
 	default:
 		return DecodedTokenCustody{}, fmt.Errorf("unknown token program owner")
@@ -51,6 +53,54 @@ func DecodeTokenCustody(programOwner string, data []byte, expectedMint, expected
 		return DecodedTokenCustody{}, fmt.Errorf("token custody has unsupported authority state")
 	}
 	return DecodedTokenCustody{Raw: binary.LittleEndian.Uint64(data[64:72]), TokenProgram: programOwner}, nil
+}
+
+// Account-side checks only: mint transfer-fee schedules, hook program and
+// authorities must also be checked at execution observation. Unknown account
+// extensions cannot silently change the custody's spendability or accounting.
+func validateCustodyExtensions(data []byte) error {
+	if len(data) < 170 || len(data) == 355 || data[165] != 2 {
+		return fmt.Errorf("invalid extended Token-2022 custody layout")
+	}
+	seen := map[uint16]bool{}
+	for tail := data[166:]; len(tail) > 0; {
+		if len(tail) < 4 {
+			return fmt.Errorf("truncated custody extension header")
+		}
+		kind := binary.LittleEndian.Uint16(tail[:2])
+		length := int(binary.LittleEndian.Uint16(tail[2:4]))
+		if kind == 0 {
+			for _, b := range tail {
+				if b != 0 {
+					return fmt.Errorf("nonzero custody extension padding")
+				}
+			}
+			return nil
+		}
+		if seen[kind] || length > len(tail)-4 {
+			return fmt.Errorf("duplicate or truncated custody extension")
+		}
+		seen[kind] = true
+		value := tail[4 : 4+length]
+		switch kind {
+		case 2: // TransferFeeAmount: withheld tokens are not spendable custody.
+			if length != 8 || binary.LittleEndian.Uint64(value) != 0 {
+				return fmt.Errorf("unsupported custody withheld fee")
+			}
+		case 7: // ImmutableOwner has an empty payload.
+			if length != 0 {
+				return fmt.Errorf("invalid immutable-owner extension")
+			}
+		case 15: // TransferHookAccount must not be in a transferring state.
+			if length != 1 || value[0] != 0 {
+				return fmt.Errorf("unsupported custody transfer-hook state")
+			}
+		default:
+			return fmt.Errorf("unsupported custody extension %d", kind)
+		}
+		tail = tail[4+length:]
+	}
+	return nil
 }
 
 // ValueRawUSDC converts token raw units at a micro-dollar price. Assets round
