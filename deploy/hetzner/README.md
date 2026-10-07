@@ -86,15 +86,19 @@ Rust is stopped by hand:
    attempts in `prepared|submitted|unknown|ambiguous`, no fleet decisions
    in `planned|simulating|ready|submitted|confirming`, and so on for the
    family's operation rows.
-3. Run `systemctl stop <rust-unit>`. Never use `runtime.py stop`.
+3. Run `systemctl disable --now <rust-unit>`. Never use `runtime.py stop`.
 4. Run `systemctl enable --now <go-unit>`.
 5. Watch `loyal_family_last_progress_timestamp_seconds{family=...}` advance.
 
+Which writer runs is the unit's boot enablement, so a swap always moves it
+with the running unit. A stop alone leaves Rust enabled, and after a reboot
+Rust and Go would both start.
+
 To fall back, wait for `loyal_family_inflight{family=...} == 0`, then run
-`systemctl stop <go-unit>`, then `rm /run/<rust-unit>/paused` and
-`systemctl start <rust-unit>`. The Rust controllers' `quiesce` (what
-`systemctl stop` runs) writes that durable pause marker, and `supervise`
-refuses to start while it exists, so a plain `systemctl start` leaves Rust
+`systemctl disable --now <go-unit>`, then `rm /run/<rust-unit>/paused` and
+`systemctl enable --now <rust-unit>`. The Rust controllers' `quiesce` (what
+`systemctl stop` runs) writes that pause marker, and `supervise` refuses to
+start while it exists, so starting Rust without removing it leaves Rust
 down. Go keeps the row states and legacy lease columns that Rust reads. A
 stopped Go unit is inactive, so it does not alert.
 
