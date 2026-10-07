@@ -129,7 +129,7 @@ func TestWorkerDispatchKeepsRecoveryFirstAndClassifiesOutcomes(t *testing.T) {
 		results: []ExecutorResult{ResultCompleted, ResultRecoveryPending, ResultUnknown},
 		errs:    []error{nil, nil, errors.New("rpc connection reset")},
 	}
-	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor})
+	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor, Facts: testFacts()})
 	if err != nil {
 		t.Fatalf("build worker: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestWorkerDispatchKeepsRecoveryFirstAndClassifiesOutcomes(t *testing.T) {
 
 	// An unknown result cannot prove finished work or healthy execution.
 	zeroExecutor := &scriptedExecutor{results: []ExecutorResult{ResultUnknown}}
-	worker, err = NewWorker(WorkerDependencies{Store: &Store{}, Executor: zeroExecutor})
+	worker, err = NewWorker(WorkerDependencies{Store: &Store{}, Executor: zeroExecutor, Facts: testFacts()})
 	if err != nil {
 		t.Fatalf("rebuild worker: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestWorkerDispatchRetainsDecisionsAndRecoveryErrors(t *testing.T) {
 		results: []ExecutorResult{ResultDeferred, ResultRecoveryPending, ResultNotActionable, ResultNoop, ResultDependencyUnavailable, "future_outcome"},
 		errs:    []error{errors.New("allowance unknown"), errors.New("ownership lost")},
 	}
-	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor})
+	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}

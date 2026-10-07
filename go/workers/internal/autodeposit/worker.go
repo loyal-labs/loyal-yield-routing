@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 // TargetExecutor is the consumer-defined execution effect for one dispatchable
@@ -37,6 +39,8 @@ type WorkerDependencies struct {
 	// Optional; when nil, Run returns the first tick error it cannot recover
 	// from so the runtime still sees the failure.
 	OnError func(error)
+	// Facts receives the family's progress and inflight count. Required.
+	Facts *engine.Facts
 
 	PollInterval          time.Duration
 	ProjectionBatchLimit  int64
@@ -54,6 +58,7 @@ type Worker struct {
 	hints           *SlotHintQueue
 	onAlert         func(ExecutorFailureAlert)
 	onError         func(error)
+	facts           *engine.Facts
 	executionErrors int
 
 	pollInterval          time.Duration
@@ -80,12 +85,16 @@ func NewWorker(deps WorkerDependencies) (*Worker, error) {
 	if deps.Executor == nil {
 		return nil, errors.New("autodeposit worker requires an executor")
 	}
+	if deps.Facts == nil {
+		return nil, errors.New("autodeposit worker requires facts")
+	}
 	worker := &Worker{
 		store:                 deps.Store,
 		executor:              deps.Executor,
 		hints:                 deps.SlotHints,
 		onAlert:               deps.OnAlert,
 		onError:               deps.OnError,
+		facts:                 deps.Facts,
 		pollInterval:          deps.PollInterval,
 		projectionBatchLimit:  deps.ProjectionBatchLimit,
 		dispatchLimit:         deps.DispatchLimit,
@@ -232,6 +241,13 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 		cycle, cancel := context.WithTimeout(ctx, runtimeCycleTimeout)
 		_, err := w.Tick(cycle)
+		if err == nil {
+			var inflight int
+			if err = w.store.pool.QueryRow(cycle, `SELECT count(*) FROM loyal_yield.balance_sweep_transaction_attempts WHERE attempt_state IN ('prepared','submitted','unknown','ambiguous')`).Scan(&inflight); err == nil {
+				w.facts.Inflight(engine.FamilyAutodeposit, inflight)
+				w.facts.Progress(engine.FamilyAutodeposit)
+			}
+		}
 		cancel()
 		if err != nil {
 			if ctx.Err() != nil {

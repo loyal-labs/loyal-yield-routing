@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 	"strings"
 	"testing"
 	"time"
@@ -309,6 +310,11 @@ type scriptedControllerChain struct {
 	positions    map[string][2]int64
 	simulateErr  error
 	broadcastErr error
+	// The scripted cluster: sent signatures, the last one asked about, and the
+	// finalized height (zero never expires a blockhash).
+	sent          map[string]bool
+	lastSignature string
+	height        uint64
 }
 
 func (s *scriptedControllerChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, authority string) (int64, error) {
@@ -327,28 +333,44 @@ func (s *scriptedControllerChain) LatestBlockhash(ctx context.Context) (string, 
 	return "itest-controller-blockhash", 900, nil
 }
 
-func (s *scriptedControllerChain) Observe(ctx context.Context, attempt DurableAttempt) (AttemptObservation, error) {
-	if strings.HasPrefix(attempt.Signature, "itest-controller-") && attempt.BroadcastCount == 0 {
-		return AttemptObservation{State: AttemptUnknown}, nil
-	}
-	observation, seen := s.observations[attempt.Signature]
-	if !seen {
-		return AttemptObservation{State: AttemptUnknown}, nil
-	}
-	return observation, nil
+func (s *scriptedControllerChain) FinalizedBlockHeight(context.Context) (uint64, error) {
+	return s.height, nil
 }
 
-func (s *scriptedControllerChain) BroadcastExact(ctx context.Context, attempt DurableAttempt) (string, error) {
-	if attempt.BroadcastCount == 0 {
-		return "", errors.New("broadcast preceded durable intent")
+// SignatureState answers with the scripted observation; a controller-built
+// signature is unseen until its bytes are sent.
+func (s *scriptedControllerChain) SignatureState(_ context.Context, signature string) (solana.SignatureState, error) {
+	s.lastSignature = signature
+	unseen := solana.SignatureState{ContextSlot: 1}
+	if strings.HasPrefix(signature, "itest-controller-") && !s.sent[signature] {
+		return unseen, nil
 	}
+	observation, seen := s.observations[signature]
+	if !seen {
+		return unseen, nil
+	}
+	switch observation.State {
+	case AttemptConfirmed:
+		return solana.SignatureState{Found: true, Slot: uint64(*observation.ConfirmedSlot), Commitment: solana.Confirmed, ContextSlot: 1}, nil
+	case AttemptFailed:
+		return solana.SignatureState{Found: true, Slot: 1, Commitment: solana.Confirmed, Err: "scripted failure", ContextSlot: 1}, nil
+	}
+	return unseen, nil
+}
+
+// SendWire lands the bytes of the signature land asked about last.
+func (s *scriptedControllerChain) SendWire(context.Context, []byte, bool) error {
+	if s.sent == nil {
+		s.sent = map[string]bool{}
+	}
+	s.sent[s.lastSignature] = true
 	if s.broadcastErr != nil {
-		return "", s.broadcastErr
+		return s.broadcastErr
 	}
-	for _, effect := range s.receipts[attempt.Signature].Effects {
+	for _, effect := range s.receipts[s.lastSignature].Effects {
 		s.balances[effect.TokenAccount] = effect.PostRaw
 	}
-	return attempt.Signature, nil
+	return nil
 }
 
 func (s *scriptedControllerChain) ConfirmedReceipt(ctx context.Context, signature string) (ReceiptEvidence, error) {
@@ -524,7 +546,7 @@ func TestControllerRecoversConfirmedPull(t *testing.T) {
 		},
 	}
 	wires := &scriptedControllerWires{}
-	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, LeaseRenewWindow: time.Second})
+	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, LeaseRenewWindow: time.Second, Facts: testFacts()})
 	if err != nil {
 		t.Fatalf("build controller: %v", err)
 	}
@@ -620,7 +642,7 @@ func TestControllerRefusesWrongTopUpReceipt(t *testing.T) {
 				},
 			}
 			wires := &scriptedControllerWires{}
-			controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, LeaseRenewWindow: time.Second})
+			controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, LeaseRenewWindow: time.Second, Facts: testFacts()})
 			if err != nil {
 				t.Fatalf("build controller: %v", err)
 			}
@@ -671,7 +693,7 @@ func TestControllerSimulationFailureKeepsCustodyClaimed(t *testing.T) {
 		simulateErr: errors.New("scripted simulation failure"),
 	}
 	wires := &scriptedControllerWires{}
-	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, LeaseRenewWindow: time.Second})
+	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, LeaseRenewWindow: time.Second, Facts: testFacts()})
 	if err != nil {
 		t.Fatalf("build controller: %v", err)
 	}

@@ -282,7 +282,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Autodeposit wires", err)
 	}
-	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: chain, Wires: wires})
+	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: chain, Wires: wires, Facts: facts})
 	if err != nil {
 		return retailError("Autodeposit controller", err)
 	}
@@ -322,7 +322,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("lookup planner", err)
 	}
-	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, OnError: func(error) { log.Print("retail autodeposit tick failed") }, OnAlert: func(autodeposit.ExecutorFailureAlert) {
+	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, Facts: facts, OnError: func(error) { log.Print("retail autodeposit tick failed") }, OnAlert: func(autodeposit.ExecutorFailureAlert) {
 		log.Print("retail autodeposit execution requires attention")
 	}})
 	if err != nil {

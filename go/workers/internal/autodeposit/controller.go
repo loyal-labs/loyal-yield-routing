@@ -7,6 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+)
+
+// landResendEvery matches the fleet landing cadence; landWindow bounds one
+// dispatch's landing to a blockhash lifetime.
+var (
+	landResendEvery = time.Second
+	landWindow      = 90 * time.Second
 )
 
 // WireBuilder is the wire-construction capability the runtime must supply: the
@@ -65,6 +75,7 @@ type Controller struct {
 	store *Store
 	chain Chain
 	wires WireBuilder
+	facts *engine.Facts
 	// leaseRenewWindow is how often an in-flight execution renews its claim
 	// lease. Zero selects the default.
 	leaseRenewWindow time.Duration
@@ -78,6 +89,7 @@ type ControllerDependencies struct {
 	Store *Store
 	Chain Chain
 	Wires WireBuilder
+	Facts *engine.Facts
 	// LeaseRenewWindow is optional.
 	LeaseRenewWindow time.Duration
 }
@@ -94,6 +106,9 @@ func NewController(deps ControllerDependencies) (*Controller, error) {
 	if deps.Wires == nil {
 		return nil, errors.New("autodeposit controller requires a wire builder")
 	}
+	if deps.Facts == nil {
+		return nil, errors.New("autodeposit controller requires facts")
+	}
 	window := deps.LeaseRenewWindow
 	if window == 0 {
 		window = DefaultLeaseRenewWindow
@@ -102,7 +117,7 @@ func NewController(deps ControllerDependencies) (*Controller, error) {
 		return nil, errors.New("claim renewal window must be positive and at most three minutes")
 	}
 
-	return &Controller{store: deps.Store, chain: deps.Chain, wires: deps.Wires, leaseRenewWindow: window}, nil
+	return &Controller{store: deps.Store, chain: deps.Chain, wires: deps.Wires, facts: deps.Facts, leaseRenewWindow: window}, nil
 }
 
 // Execute resolves one dispatchable target and reports its end state through
@@ -136,50 +151,67 @@ func (c *Controller) assertOwnership(scope executionScope, claimToken string) er
 	return nil
 }
 
-// durableSettlement adapts the chain and the SQL journal onto the settlement
-// protocol: observation and broadcast come from the chain, every record write
-// comes from the store under this execution's claim lease.
-type durableSettlement struct {
-	store      *Store
-	chain      Chain
-	leaseToken string
-}
-
-func (d durableSettlement) Observe(ctx context.Context, attempt DurableAttempt) (AttemptObservation, error) {
-	if err := d.store.requireMainnetClaim(ctx, attempt.ClaimToken); err != nil {
-		return AttemptObservation{}, err
-	}
-	return d.chain.Observe(ctx, attempt)
-}
-
-func (d durableSettlement) BroadcastExact(ctx context.Context, attempt DurableAttempt) (string, error) {
-	if err := d.store.requireMainnetClaim(ctx, attempt.ClaimToken); err != nil {
-		return "", err
-	}
-	return d.chain.BroadcastExact(ctx, attempt)
-}
-
-func (d durableSettlement) RecordBroadcast(ctx context.Context, attempt DurableAttempt) (DurableAttempt, error) {
-	// First submission always simulates the exact persisted bytes. A transport
-	// or simulation error leaves the wire prepared, unsent and still claimed;
-	// it is not a chain failure and cannot release custody.
-	if err := d.store.requireMainnetClaim(ctx, attempt.ClaimToken); err != nil {
-		return DurableAttempt{}, err
-	}
-	if attempt.BroadcastCount == 0 {
-		if err := d.chain.SimulateExact(ctx, attempt); err != nil {
-			return DurableAttempt{}, err
-		}
-	}
-	return d.store.RecordAttemptBroadcast(ctx, attempt, d.leaseToken)
-}
-
-func (d durableSettlement) RecordObservation(ctx context.Context, attempt DurableAttempt, observation AttemptObservation) (DurableAttempt, error) {
-	return d.store.RecordAttemptObservation(ctx, attempt, observation, d.leaseToken)
-}
-
+// settle lands one persisted pull or top-up through the shared send path.
+// Every send is counted first, as the TS executor's
+// recordAutodepositAttemptBroadcast does, and the first send simulates the
+// exact bytes. The outcome is recorded as the TS observation state: confirmed,
+// failed or expired. When the landing window closes first, the attempt stays
+// submitted and the next dispatch lands it again.
 func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settlement, error) {
-	return SettleDurableAttempt(scope.ctx, attempt, durableSettlement{store: c.store, chain: c.chain, leaseToken: scope.leaseToken})
+	if attempt.Signature == "" || attempt.SignedTransactionBase64 == "" {
+		return Settlement{}, errors.New("durable attempt has no persisted wire identity")
+	}
+	if attempt.State == AttemptConfirmed || attempt.State == AttemptFailed || attempt.State == AttemptExpired {
+		return Settlement{Attempt: attempt}, nil
+	}
+	if err := c.store.requireMainnetClaim(scope.ctx, attempt.ClaimToken); err != nil {
+		return Settlement{}, err
+	}
+	wire, err := base64StdDecode(attempt.SignedTransactionBase64)
+	if err != nil {
+		return Settlement{}, fmt.Errorf("decode persisted %s wire: %w", attempt.OperationKind, err)
+	}
+	landCtx, cancel := context.WithTimeout(scope.ctx, landWindow)
+	out, err := solana.Land(landCtx, c.chain, solana.Attempt{
+		Wire: wire, Signature: attempt.Signature, LastValidBlockHeight: uint64(attempt.LastValidBlockHeight),
+		Sends: attempt.BroadcastCount, Required: solana.Confirmed,
+	}, landResendEvery, func(sendCtx context.Context) error {
+		if attempt.BroadcastCount == 0 {
+			// A simulation error leaves the wire prepared, unsent and claimed.
+			if err := c.chain.SimulateExact(sendCtx, attempt); err != nil {
+				return err
+			}
+		}
+		recorded, err := c.store.RecordAttemptBroadcast(sendCtx, attempt, scope.leaseToken)
+		if err == nil {
+			attempt = recorded
+		}
+		return err
+	})
+	cancel()
+	if errors.Is(err, context.DeadlineExceeded) && scope.ctx.Err() == nil {
+		return Settlement{Attempt: attempt}, nil
+	}
+	if err != nil {
+		return Settlement{}, err
+	}
+	observation := AttemptObservation{State: AttemptExpired}
+	switch out.Kind {
+	case solana.Landed:
+		slot := int64(out.Slot)
+		observation = AttemptObservation{State: AttemptConfirmed, ConfirmedSlot: &slot}
+		c.facts.Landed(engine.FamilyAutodeposit)
+	case solana.Failed:
+		observation = AttemptObservation{State: AttemptFailed, Err: errors.New("transaction failed on chain: " + out.Err)}
+		c.facts.Failed(engine.FamilyAutodeposit, "transaction_failed")
+	default:
+		c.facts.Failed(engine.FamilyAutodeposit, "blockhash_expired")
+	}
+	recorded, err := c.store.RecordAttemptObservation(scope.ctx, attempt, observation, scope.leaseToken)
+	if err != nil {
+		return Settlement{}, err
+	}
+	return Settlement{Attempt: recorded}, nil
 }
 
 // executeRecovery resumes a claim whose pull already holds custody. It runs
@@ -306,8 +338,11 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	return c.executeFrozenClaim(scope, claimToken, target, frozen)
 }
 
-// An unsigned claim may need account setup. Signed setup remains owned until
-// its exact confirmation and decoded account readback, before a pull exists.
+// An unsigned claim may need account setup before its pull. Like the TS
+// executor's ensure-before-pull path the chain account is the fact: each stage
+// is inspected, built, landed and read back here. A stage creates its account
+// and pays its own rent shortfall in one atomic transaction, so a stage
+// repeated after a crash fails on the existing account and costs only a fee.
 func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string, target ExecutableTarget, frozen DepositPlan) (ExecutorResult, error) {
 	ready, err := c.ensureDestinationSetup(scope, claimToken, frozen)
 	if err != nil {
@@ -427,105 +462,57 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 	if !ok {
 		return true, nil
 	} // Existing exact-route test adapters have no setup capability.
-	for completed := 0; completed < 4; completed++ {
-		attempt, err := c.store.LoadDestinationSetup(scope.ctx, claimToken, scope.leaseToken)
+	for stage := 0; stage < 4; stage++ {
+		current, err := c.store.LoadTargetExecutionContext(scope.ctx, plan.Target.ID)
 		if err != nil {
 			return false, err
 		}
-		if attempt != nil && attempt.State == AttemptAmbiguous {
-			return false, nil
+		if current == nil || !current.FreshActionable {
+			return true, nil
 		}
-		if attempt != nil && attempt.State == AttemptConfirmed {
-			if _, err = builder.ReadbackDestinationSetup(scope.ctx, plan, attempt.Plan, *attempt.ConfirmedSlot); err != nil {
-				return false, err
-			}
+		next, err := builder.InspectDestinationSetup(scope.ctx, plan)
+		if err != nil || next == nil {
+			return next == nil && err == nil, err
 		}
-		if attempt == nil || attempt.State == AttemptConfirmed || attempt.State == AttemptFailed || attempt.State == AttemptExpired {
-			current, err := c.store.LoadTargetExecutionContext(scope.ctx, plan.Target.ID)
-			if err != nil {
-				return false, err
-			}
-			if current == nil || !current.FreshActionable {
-				return true, nil
-			}
-			next, err := builder.InspectDestinationSetup(scope.ctx, plan)
-			if err != nil {
-				return false, err
-			}
-			if next == nil {
-				return true, nil
-			}
-			blockhash, height, err := c.chain.LatestBlockhash(scope.ctx)
-			if err != nil {
-				return false, err
-			}
-			wire, err := builder.BuildDestinationSetup(scope.ctx, plan, *next, blockhash, height)
-			if err != nil {
-				return false, err
-			}
-			saved, err := c.store.PersistDestinationSetup(scope.ctx, claimToken, scope.leaseToken, *next, wire)
-			if err != nil {
-				return false, err
-			}
-			attempt = &saved
-		}
-		if err = builder.ProveDestinationSetup(scope.ctx, plan, *attempt); err != nil {
-			return false, err
-		}
-		if err := c.store.requireMainnetTarget(scope.ctx, plan.Target.ID); err != nil {
-			return false, err
-		}
-		observation, err := c.chain.Observe(scope.ctx, attempt.durable())
+		blockhash, height, err := c.chain.LatestBlockhash(scope.ctx)
 		if err != nil {
 			return false, err
 		}
-		if observation.State == AttemptUnknown {
-			if attempt.BroadcastCount == 0 {
-				if err = c.chain.SimulateExact(scope.ctx, attempt.durable()); err != nil {
-					return false, err
-				}
-			}
-			saved, err := c.store.RecordDestinationSetupBroadcast(scope.ctx, *attempt, scope.leaseToken)
-			if err != nil {
-				return false, err
-			}
-			attempt = &saved
-			if err := c.store.requireMainnetTarget(scope.ctx, plan.Target.ID); err != nil {
-				return false, err
-			}
-			returned, sendErr := c.chain.BroadcastExact(scope.ctx, attempt.durable())
-			if sendErr == nil && returned != attempt.Wire.Signature {
-				observation = AttemptObservation{State: AttemptAmbiguous, Err: errors.New("setup broadcast returned another signature")}
-			} else {
-				observation, err = c.chain.Observe(scope.ctx, attempt.durable())
-				if err != nil {
-					return false, err
-				}
-				if observation.State == AttemptUnknown {
-					observation.Err = sendErr
-				}
-			}
-		}
-		var evidence *SetupReadback
-		if observation.State == AttemptConfirmed {
-			if observation.ConfirmedSlot == nil {
-				return false, errors.New("setup confirmed without slot")
-			}
-			readback, readErr := builder.ReadbackDestinationSetup(scope.ctx, plan, attempt.Plan, *observation.ConfirmedSlot)
-			err = readErr
-			evidence = &readback
-			if err != nil {
-				return false, err
-			}
-		}
-		if _, err = c.store.RecordDestinationSetupObservation(scope.ctx, *attempt, observation, evidence, scope.leaseToken); err != nil {
+		wire, err := builder.BuildDestinationSetup(scope.ctx, plan, *next, blockhash, height)
+		if err != nil {
 			return false, err
 		}
-		if observation.State != AttemptConfirmed {
+		setup := SetupAttempt{ClaimToken: claimToken, Plan: *next, Wire: wire}
+		if err = builder.ProveDestinationSetup(scope.ctx, plan, setup); err != nil {
+			return false, err
+		}
+		if err = c.chain.SimulateExact(scope.ctx, setup.durable()); err != nil {
+			return false, err
+		}
+		bytes, err := base64StdDecode(wire.SignedTransactionBase64)
+		if err != nil {
+			return false, err
+		}
+		landCtx, cancel := context.WithTimeout(scope.ctx, landWindow)
+		out, err := solana.Land(landCtx, c.chain, solana.Attempt{
+			Wire: bytes, Signature: wire.Signature, LastValidBlockHeight: uint64(wire.LastValidBlockHeight), Required: solana.Confirmed,
+		}, landResendEvery, func(context.Context) error { return c.assertOwnership(scope, claimToken) })
+		cancel()
+		if errors.Is(err, context.DeadlineExceeded) && scope.ctx.Err() == nil {
 			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if out.Kind != solana.Landed {
+			// Not landed: the next dispatch inspects the chain again.
+			return false, nil
+		}
+		if _, err = builder.ReadbackDestinationSetup(scope.ctx, plan, *next, int64(out.Slot)); err != nil {
+			return false, err
 		}
 	}
-	// Four dependency stages were proved; route inspection runs once more.
+	// Four dependency stages were created; route inspection runs once more.
 	next, err := builder.InspectDestinationSetup(scope.ctx, plan)
 	return next == nil, err
 }

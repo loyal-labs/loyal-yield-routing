@@ -51,7 +51,7 @@ func TestNamespaceRefusesFreshControlWork(t *testing.T) {
 				if err != nil || artifact != nil {
 					t.Fatal("foreign artifact target loaded")
 				}
-				controller, err := NewController(ControllerDependencies{Store: s, Chain: namespaceNoRPC{}, Wires: &scriptedControllerWires{}})
+				controller, err := NewController(ControllerDependencies{Store: s, Chain: namespaceNoRPC{}, Wires: &scriptedControllerWires{}, Facts: testFacts()})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -77,19 +77,15 @@ func TestNamespaceSignedForeignCustodyStaysHeldWithoutRPC(t *testing.T) {
 			if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_targets SET cluster=$2 WHERE id=$1`, target.TargetID, value); err != nil {
 				t.Fatal(err)
 			}
-			controller, err := NewController(ControllerDependencies{Store: s, Chain: namespaceNoRPC{}, Wires: &scriptedControllerWires{}})
+			controller, err := NewController(ControllerDependencies{Store: s, Chain: namespaceNoRPC{}, Wires: &scriptedControllerWires{}, Facts: testFacts()})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err = controller.Execute(t.Context(), ExecutableTarget{TargetID: target.TargetID, ScheduledSlotID: slot, ClaimToken: claim}); !errors.Is(err, ErrChainNamespace) {
 				t.Fatalf("foreign recovery=%v", err)
 			}
-			adapter := durableSettlement{store: s, chain: namespaceNoRPC{}, leaseToken: "lease-current"}
-			if _, err = adapter.Observe(t.Context(), original); !errors.Is(err, ErrChainNamespace) {
-				t.Fatalf("foreign observe=%v", err)
-			}
-			if _, err = adapter.BroadcastExact(t.Context(), original); !errors.Is(err, ErrChainNamespace) {
-				t.Fatalf("foreign send=%v", err)
+			if _, err = controller.settle(executionScope{ctx: t.Context(), leaseToken: "lease-current"}, original); !errors.Is(err, ErrChainNamespace) {
+				t.Fatalf("foreign landing=%v", err)
 			}
 			saved, err := s.LoadLatestAttempt(t.Context(), claim, OperationPull)
 			if err != nil || saved.ID != original.ID || saved.State != AttemptPrepared || saved.BroadcastCount != 0 || saved.SignedTransactionBase64 != wire {
@@ -161,7 +157,7 @@ func TestNamespaceChangedInsideBuilderCannotPublishPull(t *testing.T) {
 				}
 			}}
 			chain := &scriptedControllerChain{balances: map[string]int64{target.WalletTokenATA: 9_000_000, target.VaultTokenATA: 0}}
-			controller, err := NewController(ControllerDependencies{Store: s, Chain: chain, Wires: builder})
+			controller, err := NewController(ControllerDependencies{Store: s, Chain: chain, Wires: builder, Facts: testFacts()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,34 +174,6 @@ func TestNamespaceChangedInsideBuilderCannotPublishPull(t *testing.T) {
 			}
 			if attempts != 0 || chain.balances[target.WalletTokenATA] != 9_000_000 {
 				t.Fatal("foreign builder packet escaped atomic namespace gate")
-			}
-		})
-	}
-}
-
-func TestNamespaceChangedBeforeSetupPersistenceHoldsNewPacket(t *testing.T) {
-	for _, value := range []any{"devnet", nil} {
-		t.Run(map[bool]string{true: "null", false: "devnet"}[value == nil], func(t *testing.T) {
-			s := integrationStore(t)
-			target, claim, _ := selectedReleaseClaim(t, s, "namespace-setup")
-			builder, plan, setup, _ := setupFixture(t, SetupATA)
-			plan.Target.ID, plan.Target.ManagedVaultID, plan.AmountRaw = target.TargetID, target.ManagedVaultID, 5_000_000
-			if _, err := s.FreezeDepositPlan(t.Context(), claim, "lease-current", plan); err != nil {
-				t.Fatal(err)
-			}
-			wire, err := builder.BuildDestinationSetup(t.Context(), plan, setup, fixedKey("namespace-setup-hash"), 900)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_targets SET cluster=$2 WHERE id=$1`, target.TargetID, value); err != nil {
-				t.Fatal(err)
-			}
-			if _, err = s.PersistDestinationSetup(t.Context(), claim, "lease-current", setup, wire); !errors.Is(err, ErrChainNamespace) {
-				t.Fatalf("foreign setup publication=%v", err)
-			}
-			var attempts int
-			if err = s.pool.QueryRow(t.Context(), `SELECT count(*) FROM loyal_yield.balance_sweep_destination_setup_attempts WHERE claim_token=$1`, claim).Scan(&attempts); err != nil || attempts != 0 {
-				t.Fatalf("setup journal=%d %v", attempts, err)
 			}
 		})
 	}

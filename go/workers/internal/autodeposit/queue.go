@@ -82,11 +82,6 @@ WITH stale_claims AS (
                  OR (attempt.operation_kind = 'pull'
                      AND attempt.attempt_state = ANY($5::text[])))
       )
-      AND NOT EXISTS (
-          SELECT 1 FROM loyal_yield.balance_sweep_destination_setup_attempts AS setup
-          WHERE setup.claim_token=claim.claim_token
-            AND setup.attempt_state IN('prepared','submitted','unknown','ambiguous')
-      )
       AND target.token_mint = $3
       AND target.cluster = 'mainnet-beta'
       AND target.wallet_balance_floor_raw IS NOT NULL

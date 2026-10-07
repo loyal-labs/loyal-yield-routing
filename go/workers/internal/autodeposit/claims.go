@@ -647,11 +647,6 @@ SELECT COALESCE(autodeposit_executor_lease_token = $2
                 OR (attempt.operation_kind = 'pull'
                     AND attempt.attempt_state = ANY($3::text[])))
        )
-       AND NOT EXISTS(
-         SELECT 1 FROM loyal_yield.balance_sweep_destination_setup_attempts setup
-         WHERE setup.claim_token=claim.claim_token
-           AND setup.attempt_state IN('prepared','submitted','unknown','ambiguous')
-       )
 FROM loyal_yield.balance_sweep_lot_claims AS claim
 WHERE claim.claim_token = $1`, claimToken, leaseToken, ClaimHoldingPullAttemptStates).Scan(&ownsLease, &unspent); err != nil {
 			return fmt.Errorf("check autodeposit claim release authority: %w", err)
@@ -732,3 +727,17 @@ WHERE claim_token = $1`, claimToken); err != nil {
 
 // ErrClaimCustodyHeld distinguishes a financial hold from executor ownership.
 var ErrClaimCustodyHeld = errors.New("autodeposit claim holds custody")
+
+// LoadFrozenDepositPlan reads the claim's immutable deposit plan under the
+// executor's live claim lease.
+func (s *Store) LoadFrozenDepositPlan(ctx context.Context, claimToken string, targetID int64, leaseToken string) (DepositPlan, error) {
+	var raw []byte
+	err := s.pool.QueryRow(ctx, `SELECT autodeposit_deposit_plan FROM loyal_yield.balance_sweep_lot_claims WHERE claim_token=$1 AND target_id=$2 AND status='selected' AND autodeposit_executor_lease_token=$3 AND autodeposit_executor_lease_expires_at>now()`, claimToken, targetID, leaseToken).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DepositPlan{}, ErrOwnershipLost
+	}
+	if err != nil {
+		return DepositPlan{}, err
+	}
+	return UnmarshalDepositPlan(raw)
+}

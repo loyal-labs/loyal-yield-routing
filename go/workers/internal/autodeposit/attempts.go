@@ -1,9 +1,7 @@
 package autodeposit
 
 import (
-	"context"
 	"errors"
-	"fmt"
 )
 
 // OperationKind is one leg of an autodeposit: the wallet pull, then the Kamino
@@ -99,97 +97,9 @@ func AlertForAttemptState(state AttemptState) *ExecutorFailureAlert {
 	}
 }
 
-// AttemptDependencies are the consumer-provided effects of settlement. The
-// family owns the decision order; the owner of the RPC client and store owns
-// the implementations, so this package never touches a network or a database.
-type AttemptDependencies interface {
-	Observe(ctx context.Context, attempt DurableAttempt) (AttemptObservation, error)
-	// BroadcastExact resubmits the persisted bytes and returns the signature the
-	// cluster acknowledged.
-	BroadcastExact(ctx context.Context, attempt DurableAttempt) (string, error)
-	RecordBroadcast(ctx context.Context, attempt DurableAttempt) (DurableAttempt, error)
-	RecordObservation(ctx context.Context, attempt DurableAttempt, observation AttemptObservation) (DurableAttempt, error)
-}
-
-// Settlement is the outcome of resolving one persisted attempt.
+// Settlement is the outcome of landing one persisted attempt.
 type Settlement struct {
-	Attempt     DurableAttempt
-	Observation AttemptObservation
-	Broadcasted bool
-}
-
-func observationIsTerminal(observation AttemptObservation) bool {
-	return observation.State != AttemptUnknown
-}
-
-// SettleDurableAttempt resolves one persisted signed attempt without ever
-// constructing a replacement. Re-broadcast is safe because it uses the
-// immutable bytes whose deterministic signature is already stored; anything else
-// would be a new spend decided from a balance delta.
-//
-// Observe first: a terminal observation records and stops. Otherwise the
-// durable broadcast INTENT is committed before any send: RecordBroadcast
-// advances broadcast_count on the immutable wire, so a crash mid-submit leaves
-// durable evidence that the exact bytes may be in flight. Only then are the
-// bytes broadcast and the observed outcome recorded — an observed submit is the
-// confirmation evidence, never the count. A broadcast that errors falls back to
-// a fresh observation so an already-landed submission is not mislabeled as
-// failed; a signature the cluster returns that differs from the persisted one is
-// recorded as contradictory evidence, never as observed progress.
-func SettleDurableAttempt(ctx context.Context, attempt DurableAttempt, dependencies AttemptDependencies) (Settlement, error) {
-	if attempt.Signature == "" || attempt.SignedTransactionBase64 == "" {
-		return Settlement{}, errors.New("durable attempt has no persisted wire identity")
-	}
-	observation, err := dependencies.Observe(ctx, attempt)
-	if err != nil {
-		return Settlement{}, err
-	}
-	if observationIsTerminal(observation) {
-		recorded, err := dependencies.RecordObservation(ctx, attempt, observation)
-		if err != nil {
-			return Settlement{}, err
-		}
-		return Settlement{Attempt: recorded, Observation: observation}, nil
-	}
-
-	// Durable intent precedes the send: from here the wire is treated as
-	// possibly in flight by every recovery path.
-	intent, err := dependencies.RecordBroadcast(ctx, attempt)
-	if err != nil {
-		return Settlement{}, err
-	}
-	attempt = intent
-
-	broadcasted := false
-	returnedSignature, broadcastErr := dependencies.BroadcastExact(ctx, attempt)
-	if broadcastErr == nil {
-		if returnedSignature != attempt.Signature {
-			broadcastErr = fmt.Errorf("RPC returned signature %s, expected persisted signature %s", returnedSignature, attempt.Signature)
-		}
-	}
-	if broadcastErr == nil {
-		broadcasted = true
-		observation, err = dependencies.Observe(ctx, attempt)
-		if err != nil {
-			return Settlement{}, err
-		}
-	} else {
-		// The error may mean the submission landed anyway; observe again and
-		// record chain truth rather than a transport verdict.
-		retryObservation, observeErr := dependencies.Observe(ctx, attempt)
-		if observeErr != nil {
-			return Settlement{}, observeErr
-		}
-		observation = retryObservation
-		if observation.State == AttemptUnknown && observation.Err == nil {
-			observation.Err = broadcastErr
-		}
-	}
-	recorded, err := dependencies.RecordObservation(ctx, attempt, observation)
-	if err != nil {
-		return Settlement{}, err
-	}
-	return Settlement{Attempt: recorded, Observation: observation, Broadcasted: broadcasted}, nil
+	Attempt DurableAttempt
 }
 
 // TopUpRecoveryAction classifies what a resumed claim does about its deposit leg.

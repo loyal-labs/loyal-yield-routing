@@ -53,7 +53,6 @@ func (s *Store) RequireSchema(ctx context.Context) error {
 		"loyal_yield.balance_sweep_lot_claims",
 		"loyal_yield.balance_sweep_lot_claim_items",
 		"loyal_yield.balance_sweep_transaction_attempts",
-		"loyal_yield.balance_sweep_destination_setup_attempts",
 		"loyal_yield.projection_offsets",
 		"loyal_yield.managed_vaults",
 		"loyal_yield.route_policies",

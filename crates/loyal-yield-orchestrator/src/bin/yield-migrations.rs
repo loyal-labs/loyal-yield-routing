@@ -462,12 +462,6 @@ const MIGRATIONS: &[Migration] = &[
         expected_checksum: None,
     },
     Migration {
-        version: 87,
-        name: "balance_sweep_destination_setup",
-        sql: include_str!("../../../loyal-yield-store/migrations/0087_balance_sweep_destination_setup.sql"),
-        expected_checksum: None,
-    },
-    Migration {
         version: 89,
         name: "autodeposit_floor_rebaseline_classification",
         sql: include_str!("../../../loyal-yield-store/migrations/0089_autodeposit_floor_rebaseline_classification.sql"),

@@ -57,7 +57,7 @@ FROM loyal_yield.balance_sweep_targets WHERE id=$1`, seeded.TargetID, USDCMint);
 		positions: map[string][2]int64{"fresh-reserve": {5_000_001, 870_002}},
 	}
 	wires := &scriptedControllerWires{suffix: "-fresh"}
-	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires})
+	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}

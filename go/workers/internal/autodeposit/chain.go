@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gagliardetto/solana-go"
 
@@ -32,11 +33,8 @@ type Chain interface {
 	// LatestBlockhash returns a fresh confirmed blockhash and its validity
 	// window, required before any wire is built.
 	LatestBlockhash(ctx context.Context) (string, int64, error)
-	// Observe reads the chain state of one persisted signature.
-	Observe(ctx context.Context, attempt DurableAttempt) (AttemptObservation, error)
-	// BroadcastExact submits the persisted bytes once, without RPC-side retry,
-	// and returns the acknowledged signature.
-	BroadcastExact(ctx context.Context, attempt DurableAttempt) (string, error)
+	// LandChain is the shared send path persisted wires land through.
+	solwire.LandChain
 	// ConfirmedReceipt reads the immutable transaction receipt for the exact
 	// signature, for integer effect verification.
 	ConfirmedReceipt(ctx context.Context, signature string) (ReceiptEvidence, error)
@@ -88,6 +86,7 @@ func (e ReceiptEvidence) EffectFor(tokenAccount string) (ReceiptEffect, bool) {
 // receipts, simulation.
 type RPCChain struct {
 	rpc *backyard.RPCClient
+	*solwire.LandRPC
 }
 
 // NewRPCChain builds the production chain adapter over an RPC endpoint URL.
@@ -101,7 +100,11 @@ func NewRPCChain(rpcURL string) (*RPCChain, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build autodeposit chain RPC: %w", err)
 	}
-	return &RPCChain{rpc: client}, nil
+	land, err := solwire.NewLandRPC(rpcURL, 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return &RPCChain{rpc: client, LandRPC: land}, nil
 }
 
 func (c *RPCChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, authority string) (int64, error) {
@@ -193,48 +196,6 @@ func (c *RPCChain) LatestBlockhash(ctx context.Context) (string, int64, error) {
 
 func (c *RPCChain) MinimumBalanceForRentExemption(ctx context.Context, size int) (uint64, error) {
 	return c.rpc.MinimumBalanceForRentExemption(ctx, size)
-}
-
-func (c *RPCChain) Observe(ctx context.Context, attempt DurableAttempt) (AttemptObservation, error) {
-	if _, err := persistedWireTransaction(attempt); err != nil {
-		return AttemptObservation{}, err
-	}
-	status, err := c.rpc.SignatureStatus(ctx, attempt.Signature)
-	if err != nil {
-		return AttemptObservation{}, fmt.Errorf("observe autodeposit %s signature: %w", attempt.OperationKind, err)
-	}
-	switch {
-	case !status.Found:
-		if attempt.LastValidBlockHeight <= 0 {
-			return AttemptObservation{State: AttemptUnknown}, nil
-		}
-		height, err := c.rpc.FinalizedBlockHeight(ctx)
-		if err != nil {
-			return AttemptObservation{}, err
-		}
-		if height > attempt.LastValidBlockHeight {
-			return AttemptObservation{State: AttemptExpired}, nil
-		}
-		return AttemptObservation{State: AttemptUnknown}, nil
-	case status.Failed:
-		return AttemptObservation{State: AttemptFailed, Err: errors.New("transaction failed on chain")}, nil
-	case status.Confirmed:
-		slot := status.ConfirmationSlot
-		return AttemptObservation{State: AttemptConfirmed, ConfirmedSlot: &slot}, nil
-	default:
-		return AttemptObservation{State: AttemptUnknown}, nil
-	}
-}
-
-func (c *RPCChain) BroadcastExact(ctx context.Context, attempt DurableAttempt) (string, error) {
-	if _, err := persistedWireTransaction(attempt); err != nil {
-		return "", err
-	}
-	wire, err := base64StdDecode(attempt.SignedTransactionBase64)
-	if err != nil {
-		return "", fmt.Errorf("decode persisted %s wire: %w", attempt.OperationKind, err)
-	}
-	return c.rpc.SendSignedTransactionOnce(ctx, wire, attempt.Signature)
 }
 
 func (c *RPCChain) ConfirmedReceipt(ctx context.Context, signature string) (ReceiptEvidence, error) {

@@ -43,7 +43,7 @@ func TestUnsignedRepairNeverReopensPersistedWire(t *testing.T) {
 			if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_surplus_lots SET status='open',remaining_amount_raw=original_amount_raw WHERE target_id=$1`, target.TargetID); err != nil {
 				t.Fatal(err)
 			}
-			w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{}})
+			w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{}, Facts: testFacts()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,11 +80,11 @@ func TestWorkerRepairsUnsignedMissingPositionWithoutAppReads(t *testing.T) {
 		pull:  {Signature: pull, Slot: 870001, Effects: []ReceiptEffect{{TokenAccount: wallet, Mint: USDCMint, PreRaw: 9_000_000, PostRaw: 4_000_000}, {TokenAccount: custody, Mint: USDCMint, PreRaw: 0, PostRaw: 5_000_000}}},
 		topup: {Signature: topup, Slot: 870002, Effects: []ReceiptEffect{{TokenAccount: custody, Mint: USDCMint, PreRaw: 5_000_000, PostRaw: 0}, {TokenAccount: "itest-liquidity-supply", Mint: USDCMint, PreRaw: 10, PostRaw: 5_000_010}}}}, positions: map[string][2]int64{"repair-reserve": {5_000_001, 870002}}}
 	wires := &scriptedControllerWires{suffix: "-repair"}
-	controller, err := NewController(ControllerDependencies{Store: s, Chain: chain, Wires: wires})
+	controller, err := NewController(ControllerDependencies{Store: s, Chain: chain, Wires: wires, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := NewWorker(WorkerDependencies{Store: s, Executor: controller})
+	w, err := NewWorker(WorkerDependencies{Store: s, Executor: controller, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestUnsignedStaleRepairClearsOnlyUnheldRows(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_wallet_balances_current SET amount_raw=4000000,observed_slot=2 WHERE target_id=$1`, target.TargetID); err != nil {
 		t.Fatal(err)
 	}
-	w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{}})
+	w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{}, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}

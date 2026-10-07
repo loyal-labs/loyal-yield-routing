@@ -33,16 +33,12 @@ type DestinationSetupPlan struct {
 	RentTopUpLamports uint64     `json:"rentTopUpLamports"`
 	ObservedSlot      int64      `json:"observedSlot"`
 }
+
+// SetupAttempt is one signed destination setup stage, landed in-process.
 type SetupAttempt struct {
-	ID               int64
-	ClaimToken       string
-	Plan             DestinationSetupPlan
-	Wire             BuiltWire
-	State            AttemptState
-	BroadcastCount   int
-	ConfirmedSlot    *int64
-	ReadbackSlot     *int64
-	ReadbackEvidence *SetupReadback
+	ClaimToken string
+	Plan       DestinationSetupPlan
+	Wire       BuiltWire
 }
 
 type SetupReadback struct {
@@ -55,7 +51,7 @@ type SetupReadback struct {
 }
 
 func (a SetupAttempt) durable() DurableAttempt {
-	return DurableAttempt{ID: a.ID, ClaimToken: a.ClaimToken, OperationKind: OperationKind("setup_" + string(a.Plan.Stage)), Signature: a.Wire.Signature, SignedTransactionBase64: a.Wire.SignedTransactionBase64, SignedTransactionSHA256: a.Wire.SignedTransactionSHA256, RecentBlockhash: a.Wire.RecentBlockhash, LastValidBlockHeight: a.Wire.LastValidBlockHeight, State: a.State, BroadcastCount: a.BroadcastCount, ConfirmedSlot: a.ConfirmedSlot}
+	return DurableAttempt{ClaimToken: a.ClaimToken, OperationKind: OperationKind("setup_" + string(a.Plan.Stage)), Signature: a.Wire.Signature, SignedTransactionBase64: a.Wire.SignedTransactionBase64, SignedTransactionSHA256: a.Wire.SignedTransactionSHA256, RecentBlockhash: a.Wire.RecentBlockhash, LastValidBlockHeight: a.Wire.LastValidBlockHeight}
 }
 
 type SetupRentReader func(context.Context, int) (uint64, error)

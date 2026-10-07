@@ -370,10 +370,6 @@ inserted AS (
   WHERE NOT EXISTS (SELECT 1 FROM existing_active)
     AND $15::boolean
     AND ($4 <> 'pull' OR NOT EXISTS (
-      SELECT 1 FROM loyal_yield.balance_sweep_destination_setup_attempts setup
-      WHERE setup.claim_token=$1 AND setup.attempt_state IN ('prepared','submitted','unknown','ambiguous')
-    ))
-    AND ($4 <> 'pull' OR NOT EXISTS (
       SELECT 1
       FROM loyal_yield.balance_sweep_targets AS target
       JOIN loyal_yield.managed_vaults AS vault
@@ -440,7 +436,7 @@ SET attempt_state = 'submitted',
 WHERE id = $1
   AND signature = $2
   AND signed_transaction_sha256 = $3
-  AND attempt_state IN ('prepared', 'submitted', 'unknown')
+  AND attempt_state IN ('prepared', 'submitted', 'unknown', 'ambiguous')
   AND EXISTS (
     SELECT 1
     FROM loyal_yield.balance_sweep_lot_claims AS claim

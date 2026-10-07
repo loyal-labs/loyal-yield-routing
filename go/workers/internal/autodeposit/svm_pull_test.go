@@ -382,10 +382,10 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e = chain.SimulateExact(t.Context(), attempt); e != nil {
 		t.Fatalf("actual Go pull simulation: %v", e)
 	}
-	if _, e = chain.BroadcastExact(t.Context(), attempt); e != nil {
+	if e = chain.SendWire(t.Context(), svmWire(t, attempt), true); e != nil {
 		t.Fatal(e)
 	}
-	observation, e := chain.Observe(t.Context(), attempt)
+	observation, e := svmObserve(t.Context(), chain, attempt)
 	if e != nil || observation.State != AttemptConfirmed || observation.ConfirmedSlot == nil {
 		t.Fatalf("actual confirmation=%+v %v", observation, e)
 	}
@@ -407,7 +407,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 			t.Fatalf("actual balance %s=%d want%d err=%v", expected.account, balance, expected.amount, e)
 		}
 	}
-	if _, e = chain.BroadcastExact(t.Context(), attempt); e != nil {
+	if e = chain.SendWire(t.Context(), svmWire(t, attempt), true); e != nil {
 		t.Fatal(e)
 	}
 	balance, e := chain.ConfirmedTokenBalanceRaw(t.Context(), f.VaultATA, f.Vault)
@@ -434,10 +434,10 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e = chain.SimulateExact(t.Context(), top); e != nil {
 		t.Fatalf("actual official top-up simulation: %v", e)
 	}
-	if _, e = chain.BroadcastExact(t.Context(), top); e != nil {
+	if e = chain.SendWire(t.Context(), svmWire(t, top), true); e != nil {
 		t.Fatal(e)
 	}
-	topObservation, e := chain.Observe(t.Context(), top)
+	topObservation, e := svmObserve(t.Context(), chain, top)
 	if e != nil || topObservation.State != AttemptConfirmed || topObservation.ConfirmedSlot == nil {
 		t.Fatalf("actual top-up confirmation=%+v %v", topObservation, e)
 	}
@@ -448,7 +448,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if position, slot, err := chain.ConfirmedVaultPositionRaw(t.Context(), plan, route); err != nil || position != f.AmountRaw || slot != 1000 {
 		t.Fatalf("actual mock obligation/collateral conversion=%d slot%d err=%v", position, slot, err)
 	}
-	if _, e = chain.BroadcastExact(t.Context(), top); e != nil {
+	if e = chain.SendWire(t.Context(), svmWire(t, top), true); e != nil {
 		t.Fatal(e)
 	}
 	for _, expected := range []struct {

@@ -138,8 +138,7 @@ ORDER BY yp.updated_at DESC,yp.id DESC LIMIT 1 FOR SHARE OF mv,rp,yp`, id).Scan(
  JOIN loyal_yield.balance_sweep_surplus_lots lot ON lot.id=item.lot_id
  JOIN loyal_yield.balance_sweep_lot_claims claim ON claim.claim_token=item.claim_token
  WHERE lot.scheduled_slot_id=slot.id AND (claim.execution_id IS NOT NULL
- OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts a WHERE a.claim_token=claim.claim_token)
- OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_destination_setup_attempts a WHERE a.claim_token=claim.claim_token AND a.attempt_state IN('prepared','submitted','unknown','ambiguous'))))
+ OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts a WHERE a.claim_token=claim.claim_token)))
  AND NOT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts a WHERE a.scheduled_slot_id=slot.id)
  FOR UPDATE OF slot
 ), suppressed AS (
