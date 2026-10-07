@@ -39,22 +39,23 @@ func NewSweepNotifier(endpoint, secret string) (*SweepNotifier, error) {
 
 // NotifyFailed reports one failed scheduled slot exactly as the TS executor's
 // notifyFailedSweep did: {walletAddress, kind: "failed", dedupeKey: "slot-<id>"}
-// with no amount. The result is logged and never changes the sweep's outcome.
-func (n *SweepNotifier) NotifyFailed(ctx context.Context, wallet string, scheduledSlotID int64) {
+// with no amount. The result is logged and never changes the sweep's outcome;
+// it reports whether the app accepted the push.
+func (n *SweepNotifier) NotifyFailed(ctx context.Context, wallet string, scheduledSlotID int64) bool {
 	if n == nil {
-		return
+		return false
 	}
 	if scheduledSlotID <= 0 {
 		slog.Warn("autodeposit sweep notify skipped", "event", "solana_week_sweep_notify", "status", "skipped", "reason", "no_scheduled_slot")
-		return
+		return false
 	}
 	body, err := json.Marshal(map[string]string{"walletAddress": wallet, "kind": "failed", "dedupeKey": fmt.Sprintf("slot-%d", scheduledSlotID)})
 	if err != nil {
-		return
+		return false
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, n.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return
+		return false
 	}
 	request.Header.Set("Authorization", "Bearer "+n.secret)
 	request.Header.Set("Content-Type", "application/json")
@@ -70,7 +71,7 @@ func (n *SweepNotifier) NotifyFailed(ctx context.Context, wallet string, schedul
 			}
 		}
 		slog.Warn("autodeposit sweep notify failed", "event", "solana_week_sweep_notify", "status", "failed", "httpStatus", nil, "error", message)
-		return
+		return false
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
@@ -83,7 +84,8 @@ func (n *SweepNotifier) NotifyFailed(ctx context.Context, wallet string, schedul
 			message = http.StatusText(response.StatusCode)
 		}
 		slog.Warn("autodeposit sweep notify failed", "event", "solana_week_sweep_notify", "status", "failed", "httpStatus", response.StatusCode, "error", message)
-		return
+		return false
 	}
 	slog.Info("autodeposit sweep notify sent", "event", "solana_week_sweep_notify", "status", "sent", "httpStatus", response.StatusCode)
+	return true
 }

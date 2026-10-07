@@ -18,8 +18,8 @@ import (
 // failure, and users whose sweeps had been promised heard nothing. The TS
 // executor refuses below 0.05 SOL with fee_payer_exhausted and pushes the
 // user once per slot. Go defined the result but sent the pull regardless.
-// The payer is now read once per pass: exhausted, the pass claims nothing,
-// pushes each due slot and counts the code once; the balance is a gauge.
+// The payer is now read once per pass: exhausted, the pass claims nothing and
+// pushes each due slot once per outage; the balance gauge is the one page.
 func TestFeePayerExhaustionClaimsNothingAndPushesEachDueSlot(t *testing.T) {
 	scenario := newFreshScenario(t, "payer", 0)
 	var mu sync.Mutex
@@ -52,7 +52,7 @@ func TestFeePayerExhaustionClaimsNothingAndPushesEachDueSlot(t *testing.T) {
 		if err != nil || !report.FeePayerExhausted || len(report.Dispatched) != 0 || report.settled() {
 			t.Fatalf("pass %d with an exhausted payer: %+v %v", pass, report, err)
 		}
-		if got := failedCount(t, registry, "autodeposit_fee_payer_exhausted"); got != float64(pass) || balance() != FeePayerMinimumLamports-1 {
+		if got := failedCount(t, registry, "autodeposit_fee_payer_exhausted"); got != 0 || balance() != FeePayerMinimumLamports-1 {
 			t.Fatalf("pass %d counted %v exhaustions, gauge %v", pass, got, balance())
 		}
 	}
@@ -62,8 +62,31 @@ func TestFeePayerExhaustionClaimsNothingAndPushesEachDueSlot(t *testing.T) {
 	}
 	mu.Lock()
 	want := map[string]string{"walletAddress": scenario.wallet, "kind": "failed", "dedupeKey": "slot-" + strconv.FormatInt(scenario.slot, 10)}
-	if len(pushes) != 2 || authorization != "Bearer itest-notify-secret" || !reflect.DeepEqual(pushes[0], want) || !reflect.DeepEqual(pushes[1], want) {
-		t.Fatalf("pushes %v (auth %q), want %v once per pass, deduplicated by the app", pushes, authorization, want)
+	if len(pushes) != 1 || authorization != "Bearer itest-notify-secret" || !reflect.DeepEqual(pushes[0], want) {
+		t.Fatalf("pushes %v (auth %q), want %v once per outage", pushes, authorization, want)
+	}
+	mu.Unlock()
+
+	// A funded pass ends the outage; the next outage pushes the slot again.
+	setDue := func(due bool) {
+		t.Helper()
+		if _, err := scenario.store.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_scheduled_slots SET eligible_after = CASE WHEN $2 THEN now() - interval '1 second' ELSE now() + interval '1 hour' END WHERE id=$1`, scenario.slot, due); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setDue(false)
+	scenario.chain.lamports = map[string]uint64{payer: FeePayerMinimumLamports}
+	if _, err := worker.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	setDue(true)
+	scenario.chain.lamports = map[string]uint64{payer: FeePayerMinimumLamports - 1}
+	if _, err := worker.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(pushes) != 2 {
+		t.Fatalf("a new outage pushed %d times in total, want 2", len(pushes))
 	}
 	mu.Unlock()
 

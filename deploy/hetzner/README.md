@@ -147,6 +147,14 @@ The alerts are:
 | LoyalMonitoringDown | node_exporter, Prometheus or Alertmanager is not scrapeable for 2m |
 | Watchdog | Always firing. It goes to the heartbeat receiver, and the external switch pages when it stops |
 
+Known Autodeposit gaps:
+
+- The fee payer is read once per pass. A pass that sets up many new vaults
+  can spend it below 0.05 SOL partway through; the next pass stops.
+- A target blocked at route preflight is released, not deferred with a
+  marker, so `LoyalAutodepositOverdue` does not see it. This matches Rust's
+  overdue check; only the `autodeposit_preflight_blocked` code reports it.
+
 A family whose Go process does not report facts yet stays at progress 0 and
 pages after its grace. Enable a Go unit only after its families emit facts.
 

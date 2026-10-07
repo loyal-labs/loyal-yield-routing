@@ -49,11 +49,15 @@ type WorkerDependencies struct {
 // Worker is the synchronous Autodeposit runtime: one Tick is one complete
 // reconcile-and-dispatch pass. Run repeats it until the context is cancelled.
 type Worker struct {
-	store           *Store
-	executor        TargetExecutor
-	facts           *engine.Facts
-	feePayer        FeePayerReader
-	notifier        *SweepNotifier
+	store    *Store
+	executor TargetExecutor
+	facts    *engine.Facts
+	feePayer FeePayerReader
+	notifier *SweepNotifier
+	// notified holds the slots pushed during the current payer outage. The
+	// app dedupes by slot; this only keeps a long outage from re-posting
+	// every pass. A restart re-sends, which the app absorbs.
+	notified        map[int64]struct{}
 	executionErrors int
 
 	pollInterval          time.Duration
@@ -106,6 +110,7 @@ func NewWorker(deps WorkerDependencies) (*Worker, error) {
 		facts:                 deps.Facts,
 		feePayer:              deps.FeePayer,
 		notifier:              deps.Notifier,
+		notified:              map[int64]struct{}{},
 		pollInterval:          deps.PollInterval,
 		projectionBatchLimit:  deps.ProjectionBatchLimit,
 		dispatchLimit:         deps.DispatchLimit,
@@ -212,6 +217,9 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 	}
 	w.facts.FeePayerBalance(payer, lamports)
 	report.FeePayerExhausted = lamports < FeePayerMinimumLamports
+	if !report.FeePayerExhausted {
+		clear(w.notified)
+	}
 
 	targets, err := w.store.LoadExecutableTargets(ctx, w.dispatchLimit, hints)
 	if err != nil {
@@ -220,7 +228,7 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 	if report.FeePayerExhausted {
 		slog.Error("autodeposit fee payer is out of SOL; top up the delegated signer", "code", "autodeposit_fee_payer_exhausted",
 			"feePayer", payer, "balanceLamports", lamports, "minimumLamports", FeePayerMinimumLamports, "dueTargets", len(targets))
-		w.facts.Failed(engine.FamilyAutodeposit, "autodeposit_fee_payer_exhausted")
+		// LoyalFeePayerExhausted on the balance gauge is the one page.
 		w.notifyUnstarted(ctx, targets)
 		return report, nil
 	}
@@ -233,8 +241,9 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 }
 
 // notifyUnstarted pushes each due fresh slot the failed sweep the TS executor
-// reported on fee-payer exhaustion (6557c221); the app keeps one push per
-// slot. Claims already holding custody are not a promise this pass breaks.
+// reported on fee-payer exhaustion (6557c221), once per slot per outage; a
+// push that did not reach the app is tried again next pass. Claims already
+// holding custody are not a promise this pass breaks.
 func (w *Worker) notifyUnstarted(ctx context.Context, targets []ExecutableTarget) {
 	if w.notifier == nil {
 		return
@@ -245,8 +254,11 @@ func (w *Worker) notifyUnstarted(ctx context.Context, targets []ExecutableTarget
 		if ctx.Err() != nil {
 			return
 		}
-		if !target.isRecovery() {
-			w.notifier.NotifyFailed(ctx, target.Wallet, target.ScheduledSlotID)
+		if _, done := w.notified[target.ScheduledSlotID]; done || target.isRecovery() {
+			continue
+		}
+		if w.notifier.NotifyFailed(ctx, target.Wallet, target.ScheduledSlotID) {
+			w.notified[target.ScheduledSlotID] = struct{}{}
 		}
 	}
 }
