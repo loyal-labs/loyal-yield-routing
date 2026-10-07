@@ -1,5 +1,7 @@
 //! Opt-in current-native ONyc proof. No RPC, signatures, validators or daemons.
-//! Every executed wire comes from the current Go compiler and the prior bank.
+//! Lifecycle wires use the native Go compiler; repay-first probes use dependency builders.
+#[path = "onyc_offline_lifecycle/repay_first.rs"]
+mod repay_first;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use litesvm::LiteSVM;
 use serde_json::{json, Value};
