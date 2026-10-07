@@ -42,5 +42,9 @@ spl-token-2022.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 
+[features]
+# Exposes klend_golden for go/workers/testdata/klend/golden-generator only.
+klend-golden = []
+
 [dev-dependencies]
 bytemuck = "1"

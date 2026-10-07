@@ -502,12 +502,7 @@ func canonicalStrings(values []string) []string {
 	return out
 }
 
-type FreshAccount struct {
-	Kind, Address, Owner, DataSHA256 string
-	Slot                             int64
-	Executable                       bool
-	Exists                           bool
-}
+// FreshRouteEvidence is what one same-mint preparation observed.
 type FreshRouteEvidence struct {
 	Anchors                       ExecutionBalanceAnchors
 	ObservedAt                    time.Time
@@ -519,8 +514,6 @@ type FreshRouteEvidence struct {
 	OpportunityKey                string
 	EpochID                       int64
 	EpochFingerprint              string
-	Accounts                      []FreshAccount
-	PolicyData                    []byte
 }
 type DecodedSquadsPolicy struct {
 	Settings              string
@@ -536,50 +529,6 @@ type DecodedSquadsPolicy struct {
 	InstructionData       [][]byte
 	AllowedIndexes        []uint8
 	Constraints           []squadspolicy.InstructionConstraintView
-}
-
-func ValidateFreshRouteEvidence(e FreshRouteEvidence, now time.Time, expectedOpportunityKey, expectedEpochFingerprint, delegatedSigner string, protected []RouteInstruction) (DecodedSquadsPolicy, error) {
-	if e.Slot <= 0 || e.OpportunityID <= 0 || e.EpochID <= 0 || e.OpportunityKey != expectedOpportunityKey || e.EpochFingerprint != expectedEpochFingerprint {
-		return DecodedSquadsPolicy{}, errors.New("opportunity or market epoch fence changed")
-	}
-	if e.ObservedAt.After(now) || now.Sub(e.ObservedAt) > 15*time.Second {
-		return DecodedSquadsPolicy{}, errors.New("fresh route evidence expired")
-	}
-	required := map[string]int{"reserve": 2, "obligation": 2, "token_account": 1, "policy": 1}
-	for _, a := range e.Accounts {
-		if !a.Exists || a.Executable || a.Slot < e.Slot || len(a.DataSHA256) != 64 {
-			return DecodedSquadsPolicy{}, fmt.Errorf("invalid fresh %s account", a.Kind)
-		}
-		expectedOwner := ""
-		switch a.Kind {
-		case "reserve", "obligation":
-			expectedOwner = KLendProgram
-		case "policy":
-			expectedOwner = SquadsProgram
-		case "farm":
-			expectedOwner = farmsProgram
-		case "token_account":
-			if a.Owner != "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" && a.Owner != token2022Program {
-				return DecodedSquadsPolicy{}, errors.New("fresh token account owner is invalid")
-			}
-		}
-		if expectedOwner != "" && a.Owner != expectedOwner {
-			return DecodedSquadsPolicy{}, fmt.Errorf("fresh %s account owner is invalid", a.Kind)
-		}
-		if _, ok := required[a.Kind]; ok {
-			required[a.Kind]--
-		}
-	}
-	for kind, count := range required {
-		if count > 0 {
-			return DecodedSquadsPolicy{}, fmt.Errorf("fresh %s account evidence missing", kind)
-		}
-	}
-	p, err := DecodeSquadsPolicy(e.PolicyData)
-	if err != nil {
-		return p, err
-	}
-	return validateDelegatedInstructions(p, delegatedSigner, protected)
 }
 
 func validateDelegatedInstructions(p DecodedSquadsPolicy, delegatedSigner string, protected []RouteInstruction) (DecodedSquadsPolicy, error) {
@@ -838,38 +787,11 @@ type RoutePreparation struct {
 	ExecutionPlan                             json.RawMessage
 }
 
-// PrepareRoute compiles a mature same-mint route; payer pays its fee and is
-// the policy signer or the fee-only shard ranked for that vault (feePayer).
-func PrepareRoute(route KaminoSameMintRoute, policy, signer, payer string, policyAccountIndex uint8, allowedIndexes []uint8, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error)) (RoutePreparation, error) {
-	return prepareRoute(route, policy, signer, payer, policyAccountIndex, allowedIndexes, tables, recentBlockhash, feeLamports, computeLimit, simulate, interleaveMatureSameMintRoute, "same_mint_kamino_v0")
-}
-
-func prepareRoute(route KaminoSameMintRoute, policy, signer, payer string, policyAccountIndex uint8, allowedIndexes []uint8, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error), layout func([]RouteInstruction, []RouteInstruction) ([]RouteInstruction, error), kind string) (RoutePreparation, error) {
-	if len(route.Protected) == 0 || len(allowedIndexes) != len(route.Protected) {
-		return RoutePreparation{}, errors.New("protected instructions and policy indexes differ")
-	}
-	seenIndexes := make(map[uint8]bool, len(allowedIndexes))
-	for _, index := range allowedIndexes {
-		if seenIndexes[index] {
-			return RoutePreparation{}, errors.New("duplicate allowed instruction constraint index")
-		}
-		seenIndexes[index] = true
-	}
-	// Rust's mature same-mint route executes each value-moving KLend
-	// instruction through its own ProgramInteraction payload. Public refreshes
-	// are interleaved around withdrawal/deposit so the target obligation is
-	// refreshed after the source withdrawal and immediately before deposit.
-	wrapped := make([]RouteInstruction, len(route.Protected))
-	for i := range route.Protected {
-		var err error
-		wrapped[i], err = wrapSquadsPolicy(policy, signer, policyAccountIndex, []uint8{allowedIndexes[i]}, []RouteInstruction{route.Protected[i]})
-		if err != nil {
-			return RoutePreparation{}, err
-		}
-	}
-	instructions, err := layout(route.Public, wrapped)
-	if err != nil {
-		return RoutePreparation{}, err
+// prepareRoute compiles the final instructions for payer and simulates the
+// exact unsigned wire. Callers set the route and requirements fingerprints.
+func prepareRoute(instructions []RouteInstruction, payer string, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error), kind string) (RoutePreparation, error) {
+	if feeLamports == 0 || computeLimit == 0 || computeLimit > defaultComputeLimit {
+		return RoutePreparation{}, errors.New("fee or compute limit is invalid")
 	}
 	tx, missing, err := compileV0Transaction(payer, recentBlockhash, instructions, tables, feeLamports, computeLimit)
 	if err != nil {
@@ -881,9 +803,6 @@ func prepareRoute(route KaminoSameMintRoute, policy, signer, payer string, polic
 	if tx.PacketBytes > SolanaPacketLimit {
 		return RoutePreparation{}, fmt.Errorf("transaction packet %d exceeds %d", tx.PacketBytes, SolanaPacketLimit)
 	}
-	if feeLamports == 0 || computeLimit == 0 || computeLimit > defaultComputeLimit {
-		return RoutePreparation{}, errors.New("fee or compute limit is invalid")
-	}
 	sim, err := simulate(tx.UnsignedWire)
 	if err != nil {
 		return RoutePreparation{}, err
@@ -891,14 +810,6 @@ func prepareRoute(route KaminoSameMintRoute, policy, signer, payer string, polic
 	if !sim.Succeeded || sim.Slot <= 0 || sim.UnitsConsumed > computeLimit || sim.WireSHA256 != tx.WireSHA256 {
 		return RoutePreparation{}, errors.New("exact transaction simulation failed or mismatched")
 	}
-	routeBytes, _ := json.Marshal(route)
-	reqBytes, _ := json.Marshal(struct {
-		Tables  []string `json:"tables"`
-		Compute uint64   `json:"compute"`
-		Fee     uint64   `json:"fee"`
-	}{tx.LookupTables, computeLimit, feeLamports})
-	rf := sha256.Sum256(routeBytes)
-	rq := sha256.Sum256(reqBytes)
 	plan, _ := json.Marshal(struct {
 		Kind                      string             `json:"kind"`
 		MessageBase64             string             `json:"message_base64"`
@@ -912,28 +823,7 @@ func prepareRoute(route KaminoSameMintRoute, policy, signer, payer string, polic
 		ComputeUnitLimit          uint64             `json:"compute_unit_limit"`
 		Simulation                SimulationEvidence `json:"simulation"`
 	}{kind, base64.StdEncoding.EncodeToString(tx.Message), tx.MessageSHA256, base64.StdEncoding.EncodeToString(tx.UnsignedWire), tx.WireSHA256, tx.LookupTables, tx.WritableAccounts, tx.PacketBytes, tx.FeeLamports, tx.ComputeLimit, sim})
-	return RoutePreparation{RouteFingerprint: hex.EncodeToString(rf[:]), RequirementsFingerprint: hex.EncodeToString(rq[:]), Transaction: tx, Simulation: sim, ExecutionPlan: plan}, nil
-}
-
-func interleaveMatureSameMintRoute(public, wrapped []RouteInstruction) ([]RouteInstruction, error) {
-	if len(wrapped) != 2 {
-		return nil, errors.New("mature same-mint route requires withdraw and deposit policy instructions")
-	}
-	firstObligation := -1
-	for i := range public {
-		if public[i].Step == "kamino_refresh_obligation" {
-			firstObligation = i
-			break
-		}
-	}
-	if firstObligation < 0 || firstObligation+1 >= len(public) {
-		return nil, errors.New("mature same-mint route requires source and target obligation refreshes")
-	}
-	instructions := append([]RouteInstruction(nil), public[:firstObligation+1]...)
-	instructions = append(instructions, wrapped[0])
-	instructions = append(instructions, public[firstObligation+1:]...)
-	instructions = append(instructions, wrapped[1])
-	return instructions, nil
+	return RoutePreparation{Transaction: tx, Simulation: sim, ExecutionPlan: plan}, nil
 }
 
 func wrapSquadsPolicy(policy, signer string, accountIndex uint8, indexes []uint8, inner []RouteInstruction) (RouteInstruction, error) {
@@ -978,7 +868,7 @@ func wrapSquadsPolicy(policy, signer string, accountIndex uint8, indexes []uint8
 	data = append(data, compiled...)
 	outer := []InstructionAccount{{policy, false, true}, {SquadsProgram, false, false}, {signer, true, false}}
 	outer = append(outer, accounts...)
-	return RouteInstruction{"squads_execute_program_interaction", SquadsProgram, outer, data}, nil
+	return RouteInstruction{Step: "squads_execute_program_interaction", Program: SquadsProgram, Accounts: outer, Data: data}, nil
 }
 
 func compileV0Transaction(payer, blockhash string, instructions []RouteInstruction, tables []LookupTable, fee, compute uint64) (PreparedTransaction, []string, error) {

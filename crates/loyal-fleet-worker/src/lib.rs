@@ -1,4 +1,6 @@
 mod cross_mint;
+#[cfg(feature = "klend-golden")]
+pub mod klend_golden;
 pub mod multiply;
 mod same_mint_reconciliation;
 mod voltr;

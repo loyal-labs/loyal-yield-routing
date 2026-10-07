@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -12,7 +11,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -160,100 +158,16 @@ func seedConnectedLookupTable(t *testing.T, ctx context.Context, store *Store, c
 			t.Fatal(err)
 		}
 	}
-}
-
-func runConnectedRustWorker(t *testing.T, ctx context.Context, database string, request map[string]any) json.RawMessage {
-	t.Helper()
-	path := os.Getenv("KAMINO_CONNECTED_WORKER_PATH")
-	if path == "" {
-		t.Fatal("connected lifecycle requires compiled retained worker test binary")
-	}
-	input := filepath.Join(t.TempDir(), "go-handoff.json")
-	evidencePath := filepath.Join(t.TempDir(), "retained-evidence.json")
-	request["evidencePath"] = evidencePath
-	request["runId"] = os.Getenv("KAMINO_CONNECTED_RUN_ID")
-	data, err := json.Marshal(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(input, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	command := exec.CommandContext(ctx, path, "--exact", "cross_mint::connected_e2e::consume_go_cross_mint_opportunity", "--ignored", "--nocapture")
-	// The only key is the public deterministic local fixture signer. Never
-	// inherit production credentials or endpoints into the retained worker.
-	command.Env = []string{"KAMINO_CONNECTED_CONFIRMER_PATH=" + os.Getenv("KAMINO_CONNECTED_CONFIRMER_PATH"), "LC_ALL=C", "OBSERVABILITY_ENABLED=false", "FLEET_TEST_DATABASE_URL=" + database, "KAMINO_CONNECTED_REQUEST_PATH=" + input,
-		"POLICY_KEYPAIR=" + encodeBase58(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))),
-		"EARN_ROUTER_ENABLED_STABLE_MINTS=" + USDCMint + "," + USDTMint,
-		"NO_PROXY=127.0.0.1,localhost", "HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9"}
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("retained worker failed: %v\n%s", err, output)
-	}
-	t.Logf("retained worker: %s", output)
-	if request["setupOnly"] == true {
-		return nil
-	}
-	evidence, err := os.ReadFile(evidencePath)
-	if err != nil {
-		t.Fatalf("retained worker omitted terminal evidence: %v", err)
-	}
-	return json.RawMessage(evidence)
-}
-
-// Only the owning Go test emits the final marker, after both producers have
-// verified their own observations from this run. No parsing of success logs.
-func emitConnectedEvidence(t *testing.T, raw json.RawMessage, cluster string, epochID, opportunityID int64, sameMint bool) {
-	t.Helper()
-	var evidence map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &evidence); err != nil {
-		t.Fatal(err)
-	}
-	lane := "cross-mint"
-	if sameMint {
-		lane = "same-mint"
-	}
-	runID := os.Getenv("KAMINO_CONNECTED_RUN_ID")
-	if runID == "" {
-		t.Fatal("connected evidence requires a fresh run ID")
-	}
-	for key, expected := range map[string]any{"runId": runID, "lane": lane, "cluster": cluster, "epochId": epochID, "opportunityId": opportunityID} {
-		want, _ := json.Marshal(expected)
-		if !bytes.Equal(evidence[key], want) {
-			t.Fatalf("retained evidence changed %s", key)
-		}
-	}
-	var legs []struct {
-		SubmissionID int64 `json:"submissionId"`
-	}
-	if err := json.Unmarshal(evidence["legs"], &legs); err != nil || len(legs) == 0 || legs[0].SubmissionID <= 0 {
-		t.Fatal("retained signed evidence missing")
-	}
-	var stages []json.RawMessage
-	if err := json.Unmarshal(evidence["stages"], &stages); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"published", "revalidated", "ambiguous_broadcast_recovered"} {
-		ids := []int64{}
-		if name == "ambiguous_broadcast_recovered" {
-			ids = append(ids, legs[0].SubmissionID)
-		}
-		stage, err := json.Marshal(map[string]any{"name": name, "status": "pass", "submissionIds": ids})
-		if err != nil {
+	if kind == "vault_shards" {
+		// The vault's shard is bound to it through its sealed manifest.
+		var manifestID int64
+		if err = store.pool.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_manifests(family_id,subject_kind,subject_key,vault_id,desired_set_hash,address_count,source_slot,planner_version,catalog_version,sealed_at) VALUES($1,'vault',$2,$3,$4,$5,1000,'test','test',clock_timestamp()) RETURNING id`, familyID, table, vaultID, fmt.Sprintf("%x", hash.Sum(nil)), len(addresses)).Scan(&manifestID); err != nil {
 			t.Fatal(err)
 		}
-		stages = append(stages, stage)
+		if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_vault_bindings(vault_id,family_id,route_lookup_table_id,manifest_id,desired_head_revision,allocation_mode,reserved_capacity,lifecycle_state,active_from_slot,activated_at) VALUES($1,$2,$3,$4,1,'packed_shard',32,'active',1000,clock_timestamp())`, vaultID, familyID, tableID, manifestID); err != nil {
+			t.Fatal(err)
+		}
 	}
-	var err error
-	evidence["stages"], err = json.Marshal(stages)
-	if err != nil {
-		t.Fatal(err)
-	}
-	output, err := json.Marshal(evidence)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("KAMINO_CONNECTED_EVIDENCE %s", output)
 }
 
 func (s *connectedSVM) call(request any) ([]byte, error) {

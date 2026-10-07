@@ -261,6 +261,19 @@ func buildRouteALTManifest(input KaminoSameMintRouteRequest, settings string, po
 			}
 		}
 	}
+	if includeKLend && input.TargetObligationMissing {
+		vault, err := decodePublicKey(input.Vault)
+		if err != nil {
+			return ALTManifest{}, err
+		}
+		metadata, err := findProgramAddress(KLendProgram, []byte("user_meta"), vault[:])
+		if err != nil {
+			return ALTManifest{}, err
+		}
+		if err := add(metadata, 2, 6); err != nil {
+			return ALTManifest{}, err
+		}
+	}
 	if validatedSwap != nil {
 		routeMints := map[string]bool{input.Source.LiquidityMint: true, input.Target.LiquidityMint: true}
 		for mint := range routeMints {

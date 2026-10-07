@@ -8,6 +8,7 @@ use solana_program::{
     program_error::ProgramError,
     pubkey,
     pubkey::Pubkey,
+    sysvar::Sysvar,
 };
 use spl_token::solana_program::program_pack::Pack;
 
@@ -451,6 +452,9 @@ fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) ->
         }
         return Ok(());
     }
+    if data == [251, 10, 231, 76, 27, 11, 159, 96, 0, 0] {
+        return process_kamino_init_obligation(program_id, accounts);
+    }
     match parse_kamino_instruction(data)? {
         KaminoInstruction::Deposit { amount } => {
             process_kamino_deposit(program_id, accounts, amount)
@@ -465,6 +469,63 @@ fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) ->
             process_multiply_debt(program_id, accounts, amount, false)
         }
     }
+}
+
+// init_obligation (tag 0, id 0) in the official account order: the vanilla
+// obligation PDA is created through the System program, rent paid by the
+// signing fee payer, and stamped with its market and owner. User metadata and
+// referrer state are not modeled.
+fn process_kamino_init_obligation(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
+    let [owner, fee_payer, obligation, market, seed1, seed2, _metadata, _rent, system] = accounts
+    else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+    let seeds: [&[u8]; 6] = [
+        &[0],
+        &[0],
+        owner.key.as_ref(),
+        market.key.as_ref(),
+        seed1.key.as_ref(),
+        seed2.key.as_ref(),
+    ];
+    let (expected, bump) = Pubkey::find_program_address(&seeds, program_id);
+    if !owner.is_signer
+        || !fee_payer.is_signer
+        || !fee_payer.is_writable
+        || !obligation.is_writable
+        || obligation.key != &expected
+        || obligation.lamports() != 0
+        || market.owner != program_id
+        || system.key != &solana_program::system_program::ID
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let space = 3344;
+    let rent = solana_program::rent::Rent::get()?.minimum_balance(space);
+    invoke_signed(
+        &solana_program::system_instruction::create_account(
+            fee_payer.key,
+            obligation.key,
+            rent,
+            space as u64,
+            program_id,
+        ),
+        &[fee_payer.clone(), obligation.clone(), system.clone()],
+        &[&[
+            &[0],
+            &[0],
+            owner.key.as_ref(),
+            market.key.as_ref(),
+            seed1.key.as_ref(),
+            seed2.key.as_ref(),
+            &[bump],
+        ]],
+    )?;
+    let mut data = obligation.try_borrow_mut_data()?;
+    data[..8].copy_from_slice(&KAMINO_OBLIGATION_DISCRIMINATOR);
+    data[32..64].copy_from_slice(market.key.as_ref());
+    data[64..96].copy_from_slice(owner.key.as_ref());
+    Ok(())
 }
 
 // The Multiply fixture uses the source-pinned Scope address. This local model

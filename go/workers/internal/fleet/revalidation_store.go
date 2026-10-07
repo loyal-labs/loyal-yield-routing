@@ -25,6 +25,7 @@ type RevalidationLease struct {
 	VaultPubkey                     string
 	VaultIndex                      uint8
 	PolicyAccount                   string
+	SetupPolicyAccount              string // active setup policy: init_obligation authority
 	DelegatedSigners                []string
 	SourceReserve                   string
 	TargetReserve                   string
@@ -140,6 +141,7 @@ SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fen
             THEN withdraw_policy.policy_account ELSE policy.policy_account END,
        CASE WHEN claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
             THEN withdraw_policy.delegated_signers ELSE policy.delegated_signers END,
+       COALESCE(setup_policy.policy_account,''),
        claimed.source_reserve,
        claimed.target_reserve,claimed.liquidity_mint,
        claimed.source_liquidity_mint,claimed.target_liquidity_mint,
@@ -152,6 +154,7 @@ FROM claimed
 JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=claimed.optimizer_epoch_id
 JOIN loyal_yield.managed_vaults vault ON vault.id=claimed.vault_id AND vault.active
 JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id AND policy.active
+LEFT JOIN loyal_yield.route_policies setup_policy ON setup_policy.id=vault.setup_policy_id AND setup_policy.active
 LEFT JOIN loyal_yield.route_policies withdraw_policy
   ON claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
  AND withdraw_policy.policy_account=claimed.execution_plan#>>'{policy_bindings,withdraw,policy_account}'
@@ -163,7 +166,7 @@ LEFT JOIN loyal_yield.route_policies withdraw_policy
  AND ($5='' OR $5=ANY(withdraw_policy.delegated_signers))`, cluster, owner, ttl.String(), includeReady, signer, crossMintEnabled, routeKind, leaseKind).Scan(
 		&l.OpportunityID, &l.OptimizerEpochID, &l.IdempotencyKey, &l.FencingToken,
 		&l.ExpiresAt, &l.VaultID, &l.VaultPubkey, &l.VaultIndex, &l.PolicyAccount,
-		&l.DelegatedSigners, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,
+		&l.DelegatedSigners, &l.SetupPolicyAccount, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,
 		&l.SourceLiquidityMint, &l.TargetLiquidityMint, &l.RouteKind,
 		&l.LiquidityAmountRaw, &l.SourceCollateralRaw, &l.PrincipalUSDMicros,
 		&l.SourceAPYBPS, &l.TargetAPYBPS, &l.EdgeBPS, &l.NetGainUSDMicros,
@@ -244,6 +247,7 @@ SELECT claimed.id,claimed.optimizer_epoch_id,claimed.idempotency_key,claimed.fen
             THEN withdraw_policy.policy_account ELSE policy.policy_account END,
        CASE WHEN claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
             THEN withdraw_policy.delegated_signers ELSE policy.delegated_signers END,
+       COALESCE(setup_policy.policy_account,''),
        claimed.source_reserve,
        claimed.target_reserve,claimed.liquidity_mint,
        claimed.source_liquidity_mint,claimed.target_liquidity_mint,
@@ -257,6 +261,7 @@ JOIN candidate ON candidate.id=claimed.id
 JOIN loyal_yield.optimizer_epochs epoch ON epoch.id=claimed.optimizer_epoch_id
 JOIN loyal_yield.managed_vaults vault ON vault.id=claimed.vault_id AND vault.active
 JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id AND policy.active
+LEFT JOIN loyal_yield.route_policies setup_policy ON setup_policy.id=vault.setup_policy_id AND setup_policy.active
 LEFT JOIN loyal_yield.route_policies withdraw_policy
   ON claimed.execution_plan->>'route_kind'='cross_mint_jupiter'
  AND withdraw_policy.policy_account=claimed.execution_plan#>>'{policy_bindings,withdraw,policy_account}'
@@ -268,7 +273,7 @@ LEFT JOIN loyal_yield.route_policies withdraw_policy
  AND ($2='' OR $2=ANY(withdraw_policy.delegated_signers))`, cluster, signer, crossMintEnabled, seenIDs, seenTokens).Scan(
 		&l.OpportunityID, &l.OptimizerEpochID, &l.IdempotencyKey, &l.FencingToken,
 		&l.ExpiresAt, &l.VaultID, &l.VaultPubkey, &l.VaultIndex, &l.PolicyAccount,
-		&l.DelegatedSigners, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,
+		&l.DelegatedSigners, &l.SetupPolicyAccount, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,
 		&l.SourceLiquidityMint, &l.TargetLiquidityMint, &l.RouteKind,
 		&l.LiquidityAmountRaw, &l.SourceCollateralRaw, &l.PrincipalUSDMicros,
 		&l.SourceAPYBPS, &l.TargetAPYBPS, &l.EdgeBPS, &l.NetGainUSDMicros,

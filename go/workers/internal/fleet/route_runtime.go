@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"sort"
 	"sync"
 	"time"
 
@@ -162,10 +161,12 @@ type sameMintPreparation struct {
 
 // feePayer is Rust's select_same_mint_route_fee_payer: a mature route goes
 // to the first healthy shard in the vault's rendezvous order; anything else,
-// or no healthy shard, falls back to the policy signer. Admission rechecks the
-// chosen shard's budget against a fresh balance under its row lock.
-func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease RevalidationLease, slot int64) string {
-	if !matureReservePosition(lease.ExecutionPlan) || len(r.feeOnlyPayers) == 0 {
+// or no healthy shard, falls back to the policy signer. A route that creates
+// accounts is never mature: the payer funds rent, which a fee-only key never
+// does (b1ad5b1a). Admission rechecks the chosen shard's budget against a
+// fresh balance under its row lock.
+func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease RevalidationLease, slot int64, mature bool) string {
+	if !mature || len(r.feeOnlyPayers) == 0 {
 		return r.signer
 	}
 	shards, err := r.store.EligibleFeePayerShards(ctx, cluster, r.signer, r.feeOnlyPayers)
@@ -197,10 +198,11 @@ func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease Revali
 // capacity refresh and lease check. The returned stage names the failing step.
 func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease RevalidationLease, afterEvidence func(FreshRouteEvidence) error) (sameMintPreparation, string, error) {
 	var out sameMintPreparation
-	input, evidence, err := r.loadFreshRoute(ctx, lease)
+	fresh, err := r.loadFreshRoute(ctx, lease)
 	if err != nil {
 		return out, "load_fresh_route", err
 	}
+	input, evidence := fresh.input, fresh.evidence
 	out.Evidence = evidence
 	if afterEvidence != nil {
 		if err := afterEvidence(evidence); err != nil {
@@ -211,38 +213,18 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if err != nil {
 		return out, "klend_build", err
 	}
-	policy, err := ValidateFreshRouteEvidence(evidence, time.Now().UTC(), lease.IdempotencyKey, lease.OptimizerEpochKey, r.signer, route.Protected)
-	if err != nil {
-		return out, "validate_evidence", err
-	}
-	if policy.AccountIndex != lease.VaultIndex {
-		return out, "validate_evidence", errors.New("fresh policy account index differs from managed vault index")
-	}
-	wrapped := make([]RouteInstruction, len(route.Protected))
-	for i := range route.Protected {
-		wrapped[i], err = wrapSquadsPolicy(lease.PolicyAccount, r.signer, lease.VaultIndex, []uint8{policy.AllowedIndexes[i]}, []RouteInstruction{route.Protected[i]})
-		if err != nil {
-			return out, "wrap_policy", err
-		}
-	}
-	instructions, err := interleaveMatureSameMintRoute(route.Public, wrapped)
+	body, policies, err := wrapSameMintRoute(route, r.signer, lease.VaultIndex, lease.PolicyAccount, fresh.routePolicy, lease.SetupPolicyAccount, fresh.setupPolicy)
 	if err != nil {
 		return out, "wrap_policy", err
 	}
-	decodedPolicy, err := DecodeSquadsPolicy(evidence.PolicyData)
-	if err != nil {
-		return out, "alt_manifest", err
-	}
 	// Static program identities participate in v1 requirements hashing. The
-	// final wire will carry compute-budget instructions; their data values do
-	// not change manifest identity, but omitting the program would change it.
-	manifestInstructions := append(computeBudgetInstructions(uint32(r.computeLimit), 0), instructions...)
-	manifest, err := BuildRouteALTManifest(input, decodedPolicy.Settings, lease.PolicyAccount, r.signer, manifestInstructions, nil)
+	// final wire carries compute-budget instructions; their data values do not
+	// change manifest identity, but omitting the program would change it.
+	manifest, err := buildRouteALTManifest(input, policies.settings, policies.accounts, r.signer, append(computeBudgetInstructions(uint32(r.computeLimit), 0), body...), nil, true)
 	if err != nil {
 		return out, "alt_manifest", err
 	}
-	requiredAddresses := requiredLookupTableAddresses(instructions)
-	tables, err := r.store.LoadReusableLookupTables(ctx, cluster, lease.VaultID, evidence.Slot, requiredAddresses)
+	tables, err := r.store.LoadReusableLookupTables(ctx, cluster, lease.VaultID, evidence.Slot, requiredLookupTableAddresses(body))
 	if err != nil {
 		return out, "lookup_tables", err
 	}
@@ -256,8 +238,8 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "blockhash", err
 	}
 	out.LastValidBlockHeight = lastValidBlockHeight
-	out.FeePayer = r.feePayer(ctx, cluster, lease, evidence.Slot)
-	preview, missing, err := compileV0Transaction(out.FeePayer, blockhash, instructions, tables, 1, r.computeLimit)
+	out.FeePayer = r.feePayer(ctx, cluster, lease, evidence.Slot, !input.setup())
+	preview, missing, err := compileV0Transaction(out.FeePayer, blockhash, append(computeBudgetInstructions(uint32(r.computeLimit), 0), body...), tables, 1, r.computeLimit)
 	if err != nil {
 		return out, "compile", err
 	}
@@ -306,25 +288,8 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		recentPriority = cappedPriority
 	}
 	out.PriorityFee = recentPriority
-	budgeted := route
-	budgeted.Public = append(computeBudgetInstructions(uint32(compute), recentPriority), route.Public...)
-	budgetWrapped := make([]RouteInstruction, len(budgeted.Protected))
-	for i := range budgeted.Protected {
-		budgetWrapped[i], err = wrapSquadsPolicy(lease.PolicyAccount, r.signer, lease.VaultIndex, []uint8{policy.AllowedIndexes[i]}, []RouteInstruction{budgeted.Protected[i]})
-		if err != nil {
-			return out, "budgeted_compile", err
-		}
-	}
-	budgetInstructions, err := interleaveMatureSameMintRoute(budgeted.Public, budgetWrapped)
-	if err != nil {
-		return out, "budgeted_compile", err
-	}
-	manifest, err = BuildRouteALTManifest(input, decodedPolicy.Settings, lease.PolicyAccount, r.signer, budgetInstructions, nil)
-	if err != nil {
-		return out, "budgeted_manifest", err
-	}
-	out.Instructions = budgetInstructions
-	budgetPreview, missing, err := compileV0Transaction(out.FeePayer, blockhash, budgetInstructions, tables, 1, compute)
+	out.Instructions = append(computeBudgetInstructions(uint32(compute), recentPriority), body...)
+	budgetPreview, missing, err := compileV0Transaction(out.FeePayer, blockhash, out.Instructions, tables, 1, compute)
 	if err != nil {
 		return out, "budgeted_compile", fmt.Errorf("budgeted transaction compilation: %w", err)
 	}
@@ -339,22 +304,100 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "fee", fmt.Errorf("budgeted fee %d exceeds opportunity cap %d", fee, lease.FeeCapLamports)
 	}
 	out.Fee = fee
-	preparation, err := PrepareRoute(budgeted, lease.PolicyAccount, r.signer, out.FeePayer, lease.VaultIndex, policy.AllowedIndexes, tables, blockhash, fee, compute, func(wire []byte) (SimulationEvidence, error) {
+	preparation, err := prepareRoute(out.Instructions, out.FeePayer, tables, blockhash, fee, compute, func(wire []byte) (SimulationEvidence, error) {
 		return r.rpc.SimulateExactTransaction(ctx, wire, evidence.Slot)
-	})
-	if err == nil {
-		preparation.RouteFingerprint = retainedSameMintRouteFingerprint(lease)
-		preparation.RequirementsFingerprint = manifest.Fingerprint
-		preparation.Manifest = &manifest
-	}
+	}, "same_mint_kamino_v0")
 	if err != nil {
 		return out, "prepare_route", err
 	}
+	preparation.RouteFingerprint = retainedSameMintRouteFingerprint(lease)
+	preparation.RequirementsFingerprint = manifest.Fingerprint
+	preparation.Manifest = &manifest
 	if err := preserveCanonicalPlan(lease.ExecutionPlan, &preparation, "prepared_transaction"); err != nil {
 		return out, "prepare_route", err
 	}
 	out.Preparation = preparation
 	return out, "", nil
+}
+
+// sameMintPolicies are the policies a wrapped route executes under.
+type sameMintPolicies struct {
+	settings string
+	accounts []string
+}
+
+// wrapSameMintRoute replaces each protected instruction, in route order, with
+// its own Squads ProgramInteraction execution under an exact constraint:
+// withdrawal and deposit under the route policy; init_obligation under the
+// route policy when it carries a market-scoped init constraint, else under
+// the vault's setup policy (Rust's resolve_init_obligation_policy, ee8715ad).
+func wrapSameMintRoute(route []RouteInstruction, signer string, vaultIndex uint8, routePolicy string, routeData []byte, setupPolicy string, setupData []byte) ([]RouteInstruction, sameMintPolicies, error) {
+	var used sameMintPolicies
+	decode := func(data []byte) (DecodedSquadsPolicy, error) {
+		p, err := DecodeSquadsPolicy(data)
+		if err == nil && p.AccountIndex != vaultIndex {
+			err = errors.New("policy account index differs from managed vault index")
+		}
+		return p, err
+	}
+	routeDecoded, err := decode(routeData)
+	if err != nil {
+		return nil, used, err
+	}
+	used.settings = routeDecoded.Settings
+	var protected []RouteInstruction
+	initAt := -1
+	for _, ix := range route {
+		if ix.Protected {
+			if ix.Step == "kamino_init_obligation" {
+				initAt = len(protected)
+			}
+			protected = append(protected, ix)
+		}
+	}
+	accounts := make([]string, len(protected))
+	for i := range accounts {
+		accounts[i] = routePolicy
+	}
+	matched, err := validateDelegatedInstructions(routeDecoded, signer, protected)
+	indexes := matched.AllowedIndexes
+	if err != nil {
+		if initAt < 0 {
+			return nil, used, err
+		}
+		rest := append(append([]RouteInstruction{}, protected[:initAt]...), protected[initAt+1:]...)
+		if matched, err = validateDelegatedInstructions(routeDecoded, signer, rest); err != nil {
+			return nil, used, err
+		}
+		if len(setupData) == 0 {
+			return nil, used, errors.New("target obligation is missing and no route or setup policy authorizes init_obligation")
+		}
+		setupDecoded, err := decode(setupData)
+		if err != nil {
+			return nil, used, err
+		}
+		if setupDecoded, err = validateDelegatedInstructions(setupDecoded, signer, protected[initAt:initAt+1]); err != nil {
+			return nil, used, fmt.Errorf("setup policy: %w", err)
+		}
+		indexes = append(append(append([]uint8{}, matched.AllowedIndexes[:initAt]...), setupDecoded.AllowedIndexes[0]), matched.AllowedIndexes[initAt:]...)
+		accounts[initAt] = setupPolicy
+	}
+	used.accounts = canonicalStrings(accounts)
+	body := make([]RouteInstruction, 0, len(route))
+	next := 0
+	for _, ix := range route {
+		if !ix.Protected {
+			body = append(body, ix)
+			continue
+		}
+		wrapped, err := wrapSquadsPolicy(accounts[next], signer, vaultIndex, []uint8{indexes[next]}, []RouteInstruction{ix})
+		if err != nil {
+			return nil, used, err
+		}
+		body = append(body, wrapped)
+		next++
+	}
+	return body, used, nil
 }
 
 // shadowSeen remembers (opportunity, fencing_token) pairs the shadow already
@@ -526,107 +569,162 @@ type decodedRoutePosition struct {
 	FarmUser   string
 }
 
-func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease) (KaminoSameMintRouteRequest, FreshRouteEvidence, error) {
+// freshSameMint is the coherent chain state one same-mint route is built from.
+type freshSameMint struct {
+	input                    KaminoSameMintRouteRequest
+	evidence                 FreshRouteEvidence
+	routePolicy, setupPolicy []byte
+}
+
+// maxObligationRentLamports bounds the payer's rent top-up to the vault
+// (Rust's MAX_KAMINO_OBLIGATION_RENT_LAMPORTS, 515306a9).
+const maxObligationRentLamports = 25_000_000
+
+// vaultRentTopUp is the payer's transfer that lets the vault pay its new
+// obligation's rent from inside its policy: exactly the vault's deficit.
+func vaultRentTopUp(rent, vaultLamports uint64) (uint64, error) {
+	if rent > maxObligationRentLamports {
+		return 0, fmt.Errorf("route_setup_rent_cap_exceeded: obligation rent %d exceeds %d lamports", rent, maxObligationRentLamports)
+	}
+	if vaultLamports >= rent {
+		return 0, nil
+	}
+	return rent - vaultLamports, nil
+}
+
+func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease) (freshSameMint, error) {
+	var f freshSameMint
 	minimum, err := r.rpc.ConfirmedSlot(ctx)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
 	_, preliminary, err := r.rpc.ConfirmedAccounts(ctx, []string{lease.SourceReserve, lease.TargetReserve}, minimum)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
 	source, err := decodeRouteReserve(preliminary[0], lease.VaultPubkey)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
 	target, err := decodeRouteReserve(preliminary[1], lease.VaultPubkey)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
 	if source.Position.LiquidityMint != lease.LiquidityMint || target.Position.LiquidityMint != lease.LiquidityMint {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("fresh reserve mint differs from opportunity")
+		return f, errors.New("fresh reserve mint differs from opportunity")
 	}
-	// The vault is a Squads PDA that signs through CPI; it is a system account
-	// only while it holds lamports, so its existence is not route evidence.
-	addresses := []string{lease.SourceReserve, lease.TargetReserve, source.Obligation, target.Obligation, source.Position.VaultLiquidityATA, lease.PolicyAccount}
-	kinds := []string{"reserve", "reserve", "obligation", "obligation", "token_account", "policy"}
+	// A missing target obligation or obligation farm user is setup the route
+	// performs itself, so those reads may be absent. The vault is a Squads PDA
+	// that holds lamports only once funded; its balance decides the rent top-up.
+	addresses := []string{lease.SourceReserve, lease.TargetReserve, source.Obligation, target.Obligation, source.Position.VaultLiquidityATA, lease.PolicyAccount, lease.VaultPubkey}
+	if lease.SetupPolicyAccount != "" {
+		addresses = append(addresses, lease.SetupPolicyAccount)
+	}
+	farmUsers := len(addresses)
 	for _, position := range []*decodedRoutePosition{&source, &target} {
-		if position.Position.ReserveFarmState != "" {
-			addresses = append(addresses, position.Position.ReserveFarmState, position.FarmUser)
-			kinds = append(kinds, "farm", "farm")
+		if position.FarmUser != "" {
+			addresses = append(addresses, position.FarmUser)
 		}
 	}
 	minimum, err = r.rpc.ConfirmedSlot(ctx)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
-	slot, accounts, err := r.rpc.ConfirmedAccounts(ctx, addresses, minimum)
+	slot, accounts, err := r.rpc.accounts(ctx, addresses, minimum, "confirmed", true)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
 	freshSource, err := decodeRouteReserve(accounts[0], lease.VaultPubkey)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
 	freshTarget, err := decodeRouteReserve(accounts[1], lease.VaultPubkey)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
 	if !reflect.DeepEqual(freshSource.Position, source.Position) || !reflect.DeepEqual(freshTarget.Position, target.Position) {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("reserve route identities changed during coherent observation")
+		return f, errors.New("reserve route identities changed during coherent observation")
 	}
 	sourceCollateral, err := decodeObligation(accounts[2], freshSource.Position.Market, lease.VaultPubkey, lease.SourceReserve, &freshSource.Position)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
 	if lease.SourceCollateralRaw > 0 && sourceCollateral != lease.SourceCollateralRaw {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("fresh source collateral amount differs from opportunity")
+		return f, errors.New("fresh source collateral amount differs from opportunity")
 	}
-	targetCollateral, err := decodeObligation(accounts[3], freshTarget.Position.Market, lease.VaultPubkey, "", &freshTarget.Position)
-	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+	targetMissing := absent(accounts[3])
+	var targetCollateral uint64
+	if !targetMissing {
+		if targetCollateral, err = decodeObligation(accounts[3], freshTarget.Position.Market, lease.VaultPubkey, "", &freshTarget.Position); err != nil {
+			return f, err
+		}
+		for i := 0; i < 8; i++ {
+			offset := 96 + i*136
+			if encodeBase58(accounts[3].Data[offset:offset+32]) == lease.TargetReserve {
+				targetCollateral = binary.LittleEndian.Uint64(accounts[3].Data[offset+32 : offset+40])
+			}
+		}
 	}
 	if freshSource.Position.LiquidityTokenProgram != freshTarget.Position.LiquidityTokenProgram || accounts[4].Owner != freshSource.Position.LiquidityTokenProgram {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("same-mint reserve token programs differ from vault custody")
+		return f, errors.New("same-mint reserve token programs differ from vault custody")
 	}
 	if err := validateVaultTokenAccount(accounts[4], lease.LiquidityMint, lease.VaultPubkey); err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
+		return f, err
 	}
-	if accounts[5].Address != lease.PolicyAccount || accounts[5].Owner != SquadsProgram {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("fresh policy account identity or owner mismatch")
+	if accounts[5].Owner != SquadsProgram {
+		return f, errors.New("fresh policy account owner mismatch")
+	}
+	f.routePolicy = accounts[5].Data
+	if lease.SetupPolicyAccount != "" {
+		f.setupPolicy = accounts[7].Data
+	}
+	missingFarmUser := []bool{false, false}
+	for i, position := range []decodedRoutePosition{freshSource, freshTarget} {
+		if position.FarmUser != "" {
+			missingFarmUser[i] = absent(accounts[farmUsers])
+			farmUsers++
+		}
 	}
 	sourceEconomics, err := DecodeKaminoReserve(accounts[0], ReserveIdentity{Address: lease.SourceReserve, Market: freshSource.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("decode fresh source economics: %w", err)
+		return f, fmt.Errorf("decode fresh source economics: %w", err)
 	}
 	targetEconomics, err := DecodeKaminoReserve(accounts[1], ReserveIdentity{Address: lease.TargetReserve, Market: freshTarget.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("decode fresh target economics: %w", err)
+		return f, fmt.Errorf("decode fresh target economics: %w", err)
 	}
 	// A durable amount is a planning estimate. Recheck its backing against the
 	// same-bank collateral exchange value; a stale high estimate must never
 	// fund the target deposit by consuming pre-existing idle custody.
 	redeemable, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: accounts[0].Address, Owner: accounts[0].Owner, Lamports: accounts[0].Lamports, Data: accounts[0].Data, Executable: accounts[0].Executable}, freshSource.Position.Market, lease.LiquidityMint, sourceCollateral)
 	if err != nil {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("fresh collateral backing: %w", err)
+		return f, fmt.Errorf("fresh collateral backing: %w", err)
 	}
 	if lease.LiquidityAmountRaw == 0 || lease.LiquidityAmountRaw > redeemable || lease.PrincipalUSDMicros <= 0 || uint64(lease.PrincipalUSDMicros) != lease.LiquidityAmountRaw {
-		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("planned same-mint deposit exceeds fresh collateral backing or stable principal differs")
+		return f, errors.New("planned same-mint deposit exceeds fresh collateral backing or stable principal differs")
 	}
-	for i := 0; i < 8; i++ {
-		offset := 96 + i*136
-		if encodeBase58(accounts[3].Data[offset:offset+32]) == lease.TargetReserve {
-			targetCollateral = binary.LittleEndian.Uint64(accounts[3].Data[offset+32 : offset+40])
+	var topUp uint64
+	if targetMissing {
+		rent, err := r.rpc.MinimumBalanceForRentExemption(ctx, obligationLength)
+		if err != nil {
+			return f, err
+		}
+		if topUp, err = vaultRentTopUp(rent, accounts[6].Lamports); err != nil {
+			return f, err
 		}
 	}
-	evidence := FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey, PolicyData: append([]byte(nil), accounts[5].Data...)}
-	evidence.Anchors = ExecutionBalanceAnchors{SourceObligation: source.Obligation, TargetObligation: target.Obligation, VaultLiquidityATA: source.Position.VaultLiquidityATA, SourceReserve: lease.SourceReserve, TargetReserve: lease.TargetReserve, SourceMarket: source.Position.Market, TargetMarket: target.Position.Market, SourceCollateralMint: source.Position.CollateralMint, TargetCollateralMint: target.Position.CollateralMint, LiquidityTokenProgram: source.Position.LiquidityTokenProgram, Owner: lease.VaultPubkey, Mint: lease.LiquidityMint, SourceCollateralRaw: sourceCollateral, TargetCollateralRaw: targetCollateral, IdleLiquidityRaw: binary.LittleEndian.Uint64(accounts[4].Data[64:72]), MinimumSlot: slot}
-	for index, account := range accounts {
-		hash := sha256.Sum256(account.Data)
-		evidence.Accounts = append(evidence.Accounts, FreshAccount{Kind: kinds[index], Address: account.Address, Owner: account.Owner, DataSHA256: hex.EncodeToString(hash[:]), Slot: slot, Executable: account.Executable, Exists: true})
-	}
-	return KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: freshSource.Position, Target: freshTarget.Position, WithdrawCollateralAmount: sourceCollateral, DepositLiquidityAmount: lease.LiquidityAmountRaw}, evidence, nil
+	f.evidence = FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey}
+	f.evidence.Anchors = ExecutionBalanceAnchors{SourceObligation: source.Obligation, TargetObligation: target.Obligation, VaultLiquidityATA: source.Position.VaultLiquidityATA, SourceReserve: lease.SourceReserve, TargetReserve: lease.TargetReserve, SourceMarket: source.Position.Market, TargetMarket: target.Position.Market, SourceCollateralMint: source.Position.CollateralMint, TargetCollateralMint: target.Position.CollateralMint, LiquidityTokenProgram: source.Position.LiquidityTokenProgram, Owner: lease.VaultPubkey, Mint: lease.LiquidityMint, SourceCollateralRaw: sourceCollateral, TargetCollateralRaw: targetCollateral, IdleLiquidityRaw: binary.LittleEndian.Uint64(accounts[4].Data[64:72]), MinimumSlot: slot}
+	f.input = KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: freshSource.Position, Target: freshTarget.Position, WithdrawCollateralAmount: sourceCollateral, DepositLiquidityAmount: lease.LiquidityAmountRaw,
+		TargetObligationMissing: targetMissing, SourceFarmUserMissing: missingFarmUser[0], TargetFarmUserMissing: missingFarmUser[1], Payer: r.signer, VaultRentTopUpLamports: topUp}
+	return f, nil
 }
+
+// obligationLength is the KLend Obligation account size, discriminator included.
+const obligationLength = 3344
+
+// absent reports an account the RPC returned as null.
+func absent(a Account) bool { return a.Owner == "" && a.Lamports == 0 }
 
 func decodeRouteReserve(account Account, vault string) (decodedRoutePosition, error) {
 	if account.Owner != KLendProgram || len(account.Data) != reserveLength || !bytes.Equal(account.Data[:8], reserveDiscriminator[:]) {
@@ -682,7 +780,7 @@ func decodeRouteReserve(account Account, vault string) (decodedRoutePosition, er
 
 func decodeObligation(account Account, expectedMarket, expectedOwner, expectedDeposit string, position *KaminoPositionAccounts) (uint64, error) {
 	obligationDiscriminator := [8]byte{168, 206, 141, 106, 88, 76, 172, 167}
-	if account.Owner != KLendProgram || len(account.Data) != 3344 || !bytes.Equal(account.Data[:8], obligationDiscriminator[:]) {
+	if account.Owner != KLendProgram || len(account.Data) != obligationLength || !bytes.Equal(account.Data[:8], obligationDiscriminator[:]) {
 		return 0, fmt.Errorf("obligation %s has invalid owner or data", account.Address)
 	}
 	key := func(offset int) string { return encodeBase58(account.Data[offset : offset+32]) }
@@ -706,8 +804,6 @@ func decodeObligation(account Account, expectedMarket, expectedOwner, expectedDe
 			position.ObligationBorrowReserves = append(position.ObligationBorrowReserves, value)
 		}
 	}
-	sort.Strings(position.ObligationDepositReserves)
-	sort.Strings(position.ObligationBorrowReserves)
 	if expectedDeposit != "" && expectedAmount == 0 {
 		return 0, errors.New("source obligation no longer contains the planned reserve")
 	}

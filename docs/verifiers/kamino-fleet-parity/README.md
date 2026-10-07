@@ -25,9 +25,7 @@ and sets HTTP proxies to an unavailable loopback port (local fixture endpoints
 are exempt). Dependencies must already be cached. It creates disposable
 PostgreSQL databases, runs Go vet and all Go tests with the race detector,
 requires every named integration test to run and pass exactly once, and rejects
-skipped fleet tests. Both connected lanes must also emit the structured lifecycle
-and recovery evidence described below; passing test names alone are insufficient.
-Missing dependencies or failed/skipped checks fail the audit rather than being
+skipped fleet tests, including the three connected Go execution tests. Missing dependencies or failed/skipped checks fail the audit rather than being
 reported as successful verification. The audit also requires `cargo build-sbf`
 and its cached toolchain to rebuild the mock protocol program used by LiteSVM.
 
@@ -46,27 +44,22 @@ schema. Production is never migrated by this verifier.
    defensive orphan-submission cases only, test setup injects legacy/partial
    rows with transaction-local trigger bypass; sweep execution never bypasses
    triggers. These fixtures do not simulate a successful signed handoff.
-   `TestConnectedCrossMintPreflight` now connects the real Go planner, publication,
-   revalidator claim, TLS-local RPC/Jupiter account validation, actual Rust KLend
-   proxy, and durable `ready` commit for the same opportunity. It exercises empty
-   obligation vectors and complete coverage by finalized Jupiter ALTs. Exact
-   simulation bytes now execute through the real Squads SBF, SPL Token and local
-   Kamino/Jupiter mock SBF in LiteSVM. The narrow local protocol model uses fixed
-   prices and does not implement Kamino interest/oracles or AlphaQ pricing/CPI.
-   The harness invokes retained Rust execution, confirmation and reconciliation
-   against the local chain. Both lanes interrupt actual signing before durable
-   persistence, restart before broadcast after persistence, reject duplicate
-   execution and stale owners, replay exact wires, and check final balances and
-   telemetry-driven capacity release. Cross-mint covers all three signed legs,
-   including initial withdrawal. Test-only interruption points are absent from
-   production binaries. Real database locks hold live writes across natural
-   lease expiry: same-mint preparation, cross-mint authority acquisition and
-   signed insertion, and cross-mint reconciliation must roll back. The latter
-   probes caught transaction-start `now()` admitting expired cross-mint writes;
-   current-time guards and checked affected-row counts close that boundary.
-   The terminal evidence file is emitted only after every assertion succeeds;
-   the Go owner adds its own publication, revalidation and response-loss evidence.
-   Both lanes still require a fresh successful full audit, not a development run.
+   The connected tests (`internal/fleet/connected_execution_test.go`) run the
+   Go fleet family alone against a local LiteSVM bank (real Squads and SPL
+   Token, explicit mock KLend/Jupiter SBF): Go plans and publishes, prepares
+   and simulates, persists the signed wire before any send, lands it through
+   `land()` while the RPC loses the response of the first executed send,
+   recovers with a keyless owner and reconciles from the finalized receipt.
+   `TestConnectedSameMintExecution` moves between existing obligations,
+   `TestConnectedSameMintSetupExecution` moves into a market where the vault
+   has no obligation and no lamports (withdraw, rent top-up, setup-policy
+   `init_obligation` and deposit in one transaction), and
+   `TestConnectedCrossMintExecution` lands withdraw, swap and deposit legs.
+   They need `FLEET_TEST_DATABASE_URL`, `KAMINO_CONNECTED_SVM_PATH` (the
+   `fleet-local-svm` example of `squads-test-harness`) and
+   `MOCK_YIELD_PROTOCOLS_PROGRAM_SO` built from current source. No Rust
+   process participates. The mock models no interest, oracles, farms or user
+   metadata.
 3. **Go route negative tests:** execute validation/preparation functions with
    missing ALTs, oversized packets, simulation errors, and changed identities.
 4. **Actual KLend proxy:** Go invokes the compiled, digest-verified Rust binary
@@ -135,72 +128,6 @@ normal dependency cache); the mandatory `--audit-current` parent invokes this
 path without development flags. Cached development success cannot substitute
 for rerunning that audit after edits.
 
-## Connected lifecycle evidence contract (version 1)
-
-The runner generates `KAMINO_CONNECTED_RUN_ID` after environment isolation. Each
-owning Go test must emit exactly one single-line JSON record via
-`t.Logf("KAMINO_CONNECTED_EVIDENCE %s", jsonBytes)` **after all real assertions**
-and before the test passes. The checker consumes `go test -json` output, not
-arbitrary stderr or component-verifier PASS statements. Long `test2json` output
-is reassembled per owning test; truncated or foreign-test fragments fail closed.
-Owners:
-
-- `same-mint`: `TestConnectedSameMintLifecycle`
-- `cross-mint`: `TestConnectedCrossMintPreflight`
-
-Root fields (no extras): `schemaVersion` (integer `1`), `runId` (the runner value),
-`lane`, `cluster` (nonempty), `epochId`, `opportunityId` (original publication),
-`decisionId` (positive integer DB identities), `legs`, `stages`.
-
-Each leg has exactly `name`, `opportunityId`, `submissionId`, `signature`,
-`confirmedSlot`, `reconciledSlot`. IDs/slots are positive integers; signatures
-are base58 strings of length 64–88. Reconciled slot cannot precede confirmed
-slot. Same-mint requires one `same_mint` leg; cross-mint requires `withdraw`,
-`swap`, `deposit`. The initial leg references the original opportunity; later
-cross-mint legs may have different opportunity IDs. Submission IDs and signatures
-are unique within a lane; signatures must not be reused between lanes. DB IDs
-may overlap between independently migrated databases.
-
-Each stage has exactly `name`, `status` (literal `pass`), `submissionIds` (unique
-IDs referencing that record's legs). Exactly one of **every** stage is required:
-
-| Stage | Required submission references |
-| --- | --- |
-| `published`, `revalidated` | Empty (pre-signature stages) |
-| `signed`, `confirmed`, `reconciled` | Every leg |
-| `expired_reconcile_lease_recovered` | Every leg |
-| `stale_reconciler_rejected` | Every leg |
-| `exact_wire_replay_no_effect` | Every leg |
-| `pre_persistence_crash_recovered` | Every leg |
-| `post_persistence_crash_recovered` | Every leg |
-| `expiry_during_signed_write_rejected` | Every leg |
-| `ambiguous_broadcast_recovered` | At least one actually affected leg |
-| `duplicate_work_rejected` | Every leg |
-| `telemetry_capacity_released` | Every leg |
-| `terminal_balances_verified` | Every leg |
-
-Stage lists are summaries of completed assertions, not instructions to fabricate
-literal success. Recover expired leases through real retained paths; prove stale
-owners cannot commit and exact persisted wire replay does not change balances,
-receipts or transaction count. Ambiguous broadcast must actually be injected,
-then resolved through durable ownership and authoritative confirmation. Duplicate
-work prevention must cover the movement, not just a second revalidator poll.
-Terminal checks must compare actual token/collateral balances and durable states,
-assert no idle custody/unresolved submissions or account conflicts, and verify
-capacity release only after observed post-execution telemetry. The emitting
-harness must enforce these semantic assertions: the Python checker validates
-provenance, identity, completeness and references, not the truth of arbitrary
-JSON or source-code freshness. Both parts are mandatory.
-
-The checker rejects missing/unknown/duplicate legs or stages, any skipped/failed
-fleet test or stage, duplicate test completions, missing package completion,
-evidence outside the owning running test, reused signatures and mismatched run
-IDs. Full mode cannot accept single-lane output. Successful records are printed
-as `VERIFIED_CONNECTED_EVIDENCE` so the audit log retains the identity/signature
-trace after scratch cleanup. Do not put accounts, wire bytes or secrets in these
-records. Standalone validation requires `--run-id RUN_ID`; optional
-`--development-lane LANE` explicitly narrows scope and labels its result.
-
 ## Broader shared-input decision diagnostic
 
 Run `bash scripts/compare-fleet-decisions.sh /absolute/new-output-directory`.
@@ -263,24 +190,9 @@ Autodeposit fences. Logs retain independent candidate counts and additionally
 report `jointAllocationChecked`, `jointSelectedIdleCount`, and
 `jointSelectedReserveCount`; `executableIdleEnabled` remains false.
 
-`KLendProxy.BuildIdleDeposit` invokes the official Rust KLend deposit builder
-without a source or withdrawal parameter. It requires an existing, PDA-bound
-empty/target-only obligation and the vault's stablecoin ATA. It does not create
-missing obligations/ATAs or take ownership of funds. The required
-`TestRealKLendProxyIdleDeposit` exercises all six mints through the compiled
-proxy, exact deposit bytes, every returned account/privilege/byte mutation,
-invalid footprints/PDAs/amounts, duplicate JSON fields and withdrawal injection.
-`PrepareIdleDepositRoute` compiles a deposit-only Squads payload, applies its
-compute budget, requires reusable ALT coverage and exact simulation, and cannot
-use the withdrawal policy index. The required
-`TestConnectedSameMintLifecycle/idle-deposit-signed-wire` subtest starts a separate
-SVM with initial USDC idle funds and an existing target obligation. It signs and
-executes the exact Go-produced bytes through Squads/SPL and mock Kamino, rejects
-wrong policy indexes, leaves the reserve source unchanged, and checks that exact
-wire replay retains one successful execution and no second transfer.
-
-This is **local signed-wire proof, not durable idle lifecycle/recovery proof**;
-it does not add a third connected lifecycle record or prove real KLend execution.
+`BuildIdleDeposit` is the KLend deposit builder without a source or
+withdrawal parameter. It requires an existing, PDA-bound empty/target-only
+obligation and the vault's stablecoin ATA, and does not take ownership of funds.
 
 `PlanFleet` and `Store.Publish` still reject idle diagnostic routes. Idle
 publication, fresh revalidation, retained execution/reconciliation, restart
@@ -290,8 +202,7 @@ deposit in one transaction.
 
 ## Remaining production gates
 
-Require a current-source audit with both connected records before accepting the
-local handoff. It does not close the separate executable-idle or real shared-snapshot
+Require a current-source run of the connected Go execution tests. They do not close the separate executable-idle or real shared-snapshot
 Rust/Go observer/revalidator parity gaps. Joint idle/reserve allocation now has
 normalized-input comparison coverage, but not connected idle lifecycle evidence.
 Even a completed connected run uses mock Kamino/Jupiter programs and fixed

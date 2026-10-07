@@ -48,7 +48,7 @@ func jupiterBuildForVault(t *testing.T, vault string, amount, quoted uint64, sli
 	data = append(data, 1, 0x10, 0x27, 0, 1)
 	amm, state, poolA, poolB := testPubkey(32), testPubkey(33), testPubkey(34), testPubkey(35)
 	accounts := []InstructionAccount{{vault, true, false}, {inputATA, false, true}, {outputATA, false, true}, {USDCMint, false, false}, {USDTMint, false, false}, {tokenProgram, false, false}, {tokenProgram, false, false}, {jupiterProgram, false, false}, {jupiterEvent, false, false}, {jupiterProgram, false, false}, {alphaQProgram, false, false}, {vault, false, false}, {amm, false, false}, {state, false, true}, {inputATA, false, true}, {outputATA, false, true}, {poolA, false, true}, {poolB, false, true}, {poolA, false, false}, {poolB, false, false}, {poolB, false, true}, {tokenProgram, false, false}, {instructionsSysvar, false, false}, {jupiterProgram, false, false}}
-	swap := RouteInstruction{"jupiter_exact_in", jupiterProgram, accounts, data}
+	swap := RouteInstruction{Step: "jupiter_exact_in", Program: jupiterProgram, Accounts: accounts, Data: data}
 	percent := 100.0
 	route := rawJupiterRoute{rawJupiterSwapInfo{amm, "AlphaQ", USDCMint, USDTMint, strconv.FormatUint(amount, 10), strconv.FormatUint(quoted, 10)}, &percent, 10_000}
 	price := append([]byte{3}, make([]byte, 8)...)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"sort"
 )
 
@@ -81,14 +80,4 @@ WHERE cluster=$1 AND enabled AND database_authority_separation_passes AND fee_pa
 		shards = append(shards, shard)
 	}
 	return shards, rows.Err()
-}
-
-// matureReservePosition reports whether a same-mint route moves an existing
-// reserve position. Rust allows a fee-only payer only for these routes: idle
-// and setup work pays rent, which a fee-only key never funds.
-func matureReservePosition(plan json.RawMessage) bool {
-	var p struct {
-		SourceKind string `json:"source_kind"`
-	}
-	return json.Unmarshal(plan, &p) == nil && p.SourceKind == "reserve_position"
 }

@@ -249,14 +249,23 @@ func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
 }
 
 func (c *RPCClient) ConfirmedAccounts(ctx context.Context, addresses []string, minimumSlot int64) (int64, []Account, error) {
-	return c.accounts(ctx, addresses, minimumSlot, "confirmed")
+	return c.accounts(ctx, addresses, minimumSlot, "confirmed", false)
 }
 
 func (c *RPCClient) FinalizedAccounts(ctx context.Context, addresses []string, minimumSlot int64) (int64, []Account, error) {
-	return c.accounts(ctx, addresses, minimumSlot, "finalized")
+	return c.accounts(ctx, addresses, minimumSlot, "finalized", false)
 }
 
-func (c *RPCClient) accounts(ctx context.Context, addresses []string, minimumSlot int64, commitment string) (int64, []Account, error) {
+// MinimumBalanceForRentExemption is the chain's rent-exempt lamports for size bytes.
+func (c *RPCClient) MinimumBalanceForRentExemption(ctx context.Context, size int) (uint64, error) {
+	var lamports uint64
+	err := c.call(ctx, "getMinimumBalanceForRentExemption", []any{size, map[string]string{"commitment": "confirmed"}}, &lamports)
+	return lamports, err
+}
+
+// accounts reads one coherent batch. With absentAllowed a null account is
+// returned as Account{Address} (no owner, no lamports) instead of an error.
+func (c *RPCClient) accounts(ctx context.Context, addresses []string, minimumSlot int64, commitment string, absentAllowed bool) (int64, []Account, error) {
 	if len(addresses) == 0 || minimumSlot <= 0 {
 		return 0, nil, fmt.Errorf("addresses and minimum slot are required")
 	}
@@ -280,6 +289,10 @@ func (c *RPCClient) accounts(ctx context.Context, addresses []string, minimumSlo
 	accounts := make([]Account, len(addresses))
 	for index, value := range result.Value {
 		if value == nil || value.Owner == "" || value.Lamports == 0 {
+			if absentAllowed {
+				accounts[index] = Account{Address: addresses[index]}
+				continue
+			}
 			return 0, nil, fmt.Errorf("required account %s is absent", addresses[index])
 		}
 		var encoded []string

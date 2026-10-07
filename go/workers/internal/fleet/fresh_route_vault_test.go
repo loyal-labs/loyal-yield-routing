@@ -3,32 +3,60 @@ package fleet
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
 
-// Production shadow revalidation failed every same-mint route at
-// load_fresh_route with "required account <x> is absent" for an account that
-// was neither reserve and was genuinely absent at confirmed commitment
-// (rehearsal shadow-approved-account-diagnostic-20261004T0009Z). The Go port
-// read the Squads vault PDA as a required account; a smart-account vault is a
-// system account only while it holds lamports and signs through CPI either
-// way. The fresh read must not depend on the vault account existing.
-func TestFreshRouteDoesNotRequireTheVaultPDAAccount(t *testing.T) {
-	market := testIdentity(40)
-	sourceIdentity := ReserveIdentity{Address: testIdentity(1), Market: market, Mint: USDCMint}
-	targetIdentity := ReserveIdentity{Address: testIdentity(2), Market: market, Mint: USDCMint}
-	reserves := map[string]Account{
-		sourceIdentity.Address: reserveFixture(sourceIdentity, 1_000_000, 0),
-		targetIdentity.Address: reserveFixture(targetIdentity, 1_000_000, 0),
-	}
+// Regression for the Go fleet path failing every cycle when the target
+// obligation did not exist yet: loadFreshRoute required it ("required account
+// <target obligation> is absent"), so a vault whose best market had no
+// obligation never moved. Rust initializes it inside the route (ee8715ad,
+// docs/plans/same-mint-obligation-ready-policy-verifier.md: withdraw, init and
+// deposit in one transaction). The same read must also tolerate an unfunded
+// vault PDA (rehearsal shadow-approved-account-diagnostic-20261004T0009Z): a
+// Squads vault is a system account only while it holds lamports.
+func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
 	vault := testIdentity(4)
-	var requested [][]string
+	source := ReserveIdentity{Address: testIdentity(1), Market: testIdentity(40), Mint: USDCMint}
+	target := ReserveIdentity{Address: testIdentity(2), Market: testIdentity(41), Mint: USDCMint}
+	const amount, rent = uint64(1_000_000_000), uint64(23_942_400)
+	chain := map[string]Account{}
+	var sourcePosition decodedRoutePosition
+	for i, identity := range []ReserveIdentity{source, target} {
+		account := reserveFixture(identity, 1_000_000_000_000, 1_000_000_000_000)
+		fixtureKey(t, account.Data, 408, tokenProgram)
+		fixtureKey(t, account.Data, 2560, testIdentity(byte(90+i)))
+		fixtureKey(t, account.Data, 160, testIdentity(byte(92+i)))
+		fixtureKey(t, account.Data, 2600, testIdentity(byte(94+i)))
+		binary.LittleEndian.PutUint64(account.Data[2592:2600], 2_000_000_000_000)
+		chain[account.Address] = account
+		decoded, err := decodeRouteReserve(account, vault)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			sourcePosition = decoded
+		}
+	}
+	obligation := Account{Address: sourcePosition.Obligation, Owner: KLendProgram, Lamports: 1, Data: make([]byte, obligationLength)}
+	copy(obligation.Data, []byte{168, 206, 141, 106, 88, 76, 172, 167})
+	fixtureKey(t, obligation.Data, 32, source.Market)
+	fixtureKey(t, obligation.Data, 64, vault)
+	fixtureKey(t, obligation.Data, 96, source.Address)
+	binary.LittleEndian.PutUint64(obligation.Data[128:136], amount)
+	chain[obligation.Address] = obligation
+	ata := Account{Address: sourcePosition.Position.VaultLiquidityATA, Owner: tokenProgram, Lamports: 1, Data: make([]byte, 165)}
+	fixtureKey(t, ata.Data, 0, USDCMint)
+	fixtureKey(t, ata.Data, 32, vault)
+	ata.Data[108] = 1
+	chain[ata.Address] = ata
+	policy := testIdentity(5)
+	chain[policy] = Account{Address: policy, Owner: SquadsProgram, Lamports: 1, Data: []byte{1}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var call struct {
@@ -38,36 +66,80 @@ func TestFreshRouteDoesNotRequireTheVaultPDAAccount(t *testing.T) {
 		if err := json.Unmarshal(body, &call); err != nil {
 			t.Error(err)
 		}
-		var result any = int64(100)
-		if call.Method == "getMultipleAccounts" {
+		var result any = int64(1000)
+		switch call.Method {
+		case "getMinimumBalanceForRentExemption":
+			var size int
+			_ = json.Unmarshal(call.Params[0], &size)
+			if size != obligationLength {
+				t.Errorf("rent asked for %d bytes", size)
+			}
+			result = rent
+		case "getMultipleAccounts":
 			var addresses []string
 			_ = json.Unmarshal(call.Params[0], &addresses)
-			requested = append(requested, addresses)
 			values := make([]any, len(addresses))
 			for i, address := range addresses {
-				if account, ok := reserves[address]; ok {
+				// The target obligation and the vault are absent on chain.
+				if account, ok := chain[address]; ok {
 					values[i] = map[string]any{"owner": account.Owner, "lamports": account.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(account.Data), "base64"}}
-				} else if address != vault {
-					// Every other account exists but is not a valid obligation.
-					values[i] = map[string]any{"owner": SquadsProgram, "lamports": 1, "executable": false, "data": []string{"", "base64"}}
 				}
 			}
-			result = map[string]any{"context": map[string]any{"slot": 100}, "value": values}
+			result = map[string]any{"context": map[string]any{"slot": 1000}, "value": values}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 	}))
 	defer server.Close()
-	r := &Revalidator{rpc: NewRPCClient(server.URL), slotDuration: 400 * time.Millisecond}
-	lease := RevalidationLease{VaultPubkey: vault, SourceReserve: sourceIdentity.Address, TargetReserve: targetIdentity.Address, LiquidityMint: USDCMint, PolicyAccount: testIdentity(5)}
-	_, _, err := r.loadFreshRoute(context.Background(), lease)
-	if err == nil || strings.Contains(err.Error(), "is absent") || !strings.Contains(err.Error(), "obligation") {
-		t.Fatalf("fresh read did not proceed past an absent vault PDA: %v", err)
+	r := &Revalidator{rpc: NewRPCClient(server.URL), slotDuration: 400 * time.Millisecond, signer: testIdentity(6)}
+	lease := RevalidationLease{VaultPubkey: vault, SourceReserve: source.Address, TargetReserve: target.Address, LiquidityMint: USDCMint, PolicyAccount: policy, LiquidityAmountRaw: amount, PrincipalUSDMicros: int64(amount)}
+	fresh, err := r.loadFreshRoute(context.Background(), lease)
+	if err != nil {
+		t.Fatalf("fresh read refused a route whose target obligation the route creates: %v", err)
 	}
-	for _, addresses := range requested {
-		for _, address := range addresses {
-			if address == vault {
-				t.Fatal("fresh route read the vault PDA as route evidence")
-			}
+	in := fresh.input
+	if !in.TargetObligationMissing || in.VaultRentTopUpLamports != rent || in.Payer != r.signer || in.SourceFarmUserMissing || in.TargetFarmUserMissing || fresh.evidence.Anchors.TargetCollateralRaw != 0 {
+		t.Fatalf("setup facts not read from chain: %+v", in)
+	}
+	route, err := BuildSameMintRoute(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	for _, ix := range route {
+		step := ix.Step
+		if ix.Protected {
+			step += "*"
 		}
+		steps = append(steps, step)
+	}
+	want := []string{"kamino_refresh_reserve", "kamino_refresh_reserve", "kamino_refresh_obligation", "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2*", "system_transfer_vault_rent_top_up", "kamino_init_obligation*", "kamino_refresh_obligation", "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2*"}
+	if len(steps) != len(want) {
+		t.Fatalf("route %v, want %v", steps, want)
+	}
+	for i := range want {
+		if steps[i] != want[i] {
+			t.Fatalf("route %v, want %v", steps, want)
+		}
+	}
+}
+
+// A setup route pays rent, so it never goes to a fee-only payer (b1ad5b1a).
+func TestSetupRouteIsNeverFeeOnly(t *testing.T) {
+	r := &Revalidator{signer: testIdentity(6), feeOnlyPayers: []string{testIdentity(7)}}
+	if payer := r.feePayer(context.Background(), "localnet", RevalidationLease{}, 1, false); payer != r.signer {
+		t.Fatalf("setup route paid by %s", payer)
+	}
+}
+
+// The payer funds exactly the vault's rent deficit, and never more than the
+// retained cap.
+func TestVaultRentTopUp(t *testing.T) {
+	for _, c := range []struct{ rent, vault, want uint64 }{{23_942_400, 0, 23_942_400}, {23_942_400, 1_000_000, 22_942_400}, {23_942_400, 23_942_400, 0}, {23_942_400, 30_000_000, 0}} {
+		if got, err := vaultRentTopUp(c.rent, c.vault); err != nil || got != c.want {
+			t.Fatalf("top-up(%d,%d)=%d %v", c.rent, c.vault, got, err)
+		}
+	}
+	if _, err := vaultRentTopUp(maxObligationRentLamports+1, 0); err == nil {
+		t.Fatal("rent above the cap was funded")
 	}
 }

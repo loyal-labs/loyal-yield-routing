@@ -31,6 +31,8 @@ type RouteInstruction struct {
 	Program  string               `json:"program"`
 	Accounts []InstructionAccount `json:"accounts"`
 	Data     []byte               `json:"-"`
+	// Protected instructions execute as the vault through a Squads policy.
+	Protected bool `json:"-"`
 }
 type KaminoPositionAccounts struct {
 	Reserve                   string   `json:"reserve"`
@@ -58,6 +60,15 @@ type KaminoSameMintRouteRequest struct {
 	Target                   KaminoPositionAccounts `json:"target"`
 	WithdrawCollateralAmount uint64                 `json:"withdrawCollateralAmount"`
 	DepositLiquidityAmount   uint64                 `json:"depositLiquidityAmount"`
+	// Same-mint setup facts read from chain with the route. The route itself
+	// initializes a missing target obligation and missing obligation farm
+	// users, paid by Payer; VaultRentTopUpLamports funds the vault, which pays
+	// the obligation's rent from inside its policy.
+	TargetObligationMissing bool   `json:"targetObligationMissing,omitempty"`
+	SourceFarmUserMissing   bool   `json:"sourceFarmUserMissing,omitempty"`
+	TargetFarmUserMissing   bool   `json:"targetFarmUserMissing,omitempty"`
+	Payer                   string `json:"payer,omitempty"`
+	VaultRentTopUpLamports  uint64 `json:"vaultRentTopUpLamports,omitempty"`
 }
 
 // KaminoSameMintRoute splits a route into instructions the vault may run
@@ -87,25 +98,79 @@ type DestinationSetupRequest struct {
 	Target KaminoPositionAccounts `json:"target"`
 }
 
-// BuildSameMintRoute refreshes the source (and distinct target) reserve and
-// the source obligation, withdraws source collateral, deposits target
-// liquidity, then refreshes the target obligation. Source and target share one
-// mint and one vault ATA.
-func BuildSameMintRoute(r KaminoSameMintRouteRequest) (KaminoSameMintRoute, error) {
-	return buildKLendRoute(r, true)
+// setup reports a route that creates accounts, and so pays rent.
+func (r KaminoSameMintRouteRequest) setup() bool {
+	return r.TargetObligationMissing || r.SourceFarmUserMissing || r.TargetFarmUserMissing
+}
+
+// BuildSameMintRoute builds one atomic same-mint move in the retained
+// worker's order (build_route_execution_plan): refresh both reserves, create a
+// missing source farm user, refresh the source obligation and, for an existing
+// target, create its missing farm user and refresh it; withdraw; then either
+// refresh the target for its reserve or, for a missing target obligation, fund
+// the vault's obligation rent, initialize the obligation and its farm user and
+// refresh it; deposit. Setup is part of the move: withdrawal and deposit share
+// one transaction, so funds never sit idle between transactions (ee8715ad).
+func BuildSameMintRoute(r KaminoSameMintRouteRequest) ([]RouteInstruction, error) {
+	s, t := &r.Source, &r.Target
+	if s.LiquidityMint != t.LiquidityMint || s.VaultLiquidityATA != t.VaultLiquidityATA || s.Reserve == t.Reserve || r.WithdrawCollateralAmount == 0 || r.DepositLiquidityAmount == 0 {
+		return nil, fmt.Errorf("invalid same-mint route lane or amount")
+	}
+	vault, err := solana.PublicKeyFromBase58(r.Vault)
+	if err != nil {
+		return nil, err
+	}
+	if err = bindKLendPDAs(s, vault); err != nil {
+		return nil, err
+	}
+	if err = bindKLendPDAs(t, vault); err != nil {
+		return nil, err
+	}
+	// The retained worker refreshes every footprint reserve; this route reads
+	// and refreshes only its own two.
+	for _, reserve := range append(append(append(append([]string{}, s.ObligationDepositReserves...), s.ObligationBorrowReserves...), t.ObligationDepositReserves...), t.ObligationBorrowReserves...) {
+		if reserve != s.Reserve && reserve != t.Reserve {
+			return nil, fmt.Errorf("obligation footprint reserve %s is outside the route", reserve)
+		}
+	}
+	owner := vault.String()
+	protect := func(ix RouteInstruction) RouteInstruction { ix.Protected = true; return ix }
+	route := []RouteInstruction{refreshReserve(*s), refreshReserve(*t)}
+	if r.SourceFarmUserMissing {
+		route = append(route, initObligationFarm(r.Payer, owner, *s))
+	}
+	route = append(route, refreshObligation(*s, false))
+	withdraw := protect(withdrawV2(owner, *s, r.WithdrawCollateralAmount))
+	deposit := protect(depositV2(owner, *t, r.DepositLiquidityAmount))
+	if !r.TargetObligationMissing {
+		if r.TargetFarmUserMissing {
+			route = append(route, initObligationFarm(r.Payer, owner, *t))
+		}
+		route = append(route, refreshObligation(*t, false), withdraw, refreshObligation(*t, true), deposit)
+		return route, canonicalAccounts(KaminoSameMintRoute{Public: route})
+	}
+	route = append(route, withdraw)
+	if r.VaultRentTopUpLamports > 0 {
+		route = append(route, RouteInstruction{Step: "system_transfer_vault_rent_top_up", Program: systemProgram, Accounts: []InstructionAccount{{r.Payer, true, true}, {owner, false, true}},
+			Data: binary.LittleEndian.AppendUint64([]byte{2, 0, 0, 0}, r.VaultRentTopUpLamports)})
+	}
+	metadata, err := findProgramAddress(KLendProgram, []byte("user_meta"), vault[:])
+	if err != nil {
+		return nil, err
+	}
+	route = append(route, protect(initObligation(owner, *t, metadata)))
+	if r.TargetFarmUserMissing {
+		route = append(route, initObligationFarm(r.Payer, owner, *t))
+	}
+	route = append(route, refreshObligation(*t, false), deposit)
+	return route, canonicalAccounts(KaminoSameMintRoute{Public: route})
 }
 
 // BuildCrossMintLegs builds the independent KLend withdrawal and deposit legs.
 // It does not combine withdrawal, Jupiter swap, and deposit into a transaction.
 func BuildCrossMintLegs(r KaminoSameMintRouteRequest) (KaminoSameMintRoute, error) {
-	return buildKLendRoute(r, false)
-}
-
-func buildKLendRoute(r KaminoSameMintRouteRequest, sameMintLane bool) (KaminoSameMintRoute, error) {
-	sameMint := r.Source.LiquidityMint == r.Target.LiquidityMint
-	sameATA := r.Source.VaultLiquidityATA == r.Target.VaultLiquidityATA
-	validLane := sameMintLane && sameMint && sameATA || !sameMintLane && !sameMint && !sameATA
-	if r.WithdrawCollateralAmount == 0 || r.DepositLiquidityAmount == 0 || !validLane {
+	if r.Source.LiquidityMint == r.Target.LiquidityMint || r.Source.VaultLiquidityATA == r.Target.VaultLiquidityATA || r.WithdrawCollateralAmount == 0 || r.DepositLiquidityAmount == 0 ||
+		r.TargetObligationMissing || r.SourceFarmUserMissing || r.TargetFarmUserMissing || r.VaultRentTopUpLamports > 0 {
 		return KaminoSameMintRoute{}, fmt.Errorf("invalid KLend route lane or amount")
 	}
 	vault, err := solana.PublicKeyFromBase58(r.Vault)
@@ -118,12 +183,7 @@ func buildKLendRoute(r KaminoSameMintRouteRequest, sameMintLane bool) (KaminoSam
 	if err = bindKLendPDAs(&r.Target, vault); err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	public := []RouteInstruction{refreshReserve(r.Source)}
-	if r.Target.Reserve != r.Source.Reserve {
-		public = append(public, refreshReserve(r.Target))
-	}
-	public = append(public, refreshObligation(r.Source, false), refreshObligation(r.Target, true))
-	route := KaminoSameMintRoute{Public: public, Protected: []RouteInstruction{
+	route := KaminoSameMintRoute{Public: []RouteInstruction{refreshReserve(r.Source), refreshReserve(r.Target), refreshObligation(r.Source, false), refreshObligation(r.Target, true)}, Protected: []RouteInstruction{
 		withdrawV2(vault.String(), r.Source, r.WithdrawCollateralAmount),
 		depositV2(vault.String(), r.Target, r.DepositLiquidityAmount),
 	}}
@@ -195,13 +255,9 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 			{owner, true, false}, {owner, true, true}, {metadata, false, true}, {KLendProgram, false, false}, {rentSysvar, false, false}, {systemProgram, false, false},
 		})
 	case "obligation":
-		ix = klendInstruction("init_obligation", []byte{0, 0}, []InstructionAccount{
-			{owner, true, false}, {owner, true, true}, {t.Obligation, false, true}, {t.Market, false, false}, {systemProgram, false, false}, {systemProgram, false, false}, {metadata, false, false}, {rentSysvar, false, false}, {systemProgram, false, false},
-		})
+		ix = initObligation(owner, t, metadata)
 	case "farm":
-		ix = klendInstruction("init_obligation_farms_for_reserve", []byte{0}, []InstructionAccount{
-			{r.Payer, true, true}, {owner, false, false}, {t.Obligation, false, true}, {t.MarketAuthority, false, false}, {t.Reserve, false, true}, {t.ReserveFarmState, false, true}, {t.ObligationFarmUserState, false, true}, {t.Market, false, false}, {farmsProgram, false, false}, {rentSysvar, false, false}, {systemProgram, false, false},
-		})
+		ix = initObligationFarm(r.Payer, owner, t)
 	default:
 		return KaminoSameMintRoute{}, fmt.Errorf("unsupported destination setup stage")
 	}
@@ -211,6 +267,22 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 		route = KaminoSameMintRoute{Protected: []RouteInstruction{ix}}
 	}
 	return route, canonicalAccounts(route)
+}
+
+// initObligation creates the vault's vanilla (tag 0, id 0) obligation. The
+// vault is owner and rent payer: inside a Squads policy only the vault signs.
+func initObligation(owner string, t KaminoPositionAccounts, metadata string) RouteInstruction {
+	return klendInstruction("init_obligation", []byte{0, 0}, []InstructionAccount{
+		{owner, true, false}, {owner, true, true}, {t.Obligation, false, true}, {t.Market, false, false}, {systemProgram, false, false}, {systemProgram, false, false}, {metadata, false, false}, {rentSysvar, false, false}, {systemProgram, false, false},
+	})
+}
+
+// initObligationFarm creates the obligation's collateral farm user; the payer
+// funds it, so it stays outside the vault's policy.
+func initObligationFarm(payer, owner string, t KaminoPositionAccounts) RouteInstruction {
+	return klendInstruction("init_obligation_farms_for_reserve", []byte{0}, []InstructionAccount{
+		{payer, true, true}, {owner, false, false}, {t.Obligation, false, true}, {t.MarketAuthority, false, false}, {t.Reserve, false, true}, {t.ReserveFarmState, false, true}, {t.ObligationFarmUserState, false, true}, {t.Market, false, false}, {farmsProgram, false, false}, {rentSysvar, false, false}, {systemProgram, false, false},
+	})
 }
 
 // bindKLendPDAs derives the market authority, the vanilla (tag 0, id 0)
