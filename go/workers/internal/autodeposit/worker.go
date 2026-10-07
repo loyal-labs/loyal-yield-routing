@@ -2,8 +2,10 @@ package autodeposit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -28,18 +30,8 @@ type WorkerDependencies struct {
 	Store *Store
 	// Executor performs one target's chain effects. Required.
 	Executor TargetExecutor
-	// SlotHints carries externally signalled slot ids (for example realtime
-	// events) that should be dispatched first. Optional; drained every tick.
-	SlotHints *SlotHintQueue
-	// OnAlert receives the alerts a tick's outcomes deserve. Optional.
-	OnAlert func(ExecutorFailureAlert)
-	// OnError receives each Tick's housekeeping failure. Run keeps the family's
-	// recovery model — the next tick re-reads durable state — but a projection
-	// or release failure must reach an operator, not disappear into the loop.
-	// Optional; when nil, Run returns the first tick error it cannot recover
-	// from so the runtime still sees the failure.
-	OnError func(error)
-	// Facts receives the family's progress and inflight count. Required.
+	// Facts receives the family's progress, inflight count and failure codes.
+	// Required.
 	Facts *engine.Facts
 
 	PollInterval          time.Duration
@@ -55,9 +47,6 @@ type WorkerDependencies struct {
 type Worker struct {
 	store           *Store
 	executor        TargetExecutor
-	hints           *SlotHintQueue
-	onAlert         func(ExecutorFailureAlert)
-	onError         func(error)
 	facts           *engine.Facts
 	executionErrors int
 
@@ -69,13 +58,18 @@ type Worker struct {
 	releaseBatchLimit     int64
 }
 
-// Defaults for unset dependency bounds.
+// Defaults for unset dependency bounds. The poll interval is the Rust
+// trigger's: the timeout of the one wakeup loop.
 const (
-	DefaultPollInterval         = time.Minute
+	DefaultPollInterval         = 10 * time.Second
 	DefaultProjectionBatchLimit = 500
 	DefaultDispatchLimit        = 20
 	DefaultReleaseBatchLimit    = 100
 )
+
+// WakeupChannel carries {"scheduled_slot_id": N} for each slot that becomes
+// requested (migration 0016's trigger on balance_sweep_scheduled_slots).
+const WakeupChannel = "loyal_yield_autodeposit_wakeup"
 
 // NewWorker validates the dependencies and applies the family defaults.
 func NewWorker(deps WorkerDependencies) (*Worker, error) {
@@ -91,9 +85,6 @@ func NewWorker(deps WorkerDependencies) (*Worker, error) {
 	worker := &Worker{
 		store:                 deps.Store,
 		executor:              deps.Executor,
-		hints:                 deps.SlotHints,
-		onAlert:               deps.OnAlert,
-		onError:               deps.OnError,
 		facts:                 deps.Facts,
 		pollInterval:          deps.PollInterval,
 		projectionBatchLimit:  deps.ProjectionBatchLimit,
@@ -147,7 +138,11 @@ type TickReport struct {
 // that already left the wallet must be resolved regardless of enablement. The
 // error return covers only this pass's own housekeeping failures; executor
 // outcomes are tallied, never aborted the scan.
-func (w *Worker) Tick(ctx context.Context) (TickReport, error) {
+func (w *Worker) Tick(ctx context.Context) (TickReport, error) { return w.tick(ctx, nil) }
+
+// tick dispatches the woken slots first. Each failure is counted under the
+// Rust trigger's OperationalError code for the same stage.
+func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 	var report TickReport
 	if err := ctx.Err(); err != nil {
 		return report, err
@@ -155,49 +150,71 @@ func (w *Worker) Tick(ctx context.Context) (TickReport, error) {
 
 	projection, err := w.store.ProjectSurplusLotsOnce(ctx, w.projectionBatchLimit)
 	if err != nil {
-		return report, err
+		return report, w.failed("autodeposit_projection_failed", err)
 	}
 	report.Projection = projection
 
 	staleSlots, err := w.store.FailStaleRequestedSlots(ctx, w.releaseBatchLimit)
 	if err != nil {
-		return report, err
+		return report, w.failed("autodeposit_execution_queue_preparation_failed", err)
 	}
 	report.Outcome.StaleRequestedSlotsFailed = staleSlots
+	if staleSlots > 0 {
+		w.failed("autodeposit_requested_slot_timed_out", nil)
+	}
 
 	staleClaims, err := w.store.ReleaseStaleSelectedClaims(ctx, w.staleSelectedSeconds, w.releaseBatchLimit)
 	if err != nil {
-		return report, err
+		return report, w.failed("autodeposit_execution_queue_preparation_failed", err)
 	}
 	report.Outcome.StaleClaimsReleased = staleClaims
+	if staleClaims > 0 {
+		w.failed("autodeposit_stale_claim_released", nil)
+	}
 	if err := w.store.RepairUnsignedSchedules(ctx, w.releaseBatchLimit); err != nil {
-		return report, err
+		return report, w.failed("autodeposit_execution_queue_preparation_failed", err)
 	}
 
-	var hints []int64
-	if w.hints != nil {
-		hints = w.hints.Drain(int(w.dispatchLimit))
-	}
 	targets, err := w.store.LoadExecutableTargets(ctx, w.dispatchLimit, hints)
 	if err != nil {
-		return report, err
+		return report, w.failed("autodeposit_execution_queue_preparation_failed", err)
 	}
 	report.Dispatched = targets
 	report.Outcome.TargetsScanned = len(targets)
 
 	report.Alerts = w.dispatch(ctx, targets, &report.Outcome)
 	report.ExecutorErrors = w.executionErrors
-	for _, alert := range report.Alerts {
-		if w.onAlert != nil {
-			w.onAlert(alert)
-		}
-	}
 	return report, nil
+}
+
+// failed counts and logs one stable failure code. Shutdown is not a failure.
+func (w *Worker) failed(code string, err error) error {
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
+	w.facts.Failed(engine.FamilyAutodeposit, code)
+	if err != nil {
+		slog.Error("autodeposit "+code, "code", code, "error", safeError(err))
+	} else {
+		slog.Warn("autodeposit "+code, "code", code)
+	}
+	return err
+}
+
+// safeError keeps an error's cause unless it may carry a DSN, an endpoint or
+// key material, as the Rust trigger's safe_error did.
+func safeError(err error) string {
+	message := err.Error()
+	if strings.Contains(message, "postgres") || strings.Contains(message, "http") || strings.Contains(message, "keypair") {
+		return "external dependency failed; inspect terminal logs"
+	}
+	return message
 }
 
 // dispatch runs the executor over the prioritized target list in order. The
 // order is the family's recovery-starvation guarantee: it is preserved here
-// even if the executor is slow, because dispatch is synchronous.
+// even if the executor is slow, because dispatch is synchronous. Each alert
+// an outcome deserves is counted under its code.
 func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outcome *ExecutorOutcome) []ExecutorFailureAlert {
 	var alerts []ExecutorFailureAlert
 	w.executionErrors = 0
@@ -207,58 +224,137 @@ func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outco
 		}
 		outcome.ExecutionsAttempted++
 		result, err := w.executor.Execute(ctx, target)
+		var alert *ExecutorFailureAlert
 		if err != nil {
 			w.executionErrors++
-			if result == ResultUnknown {
-				alert := genericExecutorAlert()
-				alert.Summary = "autodeposit executor run errored without a classified outcome: " + err.Error()
-				alerts = append(alerts, *alert)
-				outcome.ExecutionsFailed++
-				continue
-			}
 		}
-		if alert := outcome.RecordExecutorResult(result); alert != nil {
+		if err != nil && result == ResultUnknown {
+			alert = genericExecutorAlert()
+			alert.Summary = "autodeposit executor run errored without a classified outcome: " + safeError(err)
+			outcome.ExecutionsFailed++
+		} else {
+			alert = outcome.RecordExecutorResult(result)
+		}
+		attributes := []any{"result", string(result), "targetId", target.TargetID, "scheduledSlotId", target.ScheduledSlotID}
+		if err != nil {
+			attributes = append(attributes, "error", safeError(err))
+		}
+		if alert != nil {
 			alerts = append(alerts, *alert)
+			w.facts.Failed(engine.FamilyAutodeposit, alert.Code)
+			level := slog.LevelError
+			if alert.SelfRecovering {
+				level = slog.LevelWarn
+			}
+			slog.Log(ctx, level, alert.Summary, append(attributes, "code", alert.Code, "operation", alert.Operation, "retryable", alert.Retryable)...)
+		} else if err != nil {
+			slog.Info("autodeposit execution "+string(result), attributes...)
 		}
 	}
 	return alerts
 }
 
-// Run repeats Tick until the context is cancelled. A failing tick is not fatal:
-// the next tick re-reads the durable state, which is the family's recovery
-// model. Sanitized failures reach OnError; standalone callers without OnError
-// retain the original fail-fast API.
-// Cancellation is honored between ticks and between dispatches; Run returns the
-// context's error.
+// Run repeats the pass until the context is cancelled. There is one wakeup:
+// a requested-slot notification or, failing that, the poll interval. A
+// failing pass is not fatal: the next one re-reads the durable state, which is
+// the family's recovery model.
 func (w *Worker) Run(ctx context.Context) error {
-	timer := time.NewTimer(0)
-	defer timer.Stop()
+	ctx, cancel := context.WithCancel(ctx)
+	wake := make(chan int64, w.dispatchLimit)
+	listening := make(chan struct{})
+	go func() {
+		defer close(listening)
+		w.listen(ctx, wake)
+	}()
+	defer func() {
+		cancel()
+		<-listening
+	}()
+	var hints []int64
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-		}
-		cycle, cancel := context.WithTimeout(ctx, runtimeCycleTimeout)
-		_, err := w.Tick(cycle)
-		if err == nil {
+		cycle, cycleCancel := context.WithTimeout(ctx, runtimeCycleTimeout)
+		if _, err := w.tick(cycle, hints); err == nil {
 			var inflight int
 			if err = w.store.pool.QueryRow(cycle, `SELECT count(*) FROM loyal_yield.balance_sweep_transaction_attempts WHERE attempt_state IN ('prepared','submitted','unknown','ambiguous')`).Scan(&inflight); err == nil {
 				w.facts.Inflight(engine.FamilyAutodeposit, inflight)
 				w.facts.Progress(engine.FamilyAutodeposit)
 			}
 		}
-		cancel()
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if w.onError == nil {
-				return err
-			}
-			log.Print("autodeposit cycle_failed")
-			w.onError(errRuntimeProofUnavailable)
+		cycleCancel()
+		hints = nil
+		timer := time.NewTimer(w.pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		case slot := <-wake:
+			timer.Stop()
+			hints = append(hints, slot)
 		}
-		timer.Reset(w.pollInterval)
+		// Wakeups already delivered ride the same pass; nothing waits for more.
+	delivered:
+		for len(hints) > 0 && len(hints) < cap(wake) {
+			select {
+			case slot := <-wake:
+				hints = append(hints, slot)
+			default:
+				break delivered
+			}
+		}
+	}
+}
+
+// listen holds one LISTEN session and turns each requested-slot notification
+// into a wakeup. A lost session reconnects after the poll interval, which
+// alone drives the loop meanwhile. A full wakeup buffer drops the hint: the
+// slot is durable and the next poll dispatches it.
+func (w *Worker) listen(ctx context.Context, wake chan<- int64) {
+	for {
+		err := w.listenOnce(ctx, wake)
+		if ctx.Err() != nil {
+			return
+		}
+		w.failed("autodeposit_realtime_listener_failed", err)
+		timer := time.NewTimer(w.pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (w *Worker) listenOnce(ctx context.Context, wake chan<- int64) error {
+	pooled, err := w.store.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	conn := pooled.Hijack()
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = conn.Close(closeCtx)
+		cancel()
+	}()
+	if _, err := conn.Exec(ctx, "LISTEN "+WakeupChannel); err != nil {
+		return err
+	}
+	for {
+		notification, err := conn.WaitForNotification(ctx)
+		if err != nil {
+			return err
+		}
+		var hint struct {
+			ScheduledSlotID int64 `json:"scheduled_slot_id"`
+		}
+		if json.Unmarshal([]byte(notification.Payload), &hint) != nil || hint.ScheduledSlotID <= 0 {
+			slog.Warn("autodeposit wakeup payload was not a valid scheduled-slot hint")
+			continue
+		}
+		select {
+		case wake <- hint.ScheduledSlotID:
+		default:
+		}
 	}
 }

@@ -1,7 +1,5 @@
 package autodeposit
 
-import "fmt"
-
 // ExecutorResult is the family's durable execution outcome, independent of process status.
 type ExecutorResult string
 
@@ -168,7 +166,3 @@ const (
 	StaleRequestedSlotSeconds = 15 * 60
 	RequestedSlotTimeoutError = "Autodeposit request timed out before worker selection."
 )
-
-func (a ExecutorFailureAlert) String() string {
-	return fmt.Sprintf("%s (%s)", a.Code, a.Operation)
-}

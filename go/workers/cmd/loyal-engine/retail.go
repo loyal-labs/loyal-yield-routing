@@ -408,9 +408,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("lookup planner", err)
 	}
-	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, Facts: facts, OnError: func(error) { log.Print("retail autodeposit tick failed") }, OnAlert: func(autodeposit.ExecutorFailureAlert) {
-		log.Print("retail autodeposit execution requires attention")
-	}})
+	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, Facts: facts})
 	if err != nil {
 		return retailError("Autodeposit worker", err)
 	}
