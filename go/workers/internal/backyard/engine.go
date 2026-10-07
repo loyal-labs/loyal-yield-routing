@@ -65,10 +65,6 @@ type Engine struct {
 // dependency, an unowned lease identity, or a capability that does not match
 // the pinned delegated executor is a startup failure, not a degraded mode.
 func NewEngine(config EngineConfig) (*Engine, error) {
-	worker, err := NewWorker(config.Database, config.RPC, config.Config, config.Credentials)
-	if err != nil {
-		return nil, err
-	}
 	if !ValidLeaseOwner(config.Owner) {
 		return nil, fmt.Errorf("Backyard engine requires a platform-neutral lease owner")
 	}
@@ -80,6 +76,10 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 		}
 	default:
 		return nil, fmt.Errorf("unknown Backyard selector mode")
+	}
+	worker, err := NewWorker(config.Database, config.RPC, config.Config, config.Credentials)
+	if err != nil {
+		return nil, err
 	}
 	if config.Out == nil {
 		config.Out = io.Discard
@@ -157,6 +157,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed, live bool)
 					if code != lastEvaluateFailure {
 						lastEvaluateFailure = code
 						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector sample unavailable (%s); retaining current authority\n", code)
+						backyardEvents.selectorUnavailable(code)
 					}
 					return
 				}

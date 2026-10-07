@@ -79,7 +79,7 @@ func (a *Application) HandlePolicyTransaction(ctx context.Context, update *pb.Su
 	}
 	if decoded != nil {
 		if len(decoded.Instructions) > 0 {
-			if _, err := a.monitor.ProcessPolicyInstructions(ctx, decoded.Signature, decoded.Slot, decoded.Instructions); err != nil {
+			if _, err := a.monitor.ProcessPolicyInstructions(ctx, decoded.Signature, decoded.Slot, decoded.Instructions, true); err != nil {
 				return err
 			}
 		}
@@ -155,7 +155,7 @@ func (a *Application) reconcileTargetedPolicy(ctx context.Context, update Normal
 	}
 	policyReconciled, intentReconciled, subscriptionObserved := false, false, false
 	if len(squads) > 0 {
-		if _, err := a.monitor.ProcessPolicyInstructions(ctx, transaction.Signature, transaction.Slot, squads); err != nil {
+		if _, err := a.monitor.ProcessPolicyInstructions(ctx, transaction.Signature, transaction.Slot, squads, false); err != nil {
 			return notReconciled, err
 		}
 		policyReconciled = true
@@ -303,11 +303,17 @@ func (a *Application) processNextJob(ctx context.Context, owner string) (jobOutc
 	return jobOutcome{deferred: true, jobID: job.ID, attempt: job.AttemptCount, kind: kind, err: errors.New(message)}, nil
 }
 
-// caughtUp reports whether no incomplete Earn job is older than the backlog
-// horizon. A growing backlog therefore stops observer progress.
+// caughtUp reports whether no runnable Earn job has waited longer than the
+// backlog horizon. A job deferred to a later attempt is not runnable: its
+// failure is reported through Failed at the alert thresholds, while consumers
+// that fall behind the runnable queue stop observer progress.
 func (a *Application) caughtUp(ctx context.Context) (bool, error) {
 	var oldest *time.Time
-	if err := a.store.pool.QueryRow(ctx, `SELECT MIN(created_at) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1 AND completed_at IS NULL`, a.consumer).Scan(&oldest); err != nil {
+	if err := a.store.pool.QueryRow(ctx, `
+        SELECT MIN(next_attempt_at)
+        FROM loyal_yield.earn_reconciliation_jobs
+        WHERE consumer_name=$1 AND completed_at IS NULL AND next_attempt_at <= now()
+          AND (claim_expires_at IS NULL OR claim_expires_at <= now())`, a.consumer).Scan(&oldest); err != nil {
 		return false, err
 	}
 	return oldest == nil || time.Since(*oldest) < earnBacklogHorizon, nil
@@ -350,11 +356,10 @@ func (a *Application) runConsumer(ctx context.Context, owner string, reports boo
 		case outcome.deferred:
 			alert := outcome.kind == deferFailure && outcome.attempt == 1 || outcome.kind != deferFailure && outcome.attempt == proofStaleAttempt
 			reason := map[deferral]string{deferProofPending: "proof_pending", deferRPCBehind: "rpc_behind", deferFailure: "failure"}[outcome.kind]
-			if outcome.kind == deferFailure {
-				a.facts.Failed(engine.FamilyObserver, "earn_job_failed")
-			}
 			level := slog.LevelWarn
 			if alert {
+				// Rust alerted on a first failure and on a proof stale at attempt 6.
+				a.facts.Failed(engine.FamilyObserver, "earn_job_"+reason)
 				level = slog.LevelError
 			}
 			a.logger.Log(ctx, level, "Earn reconciliation job deferred", "event", "earn_job_deferred", "reason", reason, "job_id", outcome.jobID, "attempt_count", outcome.attempt, "error", outcome.err)

@@ -61,6 +61,7 @@ type selectorEvaluateDeps struct {
 // single-use, bounded, and validated through the same manifest both here and
 // inside the evaluation.
 func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfig, execute bool) error {
+	jupiterAPIKey = config.JupiterAPIKey
 	if config.RPCURL == "" || config.DatabaseURL == "" {
 		return fmt.Errorf("BACKYARD_SOLANA_RPC_URL and BACKYARD_DATABASE_URL are required for selector evaluation")
 	}

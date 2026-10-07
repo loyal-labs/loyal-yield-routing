@@ -44,12 +44,12 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	go func() {
 		select {
 		case <-lost:
-			cancel()
+			cancel(errBackyardLockLost)
 		case <-ctx.Done():
 		}
 	}()
@@ -69,14 +69,22 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	}
 	lane, err := backyard.NewEngine(backyard.EngineConfig{
 		Database: database, RPC: rpc, Credentials: credentials, Config: backyard.DefaultConfig(), Owner: owner,
-		Out: os.Stdout, Logger: slog.Default(), Facts: facts, JupiterAPIKey: optionalCredential("JUPITER_API_KEY"),
+		Out: os.Stdout, Logger: slog.Default(), Facts: facts, JupiterAPIKey: cfg.JupiterAPIKey,
 		Selector: selector, TimescaleURL: cfg.TimescaleURL,
 	})
 	if err != nil {
 		return err
 	}
-	return engine.Run(ctx, lane, metrics)
+	err = engine.Run(ctx, lane, metrics)
+	if cause := context.Cause(ctx); errors.Is(cause, errBackyardLockLost) {
+		return cause
+	}
+	return err
 }
+
+// errBackyardLockLost: another holder may now own the family; this process
+// must exit with an error so its supervisor restarts it into the lock wait.
+var errBackyardLockLost = errors.New("backyard family lock lost")
 
 // backyardRuntimeConfig reads the Backyard database and RPC credentials shared
 // by the engine and the one-shot operator commands.
@@ -89,6 +97,7 @@ func backyardRuntimeConfig() (backyard.RuntimeConfig, error) {
 	if cfg.RPCURL, err = engine.Credential("BACKYARD_SOLANA_RPC_URL"); err != nil {
 		return cfg, err
 	}
+	cfg.JupiterAPIKey = optionalCredential("JUPITER_API_KEY")
 	return cfg, cfg.Validate()
 }
 

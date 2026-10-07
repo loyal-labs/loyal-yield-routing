@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -21,14 +22,18 @@ import (
 
 // PolicyMonitor projects confirmed Squads settings instructions, ported from
 // loyal-squads-policy-monitor PolicyMonitor::process_policy_instructions with
-// PostgresPolicyMatchSink and Earn MAX projection. Every projection is an
-// idempotent slot-ordered upsert, so the Rust in-memory seen-signature set is
-// not carried over: a replay writes the same rows.
+// PostgresPolicyMatchSink and Earn MAX projection. Like the Rust monitor shared
+// behind one mutex by the stream and every Earn consumer, it projects one
+// transaction at a time and skips a signature it already projected: setup
+// matches activate their vault without a slot order, so a lagging targeted
+// replay of an older setup must not run after the stream applied a removal.
 type PolicyMonitor struct {
 	store    *Store
 	rpc      *solanarpc.Client
 	cluster  string
 	delegate solana.PublicKey
+	mu       sync.Mutex
+	seen     map[string]struct{}
 }
 
 // NewPolicyMonitor binds the confirmed-commitment projection to one cluster
@@ -44,13 +49,28 @@ func NewPolicyMonitor(store *Store, rpc *solanarpc.Client, cluster string, deleg
 	if delegate.IsZero() {
 		return nil, errors.New("EARN_MAX_DELEGATE is required")
 	}
-	return &PolicyMonitor{store: store, rpc: rpc, cluster: cluster, delegate: delegate}, nil
+	return &PolicyMonitor{store: store, rpc: rpc, cluster: cluster, delegate: delegate, seen: map[string]struct{}{}}, nil
 }
 
 const confirmedCommitment = "confirmed"
 
-// ProcessPolicyInstructions returns the number of projected events.
-func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature string, slot uint64, instructions []sp.Instruction) (int, error) {
+// ProcessPolicyInstructions returns the number of projected events. Only the
+// stream path waits (bounded) for an RPC behind the event slot; a durable job
+// defers instead and the queue retries it.
+func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature string, slot uint64, instructions []sp.Instruction, waitBehind bool) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.seen[signature]; ok {
+		return 0, nil
+	}
+	emitted, err := m.process(ctx, signature, slot, instructions, waitBehind)
+	if err == nil {
+		m.seen[signature] = struct{}{}
+	}
+	return emitted, err
+}
+
+func (m *PolicyMonitor) process(ctx context.Context, signature string, slot uint64, instructions []sp.Instruction, waitBehind bool) (int, error) {
 	emitted := 0
 	earnMax := map[solana.PublicKey]uint64{}
 	for _, instruction := range instructions {
@@ -74,7 +94,7 @@ func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature
 	}
 	sort.Slice(settings, func(i, j int) bool { return bytes.Compare(settings[i][:], settings[j][:]) < 0 })
 	for _, key := range settings {
-		if err := m.projectEarnMaxManifest(ctx, key, earnMax[key], signature, slot); err != nil {
+		if err := m.projectEarnMaxManifest(ctx, key, earnMax[key], signature, slot, waitBehind); err != nil {
 			return emitted, err
 		}
 		emitted++
@@ -254,14 +274,10 @@ var policyReloadDelays = []time.Duration{250 * time.Millisecond, 500 * time.Mill
 // deliver a transaction before the separately configured RPC serves the same
 // write; minContextSlot makes the RPC itself refuse an older view, and only
 // that refusal waits (bounded) for the node to catch up.
-func readAtEventSlot(ctx context.Context, rpc *solanarpc.Client, addresses []string, slot uint64) (solanarpc.AccountsResponse, error) {
+func readAtEventSlot(ctx context.Context, rpc *solanarpc.Client, addresses []string, slot uint64, waitBehind bool) (solanarpc.AccountsResponse, error) {
 	for attempt := 0; ; attempt++ {
 		response, err := rpc.MultipleAccounts(ctx, addresses, confirmedCommitment, &slot)
-		behind := solanarpc.IsBehind(err)
-		if err == nil && response.Slot < slot {
-			behind, err = true, fmt.Errorf("confirmed policy reload context %d is behind event slot %d", response.Slot, slot)
-		}
-		if !behind || attempt == len(policyReloadDelays) {
+		if !waitBehind || !solanarpc.IsBehind(err) || attempt == len(policyReloadDelays) {
 			return response, err
 		}
 		select {
@@ -272,7 +288,7 @@ func readAtEventSlot(ctx context.Context, rpc *solanarpc.Client, addresses []str
 	}
 }
 
-func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings solana.PublicKey, base uint64, signature string, slot uint64) error {
+func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings solana.PublicKey, base uint64, signature string, slot uint64, waitBehind bool) error {
 	topology, err := multiply.DeriveEarnMaxTopology(settings, base)
 	if err != nil {
 		return err
@@ -303,7 +319,7 @@ func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings sol
 		families = append(families, expected{family, policy, constraints, hex.EncodeToString(digest[:])})
 		addresses = append(addresses, policy.Account.String())
 	}
-	response, err := readAtEventSlot(ctx, m.rpc, addresses, slot)
+	response, err := readAtEventSlot(ctx, m.rpc, addresses, slot, waitBehind)
 	if err != nil {
 		return err
 	}

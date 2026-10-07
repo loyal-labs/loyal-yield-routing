@@ -159,7 +159,9 @@ func (e *events) tickResult(err error, fatal bool) {
 	}
 	e.action = ""
 	e.mu.Unlock()
-	if err == nil && e.facts != nil {
+	// A latched route keeps ticking without error; it is stopped, not
+	// progressing, so the stale-progress alert pages until clear-hold.
+	if err == nil && !manual && e.facts != nil {
 		e.facts.Progress(engine.FamilyBackyard)
 	}
 	if heartbeat {
@@ -185,10 +187,26 @@ func (e *events) tickResult(err error, fatal bool) {
 	}
 }
 
+// selectorUnavailable reports a live selector sample that could not be
+// evaluated (change-only); the route keeps its current authority.
+func (e *events) selectorUnavailable(code string) {
+	if e == nil {
+		return
+	}
+	e.log.Warn("backyard_selector_unavailable", "code", code)
+}
+
 // operationFailedAfterSend reports a broadcast money operation that ended
 // failed or in manual recovery.
 func (e *events) operationFailedAfterSend(action Action, reason, signature string) {
 	if e == nil {
+		return
+	}
+	// A failed REPORT_NAV is retried by the next tick (mostly blockhash
+	// expiry); the nav_reported absence pages if retries stop working, so only
+	// fund-moving steps page here.
+	if action == ReportNAV {
+		e.log.Info("backyard_operation_failed_after_send", "code", reason, "action", string(action), "signature", signature)
 		return
 	}
 	e.log.Error("backyard_operation_failed_after_send", "code", reason, "action", string(action), "signature", signature)

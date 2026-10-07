@@ -191,21 +191,27 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 	if _, err := NewEngine(base); err == nil || !strings.Contains(err.Error(), "pinned delegated executor") {
 		t.Fatalf("injected runtime accepted an unpinned signing capability: %v", err)
 	}
-	for name, mutate := range map[string]func(*EngineConfig){
-		"missing database":      func(c *EngineConfig) { c.Database = nil },
-		"missing rpc":           func(c *EngineConfig) { c.RPC = nil },
-		"missing credentials":   func(c *EngineConfig) { c.Credentials = Credentials{} },
-		"truncated capability":  func(c *EngineConfig) { c.Credentials = Credentials{PolicyKey: unpinned[:ed25519.SeedSize]} },
-		"selector without feed": func(c *EngineConfig) { c.Selector = SelectorLive },
-		"unknown selector":      func(c *EngineConfig) { c.Selector = "both" },
-		"caller lease owner":    func(c *EngineConfig) { c.Owner = "developer-laptop" },
-		"retail lease owner":    func(c *EngineConfig) { c.Owner = "worker:retail:backyard-eu-1:sha-" + commit },
-		"invalid lease config":  func(c *EngineConfig) { c.Config = Config{PollInterval: 0} },
+	// Each mutation names the check that must reject it, so no case passes
+	// merely because the offline capability is unpinned.
+	for name, tc := range map[string]struct {
+		mutate func(*EngineConfig)
+		want   string
+	}{
+		"missing database":      {func(c *EngineConfig) { c.Database = nil }, ""},
+		"missing rpc":           {func(c *EngineConfig) { c.RPC = nil }, ""},
+		"missing credentials":   {func(c *EngineConfig) { c.Credentials = Credentials{} }, ""},
+		"truncated capability":  {func(c *EngineConfig) { c.Credentials = Credentials{PolicyKey: unpinned[:ed25519.SeedSize]} }, ""},
+		"selector without feed": {func(c *EngineConfig) { c.Selector = SelectorLive }, "Timescale economic feed"},
+		"unknown selector":      {func(c *EngineConfig) { c.Selector = "both" }, "unknown Backyard selector mode"},
+		"caller lease owner":    {func(c *EngineConfig) { c.Owner = "developer-laptop" }, "platform-neutral lease owner"},
+		"retail lease owner":    {func(c *EngineConfig) { c.Owner = "worker:retail:backyard-eu-1:sha-" + commit }, "platform-neutral lease owner"},
+		"invalid lease config":  {func(c *EngineConfig) { c.Config = Config{PollInterval: 0} }, ""},
 	} {
 		config := base
-		mutate(&config)
-		if _, err := NewEngine(config); err == nil {
-			t.Fatalf("%s did not fail closed", name)
+		tc.mutate(&config)
+		_, err := NewEngine(config)
+		if err == nil || tc.want != "" && !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s did not fail closed on its own check: %v", name, err)
 		}
 	}
 	if _, err := NewEngine(EngineConfig{}); err == nil {

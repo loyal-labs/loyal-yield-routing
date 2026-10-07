@@ -565,6 +565,8 @@ func readCompactAccountConstraint(cursor *borshCursor, table []solana.PublicKey)
 		if err != nil {
 			return AccountConstraintView{}, err
 		}
+		// A pinned-key constraint stays a pinned-key constraint when empty.
+		view.Pubkeys = make([]solana.PublicKey, 0, count)
 		for i := 0; i < count; i++ {
 			index, err := cursor.u8()
 			if err != nil {

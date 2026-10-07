@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Backyard events are journald/ClickStack inputs: a fatal exit must carry its
@@ -46,5 +49,36 @@ func TestEventsRedactCredentialsAndExposeHeartbeatFields(t *testing.T) {
 	e.tickResult(nil, false)
 	if !strings.Contains(out.String(), `"fee_accumulator_warning":false`) {
 		t.Fatalf("one-percent boundary reported as a warning: %s", out.String())
+	}
+}
+
+// A latched route keeps ticking without error but is stopped: progress must go
+// stale so the backyard stale-progress alert pages until clear-hold.
+func TestLatchedRouteStopsProgress(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	facts := engine.NewFacts(registry)
+	facts.Own(engine.FamilyBackyard)
+	progress := func() float64 {
+		families, err := registry.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, family := range families {
+			if family.GetName() == "loyal_family_last_progress_timestamp_seconds" {
+				return family.GetMetric()[0].GetGauge().GetValue()
+			}
+		}
+		return -1
+	}
+	e := newEvents(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), facts)
+	e.noteLatch(true, "operator_review")
+	e.tickResult(nil, false)
+	if progress() != 0 {
+		t.Fatal("a latched tick reported progress")
+	}
+	e.noteLatch(false, "")
+	e.tickResult(nil, false)
+	if progress() <= 0 {
+		t.Fatal("a cleared tick did not report progress")
 	}
 }

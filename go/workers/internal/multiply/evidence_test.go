@@ -2,6 +2,9 @@ package multiply
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +94,23 @@ func TestNoEffectProofRequiresOriginalEvidenceAndCompleteHistory(t *testing.T) {
 	executor.RPC = rpc
 	if _, err := executor.ProveExpiredNoEffect(context.Background(), op, after, topology, 199, nil); err == nil {
 		t.Fatal("legacy attempt acquired reconstructed proof")
+	}
+}
+
+// Prestate evidence published before ExpectedEffects wrote Rust's explicit
+// nulls must still validate: the anchors digest keeps its original shape.
+func TestFinancialAnchorsDigestIsIndependentOfRowEncoding(t *testing.T) {
+	effects := ExpectedEffects{TokenDeltas: []TokenDelta{{Account: "a", Mint: "m", RawDelta: -5}}}
+	digest, err := financialAnchorsHash(effects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := sha256.Sum256([]byte(`{"tokenAmountsBefore":[],"tokenDeltas":[{"account":"a","mint":"m","rawDelta":-5}]}`))
+	if digest != hexEncode(legacy[:]) {
+		t.Fatalf("anchors digest drifted from published prestate evidence: %s", digest)
+	}
+	row, err := json.Marshal(effects)
+	if err != nil || !strings.Contains(string(row), `"obligationDelta":null`) {
+		t.Fatalf("row encoding must carry Rust's explicit nulls: %s %v", row, err)
 	}
 }

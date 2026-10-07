@@ -164,6 +164,9 @@ func readCustodyTransfer(ctx context.Context, rpc *solanarpc.Client, signature s
 				}
 			}
 		}
+		if next != len(loaded) {
+			return nil, errors.New("Earn MAX cash-flow loaded addresses do not match the lookups")
+		}
 	} else if transaction.Message.IsVersioned() {
 		return nil, errors.New("Earn MAX cash-flow transaction omitted loaded addresses")
 	}

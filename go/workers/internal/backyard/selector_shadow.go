@@ -14,6 +14,7 @@ import (
 // submission path, lease acquisition, or database writes. Gross forecasts remain
 // visibly unexecutable until pair capacity, cost, and recreation are admitted.
 func RunSelectorShadow(ctx context.Context, out io.Writer, config RuntimeConfig) error {
+	jupiterAPIKey = config.JupiterAPIKey
 	if config.RPCURL == "" || config.DatabaseURL == "" {
 		return fmt.Errorf("BACKYARD_SOLANA_RPC_URL and BACKYARD_DATABASE_URL are required for shadow observation")
 	}

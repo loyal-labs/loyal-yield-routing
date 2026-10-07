@@ -80,6 +80,9 @@ func DefaultConfig() Config {
 // independent credentials; neither reads the other's URLs or keys.
 type RuntimeConfig struct {
 	DatabaseURL, RPCURL, TimescaleURL string
+	// JupiterAPIKey selects the keyed Jupiter API; empty uses the keyless
+	// endpoint, which is too rate-limited for one selector round.
+	JupiterAPIKey string
 }
 
 func (c RuntimeConfig) Validate() error {
