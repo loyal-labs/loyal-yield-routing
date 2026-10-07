@@ -19,9 +19,9 @@ python3 "$root/scripts/compare-fleet-decisions.py" --generate "$FLEET_DECISION_F
 cd "$root"
 FLEET_DECISION_OUTPUT="$out/rust.json" cargo test --locked --offline -p loyal-yield-orchestrator --bin fleet-opportunity-planner \
   -- --exact decision_parity::produce_shared_input_decisions --ignored >"$out/rust.log" 2>&1
-cd "$root/go/kamino-fleet-planner"
-go build -o "$out/go-decisions" ./cmd/loyal-fleet-decision-parity
-FLEET_DECISION_OUTPUT="$out/go.json" "$out/go-decisions"
+cd "$root/go/workers"
+go build -o "$out/loyal-evidence" ./cmd/loyal-evidence
+"$out/loyal-evidence" -kind fleet-decision-parity -snapshot "$FLEET_DECISION_FIXTURE" >"$out/go.json"
 status=0
 python3 "$root/scripts/compare-fleet-decisions.py" --fixture "$FLEET_DECISION_FIXTURE" --rust "$out/rust.json" --go "$out/go.json" >"$out/report.json" || status=$?
 python3 - "$out/report.json" <<'PY'

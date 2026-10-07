@@ -545,7 +545,7 @@ func ValidateFreshRouteEvidence(e FreshRouteEvidence, now time.Time, expectedOpp
 	if e.ObservedAt.After(now) || now.Sub(e.ObservedAt) > 15*time.Second {
 		return DecodedSquadsPolicy{}, errors.New("fresh route evidence expired")
 	}
-	required := map[string]int{"vault": 1, "reserve": 2, "obligation": 2, "token_account": 1, "policy": 1}
+	required := map[string]int{"reserve": 2, "obligation": 2, "token_account": 1, "policy": 1}
 	for _, a := range e.Accounts {
 		if !a.Exists || a.Executable || a.Slot < e.Slot || len(a.DataSHA256) != 64 {
 			return DecodedSquadsPolicy{}, fmt.Errorf("invalid fresh %s account", a.Kind)

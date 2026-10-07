@@ -1,24 +1,20 @@
 package main
 
-// A separate diagnostic: reads the same policy-eligible reserve-source frontier
-// as the Rust producer, but runs the actual Go fleet planner. No DB/RPC/signing.
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/kamino-fleet-planner/internal/fleet"
-	"os"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-func fatal(err any) { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
-func main() {
-	path := os.Getenv("FLEET_DECISION_FIXTURE")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		fatal(err)
-	}
+// fleetDecisionParity runs the actual Go fleet planner over the shared
+// Rust/Go decision fixture (scripts/compare-fleet-decisions.py). It reads the
+// same policy-eligible reserve-source frontier as the Rust producer. No
+// database, RPC or signing.
+func fleetDecisionParity(raw []byte) (any, error) {
 	var input struct {
 		SchemaVersion int `json:"schemaVersion"`
 		Cases         []struct {
@@ -37,8 +33,8 @@ func main() {
 			} `json:"vaults"`
 		} `json:"cases"`
 	}
-	if err = json.Unmarshal(raw, &input); err != nil || input.SchemaVersion != 1 {
-		fatal(fmt.Errorf("invalid fixture: %v", err))
+	if err := json.Unmarshal(raw, &input); err != nil || input.SchemaVersion != 1 {
+		return nil, fmt.Errorf("invalid fixture: %v", err)
 	}
 	results := []any{}
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -74,7 +70,7 @@ func main() {
 		}
 		plan, err := fleet.PlanFleetShadowAt(snapshot, vaults, now)
 		if err != nil {
-			fatal(fmt.Errorf("%s: %w", c.Name, err))
+			return nil, fmt.Errorf("%s: %w", c.Name, err)
 		}
 		selected := []any{}
 		for _, o := range plan.Opportunities {
@@ -84,11 +80,5 @@ func main() {
 		results = append(results, map[string]any{"name": c.Name, "selected": selected})
 	}
 	hash := sha256.Sum256(raw)
-	output, err := json.Marshal(map[string]any{"schemaVersion": 1, "implementation": "go", "fixtureSha256": hex.EncodeToString(hash[:]), "cases": results})
-	if err != nil {
-		fatal(err)
-	}
-	if err = os.WriteFile(os.Getenv("FLEET_DECISION_OUTPUT"), output, 0600); err != nil {
-		fatal(err)
-	}
+	return map[string]any{"schemaVersion": 1, "implementation": "go", "fixtureSha256": hex.EncodeToString(hash[:]), "cases": results}, nil
 }

@@ -11,8 +11,8 @@ import (
 )
 
 // testdata/klend/golden.json is the byte-parity record of the retired Rust
-// loyal-klend-proxy (crates/loyal-yield-orchestrator/src/bin/loyal-klend-proxy.rs,
-// klend-interface 23b9f2b). Regenerate it only from that binary:
+// loyal-klend-proxy (crates/loyal-yield-orchestrator/src/bin/loyal-klend-proxy.rs
+// at c22e1094, klend-interface 23b9f2b). Regenerate it only from that binary:
 //
 //	KLEND_GOLDEN_PROXY=/path/to/loyal-klend-proxy go test ./internal/fleet -run TestKLendGolden
 const klendGoldenPath = "../../testdata/klend/golden.json"

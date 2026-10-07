@@ -1,5 +1,13 @@
 # Kamino planner and revalidator local verification
 
+> **Retired.** `go/kamino-fleet-planner`, its parity scripts and the Rust
+> `loyal-klend-proxy`/parity reference binaries were deleted when the planner
+> moved into `go/workers/internal/fleet` (workers v2). The fixtures here remain:
+> `kamino-route-v1.json` seeds the KLend byte-parity golden
+> (`go/workers/testdata/klend/golden.json`), and
+> `scripts/compare-fleet-decisions.sh` compares the Rust planner with
+> `loyal-evidence -kind fleet-decision-parity`. The text below is historical.
+
 The Go service is intended to replace the Rust opportunity planner and route
 revalidator, not the retained executor, confirmer, reconciler, health projector,
 or ALT provisioner. Local verification is necessary but is **not deployment
