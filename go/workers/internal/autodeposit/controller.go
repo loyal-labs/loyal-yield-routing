@@ -311,12 +311,6 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string, target ExecutableTarget, frozen DepositPlan) (ExecutorResult, error) {
 	ready, err := c.ensureDestinationSetup(scope, claimToken, frozen)
 	if err != nil {
-		if errors.Is(err, ErrDesiredControlsPending) {
-			if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-				return ResultRecoveryPending, releaseErr
-			}
-			return ResultDeferred, nil
-		}
 		return ResultPreflightBlocked, err
 	}
 	if !ready {
@@ -366,15 +360,6 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	if err = c.store.checkUnsignedDesiredAdmission(scope.ctx, target.TargetID, claimToken, scope.leaseToken); err != nil {
-		if errors.Is(err, ErrDesiredControlsPending) {
-			if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-				return ResultRecoveryPending, releaseErr
-			}
-			return ResultDeferred, nil
-		}
-		return ResultRecoveryPending, err
-	}
 	wire, err := c.wires.BuildPull(scope.ctx, PullWireRequest{
 		Plan: frozen, RecurringDelegation: targetContext.RecurringDelegation,
 		RecentBlockhash: blockhash, LastValidBlockHeight: lastValid,
@@ -395,7 +380,6 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 		SourcePreBalanceRaw:      walletBalance,
 		DestinationPreBalanceRaw: 0,
 		ProtectionFloorRaw:       &targetContext.WalletBalanceFloorRaw,
-		SourceDesiredRevision:    targetContext.DesiredRevision,
 		Signature:                wire.Signature,
 		SignedTransactionBase64:  wire.SignedTransactionBase64,
 		SignedTransactionSHA256:  wire.SignedTransactionSHA256,
@@ -403,12 +387,6 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 		LastValidBlockHeight:     wire.LastValidBlockHeight,
 	}, scope.leaseToken)
 	if err != nil {
-		if errors.Is(err, ErrDesiredControlsPending) {
-			if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-				return ResultRecoveryPending, releaseErr
-			}
-			return ResultDeferred, nil
-		}
 		if errors.Is(err, ErrOwnershipLost) {
 			return ResultRecoveryPending, err
 		}
@@ -481,14 +459,11 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 			if err != nil {
 				return false, err
 			}
-			if err = c.store.checkUnsignedDesiredAdmission(scope.ctx, plan.Target.ID, claimToken, scope.leaseToken); err != nil {
-				return false, err
-			}
 			wire, err := builder.BuildDestinationSetup(scope.ctx, plan, *next, blockhash, height)
 			if err != nil {
 				return false, err
 			}
-			saved, err := c.store.PersistDestinationSetup(scope.ctx, claimToken, scope.leaseToken, *next, wire, current.DesiredRevision)
+			saved, err := c.store.PersistDestinationSetup(scope.ctx, claimToken, scope.leaseToken, *next, wire)
 			if err != nil {
 				return false, err
 			}

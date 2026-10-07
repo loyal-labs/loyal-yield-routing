@@ -257,8 +257,7 @@ type PreparedAttempt struct {
 	LastValidBlockHeight     int64
 	// Only fresh pull admission uses this protection revision. Existing signed
 	// attempts remain recoverable when controls change.
-	ProtectionFloorRaw    *int64
-	SourceDesiredRevision int64
+	ProtectionFloorRaw *int64
 }
 
 // PersistPreparedAttempt stores one signed transaction before its first
@@ -312,9 +311,8 @@ WHERE target.id = $1`, prepared.TargetID)
 		// fresh checks apply only to inserted wire, never adoption/recovery.
 		var admissionActive, namespaceKnown bool
 		var floor, maximum *int64
-		var desiredRevision int64
-		if err := tx.QueryRow(ctx, `SELECT desired_active AND chain_status='active',wallet_balance_floor_raw,max_amount_per_period,COALESCE(cluster='mainnet-beta',false),desired_revision
- FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, prepared.TargetID).Scan(&admissionActive, &floor, &maximum, &namespaceKnown, &desiredRevision); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT desired_active AND chain_status='active',wallet_balance_floor_raw,max_amount_per_period,COALESCE(cluster='mainnet-beta',false)
+ FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, prepared.TargetID).Scan(&admissionActive, &floor, &maximum, &namespaceKnown); err != nil {
 			return fmt.Errorf("lock autodeposit pull controls: %w", err)
 		}
 		pullAllowed := prepared.OperationKind != OperationPull || (admissionActive && floor != nil && prepared.ProtectionFloorRaw != nil &&
@@ -327,15 +325,6 @@ WHERE target.id = $1`, prepared.TargetID)
 			return err
 		}
 		pullAllowed = pullAllowed && namespaceKnown && policyScoped
-		desiredApplied := true
-		if s.requireDesiredAdmission && prepared.OperationKind == OperationPull {
-			desiredApplied, err = desiredAdmissionApplied(ctx, tx, prepared.TargetID)
-			if err != nil {
-				return err
-			}
-			desiredApplied = desiredApplied && prepared.SourceDesiredRevision > 0 && prepared.SourceDesiredRevision == desiredRevision
-			pullAllowed = pullAllowed && desiredApplied
-		}
 		rows, err := tx.Query(ctx, `
 WITH guarded_claim AS (
   UPDATE loyal_yield.balance_sweep_lot_claims
@@ -424,9 +413,6 @@ LIMIT 1`,
 		if attempt == nil {
 			if !namespaceKnown || !policyScoped {
 				return ErrChainNamespace
-			}
-			if !desiredApplied {
-				return ErrDesiredControlsPending
 			}
 			return fmt.Errorf("%w: could not acquire idle ownership for durable %s attempt on claim %s", ErrOwnershipLost, prepared.OperationKind, prepared.ClaimToken)
 		}

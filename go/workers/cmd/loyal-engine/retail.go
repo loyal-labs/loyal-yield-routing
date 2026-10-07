@@ -235,10 +235,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err := aStore.RequireSchema(startup); err != nil {
 		return retailError("Autodeposit schema", err)
 	}
-	if err := aStore.RequireDesiredSchema(startup); err != nil {
-		return retailError("Autodeposit desired controls schema", err)
-	}
-	aStore.EnableDesiredControlAdmission()
 	cStore, err := fleet.NewStoreFromPool(yieldPool)
 	if err != nil {
 		return retailError("fleet store", err)
@@ -331,7 +327,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	artifactReader := &autodeposit.ArtifactProofReader{Wires: wires, History: artifactRPC}
 	artifacts := &autodeposit.ArtifactReconciler{Store: aStore, Reader: artifactReader}
 	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, RuntimeChain: chain, OnError: func(error) { log.Print("retail autodeposit control requires attention") }, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
-	desired := &autodeposit.DesiredReconciler{Store: aStore, Reader: wires, Artifacts: artifactReader, RuntimeChain: chain, OnError: func(error) { log.Print("retail autodeposit desired controls require attention") }, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
 	fleetRPC := fleet.NewRPCClient(cfg.rpcURL)
 	cConfig := cfg.fleetConfig()
 	cConfig.RevalidationOwner = owner
@@ -376,5 +371,5 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err := startup.Err(); err != nil {
 		return err
 	}
-	return runRetailLanes(ctx, control, desired, aWorker, planner, executor, crossMint, lookupPlanner, lookupWorker, multiplyWorker, metrics)
+	return runRetailLanes(ctx, control, aWorker, planner, executor, crossMint, lookupPlanner, lookupWorker, multiplyWorker, metrics)
 }

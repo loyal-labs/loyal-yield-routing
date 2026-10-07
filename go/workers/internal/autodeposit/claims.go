@@ -81,16 +81,6 @@ func (s *Store) ClaimEligibleLotsOnce(ctx context.Context, targetID int64, claim
 			outcome = noopClaim(targetID, "target_not_active")
 			return nil
 		}
-		if s.requireDesiredAdmission {
-			ready, err := desiredAdmissionApplied(ctx, tx, targetID)
-			if err != nil {
-				return err
-			}
-			if !ready {
-				outcome = noopClaim(targetID, "desired_controls_pending")
-				return nil
-			}
-		}
 		// The user can change protection settings after the RPC/context read.
 		// Read the authoritative settings while the target row stays locked.
 		var currentFloor, currentMax *int64

@@ -1,6 +1,7 @@
 package autodeposit
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"testing"
@@ -11,11 +12,11 @@ import (
 // these tests fails immediately instead of returning permissive fake evidence.
 type namespaceNoRPC struct{ Chain }
 
-func TestNamespaceRefusesFreshDesiredAndControlWork(t *testing.T) {
+func TestNamespaceRefusesFreshControlWork(t *testing.T) {
 	for _, kind := range []string{"devnet-target", "null-target", "devnet-policy", "unknown-policy"} {
 		t.Run(kind, func(t *testing.T) {
 			s := integrationStore(t)
-			id, r, reader := seedDesiredRuntime(t, s)
+			id, reader, _ := seedControlRuntime(t, s)
 			var value any = "devnet"
 			if kind == "null-target" {
 				value = nil
@@ -30,11 +31,8 @@ func TestNamespaceRefusesFreshDesiredAndControlWork(t *testing.T) {
 			if _, err := s.pool.Exec(t.Context(), query, id, value); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := r.Tick(t.Context()); err != nil && (kind == "devnet-target" || kind == "null-target") {
-				t.Fatal(err)
-			}
 			if reader.calls != 0 {
-				t.Fatal("unscoped desired proof reached mainnet reader")
+				t.Fatal("unscoped control proof reached mainnet reader")
 			}
 			fresh, err := s.loadFreshTargets(t.Context(), 100, nil)
 			if err != nil || len(fresh) != 0 {
@@ -110,19 +108,16 @@ func TestNamespaceSignedForeignCustodyStaysHeldWithoutRPC(t *testing.T) {
 
 func TestMainnetReadinessIgnoresUnrelatedUnsignedNamespacesAndClosedBaseline(t *testing.T) {
 	s := integrationStore(t)
-	id, r, _ := seedDesiredRuntime(t, s)
-	control := &ControlReconciler{Store: s, Reader: r.Reader, Artifacts: &ArtifactReconciler{Store: s, Reader: r.Artifacts}}
-	// Desired demand does not enqueue observed-control work. Request real bootstrap proof.
+	id, reader, artifacts := seedControlRuntime(t, s)
+	control := &ControlReconciler{Store: s, Reader: reader, Artifacts: &ArtifactReconciler{Store: s, Reader: artifacts}}
+	// Request real bootstrap proof.
 	if _, err := s.EnqueueAutodepositReconciliationRequest(t.Context(), id, 200); err != nil {
 		t.Fatal(err)
 	}
 	if worked, err := control.Tick(t.Context()); err != nil || !worked {
 		t.Fatalf("control tick worked=%v err=%v", worked, err)
 	}
-	if _, err := r.Tick(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	// Control/desired reconciliation can publish confirmed mainnet wallet events.
+	// Control reconciliation can publish confirmed mainnet wallet events.
 	// Apply them through the actual projector before requiring financial readiness.
 	if _, err := s.ProjectSurplusLotsOnce(t.Context(), 1000); err != nil {
 		t.Fatal(err)
@@ -135,11 +130,6 @@ func TestMainnetReadinessIgnoresUnrelatedUnsignedNamespacesAndClosedBaseline(t *
 		other := seedIntegrationTarget(t, s, "health-unrelated-"+kind)
 		if kind == "closed" {
 			if _, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_targets SET chain_status='closed' WHERE id=$1`, other.TargetID); err != nil {
-				t.Fatal(err)
-			}
-			// Model the retained, unqueued closed baseline: 0091 intentionally
-			// never backfills its historical desired revision as fresh demand.
-			if _, err := s.pool.Exec(t.Context(), `DELETE FROM loyal_yield.autodeposit_desired_control_requests WHERE target_id=$1`, other.TargetID); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := s.pool.Exec(t.Context(), `DELETE FROM loyal_yield.autodeposit_reconciliation_requests WHERE target_id=$1`, other.TargetID); err != nil {
@@ -159,34 +149,11 @@ func TestMainnetReadinessIgnoresUnrelatedUnsignedNamespacesAndClosedBaseline(t *
 			s.insertIntegrationEvent(t, other.TargetID, 1000+other.TargetID, 9_000_000, nil, time.Now())
 		}
 	}
-	if slot, err := s.desiredRuntimeHealth(t.Context(), chain); err != nil || slot != 200 {
-		t.Fatalf("desired frontier=%d %v", slot, err)
-	}
 	if slot, err := runtimeRecoveryHealth(t.Context(), s, chain, true); err != nil || slot != 200 {
 		t.Fatalf("financial frontier=%d %v", slot, err)
 	}
 	if request, err := s.ClaimAutodepositReconciliationRequest(t.Context(), "mainnet-health-reader", 30); err != nil || request != nil {
 		t.Fatalf("foreign request claimed=%v %v", request, err)
-	}
-	if _, err := s.desiredRuntimeHealth(t.Context(), runtimeRPCFixture(t, 199)); err == nil {
-		t.Fatal("desired frontier behind its applied wallet proof")
-	}
-	for _, kind := range []string{"policy", "position"} {
-		query := `UPDATE loyal_yield.route_policies SET last_seen_slot=201 WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults mv JOIN loyal_yield.balance_sweep_targets target ON target.settings=mv.settings AND target.vault_index=mv.vault_index AND target.vault_pubkey=mv.vault_pubkey WHERE target.id=$1)`
-		if kind == "position" {
-			query = `UPDATE loyal_yield.user_yield_positions SET current_observed_slot=201 WHERE settings=(SELECT settings FROM loyal_yield.balance_sweep_targets WHERE id=$1)`
-		}
-		if _, err := s.pool.Exec(t.Context(), query, id); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.desiredRuntimeHealth(t.Context(), chain); err == nil {
-			t.Fatalf("frontier behind %s clock", kind)
-		}
-		if kind == "policy" {
-			if _, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.route_policies SET last_seen_slot=1 WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults mv JOIN loyal_yield.balance_sweep_targets target ON target.settings=mv.settings AND target.vault_index=mv.vault_index AND target.vault_pubkey=mv.vault_pubkey WHERE target.id=$1)`, id); err != nil {
-				t.Fatal(err)
-			}
-		}
 	}
 }
 
@@ -194,14 +161,7 @@ func TestNamespaceChangedInsideBuilderCannotPublishPull(t *testing.T) {
 	for _, value := range []any{"devnet", nil} {
 		t.Run(map[bool]string{true: "null", false: "devnet"}[value == nil], func(t *testing.T) {
 			s := integrationStore(t)
-			id, r, _ := seedDesiredRuntime(t, s)
-			s.EnableDesiredControlAdmission()
-			if _, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.autodeposit_desired_control_requests SET requested_at=now()-interval '2 hours' WHERE target_id=$1`, id); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := r.Tick(t.Context()); err != nil {
-				t.Fatal(err)
-			}
+			id, _, _ := seedControlRuntime(t, s)
 			target, err := s.LoadArtifactTarget(t.Context(), id)
 			if err != nil {
 				t.Fatal(err)
@@ -251,7 +211,7 @@ func TestNamespaceChangedBeforeSetupPersistenceHoldsNewPacket(t *testing.T) {
 			if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_targets SET cluster=$2 WHERE id=$1`, target.TargetID, value); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = s.PersistDestinationSetup(t.Context(), claim, "lease-current", setup, wire, 0); !errors.Is(err, ErrChainNamespace) {
+			if _, err = s.PersistDestinationSetup(t.Context(), claim, "lease-current", setup, wire); !errors.Is(err, ErrChainNamespace) {
 				t.Fatalf("foreign setup publication=%v", err)
 			}
 			var attempts int
@@ -264,12 +224,12 @@ func TestNamespaceChangedBeforeSetupPersistenceHoldsNewPacket(t *testing.T) {
 
 func TestControlConfirmedSameSlotConflictDoesNotOverwriteWallet(t *testing.T) {
 	s := integrationStore(t)
-	id, r, _ := seedDesiredRuntime(t, s)
+	id, reader, _ := seedControlRuntime(t, s)
 	target, err := s.LoadControlTarget(t.Context(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	o, err := r.Reader.ObserveControl(t.Context(), *target, 1)
+	o, err := reader.ObserveControl(t.Context(), *target, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,43 +252,6 @@ func TestControlConfirmedSameSlotConflictDoesNotOverwriteWallet(t *testing.T) {
 	}
 	if amount != 8_000_000 || processed != 0 {
 		t.Fatalf("confirmed contradiction overwritten: amount=%d processed=%d", amount, processed)
-	}
-}
-
-func TestDesiredDeadlineIgnoresEmptyHistoricalFailure(t *testing.T) {
-	for _, backed := range []bool{false, true} {
-		t.Run(map[bool]string{false: "empty-history", true: "live-unsigned-lot"}[backed], func(t *testing.T) {
-			s := integrationStore(t)
-			id, r, _ := seedDesiredRuntime(t, s)
-			var demand time.Time
-			if err := s.pool.QueryRow(t.Context(), `SELECT requested_at FROM loyal_yield.autodeposit_desired_control_requests WHERE target_id=$1`, id).Scan(&demand); err != nil {
-				t.Fatal(err)
-			}
-			future := demand.Add(7 * 24 * time.Hour)
-			if backed {
-				if _, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_scheduled_slots SET status='failed',eligible_after=$2 WHERE target_id=$1`, id, future); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				if _, err := s.pool.Exec(t.Context(), `INSERT INTO loyal_yield.balance_sweep_scheduled_slots(target_id,token_mint,status,eligible_after) VALUES($1,$2,'released',$3)`, id, USDCMint, future); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := r.Tick(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			var actual time.Time
-			if err := s.pool.QueryRow(t.Context(), `SELECT eligible_after FROM loyal_yield.balance_sweep_surplus_lots WHERE target_id=$1 AND status='open'`, id).Scan(&actual); err != nil {
-				t.Fatal(err)
-			}
-			want := demand.Add(time.Hour)
-			if backed {
-				want = future
-			}
-			if !actual.Equal(want) {
-				t.Fatalf("deadline=%s want=%s", actual, want)
-			}
-		})
 	}
 }
 
@@ -364,4 +287,15 @@ func TestMainnetStaleSchedulingDoesNotMutateForeignUnsignedWork(t *testing.T) {
 			}
 		})
 	}
+}
+
+type controlsChangingPullBuilder struct {
+	*scriptedControllerWires
+	change func()
+}
+
+func (b *controlsChangingPullBuilder) BuildPull(ctx context.Context, request PullWireRequest) (BuiltWire, error) {
+	wire, err := b.scriptedControllerWires.BuildPull(ctx, request)
+	b.change()
+	return wire, err
 }
