@@ -207,6 +207,11 @@ func (e ImmutableMarketEpoch) Reserve(address string) (MarketEpochReserve, bool)
 	return MarketEpochReserve{}, false
 }
 
+// submissionTerminalStates are the signed_route_submissions states that no
+// longer own their opportunity: the schema's one-open-submission index and
+// every Rust holding guard exclude exactly these. Any other state is in flight.
+const submissionTerminalStates = `('reconciled','expired','failed')`
+
 var earnStableMints = []string{CashMint, USDGMint, PYUSDMint, USDCMint, USDTMint, USDSMint}
 
 type CrossMintEarnPolicyBinding struct {

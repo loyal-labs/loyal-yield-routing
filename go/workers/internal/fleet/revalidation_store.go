@@ -105,9 +105,11 @@ WITH candidate AS (
         AND ($8<>'execute' OR (NULLIF(btrim(o.route_fingerprint),'') IS NOT NULL
           AND NULLIF(btrim(o.requirements_fingerprint),'') IS NOT NULL))
         AND EXISTS(SELECT 1 FROM loyal_yield.cross_mint_movement_controls control
-          WHERE control.cluster=o.cluster AND control.start_new_movements AND control.continue_or_recover_existing)
-        AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions holding
-          WHERE holding.opportunity_id=o.id AND holding.submission_state IN ('signed','submitted','confirmed','needs_reconcile'))))
+          WHERE control.cluster=o.cluster AND control.start_new_movements AND control.continue_or_recover_existing)))
+   -- Rust's opportunity lease, for every route kind: a submission that is not
+   -- terminal still owns the opportunity.
+   AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions holding
+     WHERE holding.opportunity_id=o.id AND holding.submission_state NOT IN `+submissionTerminalStates+`)
    AND (($6 AND o.execution_plan->>'route_kind'='cross_mint_jupiter'
          AND bound_withdraw_policy.id IS NOT NULL
          AND ($5='' OR o.execution_plan#>>'{policy_bindings,delegated_signer}'=$5))

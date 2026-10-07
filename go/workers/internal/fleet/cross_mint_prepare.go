@@ -932,7 +932,7 @@ func (s *Store) CheckCrossMintPreparation(ctx context.Context, q CrossMintPrepar
  AND ($26<>'withdraw' OR COALESCE(c.start_new_movements,false))
  AND (SELECT COALESCE(max(leg_generation),0)+1 FROM loyal_yield.signed_route_submissions WHERE decision_id=d.id AND movement_leg=$26)=$27
  AND o.estimated_cost_lamports-COALESCE((SELECT sum(compiled_fee_lamports) FROM loyal_yield.signed_route_submissions WHERE decision_id=d.id),0)=$28
- AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions holding WHERE holding.decision_id=d.id AND holding.submission_state IN ('signed','submitted','confirmed','needs_reconcile'))
+ AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions holding WHERE holding.decision_id=d.id AND holding.submission_state NOT IN `+submissionTerminalStates+`)
  FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id
  JOIN loyal_yield.managed_vaults v ON v.id=d.vault_id
  LEFT JOIN loyal_yield.cross_mint_movement_controls c ON c.cluster=o.cluster WHERE d.id=$1`, m.DecisionID, q.ContinuationOwner, q.ContinuationFencingToken, q.ControlGeneration, q.ExpiresAt, m.OpportunityID, m.OptimizerEpochID, m.Cluster, m.VaultID, m.VaultPubkey, m.SourceSnapshotID, m.SourceReserve, m.IntendedTargetReserve, m.ActiveTargetReserve, m.SourceMint, m.TargetMint, m.PlannedAmountRaw, string(m.ExecutionPlan), string(m.PreflightCertification), m.CustodyMint, m.CustodyAccount, m.CustodyAmountRaw, m.CustodyVersion, m.CustodyObservedBalanceRaw, m.CustodyReconciledSlot, q.Leg, q.Generation, q.RemainingFeeLamports).Scan(&valid)
