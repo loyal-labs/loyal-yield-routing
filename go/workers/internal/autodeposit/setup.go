@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 
 	"github.com/gagliardetto/solana-go"
@@ -288,11 +287,10 @@ func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a backya
 		if err := validateVaultUSDCATA(a, setup.Account, plan.Target.VaultPubkey); err != nil {
 			return err
 		}
+		// Identity only: custody residue is the controller's idle-tolerance
+		// decision before the pull, as in the TS executor.
 		if len(a.Data) != splTokenAccountLength || a.Data[108] != 1 {
 			return errors.New("setup custody token account is uninitialized")
-		}
-		if binary.LittleEndian.Uint64(a.Data[64:72]) != 0 {
-			return errors.New("setup requires empty vault token custody")
 		}
 	case SetupMetadata:
 		if a.Owner != KLendProgramID || len(a.Data) != 1032 || !bytes.Equal(a.Data[:8], accountDiscriminator("UserMetadata")) || base58Key(a.Data[80:112]) != plan.Target.VaultPubkey {

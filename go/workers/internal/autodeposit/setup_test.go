@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"testing"
@@ -145,6 +146,25 @@ func TestDestinationSetupUsesOfficialBuilderBeforePull(t *testing.T) {
 		})
 	}
 }
+
+// Fleet same-mint withdrawals leave accrued interest in the vault's custody,
+// so production custody is rarely zero. The TS executor creates the account
+// only when it is missing and leaves the idle tolerance to its pre-pull check.
+func TestDestinationSetupAcceptsCustodyResidue(t *testing.T) {
+	builder, plan, expected, accounts := setupFixture(t, SetupObligation)
+	custody := accounts[plan.Target.VaultUsdcAta]
+	custody.Data = append([]byte(nil), custody.Data...)
+	binary.LittleEndian.PutUint64(custody.Data[64:72], 1488)
+	accounts[plan.Target.VaultUsdcAta] = custody
+	setup, err := builder.InspectDestinationSetup(t.Context(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setup == nil || setup.Stage != SetupObligation || setup.Account != expected.Account {
+		t.Fatalf("setup %v want the missing obligation", setup)
+	}
+}
+
 func TestSetupReadbackRejectsForeignIdentity(t *testing.T) {
 	builder, plan, setup, accounts := setupFixture(t, SetupMetadata)
 	data := make([]byte, 1032)
