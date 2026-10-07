@@ -21,6 +21,40 @@ import (
 // vault PDA (rehearsal shadow-approved-account-diagnostic-20261004T0009Z): a
 // Squads vault is a system account only while it holds lamports.
 func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
+	const rent = uint64(23_942_400)
+	fresh, r := loadFixtureFreshRoute(t, 2_000_000_000_000)
+	in := fresh.input
+	if !in.TargetObligationMissing || in.VaultRentTopUpLamports != rent || in.Payer != r.signer || in.SourceFarmUserMissing || in.TargetFarmUserMissing || fresh.evidence.Anchors.TargetCollateralRaw != 0 {
+		t.Fatalf("setup facts not read from chain: %+v", in)
+	}
+	route, err := BuildSameMintRoute(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	for _, ix := range route {
+		step := ix.Step
+		if ix.Protected {
+			step += "*"
+		}
+		steps = append(steps, step)
+	}
+	want := []string{"kamino_refresh_reserve", "kamino_refresh_reserve", "kamino_refresh_obligation", "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2*", "system_transfer_vault_rent_top_up", "kamino_init_obligation*", "kamino_refresh_obligation", "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2*"}
+	if len(steps) != len(want) {
+		t.Fatalf("route %v, want %v", steps, want)
+	}
+	for i := range want {
+		if steps[i] != want[i] {
+			t.Fatalf("route %v, want %v", steps, want)
+		}
+	}
+}
+
+// loadFixtureFreshRoute reads a same-mint route moving 1e9 collateral units
+// (the planned 1e9 liquidity) out of a source reserve with collateralSupply
+// collateral against 2e12 liquidity, into a target with no obligation.
+func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint, *Revalidator) {
+	t.Helper()
 	vault := testIdentity(4)
 	source := ReserveIdentity{Address: testIdentity(1), Market: testIdentity(40), Mint: USDCMint}
 	target := ReserveIdentity{Address: testIdentity(2), Market: testIdentity(41), Mint: USDCMint}
@@ -33,7 +67,7 @@ func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
 		fixtureKey(t, account.Data, 2560, testIdentity(byte(90+i)))
 		fixtureKey(t, account.Data, 160, testIdentity(byte(92+i)))
 		fixtureKey(t, account.Data, 2600, testIdentity(byte(94+i)))
-		binary.LittleEndian.PutUint64(account.Data[2592:2600], 2_000_000_000_000)
+		binary.LittleEndian.PutUint64(account.Data[2592:2600], collateralSupply)
 		chain[account.Address] = account
 		decoded, err := decodeRouteReserve(account, vault)
 		if err != nil {
@@ -89,38 +123,14 @@ func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 	r := &Revalidator{rpc: NewRPCClient(server.URL), slotDuration: 400 * time.Millisecond, signer: testIdentity(6)}
 	lease := RevalidationLease{VaultPubkey: vault, SourceReserve: source.Address, TargetReserve: target.Address, LiquidityMint: USDCMint, PolicyAccount: policy, LiquidityAmountRaw: amount, PrincipalUSDMicros: int64(amount)}
 	fresh, err := r.loadFreshRoute(context.Background(), lease)
 	if err != nil {
 		t.Fatalf("fresh read refused a route whose target obligation the route creates: %v", err)
 	}
-	in := fresh.input
-	if !in.TargetObligationMissing || in.VaultRentTopUpLamports != rent || in.Payer != r.signer || in.SourceFarmUserMissing || in.TargetFarmUserMissing || fresh.evidence.Anchors.TargetCollateralRaw != 0 {
-		t.Fatalf("setup facts not read from chain: %+v", in)
-	}
-	route, err := BuildSameMintRoute(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var steps []string
-	for _, ix := range route {
-		step := ix.Step
-		if ix.Protected {
-			step += "*"
-		}
-		steps = append(steps, step)
-	}
-	want := []string{"kamino_refresh_reserve", "kamino_refresh_reserve", "kamino_refresh_obligation", "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2*", "system_transfer_vault_rent_top_up", "kamino_init_obligation*", "kamino_refresh_obligation", "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2*"}
-	if len(steps) != len(want) {
-		t.Fatalf("route %v, want %v", steps, want)
-	}
-	for i := range want {
-		if steps[i] != want[i] {
-			t.Fatalf("route %v, want %v", steps, want)
-		}
-	}
+	return fresh, r
 }
 
 // A setup route pays rent, so it never goes to a fee-only payer (b1ad5b1a).
