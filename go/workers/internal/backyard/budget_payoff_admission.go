@@ -219,10 +219,14 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 	return plan, nil
 }
 
-func pricePhase3PositionReturnNAV(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (phase3BridgeAdmission, error) {
+func (d *Database) admitPhase3PositionReturnNAV(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
 	if decision.Action != ReportNAV || evidence.Request.Action != ReportNAV || decision.AmountRaw != 0 || evidence.Request.AmountRaw != 0 ||
 		evidence.Request.Report.ObservedSlot != uint64(observation.Snapshot.Slot) || evidence.Request.Report.Sequence != uint64(observation.Snapshot.Slot) {
-		return phase3BridgeAdmission{}, budgetHold("post_payoff_nav_intent_mismatch")
+		return budgetHold("post_payoff_nav_intent_mismatch")
 	}
-	return pricePhase3PositionReturn(ctx, rpc, client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects, false)
+	plan, err := pricePhase3PositionReturn(ctx, rpc, client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects, false)
+	if err != nil {
+		return err
+	}
+	return d.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
 }

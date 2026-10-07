@@ -104,7 +104,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			}
 			return nil
 		},
-		admitBridge: func(_ context.Context, id string, got Observation, d Decision, _ BridgeExecutionEvidence, _ *phase3BridgeAdmission) error {
+		admitBridge: func(_ context.Context, id string, got Observation, d Decision, _ BridgeExecutionEvidence) error {
 			order = append(order, "admit")
 			if id != "operation" || got != observation || d != decision {
 				t.Fatal("admission lost the recorded decision")
@@ -121,9 +121,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 	// The same real dispatch path must preserve a typed admission rejection,
 	// not turn it into generic restart recovery or a successful build.
 	rejected := &BudgetHold{Reason: "transaction_cap_exceeded"}
-	worker.runtime.admitBridge = func(context.Context, string, Observation, Decision, BridgeExecutionEvidence, *phase3BridgeAdmission) error {
-		return rejected
-	}
+	worker.runtime.admitBridge = func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return rejected }
 	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
 		t.Fatal("admission rejection reached construction/signing")
 		return nil
@@ -454,9 +452,7 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			cancel()
 			return nil
 		},
-		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence, *phase3BridgeAdmission) error {
-			return nil
-		},
+		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
 	}}
 	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
 	err := worker.Run(ctx, leasing, "worker:backyard:test:sha-"+strings.Repeat("f", 40), config)
@@ -709,9 +705,7 @@ func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 				recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
 					return DecisionRecord{OperationID: "report-op", Status: Decided}, nil
 				},
-				admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence, *phase3BridgeAdmission) error {
-					return nil
-				},
+				admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
 				buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
 					persisted = &PersistedOperation{Operation: Operation{ID: "report-op"}, Status: after, SignedWire: []byte{1, 2, 3}}
 					return nil
@@ -744,85 +738,5 @@ func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 				t.Fatal("recovery tried a second signed send")
 			}
 		})
-	}
-}
-
-// Live 2026-10: the serial B2 exit pricer takes ~25 of the adaptor's 32 report
-// slots. A report observed before that pricing reaches build and send already
-// stale (report_stale / report_expired_in_simulation). The tick must price the
-// exit first and take the report's NAV and slot afterwards.
-func TestTickTakesTheReportAfterItsExitIsPriced(t *testing.T) {
-	slot := int64(1_000)
-	observeAt := func(id string) Observation {
-		return tickObservation(Snapshot{ObservationID: id, Slot: slot, RouteKind: RouteKind, Fresh: true, LastReportAgeSeconds: 3600})
-	}
-	report := func(o Observation) BridgeExecutionEvidence {
-		at := uint64(o.Snapshot.Slot)
-		return BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: ReportNAV, Report: BridgeReport{Sequence: at, ObservedSlot: at}}}
-	}
-	decided := observeAt("decided")
-	if d := Decide(decided.Snapshot); d.Action != ReportNAV {
-		t.Fatalf("expected report fixture: %+v", d)
-	}
-	var persisted *PersistedOperation
-	var built BridgeExecutionEvidence
-	order := []string{}
-	w := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return persisted, nil },
-		observe:         func(context.Context) (Observation, error) { return decided, nil },
-		prepareBridge: func(_ context.Context, _ RouteManifest, _ Decision, o Observation) (Observation, BridgeExecutionEvidence, error) {
-			slot++
-			return o, report(o), nil
-		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
-			slot++
-			order = append(order, "record")
-			return DecisionRecord{OperationID: "report-op", Status: Decided}, nil
-		},
-		priceReportExit: func(_ context.Context, o Observation, _ Decision, _ BridgeExecutionEvidence) (*phase3BridgeAdmission, error) {
-			slot += 25
-			order = append(order, "price")
-			return &phase3BridgeAdmission{Snapshot: o.Snapshot}, nil
-		},
-		prepareReport: func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error) {
-			slot += 3
-			order = append(order, "report")
-			o := observeAt("reported")
-			return o, report(o), nil
-		},
-		admitBridge: func(_ context.Context, id string, o Observation, _ Decision, _ BridgeExecutionEvidence, exit *phase3BridgeAdmission) error {
-			slot++
-			order = append(order, "admit")
-			// The journaled decision and the exit keep the decided observation.
-			if id != "report-op" || o != decided || exit == nil || exit.Snapshot != decided.Snapshot {
-				t.Fatal("admission lost the decided observation or the priced exit")
-			}
-			return nil
-		},
-		buildBridge: func(_ context.Context, _ string, evidence BridgeExecutionEvidence) error {
-			slot += 2 // build, sign and simulate
-			order = append(order, "build")
-			if ReportExpiredAtLanding(int64(evidence.Request.Report.ObservedSlot), slot) {
-				return journaledBudgetHold(reportExpiredInSimulationReason)
-			}
-			built = evidence
-			persisted = &PersistedOperation{Operation: Operation{ID: "report-op"}, Status: Signed, SignedWire: []byte{1}}
-			return nil
-		},
-		advance: func(context.Context, PersistedOperation) error {
-			slot++
-			order = append(order, "send")
-			if stale, reason := EvaluateReportSendFreshness(int64(built.Request.Report.ObservedSlot), slot); stale {
-				return fmt.Errorf("send fence refused the report: %s (observed %d, confirmed %d)", reason, built.Request.Report.ObservedSlot, slot)
-			}
-			persisted.Status = Submitted
-			return nil
-		},
-	}}
-	if err := w.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(order, ","); got != "record,price,report,admit,build,send" {
-		t.Fatalf("report was not taken after the exit pricing: %s", got)
 	}
 }
