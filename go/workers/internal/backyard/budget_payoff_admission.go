@@ -180,12 +180,15 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 		return phase3BridgeAdmission{}, err
 	}
 	tailDecision := Decision{Action: DeleverRouteStep, StrategyKey: s.RouteLane, Reason: "withdrawal_withdraw_collateral"}
-	tail, err := observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, post, tailDecision, KaminoExecutionEvidence{withdrawal, withdrawalEffects})
-	if err != nil {
-		return tail, err
-	}
-	current, err := manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
-	if err != nil {
+	var tail phase3BridgeAdmission
+	var current ValuedTransactionCost
+	if err = concurrentReads(ctx, func(ctx context.Context) (err error) {
+		tail, err = observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, post, tailDecision, KaminoExecutionEvidence{withdrawal, withdrawalEffects})
+		return err
+	}, func(ctx context.Context) (err error) {
+		current, err = manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+		return err
+	}); err != nil {
 		return tail, err
 	}
 	encoded, err := jsonMarshalExpectedEffects(effects)
