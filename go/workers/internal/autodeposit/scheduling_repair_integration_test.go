@@ -102,7 +102,18 @@ func TestWorkerRepairsUnsignedMissingPositionWithoutAppReads(t *testing.T) {
 	if len(second.Dispatched) != 0 {
 		t.Fatalf("absent position retried: %+v", second)
 	}
+	// Released lots wait out the TS pre-send cadence, and the repaired slot
+	// inherits their deadline, instead of being claimed, released and alerted
+	// again on every poll.
 	seedRepairPosition(t, s, target.TargetID, USDCMint)
+	if waiting, err := w.Tick(ctx); err != nil || len(waiting.Dispatched) != 0 {
+		t.Fatalf("released work retried before its delay: %+v %v", waiting, err)
+	}
+	var waits bool
+	if err = s.pool.QueryRow(ctx, `SELECT bool_and(eligible_after > now() + interval '4 minutes') FROM loyal_yield.balance_sweep_scheduled_slots WHERE target_id=$1 AND status='scheduled'`, target.TargetID).Scan(&waits); err != nil || !waits {
+		t.Fatalf("repaired slot is eligible before the retry delay: %v %v", waits, err)
+	}
+	elapseReleaseDelay(t, s, target.TargetID)
 	third, err := w.Tick(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -211,5 +222,16 @@ func TestUnsignedStaleRepairClearsOnlyUnheldRows(t *testing.T) {
 	}
 	if state != "canceled" || lotState != "suppressed" {
 		t.Fatalf("stale pending schedule retained: %s/%s", state, lotState)
+	}
+}
+
+// elapseReleaseDelay moves a target's released work to the end of its retry
+// delay, as waiting ReleasedClaimRetryDelay would.
+func elapseReleaseDelay(t *testing.T, s *Store, targetID int64) {
+	t.Helper()
+	for _, table := range []string{"balance_sweep_surplus_lots", "balance_sweep_scheduled_slots"} {
+		if _, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.`+table+` SET eligible_after = LEAST(eligible_after, now()) WHERE target_id=$1`, targetID); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

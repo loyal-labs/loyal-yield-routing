@@ -174,6 +174,7 @@ func TestClaimRechecksFloorAndCurrentPeriodCapUnderTargetLock(t *testing.T) {
 	if _, err := store.ReleaseClaimOnce(ctx, firstClaim, "lease-current"); err != nil {
 		t.Fatal(err)
 	}
+	elapseReleaseDelay(t, store, seeded.TargetID)
 	callerCap := int64(100_000_000)
 	outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, "stale-floor-claim", nil, 9_000_000, 0, &callerCap, &callerCap)
 	if err != nil || outcome.Status != ClaimNoopStatus() || outcome.Reason != "wallet_balance_floor_changed" {

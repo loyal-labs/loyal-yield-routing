@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -611,9 +612,16 @@ WHERE claim_token = $1`, claimToken, executionID); err != nil {
 	return outcome, nil
 }
 
-// ReleaseClaimOnce returns an unspent claim's lots to the open pool and fails
-// the slot. The locked claim must still belong to this live executor lease,
-// and no pull attempt or execution may hold custody.
+// ReleasedClaimRetryDelay is how long released lots wait before their slot is
+// attempted again: the TS executor's pre-send failure cadence (ad456191). A
+// blocked route, idle custody or an empty fee payer does not clear within one
+// poll, and retrying every poll only claims, releases and pages again.
+const ReleasedClaimRetryDelay = 5 * time.Minute
+
+// ReleaseClaimOnce returns an unspent claim's lots to the open pool, not
+// eligible before ReleasedClaimRetryDelay, and fails the slot; schedule repair
+// reschedules it at the lots' deadline. The locked claim must still belong to
+// this live executor lease, and no pull attempt or execution may hold custody.
 func (s *Store) ReleaseClaimOnce(ctx context.Context, claimToken, leaseToken string) (ClaimOutcome, error) {
 	var outcome ClaimOutcome
 	if s == nil || s.pool == nil {
@@ -685,6 +693,7 @@ restored AS (
             lot.remaining_amount_raw + item.amount_raw
         ),
         status = 'open',
+        eligible_after = GREATEST(lot.eligible_after, now() + $3 * interval '1 second'),
         updated_at = now()
     FROM matched_items AS item
     WHERE lot.id = item.lot_id
@@ -697,7 +706,7 @@ SET status = 'released',
     updated_at = now()
 WHERE claim_token = $1
   AND status = 'selected'
-  AND EXISTS (SELECT 1 FROM restored)`, claimToken, USDCMint)
+  AND EXISTS (SELECT 1 FROM restored)`, claimToken, USDCMint, int64(ReleasedClaimRetryDelay/time.Second))
 		if err != nil {
 			return fmt.Errorf("release autodeposit claim: %w", err)
 		}
