@@ -23,5 +23,5 @@ func PrepareIdleDepositRoute(route KaminoSameMintRoute, request KaminoIdleDeposi
 		result := append([]RouteInstruction(nil), public...)
 		return append(result, wrapped[0]), nil
 	}
-	return prepareRoute(route, policy, signer, policyAccountIndex, []uint8{allowedIndex}, tables, recentBlockhash, feeLamports, computeLimit, simulate, layout, "idle_vault_deposit_kamino_v0")
+	return prepareRoute(route, policy, signer, signer, policyAccountIndex, []uint8{allowedIndex}, tables, recentBlockhash, feeLamports, computeLimit, simulate, layout, "idle_vault_deposit_kamino_v0")
 }

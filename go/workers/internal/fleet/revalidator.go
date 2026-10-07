@@ -838,11 +838,13 @@ type RoutePreparation struct {
 	ExecutionPlan                             json.RawMessage
 }
 
-func PrepareRoute(route KaminoSameMintRoute, policy, signer string, policyAccountIndex uint8, allowedIndexes []uint8, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error)) (RoutePreparation, error) {
-	return prepareRoute(route, policy, signer, policyAccountIndex, allowedIndexes, tables, recentBlockhash, feeLamports, computeLimit, simulate, interleaveMatureSameMintRoute, "same_mint_kamino_v0")
+// PrepareRoute compiles a mature same-mint route; payer pays its fee and is
+// the policy signer or that vault's fee-only payer (RouteFeePayer).
+func PrepareRoute(route KaminoSameMintRoute, policy, signer, payer string, policyAccountIndex uint8, allowedIndexes []uint8, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error)) (RoutePreparation, error) {
+	return prepareRoute(route, policy, signer, payer, policyAccountIndex, allowedIndexes, tables, recentBlockhash, feeLamports, computeLimit, simulate, interleaveMatureSameMintRoute, "same_mint_kamino_v0")
 }
 
-func prepareRoute(route KaminoSameMintRoute, policy, signer string, policyAccountIndex uint8, allowedIndexes []uint8, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error), layout func([]RouteInstruction, []RouteInstruction) ([]RouteInstruction, error), kind string) (RoutePreparation, error) {
+func prepareRoute(route KaminoSameMintRoute, policy, signer, payer string, policyAccountIndex uint8, allowedIndexes []uint8, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error), layout func([]RouteInstruction, []RouteInstruction) ([]RouteInstruction, error), kind string) (RoutePreparation, error) {
 	if len(route.Protected) == 0 || len(allowedIndexes) != len(route.Protected) {
 		return RoutePreparation{}, errors.New("protected instructions and policy indexes differ")
 	}
@@ -869,7 +871,7 @@ func prepareRoute(route KaminoSameMintRoute, policy, signer string, policyAccoun
 	if err != nil {
 		return RoutePreparation{}, err
 	}
-	tx, missing, err := compileV0Transaction(signer, recentBlockhash, instructions, tables, feeLamports, computeLimit)
+	tx, missing, err := compileV0Transaction(payer, recentBlockhash, instructions, tables, feeLamports, computeLimit)
 	if err != nil {
 		return RoutePreparation{}, err
 	}

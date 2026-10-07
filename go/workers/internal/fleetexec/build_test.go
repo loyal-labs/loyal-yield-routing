@@ -92,7 +92,7 @@ func TestSignPreparedRouteRejectsWrongAuthorityAndTamperedEvidence(t *testing.T)
 	twoSigners.WireSHA256 = hex.EncodeToString(wireHash[:])
 	twoSigners.PacketBytes = len(unsigned)
 	if _, err := (DelegateSigner{FeePayer: key}).SignPreparedRoute(twoSigners, fixture.LastValidHeight); err == nil ||
-		!strings.Contains(err.Error(), "exactly the fee payer") {
+		!strings.Contains(err.Error(), "at most the delegate") {
 		t.Fatalf("multi-signer error = %v", err)
 	}
 	if _, err := (DelegateSigner{}).SignPreparedRoute(preparation, fixture.LastValidHeight); err == nil {

@@ -29,6 +29,10 @@ type ExecutionAdmission struct {
 	ConflictKeys                                                       []string
 	Evidence                                                           FreshRouteEvidence
 	Anchors                                                            ExecutionBalanceAnchors
+	// FeePayer is the policy signer or the vault's fee-only payer, with the
+	// balance a fee-only payer's spend reservation records.
+	FeePayer                             string
+	FeePayerBalance, FeePayerBalanceSlot int64
 }
 
 type ExecutionALT struct {
@@ -98,7 +102,8 @@ func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*Ex
 	commit.ConflictKeys = canonicalStrings([]string{"vault-write:" + lease.VaultPubkey, fmt.Sprintf("fleet-shared-write-lane:%02d", lease.VaultID%64)})
 	admission := &ExecutionAdmission{Lease: *lease, Preparation: prepared.Preparation,
 		LastValidBlockHeight: prepared.LastValidBlockHeight, ConflictKeys: append([]string(nil), commit.ConflictKeys...),
-		Evidence: prepared.Evidence, Anchors: prepared.Evidence.Anchors}
+		Evidence: prepared.Evidence, Anchors: prepared.Evidence.Anchors,
+		FeePayer: prepared.FeePayer, FeePayerBalance: prepared.FeePayerBalance, FeePayerBalanceSlot: prepared.FeePayerBalanceSlot}
 	for _, address := range prepared.Preparation.Transaction.LookupTables {
 		found := false
 		for _, table := range prepared.Tables {

@@ -159,13 +159,22 @@ func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmi
 		return 0, errors.New("signed admission wire is not canonical")
 	}
 	message, err := decoded.Message.MarshalBinary()
-	if err != nil || !bytes.Equal(message, a.Preparation.Transaction.Message) || len(decoded.Message.AccountKeys) == 0 || len(decoded.Signatures) != 1 || decoded.Signatures[0].String() != wire.TransactionSignature || decoded.Message.RecentBlockhash.String() != wire.RecentBlockhash {
+	if err != nil || !bytes.Equal(message, a.Preparation.Transaction.Message) || len(decoded.Message.AccountKeys) == 0 || len(decoded.Signatures) < 1 || len(decoded.Signatures) > 2 || decoded.Signatures[0].String() != wire.TransactionSignature || decoded.Message.RecentBlockhash.String() != wire.RecentBlockhash {
 		return 0, errors.New("signed admission message/signature differs")
 	}
 	if err := decoded.VerifySignatures(); err != nil {
 		return 0, err
 	}
 	payer := decoded.Message.AccountKeys[0].String()
+	// One signature: the delegate pays. Two: the vault's fee-only payer pays,
+	// with the Rust spend reservation 0025 requires for that payer kind.
+	payerKind := "policy"
+	if len(decoded.Signatures) == 2 {
+		payerKind = "fee_only_shard"
+		if a.FeePayer != payer || a.FeePayerBalance < int64(a.Preparation.Transaction.FeeLamports) || a.FeePayerBalanceSlot <= 0 {
+			return 0, errors.New("fee-only payer differs from admission or lacks its observed balance")
+		}
+	}
 	semantic := fmt.Sprintf("fleet-opportunity:%d", a.Lease.OpportunityID)
 	epochs, err := marshalALTEpochs(a.SelectedALTs)
 	if err != nil {
@@ -240,10 +249,16 @@ func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmi
    (cluster,semantic_key,opportunity_id,signed_transaction,signed_transaction_hash,message_hash,transaction_signature,recent_blockhash,last_valid_block_height,
     source_snapshot_id,optimizer_epoch_id,alt_requirements_fingerprint,alt_selection_fingerprint,alt_mutation_epochs,fee_payer,fee_payer_kind,compiled_fee_lamports,
     writable_account_keys,conflict_account_keys,executor_owner,executor_fencing_token,movement_leg,leg_purpose,leg_generation,expected_effect,expected_balance_anchors)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'policy',$16,$17,$18,$19,$20,'route','optimize_yield',1,$21,'{}') RETURNING id`,
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$22,$16,$17,$18,$19,$20,'route','optimize_yield',1,$21,'{}') RETURNING id`,
 			l.Cluster, semantic, l.OpportunityID, wire.SignedTransaction, wire.SignedTransactionHash, wire.MessageHash, wire.TransactionSignature, wire.RecentBlockhash, wire.LastValidBlockHeight,
-			l.SourceSnapshotID, l.OptimizerEpochID, p.RequirementsFingerprint, a.AltSelectionFingerprint, epochs, payer, int64(p.Transaction.FeeLamports), p.Transaction.WritableAccounts, keys, l.Owner, l.FencingToken, expected).Scan(&submissionID); err != nil {
+			l.SourceSnapshotID, l.OptimizerEpochID, p.RequirementsFingerprint, a.AltSelectionFingerprint, epochs, payer, int64(p.Transaction.FeeLamports), p.Transaction.WritableAccounts, keys, l.Owner, l.FencingToken, expected, payerKind).Scan(&submissionID); err != nil {
 			return err
+		}
+		if payerKind == "fee_only_shard" {
+			if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.route_fee_payer_spend_reservations(cluster,fee_payer,semantic_key,opportunity_id,signed_submission_id,compiled_fee_lamports,observed_balance_lamports,observed_balance_slot,observed_balance_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp())`,
+				l.Cluster, payer, semantic, l.OpportunityID, submissionID, int64(p.Transaction.FeeLamports), a.FeePayerBalance, a.FeePayerBalanceSlot); err != nil {
+				return err
+			}
 		}
 		var decisionID int64
 		if err := tx.QueryRow(ctx, `INSERT INTO loyal_yield.rebalance_decisions

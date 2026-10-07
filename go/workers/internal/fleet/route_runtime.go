@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"sync"
@@ -49,6 +50,7 @@ type Revalidator struct {
 	crossMintMaxValueLossBPS uint16
 	crossMintMaxSlippageBPS  uint16
 	jupiter                  *JupiterBuildClient
+	feeOnlyPayers            []string
 }
 
 type RevalidatorConfig struct {
@@ -62,6 +64,8 @@ type RevalidatorConfig struct {
 	CrossMintMaxSlippageBPS  uint16
 	JupiterBuildURL          string
 	JupiterAPIKey            string
+	// FeeOnlyPayers is the fixed fee-only payer list (public keys).
+	FeeOnlyPayers []string
 }
 
 func NewRevalidator(store *Store, rpc *RPCClient, proxy *KLendProxy, config RevalidatorConfig) (*Revalidator, error) {
@@ -95,7 +99,7 @@ func newRevalidator(store revalidationStore, rpc *RPCClient, proxy *KLendProxy, 
 			return nil, err
 		}
 	}
-	return &Revalidator{store: store, rpc: rpc, proxy: proxy, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter}, nil
+	return &Revalidator{store: store, rpc: rpc, proxy: proxy, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...)}, nil
 }
 
 // Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
@@ -152,6 +156,10 @@ type sameMintPreparation struct {
 	PriorityFee          uint64
 	Tables               []LookupTable
 	Instructions         []RouteInstruction
+	// FeePayer pays this route; a fee-only payer's balance is read at
+	// FeePayerBalanceSlot for its Rust spend reservation.
+	FeePayer                             string
+	FeePayerBalance, FeePayerBalanceSlot int64
 }
 
 // prepareSameMint runs the read-only same-mint preparation from fresh chain
@@ -219,7 +227,18 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "blockhash", err
 	}
 	out.LastValidBlockHeight = lastValidBlockHeight
-	preview, missing, err := compileV0Transaction(r.signer, blockhash, instructions, tables, 1, r.computeLimit)
+	out.FeePayer = r.signer
+	if matureReservePosition(lease.ExecutionPlan) {
+		out.FeePayer = RouteFeePayer(cluster, lease.VaultPubkey, r.signer, r.feeOnlyPayers)
+	}
+	if out.FeePayer != r.signer {
+		slot, accounts, err := r.rpc.ConfirmedAccounts(ctx, []string{out.FeePayer}, evidence.Slot)
+		if err != nil || len(accounts) != 1 || accounts[0].Lamports > math.MaxInt64 {
+			return out, "fee_payer", fmt.Errorf("fee-only payer balance unavailable: %v", err)
+		}
+		out.FeePayerBalance, out.FeePayerBalanceSlot = int64(accounts[0].Lamports), slot
+	}
+	preview, missing, err := compileV0Transaction(out.FeePayer, blockhash, instructions, tables, 1, r.computeLimit)
 	if err != nil {
 		return out, "compile", err
 	}
@@ -286,7 +305,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "budgeted_manifest", err
 	}
 	out.Instructions = budgetInstructions
-	budgetPreview, missing, err := compileV0Transaction(r.signer, blockhash, budgetInstructions, tables, 1, compute)
+	budgetPreview, missing, err := compileV0Transaction(out.FeePayer, blockhash, budgetInstructions, tables, 1, compute)
 	if err != nil {
 		return out, "budgeted_compile", fmt.Errorf("budgeted transaction compilation: %w", err)
 	}
@@ -301,7 +320,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "fee", fmt.Errorf("budgeted fee %d exceeds opportunity cap %d", fee, lease.FeeCapLamports)
 	}
 	out.Fee = fee
-	preparation, err := PrepareRoute(budgeted, lease.PolicyAccount, r.signer, lease.VaultIndex, policy.AllowedIndexes, tables, blockhash, fee, compute, func(wire []byte) (SimulationEvidence, error) {
+	preparation, err := PrepareRoute(budgeted, lease.PolicyAccount, r.signer, out.FeePayer, lease.VaultIndex, policy.AllowedIndexes, tables, blockhash, fee, compute, func(wire []byte) (SimulationEvidence, error) {
 		return r.rpc.SimulateExactTransaction(ctx, wire, evidence.Slot)
 	})
 	if err == nil {

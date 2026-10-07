@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,7 @@ type retailConfig struct {
 	databaseURL, timescaleURL, rpcURL, timescaleSchema, proxyPath, proxyHash string
 	slotDuration                                                             time.Duration
 	delegate, feePayer                                                       ed25519.PrivateKey
+	feeOnly                                                                  []ed25519.PrivateKey
 	crossMintEnabled                                                         bool
 	crossMintMaxSlippageBPS, crossMintMaxValueLossBPS                        uint16
 	jupiterBuildURL, jupiterAPIKey                                           string
@@ -140,10 +143,51 @@ func loadRetailConfig() (retailConfig, error) {
 	if !bytes.Equal(cfg.delegate, cfg.feePayer) {
 		return cfg, errors.New("retail Autodeposit and fleet require delegate and fee payer to be the same key")
 	}
+	if cfg.feeOnly, err = loadFeeOnlyPayers(cfg.delegate); err != nil {
+		return cfg, err
+	}
 	if err := cfg.fleetConfig().Validate(); err != nil {
 		return cfg, retailError("fleet configuration", err)
 	}
 	return cfg, nil
+}
+
+// loadFeeOnlyPayers reads the optional fee-only route payers, in Rust's
+// YIELD_ROUTE_FEE_PAYER_KEYPAIRS format: a JSON array of encoded keypairs.
+// Absent means the delegate pays every route, as in Rust.
+func loadFeeOnlyPayers(delegate ed25519.PrivateKey) ([]ed25519.PrivateKey, error) {
+	const name = "YIELD_ROUTE_FEE_PAYER_KEYPAIRS"
+	raw, err := os.ReadFile(filepath.Join(os.Getenv("CREDENTIALS_DIRECTORY"), name))
+	if errors.Is(err, fs.ErrNotExist) || err == nil && strings.TrimSpace(string(raw)) == "" {
+		return nil, nil
+	}
+	var encoded []string
+	if err != nil || json.Unmarshal(raw, &encoded) != nil {
+		return nil, fmt.Errorf("%s must be a JSON array of encoded keypairs", name)
+	}
+	keys := make([]ed25519.PrivateKey, 0, len(encoded))
+	seen := map[string]bool{base58.Encode(delegate[32:]): true}
+	for _, material := range encoded {
+		key, err := parseRetailKey(material)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s entry", name)
+		}
+		public := base58.Encode(key[32:])
+		if seen[public] {
+			return nil, fmt.Errorf("%s repeats a key or the delegate", name)
+		}
+		seen[public] = true
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+func (c retailConfig) feeOnlyPublicKeys() []string {
+	out := make([]string, 0, len(c.feeOnly))
+	for _, key := range c.feeOnly {
+		out = append(out, base58.Encode(key[32:]))
+	}
+	return out
 }
 
 func parseRetailKey(material string) (ed25519.PrivateKey, error) {
@@ -388,7 +432,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	// Compilation/verification remains available for recovery with rollout off.
 	// Only the planner and D controller receive fresh cross-mint enablement.
-	revalidator, err := fleet.NewRevalidator(cStore, fleetRPC, proxy, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, SlotDuration: cfg.slotDuration, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey})
+	revalidator, err := fleet.NewRevalidator(cStore, fleetRPC, proxy, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, SlotDuration: cfg.slotDuration, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys()})
 	if err != nil {
 		return retailError("fused fleet preparation", err)
 	}
@@ -398,7 +442,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("fleet execution RPC", err)
 	}
-	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts}, dStore, landRPC, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate})
+	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts}, dStore, landRPC, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
 	if err != nil {
 		return retailError("fleet executor", err)
 	}

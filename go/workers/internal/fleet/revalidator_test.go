@@ -111,7 +111,7 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 		h := sha256.Sum256(w)
 		return SimulationEvidence{Slot: 101, Succeeded: true, UnitsConsumed: 200000, WireSHA256: hex.EncodeToString(h[:])}, nil
 	}
-	prep, err := PrepareRoute(route, testPolicy, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, sim)
+	prep, err := PrepareRoute(route, testPolicy, testVault, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, sim)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,20 +121,20 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	if !strings.Contains(string(prep.ExecutionPlan), "unsigned_transaction_base64") {
 		t.Fatal("exact bytes not durably handoff-ready")
 	}
-	if _, err := PrepareRoute(route, testPolicy, testVault, 0, []uint8{0, 1}, nil, testMarket, 5000, 400000, sim); err == nil {
+	if _, err := PrepareRoute(route, testPolicy, testVault, testVault, 0, []uint8{0, 1}, nil, testMarket, 5000, 400000, sim); err == nil {
 		t.Fatal("missing ALT was accepted")
 	}
 	oversized := route
 	oversized.Public = append([]RouteInstruction(nil), route.Public...)
 	oversized.Public[0].Data = make([]byte, 1400)
-	if _, err := PrepareRoute(oversized, testPolicy, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, sim); err == nil || !strings.Contains(err.Error(), "packet") {
+	if _, err := PrepareRoute(oversized, testPolicy, testVault, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, sim); err == nil || !strings.Contains(err.Error(), "packet") {
 		t.Fatalf("oversized packet accepted: %v", err)
 	}
 	failSim := func(w []byte) (SimulationEvidence, error) {
 		h := sha256.Sum256(w)
 		return SimulationEvidence{Slot: 101, Succeeded: false, UnitsConsumed: 1, WireSHA256: hex.EncodeToString(h[:])}, nil
 	}
-	if _, err := PrepareRoute(route, testPolicy, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, failSim); err == nil {
+	if _, err := PrepareRoute(route, testPolicy, testVault, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, failSim); err == nil {
 		t.Fatal("simulation failure accepted")
 	}
 	e.OpportunityKey = "changed"
