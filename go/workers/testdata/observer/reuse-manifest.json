@@ -92,16 +92,6 @@
       "target": "go/workers/internal/observer/kamino/verification.go"
     },
     {
-      "source": "go/laserstream-worker/internal/observability/observability.go",
-      "source_sha256": "8ee0f0aa730ddacef0c937d32d36647268d4b2ba0dca3a4761540adc2d9b5e7a",
-      "target": "go/workers/internal/observer/observability/observability.go"
-    },
-    {
-      "source": "go/laserstream-worker/internal/observability/observability_test.go",
-      "source_sha256": "b327b5ac7b502b49f01bb7f9a9dba91c114c0441b0bf2421fd470cb02e47391e",
-      "target": "go/workers/internal/observer/observability/observability_test.go"
-    },
-    {
       "source": "go/laserstream-worker/internal/solanarpc/client.go",
       "source_sha256": "ef73da5f5a811606089eccd97263b99e38c59ef4d4d6195f0af03a60ae61b64c",
       "target": "go/workers/internal/observer/solanarpc/client.go"

@@ -6,6 +6,9 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // HTTPServer owns its listener and joins serving before process dependencies close.
@@ -20,6 +23,16 @@ func ListenHTTP(address string, handler http.Handler) (*HTTPServer, error) {
 		return nil, err
 	}
 	return &HTTPServer{listener: listener, server: &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}}, nil
+}
+
+// ListenMetrics serves registry on /metrics, the process's only HTTP surface.
+func ListenMetrics(address string, registry *prometheus.Registry) (*HTTPServer, error) {
+	if address == "" {
+		return nil, errors.New("required configuration missing: LOYAL_METRICS_ADDRESS")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+	return ListenHTTP(address, mux)
 }
 
 func (s *HTTPServer) Run(ctx context.Context) error {

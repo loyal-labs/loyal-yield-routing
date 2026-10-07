@@ -21,18 +21,23 @@ It also supports single `fleet` and `backyard` decisions. This is a modeled
 decision, not a realized return. Fixture provenance and proof limits are listed
 in `testdata/manifest.json`.
 
+Secrets are read only from systemd credential files
+(`$CREDENTIALS_DIRECTORY/<NAME>`, see `deploy/hetzner/`); everything else is
+environment. The release identity is stamped at link time
+(`-X .../internal/engine.Release=sha-<commit>`). Every process serves
+`/metrics` on `LOYAL_METRICS_ADDRESS`.
+
 The engine selects `LOYAL_WORKER_SCOPE=retail` or `backyard`; each instance
-requires `LOYAL_WORKER_INSTANCE` and immutable `LOYAL_IMAGE_VERSION`. Retail requires
-explicit `RETAIL_MODE=active` and scoped `RETAIL_DATABASE_URL`,
-`RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_TIMESCALE_SCHEMA`,
-`RETAIL_SOLANA_RPC_URL`, `RETAIL_HTTP_ADDRESS`, `RETAIL_SLOT_DURATION`,
-`RETAIL_KLEND_PROXY_PATH`, `RETAIL_KLEND_PROXY_SHA256`,
-`RETAIL_DELEGATE_KEYPAIR` and `RETAIL_FEE_PAYER_KEYPAIR`. The current Autodeposit
+requires `LOYAL_WORKER_INSTANCE`. Retail requires
+explicit `RETAIL_MODE=active`, `RETAIL_TIMESCALE_SCHEMA`, `RETAIL_SLOT_DURATION`,
+`RETAIL_KLEND_PROXY_PATH`, `RETAIL_KLEND_PROXY_SHA256`, and the credentials
+`RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`,
+`RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR` and `RETAIL_FEE_PAYER_KEYPAIR`. The current Autodeposit
 and same-mint packet contracts require the latter two keys to be identical.
 `RETAIL_CROSS_MINT_ENABLED=true` opts the planner/controller into fresh cross-mint
 work; it defaults off. Existing signed recovery and custody continuation stay
 available with rollout off. Source database controls are checked independently.
-Jupiter uses scoped `RETAIL_JUPITER_BUILD_URL` and `RETAIL_JUPITER_API_KEY`;
+Jupiter uses scoped `RETAIL_JUPITER_BUILD_URL` and the `RETAIL_JUPITER_API_KEY` credential;
 optional `RETAIL_CROSS_MINT_MAX_SLIPPAGE_BPS` and
 `RETAIL_CROSS_MINT_MAX_VALUE_LOSS_BPS` each default to 50 and accept 1..1000.
 An inherited legacy cross-mint flag cannot grant fresh authority.
@@ -72,11 +77,10 @@ the production-specific 0071 data activation and ledger entry are excluded.
 Branch CI provides actual PostgreSQL 17 and Timescale. No migration executable
 is packaged in the worker image, and tests never apply schema to production.
 
-`/readyz` opens only after every configured family reports a healthy, fresh
-cycle using real chain slots and its custody/recovery census. It closes when
-any family stalls or exits. Investigate that family's classified error and
-durable journal before admitting more work. Recovery preserves possibly sent
-bytes, even after user disablement; do not clear uncertainty by deleting rows.
+Health is the four family facts on `/metrics` (`internal/engine/facts.go`);
+alert rules live in `deploy/hetzner/monitoring/`. There is no readiness
+endpoint. Recovery preserves possibly sent bytes, even after user
+disablement; do not clear uncertainty by deleting rows.
 
 The Docker image includes the official locked Rust KLend builder and retained
 Earn bridge alongside the three Go binaries, runs as UID 65532, and records

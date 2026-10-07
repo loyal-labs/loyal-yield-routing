@@ -18,7 +18,7 @@ func TestObserverRefusesForeignRPCBeforeOpeningWriters(t *testing.T) {
 		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":"foreign-genesis"}`)
 	}))
 	defer server.Close()
-	_, err := New(context.Background(), config.Config{Cluster: "mainnet-beta", SolanaRPCURL: server.URL, AppsDatabaseURL: "unusable-apps", NeonDatabaseURL: "unusable-yield"}, nil, nil, nil)
+	_, err := New(context.Background(), config.Config{Cluster: "mainnet-beta", SolanaRPCURL: server.URL, AppsDatabaseURL: "unusable-apps", NeonDatabaseURL: "unusable-yield"}, nil, nil)
 	if err == nil || err.Error() != "observer watch RPC is not Solana mainnet" {
 		t.Fatalf("foreign endpoint reached writer initialization: %v", err)
 	}

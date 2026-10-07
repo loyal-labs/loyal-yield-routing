@@ -12,7 +12,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/observability"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 )
 
@@ -51,11 +50,9 @@ func requireStoppedRuntimeRPC(t *testing.T, stopped <-chan struct{}) {
 	}
 }
 
-func TestRuntimeStartupDeadlineHoldsWatchReadiness(t *testing.T) {
+func TestRuntimeStartupDeadlineStopsBlockedRPC(t *testing.T) {
 	rpc, stopped := stalledRuntimeRPC(t, "getGenesisHash")
-	health := observability.NewHealth()
-	health.SetDomainReady("watch", true)
-	runtime := &Runtime{cfg: config.Config{Cluster: "mainnet-beta", ProgressTimeout: 100 * time.Millisecond}, rpc: rpc, health: health}
+	runtime := &Runtime{cfg: config.Config{Cluster: "mainnet-beta", ProgressTimeout: 100 * time.Millisecond}, rpc: rpc}
 	started := time.Now()
 	if err := runtime.Run(context.Background()); err == nil {
 		t.Fatal("blocked startup was accepted")
@@ -64,17 +61,6 @@ func TestRuntimeStartupDeadlineHoldsWatchReadiness(t *testing.T) {
 		t.Fatal("startup used the transport timeout instead of its pass budget")
 	}
 	requireStoppedRuntimeRPC(t, stopped)
-	response := httptest.NewRecorder()
-	health.Handler(time.Second).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	var result struct {
-		DomainGates map[string]bool `json:"domainGates"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.DomainGates["watch"] {
-		t.Fatal("incomplete startup reopened the watch gate")
-	}
 }
 
 func TestRuntimeVerifyDeadlineCancelsActualRPC(t *testing.T) {

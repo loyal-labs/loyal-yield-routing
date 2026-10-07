@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,18 +23,49 @@ func retailKeyMaterialForTest(seed []byte) string {
 	return string(encoded)
 }
 
+// setCredential stands in for systemd's LoadCredentialEncrypted= directory.
+func setCredential(t *testing.T, name, value string) {
+	t.Helper()
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	if dir == "" {
+		dir = t.TempDir()
+		t.Setenv("CREDENTIALS_DIRECTORY", dir)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func configureRetailForTest(t *testing.T) {
 	t.Helper()
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
 	for name, value := range map[string]string{
-		"RETAIL_MODE": "active", "RETAIL_DATABASE_URL": "postgresql://test:test-secret@db.invalid/yield", "RETAIL_TIMESCALE_DATABASE_URL": "postgresql://test:test-secret@db.invalid/market", "RETAIL_SOLANA_RPC_URL": "https://rpc.invalid/?api-key=test-secret", "RETAIL_TIMESCALE_SCHEMA": "kamino", "RETAIL_HTTP_ADDRESS": "127.0.0.1:0", "RETAIL_KLEND_PROXY_PATH": "/unused/test-helper", "RETAIL_KLEND_PROXY_SHA256": strings.Repeat("a", 64), "RETAIL_SLOT_DURATION": "400ms", "RETAIL_CROSS_MINT_ENABLED": "false", "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER": "false",
+		"RETAIL_MODE": "active", "RETAIL_TIMESCALE_SCHEMA": "kamino", "RETAIL_KLEND_PROXY_PATH": "/unused/test-helper", "RETAIL_KLEND_PROXY_SHA256": strings.Repeat("a", 64), "RETAIL_SLOT_DURATION": "400ms", "RETAIL_CROSS_MINT_ENABLED": "false", "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER": "false",
 	} {
 		t.Setenv(name, value)
+	}
+	for name, value := range map[string]string{
+		"RETAIL_DATABASE_URL": "postgresql://test:test-secret@db.invalid/yield", "RETAIL_TIMESCALE_DATABASE_URL": "postgresql://test:test-secret@db.invalid/market", "RETAIL_SOLANA_RPC_URL": "https://rpc.invalid/?api-key=test-secret", "RETAIL_JUPITER_API_KEY": "test-secret",
+	} {
+		setCredential(t, name, value)
 	}
 	seed := make([]byte, ed25519.SeedSize)
 	seed[0] = 41
 	key := retailKeyMaterialForTest(seed)
-	t.Setenv("RETAIL_DELEGATE_KEYPAIR", key)
-	t.Setenv("RETAIL_FEE_PAYER_KEYPAIR", key)
+	setCredential(t, "RETAIL_DELEGATE_KEYPAIR", key)
+	setCredential(t, "RETAIL_FEE_PAYER_KEYPAIR", key)
+}
+
+// setRetailInput writes credentials to the credential directory and
+// everything else to the environment, as the systemd unit does.
+func setRetailInput(t *testing.T, name, value string) {
+	t.Helper()
+	switch name {
+	case "RETAIL_DATABASE_URL", "RETAIL_TIMESCALE_DATABASE_URL", "RETAIL_SOLANA_RPC_URL", "RETAIL_JUPITER_API_KEY", "RETAIL_DELEGATE_KEYPAIR", "RETAIL_FEE_PAYER_KEYPAIR", "RETAIL_LOOKUP_MANAGER_KEYPAIR":
+		setCredential(t, name, value)
+	default:
+		t.Setenv(name, value)
+	}
 }
 
 func TestRetailConfigurationDoesNotStartWritersByDefault(t *testing.T) {
@@ -43,7 +74,7 @@ func TestRetailConfigurationDoesNotStartWritersByDefault(t *testing.T) {
 	for _, mode := range []string{"", "shadow", "publish"} {
 		t.Run("mode-"+mode, func(t *testing.T) {
 			t.Setenv("RETAIL_MODE", mode)
-			err := runRetail(context.Background(), owner, "sha-"+strings.Repeat("a", 40))
+			err := runRetail(context.Background(), owner, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), "RETAIL_MODE") {
 				t.Fatalf("unapproved writer mode reached initialization: %v", err)
 			}
@@ -89,17 +120,19 @@ func TestRetailConfigurationIsScopedBoundedAndSecretSafe(t *testing.T) {
 	if cfg.slotDuration != 400*time.Millisecond || cfg.fleetConfig().SlotDuration != cfg.slotDuration || !cfg.fleetConfig().FusedExecute {
 		t.Fatal("planner/executor clocks or fused preparation drifted")
 	}
-	cases := []struct{ name, value string }{{"RETAIL_SLOT_DURATION", "0s"}, {"RETAIL_SLOT_DURATION", "11s"}, {"RETAIL_TIMESCALE_SCHEMA", "kamino;test-secret"}, {"RETAIL_SOLANA_RPC_URL", "test-secret"}, {"RETAIL_KLEND_PROXY_SHA256", strings.Repeat("z", 64)}, {"RETAIL_DELEGATE_KEYPAIR", "test-secret"}, {"RETAIL_HTTP_ADDRESS", "test-secret"}, {"RETAIL_CROSS_MINT_ENABLED", "test-secret"}}
+	cases := []struct{ name, value string }{{"RETAIL_SLOT_DURATION", "0s"}, {"RETAIL_SLOT_DURATION", "11s"}, {"RETAIL_TIMESCALE_SCHEMA", "kamino;test-secret"}, {"RETAIL_SOLANA_RPC_URL", "test-secret"}, {"RETAIL_KLEND_PROXY_SHA256", strings.Repeat("z", 64)}, {"RETAIL_DELEGATE_KEYPAIR", "test-secret"}, {"RETAIL_CROSS_MINT_ENABLED", "test-secret"}}
 	for _, tc := range cases {
 		t.Run(tc.name+tc.value, func(t *testing.T) {
-			t.Setenv(tc.name, tc.value)
+			configureRetailForTest(t)
+			setRetailInput(t, tc.name, tc.value)
 			if _, err := loadRetailConfig(); err == nil || strings.Contains(err.Error(), "test-secret") {
 				t.Fatalf("invalid configuration leaked or was accepted: %v", err)
 			}
 		})
 	}
-	t.Setenv("RETAIL_DELEGATE_KEYPAIR", "")
+	setCredential(t, "RETAIL_DELEGATE_KEYPAIR", "")
 	t.Setenv("POLICY_KEYPAIR", "test-secret")
+	setCredential(t, "POLICY_KEYPAIR", "test-secret")
 	t.Setenv("BACKYARD_POLICY_KEYPAIR", "test-secret")
 	if _, err := loadRetailConfig(); err == nil || !strings.Contains(err.Error(), "RETAIL_DELEGATE_KEYPAIR") {
 		t.Fatalf("unscoped credential substituted: %v", err)
@@ -111,7 +144,7 @@ func TestRetailRejectsTwoKeysWhileAutodepositAndFleetHaveOneSigner(t *testing.T)
 	seed := make([]byte, ed25519.SeedSize)
 	seed[0] = 99
 	key := retailKeyMaterialForTest(seed)
-	t.Setenv("RETAIL_FEE_PAYER_KEYPAIR", key)
+	setCredential(t, "RETAIL_FEE_PAYER_KEYPAIR", key)
 	if _, err := loadRetailConfig(); err == nil || !strings.Contains(err.Error(), "same key") {
 		t.Fatalf("unsupported signer graph accepted: %v", err)
 	}
@@ -126,7 +159,7 @@ func TestRetailDiagnosticsRetainCancellationWithoutRenderingSecrets(t *testing.T
 	configureRetailForTest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := runRetail(ctx, "invalid-owner", "invalid-release"); !errors.Is(err, context.Canceled) {
+	if err := runRetail(ctx, "invalid-owner", nil, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled startup proceeded: %v", err)
 	}
 }
@@ -171,26 +204,5 @@ func TestRetailShutdownJoinsLanesBeforeReturning(t *testing.T) {
 	case <-lane.drained:
 	default:
 		t.Fatal("dependencies could close before lane drained")
-	}
-}
-
-func TestRetailReadinessDoesNotOpenOnConstruction(t *testing.T) {
-	health := retailHealth()
-	recorder := httptest.NewRecorder()
-	health.Handler(time.Minute).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("unobserved families reported ready: %d", recorder.Code)
-	}
-	var body struct {
-		Gates map[string]bool `json:"domainGates"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	for _, family := range []string{"autodeposit-control", "autodeposit", "fleet-planner", "fleet-executor", "multiply"} {
-		value, known := body.Gates[family]
-		if !known || value {
-			t.Fatalf("family %s reported readiness without proof", family)
-		}
 	}
 }

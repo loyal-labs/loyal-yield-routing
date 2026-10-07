@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
 	"github.com/mr-tron/base58"
 )
@@ -47,7 +48,7 @@ func loadRetailLookupConfig() (retailLookupConfig, error) {
 		}
 		cfg.budget.RollingWindow = window
 	}
-	material, err := required("RETAIL_LOOKUP_MANAGER_KEYPAIR")
+	material, err := engine.Credential("RETAIL_LOOKUP_MANAGER_KEYPAIR")
 	if err != nil {
 		return cfg, err
 	}

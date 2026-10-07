@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/ata"
 )
 
@@ -12,15 +13,14 @@ import (
 // observer. Progress uses the retained stream consumer and its atomic cursor;
 // the observer owns and joins this lane alongside capture and read models.
 func (r *Runtime) NewATAProjector(ctx context.Context) (*ata.Projector, error) {
-	if r == nil || r.neon == nil || r.timescale == nil || r.health == nil {
-		return nil, errors.New("ATA projection requires initialized observer pools and health")
+	if r == nil || r.neon == nil || r.timescale == nil || r.facts == nil {
+		return nil, errors.New("ATA projection requires initialized observer pools and facts")
 	}
-	r.health.SetDomainReady("ata_projection", false)
 	projector, err := ata.NewProjector(r.timescale, r.neon, ata.ProjectorConfig{
 		Stream: r.cfg.ATAStream, Cluster: r.cfg.Cluster, BatchLimit: 500, PollInterval: 250 * time.Millisecond,
 		IOTimeout: 10 * time.Second,
-		OnHealth:  func(ready bool) { r.health.SetDomainReady("ata_projection", ready) },
 		OnError: func(error) {
+			r.facts.Failed(engine.FamilyObserver, "ata_projection")
 			r.logger.WarnContext(ctx, "ATA projection unavailable", "stream", r.cfg.ATAStream)
 		},
 	})

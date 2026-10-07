@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -23,18 +22,17 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/observability"
 	"github.com/mr-tron/base58"
 )
 
 type retailConfig struct {
-	databaseURL, timescaleURL, rpcURL, timescaleSchema, httpAddress, proxyPath, proxyHash string
-	slotDuration                                                                          time.Duration
-	delegate, feePayer                                                                    ed25519.PrivateKey
-	crossMintEnabled                                                                      bool
-	crossMintMaxSlippageBPS, crossMintMaxValueLossBPS                                     uint16
-	jupiterBuildURL, jupiterAPIKey                                                        string
-	lookup                                                                                retailLookupConfig
+	databaseURL, timescaleURL, rpcURL, timescaleSchema, proxyPath, proxyHash string
+	slotDuration                                                             time.Duration
+	delegate, feePayer                                                       ed25519.PrivateKey
+	crossMintEnabled                                                         bool
+	crossMintMaxSlippageBPS, crossMintMaxValueLossBPS                        uint16
+	jupiterBuildURL, jupiterAPIKey                                           string
+	lookup                                                                   retailLookupConfig
 }
 
 // Configuration is scoped to this capability. Legacy/background writer flags
@@ -68,7 +66,10 @@ func loadRetailConfig() (retailConfig, error) {
 	if cfg.jupiterBuildURL == "" {
 		cfg.jupiterBuildURL = "https://api.jup.ag/swap/v2/build"
 	}
-	cfg.jupiterAPIKey = os.Getenv("RETAIL_JUPITER_API_KEY")
+	var err error
+	if cfg.jupiterAPIKey, err = engine.Credential("RETAIL_JUPITER_API_KEY"); err != nil {
+		return cfg, err
+	}
 	if _, err := fleet.NewJupiterBuildClient(cfg.jupiterBuildURL, cfg.jupiterAPIKey); err != nil {
 		return cfg, errors.New("RETAIL_JUPITER_BUILD_URL must be absolute HTTPS without user info")
 	}
@@ -90,11 +91,12 @@ func loadRetailConfig() (retailConfig, error) {
 	for _, field := range []struct {
 		name string
 		out  *string
+		read func(string) (string, error)
 	}{
-		{"RETAIL_DATABASE_URL", &cfg.databaseURL}, {"RETAIL_TIMESCALE_DATABASE_URL", &cfg.timescaleURL}, {"RETAIL_SOLANA_RPC_URL", &cfg.rpcURL},
-		{"RETAIL_TIMESCALE_SCHEMA", &cfg.timescaleSchema}, {"RETAIL_HTTP_ADDRESS", &cfg.httpAddress}, {"RETAIL_KLEND_PROXY_PATH", &cfg.proxyPath}, {"RETAIL_KLEND_PROXY_SHA256", &cfg.proxyHash},
+		{"RETAIL_DATABASE_URL", &cfg.databaseURL, engine.Credential}, {"RETAIL_TIMESCALE_DATABASE_URL", &cfg.timescaleURL, engine.Credential}, {"RETAIL_SOLANA_RPC_URL", &cfg.rpcURL, engine.Credential},
+		{"RETAIL_TIMESCALE_SCHEMA", &cfg.timescaleSchema, required}, {"RETAIL_KLEND_PROXY_PATH", &cfg.proxyPath, required}, {"RETAIL_KLEND_PROXY_SHA256", &cfg.proxyHash, required},
 	} {
-		value, err := required(field.name)
+		value, err := field.read(field.name)
 		if err != nil {
 			return cfg, err
 		}
@@ -103,9 +105,6 @@ func loadRetailConfig() (retailConfig, error) {
 	rpc, err := url.Parse(cfg.rpcURL)
 	if err != nil || rpc.Host == "" || (rpc.Scheme != "http" && rpc.Scheme != "https") {
 		return cfg, errors.New("RETAIL_SOLANA_RPC_URL must be an absolute HTTP or HTTPS URL")
-	}
-	if _, _, err := net.SplitHostPort(cfg.httpAddress); err != nil {
-		return cfg, errors.New("RETAIL_HTTP_ADDRESS must contain host and port")
 	}
 	cfg.slotDuration, err = time.ParseDuration(os.Getenv("RETAIL_SLOT_DURATION"))
 	if err != nil || cfg.slotDuration <= 0 || cfg.slotDuration > 10*time.Second {
@@ -123,7 +122,7 @@ func loadRetailConfig() (retailConfig, error) {
 		name string
 		out  *ed25519.PrivateKey
 	}{{"RETAIL_DELEGATE_KEYPAIR", &cfg.delegate}, {"RETAIL_FEE_PAYER_KEYPAIR", &cfg.feePayer}} {
-		material, err := required(field.name)
+		material, err := engine.Credential(field.name)
 		if err != nil {
 			return cfg, err
 		}
@@ -197,33 +196,17 @@ func retailError(stage string, cause error) error {
 	return &retailStageFailure{stage: stage, cause: cause}
 }
 
-func retailHealth() *observability.Health {
-	health := observability.NewHealth()
-	for _, family := range []string{"autodeposit-control", "autodeposit", "fleet-planner", "fleet-executor", "multiply"} {
-		health.SetDomainReady(family, false)
-	}
-	// Each autonomous family opens its gate only after its own healthy cycle;
-	// the aggregate separately enforces freshness for every family.
-	return health
-}
-
 func runRetailLanes(ctx context.Context, lanes ...engine.Lane) error {
 	return retailError("lanes", engine.Run(ctx, lanes...))
 }
 
-func runRetail(ctx context.Context, owner, release string) error {
+// facts is the family health surface; metrics is the joined /metrics lane.
+func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics engine.Lane) error {
 	if ctx == nil {
 		return errors.New("retail requires caller context")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-	parts := strings.Split(owner, ":")
-	if len(parts) != 4 || parts[0] != "worker" || parts[1] != "retail" || parts[3] != release {
-		return errors.New("retail requires scoped instance and immutable release")
-	}
-	if _, err := engine.InstanceOwner("retail", parts[2], release); err != nil {
-		return retailError("instance identity", err)
 	}
 	cfg, err := loadRetailConfig()
 	if err != nil {
@@ -299,8 +282,6 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("Autodeposit controller", err)
 	}
-	health := retailHealth()
-	readiness := newRetailReadiness(health, "cross-mint", "autodeposit-desired", "lookup-planner", "lookup-writer")
 	lookupRPC, err := fleetexec.NewLookupRPC(cfg.rpcURL, 10*time.Second)
 	if err != nil {
 		return retailError("lookup RPC", err)
@@ -321,7 +302,6 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err := dStore.RequireLookupSchema(startup); err != nil {
 		return retailError("lookup writer schema", err)
 	}
-	lookupWorker.SetRuntimeReporter(readiness.reporter("lookup-writer"))
 	// Retain the source provisioner's growth reservation (8) and vault cohort
 	// limit (16). This lane receives no manager key or broadcast capability.
 	lookupPlanner, err := fleetexec.NewLookupPlanner(dStore, lookupRPC, fleetexec.LookupPlannerConfig{
@@ -338,15 +318,12 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("lookup planner", err)
 	}
-	lookupPlanner.SetRuntimeReporter(readiness.reporter("lookup-planner"))
-	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, OnError: func(error) { health.SetDomainReady("autodeposit", false); log.Print("retail autodeposit tick failed") }, OnAlert: func(autodeposit.ExecutorFailureAlert) {
-		health.SetDomainReady("autodeposit", false)
+	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, OnError: func(error) { log.Print("retail autodeposit tick failed") }, OnAlert: func(autodeposit.ExecutorFailureAlert) {
 		log.Print("retail autodeposit execution requires attention")
 	}})
 	if err != nil {
 		return retailError("Autodeposit worker", err)
 	}
-	aWorker.SetRuntimeReporter(readiness.reporter("autodeposit"))
 	artifactRPC, err := autodeposit.NewArtifactRPC(cfg.rpcURL)
 	if err != nil {
 		return retailError("Autodeposit artifact RPC", err)
@@ -354,9 +331,7 @@ func runRetail(ctx context.Context, owner, release string) error {
 	artifactReader := &autodeposit.ArtifactProofReader{Wires: wires, History: artifactRPC}
 	artifacts := &autodeposit.ArtifactReconciler{Store: aStore, Reader: artifactReader}
 	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, RuntimeChain: chain, OnError: func(error) { log.Print("retail autodeposit control requires attention") }, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
-	control.SetRuntimeReporter(readiness.reporter("autodeposit-control"))
 	desired := &autodeposit.DesiredReconciler{Store: aStore, Reader: wires, Artifacts: artifactReader, RuntimeChain: chain, OnError: func(error) { log.Print("retail autodeposit desired controls require attention") }, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
-	desired.SetRuntimeReporter(readiness.reporter("autodeposit-desired"))
 	fleetRPC := fleet.NewRPCClient(cfg.rpcURL)
 	cConfig := cfg.fleetConfig()
 	cConfig.RevalidationOwner = owner
@@ -364,7 +339,6 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("fleet planner", err)
 	}
-	planner.SetRuntimeReporter(readiness.reporter("fleet-planner"))
 	if err := planner.SetMarketEvidence(evidence); err != nil {
 		return retailError("fleet evidence binding", err)
 	}
@@ -384,7 +358,6 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("fleet executor", err)
 	}
-	executor.SetRuntimeReporter(readiness.reporter("fleet-executor"))
 	if err := executor.SetFreshRevalidator(revalidator); err != nil {
 		return retailError("fleet fresh execution binding", err)
 	}
@@ -392,7 +365,6 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("cross-mint runtime", err)
 	}
-	crossMint.SetRuntimeReporter(readiness.reporter("cross-mint"))
 	observation, err := multiply.NewLiveObservationReader(gRPC)
 	if err != nil {
 		return retailError("Multiply observation", err)
@@ -401,14 +373,8 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("Multiply worker", err)
 	}
-	multiplyWorker.SetRuntimeReporter(readiness.reporter("multiply"))
 	if err := startup.Err(); err != nil {
 		return err
 	}
-	server, err := engine.ListenHTTP(cfg.httpAddress, health.Handler(30*time.Second))
-	if err != nil {
-		return retailError("health listener", err)
-	}
-	defer server.Close()
-	return runRetailLanes(ctx, control, desired, aWorker, planner, executor, crossMint, lookupPlanner, lookupWorker, multiplyWorker, readiness, server)
+	return runRetailLanes(ctx, control, desired, aWorker, planner, executor, crossMint, lookupPlanner, lookupWorker, multiplyWorker, metrics)
 }
