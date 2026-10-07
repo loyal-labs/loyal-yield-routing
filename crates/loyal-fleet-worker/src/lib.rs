@@ -1,4 +1,6 @@
 mod cross_mint;
+#[cfg(feature = "klend-golden")]
+pub mod klend_golden;
 pub mod multiply;
 mod same_mint_reconciliation;
 mod voltr;
@@ -2027,9 +2029,6 @@ struct BudgetedFleetTransaction {
     priority_fee_micro_lamports: u64,
     compiled_fee_lamports: u64,
 }
-
-#[cfg(test)]
-mod connected_faults;
 
 struct QueueSignedRouteHandoff {
     lease: RebalanceOpportunityLease,
@@ -8330,14 +8329,6 @@ async fn run_with_runtime(
                 .observed_balance_at,
         )
         .await?;
-        #[cfg(test)]
-        if connected_faults::interrupt(
-            &pre_reconcile_input,
-            &handoff,
-            &current_market.capacity_reservation,
-        ) {
-            return Err("connected injected crash before signed persistence".into());
-        }
         let (prepared, submission) = client
             .prepare_same_mint_rebalance_with_signed_submission(
                 pre_reconcile_input.clone(),

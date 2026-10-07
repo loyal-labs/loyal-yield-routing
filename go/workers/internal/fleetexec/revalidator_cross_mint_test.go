@@ -1,4 +1,4 @@
-package main
+package fleetexec
 
 import (
 	"bytes"
@@ -14,14 +14,13 @@ import (
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
 )
 
-func TestRetailCrossMintRequestPreservesAuthorityAndCustody(t *testing.T) {
+func TestRevalidatorCrossMintRequestPreservesAuthorityAndCustody(t *testing.T) {
 	amount, slot, snapshot, terminal := int64(991), int64(123), int64(8), "terminal"
-	m := fleetexec.CrossMintMovement{DecisionID: 1, OpportunityID: 2, OptimizerEpochID: 3, VaultID: 4, Cluster: "localnet", VaultPubkey: "vault", SourceSnapshotID: &snapshot, SourceReserve: "source", IntendedTargetReserve: "intended", ActiveTargetReserve: "fallback", SourceMint: "mint-a", TargetMint: "mint-b", PlannedAmountRaw: 990, ExecutionPlan: json.RawMessage(`{"plan":1}`), PreflightCertification: json.RawMessage(`{"cert":2}`), CustodyMint: "mint-b", CustodyAccount: "aggregate", CustodyAmountRaw: 990, CustodyObservedBalanceRaw: &amount, CustodyReconciledSlot: &slot, CustodyVersion: 7, Phase: fleetexec.CrossMintTargetIdle, TerminalOutcome: &terminal}
-	q := fleetexec.CrossMintLegRequest{Movement: m, Leg: fleetexec.LegDeposit, Purpose: fleetexec.PurposeFallbackTarget, Generation: 9, RemainingFeeLamports: 10000, ContinuationOwner: "actual-d-owner", ContinuationFencingToken: 10, ControlGeneration: 0, ExpiresAt: time.Now().Add(time.Minute)}
-	got := retailCrossMintLegRequest(q)
+	m := CrossMintMovement{DecisionID: 1, OpportunityID: 2, OptimizerEpochID: 3, VaultID: 4, Cluster: "localnet", VaultPubkey: "vault", SourceSnapshotID: &snapshot, SourceReserve: "source", IntendedTargetReserve: "intended", ActiveTargetReserve: "fallback", SourceMint: "mint-a", TargetMint: "mint-b", PlannedAmountRaw: 990, ExecutionPlan: json.RawMessage(`{"plan":1}`), PreflightCertification: json.RawMessage(`{"cert":2}`), CustodyMint: "mint-b", CustodyAccount: "aggregate", CustodyAmountRaw: 990, CustodyObservedBalanceRaw: &amount, CustodyReconciledSlot: &slot, CustodyVersion: 7, Phase: CrossMintTargetIdle, TerminalOutcome: &terminal}
+	q := CrossMintLegRequest{Movement: m, Leg: LegDeposit, Purpose: PurposeFallbackTarget, Generation: 9, RemainingFeeLamports: 10000, ContinuationOwner: "actual-d-owner", ContinuationFencingToken: 10, ControlGeneration: 0, ExpiresAt: time.Now().Add(time.Minute)}
+	got := revalidatorCrossMintLegRequest(q)
 	if got.ContinuationOwner != q.ContinuationOwner || got.ContinuationFencingToken != q.ContinuationFencingToken || got.ControlGeneration != 0 || !got.ExpiresAt.Equal(q.ExpiresAt) || got.Generation != q.Generation || got.RemainingFeeLamports != q.RemainingFeeLamports || got.Leg != q.Leg || got.Purpose != q.Purpose {
 		t.Fatalf("changed actual lease authority: %+v", got)
 	}
@@ -36,7 +35,7 @@ func TestRetailCrossMintRequestPreservesAuthorityAndCustody(t *testing.T) {
 	}
 }
 
-func retailCrossMintLegFixture() fleet.CrossMintLegPreparation {
+func revalidatorCrossMintLegFixture() fleet.CrossMintLegPreparation {
 	return fleet.CrossMintLegPreparation{
 		Preparation: fleet.RoutePreparation{Transaction: fleet.PreparedTransaction{FeeLamports: 5000}}, LastValidBlockHeight: 900, PolicyAccount: "policy",
 		ExpectedEffect: json.RawMessage(`{"debit":{"mint":"source","tokenAccount":"debit","amountRaw":10},"creditMint":"target","creditTokenAccount":"credit","minimumCreditAmountRaw":9}`),
@@ -48,9 +47,9 @@ func retailCrossMintLegFixture() fleet.CrossMintLegPreparation {
 	}
 }
 
-func TestRetailCrossMintPreparationPreservesOrderedALTAndExactContracts(t *testing.T) {
-	p := retailCrossMintLegFixture()
-	got, err := retailCrossMintPreparedLeg(p)
+func TestRevalidatorCrossMintPreparationPreservesOrderedALTAndExactContracts(t *testing.T) {
+	p := revalidatorCrossMintLegFixture()
+	got, err := revalidatorCrossMintPreparedLeg(p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,13 +58,13 @@ func TestRetailCrossMintPreparationPreservesOrderedALTAndExactContracts(t *testi
 	}
 	p.WaitingALT, p.ExpectedEffect, p.BalanceAnchors = true, nil, nil
 	p.MissingAddresses = []string{"vault"}
-	got, err = retailCrossMintPreparedLeg(p)
+	got, err = revalidatorCrossMintPreparedLeg(p)
 	if err != nil || !got.WaitingALT || got.ExpectedEffect.Debit != nil || got.BalanceAnchors.Debit != nil || !reflect.DeepEqual(got.MissingAddresses, p.MissingAddresses) {
 		t.Fatalf("unsigned waiting demand was promoted to proof: %+v %v", got, err)
 	}
 }
 
-func TestRetailCrossMintPreparationRejectsMalformedReceiptContracts(t *testing.T) {
+func TestRevalidatorCrossMintPreparationRejectsMalformedReceiptContracts(t *testing.T) {
 	for name, mutate := range map[string]func(*fleet.CrossMintLegPreparation){
 		"null":            func(p *fleet.CrossMintLegPreparation) { p.ExpectedEffect = json.RawMessage(`null`) },
 		"generic":         func(p *fleet.CrossMintLegPreparation) { p.ExpectedEffect = json.RawMessage(`{}`) },
@@ -89,9 +88,9 @@ func TestRetailCrossMintPreparationRejectsMalformedReceiptContracts(t *testing.T
 		"fee overflow": func(p *fleet.CrossMintLegPreparation) { p.Preparation.Transaction.FeeLamports = math.MaxUint64 },
 	} {
 		t.Run(name, func(t *testing.T) {
-			p := retailCrossMintLegFixture()
+			p := revalidatorCrossMintLegFixture()
 			mutate(&p)
-			if _, err := retailCrossMintPreparedLeg(p); err == nil {
+			if _, err := revalidatorCrossMintPreparedLeg(p); err == nil {
 				t.Fatal("malformed source contract accepted")
 			}
 		})
@@ -100,7 +99,7 @@ func TestRetailCrossMintPreparationRejectsMalformedReceiptContracts(t *testing.T
 
 // This is a source-shape fixture with synthetic readback/simulation hashes.
 // It verifies conversion boundaries, and provides no chain or SVM evidence.
-func retailCrossMintActivationFixture(t *testing.T) fleet.CrossMintActivationPreparation {
+func revalidatorCrossMintActivationFixture(t *testing.T) fleet.CrossMintActivationPreparation {
 	t.Helper()
 	key := func(n byte) string { return solana.PublicKeyFromBytes(bytes.Repeat([]byte{n}, 32)).String() }
 	var seed [8]byte
@@ -121,9 +120,9 @@ func retailCrossMintActivationFixture(t *testing.T) fleet.CrossMintActivationPre
 	return fleet.CrossMintActivationPreparation{Lease: l, Certificate: c, InitialWithdrawalPreparation: fleet.CrossMintLegPreparation{Preparation: fleet.RoutePreparation{Transaction: fleet.PreparedTransaction{FeeLamports: 5000}}}, ObservedAt: time.Now(), ObservedSlot: 110, TargetObservedSupplyUSDMicros: 9000000, Capacity: fleet.CrossMintActivationCapacity{Cluster: l.Cluster, TargetReserve: l.TargetReserve, LiquidityMint: l.TargetLiquidityMint, ObservedSupplyUSDMicros: 9000000, ObservedSlot: 110, MaximumInflightUSDMicros: 4000000, TelemetryVersion: 0}}
 }
 
-func TestRetailCrossMintActivationBindsConcreteFrontierAndSourceCertificate(t *testing.T) {
-	p := retailCrossMintActivationFixture(t)
-	got, err := retailCrossMintActivationAdmission(p, time.Now())
+func TestRevalidatorCrossMintActivationBindsConcreteFrontierAndSourceCertificate(t *testing.T) {
+	p := revalidatorCrossMintActivationFixture(t)
+	got, err := revalidatorCrossMintActivationAdmission(p, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,30 +147,30 @@ func TestRetailCrossMintActivationBindsConcreteFrontierAndSourceCertificate(t *t
 		t.Run(name, func(t *testing.T) {
 			bad := p
 			mutate(&bad)
-			if _, err := retailCrossMintActivationAdmission(bad, time.Now()); err == nil {
+			if _, err := revalidatorCrossMintActivationAdmission(bad, time.Now()); err == nil {
 				t.Fatal("invalid activation mapped to executable admission")
 			}
 		})
 	}
 }
 
-func TestRetailCrossMintActivationPreservesCapturedControlGeneration(t *testing.T) {
+func TestRevalidatorCrossMintActivationPreservesCapturedControlGeneration(t *testing.T) {
 	// D compares this captured generation with its separately locked current
 	// control. The adapter cannot substitute newer activation authority.
 	for _, generation := range []int64{0, 1, 9, math.MaxInt64} {
-		p := retailCrossMintActivationFixture(t)
+		p := revalidatorCrossMintActivationFixture(t)
 		p.ControlGeneration = generation
-		got, err := retailCrossMintActivationAdmission(p, time.Now())
+		got, err := revalidatorCrossMintActivationAdmission(p, time.Now())
 		if err != nil || got.Activation.SourceControlGeneration != generation {
 			t.Fatalf("captured source generation changed: %d %+v %v", generation, got, err)
 		}
 	}
 }
 
-func TestRetailCrossMintFirstSendPreservesExactPersistedWireAndLookupOrder(t *testing.T) {
-	m := fleetexec.CrossMintMovement{DecisionID: 1, OpportunityID: 2, Cluster: "localnet"}
-	q := fleetexec.CrossMintFirstSendRequest{Movement: m, Submission: fleetexec.SubmissionRecord{DecisionID: &m.DecisionID, OpportunityID: m.OpportunityID, Cluster: m.Cluster, SignedTransaction: []byte{1, 2, 3}, MessageHash: "message-sha", Signature: "signature", RecentBlockhash: "hash", LastValidBlockHeight: 456, MovementLeg: fleetexec.LegSwap, LegPurpose: fleetexec.PurposeOptimizeYield}, ExpectedWireSHA256: "durable-wire-sha", PolicyAccount: "policy", MinimumSlot: 789, SelectedALTs: retailCrossMintLegFixture().SelectedALTs}
-	got, err := retailCrossMintFirstSendRequest(q)
+func TestRevalidatorCrossMintFirstSendPreservesExactPersistedWireAndLookupOrder(t *testing.T) {
+	m := CrossMintMovement{DecisionID: 1, OpportunityID: 2, Cluster: "localnet"}
+	q := CrossMintFirstSendRequest{Movement: m, Submission: SubmissionRecord{DecisionID: &m.DecisionID, OpportunityID: m.OpportunityID, Cluster: m.Cluster, SignedTransaction: []byte{1, 2, 3}, MessageHash: "message-sha", Signature: "signature", RecentBlockhash: "hash", LastValidBlockHeight: 456, MovementLeg: LegSwap, LegPurpose: PurposeOptimizeYield}, ExpectedWireSHA256: "durable-wire-sha", PolicyAccount: "policy", MinimumSlot: 789, SelectedALTs: revalidatorCrossMintLegFixture().SelectedALTs}
+	got, err := revalidatorCrossMintFirstSendRequest(q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,27 +182,27 @@ func TestRetailCrossMintFirstSendPreservesExactPersistedWireAndLookupOrder(t *te
 		t.Fatal("first-send source aliases mutable signed bytes")
 	}
 	q.Submission.DecisionID = nil
-	if _, err := retailCrossMintFirstSendRequest(q); err == nil {
+	if _, err := revalidatorCrossMintFirstSendRequest(q); err == nil {
 		t.Fatal("unbound journal accepted")
 	}
-	if _, err := newRetailCrossMintAdapters(nil); err == nil {
+	if _, err := NewRevalidatorCrossMint(nil); err == nil {
 		t.Fatal("missing concrete source accepted")
 	}
 }
 
-func TestRetailCrossMintOnlyValidatedSwapShortfallPermitsRecovery(t *testing.T) {
+func TestRevalidatorCrossMintOnlyValidatedSwapShortfallPermitsRecovery(t *testing.T) {
 	ctx := context.Background()
-	if !errors.Is(retailCrossMintLegError(ctx, fleetexec.LegSwap, fleet.ErrCrossMintQuoteUnavailable), fleetexec.ErrCrossMintSwapUnavailable) {
+	if !errors.Is(revalidatorCrossMintLegError(ctx, LegSwap, fleet.ErrCrossMintQuoteUnavailable), ErrCrossMintSwapUnavailable) {
 		t.Fatal("validated quote shortfall did not reach source recovery")
 	}
 	for _, err := range []error{context.DeadlineExceeded, context.Canceled, errors.New("provider failure"), errors.Join(fleet.ErrCrossMintQuoteUnavailable, context.DeadlineExceeded)} {
-		if got := retailCrossMintLegError(ctx, fleetexec.LegSwap, err); got != err || errors.Is(got, fleetexec.ErrCrossMintSwapUnavailable) {
+		if got := revalidatorCrossMintLegError(ctx, LegSwap, err); got != err || errors.Is(got, ErrCrossMintSwapUnavailable) {
 			t.Fatal("uncertain failure was converted to alternative custody spend")
 		}
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if errors.Is(retailCrossMintLegError(canceled, fleetexec.LegSwap, fleet.ErrCrossMintQuoteUnavailable), fleetexec.ErrCrossMintSwapUnavailable) || errors.Is(retailCrossMintLegError(ctx, fleetexec.LegDeposit, fleet.ErrCrossMintQuoteUnavailable), fleetexec.ErrCrossMintSwapUnavailable) {
+	if errors.Is(revalidatorCrossMintLegError(canceled, LegSwap, fleet.ErrCrossMintQuoteUnavailable), ErrCrossMintSwapUnavailable) || errors.Is(revalidatorCrossMintLegError(ctx, LegDeposit, fleet.ErrCrossMintQuoteUnavailable), ErrCrossMintSwapUnavailable) {
 		t.Fatal("cancellation or unrelated leg selected recovery")
 	}
 }

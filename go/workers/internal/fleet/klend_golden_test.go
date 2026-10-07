@@ -55,6 +55,9 @@ func klendGoldenRoute(operation string, route KaminoSameMintRoute) klendGoldenOu
 	return out
 }
 
+// The same-mint route is recorded from the retained worker itself in
+// same_mint_golden_test.go; this proxy record keeps the other builders.
+//
 // klendGoldenRequests spans every builder stage, footprint shape, optional
 // account, stable mint/token program and each input the Rust proxy refused.
 func klendGoldenRequests(t *testing.T) []klendGoldenCase {
@@ -80,46 +83,13 @@ func klendGoldenRequests(t *testing.T) []klendGoldenCase {
 		return address
 	}
 	// Any valid keys serve as farm states: the builders derive, never read.
-	sourceFarm, targetFarm := base.Source.LiquiditySupply, base.Target.LiquiditySupply
+	targetFarm := base.Target.LiquiditySupply
 	withFarm := func(p KaminoPositionAccounts, farmState string) KaminoPositionAccounts {
 		p.ReserveFarmState = farmState
 		return p
 	}
 	sameMint := base
-	add("same-mint distinct reserves", "buildSameMintRoute", sameMint)
-	same := base
-	same.Target = base.Source
-	same.Target.ObligationDepositReserves = []string{base.Source.Reserve, base.Target.Reserve}
-	add("same-mint one reserve", "buildSameMintRoute", same)
-	empty := base
-	empty.Source.ObligationBorrowReserves = []string{}
-	empty.Target.ObligationDepositReserves = []string{}
-	add("same-mint empty target footprint", "buildSameMintRoute", empty)
-	borrowed := base
-	borrowed.Source.ObligationBorrowReserves = []string{base.Target.Reserve}
-	borrowed.Source.SwitchboardPriceOracle = base.Target.PythOracle
-	borrowed.Source.SwitchboardTWAPOracle = base.Target.ScopePrices
-	add("same-mint borrow footprint and every oracle", "buildSameMintRoute", borrowed)
-	farmed := base
-	farmed.Source = withFarm(base.Source, sourceFarm)
-	farmed.Target = withFarm(base.Target, targetFarm)
-	add("same-mint farms derived", "buildSameMintRoute", farmed)
 	add("same-mint rejected as cross-mint", "buildCrossMintLegs", sameMint)
-	zero := base
-	zero.WithdrawCollateralAmount = 0
-	add("same-mint zero withdrawal", "buildSameMintRoute", zero)
-	wrongObligation := base
-	wrongObligation.Source.Obligation = base.Target.Reserve
-	add("same-mint foreign obligation", "buildSameMintRoute", wrongObligation)
-	wrongAuthority := base
-	wrongAuthority.Target.MarketAuthority = base.Target.Reserve
-	add("same-mint foreign market authority", "buildSameMintRoute", wrongAuthority)
-	orphanFarmUser := base
-	orphanFarmUser.Target.ObligationFarmUserState = base.Target.Reserve
-	add("same-mint farm user without farm", "buildSameMintRoute", orphanFarmUser)
-	badKey := base
-	badKey.Source.PythOracle = "not-a-key"
-	add("same-mint malformed oracle", "buildSameMintRoute", badKey)
 	for _, mint := range earnStableMints {
 		if mint == base.Source.LiquidityMint {
 			continue
@@ -135,16 +105,11 @@ func klendGoldenRequests(t *testing.T) []klendGoldenCase {
 	crossFarm.Target.VaultLiquidityATA = ata(base.Vault, USDTMint)
 	crossFarm.Target = withFarm(crossFarm.Target, targetFarm)
 	add("cross-mint farmed target", "buildCrossMintLegs", crossFarm)
-	add("cross-mint rejected as same-mint", "buildSameMintRoute", crossFarm)
 
 	// Idle deposits, through a USDC vault whose ATA the builder derives.
 	usdcTarget := base.Target
 	usdcTarget.LiquidityMint, usdcTarget.LiquidityTokenProgram = USDCMint, tokenProgram
 	usdcTarget.VaultLiquidityATA = ata(base.Vault, USDCMint)
-	bound := KaminoSameMintRouteRequest{Vault: base.Vault, Source: usdcTarget, Target: usdcTarget, WithdrawCollateralAmount: 1, DepositLiquidityAmount: 1}
-	if _, err := BuildSameMintRoute(bound); err != nil {
-		t.Fatal(err)
-	}
 	boundTarget := usdcTarget
 	if err := bindKLendPDAsForTest(&boundTarget, base.Vault); err != nil {
 		t.Fatal(err)
@@ -225,13 +190,10 @@ func buildKLendGolden(operation string, raw json.RawMessage) (KaminoSameMintRout
 		return decoder.Decode(out)
 	}
 	switch operation {
-	case "buildSameMintRoute", "buildCrossMintLegs":
+	case "buildCrossMintLegs":
 		var r KaminoSameMintRouteRequest
 		if err := decode(&r); err != nil {
 			return KaminoSameMintRoute{}, err
-		}
-		if operation == "buildSameMintRoute" {
-			return BuildSameMintRoute(r)
 		}
 		return BuildCrossMintLegs(r)
 	case "buildIdleDeposit":

@@ -6,10 +6,6 @@
 
 use super::*;
 
-#[cfg(test)]
-#[path = "connected_e2e.rs"]
-mod connected_e2e;
-
 use loyal_actions::jupiter::{
     JupiterBuildLimits, JupiterExactInBuildExpectation, JupiterLookupTableSnapshot,
     JupiterMintSnapshot, JupiterTokenAccountSnapshot, JupiterV2Dialect, SOLANA_MAX_COMPUTE_UNITS,
@@ -1308,11 +1304,6 @@ pub(super) async fn activate_cross_mint_opportunity(
             "an older cross-mint continuation appeared during activation; retry recovery-first"
                 .into(),
         );
-    }
-    #[cfg(test)]
-    if connected_e2e::initial_withdraw_crash_armed(lease.opportunity.id) {
-        connected_e2e::capture_initial_withdraw(continuation, withdraw)?;
-        return Err("connected injected initial withdrawal crash before signed persistence".into());
     }
     match publish_prepared_leg(&runtime.client, continuation.clone(), withdraw).await {
         Ok(result) => Ok(result),

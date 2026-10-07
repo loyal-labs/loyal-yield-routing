@@ -74,44 +74,45 @@ func TestPlanFleetCapacityAwareWave(t *testing.T) {
 	}
 }
 
-func testRoute() KaminoSameMintRoute {
+func testRoute() []RouteInstruction {
 	account := InstructionAccount{testSource, false, true}
 	refresh := []byte{33, 132, 147, 228, 151, 192, 72, 89}
-	return KaminoSameMintRoute{Public: []RouteInstruction{
-		{"kamino_refresh_obligation", KLendProgram, []InstructionAccount{account}, append([]byte(nil), refresh...)},
-		{"kamino_refresh_obligation", KLendProgram, []InstructionAccount{{testTarget, false, true}}, append([]byte(nil), refresh...)},
-	}, Protected: []RouteInstruction{{"withdraw", KLendProgram, []InstructionAccount{{testVault, true, true}, account}, []byte{1, 2, 3}}, {"deposit", KLendProgram, []InstructionAccount{{testVault, true, true}, {testTarget, false, true}}, []byte{4, 5, 6}}}}
+	return []RouteInstruction{
+		{Step: "kamino_refresh_obligation", Program: KLendProgram, Accounts: []InstructionAccount{account}, Data: append([]byte(nil), refresh...)},
+		{Step: "withdraw", Program: KLendProgram, Accounts: []InstructionAccount{{testVault, true, true}, account}, Data: []byte{1, 2, 3}, Protected: true},
+		{Step: "kamino_refresh_obligation", Program: KLendProgram, Accounts: []InstructionAccount{{testTarget, false, true}}, Data: append([]byte(nil), refresh...)},
+		{Step: "deposit", Program: KLendProgram, Accounts: []InstructionAccount{{testVault, true, true}, {testTarget, false, true}}, Data: []byte{4, 5, 6}, Protected: true},
+	}
 }
+
 func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	route := testRoute()
-	policyBytes, err := BuildExactPolicyFixture(testMarket, testVault, 0, route.Protected)
+	policyBytes, err := BuildExactPolicyFixture(testMarket, testVault, 0, []RouteInstruction{route[1], route[3]})
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
-	hash := strings.Repeat("a", 64)
-	accounts := []FreshAccount{{"vault", testVault, SquadsProgram, hash, 100, false, true}, {"reserve", testSource, KLendProgram, hash, 100, false, true}, {"reserve", testTarget, KLendProgram, hash, 100, false, true}, {"obligation", testPolicy, KLendProgram, hash, 100, false, true}, {"obligation", testMarket, KLendProgram, hash, 100, false, true}, {"token_account", testMint, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", hash, 100, false, true}, {"farm", testALT, farmsProgram, hash, 100, false, true}, {"farm", testSource, farmsProgram, hash, 100, false, true}, {"policy", testPolicy, SquadsProgram, hash, 100, false, true}}
-	e := FreshRouteEvidence{ObservedAt: now, Slot: 100, OpportunityID: 1, OpportunityKey: hash, EpochID: 2, EpochFingerprint: strings.Repeat("b", 64), Accounts: accounts, PolicyData: policyBytes}
-	decoded, err := ValidateFreshRouteEvidence(e, now, hash, strings.Repeat("b", 64), testVault, route.Protected)
+	body, policies, err := wrapSameMintRoute(route, testVault, 0, testPolicy, policyBytes, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.AccountIndex != 0 || len(decoded.InstructionData) != 2 {
-		t.Fatal("policy decode incomplete")
+	if len(policies.accounts) != 1 || policies.accounts[0] != testPolicy || body[1].Data[17] != 0 || body[3].Data[17] != 1 {
+		t.Fatalf("withdraw and deposit not executed under their exact route constraints: %+v", policies)
 	}
 	wrongPermissions := append([]byte(nil), policyBytes...)
 	wrongPermissions[101] = 0xff
-	e.PolicyData = wrongPermissions
-	if _, err = ValidateFreshRouteEvidence(e, now, hash, strings.Repeat("b", 64), testVault, route.Protected); err == nil {
+	if _, _, err = wrapSameMintRoute(route, testVault, 0, testPolicy, wrongPermissions, "", nil); err == nil {
 		t.Fatal("accepted noncanonical policy signer permissions")
 	}
-	e.PolicyData = policyBytes
+	if _, _, err = wrapSameMintRoute(route, testVault, 1, testPolicy, policyBytes, "", nil); err == nil {
+		t.Fatal("accepted a policy for another vault index")
+	}
 	all := []string{testSource, testTarget, testVault, testPolicy, testMarket, testMint}
+	tables := []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}
 	sim := func(w []byte) (SimulationEvidence, error) {
 		h := sha256.Sum256(w)
 		return SimulationEvidence{Slot: 101, Succeeded: true, UnitsConsumed: 200000, WireSHA256: hex.EncodeToString(h[:])}, nil
 	}
-	prep, err := PrepareRoute(route, testPolicy, testVault, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, sim)
+	prep, err := prepareRoute(body, testVault, tables, testMarket, 5000, 400000, sim, "same_mint_kamino_v0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,30 +122,20 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	if !strings.Contains(string(prep.ExecutionPlan), "unsigned_transaction_base64") {
 		t.Fatal("exact bytes not durably handoff-ready")
 	}
-	if _, err := PrepareRoute(route, testPolicy, testVault, testVault, 0, []uint8{0, 1}, nil, testMarket, 5000, 400000, sim); err == nil {
+	if _, err := prepareRoute(body, testVault, nil, testMarket, 5000, 400000, sim, "same_mint_kamino_v0"); err == nil {
 		t.Fatal("missing ALT was accepted")
 	}
-	oversized := route
-	oversized.Public = append([]RouteInstruction(nil), route.Public...)
-	oversized.Public[0].Data = make([]byte, 1400)
-	if _, err := PrepareRoute(oversized, testPolicy, testVault, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, sim); err == nil || !strings.Contains(err.Error(), "packet") {
+	oversized := append([]RouteInstruction(nil), body...)
+	oversized[0].Data = make([]byte, 1400)
+	if _, err := prepareRoute(oversized, testVault, tables, testMarket, 5000, 400000, sim, "same_mint_kamino_v0"); err == nil || !strings.Contains(err.Error(), "packet") {
 		t.Fatalf("oversized packet accepted: %v", err)
 	}
 	failSim := func(w []byte) (SimulationEvidence, error) {
 		h := sha256.Sum256(w)
 		return SimulationEvidence{Slot: 101, Succeeded: false, UnitsConsumed: 1, WireSHA256: hex.EncodeToString(h[:])}, nil
 	}
-	if _, err := PrepareRoute(route, testPolicy, testVault, testVault, 0, []uint8{0, 1}, []LookupTable{{Address: testALT, Addresses: all, Active: true, UsableAfterSlot: 99, LastVerifiedSlot: 100}}, testMarket, 5000, 400000, failSim); err == nil {
+	if _, err := prepareRoute(body, testVault, tables, testMarket, 5000, 400000, failSim, "same_mint_kamino_v0"); err == nil {
 		t.Fatal("simulation failure accepted")
-	}
-	e.OpportunityKey = "changed"
-	if _, err := ValidateFreshRouteEvidence(e, now, hash, strings.Repeat("b", 64), testVault, route.Protected); err == nil {
-		t.Fatal("changed opportunity accepted")
-	}
-	e.OpportunityKey = hash
-	e.EpochFingerprint = "changed"
-	if _, err := ValidateFreshRouteEvidence(e, now, hash, strings.Repeat("b", 64), testVault, route.Protected); err == nil {
-		t.Fatal("changed epoch accepted")
 	}
 }
 
