@@ -2,6 +2,9 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -146,23 +149,16 @@ func (r *Runtime) Run(ctx context.Context) error {
 		return err
 	}
 	firstWatchObservation := watchObservationSlot == 0
-	fromSlot, err := r.replayStart(startup, seedSlot, currentWatch.ObservationStartSlot, watchObservationSlot)
+	requestedSlot, fromSlot, err := r.replayStart(startup, seedSlot, watchObservationSlot)
 	if err != nil {
 		return err
 	}
+	replayGap := fromSlot > requestedSlot
+	if replayGap {
+		r.logger.Error("LaserStream cursor is outside the replay window; recovering every Earn binding from confirmed account state", "event", "laserstream_replay_window_exceeded", "requestedFromSlot", requestedSlot, "clampedFromSlot", fromSlot, "skippedSlots", fromSlot-requestedSlot)
+	}
 	if err = currentWatch.AnchorNewEarnBindings(nil, fromSlot); err != nil {
 		return err
-	}
-	if firstWatchObservation {
-		recovered, recoveryErr := r.recoverNewEarnBindings(startup, nil, currentWatch)
-		if recoveryErr != nil {
-			return fmt.Errorf("recover initial Earn bindings: %w", recoveryErr)
-		}
-		r.logger.Info("recovered initial Earn binding state from confirmed RPC", "insertedJobs", recovered)
-		watchObservationSlot = fromSlot
-		if err = r.earnStore.AdvanceReplayCursor(startup, watchObservationConsumer, watchObservationSlot); err != nil {
-			return fmt.Errorf("persist initial watch observation: %w", err)
-		}
 	}
 	request, err := r.request(currentWatch, targets, fromSlot)
 	if err != nil {
@@ -174,6 +170,17 @@ func (r *Runtime) Run(ctx context.Context) error {
 	// Only initialization belongs to this deadline. The promoted stream must
 	// remain owned by the process context after startup succeeds.
 	cancelStartup()
+	// Replay cannot reach state older than the provider window, and the first
+	// watch observation has no earlier scan of the bindings. Both read every
+	// binding's confirmed state instead, outside the startup deadline.
+	if firstWatchObservation || replayGap {
+		recovered, recoveryErr := r.recoverWatchState(ctx, currentWatch, watchObservationConsumer, fromSlot)
+		if recoveryErr != nil {
+			return recoveryErr
+		}
+		r.logger.Info("recovered Earn binding state from confirmed RPC", "insertedJobs", recovered, "firstWatchObservation", firstWatchObservation, "replayGap", replayGap)
+		watchObservationSlot = max(watchObservationSlot, fromSlot)
+	}
 	manager := stream.NewManager(stream.GRPCConnector{Endpoint: r.cfg.LaserStreamEndpoint, APIKey: r.cfg.HeliusAPIKey}, r.handler, stream.Config{ReplayOverlapSlots: r.cfg.ReplayOverlapSlots, HandoffTimeout: r.cfg.HandoffTimeout})
 	if err = manager.Start(ctx, request); err != nil {
 		return err
@@ -261,14 +268,27 @@ func (r *Runtime) Run(ctx context.Context) error {
 					}
 					return nil
 				}
-				r.ata.SetTargets(nextWatch.ATAs)
-				r.earn.SetWatchSet(nextWatch)
-				r.kamino.SetTargets(nextTargets)
-				requested := manager.ActiveFrontier()
 				bindingStart, anchorErr := nextWatch.NewEarnBindingStart(currentWatch)
 				if anchorErr != nil {
 					return anchorErr
 				}
+				if bindingStart != nil {
+					// New bindings were just read from confirmed state above, so
+					// an anchor older than the provider window needs no replay;
+					// requesting it would fail every handoff with OutOfRange.
+					current, slotErr := r.rpc.Slot(passCtx, "confirmed")
+					if slotErr != nil {
+						r.facts.Failed(engine.FamilyObserver, "filter_handoff")
+						r.logger.Error("combined filter-set handoff could not read the current slot; old stream retained", "error", slotErr)
+						return nil
+					}
+					start := clampToReplayWindow(*bindingStart, current)
+					bindingStart = &start
+				}
+				r.ata.SetTargets(nextWatch.ATAs)
+				r.earn.SetWatchSet(nextWatch)
+				r.kamino.SetTargets(nextTargets)
+				requested := manager.ActiveFrontier()
 				if bindingStart != nil && *bindingStart < requested {
 					requested = *bindingStart
 				}
@@ -336,7 +356,7 @@ func (r *Runtime) load(ctx context.Context) (*watch.Set, []kamino.Target, error)
 	if len(targets) == 0 {
 		return nil, nil, errors.New("no active Kamino reserve targets")
 	}
-	targets, err = r.kaminoCatalog.Enrich(ctx, targets)
+	targets, err = r.kaminoCatalog.ObservationTargets(ctx, targets)
 	if err != nil {
 		return nil, nil, fmt.Errorf("refresh Kamino observation catalog: %w", err)
 	}
@@ -405,23 +425,46 @@ func (r *Runtime) verifyPass(ctx context.Context) error {
 	defer cancel()
 	return r.kamino.Verify(passCtx)
 }
-func (r *Runtime) replayStart(ctx context.Context, seed uint64, observationStart *uint64, watchCursor uint64) (uint64, error) {
+
+// laserStreamReplaySlots is LASERSTREAM_MAX_REPLAY_SLOTS in the Rust monitor
+// (balance-sweep-ata-monitor main.rs). LaserStream replays about 216,000
+// slots; an older from_slot fails every subscribe attempt with OutOfRange.
+const laserStreamReplaySlots uint64 = 200_000
+
+// clampToReplayWindow is Rust's clamp_laserstream_replay_start: a start older
+// than the provider window begins at the window edge, and the caller recovers
+// the skipped range from confirmed account state instead of replay.
+func clampToReplayWindow(start, current uint64) uint64 {
+	if current > laserStreamReplaySlots && start < current-laserStreamReplaySlots {
+		return current - laserStreamReplaySlots
+	}
+	return start
+}
+
+// replayStart returns the continuity start the durable cursors ask for and
+// the start actually requested from LaserStream.
+func (r *Runtime) replayStart(ctx context.Context, seed uint64, watchCursor uint64) (uint64, uint64, error) {
 	current, err := r.rpc.Slot(ctx, "confirmed")
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	earnCursor, err := r.earnStore.ReplayCursor(ctx, r.earn.ConsumerName())
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	policyCursor, err := r.earnStore.ProjectionCursor(ctx, earn.PolicyProjectionConsumer)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, r.cfg.ReplayOverlapSlots, observationStart)
+	return selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, r.cfg.ReplayOverlapSlots)
 }
 
-func selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, overlap uint64, observationStart *uint64) (uint64, error) {
+// selectReplayStart takes the oldest durable cursor, as Rust's
+// laserstream_replay_start_slot does per stream, and clamps it into the
+// provider window. Earn observation anchors (route_policies.last_seen_slot)
+// are not continuity cursors: most predate the window, and the bindings they
+// anchor are recovered from confirmed state when no cursor covers them.
+func selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, overlap uint64) (uint64, uint64, error) {
 	starts := []uint64{subtract(seed, overlap)}
 	if earnCursor > 0 {
 		starts = append(starts, subtract(earnCursor, overlap))
@@ -436,19 +479,16 @@ func selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, ove
 		// independently of ahead Earn/projection cursors.
 		starts = append(starts, subtract(current, max(overlap, 10_000)))
 	}
-	if observationStart != nil {
-		starts = append(starts, *observationStart)
-	}
-	result := current
+	requested := current
 	for _, start := range starts {
-		if start > 0 && start < result {
-			result = start
+		if start > 0 && start < requested {
+			requested = start
 		}
 	}
-	if result == 0 {
-		return 0, errors.New("combined replay start resolved to zero")
+	if requested == 0 {
+		return 0, 0, errors.New("combined replay start resolved to zero")
 	}
-	return result, nil
+	return requested, clampToReplayWindow(requested, current), nil
 }
 func (r *Runtime) request(set *watch.Set, targets []kamino.Target, from uint64) (*pb.SubscribeRequest, error) {
 	accounts := make(map[string]subscription.AccountFilter, len(set.Channels)+1)
@@ -509,42 +549,93 @@ func newEarnBindingRecoveries(previous, next *watch.Set) []earnBindingRecovery {
 	return result
 }
 
+// earnBindingRecoveryBatch is the getMultipleAccounts limit; each batch is one
+// RPC read and one capture transaction under its own deadline.
+const earnBindingRecoveryBatch = 100
+
+// recoverWatchState reads every binding of set from confirmed state, then
+// records the watch observation at fromSlot. Its cost grows with the watch
+// set, so each batch carries a pass deadline and the whole read carries none.
+// The cursor moves only after every batch is durable; a restart before then
+// repeats the read under the same event keys and inserts no duplicate jobs.
+func (r *Runtime) recoverWatchState(ctx context.Context, set *watch.Set, watchConsumer string, fromSlot uint64) (int64, error) {
+	recovered, err := r.recoverNewEarnBindings(ctx, nil, set)
+	if err != nil {
+		return recovered, fmt.Errorf("recover Earn binding state: %w", err)
+	}
+	cursorCtx, cancel := context.WithTimeout(ctx, r.passTimeout())
+	defer cancel()
+	if err := r.earnStore.AdvanceReplayCursor(cursorCtx, watchConsumer, fromSlot); err != nil {
+		return recovered, fmt.Errorf("persist watch observation after binding recovery: %w", err)
+	}
+	return recovered, nil
+}
+
 func (r *Runtime) recoverNewEarnBindings(ctx context.Context, previous, next *watch.Set) (int64, error) {
 	bindings := newEarnBindingRecoveries(previous, next)
 	var inserted int64
-	for start := 0; start < len(bindings); start += 100 {
-		end := min(start+100, len(bindings))
-		addresses := make([]string, end-start)
-		for index, binding := range bindings[start:end] {
-			addresses[index] = binding.address
-		}
-		response, err := r.rpc.MultipleAccounts(ctx, addresses, "confirmed", nil)
+	for start := 0; start < len(bindings); start += earnBindingRecoveryBatch {
+		batch := bindings[start:min(start+earnBindingRecoveryBatch, len(bindings))]
+		recovered, err := r.recoverEarnBindingBatch(ctx, next, batch)
+		inserted += recovered
 		if err != nil {
-			return inserted, fmt.Errorf("read newly discovered Earn accounts: %w", err)
-		}
-		if response.Slot == 0 || len(response.Accounts) != len(addresses) {
-			return inserted, fmt.Errorf("new Earn account recovery returned slot %d and %d/%d accounts", response.Slot, len(response.Accounts), len(addresses))
-		}
-		for index, binding := range bindings[start:end] {
-			kind := "account_deleted"
-			if account := response.Accounts[index]; account != nil && account.Lamports > 0 {
-				kind = "account"
-			}
-			eventKey := fmt.Sprintf("watch-discovery:%d:%s", response.Slot, binding.address)
-			address := binding.address
-			update := earn.NormalizedUpdate{EventKey: &eventKey, Filters: binding.filters, EventKind: kind, AccountPubkey: &address, Slot: response.Slot}
-			vaults := next.AffectedVaults(binding.address)
-			if len(vaults) == 0 {
-				return inserted, fmt.Errorf("new Earn binding %s has no affected vault", binding.address)
-			}
-			outcome, err := r.earnStore.Enqueue(ctx, r.earn.ConsumerName(), eventKey, response.Slot, update, vaults, binding.address)
-			if err != nil {
-				return inserted, fmt.Errorf("enqueue new Earn binding recovery for %s: %w", binding.address, err)
-			}
-			inserted += outcome.InsertedJobs
+			return inserted, err
 		}
 	}
 	return inserted, nil
+}
+
+func (r *Runtime) recoverEarnBindingBatch(ctx context.Context, next *watch.Set, batch []earnBindingRecovery) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.passTimeout())
+	defer cancel()
+	addresses := make([]string, len(batch))
+	for index, binding := range batch {
+		addresses[index] = binding.address
+	}
+	response, err := r.rpc.MultipleAccounts(ctx, addresses, "confirmed", nil)
+	if err != nil {
+		return 0, fmt.Errorf("read Earn binding accounts: %w", err)
+	}
+	if response.Slot == 0 || len(response.Accounts) != len(addresses) {
+		return 0, fmt.Errorf("earn binding recovery returned slot %d and %d/%d accounts", response.Slot, len(response.Accounts), len(addresses))
+	}
+	events := make([]earn.QueuedEvent, len(batch))
+	for index, binding := range batch {
+		vaults := next.AffectedVaults(binding.address)
+		if len(vaults) == 0 {
+			return 0, fmt.Errorf("earn binding %s has no affected vault", binding.address)
+		}
+		eventKey, kind := bindingRecoveryEvent(binding.address, response.Accounts[index])
+		address := binding.address
+		update := earn.NormalizedUpdate{EventKey: &eventKey, Filters: binding.filters, EventKind: kind, AccountPubkey: &address, Slot: response.Slot}
+		events[index] = earn.QueuedEvent{EventKey: eventKey, Slot: response.Slot, Event: update, Vaults: vaults, Account: binding.address}
+	}
+	outcome, err := r.earnStore.EnqueueBatch(ctx, r.earn.ConsumerName(), events)
+	if err != nil {
+		return 0, fmt.Errorf("enqueue Earn binding recovery: %w", err)
+	}
+	return outcome.InsertedJobs, nil
+}
+
+// bindingRecoveryEvent keys a recovered binding by its address and the
+// confirmed state read, never by the read slot: reading the same state again
+// after a restart names the same job, which the job key then deduplicates.
+func bindingRecoveryEvent(address string, account *solanarpc.Account) (string, string) {
+	if account == nil || account.Lamports == 0 {
+		return "watch-discovery:" + address + ":deleted", "account_deleted"
+	}
+	digest := sha256.New()
+	var lamports [8]byte
+	binary.LittleEndian.PutUint64(lamports[:], account.Lamports)
+	digest.Write(lamports[:])
+	digest.Write([]byte(account.Owner))
+	if account.Executable {
+		digest.Write([]byte{0, 1})
+	} else {
+		digest.Write([]byte{0, 0})
+	}
+	digest.Write(account.Data)
+	return "watch-discovery:" + address + ":" + hex.EncodeToString(digest.Sum(nil)), "account"
 }
 
 func (r *Runtime) recoverEarnMaxGaps(ctx context.Context, set *watch.Set) (int64, error) {

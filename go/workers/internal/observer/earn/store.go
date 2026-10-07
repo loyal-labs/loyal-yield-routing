@@ -24,44 +24,49 @@ type EnqueueOutcome struct {
 	Cursor                              uint64
 }
 
+// QueuedEvent is one normalized Earn event and the vaults it affects.
+type QueuedEvent struct {
+	EventKey string
+	Slot     uint64
+	Event    any
+	Vaults   []watch.Vault
+	Account  string
+}
+
 func (s *Store) Enqueue(ctx context.Context, consumer, eventKey string, slot uint64, event any, vaults []watch.Vault, account string) (EnqueueOutcome, error) {
-	if slot > math.MaxInt64 {
-		return EnqueueOutcome{}, fmt.Errorf("earn slot exceeds PostgreSQL BIGINT")
+	return s.EnqueueBatch(ctx, consumer, []QueuedEvent{{EventKey: eventKey, Slot: slot, Event: event, Vaults: vaults, Account: account}})
+}
+
+// EnqueueBatch commits every event's jobs, Autodeposit demand and the consumer
+// cursor in one transaction, so a batch is captured completely or not at all.
+func (s *Store) EnqueueBatch(ctx context.Context, consumer string, events []QueuedEvent) (EnqueueOutcome, error) {
+	if len(events) == 0 {
+		return EnqueueOutcome{}, fmt.Errorf("earn enqueue batch is empty")
 	}
-	if len(vaults) == 0 {
-		return EnqueueOutcome{}, fmt.Errorf("earn event has no affected vault")
-	}
-	eventJSON, err := json.Marshal(event)
-	if err != nil {
-		return EnqueueOutcome{}, err
+	payloads := make([][]byte, len(events))
+	for index, event := range events {
+		if event.Slot > math.MaxInt64 {
+			return EnqueueOutcome{}, fmt.Errorf("earn slot exceeds PostgreSQL BIGINT")
+		}
+		if len(event.Vaults) == 0 {
+			return EnqueueOutcome{}, fmt.Errorf("earn event has no affected vault")
+		}
+		eventJSON, err := json.Marshal(event.Event)
+		if err != nil {
+			return EnqueueOutcome{}, err
+		}
+		payloads[index] = eventJSON
 	}
 	var outcome EnqueueOutcome
-	err = db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		outcome.Cursor = slot
-		for _, vault := range vaults {
-			vaultJSON, err := json.Marshal(vault)
-			if err != nil {
+	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		outcome = EnqueueOutcome{}
+		for index, event := range events {
+			if err := enqueueEvent(ctx, tx, consumer, event, payloads[index], &outcome); err != nil {
 				return err
 			}
-			result, err := tx.Exec(ctx, `INSERT INTO loyal_yield.earn_reconciliation_jobs(consumer_name,event_key,durable_slot,settings,vault_index,vault_pubkey,event_payload,vault_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(consumer_name,event_key,settings,vault_index,vault_pubkey) DO NOTHING`, consumer, eventKey, int64(slot), vault.Settings, int16(vault.VaultIndex), vault.Vault, eventJSON, vaultJSON)
-			if err != nil {
-				return fmt.Errorf("enqueue Earn reconciliation job: %w", err)
-			}
-			outcome.InsertedJobs += result.RowsAffected()
-			var targetID int64
-			err = tx.QueryRow(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE settings=$1 AND vault_pubkey=$2 AND chain_status<>'closed' AND (policy_account=$3 OR subscription_authority=$3 OR recurring_delegation=$3 OR wallet_token_ata=$3) ORDER BY policy_seed DESC LIMIT 1`, vault.Settings, vault.Vault, account).Scan(&targetID)
-			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("load Autodeposit reconciliation target: %w", err)
-			}
-			if err == nil {
-				result, err := tx.Exec(ctx, `INSERT INTO loyal_yield.autodeposit_reconciliation_requests(target_id,requested_slot) VALUES($1,$2) ON CONFLICT(target_id) DO UPDATE SET requested_slot=EXCLUDED.requested_slot,next_attempt_at=LEAST(loyal_yield.autodeposit_reconciliation_requests.next_attempt_at,now()),updated_at=now() WHERE EXCLUDED.requested_slot>=loyal_yield.autodeposit_reconciliation_requests.requested_slot`, targetID, int64(slot))
-				if err != nil {
-					return err
-				}
-				outcome.CoalescedAutodeposits += result.RowsAffected()
-			}
+			outcome.Cursor = max(outcome.Cursor, event.Slot)
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO loyal_yield.laserstream_replay_cursors(consumer_name,durable_slot) VALUES($1,$2) ON CONFLICT(consumer_name) DO UPDATE SET durable_slot=GREATEST(loyal_yield.laserstream_replay_cursors.durable_slot,EXCLUDED.durable_slot),updated_at=now()`, consumer, int64(slot)); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.laserstream_replay_cursors(consumer_name,durable_slot) VALUES($1,$2) ON CONFLICT(consumer_name) DO UPDATE SET durable_slot=GREATEST(loyal_yield.laserstream_replay_cursors.durable_slot,EXCLUDED.durable_slot),updated_at=now()`, consumer, int64(outcome.Cursor)); err != nil {
 			return fmt.Errorf("advance Earn durable cursor: %w", err)
 		}
 		return nil
@@ -70,6 +75,33 @@ func (s *Store) Enqueue(ctx context.Context, consumer, eventKey string, slot uin
 		return EnqueueOutcome{}, err
 	}
 	return outcome, nil
+}
+
+func enqueueEvent(ctx context.Context, tx pgx.Tx, consumer string, event QueuedEvent, eventJSON []byte, outcome *EnqueueOutcome) error {
+	for _, vault := range event.Vaults {
+		vaultJSON, err := json.Marshal(vault)
+		if err != nil {
+			return err
+		}
+		result, err := tx.Exec(ctx, `INSERT INTO loyal_yield.earn_reconciliation_jobs(consumer_name,event_key,durable_slot,settings,vault_index,vault_pubkey,event_payload,vault_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(consumer_name,event_key,settings,vault_index,vault_pubkey) DO NOTHING`, consumer, event.EventKey, int64(event.Slot), vault.Settings, int16(vault.VaultIndex), vault.Vault, eventJSON, vaultJSON)
+		if err != nil {
+			return fmt.Errorf("enqueue Earn reconciliation job: %w", err)
+		}
+		outcome.InsertedJobs += result.RowsAffected()
+		var targetID int64
+		err = tx.QueryRow(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE settings=$1 AND vault_pubkey=$2 AND chain_status<>'closed' AND (policy_account=$3 OR subscription_authority=$3 OR recurring_delegation=$3 OR wallet_token_ata=$3) ORDER BY policy_seed DESC LIMIT 1`, vault.Settings, vault.Vault, event.Account).Scan(&targetID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("load Autodeposit reconciliation target: %w", err)
+		}
+		if err == nil {
+			result, err := tx.Exec(ctx, `INSERT INTO loyal_yield.autodeposit_reconciliation_requests(target_id,requested_slot) VALUES($1,$2) ON CONFLICT(target_id) DO UPDATE SET requested_slot=EXCLUDED.requested_slot,next_attempt_at=LEAST(loyal_yield.autodeposit_reconciliation_requests.next_attempt_at,now()),updated_at=now() WHERE EXCLUDED.requested_slot>=loyal_yield.autodeposit_reconciliation_requests.requested_slot`, targetID, int64(event.Slot))
+			if err != nil {
+				return err
+			}
+			outcome.CoalescedAutodeposits += result.RowsAffected()
+		}
+	}
+	return nil
 }
 
 func (s *Store) AdvanceReplayCursor(ctx context.Context, consumer string, slot uint64) error {

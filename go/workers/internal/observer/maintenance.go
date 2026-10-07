@@ -143,7 +143,7 @@ func (m *Maintenance) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			m.onError()
-			m.logger.WarnContext(ctx, "maintenance pass unavailable", "cluster", m.cluster)
+			m.logger.WarnContext(ctx, "maintenance pass unavailable", "cluster", m.cluster, "error", err)
 			timer.Reset(m.retryInterval)
 			continue
 		}

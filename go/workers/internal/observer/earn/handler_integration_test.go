@@ -67,7 +67,7 @@ func TestHandlerAtomicallyEnqueuesJobsAutodepositAndCursor(t *testing.T) {
 		t.Fatalf("duplicate enqueue inserted %d jobs", duplicate.InsertedJobs)
 	}
 	var jobs, cursor, requested int64
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs`).Scan(&jobs); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE settings=$1`, settings.String()).Scan(&jobs); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name=$1`, handler.ConsumerName()).Scan(&cursor); err != nil {

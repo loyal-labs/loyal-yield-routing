@@ -5,37 +5,90 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 )
 
-func TestColdStartReplayIncludesEarnObservationAnchor(t *testing.T) {
-	observationStart := uint64(250)
-	got, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 96_000, 32, &observationStart)
+// Production shape from the rehearsal: fresh durable cursors, while 1,985 of
+// 1,992 active route policies were last seen before LaserStream's retention.
+// The stream must start from the cursors, inside the provider window.
+func TestReplayStartFollowsDurableCursorsInsideProviderWindow(t *testing.T) {
+	const current = 449_073_607
+	requested, from, err := selectReplayStart(current, current-50, current-400, current-300, current-200, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != observationStart {
-		t.Fatalf("cold-start replay = %d, want observation anchor %d", got, observationStart)
+	if requested != current-432 || from != requested {
+		t.Fatalf("replay requested=%d from=%d, want continuity from oldest cursor %d", requested, from, current-432)
 	}
 }
 
-func TestColdStartReplayIncludesDurableWatchObservation(t *testing.T) {
-	got, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 500, 32, nil)
+// ASK-2252 shape: a cursor 1M slots behind. Rust clamps to the window edge
+// (clamp_laserstream_replay_start); the caller sees requested < from and
+// recovers the skipped range from confirmed account state.
+func TestReplayStartOutsideProviderWindowIsClampedAndReported(t *testing.T) {
+	const current = 449_073_607
+	requested, from, err := selectReplayStart(current, current-50, current-1_051_842, current-300, current-200, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 468 {
-		t.Fatalf("cold-start replay = %d, want watch observation overlap 468", got)
+	if from != current-laserStreamReplaySlots {
+		t.Fatalf("from_slot = %d, want provider window edge %d", from, current-laserStreamReplaySlots)
+	}
+	if requested != current-1_051_874 || requested >= from {
+		t.Fatalf("requested = %d, want the unreplayable cursor start reported for snapshot recovery", requested)
+	}
+}
+
+func TestReplayStartFollowsDurableWatchObservation(t *testing.T) {
+	_, from, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 500, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if from != 468 {
+		t.Fatalf("replay = %d, want watch observation overlap 468", from)
 	}
 }
 
 func TestFirstDeploymentUsesBoundedDiscoveryReplay(t *testing.T) {
-	got, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 0, 32, nil)
+	_, from, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 0, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 90_000 {
-		t.Fatalf("first-deployment replay = %d, want bounded discovery floor 90000", got)
+	if from != 90_000 {
+		t.Fatalf("first-deployment replay = %d, want bounded discovery floor 90000", from)
+	}
+}
+
+// A handoff for a newly discovered binding whose policy was last seen before
+// the window must still request a replayable slot.
+func TestHandoffBindingAnchorIsClampedIntoProviderWindow(t *testing.T) {
+	const current = 449_073_607
+	if got := clampToReplayWindow(1_000, current); got != current-laserStreamReplaySlots {
+		t.Fatalf("ancient binding anchor = %d, want window edge %d", got, current-laserStreamReplaySlots)
+	}
+	if got := clampToReplayWindow(current-10, current); got != current-10 {
+		t.Fatalf("recent binding anchor moved to %d", got)
+	}
+}
+
+// A restart reads the same confirmed state at a later slot; the event must be
+// the same so the job key deduplicates it. A changed state is a new event.
+func TestBindingRecoveryEventIsIdentifiedByStateNotReadSlot(t *testing.T) {
+	address := "11111111111111111111111111111111"
+	state := &solanarpc.Account{Lamports: 2_039_280, Owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", Data: []byte{1, 2, 3}}
+	first, kind := bindingRecoveryEvent(address, state)
+	again, _ := bindingRecoveryEvent(address, &solanarpc.Account{Lamports: 2_039_280, Owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", Data: []byte{1, 2, 3}, RentEpoch: 99})
+	if kind != "account" || first != again {
+		t.Fatalf("same confirmed state produced %q then %q", first, again)
+	}
+	changed, _ := bindingRecoveryEvent(address, &solanarpc.Account{Lamports: 2_039_280, Owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", Data: []byte{1, 2, 4}})
+	if changed == first {
+		t.Fatal("changed account data reused the recovered event")
+	}
+	deleted, deletedKind := bindingRecoveryEvent(address, nil)
+	if deletedKind != "account_deleted" || deleted == first {
+		t.Fatalf("missing account recovered as %q/%q", deleted, deletedKind)
 	}
 }
 

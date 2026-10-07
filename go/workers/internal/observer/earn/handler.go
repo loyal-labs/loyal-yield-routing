@@ -32,7 +32,20 @@ type Handler struct {
 }
 
 func NewHandler(store *Store, cluster string) *Handler {
-	return &Handler{store: store, consumer: ConsumerNamePrefix + cluster}
+	return &Handler{store: store, consumer: ConsumerName(cluster)}
+}
+
+// ConsumerName is the durable Earn cursor and job consumer identity. Rust
+// formats it as earn-smart-account:{--cluster} (balance-sweep-ata-monitor
+// main.rs), and production ran with the flag's default "mainnet", so the
+// retained cursor and pending jobs are keyed earn-smart-account:mainnet. The
+// Go configuration normalizes every mainnet spelling to mainnet-beta; the
+// durable identity keeps Rust's spelling so Go continues that cursor.
+func ConsumerName(cluster string) string {
+	if cluster == "mainnet-beta" {
+		cluster = "mainnet"
+	}
+	return ConsumerNamePrefix + cluster
 }
 func (h *Handler) SetWatchSet(set *watch.Set) { h.mu.Lock(); h.watch = set; h.mu.Unlock() }
 func (h *Handler) ConsumerName() string       { return h.consumer }

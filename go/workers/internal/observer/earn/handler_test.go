@@ -62,3 +62,21 @@ func TestHandlerRejectsZeroAndOversizedSlots(t *testing.T) {
 		t.Fatalf("zero slot = %v, want rejection", err)
 	}
 }
+
+// Rust keyed its Earn cursor and jobs earn-smart-account:{--cluster}, and
+// production ran with the default --cluster mainnet. The Go configuration
+// spells mainnet as mainnet-beta; the observer must still resume that cursor
+// and claim the jobs Rust left pending under it.
+func TestConsumerNameContinuesRustCursorIdentity(t *testing.T) {
+	for cluster, want := range map[string]string{
+		"mainnet-beta": "earn-smart-account:mainnet",
+		"devnet":       "earn-smart-account:devnet",
+	} {
+		if got := NewHandler(nil, cluster).ConsumerName(); got != want {
+			t.Fatalf("cluster %s capture consumer = %q, want Rust cursor %q", cluster, got, want)
+		}
+		if got := ConsumerName(cluster); got != want {
+			t.Fatalf("cluster %s application consumer = %q, want Rust cursor %q", cluster, got, want)
+		}
+	}
+}

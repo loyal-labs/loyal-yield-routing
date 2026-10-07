@@ -102,6 +102,39 @@ func (c *CatalogClient) Enrich(ctx context.Context, targets []Target) ([]Target,
 	}
 	return enriched, nil
 }
+
+// ObservationTargets is the watched reserve set: the stored catalog and Earn
+// MAX targets enriched from the Kamino API, then the pinned supplemental
+// reserves, which Rust appends without any API lookup (merge_observation_targets
+// in kamino-reserve-monitor main.rs; a reserve resolved twice must keep one
+// market/mint identity).
+func (c *CatalogClient) ObservationTargets(ctx context.Context, stored []Target) ([]Target, error) {
+	targets, err := c.Enrich(ctx, stored)
+	if err != nil {
+		return nil, err
+	}
+	index := make(map[string]int, len(targets))
+	for position, target := range targets {
+		index[target.Reserve] = position
+	}
+	for _, supplemental := range supplementalObservationTargets() {
+		position, exists := index[supplemental.Reserve]
+		if !exists {
+			targets = append(targets, supplemental)
+			continue
+		}
+		if !sameIdentity(targets[position].Market, supplemental.Market) || !sameIdentity(targets[position].LiquidityMint, supplemental.LiquidityMint) {
+			return nil, fmt.Errorf("kamino reserve %s resolved conflicting observation identities", supplemental.Reserve)
+		}
+		targets[position] = supplemental
+	}
+	return targets, nil
+}
+
+func sameIdentity(left, right *string) bool {
+	return (left == nil && right == nil) || (left != nil && right != nil && *left == *right)
+}
+
 func (c *CatalogClient) SlotDuration(ctx context.Context) (float64, error) {
 	var response slotDurationDTO
 	if err := c.get(ctx, c.baseURL+"/slots/duration", &response); err != nil {

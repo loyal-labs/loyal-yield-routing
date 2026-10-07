@@ -1,12 +1,16 @@
 package observer
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"io"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -73,5 +77,49 @@ func TestChangedCustodyNamespaceBlocksAllProductWrites(t *testing.T) {
 	report, err := m.Tick(context.Background(), time.Now().UTC())
 	if !errors.Is(err, foreign) || report.HealthPublished || report.Allocation != nil || report.ModelPublished || report.SharePrices != 0 {
 		t.Fatalf("namespace failure reached product publication: report=%+v err=%v", report, err)
+	}
+}
+
+// syncBuffer lets the maintenance goroutine and the test share a log sink.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+func (b *syncBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.String() }
+
+// A failed pass is retried; its warning must carry the failure, not only the
+// cluster, or the 35 production retries say nothing about what is wrong.
+func TestMaintenanceFailureLogsItsCause(t *testing.T) {
+	pool := offlineClosedPool(t)
+	var output syncBuffer
+	failed := make(chan struct{}, 16)
+	cause := errors.New("legacy custody namespace rejected")
+	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, HealthObservation: time.Millisecond, RetryInterval: time.Minute, Logger: slog.New(slog.NewJSONHandler(&output, nil)), OnError: func() { failed <- struct{}{} }, ValidateNamespace: func(context.Context) error { return cause }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	select {
+	case <-failed:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance pass did not fail")
+	}
+	cancel()
+	<-done
+	var record map[string]any
+	line, _, _ := strings.Cut(output.String(), "\n")
+	if err := json.Unmarshal([]byte(line), &record); err != nil {
+		t.Fatalf("decode log record %q: %v", line, err)
+	}
+	if record["msg"] != "maintenance pass unavailable" || record["error"] != cause.Error() {
+		t.Fatalf("maintenance failure log = %v, want its cause", record)
 	}
 }

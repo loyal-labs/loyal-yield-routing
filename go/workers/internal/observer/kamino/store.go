@@ -35,6 +35,25 @@ func earnMaxObservationTargets() []Target {
 	return targets
 }
 
+// supplementalObservationTargets is EARN_MAX_SUPPLEMENTAL_OBSERVATION_RESERVES
+// (loyal-actions earn_max.rs) as loyal-kamino-data targets.rs
+// supplemental_observation_targets builds it: the Backyard AUTO collateral and
+// PYUSD debt reserves, pinned, named "Auto Market" and never resolved through
+// the Kamino API catalog.
+func supplementalObservationTargets() []Target {
+	const market, marketName = "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk", "Auto Market"
+	rows := [][2]string{
+		{"G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX", "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm"},
+		{"6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"},
+	}
+	targets := make([]Target, 0, len(rows))
+	for _, row := range rows {
+		marketID, name, mint := market, marketName, row[1]
+		targets = append(targets, Target{Reserve: row[0], Market: &marketID, MarketName: &name, LiquidityMint: &mint})
+	}
+	return targets
+}
+
 type Store struct {
 	pool   *pgxpool.Pool
 	schema string

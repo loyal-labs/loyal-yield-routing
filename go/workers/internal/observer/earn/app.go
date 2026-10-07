@@ -58,7 +58,7 @@ func NewApplication(ctx context.Context, pool *pgxpool.Pool, rpc *solanarpc.Clie
 	if err != nil {
 		return nil, err
 	}
-	return &Application{store: store, multiply: multiplyStore, rpc: rpc, monitor: monitor, consumer: ConsumerNamePrefix + cluster,
+	return &Application{store: store, multiply: multiplyStore, rpc: rpc, monitor: monitor, consumer: ConsumerName(cluster),
 		facts: facts, logger: logger, streamAlive: streamAlive}, nil
 }
 

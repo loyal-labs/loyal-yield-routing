@@ -44,10 +44,18 @@ func Build(spec Spec) (*pb.SubscribeRequest, error) {
 		if len(addresses) == 0 {
 			return nil, fmt.Errorf("account filter %q is empty and would subscribe to all accounts", label)
 		}
-		requireSignature := filter.RequireTxnSignature
+		// Rust sends nonempty_txn_signature=Some(true) for the ATA/Earn channels
+		// and None for Kamino reserves (kamino-reserve-monitor source.rs).
+		// Some(false) is not "unset": it drops every transaction-driven update,
+		// which is how a reserve account changes.
+		var requireSignature *bool
+		if filter.RequireTxnSignature {
+			required := true
+			requireSignature = &required
+		}
 		accounts[label] = &pb.SubscribeRequestFilterAccounts{
 			Account:              addresses,
-			NonemptyTxnSignature: &requireSignature,
+			NonemptyTxnSignature: requireSignature,
 		}
 	}
 	if _, ok := accounts[KaminoReserves]; !ok {

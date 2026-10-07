@@ -31,11 +31,15 @@ func TestBuildUsesOneCombinedConfirmedRequest(t *testing.T) {
 	if got := request.Accounts[KaminoReserves].Account; len(got) != 2 || got[0] != "reserve-a" || got[1] != "reserve-b" {
 		t.Fatalf("sorted compact reserve addresses = %v", got)
 	}
-	if request.Accounts[KaminoReserves].GetNonemptyTxnSignature() {
-		t.Fatal("Kamino reserves unexpectedly require transaction signatures")
+	// Kamino reserve accounts change inside transactions. Rust leaves the
+	// signature filter unset; an explicit false filters every such update out.
+	if request.Accounts[KaminoReserves].NonemptyTxnSignature != nil {
+		t.Fatalf("Kamino reserve signature filter = %v, want unset", *request.Accounts[KaminoReserves].NonemptyTxnSignature)
 	}
-	if !request.Accounts[BalanceSweepWalletATAs].GetNonemptyTxnSignature() {
-		t.Fatal("balance ATAs must require transaction signatures")
+	for _, label := range []string{BalanceSweepWalletATAs, "earn_vault_accounts"} {
+		if value := request.Accounts[label].NonemptyTxnSignature; value == nil || !*value {
+			t.Fatalf("%s must require transaction signatures, got %v", label, value)
+		}
 	}
 	if request.Transactions[EarnMaxPolicyTransactions].AccountInclude[0] != SquadsSmartAccountProgramID {
 		t.Fatal("Earn MAX policy filter does not target the Squads smart-account program")
