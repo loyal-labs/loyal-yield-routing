@@ -1,0 +1,63 @@
+# Alert rules over the family facts (internal/engine/facts.go) and
+# node_exporter's systemd collector. No other health signal exists.
+groups:
+  - name: loyal-families
+    rules:
+      # A family that stops completing work. Each Go process starts the
+      # clock of every family it owns at startup, so a family that never
+      # progresses is caught too. Thresholds are per family cadence.
+      - alert: LoyalFamilyProgressStale
+        expr: |
+          time() - loyal_family_last_progress_timestamp_seconds{family="observer"} > 120
+          or time() - loyal_family_last_progress_timestamp_seconds{family=~"autodeposit|fleet"} > 600
+          or time() - loyal_family_last_progress_timestamp_seconds{family=~"multiply|lookup|backyard"} > 1800
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.family }} has completed no work for {{ $value | humanizeDuration }}"
+
+      # Operations ending without their outcome, per stable code.
+      - alert: LoyalFamilyFailing
+        expr: sum by (family, code) (increase(loyal_family_failed_total[15m])) >= 3
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.family }} failed {{ $value | humanize }} times with {{ $labels.code }} in 15m"
+
+      # land() makes every signed operation terminal by confirmation or by
+      # block height passing last_valid_block_height (~150 blocks, 60-90s).
+      # Work in flight for twice that with no terminal outcome is stuck.
+      - alert: LoyalInflightStuck
+        expr: |
+          loyal_family_inflight > 0
+          unless on (family)
+            (sum by (family) (increase(loyal_family_landed_total[3m])) > 0
+             or sum by (family) (increase(loyal_family_failed_total[3m])) > 0)
+        for: 3m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.family }} has {{ $value }} operations in flight and none reached a terminal state in 3m"
+
+  - name: loyal-units
+    rules:
+      # A Go unit listed in loyal-targets.yml that does not serve /metrics.
+      - alert: LoyalWorkerDown
+        expr: up{job="loyal"} == 0
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.unit }} is not serving /metrics"
+
+      # Any loyal-* unit (Go or Rust) that failed or is stuck starting.
+      # A deliberate `systemctl stop` leaves a unit inactive and is silent.
+      - alert: LoyalUnitDown
+        expr: node_systemd_unit_state{name=~"loyal-.+\\.service", state=~"failed|activating"} == 1
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.name }} is {{ $labels.state }}"
+
+      - alert: LoyalUnitRestartLoop
+        expr: increase(node_systemd_service_restart_total{name=~"loyal-.+\\.service"}[15m]) > 3
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.name }} restarted {{ $value | humanize }} times in 15m"

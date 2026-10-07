@@ -1,0 +1,27 @@
+# Prometheus on the worker host. Everything listens on loopback only.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/loyal.rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["127.0.0.1:9093"]
+
+scrape_configs:
+  # The Go workers' /metrics. loyal-targets.yml lists the units that are
+  # meant to run on Go right now: a family swap adds its unit there, a
+  # fallback to Rust removes it. A listed target that cannot be scraped
+  # alerts as LoyalWorkerDown.
+  - job_name: loyal
+    file_sd_configs:
+      - files: ["/etc/prometheus/loyal-targets.yml"]
+
+  # node_exporter with the systemd collector: unit state and restart counts
+  # for every loyal-* unit, Go and Rust alike.
+  - job_name: node
+    static_configs:
+      - targets: ["127.0.0.1:9100"]

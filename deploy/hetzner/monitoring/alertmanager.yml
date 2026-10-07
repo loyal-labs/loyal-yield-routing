@@ -1,0 +1,23 @@
+# Alertmanager with its native Telegram receiver. The bot token is a
+# systemd credential (see alertmanager.service.d/telegram.conf); the chat
+# id below is a placeholder the operator replaces at install time.
+route:
+  receiver: telegram
+  group_by: [alertname, family, name, unit]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+inhibit_rules:
+  # A unit that is down explains its own stale families and missing metrics.
+  - source_matchers: [alertname="LoyalWorkerDown"]
+    target_matchers: [alertname=~"LoyalFamilyProgressStale|LoyalInflightStuck"]
+    equal: [unit]
+
+receivers:
+  - name: telegram
+    telegram_configs:
+      - bot_token_file: /run/credentials/prometheus-alertmanager.service/telegram_bot_token
+        chat_id: -1000000000000 # placeholder: the alerts chat id
+        parse_mode: HTML
+        send_resolved: true

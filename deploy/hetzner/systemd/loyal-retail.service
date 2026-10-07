@@ -1,0 +1,74 @@
+# Retail families. Static Go binary, no container, no controller.
+# Secrets: systemd-creds encrypted with the host key; names only here.
+[Unit]
+Description=Loyal retail engine (Go): autodeposit, fleet, multiply, lookup
+Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting; restart loops are an alert, not a stop.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/opt/loyal/bin/loyal-engine
+Restart=always
+RestartSec=5s
+# A stop leaves signed rows on the operation table; the next start lands them.
+TimeoutStopSec=60s
+
+LoadCredentialEncrypted=RETAIL_DATABASE_URL:/etc/credstore.encrypted/loyal-retail/RETAIL_DATABASE_URL
+LoadCredentialEncrypted=RETAIL_TIMESCALE_DATABASE_URL:/etc/credstore.encrypted/loyal-retail/RETAIL_TIMESCALE_DATABASE_URL
+LoadCredentialEncrypted=RETAIL_SOLANA_RPC_URL:/etc/credstore.encrypted/loyal-retail/RETAIL_SOLANA_RPC_URL
+LoadCredentialEncrypted=RETAIL_JUPITER_API_KEY:/etc/credstore.encrypted/loyal-retail/RETAIL_JUPITER_API_KEY
+LoadCredentialEncrypted=RETAIL_DELEGATE_KEYPAIR:/etc/credstore.encrypted/loyal-retail/RETAIL_DELEGATE_KEYPAIR
+LoadCredentialEncrypted=RETAIL_FEE_PAYER_KEYPAIR:/etc/credstore.encrypted/loyal-retail/RETAIL_FEE_PAYER_KEYPAIR
+
+Environment=LOYAL_WORKER_SCOPE=retail
+Environment=LOYAL_WORKER_INSTANCE=primary
+Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9102
+Environment=RETAIL_MODE=active
+Environment=RETAIL_SLOT_DURATION=400ms
+Environment=RETAIL_TIMESCALE_SCHEMA=kamino
+# Retained Rust KLend builder child until it is ported to Go.
+Environment=RETAIL_KLEND_PROXY_PATH=/opt/loyal/bin/loyal-klend-proxy
+# Non-secret host values: RETAIL_KLEND_PROXY_SHA256 (changes per build),
+# RETAIL_CROSS_MINT_ENABLED, RETAIL_LOOKUP_MODE. Active lookup mode also
+# needs LoadCredentialEncrypted=RETAIL_LOOKUP_MANAGER_KEYPAIR in a drop-in.
+EnvironmentFile=/etc/loyal/loyal-retail.env
+
+DynamicUser=yes
+User=loyal-retail
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loyal-retail
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
