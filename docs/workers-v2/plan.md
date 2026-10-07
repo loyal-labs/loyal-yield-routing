@@ -435,7 +435,7 @@ Timescale extension/hypertable calls. Next branch CI will exercise the complete
 quiescing in-flight old producers before accepting the scalar cursor frontier.
 
 Autodeposit now repairs conclusively unsigned stranded work and continues bounded
-creator-history pagination. Additive migration 0091 separates desired revisions,
+creator-history pagination. Additive migration 0091 (reverted for go-live phase 1, see golive-contract.md) separated desired revisions,
 coalesced demand generations and application acknowledgments from chain slots.
 Its atomic trigger tracks control and authoritative identity changes, including
 namespace and delegation timing. Fresh pull/setup publication must bind the

@@ -26,9 +26,6 @@ type WorkerDependencies struct {
 	Store *Store
 	// Executor performs one target's chain effects. Required.
 	Executor TargetExecutor
-	// RuntimeChain supplies the actual confirmed RPC frontier for readiness.
-	// Optional until a runtime reporter is installed.
-	RuntimeChain ConfirmedSlotReader
 	// SlotHints carries externally signalled slot ids (for example realtime
 	// events) that should be dispatched first. Optional; drained every tick.
 	SlotHints *SlotHintQueue
@@ -57,8 +54,6 @@ type Worker struct {
 	hints           *SlotHintQueue
 	onAlert         func(ExecutorFailureAlert)
 	onError         func(error)
-	runtimeChain    ConfirmedSlotReader
-	runtimeReporter func(bool, uint64)
 	executionErrors int
 
 	pollInterval          time.Duration
@@ -91,18 +86,12 @@ func NewWorker(deps WorkerDependencies) (*Worker, error) {
 		hints:                 deps.SlotHints,
 		onAlert:               deps.OnAlert,
 		onError:               deps.OnError,
-		runtimeChain:          deps.RuntimeChain,
 		pollInterval:          deps.PollInterval,
 		projectionBatchLimit:  deps.ProjectionBatchLimit,
 		dispatchLimit:         deps.DispatchLimit,
 		staleRequestedSeconds: deps.StaleRequestedSeconds,
 		staleSelectedSeconds:  deps.StaleSelectedSeconds,
 		releaseBatchLimit:     deps.ReleaseBatchLimit,
-	}
-	if worker.runtimeChain == nil {
-		if controller, ok := deps.Executor.(*Controller); ok {
-			worker.runtimeChain, _ = controller.chain.(ConfirmedSlotReader)
-		}
 	}
 	if worker.pollInterval <= 0 {
 		worker.pollInterval = DefaultPollInterval
@@ -228,13 +217,11 @@ func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outco
 
 // Run repeats Tick until the context is cancelled. A failing tick is not fatal:
 // the next tick re-reads the durable state, which is the family's recovery
-// model. Sanitized failures reach OnError; standalone callers with neither an
-// OnError nor a runtime reporter retain the original fail-fast API.
+// model. Sanitized failures reach OnError; standalone callers without OnError
+// retain the original fail-fast API.
 // Cancellation is honored between ticks and between dispatches; Run returns the
 // context's error.
 func (w *Worker) Run(ctx context.Context) error {
-	w.reportRuntime(false, 0)
-	defer w.reportRuntime(false, 0)
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -244,28 +231,17 @@ func (w *Worker) Run(ctx context.Context) error {
 		case <-timer.C:
 		}
 		cycle, cancel := context.WithTimeout(ctx, runtimeCycleTimeout)
-		report, err := w.Tick(cycle)
-		var slot uint64
-		if err == nil && w.runtimeReporter != nil {
-			if len(report.Alerts) != 0 || report.ExecutorErrors != 0 || report.Outcome.ExecutionsUnknown != 0 {
-				err = errRuntimeProofUnavailable
-			} else {
-				slot, err = runtimeRecoveryHealth(cycle, w.store, w.runtimeChain, true)
-			}
-		}
+		_, err := w.Tick(cycle)
 		cancel()
-		w.reportRuntime(err == nil && ctx.Err() == nil && slot > 0, slot)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if w.onError == nil && w.runtimeReporter == nil {
+			if w.onError == nil {
 				return err
 			}
-			log.Print("autodeposit cycle_or_readiness_proof_failed")
-			if w.onError != nil {
-				w.onError(errRuntimeProofUnavailable)
-			}
+			log.Print("autodeposit cycle_failed")
+			w.onError(errRuntimeProofUnavailable)
 		}
 		timer.Reset(w.pollInterval)
 	}

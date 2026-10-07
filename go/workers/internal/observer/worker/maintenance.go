@@ -63,12 +63,8 @@ func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, er
 	if err != nil {
 		return nil, err
 	}
-	onHealth := func(ready bool) {
-		if !ready {
-			r.facts.Failed(engine.FamilyObserver, "read_models")
-		}
-	}
-	maintenance, err := observer.NewMaintenance(r.neon, r.timescale, observer.MaintenanceConfig{Cluster: r.cfg.Cluster, MediumMarkets: mediumMainnetMarkets, PriceRPC: rpc, Logger: r.logger, ValidateNamespace: validateNamespace, OnHealth: onHealth})
+	onError := func() { r.facts.Failed(engine.FamilyObserver, "read_models") }
+	maintenance, err := observer.NewMaintenance(r.neon, r.timescale, observer.MaintenanceConfig{Cluster: r.cfg.Cluster, MediumMarkets: mediumMainnetMarkets, PriceRPC: rpc, Logger: r.logger, ValidateNamespace: validateNamespace, OnError: onError})
 	if err != nil {
 		return nil, err
 	}

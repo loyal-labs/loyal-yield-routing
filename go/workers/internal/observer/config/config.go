@@ -37,7 +37,7 @@ type Config struct {
 
 // BridgeEnvironment builds the complete environment of the Earn domain bridge
 // child. It is a strict allowlist: the child receives only observer data-plane
-// configuration and telemetry endpoints. The worker process environment is
+// configuration. The worker process environment is
 // never inherited. The public Earn delegate is verifier input; POLICY_KEYPAIR
 // and the Helius API key are excluded.
 func (c Config) BridgeEnvironment() []string {
@@ -56,7 +56,6 @@ func (c Config) BridgeEnvironment() []string {
 		"LASERSTREAM_ENDPOINT=" + c.LaserStreamEndpoint,
 		"EARN_BRIDGE_OBSERVER_CONSUMER=1",
 		"RUST_LOG=" + envOr("RUST_LOG", "info"),
-		"OTEL_EXPORTER_OTLP_ENDPOINT=" + os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 	}
 }
 

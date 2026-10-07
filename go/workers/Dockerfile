@@ -24,7 +24,7 @@ COPY go/workers/ ./
 ARG LOYAL_IMAGE_VERSION
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    flags="-s -w -X github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine.Release=sha-${LOYAL_IMAGE_VERSION}" && \
+    flags="-s -w -X github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine.Release=${LOYAL_IMAGE_VERSION}" && \
     CGO_ENABLED=0 go build -trimpath -ldflags="$flags" -o /out/loyal-observer ./cmd/loyal-observer && \
     CGO_ENABLED=0 go build -trimpath -ldflags="$flags" -o /out/loyal-engine ./cmd/loyal-engine && \
     CGO_ENABLED=0 go build -trimpath -ldflags="$flags" -o /out/loyal-evidence ./cmd/loyal-evidence

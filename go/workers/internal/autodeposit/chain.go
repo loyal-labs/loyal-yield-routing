@@ -90,15 +90,6 @@ type RPCChain struct {
 	rpc *backyard.RPCClient
 }
 
-// ConfirmedSlot probes the chain independently of business dispatch. An empty
-// queue cannot manufacture chain progress for runtime readiness.
-func (c *RPCChain) ConfirmedSlot(ctx context.Context) (int64, error) {
-	if c == nil || c.rpc == nil {
-		return 0, errors.New("autodeposit confirmed RPC frontier unavailable")
-	}
-	return c.rpc.ConfirmedSlot(ctx)
-}
-
 // NewRPCChain builds the production chain adapter over an RPC endpoint URL.
 // The recurring-delegation allowance is decoded with the official
 // loyal-actions byte layout (delegation.go); no decoder is injected.

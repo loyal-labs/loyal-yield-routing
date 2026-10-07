@@ -67,8 +67,10 @@ func loadRetailConfig() (retailConfig, error) {
 		cfg.jupiterBuildURL = "https://api.jup.ag/swap/v2/build"
 	}
 	var err error
-	if cfg.jupiterAPIKey, err = engine.Credential("RETAIL_JUPITER_API_KEY"); err != nil {
-		return cfg, err
+	if cfg.crossMintEnabled {
+		if cfg.jupiterAPIKey, err = engine.Credential("RETAIL_JUPITER_API_KEY"); err != nil {
+			return cfg, err
+		}
 	}
 	if _, err := fleet.NewJupiterBuildClient(cfg.jupiterBuildURL, cfg.jupiterAPIKey); err != nil {
 		return cfg, errors.New("RETAIL_JUPITER_BUILD_URL must be absolute HTTPS without user info")
@@ -326,7 +328,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	artifactReader := &autodeposit.ArtifactProofReader{Wires: wires, History: artifactRPC}
 	artifacts := &autodeposit.ArtifactReconciler{Store: aStore, Reader: artifactReader}
-	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, RuntimeChain: chain, OnError: func(error) { log.Print("retail autodeposit control requires attention") }, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
+	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, OnError: func(error) { log.Print("retail autodeposit control requires attention") }, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
 	fleetRPC := fleet.NewRPCClient(cfg.rpcURL)
 	cConfig := cfg.fleetConfig()
 	cConfig.RevalidationOwner = owner

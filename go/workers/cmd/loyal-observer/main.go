@@ -22,8 +22,7 @@ func run(ctx context.Context) error {
 	}
 	registry := prometheus.NewRegistry()
 	facts := engine.NewFacts(registry)
-	// The family's staleness clock starts when the process starts.
-	facts.Progress(engine.FamilyObserver)
+	facts.Own(engine.FamilyObserver)
 	metrics, err := engine.ListenMetrics(os.Getenv("LOYAL_METRICS_ADDRESS"), registry)
 	if err != nil {
 		return err

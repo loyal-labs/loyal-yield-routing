@@ -26,10 +26,10 @@ func offlineClosedPool(t *testing.T) *pgxpool.Pool {
 	pool.Close()
 	return pool
 }
-func TestMaintenanceOutageRetriesLowersReadinessAndCancellationJoins(t *testing.T) {
+func TestMaintenanceOutageRetriesReportsEachFailureAndCancellationJoins(t *testing.T) {
 	pool := offlineClosedPool(t)
-	health := make(chan bool, 16)
-	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, HealthObservation: time.Millisecond, RetryInterval: 2 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), OnHealth: func(ready bool) { health <- ready }})
+	failures := make(chan struct{}, 16)
+	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, HealthObservation: time.Millisecond, RetryInterval: 2 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), OnError: func() { failures <- struct{}{} }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,13 +37,10 @@ func TestMaintenanceOutageRetriesLowersReadinessAndCancellationJoins(t *testing.
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- m.Run(ctx) }()
-	// Initial state, first failed pass and an actual retry must all remain false.
+	// The first failed pass and actual retries are each reported.
 	for i := 0; i < 3; i++ {
 		select {
-		case ready := <-health:
-			if ready {
-				t.Fatal("failed pass reported ready")
-			}
+		case <-failures:
 		case <-ctx.Done():
 			t.Fatal("ordinary outage stopped retries")
 		}
@@ -57,18 +54,10 @@ func TestMaintenanceOutageRetriesLowersReadinessAndCancellationJoins(t *testing.
 	case <-time.After(time.Second):
 		t.Fatal("maintenance did not join cancelled caller")
 	}
-	select {
-	case ready := <-health:
-		if ready {
-			t.Fatal("cancelled runtime remained ready")
-		}
-	default:
-		t.Fatal("shutdown did not lower readiness")
-	}
 }
 func TestFixedMainnetCatalogCannotBeLabelledDevnet(t *testing.T) {
 	pool := offlineClosedPool(t)
-	_, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "devnet", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, OnHealth: func(bool) {}})
+	_, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "devnet", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, OnError: func() {}})
 	if err == nil {
 		t.Fatal("mainnet product universe accepted a devnet namespace")
 	}
@@ -77,7 +66,7 @@ func TestFixedMainnetCatalogCannotBeLabelledDevnet(t *testing.T) {
 func TestChangedCustodyNamespaceBlocksAllProductWrites(t *testing.T) {
 	pool := offlineClosedPool(t)
 	foreign := errors.New("foreign active custody")
-	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, OnHealth: func(bool) {}, ValidateNamespace: func(context.Context) error { return foreign }})
+	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, OnError: func() {}, ValidateNamespace: func(context.Context) error { return foreign }})
 	if err != nil {
 		t.Fatal(err)
 	}

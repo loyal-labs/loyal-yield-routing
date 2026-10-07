@@ -99,14 +99,11 @@ func TestNamespaceSignedForeignCustodyStaysHeldWithoutRPC(t *testing.T) {
 			if err = s.pool.QueryRow(t.Context(), `SELECT status::text FROM loyal_yield.balance_sweep_lot_claims WHERE claim_token=$1`, claim).Scan(&state); err != nil || state != "selected" {
 				t.Fatalf("foreign custody released: %s %v", state, err)
 			}
-			if _, err = runtimeRecoveryHealth(t.Context(), s, runtimeRPCFixture(t, 200), false); err == nil {
-				t.Fatal("foreign signed custody disappeared from readiness hold")
-			}
 		})
 	}
 }
 
-func TestMainnetReadinessIgnoresUnrelatedUnsignedNamespacesAndClosedBaseline(t *testing.T) {
+func TestMainnetControlIgnoresForeignNamespacesAndClosedBaseline(t *testing.T) {
 	s := integrationStore(t)
 	id, reader, artifacts := seedControlRuntime(t, s)
 	control := &ControlReconciler{Store: s, Reader: reader, Artifacts: &ArtifactReconciler{Store: s, Reader: artifacts}}
@@ -118,13 +115,8 @@ func TestMainnetReadinessIgnoresUnrelatedUnsignedNamespacesAndClosedBaseline(t *
 		t.Fatalf("control tick worked=%v err=%v", worked, err)
 	}
 	// Control reconciliation can publish confirmed mainnet wallet events.
-	// Apply them through the actual projector before requiring financial readiness.
 	if _, err := s.ProjectSurplusLotsOnce(t.Context(), 1000); err != nil {
 		t.Fatal(err)
-	}
-	chain := runtimeRPCFixture(t, 200)
-	if slot, err := runtimeRecoveryHealth(t.Context(), s, chain, true); err != nil || slot != 200 {
-		t.Fatalf("baseline financial frontier=%d %v", slot, err)
 	}
 	for _, kind := range []string{"closed", "devnet", "null"} {
 		other := seedIntegrationTarget(t, s, "health-unrelated-"+kind)
@@ -148,9 +140,6 @@ func TestMainnetReadinessIgnoresUnrelatedUnsignedNamespacesAndClosedBaseline(t *
 			}
 			s.insertIntegrationEvent(t, other.TargetID, 1000+other.TargetID, 9_000_000, nil, time.Now())
 		}
-	}
-	if slot, err := runtimeRecoveryHealth(t.Context(), s, chain, true); err != nil || slot != 200 {
-		t.Fatalf("financial frontier=%d %v", slot, err)
 	}
 	if request, err := s.ClaimAutodepositReconciliationRequest(t.Context(), "mainnet-health-reader", 30); err != nil || request != nil {
 		t.Fatalf("foreign request claimed=%v %v", request, err)

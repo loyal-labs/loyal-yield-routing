@@ -40,13 +40,10 @@ func run(ctx context.Context) error {
 	}
 	registry := prometheus.NewRegistry()
 	facts := engine.NewFacts(registry)
-	families := []engine.Family{engine.FamilyBackyard}
 	if scope == "retail" {
-		families = []engine.Family{engine.FamilyAutodeposit, engine.FamilyFleet, engine.FamilyMultiply, engine.FamilyLookup}
-	}
-	// Each owned family's staleness clock starts when the process starts.
-	for _, family := range families {
-		facts.Progress(family)
+		facts.Own(engine.FamilyAutodeposit, engine.FamilyFleet, engine.FamilyMultiply, engine.FamilyLookup)
+	} else {
+		facts.Own(engine.FamilyBackyard)
 	}
 	metrics, err := engine.ListenMetrics(os.Getenv("LOYAL_METRICS_ADDRESS"), registry)
 	if err != nil {
