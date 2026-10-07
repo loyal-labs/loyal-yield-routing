@@ -24,7 +24,9 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/observability"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 	"github.com/mr-tron/base58"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type retailConfig struct {
@@ -229,6 +231,8 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return err
 	}
+	// One fact set per process; the /metrics handler serves the default registry.
+	facts := engine.NewFacts(prometheus.DefaultRegisterer)
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	proxy, err := fleet.NewKLendProxy(cfg.proxyPath, cfg.proxyHash)
@@ -380,7 +384,11 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("fleet execution RPC", err)
 	}
-	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration}, dStore, executionRPC, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate})
+	landRPC, err := solana.NewLandRPC(cfg.rpcURL, 15*time.Second)
+	if err != nil {
+		return retailError("fleet landing RPC", err)
+	}
+	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts}, dStore, landRPC, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate})
 	if err != nil {
 		return retailError("fleet executor", err)
 	}
@@ -388,7 +396,7 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err := executor.SetFreshRevalidator(revalidator); err != nil {
 		return retailError("fleet fresh execution binding", err)
 	}
-	crossMint, err := composeRetailCrossMint(startup, cfg, owner, dStore, revalidator, executionRPC, evidence)
+	crossMint, err := composeRetailCrossMint(startup, cfg, owner, dStore, revalidator, executionRPC, evidence, facts)
 	if err != nil {
 		return retailError("cross-mint runtime", err)
 	}

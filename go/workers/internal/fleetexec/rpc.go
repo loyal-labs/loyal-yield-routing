@@ -13,13 +13,6 @@ import (
 	"time"
 )
 
-// BroadcastClient sends exactly the bytes it is given, once. Implementations
-// must not retry: the journal owns recovery, and a re-send after an ambiguous
-// outcome could double-spend.
-type BroadcastClient interface {
-	Send(ctx context.Context, wire []byte) error
-}
-
 // SignatureStatus is the chain's durable outcome for one signature. Found is
 // false when the signature is absent from history.
 type SignatureStatus struct {
@@ -164,17 +157,6 @@ func (a *RPCAdapter) call(ctx context.Context, result interface{}, method string
 		return nil
 	}
 	return json.Unmarshal(envelope.Result, result)
-}
-
-// Send broadcasts the exact signed bytes once, without preflight, exactly like
-// the legacy runtime broadcast. A timeout or transport error surfaces as an
-// error; the worker records ambiguity and never re-sends.
-func (a *RPCAdapter) Send(ctx context.Context, wire []byte) error {
-	return a.call(ctx, nil, "sendTransaction", base64.StdEncoding.EncodeToString(wire), map[string]interface{}{
-		"encoding":      "base64",
-		"skipPreflight": true,
-		"maxRetries":    0,
-	})
 }
 
 type rpcSignatureStatus struct {

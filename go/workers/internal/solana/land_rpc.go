@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -37,6 +38,11 @@ func (r *LandRPC) call(ctx context.Context, out any, method string, params ...an
 	request.Header.Set("Content-Type", "application/json")
 	response, err := r.client.Do(request)
 	if err != nil {
+		// The URL can carry a provider key; keep only the cause.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
 		return fmt.Errorf("%s: %w", method, err)
 	}
 	defer response.Body.Close()

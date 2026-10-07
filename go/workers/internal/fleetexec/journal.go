@@ -262,26 +262,22 @@ RETURNING opportunity_id`, input.Cluster, key, input.OpportunityID, input.Execut
 	return id, reused, nil
 }
 
-// RecordBroadcastIntent durably counts the send before the send happens,
-// exactly like the legacy record-broadcast-intent protocol: broadcast_count
-// is incremented and error_detail marks the intent while the confirmation
-// lease stays held, so a crash after this point leaves a row that resolves
-// by signature status and is never re-sent and never rebuilt.
+// RecordBroadcastIntent counts one send on the row before the bytes leave,
+// exactly like the Rust confirmer's prepare_signed_route_broadcast_batch:
+// broadcast_count increments, error_detail marks the intent and the decision
+// moves to confirming. A signed row becomes submitted with its first send.
 func (s *Store) RecordBroadcastIntent(ctx context.Context, lease SubmissionLease) error {
-	if err := verifyDurableWire(lease.Submission); err != nil {
-		return err
-	}
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var decision int64
 		var epochs json.RawMessage
 		var semantic, cluster, requirements string
 		err := tx.QueryRow(ctx, `SELECT s.decision_id,s.alt_mutation_epochs,s.semantic_key,s.cluster,s.alt_requirements_fingerprint
    FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id
-   WHERE s.id=$1 AND s.transaction_signature=$4 AND s.signed_transaction=$5 AND s.submission_state IN ('signed','submitted')
-    AND s.broadcast_count=0 AND s.confirmation_lease_owner=$2 AND s.confirmation_fencing_token=$3
+   WHERE s.id=$1 AND s.transaction_signature=$4 AND s.submission_state IN ('signed','submitted')
+    AND s.confirmation_lease_owner=$2 AND s.confirmation_fencing_token=$3
     AND s.confirmation_lease_expires_at>clock_timestamp() AND d.movement_route <> 'cross_mint_jupiter'
     AND d.status::text IN ('planned','simulating','ready','submitted','confirming','confirmed')
-    AND (d.signature IS NULL OR d.signature=s.transaction_signature) FOR UPDATE OF s,d`, lease.Submission.ID, lease.Owner, lease.FencingToken, lease.Submission.Signature, lease.Submission.SignedTransaction).Scan(&decision, &epochs, &semantic, &cluster, &requirements)
+    AND (d.signature IS NULL OR d.signature=s.transaction_signature) FOR UPDATE OF s,d`, lease.Submission.ID, lease.Owner, lease.FencingToken, lease.Submission.Signature).Scan(&decision, &epochs, &semantic, &cluster, &requirements)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrStaleOwner
 		}
@@ -295,7 +291,7 @@ func (s *Store) RecordBroadcastIntent(ctx context.Context, lease SubmissionLease
 		if err != nil || tag.RowsAffected() != 1 {
 			return ErrStaleOwner
 		}
-		tag, err = tx.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET broadcast_count=broadcast_count+1,last_broadcast_at=clock_timestamp(),last_status_checked_at=clock_timestamp(),error_detail='broadcast_intent_persisted',updated_at=clock_timestamp() WHERE id=$1 AND confirmation_lease_owner=$2 AND confirmation_fencing_token=$3 AND confirmation_lease_expires_at>clock_timestamp() AND broadcast_count=0`, lease.Submission.ID, lease.Owner, lease.FencingToken)
+		tag, err = tx.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET submission_state='submitted',submitted_at=COALESCE(submitted_at,clock_timestamp()),broadcast_count=broadcast_count+1,last_broadcast_at=clock_timestamp(),last_status_checked_at=clock_timestamp(),error_detail='broadcast_intent_persisted',updated_at=clock_timestamp() WHERE id=$1 AND confirmation_lease_owner=$2 AND confirmation_fencing_token=$3 AND confirmation_lease_expires_at>clock_timestamp()`, lease.Submission.ID, lease.Owner, lease.FencingToken)
 		if err != nil {
 			return err
 		}
@@ -304,6 +300,14 @@ func (s *Store) RecordBroadcastIntent(ctx context.Context, lease SubmissionLease
 		}
 		return nil
 	})
+}
+
+// InflightCount is the number of this cluster's same-mint routes signed or
+// sent and not yet terminal.
+func (s *Store) InflightCount(ctx context.Context, cluster string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE cluster=$1 AND movement_leg='route' AND submission_state NOT IN ('reconciled','expired','failed')`, cluster).Scan(&n)
+	return n, err
 }
 
 // RenewClaimLease extends this owner's confirmation lease without changing
@@ -376,10 +380,9 @@ type SubmissionRecord struct {
 	ConflictAccountKeys       []string
 }
 
-// ClaimRecoveryWork claims up to limit non-lease-held submissions, true
-// recovery first: ambiguous, expiry-check and already-sent rows precede
-// fresh signed routes, so an uncertain spend is never left behind newer
-// work and a fresh send never preempts resolving an older one.
+// ClaimRecoveryWork claims up to limit same-mint submissions the family owns.
+// It writes the Rust confirmation-lease columns, so a restarted Rust confirmer
+// skips rows Go is landing and takes them back once the lease lapses.
 func (s *Store) ClaimRecoveryWork(ctx context.Context, cluster, owner string, ttl time.Duration, limit int) ([]SubmissionLease, error) {
 	if cluster == "" || owner == "" || ttl <= 0 || limit <= 0 {
 		return nil, errors.New("incomplete claim request")
@@ -397,11 +400,10 @@ WITH candidates AS (
        AND o.execution_plan->>'route_kind'='same_mint'
        AND o.execution_plan->>'source_kind' IN ('reserve_position','idle_vault_usdc'))
     AND submission_state IN ('signed','submitted','confirmed',
-        'reconciliation_pending','expiry_check_pending','effect_ambiguous')
+        'reconciliation_pending','expiry_check_pending')
     AND (confirmation_lease_owner IS NULL OR confirmation_lease_expires_at < clock_timestamp())
     AND confirmation_available_at <= clock_timestamp()
   ORDER BY CASE submission_state
-      WHEN 'effect_ambiguous' THEN 0
       WHEN 'expiry_check_pending' THEN 1
       WHEN 'submitted' THEN 2
       WHEN 'confirmed' THEN 3
@@ -470,16 +472,10 @@ func scanSubmissionLease(rows rowScanner, owner string) (SubmissionLease, error)
 // Advance is a fenced durable transition for one claimed submission.
 type Advance struct {
 	NextState                 SubmissionState
-	SubmittedSlot             *int64
 	ConfirmedSlot             *int64
-	FinalizedSlot             *int64
-	ReconciledSlot            *int64
 	EffectCheckSlot           *int64
 	ExpiryObservedBlockHeight *int64
 	ErrorDetail               *string
-	BroadcastSent             bool
-	ReconciledEffect          json.RawMessage
-	noEffect                  *sameMintNoEffectProof
 }
 
 // AdvanceSubmission applies one fenced transition. Zero affected rows mean the
@@ -495,75 +491,33 @@ func (s *Store) AdvanceSubmission(ctx context.Context, lease SubmissionLease, ad
 	if advance.NextState == StateReconciled {
 		return errors.New("reconciliation requires fenced family post-state publication")
 	}
-	if advance.NextState == StateExpired {
-		r := lease.Submission
-		if advance.ExpiryObservedBlockHeight == nil || *advance.ExpiryObservedBlockHeight <= r.LastValidBlockHeight {
-			return errors.New("expiry requires a bound height beyond the signed blockhash")
-		}
-		unbroadcast := r.BroadcastCount == 0 && (r.State == StateSigned || r.State == StateSubmitted) && r.MovementLeg == LegRoute
-		if !unbroadcast {
-			p := advance.noEffect
-			if p == nil || r.MovementLeg != LegRoute || r.EffectCheckSlot == nil || r.ExpiryObservedBlockHeight == nil ||
-				*r.ExpiryObservedBlockHeight != *advance.ExpiryObservedBlockHeight || p.signature != r.Signature ||
-				p.observedSlot < *r.EffectCheckSlot || p.historySlot < p.observedSlot || p.observedHeight < *advance.ExpiryObservedBlockHeight {
-				return errors.New("broadcast expiry requires actual family account-effect and history proof")
-			}
-		}
+	if advance.NextState == StateExpired && (advance.ExpiryObservedBlockHeight == nil || *advance.ExpiryObservedBlockHeight <= lease.Submission.LastValidBlockHeight) {
+		return errors.New("expiry requires a finalized height beyond the signed blockhash")
 	}
-	var advanced int64
-	err := s.pool.QueryRow(ctx, `
-WITH advanced AS (UPDATE loyal_yield.signed_route_submissions
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions
 SET submission_state=$3,
-    submitted_slot=COALESCE($4, submitted_slot),
-    confirmed_slot=COALESCE($5, confirmed_slot),
-    finalized_slot=COALESCE($6, finalized_slot),
-    reconciled_slot=COALESCE($7, reconciled_slot),
-    reconciled_at=CASE WHEN $7::bigint IS NOT NULL THEN clock_timestamp() ELSE reconciled_at END,
-    effect_check_slot=COALESCE($8, effect_check_slot),
-    expiry_observed_block_height=COALESCE($9, expiry_observed_block_height),
-    reconciled_effect=COALESCE($10, reconciled_effect),
-    error_detail=COALESCE($11, error_detail),
-    last_broadcast_at=CASE WHEN $12 THEN clock_timestamp() ELSE last_broadcast_at END,
+    confirmed_slot=COALESCE($4, confirmed_slot),
+    effect_check_slot=COALESCE($5, effect_check_slot),
+    expiry_observed_block_height=COALESCE($6, expiry_observed_block_height),
+    error_detail=COALESCE($7, error_detail),
     last_status_checked_at=clock_timestamp(),
     confirmation_lease_owner=NULL,
     confirmation_lease_expires_at=NULL,
     updated_at=clock_timestamp()
 WHERE id=$1
   AND confirmation_lease_owner=$2
-  AND confirmation_fencing_token=$13
+  AND confirmation_fencing_token=$8
   AND confirmation_lease_expires_at > clock_timestamp()
-  AND submission_state=$14
+  AND submission_state=$9
   AND movement_leg='route'
-  AND EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.id=signed_route_submissions.opportunity_id
-    WHERE d.id=signed_route_submissions.decision_id AND d.movement_route='same_mint'
-     AND o.execution_plan->>'route_kind'='same_mint' AND o.execution_plan->>'source_kind' IN ('reserve_position','idle_vault_usdc'))
-  AND ($3 <> 'expired' OR (
-    last_valid_block_height < $9
-    AND movement_leg='route'
-    AND ((broadcast_count=0 AND submission_state IN ('signed','submitted'))
-      OR ($15 AND submission_state IN ('expiry_check_pending','effect_ambiguous')
-        AND expiry_observed_block_height=$9 AND effect_check_slot IS NOT NULL))
-    AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d
-      WHERE d.id=signed_route_submissions.decision_id AND d.movement_route='cross_mint_jupiter')
-  )) RETURNING id
- ), released AS (
- DELETE FROM loyal_yield.route_account_conflict_leases conflict USING advanced
- WHERE conflict.submission_id=advanced.id AND (
- $3 IN ('reconciled','expired','failed') OR
- ($3 IN ('effect_ambiguous','reconciliation_pending') AND
- (conflict.writable_account_key LIKE 'fleet-shared-write-lane:%' OR
-  ($3='reconciliation_pending' AND conflict.writable_account_key LIKE 'policy-setup-funding:%')))
- ) RETURNING conflict.submission_id
- ) SELECT count(*) FROM advanced`,
+  AND ($3 <> 'expired' OR last_valid_block_height < $6)`,
 		lease.Submission.ID, lease.Owner, string(advance.NextState),
-		advance.SubmittedSlot, advance.ConfirmedSlot, advance.FinalizedSlot,
-		advance.ReconciledSlot, advance.EffectCheckSlot, advance.ExpiryObservedBlockHeight,
-		nullableJSON(advance.ReconciledEffect), advance.ErrorDetail, advance.BroadcastSent,
-		lease.FencingToken, string(lease.Submission.State), advance.noEffect != nil).Scan(&advanced)
+		advance.ConfirmedSlot, advance.EffectCheckSlot, advance.ExpiryObservedBlockHeight,
+		advance.ErrorDetail, lease.FencingToken, string(lease.Submission.State))
 	if err != nil {
 		return err
 	}
-	if advanced == 0 {
+	if tag.RowsAffected() == 0 {
 		return ErrStaleOwner
 	}
 	return nil

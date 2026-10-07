@@ -21,6 +21,7 @@ import (
 	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 type connectedAdmission struct {
@@ -161,9 +162,13 @@ func TestConnectedGoSameMintExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workerConfig := Config{Cluster: a.Lease.Cluster, Owner: a.Lease.Owner, LeaseTTL: 5 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, SlotDuration: 400 * time.Millisecond}
+	land, err := solana.NewLandRPC(handoff.RPCURL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerConfig := Config{Cluster: a.Lease.Cluster, Owner: a.Lease.Owner, LeaseTTL: 5 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, SlotDuration: 400 * time.Millisecond, Facts: testFacts()}
 	signer := DelegateSigner{FeePayer: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))}
-	worker, err := NewWorker(workerConfig, store, adapter, adapter, signer)
+	worker, err := NewWorker(workerConfig, store, land, adapter, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,11 +191,14 @@ func TestConnectedGoSameMintExecution(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM loyal_yield.target_capacity_reservations WHERE id=$1 AND signed_submission_id=$2 AND decision_id=$3 AND reservation_state<>'released'),(SELECT count(*) FROM loyal_yield.route_account_conflict_leases WHERE opportunity_id=$4 AND submission_id=$2)`, a.CapacityReservationID, id, decisionID, a.Lease.OpportunityID).Scan(&reserved, &conflicts); err != nil || reserved != 1 || conflicts != len(a.ConflictKeys) {
 		t.Fatalf("signed ownership not retained capacity=%d conflicts=%d: %v", reserved, conflicts, err)
 	}
-	if n, err := worker.Tick(ctx); err != nil || n != 1 {
-		t.Fatalf("initial Go broadcast n=%d: %v", n, err)
+	// The fixture executes the send but loses its response; landing reads the
+	// confirmed signature and hands off reconciliation without another send.
+	if err := worker.Tick(ctx); err != nil {
+		t.Fatalf("initial Go landing: %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT submission_state,broadcast_count FROM loyal_yield.signed_route_submissions WHERE id=$1`, id).Scan(&state, &broadcasts); err != nil || state != "effect_ambiguous" || broadcasts != 1 {
-		t.Fatalf("executed response loss not durable %s/%d: %v", state, broadcasts, err)
+	worker.wg.Wait()
+	if err := pool.QueryRow(ctx, `SELECT submission_state,broadcast_count FROM loyal_yield.signed_route_submissions WHERE id=$1`, id).Scan(&state, &broadcasts); err != nil || state != "reconciliation_pending" || broadcasts != 1 {
+		t.Fatalf("executed response loss did not land %s/%d: %v", state, broadcasts, err)
 	}
 	// The chain moves its frontier, not its balances, through this fixture RPC.
 	var advanced int64
@@ -199,14 +207,15 @@ func TestConnectedGoSameMintExecution(t *testing.T) {
 	}
 	workerConfig.Owner = "connected-go-d-restarted"
 	// Recovery has no key at all. A successful terminal result cannot re-sign.
-	restarted, err := NewWorker(workerConfig, store, adapter, adapter, DelegateSigner{})
+	restarted, err := NewWorker(workerConfig, store, land, adapter, DelegateSigner{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for state != "reconciled" {
-		if _, err := restarted.Tick(ctx); err != nil {
+		if err := restarted.Tick(ctx); err != nil {
 			t.Fatalf("live Go recovery/reconciliation: %v", err)
 		}
+		restarted.wg.Wait()
 		if err := pool.QueryRow(ctx, `SELECT submission_state FROM loyal_yield.signed_route_submissions WHERE id=$1`, id).Scan(&state); err != nil {
 			t.Fatal(err)
 		}

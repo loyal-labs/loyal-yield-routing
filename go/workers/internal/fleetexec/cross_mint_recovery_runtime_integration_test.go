@@ -23,7 +23,7 @@ func TestCrossMintKeylessRuntimeCannotStartUnsignedWorkOrReportItsCustodyReady(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := NewCrossMintRecoveryRuntime(ctx, Config{Cluster: movement.Cluster, Owner: "keyless-owner", LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second}, store, adapter, &runtimeVerifier{})
+	runtime, err := NewCrossMintRecoveryRuntime(ctx, Config{Cluster: movement.Cluster, Owner: "keyless-owner", LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store, adapter, &runtimeVerifier{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,7 @@
 package fleetexec
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 	"github.com/mr-tron/base58"
 )
 
@@ -381,7 +383,10 @@ func firstOwnedSubmission(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 	return id
 }
 
-func TestCrashAfterDurableIntentBeforeSendRecoversWithoutNewSend(t *testing.T) {
+func TestRestartAfterDurableIntentResendsSameBytesUntilConfirmed(t *testing.T) {
+	// The Go executor used to send once and treat any later send as a double
+	// spend, so a dropped forward sat until its blockhash expired. Resending
+	// the identical signed bytes cannot spend twice; the Rust confirmer did it.
 	store, pool := integrationStore(t)
 	ctx := context.Background()
 	suffix := fmt.Sprint(time.Now().UnixNano())
@@ -392,10 +397,9 @@ func TestCrashAfterDurableIntentBeforeSendRecoversWithoutNewSend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// First owner claims and records the durable broadcast intent, then the
-	// process dies before Send (the lease is abandoned, not released).
-	owner := "owner-crash"
-	lease := claimOne(t, ctx, store, baseline.Cluster, owner)
+	// First owner records the durable broadcast intent, then the process dies
+	// before the send (the lease is abandoned, not released).
+	lease := claimOne(t, ctx, store, baseline.Cluster, "owner-crash")
 	if lease.Submission.ID != id {
 		t.Fatalf("claimed submission %d, want %d", lease.Submission.ID, id)
 	}
@@ -403,63 +407,101 @@ func TestCrashAfterDurableIntentBeforeSendRecoversWithoutNewSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, count, _, _, _ := durableRow(t, ctx, pool, id)
-	if state != string(StateSigned) || count != 1 {
-		t.Fatalf("durable intent state = %s count = %d, want signed/1", state, count)
+	if state != string(StateSubmitted) || count != 1 {
+		t.Fatalf("durable intent state = %s count = %d, want submitted/1", state, count)
 	}
-
-	// Recovery claims the crashed row after the abandoned lease lapses and
-	// must resolve by signature status: never resend, never rebuild.
 	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET confirmation_lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	sends := 0
-	statuses := 0
-	broadcast := &countingBroadcast{counter: &sends, err: &AmbiguousSendError{Cause: errors.New("unreachable")}}
-	status := &fakeStatus{counter: &statuses}
-	worker, err := NewWorker(Config{Cluster: baseline.Cluster, Owner: "owner-recovery", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second}, store, broadcast, status, DelegateSigner{})
+
+	// The restarted family claims the row and lands it: the first resend is
+	// dropped, the second confirms.
+	chain := &countingChain{height: 3_990, landOn: 2}
+	worker, err := NewWorker(Config{Cluster: baseline.Cluster, Owner: "owner-recovery", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second, Facts: testFacts()}, store, chain, &fakeStatus{}, DelegateSigner{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := worker.Tick(ctx); err != nil {
+	if err := worker.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if sends != 0 {
-		t.Fatalf("recovery re-sent a crashed intent %d times", sends)
+	worker.wg.Wait()
+	if len(chain.wires) != 2 {
+		t.Fatalf("sent %d times, want 2", len(chain.wires))
 	}
-	if statuses == 0 {
-		t.Fatalf("recovery never checked the exact signature status")
+	for _, sent := range chain.wires {
+		if !bytes.Equal(sent, wire.SignedTransaction) {
+			t.Fatal("landing rebuilt or changed the signed bytes")
+		}
 	}
-	state, count, _, _, _ = durableRow(t, ctx, pool, id)
-	if count != 1 {
-		t.Fatalf("broadcast count moved from the durable intent to %d", count)
+	state, count, owner, _, _ := durableRow(t, ctx, pool, id)
+	if state != string(StateReconciliationPending) || count != 3 || owner != nil {
+		t.Fatalf("landed row state = %s count = %d owner = %v", state, count, owner)
 	}
-	_ = state
-	_ = baseline
 }
 
-type countingBroadcast struct {
-	counter *int
-	err     error
+func TestExpiredRouteIsTerminalAndReleasesItsReservations(t *testing.T) {
+	store, pool := integrationStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	baseline := seedBaseline(t, ctx, pool, suffix)
+	wire, _ := integrationWire(t, 12)
+	id, _, err := store.PersistSignedRoute(ctx, fixturePersistInput(t, ctx, pool, baseline, wire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := &countingChain{height: 3_999, heightStep: 1}
+	worker, err := NewWorker(Config{Cluster: baseline.Cluster, Owner: "owner-expiry", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second, Facts: testFacts()}, store, chain, &fakeStatus{}, DelegateSigner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	worker.wg.Wait()
+	state, count, _, height, effectSlot := durableRow(t, ctx, pool, id)
+	if state != string(StateExpired) || count != 1 || height == nil || *height != 4_001 || effectSlot == nil {
+		t.Fatalf("expired row state = %s count = %d height = %v slot = %v", state, count, height, effectSlot)
+	}
+	var reservation, opportunity, decision string
+	var conflicts int
+	if err := pool.QueryRow(ctx, `SELECT r.reservation_state,o.opportunity_state,d.status::text,(SELECT count(*) FROM loyal_yield.route_account_conflict_leases WHERE submission_id=$2)
+ FROM loyal_yield.target_capacity_reservations r JOIN loyal_yield.rebalance_opportunities o ON o.id=r.opportunity_id JOIN loyal_yield.rebalance_decisions d ON d.id=o.decision_id WHERE r.opportunity_id=$1`, baseline.OpportunityID, id).Scan(&reservation, &opportunity, &decision, &conflicts); err != nil {
+		t.Fatal(err)
+	}
+	if reservation != "released" || opportunity != "failed" || decision != "failed" || conflicts != 0 {
+		t.Fatalf("expiry kept work alive: reservation=%s opportunity=%s decision=%s conflicts=%d", reservation, opportunity, decision, conflicts)
+	}
 }
 
-func (c *countingBroadcast) Send(ctx context.Context, wire []byte) error {
-	*c.counter++
-	return c.err
+// countingChain is a cluster that drops forwards until send number landOn.
+type countingChain struct {
+	wires      [][]byte
+	height     uint64
+	heightStep uint64
+	landOn     int
 }
 
-type fakeStatus struct {
-	counter *int
-	status  SignatureStatus
-	found   bool
+func (c *countingChain) SendWire(_ context.Context, wire []byte, _ bool) error {
+	c.wires = append(c.wires, append([]byte(nil), wire...))
+	return nil
 }
+
+func (c *countingChain) FinalizedBlockHeight(context.Context) (uint64, error) {
+	c.height += c.heightStep
+	return c.height, nil
+}
+
+func (c *countingChain) SignatureState(context.Context, string) (solana.SignatureState, error) {
+	if c.landOn > 0 && len(c.wires) >= c.landOn {
+		return solana.SignatureState{Found: true, Slot: 700, Commitment: solana.Confirmed, ContextSlot: 700}, nil
+	}
+	return solana.SignatureState{ContextSlot: 650}, nil
+}
+
+type fakeStatus struct{}
 
 func (f *fakeStatus) SignatureStatus(ctx context.Context, signature string) (SignatureStatus, error) {
-	if f.counter != nil {
-		*f.counter++
-	}
-	out := f.status
-	out.Found = f.found
-	return out, nil
+	return SignatureStatus{}, nil
 }
 
 func (f *fakeStatus) FinalizedTransaction(ctx context.Context, signature string) (*TransactionReceipt, error) {
@@ -488,7 +530,7 @@ func TestStaleOwnerCannotMutate(t *testing.T) {
 	}
 
 	// The stale owner's advance is refused and changes nothing.
-	err = store.AdvanceSubmission(ctx, lease, Advance{NextState: StateSubmitted, BroadcastSent: true})
+	err = store.AdvanceSubmission(ctx, lease, Advance{NextState: StateFailed, ErrorDetail: errPtr("stale")})
 	if !errors.Is(err, ErrStaleOwner) {
 		t.Fatalf("stale advance = %v, want stale owner", err)
 	}
@@ -497,12 +539,15 @@ func TestStaleOwnerCannotMutate(t *testing.T) {
 		t.Fatalf("stale owner mutated durable state: %s %v", state, owner)
 	}
 	// The current owner still advances under its own fence.
-	if err := store.AdvanceSubmission(ctx, fresh, Advance{NextState: StateEffectAmbiguous, BroadcastSent: true, ErrorDetail: errPtr("broadcast outcome unknown: timeout")}); err != nil {
+	if err := store.RecordBroadcastIntent(ctx, fresh); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.RecordBroadcastIntent(ctx, lease); !errors.Is(err, ErrStaleOwner) {
+		t.Fatalf("stale owner counted a send: %v", err)
 	}
 }
 
-func TestExpiryRequiresActualEffectsAndTelemetryIsStrictlyNewer(t *testing.T) {
+func TestExpiryRequiresHeightBeyondBlockhashAndTelemetryIsStrictlyNewer(t *testing.T) {
 	store, pool := integrationStore(t)
 	ctx := context.Background()
 	suffix := fmt.Sprint(time.Now().UnixNano())
@@ -514,53 +559,17 @@ func TestExpiryRequiresActualEffectsAndTelemetryIsStrictlyNewer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Broadcast ambiguity, then a bound expiry proof at one observed height.
 	lease := claimOne(t, ctx, store, baseline.Cluster, "owner-expiry")
-	if err := store.RecordBroadcastIntent(ctx, lease); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.AdvanceSubmission(ctx, lease, Advance{
-		NextState: StateEffectAmbiguous, BroadcastSent: true,
-		EffectCheckSlot: int64Ptr(501), ErrorDetail: errPtr("broadcast outcome unknown: reset"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	lease = claimOne(t, ctx, store, baseline.Cluster, "owner-expiry")
-	if err := store.AdvanceSubmission(ctx, lease, Advance{
-		NextState: StateEffectAmbiguous, ExpiryObservedBlockHeight: int64Ptr(5_000),
-		EffectCheckSlot: int64Ptr(501), ErrorDetail: errPtr("blockhash_expired_at_height_5000_awaiting_effect_absence_proof"),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// A stale-height observation (behind the last valid height) must never
-	// release the unknown: the proof only binds at a strictly newer height.
-	lease = claimOne(t, ctx, store, baseline.Cluster, "owner-expiry")
+	// The signed bytes are still valid at their last valid height.
 	if err := store.AdvanceSubmission(ctx, lease, Advance{
 		NextState: StateExpired, ExpiryObservedBlockHeight: int64Ptr(4_000),
 		ErrorDetail: errPtr("blockhash_expired_at_height_4000"),
 	}); err == nil {
 		t.Fatalf("expiry at the last valid height must be refused")
 	}
-
-	// Bound height and slot alone cannot release custody. A rejected advance
-	// retains this lease; its actual effects have not been observed.
-	if err := store.AdvanceSubmission(ctx, lease, Advance{
-		NextState: StateExpired, ExpiryObservedBlockHeight: int64Ptr(5_000),
-		ErrorDetail: errPtr("blockhash_expired_at_height_5000"),
-	}); err == nil {
-		t.Fatal("signature absence and slot alone released custody")
-	}
 	state, _, _, _, _ := durableRow(t, ctx, pool, id)
-	if state != string(StateEffectAmbiguous) {
-		t.Fatalf("unproven expiry changed state: %s", state)
-	}
-	var reservationState string
-	if err := pool.QueryRow(ctx, `SELECT reservation_state FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, baseline.OpportunityID).Scan(&reservationState); err != nil {
-		t.Fatal(err)
-	}
-	if reservationState != "active" {
-		t.Fatalf("unproven expiry released capacity, got %s", reservationState)
+	if state != string(StateSigned) {
+		t.Fatalf("refused expiry changed state: %s", state)
 	}
 
 	// A reconciled movement's capacity waits for strictly newer telemetry:
@@ -619,7 +628,7 @@ func TestReceiptMismatchRetainsCustody(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := &finalizedStatus{receipt: &TransactionReceipt{Slot: 700, Signature: wire.TransactionSignature, MessageB64: base64.StdEncoding.EncodeToString([]byte("different-message")), accountAddresses: []string{"payer", "source", "target"}}}
-	worker, err := NewWorker(Config{Cluster: baseline.Cluster, Owner: "owner-reconcile", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second}, store, &countingBroadcast{}, status, DelegateSigner{})
+	worker, err := NewWorker(Config{Cluster: baseline.Cluster, Owner: "owner-reconcile", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second, Facts: testFacts()}, store, &countingChain{}, status, DelegateSigner{})
 	if err != nil {
 		t.Fatal(err)
 	}

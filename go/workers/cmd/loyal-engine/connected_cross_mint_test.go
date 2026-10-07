@@ -12,6 +12,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/prometheus/client_golang/prometheus"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -203,7 +205,7 @@ func TestConnectedRetailGoCrossMintExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := fleetexec.Config{Cluster: bank.Cluster, Owner: owner, LeaseTTL: 20 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, SlotDuration: 400 * time.Millisecond}
+	config := fleetexec.Config{Cluster: bank.Cluster, Owner: owner, LeaseTTL: 20 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, SlotDuration: 400 * time.Millisecond, Facts: engine.NewFacts(prometheus.NewRegistry())}
 	signer := fleetexec.DelegateSigner{FeePayer: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))}
 	controller, err := fleetexec.NewCrossMintController(store, adapters, signer, rpc, bank.Cluster, owner, config.LeaseTTL, true)
 	if err != nil {
@@ -242,8 +244,10 @@ func TestConnectedRetailGoCrossMintExecution(t *testing.T) {
 	if n, err := runtime.Tick(ctx); err != nil || n != 1 {
 		t.Fatalf("first actual withdrawal send n=%d: %v", n, err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT submission_state,broadcast_count FROM loyal_yield.signed_route_submissions WHERE id=$1`, submissionID).Scan(&state, &broadcasts); err != nil || state != "effect_ambiguous" || broadcasts != 1 {
-		t.Fatalf("executed response loss was not retained: %s/%d %v", state, broadcasts, err)
+	// The bank executes the send and loses its response; landing keeps the
+	// exact bytes until the signature finalizes.
+	if err := pool.QueryRow(ctx, `SELECT submission_state,broadcast_count FROM loyal_yield.signed_route_submissions WHERE id=$1`, submissionID).Scan(&state, &broadcasts); err != nil || broadcasts < 1 || state == "effect_ambiguous" {
+		t.Fatalf("executed response loss was not landed: %s/%d %v", state, broadcasts, err)
 	}
 	// This recovery owner receives no controller, activation source or key.
 	recoveryConfig := config
@@ -265,7 +269,7 @@ func TestConnectedRetailGoCrossMintExecution(t *testing.T) {
 	}
 	var recoveredWire []byte
 	var recoveredSignature, recoveredHash string
-	if err := pool.QueryRow(ctx, `SELECT signed_transaction,transaction_signature,signed_transaction_hash,broadcast_count FROM loyal_yield.signed_route_submissions WHERE id=$1`, submissionID).Scan(&recoveredWire, &recoveredSignature, &recoveredHash, &broadcasts); err != nil || !bytes.Equal(originalWire, recoveredWire) || signature != recoveredSignature || wireHash != recoveredHash || broadcasts != 1 {
+	if err := pool.QueryRow(ctx, `SELECT signed_transaction,transaction_signature,signed_transaction_hash,broadcast_count FROM loyal_yield.signed_route_submissions WHERE id=$1`, submissionID).Scan(&recoveredWire, &recoveredSignature, &recoveredHash, &broadcasts); err != nil || !bytes.Equal(originalWire, recoveredWire) || signature != recoveredSignature || wireHash != recoveredHash || broadcasts < 1 {
 		t.Fatalf("signerless recovery substituted or resent the wire: %v", err)
 	}
 	var terminal *string

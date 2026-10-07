@@ -15,7 +15,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // The root adapts C's concrete finalized policy verifier. This capability has
@@ -55,7 +57,7 @@ type CrossMintRuntime struct {
 	accounts      finalizedAccountReader
 	history       finalizedHistoryReader
 	status        StatusClient
-	broadcast     BroadcastClient
+	chain         solana.LandChain
 	verifier      CrossMintFirstSendVerifier
 	admission     CrossMintActivationSource
 	reportRuntime func(bool, uint64)
@@ -85,7 +87,11 @@ func NewCrossMintRecoveryRuntime(ctx context.Context, config Config, store *Stor
 	if err := store.RequireCrossMintSchema(ctx); err != nil {
 		return nil, err
 	}
-	return &CrossMintRuntime{config: config, store: store, adapter: adapter, accounts: fleet.NewRPCClient(adapter.url), history: adapter, status: adapter, broadcast: adapter, verifier: verifier}, nil
+	chain, err := solana.NewLandRPC(adapter.url, adapter.deadline)
+	if err != nil {
+		return nil, err
+	}
+	return &CrossMintRuntime{config: config, store: store, adapter: adapter, accounts: fleet.NewRPCClient(adapter.url), history: adapter, status: adapter, chain: chain, verifier: verifier}, nil
 }
 
 // Configure before Run. The root retains dependency and pool lifecycles.
@@ -263,8 +269,11 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 		}
 		return r.store.expireCrossMint(workCtx, l, proof)
 	}
-	if l.Submission.BroadcastCount != 0 || l.Submission.State != StateSigned {
-		return r.store.deferCrossMintStatus(workCtx, l, nil, nil, "signature_not_yet_finalized", false)
+	if l.Submission.BroadcastCount != 0 {
+		return r.land(workCtx, ctx, l, nil)
+	}
+	if l.Submission.State != StateSigned {
+		return r.store.deferCrossMintStatus(workCtx, l, nil, nil, "unsent_leg_not_signed", false)
 	}
 	m, err := r.store.CrossMintMovement(workCtx, *l.Submission.DecisionID)
 	if err != nil {
@@ -300,16 +309,59 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 		}
 		return r.hold(workCtx, l, "first_send_custody_unproven", err)
 	}
-	if err = r.store.recordCrossMintBroadcastIntent(workCtx, l, m); err != nil {
+	return r.land(workCtx, ctx, l, &m)
+}
+
+// land resends the leg's exact bytes until they finalize or expire. The first
+// send of an unsent leg is recorded with its full custody recheck; later sends
+// only count. If the lease window ends first, the next claim lands again.
+func (r *CrossMintRuntime) land(workCtx, ctx context.Context, l SubmissionLease, first *CrossMintMovement) error {
+	out, err := solana.Land(workCtx, r.chain, solana.Attempt{
+		Wire: l.Submission.SignedTransaction, Signature: l.Submission.Signature,
+		LastValidBlockHeight: uint64(l.Submission.LastValidBlockHeight), Sends: l.Submission.BroadcastCount,
+		Required: solana.Finalized,
+	}, resendEvery, func(sendCtx context.Context) error {
+		if first != nil {
+			m := *first
+			first = nil
+			return r.store.recordCrossMintBroadcastIntent(sendCtx, l, m)
+		}
+		if err := r.store.recordCrossMintResend(sendCtx, l); err != nil {
+			return err
+		}
+		l.Submission.State = StateSubmitted
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil
+		}
 		return err
 	}
-	l.Submission.BroadcastCount++
-	// The persisted intent is already counted. Every transport error is unknown
-	// delivery; neither this tick nor a future owner resends these bytes.
-	if err = r.broadcast.Send(workCtx, l.Submission.SignedTransaction); err != nil {
-		return r.store.deferCrossMintStatus(workCtx, l, nil, nil, "broadcast_outcome_unknown", true)
+	switch out.Kind {
+	case solana.Landed:
+		r.config.Facts.Landed(engine.FamilyFleet)
+		return r.store.markCrossMintFinalized(workCtx, l, int64(out.Slot))
+	case solana.Failed:
+		r.config.Facts.Failed(engine.FamilyFleet, "transaction_failed")
+		return r.hold(workCtx, l, "finalized_failure_requires_manual_custody_proof", errors.New(out.Err))
+	default:
+		r.config.Facts.Failed(engine.FamilyFleet, "blockhash_expired")
+		height, slot := int64(out.BlockHeight), int64(out.ContextSlot)
+		return r.store.deferCrossMintStatus(workCtx, l, &slot, &height, "expiry_requires_finalized_custody_and_history", true)
 	}
-	return r.store.deferCrossMintStatus(workCtx, l, nil, nil, "broadcast_sent_once", false)
+}
+
+// recordCrossMintResend counts one more send of an already-sent leg.
+func (s *Store) recordCrossMintResend(ctx context.Context, l SubmissionLease) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET submission_state='submitted',submitted_at=COALESCE(submitted_at,clock_timestamp()),broadcast_count=broadcast_count+1,last_broadcast_at=clock_timestamp(),last_status_checked_at=clock_timestamp(),error_detail='broadcast_intent_persisted',updated_at=clock_timestamp() WHERE id=$1 AND confirmation_lease_owner=$2 AND confirmation_fencing_token=$3 AND confirmation_lease_expires_at>clock_timestamp() AND broadcast_count>0 AND submission_state IN ('signed','submitted') AND movement_leg IN ('withdraw','swap','deposit')`, l.Submission.ID, l.Owner, l.FencingToken)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrStaleOwner
+	}
+	return nil
 }
 
 func (r *CrossMintRuntime) hold(ctx context.Context, l SubmissionLease, reason string, cause error) error {

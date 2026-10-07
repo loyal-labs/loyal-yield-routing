@@ -18,6 +18,7 @@ import (
 	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 type runtimeStatus struct {
@@ -40,16 +41,39 @@ func (s *runtimeStatus) FinalizedTransaction(context.Context, string) (*Transact
 	return s.receipt, nil
 }
 
+// runtimeSend is the landing chain over the same scripted status. A send
+// numbered landOn finalizes the signature, like a forward that arrives.
 type runtimeSend struct {
-	wire  []byte
-	calls int
-	err   error
+	status *runtimeStatus
+	wire   []byte
+	calls  int
+	landOn int
+	err    error
 }
 
-func (s *runtimeSend) Send(_ context.Context, wire []byte) error {
+func (s *runtimeSend) SendWire(_ context.Context, wire []byte, _ bool) error {
 	s.calls++
 	s.wire = append([]byte(nil), wire...)
+	if s.calls == s.landOn {
+		s.status.status = SignatureStatus{Found: true, Confirmed: true, Finalized: true, Slot: 1010, ContextSlot: 1010, BlockHeight: s.status.status.BlockHeight}
+	}
 	return s.err
+}
+
+func (s *runtimeSend) FinalizedBlockHeight(context.Context) (uint64, error) {
+	return uint64(s.status.status.BlockHeight), nil
+}
+
+func (s *runtimeSend) SignatureState(context.Context, string) (solana.SignatureState, error) {
+	st := s.status.status
+	out := solana.SignatureState{Found: st.Found, Slot: uint64(st.Slot), Err: st.Err, ContextSlot: uint64(st.ContextSlot), Commitment: solana.Processed}
+	if st.Confirmed {
+		out.Commitment = solana.Confirmed
+	}
+	if st.Finalized {
+		out.Commitment = solana.Finalized
+	}
+	return out, nil
 }
 
 type runtimeVerifier struct {
@@ -189,7 +213,8 @@ func crossMintRuntimeFixture(t *testing.T) (*CrossMintRuntime, *pgxpool.Pool, in
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &CrossMintRuntime{config: Config{Cluster: m.Cluster, Owner: a.Lease.Owner, LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second}, store: store, accounts: reader, history: addressHistory{pages: map[string][]finalizedAddressSignature{}}, status: &runtimeStatus{status: SignatureStatus{ContextSlot: 1005, BlockHeight: 3999}}, broadcast: &runtimeSend{}, verifier: &runtimeVerifier{}}, pool, id
+	status := &runtimeStatus{status: SignatureStatus{ContextSlot: 1005, BlockHeight: 3999}}
+	return &CrossMintRuntime{config: Config{Cluster: m.Cluster, Owner: a.Lease.Owner, LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store: store, accounts: reader, history: addressHistory{pages: map[string][]finalizedAddressSignature{}}, status: status, chain: &runtimeSend{status: status, landOn: 1}, verifier: &runtimeVerifier{}}, pool, id
 }
 
 func runtimeClaim(t *testing.T, r *CrossMintRuntime, pool *pgxpool.Pool) SubmissionLease {
@@ -204,34 +229,31 @@ func runtimeClaim(t *testing.T, r *CrossMintRuntime, pool *pgxpool.Pool) Submiss
 	return leases[0]
 }
 
-func TestCrossMintRuntimeFirstSendUsesExactWireAndNeverResendsAmbiguousDelivery(t *testing.T) {
+func TestCrossMintRuntimeLandsExactWireAcrossDroppedForwards(t *testing.T) {
+	// The Go runtime used to send a leg once and then wait for its blockhash
+	// to expire when the forward was dropped; the Rust confirmer rebroadcast.
 	r, pool, id := crossMintRuntimeFixture(t)
 	l := runtimeClaim(t, r, pool)
-	sender := r.broadcast.(*runtimeSend)
+	sender := r.chain.(*runtimeSend)
 	sender.err = errors.New("transport timeout")
+	sender.landOn = 3
 	if err := r.handle(context.Background(), l); err != nil {
 		t.Fatal(err)
 	}
-	if sender.calls != 1 || string(sender.wire) != string(l.Submission.SignedTransaction) {
-		t.Fatal("send did not use exact persisted bytes once")
+	if sender.calls != 3 || string(sender.wire) != string(l.Submission.SignedTransaction) {
+		t.Fatalf("sent %d times; want the exact persisted bytes until they land", sender.calls)
 	}
 	verifier := r.verifier.(*runtimeVerifier)
 	if verifier.calls != 1 || len(verifier.evidence.SelectedALTs) != 1 || verifier.evidence.MinimumSlot < 1000 {
-		t.Fatal("first send omitted actual compiled ALT/bank evidence")
+		t.Fatal("first send omitted actual compiled ALT/bank evidence or was re-verified on resend")
 	}
 	l = runtimeClaim(t, r, pool)
-	if l.Submission.BroadcastCount != 1 || l.Submission.State != StateEffectAmbiguous {
-		t.Fatal("ambiguous transport lost durable intent")
-	}
-	if err := r.handle(context.Background(), l); err != nil {
-		t.Fatal(err)
-	}
-	if sender.calls != 1 {
-		t.Fatal("ambiguous delivery was resent")
+	if l.Submission.BroadcastCount != 3 || l.Submission.State != StateReconciliationPending {
+		t.Fatalf("landing state %s count %d", l.Submission.State, l.Submission.BroadcastCount)
 	}
 	var reservation string
 	if err := pool.QueryRow(context.Background(), `SELECT reservation_state FROM loyal_yield.target_capacity_reservations WHERE signed_submission_id=$1 OR decision_id=(SELECT decision_id FROM loyal_yield.signed_route_submissions WHERE id=$1)`, id).Scan(&reservation); err != nil || reservation != "active" {
-		t.Fatalf("uncertainty released capacity: %s %v", reservation, err)
+		t.Fatalf("landing released capacity before the receipt: %s %v", reservation, err)
 	}
 }
 
@@ -251,7 +273,7 @@ func TestCrossMintRuntimeInitialExpiryWithoutHistoryAnchorRetainsManualHold(t *t
 		t.Fatal("unknown first-withdraw anchor became no-effect proof")
 	}
 	l = runtimeClaim(t, r, pool)
-	if l.Submission.State != StateEffectAmbiguous || r.broadcast.(*runtimeSend).calls != 0 {
+	if l.Submission.State != StateEffectAmbiguous || r.chain.(*runtimeSend).calls != 0 {
 		t.Fatal("unknown expiry became publish or retry authority")
 	}
 	var receipts int
@@ -279,7 +301,7 @@ func TestCrossMintRuntimeFinalityCannotAdvanceCustodyBeforeExactReceipt(t *testi
 	if err := pool.QueryRow(context.Background(), `SELECT custody_version FROM loyal_yield.rebalance_decisions WHERE id=(SELECT decision_id FROM loyal_yield.signed_route_submissions WHERE id=$1)`, id).Scan(&version); err != nil || version != 0 {
 		t.Fatalf("signature finality inferred custody: %d %v", version, err)
 	}
-	if r.broadcast.(*runtimeSend).calls != 0 {
+	if r.chain.(*runtimeSend).calls != 0 {
 		t.Fatal("observed finalized signature was broadcast again")
 	}
 }
@@ -344,13 +366,13 @@ func runtimeFinalizeWithdrawal(t *testing.T, r *CrossMintRuntime, pool *pgxpool.
 	if err = pool.QueryRow(ctx, `SELECT s.submission_state,r.reservation_state FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=s.decision_id WHERE s.id=$1`, id).Scan(&state, &reservation); err != nil || state != "reconciled" || reservation != "active" {
 		t.Fatalf("intermediate receipt released capacity: %s %s %v", state, reservation, err)
 	}
-	if r.broadcast.(*runtimeSend).calls != 0 {
+	if r.chain.(*runtimeSend).calls != 0 {
 		t.Fatal("receipt recovery rebuilt or resent finalized wire")
 	}
 	return actual
 }
 
-func TestCrossMintRuntimeCrashAfterIntentAndBeforeSendNeverPublishesAgain(t *testing.T) {
+func TestCrossMintRuntimeCrashAfterIntentResendsSameBytesWithoutNewFirstSend(t *testing.T) {
 	r, pool, _ := crossMintRuntimeFixture(t)
 	ctx := context.Background()
 	l := runtimeClaim(t, r, pool)
@@ -372,8 +394,13 @@ func TestCrossMintRuntimeCrashAfterIntentAndBeforeSendNeverPublishesAgain(t *tes
 	if err = r.handle(ctx, l); err != nil {
 		t.Fatal(err)
 	}
-	if r.broadcast.(*runtimeSend).calls != 0 || r.verifier.(*runtimeVerifier).calls != 0 {
-		t.Fatal("crash recovery became another first send")
+	sender := r.chain.(*runtimeSend)
+	if sender.calls != 1 || string(sender.wire) != string(l.Submission.SignedTransaction) || r.verifier.(*runtimeVerifier).calls != 0 {
+		t.Fatal("restart must resend the same bytes without a new first-send verification")
+	}
+	l = runtimeClaim(t, r, pool)
+	if l.Submission.BroadcastCount != 2 || l.Submission.State != StateReconciliationPending {
+		t.Fatalf("restart landing state %s count %d", l.Submission.State, l.Submission.BroadcastCount)
 	}
 }
 
@@ -465,7 +492,7 @@ func TestCrossMintRuntimeExpiryPublishesConcreteNoEffectOnlyAfterKnownAnchorAndL
 			if err = pool.QueryRow(context.Background(), `SELECT s.submission_state,(SELECT count(*) FROM loyal_yield.cross_mint_no_effect_receipts WHERE submission_id=s.id),d.custody_version,r.reservation_state FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE s.id=$1`, id).Scan(&state, &receipts, &version, &reservation); err != nil {
 				t.Fatal(err)
 			}
-			if version != 1 || reservation != "active" || r.broadcast.(*runtimeSend).calls != 0 {
+			if version != 1 || reservation != "active" || r.chain.(*runtimeSend).calls != 0 {
 				t.Fatal("expiry changed custody, released capacity or broadcast")
 			}
 			if mode == "known_absent" {
@@ -595,7 +622,7 @@ func TestCrossMintRuntimeDisabledRolloutCancelsOnlyUnsignedSourceCustodyAndSkips
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := NewCrossMintRuntime(ctx, Config{Cluster: b.Cluster, Owner: "rollout-owner", LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second}, store, controller, adapter, &runtimeVerifier{})
+	runtime, err := NewCrossMintRuntime(ctx, Config{Cluster: b.Cluster, Owner: "rollout-owner", LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store, controller, adapter, &runtimeVerifier{})
 	if err != nil {
 		t.Fatal(err)
 	}

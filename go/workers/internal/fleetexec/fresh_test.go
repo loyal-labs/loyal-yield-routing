@@ -98,7 +98,7 @@ func TestFreshPublicationBindsRegisteredHandoffAndFirstSend(t *testing.T) {
 	store, pool := integrationStore(t)
 	ctx := context.Background()
 	a, signer := seedFresh(t, ctx, pool)
-	worker, err := NewWorker(Config{Cluster: a.Lease.Cluster, Owner: a.Lease.Owner, LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second}, store, &countingBroadcast{counter: new(int)}, &fakeStatus{}, signer)
+	worker, err := NewWorker(Config{Cluster: a.Lease.Cluster, Owner: a.Lease.Owner, LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store, &countingChain{}, &fakeStatus{}, signer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +118,8 @@ func TestFreshPublicationBindsRegisteredHandoffAndFirstSend(t *testing.T) {
 	if err := store.RecordBroadcastIntent(ctx, lease); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordBroadcastIntent(ctx, lease); err == nil {
-		t.Fatal("same first-send fence reused twice")
+	if err := store.RecordBroadcastIntent(ctx, lease); err != nil {
+		t.Fatal("a resend of the same bytes must be countable under the same fence:", err)
 	}
 	var status, signature string
 	if err := pool.QueryRow(ctx, `SELECT status::text,signature FROM loyal_yield.rebalance_decisions WHERE id=$1`, decision).Scan(&status, &signature); err != nil {

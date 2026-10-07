@@ -1,7 +1,6 @@
 package fleetexec
 
 import (
-	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -125,89 +124,10 @@ func TestSignPreparedRoutePreservesMessageBytes(t *testing.T) {
 	}
 }
 
-func TestPlanForIsRecoveryFirstAndNeverResends(t *testing.T) {
-	record := SubmissionRecord{ID: 7}
-	record.State = StateSigned
-	plan, err := planFor(record)
-	if err != nil || !plan.SendExactWire || plan.CheckStatus {
-		t.Fatalf("signed plan = %+v, %v", plan, err)
-	}
-	record.BroadcastCount = 1
-	if plan, err := planFor(record); err != nil || plan.SendExactWire || !plan.CheckStatus {
-		t.Fatalf("a signed record with broadcasts must resolve by status, never send again: %+v, %v", plan, err)
-	}
-	record.BroadcastCount = 0
-	record.State = StateEffectAmbiguous
-	plan, err = planFor(record)
-	if err != nil || plan.SendExactWire || !plan.CheckStatus {
-		t.Fatalf("ambiguous plan = %+v, %v (must resolve by status, never resend)", plan, err)
-	}
-	record.State = StateExpiryCheckPending
-	plan, _ = planFor(record)
-	if !plan.CheckStatus || plan.SendExactWire {
-		t.Fatalf("expiry plan = %+v", plan)
-	}
-	record.State = StateConfirmed
-	plan, _ = planFor(record)
-	if !plan.AwaitConfirmation {
-		t.Fatalf("confirmed plan = %+v", plan)
-	}
-	record.State = StateReconciliationPending
-	plan, _ = planFor(record)
-	if !plan.ReconcileFinalized {
-		t.Fatalf("reconciliation plan = %+v", plan)
-	}
-	for _, terminal := range []SubmissionState{StateReconciled, StateExpired, StateFailed} {
-		record.State = terminal
-		if _, err := planFor(record); err == nil {
-			t.Fatalf("terminal state %s must not be planned", terminal)
-		}
-	}
-}
-
-func TestExecutePreparedRouteBindsSignerIdentity(t *testing.T) {
-	fixture := mustSignedFixture(t)
-	preparation, key, err := fixturePreparation(fixture)
-	if err != nil {
-		t.Fatal(err)
-	}
-	worker := &Worker{signer: DelegateSigner{FeePayer: key}}
-	// The admission evidence names a different fee payer: refuse before any
-	// persistence, the signature identity must be the delegated signer's.
-	admission := PersistRouteInput{FeePayer: "SomeOtherPayer", OpportunityID: 1, SemanticKey: "k", Cluster: "c"}
-	if _, _, err := worker.ExecutePreparedRoute(context.Background(), preparation, fixture.LastValidHeight, admission); err == nil ||
-		!strings.Contains(err.Error(), "not the delegated signer") {
-		t.Fatalf("payer mismatch error = %v", err)
-	}
-	// With matching evidence the fresh path signs and hands the exact wire
-	// to the journal; without a store that is a configuration error, never a
-	// silent skip.
-	admission.FeePayer = fixture.FeePayer
-	if _, _, err := worker.ExecutePreparedRoute(context.Background(), preparation, fixture.LastValidHeight, admission); err == nil ||
-		!strings.Contains(err.Error(), "missing fleet executor dependency") {
-		t.Fatalf("missing store error = %v", err)
-	}
-}
-
-func TestPlanForCrashedAfterIntentResolvesWithoutSend(t *testing.T) {
-	// A crash between the durable broadcast intent and the Send leaves the
-	// row signed with broadcast_count = 1. The only legal plan resolves by
-	// signature status; the wire is never re-sent and never rebuilt.
-	record := SubmissionRecord{ID: 9, State: StateSigned, BroadcastCount: 1}
-	plan, err := planFor(record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.SendExactWire || !plan.CheckStatus {
-		t.Fatalf("crashed-intent plan = %+v (must resolve by status, never resend)", plan)
-	}
-}
-
 func TestLegalTransitionGuard(t *testing.T) {
 	legal := map[SubmissionState][]SubmissionState{
-		StateSigned:                {StateSubmitted, StateEffectAmbiguous, StateExpiryCheckPending, StateExpired, StateFailed},
-		StateSubmitted:             {StateConfirmed, StateEffectAmbiguous, StateExpiryCheckPending, StateExpired, StateFailed},
-		StateEffectAmbiguous:       {StateConfirmed, StateExpiryCheckPending, StateExpired, StateFailed},
+		StateSigned:                {StateConfirmed, StateExpired, StateFailed},
+		StateSubmitted:             {StateConfirmed, StateExpired, StateFailed},
 		StateExpiryCheckPending:    {StateConfirmed, StateExpired, StateFailed},
 		StateConfirmed:             {StateReconciliationPending},
 		StateReconciliationPending: {StateReconciled, StateFailed},
@@ -239,6 +159,8 @@ func TestLegalTransitionGuard(t *testing.T) {
 		{StateConfirmed, StateSubmitted},
 		{StateConfirmed, StateReconciled},
 		{StateReconciliationPending, StateEffectAmbiguous},
+		{StateSubmitted, StateEffectAmbiguous},
+		{StateEffectAmbiguous, StateExpired},
 	}
 	for _, edge := range forbidden {
 		if legalTransition(edge.from, edge.to) {
