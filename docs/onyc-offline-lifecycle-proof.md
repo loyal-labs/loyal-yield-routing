@@ -55,7 +55,7 @@ A compiled harness is not a passing lifecycle. The emitted result must explicitl
 - Clone-only quotes execute freshly constructed single-hop WhirlpoolV2 instructions through the Go compiler. Quote probes preserve the main bank. The exact main-bank wire enforces a 50bps minimum from the executed clone output. A separate impossible-minimum clone fails with capital/program state unchanged; only its fee payer may pay fees. These are offline execution quotes, not production Jupiter responses or worker admission.
 - Pool state evolves through actual swaps. No pool poststate is assigned. Immutable ELF bytes are pinned at load rather than copied into each leg's input. Mutable account bytes/hashes are retained throughout.
 - All 11 captured LP holders sum to 3,255,644 raw, equal to the captured mint supply. The holder capture is atslot 452734177; the main snapshot is 452734005. This separate-slot limitation is explicit. LP mint/holders and fee configuration remain unchanged. Native fee LP accrues normally through the intermediate NAV reports.
-- The original $10k partial withdrawal exposed an `int64` overflow in `partialWithdrawalReleaseReceipts`. `control-04` retains the failure: the captured $100k case returned 0 instead of 8,770,549,397,934 receipts. Vlad approved the narrow local fix. Multiplication and division now use the existing `math/big` library with checked conversion back to `int64`; floor rounding and risk caps stay unchanged. The three connected partial-plus-full-exit cases pass with this fix. It has not been deployed.
+- The original $10k partial withdrawal exposed an `int64` overflow in `partialWithdrawalReleaseReceipts`. `control-04` retains the failure: the captured $100k case returned 0 instead of 8,770,549,397,934 receipts. Vlad approved the narrow local fix. Multiplication and division now use the existing `math/big` library with checked conversion back to `int64`; floor rounding and risk caps stay unchanged. The three connected partial-plus-full-exit cases pass with this fix. PR #266 deployed this arithmetic fix as `64743c6` on 2026-10-03; deployment health was verified separately from these offline proofs.
 
 `fullExitPass` and `fullLifecyclePass` are separate. Skipping a partial withdrawal cannot produce `fullLifecyclePass:true`. Earlier diagnostic outputs are retained, including the closed-obligation assertion failure after a successful instruction chain; they are not final passing results.
 
@@ -113,3 +113,54 @@ sudo -n systemd-run --wait --collect --pipe --unit=onyc-proof-control-unique \
 ```
 
 `fixture-current` also contains `entry-swap-request.json` and `exit-swap-request.json`, constructed from the captured current Jupiter response and captured ALT. The recorded HTTP quote is used for the first $100k entry. Subsequent swaps build new structured instruction data and use clone-executed quotes; they never resize a serialized wire.
+
+
+## Repay-first existing-permission probes (2026-10-02)
+
+The opt-in `repay_first::onyc_existing_boundary_repay_first` test adds offline
+protocol probes in the crate-relative `tests/onyc_offline_lifecycle/repay_first.rs`.
+Use the resource-bounded command above, replacing its working directory with
+`--working-directory=/home/exedev/dev/loyal-yield-routing-ASK-2316-repay-first`
+and choosing a new `ONYC_PROOF_OUTPUT` directory. Use this filter after `--`:
+`--ignored --nocapture repay_first::onyc_existing_boundary_repay_first`.
+Require exactly one passed test; zero matched tests is not verification.
+The Go compiler, public snapshot and LP-holder capture remain the same.
+
+Final evidence: `/home/exedev/dev/voltr-handoff-20261002/onyc-repay-first-proof/mechanics-final`.
+The final test passed. Its wrapper verified 3 GiB memory, no swap, 64 tasks,
+one CPU and UID 1000 from inside the running cgroup. No validator or live
+transaction was used.
+
+Proved against the captured programs and accounts:
+
+- A $100 top-level flash borrow/repay pair succeeds. Missing repayment and wrong
+  amount/index/custody reject with exact KLend errors 6032/6033 and roll back.
+  The captured flash fee is zero; positive-fee repayment remains unproved.
+- A native $100k vault entry borrows $20k, swaps it and redeposits it within
+  existing risk limits. A separate executor-owned account repays the obligation
+  directly. Requested payoff is 20,000,005,350 raw USDC; actual payer debit is
+  20,000,000,275 raw. Reimbursement must use actual debit, not the requested amount.
+- Current Squads policies reject executor reimbursement and a substituted Jupiter
+  output account with error 6069 (`ProgramInteractionAccountConstraintViolated`).
+  The allowed stage destination succeeds as a positive control.
+- Prefunded repay/denied-return and flash-borrow/repay/denied-return prefixes
+  roll back all tracked accounts, except the executor's 5,000-lamport transaction
+  fee. These prefixes fit in 883 and 978 bytes. Full exit bundle fit is unproved.
+
+The separate executor account starts with explicitly synthetic $100k. The flash-only
+bank has a separate $1 synthetic fee reserve, unused by this zero-fee capture.
+The synthetic setup records initial funding before execution. Subsequent reserve,
+pool, oracle, policy and obligation state comes from protocol execution. Native
+lifecycle steps advance one slot and one second. Dependency probes use a fixed
+clock, as recorded in `probe-scope.json`. Only the on-curve executor is a top-level signer.
+Zero-signature offline execution does not prove signatures or production admission.
+
+After external repayment and the unchanged withdrawal/sale, the vault holds
+119,976,001,468 raw USDC and the executor holds 79,999,999,725 raw. The executor
+has received no reimbursement. Accordingly, `fullExitProved` and
+`selfFinancingExitProved` remain false. No higher-leverage position was constructed.
+
+The next proposed change is a separately reviewed conditional reimbursement
+instruction that binds the actual debt payment, recipient, fee and same-transaction
+settlement. A raw transfer allowance is insufficient. No new permission, adaptor,
+production builder, deployment or risk-limit change is included in these probes.
