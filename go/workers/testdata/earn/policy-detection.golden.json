@@ -1,0 +1,1720 @@
+{
+  "cases": [
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "HvSPQZYAEcsDWjvJDEuNZe2atzEXxpsRWZRt9XruvMaA",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            ],
+            "kamino_markets": [
+              "3VDh6SJfCg3VFhtatqkLr4pXuYt7iprRxo9BAvthAs7D"
+            ],
+            "policy_account": "5QbTvYocqtmUizb4X4ZALPpGihiWgpbZqPeMkh4DuqLx",
+            "policy_seed": 1,
+            "risk_profile": null,
+            "route_modes": [
+              "same_mint_kamino",
+              "cross_mint_jupiter",
+              "cross_mint_loyal_hub"
+            ],
+            "settings": "4VdmfK1fQcAx3BGcSoH2F48kzqd2pBwVCYWc2bLEsv3v",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "3UdYfDBEMEACmkjUyKZzhkEYf3gu7onBGzgYPHxU424H"
+            ],
+            "swap_lanes": [
+              {
+                "exact_in_discriminator": [
+                  187,
+                  100,
+                  250,
+                  204,
+                  49,
+                  196,
+                  175,
+                  20
+                ],
+                "kind": "jupiter",
+                "program_id": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+              },
+              {
+                "hub_authorizer": "72wVRMkAo8MKryo4afnkrWCJPRDJYkGKqqJx6KXyGKJS",
+                "kind": "loyal_hub",
+                "max_fee_bps": 50
+              }
+            ],
+            "threshold": 1,
+            "universe_preset": null,
+            "vault_index": 0,
+            "vault_pubkey": "3ADFT3D4m1ENJxMZPiyjFVcqJMZbt4Mxu1XA8dqyytBn"
+          },
+          "kind": "route"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "4VdmfK1fQcAx3BGcSoH2F48kzqd2pBwVCYWc2bLEsv3v"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "HvSPQZYAEcsDWjvJDEuNZe2atzEXxpsRWZRt9XruvMaA"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "HvSPQZYAEcsDWjvJDEuNZe2atzEXxpsRWZRt9XruvMaA"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "5QbTvYocqtmUizb4X4ZALPpGihiWgpbZqPeMkh4DuqLx"
+          }
+        ],
+        "data": "8ad140a34f43e94c010100000007010000000000000003000500000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00080600000000000100000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d0002000100000024f1fc900a771831d75fa373d41c2f9c8a1253e4ea1e5185bfc92d0034ec8af800050001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d610106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90901010000002000000000000000052000000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90b000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000100000000000000000000000508000000eb34779895c51407000479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f0600000000000100000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d000101010000002000000000000000052000000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90201010000002000000000000000052000000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9030002000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6124cb60d2831fff779dfa86464ff9f1063f8519a71652d6cc6e4c6565d403fe6a0106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9040002000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6124cb60d2831fff779dfa86464ff9f1063f8519a71652d6cc6e4c6565d403fe6a0106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a905000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000200000000000000000000000508000000bb64facc31c4af140018000000000000000164000504f0a807a9e130a3d5220ff521c3ccdfc341d9d9d15f7ef49a51124759a1cf080b0000000000010000006ac27d949dbf8d0ae3636db68158c93af4386e7e840d2fd73c0e579973eead720104f0a807a9e130a3d5220ff521c3ccdfc341d9d9d15f7ef49a51124759a1cf0801000100000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d0004010000000000050100000000000201010000002000000000000000052000000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d00000301010000002000000000000000052000000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d0000060002000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6124cb60d2831fff779dfa86464ff9f1063f8519a71652d6cc6e4c6565d403fe6a00070002000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6124cb60d2831fff779dfa86464ff9f1063f8519a71652d6cc6e4c6565d403fe6a0009000100000059a5507ce671130c6a9e76f56a57e5ee9ae5c35111028187db3a1a044aa77313000a000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000b000100000006ddf6e1ee758fde18425dbce46ccddab61afc4d83b90d27febdf928d8a18bfc0002000000000000000000000000010019000000000000000132000504b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00080600000000000100000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d0002000100000024f1fc900a771831d75fa373d41c2f9c8a1253e4ea1e5185bfc92d0034ec8af800050001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d610106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90901010000002000000000000000052000000020137385a48ff04ff7082b806308821aa634c4f2930c6f13945d024669c6925d000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90b000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000100000000000000000000000508000000d8e0bf1bcc9766af0004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00080200000000000100000024f1fc900a771831d75fa373d41c2f9c8a1253e4ea1e5185bfc92d0034ec8af8000100010000005fa6899bdaca68e35178038df83a0972e1c4648e04e7423008756f98b4175f00000100000000000000000000000508000000218493e497c0485900000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "all_in_one_jupiter_hub"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "BuN7iHvzeJZk2HCKBu9ZciHvp3jSadVb7EdG2xuSApMd",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+              "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+              "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+              "Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN",
+              "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+              "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+              "9zNQRsGLjNKwCUU5Gq5LR8beUCPzQMVMqKAi3SSZh54u",
+              "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9",
+              "3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC",
+              "BTRR3sj1Bn2ZjuemgbeQ6SCtf84iXS81CS7UDTSxUCaK"
+            ],
+            "kamino_markets": [
+              "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+              "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+              "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF"
+            ],
+            "policy_account": "94dPKdKjLugzKe8hAQysYv6e7WwGFAmtNs3CWBvh2psp",
+            "policy_seed": 1,
+            "risk_profile": "safe",
+            "route_modes": [
+              "same_mint_kamino",
+              "cross_mint_jupiter"
+            ],
+            "settings": "Bi7SEpMpU11DRMC3HWYUroUXEs6wfKoxx4484JYq4AUF",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+              "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+              "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+              "Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN",
+              "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+              "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+              "9zNQRsGLjNKwCUU5Gq5LR8beUCPzQMVMqKAi3SSZh54u",
+              "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9",
+              "3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC",
+              "BTRR3sj1Bn2ZjuemgbeQ6SCtf84iXS81CS7UDTSxUCaK"
+            ],
+            "swap_lanes": [
+              {
+                "exact_in_discriminator": [
+                  187,
+                  100,
+                  250,
+                  204,
+                  49,
+                  196,
+                  175,
+                  20
+                ],
+                "kind": "jupiter",
+                "program_id": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+              }
+            ],
+            "threshold": 1,
+            "universe_preset": "kamino_stable",
+            "vault_index": 0,
+            "vault_pubkey": "59cEeCRxiZHATzMsvQ3VSZ4RbdanWCpZyXRJ4aWAifRk"
+          },
+          "kind": "route"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "Bi7SEpMpU11DRMC3HWYUroUXEs6wfKoxx4484JYq4AUF"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "BuN7iHvzeJZk2HCKBu9ZciHvp3jSadVb7EdG2xuSApMd"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "BuN7iHvzeJZk2HCKBu9ZciHvp3jSadVb7EdG2xuSApMd"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "94dPKdKjLugzKe8hAQysYv6e7WwGFAmtNs3CWBvh2psp"
+          }
+        ],
+        "data": "8ad140a34f43e94c010100000007010000000000000003000400000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008060000000000010000003da33c17f20770a423584e61f461ac83c4c6269f0ce63ebc588f0a576f80d8cb00020005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a81380005000e000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61ce010e60afedb22717bd63192f54145a3f965a33bb82d2c7029eb2ce1e2082641792483b6c8a2a87b7471d814f9591f9395c840a9ce3d9f4d5ba7d3a4b8a749e0707312d1d41da71f0fb280c1662cd65ebeb2e0859c0cbae3fdbdcb26c86e0af1c2ee67f124df6edf2a9d2bf5e3a533c7701b58f8daa957210a1e5b0618cd2beb5d25af81fdd47e23fc51cb929f2bff3e1bf6ad64df77d3e523a228023e73e6ccb6d67bfdd6f6c95e725855f37b0257a1ea2a594c18795bb26f3501272c14e95a5db61aaf1569da71234cc001c123012e983116784ef9ed958eb525f19fa88969371c6ba34f038551aa6abcbc6b234430538ccdca7a5d729b73cab9212ec7f2c07072f054ab48d987da4e5969e632cddf38dd64141349da41b0b695b91d15c3a858fcd94516004988b037b523638e9b44118b1dc4845c7da3bfece6c2a5f96928cc05daf434aa7f7485a28484fc3069311384b17c36db51f4b3bb202cbc80cc8248e68e4df4cb4cd5e75acf2fdd02c9807c4c0d4d20cc9918ccc15e9abf708b59b599376abeb47121fbde2c928f82b14168e0dbc25b6dde2812feec55d3f78e00106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9090101000000200000000000000005200000003da33c17f20770a423584e61f461ac83c4c6269f0ce63ebc588f0a576f80d8cb000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90b000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000100000000000000000000000508000000eb34779895c51407000479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f060000000000010000003da33c17f20770a423584e61f461ac83c4c6269f0ce63ebc588f0a576f80d8cb00010101000000200000000000000005200000003da33c17f20770a423584e61f461ac83c4c6269f0ce63ebc588f0a576f80d8cb000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9020101000000200000000000000005200000003da33c17f20770a423584e61f461ac83c4c6269f0ce63ebc588f0a576f80d8cb000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a903000e000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61ce010e60afedb22717bd63192f54145a3f965a33bb82d2c7029eb2ce1e2082641792483b6c8a2a87b7471d814f9591f9395c840a9ce3d9f4d5ba7d3a4b8a749e0707312d1d41da71f0fb280c1662cd65ebeb2e0859c0cbae3fdbdcb26c86e0af1c2ee67f124df6edf2a9d2bf5e3a533c7701b58f8daa957210a1e5b0618cd2beb5d25af81fdd47e23fc51cb929f2bff3e1bf6ad64df77d3e523a228023e73e6ccb6d67bfdd6f6c95e725855f37b0257a1ea2a594c18795bb26f3501272c14e95a5db61aaf1569da71234cc001c123012e983116784ef9ed958eb525f19fa88969371c6ba34f038551aa6abcbc6b234430538ccdca7a5d729b73cab9212ec7f2c07072f054ab48d987da4e5969e632cddf38dd64141349da41b0b695b91d15c3a858fcd94516004988b037b523638e9b44118b1dc4845c7da3bfece6c2a5f96928cc05daf434aa7f7485a28484fc3069311384b17c36db51f4b3bb202cbc80cc8248e68e4df4cb4cd5e75acf2fdd02c9807c4c0d4d20cc9918ccc15e9abf708b59b599376abeb47121fbde2c928f82b14168e0dbc25b6dde2812feec55d3f78e00106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a904000e000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61ce010e60afedb22717bd63192f54145a3f965a33bb82d2c7029eb2ce1e2082641792483b6c8a2a87b7471d814f9591f9395c840a9ce3d9f4d5ba7d3a4b8a749e0707312d1d41da71f0fb280c1662cd65ebeb2e0859c0cbae3fdbdcb26c86e0af1c2ee67f124df6edf2a9d2bf5e3a533c7701b58f8daa957210a1e5b0618cd2beb5d25af81fdd47e23fc51cb929f2bff3e1bf6ad64df77d3e523a228023e73e6ccb6d67bfdd6f6c95e725855f37b0257a1ea2a594c18795bb26f3501272c14e95a5db61aaf1569da71234cc001c123012e983116784ef9ed958eb525f19fa88969371c6ba34f038551aa6abcbc6b234430538ccdca7a5d729b73cab9212ec7f2c07072f054ab48d987da4e5969e632cddf38dd64141349da41b0b695b91d15c3a858fcd94516004988b037b523638e9b44118b1dc4845c7da3bfece6c2a5f96928cc05daf434aa7f7485a28484fc3069311384b17c36db51f4b3bb202cbc80cc8248e68e4df4cb4cd5e75acf2fdd02c9807c4c0d4d20cc9918ccc15e9abf708b59b599376abeb47121fbde2c928f82b14168e0dbc25b6dde2812feec55d3f78e00106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a905000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000300000000000000000000000508000000bb64facc31c4af14001800000000000000016400051a00000000000000050e00000000000000010000006800102700010004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008060000000000010000003da33c17f20770a423584e61f461ac83c4c6269f0ce63ebc588f0a576f80d8cb00020005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a81380005000e000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61ce010e60afedb22717bd63192f54145a3f965a33bb82d2c7029eb2ce1e2082641792483b6c8a2a87b7471d814f9591f9395c840a9ce3d9f4d5ba7d3a4b8a749e0707312d1d41da71f0fb280c1662cd65ebeb2e0859c0cbae3fdbdcb26c86e0af1c2ee67f124df6edf2a9d2bf5e3a533c7701b58f8daa957210a1e5b0618cd2beb5d25af81fdd47e23fc51cb929f2bff3e1bf6ad64df77d3e523a228023e73e6ccb6d67bfdd6f6c95e725855f37b0257a1ea2a594c18795bb26f3501272c14e95a5db61aaf1569da71234cc001c123012e983116784ef9ed958eb525f19fa88969371c6ba34f038551aa6abcbc6b234430538ccdca7a5d729b73cab9212ec7f2c07072f054ab48d987da4e5969e632cddf38dd64141349da41b0b695b91d15c3a858fcd94516004988b037b523638e9b44118b1dc4845c7da3bfece6c2a5f96928cc05daf434aa7f7485a28484fc3069311384b17c36db51f4b3bb202cbc80cc8248e68e4df4cb4cd5e75acf2fdd02c9807c4c0d4d20cc9918ccc15e9abf708b59b599376abeb47121fbde2c928f82b14168e0dbc25b6dde2812feec55d3f78e00106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9090101000000200000000000000005200000003da33c17f20770a423584e61f461ac83c4c6269f0ce63ebc588f0a576f80d8cb000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90b000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000100000000000000000000000508000000d8e0bf1bcc9766af0004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b000802000000000005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a81380001000500000027c64f5822216e61701c5fe53a6e5f6173aa460557610f6cda572bdd4c646f759c606742724ae06b2613369009fe8461f72ca94ace1e9827ed1d2c0146df9bd97131ab451ddad7c9c7f625140c7a3f6008c79410bae0a7a32d7a93bb65afdc6d91b9d3a6d24f478dbc0ea6439cc2b975c7d09acab552bf4935c5be544929ad490d783e1bbf35f21ac1b6791f040786513056ab0daba26886dc15f29fa419deab000100000000000000000000000508000000218493e497c0485900000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "preset_safe_jupiter"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "GmTTnA6PtF9qBHaEio4kcCofms1qbLvV2f8DEKqQfiAW",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+              "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+              "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+              "Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN",
+              "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+              "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+              "9zNQRsGLjNKwCUU5Gq5LR8beUCPzQMVMqKAi3SSZh54u",
+              "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9",
+              "3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC",
+              "BTRR3sj1Bn2ZjuemgbeQ6SCtf84iXS81CS7UDTSxUCaK"
+            ],
+            "kamino_markets": [
+              "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+              "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+              "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF",
+              "DxXdAyU3kCjnyggvHmY5nAwg5cRbbmdyX3npfDMjjMek",
+              "GMqmFygF5iSm5nkckYU6tieggFcR42SyjkkhK5rswFRs",
+              "CF32kn7AY8X1bW7ZkGcHc4X9ZWTxqKGCJk6QwrQkDcdw"
+            ],
+            "policy_account": "BPktozcavvJJ99wgj5BqhGAWd7ugyuLUPyrndPvViv7G",
+            "policy_seed": 1,
+            "risk_profile": "medium",
+            "route_modes": [
+              "same_mint_kamino"
+            ],
+            "settings": "3ZV3yJnajPMVy3Bz1g8AWpQMFJ1SPKm7Sm5DD3E1nzB3",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+              "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+              "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+              "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+              "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+              "Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN",
+              "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+              "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+              "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+              "9zNQRsGLjNKwCUU5Gq5LR8beUCPzQMVMqKAi3SSZh54u",
+              "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9",
+              "3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC",
+              "BTRR3sj1Bn2ZjuemgbeQ6SCtf84iXS81CS7UDTSxUCaK"
+            ],
+            "swap_lanes": [],
+            "threshold": 1,
+            "universe_preset": "kamino_stable",
+            "vault_index": 0,
+            "vault_pubkey": "8bo6aUp1s247wcFMTo7eZxKKSWSg3nMjZigitAsvCPhc"
+          },
+          "kind": "route"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "3ZV3yJnajPMVy3Bz1g8AWpQMFJ1SPKm7Sm5DD3E1nzB3"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "GmTTnA6PtF9qBHaEio4kcCofms1qbLvV2f8DEKqQfiAW"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "GmTTnA6PtF9qBHaEio4kcCofms1qbLvV2f8DEKqQfiAW"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "BPktozcavvJJ99wgj5BqhGAWd7ugyuLUPyrndPvViv7G"
+          }
+        ],
+        "data": "8ad140a34f43e94c010100000007010000000000000003000300000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00080600000000000100000070ebad55884e3a0ff68928c28e90ace63ac872a8a1fda1b9e9af75b9665c8a5300020008000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a8138c085d05b37025d3124bb537915a75a3aab192e5edc5bfbdb45caa46977e4c20de4360e81358a42b61df9b663e5ec10ea3c8fc0b139beab62671208f66de7cacaa708fbaea39dc1779ceb0ecd34d87dba1f53eb774f422a5247f3bae3c22c577a0005000e000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61ce010e60afedb22717bd63192f54145a3f965a33bb82d2c7029eb2ce1e2082641792483b6c8a2a87b7471d814f9591f9395c840a9ce3d9f4d5ba7d3a4b8a749e0707312d1d41da71f0fb280c1662cd65ebeb2e0859c0cbae3fdbdcb26c86e0af1c2ee67f124df6edf2a9d2bf5e3a533c7701b58f8daa957210a1e5b0618cd2beb5d25af81fdd47e23fc51cb929f2bff3e1bf6ad64df77d3e523a228023e73e6ccb6d67bfdd6f6c95e725855f37b0257a1ea2a594c18795bb26f3501272c14e95a5db61aaf1569da71234cc001c123012e983116784ef9ed958eb525f19fa88969371c6ba34f038551aa6abcbc6b234430538ccdca7a5d729b73cab9212ec7f2c07072f054ab48d987da4e5969e632cddf38dd64141349da41b0b695b91d15c3a858fcd94516004988b037b523638e9b44118b1dc4845c7da3bfece6c2a5f96928cc05daf434aa7f7485a28484fc3069311384b17c36db51f4b3bb202cbc80cc8248e68e4df4cb4cd5e75acf2fdd02c9807c4c0d4d20cc9918ccc15e9abf708b59b599376abeb47121fbde2c928f82b14168e0dbc25b6dde2812feec55d3f78e00106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90901010000002000000000000000052000000070ebad55884e3a0ff68928c28e90ace63ac872a8a1fda1b9e9af75b9665c8a53000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90b000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000100000000000000000000000508000000eb34779895c514070004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00080600000000000100000070ebad55884e3a0ff68928c28e90ace63ac872a8a1fda1b9e9af75b9665c8a5300020008000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a8138c085d05b37025d3124bb537915a75a3aab192e5edc5bfbdb45caa46977e4c20de4360e81358a42b61df9b663e5ec10ea3c8fc0b139beab62671208f66de7cacaa708fbaea39dc1779ceb0ecd34d87dba1f53eb774f422a5247f3bae3c22c577a0005000e000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61ce010e60afedb22717bd63192f54145a3f965a33bb82d2c7029eb2ce1e2082641792483b6c8a2a87b7471d814f9591f9395c840a9ce3d9f4d5ba7d3a4b8a749e0707312d1d41da71f0fb280c1662cd65ebeb2e0859c0cbae3fdbdcb26c86e0af1c2ee67f124df6edf2a9d2bf5e3a533c7701b58f8daa957210a1e5b0618cd2beb5d25af81fdd47e23fc51cb929f2bff3e1bf6ad64df77d3e523a228023e73e6ccb6d67bfdd6f6c95e725855f37b0257a1ea2a594c18795bb26f3501272c14e95a5db61aaf1569da71234cc001c123012e983116784ef9ed958eb525f19fa88969371c6ba34f038551aa6abcbc6b234430538ccdca7a5d729b73cab9212ec7f2c07072f054ab48d987da4e5969e632cddf38dd64141349da41b0b695b91d15c3a858fcd94516004988b037b523638e9b44118b1dc4845c7da3bfece6c2a5f96928cc05daf434aa7f7485a28484fc3069311384b17c36db51f4b3bb202cbc80cc8248e68e4df4cb4cd5e75acf2fdd02c9807c4c0d4d20cc9918ccc15e9abf708b59b599376abeb47121fbde2c928f82b14168e0dbc25b6dde2812feec55d3f78e00106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90901010000002000000000000000052000000070ebad55884e3a0ff68928c28e90ace63ac872a8a1fda1b9e9af75b9665c8a53000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90b000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000100000000000000000000000508000000d8e0bf1bcc9766af0004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b000802000000000008000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a8138c085d05b37025d3124bb537915a75a3aab192e5edc5bfbdb45caa46977e4c20de4360e81358a42b61df9b663e5ec10ea3c8fc0b139beab62671208f66de7cacaa708fbaea39dc1779ceb0ecd34d87dba1f53eb774f422a5247f3bae3c22c577a0001000800000091fab7d794f7c90e6a15d5e7a323677a2e9f619f908b5d0b36a327167be4cfb3c559acce326923e1ae0446631df9cc5bb5c7c2366c18fe1a2af8d136eb06cd157cf675595437519b280fff289342e3b67dce996a52b1f791e3004aee53de4df9ff40082b8a5574ae6dbc2c73367416cc39ff96271a899b063ab461ef76eecb69f105d8d8393f96ce2131950588f08a7154b9716ccadf7dd73c9e23cf4d21abd479c4ec10a27db43f06e7bb73192df88752afd1d77d095dca2a3971da9f015d4b7edc68639cdeca58392e0afa3dc2288bcabcfeca98ad448c80e1da9f61be50a5985fe08237f08de430b7c7ef91b48ba17b012f4551e8dddb5726ba62eeacfea1000100000000000000000000000508000000218493e497c0485900000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "preset_medium"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "7QnqsiRKvz4oTpJATxmZb5u2oUxGXDeWZRZa5REMDTGV",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            ],
+            "kamino_markets": [
+              "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+              "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+              "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF"
+            ],
+            "policy_account": "CpZgVBC3dPznkbHc6nmdBXvNrCTShRXVvVLP77fNKdrH",
+            "policy_seed": 1,
+            "risk_profile": "safe",
+            "route_modes": [
+              "same_mint_kamino"
+            ],
+            "settings": "AdX9DGTtCreNFU54vb8if7yMQ5NybwGUkoPuiPpbE8Ey",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            ],
+            "swap_lanes": [],
+            "threshold": 1,
+            "universe_preset": "kamino_stable",
+            "vault_index": 0,
+            "vault_pubkey": "AVCCFvc6jZmD3jegRAqA3Pxz2aukVBGPcUQsuDgcMuUp"
+          },
+          "kind": "route"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "AdX9DGTtCreNFU54vb8if7yMQ5NybwGUkoPuiPpbE8Ey"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "7QnqsiRKvz4oTpJATxmZb5u2oUxGXDeWZRZa5REMDTGV"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "7QnqsiRKvz4oTpJATxmZb5u2oUxGXDeWZRZa5REMDTGV"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "CpZgVBC3dPznkbHc6nmdBXvNrCTShRXVvVLP77fNKdrH"
+          }
+        ],
+        "data": "8ad140a34f43e94c010100000007010000000000000003000300000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008030000000000010000008cf21a2930e58e9e41106a1828b9250013e5842c59483a41cdc995643195ea4d00020005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a813800050001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61000100000000000000000000000508000000eb34779895c514070004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008030000000000010000008cf21a2930e58e9e41106a1828b9250013e5842c59483a41cdc995643195ea4d00020005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a813800050001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61000100000000000000000000000508000000d8e0bf1bcc9766af0004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008080000000000010000008cf21a2930e58e9e41106a1828b9250013e5842c59483a41cdc995643195ea4d000100010000008cf21a2930e58e9e41106a1828b9250013e5842c59483a41cdc995643195ea4d00030005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a8138000400010000000000000000000000000000000000000000000000000000000000000000000000000500010000000000000000000000000000000000000000000000000000000000000000000000000600010000009cdd6758914ab4130656aeda29075890736fdf26f38880c8fd026a29e90ba70a0007000100000006a7d517192c5c51218cc94c3d4af17f58daee089ba1fd44e3dbd98a0000000000080001000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000050a000000fb0ae74c1b0b9f60000000000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "compact_same_mint_safe"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "APhbvE1dVToDKDJT8kMm4dJPdMapuGxfukG8XS1JWWeJ",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            ],
+            "kamino_markets": [
+              "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+              "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+              "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF"
+            ],
+            "policy_account": "GUf3mdvoPX6rF7UQGgy57pH8nEJasHJvFnqa5M4jDs4L",
+            "policy_seed": 12,
+            "risk_profile": "safe",
+            "route_modes": [
+              "same_mint_kamino"
+            ],
+            "settings": "7Sgr9gc4Qtd4NMTxcDb5e9Nuo5fbHnNd7m3TQLkzT37Q",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            ],
+            "swap_lanes": [],
+            "threshold": 1,
+            "universe_preset": "kamino_stable",
+            "vault_index": 0,
+            "vault_pubkey": "2pTMuv7KpzQKsD9cejCDiFXQNZSfWaKDKj9c8aq5m8j7"
+          },
+          "kind": "route"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "7Sgr9gc4Qtd4NMTxcDb5e9Nuo5fbHnNd7m3TQLkzT37Q"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "APhbvE1dVToDKDJT8kMm4dJPdMapuGxfukG8XS1JWWeJ"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "APhbvE1dVToDKDJT8kMm4dJPdMapuGxfukG8XS1JWWeJ"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "GUf3mdvoPX6rF7UQGgy57pH8nEJasHJvFnqa5M4jDs4L"
+          }
+        ],
+        "data": "8ad140a34f43e94c0101000000070c0000000000000003000200000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008030000000000010000001b03ca7a694fab858de6143a498d02b8bfa604edb7ca3432f6487db64f66096600020005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a813800050001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61000100000000000000000000000508000000eb34779895c514070004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008030000000000010000001b03ca7a694fab858de6143a498d02b8bfa604edb7ca3432f6487db64f66096600020005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a813800050001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61000100000000000000000000000508000000d8e0bf1bcc9766af00000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "same_mint_market_mint"
+    },
+    {
+      "events": [],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "2H1bjbYyCD2s1j1QHmz6hmR9yfpLJach2VZQdzu59xbg"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "FjcTqRfo9vjv8GHGhzSC5sg4gdE4ATuiuTtiixXy9ytS"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "FjcTqRfo9vjv8GHGhzSC5sg4gdE4ATuiuTtiixXy9ytS"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "3azTYBcAtQNJYVYRC88YnhAxm5tomCbTkJ4sSzhJdxjM"
+          }
+        ],
+        "data": "8ad140a34f43e94c0101000000070d0000000000000003000200000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008030000000000010000008f592ff41ee6244a04009ba18cf14f0695afc612226555388d1f03157d6b19e800020005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a813800050001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d61000100000000000000000000000508000000d8e0bf1bcc9766af0004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008080000000000010000008f592ff41ee6244a04009ba18cf14f0695afc612226555388d1f03157d6b19e8000100010000008f592ff41ee6244a04009ba18cf14f0695afc612226555388d1f03157d6b19e800030005000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a813800040001000000000000000000000000000000000000000000000000000000000000000000000000050001000000000000000000000000000000000000000000000000000000000000000000000000060001000000ce1dfa67f020f0a19942b937f9a689ce10bc147587bd0027966f70a4b3b94f370007000100000006a7d517192c5c51218cc94c3d4af17f58daee089ba1fd44e3dbd98a0000000000080001000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000050a000000fb0ae74c1b0b9f60000000000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "init_obligation_setup"
+    },
+    {
+      "events": [],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "8w1wabS79MRczAC9WYdt1vCB7YuGqj3BM891UAZzd7KT"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "Gb8xsxicFCHy6TC6zofcHaaWTgJJSqwMdFvyehcHm4c9"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "Gb8xsxicFCHy6TC6zofcHaaWTgJJSqwMdFvyehcHm4c9"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "7XC2giDhgykfaEKbxzu1x1Aez3axUB8CbpgV88X5H4BN"
+          }
+        ],
+        "data": "8ad140a34f43e94c010100000007010000000000000003000100000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008060000000000010000004f17fac12dddfa89281c476520214f0224da08fde5259c5f499ead6ea4af0fb80002000100000024f1fc900a771831d75fa373d41c2f9c8a1253e4ea1e5185bfc92d0034ec8af800050001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d610106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9090101000000200000000000000005200000004f17fac12dddfa89281c476520214f0224da08fde5259c5f499ead6ea4af0fb8000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90b000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000100000000000000000000000508000000eb34779895c5140700000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "three_step_0"
+    },
+    {
+      "events": [],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "8w1wabS79MRczAC9WYdt1vCB7YuGqj3BM891UAZzd7KT"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "Gb8xsxicFCHy6TC6zofcHaaWTgJJSqwMdFvyehcHm4c9"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "Gb8xsxicFCHy6TC6zofcHaaWTgJJSqwMdFvyehcHm4c9"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "3PkW8bqSR1LYYhATJhMfZ67nihWXPJ436TLnnYKNLim5"
+          }
+        ],
+        "data": "8ad140a34f43e94c01010000000702000000000000000300010000000479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f060000000000010000004f17fac12dddfa89281c476520214f0224da08fde5259c5f499ead6ea4af0fb800010101000000200000000000000005200000004f17fac12dddfa89281c476520214f0224da08fde5259c5f499ead6ea4af0fb8000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9020101000000200000000000000005200000004f17fac12dddfa89281c476520214f0224da08fde5259c5f499ead6ea4af0fb8000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9030002000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6124cb60d2831fff779dfa86464ff9f1063f8519a71652d6cc6e4c6565d403fe6a0106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9040002000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6124cb60d2831fff779dfa86464ff9f1063f8519a71652d6cc6e4c6565d403fe6a0106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a905000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000200000000000000000000000508000000bb64facc31c4af1400180000000000000001640005000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "three_step_1"
+    },
+    {
+      "events": [],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "8w1wabS79MRczAC9WYdt1vCB7YuGqj3BM891UAZzd7KT"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "Gb8xsxicFCHy6TC6zofcHaaWTgJJSqwMdFvyehcHm4c9"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "Gb8xsxicFCHy6TC6zofcHaaWTgJJSqwMdFvyehcHm4c9"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "BPpwH5x9TMCNg2YwvujWBW93jyzy9ViS3tmWAvo14Lo7"
+          }
+        ],
+        "data": "8ad140a34f43e94c010100000007030000000000000003000200000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008060000000000010000004f17fac12dddfa89281c476520214f0224da08fde5259c5f499ead6ea4af0fb80002000100000024f1fc900a771831d75fa373d41c2f9c8a1253e4ea1e5185bfc92d0034ec8af800050001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d610106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9090101000000200000000000000005200000004f17fac12dddfa89281c476520214f0224da08fde5259c5f499ead6ea4af0fb8000106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90b000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000c000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9000100000000000000000000000508000000d8e0bf1bcc9766af0004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008080000000000010000004f17fac12dddfa89281c476520214f0224da08fde5259c5f499ead6ea4af0fb8000100010000004f17fac12dddfa89281c476520214f0224da08fde5259c5f499ead6ea4af0fb80003000100000024f1fc900a771831d75fa373d41c2f9c8a1253e4ea1e5185bfc92d0034ec8af8000400010000000000000000000000000000000000000000000000000000000000000000000000000500010000000000000000000000000000000000000000000000000000000000000000000000000600010000008283547bf5e0d9078bffc830d8c04f31df30916809c0ff51cc8389013ecdfc6e0007000100000006a7d517192c5c51218cc94c3d4af17f58daee089ba1fd44e3dbd98a0000000000080001000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000050a000000fb0ae74c1b0b9f60000000000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "three_step_2"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "3gvhsGMvo4Vbw817iQHZocJqBpTDwDe6aA24mupYFyNw",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            ],
+            "kamino_markets": [
+              "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+              "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+              "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+              "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+              "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF"
+            ],
+            "policy_account": "2UgcAQwqDfh8m2bGihRJa9xFXAru8zhJVRcHHc5teSrn",
+            "policy_seed": 0,
+            "risk_profile": "safe",
+            "route_modes": [
+              "same_mint_kamino",
+              "cross_mint_jupiter"
+            ],
+            "settings": "4cgZYF8HxJKoHCvtCXYGPz1v5G4KLp66y9fgFmtWE88c",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [
+              "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            ],
+            "swap_lanes": [
+              {
+                "exact_in_discriminator": [
+                  187,
+                  100,
+                  250,
+                  204,
+                  49,
+                  196,
+                  175,
+                  20
+                ],
+                "kind": "jupiter",
+                "program_id": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+              }
+            ],
+            "threshold": 1,
+            "universe_preset": "kamino_stable",
+            "vault_index": 0,
+            "vault_pubkey": "sRP7Kbj3KKXpkkzr4vQHoa8AtEAyCEA37rEaVWahMMV"
+          },
+          "kind": "route"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "4cgZYF8HxJKoHCvtCXYGPz1v5G4KLp66y9fgFmtWE88c"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "3gvhsGMvo4Vbw817iQHZocJqBpTDwDe6aA24mupYFyNw"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "3gvhsGMvo4Vbw817iQHZocJqBpTDwDe6aA24mupYFyNw"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "2UgcAQwqDfh8m2bGihRJa9xFXAru8zhJVRcHHc5teSrn"
+          }
+        ],
+        "data": "8ad140a34f43e94c01010000000815f326d59c55b49ad222dd9efa879e5811e96c321137ac2786e9f1900683fd03010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f1185321540701000000000004000f04b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00080cea9bbcfa87bd993007cdcf8b28de76cd41a0c42c809e0614435b90cf77cc64667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c42e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759d99234ca6362ce9de16ce9a69f20e42ce78222cc6c0fecc6c32440122234a8138c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a90479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f4f4f4beb02cfa8736a079835d2998362b80302da8ac30b033e7571ccb9745a91c64422cfc6f56c6e7237232e2ba3a76c31391107d4b805d8483438d2ebc92022b8253772d9c5f1b4c8b77491898c67194866f93aa6709729054829bab7c74207c1026e683ad42d078e22477709ed1612519b0eb19102fa33020c294deb74a7fce852a54935a4c2982fc9d07ad65129bfd9f660d11c3814339d88bae2e4be51940400060000010100020005020304050600050001070108090101200000000000000005200000000cea9bbcfa87bd993007cdcf8b28de76cd41a0c42c809e0614435b90cf77cc640001080b000108000c000108000100000000000000000508000000eb34779895c514070009060000010100010101200000000000000005200000000cea9bbcfa87bd993007cdcf8b28de76cd41a0c42c809e0614435b90cf77cc64000108020101200000000000000005200000000cea9bbcfa87bd993007cdcf8b28de76cd41a0c42c809e0614435b90cf77cc6400010803000107010804000107010805000108000200000000000000000508000000bb64facc31c4af140018000000000000000164000500060000010100020005020304050600050001070108090101200000000000000005200000000cea9bbcfa87bd993007cdcf8b28de76cd41a0c42c809e0614435b90cf77cc640001080b000108000c000108000100000000000000000508000000d8e0bf1bcc9766af0000020000050203040506000100050a0b0c0d0e000100000000000000000508000000218493e497c04859000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "update_all_in_one"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "AWxggjuZRmWULwxwPeM6ZZxRtdDdekVq22mFRx2QbW7U",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "max_amount_per_period": 500000,
+            "policy_account": "7GCoRbsqAmq1eN83LfkegD4qutpX4Mwu8Spn9FH12ijR",
+            "policy_seed": 9,
+            "settings": "8GwUgtTvyvPXGjc1NsjASJA3SbtYJtRETgEBnSn8rD5v",
+            "signature": "golden-signature",
+            "slot": 77,
+            "threshold": 1,
+            "token_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "vault_index": 1,
+            "vault_pubkey": "FujKGxTK2VsQad9tTpPjtMYs55dtCpnmKuZikNUwkFci",
+            "vault_token_ata": "3U24AHaaXX2oGtbxCPcKqtHbfCCJcWeL7uvjmnpTeWc7",
+            "vault_usdc_ata": "3U24AHaaXX2oGtbxCPcKqtHbfCCJcWeL7uvjmnpTeWc7",
+            "wallet": "GfsJWjmGXMfct8JMR9Lm9ySUnniZbnGUTQDbT8ipWf9U",
+            "wallet_token_ata": "53bjdfCnUSTrctVKjTnZf8FqriCRRuGYbWd7m56DAEAa",
+            "wallet_usdc_ata": "53bjdfCnUSTrctVKjTnZf8FqriCRRuGYbWd7m56DAEAa"
+          },
+          "kind": "sweep"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "8GwUgtTvyvPXGjc1NsjASJA3SbtYJtRETgEBnSn8rD5v"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "AWxggjuZRmWULwxwPeM6ZZxRtdDdekVq22mFRx2QbW7U"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "73FHBw5iTm1saCWr2GA3PF7o7zASCrVfiHnzxARqBBo7"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "7GCoRbsqAmq1eN83LfkegD4qutpX4Mwu8Spn9FH12ijR"
+          }
+        ],
+        "data": "8ad140a34f43e94c0101000000070900000000000000030101000000bbc777afba68f0123ec0c4d1b7ee896e9301c929c55a06ba95182158258c15a909000000000106000000000000000000000000030003000000000000000520000000e8d44050873dba865aa7c170ab4cce64d90839a34dcfd6cf71d14e0205443b1b0023000000000000000520000000dd85aa347cc4f82a7043654e72f57b8fd00aacb36c41493a214972dd10f6fdc7006b000000000000000520000000890f728c85f07bcf266100cb76e2503a8ba505853327542f477e5ff77fe631cc008b000000000000000520000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6100c3000000000000000320a10700000000000501bbc777afba68f0123ec0c4d1b7ee896e9301c929c55a06ba95182158258c15a9010001000000890f728c85f07bcf266100cb76e2503a8ba505853327542f477e5ff77fe631cc01bbc777afba68f0123ec0c4d1b7ee896e9301c929c55a06ba95182158258c15a90200010000003c192f31c4c63db0e2abe7150593e4a6edfc926c139ca253d48d5c6cdb69aa470106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a903000100000024a33f7d658c21fe6673783eced56496649529022da25f80f72ca05ee9441c100106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9040001000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d610106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a905000100000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a900060001000000dd85aa347cc4f82a7043654e72f57b8fd00aacb36c41493a214972dd10f6fdc70007000100000022045e49e3da36b56de17bd168b45aa221b310de85bda8aba15e81b00fba858200080001000000bbc777afba68f0123ec0c4d1b7ee896e9301c929c55a06ba95182158258c15a90003000000000000000000000000050009000000000000000520000000e8d44050873dba865aa7c170ab4cce64d90839a34dcfd6cf71d14e0205443b1b0029000000000000000520000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d6100000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "canonical_subscription_sweep"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "3Gs1tfAVQprDtQNiC5dBZzzsCzDZe7q1DBAgPKggVPSQ",
+            "cluster": "mainnet-beta",
+            "daily_source_mint_spending_cap": 1000000000,
+            "delegated_signer": "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9",
+            "manifest_fingerprint": "bb58a340f19f2c7e7631620c6ceee40aebc9931b1285c02b3ad1d696069483ae",
+            "max_slippage_bps": 75,
+            "mutation": "create",
+            "policy_account": "8KMPBXpH7q3J87gyAwn3xVGJ6yjQeHJRqGWiC9Ks9RUa",
+            "policy_seed": 21,
+            "settings": "HKn73VCh4HKQyxNyuxtMvujutm15Pa9BSR2wfP6G7MKH",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "source_shard": "classic",
+            "vault_index": 0,
+            "vault_pubkey": "LAwydpKEzJwiKd9XSGTM6BJpzPHE92pxrxHcUZTePM9"
+          },
+          "kind": "cross_mint"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "HKn73VCh4HKQyxNyuxtMvujutm15Pa9BSR2wfP6G7MKH"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "3Gs1tfAVQprDtQNiC5dBZzzsCzDZe7q1DBAgPKggVPSQ"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "3Gs1tfAVQprDtQNiC5dBZzzsCzDZe7q1DBAgPKggVPSQ"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "8KMPBXpH7q3J87gyAwn3xVGJ6yjQeHJRqGWiC9Ks9RUa"
+          }
+        ],
+        "data": "8ad140a34f43e94c01010000000715000000000000000300020000000479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f0200000000000100000004e94891282e3854463948d2fd122ba8eebc30c5b54844382939d2f916d93f500002000600000064482a70d6d03ad3232edd0e1eb02ec116c0f93f8b2dc4e22f8922200599a58f42be1205d9eec94682c9b8fdb596155917eb4d6b760595dab394ecfefd78ef6a020bffc06105b594d4bec0b9b83094f114fd226a0e2fc98304c8dbeccb10cd3a26b5651edfd62cca3bf66422a2578704f708e30f5efd06e26d37774d810c17e38d74a8d8f21e8df8c855af37210f46c011075d7b6992c3c8947bf5c42167a3028a2c502a1324c1df889292c2754afff31a4217df1e83aa4adf55b6a619a80c19000300000000000000000000000508000000bb64facc31c4af14001800000000000000014b00051a000000000000000000000479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f0200000001000100000004e94891282e3854463948d2fd122ba8eebc30c5b54844382939d2f916d93f500005000600000064482a70d6d03ad3232edd0e1eb02ec116c0f93f8b2dc4e22f8922200599a58f42be1205d9eec94682c9b8fdb596155917eb4d6b760595dab394ecfefd78ef6a020bffc06105b594d4bec0b9b83094f114fd226a0e2fc98304c8dbeccb10cd3a26b5651edfd62cca3bf66422a2578704f708e30f5efd06e26d37774d810c17e38d74a8d8f21e8df8c855af37210f46c011075d7b6992c3c8947bf5c42167a3028a2c502a1324c1df889292c2754afff31a4217df1e83aa4adf55b6a619a80c19000300000000000000000000000508000000d19853937cfed8e9001900000000000000014b00051b00000000000000000000000003000000c6fa7af3bedbad3a3d65f36aabc97431b1bbe4c2d2f6e0e47ca60203452f5d610000000000000000000100ca9a3b00000000ce010e60afedb22717bd63192f54145a3f965a33bb82d2c7029eb2ce1e2082640000000000000000000100ca9a3b000000000707312d1d41da71f0fb280c1662cd65ebeb2e0859c0cbae3fdbdcb26c86e0af0000000000000000000100ca9a3b00000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "cross_mint_classic"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "DACMmb1f7gTAJoJfXyn2whPRzoRxBN2DMGavREpDgADa",
+            "cluster": "mainnet-beta",
+            "daily_source_mint_spending_cap": 1000000000,
+            "delegated_signer": "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9",
+            "manifest_fingerprint": "f32c6d7f3256aae04e79d03c005e5a74229e2719ab35e198e322f9d2be5460f6",
+            "max_slippage_bps": 75,
+            "mutation": "create",
+            "policy_account": "GKCsiGABxCyXrQqnJuxh1yXuUJqetTudYqsQj95txoP5",
+            "policy_seed": 21,
+            "settings": "CXtZL3CBWabZRYRGYQfsLUGqLQWdGTjBz3PtXcibxxox",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "source_shard": "token_2022",
+            "vault_index": 0,
+            "vault_pubkey": "78oVPcZC7V9obceiEWQ2vazA27AEuEn6KZ39RC2T1cZn"
+          },
+          "kind": "cross_mint"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "CXtZL3CBWabZRYRGYQfsLUGqLQWdGTjBz3PtXcibxxox"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "DACMmb1f7gTAJoJfXyn2whPRzoRxBN2DMGavREpDgADa"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "DACMmb1f7gTAJoJfXyn2whPRzoRxBN2DMGavREpDgADa"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "GKCsiGABxCyXrQqnJuxh1yXuUJqetTudYqsQj95txoP5"
+          }
+        ],
+        "data": "8ad140a34f43e94c01010000000715000000000000000300020000000479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f020000000000010000005b25c0c78f221e80a5fa3662e2e61c71fd8fb8920683cc50948dc5be31fc395900020006000000accda11ffe721e52de1ca9e05553280382495fce79f90e676245031524462016163c7d1bf3032902102b1a8ecc969d2ff9cfdf9e9448324468fde0276d4957ecef9682bde8443f1d5a4e7f8d69fd24a0a623571a5009aab74f60ce16255134ffe8bfd88efdb359a54a5e72abeb02df306426dde4a873c9f71ebeeb22b3848fd18a938186e1c01f10e340cab3afe24af1b4c9784962842531685948d8a6b072ae24ac1877a36d5cf22a249b80860b1c3def128fee7b69b6bc9ff1424a5b720c96000300000000000000000000000508000000bb64facc31c4af14001800000000000000014b00051a000000000000000000000479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f020000000100010000005b25c0c78f221e80a5fa3662e2e61c71fd8fb8920683cc50948dc5be31fc395900050006000000accda11ffe721e52de1ca9e05553280382495fce79f90e676245031524462016163c7d1bf3032902102b1a8ecc969d2ff9cfdf9e9448324468fde0276d4957ecef9682bde8443f1d5a4e7f8d69fd24a0a623571a5009aab74f60ce16255134ffe8bfd88efdb359a54a5e72abeb02df306426dde4a873c9f71ebeeb22b3848fd18a938186e1c01f10e340cab3afe24af1b4c9784962842531685948d8a6b072ae24ac1877a36d5cf22a249b80860b1c3def128fee7b69b6bc9ff1424a5b720c96000300000000000000000000000508000000d19853937cfed8e9001900000000000000014b00051b00000000000000000000000003000000a5db61aaf1569da71234cc001c123012e983116784ef9ed958eb525f19fa88960000000000000000000100ca9a3b000000001c2ee67f124df6edf2a9d2bf5e3a533c7701b58f8daa957210a1e5b0618cd2be0000000000000000000100ca9a3b000000001792483b6c8a2a87b7471d814f9591f9395c840a9ce3d9f4d5ba7d3a4b8a749e0000000000000000000100ca9a3b00000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "cross_mint_token_2022"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd",
+            "cluster": "mainnet-beta",
+            "policy_account": "BoyMkTbQ7TiBCjJMjBBgQSPKs5i8YCWhyoEqui3Ecrb5",
+            "settings": "2pMhswm2JSsnZN2XjifEzHCyF4kEHZgpYorpXt9Pj8jL",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed"
+          },
+          "kind": "removal"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "2pMhswm2JSsnZN2XjifEzHCyF4kEHZgpYorpXt9Pj8jL"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "BoyMkTbQ7TiBCjJMjBBgQSPKs5i8YCWhyoEqui3Ecrb5"
+          }
+        ],
+        "data": "8ad140a34f43e94c010100000009a09d4f75941543f56e4859937cdbdf8ba672981b7e89021637a65ae641ea306400",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "remove_one"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd",
+            "cluster": "mainnet-beta",
+            "policy_account": "BoyMkTbQ7TiBCjJMjBBgQSPKs5i8YCWhyoEqui3Ecrb5",
+            "settings": "2pMhswm2JSsnZN2XjifEzHCyF4kEHZgpYorpXt9Pj8jL",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed"
+          },
+          "kind": "removal"
+        },
+        {
+          "input": {
+            "authority": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd",
+            "cluster": "mainnet-beta",
+            "policy_account": "84TN4gErXFWBAcUAwjkhyndMREDKY8XM3vubNg8gKXW8",
+            "settings": "2pMhswm2JSsnZN2XjifEzHCyF4kEHZgpYorpXt9Pj8jL",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed"
+          },
+          "kind": "removal"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "2pMhswm2JSsnZN2XjifEzHCyF4kEHZgpYorpXt9Pj8jL"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "BoyMkTbQ7TiBCjJMjBBgQSPKs5i8YCWhyoEqui3Ecrb5"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "84TN4gErXFWBAcUAwjkhyndMREDKY8XM3vubNg8gKXW8"
+          }
+        ],
+        "data": "8ad140a34f43e94c010200000009a09d4f75941543f56e4859937cdbdf8ba672981b7e89021637a65ae641ea30640968e45c1e123e23a4f7e902794c7e296b4959316833252e4fec504a94b0ac7ab100",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "remove_two"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd",
+            "cluster": "mainnet-beta",
+            "policy_account": "8ystAmJbXkPZcd6thLtpfJtUvgmao64Cd7nnaYB17ZNN",
+            "settings": "2pMhswm2JSsnZN2XjifEzHCyF4kEHZgpYorpXt9Pj8jL",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed"
+          },
+          "kind": "removal"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "2pMhswm2JSsnZN2XjifEzHCyF4kEHZgpYorpXt9Pj8jL"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "CbBGb8JBkh6w91HTXNGnXqSNzViKHP2EJm1fFSq22Tkd"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "8ystAmJbXkPZcd6thLtpfJtUvgmao64Cd7nnaYB17ZNN"
+          }
+        ],
+        "data": "8ad140a34f43e94c0101000000087693ddd28e9e64be46290c940a5ae0103d4755037f2611a9a14eb097355141c7010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f118532154070100000000000300010000003075e132e53ba34c7e8db6af7191ae354114cec7a4b9ebbb82cf6be0af47aa590100000000000100000078f9004a77c772e055d5369bf6e1ae260116d9bace9679b9c404fcc43944278d000100000000000000000000000503000000010203000000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "update_incompatible"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [],
+            "kamino_markets": [
+              "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+              "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
+            ],
+            "policy_account": "7ygc1vtEw72AhLekQ2iWqiQWf5dXnBS8CGTniCwB1CCs",
+            "policy_seed": 14,
+            "risk_profile": null,
+            "route_modes": [
+              "kamino_setup"
+            ],
+            "settings": "35VL7Jb1JAqmBaesC9HgtxX11sUaDWAWJZ1AfTcnra1h",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [],
+            "swap_lanes": [],
+            "threshold": 1,
+            "universe_preset": null,
+            "vault_index": 0,
+            "vault_pubkey": "64t39jPwvhjF9pPFuxMKjhstWdiYKqbKbG9w2wGX5ygh"
+          },
+          "kind": "setup"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "35VL7Jb1JAqmBaesC9HgtxX11sUaDWAWJZ1AfTcnra1h"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "7ygc1vtEw72AhLekQ2iWqiQWf5dXnBS8CGTniCwB1CCs"
+          }
+        ],
+        "data": "8ad140a34f43e94c0101000000070e0000000000000003000100000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008090000000000010000004b48e286a8f281095e115951807116acc9d84726665664f693ea0f96c1f40bbe000100010000004b48e286a8f281095e115951807116acc9d84726665664f693ea0f96c1f40bbe00020002000000803dd99bb687e760deae5be25cd03f52be6be38d9e0e52a09c411c464e221e9f4c2bacb4a34354e0ce4244e230abf79131b4e8ca7197c41ff10d5e9bbe1f5f4500030002000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c8969000400010000000000000000000000000000000000000000000000000000000000000000000000000500010000000000000000000000000000000000000000000000000000000000000000000000000600010000000c850660e757c6ddaca21cb47598698ef5f21f464ce399f6a8544f66256538180007000100000006a7d517192c5c51218cc94c3d4af17f58daee089ba1fd44e3dbd98a0000000000080001000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000050a000000fb0ae74c1b0b9f60000000000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "setup_single_legacy"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [],
+            "kamino_markets": [
+              "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+              "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
+            ],
+            "policy_account": "8W7tT9orM5qWktnJ93M3xsoDzapj22CY5PypEPgDNZJ4",
+            "policy_seed": 15,
+            "risk_profile": null,
+            "route_modes": [
+              "kamino_setup"
+            ],
+            "settings": "35VL7Jb1JAqmBaesC9HgtxX11sUaDWAWJZ1AfTcnra1h",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [],
+            "swap_lanes": [],
+            "threshold": 1,
+            "universe_preset": null,
+            "vault_index": 0,
+            "vault_pubkey": "64t39jPwvhjF9pPFuxMKjhstWdiYKqbKbG9w2wGX5ygh"
+          },
+          "kind": "setup"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "35VL7Jb1JAqmBaesC9HgtxX11sUaDWAWJZ1AfTcnra1h"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "8W7tT9orM5qWktnJ93M3xsoDzapj22CY5PypEPgDNZJ4"
+          }
+        ],
+        "data": "8ad140a34f43e94c0101000000070f0000000000000004000904b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00084b48e286a8f281095e115951807116acc9d84726665664f693ea0f96c1f40bbe803dd99bb687e760deae5be25cd03f52be6be38d9e0e52a09c411c464e221e9f4c2bacb4a34354e0ce4244e230abf79131b4e8ca7197c41ff10d5e9bbe1f5f45667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896900000000000000000000000000000000000000000000000000000000000000000c850660e757c6ddaca21cb47598698ef5f21f464ce399f6a8544f662565381806a7d517192c5c51218cc94c3d4af17f58daee089ba1fd44e3dbd98a000000000100090000010100010001010002000202030003000204050004000106000500010600060001070007000108000800010600010000000000000000050a000000fb0ae74c1b0b9f60000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "setup_single_compact"
+    }
+  ],
+  "earn_max": [
+    {
+      "delegate": "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9",
+      "families": [
+        {
+          "create": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "7XfwZeVvP6XFfSHneg593bvmDzST5DJLJqeewgDaZqn5"
+              }
+            ],
+            "data": "8ad140a34f43e94c010100000007070000000000000004000804b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00086b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d152bc0d0ee4262b2a027cad9aada37a1a016f9cb25da6cb3181c6d9fbb513f35d9b9d5ce587bce5586c65c969292dcfaacd485cf168edc57b2aa928897a3d1c7e939c144d9411557990fbe8d48f7ebad177a6507def8f74cde1fba75251037023fef1e18eeb04113f731fdef85c207b6e6a3282e0ed725d35e671fe3fe1f2239e0ee968176f4155d1c183efaf9db3245081e17d42c00e9527d3acc0180b7293c79a36983244da1ee1526fd351f97d67b5f2c4779209fcb7f518571c40082ba0db0200040000010100010101400000000000000005200000006b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d100010004000302030400090003050607000100000000000000000508000000d8e0bf1bcc9766af0000040000010100010101400000000000000005200000006b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d100010004000302030400090003050607000100000000000000000508000000eb34779895c5140700000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          "family": "CollateralLifecycle",
+          "update": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "7XfwZeVvP6XFfSHneg593bvmDzST5DJLJqeewgDaZqn5"
+              }
+            ],
+            "data": "8ad140a34f43e94c010100000008610193861209f632cad2e67e7791dd28f507e8d5a361c0eebdd8e9002d648246010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f1185321540701000000000004000804b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00086b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d152bc0d0ee4262b2a027cad9aada37a1a016f9cb25da6cb3181c6d9fbb513f35d9b9d5ce587bce5586c65c969292dcfaacd485cf168edc57b2aa928897a3d1c7e939c144d9411557990fbe8d48f7ebad177a6507def8f74cde1fba75251037023fef1e18eeb04113f731fdef85c207b6e6a3282e0ed725d35e671fe3fe1f2239e0ee968176f4155d1c183efaf9db3245081e17d42c00e9527d3acc0180b7293c79a36983244da1ee1526fd351f97d67b5f2c4779209fcb7f518571c40082ba0db0200040000010100010101400000000000000005200000006b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d100010004000302030400090003050607000100000000000000000508000000d8e0bf1bcc9766af0000040000010100010101400000000000000005200000006b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d100010004000302030400090003050607000100000000000000000508000000eb34779895c51407000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          }
+        },
+        {
+          "create": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "3spzeToWFosZWDdv1ydp6ZHc4eHxEZVs6UtiTEoQdmDW"
+              }
+            ],
+            "data": "8ad140a34f43e94c010100000007080000000000000004000804b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00086b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d12e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759dafc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c492368f8a2510f011bf7750e034ee3224821ab6e299973fd75dfc144dc06301d531c5afab194c0a973df08737ba0d83f2a3d9c5c8f0c68b8452e06dcdc4555ed904a86f82340a8a2fa4db7e6ff1666614b35a0fbfedff9ea5f4bec6a216e009760200040000010100010101400000000000000005200000006b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d100010002000302030400080003050607000100000000000000000508000000a1808ff5abc7c2060000040000010100010101400000000000000005200000006b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d10001000200030203040006000305060700010000000000000000050800000074aed54cb435d29000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          "family": "DebtLifecycle",
+          "update": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "3spzeToWFosZWDdv1ydp6ZHc4eHxEZVs6UtiTEoQdmDW"
+              }
+            ],
+            "data": "8ad140a34f43e94c0101000000082abcae619217c6503864122c36e6d72bc1fa1669b1f4495ffdebc6ef932e2f15010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f1185321540701000000000004000804b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00086b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d12e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759dafc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c492368f8a2510f011bf7750e034ee3224821ab6e299973fd75dfc144dc06301d531c5afab194c0a973df08737ba0d83f2a3d9c5c8f0c68b8452e06dcdc4555ed904a86f82340a8a2fa4db7e6ff1666614b35a0fbfedff9ea5f4bec6a216e009760200040000010100010101400000000000000005200000006b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d100010002000302030400080003050607000100000000000000000508000000a1808ff5abc7c2060000040000010100010101400000000000000005200000006b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d10001000200030203040006000305060700010000000000000000050800000074aed54cb435d290000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          }
+        },
+        {
+          "create": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "EtHcD5ZuPkTibohrHD5PJXpYgWCk2n3bA3ug5ZJwRZpn"
+              }
+            ],
+            "data": "8ad140a34f43e94c01010000000709000000000000000400080479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f6b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d192368f8a2510f011bf7750e034ee3224821ab6e299973fd75dfc144dc06301d531c5afab194c0a973df08737ba0d83f2a3d9c5c8f0c68b8452e06dcdc4555ed9fef1e18eeb04113f731fdef85c207b6e6a3282e0ed725d35e671fe3fe1f2239e0ee968176f4155d1c183efaf9db3245081e17d42c00e9527d3acc0180b7293c704a86f82340a8a2fa4db7e6ff1666614b35a0fbfedff9ea5f4bec6a216e009769a36983244da1ee1526fd351f97d67b5f2c4779209fcb7f518571c40082ba0db040003020001010003000202030006000204050001000000000000000001c120000003020001010003000202060006000205070001000000000000000001c120000003020001010003000204050006000202030001000000000000000001c120000003020001010003000205070006000202060001000000000000000001c12000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          "family": "SwapRoutes",
+          "update": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "EtHcD5ZuPkTibohrHD5PJXpYgWCk2n3bA3ug5ZJwRZpn"
+              }
+            ],
+            "data": "8ad140a34f43e94c010100000008ce4b5435ae8646c82e1b17dae9c4fc736417e9baa8291083d48b167bcb9ac513010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f118532154070100000000000400080479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f6b7c5b89c270e06d03c31e0dacd36e32d85ff1c56bab251806aa107c1660b2d192368f8a2510f011bf7750e034ee3224821ab6e299973fd75dfc144dc06301d531c5afab194c0a973df08737ba0d83f2a3d9c5c8f0c68b8452e06dcdc4555ed9fef1e18eeb04113f731fdef85c207b6e6a3282e0ed725d35e671fe3fe1f2239e0ee968176f4155d1c183efaf9db3245081e17d42c00e9527d3acc0180b7293c704a86f82340a8a2fa4db7e6ff1666614b35a0fbfedff9ea5f4bec6a216e009769a36983244da1ee1526fd351f97d67b5f2c4779209fcb7f518571c40082ba0db040003020001010003000202030006000204050001000000000000000001c120000003020001010003000202060006000205070001000000000000000001c120000003020001010003000204050006000202030001000000000000000001c120000003020001010003000205070006000202060001000000000000000001c120000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          }
+        }
+      ],
+      "policy_seed_base": 7,
+      "settings": "GrfZwMQNEu6xpJFsWGn1pTBaD9rcfyMbghmcta5ZHsge"
+    },
+    {
+      "delegate": "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9",
+      "families": [
+        {
+          "create": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "2j27Z9vje5H26ZBNk1Gb5ytDL6zBJVeLhfJCQntcR1U3"
+              }
+            ],
+            "data": "8ad140a34f43e94c0101000000071f0000000000000004000804b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00081f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e52bc0d0ee4262b2a027cad9aada37a1a016f9cb25da6cb3181c6d9fbb513f35d9b9d5ce587bce5586c65c969292dcfaacd485cf168edc57b2aa928897a3d1c7e939c144d9411557990fbe8d48f7ebad177a6507def8f74cde1fba75251037023d308a6b56cba197fee313708f3aa2367d083eaec175a083e31decbe1c48d44f3bdd507ea6461274d904d35b7dea0334f6f2e9a0988e60eef7971b058e78e17571776c37e3bc7d211dfaa74bdaab16322d5051225f31e66d9d0a70c4914c17b470200040000010100010101400000000000000005200000001f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e00010004000302030400090003050607000100000000000000000508000000d8e0bf1bcc9766af0000040000010100010101400000000000000005200000001f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e00010004000302030400090003050607000100000000000000000508000000eb34779895c5140700000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          "family": "CollateralLifecycle",
+          "update": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "2j27Z9vje5H26ZBNk1Gb5ytDL6zBJVeLhfJCQntcR1U3"
+              }
+            ],
+            "data": "8ad140a34f43e94c010100000008199f56e2216d4d7d09768adb5774a16400026352e8047048dba7e96089bc49b0010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f1185321540701000000000004000804b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00081f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e52bc0d0ee4262b2a027cad9aada37a1a016f9cb25da6cb3181c6d9fbb513f35d9b9d5ce587bce5586c65c969292dcfaacd485cf168edc57b2aa928897a3d1c7e939c144d9411557990fbe8d48f7ebad177a6507def8f74cde1fba75251037023d308a6b56cba197fee313708f3aa2367d083eaec175a083e31decbe1c48d44f3bdd507ea6461274d904d35b7dea0334f6f2e9a0988e60eef7971b058e78e17571776c37e3bc7d211dfaa74bdaab16322d5051225f31e66d9d0a70c4914c17b470200040000010100010101400000000000000005200000001f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e00010004000302030400090003050607000100000000000000000508000000d8e0bf1bcc9766af0000040000010100010101400000000000000005200000001f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e00010004000302030400090003050607000100000000000000000508000000eb34779895c51407000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          }
+        },
+        {
+          "create": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "Dp3dqCcGvuVBLLEs21hbb9MQmCqDTGFV94RF1LTvGacs"
+              }
+            ],
+            "data": "8ad140a34f43e94c010100000007200000000000000004000804b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00081f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e2e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759dafc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c46553929c93b36935aed4d03bb5ed769f1e54dcbe98a41e9d2fea97e006c2b651f9f4b6fadd5d7a3a5eca06775187b3076398f15586b273a05301abe63a88454ad8e189031e7b7b0121ad37d836dd93b3f2aefe21e27e138b50912d4d5372e76f0200040000010100010101400000000000000005200000001f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e00010002000302030400080003050607000100000000000000000508000000a1808ff5abc7c2060000040000010100010101400000000000000005200000001f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e0001000200030203040006000305060700010000000000000000050800000074aed54cb435d29000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          "family": "DebtLifecycle",
+          "update": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "Dp3dqCcGvuVBLLEs21hbb9MQmCqDTGFV94RF1LTvGacs"
+              }
+            ],
+            "data": "8ad140a34f43e94c010100000008be598543e07904566ea77a772704710dfc06a905a41a8d80e37551156932296c010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f1185321540701000000000004000804b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00081f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e2e56f8a20c60ead1165a8d82c558c87b4f1598454c877304e2f88d6ae319759dafc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896951c7485c29a57aea81cae7d819adcb8116a1bcff88051a4ec1d8b6fc2d5228c46553929c93b36935aed4d03bb5ed769f1e54dcbe98a41e9d2fea97e006c2b651f9f4b6fadd5d7a3a5eca06775187b3076398f15586b273a05301abe63a88454ad8e189031e7b7b0121ad37d836dd93b3f2aefe21e27e138b50912d4d5372e76f0200040000010100010101400000000000000005200000001f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e00010002000302030400080003050607000100000000000000000508000000a1808ff5abc7c2060000040000010100010101400000000000000005200000001f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e0001000200030203040006000305060700010000000000000000050800000074aed54cb435d290000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          }
+        },
+        {
+          "create": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "dWqjbKrcUudYsEL6Pw2KVHB5zBWy1TCWoJmwE8SF76x"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "9JcY5fEn5pagG6rg9gBitKYLbyFCjeZgcsgUkTAiWZjA"
+              }
+            ],
+            "data": "8ad140a34f43e94c01010000000721000000000000000400080479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f1f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e6553929c93b36935aed4d03bb5ed769f1e54dcbe98a41e9d2fea97e006c2b651f9f4b6fadd5d7a3a5eca06775187b3076398f15586b273a05301abe63a88454ad308a6b56cba197fee313708f3aa2367d083eaec175a083e31decbe1c48d44f3bdd507ea6461274d904d35b7dea0334f6f2e9a0988e60eef7971b058e78e1757d8e189031e7b7b0121ad37d836dd93b3f2aefe21e27e138b50912d4d5372e76f1776c37e3bc7d211dfaa74bdaab16322d5051225f31e66d9d0a70c4914c17b47040003020001010003000202030006000204050001000000000000000001c120000003020001010003000202060006000205070001000000000000000001c120000003020001010003000204050006000202030001000000000000000001c120000003020001010003000205070006000202060001000000000000000001c12000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          "family": "SwapRoutes",
+          "update": {
+            "accounts": [
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": true,
+                "is_writable": true,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "11111111111111111111111111111111"
+              },
+              {
+                "is_signer": false,
+                "is_writable": false,
+                "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+              },
+              {
+                "is_signer": true,
+                "is_writable": false,
+                "pubkey": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+              },
+              {
+                "is_signer": false,
+                "is_writable": true,
+                "pubkey": "9JcY5fEn5pagG6rg9gBitKYLbyFCjeZgcsgUkTAiWZjA"
+              }
+            ],
+            "data": "8ad140a34f43e94c0101000000087b608cb9115925dbac744932cd02cc48447aaf8dce596902d3ea4d959289e5c5010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f118532154070100000000000400080479d55bf231c06eee74c56ece681507fdb1b2dea3f48e5102b1cda256bc138f1f3b51ec1177fd9a85d60c87b13e2772b1560f151acd32aa6afe62d5df38370e6553929c93b36935aed4d03bb5ed769f1e54dcbe98a41e9d2fea97e006c2b651f9f4b6fadd5d7a3a5eca06775187b3076398f15586b273a05301abe63a88454ad308a6b56cba197fee313708f3aa2367d083eaec175a083e31decbe1c48d44f3bdd507ea6461274d904d35b7dea0334f6f2e9a0988e60eef7971b058e78e1757d8e189031e7b7b0121ad37d836dd93b3f2aefe21e27e138b50912d4d5372e76f1776c37e3bc7d211dfaa74bdaab16322d5051225f31e66d9d0a70c4914c17b47040003020001010003000202030006000204050001000000000000000001c120000003020001010003000202060006000205070001000000000000000001c120000003020001010003000204050006000202030001000000000000000001c120000003020001010003000205070006000202060001000000000000000001c120000000000000",
+            "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          }
+        }
+      ],
+      "policy_seed_base": 31,
+      "settings": "5NBu4iGL3G6gMqEE5MmnGSYeuwWujaJ26vx3q86NGT2C"
+    }
+  ]
+}

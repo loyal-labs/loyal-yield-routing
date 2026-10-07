@@ -20,7 +20,9 @@ const (
 	subscriptionDelegateSeed  = "delegation"
 	subscriptionEventSeed     = "event_authority"
 
-	subscriptionsTransferRecurring = 5
+	subscriptionsTransferRecurring      = 5
+	subscriptionTransferDelegatorOffset = 9
+	subscriptionTransferMintOffset      = 41
 
 	delegationDiscriminator       = 3
 	delegationDiscriminatorOffset = 0

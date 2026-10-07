@@ -35,7 +35,7 @@ type CrossMintFirstSendRequest struct {
 // current finalized protocol state. It never fetches a replacement quote, signs,
 // acquires movement authority or broadcasts.
 func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input CrossMintFirstSendRequest) error {
-	if r == nil || r.rpc == nil || r.proxy == nil || r.signer == "" || input.MinimumSlot <= 0 {
+	if r == nil || r.rpc == nil || r.signer == "" || input.MinimumSlot <= 0 {
 		return errors.New("cross-mint first send requires concrete chain reader and exact journal evidence")
 	}
 	cert, err := ValidateCrossMintPreflightCertificate(input.Movement, time.Now())

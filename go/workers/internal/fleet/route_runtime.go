@@ -40,7 +40,6 @@ type revalidationStore interface {
 type Revalidator struct {
 	store                    revalidationStore
 	rpc                      *RPCClient
-	proxy                    *KLendProxy
 	owner                    string
 	signer                   string
 	leaseTTL                 time.Duration
@@ -69,13 +68,13 @@ type RevalidatorConfig struct {
 	FeeOnlyPayers []string
 }
 
-func NewRevalidator(store *Store, rpc *RPCClient, proxy *KLendProxy, config RevalidatorConfig) (*Revalidator, error) {
-	return newRevalidator(store, rpc, proxy, config)
+func NewRevalidator(store *Store, rpc *RPCClient, config RevalidatorConfig) (*Revalidator, error) {
+	return newRevalidator(store, rpc, config)
 }
 
-func newRevalidator(store revalidationStore, rpc *RPCClient, proxy *KLendProxy, config RevalidatorConfig) (*Revalidator, error) {
-	if store == nil || rpc == nil || proxy == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second {
-		return nil, errors.New("store, RPC, proxy, owner, signer, and lease TTL are required")
+func newRevalidator(store revalidationStore, rpc *RPCClient, config RevalidatorConfig) (*Revalidator, error) {
+	if store == nil || rpc == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second {
+		return nil, errors.New("store, RPC, owner, signer, and lease TTL are required")
 	}
 	if _, err := decodePublicKey(config.DelegatedSigner); err != nil {
 		return nil, fmt.Errorf("delegated signer: %w", err)
@@ -100,7 +99,7 @@ func newRevalidator(store revalidationStore, rpc *RPCClient, proxy *KLendProxy, 
 			return nil, err
 		}
 	}
-	return &Revalidator{store: store, rpc: rpc, proxy: proxy, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...)}, nil
+	return &Revalidator{store: store, rpc: rpc, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...)}, nil
 }
 
 // Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
@@ -208,9 +207,9 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 			return out, "lease_check", err
 		}
 	}
-	route, err := r.proxy.Build(ctx, input)
+	route, err := BuildSameMintRoute(input)
 	if err != nil {
-		return out, "proxy_build", err
+		return out, "klend_build", err
 	}
 	policy, err := ValidateFreshRouteEvidence(evidence, time.Now().UTC(), lease.IdempotencyKey, lease.OptimizerEpochKey, r.signer, route.Protected)
 	if err != nil {
@@ -547,8 +546,10 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if source.Position.LiquidityMint != lease.LiquidityMint || target.Position.LiquidityMint != lease.LiquidityMint {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("fresh reserve mint differs from opportunity")
 	}
-	addresses := []string{lease.VaultPubkey, lease.SourceReserve, lease.TargetReserve, source.Obligation, target.Obligation, source.Position.VaultLiquidityATA, lease.PolicyAccount}
-	kinds := []string{"vault", "reserve", "reserve", "obligation", "obligation", "token_account", "policy"}
+	// The vault is a Squads PDA that signs through CPI; it is a system account
+	// only while it holds lamports, so its existence is not route evidence.
+	addresses := []string{lease.SourceReserve, lease.TargetReserve, source.Obligation, target.Obligation, source.Position.VaultLiquidityATA, lease.PolicyAccount}
+	kinds := []string{"reserve", "reserve", "obligation", "obligation", "token_account", "policy"}
 	for _, position := range []*decodedRoutePosition{&source, &target} {
 		if position.Position.ReserveFarmState != "" {
 			addresses = append(addresses, position.Position.ReserveFarmState, position.FarmUser)
@@ -563,49 +564,49 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
 	}
-	freshSource, err := decodeRouteReserve(accounts[1], lease.VaultPubkey)
+	freshSource, err := decodeRouteReserve(accounts[0], lease.VaultPubkey)
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
 	}
-	freshTarget, err := decodeRouteReserve(accounts[2], lease.VaultPubkey)
+	freshTarget, err := decodeRouteReserve(accounts[1], lease.VaultPubkey)
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
 	}
 	if !reflect.DeepEqual(freshSource.Position, source.Position) || !reflect.DeepEqual(freshTarget.Position, target.Position) {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("reserve route identities changed during coherent observation")
 	}
-	sourceCollateral, err := decodeObligation(accounts[3], freshSource.Position.Market, lease.VaultPubkey, lease.SourceReserve, &freshSource.Position)
+	sourceCollateral, err := decodeObligation(accounts[2], freshSource.Position.Market, lease.VaultPubkey, lease.SourceReserve, &freshSource.Position)
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
 	}
 	if lease.SourceCollateralRaw > 0 && sourceCollateral != lease.SourceCollateralRaw {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("fresh source collateral amount differs from opportunity")
 	}
-	targetCollateral, err := decodeObligation(accounts[4], freshTarget.Position.Market, lease.VaultPubkey, "", &freshTarget.Position)
+	targetCollateral, err := decodeObligation(accounts[3], freshTarget.Position.Market, lease.VaultPubkey, "", &freshTarget.Position)
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
 	}
-	if freshSource.Position.LiquidityTokenProgram != freshTarget.Position.LiquidityTokenProgram || accounts[5].Owner != freshSource.Position.LiquidityTokenProgram {
+	if freshSource.Position.LiquidityTokenProgram != freshTarget.Position.LiquidityTokenProgram || accounts[4].Owner != freshSource.Position.LiquidityTokenProgram {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("same-mint reserve token programs differ from vault custody")
 	}
-	if err := validateVaultTokenAccount(accounts[5], lease.LiquidityMint, lease.VaultPubkey); err != nil {
+	if err := validateVaultTokenAccount(accounts[4], lease.LiquidityMint, lease.VaultPubkey); err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, err
 	}
-	if accounts[6].Address != lease.PolicyAccount || accounts[6].Owner != SquadsProgram {
+	if accounts[5].Address != lease.PolicyAccount || accounts[5].Owner != SquadsProgram {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, errors.New("fresh policy account identity or owner mismatch")
 	}
-	sourceEconomics, err := DecodeKaminoReserve(accounts[1], ReserveIdentity{Address: lease.SourceReserve, Market: freshSource.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
+	sourceEconomics, err := DecodeKaminoReserve(accounts[0], ReserveIdentity{Address: lease.SourceReserve, Market: freshSource.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("decode fresh source economics: %w", err)
 	}
-	targetEconomics, err := DecodeKaminoReserve(accounts[2], ReserveIdentity{Address: lease.TargetReserve, Market: freshTarget.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
+	targetEconomics, err := DecodeKaminoReserve(accounts[1], ReserveIdentity{Address: lease.TargetReserve, Market: freshTarget.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("decode fresh target economics: %w", err)
 	}
 	// A durable amount is a planning estimate. Recheck its backing against the
 	// same-bank collateral exchange value; a stale high estimate must never
 	// fund the target deposit by consuming pre-existing idle custody.
-	redeemable, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: accounts[1].Address, Owner: accounts[1].Owner, Lamports: accounts[1].Lamports, Data: accounts[1].Data, Executable: accounts[1].Executable}, freshSource.Position.Market, lease.LiquidityMint, sourceCollateral)
+	redeemable, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: accounts[0].Address, Owner: accounts[0].Owner, Lamports: accounts[0].Lamports, Data: accounts[0].Data, Executable: accounts[0].Executable}, freshSource.Position.Market, lease.LiquidityMint, sourceCollateral)
 	if err != nil {
 		return KaminoSameMintRouteRequest{}, FreshRouteEvidence{}, fmt.Errorf("fresh collateral backing: %w", err)
 	}
@@ -614,12 +615,12 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	}
 	for i := 0; i < 8; i++ {
 		offset := 96 + i*136
-		if encodeBase58(accounts[4].Data[offset:offset+32]) == lease.TargetReserve {
-			targetCollateral = binary.LittleEndian.Uint64(accounts[4].Data[offset+32 : offset+40])
+		if encodeBase58(accounts[3].Data[offset:offset+32]) == lease.TargetReserve {
+			targetCollateral = binary.LittleEndian.Uint64(accounts[3].Data[offset+32 : offset+40])
 		}
 	}
-	evidence := FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey, PolicyData: append([]byte(nil), accounts[6].Data...)}
-	evidence.Anchors = ExecutionBalanceAnchors{SourceObligation: source.Obligation, TargetObligation: target.Obligation, VaultLiquidityATA: source.Position.VaultLiquidityATA, SourceReserve: lease.SourceReserve, TargetReserve: lease.TargetReserve, SourceMarket: source.Position.Market, TargetMarket: target.Position.Market, SourceCollateralMint: source.Position.CollateralMint, TargetCollateralMint: target.Position.CollateralMint, LiquidityTokenProgram: source.Position.LiquidityTokenProgram, Owner: lease.VaultPubkey, Mint: lease.LiquidityMint, SourceCollateralRaw: sourceCollateral, TargetCollateralRaw: targetCollateral, IdleLiquidityRaw: binary.LittleEndian.Uint64(accounts[5].Data[64:72]), MinimumSlot: slot}
+	evidence := FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey, PolicyData: append([]byte(nil), accounts[5].Data...)}
+	evidence.Anchors = ExecutionBalanceAnchors{SourceObligation: source.Obligation, TargetObligation: target.Obligation, VaultLiquidityATA: source.Position.VaultLiquidityATA, SourceReserve: lease.SourceReserve, TargetReserve: lease.TargetReserve, SourceMarket: source.Position.Market, TargetMarket: target.Position.Market, SourceCollateralMint: source.Position.CollateralMint, TargetCollateralMint: target.Position.CollateralMint, LiquidityTokenProgram: source.Position.LiquidityTokenProgram, Owner: lease.VaultPubkey, Mint: lease.LiquidityMint, SourceCollateralRaw: sourceCollateral, TargetCollateralRaw: targetCollateral, IdleLiquidityRaw: binary.LittleEndian.Uint64(accounts[4].Data[64:72]), MinimumSlot: slot}
 	for index, account := range accounts {
 		hash := sha256.Sum256(account.Data)
 		evidence.Accounts = append(evidence.Accounts, FreshAccount{Kind: kinds[index], Address: account.Address, Owner: account.Owner, DataSHA256: hex.EncodeToString(hash[:]), Slot: slot, Executable: account.Executable, Exists: true})

@@ -36,6 +36,14 @@ type KaminoPrimeUSDCRequest struct {
 	RecentBlockhash         string
 	LastValidBlockHeight    int64
 	RouteLane               string
+	// FullPayoff requires a fresh finite interest-window bound at build/send.
+	// It changes no instruction bytes and never asserts terminal debt by itself.
+	FullPayoff         bool   `json:"fullPayoff,omitempty"`
+	RepaymentRelease   bool   `json:"repaymentRelease,omitempty"`
+	ReleaseDebtIdleRaw uint64 `json:"releaseDebtIdleRaw,omitempty"`
+	// This selects the reviewed pilot release model, never authority. The
+	// locked budget must authorize pilot mode at admission, build and send.
+	PilotRepaymentRelease bool `json:"pilotRepaymentRelease,omitempty"`
 	// ObligationReserves is the exact confirmed deposit-then-borrow reserve
 	// sequence currently present in the obligation. RefreshObligation requires
 	// this live topology; deriving it from the mutation leg breaks re-deposits.
@@ -101,6 +109,100 @@ func BuildAndSignKaminoPrimeUSDCTransaction(request KaminoPrimeUSDCRequest, exec
 	return buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
 
+func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
+	return compileKaminoMessageForDelegate(request, mustKey(bridgeDelegate))
+}
+
+// The production wrapper supplies the embedded reviewed manifest exactly once;
+// the manifest-aware helper retains that value into AUTO policy validation so
+// a candidate binding is provable against a supplied manifest and the shipped
+// wrapper still fails closed while no binding exists.
+func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		return nil, err
+	}
+	return manifest.compileKaminoMessage(request, delegate)
+}
+
+func (m RouteManifest) compileKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
+	lane := request.RouteLane
+	if lane == "" {
+		lane = RouteID
+	}
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return nil, err
+	}
+	if lane == autoAUTOPYUSD.Lane {
+		if err := m.requireAutoKaminoBinding(request, route); err != nil {
+			return nil, err
+		}
+		return compileReviewedKaminoMessage(request, delegate, route)
+	}
+	return compileResolvedKaminoMessage(request, delegate, route)
+}
+
+// The public compiler and signer resolve installed routes before entering this
+// shared byte builder. Keeping resolution outside permits offline SDK/SBF parity
+// tests without registering candidate routes or changing production authority.
+func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
+	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff || !selectorLane(request.RouteLane)) {
+		return nil, budgetHold("invalid_pilot_repayment_release")
+	}
+	return compileReviewedKaminoMessage(request, delegate, route)
+}
+
+// compileReviewedKaminoMessage is the checked byte builder behind both
+// entries. Installed selector lanes pass the public pilot gate above, and the
+// candidate AUTO lane arrives only through the manifest compiler, whose
+// requireAutoKaminoBinding has already validated the request against the
+// reviewed catalog binding. The pilot release still must be a withdrawal-only
+// repayment release in both cases.
+func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
+	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff) {
+		return nil, budgetHold("invalid_pilot_repayment_release")
+	}
+	if request.LastValidBlockHeight <= 0 {
+		return nil, fmt.Errorf("invalid Kamino blockhash lifetime")
+	}
+	blockhash, err := decodeKey(request.RecentBlockhash)
+	if err != nil {
+		return nil, err
+	}
+	inner, leg, err := kaminoResolvedRouteInstruction(request, route)
+	if err != nil {
+		return nil, err
+	}
+	if request.PilotRepaymentRelease && (leg != kaminoLegWithdraw || request.Action != DeleverRouteStep) {
+		return nil, budgetHold("invalid_pilot_repayment_release")
+	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil || policy == (publicKey{}) || !validSHA256(request.PolicyAccountDataSHA256) {
+		return nil, fmt.Errorf("Kamino policy is not bound to confirmed catalog bytes")
+	}
+	outer, err := wrapSquadsKaminoPolicy(policy, delegate, delegate, request.PolicyConstraintIndex, inner)
+	if err != nil {
+		return nil, err
+	}
+	instructions := append(kaminoRefreshInstructionsForResolvedRoute(leg, request, route), outer)
+	// Installed lanes keep the exact installed legacy bytes; the candidate AUTO
+	// lane arrives only after requireAutoKaminoBinding and carries the reviewed
+	// ComputeBudget heap frame ahead of the identical refresh-plus-policy
+	// payload, so the eight-constraint policy parses and executes on the
+	// deployed Squads ELF.
+	var message []byte
+	if route.Lane == autoAUTOPYUSD.Lane {
+		message, err = compileAutoKaminoLegacyMessage(delegate, blockhash, instructions)
+	} else {
+		message, err = compileKaminoLegacyMessage(delegate, blockhash, instructions)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return checkedUnsignedMessage(message)
+}
+
 func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedKaminoTransaction, error) {
 	if len(executor) != ed25519.PrivateKeySize || request.LastValidBlockHeight <= 0 {
 		return SignedKaminoTransaction{}, fmt.Errorf("invalid Kamino signing material")
@@ -109,25 +211,7 @@ func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRe
 	if feePayer != expectedDelegate {
 		return SignedKaminoTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
 	}
-	blockhash, err := decodeKey(request.RecentBlockhash)
-	if err != nil {
-		return SignedKaminoTransaction{}, fmt.Errorf("invalid confirmed blockhash: %w", err)
-	}
-	inner, leg, err := kaminoPrimeUSDCInstruction(request)
-	if err != nil {
-		return SignedKaminoTransaction{}, err
-	}
-	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) || !validSHA256(request.PolicyAccountDataSHA256) {
-		return SignedKaminoTransaction{}, fmt.Errorf("Kamino policy is not bound to confirmed catalog bytes")
-	}
-	outer, err := wrapSquadsKaminoPolicy(policy, feePayer, expectedDelegate, request.PolicyConstraintIndex, inner)
-	if err != nil {
-		return SignedKaminoTransaction{}, err
-	}
-	preInstructions := kaminoPrimeUSDCRefreshInstructionsForRequest(leg, request)
-	instructions := append(preInstructions, outer)
-	message, err := compileKaminoLegacyMessage(feePayer, blockhash, instructions)
+	message, err := compileKaminoMessageForDelegate(request, expectedDelegate)
 	if err != nil {
 		return SignedKaminoTransaction{}, err
 	}
@@ -152,12 +236,46 @@ func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRe
 // (two reserve refreshes and one obligation refresh) followed by one Squads
 // policy execution; no general multi-instruction transaction API is exposed.
 func compileKaminoLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
+	if err := validateKaminoRefreshSequence(instructions); err != nil {
+		return nil, err
+	}
+	return encodeKaminoLegacyMessageBody(feePayer, blockhash, instructions)
+}
+
+// validateKaminoRefreshSequence is the exact installed gate: the reviewed KLend
+// prefix (two reserve refreshes and one obligation refresh) followed by one
+// Squads policy execution, nothing else. The AUTO resource compiler reuses it
+// unchanged so its heap-carrying messages validate the identical payload.
+func validateKaminoRefreshSequence(instructions []compiledInstruction) error {
 	if len(instructions) != 4 || instructions[0].program != mustKey(kaminoPrimeUSDCProgram) ||
 		instructions[1].program != mustKey(kaminoPrimeUSDCProgram) || instructions[2].program != mustKey(kaminoPrimeUSDCProgram) ||
 		instructions[3].program != mustKey(bridgeSquadsProgram) || !bytesEqual(instructions[0].data, kaminoRefreshReserve) ||
 		!bytesEqual(instructions[1].data, kaminoRefreshReserve) || !bytesEqual(instructions[2].data, kaminoRefreshObligation) {
-		return nil, fmt.Errorf("Kamino transaction is not the exact refresh-plus-policy sequence")
+		return fmt.Errorf("Kamino transaction is not the exact refresh-plus-policy sequence")
 	}
+	return nil
+}
+
+// compileAutoKaminoLegacyMessage is the closed AUTO variant: the exact
+// refresh-plus-policy sequence validated by the same gate as the installed
+// compiler, prefixed by the canonical ComputeBudget heap frame. The five-slot
+// body encoder is only reachable through this validated combination — the
+// installed compiler keeps its exact-four gate.
+func compileAutoKaminoLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
+	if err := validateKaminoRefreshSequence(instructions); err != nil {
+		return nil, err
+	}
+	heap := autoComputeBudgetHeapInstruction()
+	if !isAutoExecutionHeapInstruction(heap) {
+		return nil, fmt.Errorf("AUTO heap resource drifted from the reviewed frame")
+	}
+	return encodeKaminoLegacyMessageBody(feePayer, blockhash, withAutoExecutionHeap(instructions))
+}
+
+// encodeKaminoLegacyMessageBody serializes an already-validated instruction
+// list into the legacy wire format. Count and sequence admission stay with the
+// callers above; this body never adds or drops instructions.
+func encodeKaminoLegacyMessageBody(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
 	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
 	for _, instruction := range instructions {
 		for _, account := range instruction.accounts {
@@ -225,6 +343,24 @@ func kaminoPrimeUSDCInstruction(request KaminoPrimeUSDCRequest) (compiledInstruc
 }
 
 func kaminoRouteInstruction(request KaminoPrimeUSDCRequest, lane string) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+	if lane == "" {
+		lane = RouteID
+	}
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return compiledInstruction{}, 0, err
+	}
+	return kaminoResolvedRouteInstruction(request, route)
+}
+
+func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route RuntimeRoute) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+	lane := request.RouteLane
+	if lane == "" {
+		lane = route.Lane
+	}
+	if lane != route.Lane {
+		return compiledInstruction{}, 0, fmt.Errorf("Kamino request does not match resolved lane")
+	}
 	if request.AmountRaw == 0 || len(request.Accounts) == 0 || len(request.Data) != 16 {
 		return compiledInstruction{}, 0, fmt.Errorf("incomplete exact Kamino PRIME/USDC packet")
 	}
@@ -239,25 +375,55 @@ func kaminoRouteInstruction(request KaminoPrimeUSDCRequest, lane string) (compil
 		}
 		accounts[i] = accountMeta{key: key, signer: input.Signer, writable: input.Writable}
 	}
-	leg, ok := matchesKaminoStepForRoute(request.Action, request.Data[:8], accounts, lane)
+	leg, ok := matchesKaminoStepForResolvedRoute(request.Action, request.Data[:8], accounts, route)
 	if !ok {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet is not an approved PRIME/USDC lifecycle step")
 	}
-	if request.PolicyConstraintIndex != kaminoConstraintIndex(leg) {
+	if request.PolicyConstraintIndex != kaminoConstraintIndexForRoute(route, leg) {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet uses the wrong fixed lane constraint index")
+	}
+	if route.BasicPolicy {
+		family := basicPolicyFamilyForKaminoLeg(leg)
+		binding, err := basicPolicyBinding(family)
+		if err != nil || request.Policy != binding.Policy {
+			return compiledInstruction{}, 0, fmt.Errorf("Kamino policy does not match the basic family binding")
+		}
+	} else if route.Lane == autoAUTOPYUSD.Lane {
+		// The combined AUTO candidate policy has no static identity to compare
+		// here: the per-leg constraint index was pinned above, and policy
+		// identity is retained against the reviewed manifest binding at the
+		// compile entry (compileKaminoMessage), never from these observation
+		// pins on the route struct.
+	} else if route.Lane != RouteID {
+		binding, ok := route.KaminoPolicies[leg]
+		if !ok || request.Policy != binding.Policy || request.PolicyAccountDataSHA256 != binding.DataSHA256 {
+			return compiledInstruction{}, 0, fmt.Errorf("Kamino policy does not match the exact route leg binding")
+		}
 	}
 	return compiledInstruction{program: mustKey(kaminoPrimeUSDCProgram), accounts: accounts, data: append([]byte(nil), request.Data...)}, leg, nil
 }
 
-func kaminoConstraintIndex(leg kaminoPrimeUSDCLeg) byte {
-	switch leg {
-	case kaminoLegDeposit, kaminoLegWithdraw, kaminoLegBorrow, kaminoLegRepay:
-		// Phase 1 installs one physical policy per Kamino mutation. Every one of
-		// those split policies contains exactly one constraint at index zero.
+func kaminoConstraintIndexForRoute(route RuntimeRoute, leg kaminoPrimeUSDCLeg) byte {
+	// The combined AUTO candidate policy carries all four lifecycle legs in one
+	// account at the proven per-leg indexes. Retained split-policy routes still
+	// have one constraint at index zero, and the four-policy basic set uses the
+	// family indexes above; Phase 2 attaches that model to the three runtime
+	// lanes.
+	if route.Lane == autoAUTOPYUSD.Lane {
+		return autoKaminoConstraintIndex(leg)
+	}
+	if !route.BasicPolicy && (route.Lane == RouteID || len(route.KaminoPolicies) > 0) {
 		return 0
-	default:
+	}
+	return kaminoConstraintIndex(leg)
+}
+
+func kaminoConstraintIndex(leg kaminoPrimeUSDCLeg) byte {
+	index := basicPolicyConstraintIndex(leg)
+	if index == 0xff {
 		return math.MaxUint8
 	}
+	return index
 }
 
 func matchesKaminoStep(action Action, discriminator []byte, accounts []accountMeta) (kaminoPrimeUSDCLeg, bool) {
@@ -265,39 +431,31 @@ func matchesKaminoStep(action Action, discriminator []byte, accounts []accountMe
 }
 
 func matchesKaminoStepForRoute(action Action, discriminator []byte, accounts []accountMeta, lane string) (kaminoPrimeUSDCLeg, bool) {
-	if lane == SelectedRouteID {
-		deposit, borrow, repay, withdraw := mapleKaminoMetas()
-		switch action {
-		case OpenRouteStep, OpenPrimeUSDCStep:
-			if bytesEqual(discriminator, kaminoDepositCollateral) && exactKaminoMetas(accounts, deposit) {
-				return kaminoLegDeposit, true
-			}
-			if bytesEqual(discriminator, kaminoBorrowUSDC) && exactKaminoMetas(accounts, borrow) {
-				return kaminoLegBorrow, true
-			}
-		case DeleverRouteStep, DeleverPrimeUSDCStep:
-			if bytesEqual(discriminator, kaminoRepayUSDC) && exactKaminoMetas(accounts, repay) {
-				return kaminoLegRepay, true
-			}
-			if bytesEqual(discriminator, kaminoWithdrawCollateral) && exactKaminoMetas(accounts, withdraw) {
-				return kaminoLegWithdraw, true
-			}
-		}
+	if lane == "" {
+		lane = RouteID
+	}
+	route, err := runtimeRoute(lane)
+	if err != nil {
 		return 0, false
 	}
+	return matchesKaminoStepForResolvedRoute(action, discriminator, accounts, route)
+}
+
+func matchesKaminoStepForResolvedRoute(action Action, discriminator []byte, accounts []accountMeta, route RuntimeRoute) (kaminoPrimeUSDCLeg, bool) {
+	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 	switch action {
-	case OpenPrimeUSDCStep:
-		if string(discriminator) == string(kaminoDepositCollateral) && exactKaminoMetas(accounts, kaminoDepositMetas()) {
+	case OpenRouteStep, OpenPrimeUSDCStep:
+		if bytesEqual(discriminator, kaminoDepositCollateral) && exactKaminoMetas(accounts, deposit) {
 			return kaminoLegDeposit, true
 		}
-		if string(discriminator) == string(kaminoBorrowUSDC) && exactKaminoMetas(accounts, kaminoBorrowMetas()) {
+		if bytesEqual(discriminator, kaminoBorrowUSDC) && exactKaminoMetas(accounts, borrow) {
 			return kaminoLegBorrow, true
 		}
-	case DeleverPrimeUSDCStep:
-		if string(discriminator) == string(kaminoRepayUSDC) && exactKaminoMetas(accounts, kaminoRepayMetas()) {
+	case DeleverRouteStep, DeleverPrimeUSDCStep:
+		if bytesEqual(discriminator, kaminoRepayUSDC) && exactKaminoMetas(accounts, repay) {
 			return kaminoLegRepay, true
 		}
-		if string(discriminator) == string(kaminoWithdrawCollateral) && exactKaminoMetas(accounts, kaminoWithdrawMetas()) {
+		if bytesEqual(discriminator, kaminoWithdrawCollateral) && exactKaminoMetas(accounts, withdraw) {
 			return kaminoLegWithdraw, true
 		}
 	}
@@ -390,6 +548,10 @@ func kaminoPrimeUSDCRefreshInstructionsForRequest(leg kaminoPrimeUSDCLeg, reques
 	if err != nil {
 		return nil
 	}
+	return kaminoRefreshInstructionsForResolvedRoute(leg, request, route)
+}
+
+func kaminoRefreshInstructionsForResolvedRoute(leg kaminoPrimeUSDCLeg, request KaminoPrimeUSDCRequest, route RuntimeRoute) []compiledInstruction {
 	program, market := route.Kamino.Program, route.Kamino.Market
 	refreshReserve := func(reserve string) compiledInstruction {
 		return compiledInstruction{program: mustKey(program), accounts: []accountMeta{
@@ -440,12 +602,62 @@ func kaminoPrimeUSDCRefreshInstructionsForRequest(leg kaminoPrimeUSDCLeg, reques
 }
 
 func mapleKaminoMetas() (deposit, borrow, repay, withdraw []accountMeta) {
-	r := mapleSyrupUSDCUSDC
-	meta := func(address string, signer, writable bool) accountMeta { return kaminoMeta(address, signer, writable) }
-	deposit = []accountMeta{meta(bridgeVault, true, true), meta(r.Kamino.Obligation, false, true), meta(r.Kamino.Market, false, false), meta("6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g", false, false), meta(r.Kamino.CollateralReserve, false, true), meta(r.Kamino.CollateralMint, false, false), meta(r.CollateralLiquiditySupply, false, true), meta(r.CollateralReceiptMint, false, true), meta(r.CollateralReceiptSupply, false, true), meta(r.CollateralCustody, false, true), meta(r.Kamino.Program, false, false), meta(bridgeTokenProgram, false, false), meta(bridgeTokenProgram, false, false), meta(kaminoInstructions, false, false), meta(r.Kamino.Program, false, false), meta(r.Kamino.Program, false, false), meta(kaminoFarmsProgram, false, false)}
-	borrow = []accountMeta{meta(bridgeVault, true, false), meta(r.Kamino.Obligation, false, true), meta(r.Kamino.Market, false, false), meta("6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g", false, false), meta(r.Kamino.DebtReserve, false, true), meta(r.Kamino.DebtMint, false, false), meta(r.DebtLiquiditySupply, false, true), meta(r.DebtFeeReceiver, false, true), meta(r.DebtCustody, false, true), meta(r.Kamino.Program, false, false), meta(bridgeTokenProgram, false, false), meta(kaminoInstructions, false, false), meta(mapleObligationDebtFarm, false, true), meta(mapleDebtFarm, false, true), meta(kaminoFarmsProgram, false, false)}
-	repay = []accountMeta{meta(bridgeVault, true, false), meta(r.Kamino.Obligation, false, true), meta(r.Kamino.Market, false, false), meta(r.Kamino.DebtReserve, false, true), meta(r.Kamino.DebtMint, false, false), meta(r.DebtLiquiditySupply, false, true), meta(r.DebtCustody, false, true), meta(bridgeTokenProgram, false, false), meta(kaminoInstructions, false, false), meta(mapleObligationDebtFarm, false, true), meta(mapleDebtFarm, false, true), meta("6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g", false, false), meta(kaminoFarmsProgram, false, false)}
-	withdraw = []accountMeta{meta(bridgeVault, true, true), meta(r.Kamino.Obligation, false, true), meta(r.Kamino.Market, false, false), meta("6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g", false, false), meta(r.Kamino.CollateralReserve, false, true), meta(r.Kamino.CollateralMint, false, false), meta(r.CollateralReceiptSupply, false, true), meta(r.CollateralReceiptMint, false, true), meta(r.CollateralLiquiditySupply, false, true), meta(r.CollateralCustody, false, true), meta(r.Kamino.Program, false, false), meta(bridgeTokenProgram, false, false), meta(bridgeTokenProgram, false, false), meta(kaminoInstructions, false, false), meta(r.Kamino.Program, false, false), meta(r.Kamino.Program, false, false), meta(kaminoFarmsProgram, false, false)}
+	return kaminoMetasForRoute(mapleSyrupUSDCUSDC)
+}
+
+// The SDK v2 layout is shared; only the bound market/custody/token/farm
+// identities vary. Receipt tokens always use classic SPL independently of the
+// underlying token program. Absent farm accounts use the Anchor sentinel.
+func kaminoMetasForRoute(r RuntimeRoute) (deposit, borrow, repay, withdraw []accountMeta) {
+	deposit, borrow, repay, withdraw = kaminoDepositMetas(), kaminoBorrowMetas(), kaminoRepayMetas(), kaminoWithdrawMetas()
+	set := func(m []accountMeta, index int, address string) { m[index].key = mustKey(address) }
+	farm := func(m []accountMeta, index int, address string) {
+		if address == "" {
+			m[index] = kaminoMeta(r.Kamino.Program, false, false)
+		} else {
+			m[index] = kaminoMeta(address, false, true)
+		}
+	}
+	for _, m := range [][]accountMeta{deposit, borrow, repay, withdraw} {
+		set(m, 0, r.Kamino.Vault)
+		set(m, 1, r.Kamino.Obligation)
+		set(m, 2, r.Kamino.Market)
+	}
+	for _, m := range [][]accountMeta{deposit, withdraw} {
+		set(m, 3, r.Kamino.MarketAuthority)
+		set(m, 4, r.Kamino.CollateralReserve)
+		set(m, 5, r.Kamino.CollateralMint)
+		set(m, 9, r.CollateralCustody)
+		set(m, 10, r.Kamino.Program)
+		set(m, 11, classicTokenProgram)
+		set(m, 12, r.CollateralTokenProgram)
+		farm(m, 14, r.ObligationCollateralFarm)
+		farm(m, 15, r.CollateralFarm)
+	}
+	set(deposit, 6, r.CollateralLiquiditySupply)
+	set(deposit, 7, r.CollateralReceiptMint)
+	set(deposit, 8, r.CollateralReceiptSupply)
+	set(withdraw, 6, r.CollateralReceiptSupply)
+	set(withdraw, 7, r.CollateralReceiptMint)
+	set(withdraw, 8, r.CollateralLiquiditySupply)
+	set(borrow, 3, r.Kamino.MarketAuthority)
+	set(borrow, 4, r.Kamino.DebtReserve)
+	set(borrow, 5, r.Kamino.DebtMint)
+	set(borrow, 6, r.DebtLiquiditySupply)
+	set(borrow, 7, r.DebtFeeReceiver)
+	set(borrow, 8, r.DebtCustody)
+	set(borrow, 9, r.Kamino.Program)
+	set(borrow, 10, r.DebtTokenProgram)
+	farm(borrow, 12, r.ObligationDebtFarm)
+	farm(borrow, 13, r.DebtFarm)
+	set(repay, 3, r.Kamino.DebtReserve)
+	set(repay, 4, r.Kamino.DebtMint)
+	set(repay, 5, r.DebtLiquiditySupply)
+	set(repay, 6, r.DebtCustody)
+	set(repay, 7, r.DebtTokenProgram)
+	farm(repay, 9, r.ObligationDebtFarm)
+	farm(repay, 10, r.DebtFarm)
+	set(repay, 11, r.Kamino.MarketAuthority)
 	return
 }
 
@@ -504,6 +716,9 @@ func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc 
 		return err
 	}
 	if _, err := DecodeExpectedEffects(effects); err != nil {
+		return err
+	}
+	if err := authorizePhase3ProductionBuild(ctx, database, rpc, operationID, evidence.Request, evidence.ExpectedEffects, effects); err != nil {
 		return err
 	}
 	signer, err := credentials.signer()

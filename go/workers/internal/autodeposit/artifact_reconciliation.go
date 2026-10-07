@@ -79,7 +79,7 @@ type ArtifactProofReader struct {
 }
 
 func (r *ArtifactProofReader) FindCreationProof(ctx context.Context, target ArtifactTarget, role ArtifactRole, minimumSlot int64) (VerifiedArtifactCreationProof, error) {
-	if r == nil || r.Wires == nil || r.Wires.proxy == nil || r.History == nil {
+	if r == nil || r.Wires == nil || r.History == nil {
 		return VerifiedArtifactCreationProof{}, errors.New("artifact proof reader requires official builder and history")
 	}
 	if err := r.Wires.proveArtifactAccounts(ctx, target, minimumSlot); err != nil {
@@ -241,8 +241,7 @@ func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target Art
 	if binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:delegationPerPeriodOffset+8]) != uint64(*target.MaxAmountPerPeriod) {
 		return errors.New("artifact delegation budget changed between snapshots")
 	}
-	_, err = b.proxy.BuildCanonicalSubscriptionPolicy(ctx, fleet.CanonicalSubscriptionPolicyRequest{Settings: target.Settings, RootAuthority: target.RootAuthority, Payer: target.RootAuthority, DelegatedSigner: b.delegate.String(), PolicySeed: uint64(target.PolicySeed), Wallet: target.Wallet, Vault: target.Vault, MaxAmountPerPeriod: uint64(*target.MaxAmountPerPeriod), PolicyDataHex: hex.EncodeToString(accounts[1].Data)})
-	return err
+	return VerifyCanonicalSubscriptionPolicyAccount(CanonicalSubscriptionPolicyRequest{Settings: target.Settings, RootAuthority: target.RootAuthority, Payer: target.RootAuthority, DelegatedSigner: b.delegate.String(), PolicySeed: uint64(target.PolicySeed), Wallet: target.Wallet, Vault: target.Vault, MaxAmountPerPeriod: uint64(*target.MaxAmountPerPeriod)}, accounts[1].Data)
 }
 
 // The layout is pinned to Loyal smart-accounts core generated Settings.ts and
@@ -397,7 +396,7 @@ func (b *SweepWireBuilder) verifyArtifactCreator(ctx context.Context, target Art
 		}
 		var expected fleet.RouteInstruction
 		if role == ArtifactPolicy {
-			expected, err = b.proxy.BuildCanonicalSubscriptionPolicy(ctx, fleet.CanonicalSubscriptionPolicyRequest{Settings: target.Settings, RootAuthority: target.RootAuthority, Payer: keys[0].String(), DelegatedSigner: b.delegate.String(), PolicySeed: uint64(target.PolicySeed), Wallet: target.Wallet, Vault: target.Vault, MaxAmountPerPeriod: uint64(*target.MaxAmountPerPeriod)})
+			expected, err = BuildCanonicalSubscriptionPolicy(CanonicalSubscriptionPolicyRequest{Settings: target.Settings, RootAuthority: target.RootAuthority, Payer: keys[0].String(), DelegatedSigner: b.delegate.String(), PolicySeed: uint64(target.PolicySeed), Wallet: target.Wallet, Vault: target.Vault, MaxAmountPerPeriod: uint64(*target.MaxAmountPerPeriod)})
 			if err != nil {
 				return proof, err
 			}

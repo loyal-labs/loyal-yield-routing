@@ -15,48 +15,25 @@ import (
 )
 
 type Config struct {
-	LaserStreamEndpoint   string
-	HeliusAPIKey          string
-	EarnMaxDelegate       string
-	SolanaRPCURL          string
-	NeonDatabaseURL       string
-	AppsDatabaseURL       string
-	TimescaleDatabaseURL  string
-	KaminoAPIBase         string
-	Cluster               string
-	ATAStream             string
-	BridgeBinary          string
-	BridgeStartupTimeout  time.Duration
+	LaserStreamEndpoint  string
+	HeliusAPIKey         string
+	EarnMaxDelegate      string
+	SolanaRPCURL         string
+	NeonDatabaseURL      string
+	AppsDatabaseURL      string
+	TimescaleDatabaseURL string
+	KaminoAPIBase        string
+	Cluster              string
+	ATAStream            string
+	// APYRiskProfiles are the published Earn APY strategies; empty when the
+	// shared snapshot table is written by another environment.
+	APYRiskProfiles       []string
 	ReplayOverlapSlots    uint64
 	WatchRefresh          time.Duration
 	VerifyRefresh         time.Duration
 	ProgressTimeout       time.Duration
 	HandoffTimeout        time.Duration
 	ReconciliationWorkers int
-}
-
-// BridgeEnvironment builds the complete environment of the Earn domain bridge
-// child. It is a strict allowlist: the child receives only observer data-plane
-// configuration. The worker process environment is
-// never inherited. The public Earn delegate is verifier input; POLICY_KEYPAIR
-// and the Helius API key are excluded.
-func (c Config) BridgeEnvironment() []string {
-	return []string{
-		"NEON_DATABASE_URL=" + c.NeonDatabaseURL,
-		"TIMESCALEDB_URL=" + c.TimescaleDatabaseURL,
-		"EARN_MAX_DELEGATE=" + c.EarnMaxDelegate,
-		"EARN_RECONCILIATION_CONCURRENCY=" + strconv.Itoa(c.ReconciliationWorkers),
-		// The Go retail engine owns Autodeposit reconciliation. The retained
-		// bridge may project Earn observations, but must not acknowledge that
-		// family outbox or bypass the Go creator-history gate.
-		"AUTODEPOSIT_RECONCILIATION_CONCURRENCY=0",
-		"SOLANA_RPC_URL=" + c.SolanaRPCURL,
-		"SOLANA_CLUSTER=" + c.Cluster,
-		"KAMINO_API_BASE=" + c.KaminoAPIBase,
-		"LASERSTREAM_ENDPOINT=" + c.LaserStreamEndpoint,
-		"EARN_BRIDGE_OBSERVER_CONSUMER=1",
-		"RUST_LOG=" + envOr("RUST_LOG", "info"),
-	}
 }
 
 func FromEnv() (Config, error) {
@@ -66,13 +43,9 @@ func FromEnv() (Config, error) {
 		"KAMINO_CONFIRMED_REFRESH_INTERVAL_SECONDS",
 		"LASERSTREAM_PROGRESS_TIMEOUT_SECONDS",
 		"LASERSTREAM_HANDOFF_TIMEOUT_SECONDS",
-		"EARN_DOMAIN_BRIDGE_STARTUP_TIMEOUT_SECONDS",
 		"EARN_RECONCILIATION_CONCURRENCY",
 	); err != nil {
 		return Config{}, err
-	}
-	if value := strings.TrimSpace(os.Getenv("AUTODEPOSIT_RECONCILIATION_CONCURRENCY")); value != "" && value != "0" {
-		return Config{}, errors.New("AUTODEPOSIT_RECONCILIATION_CONCURRENCY must be 0: the Go retail engine owns this outbox")
 	}
 	var missing []string
 	credential := func(name string) string {
@@ -93,8 +66,6 @@ func FromEnv() (Config, error) {
 		KaminoAPIBase:         envOr("KAMINO_API_BASE", "https://api.kamino.finance"),
 		Cluster:               normalizeSolanaCluster(envOr("SOLANA_CLUSTER", "mainnet-beta")),
 		ATAStream:             strings.ToLower(envOr("BALANCE_SWEEP_ATA_STREAM", "production")),
-		BridgeBinary:          strings.TrimSpace(os.Getenv("EARN_DOMAIN_BRIDGE_BINARY")),
-		BridgeStartupTimeout:  durationEnv("EARN_DOMAIN_BRIDGE_STARTUP_TIMEOUT_SECONDS", 20*time.Second),
 		ReplayOverlapSlots:    uintEnv("LASERSTREAM_REPLAY_OVERLAP_SLOTS", 32),
 		WatchRefresh:          durationEnv("BALANCE_SWEEP_TARGET_REFRESH_SECONDS", 300*time.Second),
 		VerifyRefresh:         durationEnv("KAMINO_CONFIRMED_REFRESH_INTERVAL_SECONDS", 60*time.Second),
@@ -122,6 +93,20 @@ func FromEnv() (Config, error) {
 	}
 	if cfg.ReplayOverlapSlots == 0 || cfg.WatchRefresh <= 0 || cfg.VerifyRefresh <= 0 || cfg.ProgressTimeout <= 0 {
 		return Config{}, errors.New("LaserStream intervals and replay overlap must be positive")
+	}
+	switch strings.TrimSpace(os.Getenv("DISABLE_EARN_APY_REFRESH")) {
+	case "", "false":
+		for _, profile := range strings.Split(envOr("EARN_APY_RISK_PROFILES", "safe"), ",") {
+			if profile = strings.TrimSpace(profile); profile != "" {
+				cfg.APYRiskProfiles = append(cfg.APYRiskProfiles, profile)
+			}
+		}
+		if len(cfg.APYRiskProfiles) == 0 {
+			return Config{}, errors.New("EARN_APY_RISK_PROFILES requires at least one risk profile")
+		}
+	case "true":
+	default:
+		return Config{}, errors.New("DISABLE_EARN_APY_REFRESH must be true or false")
 	}
 	if cfg.ReconciliationWorkers < 1 {
 		return Config{}, errors.New("reconciliation worker counts must be positive")

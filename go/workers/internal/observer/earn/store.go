@@ -137,11 +137,3 @@ func (s *Store) AdvanceProjectionCursor(ctx context.Context, consumer string, sl
 	_, err := s.pool.Exec(ctx, `INSERT INTO loyal_yield.projection_offsets(consumer_name,last_event_id) VALUES($1,$2) ON CONFLICT(consumer_name) DO UPDATE SET last_event_id=GREATEST(loyal_yield.projection_offsets.last_event_id,EXCLUDED.last_event_id),updated_at=now()`, consumer, int64(slot))
 	return err
 }
-func (s *Store) Health(ctx context.Context, consumer string) (cursor, pending, failed, oldest uint64, err error) {
-	var a, b, c, d int64
-	err = s.pool.QueryRow(ctx, `SELECT COALESCE((SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name=$1),0),COUNT(*),COUNT(*) FILTER(WHERE last_error IS NOT NULL),COALESCE(GREATEST(0,FLOOR(EXTRACT(EPOCH FROM(now()-MIN(created_at))))::bigint),0) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1 AND completed_at IS NULL`, consumer).Scan(&a, &b, &c, &d)
-	if err == nil {
-		cursor, pending, failed, oldest = uint64(max(a, 0)), uint64(max(b, 0)), uint64(max(c, 0)), uint64(max(d, 0))
-	}
-	return
-}

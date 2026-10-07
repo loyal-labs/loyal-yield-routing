@@ -33,7 +33,6 @@ type Config struct {
 	SlotDuration                       time.Duration
 	RevalidatorEnabled                 bool
 	RevalidatorShadow                  bool
-	KLendProxyPath, KLendProxySHA256   string
 	DelegatedSigner, RevalidationOwner string
 	RevalidationLeaseTTL               time.Duration
 	RevalidationPollInterval           time.Duration
@@ -59,8 +58,6 @@ func ConfigFromEnvironment() (Config, error) {
 		Cluster:                  valueOr(os.Getenv("KAMINO_FLEET_CLUSTER"), "mainnet-beta"),
 		Mode:                     Mode(valueOr(os.Getenv("KAMINO_FLEET_MODE"), string(ModeShadow))),
 		PollInterval:             durationOr(os.Getenv("KAMINO_FLEET_POLL_INTERVAL"), time.Second),
-		KLendProxyPath:           os.Getenv("KAMINO_KLEND_PROXY_PATH"),
-		KLendProxySHA256:         strings.ToLower(os.Getenv("KAMINO_KLEND_PROXY_SHA256")),
 		DelegatedSigner:          os.Getenv("KAMINO_FLEET_DELEGATED_SIGNER"),
 		RevalidationOwner:        valueOr(os.Getenv("KAMINO_FLEET_REVALIDATION_OWNER"), "loyal-kamino-fleet-planner"),
 		RevalidationLeaseTTL:     durationOr(os.Getenv("KAMINO_FLEET_REVALIDATION_LEASE_TTL"), 30*time.Second),
@@ -197,8 +194,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("publish mode cannot run the read-only shadow revalidator")
 	}
 	if c.RevalidatorEnabled || c.RevalidatorShadow {
-		if c.KLendProxyPath == "" || len(c.KLendProxySHA256) != 64 || !isHex(c.KLendProxySHA256) || c.DelegatedSigner == "" || c.RevalidationOwner == "" || (c.RevalidatorEnabled && c.RevalidationLeaseTTL < time.Second) || c.RevalidationPollInterval <= 0 || c.RevalidationConcurrency <= 0 || c.RevalidationConcurrency > 256 || c.RevalidationComputeLimit == 0 || c.RevalidationComputeLimit > defaultComputeLimit {
-			return fmt.Errorf("revalidator requires a digest-pinned KLend proxy, delegated signer, owner, valid lease, concurrency, poll interval, and compute limit")
+		if c.DelegatedSigner == "" || c.RevalidationOwner == "" || (c.RevalidatorEnabled && c.RevalidationLeaseTTL < time.Second) || c.RevalidationPollInterval <= 0 || c.RevalidationConcurrency <= 0 || c.RevalidationConcurrency > 256 || c.RevalidationComputeLimit == 0 || c.RevalidationComputeLimit > defaultComputeLimit {
+			return fmt.Errorf("revalidator requires a delegated signer, owner, valid lease, concurrency, poll interval, and compute limit")
 		}
 		if _, err := decodePublicKey(c.DelegatedSigner); err != nil {
 			return fmt.Errorf("invalid revalidator delegated signer: %w", err)

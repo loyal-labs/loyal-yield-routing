@@ -6,8 +6,10 @@ is accepted and later merge/activation is authorized. See
 
 One module composes observer, retail engine and separately credentialed Backyard
 engine. The initial source-preserving imports retain existing schemas and tests.
-The observer may retain the reviewed Rust Earn bridge until Go application proof
-passes; Rust ABI/SVM proof and the official KLend helper remain authoritative.
+KLend instruction builders and the Earn domain application are Go; their byte
+and row parity with the retained Rust code is pinned by goldens the Rust code
+generates (`testdata/klend`, `testdata/earn`). Rust ABI/SVM proof remains
+authoritative.
 
 Run `make verify` for formatting, vet, race tests and the three binary builds.
 Use `GOTOOLCHAIN=local`; the language baseline is Go 1.25.1 and branch CI uses
@@ -30,7 +32,7 @@ environment. The release identity is stamped at link time
 The engine selects `LOYAL_WORKER_SCOPE=retail` or `backyard`; each instance
 requires `LOYAL_WORKER_INSTANCE`. Retail requires
 explicit `RETAIL_MODE=active`, `RETAIL_TIMESCALE_SCHEMA`, `RETAIL_SLOT_DURATION`,
-`RETAIL_KLEND_PROXY_PATH`, `RETAIL_KLEND_PROXY_SHA256`, and the credentials
+and the credentials
 `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`,
 `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR` and `RETAIL_FEE_PAYER_KEYPAIR`. The current Autodeposit
 and same-mint packet contracts require the latter two keys to be identical.
@@ -65,13 +67,25 @@ catalog state and publishes proved existing bindings; fresh provisioning and
 cleanup packets require active mode and independently fenced writer admission.
 Do not enable this rewrite against shared resources.
 
+Backyard (`LOYAL_WORKER_SCOPE=backyard`) is the production Voltr/Kamino RWA
+line ported from `origin/feat/voltr-rwa-selector`. It requires the credentials
+`BACKYARD_DATABASE_URL` (the direct, non-pooler DSN: it also holds the family
+lock), `BACKYARD_SOLANA_RPC_URL` and `BACKYARD_POLICY_KEYPAIR`; an optional
+`JUPITER_API_KEY` credential selects the keyed Jupiter API. The selector
+collector is off by default; `BACKYARD_RWA_SELECTOR_SHADOW=1` or
+`BACKYARD_RWA_SELECTOR_LIVE=1` enables it and then requires the
+`BACKYARD_TIMESCALE_DATABASE_URL` credential. `BACKYARD_RWA_PILOT_CANARY_ENTRY`
+keeps its existing meaning. One-shot operator commands run as
+`loyal-engine backyard <command>` (for example `clear-hold --reason "<text>"`)
+with the same credentials.
+
 Observer retains its reviewed transport configuration in
-`internal/observer/config/config.go` and starts the separately supervised,
-unsigned Rust Earn bridge with an explicit environment allowlist. Each family
+`internal/observer/config/config.go` and runs the Earn domain application
+(`internal/observer/earn`) in process: policy projection, the durable Earn
+reconciliation queue and the hourly Earn APY snapshots. Each family
 requires its own database boundary: observer watches use `NEON_DATABASE_URL`
 for Yield and explicit `OBSERVER_APPS_DATABASE_URL` for Apps identities. The
-Apps connection is read-only in the observer and is excluded from the bridge
-environment. The fixed watch catalog verifies actual mainnet genesis before
+Apps connection is read-only in the observer. The fixed watch catalog verifies actual mainnet genesis before
 opening writers and on every watch refresh.
 Each family
 owns SQL beside its lifecycle code. Shared packages provide concrete pool,
@@ -89,7 +103,7 @@ alert rules live in `deploy/hetzner/monitoring/`. There is no readiness
 endpoint. Recovery preserves possibly sent bytes, even after user
 disablement; do not clear uncertainty by deleting rows.
 
-The Docker image includes the official locked Rust KLend builder and retained
-Earn bridge alongside the three Go binaries, runs as UID 65532, and records
+The Docker image contains only the three Go binaries, runs as UID 65532, and
+records
 artifact checksums. Branch CI builds and probes it without publishing. Main
 merge, migration acceptance and family writer activation remain separate gates.

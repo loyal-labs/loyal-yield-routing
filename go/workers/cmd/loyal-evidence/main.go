@@ -13,11 +13,22 @@ import (
 )
 
 func run() error {
-	kind := flag.String("kind", "", "fleet, fleet-wave or backyard saved decision")
+	kind := flag.String("kind", "", "fleet, fleet-wave, fleet-decision-parity or backyard saved decision")
 	path := flag.String("snapshot", "", "saved input JSON; no database or RPC")
 	flag.Parse()
 	if *path == "" {
 		return errors.New("snapshot path required")
+	}
+	if *kind == "fleet-decision-parity" {
+		raw, err := os.ReadFile(*path)
+		if err != nil {
+			return err
+		}
+		result, err := fleetDecisionParity(raw)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	input, err := os.Open(*path)
 	if err != nil {

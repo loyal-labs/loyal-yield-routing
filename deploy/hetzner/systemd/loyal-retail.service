@@ -29,18 +29,16 @@ Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9102
 Environment=RETAIL_MODE=active
 Environment=RETAIL_SLOT_DURATION=400ms
 Environment=RETAIL_TIMESCALE_SCHEMA=kamino
-# Retained Rust KLend builder child until it is ported to Go.
-Environment=RETAIL_KLEND_PROXY_PATH=/opt/loyal/bin/loyal-klend-proxy
-# Non-secret host values: RETAIL_KLEND_PROXY_SHA256 (changes per build),
-# RETAIL_CROSS_MINT_ENABLED, RETAIL_LOOKUP_MODE, and RETAIL_FAMILIES: the
-# families moved off their stopped Rust workers (autodeposit,fleet,multiply,
-# lookup). Each is held by a session lock on RETAIL_DATABASE_URL, which must
-# be the direct Neon DSN, not the pooler. Optional fee-only route payers come
-# from a YIELD_ROUTE_FEE_PAYER_KEYPAIRS credential drop-in (Rust's format);
-# only keys enabled in route_fee_payer_shards are used, else the delegate
-# pays. Fleet plans the Backyard Voltr vault when
-# BACKYARD_VOLTR_ORCHESTRATION_ENABLED and BACKYARD_VOLTR_FLEET_VAULT_ID are
-# set, and signs it only when the delegate is the route guardian. Active lookup mode also
+# Non-secret host values: RETAIL_CROSS_MINT_ENABLED, RETAIL_LOOKUP_MODE and
+# RETAIL_FAMILIES: the families moved off their stopped Rust workers
+# (autodeposit,fleet,multiply,lookup). Each is held by a session lock on
+# RETAIL_DATABASE_URL, which must be the direct Neon DSN, not the pooler.
+# Optional fee-only route payers come from a YIELD_ROUTE_FEE_PAYER_KEYPAIRS
+# credential drop-in (Rust's format); only keys enabled in
+# route_fee_payer_shards are used, else the delegate pays. Fleet plans the
+# Backyard Voltr vault when BACKYARD_VOLTR_ORCHESTRATION_ENABLED and
+# BACKYARD_VOLTR_FLEET_VAULT_ID are set, and signs it only when the delegate
+# is the route guardian. Active lookup mode also
 # needs LoadCredentialEncrypted=RETAIL_LOOKUP_MANAGER_KEYPAIR in a drop-in.
 EnvironmentFile=/etc/loyal/loyal-retail.env
 

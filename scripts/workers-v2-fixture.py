@@ -41,6 +41,27 @@ for version, name, path, override in entries:
     checksum = override[6:-2] if override.startswith('Some("') else hashlib.sha256(file.read_bytes()).hexdigest()
     ledger[int(version)] = (name, checksum)
 
+# Production applied these outside the Yield registry: 0074-0083 through the
+# deployed Backyard worker's store migrations (origin/feat/voltr-rwa-selector
+# f821a78f6a) and 0085 as the separately rolled-out history index. The fixture
+# applies them at their production position and records the same ledger rows
+# (name, sha256 of the file) those runners wrote.
+out_of_band_root = repo / "crates/loyal-yield-store/migrations"
+out_of_band = {}
+for version, name in ((74, "backyard_rwa_phase3_journal_actions"), (75, "backyard_rwa_setup_pre_simulation_wire"),
+                      (76, "backyard_rwa_manual_recovery_latch"), (77, "backyard_rwa_manual_recovery_generation"),
+                      (78, "backyard_rwa_incident_resolution"), (79, "backyard_rwa_initializer_actions"),
+                      (80, "backyard_rwa_strategy_journal"), (81, "backyard_rwa_finalized_report_failure"),
+                      (82, "backyard_rwa_initializer_auto_scope"), (83, "backyard_rwa_finalized_restore_failure"),
+                      (85, "earn_vault_allocation_history_index")):
+    if version in ledger:
+        raise SystemExit("Out-of-band migration %d is now registered; drop it from the fixture list" % version)
+    file = out_of_band_root / ("%04d_%s.sql" % (version, name))
+    if not file.is_file():
+        raise SystemExit("Deployed out-of-band migration %s is missing" % file.name)
+    after = 73 if version < 84 else 84
+    out_of_band.setdefault(after, []).append((version, name, file))
+
 def execute(url, *, sql=None, file=None):
     args = ["psql", url, "-X", "-v", "ON_ERROR_STOP=1", "-q"]
     if file is not None and not re.search(r"\bCONCURRENTLY\b", file.read_text()):
@@ -57,7 +78,7 @@ for entry in app_schema:
     file = schema / entry["file"]
     if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
         raise SystemExit("Historical app schema fixture provenance drifted")
-default_families = ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "multiply", "lookup", "ata_projector")
+default_families = ("fleet", "fleetexec", "autodeposit", "observer", "earn_parity", "backyard", "multiply", "lookup", "ata_projector")
 families = tuple(os.environ.get("WORKERS_V2_FIXTURE_FAMILIES", ",".join(default_families)).split(","))
 allowed_families = set(default_families) | {"fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture", "lookup", "ata_projector", "autodeposit_intent", "fleet_go_same_mint_simplify", "fleet_go_cross_mint_simplify"}
 if not families or len(set(families)) != len(families) or any(f not in allowed_families for f in families):
@@ -95,6 +116,11 @@ def apply_yield_schema(url):
             raise SystemExit("Unsafe migration ledger name")
         execute(url, sql="INSERT INTO loyal_yield.schema_migrations(version,name,checksum) "
                 f"VALUES({version},'{name}','{checksum}')")
+        for extra_version, extra_name, extra_file in out_of_band.get(version, []):
+            execute(url, file=extra_file)
+            extra_checksum = hashlib.sha256(extra_file.read_bytes()).hexdigest()
+            execute(url, sql="INSERT INTO loyal_yield.schema_migrations(version,name,checksum) "
+                    f"VALUES({extra_version},'{extra_name}','{extra_checksum}')")
 
 def apply_apps_autodeposit_schema(url):
     for entry in json.loads((schema / "apps-autodeposit-manifest.json").read_text()):
@@ -181,6 +207,7 @@ if out:
                             ("ATA_PROJECTOR_TEST_DATABASE_URL", "ata_projector"),
                             ("AUTODEPOSIT_TEST_DATABASE_URL", "autodeposit"),
                             ("OBSERVER_TEST_DATABASE_URL", "observer"),
+                            ("EARN_PARITY_TEST_DATABASE_URL", "earn_parity"),
                             ("TEST_DATABASE_URL", "observer"),
                             ("BACKYARD_RWA_TEST_DATABASE_URL", "backyard"),
                             ("MULTIPLY_TEST_DATABASE_URL", "multiply")):

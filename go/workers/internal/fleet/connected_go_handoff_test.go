@@ -39,7 +39,7 @@ func TestConnectedGoSameMintAdmissionProducer(t *testing.T) {
 	if _, hasPassword := dbURL.User.Password(); hasPassword {
 		t.Fatal("fixture database URL must not contain a password")
 	}
-	for _, name := range []string{"KAMINO_TEST_KLEND_PROXY_PATH", "KAMINO_CONNECTED_SVM_PATH", "KAMINO_CONNECTED_WORKER_PATH"} {
+	for _, name := range []string{"KAMINO_CONNECTED_SVM_PATH", "KAMINO_CONNECTED_WORKER_PATH"} {
 		if os.Getenv(name) == "" {
 			t.Fatalf("configured Go handoff lacks local artifact %s", name)
 		}

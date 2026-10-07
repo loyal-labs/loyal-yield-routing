@@ -111,7 +111,7 @@ func TestConnectedGoSameMintExecution(t *testing.T) {
 	defer stopProducer()
 	command := exec.CommandContext(commandCtx, producerPath, "-test.run=^TestConnectedGoSameMintAdmissionProducer$", "-test.v", "-test.timeout=110s")
 	command.Env = []string{"LC_ALL=C", "FLEET_TEST_GO_SAME_MINT_DATABASE_URL=" + database, "KAMINO_CONNECTED_GO_D_CALLBACK=" + callback.URL + "/handoff", "KAMINO_CONNECTED_GO_D_TOKEN=" + token}
-	for _, name := range []string{"KAMINO_TEST_KLEND_PROXY_PATH", "KAMINO_CONNECTED_SVM_PATH", "KAMINO_CONNECTED_WORKER_PATH", "MOCK_YIELD_PROTOCOLS_PROGRAM_SO"} {
+	for _, name := range []string{"KAMINO_CONNECTED_SVM_PATH", "KAMINO_CONNECTED_WORKER_PATH", "MOCK_YIELD_PROTOCOLS_PROGRAM_SO"} {
 		value := os.Getenv(name)
 		if value == "" {
 			t.Fatalf("configured proof lacks local artifact %s", name)

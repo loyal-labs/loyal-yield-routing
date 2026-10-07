@@ -10,9 +10,7 @@ on:
       - bun.lock
       - Dockerfile.laserstream-workers
       - Dockerfile.light-workers
-      - Dockerfile.kamino-fleet-planner
       - Dockerfile.operator-tools
-      - go/kamino-fleet-planner/**
       - package.json
       - rust-toolchain.toml
       - .sqlx/**
@@ -22,7 +20,6 @@ on:
       - scripts/durable-autodeposit-confirmation.ts
       - scripts/execute-autodeposit-policy.ts
       - scripts/kamino-monitor-predeploy.sh
-      - scripts/kamino-fleet-planner-entrypoint.sh
       - scripts/verify-rust-image-build-once.sh
   push:
     branches:
@@ -35,9 +32,7 @@ on:
       - bun.lock
       - Dockerfile.laserstream-workers
       - Dockerfile.light-workers
-      - Dockerfile.kamino-fleet-planner
       - Dockerfile.operator-tools
-      - go/kamino-fleet-planner/**
       - package.json
       - rust-toolchain.toml
       - .sqlx/**
@@ -47,7 +42,6 @@ on:
       - scripts/durable-autodeposit-confirmation.ts
       - scripts/execute-autodeposit-policy.ts
       - scripts/kamino-monitor-predeploy.sh
-      - scripts/kamino-fleet-planner-entrypoint.sh
       - scripts/verify-rust-image-build-once.sh
   schedule:
     # Refresh the large Cargo snapshots away from the image publication path.

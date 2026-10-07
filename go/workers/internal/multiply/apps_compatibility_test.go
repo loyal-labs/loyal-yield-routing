@@ -17,7 +17,7 @@ import (
 
 // Execute the retained Rust producer's actual SQL, not a proposed native Go
 // admission API. This proves registered-schema/Go-reader interoperability;
-// external receipt authority remains in the expressly retained Rust bridge.
+// external receipt authority is the Go observer Earn application.
 func retainedExternalStatements(t *testing.T) (string, string, string) {
 	t.Helper()
 	raw, err := os.ReadFile("../../../../crates/loyal-yield-store/src/multiply_state_store.rs")

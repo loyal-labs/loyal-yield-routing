@@ -5,9 +5,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
+	"testing"
+
 	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
-	"testing"
 )
 
 func TestPersistedV0RetainsAllSignaturesAndResolvesPinnedLookup(t *testing.T) {

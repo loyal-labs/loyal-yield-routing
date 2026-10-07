@@ -51,11 +51,11 @@ type DestinationSetupBuilder interface {
 	ReadbackDestinationSetup(context.Context, DepositPlan, DestinationSetupPlan, int64) error
 }
 
-func NewSweepWireBuilderWithSetup(proxy *fleet.KLendProxy, key ed25519.PrivateKey, read AccountReader, rent SetupRentReader) (*SweepWireBuilder, error) {
+func NewSweepWireBuilderWithSetup(key ed25519.PrivateKey, read AccountReader, rent SetupRentReader) (*SweepWireBuilder, error) {
 	if rent == nil {
 		return nil, errors.New("destination setup requires a bounded rent reader")
 	}
-	b, err := NewSweepWireBuilder(proxy, key, read)
+	b, err := NewSweepWireBuilder(key, read)
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +330,7 @@ func (b *SweepWireBuilder) setupInstructions(ctx context.Context, plan DepositPl
 	if err := validateDestinationSetupPlan(plan, setup); err != nil {
 		return nil, err
 	}
-	built, err := b.proxy.BuildDestinationSetup(ctx, fleet.DestinationSetupRequest{Stage: string(setup.Stage), Vault: plan.Target.VaultPubkey, Payer: b.delegate.String(), Target: setup.Route.Position})
+	built, err := fleet.BuildDestinationSetup(fleet.DestinationSetupRequest{Stage: string(setup.Stage), Vault: plan.Target.VaultPubkey, Payer: b.delegate.String(), Target: setup.Route.Position})
 	if err != nil {
 		return nil, err
 	}

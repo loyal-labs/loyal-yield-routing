@@ -117,7 +117,9 @@ func durableEventKey(update NormalizedUpdate, vaults []watch.Vault) string {
 			}
 		}
 	}
-	if policyFilter && policyAccount && update.Signature != nil {
+	// A wallet or settings update can arrive first in a close transaction;
+	// deletions keep their own key so discovery cannot consume the cleanup.
+	if policyFilter && policyAccount && update.EventKind != "account_deleted" && update.Signature != nil {
 		return fmt.Sprintf("policy-discovery:%d:%s", update.Slot, *update.Signature)
 	}
 	if update.EventKey != nil {

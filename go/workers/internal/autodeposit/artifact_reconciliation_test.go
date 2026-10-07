@@ -9,13 +9,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/gagliardetto/solana-go"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"os"
 	"reflect"
 	"strconv"
 	"testing"
+
+	"github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 type artifactGolden struct {
@@ -42,7 +43,7 @@ func artifactFixture(t *testing.T) (artifactGolden, ArtifactTarget, *SweepWireBu
 		t.Fatal("unexpected source pin")
 	}
 	target := ArtifactTarget{ControlTarget: ControlTarget{Cluster: mainnetCluster, TargetID: 1, SetupGeneration: 3, PolicySeed: f.PolicySeed, Settings: f.Settings, Wallet: f.Wallet, WalletTokenATA: f.WalletATA, Vault: f.Vault, VaultTokenATA: f.VaultATA, Mint: USDCMint, Policy: f.Policy, SubscriptionAuthority: f.SubscriptionAuthority, RecurringDelegation: f.RecurringDelegation, Nonce: &f.Nonce, MaxAmountPerPeriod: &f.MaxAmountPerPeriod, StartTimestamp: &f.StartTimestamp}, RootAuthority: f.RootAuthority, PeriodLength: &f.PeriodLength, ExpiryTimestamp: &f.ExpiryTimestamp}
-	b, e := NewSweepWireBuilder(setupProxy(t), ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, 32)), func(context.Context, []string, ...string) (int64, []backyard.ConfirmedAccount, error) {
+	b, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, 32)), func(context.Context, []string, ...string) (int64, []backyard.ConfirmedAccount, error) {
 		return 0, nil, errors.New("unexpected account read")
 	})
 	if e != nil {
@@ -58,25 +59,23 @@ func goldenHex(t *testing.T, s string) []byte {
 	}
 	return v
 }
-func artifactRequest(f artifactGolden) fleet.CanonicalSubscriptionPolicyRequest {
-	return fleet.CanonicalSubscriptionPolicyRequest{Settings: f.Settings, RootAuthority: f.RootAuthority, Payer: f.Payer, DelegatedSigner: f.DelegatedSigner, PolicySeed: uint64(f.PolicySeed), Wallet: f.Wallet, Vault: f.Vault, MaxAmountPerPeriod: uint64(f.MaxAmountPerPeriod)}
+func artifactRequest(f artifactGolden) CanonicalSubscriptionPolicyRequest {
+	return CanonicalSubscriptionPolicyRequest{Settings: f.Settings, RootAuthority: f.RootAuthority, Payer: f.Payer, DelegatedSigner: f.DelegatedSigner, PolicySeed: uint64(f.PolicySeed), Wallet: f.Wallet, Vault: f.Vault, MaxAmountPerPeriod: uint64(f.MaxAmountPerPeriod)}
 }
 func TestCanonicalSubscriptionCreatorOfficialSolitaABI(t *testing.T) {
-	f, _, b := artifactFixture(t)
+	f, _, _ := artifactFixture(t)
 	request := artifactRequest(f)
-	ix, e := b.proxy.BuildCanonicalSubscriptionPolicy(t.Context(), request)
+	ix, e := BuildCanonicalSubscriptionPolicy(request)
 	if e != nil {
 		t.Fatal(e)
 	}
 	if !bytes.Equal(ix.Data, goldenHex(t, f.DataHex)) || !reflect.DeepEqual(ix.Accounts, f.Accounts) {
-		t.Fatalf("Rust creator differs from independent Solita SDK golden: accounts=%+v", ix.Accounts)
+		t.Fatalf("creator differs from independent Solita SDK golden: accounts=%+v", ix.Accounts)
 	}
-	request.PolicyDataHex = f.PolicyDataHex
-	if _, e = b.proxy.BuildCanonicalSubscriptionPolicy(t.Context(), request); e != nil {
+	if e = VerifyCanonicalSubscriptionPolicyAccount(request, goldenHex(t, f.PolicyDataHex)); e != nil {
 		t.Fatalf("canonical advanced policy rejected: %v", e)
 	}
-	request.PolicyDataHex = f.WeakenedPolicyDataHex
-	if _, e = b.proxy.BuildCanonicalSubscriptionPolicy(t.Context(), request); e == nil {
+	if e = VerifyCanonicalSubscriptionPolicyAccount(request, goldenHex(t, f.WeakenedPolicyDataHex)); e == nil {
 		t.Fatal("dropping token-account owner constraint accepted")
 	}
 	for _, mutation := range []struct {
@@ -86,8 +85,7 @@ func TestCanonicalSubscriptionCreatorOfficialSolitaABI(t *testing.T) {
 		t.Run(mutation.name, func(t *testing.T) {
 			d := goldenHex(t, f.PolicyDataHex)
 			mutation.change(d)
-			request.PolicyDataHex = hex.EncodeToString(d)
-			if _, e := b.proxy.BuildCanonicalSubscriptionPolicy(t.Context(), request); e == nil {
+			if e := VerifyCanonicalSubscriptionPolicyAccount(request, d); e == nil {
 				t.Fatal("mutated policy accepted")
 			}
 		})

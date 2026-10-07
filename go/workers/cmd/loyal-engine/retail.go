@@ -29,15 +29,15 @@ import (
 )
 
 type retailConfig struct {
-	databaseURL, timescaleURL, rpcURL, timescaleSchema, proxyPath, proxyHash string
-	slotDuration                                                             time.Duration
-	delegate, feePayer                                                       ed25519.PrivateKey
-	feeOnly                                                                  []ed25519.PrivateKey
-	crossMintEnabled                                                         bool
-	crossMintMaxSlippageBPS, crossMintMaxValueLossBPS                        uint16
-	jupiterBuildURL, jupiterAPIKey                                           string
-	lookup                                                                   retailLookupConfig
-	voltrVaultID                                                             int64
+	databaseURL, timescaleURL, rpcURL, timescaleSchema string
+	slotDuration                                       time.Duration
+	delegate, feePayer                                 ed25519.PrivateKey
+	feeOnly                                            []ed25519.PrivateKey
+	crossMintEnabled                                   bool
+	crossMintMaxSlippageBPS, crossMintMaxValueLossBPS  uint16
+	jupiterBuildURL, jupiterAPIKey                     string
+	lookup                                             retailLookupConfig
+	voltrVaultID                                       int64
 }
 
 // Configuration is scoped to this capability. Legacy/background writer flags
@@ -113,7 +113,7 @@ func loadRetailConfig() (retailConfig, error) {
 		read func(string) (string, error)
 	}{
 		{"RETAIL_DATABASE_URL", &cfg.databaseURL, engine.Credential}, {"RETAIL_TIMESCALE_DATABASE_URL", &cfg.timescaleURL, engine.Credential}, {"RETAIL_SOLANA_RPC_URL", &cfg.rpcURL, engine.Credential},
-		{"RETAIL_TIMESCALE_SCHEMA", &cfg.timescaleSchema, required}, {"RETAIL_KLEND_PROXY_PATH", &cfg.proxyPath, required}, {"RETAIL_KLEND_PROXY_SHA256", &cfg.proxyHash, required},
+		{"RETAIL_TIMESCALE_SCHEMA", &cfg.timescaleSchema, required},
 	} {
 		value, err := field.read(field.name)
 		if err != nil {
@@ -129,14 +129,6 @@ func loadRetailConfig() (retailConfig, error) {
 	if err != nil || cfg.slotDuration <= 0 || cfg.slotDuration > 10*time.Second {
 		return cfg, errors.New("RETAIL_SLOT_DURATION must be positive and at most ten seconds")
 	}
-	if len(cfg.proxyHash) != 64 {
-		return cfg, errors.New("RETAIL_KLEND_PROXY_SHA256 must be a SHA-256 digest")
-	}
-	digest, err := hex.DecodeString(cfg.proxyHash)
-	if err != nil || len(digest) != 32 {
-		return cfg, errors.New("RETAIL_KLEND_PROXY_SHA256 must be a SHA-256 digest")
-	}
-	cfg.proxyHash = strings.ToLower(cfg.proxyHash)
 	for _, field := range []struct {
 		name string
 		out  *ed25519.PrivateKey
@@ -237,7 +229,7 @@ func parseRetailKey(material string) (ed25519.PrivateKey, error) {
 }
 
 func (c retailConfig) fleetConfig() fleet.Config {
-	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", Mode: fleet.ModePublish, PollInterval: time.Second, SlotDuration: c.slotDuration, KLendProxyPath: c.proxyPath, KLendProxySHA256: c.proxyHash, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey, VoltrVaultID: c.voltrVaultID}
+	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", Mode: fleet.ModePublish, PollInterval: time.Second, SlotDuration: c.slotDuration, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey, VoltrVaultID: c.voltrVaultID}
 }
 
 // The outer diagnostic retains error identity for cancellation and inspection
@@ -320,10 +312,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	proxy, err := fleet.NewKLendProxy(cfg.proxyPath, cfg.proxyHash)
-	if err != nil {
-		return retailError("pinned KLend helper", err)
-	}
 	yieldPool, err := db.Open(startup, cfg.databaseURL, 16)
 	if err != nil {
 		return retailError("Yield database", err)
@@ -376,7 +364,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("rent RPC", err)
 	}
-	wires, err := autodeposit.NewSweepWireBuilderWithSetup(proxy, cfg.delegate, chain.ReadAccountsWithOptional, rentRPC.MinimumBalanceForRentExemption)
+	wires, err := autodeposit.NewSweepWireBuilderWithSetup(cfg.delegate, chain.ReadAccountsWithOptional, rentRPC.MinimumBalanceForRentExemption)
 	if err != nil {
 		return retailError("Autodeposit wires", err)
 	}
@@ -445,7 +433,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	// Compilation/verification remains available for recovery with rollout off.
 	// Only the planner and D controller receive fresh cross-mint enablement.
-	revalidator, err := fleet.NewRevalidator(cStore, fleetRPC, proxy, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, SlotDuration: cfg.slotDuration, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys()})
+	revalidator, err := fleet.NewRevalidator(cStore, fleetRPC, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, SlotDuration: cfg.slotDuration, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys()})
 	if err != nil {
 		return retailError("fused fleet preparation", err)
 	}

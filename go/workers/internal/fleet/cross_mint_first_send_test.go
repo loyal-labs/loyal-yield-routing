@@ -9,9 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"math"
-	"os"
 	"testing"
 	"time"
 
@@ -126,18 +124,6 @@ func TestCrossMintFirstSendRejectsMalformedJournalBeforeRPC(t *testing.T) {
 // against explicitly mocked finalized account and simulation replies. It proves
 // orchestration and exact-wire use, not chain execution or provider correctness.
 func TestRealKLendCrossMintFirstSendRechecksExactOldWithdrawal(t *testing.T) {
-	path := os.Getenv("KAMINO_TEST_KLEND_PROXY_PATH")
-	if path == "" {
-		t.Skip("requires pinned compiled Rust KLend proxy")
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy, err := NewKLendProxy(path, fmt.Sprintf("%x", sha256.Sum256(raw)))
-	if err != nil {
-		t.Fatal(err)
-	}
 	q, plan, bank := crossMintPreparationFixture(t)
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))
 	signer := encodeBase58(key.Public().(ed25519.PublicKey))
@@ -149,14 +135,14 @@ func TestRealKLendCrossMintFirstSendRechecksExactOldWithdrawal(t *testing.T) {
 	}
 	fields["policy_bindings"], _ = json.Marshal(plan.Bindings)
 	q.Movement.ExecutionPlan, _ = json.Marshal(fields)
-	r := &Revalidator{proxy: proxy, signer: signer, slotDuration: 400 * time.Millisecond}
+	r := &Revalidator{signer: signer, slotDuration: 400 * time.Millisecond}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	route, err := proxy.BuildCrossMintLegs(ctx, KaminoSameMintRouteRequest{Vault: q.Movement.VaultPubkey, Source: bank.source.Position, Target: bank.target.Position, WithdrawCollateralAmount: 999, DepositLiquidityAmount: 999})
+	route, err := BuildCrossMintLegs(KaminoSameMintRouteRequest{Vault: q.Movement.VaultPubkey, Source: bank.source.Position, Target: bank.target.Position, WithdrawCollateralAmount: 999, DepositLiquidityAmount: 999})
 	if err != nil {
 		t.Fatal(err)
 	}
-	recovery, err := proxy.BuildIdleDeposit(ctx, KaminoIdleDepositRequest{Vault: q.Movement.VaultPubkey, Target: bank.source.Position, DepositLiquidityAmount: 999})
+	recovery, err := BuildIdleDeposit(KaminoIdleDepositRequest{Vault: q.Movement.VaultPubkey, Target: bank.source.Position, DepositLiquidityAmount: 999})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,18 +1,65 @@
 package backyard
 
 import (
+	"context"
+	"encoding/binary"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestPilotUSDCObservationBoundsDepositRemainderWithoutLosingNAV(t *testing.T) {
+	m := readyWorkerManifest(t)
+	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	var previous string
+	for _, valid := range []bool{true, false} {
+		observe := productionConfirmedBatchForManifest(t, m, 77, func(accounts []ConfirmedAccount) {
+			// Keep the real production decoders; replace only controlled chain
+			// bytes. A collateral-only obligation avoids a separate debt window.
+			clear(accountAt(accounts, kaminoPrimeUSDCObligation).Data[1208:2208])
+			binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], 77)
+			reserve := accountAt(accounts, kaminoCollateralReserve).Data
+			for i := 1; i < 11; i++ {
+				binary.LittleEndian.PutUint32(reserve[kaminoReserveConfigOffset+64+i*8:], 10_000)
+			}
+			if !valid {
+				reserve[kaminoReserveConfigOffset+7] = 1
+			}
+		})
+		o, err := observe(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := o.Snapshot
+		if s.RouteLane != PhaseOneLaneID || s.CollateralIdleRaw != 3 || s.StrategyNAVRaw != 40 || s.PositionCollateralRaw != 10 {
+			t.Fatal("deposit bound changed custody or NAV", s)
+		}
+		if valid && s.MinimumCollateralDepositRaw != 3 || !valid && s.MinimumCollateralDepositRaw != 0 {
+			t.Fatal("production observation omitted reserve rounding bound", s.MinimumCollateralDepositRaw)
+		}
+		if !valid && s.ObservationID == previous {
+			t.Fatal("changed rounding evidence reused observation identity")
+		}
+		previous = s.ObservationID
+	}
+}
 
 func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVSnapshot {
 	digest := strings.Repeat("a", 64)
 	return RouteNAVSnapshot{
 		Slot: int64(slot), StrategyNAVRaw: current, TotalVaultNAVRaw: current, PriorReportedNAVRaw: reported,
 		PriorReportUpdatedTS: uint64(lastUpdated.Unix()), SnapshotDigest: digest,
+		Voltr:  VoltrVaultBook{AdminPerformanceFeeBPS: uint64(approvedAdminPerformanceFeeBPS)},
 		Report: BridgeReport{Sequence: slot, ObservedSlot: slot, NAVAfterRaw: current, SnapshotDigest: digest},
 	}
+}
+
+// cadenceArmedIdentity completes the monitor inputs the production observe path
+// adds for a route whose pinned program identity verified.
+func cadenceArmedIdentity(s *Snapshot) {
+	s.ProgramIdentityKnown = true
+	s.VoltrProgramDeploySlot = voltrProgramDeploySlot
+	s.AdaptorProgramDeploySlot = adaptorProgramDeploySlot
 }
 
 func TestOptionalLifecycleObligationPrefersSelectedPhase2Close(t *testing.T) {
@@ -26,6 +73,11 @@ func TestOptionalLifecycleObligationPrefersSelectedPhase2Close(t *testing.T) {
 	if got := optionalLifecycleObligations([]string{bridgeSquadsATA}); len(got) != 0 {
 		t.Fatalf("unrelated account became optional: %v", got)
 	}
+	for _, obligation := range []string{primePRIMEPYUSD.Kamino.Obligation, primePRIMEUSDS.Kamino.Obligation} {
+		if got := optionalLifecycleObligations([]string{bridgeSquadsATA, obligation}); len(got) != 1 || got[0] != obligation {
+			t.Fatalf("closed Prime sibling obligation blocks terminal observation: %v", got)
+		}
+	}
 }
 
 func TestRouteNAVCadenceDoesNotSpamUnchangedFreshReports(t *testing.T) {
@@ -35,6 +87,8 @@ func TestRouteNAVCadenceDoesNotSpamUnchangedFreshReports(t *testing.T) {
 	if err := applyRouteNAVSnapshot(&snapshot, nav, now); err != nil {
 		t.Fatal(err)
 	}
+	snapshot.VoltrTotalValueRaw = 42 // idle 0 + custody 0 + receipt 42
+	cadenceArmedIdentity(&snapshot)
 	if snapshot.CapitalMutated || snapshot.LastReportAgeSeconds != 10 {
 		t.Fatalf("unchanged NAV was marked dirty: %+v", snapshot)
 	}
@@ -76,13 +130,19 @@ func TestRouteNAVCadenceReportsMutationBeforeNextRiskAction(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	snapshot := base()
 	snapshot.SquadsIdleRaw = 100
-	nav := cadenceNAV(uint64(snapshot.Slot), 43, 42, now.Add(-10*time.Second))
+	nav := cadenceNAV(uint64(snapshot.Slot), 2_000, 42, now.Add(-10*time.Second))
 	if err := applyRouteNAVSnapshot(&snapshot, nav, now); err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.CapitalMutated {
-		t.Fatal("changed independently computed NAV was not marked dirty")
+	snapshot.VoltrTotalValueRaw = 42 // idle 0 + custody 0 + receipt 42
+	snapshot.StrategyNAVRaw = 2_000  // the recomputed external NAV this merge observed
+	cadenceArmedIdentity(&snapshot)
+	// The merge no longer reads a capital mutation out of the NAV comparison:
+	// that fact comes from the reconciled journal (productionObserveState.observe).
+	if snapshot.CapitalMutated {
+		t.Fatal("the NAV comparison alone marked a capital mutation")
 	}
+	snapshot.CapitalMutated = true // reconciled bridge mutation newer than the last report
 	if got := Decide(snapshot); got.Action != ReportNAV || got.Reason != "nav_due" {
 		t.Fatalf("risk mutation was selected before NAV report: %+v", got)
 	}
@@ -97,6 +157,8 @@ func TestRouteNAVCadenceReportsReconciledRiskMutationEvenWhenValueIsUnchanged(t 
 		t.Fatal(err)
 	}
 	snapshot.PostMutationNAVRequired = true
+	snapshot.VoltrTotalValueRaw = 42 // idle 0 + custody 0 + receipt 42
+	cadenceArmedIdentity(&snapshot)
 	if snapshot.CapitalMutated {
 		t.Fatal("unchanged value was incorrectly marked as capital mutation")
 	}
@@ -105,14 +167,16 @@ func TestRouteNAVCadenceReportsReconciledRiskMutationEvenWhenValueIsUnchanged(t 
 	}
 }
 
-func TestRouteNAVCadenceReportsAtSixtySeconds(t *testing.T) {
+func TestRouteNAVCadenceReportsAtOneHour(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	snapshot := base()
-	nav := cadenceNAV(uint64(snapshot.Slot), 42, 42, now.Add(-60*time.Second))
+	nav := cadenceNAV(uint64(snapshot.Slot), 42, 42, now.Add(-time.Hour))
 	if err := applyRouteNAVSnapshot(&snapshot, nav, now); err != nil {
 		t.Fatal(err)
 	}
-	if got := Decide(snapshot); got.Action != ReportNAV || snapshot.LastReportAgeSeconds != 60 {
+	snapshot.VoltrTotalValueRaw = 42 // idle 0 + custody 0 + receipt 42
+	cadenceArmedIdentity(&snapshot)
+	if got := Decide(snapshot); got.Action != ReportNAV || snapshot.LastReportAgeSeconds != 3600 {
 		t.Fatalf("aged NAV did not report: snapshot=%+v decision=%+v", snapshot, got)
 	}
 }
@@ -137,7 +201,7 @@ func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) 
 
 func TestRouteFixedAddressesIncludeEveryMutableConstructionInput(t *testing.T) {
 	addresses := routeFixedAddresses(readyWorkerManifest(t))
-	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, kaminoPrimeCustody: false, kaminoPrimeUSDCObligation: false, kaminoCollateralReserve: false, kaminoDebtReserve: false, kaminoPrimeLiquiditySupply: false, kaminoUSDCLiquiditySupply: false, reportTicketPDA: false}
+	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, bridgeVoltrVault: false, bridgeLPMint: false, kaminoPrimeCustody: false, kaminoPrimeUSDCObligation: false, kaminoCollateralReserve: false, kaminoDebtReserve: false, kaminoPrimeLiquiditySupply: false, kaminoUSDCLiquiditySupply: false, reportTicketPDA: false}
 	for _, address := range addresses {
 		if _, ok := wanted[address]; ok {
 			wanted[address] = true

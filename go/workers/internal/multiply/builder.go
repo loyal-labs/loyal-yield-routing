@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earn"
 )
 
 // BuiltOperation mirrors builder::BuiltOperation.
@@ -324,38 +323,8 @@ func BuildOperation(plan *ActionPlan, observed *ObservedRoute, topology *EarnMax
 	return nil, fmt.Errorf("unknown multiply action %q", plan.Action)
 }
 
-// BuildWalletClaimInstruction binds the app-owned root wallet claim to the
-// saved request, paying earn.ClaimPayout of the claim custody's balance when
-// the transaction is built. The delegate never signs this instruction.
-func BuildWalletClaimInstruction(route *RouteState, topology *EarnMaxTopology, requestID string, request earn.ClaimRequest, custodyBalanceRaw uint64) (Instruction, error) {
-	if route == nil || topology == nil || route.Withdrawal == nil || route.CurrentOperationID != nil || route.Goal != GoalWithdraw || route.Withdrawal.Status != WithdrawalClaimable || route.Withdrawal.RequestID != requestID || requestID == "" {
-		return Instruction{}, errors.New("claim is not owned by a claimable withdrawal request")
-	}
-	if route.Settings != topology.Settings.String() || route.Vault != topology.Vault.String() || route.VaultIndex != topology.VaultIndex {
-		return Instruction{}, errors.New("claim route custody identity drifted")
-	}
-	if !request.Full && request.AmountRaw != route.Withdrawal.AmountRaw {
-		return Instruction{}, errors.New("explicit claim request differs from the saved withdrawal")
-	}
-	amount, err := earn.ClaimPayout(request, custodyBalanceRaw)
-	if err != nil {
-		return Instruction{}, err
-	}
-	if amount > math.MaxInt64 {
-		return Instruction{}, errors.New("claim request amount is invalid")
-	}
-	destination, err := solana.PublicKeyFromBase58(route.Withdrawal.DestinationAccount)
-	if err != nil || destination == topology.ClaimCustody {
-		return Instruction{}, errors.New("claim destination is invalid")
-	}
-	data := appendU64Instruction([]byte{12}, amount)
-	data = append(data, 6)
-	return Instruction{ProgramID: mustKey(TokenProgram), Accounts: []AccountMeta{{PubKey: topology.ClaimCustody, IsWritable: true}, {PubKey: mustKey(USDCMint)}, {PubKey: destination, IsWritable: true}, {PubKey: topology.Vault, IsSigner: true}}, Data: data}, nil
-}
-
 // WalletClaimReceipt contains confirmed transaction metadata, not later balance
-// snapshots. The app supplies the verified current root authority from Squads
-// settings and retains ownership of authenticated request admission.
+// snapshots. LookupTables resolve a v0 message's loaded accounts.
 type WalletClaimReceipt struct {
 	Signature                                                      string
 	ConfirmationState                                              string
@@ -366,98 +335,164 @@ type WalletClaimReceipt struct {
 	SourceBefore, SourceAfter, DestinationBefore, DestinationAfter TokenBalance
 }
 
-func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, requestID string, request earn.ClaimRequest, rootAuthority solana.PublicKey, receipt *WalletClaimReceipt) error {
-	if receipt == nil {
-		return errors.New("claim has no successful confirmed root-wallet receipt")
+// ValidateWalletClaimReceipt is the Rust bridge's acceptance of a root-wallet
+// Claim (balance-sweep-ata-monitor validate_earn_max_root_claim and
+// validate_earn_max_claim), check for check: the one non-compute-budget
+// instruction is the exact Squads root Transaction payload, for vault 0, of
+// the saved amount from the claim custody to the saved destination, with an
+// account table of exactly those five custody keys. Any number of signers;
+// the Squads program enforces the authority's permission on chain.
+func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, requestID string, receipt *WalletClaimReceipt) error {
+	if route == nil || topology == nil || receipt == nil || route.Withdrawal == nil {
+		return errors.New("claim has no route, topology or receipt")
 	}
-	// The source's pre-transaction balance is the balance the claim was built from.
-	expected, err := BuildWalletClaimInstruction(route, topology, requestID, request, receipt.SourceBefore.AmountRaw)
+	w := route.Withdrawal
+	if route.Goal != GoalWithdraw || route.CurrentOperationID != nil || w.Status != WithdrawalClaimable || w.RequestID != requestID || requestID == "" {
+		return errors.New("claim has no current wallet-owned request")
+	}
+	if receipt.TransactionError != nil || receipt.ConfirmedSlot == 0 || receipt.ConfirmedSlot < route.ObservedSlot || (receipt.ConfirmationState != "confirmed" && receipt.ConfirmationState != "finalized") {
+		return errors.New("claim has no successful confirmed receipt")
+	}
+	if route.Settings != topology.Settings.String() || route.Vault != topology.Vault.String() || route.VaultIndex != 0 || topology.VaultIndex != 0 {
+		return errors.New("claim route custody identity drifted")
+	}
+	tx, err := solana.TransactionFromBytes(receipt.Wire)
 	if err != nil {
 		return err
 	}
-	if receipt == nil || receipt.TransactionError != nil || receipt.ConfirmedSlot == 0 || receipt.ConfirmedSlot < route.ObservedSlot || (receipt.ConfirmationState != "confirmed" && receipt.ConfirmationState != "finalized") || rootAuthority.IsZero() {
-		return errors.New("claim has no successful confirmed root-wallet receipt")
+	canonical, err := tx.MarshalBinary()
+	if err != nil || !bytes.Equal(canonical, receipt.Wire) || len(tx.Signatures) == 0 || int(tx.Message.Header.NumRequiredSignatures) != len(tx.Signatures) {
+		return errors.New("claim transaction is malformed")
 	}
-	tx, err := decodeVerifiedTransaction(receipt.Wire)
+	if err := tx.VerifySignatures(); err != nil {
+		return err
+	}
+	if tx.Signatures[0].String() != receipt.Signature {
+		return errors.New("claim receipt does not bind the signed transaction")
+	}
+	source, vault, usdc, token := topology.ClaimCustody, topology.Vault, mustKey(USDCMint), mustKey(TokenProgram)
+	destination, err := solana.PublicKeyFromBase58(w.DestinationAccount)
 	if err != nil {
 		return err
 	}
-	if tx.Signatures[0].String() != receipt.Signature || !tx.IsSigner(rootAuthority) {
-		return errors.New("claim transaction is not signed by its verified root authority")
+	amount := w.AmountRaw
+	for _, b := range []struct {
+		balance TokenBalance
+		account solana.PublicKey
+	}{{receipt.SourceBefore, source}, {receipt.SourceAfter, source}, {receipt.DestinationBefore, destination}, {receipt.DestinationAfter, destination}} {
+		if b.balance.Account != b.account.String() || b.balance.Mint != USDCMint || b.balance.TokenProgram != TokenProgram {
+			return errors.New("claim receipt token identity drifted")
+		}
 	}
+	if amount == 0 || source == destination || receipt.SourceBefore.AmountRaw < amount || receipt.SourceBefore.AmountRaw-amount != receipt.SourceAfter.AmountRaw ||
+		receipt.DestinationBefore.AmountRaw+amount < amount || receipt.DestinationBefore.AmountRaw+amount != receipt.DestinationAfter.AmountRaw {
+		return errors.New("claim receipt did not pay exact saved custody and amount")
+	}
+	static := len(tx.Message.AccountKeys)
+	loadedWritable := 0
 	if tx.Message.IsVersioned() {
 		if err := tx.Message.SetAddressTables(receipt.LookupTables); err != nil {
 			return err
 		}
 		if err := tx.Message.ResolveLookups(); err != nil {
-			return err
+			return errors.New("claim loaded account proof is incomplete")
 		}
+		for _, lookup := range tx.Message.AddressTableLookups {
+			loadedWritable += len(lookup.WritableIndexes)
+		}
+	}
+	keys := tx.Message.AccountKeys
+	header := tx.Message.Header
+	signers := int(header.NumRequiredSignatures)
+	meta := func(index int) (*solana.AccountMeta, error) {
+		if index >= len(keys) {
+			return nil, errors.New("claim account index is invalid")
+		}
+		writable := index < static+loadedWritable
+		switch {
+		case index < signers:
+			writable = index < signers-int(header.NumReadonlySignedAccounts)
+		case index < static:
+			writable = index < static-int(header.NumReadonlyUnsignedAccounts)
+		}
+		return &solana.AccountMeta{PublicKey: keys[index], IsSigner: index < signers, IsWritable: writable}, nil
 	}
 	found := false
 	for _, compiled := range tx.Message.Instructions {
-		program, err := tx.ResolveProgramIDIndex(compiled.ProgramIDIndex)
-		if err != nil {
-			return err
+		if int(compiled.ProgramIDIndex) >= len(keys) {
+			return errors.New("claim program index is invalid")
 		}
+		program := keys[compiled.ProgramIDIndex]
 		if program == solana.ComputeBudget {
 			continue
 		}
 		if found || program != mustKey(SquadsProgram) {
-			return errors.New("claim transaction contains an unexpected financial instruction")
+			return errors.New("claim has an unexpected outer instruction")
 		}
 		found = true
-		accounts, err := compiled.ResolveInstructionAccounts(&tx.Message)
-		if err != nil {
-			return err
-		}
-		if len(accounts) < 3 || accounts[0].PublicKey != topology.Settings || !accounts[0].IsWritable || accounts[1].PublicKey != mustKey(SquadsProgram) || accounts[2].PublicKey != rootAuthority || !accounts[2].IsSigner {
-			return errors.New("claim outer accounts do not bind root settings authority")
-		}
-		data := []byte(compiled.Data)
-		if len(data) < 15 || !bytes.Equal(data[:8], squadsExecuteSyncV2Discriminator[:]) || data[8] != topology.VaultIndex || data[9] != 1 || data[10] != 0 {
-			return errors.New("claim must use root Transaction payload, not delegated Policy payload")
-		}
-		length := int(binary.LittleEndian.Uint32(data[11:15]))
-		if length != len(data)-15 {
-			return errors.New("claim root payload length drifted")
-		}
-		payload := data[15:]
-		if len(payload) < 9 || payload[0] != 1 || payload[2] != 4 {
-			return errors.New("claim root payload must have exactly one transfer")
-		}
-		programIndex := int(payload[1])
-		table := accounts[3:]
-		if programIndex >= len(table) || table[programIndex].PublicKey != expected.ProgramID {
-			return errors.New("claim inner program drifted")
-		}
-		for i, index := range payload[3:7] {
-			if int(index) >= len(table) || table[index].PublicKey != expected.Accounts[i].PubKey || (expected.Accounts[i].IsWritable && !table[index].IsWritable) {
-				return errors.New("claim inner custody identity drifted")
+		accounts := make([]*solana.AccountMeta, len(compiled.Accounts))
+		for i, index := range compiled.Accounts {
+			if accounts[i], err = meta(int(index)); err != nil {
+				return err
 			}
 		}
-		dataLength := int(binary.LittleEndian.Uint16(payload[7:9]))
-		if dataLength != len(payload)-9 || !bytes.Equal(payload[9:], expected.Data) {
-			return errors.New("claim token transfer amount or decimals drifted")
+		if len(accounts) < 3 || !accounts[2].IsSigner {
+			return errors.New("claim authority did not sign the transaction")
+		}
+		// SDK compilers may order the five inner accounts differently: keep the
+		// proven order but require exactly the custody key set.
+		table := make([]solana.AccountMeta, 0, len(accounts)-3)
+		for _, a := range accounts[3:] {
+			table = append(table, *a)
+		}
+		if len(table) != 5 {
+			return errors.New("claim account table has unrelated or missing custody")
+		}
+		for _, key := range []solana.PublicKey{source, usdc, destination, vault, token} {
+			count := 0
+			for _, a := range table {
+				if a.PublicKey == key {
+					count++
+				}
+			}
+			if count != 1 {
+				return errors.New("claim account table has unrelated or missing custody")
+			}
+		}
+		position := func(key solana.PublicKey, writable, signer bool) byte {
+			for i := range table {
+				if table[i].PublicKey == key {
+					table[i].IsWritable = table[i].IsWritable || writable
+					table[i].IsSigner = table[i].IsSigner || signer
+					return byte(i)
+				}
+			}
+			return 0
+		}
+		transfer := appendU64Instruction([]byte{12}, amount)
+		transfer = append(transfer, 6)
+		inner := []byte{position(source, true, false), position(usdc, false, false), position(destination, true, false), position(vault, false, true)}
+		payload := append([]byte{1, position(token, false, false), 4}, inner...)
+		payload = binary.LittleEndian.AppendUint16(payload, uint16(len(transfer)))
+		payload = append(payload, transfer...)
+		data := append(append([]byte{}, squadsExecuteSyncV2Discriminator[:]...), 0, 1, 0)
+		data = binary.LittleEndian.AppendUint32(data, uint32(len(payload)))
+		data = append(data, payload...)
+		expected := []solana.AccountMeta{{PublicKey: topology.Settings, IsWritable: true}, {PublicKey: mustKey(SquadsProgram)}, {PublicKey: accounts[2].PublicKey, IsSigner: true}}
+		for _, a := range table {
+			expected = append(expected, solana.AccountMeta{PublicKey: a.PublicKey, IsWritable: a.IsWritable})
+		}
+		if !bytes.Equal(compiled.Data, data) || len(accounts) != len(expected) {
+			return errors.New("claim must be the exact root Transaction payload for the saved request")
+		}
+		for i, want := range expected {
+			if accounts[i].PublicKey != want.PublicKey || want.IsWritable && !accounts[i].IsWritable || want.IsSigner && !accounts[i].IsSigner {
+				return errors.New("claim must be the exact root Transaction payload for the saved request")
+			}
 		}
 	}
 	if !found {
-		return errors.New("claim root instruction is missing")
-	}
-	amount := binary.LittleEndian.Uint64(expected.Data[1:9])
-	src, dst := topology.ClaimCustody.String(), route.Withdrawal.DestinationAccount
-	for _, pair := range []struct {
-		pre, post TokenBalance
-		account   string
-	}{{receipt.SourceBefore, receipt.SourceAfter, src}, {receipt.DestinationBefore, receipt.DestinationAfter, dst}} {
-		if pair.pre.Account != pair.account || pair.post.Account != pair.account || pair.pre.Mint != USDCMint || pair.post.Mint != USDCMint || pair.pre.TokenProgram != TokenProgram || pair.post.TokenProgram != TokenProgram {
-			return errors.New("claim receipt token identity drifted")
-		}
-	}
-	if err := earn.VerifyClaimTransfer(request, receipt.SourceBefore.AmountRaw, receipt.SourceAfter.AmountRaw, amount); err != nil {
-		return err
-	}
-	if receipt.DestinationAfter.AmountRaw < receipt.DestinationBefore.AmountRaw || receipt.DestinationAfter.AmountRaw-receipt.DestinationBefore.AmountRaw != amount {
-		return errors.New("claim receipt did not credit the destination with the payout")
+		return errors.New("claim root instruction is absent")
 	}
 	return nil
 }

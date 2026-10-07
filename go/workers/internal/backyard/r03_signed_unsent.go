@@ -214,11 +214,7 @@ func (c *RPCClient) SignatureStatuses(ctx context.Context, signatures []string) 
 		return nil, fmt.Errorf("signatures are required")
 	}
 	var result struct {
-		Value []*struct {
-			Slot               int64           `json:"slot"`
-			Err                json.RawMessage `json:"err"`
-			ConfirmationStatus string          `json:"confirmationStatus"`
-		} `json:"value"`
+		Value []*signatureStatusRow `json:"value"`
 	}
 	if err := c.call(ctx, "getSignatureStatuses", []any{signatures, map[string]bool{"searchTransactionHistory": true}}, &result); err != nil {
 		return nil, err
@@ -231,8 +227,7 @@ func (c *RPCClient) SignatureStatuses(ctx context.Context, signatures []string) 
 		if row == nil {
 			continue
 		}
-		failed := len(row.Err) > 0 && string(row.Err) != "null"
-		out[index] = SignatureObservation{Found: true, Confirmed: !failed && row.Slot > 0 && (row.ConfirmationStatus == "confirmed" || row.ConfirmationStatus == "finalized"), ConfirmationSlot: row.Slot, Failed: failed}
+		out[index] = signatureObservation(row)
 	}
 	return out, nil
 }

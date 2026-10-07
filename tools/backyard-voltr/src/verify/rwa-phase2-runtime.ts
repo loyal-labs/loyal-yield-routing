@@ -178,20 +178,20 @@ function main() {
     kaminoPolicyChecks.every(Boolean) && jupiterEdges.length === 2 && new Set(jupiterEdges.map((value) => value.edge)).size === 2 &&
     jupiterEdgeChecks.every(Boolean);
 
-  const goConfig = existsSync(path("go/backyard-rwa-worker/internal/backyardrwa/config.go"))
-    ? read("go/backyard-rwa-worker/internal/backyardrwa/config.go")
+  const goConfig = existsSync(path("go/workers/internal/backyard/config.go"))
+    ? read("go/workers/internal/backyard/config.go")
     : "";
-  const goState = existsSync(path("go/backyard-rwa-worker/internal/backyardrwa/state.go"))
-    ? read("go/backyard-rwa-worker/internal/backyardrwa/state.go")
+  const goState = existsSync(path("go/workers/internal/backyard/state.go"))
+    ? read("go/workers/internal/backyard/state.go")
     : "";
-  const goRoutes = existsSync(path("go/backyard-rwa-worker/internal/backyardrwa/route_runtime.go"))
-    ? read("go/backyard-rwa-worker/internal/backyardrwa/route_runtime.go")
+  const goRoutes = existsSync(path("go/workers/internal/backyard/route_runtime.go"))
+    ? read("go/workers/internal/backyard/route_runtime.go")
     : "";
-  const goObserve = existsSync(path("go/backyard-rwa-worker/internal/backyardrwa/route_observe.go"))
-    ? read("go/backyard-rwa-worker/internal/backyardrwa/route_observe.go")
+  const goObserve = existsSync(path("go/workers/internal/backyard/route_observe.go"))
+    ? read("go/workers/internal/backyard/route_observe.go")
     : "";
-  const goStore = existsSync(path("go/backyard-rwa-worker/internal/backyardrwa/store.go"))
-    ? read("go/backyard-rwa-worker/internal/backyardrwa/store.go")
+  const goStore = existsSync(path("go/workers/internal/backyard/store.go"))
+    ? read("go/workers/internal/backyard/store.go")
     : "";
   const workerMigration = existsSync(path("crates/loyal-yield-store/migrations/0070_backyard_rwa_worker.sql"))
     ? read("crates/loyal-yield-store/migrations/0070_backyard_rwa_worker.sql")

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 )
 
 // Synthetic ABI examples complement the independent policy-bank proof. They
@@ -67,7 +68,7 @@ func syntheticPolicy(t *testing.T, compact bool) []byte {
 func TestPolicyDecoderSyntheticLayoutsAndAuthority(t *testing.T) {
 	for _, compact := range []bool{false, true} {
 		data := syntheticPolicy(t, compact)
-		decoded, err := DecodeProgramInteractionPolicyAccount(data)
+		decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(data)
 		if err != nil || decoded == nil || len(decoded.Payload.Constraints) != 1 || !bytes.Equal(decoded.Payload.Constraints[0].DataConstraints[0].DataValue.Bytes, []byte{9, 8}) {
 			t.Fatalf("compact=%v valid policy: %v %v", compact, decoded, err)
 		}
@@ -86,7 +87,7 @@ func TestPolicyDecoderSyntheticLayoutsAndAuthority(t *testing.T) {
 			loose = append(loose, make([]byte, 32)...)
 			loose = append(loose, data[143:]...)
 			loose[110] = 2
-			if decoded, err := DecodeProgramInteractionPolicyAccount(loose); err == nil && decoded != nil {
+			if decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(loose); err == nil && decoded != nil {
 				t.Fatal("unused compact key granted authority")
 			}
 		}
@@ -95,11 +96,11 @@ func TestPolicyDecoderSyntheticLayoutsAndAuthority(t *testing.T) {
 		expiration = append(expiration, 1, 0)
 		expiration = append(expiration, make([]byte, 8)...)
 		expiration = append(expiration, data[tail+9:]...)
-		if decoded, err := DecodeProgramInteractionPolicyAccount(expiration); err == nil && decoded != nil {
+		if decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(expiration); err == nil && decoded != nil {
 			t.Fatal("expiring policy granted authority")
 		}
 		for cut := 0; cut < len(data)-32; cut++ {
-			decoded, err := DecodeProgramInteractionPolicyAccount(data[:cut])
+			decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(data[:cut])
 			if err == nil && decoded != nil {
 				t.Fatalf("compact=%v accepted truncated policy at %d", compact, cut)
 			}
@@ -110,7 +111,7 @@ func policyMutationTest(compact bool, data []byte, mutate func([]byte)) func(*te
 	return func(t *testing.T) {
 		bad := append([]byte(nil), data...)
 		mutate(bad)
-		decoded, err := DecodeProgramInteractionPolicyAccount(bad)
+		decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(bad)
 		if err == nil && decoded != nil {
 			t.Fatalf("compact=%v unauthorized policy accepted", compact)
 		}

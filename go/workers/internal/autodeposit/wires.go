@@ -97,7 +97,6 @@ type TopUpRoute struct {
 // The executor key is injected explicitly; it must be the pinned delegate the
 // balance-sweep policy authorizes, and it pays its own fees.
 type SweepWireBuilder struct {
-	proxy    *fleet.KLendProxy
 	read     AccountReader
 	executor ed25519.PrivateKey
 	delegate solana.PublicKey
@@ -105,9 +104,7 @@ type SweepWireBuilder struct {
 }
 
 // NewSweepWireBuilder validates the signing material and the account reader.
-// The pinned KLend proxy is required at top-up build time, not here: the pull
-// wire never touches it.
-func NewSweepWireBuilder(proxy *fleet.KLendProxy, executor ed25519.PrivateKey, read AccountReader) (*SweepWireBuilder, error) {
+func NewSweepWireBuilder(executor ed25519.PrivateKey, read AccountReader) (*SweepWireBuilder, error) {
 	if len(executor) != ed25519.PrivateKeySize {
 		return nil, errors.New("autodeposit wire builder requires an ed25519 delegated signer key")
 	}
@@ -118,7 +115,6 @@ func NewSweepWireBuilder(proxy *fleet.KLendProxy, executor ed25519.PrivateKey, r
 		return nil, errors.New("autodeposit wire builder requires a confirmed account reader")
 	}
 	return &SweepWireBuilder{
-		proxy:    proxy,
 		read:     read,
 		executor: append(ed25519.PrivateKey(nil), executor...),
 		delegate: solana.PublicKey(executor.Public().(ed25519.PublicKey)),
@@ -230,18 +226,15 @@ func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan Deposit
 // topUpInstructions validates the official builder output and actual policy
 // permissions without signing. The pre-pull check and top-up use this same path.
 func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPlan, route TopUpRoute) ([]compiledInstruction, error) {
-	if b.proxy == nil {
-		return nil, errors.New("autodeposit top-up requires the pinned KLend proxy")
-	}
 	amount, err := wireAmount(plan)
 	if err != nil {
 		return nil, err
 	}
-	built, err := b.proxy.BuildIdleDeposit(ctx, fleet.KaminoIdleDepositRequest{
+	built, err := fleet.BuildIdleDeposit(fleet.KaminoIdleDepositRequest{
 		Vault: plan.Target.VaultPubkey, Target: route.Position, DepositLiquidityAmount: amount,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: KLend proxy refused the frozen deposit: %v", ErrRouteNotExecutable, err)
+		return nil, fmt.Errorf("%w: KLend builder refused the frozen deposit: %v", ErrRouteNotExecutable, err)
 	}
 	instructions := make([]compiledInstruction, 0, len(built.Public)+len(built.Protected))
 	for i, instruction := range append(append([]fleet.RouteInstruction{}, built.Public...), built.Protected...) {

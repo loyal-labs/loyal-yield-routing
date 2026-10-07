@@ -16,7 +16,7 @@ import (
 // Runs an independent SVM from the immutable same-mint fixture. Only initial
 // idle funding is seeded. It is a real signed Squads/SPL execution and replay
 // test, NOT an idle publication/revalidation/retained recovery lifecycle proof.
-func verifyIdleDepositSignedWire(t *testing.T, ctx context.Context, proxy *KLendProxy, seed map[string]Account, positions []KaminoPositionAccounts, policy, signer, vault string, tableNames []string) {
+func verifyIdleDepositSignedWire(t *testing.T, ctx context.Context, seed map[string]Account, positions []KaminoPositionAccounts, policy, signer, vault string, tableNames []string) {
 	t.Helper()
 	const amount = uint64(1_000_000_000)
 	accounts := make(map[string]Account, len(seed))
@@ -46,10 +46,6 @@ func verifyIdleDepositSignedWire(t *testing.T, ctx context.Context, proxy *KLend
 	defer server.Close()
 	rpc := NewRPCClient(server.URL)
 	request := KaminoIdleDepositRequest{Vault: vault, Target: target, DepositLiquidityAmount: amount}
-	route, err := proxy.BuildIdleDeposit(ctx, request)
-	if err != nil {
-		t.Fatal(err)
-	}
 	tables := []LookupTable{}
 	for _, key := range tableNames {
 		table, err := decodeLookupTable(accounts[key], 1000)
@@ -59,7 +55,7 @@ func verifyIdleDepositSignedWire(t *testing.T, ctx context.Context, proxy *KLend
 		tables = append(tables, table)
 	}
 	simulate := func(wire []byte) (SimulationEvidence, error) { return rpc.SimulateExactTransaction(ctx, wire, 1000) }
-	preparation, err := PrepareIdleDepositRoute(route, request, policy, signer, 0, 1, tables, svm.blockhash, 5000, defaultComputeLimit, simulate)
+	preparation, err := PrepareIdleDepositRoute(request, policy, signer, 0, 1, tables, svm.blockhash, 5000, defaultComputeLimit, simulate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +89,10 @@ func verifyIdleDepositSignedWire(t *testing.T, ctx context.Context, proxy *KLend
 		}
 	}
 	assertBalances(0, amount) // Simulation must not mutate chain state.
+	route, err := BuildIdleDeposit(request)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, index := range []uint8{0, 2} {
 		wrapped, err := wrapSquadsPolicy(policy, signer, 0, []uint8{index}, route.Protected)
 		if err != nil {

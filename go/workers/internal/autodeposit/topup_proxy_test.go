@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"os"
 	"testing"
 
 	"github.com/gagliardetto/solana-go"
@@ -16,19 +14,7 @@ import (
 )
 
 func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
-	path := os.Getenv("KAMINO_TEST_KLEND_PROXY_PATH")
-	if path == "" {
-		t.Skip("requires the locally built official Rust KLend proxy")
-	}
-	binaryBytes, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := sha256.Sum256(binaryBytes)
-	proxy, err := fleet.NewKLendProxy(path, hex.EncodeToString(hash[:]))
-	if err != nil {
-		t.Fatal(err)
-	}
+	var err error
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, 32))
 	plan, _ := testPullPlan()
 	plan.Target.VaultUsdcAta, err = deriveVaultATA(mustKey(plan.Target.VaultPubkey), mustKey(USDCMint), mustKey(splTokenID))
@@ -66,7 +52,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 	route.Obligation = obligation
 	route.Position.Obligation = obligation
 	route.Position.VaultLiquidityATA = plan.Target.VaultUsdcAta
-	official, err := proxy.BuildIdleDeposit(t.Context(), fleet.KaminoIdleDepositRequest{Vault: plan.Target.VaultPubkey, Target: route.Position, DepositLiquidityAmount: uint64(plan.AmountRaw)})
+	official, err := fleet.BuildIdleDeposit(fleet.KaminoIdleDepositRequest{Vault: plan.Target.VaultPubkey, Target: route.Position, DepositLiquidityAmount: uint64(plan.AmountRaw)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +67,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 		plan.Target.VaultUsdcAta:       {Address: plan.Target.VaultUsdcAta, Owner: splTokenID, Data: custody},
 		plan.Target.RoutePolicyAccount: {Address: plan.Target.RoutePolicyAccount, Owner: squadsProgramID, Data: policy},
 	}
-	builder, err := NewSweepWireBuilder(proxy, key, func(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error) {
+	builder, err := NewSweepWireBuilder(key, func(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error) {
 		out := make([]backyard.ConfirmedAccount, 0, len(addresses))
 		for _, address := range addresses {
 			out = append(out, byAddress[address])

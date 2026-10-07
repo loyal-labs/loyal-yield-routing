@@ -28,11 +28,31 @@ type ExpectedAccountEffect struct {
 }
 
 type ExpectedEffects struct {
-	Schema     string                  `json:"schema"`
-	Kind       string                  `json:"kind,omitempty"`
-	Conserved  bool                    `json:"conserved"`
-	Accounts   []ExpectedAccountEffect `json:"accounts"`
-	ReturnData *ExpectedReturnData     `json:"returnData,omitempty"`
+	Schema         string                       `json:"schema"`
+	Kind           string                       `json:"kind,omitempty"`
+	Conserved      bool                         `json:"conserved"`
+	Accounts       []ExpectedAccountEffect      `json:"accounts"`
+	ReturnData     *ExpectedReturnData          `json:"returnData,omitempty"`
+	Repayment      *ExpectedRepayment           `json:"repayment,omitempty"`
+	Deposit        *ExpectedDeposit             `json:"deposit,omitempty"`
+	Initialization *KaminoInitializationRequest `json:"initialization,omitempty"`
+}
+
+// Deposits round down to whole receipts and may debit less than the requested
+// liquidity. Bounds describe only conserved token movement, not minted receipts.
+type ExpectedDeposit struct {
+	MinimumDebitRaw uint64 `json:"minimumDebitRaw"`
+	MaximumDebitRaw uint64 `json:"maximumDebitRaw"`
+}
+
+// ExpectedRepayment bounds a finite Kamino repayment request, not the debt
+// remaining afterward. KLend clips its transfer to the debt owed. Accounts are
+// ordered source/destination, with AfterRaw describing the maximum debit;
+// reconciliation requires the same actual debit and credit within these bounds.
+// Only a subsequent obligation observation can establish a full payoff.
+type ExpectedRepayment struct {
+	MinimumDebitRaw uint64 `json:"minimumDebitRaw"`
+	MaximumDebitRaw uint64 `json:"maximumDebitRaw"`
 }
 
 type ExpectedReturnData struct {
@@ -65,6 +85,12 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 	if err := json.Unmarshal(data, &expected); err != nil {
 		return ExpectedEffects{}, fmt.Errorf("decode expected effects: %w", err)
 	}
+	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
+		if err := validateInitializationEffects(expected); err != nil {
+			return ExpectedEffects{}, err
+		}
+		return expected, nil
+	}
 	if expected.Schema != "loyal-backyard-rwa-expected-effects/v1" || len(expected.Accounts) == 0 {
 		return ExpectedEffects{}, fmt.Errorf("incomplete expected effects")
 	}
@@ -87,6 +113,12 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 			return ExpectedEffects{}, fmt.Errorf("duplicate expected custody")
 		}
 		seen[account.Address] = struct{}{}
+		if expected.Kind != "cross-mint-swap" && account.MinimumAfterRaw != nil {
+			return ExpectedEffects{}, fmt.Errorf("minimum balance is only supported for a cross-mint swap destination")
+		}
+	}
+	if err := validateRepaymentEffects(expected); err != nil {
+		return ExpectedEffects{}, err
 	}
 	if expected.Kind == "cross-mint-swap" {
 		if expected.Accounts[0].Mint == expected.Accounts[1].Mint || expected.Accounts[0].MinimumAfterRaw != nil ||
@@ -103,11 +135,53 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 	return expected, nil
 }
 
+func validateRepaymentEffects(expected ExpectedEffects) error {
+	if expected.Deposit != nil {
+		if expected.Kind != "kamino-deposit" || expected.Repayment != nil {
+			return fmt.Errorf("deposit bounds require only a Kamino deposit")
+		}
+		// Share conservation/finite-range validation, without changing the
+		// serialized operation kind or treating a deposit as repayment.
+		copy := expected
+		copy.Kind, copy.Deposit = "kamino-repay", nil
+		copy.Repayment = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
+		return validateRepaymentEffects(copy)
+	}
+	if expected.Kind == "kamino-deposit" {
+		return fmt.Errorf("missing finite Kamino deposit bounds")
+	}
+	if expected.Kind != "kamino-repay" {
+		if expected.Repayment != nil {
+			return fmt.Errorf("repayment bounds require a Kamino repayment")
+		}
+		return nil
+	}
+	bounds := expected.Repayment
+	if bounds == nil || !expected.Conserved || len(expected.Accounts) != 2 || expected.ReturnData != nil ||
+		bounds.MinimumDebitRaw == 0 || bounds.MinimumDebitRaw > bounds.MaximumDebitRaw || bounds.MaximumDebitRaw == ^uint64(0) {
+		return fmt.Errorf("invalid finite Kamino repayment bounds")
+	}
+	source, destination := expected.Accounts[0], expected.Accounts[1]
+	if source.Address == destination.Address || source.Mint != destination.Mint || source.Owner != destination.Owner ||
+		source.MinimumAfterRaw != nil || destination.MinimumAfterRaw != nil ||
+		source.AfterRaw > source.BeforeRaw || destination.AfterRaw < destination.BeforeRaw ||
+		source.BeforeRaw-source.AfterRaw != bounds.MaximumDebitRaw || destination.AfterRaw-destination.BeforeRaw != bounds.MaximumDebitRaw {
+		return fmt.Errorf("Kamino repayment bounds do not match the conserved custody graph")
+	}
+	return nil
+}
+
 // ReconcileConfirmedTransaction verifies effects against the immutable receipt
 // for the exact persisted signature. A later account read is intentionally not
 // accepted: unrelated deposits and claims can mutate the same custodies after
 // this transaction confirms.
 func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
+		return reconcileKaminoInitialization(expected, receipt)
+	}
+	if err := validateRepaymentEffects(expected); err != nil {
+		return Reconciliation{}, nil, err
+	}
 	if receipt.Signature == "" || receipt.Slot <= 0 {
 		return Reconciliation{}, nil, fmt.Errorf("confirmed transaction identity is incomplete")
 	}
@@ -120,17 +194,44 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 		return Reconciliation{}, nil, err
 	}
 	canonical := make([]string, 0, len(expected.Accounts))
+	bounds := expected.Repayment
+	if expected.Deposit != nil {
+		bounds = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
+	}
 	beforeByMint := make(map[string]uint64, len(expected.Accounts))
 	afterByMint := make(map[string]uint64, len(expected.Accounts))
-	for _, effect := range expected.Accounts {
+	for i, effect := range expected.Accounts {
 		pre, preOK := preByAddress[effect.Address]
 		post, postOK := postByAddress[effect.Address]
 		if !preOK || !postOK || pre.OwnerProgram != effect.Owner || post.OwnerProgram != effect.Owner ||
 			pre.Mint != effect.Mint || post.Mint != effect.Mint ||
-			pre.Authority != effect.Authority || post.Authority != effect.Authority || pre.Raw != effect.BeforeRaw {
+			pre.Authority != effect.Authority || post.Authority != effect.Authority {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
-		if effect.MinimumAfterRaw != nil {
+		// Voltr idle is also written by permissionless user deposits and claims,
+		// which can land between our observation and this transaction. For that
+		// one account only, reconcile this transaction's own delta; every other
+		// account keeps the exact pre/post contract.
+		// The debt reserve's fee receiver is shared by every borrower: like
+		// Voltr idle, reconcile this transaction's own fee delta only.
+		sharedFeeReceiver := expected.Kind == "kamino-borrow" && i == 2 && bounds == nil && effect.MinimumAfterRaw == nil
+		if (effect.Address == bridgeIdleATA || sharedFeeReceiver) && bounds == nil && effect.MinimumAfterRaw == nil {
+			if int64(post.Raw)-int64(pre.Raw) != int64(effect.AfterRaw)-int64(effect.BeforeRaw) {
+				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped shared-account delta mismatch: %s", effect.Address)
+			}
+		} else if pre.Raw != effect.BeforeRaw {
+			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
+		} else if bounds != nil {
+			var moved uint64
+			if i == 0 && post.Raw <= pre.Raw {
+				moved = pre.Raw - post.Raw
+			} else if i == 1 && post.Raw >= pre.Raw {
+				moved = post.Raw - pre.Raw
+			}
+			if moved < bounds.MinimumDebitRaw || moved > bounds.MaximumDebitRaw {
+				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped Kamino transfer outside finite bounds: %s", effect.Address)
+			}
+		} else if effect.MinimumAfterRaw != nil {
 			if post.Raw < *effect.MinimumAfterRaw {
 				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody minimum postcondition mismatch: %s", effect.Address)
 			}
@@ -183,6 +284,17 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 	}
 	hash := sha256.Sum256(evidence)
 	return Reconciliation{ConfirmedSlot: receipt.Slot, EffectsSHA256: hex.EncodeToString(hash[:]), Conserved: true}, evidence, nil
+}
+
+// ReconcileConfirmedTransaction is the manifest-aware dispatch: only the
+// native initializer branch differs — it reconciles through the explicit
+// reviewed manifest — and every other kind delegates to the public reconciler
+// unchanged.
+func (m RouteManifest) ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
+		return m.reconcileKaminoInitialization(expected, receipt)
+	}
+	return ReconcileConfirmedTransaction(expected, receipt)
 }
 
 func transactionBalancesByAddress(balances []TransactionTokenBalance) (map[string]TransactionTokenBalance, error) {

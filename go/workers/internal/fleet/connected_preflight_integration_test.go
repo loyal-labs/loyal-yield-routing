@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
@@ -118,7 +117,7 @@ func connectedSwapPolicy(t *testing.T, binding CrossMintPolicyBindings, seed uin
 	return data
 }
 
-// This test runs the real Go planner, claim, RPC/Jupiter validation, proxy and
+// This test runs the real Go planner, claim, RPC/Jupiter validation, KLend builders and
 // durable commit. RPC transport is local; exact transaction simulation executes
 // through Squads and mock protocol SBF in LiteSVM, not a canned success response.
 // This preflight alone does not prove the retained Rust submission lifecycle.
@@ -178,7 +177,7 @@ func runConnectedLane(t *testing.T, sameMint bool) {
 
 func runConnectedLaneWithHandoff(t *testing.T, sameMint bool, handoff *connectedGoHandoff) {
 	crossMintBank := connectedCrossMintBankRequest(t)
-	databaseURL, proxyPath := os.Getenv("FLEET_TEST_DATABASE_URL"), os.Getenv("KAMINO_TEST_KLEND_PROXY_PATH")
+	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if sameMint {
 		databaseURL = os.Getenv("FLEET_TEST_SAME_MINT_DATABASE_URL")
 	}
@@ -188,8 +187,8 @@ func runConnectedLaneWithHandoff(t *testing.T, sameMint bool, handoff *connected
 	if crossMintBank != nil {
 		databaseURL = crossMintBank.database
 	}
-	if databaseURL == "" || proxyPath == "" {
-		t.Skip("requires disposable database and real KLend proxy")
+	if databaseURL == "" {
+		t.Skip("requires disposable database")
 	}
 	u, err := url.Parse(databaseURL)
 	if err != nil || u.Hostname() != "127.0.0.1" || (u.Path != "/fleet" && u.Path != "/fleet_same_mint" && !(handoff != nil && (u.Path == "/fleet_go_same_mint" || u.Path == "/fleet_go_same_mint_simplify")) && !(crossMintBank != nil && (u.Path == "/fleet_go_cross_mint" || u.Path == "/fleet_go_cross_mint_simplify"))) {
@@ -207,14 +206,6 @@ func runConnectedLaneWithHandoff(t *testing.T, sameMint bool, handoff *connected
 		if err := store.pool.QueryRow(ctx, `SELECT current_database(),current_user`).Scan(&database, &role); err != nil || database != u.Path[1:] || role != "workers_v2" {
 			t.Fatalf("unexpected connected Go fixture identity %q/%q: %v", database, role, err)
 		}
-	}
-	raw, err := os.ReadFile(proxyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy, err := NewKLendProxy(proxyPath, fmt.Sprintf("%x", sha256.Sum256(raw)))
-	if err != nil {
-		t.Fatal(err)
 	}
 	signer := encodeBase58(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32)).Public().(ed25519.PublicKey))
 	settings := testIdentity(12)
@@ -289,9 +280,9 @@ func runConnectedLaneWithHandoff(t *testing.T, sameMint bool, handoff *connected
 	minimum := thresholdFor(amount-1, 1)
 	var route KaminoSameMintRoute
 	if sameMint {
-		route, err = proxy.Build(ctx, KaminoSameMintRouteRequest{vault, positions[0], positions[1], amount, amount})
+		route, err = BuildSameMintRoute(KaminoSameMintRouteRequest{vault, positions[0], positions[1], amount, amount})
 	} else {
-		route, err = proxy.BuildCrossMintLegs(ctx, KaminoSameMintRouteRequest{vault, positions[0], positions[1], amount - 1, minimum})
+		route, err = BuildCrossMintLegs(KaminoSameMintRouteRequest{vault, positions[0], positions[1], amount - 1, minimum})
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -304,11 +295,11 @@ func runConnectedLaneWithHandoff(t *testing.T, sameMint bool, handoff *connected
 	if !sameMint {
 		// The source policy's deposit arm authorizes recovery to its source,
 		// not the unrelated target. The target has its own two-arm policy.
-		recovery, err := proxy.BuildIdleDeposit(ctx, KaminoIdleDepositRequest{Vault: vault, Target: positions[0], DepositLiquidityAmount: minimum})
+		recovery, err := BuildIdleDeposit(KaminoIdleDepositRequest{Vault: vault, Target: positions[0], DepositLiquidityAmount: minimum})
 		if err != nil {
 			t.Fatal(err)
 		}
-		targetRoute, err := proxy.Build(ctx, KaminoSameMintRouteRequest{Vault: vault, Source: positions[1], Target: positions[1], WithdrawCollateralAmount: amount - 1, DepositLiquidityAmount: minimum})
+		targetRoute, err := BuildSameMintRoute(KaminoSameMintRouteRequest{Vault: vault, Source: positions[1], Target: positions[1], WithdrawCollateralAmount: amount - 1, DepositLiquidityAmount: minimum})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -430,7 +421,7 @@ func runConnectedLaneWithHandoff(t *testing.T, sameMint bool, handoff *connected
 	seedConnectedExecutionAccounts(t, accounts, positions, signer, vault)
 	if sameMint && handoff == nil {
 		t.Run("idle-deposit-signed-wire", func(t *testing.T) {
-			verifyIdleDepositSignedWire(t, ctx, proxy, accounts, positions, earnPolicy, signer, vault, []string{sharedTable, vaultTable})
+			verifyIdleDepositSignedWire(t, ctx, accounts, positions, earnPolicy, signer, vault, []string{sharedTable, vaultTable})
 		})
 	}
 	svm := startConnectedSVM(t, ctx, accounts)
@@ -629,7 +620,7 @@ func runConnectedLaneWithHandoff(t *testing.T, sameMint bool, handoff *connected
 	if handoff != nil {
 		owner = "connected-go-d"
 	}
-	revalidator, err := NewRevalidator(store, NewRPCClient(server.URL), proxy, RevalidatorConfig{Owner: owner, FusedExecute: handoff != nil, DelegatedSigner: signer, LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: handoff == nil, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: server.URL + "/build"})
+	revalidator, err := NewRevalidator(store, NewRPCClient(server.URL), RevalidatorConfig{Owner: owner, FusedExecute: handoff != nil, DelegatedSigner: signer, LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: handoff == nil, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: server.URL + "/build"})
 	if err != nil {
 		t.Fatal(err)
 	}

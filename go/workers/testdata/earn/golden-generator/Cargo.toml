@@ -1,0 +1,23 @@
+# Regenerates go/workers/testdata/earn/*.golden.json from the retained Rust
+# loyal-actions, loyal-squads-policy-monitor and loyal-yield-store code. It is
+# not a workspace member and never ships; see README.md.
+[package]
+name = "earn-golden-generator"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+futures-util = "0.3"
+hex = "0.4"
+loyal-actions = { path = "../../../../../crates/loyal-actions" }
+loyal-fleet-worker = { path = "../../../../../crates/loyal-fleet-worker" }
+loyal-squads-policy-monitor = { path = "../../../../../crates/loyal-squads-policy-monitor" }
+loyal-yield-store = { path = "../../../../../crates/loyal-yield-store" }
+serde_json = "1"
+sha2 = "0.10"
+solana-sdk = "2.3.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }

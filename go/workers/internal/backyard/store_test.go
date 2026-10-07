@@ -414,10 +414,10 @@ func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
 		"'SWAP_PRIME_TO_USDC_STEP'",
 		"'OPEN_PRIME_USDC_STEP'",
 		"'DELEVER_PRIME_USDC_STEP'",
-		"operation_id = 'fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe'",
-		"transaction_signature = '46UBvSw1zjtZyDVUVaissm9SEXsKFKnYCQYKd23njb1NS1Ktkzsup5ic9XA55FxyTCpkoYuuM8hhn4MioGU2X7Wz'",
-		"confirmed_slot = 444157954",
-		"recovery_reason = 'exact_effect_reconciliation_failed'",
+		"'manualResolution'",
+		"'operationId'=operation_id",
+		"'signature'=transaction_signature",
+		"'confirmedSlot'=confirmed_slot::text",
 	} {
 		if !strings.Contains(query, required) {
 			t.Fatalf("manual-recovery fence is missing %q", required)
@@ -426,8 +426,8 @@ func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
 	if strings.Contains(query, "'REPORT_NAV'") {
 		t.Fatal("report-only manual recovery was made a capital execution blocker")
 	}
-	if strings.Count(query, "AND NOT (") != 1 {
-		t.Fatal("manual-recovery fence must contain exactly one pinned incident exclusion")
+	if strings.Contains(query, "fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe") {
+		t.Fatal("incident identity belongs in the audited migration, not the live decision guard")
 	}
 }
 
@@ -490,7 +490,7 @@ func TestRouteLeaseAgainstDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	owner := "render:srv-integrationtest:sha-" + strings.Repeat("e", 40)
+	owner := "worker:backyard:integrationtest:sha-" + strings.Repeat("e", 40)
 	lease, err := database.AcquireRouteLease(ctx, productionRouteKey, owner, 30*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -519,21 +519,6 @@ func TestRouteLeaseAgainstDatabase(t *testing.T) {
 	released, err = database.ReleaseRouteLease(ctx)
 	if err != nil || !released {
 		t.Fatalf("exact lease release failed: released=%v err=%v", released, err)
-	}
-
-	// The platform-neutral owner acquires the same fence, and the legacy Render
-	// owner text is a different, stale holder while that lease is unexpired.
-	platformNeutral := "worker:backyard:srv-integrationtest:sha-" + strings.Repeat("f", 40)
-	neutral, err := database.AcquireRouteLease(ctx, productionRouteKey, platformNeutral, 30*time.Second)
-	if err != nil || neutral.Owner != platformNeutral || neutral.FencingToken <= lease.FencingToken {
-		t.Fatalf("platform-neutral owner did not take a new generation: lease=%+v err=%v", neutral, err)
-	}
-	if _, err := second.AcquireRouteLease(ctx, productionRouteKey, owner, 30*time.Second); !errors.Is(err, ErrRouteLeaseUnavailable) {
-		t.Fatalf("legacy owner text entered a live platform-neutral fence: %v", err)
-	}
-	released, err = database.ReleaseRouteLease(ctx)
-	if err != nil || !released {
-		t.Fatalf("platform-neutral exact lease release failed: released=%v err=%v", released, err)
 	}
 }
 
