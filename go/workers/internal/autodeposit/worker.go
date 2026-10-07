@@ -374,7 +374,11 @@ func (w *Worker) Run(ctx context.Context) error {
 // (OVERDUE_AUTODEPOSIT_WORK_SQL): a selected claim's created_at, and an
 // idle-blocked slot's first-blocked time. Neither moves on retry, unlike
 // eligible_after. Lots that are due but legitimately wait (a capped period
-// allowance, an expired delegation) write nothing and are not counted.
+// allowance, an expired delegation) write nothing and are not counted. An
+// idle-blocked slot counts only as Rust's did: deferred three times, the
+// wallet still above its floor, and no claim owning the target. Lots the
+// wallet no longer backs are owed nothing; their September markers read as
+// 26 days overdue without the floor.
 func (w *Worker) passFacts(ctx context.Context) error {
 	var inflight int
 	var oldest float64
@@ -389,10 +393,17 @@ SELECT
      JOIN loyal_yield.balance_sweep_surplus_lots AS lot
        ON lot.target_id = target.id AND lot.status = 'open' AND lot.remaining_amount_raw > 0
      JOIN loyal_yield.balance_sweep_scheduled_slots AS slot ON slot.id = lot.scheduled_slot_id
+     JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
+       ON balance.target_id = target.id AND balance.mint = target.token_mint
      WHERE target.token_mint = $2 AND target.desired_active AND target.chain_status = 'active'
-       AND slot.status IN ('scheduled', 'requested') AND slot.last_error LIKE $3)
+       AND slot.status IN ('scheduled', 'requested') AND slot.last_error LIKE $3
+       AND substring(slot.last_error FROM $4)::bigint >= 3
+       AND target.wallet_balance_floor_raw IS NOT NULL
+       AND balance.amount_raw > target.wallet_balance_floor_raw
+       AND NOT EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_lot_claims AS owned
+                       WHERE owned.target_id = target.id AND owned.status = 'selected'))
   ))::float8, 0)`, idleBlockedSincePattern,
-		USDCMint, idleDeferralPrefix+"%").Scan(&inflight, &oldest)
+		USDCMint, idleDeferralPrefix+"%", idleDeferralsPattern).Scan(&inflight, &oldest)
 	if err != nil {
 		return w.failed("autodeposit_progress_check_failed", err)
 	}

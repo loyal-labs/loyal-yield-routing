@@ -45,6 +45,7 @@ SELECT wallet,vault_pubkey,settings,vault_index,vault_pubkey,
 FROM loyal_yield.balance_sweep_targets WHERE id=$1`, seeded.TargetID, USDCMint, reserve); err != nil {
 		t.Fatal(err)
 	}
+	seedLiveVaultPosition(t, store, seeded, reserve, "itest-market", 1, time.Now())
 	wallet, custody := "itest-wallet-usdc-"+suffix, "itest-vault-usdc-"+suffix
 	pull, topup := "itest-controller-pull-sig-"+suffix, "itest-controller-topup-sig-"+suffix
 	chain := &scriptedControllerChain{

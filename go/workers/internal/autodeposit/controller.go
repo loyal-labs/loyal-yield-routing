@@ -375,6 +375,12 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	if !targetContext.hasReserveIdentity() {
 		return c.release(scope, claimToken, ResultPreflightBlocked, fmt.Errorf("autodeposit target %d has no observed reserve identity", target.TargetID))
 	}
+	// No fleet move updates the position pointer; the vault's observed holding
+	// is the destination. Only a fresh claim may redirect: a frozen plan is
+	// immutable.
+	if err := c.store.ResolveDepositReserve(scope.ctx, targetContext, time.Now()); err != nil {
+		return c.release(scope, claimToken, ResultPreflightBlocked, err)
+	}
 	plan := targetContext.depositPlan(claim.AmountRaw)
 	frozen, err := c.store.FreezeDepositPlan(scope.ctx, claimToken, scope.leaseToken, plan)
 	if err != nil {

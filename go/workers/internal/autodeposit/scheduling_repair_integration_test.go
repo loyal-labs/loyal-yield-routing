@@ -16,6 +16,7 @@ SELECT wallet,vault_pubkey,settings,vault_index,vault_pubkey,7,policy_account,7,
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedTargetLiveReserve(t, s, target, "repair-reserve", "repair-market", 1, time.Now())
 }
 
 func TestUnsignedRepairNeverReopensPersistedWire(t *testing.T) {

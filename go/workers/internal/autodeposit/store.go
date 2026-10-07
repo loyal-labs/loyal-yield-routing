@@ -89,6 +89,9 @@ type walletBalanceEventRow struct {
 	TxnSignature          *string
 	TargetActive          bool
 	WalletBalanceFloorRaw *int64
+	// OwnPullRaw is the amount of this family's pull whose signature the
+	// event carries; its claim already took that amount from the lots.
+	OwnPullRaw int64
 }
 
 // ProjectSurplusLotsOnce advances the surplus-lot projection by one bounded
@@ -143,7 +146,11 @@ func (s *Store) ProjectSurplusLotsOnce(ctx context.Context, batchLimit int64) (P
 				if !ok {
 					return &LotError{Code: LotErrAmountOverflow}
 				}
-				depleted, err := depleteLotsNewestFirst(ctx, tx, event.TargetID, outflow)
+				// Our own pull is the claim's outflow, already consumed from
+				// the claimed lots. Depleting it again wrote off twice each
+				// deposit; the TS executor's re-claimed lots had masked that.
+				external := outflow - min64(outflow, event.OwnPullRaw)
+				depleted, err := depleteLotsNewestFirst(ctx, tx, event.TargetID, external)
 				if err != nil {
 					return err
 				}
@@ -243,7 +250,14 @@ SELECT
               AND managed.vault_index = target.vault_index
               AND managed.vault_pubkey = target.vault_pubkey
         ) AS target_active,
-    target.wallet_balance_floor_raw
+    target.wallet_balance_floor_raw,
+    COALESCE((
+        SELECT attempt.amount_raw
+        FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+        WHERE attempt.signature = event.txn_signature
+          AND attempt.target_id = event.target_id
+          AND attempt.operation_kind = 'pull'
+    ), 0) AS own_pull_raw
 FROM loyal_yield.balance_sweep_wallet_balance_events AS event
 JOIN loyal_yield.balance_sweep_targets AS target
   ON target.id = event.target_id
@@ -262,7 +276,7 @@ LIMIT $3`, lastEventID, USDCMint, limit)
 	for rows.Next() {
 		var event walletBalanceEventRow
 		if err := rows.Scan(&event.EventID, &event.TargetID, &event.AmountRaw, &event.DeltaAmountRaw,
-			&event.ObservedAt, &event.TxnSignature, &event.TargetActive, &event.WalletBalanceFloorRaw); err != nil {
+			&event.ObservedAt, &event.TxnSignature, &event.TargetActive, &event.WalletBalanceFloorRaw, &event.OwnPullRaw); err != nil {
 			return nil, fmt.Errorf("scan autodeposit wallet event: %w", err)
 		}
 		events = append(events, event)
@@ -357,7 +371,11 @@ RETURNING id`,
 // depleteLotsNewestFirst applies an externally observed outflow to open lots.
 // Lot statuses stay open/depleted here: the money left the wallet without this
 // family moving it, which is evidence about surplus, not a completed sweep.
+// Callers pass only the part of an outflow that is not this family's pull.
 func depleteLotsNewestFirst(ctx context.Context, tx pgx.Tx, targetID, outflowAmountRaw int64) (int64, error) {
+	if outflowAmountRaw == 0 {
+		return 0, nil
+	}
 	rows, err := tx.Query(ctx, `
 SELECT lot.id, lot.remaining_amount_raw
 FROM loyal_yield.balance_sweep_surplus_lots AS lot
