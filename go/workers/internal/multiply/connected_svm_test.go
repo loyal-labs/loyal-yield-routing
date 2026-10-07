@@ -273,10 +273,6 @@ func (f *multiplySVMFixture) serveRPC(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bank send preceded durable intent/wire", 500)
 			return
 		}
-		if prestate, err := f.store.LoadOperationPrestate(r.Context(), saved.Operation); err != nil || prestate == nil {
-			http.Error(w, "bank send preceded immutable prestate", 500)
-			return
-		}
 	}
 	result, err := f.bank.call(q.Method, q.Params)
 	if q.Method == "sendTransaction" {
@@ -316,7 +312,7 @@ func (f *multiplySVMFixture) worker(t *testing.T, keyless bool) *Worker {
 	if keyless {
 		executor = &Executor{RPC: f.rpc}
 	} // real absence of both private keys
-	deps := WorkerDeps{Store: f.store, Observer: f.reader, Executor: executor, WorkerID: "svm-go-owner", RouteKey: &f.state.RouteKey}
+	deps := WorkerDeps{Store: f.store, Observer: f.reader, Executor: executor, WorkerID: "svm-go-owner", RouteKey: &f.state.RouteKey, Chain: surfaceChain{f.rpc}, Facts: testFacts()}
 	if !keyless {
 		deps.Quotes = multiplyBankQuoteClient{f}
 	}
@@ -501,7 +497,7 @@ func TestCurrentGoMultiplyLostResponseKeylessRecovery(t *testing.T) {
 	f.receiptMissing = false
 	f.mu.Unlock()
 	result, err = f.worker(t, true).Tick(f.ctx)
-	if err != nil || result.Condition != "recovered_operation_reconciled" {
+	if err != nil || result.Condition != "operation_reconciled" {
 		t.Fatalf("keyless actual receipt recovery: %v %v", result, err)
 	}
 	f.assertReconciled(t, 1)
@@ -525,7 +521,7 @@ func TestCurrentGoMultiplyRejectsIncompleteActualReceipt(t *testing.T) {
 		t.Fatal("malformed receipt became financial completion")
 	}
 	var n int
-	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operation_evidence e JOIN loyal_yield.multiply_operations o USING(operation_id) WHERE o.route_key=$1 AND e.evidence_kind='reconciled_receipt'`, f.state.RouteKey).Scan(&n); err != nil || n != 0 {
+	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operations o WHERE o.route_key=$1 AND o.reconciled_effects IS NOT NULL`, f.state.RouteKey).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("malformed receipt published: %d %v", n, err)
 	}
 }
@@ -542,7 +538,7 @@ func (f *multiplySVMFixture) assertReconciled(t *testing.T, sends int) {
 	var status, wireHash string
 	var evidence []byte
 	var slot int64
-	if err := f.store.Pool().QueryRow(f.ctx, `SELECT o.status,o.signed_wire_sha256,e.evidence,e.observed_slot FROM loyal_yield.multiply_operations o JOIN loyal_yield.multiply_operation_evidence e USING(operation_id) WHERE o.route_key=$1 AND e.evidence_kind='reconciled_receipt' ORDER BY o.created_at DESC LIMIT 1`, f.state.RouteKey).Scan(&status, &wireHash, &evidence, &slot); err != nil {
+	if err := f.store.Pool().QueryRow(f.ctx, `SELECT o.status,o.signed_wire_sha256,o.reconciled_effects,o.confirmed_slot FROM loyal_yield.multiply_operations o WHERE o.route_key=$1 AND o.reconciled_effects IS NOT NULL ORDER BY o.created_at DESC LIMIT 1`, f.state.RouteKey).Scan(&status, &wireHash, &evidence, &slot); err != nil {
 		t.Fatal(err)
 	}
 	var receipt ReconciledReceiptEvidence

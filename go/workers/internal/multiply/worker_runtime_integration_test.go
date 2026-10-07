@@ -32,10 +32,7 @@ func runtimeFixtureRoute(t *testing.T, store *Store) (*RouteState, *EarnMaxTopol
 		cleanup, close := context.WithTimeout(context.Background(), 5*time.Second)
 		defer close()
 		if _, err := store.Pool().Exec(cleanup, `DELETE FROM loyal_yield.multiply_route_states route
-WHERE route_key=$1 AND NOT EXISTS (
- SELECT 1 FROM loyal_yield.multiply_operations op
- JOIN loyal_yield.multiply_operation_evidence evidence ON evidence.operation_id=op.operation_id
- WHERE op.route_key=route.route_key)`, routeKey); err != nil {
+WHERE route_key=$1 AND NOT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations op WHERE op.route_key=route.route_key)`, routeKey); err != nil {
 			t.Error(err)
 		}
 		if _, err := store.Pool().Exec(cleanup, "DELETE FROM loyal_yield.earn_max_policy_sets WHERE settings=$1", settings.String()); err != nil {
@@ -77,7 +74,7 @@ func TestWorkerRecoversPreparedCrashBeforeDisabledAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	executor, _, _ := testExecutor(t)
-	worker, err := NewWorker(WorkerDeps{Store: store, Observer: forbiddenObservationReader{}, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: "go-recovery"})
+	worker, err := NewWorker(WorkerDeps{Store: store, Observer: forbiddenObservationReader{}, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: "go-recovery", Chain: surfaceChain{executor.RPC}, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +91,56 @@ func TestWorkerRecoversPreparedCrashBeforeDisabledAdmission(t *testing.T) {
 	}
 	if ok, err := store.SaveRouteState(ctx, old, state); err != nil || ok {
 		t.Fatalf("stale legacy fence changed recovered state %v %v", ok, err)
+	}
+}
+
+func TestWorkerExpiresUnlandedWireLikeRustWithoutSending(t *testing.T) {
+	// The Go branch held an expired, unlanded wire until a finalized
+	// account-history proof existed; Rust's expire_multiply_operation treats
+	// signature absence past the blockhash as terminal, and so does land.
+	store := integrationStore(t)
+	state, topology := runtimeFixtureRoute(t, store)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	lease, err := store.LeaseRoute(ctx, state.RouteKey, "signer", time.Now().Add(time.Minute))
+	if err != nil || lease == nil {
+		t.Fatalf("lease %v %v", lease, err)
+	}
+	operation := integrationOperation(state.RouteKey, state.Cycle, lease.Version+1)
+	state.Generation++
+	state.CurrentOperationID = &operation.OperationID
+	if ok, err := store.PrepareOperation(ctx, lease, state, operation); err != nil || !ok {
+		t.Fatalf("prepare %v %v", ok, err)
+	}
+	signed := signedWireFixture(t, false)
+	messageHash, err := MessageSHA256(signed.Wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.PersistSignedOperation(ctx, lease, operation.OperationID, topology.Vault.String(), PolicyDataHash([]byte("fixture")), messageHash, signed); err != nil || !ok {
+		t.Fatalf("persist %v %v", ok, err)
+	}
+	if ok, err := store.ReleaseLease(ctx, lease); err != nil || !ok {
+		t.Fatalf("release %v %v", ok, err)
+	}
+	executor, rpc, _ := testExecutor(t)
+	rpc.height = uint64(signed.LastValidBlockHeight) + 1
+	worker, err := NewRecoveryWorker(WorkerDeps{Store: store, Observer: forbiddenObservationReader{}, Executor: &Executor{RPC: rpc}, WorkerID: "go-landing", Chain: surfaceChain{executor.RPC}, Facts: testFacts()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := worker.Tick(ctx)
+	if err != nil || result.Condition != "operation_expired_without_effect" || len(rpc.sent) != 0 {
+		t.Fatalf("expiry %v %v sent=%d", result, err, len(rpc.sent))
+	}
+	var status string
+	var wireCleared bool
+	if err := store.Pool().QueryRow(ctx, `SELECT status,signed_wire IS NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operation.OperationID).Scan(&status, &wireCleared); err != nil || status != "expired" || !wireCleared {
+		t.Fatalf("operation row %s %v %v", status, wireCleared, err)
+	}
+	saved, err := store.LoadRouteState(ctx, state.RouteKey)
+	if err != nil || saved.State.CurrentOperationID != nil {
+		t.Fatal("expired wire kept the route", err)
 	}
 }
 
@@ -117,7 +164,7 @@ func TestWorkerCancellationReleasesLeaseAfterOwnedReadJoins(t *testing.T) {
 		return nil, request.Context().Err()
 	})
 	executor, _, _ := testExecutor(t)
-	worker, err := NewWorker(WorkerDeps{Store: store, Observer: observer, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: "cancelled-owner", RouteKey: &state.RouteKey})
+	worker, err := NewWorker(WorkerDeps{Store: store, Observer: observer, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: "cancelled-owner", RouteKey: &state.RouteKey, Chain: surfaceChain{executor.RPC}, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}

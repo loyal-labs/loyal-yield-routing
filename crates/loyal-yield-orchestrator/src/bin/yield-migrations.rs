@@ -468,12 +468,6 @@ const MIGRATIONS: &[Migration] = &[
         expected_checksum: None,
     },
     Migration {
-        version: 88,
-        name: "multiply_operation_evidence",
-        sql: include_str!("../../../loyal-yield-store/migrations/0088_multiply_operation_evidence.sql"),
-        expected_checksum: None,
-    },
-    Migration {
         version: 89,
         name: "autodeposit_floor_rebaseline_classification",
         sql: include_str!("../../../loyal-yield-store/migrations/0089_autodeposit_floor_rebaseline_classification.sql"),

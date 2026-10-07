@@ -83,7 +83,6 @@ func (s *Store) RequireSchema(ctx context.Context) error {
 		"loyal_yield.multiply_operations",
 		"loyal_yield.multiply_position_snapshots",
 		"loyal_yield.earn_max_policy_sets",
-		"loyal_yield.multiply_operation_evidence",
 		"loyal_yield.managed_vaults",
 		"loyal_yield.route_policies",
 		"loyal_yield.rebalance_opportunities",
@@ -628,12 +627,43 @@ func (s *Store) CancelPreparedOperation(ctx context.Context, lease *Lease, opera
 	return true, nil
 }
 
-// ExpireOperation mirrors expire_multiply_operation.
+// ExpireOperation mirrors expire_multiply_operation: a signature absent once
+// the finalized height passed its blockhash can never land.
 func (s *Store) ExpireOperation(ctx context.Context, lease *Lease, operationID string, route *RouteState) (bool, error) {
-	// Signature absence and blockhash expiry alone do not establish absence
-	// of financial effects. Keep the immutable wire and custody ownership until
-	// a family-specific historical signature and unchanged-state proof exists.
-	return false, errors.New("multiply expiry requires a historical signature and no-effect proof; operation retained")
+	if err := validateNextRoute(lease, route); err != nil {
+		return false, err
+	}
+	if route.CurrentOperationID != nil {
+		return false, errors.New("expired route must clear current operation")
+	}
+	encoded, err := jsonMarshal(route)
+	if err != nil {
+		return false, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var expiredID string
+	err = tx.QueryRow(ctx,
+		"UPDATE loyal_yield.multiply_operations SET status='expired', signed_wire=NULL, updated_at=now() WHERE operation_id=$1 AND route_key=$2 AND status IN ('signed_persisted','broadcast_intent') AND last_valid_block_height IS NOT NULL RETURNING operation_id",
+		operationID, lease.RouteKey).Scan(&expiredID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	version, ok, err := updateRouteInTx(ctx, tx, lease, encoded)
+	if err != nil || !ok {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	lease.Version = version
+	return true, nil
 }
 
 // MarkManualRecovery mirrors mark_multiply_manual_recovery.
@@ -674,8 +704,9 @@ func (s *Store) MarkManualRecovery(ctx context.Context, lease *Lease, operationI
 	return true, nil
 }
 
-// ReconcileOperation requires exact transaction evidence and appends it in the
-// same fenced transaction as terminal operation/route publication.
+// ReconcileOperation requires exact transaction evidence and records it on the
+// operation's reconciled_effects in the same fenced transaction as terminal
+// operation/route publication. Rust never reads that column for Multiply rows.
 func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationID, transactionSignature, reconciliationSHA256 string, confirmedSlot uint64, route *RouteState, proofs ...*ReconciledReceiptProof) (bool, error) {
 	if len(proofs) != 1 || proofs[0] == nil {
 		return false, errors.New("reconciliation requires an exact transaction receipt")
@@ -725,20 +756,10 @@ func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationI
 	if e.OperationID != op.OperationID || e.Signature != transactionSignature || e.Signature != v.Signature || e.WireSHA256 != v.WireSHA256 || e.FinancialAnchorsSHA256 != v.FinancialAnchorsSHA256 || e.ConfirmedSlot != confirmedSlot || e.ConfirmedSlot != v.ConfirmedSlot || e.ObservationSlot < e.ConfirmedSlot || e.ObservationSlot != route.ObservedSlot || e.ObservationSlot > math.MaxInt64 {
 		return false, errors.New("receipt evidence identity or observation slot drifted")
 	}
-	prestate, err := loadOperationPrestate(ctx, tx, op)
-	if err != nil {
-		return false, err
-	}
-	if prestate != nil && e.ConfirmedSlot < prestate.ObservedSlot {
-		return false, errors.New("receipt predates original prestate")
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.multiply_operation_evidence(operation_id,evidence_kind,signature,signed_wire_sha256,expected_effects_sha256,observed_slot,evidence) VALUES($1,'reconciled_receipt',$2,$3,$4,$5,$6)`, operationID, e.Signature, e.WireSHA256, e.FinancialAnchorsSHA256, int64(e.ObservationSlot), e); err != nil {
-		return false, err
-	}
 	var reconciledID string
 	err = tx.QueryRow(ctx,
-		"UPDATE loyal_yield.multiply_operations SET status='reconciled', signed_wire=NULL, confirmed_slot=$3, reconciliation_sha256=$4, updated_at=now() WHERE operation_id=$1 AND route_key=$2 AND status IN ('confirmed','reconciliation_pending') AND transaction_signature=$5 RETURNING operation_id",
-		operationID, lease.RouteKey, slot, reconciliationSHA256, transactionSignature).Scan(&reconciledID)
+		"UPDATE loyal_yield.multiply_operations SET status='reconciled', signed_wire=NULL, confirmed_slot=$3, reconciliation_sha256=$4, reconciled_effects=$6, updated_at=now() WHERE operation_id=$1 AND route_key=$2 AND status IN ('confirmed','reconciliation_pending') AND transaction_signature=$5 RETURNING operation_id",
+		operationID, lease.RouteKey, slot, reconciliationSHA256, transactionSignature, e).Scan(&reconciledID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -941,175 +962,6 @@ func decodeOperation(rows interface{ Scan(...any) error }) (*MultiplyOperation, 
 	}
 	return operation, nil
 }
-
-// PersistSignedOperationWithPrestate publishes immutable original observations
-// in the same transaction as the signed wire. Neither half can survive alone.
-func (s *Store) PersistSignedOperationWithPrestate(ctx context.Context, lease *Lease, id, policyAccount, policyHash, messageHash string, signed *SignedOperation, prestate *OperationPrestateEvidence) (bool, error) {
-	if lease == nil || signed == nil || prestate == nil || prestate.ObservedSlot == 0 || prestate.ObservedSlot > uint64(1<<63-1) || signed.LastValidBlockHeight <= 0 {
-		return false, errors.New("signed operation prestate is incomplete")
-	}
-	if err := validateHash(policyHash); err != nil {
-		return false, err
-	}
-	if err := validateHash(messageHash); err != nil {
-		return false, err
-	}
-	if _, err := PersistedTransaction(&MultiplyOperation{SignedWire: signed.Wire, SignedWireSHA256: &signed.WireSHA256, TransactionSignature: &signed.TransactionSignature, RecentBlockhash: &signed.RecentBlockhash, MessageSHA256: &messageHash}); err != nil {
-		return false, err
-	}
-	changed := false
-	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		op, err := decodeOperation(tx.QueryRow(ctx, "SELECT "+operationColumns+" FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND route_key=$2 FOR UPDATE", id, lease.RouteKey))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if op.Status != StatusPrepared {
-			return nil
-		}
-		copy := *prestate
-		copy.Signature = signed.TransactionSignature
-		copy.WireSHA256 = signed.WireSHA256
-		op.TransactionSignature = &signed.TransactionSignature
-		op.SignedWireSHA256 = &signed.WireSHA256
-		if err := validatePrestateIdentity(op, &copy); err != nil {
-			return err
-		}
-		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations operation SET status='signed_persisted',policy_account=$6,policy_data_sha256=$7,message_sha256=$8,signed_wire=$9,signed_wire_sha256=$10,transaction_signature=$11,recent_blockhash=$12,last_valid_block_height=$13,updated_at=now()
- FROM loyal_yield.multiply_route_states route WHERE operation.operation_id=$1 AND operation.route_key=$2 AND operation.status='prepared'
- AND route.route_key=operation.route_key AND route.state_version=$3 AND route.lease_owner=$4 AND route.fencing_token=$5 AND route.lease_expires_at>now()`, id, lease.RouteKey, lease.Version, lease.Owner, lease.FencingToken, policyAccount, policyHash, messageHash, signed.Wire, signed.WireSHA256, signed.TransactionSignature, signed.RecentBlockhash, signed.LastValidBlockHeight)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() != 1 {
-			return nil
-		}
-		_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.multiply_operation_evidence(operation_id,evidence_kind,signature,signed_wire_sha256,expected_effects_sha256,observed_slot,evidence) VALUES($1,'prestate',$2,$3,$4,$5,$6)`, id, copy.Signature, copy.WireSHA256, copy.FinancialAnchorsSHA256, int64(copy.ObservedSlot), copy)
-		if err != nil {
-			return err
-		}
-		changed = true
-		return nil
-	})
-	return changed && err == nil, err
-}
-
-func (s *Store) LoadOperationPrestate(ctx context.Context, op *MultiplyOperation) (*OperationPrestateEvidence, error) {
-	if op == nil {
-		return nil, errors.New("operation is missing")
-	}
-	return loadOperationPrestate(ctx, s.pool, op)
-}
-
-type evidenceQuerier interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}
-
-func loadOperationPrestate(ctx context.Context, q evidenceQuerier, op *MultiplyOperation) (*OperationPrestateEvidence, error) {
-	var signature, wireHash, financialHash string
-	var slot int64
-	var raw []byte
-	err := q.QueryRow(ctx, `SELECT signature,signed_wire_sha256,expected_effects_sha256,observed_slot,evidence FROM loyal_yield.multiply_operation_evidence WHERE operation_id=$1 AND evidence_kind='prestate'`, op.OperationID).Scan(&signature, &wireHash, &financialHash, &slot, &raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var evidence OperationPrestateEvidence
-	if err := jsonUnmarshalStrict(raw, &evidence); err != nil {
-		return nil, err
-	}
-	if slot <= 0 || evidence.ObservedSlot != uint64(slot) || signature != evidence.Signature || wireHash != evidence.WireSHA256 || financialHash != evidence.FinancialAnchorsSHA256 {
-		return nil, errors.New("prestate evidence columns disagree with payload")
-	}
-	if err := validatePrestateIdentity(op, &evidence); err != nil {
-		return nil, err
-	}
-	return &evidence, nil
-}
-
-// ExpireOperationWithProof retains legacy financial JSON byte semantics, writes
-// full absence evidence, and releases the route under its existing Rust fence.
-func (s *Store) ExpireOperationWithProof(ctx context.Context, lease *Lease, id string, next *RouteState, proof *NoEffectProof) (bool, error) {
-	if proof == nil {
-		return false, errors.New("expiry proof is missing")
-	}
-	if err := validateNextRoute(lease, next); err != nil {
-		return false, err
-	}
-	if next.CurrentOperationID != nil {
-		return false, errors.New("expired route must clear current operation")
-	}
-	var version int64
-	changed := false
-	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		op, err := decodeOperation(tx.QueryRow(ctx, "SELECT "+operationColumns+" FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND route_key=$2 FOR UPDATE", id, lease.RouteKey))
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if op.Status != StatusSignedPersisted && op.Status != StatusBroadcastIntent {
-			return nil
-		}
-		if _, err := PersistedTransaction(op); err != nil {
-			return err
-		}
-		original, err := loadOperationPrestate(ctx, tx, op)
-		if err != nil {
-			return err
-		}
-		if original == nil {
-			return errors.New("legacy operation has no immutable prestate proof")
-		}
-		e := proof.evidence
-		hash, err := financialAnchorsHash(op.ExpectedEffects)
-		if err != nil {
-			return err
-		}
-		if e.OperationID != op.OperationID || e.Signature != *op.TransactionSignature || e.WireSHA256 != *op.SignedWireSHA256 || e.FinancialAnchorsSHA256 != hash || op.LastValidBlockHeight == nil || e.LastValidBlockHeight != *op.LastValidBlockHeight || e.FinalizedHeight <= e.LastValidBlockHeight || e.FinalizedSlot == 0 || e.EffectSlot < e.FinalizedSlot || e.HistorySlot < e.EffectSlot || e.FirstAvailableBlock > original.ObservedSlot || e.EffectSlot > uint64(1<<63-1) {
-			return errors.New("expiry proof is not bound to original attempt and complete history")
-		}
-		raw, err := jsonMarshal(e)
-		if err != nil {
-			return err
-		}
-		digest := sha256.Sum256(raw)
-		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.multiply_operation_evidence(operation_id,evidence_kind,signature,signed_wire_sha256,expected_effects_sha256,observed_slot,evidence) VALUES($1,'expired_no_effect',$2,$3,$4,$5,$6)`, id, e.Signature, e.WireSHA256, e.FinancialAnchorsSHA256, int64(e.EffectSlot), raw); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, "UPDATE loyal_yield.multiply_operations SET status='expired',signed_wire=NULL,reconciliation_sha256=$2,updated_at=now() WHERE operation_id=$1", id, hex.EncodeToString(digest[:])); err != nil {
-			return err
-		}
-		encoded, err := jsonMarshal(next)
-		if err != nil {
-			return err
-		}
-		newVersion, ok, err := updateRouteInTx(ctx, tx, lease, encoded)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return errEvidenceFenceLost
-		}
-		version = newVersion
-		changed = true
-		return nil
-	})
-	if errors.Is(err, errEvidenceFenceLost) {
-		return false, nil
-	}
-	if err == nil && changed {
-		lease.Version = version
-	}
-	return changed && err == nil, err
-}
-
-var errEvidenceFenceLost = errors.New("operation evidence fence lost")
 
 // checkFreshCustodyOwnership uses the exact vault identity and the legacy
 // idle-vault-handoff lock. Active foreign configuration itself blocks admission:

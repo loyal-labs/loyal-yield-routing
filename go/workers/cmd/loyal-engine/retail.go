@@ -233,6 +233,11 @@ func runRetail(ctx context.Context, owner, release string) error {
 	}
 	// One fact set per process; the /metrics handler serves the default registry.
 	facts := engine.NewFacts(prometheus.DefaultRegisterer)
+	// Every family lands its signed rows through the same send path.
+	landRPC, err := solana.NewLandRPC(cfg.rpcURL, 15*time.Second)
+	if err != nil {
+		return retailError("landing RPC", err)
+	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	proxy, err := fleet.NewKLendProxy(cfg.proxyPath, cfg.proxyHash)
@@ -384,10 +389,6 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("fleet execution RPC", err)
 	}
-	landRPC, err := solana.NewLandRPC(cfg.rpcURL, 15*time.Second)
-	if err != nil {
-		return retailError("fleet landing RPC", err)
-	}
 	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts}, dStore, landRPC, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate})
 	if err != nil {
 		return retailError("fleet executor", err)
@@ -405,7 +406,7 @@ func runRetail(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return retailError("Multiply observation", err)
 	}
-	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: observation, Executor: gExecutor, Quotes: multiply.NewLiveQuoteClient(), WorkerID: owner})
+	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: observation, Executor: gExecutor, Quotes: multiply.NewLiveQuoteClient(), WorkerID: owner, Chain: landRPC, Facts: facts})
 	if err != nil {
 		return retailError("Multiply worker", err)
 	}

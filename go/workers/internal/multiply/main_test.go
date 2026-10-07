@@ -1,0 +1,49 @@
+package multiply
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	solanaland "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+func TestMain(m *testing.M) {
+	landResendEvery = time.Millisecond
+	os.Exit(m.Run())
+}
+
+func testFacts() *engine.Facts { return engine.NewFacts(prometheus.NewRegistry()) }
+
+// surfaceChain lands through a test's RPC surface fake or local bank.
+type surfaceChain struct{ rpc RPCSurface }
+
+func (c surfaceChain) SendWire(ctx context.Context, wire []byte, _ bool) error {
+	_, err := c.rpc.SendRawTransaction(ctx, wire)
+	return err
+}
+
+func (c surfaceChain) FinalizedBlockHeight(ctx context.Context) (uint64, error) {
+	return c.rpc.BlockHeight(ctx)
+}
+
+func (c surfaceChain) SignatureState(ctx context.Context, signature string) (solanaland.SignatureState, error) {
+	observation, err := c.rpc.SignatureStatus(ctx, signature)
+	if err != nil || observation == nil {
+		return solanaland.SignatureState{ContextSlot: 1}, err
+	}
+	state := solanaland.SignatureState{Found: true, Slot: uint64(observation.Slot), ContextSlot: 1, Commitment: solanaland.Processed}
+	switch observation.ConfirmationState {
+	case "confirmed":
+		state.Commitment = solanaland.Confirmed
+	case "finalized":
+		state.Commitment = solanaland.Finalized
+	}
+	if observation.Err != nil {
+		state.Err = *observation.Err
+	}
+	return state, nil
+}

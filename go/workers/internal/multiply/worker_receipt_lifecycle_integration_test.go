@@ -57,15 +57,11 @@ func (f *multiplySVMFixture) persistUnsentDeposit(t *testing.T) *MultiplyOperati
 	if ok, err := f.store.PrepareOperation(f.ctx, lease, &next, op); err != nil || !ok {
 		t.Fatalf("prepare: %v %v", ok, err)
 	}
-	prestate, err := NewOperationPrestate(op, before, f.topology)
-	if err != nil {
-		t.Fatal(err)
-	}
 	messageHash, err := MessageSHA256(signed.Wire)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := f.store.PersistSignedOperationWithPrestate(f.ctx, lease, id, policy.Account.String(), policy.DataSHA256, messageHash, signed, prestate); err != nil || !ok {
+	if ok, err := f.store.PersistSignedOperation(f.ctx, lease, id, policy.Account.String(), policy.DataSHA256, messageHash, signed); err != nil || !ok {
 		t.Fatalf("actual signed publication: %v %v", ok, err)
 	}
 	op, err = f.store.LoadOperation(f.ctx, id)
@@ -82,7 +78,7 @@ func TestCurrentGoMultiplyUnsentWireKeylessRecoveryWithoutPolicyReadiness(t *tes
 		t.Fatal(err)
 	}
 	result, err := f.worker(t, true).Tick(f.ctx)
-	if err != nil || result.Condition != "recovered_operation_reconciled" {
+	if err != nil || result.Condition != "operation_reconciled" {
 		t.Fatalf("actual immutable first send: %v %v", result, err)
 	}
 	saved, err := f.store.LoadOperation(f.ctx, original.OperationID)
@@ -113,9 +109,9 @@ func TestCurrentGoMultiplyActualExpiredUnsentWireNoEffect(t *testing.T) {
 		t.Fatal("proved expiry retained current operation")
 	}
 	var status string
-	var evidence []byte
-	if err := f.store.Pool().QueryRow(f.ctx, `SELECT o.status,e.evidence FROM loyal_yield.multiply_operations o JOIN loyal_yield.multiply_operation_evidence e USING(operation_id) WHERE o.operation_id=$1 AND e.evidence_kind='expired_no_effect'`, original.OperationID).Scan(&status, &evidence); err != nil || status != "expired" || !bytes.Contains(evidence, []byte(*original.SignedWireSHA256)) {
-		t.Fatalf("immutable actual no-effect evidence: %s %v", status, err)
+	var wireCleared bool
+	if err := f.store.Pool().QueryRow(f.ctx, `SELECT status,signed_wire IS NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, original.OperationID).Scan(&status, &wireCleared); err != nil || status != "expired" || !wireCleared {
+		t.Fatalf("expiry must match Rust expire_multiply_operation: %s %v %v", status, wireCleared, err)
 	}
 	after, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
 	if err != nil || after.CollateralCustody(SyrupUsdcUsdc).AmountRaw != 1_000_000 || after.Position(SyrupUsdcUsdc).CollateralDepositedRaw != 0 {
@@ -163,7 +159,7 @@ func TestCurrentGoMultiplyActualDepositThenWithdrawal(t *testing.T) {
 		t.Fatal("non-USDC unwind fabricated payout completion or changed request")
 	}
 	var receipts int
-	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operation_evidence e JOIN loyal_yield.multiply_operations o USING(operation_id) WHERE o.route_key=$1 AND e.evidence_kind='reconciled_receipt'`, f.state.RouteKey).Scan(&receipts); err != nil || receipts != 2 {
+	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operations o WHERE o.route_key=$1 AND o.reconciled_effects IS NOT NULL`, f.state.RouteKey).Scan(&receipts); err != nil || receipts != 2 {
 		t.Fatalf("deposit and unwind receipts: %d %v", receipts, err)
 	}
 }
@@ -213,7 +209,7 @@ func TestCurrentGoMultiplyActualReceiptTerminalRollsBackOnStaleFence(t *testing.
 		t.Fatalf("stale financial CAS: %v %v", ok, err)
 	}
 	var n int
-	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operation_evidence WHERE operation_id=$1 AND evidence_kind='reconciled_receipt'`, op.OperationID).Scan(&n); err != nil || n != 0 {
+	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND reconciled_effects IS NOT NULL`, op.OperationID).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("rolled back terminal leaked immutable receipt: %d %v", n, err)
 	}
 	held, err := f.store.LoadOperation(f.ctx, op.OperationID)
@@ -344,7 +340,7 @@ func TestCurrentGoMultiplyActualReceiptRejectsProviderDrift(t *testing.T) {
 		})
 	}
 	result, err := f.worker(t, true).Tick(f.ctx)
-	if err != nil || result.Condition != "recovered_operation_reconciled" {
+	if err != nil || result.Condition != "operation_reconciled" {
 		t.Fatalf("original actual receipt no longer recoverable: %v %v", result, err)
 	}
 	f.assertReconciled(t, 1)
@@ -453,7 +449,7 @@ func TestCurrentGoMultiplyActualLeveredDeployAndFullUnwind(t *testing.T) {
 					t.Fatal("duplicate old-hash candidate adopted old signed financial identity")
 				}
 				var receipts int
-				if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operation_evidence WHERE operation_id=$1`, held.Operation.OperationID).Scan(&receipts); err != nil || receipts != 0 {
+				if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND reconciled_effects IS NOT NULL`, held.Operation.OperationID).Scan(&receipts); err != nil || receipts != 0 {
 					t.Fatal("duplicate unsigned candidate gained financial evidence")
 				}
 				recovered, err := f.worker(t, true).Tick(f.ctx)
@@ -493,7 +489,7 @@ func TestCurrentGoMultiplyActualLeveredDeployAndFullUnwind(t *testing.T) {
 		t.Fatal("delegate changed exact root-owned request or claimed without wallet")
 	}
 	var kinds, missing int
-	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(DISTINCT action),count(*) FILTER(WHERE e.operation_id IS NULL) FROM loyal_yield.multiply_operations o LEFT JOIN loyal_yield.multiply_operation_evidence e ON e.operation_id=o.operation_id AND e.evidence_kind='reconciled_receipt' WHERE o.route_key=$1 AND o.status='reconciled'`, f.state.RouteKey).Scan(&kinds, &missing); err != nil || kinds < 6 || missing != 0 {
+	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(DISTINCT action),count(*) FILTER(WHERE o.reconciled_effects IS NULL) FROM loyal_yield.multiply_operations o WHERE o.route_key=$1 AND o.status='reconciled'`, f.state.RouteKey).Scan(&kinds, &missing); err != nil || kinds < 6 || missing != 0 {
 		t.Fatalf("actual lifecycle recipes/receipts: %d %d %v", kinds, missing, err)
 	}
 }
@@ -624,7 +620,7 @@ func TestCurrentGoMultiplyActualReceiptWaitsForCoherentBank(t *testing.T) {
 		t.Fatal("stale account frontier terminated/replaced financial attempt")
 	}
 	var receipts int
-	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operation_evidence WHERE operation_id=$1 AND evidence_kind='reconciled_receipt'`, held.Operation.OperationID).Scan(&receipts); err != nil || receipts != 0 {
+	if err := f.store.Pool().QueryRow(f.ctx, `SELECT count(*) FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND reconciled_effects IS NOT NULL`, held.Operation.OperationID).Scan(&receipts); err != nil || receipts != 0 {
 		t.Fatal("stale account frontier published financial completion")
 	}
 	f.mu.Lock()

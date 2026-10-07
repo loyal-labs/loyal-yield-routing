@@ -255,39 +255,11 @@ func TestSnapshotClaimUnitsIdleZerosAndUnknownEvidence(t *testing.T) {
 	}
 }
 
-// Intentional recovery correction: authoritative absence/effect proof is
-// not implemented by this draft. Expiry therefore retains the exact attempt
-// and never authorizes a replacement or releases custody.
-func TestExpiredAmbiguousAttemptRetainsOwnership(t *testing.T) {
-	topology := testTopology(t)
-	route := testRouteState(t, topology)
-	signed := signedWireFixture(t, false)
-	messageHash, err := MessageSHA256(signed.Wire)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expiry := uint64(signed.LastValidBlockHeight)
-	operation := &MultiplyOperation{OperationID: "pending-fixture", Status: StatusBroadcastIntent,
-		SignedWire: signed.Wire, SignedWireSHA256: &signed.WireSHA256, MessageSHA256: &messageHash,
-		TransactionSignature: &signed.TransactionSignature, RecentBlockhash: &signed.RecentBlockhash,
-		LastValidBlockHeight: &expiry}
-	route.CurrentOperationID = &operation.OperationID
-	executor, rpc, _ := testExecutor(t)
-	rpc.height = expiry + 1
-	worker := &Worker{executor: executor} // no store: a hold must do no DB mutation
-	result, err := worker.recover(context.Background(), nil, &StoredRoute{State: route, Operation: operation}, topology)
-	if err != nil || result.Condition != "expired_signature_unresolved_ownership_retained" {
-		t.Fatalf("expiry authorized replacement: %+v %v", result, err)
-	}
-	if route.CurrentOperationID == nil || *route.CurrentOperationID != operation.OperationID || operation.Status != StatusBroadcastIntent || len(operation.SignedWire) == 0 || len(rpc.sent) != 0 {
-		t.Fatal("expired ambiguous attempt changed ownership, bytes or broadcast state")
-	}
-}
-
 func TestWorkerAcceptsExecutorPrivateKeyAndDepositRejectsWrap(t *testing.T) {
 	topology := testTopology(t)
 	dependencies := WorkerDeps{Store: &Store{pool: &pgxpool.Pool{}}, Observer: shortReviewReader{},
-		Executor: &Executor{RPC: &fakeRPC{}, Signer: testDelegateSeed()}, Quotes: fakeQuoteClient{topology}, WorkerID: "review"}
+		Executor: &Executor{RPC: &fakeRPC{}, Signer: testDelegateSeed()}, Quotes: fakeQuoteClient{topology}, WorkerID: "review",
+		Chain: surfaceChain{&fakeRPC{}}, Facts: testFacts()}
 	if _, err := NewWorker(dependencies); err != nil {
 		t.Fatal(err)
 	}

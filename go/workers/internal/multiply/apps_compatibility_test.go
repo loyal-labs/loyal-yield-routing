@@ -113,7 +113,7 @@ func TestRetainedExternalClaimBareJournalIsAtomicAndReadable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	t.Cleanup(func() {
-		if _, err := store.pool.Exec(context.Background(), `DELETE FROM loyal_yield.multiply_route_states r WHERE route_key=$1 AND NOT EXISTS(SELECT 1 FROM loyal_yield.multiply_operations o JOIN loyal_yield.multiply_operation_evidence e ON e.operation_id=o.operation_id WHERE o.route_key=r.route_key)`, key); err != nil {
+		if _, err := store.pool.Exec(context.Background(), `WITH operations AS (DELETE FROM loyal_yield.multiply_operations WHERE route_key=$1) DELETE FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key); err != nil {
 			t.Error(err)
 		}
 	})
@@ -177,7 +177,7 @@ func TestRetainedExternalClaimBareJournalIsAtomicAndReadable(t *testing.T) {
 		t.Fatalf("release %v %v", ok, err)
 	}
 	executor, rpc, _ := testExecutor(t)
-	worker, err := NewWorker(WorkerDeps{Store: store, Observer: forbiddenObservationReader{}, Executor: executor, Quotes: fakeQuoteClient{}, WorkerID: "go-after-source"})
+	worker, err := NewWorker(WorkerDeps{Store: store, Observer: forbiddenObservationReader{}, Executor: executor, Quotes: fakeQuoteClient{}, WorkerID: "go-after-source", Chain: surfaceChain{executor.RPC}, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}

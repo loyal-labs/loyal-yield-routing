@@ -261,7 +261,7 @@ func TestStoreLifecycleCannotReconcileWithoutActualReceipt(t *testing.T) {
 	}
 }
 
-func TestStoreExpiryRetainsWireWithoutFinancialProof(t *testing.T) {
+func TestStoreExpiryMatchesRustAndPersistedCorruptionIsDetected(t *testing.T) {
 	store := integrationStore(t)
 	ctx := context.Background()
 	settings, vault := seedPolicySet(t, store)
@@ -311,15 +311,9 @@ func TestStoreExpiryRetainsWireWithoutFinancialProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := stored.State
-	next.Generation = uint64(lease.Version + 1)
-	next.CurrentOperationID = nil
-	if ok, err := store.ExpireOperation(ctx, lease, id, next); err == nil || ok {
-		t.Fatal("unproven expiry released operation")
-	}
 	retained, err := store.LoadOperation(ctx, id)
 	if err != nil || retained == nil || retained.Status != StatusBroadcastIntent || len(retained.SignedWire) == 0 {
-		t.Fatalf("unknown operation not retained: %v %v", retained, err)
+		t.Fatalf("sent operation not retained: %v %v", retained, err)
 	}
 	if _, err := PersistedTransaction(retained); err != nil {
 		t.Fatal(err)
@@ -330,6 +324,21 @@ func TestStoreExpiryRetainsWireWithoutFinancialProof(t *testing.T) {
 	}
 	if _, err := store.LoadOperation(ctx, id); err == nil {
 		t.Fatal("stored wire corruption was hidden")
+	}
+	if _, err := store.Pool().Exec(ctx, "UPDATE loyal_yield.multiply_operations SET signed_wire_sha256=$2 WHERE operation_id=$1", id, *retained.SignedWireSHA256); err != nil {
+		t.Fatal(err)
+	}
+	next := stored.State
+	next.Generation = uint64(lease.Version + 1)
+	next.CurrentOperationID = nil
+	// expire_multiply_operation: terminal, wire cleared, route released.
+	if ok, err := store.ExpireOperation(ctx, lease, id, next); err != nil || !ok {
+		t.Fatalf("expiry: %v %v", ok, err)
+	}
+	var status string
+	var cleared bool
+	if err := store.Pool().QueryRow(ctx, "SELECT status,signed_wire IS NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1", id).Scan(&status, &cleared); err != nil || status != "expired" || !cleared {
+		t.Fatalf("expired row %s %v %v", status, cleared, err)
 	}
 }
 

@@ -16,7 +16,12 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	solanaland "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
+
+// landResendEvery matches the fleet landing cadence.
+var landResendEvery = time.Second
 
 const tickInterval = 750 * time.Millisecond
 
@@ -32,6 +37,8 @@ type Worker struct {
 	routeKey        *string
 	runtimeReporter func(bool, uint64)
 	recoveryOnly    bool
+	chain           solanaland.LandChain
+	facts           *engine.Facts
 }
 
 // WorkerDeps carries the pool-injected store, the observation reader, the
@@ -43,6 +50,9 @@ type WorkerDeps struct {
 	Quotes   QuoteClient
 	WorkerID string
 	RouteKey *string
+	// Chain lands persisted wires; Facts receives the family outcomes.
+	Chain solanaland.LandChain
+	Facts *engine.Facts
 }
 
 // NewWorker validates the dependency set. The signer capability is checked to
@@ -73,6 +83,9 @@ func newWorker(deps WorkerDeps, recoveryOnly bool) (*Worker, error) {
 	if deps.WorkerID == "" {
 		return nil, errors.New("multiply worker requires a worker identity")
 	}
+	if deps.Chain == nil || deps.Facts == nil {
+		return nil, errors.New("multiply worker requires a landing chain and facts")
+	}
 	var routeKey *string
 	if deps.RouteKey != nil {
 		if *deps.RouteKey == "" {
@@ -84,6 +97,7 @@ func newWorker(deps WorkerDeps, recoveryOnly bool) (*Worker, error) {
 	return &Worker{
 		store: deps.Store, observer: deps.Observer, executor: deps.Executor,
 		quotes: deps.Quotes, workerID: deps.WorkerID, routeKey: routeKey, recoveryOnly: recoveryOnly,
+		chain: deps.Chain, facts: deps.Facts,
 	}, nil
 }
 
@@ -96,90 +110,14 @@ func (w *Worker) reportRuntime(ready bool, slot uint64) {
 	}
 }
 
-func runtimeConditionKnown(condition string) bool {
-	switch condition {
-	case "no_route_available", "route_complete", "operation_reconciled", "confirmed_operation_reconciled",
-		"recovered_operation_reconciled", "operation_expired_without_effect", "awaiting_stored_signature":
-		return true
-	}
-	return false
-}
-
-func (w *Worker) runtimeRecoveryHealth(ctx context.Context, result TickResult) (uint64, error) {
-	if !runtimeConditionKnown(result.Condition) {
-		return 0, errors.New("multiply cycle has unresolved work")
-	}
+// runtimeFrontier is the live chain slot a healthy tick reports.
+func (w *Worker) runtimeFrontier(ctx context.Context) (uint64, error) {
 	frontier, err := w.executor.RPC.LatestBlockhash(ctx)
 	if err != nil {
 		return 0, err
 	}
 	if frontier == nil || frontier.ContextSlot == 0 {
 		return 0, errors.New("missing live multiply frontier")
-	}
-	heightReader, ok := w.executor.RPC.(interface {
-		FinalizedBlockHeight(context.Context) (uint64, error)
-	})
-	if !ok {
-		return 0, errors.New("finalized health frontier unavailable")
-	}
-	height, err := heightReader.FinalizedBlockHeight(ctx)
-	if err != nil {
-		return 0, err
-	}
-	if height == 0 || height > math.MaxInt64 {
-		return 0, errors.New("invalid finalized multiply height")
-	}
-	var current string
-	if result.Condition == "awaiting_stored_signature" && result.OperationID != nil {
-		current = *result.OperationID
-	}
-	var scope any
-	if w.routeKey != nil {
-		scope = *w.routeKey
-	}
-	var blocked bool
-	// A known, successfully fenced recovery tick may wait on its exact still-live
-	// signature. Other pending/manual/orphan attempts are not proved adopted.
-	// Lease availability, disabled policy, and an empty claim never hide them.
-	// A completed, wallet-owned Claim wait may retain its actual payout snapshot
-	// past the worker refresh age: the source does not poll claimable withdrawals.
-	// Exact payout coverage and zero exposure remain required, including shortfall.
-	err = w.store.pool.QueryRow(ctx, `WITH routes AS (
- SELECT r.*, r.state->>'currentOperationId' AS current_operation,
- r.state->>'goal'='withdraw' AND r.state #>> '{withdrawal,status}'='claimable' AS claimable
- FROM loyal_yield.multiply_route_states r WHERE ($1::text IS NULL OR r.route_key=$1)
-)
-SELECT EXISTS(
- SELECT 1 FROM loyal_yield.multiply_operations o WHERE ($1::text IS NULL OR o.route_key=$1)
- AND o.status NOT IN ('reconciled','expired') AND NOT COALESCE((o.operation_id=$2
- AND o.status IN ('signed_persisted','broadcast_intent') AND o.last_valid_block_height>$3
- AND EXISTS(SELECT 1 FROM routes r WHERE r.route_key=o.route_key
- AND r.current_operation=o.operation_id AND r.state->>'engineVersion'='earn_max_v2')),false))
- OR EXISTS(SELECT 1 FROM routes r WHERE (r.state->>'goal'='manual_recovery'
- OR (COALESCE(r.current_operation,'')<>'' AND NOT EXISTS(
- SELECT 1 FROM loyal_yield.multiply_operations o WHERE o.operation_id=r.current_operation AND o.route_key=r.route_key
- AND o.status IN ('prepared','signed_persisted','broadcast_intent','confirmed','reconciliation_pending')))
- OR (r.state->>'goal' IN ('deploy','move','withdraw') AND NOT EXISTS(
- SELECT 1 FROM loyal_yield.earn_max_policy_sets p WHERE p.settings=r.settings AND p.vault_index=r.vault_index
- AND p.status='ready' AND p.manifest_version='earn-max-v2' AND p.policy_seed_base=(r.state->>'policySeedBase')::bigint))
- OR NOT EXISTS(SELECT 1 FROM loyal_yield.multiply_position_snapshots snap
- CROSS JOIN LATERAL (SELECT CASE WHEN r.claimable THEN
- snap.claim_raw>=(r.state #>> '{withdrawal,amountRaw}')::numeric
- AND snap.collateral_raw=0 AND snap.debt_raw=0 ELSE false END AS claim_covered) evidence
- WHERE snap.route_key=r.route_key
- AND snap.observed_slot=(SELECT max(latest.observed_slot) FROM loyal_yield.multiply_position_snapshots latest WHERE latest.route_key=r.route_key)
- AND (NOT COALESCE(r.claimable,false) OR evidence.claim_covered)
- AND (snap.observed_at>clock_timestamp()-interval '5 minutes' OR (r.claimable AND COALESCE(r.current_operation,'')=''
- AND r.state #>> '{withdrawal,unwindCompletedAt}' IS NOT NULL
- AND evidence.claim_covered)))))`, scope, current, int64(height)).Scan(&blocked)
-	if err != nil {
-		return 0, err
-	}
-	if blocked {
-		return 0, errors.New("multiply durable recovery holds remain")
-	}
-	if ctx.Err() != nil {
-		return 0, ctx.Err()
 	}
 	return frontier.ContextSlot, nil
 }
@@ -226,8 +164,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		if bootstrapFailed {
 			healthErr = errors.New("multiply bootstrap failed")
 		}
-		if healthErr == nil && w.runtimeReporter != nil {
-			slot, healthErr = w.runtimeRecoveryHealth(cycle, result)
+		if healthErr == nil {
+			w.facts.Progress(engine.FamilyMultiply)
+			if w.runtimeReporter != nil {
+				slot, healthErr = w.runtimeFrontier(cycle)
+			}
 		}
 		ready := healthErr == nil && cycle.Err() == nil && slot > 0
 		cancelCycle()
@@ -486,26 +427,17 @@ func (w *Worker) executePlan(ctx context.Context, lease *Lease, stored *StoredRo
 	if !prepared {
 		return TickResult{}, errors.New("prepared operation lost its route lease or idempotency key")
 	}
-	if _, err := w.executeOperation(ctx, lease, &route, operation, plan, built, observed, topology); err != nil {
-		return TickResult{}, err
-	}
-	completed, err := w.store.LoadOperation(ctx, operationID)
+	signed, err := w.signAndPersist(ctx, lease, operation, plan, built, observed, topology)
 	if err != nil {
 		return TickResult{}, err
 	}
-	if completed == nil {
-		return TickResult{}, errors.New("reconciled operation disappeared")
-	}
-	return tickResult(&route, completed, "operation_reconciled"), nil
+	return w.land(ctx, lease, &route, signed, topology)
 }
 
-// executeOperation mirrors execute_operation: sign, persist the exact wire,
-// record the broadcast intent, send once un-retried, wait for confirmation,
-// and reconcile. Any ambiguity hands the operation to recovery, never to a
-// replacement wire.
-func (w *Worker) executeOperation(ctx context.Context, lease *Lease, route *RouteState,
-	operation *MultiplyOperation, plan *ActionPlan, built *BuiltOperation,
-	before *ObservedRoute, topology *EarnMaxTopology) (*RouteState, error) {
+// signAndPersist mirrors execute_operation up to its durable boundary: sign,
+// simulate and persist the exact wire before anything is sent.
+func (w *Worker) signAndPersist(ctx context.Context, lease *Lease, operation *MultiplyOperation, plan *ActionPlan, built *BuiltOperation,
+	before *ObservedRoute, topology *EarnMaxTopology) (*MultiplyOperation, error) {
 	policy, err := w.executor.EnsureExactPolicy(ctx, topology, plan, built)
 	if err != nil {
 		return nil, err
@@ -525,62 +457,98 @@ func (w *Worker) executeOperation(ctx context.Context, lease *Lease, route *Rout
 	} else if outcome.Err != nil {
 		return nil, fmt.Errorf("simulation failed: %s", *outcome.Err)
 	}
-	prestate, err := NewOperationPrestate(operation, before, topology)
-	if err != nil {
-		return nil, err
-	}
-	persisted, err := w.store.PersistSignedOperationWithPrestate(ctx, lease, operation.OperationID,
-		policy.Account.String(), policy.DataSHA256, messageHash, signed, prestate)
+	persisted, err := w.store.PersistSignedOperation(ctx, lease, operation.OperationID,
+		policy.Account.String(), policy.DataSHA256, messageHash, signed)
 	if err != nil {
 		return nil, err
 	}
 	if !persisted {
 		return nil, errors.New("lost prepared operation before signed-byte persistence")
 	}
-	if ok, err := w.store.MarkBroadcastIntent(ctx, lease, operation.OperationID, time.Now().UTC()); err != nil {
-		return nil, err
-	} else if !ok {
-		return nil, errors.New("lost operation before broadcast intent")
-	}
-	if _, err := w.executor.Broadcast(ctx, signed); err != nil {
-		// The send itself errored without a definitive on-chain verdict; the
-		// stored signature stays authoritative and recovery owns the outcome.
-		return nil, err
-	}
-	confirmedSlot, err := w.executor.WaitConfirmed(ctx, signed.TransactionSignature)
+	stored, err := w.store.LoadOperation(ctx, operation.OperationID)
 	if err != nil {
 		return nil, err
 	}
-	if confirmedSlot == nil {
-		return nil, errors.New("transaction was not confirmed within the bounded wait")
+	if stored == nil {
+		return nil, errors.New("signed operation disappeared")
 	}
-	persistedOperation, err := w.store.LoadOperation(ctx, operation.OperationID)
+	return stored, nil
+}
+
+// land resends the operation's persisted wire until it confirms, fails on
+// chain or its blockhash expires. The first send moves signed_persisted to
+// broadcast_intent exactly as mark_multiply_broadcast_intent; a resend only
+// proves this worker still holds the route lease. Expiry is Rust's
+// expire_multiply_operation: the route clears and the planner replans.
+func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, operation *MultiplyOperation, topology *EarnMaxTopology) (TickResult, error) {
+	if _, err := PersistedTransaction(operation); err != nil {
+		return TickResult{}, err
+	}
+	if operation.LastValidBlockHeight == nil || *operation.LastValidBlockHeight > math.MaxInt64 {
+		return TickResult{}, errors.New("signed operation omitted a supported blockhash expiry")
+	}
+	unsent := operation.Status == StatusSignedPersisted
+	sends := 1
+	if unsent {
+		sends = 0
+	}
+	intent := func(sendCtx context.Context) error {
+		ok, err := w.store.MarkBroadcastIntent(sendCtx, lease, operation.OperationID, time.Now().UTC())
+		if err == nil && !ok {
+			err = errors.New("signed operation lost its lease before broadcast intent")
+		}
+		if err == nil {
+			unsent = false
+		}
+		return err
+	}
+	out, err := solanaland.Land(ctx, w.chain, solanaland.Attempt{
+		Wire: operation.SignedWire, Signature: *operation.TransactionSignature,
+		LastValidBlockHeight: *operation.LastValidBlockHeight, Sends: sends, Required: solanaland.Confirmed,
+	}, landResendEvery, func(sendCtx context.Context) error {
+		if unsent {
+			return intent(sendCtx)
+		}
+		ok, err := w.store.RenewLease(sendCtx, lease, lease.ExpiresAt)
+		if err == nil && !ok {
+			err = errors.New("route lease lost while landing")
+		}
+		return err
+	})
+	if errors.Is(err, context.DeadlineExceeded) {
+		// The lease window ended first; the next lease lands the same wire.
+		return tickResult(route, operation, "awaiting_stored_signature"), nil
+	}
 	if err != nil {
-		return nil, err
+		return TickResult{}, err
 	}
-	if persistedOperation == nil {
-		return nil, errors.New("broadcast operation disappeared")
+	switch out.Kind {
+	case solanaland.Landed:
+		w.facts.Landed(engine.FamilyMultiply)
+		if unsent {
+			// Landed without a send of ours: a lost acknowledgement.
+			if err := intent(ctx); err != nil {
+				return TickResult{}, err
+			}
+		}
+		return w.confirmAndReconcile(ctx, lease, route, operation, out.Slot, topology)
+	case solanaland.Failed:
+		w.facts.Failed(engine.FamilyMultiply, "transaction_failed")
+		return w.enterManualRecovery(ctx, lease, route, operation, "stored signed transaction failed at confirmed commitment: "+out.Err)
 	}
-	proof, err := w.executor.readReceipt(ctx, persistedOperation, topology)
+	w.facts.Failed(engine.FamilyMultiply, "blockhash_expired")
+	next := *route
+	next.Generation++
+	next.CurrentOperationID = nil
+	next.ObservedAt = time.Now().UTC()
+	expired, err := w.store.ExpireOperation(ctx, lease, operation.OperationID, &next)
 	if err != nil {
-		return nil, err
+		return TickResult{}, err
 	}
-	if proof.evidence.ConfirmedSlot != uint64(confirmedSlot.Slot) {
-		return nil, errors.New("actual receipt changed before confirmation publication")
+	if !expired {
+		return TickResult{}, errors.New("expiry lost its route fence")
 	}
-	if ok, err := w.store.MarkConfirmed(ctx, lease, operation.OperationID, uint64(confirmedSlot.Slot)); err != nil {
-		return nil, err
-	} else if !ok {
-		return nil, errors.New("lost operation before confirmed persistence")
-	}
-	persistedOperation, err = w.store.LoadOperation(ctx, operation.OperationID)
-	if err != nil {
-		return nil, err
-	}
-	if persistedOperation == nil {
-		return nil, errors.New("confirmed operation disappeared")
-	}
-	return w.reconcileOperation(ctx, lease, route, persistedOperation, uint64(confirmedSlot.Slot), topology)
+	return tickResult(&next, operation, "operation_expired_without_effect"), nil
 }
 
 // recover mirrors recover(): every non-terminal status has exactly one owned
@@ -602,93 +570,8 @@ func (w *Worker) recover(ctx context.Context, lease *Lease, stored *StoredRoute,
 			return TickResult{}, errors.New("prepared operation cancellation lost its lease")
 		}
 		return tickResult(route, operation, "prepared_operation_rebuilt"), nil
-	case StatusSignedPersisted:
-		if operation.LastValidBlockHeight == nil || *operation.LastValidBlockHeight > math.MaxInt64 {
-			return TickResult{}, errors.New("signed operation omitted a supported blockhash expiry")
-		}
-		if _, err := PersistedTransaction(operation); err != nil {
-			return TickResult{}, err
-		}
-		// Adoption must handle a legacy sender which landed the immutable wire
-		// while its intent acknowledgement was lost. Observe before any resend.
-		observation, err := w.executor.RPC.SignatureStatus(ctx, *operation.TransactionSignature)
-		if err != nil {
-			return TickResult{}, err
-		}
-		if observation != nil {
-			if observation.Err != nil && (observation.ConfirmationState == "confirmed" || observation.ConfirmationState == "finalized") {
-				return w.enterManualRecovery(ctx, lease, route, operation, "stored signed transaction failed at confirmed commitment")
-			}
-			if ok, err := w.store.MarkBroadcastIntent(ctx, lease, operation.OperationID, time.Now().UTC()); err != nil {
-				return TickResult{}, err
-			} else if !ok {
-				return TickResult{}, errors.New("observed signed operation lost before intent adoption")
-			}
-			if observation.ConfirmationState == "confirmed" || observation.ConfirmationState == "finalized" {
-				return w.confirmAndReconcile(ctx, lease, route, operation, uint64(observation.Slot), topology)
-			}
-			return tickResult(route, operation, "awaiting_stored_signature"), nil
-		}
-		height, err := w.executor.RPC.BlockHeight(ctx)
-		if err != nil {
-			return TickResult{}, err
-		}
-		if height > *operation.LastValidBlockHeight {
-			return w.expireIfProven(ctx, lease, route, operation, topology)
-		}
-		if ok, err := w.store.MarkBroadcastIntent(ctx, lease, operation.OperationID, time.Now().UTC()); err != nil {
-			return TickResult{}, err
-		} else if !ok {
-			return TickResult{}, errors.New("signed operation lost before broadcast intent")
-		}
-		if _, err := w.executor.Broadcast(ctx, &SignedOperation{
-			Wire:                 operation.SignedWire,
-			WireSHA256:           *operation.SignedWireSHA256,
-			TransactionSignature: *operation.TransactionSignature,
-			RecentBlockhash:      *operation.RecentBlockhash,
-			LastValidBlockHeight: int64(*operation.LastValidBlockHeight),
-		}); err != nil {
-			return tickResult(route, operation, "broadcast_result_ambiguous_signature_recovery_required"), nil
-		}
-		slot, err := w.executor.WaitConfirmed(ctx, *operation.TransactionSignature)
-		if err != nil {
-			return TickResult{}, err
-		}
-		if slot == nil {
-			return tickResult(route, operation, "broadcast_result_ambiguous_signature_recovery_required"), nil
-		}
-		return w.confirmAndReconcile(ctx, lease, route, operation, uint64(slot.Slot), topology)
-	case StatusBroadcastIntent:
-		if _, err := PersistedTransaction(operation); err != nil {
-			return TickResult{}, err
-		}
-		observation, err := w.executor.RPC.SignatureStatus(ctx, *operation.TransactionSignature)
-		if err != nil {
-			return TickResult{}, err
-		}
-		if observation != nil {
-			if observation.Err != nil && (observation.ConfirmationState == "confirmed" || observation.ConfirmationState == "finalized") {
-				return w.enterManualRecovery(ctx, lease, route, operation,
-					fmt.Sprintf("broadcast transaction failed: %s", *observation.Err))
-			}
-			if observation.ConfirmationState == "confirmed" || observation.ConfirmationState == "finalized" {
-				return w.confirmAndReconcile(ctx, lease, route, operation, uint64(observation.Slot), topology)
-			}
-		}
-		if operation.LastValidBlockHeight == nil {
-			return TickResult{}, errors.New("broadcast operation omitted blockhash expiry")
-		}
-		height, err := w.executor.RPC.BlockHeight(ctx)
-		if err != nil {
-			return TickResult{}, err
-		}
-		if height > *operation.LastValidBlockHeight {
-			// An expired blockhash prevents a new landing but does not prove
-			// this persisted wire never landed. Retain intent and ownership
-			// until the family establishes authoritative absence/effect proof.
-			return w.expireIfProven(ctx, lease, route, operation, topology)
-		}
-		return tickResult(route, operation, "awaiting_stored_signature"), nil
+	case StatusSignedPersisted, StatusBroadcastIntent:
+		return w.land(ctx, lease, route, operation, topology)
 	case StatusConfirmed, StatusReconciliationPending:
 		if _, err := PersistedTransaction(operation); err != nil {
 			return TickResult{}, err
@@ -703,51 +586,6 @@ func (w *Worker) recover(ctx context.Context, lease *Lease, stored *StoredRoute,
 		return tickResult(route, operation, "confirmed_operation_reconciled"), nil
 	}
 	return TickResult{}, errors.New("route points at a terminal operation")
-}
-
-func (w *Worker) expireIfProven(ctx context.Context, lease *Lease, route *RouteState, operation *MultiplyOperation, topology *EarnMaxTopology) (TickResult, error) {
-	boundary, err := w.executor.ExpiredFinalizedBoundary(ctx, operation)
-	if err != nil {
-		if ctx.Err() != nil {
-			return TickResult{}, ctx.Err()
-		}
-		return tickResult(route, operation, "expired_signature_unresolved_ownership_retained"), nil
-	}
-	prestate, err := w.store.LoadOperationPrestate(ctx, operation)
-	if err != nil {
-		return TickResult{}, err
-	}
-	if prestate == nil {
-		return tickResult(route, operation, "legacy_expired_attempt_missing_prestate_ownership_retained"), nil
-	}
-	extra, err := operationExternalCustodies(operation, topology)
-	if err != nil {
-		return TickResult{}, err
-	}
-	after, err := ObserveConfirmed(ctx, w.observer, topology, extra)
-	if err != nil {
-		return TickResult{}, err
-	}
-	proof, err := w.executor.ProveExpiredNoEffect(ctx, operation, after, topology, boundary, prestate)
-	if err != nil {
-		if ctx.Err() != nil {
-			return TickResult{}, ctx.Err()
-		}
-		return tickResult(route, operation, "expired_signature_unresolved_ownership_retained"), nil
-	}
-	next := *route
-	next.Generation++
-	next.CurrentOperationID = nil
-	next.ObservedSlot = after.Slot
-	next.ObservedAt = time.Now().UTC()
-	expired, err := w.store.ExpireOperationWithProof(ctx, lease, operation.OperationID, &next, proof)
-	if err != nil {
-		return TickResult{}, err
-	}
-	if !expired {
-		return TickResult{}, errors.New("expiry proof lost its original route fence")
-	}
-	return tickResult(&next, operation, "operation_expired_without_effect"), nil
 }
 
 func operationExternalCustodies(operation *MultiplyOperation, topology *EarnMaxTopology) ([]TokenBalance, error) {
@@ -798,7 +636,7 @@ func (w *Worker) confirmAndReconcile(ctx context.Context, lease *Lease, route *R
 	if _, err := w.reconcileOperation(ctx, lease, route, confirmed, slot, topology); err != nil {
 		return w.receiptRecoveryFailure(ctx, lease, route, confirmed, err)
 	}
-	return tickResult(route, confirmed, "recovered_operation_reconciled"), nil
+	return tickResult(route, confirmed, "operation_reconciled"), nil
 }
 
 func (w *Worker) receiptRecoveryFailure(ctx context.Context, lease *Lease, route *RouteState, operation *MultiplyOperation, err error) (TickResult, error) {

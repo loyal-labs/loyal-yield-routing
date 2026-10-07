@@ -32,7 +32,7 @@ func TestWorkerWithdrawalShortfallPersistsAcrossRestartWithoutChangingPayout(t *
 	newWorker := func(owner string) *Worker {
 		t.Helper()
 		executor, _, _ := testExecutor(t)
-		worker, err := NewWorker(WorkerDeps{Store: store, Observer: reader, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: owner, RouteKey: &state.RouteKey})
+		worker, err := NewWorker(WorkerDeps{Store: store, Observer: reader, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: owner, RouteKey: &state.RouteKey, Chain: surfaceChain{executor.RPC}, Facts: testFacts()})
 		if err != nil {
 			t.Fatal(err)
 		}
