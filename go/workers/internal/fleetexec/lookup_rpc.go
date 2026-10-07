@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -40,14 +42,70 @@ func NewLookupRPC(endpoint string, deadline time.Duration) (*LookupRPC, error) {
 	}
 	return &LookupRPC{adapter: a, LandRPC: land}, nil
 }
-func (r *LookupRPC) call(ctx context.Context, out any, method string, params ...any) error {
-	if err := r.adapter.call(ctx, out, method, params...); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("lookup RPC %s failed", method)
+
+// LookupRPCError retains only allowlisted tokens and numbers. In particular,
+// no original error survives here, even for debug formatting or unwrapping.
+type LookupRPCError struct {
+	method, class, stage string
+	httpStatus, rpcCode  int
+	durationMS           int64
+	// Only the caller context's standard sentinel is retained, preserving the
+	// previous errors.Is behavior without exposing a transport/provider cause.
+	contextErr error
+}
+
+func (e *LookupRPCError) Error() string {
+	if e.contextErr != nil {
+		return e.contextErr.Error()
 	}
-	return nil
+	return fmt.Sprintf("lookup RPC %s failed", e.method)
+}
+func (e *LookupRPCError) Unwrap() error { return e.contextErr }
+func (e *LookupRPCError) LogValue() slog.Value {
+	attrs := []slog.Attr{slog.String("method", e.method), slog.String("class", e.class), slog.Int64("duration_ms", e.durationMS)}
+	if e.httpStatus != 0 {
+		attrs = append(attrs, slog.Int("http_status", e.httpStatus))
+	}
+	if e.class == "json_rpc" {
+		attrs = append(attrs, slog.Int("code", e.rpcCode))
+	}
+	if e.stage != "" {
+		attrs = append(attrs, slog.String("planner_stage", e.stage))
+	}
+	return slog.GroupValue(attrs...)
+}
+
+func (r *LookupRPC) call(ctx context.Context, out any, method string, params ...any) error {
+	started := time.Now()
+	d, err := r.adapter.callWithDiagnostics(ctx, out, method, params...)
+	if err == nil {
+		return nil
+	}
+	// Method is internal today, but do not let future dynamic callers turn it
+	// into an unbounded log field or another path for credentials to escape.
+	switch method {
+	case "getMultipleAccounts", "getTransaction", "getLatestBlockhash", "getFeeForMessage", "getMinimumBalanceForRentExemption", "getBalance", "simulateTransaction":
+	default:
+		method = "unknown"
+	}
+	failure := &LookupRPCError{method: method, class: d.class, httpStatus: d.httpStatus, rpcCode: d.rpcCode, durationMS: time.Since(started).Milliseconds()}
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		failure.class = "timeout"
+	case errors.Is(err, context.Canceled):
+		failure.class = "canceled"
+	}
+	if ctx.Err() != nil {
+		failure.contextErr = context.Canceled
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			failure.contextErr = context.DeadlineExceeded
+			failure.class = "timeout"
+		} else {
+			failure.class = "canceled"
+		}
+	}
+	return failure
 }
 func (r *LookupRPC) SignatureStatus(ctx context.Context, sig string) (SignatureStatus, error) {
 	out, err := r.adapter.SignatureStatus(ctx, sig)

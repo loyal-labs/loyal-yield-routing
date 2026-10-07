@@ -1,12 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
+	"github.com/prometheus/client_golang/prometheus"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,4 +254,56 @@ func TestRetailFamiliesNameEachWriterOnce(t *testing.T) {
 			t.Fatalf("RETAIL_FAMILIES=%q accepted", bad)
 		}
 	}
+}
+
+func TestLaneHealthLogsSafeLookupRPCDiagnostic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"error":{"code":-32016,"message":"private-secret-provider"}}`))
+	}))
+	defer server.Close()
+	rpc, err := fleetexec.NewLookupRPC(server.URL+"?key=private-secret-query", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = rpc.LookupBlockhash(context.Background())
+	if err == nil {
+		t.Fatal("expected RPC rejection")
+	}
+	var log bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&log, nil)))
+	defer slog.SetDefault(previous)
+	registry := prometheus.NewRegistry()
+	facts := engine.NewFacts(registry)
+	laneHealth(facts, engine.FamilyLookup, "lookup_planner_tick_failed")(fmt.Errorf("planner: %w", err))
+	if strings.Contains(log.String(), "private-secret") || strings.Contains(log.String(), server.URL) {
+		t.Fatal("health log exposed provider credentials")
+	}
+	var event struct {
+		Code string
+		RPC  struct {
+			Class  string
+			Code   int
+			Method string
+		}
+	}
+	if err := json.Unmarshal(log.Bytes(), &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Code != "lookup_planner_tick_failed" || event.RPC.Class != "json_rpc" || event.RPC.Code != -32016 || event.RPC.Method != "getLatestBlockhash" {
+		t.Fatalf("RPC diagnostic missing from failure log: %s", log.String())
+	}
+	metrics, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range metrics {
+		if family.GetName() == "loyal_family_failed_total" {
+			if len(family.Metric) != 1 || family.Metric[0].GetCounter().GetValue() != 1 || len(family.Metric[0].Label) != 2 {
+				t.Fatal("failure counter or metric labels changed")
+			}
+			return
+		}
+	}
+	t.Fatal("failure counter not emitted")
 }

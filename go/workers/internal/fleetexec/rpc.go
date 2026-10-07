@@ -123,40 +123,61 @@ type rpcError struct {
 
 func (e *rpcError) Error() string { return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message) }
 
+// rpcCallDiagnostics contains only bounded metadata, never provider text or IO.
+type rpcCallDiagnostics struct {
+	class      string
+	httpStatus int
+	rpcCode    int
+}
+
 func (a *RPCAdapter) call(ctx context.Context, result interface{}, method string, params ...interface{}) error {
+	_, err := a.callWithDiagnostics(ctx, result, method, params...)
+	return err
+}
+
+// Keep the original error for non-lookup callers. Lookup discards it after
+// classification; returning metadata separately prevents unsafe cause wrapping.
+func (a *RPCAdapter) callWithDiagnostics(ctx context.Context, result interface{}, method string, params ...interface{}) (d rpcCallDiagnostics, err error) {
 	callCtx, cancel := context.WithTimeout(ctx, a.deadline)
 	defer cancel()
+	d.class = "request"
 	body, err := json.Marshal(rpcRequest{JSONRPC: "2.0", ID: time.Now().UnixNano(), Method: method, Params: params})
 	if err != nil {
-		return err
+		return d, err
 	}
 	request, err := http.NewRequestWithContext(callCtx, http.MethodPost, a.url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return d, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := a.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("%s: %w", method, err)
+		d.class = "transport"
+		return d, fmt.Errorf("%s: %w", method, err)
 	}
 	defer response.Body.Close()
+	d.httpStatus = response.StatusCode
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: rpc status %d", method, response.StatusCode)
+		d.class = "http"
+		return d, fmt.Errorf("%s: rpc status %d", method, response.StatusCode)
 	}
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
 		Error  *rpcError       `json:"error"`
 	}
+	d.class = "decode"
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&envelope); err != nil {
-		return fmt.Errorf("%s: decode: %w", method, err)
+		return d, fmt.Errorf("%s: decode: %w", method, err)
 	}
 	if envelope.Error != nil {
-		return envelope.Error
+		d.class, d.rpcCode = "json_rpc", envelope.Error.Code
+		return d, envelope.Error
 	}
 	if result == nil {
-		return nil
+		return d, nil
 	}
-	return json.Unmarshal(envelope.Result, result)
+	d.class = "result_decode"
+	return d, json.Unmarshal(envelope.Result, result)
 }
 
 type rpcSignatureStatus struct {

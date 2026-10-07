@@ -181,3 +181,14 @@ three units from journald and keeps its cursor across restarts. It sets
 `service.name` from each unit's syslog identifier (`loyal-observer`,
 `loyal-retail`, `loyal-backyard`), lifts the slog fields into attributes,
 and exports OTLP/HTTP to ClickStack.
+
+Lookup RPC failures keep the existing failure code and error text. Their `rpc`
+log group adds `method`, `class`, and `duration_ms`, plus `http_status` when a
+response arrived and numeric `code` for JSON-RPC errors. Planner failures also
+include `planner_stage` (`blockhash`, `cleanup`, `catalog`, `activation`, or
+`planning`). For example, JSON-RPC code `-32016` indicates an unmet minimum
+context slot; HTTP `429` indicates rate limiting. `class=timeout` includes the
+per-call deadline even when the planner's outer deadline has not expired.
+These fields never include endpoint URLs, provider messages, bodies or account
+lists. They are log fields, not metric labels. A failed planner tick retries
+normally and does not by itself mean a transfer failed.
