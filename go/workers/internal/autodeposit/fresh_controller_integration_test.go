@@ -185,3 +185,48 @@ func TestControllerReleasesClaimWhenSetupInspectionRefuses(t *testing.T) {
 		t.Fatalf("claim %s, want released: no wallet funds moved", status)
 	}
 }
+
+// KLend takes only the liquidity its floored collateral is worth (production
+// target 6143: asked 17017816, took 17017815). A shortfall under one
+// collateral unit is the deposit, not an ambiguous effect.
+func TestControllerCompletesTopUpRoundedDownByKLend(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	seeded, slot := seedFreshControllerTarget(t, store, "klend-rounding")
+	wallet, custody := "itest-wallet-usdc-klend-rounding", "itest-vault-usdc-klend-rounding"
+	pull, topup := "itest-controller-pull-sig-klend-rounding", "itest-controller-topup-sig-klend-rounding"
+	chain := &scriptedControllerChain{
+		balances: map[string]int64{wallet: 9_000_000, custody: 0},
+		observations: map[string]AttemptObservation{
+			pull:  {State: AttemptConfirmed, ConfirmedSlot: ptrInt64(870_001)},
+			topup: {State: AttemptConfirmed, ConfirmedSlot: ptrInt64(870_002)},
+		},
+		receipts: map[string]ReceiptEvidence{
+			pull: {Signature: pull, Slot: 870_001, Effects: []ReceiptEffect{
+				{TokenAccount: wallet, Mint: USDCMint, PreRaw: 9_000_000, PostRaw: 4_000_000},
+				{TokenAccount: custody, Mint: USDCMint, PreRaw: 0, PostRaw: 5_000_000},
+			}},
+			topup: {Signature: topup, Slot: 870_002, Effects: []ReceiptEffect{
+				{TokenAccount: custody, Mint: USDCMint, PreRaw: 5_000_000, PostRaw: 1},
+				{TokenAccount: "itest-liquidity-supply", Mint: USDCMint, PreRaw: 10, PostRaw: 5_000_009},
+			}},
+		},
+		positions: map[string][2]int64{"fresh-reserve": {5_000_000, 870_002}},
+	}
+	wires := &scriptedControllerWires{suffix: "-klend-rounding", minimumDeposit: 2}
+	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, Facts: testFacts()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot})
+	if err != nil || code != ResultCompleted {
+		t.Fatalf("outcome=%v error=%v, want the rounded deposit completed", code, err)
+	}
+	var status string
+	if err := store.pool.QueryRow(ctx, `SELECT status::text FROM loyal_yield.balance_sweep_lot_claims WHERE target_id=$1`, seeded.TargetID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "executed" {
+		t.Fatalf("claim %s, want executed", status)
+	}
+}

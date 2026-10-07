@@ -425,7 +425,7 @@ func (s *scriptedControllerWires) ConfirmTopUpRoute(ctx context.Context, plan De
 		return TopUpRoute{}, s.routeErr
 	}
 	return TopUpRoute{Position: fleet.KaminoPositionAccounts{LiquiditySupply: "itest-liquidity-supply"},
-		Obligation: "itest-obligation", MinimumDepositRaw: s.minimumDeposit}, nil
+		Obligation: "itest-obligation", MinimumDepositRaw: max(s.minimumDeposit, 1)}, nil
 }
 
 func (s *scriptedControllerWires) BuildTopUp(ctx context.Context, request TopUpWireRequest) (BuiltWire, error) {
@@ -614,6 +614,16 @@ func TestControllerRefusesWrongTopUpReceipt(t *testing.T) {
 		},
 		"wrong-mint": func(receipt ReceiptEvidence, topUp AttemptObservation) (ReceiptEvidence, AttemptObservation) {
 			receipt.Effects[0].Mint = "not-usdc"
+			return receipt, topUp
+		},
+		"reserve-took-more": func(receipt ReceiptEvidence, topUp AttemptObservation) (ReceiptEvidence, AttemptObservation) {
+			receipt.Effects[0].PreRaw++ // custody paid one more than frozen
+			receipt.Effects[1].PostRaw++
+			return receipt, topUp
+		},
+		"short-by-a-collateral-unit": func(receipt ReceiptEvidence, topUp AttemptObservation) (ReceiptEvidence, AttemptObservation) {
+			receipt.Effects[0].PostRaw = 1 // the scripted minimum deposit is 1
+			receipt.Effects[1].PostRaw--
 			return receipt, topUp
 		},
 		"early-slot": func(receipt ReceiptEvidence, topUp AttemptObservation) (ReceiptEvidence, AttemptObservation) {

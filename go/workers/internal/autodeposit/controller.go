@@ -754,9 +754,6 @@ func (c *Controller) verifyTopUpEffects(ctx context.Context, plan DepositPlan, r
 	if custody.PreRaw < 0 || custody.PostRaw < 0 || custody.Mint != plan.LiquidityMint {
 		return fmt.Errorf("custody movement mint is %s, want the frozen %s", custody.Mint, plan.LiquidityMint)
 	}
-	if delta := custody.PostRaw - custody.PreRaw; delta != -plan.AmountRaw {
-		return fmt.Errorf("top-up custody moved %d, want exactly minus the frozen %d", delta, plan.AmountRaw)
-	}
 	supply, ok := receipt.EffectFor(route.Position.LiquiditySupply)
 	if !ok {
 		return fmt.Errorf("top-up receipt shows no movement for the reserve liquidity supply %s", route.Position.LiquiditySupply)
@@ -764,8 +761,16 @@ func (c *Controller) verifyTopUpEffects(ctx context.Context, plan DepositPlan, r
 	if supply.PreRaw < 0 || supply.PostRaw < 0 || supply.Mint != plan.LiquidityMint {
 		return fmt.Errorf("liquidity supply movement mint is %s, want the frozen %s", supply.Mint, plan.LiquidityMint)
 	}
-	if delta := supply.PostRaw - supply.PreRaw; delta != plan.AmountRaw {
-		return fmt.Errorf("reserve liquidity moved %d, want exactly the frozen %d", delta, plan.AmountRaw)
+	// KLend mints floor(amount × rate) collateral and takes only the liquidity
+	// that collateral is worth, so it may take less than the frozen amount by
+	// under one collateral unit's value; the rest stays in custody. The rate
+	// only rises, so the confirmed route's minimum deposit bounds that unit.
+	taken := supply.PostRaw - supply.PreRaw
+	if delta := custody.PostRaw - custody.PreRaw; delta != -taken {
+		return fmt.Errorf("top-up custody moved %d, want minus the %d the reserve received", delta, taken)
+	}
+	if taken <= 0 || taken > plan.AmountRaw || uint64(plan.AmountRaw-taken) >= route.MinimumDepositRaw {
+		return fmt.Errorf("reserve liquidity moved %d, want the frozen %d less under one collateral unit (%d)", taken, plan.AmountRaw, route.MinimumDepositRaw)
 	}
 	return nil
 }
