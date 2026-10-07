@@ -58,7 +58,9 @@ type tickRuntime struct {
 	prepareKamino                    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
 	prepareJupiter                   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
 	recordDecision                   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
-	admitBridge                      func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error
+	priceReportExit                  func(context.Context, Observation, Decision, BridgeExecutionEvidence) (*phase3BridgeAdmission, error)
+	prepareReport                    func(context.Context, RouteManifest, Decision) (Observation, BridgeExecutionEvidence, error)
+	admitBridge                      func(context.Context, string, Observation, Decision, BridgeExecutionEvidence, *phase3BridgeAdmission) error
 	admitKamino                      func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error
 	admitJupiter                     func(context.Context, string, Observation, Decision, JupiterExecutionEvidence) error
 	buildBridge                      func(context.Context, string, BridgeExecutionEvidence) error
@@ -415,7 +417,40 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			return database.ObserveSharedCustodyOwnershipProofWithRPC(ctx, manifest, cfg, expected, observedRaw, observedSlot, rpc)
 		},
 		recordBudgetHold: database.RecordPhase3BudgetHold,
-		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+		priceReportExit: func(ctx context.Context, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (*phase3BridgeAdmission, error) {
+			var plan phase3BridgeAdmission
+			var err error
+			switch s := observation.Snapshot; {
+			case evidence.Request.Action != ReportNAV:
+				return nil, nil
+			case s.PositionDebtRaw > 0 && positionReturnRoute(s.RouteLane):
+				plan, err = observePhase3FundingAdmission(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
+			case s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0:
+				plan, err = pricePhase3PositionReturnNAV(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence)
+			case s.CollateralIdleRaw > 0 || s.DebtIdleRaw > 0:
+				plan, err = observePhase3CollateralReturnAdmission(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
+			default:
+				return nil, nil
+			}
+			return &plan, err
+		},
+		prepareReport: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, BridgeExecutionEvidence, error) {
+			manifest, err := manifestForUnwind(ctx, database, manifest)
+			if err != nil {
+				return Observation{}, BridgeExecutionEvidence{}, err
+			}
+			return observeConfirmedBridgeExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, state.enrich)
+		},
+		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence, exit *phase3BridgeAdmission) error {
+			if exit != nil {
+				// Bind the exit priced before this report to the report's own wire.
+				cost, input, err := leverageExitLegCost(ctx, rpc, manifest, evidence.Request, evidence.ExpectedEffects)
+				if err != nil {
+					return err
+				}
+				exit.Input, exit.CurrentCost, exit.ValidThroughSlot = input, cost, min(exit.ValidThroughSlot, cost.ValidThroughSlot)
+				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, *exit)
+			}
 			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
 				if err != nil {
 					return err
@@ -424,12 +459,6 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			}
 			if evidence.Request.Action == VoltrAllocateToSquads && decision.Reason == topupAllocationReason {
 				return database.admitPhase3TopupAllocation(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
-			}
-			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionDebtRaw > 0 && positionReturnRoute(observation.Snapshot.RouteLane) {
-				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
-			}
-			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionCollateralRaw > 0 && observation.Snapshot.PositionDebtRaw == 0 {
-				return database.admitPhase3PositionReturnNAV(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
 			}
 			if observation.Snapshot.CollateralIdleRaw > 0 || observation.Snapshot.DebtIdleRaw > 0 {
 				return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
@@ -739,7 +768,24 @@ func (w *Worker) Tick(ctx context.Context) error {
 		if w.runtime.admitBridge == nil {
 			err = budgetHold("bridge_admission_unavailable")
 		} else {
-			err = w.runtime.admitBridge(ctx, record.OperationID, observation, decision, bridgeEvidence)
+			var exit *phase3BridgeAdmission
+			if w.runtime.priceReportExit != nil {
+				exit, err = w.runtime.priceReportExit(ctx, observation, decision, bridgeEvidence)
+			}
+			if err == nil && exit != nil {
+				// The adaptor refuses a report older than 32 slots: take its NAV
+				// and slot after the slow exit pricing, right before admission,
+				// build, simulation and send. The decided observation stays the
+				// journal's and the exit's basis.
+				var reported Observation
+				reported, bridgeEvidence, err = w.runtime.prepareReport(ctx, w.manifest, wireDecision)
+				if err == nil && !decisionsEqual(w.manifest.DecideOnManifest(reported.Snapshot), decision) {
+					err = confirmedObservationUnavailable(fmt.Errorf("decision changed before the report was taken"))
+				}
+			}
+			if err == nil {
+				err = w.runtime.admitBridge(ctx, record.OperationID, observation, decision, bridgeEvidence, exit)
+			}
 			if err == nil {
 				err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
 			}
