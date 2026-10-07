@@ -78,7 +78,7 @@ for entry in app_schema:
     file = schema / entry["file"]
     if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
         raise SystemExit("Historical app schema fixture provenance drifted")
-default_families = ("fleet", "fleetexec", "autodeposit", "observer", "backyard", "multiply", "lookup", "ata_projector")
+default_families = ("fleet", "fleetexec", "autodeposit", "observer", "earn_parity", "backyard", "multiply", "lookup", "ata_projector")
 families = tuple(os.environ.get("WORKERS_V2_FIXTURE_FAMILIES", ",".join(default_families)).split(","))
 allowed_families = set(default_families) | {"fleet_go_same_mint", "fleet_same_mint", "fleet_go_cross_mint", "fleet_cross_mint_capture", "lookup", "ata_projector", "autodeposit_intent", "fleet_go_same_mint_simplify", "fleet_go_cross_mint_simplify"}
 if not families or len(set(families)) != len(families) or any(f not in allowed_families for f in families):
@@ -207,6 +207,7 @@ if out:
                             ("ATA_PROJECTOR_TEST_DATABASE_URL", "ata_projector"),
                             ("AUTODEPOSIT_TEST_DATABASE_URL", "autodeposit"),
                             ("OBSERVER_TEST_DATABASE_URL", "observer"),
+                            ("EARN_PARITY_TEST_DATABASE_URL", "earn_parity"),
                             ("TEST_DATABASE_URL", "observer"),
                             ("BACKYARD_RWA_TEST_DATABASE_URL", "backyard"),
                             ("MULTIPLY_TEST_DATABASE_URL", "multiply")):

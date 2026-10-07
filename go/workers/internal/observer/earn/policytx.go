@@ -351,17 +351,23 @@ func parseEarnMaxIntent(data []byte) (*EarnMaxIntent, error) {
 }
 
 func intentInput(settings string, vaultIndex uint8, transaction *PolicyTransaction, memo Memo, intent *EarnMaxIntent) multiply.IntentInput {
-	input := multiply.IntentInput{Settings: settings, VaultIndex: vaultIndex, Signature: transaction.Signature,
-		InstructionIndex: memo.SourceIndex, Slot: transaction.Slot, ObservedAt: time.Now().UTC()}
-	if intent.Withdraw != nil {
-		input.Withdraw = &struct {
+	return projectionIntent(EarnMaxIntentProjectionInput{Settings: settings, VaultIndex: vaultIndex, Signature: transaction.Signature,
+		InstructionIndex: memo.SourceIndex, Slot: transaction.Slot, ObservedAt: time.Now().UTC(), Intent: *intent})
+}
+
+// projectionIntent maps the serde projection input onto the multiply store.
+func projectionIntent(input EarnMaxIntentProjectionInput) multiply.IntentInput {
+	out := multiply.IntentInput{Settings: input.Settings, VaultIndex: input.VaultIndex, Signature: input.Signature,
+		InstructionIndex: input.InstructionIndex, Slot: input.Slot, ObservedAt: input.ObservedAt}
+	if withdraw := input.Intent.Withdraw; withdraw != nil {
+		out.Withdraw = &struct {
 			RequestID, DestinationAccount string
 			AmountRaw                     *uint64
-		}{intent.Withdraw.RequestID, intent.Withdraw.DestinationAccount, intent.Withdraw.AmountRaw}
-	} else {
-		input.CancelRequestID = &intent.Cancel.RequestID
+		}{withdraw.RequestID, withdraw.DestinationAccount, withdraw.AmountRaw}
+	} else if input.Intent.Cancel != nil {
+		out.CancelRequestID = &input.Intent.Cancel.RequestID
 	}
-	return input
+	return out
 }
 
 // projectEarnMaxMemos is project_earn_max_memos: a memo projects only when

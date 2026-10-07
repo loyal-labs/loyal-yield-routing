@@ -61,62 +61,12 @@ func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature
 		for settings, base := range affected {
 			earnMax[settings] = base
 		}
-		if event, ok := detectCrossMintPolicy(instruction); ok {
-			event.Signature, event.Slot, event.Cluster, event.SourceCommitment = signature, slot, m.cluster, confirmedCommitment
-			if err := m.store.RecordCrossMintSwapPolicyManifest(ctx, event); err != nil {
+		for _, event := range m.events(signature, slot, instruction) {
+			if err := m.store.applyPolicyEvent(ctx, event); err != nil {
 				return emitted, err
 			}
 			emitted++
-			continue
 		}
-		if removals, err := sp.DetectPolicyRemovals(instruction); err == nil && len(removals) > 0 {
-			for _, removal := range removals {
-				if err := m.store.RecordPolicyRemoval(ctx, m.removal(signature, slot, removal)); err != nil {
-					return emitted, err
-				}
-				emitted++
-			}
-			continue
-		}
-		actions, err := sp.DecodeSettingsActions(instruction)
-		if err != nil {
-			continue
-		}
-		recognized := 0
-		for _, action := range actions {
-			if event, ok := detectYieldRoute(action); ok {
-				m.stamp(&event, signature, slot)
-				if err := m.store.RecordPolicyMatch(ctx, event); err != nil {
-					return emitted, err
-				}
-				recognized++
-			}
-			if event, ok := detectYieldSetup(action); ok {
-				m.stamp(&event, signature, slot)
-				if err := m.store.RecordSetupPolicyMatch(ctx, event); err != nil {
-					return emitted, err
-				}
-				recognized++
-			}
-			if event, ok := detectBalanceSweep(action); ok {
-				event.Signature, event.Slot, event.Cluster = signature, slot, m.cluster
-				if err := m.store.RecordBalanceSweepPolicyMatch(ctx, event); err != nil {
-					return emitted, err
-				}
-				recognized++
-			}
-		}
-		if recognized == 0 {
-			// An incompatible update invalidates a previously known capability.
-			if update, err := sp.DetectPolicyUpdateIdentity(instruction); err == nil && update != nil {
-				if err := m.store.RecordPolicyRemoval(ctx, m.removal(signature, slot, *update)); err != nil {
-					return emitted, err
-				}
-				emitted++
-				continue
-			}
-		}
-		emitted += recognized
 	}
 	settings := make([]solana.PublicKey, 0, len(earnMax))
 	for key := range earnMax {
@@ -130,6 +80,72 @@ func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature
 		emitted++
 	}
 	return emitted, nil
+}
+
+// policyEvent is one PolicyMonitorEvent: exactly one input is set.
+type policyEvent struct {
+	route, setup *PolicyMatchInput
+	sweep        *BalanceSweepPolicyMatchInput
+	crossMint    *CrossMintSwapPolicyManifestInput
+	removal      *PolicyRemovalInput
+}
+
+// events classifies one instruction exactly as the Rust monitor emits:
+// a generalized cross-mint policy, else removals, else recognized creates,
+// else an incompatible update invalidating the policy.
+func (m *PolicyMonitor) events(signature string, slot uint64, instruction sp.Instruction) []policyEvent {
+	if event, ok := detectCrossMintPolicy(instruction); ok {
+		event.Signature, event.Slot, event.Cluster, event.SourceCommitment = signature, slot, m.cluster, confirmedCommitment
+		return []policyEvent{{crossMint: &event}}
+	}
+	if removals, err := sp.DetectPolicyRemovals(instruction); err == nil && len(removals) > 0 {
+		events := make([]policyEvent, 0, len(removals))
+		for _, removal := range removals {
+			input := m.removal(signature, slot, removal)
+			events = append(events, policyEvent{removal: &input})
+		}
+		return events
+	}
+	actions, err := sp.DecodeSettingsActions(instruction)
+	if err != nil {
+		return nil
+	}
+	var events []policyEvent
+	for _, action := range actions {
+		if event, ok := detectYieldRoute(action); ok {
+			m.stamp(&event, signature, slot)
+			events = append(events, policyEvent{route: &event})
+		}
+		if event, ok := detectYieldSetup(action); ok {
+			m.stamp(&event, signature, slot)
+			events = append(events, policyEvent{setup: &event})
+		}
+		if event, ok := detectBalanceSweep(action); ok {
+			event.Signature, event.Slot, event.Cluster = signature, slot, m.cluster
+			events = append(events, policyEvent{sweep: &event})
+		}
+	}
+	if len(events) == 0 {
+		if update, err := sp.DetectPolicyUpdateIdentity(instruction); err == nil && update != nil {
+			input := m.removal(signature, slot, *update)
+			events = append(events, policyEvent{removal: &input})
+		}
+	}
+	return events
+}
+
+func (s *Store) applyPolicyEvent(ctx context.Context, event policyEvent) error {
+	switch {
+	case event.route != nil:
+		return s.RecordPolicyMatch(ctx, *event.route)
+	case event.setup != nil:
+		return s.RecordSetupPolicyMatch(ctx, *event.setup)
+	case event.sweep != nil:
+		return s.RecordBalanceSweepPolicyMatch(ctx, *event.sweep)
+	case event.crossMint != nil:
+		return s.RecordCrossMintSwapPolicyManifest(ctx, *event.crossMint)
+	}
+	return s.RecordPolicyRemoval(ctx, *event.removal)
 }
 
 func (m *PolicyMonitor) stamp(event *PolicyMatchInput, signature string, slot uint64) {
