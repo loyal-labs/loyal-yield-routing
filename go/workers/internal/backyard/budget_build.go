@@ -184,10 +184,18 @@ const phase3ReadFanout = 4
 
 // concurrentReads runs independent read-only steps at once, at most
 // phase3ReadFanout in flight, and returns the first error in step order: the
-// error the serial sequence would have stopped on. Each step writes only its
-// own results.
+// error the serial sequence would have stopped on. A failure cancels only the
+// steps after it, which the serial sequence would never have reached; the
+// steps before it finish, so the reported error is never a cancellation it
+// caused. Each step writes only its own results.
 func concurrentReads(ctx context.Context, steps ...func(context.Context) error) error {
 	errs := make([]error, len(steps))
+	contexts := make([]context.Context, len(steps))
+	cancels := make([]context.CancelFunc, len(steps))
+	for i := range steps {
+		contexts[i], cancels[i] = context.WithCancel(ctx)
+		defer cancels[i]()
+	}
 	slots := make(chan struct{}, phase3ReadFanout)
 	var reads sync.WaitGroup
 	for i, step := range steps {
@@ -196,7 +204,11 @@ func concurrentReads(ctx context.Context, steps ...func(context.Context) error) 
 			defer reads.Done()
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			errs[i] = step(ctx)
+			if errs[i] = step(contexts[i]); errs[i] != nil {
+				for _, cancel := range cancels[i+1:] {
+					cancel()
+				}
+			}
 		}()
 	}
 	reads.Wait()

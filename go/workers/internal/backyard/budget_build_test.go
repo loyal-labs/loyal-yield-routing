@@ -341,3 +341,28 @@ func TestKnownBuildCostConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
 		})
 	}
 }
+
+// A failed read stops the pricing pass as the serial sequence did: the reads
+// after it are cancelled, and the reported failure is the first in step
+// order, so a consequence never displaces its root cause.
+func TestConcurrentReadsStopsAtTheFirstFailureInOrder(t *testing.T) {
+	stale := fmt.Errorf("stale confirmed slot")
+	started := time.Now()
+	err := concurrentReads(t.Context(),
+		func(context.Context) error { return stale },
+		func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() },
+	)
+	if err != stale || time.Since(started) > time.Second {
+		t.Fatal("later read not cancelled", err, time.Since(started))
+	}
+	err = concurrentReads(t.Context(),
+		func(context.Context) error { time.Sleep(50 * time.Millisecond); return stale },
+		func(context.Context) error { return fmt.Errorf("fee_message_or_slot_mismatch") },
+	)
+	if err != stale {
+		t.Fatal("later failure displaced the earlier one", err)
+	}
+	if err = concurrentReads(t.Context(), func(context.Context) error { return nil }); err != nil {
+		t.Fatal("clean pass", err)
+	}
+}
