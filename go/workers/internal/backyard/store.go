@@ -35,11 +35,17 @@ const AssertRouteLeaseSQL = `SELECT lease_expires_at FROM loyal_yield.multiply_r
 
 const OperationRouteForLeaseSQL = `SELECT operation.route_key FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key = operation.route_key WHERE operation.operation_id = $1 AND route.lease_owner = $2 AND route.fencing_token = $3 AND route.lease_expires_at > clock_timestamp() FOR UPDATE OF route`
 
+// strategyJournalHead opens the journal CTE over one route's operations.
+const strategyJournalHead = "WITH strategy_journal AS (\n SELECT * FROM loyal_yield.multiply_operations WHERE route_key = $1 AND "
+
 // ActiveStrategyJournalCTE excludes only individually bound, reviewed records
 // from the retired strategy. Unknown/unscoped records remain visible and can
 // still trip accounting monitors. It never scopes by deployment or manifest.
-const ActiveStrategyJournalCTE = `WITH strategy_journal AS (
- SELECT * FROM loyal_yield.multiply_operations WHERE route_key = $1 AND NOT COALESCE(
+const ActiveStrategyJournalCTE = strategyJournalHead + retiredStrategyExclusion + "\n) "
+
+// retiredStrategyExclusion is the predicate that hides the reviewed records of
+// the retired strategy.
+const retiredStrategyExclusion = `NOT COALESCE(
    route_key = 'rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh'
    AND engine_version = 'backyard_rwa_v1'
    AND confirmed_slot BETWEEN 1 AND 444157954
@@ -53,8 +59,7 @@ const ActiveStrategyJournalCTE = `WITH strategy_journal AS (
    AND expected_effects->'journalAssociation'->>'status' = status
    AND expected_effects->'journalAssociation'->>'currentStrategyConfig' = 'DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY'
    AND expected_effects->'journalAssociation'->>'bootstrapSlot' = '446086069'
-   AND expected_effects->'journalAssociation'->>'evidenceSha256' = '3319db2f57baf743be2471d72a1e9d34168a81ebc0378071f7a7f28e1d968a64', false)
-) `
+   AND expected_effects->'journalAssociation'->>'evidenceSha256' = '3319db2f57baf743be2471d72a1e9d34168a81ebc0378071f7a7f28e1d968a64', false)`
 
 const PostMutationNAVRequiredSQL = ActiveStrategyJournalCTE + `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM strategy_journal WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
 
@@ -922,7 +927,20 @@ type ReconciledBridgeJournalState struct {
 // subquery shares one ordering so "after" means the same thing everywhere. The
 // ordering rows additionally return their tie-break columns so the Go side can
 // compare a composite identity (see journalOrderKey) instead of a bare slot.
-const ReconciledBridgeJournalSQL = ActiveStrategyJournalCTE + `SELECT
+// Every lookup below reads the latest reconciled row of a group of these four
+// actions, which is always one action's own latest row. The journal holds a
+// HOLD row about every ten seconds and over 17k reconciled reports: ranking
+// narrow columns first and fetching at most four full rows keeps this read
+// out of the NAV report window (it took five seconds).
+const ReconciledBridgeJournalSQL = `WITH latest_per_action AS (
+ SELECT DISTINCT ON (action) operation_id FROM loyal_yield.multiply_operations
+ WHERE route_key = $1 AND status = 'reconciled'
+   AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE','STAGE_SQUADS_TO_VOLTR')
+   AND ` + retiredStrategyExclusion + `
+ ORDER BY action, confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC
+), strategy_journal AS (
+ SELECT * FROM loyal_yield.multiply_operations WHERE operation_id IN (SELECT operation_id FROM latest_per_action)
+) SELECT
  (SELECT (expected_effects->'decision'->>'observationSlot')::bigint FROM strategy_journal
    WHERE route_key = $1 AND status = 'reconciled'
      AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
