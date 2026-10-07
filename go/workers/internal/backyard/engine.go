@@ -154,6 +154,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed, live bool)
 					// carry service URLs. Change-only keeps a persistent
 					// outage at one line.
 					code := sanitizedSelectorEvaluateFailure(err)
+					backyardEvents.selectorSampleFailed(code)
 					if code != lastEvaluateFailure {
 						lastEvaluateFailure = code
 						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector sample unavailable (%s); retaining current authority\n", code)

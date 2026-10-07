@@ -48,11 +48,15 @@ systemd-creds encrypt --with-key=host --name=RETAIL_DATABASE_URL - \
 ```
 
 The binaries read secrets only from `$CREDENTIALS_DIRECTORY` and never from
-the environment. Credentials by unit:
+the environment. Every `*_DATABASE_URL` that a family's lock is taken on
+(`RETAIL_DATABASE_URL`, `BACKYARD_DATABASE_URL`, `NEON_DATABASE_URL`) must be
+the direct Neon endpoint, not the `-pooler` one: a session advisory lock
+held through a transaction pooler belongs to whichever client the pooler
+hands the session to next. Credentials by unit:
 
 - `loyal-observer`: `HELIUS_API_KEY`, `SOLANA_RPC_URL`, `NEON_DATABASE_URL`, `OBSERVER_APPS_DATABASE_URL`, `TIMESCALEDB_URL`
 - `loyal-retail`: `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`, `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR`, `RETAIL_FEE_PAYER_KEYPAIR`. Add `RETAIL_LOOKUP_MANAGER_KEYPAIR` only for active lookup mode.
-- `loyal-backyard`: `BACKYARD_DATABASE_URL`, `BACKYARD_SOLANA_RPC_URL`, `BACKYARD_POLICY_KEYPAIR`
+- `loyal-backyard`: `BACKYARD_DATABASE_URL`, `BACKYARD_SOLANA_RPC_URL`, `BACKYARD_POLICY_KEYPAIR`, `BACKYARD_TIMESCALE_DATABASE_URL`, `JUPITER_API_KEY`. Its selector mode and canary entry go in `/etc/loyal/loyal-backyard.env`.
 - Alertmanager: `telegram_bot_token`
 - Alertmanager: `heartbeat_url`, the external dead man's switch that the Watchdog alert pings.
 - Collector: `CLICKSTACK_OTLP_ENDPOINT`, `CLICKSTACK_INGESTION_KEY`

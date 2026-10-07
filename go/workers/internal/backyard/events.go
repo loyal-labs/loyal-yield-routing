@@ -196,6 +196,16 @@ func (e *events) selectorUnavailable(code string) {
 	e.log.Warn("backyard_selector_unavailable", "code", code)
 }
 
+// selectorSampleFailed counts every failed live sample. The log line above is
+// change-only to keep volume down; the counter is not, so a persistent outage
+// keeps failing and pages.
+func (e *events) selectorSampleFailed(code string) {
+	if e == nil || e.facts == nil {
+		return
+	}
+	e.facts.Failed(engine.FamilyBackyard, code)
+}
+
 // operationFailedAfterSend reports a broadcast money operation that ended
 // failed or in manual recovery.
 func (e *events) operationFailedAfterSend(action Action, reason, signature string) {

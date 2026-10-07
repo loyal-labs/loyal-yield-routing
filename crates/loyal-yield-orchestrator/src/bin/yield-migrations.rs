@@ -467,6 +467,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0089_autodeposit_floor_rebaseline_classification.sql"),
         expected_checksum: None,
     },
+    // 0090 and 0091 were used by abandoned workers-v2 branches.
+    Migration {
+        version: 92,
+        name: "earn_apy_hourly_snapshots",
+        sql: include_str!("../../../loyal-yield-store/migrations/0092_earn_apy_hourly_snapshots.sql"),
+        expected_checksum: None,
+    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

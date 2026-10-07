@@ -28,6 +28,19 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer metrics.Close()
+	lost, err := engine.HoldFamily(ctx, cfg.NeonDatabaseURL, engine.FamilyObserver)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go func() {
+		select {
+		case <-lost:
+			cancel(errLockLost)
+		case <-ctx.Done():
+		}
+	}()
 	runtime, err := worker.New(ctx, cfg, slog.Default(), facts)
 	if err != nil {
 		return err
@@ -41,8 +54,16 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return engine.Run(ctx, runtime, projector, maintenance, metrics)
+	err = engine.Run(ctx, runtime, projector, maintenance, metrics)
+	// A lost lock cancels ctx; report it as a failure, not a clean stop.
+	if cause := context.Cause(ctx); errors.Is(cause, errLockLost) {
+		return cause
+	}
+	return err
 }
+
+// errLockLost means another process may now write the observer family.
+var errLockLost = errors.New("observer family lock lost")
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
