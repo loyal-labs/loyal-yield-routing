@@ -51,7 +51,9 @@ type reserveResolution struct {
 // moves user funds, so it overrides only on a fresh observation of exactly one
 // live position in the target's mint. A vault that holds nothing has no
 // position to fragment, so it takes the default reserve, as the TS executor
-// did for a target without a pointer; anything else refuses the pull.
+// did for a target without a pointer; anything else refuses the pull. A user
+// who withdrew everything never reaches this on automatic work (see
+// VaultWithdrawn); only their explicit request deposits again.
 func resolveCurrentReserve(currentReserve, tokenMint string, positions []LiveVaultPosition, now time.Time) (reserveResolution, error) {
 	var live []LiveVaultPosition
 	var liveReserves []string
@@ -198,4 +200,70 @@ ORDER BY position.reserve`, target.Settings, target.VaultIndex, target.VaultPubk
 		positions = append(positions, position)
 	}
 	return positions, rows.Err()
+}
+
+// withdrawnSkipReason is the slot last_error for automatic work skipped
+// because the user took everything out of yield.
+const withdrawnSkipReason = "autodeposit skipped: the user withdrew everything from yield"
+
+// VaultWithdrawn reports whether the user took everything out of yield: the
+// vault holds nothing now but held something before, as a reserve row or a
+// yield position (active or closed). A vault with no history never held
+// anything and takes the default reserve like a first deposit.
+func (s *Store) VaultWithdrawn(ctx context.Context, target *TargetExecutionContext) (bool, error) {
+	var withdrawn bool
+	err := s.pool.QueryRow(ctx, `
+WITH vault AS (
+    SELECT id FROM loyal_yield.managed_vaults
+    WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3 AND active
+)
+SELECT NOT EXISTS (
+        SELECT 1 FROM loyal_yield.vault_reserve_positions_current AS position
+        WHERE position.vault_id IN (SELECT id FROM vault) AND position.amount_raw > 0)
+   AND (EXISTS (
+        SELECT 1 FROM loyal_yield.vault_reserve_positions_current AS position
+        WHERE position.vault_id IN (SELECT id FROM vault))
+     OR EXISTS (
+        SELECT 1 FROM loyal_yield.user_yield_positions AS yp
+        WHERE yp.settings = $1 AND yp.vault_index = $2 AND yp.wallet_address = $4))`,
+		target.Settings, target.VaultIndex, target.VaultPubkey, target.Wallet).Scan(&withdrawn)
+	if err != nil {
+		return false, fmt.Errorf("load autodeposit withdrawal state for target %d: %w", target.TargetID, err)
+	}
+	return withdrawn, nil
+}
+
+// SkipWithdrawnScheduledSlot cancels one automatic, unclaimed, unsigned slot
+// and suppresses its lots, as a closed target's work is. A user-requested
+// slot is an explicit ask to deposit again and is left to run. It reports
+// whether the slot was skipped.
+func (s *Store) SkipWithdrawnScheduledSlot(ctx context.Context, targetID, scheduledSlotID int64) (bool, error) {
+	var skipped int64
+	err := s.pool.QueryRow(ctx, `
+WITH slot AS (
+    UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+    SET status = 'canceled', last_error = $3, updated_at = now()
+    WHERE slot.id = $1
+      AND slot.target_id = $2
+      AND slot.status = 'scheduled'
+      AND slot.request_source IS NULL
+      AND slot.claim_token IS NULL
+      AND slot.execution_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+        WHERE attempt.scheduled_slot_id = slot.id)
+    RETURNING slot.id
+), lots AS (
+    UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
+    SET status = 'suppressed', updated_at = now()
+    WHERE lot.scheduled_slot_id IN (SELECT id FROM slot)
+      AND lot.status = 'open'
+      AND lot.remaining_amount_raw > 0
+    RETURNING lot.id
+)
+SELECT count(*) FROM slot`, scheduledSlotID, targetID, withdrawnSkipReason).Scan(&skipped)
+	if err != nil {
+		return false, fmt.Errorf("skip withdrawn autodeposit slot %d: %w", scheduledSlotID, err)
+	}
+	return skipped == 1, nil
 }

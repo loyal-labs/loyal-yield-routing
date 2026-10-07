@@ -405,29 +405,30 @@ func TestControllerRefusesPullWhenLiveReserveIsAmbiguous(t *testing.T) {
 	}
 }
 
-// A vault that holds nothing has no position to fragment: the TS executor
-// deposited a pointerless target into its default Earn reserve, and the owner
-// extended that to a drained vault. Refusing left these users' deposits waiting.
-func TestControllerDepositsEmptyVaultIntoDefaultReserve(t *testing.T) {
+// A user who took everything out of yield gets no automatic deposits: the
+// slot is canceled and its lots suppressed before any claim or chain read.
+// Their explicit request still deposits, and a vault that never held anything
+// takes the TS executor's default Earn reserve like a first deposit.
+func TestControllerSkipsWithdrawnUsersAndDefaultsEmptyVaults(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		dropPointer bool
-		wantPointer string
+		name    string
+		setup   []string
+		deposit bool
 	}{
-		{name: "drained", wantPointer: "fresh-reserve"},
-		// current_reserve is NOT NULL: a pointerless target has no position
-		// row until settlement records the deposit.
-		{name: "pointerless", dropPointer: true, wantPointer: defaultEarnReserve},
+		{name: "drained", setup: []string{zeroVaultSQL}},
+		{name: "closed", setup: []string{zeroVaultSQL, `UPDATE loyal_yield.user_yield_positions AS yp SET status='closed' FROM loyal_yield.balance_sweep_targets AS target WHERE target.id=$1 AND yp.settings=target.settings AND yp.wallet_address=target.wallet`}},
+		{name: "requested", setup: []string{zeroVaultSQL, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET request_source='web_execute_now' WHERE target_id=$1`}, deposit: true},
+		{name: "neverheld", setup: []string{
+			`DELETE FROM loyal_yield.vault_reserve_positions_current AS position USING loyal_yield.managed_vaults AS vault, loyal_yield.balance_sweep_targets AS target WHERE target.id=$1 AND vault.settings=target.settings AND position.vault_id=vault.id`,
+			`DELETE FROM loyal_yield.user_yield_positions AS yp USING loyal_yield.balance_sweep_targets AS target WHERE target.id=$1 AND yp.settings=target.settings AND yp.wallet_address=target.wallet`,
+		}, deposit: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := integrationStore(t)
 			ctx := context.Background()
 			seeded, slot := seedFreshControllerTarget(t, store, tc.name)
-			if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.vault_reserve_positions_current SET amount_raw=0, has_value=false WHERE vault_id=$1 AND reserve='fresh-reserve'`, seeded.ManagedVaultID); err != nil {
-				t.Fatal(err)
-			}
-			if tc.dropPointer {
-				if _, err := store.pool.Exec(ctx, `DELETE FROM loyal_yield.user_yield_positions AS yp USING loyal_yield.balance_sweep_targets AS target WHERE target.id=$1 AND yp.settings=target.settings AND yp.wallet_address=target.wallet`, seeded.TargetID); err != nil {
+			for _, statement := range tc.setup {
+				if _, err := store.pool.Exec(ctx, statement, seeded.TargetID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -451,25 +452,35 @@ func TestControllerDepositsEmptyVaultIntoDefaultReserve(t *testing.T) {
 				},
 				positions: map[string][2]int64{defaultEarnReserve: {5_000_000, 870_302}},
 			}
-			controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: &scriptedControllerWires{suffix: "-" + tc.name}, Facts: testFacts()})
+			wires := &scriptedControllerWires{suffix: "-" + tc.name}
+			controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, Facts: testFacts()})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot}); err != nil || code != ResultCompleted {
+			code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot})
+			if !tc.deposit {
+				var slotStatus string
+				var openLots int64
+				if qerr := store.pool.QueryRow(ctx, `SELECT status::text,(SELECT count(*) FROM loyal_yield.balance_sweep_surplus_lots WHERE scheduled_slot_id=$1 AND status='open') FROM loyal_yield.balance_sweep_scheduled_slots WHERE id=$1`, slot).Scan(&slotStatus, &openLots); qerr != nil {
+					t.Fatal(qerr)
+				}
+				if code != ResultNotActionable || ExecutorFailureAlertFor(code) != nil || len(wires.built) != 0 || slotStatus != "canceled" || openLots != 0 {
+					t.Fatalf("withdrawn user outcome=%v error=%v wires=%v slot=%s openLots=%d, want a quiet skip before any wire", code, err, wires.built, slotStatus, openLots)
+				}
+				return
+			}
+			if err != nil || code != ResultCompleted {
 				t.Fatalf("%s controller outcome=%v error=%v", tc.name, code, err)
 			}
-			var planReserve, planMarket, pointer string
-			if err := store.pool.QueryRow(ctx, `
-SELECT claim.autodeposit_deposit_plan->>'reserve', claim.autodeposit_deposit_plan->>'market', COALESCE(yp.current_reserve, '')
-FROM loyal_yield.balance_sweep_lot_claims AS claim
-JOIN loyal_yield.balance_sweep_targets AS target ON target.id = claim.target_id
-LEFT JOIN loyal_yield.user_yield_positions AS yp ON yp.settings = target.settings AND yp.wallet_address = target.wallet AND yp.status = 'active'
-WHERE claim.target_id=$1`, seeded.TargetID).Scan(&planReserve, &planMarket, &pointer); err != nil {
+			var planReserve, planMarket string
+			if err := store.pool.QueryRow(ctx, `SELECT autodeposit_deposit_plan->>'reserve', autodeposit_deposit_plan->>'market' FROM loyal_yield.balance_sweep_lot_claims WHERE target_id=$1`, seeded.TargetID).Scan(&planReserve, &planMarket); err != nil {
 				t.Fatal(err)
 			}
-			if planReserve != defaultEarnReserve || planMarket != defaultEarnMarket || pointer != tc.wantPointer {
-				t.Fatalf("deposit planned into %q/%q with pointer %q, want the default reserve and pointer %q", planReserve, planMarket, pointer, tc.wantPointer)
+			if planReserve != defaultEarnReserve || planMarket != defaultEarnMarket {
+				t.Fatalf("deposit planned into %q/%q, want the default reserve", planReserve, planMarket)
 			}
 		})
 	}
 }
+
+const zeroVaultSQL = `UPDATE loyal_yield.vault_reserve_positions_current AS position SET amount_raw=0, has_value=false FROM loyal_yield.managed_vaults AS vault, loyal_yield.balance_sweep_targets AS target WHERE target.id=$1 AND vault.settings=target.settings AND position.vault_id=vault.id`

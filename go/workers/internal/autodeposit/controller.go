@@ -318,6 +318,22 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 		// observer may clear it.
 		return ResultPreflightBlocked, fmt.Errorf("autodeposit target %d has no active same_mint_kamino policy", target.TargetID)
 	}
+	// A user who took everything out of yield gets no automatic deposits.
+	// Their automatic slot ends here, before any claim or chain read; a new
+	// inflow schedules new work and is decided again.
+	withdrawn, err := c.store.VaultWithdrawn(ctx, targetContext)
+	if err != nil {
+		return ResultDependencyUnavailable, err
+	}
+	if withdrawn {
+		skipped, err := c.store.SkipWithdrawnScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID)
+		if err != nil {
+			return ResultDependencyUnavailable, err
+		}
+		if skipped {
+			return ResultNotActionable, fmt.Errorf("autodeposit target %d: %s", target.TargetID, withdrawnSkipReason)
+		}
+	}
 
 	walletBalance, err := c.chain.ConfirmedTokenBalanceRaw(ctx, targetContext.WalletUsdcAta, targetContext.Wallet)
 	if err != nil {
