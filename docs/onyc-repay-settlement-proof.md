@@ -123,7 +123,8 @@ The proof uses unsigned simulation with actual on-curve signer identities. Priva
 queue redemption and live withdrawal are outside this proof. Squads supplies
 the vault PDA signature for inner calls only.
 
-Flash-funded exit, positive financing fees and the instruction-constructed 2.94x
-scenario remain unproved. The adapter deliberately rejects flash instructions
-and nonzero fees. Extending that grammar and accounting requires fresh tests and
-review. Existing production borrowing limits remain unchanged.
+PR #269 established the prefunded-only milestone above. The subsequent zero-fee
+flash extension is documented in `onyc-flash-exit-proof.md`; it retains the
+prefunded path and adds a separately checked twelve-instruction grammar.
+Positive fees and the instruction-constructed 2.94x scenario remain unproved.
+Existing production borrowing limits remain unchanged.

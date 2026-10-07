@@ -270,27 +270,85 @@ fn check_refresh(ix: &Instruction, keys: &[Pubkey], data: &[u8]) -> ProgramResul
         GRAMMAR,
     )
 }
-fn transaction(sysvar: &AccountInfo) -> ProgramResult {
+// Two pinned top-level calls only. Privileges may be promoted by the message;
+// require the privileges used here without rejecting promoted readonly keys.
+fn flash_pair(borrow: &Instruction, repay: &Instruction) -> Result<u64> {
+    for (ix, discriminator, len) in [
+        (borrow, FLASH_BORROW_DISC, 16),
+        (repay, FLASH_REPAY_DISC, 17),
+    ] {
+        require(
+            ix.program_id == KLEND
+                && same_keys(ix, &FLASH_KEYS)
+                && ix.accounts[0].is_signer
+                && [3, 5, 6, 7].iter().all(|i| ix.accounts[*i].is_writable)
+                && ix.data.len() == len
+                && ix.data[..8] == discriminator,
+            GRAMMAR,
+        )?;
+    }
+    let principal = u64_at(&borrow.data, 8)?;
+    require(principal > 0 && principal <= MAX_PRINCIPAL, PAYMENT)?;
+    require(
+        u64_at(&repay.data, 8)? == principal && repay.data[16] == 0,
+        GRAMMAR,
+    )?;
+    Ok(principal)
+}
+
+// Captured Reserve layout includes its eight-byte discriminator. This is not
+// origination-fee arithmetic: any nonzero flash fee, including disabled, fails.
+fn zero_flash_fee(reserve: &AccountInfo) -> ProgramResult {
+    require(
+        reserve.key == &DEBT
+            && reserve.owner == &KLEND
+            && !reserve.executable
+            && reserve.data_len() == 8624,
+        ACCOUNTS,
+    )?;
+    let d = reserve.try_borrow_data()?;
+    require(
+        d[..8] == [43, 242, 204, 202, 26, 247, 59, 127]
+            && d[32..64] == MARKET.to_bytes()
+            && d[128..160] == USDC.to_bytes()
+            && d[160..192] == FLASH_KEYS[5].to_bytes()
+            && d[192..224] == FLASH_KEYS[7].to_bytes()
+            && d[408..440] == spl_token::id().to_bytes(),
+        ACCOUNTS,
+    )?;
+    require(u64_at(&d, 4904)? == 0, FEE)
+}
+
+fn transaction(sysvar: &AccountInfo) -> Result<Option<u64>> {
     require(
         sysvar.key == &solana_program::sysvar::instructions::ID,
         ACCOUNTS,
     )?;
-    {
+    let count = {
         let d = sysvar.try_borrow_data()?;
-        require(
-            d.len() >= 2 && u16::from_le_bytes([d[0], d[1]]) == 10,
-            GRAMMAR,
-        )?;
-    }
+        require(d.len() >= 2, GRAMMAR)?;
+        u16::from_le_bytes([d[0], d[1]])
+    };
+    require(count == 10 || count == 12, GRAMMAR)?;
     let ix = |index| load_instruction_at_checked(index, sysvar);
-    check_refresh(&ix(0)?, &REFRESH_COLLATERAL_KEYS, &REFRESH_RESERVE)?;
-    check_refresh(&ix(1)?, &REFRESH_DEBT_KEYS, &REFRESH_RESERVE)?;
-    check_refresh(&ix(2)?, &REFRESH_BEFORE_KEYS, &REFRESH_OBLIGATION)?;
-    check_begin(&ix(3)?)?;
-    check_refresh(&ix(4)?, &REFRESH_COLLATERAL_KEYS, &REFRESH_RESERVE)?;
-    check_refresh(&ix(5)?, &REFRESH_DEBT_KEYS, &REFRESH_RESERVE)?;
-    check_refresh(&ix(6)?, &REFRESH_AFTER_KEYS, &REFRESH_OBLIGATION)?;
-    let withdraw = squads_inner(&ix(7)?, WITHDRAW_POLICY, 1)?;
+    let principal = if count == 12 {
+        Some(flash_pair(&ix(0)?, &ix(11)?)?)
+    } else {
+        None
+    };
+    let offset = usize::from(principal.is_some());
+    check_refresh(&ix(offset)?, &REFRESH_COLLATERAL_KEYS, &REFRESH_RESERVE)?;
+    check_refresh(&ix(1 + offset)?, &REFRESH_DEBT_KEYS, &REFRESH_RESERVE)?;
+    check_refresh(&ix(2 + offset)?, &REFRESH_BEFORE_KEYS, &REFRESH_OBLIGATION)?;
+    let begin = ix(3 + offset)?;
+    check_begin(&begin)?;
+    if let Some(p) = principal {
+        require(p <= u64_at(&begin.data, 16)?, PAYMENT)?;
+    }
+    check_refresh(&ix(4 + offset)?, &REFRESH_COLLATERAL_KEYS, &REFRESH_RESERVE)?;
+    check_refresh(&ix(5 + offset)?, &REFRESH_DEBT_KEYS, &REFRESH_RESERVE)?;
+    check_refresh(&ix(6 + offset)?, &REFRESH_AFTER_KEYS, &REFRESH_OBLIGATION)?;
+    let withdraw = squads_inner(&ix(7 + offset)?, WITHDRAW_POLICY, 1)?;
     require(
         withdraw.program_id == KLEND
             && same_keys(&withdraw, &WITHDRAW_KEYS)
@@ -299,7 +357,7 @@ fn transaction(sysvar: &AccountInfo) -> ProgramResult {
             && u64_at(&withdraw.data, 8)? > 0,
         GRAMMAR,
     )?;
-    let swap = squads_inner(&ix(8)?, SWAP_POLICY, 0)?;
+    let swap = squads_inner(&ix(8 + offset)?, SWAP_POLICY, 0)?;
     require(
         swap.program_id == JUPITER
             && same_keys(&swap, &SWAP_KEYS)
@@ -315,7 +373,7 @@ fn transaction(sysvar: &AccountInfo) -> ProgramResult {
             && u16::from_le_bytes([swap.data[35], swap.data[36]]) <= 50,
         GRAMMAR,
     )?;
-    let settle = squads_inner(&ix(9)?, settlement_policy(), 0)?;
+    let settle = squads_inner(&ix(9 + offset)?, settlement_policy(), 0)?;
     require(
         settle.program_id == PROGRAM
             && same_keys(&settle, &settle_keys())
@@ -323,7 +381,8 @@ fn transaction(sysvar: &AccountInfo) -> ProgramResult {
             && &settle.data[..8] == SETTLE
             && u64_at(&settle.data, 8)? == OPERATION,
         GRAMMAR,
-    )
+    )?;
+    Ok(principal)
 }
 
 pub fn process_instruction(
@@ -344,9 +403,13 @@ fn begin(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     check_infos(accounts, &begin_keys())?;
     require(get_stack_height() == 1 && accounts[0].is_signer, AUTHORITY)?;
     let sysvar = &accounts[8];
-    require(load_current_index_checked(sysvar)? == 3, GRAMMAR)?;
-    transaction(sysvar)?;
-    let current = load_instruction_at_checked(3, sysvar)?;
+    let principal = transaction(sysvar)?;
+    let begin_index = 3 + usize::from(principal.is_some());
+    require(
+        load_current_index_checked(sysvar)? as usize == begin_index,
+        GRAMMAR,
+    )?;
+    let current = load_instruction_at_checked(begin_index, sysvar)?;
     require(current.data == data, GRAMMAR)?;
     let receipt = &accounts[14];
     require(
@@ -358,6 +421,11 @@ fn begin(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     )?;
     mint(&accounts[4])?;
     let x_before = cash(&accounts[6], EXECUTOR)?;
+    if let Some(p) = principal {
+        zero_flash_fee(&accounts[3])?;
+        require(x_before == p, PAYMENT)?;
+        solana_program::msg!("ONYC flash begin X={} P={}", x_before, p);
+    }
     let u_before = cash(&accounts[15], VAULT)?;
     position(&accounts[1], true)?;
     let (address, bump) = receipt_address();
@@ -398,9 +466,14 @@ fn begin(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     };
     invoke(&repay, accounts)?;
     position(&accounts[1], false)?;
+    let x_after = cash(&accounts[6], EXECUTOR)?;
     let paid = x_before
-        .checked_sub(cash(&accounts[6], EXECUTOR)?)
+        .checked_sub(x_after)
         .ok_or(ProgramError::Custom(PAYMENT))?;
+    if let Some(p) = principal {
+        solana_program::msg!("ONYC flash debt X={} D={}", x_after, paid);
+        require(paid == p, PAYMENT)?;
+    }
     require(
         paid > 0 && paid <= MAX_PRINCIPAL && cash(&accounts[15], VAULT)? == u_before,
         PAYMENT,
@@ -413,7 +486,7 @@ fn begin(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     record.fill(0);
     record[..8].copy_from_slice(b"ONYCRCP1");
     record[8] = 1;
-    record[9..11].copy_from_slice(&3u16.to_le_bytes());
+    record[9..11].copy_from_slice(&(begin_index as u16).to_le_bytes());
     record[11..19].copy_from_slice(&Clock::get()?.slot.to_le_bytes());
     record[19..27].copy_from_slice(&paid.to_le_bytes());
     record[27..35].copy_from_slice(&u_before.to_le_bytes());
@@ -430,8 +503,13 @@ fn settle(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     )?;
     require(get_stack_height() == 2 && accounts[1].is_signer, AUTHORITY)?;
     let sysvar = &accounts[8];
-    require(load_current_index_checked(sysvar)? == 9, GRAMMAR)?;
-    transaction(sysvar)?;
+    let principal = transaction(sysvar)?;
+    let offset = usize::from(principal.is_some());
+    let begin_index = 3 + offset;
+    require(
+        load_current_index_checked(sysvar)? as usize == 9 + offset,
+        GRAMMAR,
+    )?;
     let receipt = &accounts[0];
     require(
         receipt.owner == &PROGRAM
@@ -445,7 +523,7 @@ fn settle(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
         require(
             &record[..8] == b"ONYCRCP1"
                 && record[8] == 1
-                && record[9..11] == [3, 0]
+                && record[9..11] == (begin_index as u16).to_le_bytes()
                 && u64_at(&record, 11)? == Clock::get()?.slot
                 && u64_at(&record, 43)? == OPERATION
                 && record[59..] == [0; 5],
@@ -458,7 +536,10 @@ fn settle(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
             u64_at(&record, 51)?,
         )
     };
-    let earlier = load_instruction_at_checked(3, sysvar)?;
+    if let Some(p) = principal {
+        require(paid == p && x_initial == p, RECEIPT)?;
+    }
+    let earlier = load_instruction_at_checked(begin_index, sysvar)?;
     require(
         u64_at(&earlier.data, 32)? == min_retained
             && paid > 0
@@ -483,6 +564,9 @@ fn settle(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     mint(&accounts[4])?;
     let u_before = cash(&accounts[2], VAULT)?;
     let x_before = cash(&accounts[3], EXECUTOR)?;
+    if principal.is_some() {
+        solana_program::msg!("ONYC flash settle before X={} D={}", x_before, paid);
+    }
     let retained = u_before
         .checked_sub(paid)
         .ok_or(ProgramError::Custom(PROCEEDS))?;
@@ -515,8 +599,189 @@ fn settle(accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
             accounts[5].clone(),
         ],
     )?;
+    let x_after = cash(&accounts[3], EXECUTOR)?;
     require(
-        cash(&accounts[2], VAULT)? == retained && cash(&accounts[3], EXECUTOR)? == x_initial,
+        cash(&accounts[2], VAULT)? == retained && x_after == x_initial,
         PAYMENT,
-    )
+    )?;
+    if principal.is_some() {
+        solana_program::msg!("ONYC flash settle after X={}", x_after);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Isolated parser fixtures only. These bytes never enter a financial bank
+    // and do not establish execution against a positive-fee reserve.
+    fn reserve_result(
+        data: &mut [u8],
+        key: Pubkey,
+        owner: Pubkey,
+        executable: bool,
+    ) -> ProgramResult {
+        let mut lamports = 1;
+        zero_flash_fee(&AccountInfo::new(
+            &key,
+            false,
+            true,
+            &mut lamports,
+            data,
+            &owner,
+            executable,
+            0,
+        ))
+    }
+
+    #[test]
+    fn authenticates_zero_flash_fee_at_captured_offset() {
+        let mut data = vec![0; 8624];
+        data[..8].copy_from_slice(&[43, 242, 204, 202, 26, 247, 59, 127]);
+        for (offset, key) in [
+            (32, MARKET),
+            (128, USDC),
+            (160, FLASH_KEYS[5]),
+            (192, FLASH_KEYS[7]),
+            (408, spl_token::id()),
+        ] {
+            data[offset..offset + 32].copy_from_slice(key.as_ref());
+        }
+        assert_eq!(reserve_result(&mut data, DEBT, KLEND, false), Ok(()));
+        // Origination fee is the previous u64, not the flash fee field.
+        data[4896..4904].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(reserve_result(&mut data, DEBT, KLEND, false), Ok(()));
+        for rate in [1, u64::MAX] {
+            let mut bad = data.clone();
+            bad[4904..4912].copy_from_slice(&rate.to_le_bytes());
+            assert_eq!(
+                reserve_result(&mut bad, DEBT, KLEND, false),
+                Err(ProgramError::Custom(FEE))
+            );
+        }
+        for offset in [0, 32, 128, 160, 192, 408] {
+            let mut bad = data.clone();
+            bad[offset] ^= 1;
+            assert_eq!(
+                reserve_result(&mut bad, DEBT, KLEND, false),
+                Err(ProgramError::Custom(ACCOUNTS))
+            );
+        }
+        for length in [0, 8623, 8625] {
+            let mut bad = data.clone();
+            bad.resize(length, 0);
+            assert_eq!(
+                reserve_result(&mut bad, DEBT, KLEND, false),
+                Err(ProgramError::Custom(ACCOUNTS))
+            );
+        }
+        for (key, owner, executable) in [
+            (COLLATERAL, KLEND, false),
+            (DEBT, SYSTEM, false),
+            (DEBT, KLEND, true),
+        ] {
+            assert_eq!(
+                reserve_result(&mut data, key, owner, executable),
+                Err(ProgramError::Custom(ACCOUNTS))
+            );
+        }
+    }
+
+    #[test]
+    fn authenticates_exact_flash_pair_not_two_matching_attacker_vectors() {
+        let instruction = |discriminator: [u8; 8]| {
+            let mut data = discriminator.to_vec();
+            data.extend(7u64.to_le_bytes());
+            Instruction {
+                program_id: KLEND,
+                data,
+                accounts: FLASH_KEYS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, key)| AccountMeta {
+                        pubkey: *key,
+                        is_signer: i == 0,
+                        is_writable: [3, 5, 6, 7].contains(&i),
+                    })
+                    .collect(),
+            }
+        };
+        let borrow = instruction(FLASH_BORROW_DISC);
+        let mut repay = instruction(FLASH_REPAY_DISC);
+        repay.data.push(0);
+        assert_eq!(flash_pair(&borrow, &repay), Ok(7));
+        for i in 0..FLASH_KEYS.len() {
+            let mut b = borrow.clone();
+            let mut r = repay.clone();
+            b.accounts[i].pubkey = SYSTEM;
+            r.accounts[i].pubkey = SYSTEM;
+            assert_eq!(
+                flash_pair(&b, &r),
+                Err(ProgramError::Custom(GRAMMAR)),
+                "matching wrong key {i}"
+            );
+        }
+        for target in [0, 1] {
+            for kind in [
+                "program",
+                "discriminator",
+                "short",
+                "long",
+                "extra-account",
+                "missing-account",
+                "signer",
+                "writable",
+            ] {
+                let mut pair = [borrow.clone(), repay.clone()];
+                let ix = &mut pair[target];
+                match kind {
+                    "program" => ix.program_id = SYSTEM,
+                    "discriminator" => ix.data[0] ^= 1,
+                    "short" => {
+                        ix.data.pop();
+                    }
+                    "long" => ix.data.push(0),
+                    "extra-account" => ix.accounts.push(AccountMeta::new_readonly(SYSTEM, false)),
+                    "missing-account" => {
+                        ix.accounts.pop();
+                    }
+                    "signer" => ix.accounts[0].is_signer = false,
+                    "writable" => ix.accounts[6].is_writable = false,
+                    _ => unreachable!(),
+                }
+                assert_eq!(
+                    flash_pair(&pair[0], &pair[1]),
+                    Err(ProgramError::Custom(GRAMMAR)),
+                    "{target}: {kind}"
+                );
+            }
+        }
+        for index in [1, 11] {
+            let mut r = repay.clone();
+            r.data[16] = index;
+            assert_eq!(flash_pair(&borrow, &r), Err(ProgramError::Custom(GRAMMAR)));
+        }
+        for principal in [0, MAX_PRINCIPAL + 1] {
+            let mut b = borrow.clone();
+            let mut r = repay.clone();
+            b.data[8..16].copy_from_slice(&principal.to_le_bytes());
+            r.data[8..16].copy_from_slice(&principal.to_le_bytes());
+            assert_eq!(flash_pair(&b, &r), Err(ProgramError::Custom(PAYMENT)));
+        }
+        let mut r = repay.clone();
+        r.data[8..16].copy_from_slice(&8u64.to_le_bytes());
+        assert_eq!(flash_pair(&borrow, &r), Err(ProgramError::Custom(GRAMMAR)));
+        let mut b = borrow.clone();
+        for ix in [&mut b, &mut repay] {
+            for account in &mut ix.accounts {
+                account.is_writable = true;
+            }
+        }
+        assert_eq!(
+            flash_pair(&b, &repay),
+            Ok(7),
+            "message privilege promotion is valid"
+        );
+    }
 }
