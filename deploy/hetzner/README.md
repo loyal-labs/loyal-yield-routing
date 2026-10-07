@@ -91,9 +91,12 @@ Rust is stopped by hand:
 5. Watch `loyal_family_last_progress_timestamp_seconds{family=...}` advance.
 
 To fall back, wait for `loyal_family_inflight{family=...} == 0`, then run
-`systemctl stop <go-unit>`, then `systemctl start <rust-unit>`. Go keeps the
-row states and legacy lease columns that Rust reads. A stopped Go unit is
-inactive, so it does not alert.
+`systemctl stop <go-unit>`, then `rm /run/<rust-unit>/paused` and
+`systemctl start <rust-unit>`. The Rust controllers' `quiesce` (what
+`systemctl stop` runs) writes that durable pause marker, and `supervise`
+refuses to start while it exists, so a plain `systemctl start` leaves Rust
+down. Go keeps the row states and legacy lease columns that Rust reads. A
+stopped Go unit is inactive, so it does not alert.
 
 During the swap window, a family whose Go and Rust units are both stopped
 emits nothing. Rust units are named per host, so add one host-local rule per
