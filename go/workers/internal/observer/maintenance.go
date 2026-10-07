@@ -44,7 +44,7 @@ type Maintenance struct {
 	mu                 sync.Mutex
 	pricesHour         time.Time
 	logger             *slog.Logger
-	onHealth           func(bool)
+	onError            func()
 	retryInterval      time.Duration
 	validateNamespace  func(context.Context) error
 }
@@ -56,8 +56,9 @@ type MaintenanceConfig struct {
 	PriceRPC                        ReservePriceRPC
 	RecoveryPoll, HealthObservation time.Duration
 	Logger                          *slog.Logger
-	OnHealth                        func(bool)
-	RetryInterval                   time.Duration
+	// OnError is called for every failed pass; it must return promptly.
+	OnError       func()
+	RetryInterval time.Duration
 	// ValidateNamespace rechecks the custody namespace before any unscoped
 	// product projection. The runtime supplies it because policy membership can
 	// change after startup; a foreign or unknown scope must not publish.
@@ -71,8 +72,8 @@ func NewMaintenance(yield, timescale *pgxpool.Pool, c MaintenanceConfig) (*Maint
 	if c.RetryInterval == 0 {
 		c.RetryInterval = time.Minute
 	}
-	if c.OnHealth == nil {
-		return nil, errors.New("maintenance requires readiness consumer")
+	if c.OnError == nil {
+		return nil, errors.New("maintenance requires a failure consumer")
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -104,7 +105,7 @@ func NewMaintenance(yield, timescale *pgxpool.Pool, c MaintenanceConfig) (*Maint
 			return nil, errors.New("invalid mainnet medium market identity")
 		}
 	}
-	return &Maintenance{yield: yield, timescale: timescale, cluster: c.Cluster, markets: markets, maxVaults: c.MaxVaults, maxRows: c.MaxModelRows, timeout: c.Timeout, rpc: c.PriceRPC, poll: c.RecoveryPoll, observation: c.HealthObservation, logger: c.Logger, onHealth: c.OnHealth, retryInterval: c.RetryInterval, validateNamespace: c.ValidateNamespace}, nil
+	return &Maintenance{yield: yield, timescale: timescale, cluster: c.Cluster, markets: markets, maxVaults: c.MaxVaults, maxRows: c.MaxModelRows, timeout: c.Timeout, rpc: c.PriceRPC, poll: c.RecoveryPoll, observation: c.HealthObservation, logger: c.Logger, onError: c.OnError, retryInterval: c.RetryInterval, validateNamespace: c.ValidateNamespace}, nil
 }
 func (m *Maintenance) RequireSchema(ctx context.Context) error {
 	if err := workersdb.RequireTables(ctx, m.yield, "loyal_yield.managed_vaults", "loyal_yield.user_yield_positions", "loyal_yield.vault_position_snapshots", "loyal_yield.vault_position_snapshot_positions", "loyal_yield.vault_idle_token_balances_current", "loyal_yield.earn_fleet_allocations_hourly", "loyal_yield.earn_reserve_share_prices", "loyal_yield.earn_forecast_snapshots", "loyal_yield.fleet_orchestration_status", "loyal_yield.fleet_orchestration_health_snapshots", "loyal_yield.rebalance_opportunities", "loyal_yield.signed_route_submissions", "loyal_yield.orchestration_outbox"); err != nil {
@@ -129,8 +130,6 @@ type MaintenanceReport struct {
 func (m *Maintenance) Run(ctx context.Context) error {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
-	defer m.onHealth(false)
-	m.onHealth(false)
 	lastStages := ""
 	for {
 		select {
@@ -140,10 +139,10 @@ func (m *Maintenance) Run(ctx context.Context) error {
 		}
 		report, err := m.Tick(ctx, time.Now().UTC())
 		if err != nil {
-			m.onHealth(false)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			m.onError()
 			m.logger.WarnContext(ctx, "maintenance pass unavailable", "cluster", m.cluster)
 			timer.Reset(m.retryInterval)
 			continue
@@ -159,8 +158,6 @@ func (m *Maintenance) Run(ctx context.Context) error {
 			m.logger.WarnContext(ctx, "fleet derived stage health changed", "cluster", m.cluster, "stuck_stages", stages)
 			lastStages = signature
 		}
-		ready := report.StageHealth != nil && len(report.StageHealth.StuckStages) == 0 && len(report.MissingPrices) == 0 && report.AllocationComplete
-		m.onHealth(ready)
 		if len(report.MissingPrices) > 0 {
 			m.logger.WarnContext(ctx, "maintenance price evidence incomplete", "cluster", m.cluster, "missing_reserve_count", len(report.MissingPrices))
 			timer.Reset(m.retryInterval)

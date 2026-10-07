@@ -55,3 +55,13 @@ func (f *Facts) Inflight(family Family, n int) {
 func (f *Facts) Progress(family Family) {
 	f.progress.WithLabelValues(string(family)).Set(float64(time.Now().Unix()))
 }
+
+// Own creates the series of each family this process writes at zero, so a
+// family that never completes work reads as progress 0, not as absent.
+func (f *Facts) Own(families ...Family) {
+	for _, family := range families {
+		f.landed.WithLabelValues(string(family))
+		f.inflight.WithLabelValues(string(family))
+		f.progress.WithLabelValues(string(family))
+	}
+}

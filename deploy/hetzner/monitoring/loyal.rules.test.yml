@@ -1,0 +1,191 @@
+# promtool test rules loyal.rules.test.yml
+rule_files:
+  - loyal.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # A family created at 0 that never progresses fires after its threshold
+  # plus grace; one that keeps progressing stays silent. (promtool's clock
+  # starts at the epoch, so time() - 0 grows from zero here.)
+  - interval: 1m
+    input_series:
+      - series: 'loyal_family_last_progress_timestamp_seconds{family="observer",unit="loyal-observer.service"}'
+        values: '0x40'
+      - series: 'loyal_family_last_progress_timestamp_seconds{family="fleet",unit="loyal-retail.service"}'
+        values: '0+60x40'
+      - series: 'loyal_family_last_progress_timestamp_seconds{family="autodeposit",unit="loyal-retail.service"}'
+        values: '0x40'
+      - series: 'loyal_family_last_progress_timestamp_seconds{family="backyard",unit="loyal-backyard.service"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LoyalFamilyProgressStale
+      - eval_time: 4m
+        alertname: LoyalFamilyProgressStale
+        exp_alerts:
+          - exp_labels: {severity: page, stale_after: 3m, family: observer, unit: loyal-observer.service}
+            exp_annotations: {summary: "observer has completed no work recently"}
+      - eval_time: 11m
+        alertname: LoyalFamilyProgressStale
+        exp_alerts:
+          - exp_labels: {severity: page, stale_after: 3m, family: observer, unit: loyal-observer.service}
+            exp_annotations: {summary: "observer has completed no work recently"}
+          - exp_labels: {severity: page, stale_after: 10m, family: autodeposit, unit: loyal-retail.service}
+            exp_annotations: {summary: "autodeposit has completed no work recently"}
+      - eval_time: 31m
+        alertname: LoyalFamilyProgressStale
+        exp_alerts:
+          - exp_labels: {severity: page, stale_after: 3m, family: observer, unit: loyal-observer.service}
+            exp_annotations: {summary: "observer has completed no work recently"}
+          - exp_labels: {severity: page, stale_after: 10m, family: autodeposit, unit: loyal-retail.service}
+            exp_annotations: {summary: "autodeposit has completed no work recently"}
+          - exp_labels: {severity: page, stale_after: 30m, family: backyard, unit: loyal-backyard.service}
+            exp_annotations: {summary: "backyard has completed no work recently"}
+
+  # Progress stops at minute 5, and the process restarts every 4 minutes
+  # (series back to 0). Restarts cannot reset the staleness clock.
+  - interval: 1m
+    input_series:
+      - series: 'loyal_family_last_progress_timestamp_seconds{family="fleet",unit="loyal-retail.service"}'
+        values: '0 60 120 180 240 300 300 300 0 0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: LoyalFamilyProgressStale
+      - eval_time: 16m
+        alertname: LoyalFamilyProgressStale
+        exp_alerts:
+          - exp_labels: {severity: page, stale_after: 10m, family: fleet, unit: loyal-retail.service}
+            exp_annotations: {summary: "fleet has completed no work recently"}
+
+  # Repeated terminal failures by code; a quiet code stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'loyal_family_failed_total{family="fleet",code="expired",unit="loyal-retail.service"}'
+        values: '0+1x30'
+      - series: 'loyal_family_failed_total{family="fleet",code="simulation_failed",unit="loyal-retail.service"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LoyalFamilyFailing
+      - eval_time: 20m
+        alertname: LoyalFamilyFailing
+        exp_alerts:
+          - exp_labels: {severity: page, family: fleet, code: expired}
+            exp_annotations:
+              summary: "fleet failed 15 times with expired in 15m"
+
+  # Inflight with no terminal outcome is stuck; inflight that keeps landing,
+  # or keeps failing terminally, is not stuck.
+  - interval: 1m
+    input_series:
+      - series: 'loyal_family_inflight{family="fleet",unit="loyal-retail.service"}'
+        values: '2x10'
+      - series: 'loyal_family_landed_total{family="fleet",unit="loyal-retail.service"}'
+        values: '5x10'
+      - series: 'loyal_family_inflight{family="multiply",unit="loyal-retail.service"}'
+        values: '1x10'
+      - series: 'loyal_family_inflight{family="autodeposit",unit="loyal-retail.service"}'
+        values: '1x10'
+      - series: 'loyal_family_landed_total{family="autodeposit",unit="loyal-retail.service"}'
+        values: '0+1x10'
+      - series: 'loyal_family_inflight{family="lookup",unit="loyal-retail.service"}'
+        values: '1x10'
+      - series: 'loyal_family_failed_total{family="lookup",code="expired",unit="loyal-retail.service"}'
+        values: '0+1x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: LoyalInflightStuck
+      - eval_time: 5m
+        alertname: LoyalInflightStuck
+        exp_alerts:
+          - exp_labels: {severity: page, family: fleet, unit: loyal-retail.service}
+            exp_annotations:
+              summary: "fleet has 2 operations in flight and none reached a terminal state in 3m"
+          - exp_labels: {severity: page, family: multiply, unit: loyal-retail.service}
+            exp_annotations:
+              summary: "multiply has 1 operations in flight and none reached a terminal state in 3m"
+
+  # A running Go unit that does not serve /metrics pages; a stopped one does not.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="loyal",instance="127.0.0.1:9102",unit="loyal-retail.service"}'
+        values: '0x5'
+      - series: 'node_systemd_unit_state{name="loyal-retail.service",state="active"}'
+        values: '1x5'
+      - series: 'up{job="loyal",instance="127.0.0.1:9103",unit="loyal-backyard.service"}'
+        values: '0x5'
+      - series: 'node_systemd_unit_state{name="loyal-backyard.service",state="active"}'
+        values: '0x5'
+      - series: 'node_systemd_unit_state{name="loyal-backyard.service",state="inactive"}'
+        values: '1x5'
+      - series: 'up{job="loyal",instance="127.0.0.1:9101",unit="loyal-observer.service"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: LoyalWorkerDown
+      - eval_time: 3m
+        alertname: LoyalWorkerDown
+        exp_alerts:
+          - exp_labels: {severity: page, job: loyal, instance: "127.0.0.1:9102", unit: loyal-retail.service}
+            exp_annotations:
+              summary: "loyal-retail.service is not serving /metrics"
+
+  # Failed or stuck-starting units alert, Go or Rust; a stopped unit does not.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{name="loyal-retail.service",state="failed"}'
+        values: '1x5'
+      - series: 'node_systemd_unit_state{name="loyal-fleet-route-executor.service",state="activating"}'
+        values: '1x5'
+      - series: 'node_systemd_unit_state{name="loyal-observer.service",state="inactive"}'
+        values: '1x5'
+      - series: 'node_systemd_unit_state{name="loyal-observer.service",state="failed"}'
+        values: '0x5'
+      - series: 'node_systemd_unit_state{name="postgresql.service",state="failed"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LoyalUnitDown
+        exp_alerts:
+          - exp_labels: {severity: page, name: loyal-retail.service, state: failed}
+            exp_annotations:
+              summary: "loyal-retail.service is failed"
+          - exp_labels: {severity: page, name: loyal-fleet-route-executor.service, state: activating}
+            exp_annotations:
+              summary: "loyal-fleet-route-executor.service is activating"
+
+  # Restart=always hides crashes from unit state; the restart counter does not.
+  - interval: 1m
+    input_series:
+      - series: 'node_systemd_service_restart_total{name="loyal-backyard.service"}'
+        values: '0+1x20'
+      - series: 'node_systemd_service_restart_total{name="loyal-observer.service"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LoyalUnitRestartLoop
+        exp_alerts:
+          - exp_labels: {severity: page, name: loyal-backyard.service}
+            exp_annotations:
+              summary: "loyal-backyard.service restarted 15 times in 15m"
+
+  # The monitoring stack's own scrape targets, and the heartbeat.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node",instance="127.0.0.1:9100"}'
+        values: '0x5'
+      - series: 'up{job="alertmanager",instance="127.0.0.1:9093"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LoyalMonitoringDown
+        exp_alerts:
+          - exp_labels: {severity: page, job: node, instance: "127.0.0.1:9100"}
+            exp_annotations:
+              summary: "node is not scrapeable"
+      - eval_time: 0m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels: {severity: none}
+            exp_annotations:
+              summary: "Alerting pipeline heartbeat"

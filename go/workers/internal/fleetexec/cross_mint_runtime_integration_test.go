@@ -520,75 +520,14 @@ func (a *rolloutAdmission) PrepareCrossMintActivation(context.Context, string) (
 	return nil, nil
 }
 
-func TestCrossMintRuntimeRecoveryPrecedesAdmissionAndReadinessNeedsObservedFrontier(t *testing.T) {
-	r, pool, id := crossMintRuntimeFixture(t)
-	ctx := context.Background()
+func TestCrossMintRuntimeRecoveryPrecedesAdmission(t *testing.T) {
+	r, _, _ := crossMintRuntimeFixture(t)
 	admission := &rolloutAdmission{}
 	r.SetActivationSource(admission)
 	// A pending signed family must prevent even consulting fresh admission.
 	// The fixture intentionally has no controller: recovery must return first.
-	if n, err := r.Tick(ctx); err != nil || n != 1 || admission.calls != 0 {
+	if n, err := r.Tick(context.Background()); err != nil || n != 1 || admission.calls != 0 {
 		t.Fatalf("recovery priority: n=%d admission=%d err=%v", n, admission.calls, err)
-	}
-	var slot atomic.Int64
-	var rpcCalls atomic.Int32
-	slot.Store(2000)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		rpcCalls.Add(1)
-		var q rpcRequest
-		if err := json.NewDecoder(req.Body).Decode(&q); err != nil {
-			t.Error(err)
-			return
-		}
-		value := int64(3999)
-		if q.Method == "getSlot" {
-			value = slot.Load()
-		} else if q.Method != "getBlockHeight" {
-			t.Errorf("unexpected readiness RPC %s", q.Method)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","result":%d,"id":1}`, value)
-	}))
-	defer server.Close()
-	adapter, err := NewRPCAdapter(server.URL, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.adapter = adapter
-	r.controller = &CrossMintController{store: r.store, cluster: r.config.Cluster, owner: r.config.Owner, ttl: time.Minute}
-	reports := 0
-	r.SetRuntimeReporter(func(ready bool, observed uint64) {
-		reports++
-		if !ready || observed != 2000 {
-			t.Errorf("reporter lost validated frontier: %v %d", ready, observed)
-		}
-	})
-	if _, err := r.Tick(ctx); err != nil || reports != 1 || rpcCalls.Load() != 2 {
-		t.Fatalf("reporter duplicated evidence IO: reports=%d rpc=%d err=%v", reports, rpcCalls.Load(), err)
-	}
-	r.SetRuntimeReporter(nil)
-	if healthy, observed, err := r.ready(ctx); err != nil || !healthy || observed != 2000 {
-		t.Fatalf("observed submitted owner not ready: %v %v", healthy, err)
-	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET last_status_checked_at=clock_timestamp()-interval '1 hour' WHERE id=$1`, id); err != nil {
-		t.Fatal(err)
-	}
-	if healthy, observed, err := r.ready(ctx); err != nil || healthy || observed != 0 {
-		t.Fatalf("stale status ready: %v %v", healthy, err)
-	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET last_status_checked_at=clock_timestamp(),confirmation_lease_owner='foreign',confirmation_lease_expires_at=clock_timestamp()+interval '1 minute' WHERE id=$1`, id); err != nil {
-		t.Fatal(err)
-	}
-	if healthy, observed, err := r.ready(ctx); err != nil || healthy || observed != 0 {
-		t.Fatalf("foreign lease ready: %v %v", healthy, err)
-	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET confirmation_lease_owner=NULL,confirmation_lease_expires_at=NULL WHERE id=$1`, id); err != nil {
-		t.Fatal(err)
-	}
-	slot.Store(0)
-	if healthy, observed, err := r.ready(ctx); err != nil || healthy || observed != 0 {
-		t.Fatalf("missing finalized frontier ready: %v %v", healthy, err)
 	}
 }
 

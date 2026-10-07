@@ -17,14 +17,8 @@ import (
 // TypeScript executor use, so a Go worker and a legacy worker contend on real
 // rows rather than on a Go-private queue.
 type Store struct {
-	pool                    *pgxpool.Pool
-	requireDesiredAdmission bool
+	pool *pgxpool.Pool
 }
-
-// EnableDesiredControlAdmission is startup configuration, called once before
-// any worker starts. Production v2 composition always enables it; retained
-// source-parity tests can exercise the older scheduling boundary separately.
-func (s *Store) EnableDesiredControlAdmission() { s.requireDesiredAdmission = true }
 
 // NewStore wraps an existing pool. The runtime owns pool lifecycle; the store
 // only owns family SQL.

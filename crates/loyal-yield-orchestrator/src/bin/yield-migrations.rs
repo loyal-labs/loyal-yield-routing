@@ -473,12 +473,6 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../../loyal-yield-store/migrations/0089_autodeposit_floor_rebaseline_classification.sql"),
         expected_checksum: None,
     },
-    Migration {
-        version: 91,
-        name: "autodeposit_desired_control_revisions",
-        sql: include_str!("../../../loyal-yield-store/migrations/0091_autodeposit_desired_control_revisions.sql"),
-        expected_checksum: None,
-    },
 ];
 
 const LEDGER_SCHEMA: &str = "loyal_yield";

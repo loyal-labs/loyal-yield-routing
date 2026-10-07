@@ -1,29 +1,37 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func setRequiredEnv(t *testing.T) {
 	t.Helper()
+	t.Setenv("LASERSTREAM_ENDPOINT", "https://example.invalid")
+	t.Setenv("EARN_MAX_DELEGATE", "11111111111111111111111111111111")
+	// Secrets arrive as systemd credential files, never as environment.
+	dir := t.TempDir()
+	t.Setenv("CREDENTIALS_DIRECTORY", dir)
 	for name, value := range map[string]string{
-		"LASERSTREAM_ENDPOINT":       "https://example.invalid",
 		"HELIUS_API_KEY":             "fixture",
-		"EARN_MAX_DELEGATE":          "11111111111111111111111111111111",
 		"SOLANA_RPC_URL":             "https://rpc.invalid",
 		"NEON_DATABASE_URL":          "postgresql://fixture",
 		"OBSERVER_APPS_DATABASE_URL": "postgresql://apps-fixture",
 		"TIMESCALEDB_URL":            "postgresql://fixture",
 	} {
-		t.Setenv(name, value)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(value+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func TestFromEnvRequiresEveryProductionDependency(t *testing.T) {
-	for _, name := range []string{"LASERSTREAM_ENDPOINT", "HELIUS_API_KEY", "EARN_MAX_DELEGATE", "SOLANA_RPC_URL", "NEON_DATABASE_URL", "TIMESCALEDB_URL", "OBSERVER_APPS_DATABASE_URL"} {
-		t.Setenv(name, "")
-	}
+	t.Setenv("LASERSTREAM_ENDPOINT", "")
+	t.Setenv("EARN_MAX_DELEGATE", "")
+	t.Setenv("CREDENTIALS_DIRECTORY", t.TempDir())
+	t.Setenv("HELIUS_API_KEY", "environment-is-not-a-credential")
 	_, err := FromEnv()
 	if err == nil {
 		t.Fatal("missing production dependencies were accepted")
@@ -45,13 +53,12 @@ func TestFromEnvRejectsInvalidOperationalIntervals(t *testing.T) {
 
 func TestFromEnvBuildsStrictProductionConfig(t *testing.T) {
 	setRequiredEnv(t)
-	t.Setenv("PORT", "9999")
 	t.Setenv("SOLANA_CLUSTER", "")
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddress != ":9999" || cfg.ReplayOverlapSlots != 32 || cfg.ReconciliationWorkers != 4 || cfg.Cluster != "mainnet-beta" {
+	if cfg.HeliusAPIKey != "fixture" || cfg.ReplayOverlapSlots != 32 || cfg.ReconciliationWorkers != 4 || cfg.Cluster != "mainnet-beta" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -123,8 +130,8 @@ func TestFromEnvDefaultsBridgeStartupAndReadyBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.BridgeStartupTimeout <= 0 || cfg.EarnReadyMaxAge <= 0 {
-		t.Fatalf("bridge startup %s / ready max age %s, want positive defaults", cfg.BridgeStartupTimeout, cfg.EarnReadyMaxAge)
+	if cfg.BridgeStartupTimeout <= 0 {
+		t.Fatalf("bridge startup %s, want positive default", cfg.BridgeStartupTimeout)
 	}
 }
 

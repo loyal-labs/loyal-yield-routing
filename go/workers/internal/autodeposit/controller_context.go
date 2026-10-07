@@ -15,7 +15,6 @@ type TargetExecutionContext struct {
 	SetupPolicyAccount string
 	SweepPolicyAccount string
 	TargetID           int64
-	DesiredRevision    int64
 	Settings           string
 	VaultIndex         int64
 	Wallet             string
@@ -65,7 +64,6 @@ func (s *Store) LoadTargetExecutionContext(ctx context.Context, targetID int64) 
 	rows, err := s.pool.Query(ctx, `
 SELECT
     target.id,
-    target.desired_revision,
     target.policy_account,
     target.settings,
     target.vault_index,
@@ -159,7 +157,7 @@ WHERE target.id = $1
 		setupPolicy   *string
 	)
 	if err := rows.Scan(
-		&context.TargetID, &context.DesiredRevision, &context.SweepPolicyAccount, &context.Settings, &context.VaultIndex, &context.Wallet,
+		&context.TargetID, &context.SweepPolicyAccount, &context.Settings, &context.VaultIndex, &context.Wallet,
 		&context.WalletUsdcAta, &context.VaultPubkey, &context.VaultUsdcAta,
 		&context.TokenMint, &context.RecurringDelegation, &floor,
 		&context.MaxAmountPerPeriodRaw, &context.PeriodLengthSeconds, &context.StartTimestamp,

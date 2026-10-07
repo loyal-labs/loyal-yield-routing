@@ -85,7 +85,7 @@ jobs:
           context: .
           file: go/workers/Dockerfile
           platforms: linux/amd64
-          build-args: LOYAL_IMAGE_VERSION=${{ github.sha }}
+          build-args: LOYAL_IMAGE_VERSION=sha-${{ github.sha }}
           tags: loyal-workers-v2:verification
           push: false
           load: true

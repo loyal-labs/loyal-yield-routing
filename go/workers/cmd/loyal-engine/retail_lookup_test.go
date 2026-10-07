@@ -23,7 +23,8 @@ func TestRetailLookupDefaultHasNoKeyCapability(t *testing.T) {
 	for _, mode := range []string{"", "reconcile-only"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("RETAIL_LOOKUP_MODE", mode)
-			t.Setenv("RETAIL_LOOKUP_MANAGER_KEYPAIR", "test-secret")
+			t.Setenv("CREDENTIALS_DIRECTORY", "")
+			setCredential(t, "RETAIL_LOOKUP_MANAGER_KEYPAIR", "test-secret")
 			t.Setenv("POLICY_KEYPAIR", "test-secret")
 			cfg, err := loadRetailLookupConfig()
 			if err != nil || cfg.active || cfg.managerKey() != nil || len(cfg.manager) != 0 {
@@ -50,7 +51,8 @@ func TestRetailLookupActiveRequiresSourceAuthorityAndExplicitBudget(t *testing.T
 			t.Setenv("RETAIL_LOOKUP_MODE", test.mode)
 			t.Setenv("RETAIL_LOOKUP_MAX_LAMPORTS", test.maximum)
 			t.Setenv("RETAIL_LOOKUP_BUDGET_WINDOW", test.window)
-			t.Setenv("RETAIL_LOOKUP_MANAGER_KEYPAIR", test.material)
+			t.Setenv("CREDENTIALS_DIRECTORY", "")
+			setCredential(t, "RETAIL_LOOKUP_MANAGER_KEYPAIR", test.material)
 			t.Setenv("POLICY_KEYPAIR", "test-secret")
 			if _, err := loadRetailLookupConfig(); err == nil || strings.Contains(err.Error(), "test-secret") {
 				t.Fatalf("invalid authority accepted or material leaked: %v", err)

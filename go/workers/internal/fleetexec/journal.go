@@ -302,11 +302,11 @@ func (s *Store) RecordBroadcastIntent(ctx context.Context, lease SubmissionLease
 	})
 }
 
-// InflightCount is the number of this cluster's same-mint routes signed or
-// sent and not yet terminal.
+// InflightCount is the number of this cluster's fleet legs signed or sent
+// and not yet terminal.
 func (s *Store) InflightCount(ctx context.Context, cluster string) (int, error) {
 	var n int
-	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE cluster=$1 AND movement_leg='route' AND submission_state NOT IN ('reconciled','expired','failed')`, cluster).Scan(&n)
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE cluster=$1 AND submission_state NOT IN ('reconciled','expired','failed')`, cluster).Scan(&n)
 	return n, err
 }
 

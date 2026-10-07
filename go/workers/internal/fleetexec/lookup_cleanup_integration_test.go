@@ -51,7 +51,7 @@ func TestLookupPlannerQueuesRealRetiringCleanupAndExactCloseRefund(t *testing.T)
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables SET desired_state='retiring',accepting_allocations=false WHERE id=$1`, op.Intent.TableID); err != nil {
 		t.Fatal(err)
 	}
-	planner, err := NewLookupPlanner(store, svm.rpc, LookupPlannerConfig{Cluster: "localnet", Owner: "cleanup-plan", LeaseTTL: time.Minute, TickDeadline: 25 * time.Second, PollInterval: time.Second, CatalogInterval: time.Minute, GrowthReservation: 8, MaximumVaultCohort: 16})
+	planner, err := NewLookupPlanner(store, svm.rpc, LookupPlannerConfig{Cluster: "localnet", Owner: "cleanup-plan", LeaseTTL: time.Minute, TickDeadline: 25 * time.Second, PollInterval: time.Second, CatalogInterval: time.Minute, GrowthReservation: 8, MaximumVaultCohort: 16, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}

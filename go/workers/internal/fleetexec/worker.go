@@ -46,19 +46,17 @@ func (c Config) validate() error {
 // delegated signing key only for fresh wire; landing never re-signs or
 // rebuilds bytes.
 type Worker struct {
-	config          Config
-	store           *Store
-	chain           solana.LandChain
-	status          StatusClient
-	signer          DelegateSigner
-	recovery        *sameMintRecovery
-	fresh           *fleet.Revalidator
-	runtimeReporter func(bool, uint64)
+	config   Config
+	store    *Store
+	chain    solana.LandChain
+	status   StatusClient
+	signer   DelegateSigner
+	recovery *sameMintRecovery
+	fresh    *fleet.Revalidator
 	// landing counts claimed rows still being landed or reconciled; at most
 	// BatchSize run at once. Run joins them before returning.
 	landing atomic.Int64
 	wg      sync.WaitGroup
-	newest  atomic.Uint64
 }
 
 // NewWorker composes the executor from its concrete dependencies.
@@ -89,9 +87,6 @@ func (w *Worker) SetFreshRevalidator(r *fleet.Revalidator) error {
 	return nil
 }
 
-// SetRuntimeReporter is configured before Run; nil preserves standalone behavior.
-func (w *Worker) SetRuntimeReporter(report func(bool, uint64)) { w.runtimeReporter = report }
-
 // Run ticks until the context is canceled and joins every landing before
 // returning.
 func (w *Worker) Run(ctx context.Context) error {
@@ -100,9 +95,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		err := w.Tick(ctx)
-		if w.runtimeReporter != nil {
-			w.runtimeReporter(err == nil, max(w.newest.Load(), 1))
-		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Print("fleetexec tick failed")
 		}
@@ -117,6 +109,7 @@ func (w *Worker) Run(ctx context.Context) error {
 // Tick claims rows up to the free landing capacity and lands or reconciles
 // each in its own goroutine, then publishes one fresh signed route. The next
 // tick's claim lands that route. A fresh route never waits behind a landing.
+// Inflight counts every fleet leg, cross-mint included.
 func (w *Worker) Tick(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -132,11 +125,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 			go func(lease SubmissionLease) {
 				defer w.wg.Done()
 				defer w.landing.Add(-1)
-				slot, err := w.handleLease(ctx, lease)
-				if slot > w.newest.Load() {
-					w.newest.Store(slot)
-				}
-				if err != nil && !errors.Is(err, ErrStaleOwner) && !errors.Is(err, context.Canceled) {
+				if err := w.handleLease(ctx, lease); err != nil && !errors.Is(err, ErrStaleOwner) && !errors.Is(err, context.Canceled) {
 					// Errors can carry RPC detail; the row itself holds the state.
 					log.Print("fleetexec submission handling failed")
 				}
@@ -168,16 +157,16 @@ func (w *Worker) Tick(ctx context.Context) error {
 	return nil
 }
 
-func (w *Worker) handleLease(ctx context.Context, lease SubmissionLease) (uint64, error) {
+func (w *Worker) handleLease(ctx context.Context, lease SubmissionLease) error {
 	// Use the deadline returned by the database rather than granting a new
 	// TTL after network delay.
 	deadline, err := w.store.RenewClaimLease(ctx, lease, w.config.LeaseTTL)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	deadline = leaseWorkDeadline(deadline, w.config.LeaseTTL)
 	if !deadline.After(time.Now()) {
-		return 0, ErrStaleOwner
+		return ErrStaleOwner
 	}
 	leaseCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
@@ -186,22 +175,22 @@ func (w *Worker) handleLease(ctx context.Context, lease SubmissionLease) (uint64
 		return w.land(leaseCtx, ctx, lease)
 	case StateConfirmed:
 		if lease.Submission.ConfirmedSlot == nil {
-			return 0, fmt.Errorf("confirmed submission %d has no confirmed slot", lease.Submission.ID)
+			return fmt.Errorf("confirmed submission %d has no confirmed slot", lease.Submission.ID)
 		}
-		return uint64(*lease.Submission.ConfirmedSlot), w.store.ConfirmSameMint(leaseCtx, lease, *lease.Submission.ConfirmedSlot)
+		return w.store.ConfirmSameMint(leaseCtx, lease, *lease.Submission.ConfirmedSlot)
 	case StateReconciliationPending:
-		return 0, w.reconcileFinalized(leaseCtx, lease)
+		return w.reconcileFinalized(leaseCtx, lease)
 	}
-	return 0, fmt.Errorf("%w: %s", ErrNotClaimable, lease.Submission.State)
+	return fmt.Errorf("%w: %s", ErrNotClaimable, lease.Submission.State)
 }
 
 // land resends the row's exact bytes until they land or expire. When the
 // lease window ends first, the row stays signed or submitted and the next
 // tick's claim lands it again: that is the same path a restart takes.
-func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) (uint64, error) {
+func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) error {
 	record := lease.Submission
 	if err := verifyDurableWire(record); err != nil {
-		return 0, err
+		return err
 	}
 	out, err := solana.Land(leaseCtx, w.chain, solana.Attempt{
 		Wire: record.SignedTransaction, Signature: record.Signature,
@@ -216,22 +205,22 @@ func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) (uin
 	})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return 0, nil
+			return nil
 		}
-		return 0, err
+		return err
 	}
 	switch out.Kind {
 	case solana.Landed:
 		w.config.Facts.Landed(engine.FamilyFleet)
-		return out.Slot, w.store.ConfirmSameMint(leaseCtx, lease, int64(out.Slot))
+		return w.store.ConfirmSameMint(leaseCtx, lease, int64(out.Slot))
 	case solana.Failed:
 		w.config.Facts.Failed(engine.FamilyFleet, "transaction_failed")
-		return out.Slot, w.store.AdvanceSubmission(leaseCtx, lease, Advance{
+		return w.store.AdvanceSubmission(leaseCtx, lease, Advance{
 			NextState: StateFailed, ConfirmedSlot: int64Ptr(int64(out.Slot)), ErrorDetail: errPtr("chain failure: " + out.Err),
 		})
 	default:
 		w.config.Facts.Failed(engine.FamilyFleet, "blockhash_expired")
-		return out.ContextSlot, w.store.AdvanceSubmission(leaseCtx, lease, Advance{
+		return w.store.AdvanceSubmission(leaseCtx, lease, Advance{
 			NextState: StateExpired, ExpiryObservedBlockHeight: int64Ptr(int64(out.BlockHeight)),
 			EffectCheckSlot: int64Ptr(int64(out.ContextSlot)), ErrorDetail: errPtr("blockhash_expired_not_landed"),
 		})

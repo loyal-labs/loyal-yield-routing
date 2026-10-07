@@ -34,11 +34,10 @@ type Worker struct {
 	quotes   QuoteClient
 	workerID string
 	// routeKey pins one route when the root composes a single-route worker.
-	routeKey        *string
-	runtimeReporter func(bool, uint64)
-	recoveryOnly    bool
-	chain           solanaland.LandChain
-	facts           *engine.Facts
+	routeKey     *string
+	recoveryOnly bool
+	chain        solanaland.LandChain
+	facts        *engine.Facts
 }
 
 // WorkerDeps carries the pool-injected store, the observation reader, the
@@ -101,33 +100,10 @@ func newWorker(deps WorkerDeps, recoveryOnly bool) (*Worker, error) {
 	}, nil
 }
 
-// SetRuntimeReporter must be configured before Run. Each positive report
-// includes a real live chain frontier and a complete durable recovery census.
-func (w *Worker) SetRuntimeReporter(report func(bool, uint64)) { w.runtimeReporter = report }
-func (w *Worker) reportRuntime(ready bool, slot uint64) {
-	if w.runtimeReporter != nil {
-		w.runtimeReporter(ready, slot)
-	}
-}
-
-// runtimeFrontier is the live chain slot a healthy tick reports.
-func (w *Worker) runtimeFrontier(ctx context.Context) (uint64, error) {
-	frontier, err := w.executor.RPC.LatestBlockhash(ctx)
-	if err != nil {
-		return 0, err
-	}
-	if frontier == nil || frontier.ContextSlot == 0 {
-		return 0, errors.New("missing live multiply frontier")
-	}
-	return frontier.ContextSlot, nil
-}
-
 // Run mirrors run(): bootstrap unpinned routes, tick, sleep, drain on
 // cancellation. A route IO failure leaves its durable attempt for recovery
 // and does not terminate every route sharing this worker.
 func (w *Worker) Run(ctx context.Context) error {
-	w.reportRuntime(false, 0)
-	defer w.reportRuntime(false, 0)
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 	for {
@@ -159,23 +135,14 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 			fmt.Printf("%s\n", encoded)
 		}
-		var slot uint64
-		healthErr := err
-		if bootstrapFailed {
-			healthErr = errors.New("multiply bootstrap failed")
-		}
-		if healthErr == nil {
-			w.facts.Progress(engine.FamilyMultiply)
-			if w.runtimeReporter != nil {
-				slot, healthErr = w.runtimeFrontier(cycle)
+		if err == nil && !bootstrapFailed {
+			var inflight int
+			if err = w.store.pool.QueryRow(cycle, `SELECT count(*) FROM loyal_yield.multiply_operations WHERE status IN ('signed_persisted','broadcast_intent','confirmed','reconciliation_pending')`).Scan(&inflight); err == nil {
+				w.facts.Inflight(engine.FamilyMultiply, inflight)
+				w.facts.Progress(engine.FamilyMultiply)
 			}
 		}
-		ready := healthErr == nil && cycle.Err() == nil && slot > 0
 		cancelCycle()
-		w.reportRuntime(ready, slot)
-		if healthErr != nil && err == nil {
-			fmt.Printf("{\"condition\":\"multiply_recovery_health_unavailable\"}\n")
-		}
 		select {
 		case <-ctx.Done():
 			fmt.Printf("{\"condition\":\"multiply_worker_drained\"}\n")

@@ -7,6 +7,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 type MarketEpochSource interface {
@@ -22,17 +24,17 @@ type Worker struct {
 	shadowRevalidator *Revalidator
 	shadowSeen        shadowSeen
 	lastConfirmedSlot int64
-	runtimeReporter   func(bool, uint64)
+	facts             *engine.Facts
 }
 
-func NewWorker(config Config, store *Store, rpc *RPCClient) (*Worker, error) {
+func NewWorker(config Config, store *Store, rpc *RPCClient, facts *engine.Facts) (*Worker, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if store == nil || rpc == nil {
-		return nil, fmt.Errorf("store and RPC client are required")
+	if store == nil || rpc == nil || facts == nil {
+		return nil, fmt.Errorf("store, RPC client and facts are required")
 	}
-	return &Worker{config: config, store: store, rpc: rpc}, nil
+	return &Worker{config: config, store: store, rpc: rpc, facts: facts}, nil
 }
 
 func (w *Worker) SetRevalidator(revalidator *Revalidator) error {
@@ -67,52 +69,16 @@ func (w *Worker) SetMarketEvidence(source MarketEpochSource) error {
 	return nil
 }
 
-// SetRuntimeReporter must be called before Run. The slot is an actual complete
-// planning-cycle observation, never a loop heartbeat.
-func (w *Worker) SetRuntimeReporter(report func(bool, uint64)) { w.runtimeReporter = report }
-
-func (w *Worker) reportRuntime(ready bool, slot uint64) {
-	if w.runtimeReporter != nil {
-		w.runtimeReporter(ready, slot)
-	}
-}
-
+// runtimeCycle plans once; a completed cycle is fleet progress.
 func (w *Worker) runtimeCycle(ctx context.Context) {
-	err := w.planningCycle(ctx)
-	if err == nil && w.config.Mode == ModePublish && w.runtimeReporter != nil {
-		err = w.runtimeRecoveryCensus(ctx)
+	if err := w.planningCycle(ctx); err != nil {
+		logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "errorCategory": "cycle"})
+		return
 	}
-	ready := err == nil && ctx.Err() == nil && w.config.Mode == ModePublish && w.lastConfirmedSlot > 0
-	w.reportRuntime(ready, uint64(max(w.lastConfirmedSlot, 0)))
-	if err != nil {
-		logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "errorCategory": "cycle_or_recovery_health"})
-	}
-}
-
-// A bounded unsigned-admission sweep can leave expired custody behind. A
-// lease held by another owner cannot turn that remaining backlog into health.
-func (w *Worker) runtimeRecoveryCensus(ctx context.Context) error {
-	var blocked bool
-	err := w.store.pool.QueryRow(ctx, `SELECT EXISTS(
- SELECT 1 FROM loyal_yield.target_capacity_reservations r
- JOIN loyal_yield.rebalance_opportunities o ON o.id=r.opportunity_id
- WHERE o.cluster=$1 AND r.reservation_state='active' AND r.signed_submission_id IS NULL
- AND (o.opportunity_state='stale' OR (o.opportunity_state='leased' AND o.lease_kind='execute'
- AND (o.lease_expires_at IS NULL OR o.lease_expires_at<=clock_timestamp())))
- ) OR EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions
- WHERE cluster=$1 AND submission_state IN ('effect_ambiguous','expiry_check_pending'))`, w.config.Cluster).Scan(&blocked)
-	if err != nil {
-		return err
-	}
-	if blocked {
-		return fmt.Errorf("fleet recovery holds remain")
-	}
-	return nil
+	w.facts.Progress(engine.FamilyFleet)
 }
 
 func (w *Worker) Run(ctx context.Context) error {
-	w.reportRuntime(false, 0)
-	defer w.reportRuntime(false, 0)
 	var lanes sync.WaitGroup
 	defer lanes.Wait()
 	// Match the retained Rust route-revalidator service: sixteen independent
@@ -162,7 +128,6 @@ func (w *Worker) runRevalidator(ctx context.Context, index int, failureEvent str
 		}
 		processed, err := cycle(ctx, w.config.Cluster)
 		if err != nil {
-			w.reportRuntime(false, 0)
 			logEvent(map[string]any{"event": failureEvent, "workerIndex": index, "errorCategory": "cycle_failed"})
 		}
 		if processed {

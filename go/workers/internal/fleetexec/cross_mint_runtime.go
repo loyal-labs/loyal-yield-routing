@@ -50,17 +50,16 @@ type CrossMintActivationSource interface {
 // keep their existing owner; fresh activation comes last, after recovery and
 // continuation, and still passes the atomic source-owned store admission.
 type CrossMintRuntime struct {
-	config        Config
-	store         *Store
-	controller    *CrossMintController
-	adapter       *RPCAdapter
-	accounts      finalizedAccountReader
-	history       finalizedHistoryReader
-	status        StatusClient
-	chain         solana.LandChain
-	verifier      CrossMintFirstSendVerifier
-	admission     CrossMintActivationSource
-	reportRuntime func(bool, uint64)
+	config     Config
+	store      *Store
+	controller *CrossMintController
+	adapter    *RPCAdapter
+	accounts   finalizedAccountReader
+	history    finalizedHistoryReader
+	status     StatusClient
+	chain      solana.LandChain
+	verifier   CrossMintFirstSendVerifier
+	admission  CrossMintActivationSource
 }
 
 func NewCrossMintRuntime(ctx context.Context, config Config, store *Store, controller *CrossMintController, adapter *RPCAdapter, verifier CrossMintFirstSendVerifier) (*CrossMintRuntime, error) {
@@ -98,9 +97,6 @@ func NewCrossMintRecoveryRuntime(ctx context.Context, config Config, store *Stor
 func (r *CrossMintRuntime) SetActivationSource(source CrossMintActivationSource) {
 	r.admission = source
 }
-func (r *CrossMintRuntime) SetRuntimeReporter(callback func(bool, uint64)) {
-	r.reportRuntime = callback
-}
 
 func (r *CrossMintRuntime) Run(ctx context.Context) error {
 	ticker := time.NewTicker(r.config.TickInterval)
@@ -119,17 +115,8 @@ func (r *CrossMintRuntime) Run(ctx context.Context) error {
 
 func (r *CrossMintRuntime) Tick(ctx context.Context) (advanced int, err error) {
 	defer func() {
-		if r.reportRuntime != nil {
-			ready := false
-			var slot uint64
-			if err == nil {
-				var evidenceErr error
-				ready, slot, evidenceErr = r.ready(ctx)
-				if evidenceErr != nil {
-					err = fmt.Errorf("cross-mint readiness evidence: %w", evidenceErr)
-				}
-			}
-			r.reportRuntime(ready && err == nil, slot)
+		if err == nil {
+			r.config.Facts.Progress(engine.FamilyFleet)
 		}
 	}()
 	if err = ctx.Err(); err != nil {
@@ -183,55 +170,6 @@ func (r *CrossMintRuntime) Tick(ctx context.Context) (advanced int, err error) {
 // Health describes this configured owner, not just a successful SQL poll.
 // Manual uncertainty, unsupported payers and foreign/expired ownership remain
 // closed. RPC frontiers must cover every durable finalized custody anchor.
-func (r *CrossMintRuntime) ready(ctx context.Context) (bool, uint64, error) {
-	if r.adapter == nil {
-		return false, 0, errors.New("cross-mint readiness requires concrete RPC owner")
-	}
-	g, err := r.store.CrossMintGates(ctx, r.config.Cluster)
-	if err != nil {
-		return false, 0, err
-	}
-	if !g.ContinueOrRecoverExisting {
-		return false, 0, nil
-	}
-	lookback := 2*r.config.TickInterval + 5*time.Second
-	if lookback > r.config.LeaseTTL/2 {
-		lookback = r.config.LeaseTTL / 2
-	}
-	var closed bool
-	var anchor *int64
-	err = r.store.pool.QueryRow(ctx, `SELECT
- EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.cluster=$1 AND d.movement_route='cross_mint_jupiter' AND s.submission_state IN ('signed','submitted','confirmed','reconciliation_pending','expiry_check_pending','effect_ambiguous') AND (
- s.fee_payer_kind<>'policy' OR s.required_commitment<>'finalized' OR s.movement_leg NOT IN ('withdraw','swap','deposit') OR s.submission_state IN ('signed','expiry_check_pending','effect_ambiguous') OR s.last_status_checked_at IS NULL OR s.last_status_checked_at<clock_timestamp()-$3::interval OR (s.confirmation_lease_owner IS NOT NULL AND (s.confirmation_lease_owner<>$2 OR s.confirmation_lease_expires_at IS NULL OR s.confirmation_lease_expires_at<=clock_timestamp()))))
- OR EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id WHERE o.cluster=$1 AND d.movement_route='cross_mint_jupiter' AND d.terminal_outcome IS NULL AND d.continuation_lease_owner IS NOT NULL AND (d.continuation_lease_owner<>$2 OR d.continuation_lease_expires_at IS NULL OR d.continuation_lease_expires_at<=clock_timestamp() OR NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s WHERE s.decision_id=d.id AND s.submission_state IN ('signed','submitted','confirmed','reconciliation_pending','expiry_check_pending','effect_ambiguous'))))
- OR ($4 AND EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id WHERE o.cluster=$1 AND d.movement_route='cross_mint_jupiter' AND d.terminal_outcome IS NULL AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s WHERE s.decision_id=d.id AND s.submission_state IN ('signed','submitted','confirmed','reconciliation_pending','expiry_check_pending','effect_ambiguous')))),
- (SELECT max(d.custody_reconciled_slot) FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id WHERE o.cluster=$1 AND d.movement_route='cross_mint_jupiter')`, r.config.Cluster, r.config.Owner, formatInterval(lookback), r.controller == nil).Scan(&closed, &anchor)
-	if err != nil {
-		return false, 0, err
-	}
-	if closed {
-		return false, 0, nil
-	}
-	floor := int64(1)
-	if anchor != nil {
-		if *anchor <= 0 {
-			return false, 0, errors.New("durable custody frontier is invalid")
-		}
-		floor = *anchor
-	}
-	var slot, height int64
-	if err = r.adapter.call(ctx, &slot, "getSlot", map[string]any{"commitment": "finalized", "minContextSlot": floor}); err != nil {
-		return false, 0, err
-	}
-	if err = r.adapter.call(ctx, &height, "getBlockHeight", map[string]any{"commitment": "finalized"}); err != nil {
-		return false, 0, err
-	}
-	if slot <= 0 || slot < floor || height <= 0 {
-		return false, 0, nil
-	}
-	return true, uint64(slot), nil
-}
-
 func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error {
 	deadline, err := r.store.RenewClaimLease(ctx, l, r.config.LeaseTTL)
 	if err != nil {

@@ -79,7 +79,7 @@ func TestLookupRequestSatisfiedOnlyByCurrentPublishedActualBanks(t *testing.T) {
 	if err != nil || before.OpportunityID != opportunity.OpportunityID || before.Reason == "alt_readmitted" {
 		t.Fatal("C woke before actual ALT satisfaction", before, err)
 	}
-	planner, err := NewLookupPlanner(store, svm.rpc, LookupPlannerConfig{Cluster: "localnet", Owner: "satisfaction-plan", LeaseTTL: time.Minute, TickDeadline: 25 * time.Second, PollInterval: time.Second, CatalogInterval: time.Minute, GrowthReservation: 8, MaximumVaultCohort: 16})
+	planner, err := NewLookupPlanner(store, svm.rpc, LookupPlannerConfig{Cluster: "localnet", Owner: "satisfaction-plan", LeaseTTL: time.Minute, TickDeadline: 25 * time.Second, PollInterval: time.Second, CatalogInterval: time.Minute, GrowthReservation: 8, MaximumVaultCohort: 16, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}

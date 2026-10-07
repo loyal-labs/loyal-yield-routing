@@ -202,10 +202,8 @@ type ControlReconciler struct {
 	Store                       *Store
 	Reader                      ControlReader
 	Artifacts                   ControlArtifactReconciler
-	RuntimeChain                ConfirmedSlotReader
 	OnError                     func(error)
 	PollInterval, LeaseDuration time.Duration
-	runtimeReporter             func(bool, uint64)
 }
 
 func (r *ControlReconciler) Tick(ctx context.Context) (bool, error) {
@@ -265,8 +263,6 @@ func (r *ControlReconciler) Tick(ctx context.Context) (bool, error) {
 }
 
 func (r *ControlReconciler) Run(ctx context.Context) error {
-	r.reportRuntime(false, 0)
-	defer r.reportRuntime(false, 0)
 	if r.Store == nil || r.Reader == nil || (r.LeaseDuration > 0 && r.LeaseDuration < time.Second) {
 		return errors.New("autodeposit control runtime dependencies or lease invalid")
 	}
@@ -279,14 +275,9 @@ func (r *ControlReconciler) Run(ctx context.Context) error {
 	for {
 		cycle, cancel := context.WithTimeout(ctx, runtimeCycleTimeout)
 		_, err := r.Tick(cycle)
-		var slot uint64
-		if err == nil && r.runtimeReporter != nil {
-			slot, err = runtimeRecoveryHealth(cycle, r.Store, r.RuntimeChain, false)
-		}
 		cancel()
-		r.reportRuntime(err == nil && ctx.Err() == nil && slot > 0, slot)
 		if err != nil && ctx.Err() == nil {
-			log.Print("autodeposit control_cycle_or_readiness_proof_failed")
+			log.Print("autodeposit control_cycle_failed")
 			if r.OnError != nil {
 				r.OnError(errRuntimeProofUnavailable)
 			}

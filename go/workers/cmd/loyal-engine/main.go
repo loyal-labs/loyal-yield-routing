@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func required(name string) (string, error) {
@@ -29,34 +31,41 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	release, err := required("LOYAL_IMAGE_VERSION")
+	owner, err := engine.InstanceOwner(scope, instance, engine.Release)
 	if err != nil {
 		return err
 	}
-	owner, err := engine.InstanceOwner(scope, instance, release)
-	if err != nil {
-		return err
-	}
-	switch scope {
-	case "backyard":
-		return runBackyard(ctx, owner, release)
-	case "retail":
-		return runRetail(ctx, owner, release)
-	default:
+	if scope != "backyard" && scope != "retail" {
 		return errors.New("engine scope must be retail or backyard")
 	}
+	registry := prometheus.NewRegistry()
+	facts := engine.NewFacts(registry)
+	if scope == "retail" {
+		facts.Own(engine.FamilyAutodeposit, engine.FamilyFleet, engine.FamilyMultiply, engine.FamilyLookup)
+	} else {
+		facts.Own(engine.FamilyBackyard)
+	}
+	metrics, err := engine.ListenMetrics(os.Getenv("LOYAL_METRICS_ADDRESS"), registry)
+	if err != nil {
+		return err
+	}
+	defer metrics.Close()
+	if scope == "backyard" {
+		return runBackyard(ctx, owner, facts, metrics)
+	}
+	return runRetail(ctx, owner, facts, metrics)
 }
 
-func runBackyard(ctx context.Context, owner, release string) error {
-	databaseURL, err := required("BACKYARD_DATABASE_URL")
+func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics engine.Lane) error {
+	databaseURL, err := engine.Credential("BACKYARD_DATABASE_URL")
 	if err != nil {
 		return err
 	}
-	rpcURL, err := required("BACKYARD_SOLANA_RPC_URL")
+	rpcURL, err := engine.Credential("BACKYARD_SOLANA_RPC_URL")
 	if err != nil {
 		return err
 	}
-	material, err := required("BACKYARD_POLICY_KEYPAIR")
+	material, err := engine.Credential("BACKYARD_POLICY_KEYPAIR")
 	if err != nil {
 		return err
 	}
@@ -77,14 +86,15 @@ func runBackyard(ctx context.Context, owner, release string) error {
 	if err != nil {
 		return err
 	}
-	lane, err := backyard.NewEngine(backyard.EngineConfig{Database: database, RPC: rpc, Credentials: credentials, RouteKey: cfg.RouteKey, Config: backyard.DefaultConfig(), Owner: owner, Out: os.Stdout, ImageVersion: release})
+	lane, err := backyard.NewEngine(backyard.EngineConfig{Database: database, RPC: rpc, Credentials: credentials, RouteKey: cfg.RouteKey, Config: backyard.DefaultConfig(), Owner: owner, Out: os.Stdout, ImageVersion: engine.Release})
 	if err != nil {
 		return err
 	}
-	return engine.Run(ctx, lane)
+	return engine.Run(ctx, lane, metrics)
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if len(os.Args) == 2 && os.Args[1] == "--role-probe" {
 		fmt.Println(`{"schemaVersion":1,"role":"engine","networkAccessed":false,"secretsLoaded":false,"databaseMutated":false,"transactionSent":false}`)
 		return
@@ -96,7 +106,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		fmt.Fprintln(os.Stderr, "engine failed:", err)
+		slog.Error("engine failed", "error", err)
 		os.Exit(1)
 	}
 }

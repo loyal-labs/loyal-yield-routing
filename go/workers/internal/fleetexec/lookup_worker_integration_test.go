@@ -2,9 +2,9 @@ package fleetexec
 
 import (
 	"bytes"
-	"encoding/base64"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -38,14 +38,8 @@ func TestLookupAutonomousTickSignsOnlyAfterBudgetAndRecoversWithoutKey(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reportedBank uint64
-	var reportedReady bool
-	worker.SetRuntimeReporter(func(ready bool, slot uint64) { reportedReady = ready; reportedBank = slot })
 	if worked, err := worker.Tick(ctx); err != nil || !worked {
 		t.Fatalf("actual fresh tick: %v/%v", worked, err)
-	}
-	if !reportedReady || reportedBank != 1000 {
-		t.Fatal("runtime fabricated or omitted actual bank frontier", reportedReady, reportedBank)
 	}
 	owned, err := lookupAttemptOf(loadLookupOperation(t, ctx, pool, op.Intent.OperationID))
 	if err != nil || len(owned.Wire.SignedTransaction) == 0 || owned.BroadcastCount < 1 || keys != 1 {
@@ -122,23 +116,10 @@ func TestLookupWorkerTransportOutageReportsUnhealthyAndJoins(t *testing.T) {
 		t.Fatal(err)
 	}
 	reports := make(chan error, 1)
-	frontiers := make(chan struct {
-		ready bool
-		slot  uint64
-	}, 1)
 	worker, err := NewLookupWorker(store, rpc, LookupWorkerConfig{Cluster: "localnet", Owner: "lookup-health", LeaseTTL: time.Minute, TickDeadline: time.Second, PollInterval: 10 * time.Millisecond, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}, ReconcileOnly: true, Facts: testFacts(), OnHealth: func(err error) { reports <- err }}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker.SetRuntimeReporter(func(ready bool, slot uint64) {
-		select {
-		case frontiers <- struct {
-			ready bool
-			slot  uint64
-		}{ready, slot}:
-		default:
-		}
-	})
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
@@ -150,14 +131,6 @@ func TestLookupWorkerTransportOutageReportsUnhealthyAndJoins(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("outage never reported")
-	}
-	select {
-	case frontier := <-frontiers:
-		if frontier.ready || frontier.slot != 0 {
-			t.Fatal("failed transport reported fabricated readiness/frontier", frontier)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("failed transport had no runtime report")
 	}
 	select {
 	case err := <-done:

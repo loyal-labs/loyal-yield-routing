@@ -3,28 +3,11 @@ package fleetexec
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"testing"
 
 	sdk "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
-
-func TestCrossMintRuntimeReporterKeepsUnknownFrontierClosed(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	r := &CrossMintRuntime{}
-	calls := 0
-	r.SetRuntimeReporter(func(ready bool, slot uint64) {
-		calls++
-		if ready || slot != 0 {
-			t.Fatalf("cancelled tick fabricated frontier: %v %d", ready, slot)
-		}
-	})
-	if n, err := r.Tick(ctx); n != 0 || !errors.Is(err, context.Canceled) || calls != 1 {
-		t.Fatalf("reporter cancellation: n=%d calls=%d err=%v", n, calls, err)
-	}
-}
 
 func TestCrossMintReceiptRequiresActualPrePostOwnerAndCanonicalProgram(t *testing.T) {
 	f := mustSignedFixture(t)

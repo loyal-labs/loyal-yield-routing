@@ -3,24 +3,35 @@ package worker
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/ata"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/earn"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/observability"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/subscription"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 )
 
 type DurableHandler struct {
-	Kamino  *kamino.Handler
-	ATA     *ata.Handler
-	Earn    *earn.Handler
-	Bridge  *earn.Bridge
-	Health  *observability.Health
-	Metrics *observability.Metrics
+	Kamino *kamino.Handler
+	ATA    *ata.Handler
+	Earn   *earn.Handler
+	Bridge *earn.Bridge
+	Facts  *engine.Facts
+	// lastSlotAt is when the stream last delivered a durable slot; zero after
+	// a reconnect. The runtime restarts a session that stops delivering.
+	lastSlotAt atomic.Int64
+}
+
+func (h *DurableHandler) failed(code string) { h.Facts.Failed(engine.FamilyObserver, code) }
+
+// stalled reports whether a session that has delivered slots stopped for longer than timeout.
+func (h *DurableHandler) stalled(timeout time.Duration) bool {
+	last := h.lastSlotAt.Load()
+	return last > 0 && time.Since(time.Unix(0, last)) > timeout
 }
 
 func (h *DurableHandler) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
@@ -33,33 +44,17 @@ func (h *DurableHandler) Handle(ctx context.Context, update *pb.SubscribeUpdate)
 	}
 	handled := false
 	if _, ok := filters[subscription.KaminoReserves]; ok {
-		started := time.Now()
-		outcome, err := h.Kamino.HandleAccount(ctx, update)
-		h.Metrics.ObserveHandler(ctx, "kamino", time.Since(started))
-		if err != nil {
-			h.Metrics.RecordFailure(ctx, "kamino_persist")
+		if _, err := h.Kamino.HandleAccount(ctx, update); err != nil {
+			h.failed("kamino_persist")
 			return err
 		}
-		h.Metrics.RecordUpdate(ctx, "kamino", subscription.KaminoReserves)
-		if !outcome.Inserted && !outcome.Malformed {
-			h.Metrics.RecordDuplicate(ctx, "kamino")
-		}
-		h.Health.DomainProgress("kamino", outcome.Slot)
 		handled = true
 	}
 	if _, ok := filters[watch.BalanceSweepWalletATAs]; ok {
-		started := time.Now()
-		outcome, err := h.ATA.HandleAccount(ctx, update)
-		h.Metrics.ObserveHandler(ctx, "ata", time.Since(started))
-		if err != nil {
-			h.Metrics.RecordFailure(ctx, "ata_persist")
+		if _, err := h.ATA.HandleAccount(ctx, update); err != nil {
+			h.failed("ata_persist")
 			return err
 		}
-		h.Metrics.RecordUpdate(ctx, "ata", watch.BalanceSweepWalletATAs)
-		if !outcome.Inserted {
-			h.Metrics.RecordDuplicate(ctx, "ata")
-		}
-		h.Health.DomainProgress("ata", outcome.Slot)
 		handled = true
 	}
 	earnAccount := false
@@ -70,38 +65,23 @@ func (h *DurableHandler) Handle(ctx context.Context, update *pb.SubscribeUpdate)
 		}
 	}
 	if earnAccount {
-		started := time.Now()
-		outcome, err := h.Earn.HandleAccount(ctx, update)
-		h.Metrics.ObserveHandler(ctx, "earn", time.Since(started))
-		if err != nil {
-			h.Metrics.RecordFailure(ctx, "earn_enqueue")
+		if _, err := h.Earn.HandleAccount(ctx, update); err != nil {
+			h.failed("earn_enqueue")
 			return err
 		}
-		h.Metrics.RecordUpdate(ctx, "earn", "account")
-		if outcome.InsertedJobs == 0 {
-			h.Metrics.RecordDuplicate(ctx, "earn")
-		}
-		h.Health.DomainProgress("earn", outcome.Cursor)
 		handled = true
 	}
 	if _, ok := filters[subscription.EarnMaxPolicyTransactions]; ok {
-		started := time.Now()
 		if err := h.Bridge.HandleTransaction(ctx, update); err != nil {
-			h.Metrics.RecordFailure(ctx, "earn_policy_projection")
+			h.failed("earn_policy_projection")
 			return err
-		}
-		h.Metrics.ObserveHandler(ctx, "earn_policy", time.Since(started))
-		h.Metrics.RecordUpdate(ctx, "earn_policy", subscription.EarnMaxPolicyTransactions)
-		if transaction := update.GetTransaction(); transaction != nil {
-			h.Health.DomainProgress("earn_policy", transaction.GetSlot())
 		}
 		handled = true
 	}
 	if _, ok := filters[subscription.StreamProgress]; ok {
 		if slot := update.GetSlot(); slot != nil {
-			h.Health.Progress(slot.GetSlot())
-			h.Metrics.Frontier.Set(float64(slot.GetSlot()))
-			h.Metrics.LastProgress.Set(float64(time.Now().Unix()))
+			h.lastSlotAt.Store(time.Now().UnixNano())
+			h.Facts.Progress(engine.FamilyObserver)
 			handled = true
 		}
 	}

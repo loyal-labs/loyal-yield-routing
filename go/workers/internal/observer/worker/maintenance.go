@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer"
 )
 
@@ -62,8 +63,8 @@ func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, er
 	if err != nil {
 		return nil, err
 	}
-	r.health.SetDomainReady("read_models", false)
-	maintenance, err := observer.NewMaintenance(r.neon, r.timescale, observer.MaintenanceConfig{Cluster: r.cfg.Cluster, MediumMarkets: mediumMainnetMarkets, PriceRPC: rpc, Logger: r.logger, ValidateNamespace: validateNamespace, OnHealth: func(ready bool) { r.health.SetDomainReady("read_models", ready) }})
+	onError := func() { r.facts.Failed(engine.FamilyObserver, "read_models") }
+	maintenance, err := observer.NewMaintenance(r.neon, r.timescale, observer.MaintenanceConfig{Cluster: r.cfg.Cluster, MediumMarkets: mediumMainnetMarkets, PriceRPC: rpc, Logger: r.logger, ValidateNamespace: validateNamespace, OnError: onError})
 	if err != nil {
 		return nil, err
 	}

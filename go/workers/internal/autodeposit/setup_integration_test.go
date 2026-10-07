@@ -104,7 +104,7 @@ func TestDestinationSetupJournalKeepsExactIntentUntilProvedReadback(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt, err := store.PersistDestinationSetup(ctx, claim, "lease-current", setup, wire, 0)
+	attempt, err := store.PersistDestinationSetup(ctx, claim, "lease-current", setup, wire)
 	if err != nil {
 		t.Fatal(err)
 	}

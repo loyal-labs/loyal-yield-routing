@@ -11,6 +11,7 @@ import (
 	"time"
 
 	solanago "github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 type Config struct {
@@ -24,10 +25,8 @@ type Config struct {
 	KaminoAPIBase         string
 	Cluster               string
 	ATAStream             string
-	HTTPAddress           string
 	BridgeBinary          string
 	BridgeStartupTimeout  time.Duration
-	EarnReadyMaxAge       time.Duration
 	ReplayOverlapSlots    uint64
 	WatchRefresh          time.Duration
 	VerifyRefresh         time.Duration
@@ -38,7 +37,7 @@ type Config struct {
 
 // BridgeEnvironment builds the complete environment of the Earn domain bridge
 // child. It is a strict allowlist: the child receives only observer data-plane
-// configuration and telemetry endpoints. The worker process environment is
+// configuration. The worker process environment is
 // never inherited. The public Earn delegate is verifier input; POLICY_KEYPAIR
 // and the Helius API key are excluded.
 func (c Config) BridgeEnvironment() []string {
@@ -57,7 +56,6 @@ func (c Config) BridgeEnvironment() []string {
 		"LASERSTREAM_ENDPOINT=" + c.LaserStreamEndpoint,
 		"EARN_BRIDGE_OBSERVER_CONSUMER=1",
 		"RUST_LOG=" + envOr("RUST_LOG", "info"),
-		"OTEL_EXPORTER_OTLP_ENDPOINT=" + os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 	}
 }
 
@@ -69,7 +67,6 @@ func FromEnv() (Config, error) {
 		"LASERSTREAM_PROGRESS_TIMEOUT_SECONDS",
 		"LASERSTREAM_HANDOFF_TIMEOUT_SECONDS",
 		"EARN_DOMAIN_BRIDGE_STARTUP_TIMEOUT_SECONDS",
-		"EARN_RECONCILIATION_READY_MAX_AGE_SECONDS",
 		"EARN_RECONCILIATION_CONCURRENCY",
 	); err != nil {
 		return Config{}, err
@@ -77,21 +74,27 @@ func FromEnv() (Config, error) {
 	if value := strings.TrimSpace(os.Getenv("AUTODEPOSIT_RECONCILIATION_CONCURRENCY")); value != "" && value != "0" {
 		return Config{}, errors.New("AUTODEPOSIT_RECONCILIATION_CONCURRENCY must be 0: the Go retail engine owns this outbox")
 	}
+	var missing []string
+	credential := func(name string) string {
+		value, err := engine.Credential(name)
+		if err != nil {
+			missing = append(missing, name)
+		}
+		return value
+	}
 	cfg := Config{
 		LaserStreamEndpoint:   strings.TrimSpace(os.Getenv("LASERSTREAM_ENDPOINT")),
-		HeliusAPIKey:          strings.TrimSpace(os.Getenv("HELIUS_API_KEY")),
+		HeliusAPIKey:          credential("HELIUS_API_KEY"),
 		EarnMaxDelegate:       strings.TrimSpace(os.Getenv("EARN_MAX_DELEGATE")),
-		SolanaRPCURL:          strings.TrimSpace(os.Getenv("SOLANA_RPC_URL")),
-		NeonDatabaseURL:       strings.TrimSpace(os.Getenv("NEON_DATABASE_URL")),
-		AppsDatabaseURL:       strings.TrimSpace(os.Getenv("OBSERVER_APPS_DATABASE_URL")),
-		TimescaleDatabaseURL:  strings.TrimSpace(os.Getenv("TIMESCALEDB_URL")),
+		SolanaRPCURL:          credential("SOLANA_RPC_URL"),
+		NeonDatabaseURL:       credential("NEON_DATABASE_URL"),
+		AppsDatabaseURL:       credential("OBSERVER_APPS_DATABASE_URL"),
+		TimescaleDatabaseURL:  credential("TIMESCALEDB_URL"),
 		KaminoAPIBase:         envOr("KAMINO_API_BASE", "https://api.kamino.finance"),
 		Cluster:               normalizeSolanaCluster(envOr("SOLANA_CLUSTER", "mainnet-beta")),
 		ATAStream:             strings.ToLower(envOr("BALANCE_SWEEP_ATA_STREAM", "production")),
-		HTTPAddress:           envOr("PORT", "10000"),
 		BridgeBinary:          strings.TrimSpace(os.Getenv("EARN_DOMAIN_BRIDGE_BINARY")),
 		BridgeStartupTimeout:  durationEnv("EARN_DOMAIN_BRIDGE_STARTUP_TIMEOUT_SECONDS", 20*time.Second),
-		EarnReadyMaxAge:       durationEnv("EARN_RECONCILIATION_READY_MAX_AGE_SECONDS", 300*time.Second),
 		ReplayOverlapSlots:    uintEnv("LASERSTREAM_REPLAY_OVERLAP_SLOTS", 32),
 		WatchRefresh:          durationEnv("BALANCE_SWEEP_TARGET_REFRESH_SECONDS", 300*time.Second),
 		VerifyRefresh:         durationEnv("KAMINO_CONFIRMED_REFRESH_INTERVAL_SECONDS", 60*time.Second),
@@ -99,18 +102,9 @@ func FromEnv() (Config, error) {
 		HandoffTimeout:        durationEnv("LASERSTREAM_HANDOFF_TIMEOUT_SECONDS", 120*time.Second),
 		ReconciliationWorkers: int(uintEnv("EARN_RECONCILIATION_CONCURRENCY", 4)),
 	}
-	if !strings.Contains(cfg.HTTPAddress, ":") {
-		cfg.HTTPAddress = ":" + cfg.HTTPAddress
-	}
-	var missing []string
 	for name, value := range map[string]string{
-		"LASERSTREAM_ENDPOINT":       cfg.LaserStreamEndpoint,
-		"HELIUS_API_KEY":             cfg.HeliusAPIKey,
-		"EARN_MAX_DELEGATE":          cfg.EarnMaxDelegate,
-		"SOLANA_RPC_URL":             cfg.SolanaRPCURL,
-		"NEON_DATABASE_URL":          cfg.NeonDatabaseURL,
-		"OBSERVER_APPS_DATABASE_URL": cfg.AppsDatabaseURL,
-		"TIMESCALEDB_URL":            cfg.TimescaleDatabaseURL,
+		"LASERSTREAM_ENDPOINT": cfg.LaserStreamEndpoint,
+		"EARN_MAX_DELEGATE":    cfg.EarnMaxDelegate,
 	} {
 		if value == "" {
 			missing = append(missing, name)
@@ -118,7 +112,7 @@ func FromEnv() (Config, error) {
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		return Config{}, fmt.Errorf("required environment variables are missing: %s", strings.Join(missing, ", "))
+		return Config{}, fmt.Errorf("required configuration is missing: %s", strings.Join(missing, ", "))
 	}
 	if _, err := solanago.PublicKeyFromBase58(cfg.EarnMaxDelegate); err != nil {
 		return Config{}, errors.New("EARN_MAX_DELEGATE must be a Solana public key")

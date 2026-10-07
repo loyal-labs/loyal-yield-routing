@@ -11,11 +11,11 @@ import (
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/ata"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/earn"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/observability"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/subscription"
@@ -27,8 +27,7 @@ const kaminoVerificationFailureThreshold = 3
 type Runtime struct {
 	cfg           config.Config
 	logger        *slog.Logger
-	health        *observability.Health
-	metrics       *observability.Metrics
+	facts         *engine.Facts
 	neon          *pgxpool.Pool
 	apps          *pgxpool.Pool
 	timescale     *pgxpool.Pool
@@ -44,7 +43,7 @@ type Runtime struct {
 	handler       *DurableHandler
 }
 
-func New(ctx context.Context, cfg config.Config, logger *slog.Logger, health *observability.Health, metrics *observability.Metrics) (*Runtime, error) {
+func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *engine.Facts) (*Runtime, error) {
 	startup, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelStartup()
 	if cfg.AppsDatabaseURL == "" {
@@ -88,9 +87,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, health *ob
 		apps.Close()
 		return nil, err
 	}
-	runtime := &Runtime{cfg: cfg, logger: logger, health: health, metrics: metrics, neon: neon, apps: apps, timescale: timescale, rpc: rpc, watchLoader: watch.NewLoaderWithApps(neon, apps, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, bridge: bridge}
-	runtime.handler = &DurableHandler{Kamino: kaminoHandler, ATA: ataHandler, Earn: earnHandler, Bridge: bridge, Health: health, Metrics: metrics}
-	health.SetDomainReady("watch", false)
+	runtime := &Runtime{cfg: cfg, logger: logger, facts: facts, neon: neon, apps: apps, timescale: timescale, rpc: rpc, watchLoader: watch.NewLoaderWithApps(neon, apps, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, bridge: bridge}
+	runtime.handler = &DurableHandler{Kamino: kaminoHandler, ATA: ataHandler, Earn: earnHandler, Bridge: bridge, Facts: facts}
 	return runtime, nil
 }
 
@@ -112,7 +110,6 @@ func (r *Runtime) Close() {
 func (r *Runtime) Run(ctx context.Context) error {
 	startup, cancelStartup := context.WithTimeout(ctx, r.passTimeout())
 	defer cancelStartup()
-	r.health.SetDomainReady("watch", false)
 	currentWatch, targets, seedSlot, err := r.loadAndSeed(startup)
 	if err != nil {
 		return err
@@ -151,18 +148,11 @@ func (r *Runtime) Run(ctx context.Context) error {
 	// Only initialization belongs to this deadline. The promoted stream must
 	// remain owned by the process context after startup succeeds.
 	cancelStartup()
-	r.health.ResetProgress()
 	manager := stream.NewManager(stream.GRPCConnector{Endpoint: r.cfg.LaserStreamEndpoint, APIKey: r.cfg.HeliusAPIKey}, r.handler, stream.Config{ReplayOverlapSlots: r.cfg.ReplayOverlapSlots, HandoffTimeout: r.cfg.HandoffTimeout})
 	if err = manager.Start(ctx, request); err != nil {
 		return err
 	}
 	defer func() { manager.Close() }()
-	r.health.SetConnected(true)
-	r.health.SetDomainReady("watch", true)
-	// Capture readiness is not application readiness: the Earn gate stays
-	// closed until the reconciliation health poll observes applied, healthy
-	// backlog state (see the earnHealthTicker case).
-	r.health.SetDomainReady("earn", false)
 	sessionStarted := time.Now()
 	r.logger.Info("combined LaserStream worker started", "fromSlot", fromSlot, "kaminoReserves", len(targets), "ataTargets", len(currentWatch.ATAs), "earnVaults", len(currentWatch.Vaults))
 	watchCtx, cancelWatch := context.WithCancel(ctx)
@@ -172,8 +162,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 	defer verifyTicker.Stop()
 	progressTicker := time.NewTicker(5 * time.Second)
 	defer progressTicker.Stop()
-	earnHealthTicker := time.NewTicker(60 * time.Second)
-	defer earnHealthTicker.Stop()
 	verificationFailures := 0
 	for {
 		select {
@@ -183,14 +171,11 @@ func (r *Runtime) Run(ctx context.Context) error {
 			if err == nil {
 				err = errors.New("earn domain bridge exited")
 			}
-			r.metrics.RecordFailure(ctx, "earn_domain_bridge_stopped")
-			r.health.Fatal(err)
+			r.facts.Failed(engine.FamilyObserver, "earn_domain_bridge_stopped")
 			return fmt.Errorf("earn domain bridge stopped: %w", err)
 		case err := <-manager.Errors():
-			r.metrics.RecordFailure(ctx, "combined_stream_stopped")
-			r.metrics.RecordReconnect(ctx)
-			r.health.SetConnected(false)
-			r.health.ResetProgress()
+			r.facts.Failed(engine.FamilyObserver, "combined_stream_stopped")
+			r.handler.lastSlotAt.Store(0)
 			r.logger.Error("combined LaserStream session stopped; reconnecting from durable frontier", "event", "laserstream_worker_session_failed", "error", err)
 			frontier := manager.ActiveFrontier()
 			manager.Close()
@@ -207,22 +192,18 @@ func (r *Runtime) Run(ctx context.Context) error {
 			if startErr := retryStart(ctx, manager, request, r.logger); startErr != nil {
 				return startErr
 			}
-			r.health.SetConnected(true)
-			r.health.SetDomainReady("earn", false)
 			sessionStarted = time.Now()
 		case <-watchRefresh:
 			refreshErr := func() error {
 				passCtx, cancelPass := context.WithTimeout(ctx, r.passTimeout())
 				defer cancelPass()
-				r.health.SetDomainReady("watch", false)
 				scanBoundary := manager.ActiveFrontier()
 				if scanBoundary == 0 {
 					scanBoundary = watchObservationSlot
 				}
 				nextWatch, nextTargets, loadErr := r.load(passCtx)
 				if loadErr != nil {
-					r.health.SetDomainReady("watch", false)
-					r.metrics.RecordFailure(ctx, "watch_refresh")
+					r.facts.Failed(engine.FamilyObserver, "watch_refresh")
 					r.logger.Error("failed to refresh combined LaserStream watch set", "error", loadErr)
 					return nil
 				}
@@ -233,15 +214,14 @@ func (r *Runtime) Run(ctx context.Context) error {
 					return retainErr
 				}
 				if recovered, recoveryErr := r.recoverNewEarnBindings(passCtx, currentWatch, nextWatch); recoveryErr != nil {
-					r.health.SetDomainReady("watch", false)
-					r.metrics.RecordFailure(ctx, "earn_binding_rpc_recovery")
+					r.facts.Failed(engine.FamilyObserver, "earn_binding_rpc_recovery")
 					r.logger.Error("failed to recover newly discovered Earn bindings; old stream retained", "event", "earn_binding_rpc_recovery_failed", "error", recoveryErr)
 					return nil
 				} else if recovered > 0 {
 					r.logger.Info("recovered newly discovered Earn binding state from confirmed RPC", "insertedJobs", recovered)
 				}
 				if recovered, gapErr := r.recoverEarnMaxGaps(passCtx, nextWatch); gapErr != nil {
-					r.metrics.RecordFailure(ctx, "earn_max_rpc_gap_recovery")
+					r.facts.Failed(engine.FamilyObserver, "earn_max_rpc_gap_recovery")
 					r.logger.Error("Earn MAX RPC gap recovery failed", "event", "earn_max_rpc_gap_recovery_failed", "error", gapErr)
 					return nil
 				} else if recovered > 0 {
@@ -259,7 +239,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 						}
 						watchObservationSlot = scanBoundary
 					}
-					r.health.SetDomainReady("watch", passCtx.Err() == nil)
 					return nil
 				}
 				r.ata.SetTargets(nextWatch.ATAs)
@@ -278,8 +257,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 					return buildErr
 				}
 				if handoffErr := manager.Handoff(passCtx, replacement); handoffErr != nil {
-					r.health.SetDomainReady("watch", false)
-					r.metrics.RecordHandoff(ctx, "failed")
+					r.facts.Failed(engine.FamilyObserver, "filter_handoff")
 					r.logger.Error("combined filter-set handoff failed; old stream retained", "error", handoffErr)
 					r.ata.SetTargets(currentWatch.ATAs)
 					r.earn.SetWatchSet(currentWatch)
@@ -292,11 +270,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 					}
 					watchObservationSlot = scanBoundary
 				}
-				r.metrics.RecordHandoff(ctx, "promoted")
 				request = replacement
 				currentWatch, targets = nextWatch, nextTargets
 				r.logger.Info("combined filter-set handoff promoted", "frontier", manager.ActiveFrontier(), "kaminoReserves", len(targets), "ataTargets", len(currentWatch.ATAs), "earnVaults", len(currentWatch.Vaults))
-				r.health.SetDomainReady("watch", passCtx.Err() == nil)
 				return nil
 			}()
 			if refreshErr != nil {
@@ -306,9 +282,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 			verifyErr := r.verifyPass(ctx)
 			if verifyErr != nil {
 				verificationFailures++
-				r.metrics.RecordFailure(ctx, "kamino_confirmed_verification")
+				r.facts.Failed(engine.FamilyObserver, "kamino_confirmed_verification")
 				if terminalErr := persistentVerificationError(verificationFailures, verifyErr); terminalErr != nil {
-					r.health.Fatal(terminalErr)
 					r.logger.Error("Kamino confirmed-state verification exhausted retries; restarting", "event", "kamino_confirmed_verification_stalled", "consecutiveFailures", verificationFailures, "error", verifyErr)
 					return terminalErr
 				}
@@ -316,41 +291,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 			} else {
 				verificationFailures = 0
 			}
-		case <-earnHealthTicker.C:
-			healthCtx, cancelHealth := context.WithTimeout(ctx, 15*time.Second)
-			cursor, pending, failed, oldest, healthErr := r.earnStore.Health(healthCtx, r.earn.ConsumerName())
-			var appliedCursor uint64
-			if healthErr == nil {
-				appliedCursor, healthErr = r.earnStore.ApplicationCursor(healthCtx, r.earn.ConsumerName())
-			}
-			cancelHealth()
-			if healthErr != nil {
-				r.metrics.RecordFailure(ctx, "earn_reconciliation_health")
-				r.health.SetDomainReady("earn", false)
-				r.logger.Error("failed to load Earn reconciliation health", "event", "earn_reconciliation_health_snapshot_failed", "error", healthErr)
-			} else {
-				r.metrics.EarnPending.Set(float64(pending))
-				r.metrics.EarnFailed.Set(float64(failed))
-				r.metrics.EarnOldestAge.Set(float64(oldest))
-				// cursor is the capture clock; appliedCursor is what the policy
-				// projection has actually applied. Readiness only follows the
-				// applied cursor plus a healthy job backlog.
-				r.health.DomainProgress("earn", cursor)
-				r.health.DomainAppliedProgress("earn", appliedCursor)
-				healthy := failed == 0 && oldest <= uint64(r.cfg.EarnReadyMaxAge/time.Second)
-				r.health.SetDomainReady("earn", healthy)
-				if !healthy {
-					r.logger.Warn("Earn application backlog is unhealthy; readiness gate held closed", "event", "earn_reconciliation_backlog_unhealthy", "captureCursor", cursor, "appliedCursor", appliedCursor, "pendingJobs", pending, "failedPendingJobs", failed, "oldestPendingAgeSeconds", oldest)
-				}
-				if failed > 0 {
-					r.logger.Error("Earn reconciliation jobs remain failed and pending", "event", "earn_reconciliation_job_failed", "failedPendingJobs", failed, "oldestPendingAgeSeconds", oldest)
-				}
-			}
 		case <-progressTicker.C:
 			frontier := manager.ActiveFrontier()
-			if (frontier == 0 && time.Since(sessionStarted) > r.cfg.ProgressTimeout) || r.health.Stale(r.cfg.ProgressTimeout) {
-				r.metrics.RecordFailure(ctx, "stream_progress_stalled")
-				r.health.Fatal(fmt.Errorf("no durable LaserStream progress for %s", r.cfg.ProgressTimeout))
+			if (frontier == 0 && time.Since(sessionStarted) > r.cfg.ProgressTimeout) || r.handler.stalled(r.cfg.ProgressTimeout) {
+				r.facts.Failed(engine.FamilyObserver, "stream_progress_stalled")
 				return fmt.Errorf("combined LaserStream progress stalled at slot %d", frontier)
 			}
 		}
@@ -387,7 +331,7 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 	r.earn.SetWatchSet(set)
 	r.kamino.SetTargets(targets)
 	if recovered, gapErr := r.recoverEarnMaxGaps(ctx, set); gapErr != nil {
-		r.metrics.RecordFailure(ctx, "earn_max_rpc_gap_recovery")
+		r.facts.Failed(engine.FamilyObserver, "earn_max_rpc_gap_recovery")
 		r.logger.Error("Earn MAX RPC gap recovery failed", "event", "earn_max_rpc_gap_recovery_failed", "error", gapErr)
 		return nil, nil, 0, fmt.Errorf("recover initial Earn MAX gaps: %w", gapErr)
 	} else if recovered > 0 {

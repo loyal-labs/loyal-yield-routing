@@ -12,6 +12,9 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 type staticMarketEpochSource struct{ epoch ImmutableMarketEpoch }
@@ -98,7 +101,7 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	defer server.Close()
 	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", Mode: ModePublish, VaultID: vaultID, Source: source, Target: target, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
 	config.DelegatedSigner = delegatedSigner
-	worker, err := NewWorker(config, store, NewRPCClient(server.URL))
+	worker, err := NewWorker(config, store, NewRPCClient(server.URL), engine.NewFacts(prometheus.NewRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +162,7 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	defer shadowStore.Close()
 	shadowConfig := config
 	shadowConfig.Mode = ModeShadow
-	shadow, err := NewWorker(shadowConfig, shadowStore, NewRPCClient(server.URL))
+	shadow, err := NewWorker(shadowConfig, shadowStore, NewRPCClient(server.URL), engine.NewFacts(prometheus.NewRegistry()))
 	if err != nil {
 		t.Fatal(err)
 	}

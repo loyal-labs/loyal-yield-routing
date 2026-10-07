@@ -21,15 +21,15 @@ WORKDIR /source
 COPY go/workers/go.mod go/workers/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY go/workers/ ./
+ARG LOYAL_IMAGE_VERSION
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/loyal-observer ./cmd/loyal-observer && \
-    CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/loyal-engine ./cmd/loyal-engine && \
-    CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/loyal-evidence ./cmd/loyal-evidence
+    flags="-s -w -X github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine.Release=${LOYAL_IMAGE_VERSION}" && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="$flags" -o /out/loyal-observer ./cmd/loyal-observer && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="$flags" -o /out/loyal-engine ./cmd/loyal-engine && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="$flags" -o /out/loyal-evidence ./cmd/loyal-evidence
 FROM debian:bookworm-slim
-ARG LOYAL_IMAGE_VERSION
-ENV LOYAL_IMAGE_VERSION=${LOYAL_IMAGE_VERSION} \
-    RETAIL_KLEND_PROXY_PATH=/usr/local/bin/loyal-klend-proxy \
+ENV RETAIL_KLEND_PROXY_PATH=/usr/local/bin/loyal-klend-proxy \
     EARN_DOMAIN_BRIDGE_BINARY=/usr/local/bin/earn-domain-bridge
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*

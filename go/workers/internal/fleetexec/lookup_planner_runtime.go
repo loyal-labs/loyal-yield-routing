@@ -3,10 +3,10 @@ package fleetexec
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 type LookupPlannerConfig struct {
@@ -14,6 +14,7 @@ type LookupPlannerConfig struct {
 	LeaseTTL, TickDeadline, PollInterval, CatalogInterval time.Duration
 	GrowthReservation, MaximumVaultCohort                 int
 	ReconcileOnly                                         bool
+	Facts                                                 *engine.Facts
 	OnHealth                                              func(error)
 }
 
@@ -24,47 +25,31 @@ type LookupPlanner struct {
 	chain       *LookupRPC
 	config      LookupPlannerConfig
 	gate        chan struct{}
-	healthMu    sync.RWMutex
-	reporter    func(bool, uint64)
 	nextCatalog time.Time
 }
 
 func NewLookupPlanner(store *Store, chain *LookupRPC, config LookupPlannerConfig) (*LookupPlanner, error) {
-	if store == nil || store.pool == nil || chain == nil || config.Cluster == "" || config.Owner == "" || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 5*time.Minute || config.LeaseTTL%time.Second != 0 || config.TickDeadline <= 0 || config.TickDeadline+5*time.Second > config.LeaseTTL || config.PollInterval <= 0 || config.PollInterval > time.Minute || config.CatalogInterval < time.Second || config.CatalogInterval > time.Hour || config.GrowthReservation < 0 || config.GrowthReservation > 256 || config.MaximumVaultCohort < 1 || config.MaximumVaultCohort > 65535 {
+	if store == nil || store.pool == nil || chain == nil || config.Cluster == "" || config.Owner == "" || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 5*time.Minute || config.LeaseTTL%time.Second != 0 || config.TickDeadline <= 0 || config.TickDeadline+5*time.Second > config.LeaseTTL || config.PollInterval <= 0 || config.PollInterval > time.Minute || config.CatalogInterval < time.Second || config.CatalogInterval > time.Hour || config.GrowthReservation < 0 || config.GrowthReservation > 256 || config.MaximumVaultCohort < 1 || config.MaximumVaultCohort > 65535 || config.Facts == nil {
 		return nil, errors.New("lookup planner configuration invalid")
 	}
 	return &LookupPlanner{store: store, chain: chain, config: config, gate: make(chan struct{}, 1)}, nil
 }
 
-func (p *LookupPlanner) SetRuntimeReporter(reporter func(bool, uint64)) {
-	p.healthMu.Lock()
-	p.reporter = reporter
-	p.healthMu.Unlock()
-}
-func (p *LookupPlanner) report(err error, bank uint64) {
-	p.reportRuntime(err == nil && bank > 0, bank)
+func (p *LookupPlanner) report(err error) {
+	if err == nil {
+		p.config.Facts.Progress(engine.FamilyLookup)
+	}
 	if p.config.OnHealth != nil {
 		p.config.OnHealth(err)
 	}
 }
 
-func (p *LookupPlanner) reportRuntime(ready bool, bank uint64) {
-	p.healthMu.RLock()
-	report := p.reporter
-	p.healthMu.RUnlock()
-	if report != nil {
-		report(ready, bank)
-	}
-}
-
 func (p *LookupPlanner) Run(ctx context.Context) error {
-	p.reportRuntime(false, 0)
-	defer p.reportRuntime(false, 0)
 	startup, cancel := context.WithTimeout(ctx, p.config.TickDeadline)
 	err := p.store.RequireLookupSchema(startup)
 	cancel()
 	if err != nil {
-		p.report(err, 0)
+		p.report(err)
 		return err
 	}
 	backoff := p.config.PollInterval
@@ -95,34 +80,25 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 	case p.gate <- struct{}{}:
 		defer func() { <-p.gate }()
 	case <-ctx.Done():
-		p.report(ctx.Err(), 0)
+		p.report(ctx.Err())
 		return false, ctx.Err()
 	}
-	var observed uint64
-	defer func() {
-		p.reportRuntime(err == nil && ctx.Err() == nil && observed > 0, observed)
-		if p.config.OnHealth != nil {
-			p.config.OnHealth(err)
-		}
-	}()
+	defer func() { p.report(err) }()
 	_, _, bank, err := p.chain.LookupBlockhash(ctx)
 	if err != nil {
 		return false, err
 	}
-	observed = uint64(bank)
 	// Independent retirement gets a bounded turn before request/catalog errors.
 	// A permanently malformed planning request must not strand rent forever.
 	if !p.config.ReconcileOnly {
-		cleanupWorked, cleanupBank, e := p.cleanupTick(ctx, bank)
-		observed = max(observed, cleanupBank)
+		cleanupWorked, _, e := p.cleanupTick(ctx, bank)
 		worked = cleanupWorked
 		if e != nil {
 			return worked, e
 		}
 	}
 	if !time.Now().Before(p.nextCatalog) {
-		catalogWorked, catalogBank, e := p.reconcileLookupCatalog(ctx, bank)
-		observed = max(observed, catalogBank)
+		catalogWorked, _, e := p.reconcileLookupCatalog(ctx, bank)
 		if e != nil {
 			return worked, e
 		}
@@ -142,7 +118,6 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 		if e != nil {
 			return false, e
 		}
-		observed = uint64(snapshot.Slot)
 		if e = p.store.ActivateLookupBinding(ctx, binding, snapshot); e != nil {
 			return false, e
 		}
@@ -169,11 +144,9 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 		if e != nil {
 			return worked, e
 		}
-		observed = uint64(proof.slot)
 		if e = p.readPlanningReadiness(ctx, vault, &proof); e != nil {
 			return worked, e
 		}
-		observed = uint64(proof.slot)
 		r, e := p.store.LeaseLookupPlanningRequest(ctx, p.config.Cluster, p.config.Owner, p.config.LeaseTTL)
 		if e != nil {
 			return worked, e
@@ -195,7 +168,6 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 }
 
 func (p *LookupPlanner) cleanupTick(ctx context.Context, bank int64) (worked bool, observed uint64, err error) {
-	observed = uint64(bank)
 	var rollbackFamily int64
 	err = p.store.pool.QueryRow(ctx, `SELECT f.id FROM loyal_yield.lookup_table_families f WHERE f.cluster=$1 AND f.desired_state IN ('active','retiring') AND ((f.previous_generation IS NOT NULL AND f.rollback_until<=clock_timestamp()) OR EXISTS(SELECT 1 FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=f.id AND lifecycle_state='standby' AND rollback_until<=clock_timestamp())) ORDER BY f.updated_at,f.id LIMIT 1`, p.config.Cluster).Scan(&rollbackFamily)
 	if err == nil {
@@ -217,7 +189,6 @@ func (p *LookupPlanner) cleanupTick(ctx context.Context, bank int64) (worked boo
 		if e != nil {
 			return worked, observed, e
 		}
-		observed = uint64(snapshot.Slot)
 		id, e := p.store.queueLookupCleanup(ctx, *candidate, snapshot)
 		if e != nil {
 			return worked, observed, e

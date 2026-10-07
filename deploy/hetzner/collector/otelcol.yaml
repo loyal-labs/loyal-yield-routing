@@ -1,0 +1,51 @@
+# OpenTelemetry Collector (contrib): journald for the Go units -> ClickStack.
+# The workers write slog JSON to stdout; nothing in the app exports telemetry.
+# Endpoint and ingestion key are systemd credentials of this unit
+# (see otelcol-contrib.service.d/loyal.conf); their values are not here.
+extensions:
+  file_storage/journald:
+    directory: /var/lib/otelcol/journald
+
+receivers:
+  journald:
+    units: [loyal-observer.service, loyal-retail.service, loyal-backyard.service]
+    priority: info
+    start_at: end
+    # Resume from the last shipped cursor after a collector restart.
+    storage: file_storage/journald
+
+processors:
+  transform/journald:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          # One service per unit: loyal-observer, loyal-retail, loyal-backyard.
+          - set(log.attributes["service.name"], log.body["SYSLOG_IDENTIFIER"])
+          - set(log.attributes["systemd.unit"], log.body["_SYSTEMD_UNIT"])
+          - set(log.attributes["process.pid"], log.body["_PID"])
+          - set(log.cache["message"], log.body["MESSAGE"])
+          # slog JSON lines become attributes; level and msg become severity and body.
+          - merge_maps(log.attributes, ParseJSON(log.cache["message"]), "upsert") where IsMatch(log.cache["message"], "^\\{")
+          - set(log.severity_text, log.attributes["level"]) where log.attributes["level"] != nil
+          - set(log.body, log.attributes["msg"]) where log.attributes["msg"] != nil
+          - set(log.body, log.cache["message"]) where log.attributes["msg"] == nil
+          - delete_key(log.attributes, "msg")
+  # Moves service.name to the resource so each unit is its own service.
+  groupbyattrs:
+    keys: [service.name]
+  batch: {}
+
+exporters:
+  otlphttp/clickstack:
+    endpoint: ${file:/run/credentials/otelcol-contrib.service/CLICKSTACK_OTLP_ENDPOINT}
+    headers:
+      authorization: ${file:/run/credentials/otelcol-contrib.service/CLICKSTACK_INGESTION_KEY}
+
+service:
+  extensions: [file_storage/journald]
+  pipelines:
+    logs:
+      receivers: [journald]
+      processors: [transform/journald, groupbyattrs, batch]
+      exporters: [otlphttp/clickstack]
