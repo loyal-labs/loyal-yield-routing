@@ -83,7 +83,14 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 		p.report(ctx.Err())
 		return false, ctx.Err()
 	}
-	defer func() { p.report(err) }()
+	stage := "blockhash"
+	defer func() {
+		var failure *LookupRPCError
+		if errors.As(err, &failure) {
+			failure.stage = stage
+		}
+		p.report(err)
+	}()
 	_, _, bank, err := p.chain.LookupBlockhash(ctx)
 	if err != nil {
 		return false, err
@@ -91,6 +98,7 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 	// Independent retirement gets a bounded turn before request/catalog errors.
 	// A permanently malformed planning request must not strand rent forever.
 	if !p.config.ReconcileOnly {
+		stage = "cleanup"
 		cleanupWorked, _, e := p.cleanupTick(ctx, bank)
 		worked = cleanupWorked
 		if e != nil {
@@ -98,6 +106,7 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 		}
 	}
 	if !time.Now().Before(p.nextCatalog) {
+		stage = "catalog"
 		catalogWorked, _, e := p.reconcileLookupCatalog(ctx, bank)
 		if e != nil {
 			return worked, e
@@ -110,6 +119,7 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 	}
 	// Existing candidates may publish only through actual bank evidence. This
 	// does not create a new mutation, including in reconcile-only mode.
+	stage = "activation"
 	var binding int64
 	var table string
 	err = p.store.pool.QueryRow(ctx, `SELECT b.id,t.table_address FROM loyal_yield.lookup_table_vault_bindings b JOIN loyal_yield.lookup_table_families f ON f.id=b.family_id JOIN loyal_yield.route_lookup_tables t ON t.id=b.route_lookup_table_id JOIN loyal_yield.lookup_table_vault_desired_heads h ON h.family_id=b.family_id AND h.vault_id=b.vault_id AND h.binding_ordinal=b.binding_ordinal AND h.manifest_id=b.manifest_id AND h.desired_revision=b.desired_head_revision WHERE f.cluster=$1 AND f.kind='vault_shards' AND f.desired_state='active' AND b.lifecycle_state IN ('preparing','warming') AND t.generation=f.active_generation AND t.desired_state='active' AND t.status='usable' AND t.usable_address_count=t.address_count AND t.last_verified_slot IS NOT NULL AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations WHERE route_lookup_table_id=t.id AND operation_state NOT IN ('complete','permanent_failure','cancelled')) ORDER BY b.updated_at,b.id LIMIT 1`, p.config.Cluster).Scan(&binding, &table)
@@ -131,6 +141,7 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 	}
 	// This census takes no lease and changes no attempt counter. RPC inputs still
 	// precede the actual request lease, but idle families avoid sixteen PDA reads.
+	stage = "planning"
 	vault, e := p.store.nextLookupPlanningVault(ctx, p.config.Cluster)
 	if e != nil || vault == 0 {
 		return worked, e

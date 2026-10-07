@@ -507,7 +507,12 @@ func laneHealth(facts *engine.Facts, family engine.Family, code string) func(err
 		case errors.Is(err, fleetexec.ErrLookupPaused):
 			slog.Info("retail lookup paused", "family", family)
 		default:
-			slog.Error("retail "+code, "family", family, "code", code, "error", engine.ErrorText(err))
+			attrs := []any{"family", family, "code", code, "error", engine.ErrorText(err)}
+			var rpcFailure *fleetexec.LookupRPCError
+			if errors.As(err, &rpcFailure) {
+				attrs = append(attrs, "rpc", rpcFailure)
+			}
+			slog.Error("retail "+code, attrs...)
 			facts.Failed(family, code)
 		}
 	}
