@@ -167,19 +167,11 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 	return worked, nil
 }
 
+// cleanupTick queues deactivation/close for tables already retiring. It
+// never finalizes a rollback: as in the source provisioner, retiring expired
+// standby bindings is the explicit operator transition
+// (--finalize-rollbacks, FinalizeLookupRollback), not a worker inference.
 func (p *LookupPlanner) cleanupTick(ctx context.Context, bank int64) (worked bool, observed uint64, err error) {
-	var rollbackFamily int64
-	err = p.store.pool.QueryRow(ctx, `SELECT f.id FROM loyal_yield.lookup_table_families f WHERE f.cluster=$1 AND f.desired_state IN ('active','retiring') AND ((f.previous_generation IS NOT NULL AND f.rollback_until<=clock_timestamp()) OR EXISTS(SELECT 1 FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=f.id AND lifecycle_state='standby' AND rollback_until<=clock_timestamp())) ORDER BY f.updated_at,f.id LIMIT 1`, p.config.Cluster).Scan(&rollbackFamily)
-	if err == nil {
-		finalized, e := p.store.FinalizeLookupRollback(ctx, p.config.Cluster, rollbackFamily)
-		if e != nil {
-			return worked, observed, e
-		}
-		worked = worked || finalized
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return worked, observed, err
-	}
-	err = nil
 	candidate, e := p.store.nextLookupCleanup(ctx, p.config.Cluster)
 	if e != nil {
 		return worked, observed, e
