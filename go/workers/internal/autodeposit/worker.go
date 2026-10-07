@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -270,21 +269,11 @@ func (w *Worker) failed(code string, err error) error {
 	}
 	w.facts.Failed(engine.FamilyAutodeposit, code)
 	if err != nil {
-		slog.Error("autodeposit "+code, "code", code, "error", safeError(err))
+		slog.Error("autodeposit "+code, "code", code, "error", engine.ErrorText(err))
 	} else {
 		slog.Warn("autodeposit "+code, "code", code)
 	}
 	return err
-}
-
-// safeError keeps an error's cause unless it may carry a DSN, an endpoint or
-// key material, as the Rust trigger's safe_error did.
-func safeError(err error) string {
-	message := err.Error()
-	if strings.Contains(message, "postgres") || strings.Contains(message, "http") || strings.Contains(message, "keypair") {
-		return "external dependency failed; inspect terminal logs"
-	}
-	return message
 }
 
 // dispatch runs the executor over the prioritized target list in order. The
@@ -306,14 +295,14 @@ func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outco
 		}
 		if err != nil && result == ResultUnknown {
 			alert = genericExecutorAlert()
-			alert.Summary = "autodeposit executor run errored without a classified outcome: " + safeError(err)
+			alert.Summary = "autodeposit executor run errored without a classified outcome: " + engine.ErrorText(err)
 			outcome.ExecutionsFailed++
 		} else {
 			alert = outcome.RecordExecutorResult(result)
 		}
 		attributes := []any{"result", string(result), "targetId", target.TargetID, "scheduledSlotId", target.ScheduledSlotID}
 		if err != nil {
-			attributes = append(attributes, "error", safeError(err))
+			attributes = append(attributes, "error", engine.ErrorText(err))
 		}
 		if alert != nil {
 			alerts = append(alerts, *alert)

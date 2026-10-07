@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -401,11 +401,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second,
 		TickDeadline: 20 * time.Second, PollInterval: time.Second,
 		Budget: cfg.lookup.budget, ReconcileOnly: !cfg.lookup.active, Facts: facts,
-		OnHealth: func(err error) {
-			if err != nil {
-				log.Print("retail lookup writer requires attention")
-			}
-		},
+		OnHealth: laneHealth(facts, engine.FamilyLookup, "lookup_writer_tick_failed"),
 	}, cfg.lookup.managerKey())
 	if err != nil {
 		return retailError("lookup writer", err)
@@ -420,11 +416,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		TickDeadline: 20 * time.Second, PollInterval: time.Second,
 		CatalogInterval: time.Minute, GrowthReservation: 8, MaximumVaultCohort: 16,
 		ReconcileOnly: !cfg.lookup.active, Facts: facts,
-		OnHealth: func(err error) {
-			if err != nil {
-				log.Print("retail lookup planner requires attention")
-			}
-		},
+		OnHealth: laneHealth(facts, engine.FamilyLookup, "lookup_planner_tick_failed"),
 	})
 	if err != nil {
 		return retailError("lookup planner", err)
@@ -439,7 +431,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	artifactReader := &autodeposit.ArtifactProofReader{Wires: wires, History: artifactRPC}
 	artifacts := &autodeposit.ArtifactReconciler{Store: aStore, Reader: artifactReader}
-	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, OnError: func(error) { log.Print("retail autodeposit control requires attention") }, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
+	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, OnError: laneHealth(facts, engine.FamilyAutodeposit, "autodeposit_control_failed"), PollInterval: time.Second, LeaseDuration: 120 * time.Second}
 	fleetRPC := fleet.NewRPCClient(cfg.rpcURL)
 	cConfig := cfg.fleetConfig()
 	cConfig.RevalidationOwner = owner
@@ -502,4 +494,21 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		return cause
 	}
 	return retailError("lanes", err)
+}
+
+// laneHealth logs a lane's failed tick with its cause and counts it under
+// code. A family's other lane may still mark progress, so a lane that fails
+// every tick is visible only here. The durable lookup pause is an operator
+// state, not a failure.
+func laneHealth(facts *engine.Facts, family engine.Family, code string) func(error) {
+	return func(err error) {
+		switch {
+		case err == nil:
+		case errors.Is(err, fleetexec.ErrLookupPaused):
+			slog.Info("retail lookup paused", "family", family)
+		default:
+			slog.Error("retail "+code, "family", family, "code", code, "error", engine.ErrorText(err))
+			facts.Failed(family, code)
+		}
+	}
 }

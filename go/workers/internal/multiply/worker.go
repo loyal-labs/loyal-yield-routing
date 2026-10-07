@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"strings"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -119,14 +118,14 @@ func (w *Worker) Run(ctx context.Context) error {
 		if w.routeKey == nil && !w.recoveryOnly {
 			if key, err := w.BootstrapReadyRoute(cycle); err != nil {
 				bootstrapFailed = true
-				fmt.Printf("{\"condition\":\"earn_max_route_bootstrap_failed\",\"error\":%q}\n", safeError(err))
+				fmt.Printf("{\"condition\":\"earn_max_route_bootstrap_failed\",\"error\":%q}\n", engine.ErrorText(err))
 			} else if key != "" {
 				fmt.Printf("{\"condition\":\"earn_max_route_bootstrapped\",\"routeKey\":%q}\n", key)
 			}
 		}
 		result, err := w.Tick(cycle)
 		if err != nil {
-			fmt.Printf("{\"condition\":\"multiply_tick_failed\",\"error\":%q}\n", safeError(err))
+			fmt.Printf("{\"condition\":\"multiply_tick_failed\",\"error\":%q}\n", engine.ErrorText(err))
 			w.facts.Failed(engine.FamilyMultiply, "tick_failed")
 		} else {
 			encoded, err := jsonMarshal(result)
@@ -152,16 +151,6 @@ func (w *Worker) Run(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
-}
-
-// safeError mirrors Rust's safe_error: the message, unless it may carry a
-// database DSN, an endpoint or key material.
-func safeError(err error) string {
-	message := err.Error()
-	if strings.Contains(message, "postgres") || strings.Contains(message, "http") || strings.Contains(message, "keypair") {
-		return "external dependency failed; inspect terminal logs"
-	}
-	return message
 }
 
 // BootstrapReadyRoute mirrors bootstrap_ready_route: create the deterministic
