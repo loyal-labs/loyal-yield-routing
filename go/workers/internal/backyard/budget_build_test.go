@@ -51,7 +51,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 		accounts[a.Address] = a
 	}
 	rpc, _ := NewRPCClient("https://rpc.invalid")
-	reads := 0
+	var reads atomic.Int64 // pricers read the slot from concurrent cost reads
 	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var body struct {
 			Method string            `json:"method"`
@@ -65,9 +65,8 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 		case "getLatestBlockhash":
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": map[string]any{"blockhash": bridgeVault, "lastValidBlockHeight": 99}}
 		case "getSlot":
-			reads++
 			result = int64(42)
-			if reads > 1 {
+			if reads.Add(1) > 1 {
 				result = finalSlot
 			}
 		case "getFeeForMessage":

@@ -14,6 +14,7 @@ import (
 // legs, the post-cycle accounts (obligation, reserves and custodies
 // patched), the debt cash left, and the payoff window (7 + 3N steps) the
 // final release must be sized over. Zero cycles returns the inputs as-is.
+// The legs' costs are left to the caller's concurrent cost reads.
 func priceLeverageExitCycles(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, *KaminoPayoffBound, error) {
 	accounts = append([]ConfirmedAccount(nil), accounts...)
 	var legs []phase3BridgeExitCost
@@ -60,23 +61,27 @@ func priceLeverageExitCycles(ctx context.Context, rpc *RPCClient, client *jupite
 				if err != nil {
 					return nil, nil, 0, 0, nil, err
 				}
-				cost, input, err := leverageExitLegCost(ctx, rpc, m, release, effects)
+				input, err := exitLegInput(release, effects)
 				if err != nil {
 					return nil, nil, 0, 0, nil, err
 				}
-				legs = append(legs, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.AmountRaw, Cost: cost, Template: input})
+				legs = append(legs, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.AmountRaw, Template: input})
 				releaseEffects, released = &effects, limit
 				idle = buffer
 			}
-			swap, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(idle)}, idle, cash, slot)
+			// After a release the swap sells exactly the probed buffer: the
+			// probe already is its quote.
+			swap := probe
+			if idle != buffer {
+				if swap, err = prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(idle)}, idle, cash, slot); err != nil {
+					return nil, nil, 0, 0, nil, err
+				}
+			}
+			input, err := exitLegInput(swap.Request, swap.ExpectedEffects)
 			if err != nil {
 				return nil, nil, 0, 0, nil, err
 			}
-			cost, input, err := leverageExitLegCost(ctx, rpc, m, swap.Request, swap.ExpectedEffects)
-			if err != nil {
-				return nil, nil, 0, 0, nil, err
-			}
-			legs = append(legs, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: swap.Request.AmountRaw, Cost: cost, Template: input})
+			legs = append(legs, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: swap.Request.AmountRaw, Template: input})
 			cash += swap.Request.MinimumOutputRaw
 			idle = 0
 		}
@@ -95,11 +100,11 @@ func priceLeverageExitCycles(ctx context.Context, rpc *RPCClient, client *jupite
 		if err != nil {
 			return nil, nil, 0, 0, nil, err
 		}
-		cost, input, err := leverageExitLegCost(ctx, rpc, m, repay, repayEffects)
+		input, err := exitLegInput(repay, repayEffects)
 		if err != nil {
 			return nil, nil, 0, 0, nil, err
 		}
-		legs = append(legs, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: cash, Cost: cost, Template: input})
+		legs = append(legs, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: cash, Template: input})
 		// Project the post-cycle state (cost-only; never an RPC write).
 		if accounts, err = projectLeverageExitCycle(accounts, route, released, releaseEffects, limit.Payoff.ObservedDebtRaw, cash); err != nil {
 			return nil, nil, 0, 0, nil, err
@@ -108,17 +113,12 @@ func priceLeverageExitCycles(ctx context.Context, rpc *RPCClient, client *jupite
 	}
 }
 
-func leverageExitLegCost(ctx context.Context, rpc *RPCClient, m RouteManifest, request any, effects ExpectedEffects) (ValuedTransactionCost, *phase3BuildInput, error) {
-	cost, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
-	if err != nil {
-		return cost, nil, err
-	}
+func exitLegInput(request any, effects ExpectedEffects) (*phase3BuildInput, error) {
 	encoded, err := jsonMarshalExpectedEffects(effects)
 	if err != nil {
-		return cost, nil, err
+		return nil, err
 	}
-	input, err := encodePhase3BuildInput(request, encoded)
-	return cost, input, err
+	return encodePhase3BuildInput(request, encoded)
 }
 
 // projectLeverageExitCycle applies one release and one partial repay to

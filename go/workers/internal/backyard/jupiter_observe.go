@@ -149,7 +149,19 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *RPCClient, client *ju
 		return JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter quote construction inputs")
 	}
 	amount := uint64(decision.AmountRaw)
-	quote, instruction, err := client.freshSwapForRoute(ctx, decision.StrategyKey, decision.Action, amount)
+	// The blockhash does not depend on the quote: read both at once, and keep
+	// the serial error order (the quote's checks first).
+	var quote JupiterQuote
+	var instruction JupiterSwapInstruction
+	var blockhash LatestBlockhash
+	var blockhashErr error
+	err = concurrentReads(ctx, func(ctx context.Context) (err error) {
+		quote, instruction, err = client.freshSwapForRoute(ctx, decision.StrategyKey, decision.Action, amount)
+		return err
+	}, func(ctx context.Context) error {
+		blockhash, blockhashErr = rpc.LatestBlockhash(ctx)
+		return nil
+	})
 	if err != nil {
 		// Jupiter may temporarily return a different route dialect or account
 		// shape as liquidity changes. That is a fail-closed observation miss,
@@ -185,9 +197,8 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *RPCClient, client *ju
 		}
 	}
 	minimumAfter := destinationRaw + minimum
-	blockhash, err := rpc.LatestBlockhash(ctx)
-	if err != nil {
-		return JupiterExecutionEvidence{}, err
+	if blockhashErr != nil {
+		return JupiterExecutionEvidence{}, blockhashErr
 	}
 	request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: binding.Policy, PolicyAccountDataSHA256: binding.PolicyAccountDataSHA256, PolicyConstraintIndex: constraintIndex, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey}
 	request, err = manifest.prepareJupiterLookupTables(ctx, rpc, request, slot)

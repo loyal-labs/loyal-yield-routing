@@ -279,12 +279,25 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 	tailRequest := BridgeBuildRequest{Action: ReportNAV, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
 		Report:          BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(post.Snapshot.SquadsIdleRaw), SnapshotDigest: s.ReportSnapshotDigest},
 		RecentBlockhash: blockhash, LastValidBlockHeight: height}
-	tail, err := observePhase3BridgeTemplateAdmission(ctx, rpc, post, tailDecision, BridgeExecutionEvidence{tailRequest, tailEffects})
-	if err != nil {
-		return plan, err
+	// The tail NAV, the current wire and every swap leg are priced by
+	// independent reads: run them at once.
+	var tail phase3BridgeAdmission
+	var current ValuedTransactionCost
+	swapCosts := make([]ValuedTransactionCost, len(swaps))
+	reads := []func(context.Context) error{func(ctx context.Context) (err error) {
+		tail, err = observePhase3BridgeTemplateAdmission(ctx, rpc, post, tailDecision, BridgeExecutionEvidence{tailRequest, tailEffects})
+		return err
+	}, func(ctx context.Context) (err error) {
+		current, err = manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+		return err
+	}}
+	for i, swap := range swaps {
+		reads = append(reads, func(ctx context.Context) (err error) {
+			swapCosts[i], err = manifest.observePhase3KnownBuildCost(ctx, rpc, swap.Request, swap.ExpectedEffects)
+			return err
+		})
 	}
-	current, err := manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
-	if err != nil {
+	if err = concurrentReads(ctx, reads...); err != nil {
 		return plan, err
 	}
 	encoded, err := jsonMarshalExpectedEffects(effects)
@@ -303,10 +316,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 	}
 	plan.ValidThroughSlot = min(tail.ValidThroughSlot, current.ValidThroughSlot)
 	for i, swap := range swaps {
-		swapCost, err := manifest.observePhase3KnownBuildCost(ctx, rpc, swap.Request, swap.ExpectedEffects)
-		if err != nil {
-			return plan, err
-		}
+		swapCost := swapCosts[i]
 		swapEffects, err := jsonMarshalExpectedEffects(swap.ExpectedEffects)
 		if err != nil {
 			return plan, err

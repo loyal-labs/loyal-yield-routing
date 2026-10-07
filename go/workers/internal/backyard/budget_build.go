@@ -178,6 +178,51 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *RPC
 	return cost, nil
 }
 
+// phase3ReadFanout bounds the independent reads one pricer runs at once; each
+// cost read already fans out to its fee and price reads.
+const phase3ReadFanout = 4
+
+// concurrentReads runs independent read-only steps at once, at most
+// phase3ReadFanout in flight, and returns the first error in step order: the
+// error the serial sequence would have stopped on. Each step writes only its
+// own results.
+func concurrentReads(ctx context.Context, steps ...func(context.Context) error) error {
+	errs := make([]error, len(steps))
+	slots := make(chan struct{}, phase3ReadFanout)
+	var reads sync.WaitGroup
+	for i, step := range steps {
+		reads.Add(1)
+		go func() {
+			defer reads.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			errs[i] = step(ctx)
+		}()
+	}
+	reads.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// exitLegCostReads reads each cost-only leg's cost from its own template.
+func exitLegCostReads(rpc *RPCClient, m RouteManifest, legs []phase3BridgeExitCost) []func(context.Context) error {
+	reads := make([]func(context.Context) error, len(legs))
+	for i := range legs {
+		reads[i] = func(ctx context.Context) error {
+			request, effects, _, err := legs[i].Template.decodeWithManifest(m)
+			if err == nil {
+				legs[i].Cost, err = m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+			}
+			return err
+		}
+	}
+	return reads
+}
+
 // Every production builder uses this gate before signer access. Passing it
 // does not create a reservation or authorize a missing setup/exit plan.
 func authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc *RPCClient, operationID string, request any, effects ExpectedEffects, encodedEffects []byte) error {

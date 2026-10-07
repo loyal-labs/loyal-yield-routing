@@ -242,10 +242,6 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 			return phase3BridgeAdmission{}, err
 		}
 		release = &KaminoExecutionEvidence{req, effects}
-		releaseCost, err = observePhase3KnownBuildCost(ctx, rpc, req, effects)
-		if err != nil {
-			return phase3BridgeAdmission{}, err
-		}
 		buffer := uint64(s.CollateralIdleRaw) + limit.LiquidityRaw
 		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToDebtStep, StrategyKey: s.RouteLane, AmountRaw: int64(buffer)}, buffer, cash, projection.Slot)
 		if err != nil {
@@ -266,10 +262,6 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 			return phase3BridgeAdmission{}, err
 		}
 		funding = &quote
-		fundingCost, err = m.observePhase3KnownBuildCost(ctx, rpc, quote.Request, quote.ExpectedEffects)
-		if err != nil {
-			return phase3BridgeAdmission{}, err
-		}
 		upper, err := withdrawalUSDCExitEstimate(quote.Request.QuotedOutputRaw)
 		if err != nil || upper > math.MaxInt64-cash {
 			return phase3BridgeAdmission{}, budgetHold("borrow_funding_output_overflow")
@@ -308,10 +300,6 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	payoffCost, err := observePhase3KnownBuildCost(ctx, rpc, payoff, payoffEffects)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
 	withdrawal, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, remaining, blockhash, s.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
@@ -324,16 +312,6 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	var addresses []string
 	for address := range policies {
 		addresses = append(addresses, address)
-	}
-	_, rows, err := rpc.GetMultipleAccounts(ctx, addresses, projection.Slot)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	for address, hash := range policies {
-		a := accountAt(rows, address)
-		if a.Owner != bridgeSquadsProgram || a.Executable || a.Lamports == 0 || sha256Bytes(a.Data) != hash {
-			return phase3BridgeAdmission{}, budgetHold("borrow_exit_policy_drift")
-		}
 	}
 	amount, err := reserve.redeemLiquidityRaw(remaining)
 	if err != nil {
@@ -352,23 +330,48 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	if funding != nil {
 		post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = 0, 0
 	}
-	tail, err := observePhase3WithdrawalAdmission(ctx, rpc, client, m, post, Decision{Action: DeleverRouteStep, StrategyKey: s.RouteLane}, KaminoExecutionEvidence{withdrawal, withdrawalEffects})
-	if err != nil {
-		return tail, err
+	// The exit's shape is fixed now. Its leg costs, the policy check and the
+	// tail are reads that feed nothing back into it: read them all at once.
+	var payoffCost ValuedTransactionCost
+	var tail phase3BridgeAdmission
+	reads := exitLegCostReads(rpc, m, cycles)
+	if release != nil {
+		reads = append(reads, func(ctx context.Context) (err error) {
+			releaseCost, err = observePhase3KnownBuildCost(ctx, rpc, release.Request, release.ExpectedEffects)
+			return err
+		}, func(ctx context.Context) (err error) {
+			fundingCost, err = m.observePhase3KnownBuildCost(ctx, rpc, funding.Request, funding.ExpectedEffects)
+			return err
+		})
+	}
+	reads = append(reads, func(ctx context.Context) (err error) {
+		payoffCost, err = observePhase3KnownBuildCost(ctx, rpc, payoff, payoffEffects)
+		return err
+	}, func(ctx context.Context) error {
+		_, rows, err := rpc.GetMultipleAccounts(ctx, addresses, projection.Slot)
+		if err != nil {
+			return err
+		}
+		for address, hash := range policies {
+			a := accountAt(rows, address)
+			if a.Owner != bridgeSquadsProgram || a.Executable || a.Lamports == 0 || sha256Bytes(a.Data) != hash {
+				return budgetHold("borrow_exit_policy_drift")
+			}
+		}
+		return nil
+	}, func(ctx context.Context) (err error) {
+		tail, err = observePhase3WithdrawalAdmission(ctx, rpc, client, m, post, Decision{Action: DeleverRouteStep, StrategyKey: s.RouteLane}, KaminoExecutionEvidence{withdrawal, withdrawalEffects})
+		return err
+	})
+	if err := concurrentReads(ctx, reads...); err != nil {
+		return phase3BridgeAdmission{}, err
 	}
 	if len(tail.Exit) == 0 || tail.Exit[0].Action != ReportNAV {
 		return tail, budgetHold("borrow_exit_nav_unavailable")
 	}
-	encode := func(request any, effects ExpectedEffects) (*phase3BuildInput, error) {
-		encoded, err := jsonMarshalExpectedEffects(effects)
-		if err != nil {
-			return nil, err
-		}
-		return encodePhase3BuildInput(request, encoded)
-	}
 	plan := tail
 	plan.Snapshot, plan.Decision, plan.CurrentCost = o.Snapshot, d, current
-	plan.Input, err = encode(request, effects)
+	plan.Input, err = exitLegInput(request, effects)
 	if err != nil {
 		return plan, err
 	}
@@ -380,7 +383,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		// post-cycle one.
 		plan.Payoff = firstPayoff
 	}
-	plan.PayoffRepayment, err = encode(payoff, payoffEffects)
+	plan.PayoffRepayment, err = exitLegInput(payoff, payoffEffects)
 	if err != nil {
 		return plan, err
 	}
@@ -393,11 +396,11 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		}
 	}
 	if funding != nil {
-		releaseInput, err := encode(release.Request, release.ExpectedEffects)
+		releaseInput, err := exitLegInput(release.Request, release.ExpectedEffects)
 		if err != nil {
 			return plan, err
 		}
-		input, err := encode(funding.Request, funding.ExpectedEffects)
+		input, err := exitLegInput(funding.Request, funding.ExpectedEffects)
 		if err != nil {
 			return plan, err
 		}
