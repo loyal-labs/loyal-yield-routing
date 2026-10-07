@@ -1105,6 +1105,150 @@
         "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
       },
       "name": "update_incompatible"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [],
+            "kamino_markets": [
+              "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+              "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
+            ],
+            "policy_account": "7ygc1vtEw72AhLekQ2iWqiQWf5dXnBS8CGTniCwB1CCs",
+            "policy_seed": 14,
+            "risk_profile": null,
+            "route_modes": [
+              "kamino_setup"
+            ],
+            "settings": "35VL7Jb1JAqmBaesC9HgtxX11sUaDWAWJZ1AfTcnra1h",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [],
+            "swap_lanes": [],
+            "threshold": 1,
+            "universe_preset": null,
+            "vault_index": 0,
+            "vault_pubkey": "64t39jPwvhjF9pPFuxMKjhstWdiYKqbKbG9w2wGX5ygh"
+          },
+          "kind": "setup"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "35VL7Jb1JAqmBaesC9HgtxX11sUaDWAWJZ1AfTcnra1h"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "7ygc1vtEw72AhLekQ2iWqiQWf5dXnBS8CGTniCwB1CCs"
+          }
+        ],
+        "data": "8ad140a34f43e94c0101000000070e0000000000000003000100000004b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b0008090000000000010000004b48e286a8f281095e115951807116acc9d84726665664f693ea0f96c1f40bbe000100010000004b48e286a8f281095e115951807116acc9d84726665664f693ea0f96c1f40bbe00020002000000803dd99bb687e760deae5be25cd03f52be6be38d9e0e52a09c411c464e221e9f4c2bacb4a34354e0ce4244e230abf79131b4e8ca7197c41ff10d5e9bbe1f5f4500030002000000667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c8969000400010000000000000000000000000000000000000000000000000000000000000000000000000500010000000000000000000000000000000000000000000000000000000000000000000000000600010000000c850660e757c6ddaca21cb47598698ef5f21f464ce399f6a8544f66256538180007000100000006a7d517192c5c51218cc94c3d4af17f58daee089ba1fd44e3dbd98a0000000000080001000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000050a000000fb0ae74c1b0b9f60000000000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "setup_single_legacy"
+    },
+    {
+      "events": [
+        {
+          "input": {
+            "authority": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF",
+            "cluster": "mainnet-beta",
+            "delegated_signers": [
+              "8UopbHH1AeJB4b2pYYtK1d1dDVwGut9yqKjTVfvzU3f9"
+            ],
+            "kamino_liquidity_mints": [],
+            "kamino_markets": [
+              "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
+              "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
+            ],
+            "policy_account": "8W7tT9orM5qWktnJ93M3xsoDzapj22CY5PypEPgDNZJ4",
+            "policy_seed": 15,
+            "risk_profile": null,
+            "route_modes": [
+              "kamino_setup"
+            ],
+            "settings": "35VL7Jb1JAqmBaesC9HgtxX11sUaDWAWJZ1AfTcnra1h",
+            "signature": "golden-signature",
+            "slot": 77,
+            "source_commitment": "confirmed",
+            "stable_mints": [],
+            "swap_lanes": [],
+            "threshold": 1,
+            "universe_preset": null,
+            "vault_index": 0,
+            "vault_pubkey": "64t39jPwvhjF9pPFuxMKjhstWdiYKqbKbG9w2wGX5ygh"
+          },
+          "kind": "setup"
+        }
+      ],
+      "instruction": {
+        "accounts": [
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "35VL7Jb1JAqmBaesC9HgtxX11sUaDWAWJZ1AfTcnra1h"
+          },
+          {
+            "is_signer": true,
+            "is_writable": true,
+            "pubkey": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "11111111111111111111111111111111"
+          },
+          {
+            "is_signer": false,
+            "is_writable": false,
+            "pubkey": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+          },
+          {
+            "is_signer": true,
+            "is_writable": false,
+            "pubkey": "9hFSiMxfFnvWqr4HGPBswx6eUxPqCaGurmNFuYnc2BVF"
+          },
+          {
+            "is_signer": false,
+            "is_writable": true,
+            "pubkey": "8W7tT9orM5qWktnJ93M3xsoDzapj22CY5PypEPgDNZJ4"
+          }
+        ],
+        "data": "8ad140a34f43e94c0101000000070f0000000000000004000904b2acb11258cce3682c418ba872ff3df91102712f15af12b6be69b3435b00084b48e286a8f281095e115951807116acc9d84726665664f693ea0f96c1f40bbe803dd99bb687e760deae5be25cd03f52be6be38d9e0e52a09c411c464e221e9f4c2bacb4a34354e0ce4244e230abf79131b4e8ca7197c41ff10d5e9bbe1f5f45667ae8d45855a9755053492c804a1e70d1005819a83a2be2769b190d0d2de112afc783caef815bb3becca2279bc2b830ed137b605891a5a1d10d6c394e6c896900000000000000000000000000000000000000000000000000000000000000000c850660e757c6ddaca21cb47598698ef5f21f464ce399f6a8544f662565381806a7d517192c5c51218cc94c3d4af17f58daee089ba1fd44e3dbd98a000000000100090000010100010001010002000202030003000204050004000106000500010600060001070007000108000800010600010000000000000000050a000000fb0ae74c1b0b9f60000000000000010000006f216e33c5cf9add9d70e7cd8c28e3dafe27e7723ea93918b27c60f11853215407010000000000000000",
+        "program_id": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+      },
+      "name": "setup_single_compact"
     }
   ],
   "earn_max": [

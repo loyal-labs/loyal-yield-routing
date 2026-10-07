@@ -119,6 +119,34 @@ async fn detect() {
         remove_context.settings, remove_context.authority, key("invalid-policy"), key("delegate"), 0, &[foreign], &[vec![0]]).unwrap();
     cases.push(("update_incompatible".into(), incompatible));
 
+    // The App creates the setup policy as one init-obligation constraint.
+    let setup_context = context("setup-single", 0);
+    let markets = vec![KAMINO_MAIN_MARKET, KAMINO_FIGURE_MARKET];
+    let setup_spec = || {
+        let mut data = loyal_actions::KAMINO_INIT_OBLIGATION_DISCRIMINATOR.to_vec();
+        data.extend([0, 0]);
+        loyal_actions::SemanticProgramInteractionConstraint {
+            program_id: loyal_actions::KAMINO_LEND_PROGRAM_ID,
+            account_pubkeys: vec![
+                (0, vec![setup_context.vault]),
+                (1, vec![setup_context.vault]),
+                (2, markets.iter().map(|market| loyal_actions::derive_kamino_vanilla_obligation(setup_context.vault, *market)).collect()),
+                (3, markets.clone()),
+                (4, vec![Pubkey::default()]),
+                (5, vec![Pubkey::default()]),
+                (6, vec![loyal_actions::derive_kamino_user_metadata(setup_context.vault)]),
+                (7, vec![solana_sdk::sysvar::rent::id()]),
+                (8, vec![solana_sdk::system_program::ID]),
+            ],
+            account_data: vec![],
+            data: vec![loyal_actions::SemanticProgramInteractionDataConstraint::SliceEquals { offset: 0, value: data }],
+        }
+    };
+    cases.push(("setup_single_legacy".into(), loyal_actions::create_deployed_semantic_program_interaction_policy_instruction(
+        setup_context.settings, setup_context.authority, key("delegate"), 14, 0, vec![setup_spec()]).unwrap()));
+    cases.push(("setup_single_compact".into(), loyal_actions::create_semantic_program_interaction_policy_instruction(
+        setup_context.settings, setup_context.authority, key("delegate"), 15, 0, vec![setup_spec()]).unwrap()));
+
     let mut out = Vec::new();
     for (name, instruction) in cases {
         let sink = Collect::default();
