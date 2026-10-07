@@ -66,11 +66,14 @@ func TestUnsignedRepairNeverReopensPersistedWire(t *testing.T) {
 	}
 }
 
-func TestWorkerRepairsUnsignedMissingPositionWithoutAppReads(t *testing.T) {
+func TestWorkerRepairsUnsignedUnresolvedReserveWithoutAppReads(t *testing.T) {
 	s := integrationStore(t)
 	ctx := t.Context()
 	target := seedIntegrationTarget(t, s, "repair-controller")
 	seedProjectedSurplus(t, s, target, 1, 9_000_000)
+	// Two live holdings leave no destination to trust.
+	seedTargetLiveReserve(t, s, target.TargetID, "ambiguous-a", "market-a", 3_000_000, time.Now())
+	seedTargetLiveReserve(t, s, target.TargetID, "ambiguous-b", "market-b", 4_000_000, time.Now())
 	if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET recurring_delegation='repair-delegation' WHERE id=$1`, target.TargetID); err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +97,17 @@ func TestWorkerRepairsUnsignedMissingPositionWithoutAppReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(first.Dispatched) != 1 || len(wires.built) != 0 {
-		t.Fatalf("missing position did not fail before signing: %+v %v", first, wires.built)
+		t.Fatalf("unresolved reserve did not fail before signing: %+v %v", first, wires.built)
 	}
 	second, err := w.Tick(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(second.Dispatched) != 0 {
-		t.Fatalf("absent position retried: %+v", second)
+		t.Fatalf("unresolved reserve retried: %+v", second)
+	}
+	if _, err = s.pool.Exec(ctx, `UPDATE loyal_yield.vault_reserve_positions_current SET amount_raw=0,has_value=false WHERE reserve IN('ambiguous-a','ambiguous-b')`); err != nil {
+		t.Fatal(err)
 	}
 	// Released lots wait out the TS pre-send cadence, and the repaired slot
 	// inherits their deadline, instead of being claimed, released and alerted
@@ -120,7 +126,7 @@ func TestWorkerRepairsUnsignedMissingPositionWithoutAppReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	if third.Outcome.ExecutionsCompleted != 1 || len(wires.built) != 2 {
-		t.Fatalf("position return did not complete autonomous retry: %+v %v", third, wires.built)
+		t.Fatalf("resolved reserve did not complete autonomous retry: %+v %v", third, wires.built)
 	}
 	var completed, attempts int64
 	if err = s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM loyal_yield.balance_sweep_executions WHERE target_id=$1),(SELECT count(*) FROM loyal_yield.balance_sweep_transaction_attempts WHERE target_id=$1)`, target.TargetID).Scan(&completed, &attempts); err != nil {
@@ -132,7 +138,7 @@ func TestWorkerRepairsUnsignedMissingPositionWithoutAppReads(t *testing.T) {
 }
 
 func TestUnsignedRepairPreservesDeadlineRequestsAndUnknownFloor(t *testing.T) {
-	for _, kind := range []string{"deadline", "requested", "null-floor", "paused", "wrong-mint", "live-lease"} {
+	for _, kind := range []string{"deadline", "requested", "null-floor", "paused", "live-lease"} {
 		t.Run(kind, func(t *testing.T) {
 			s := integrationStore(t)
 			target := seedIntegrationTarget(t, s, "repair-"+kind)
@@ -159,11 +165,6 @@ func TestUnsignedRepairPreservesDeadlineRequestsAndUnknownFloor(t *testing.T) {
 				}
 			case "paused":
 				_, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_targets SET desired_active=false WHERE id=$1`, target.TargetID)
-				if err != nil {
-					t.Fatal(err)
-				}
-			case "wrong-mint":
-				_, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.user_yield_positions SET current_liquidity_mint='other-mint' WHERE settings='itest-settings-repair-wrong-mint'`)
 				if err != nil {
 					t.Fatal(err)
 				}

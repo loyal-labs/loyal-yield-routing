@@ -26,8 +26,7 @@ WHERE target.cluster='mainnet-beta' AND slot.status IN('scheduled','failed','rel
 AND target.wallet_balance_floor_raw IS NOT NULL AND balance.observed_slot>0 AND balance.source_commitment IN('confirmed','finalized')
 AND (slot.status IN('failed','released') OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots lot WHERE lot.scheduled_slot_id=slot.id AND lot.status='open' AND lot.remaining_amount_raw>0))
 AND (balance.amount_raw-target.wallet_balance_floor_raw<10000 OR
- (slot.status IN('failed','released') AND target.desired_active AND target.chain_status='active' AND EXISTS(
- SELECT 1 FROM loyal_yield.user_yield_positions yp WHERE yp.settings=target.settings AND yp.vault_index=target.vault_index AND yp.wallet_address=target.wallet AND yp.status='active' AND yp.current_liquidity_mint=target.token_mint AND NULLIF(yp.current_reserve,'') IS NOT NULL AND NULLIF(yp.current_market,'') IS NOT NULL)))
+ (slot.status IN('failed','released') AND target.desired_active AND target.chain_status='active'))
 AND NOT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims claim WHERE claim.target_id=target.id AND (claim.status='selected' OR claim.autodeposit_executor_lease_expires_at>now()))
 ORDER BY slot.target_id LIMIT $1`, limit, USDCMint)
 	if err != nil {
@@ -113,17 +112,17 @@ WHERE target_id=$1 AND mint=$2 AND source_commitment IN('confirmed','finalized')
 		if !caughtUp {
 			return nil
 		}
-		// Requeue requires a current supported policy and a matching active
-		// destination. A temporary missing position never changes desired intent.
+		// Requeue requires a current supported policy. The destination is
+		// resolved at claim time, with the default reserve when the vault holds
+		// nothing, so a missing position pointer never blocks it.
 		eligible := false
 		if enabled {
-			var positionID int64
-			err = tx.QueryRow(ctx, `SELECT yp.id FROM loyal_yield.balance_sweep_targets target
+			var policyID int64
+			err = tx.QueryRow(ctx, `SELECT rp.id FROM loyal_yield.balance_sweep_targets target
 JOIN loyal_yield.managed_vaults mv ON mv.settings=target.settings AND mv.vault_index=target.vault_index AND mv.vault_pubkey=target.vault_pubkey AND mv.active
 JOIN loyal_yield.route_policies rp ON rp.id=mv.active_policy_id AND rp.active AND rp.cluster='mainnet-beta' AND rp.authority=target.authority AND rp.settings=target.settings AND rp.vault_index=target.vault_index AND rp.vault_pubkey=target.vault_pubkey AND 'same_mint_kamino'=ANY(rp.route_modes)
-JOIN loyal_yield.user_yield_positions yp ON yp.settings=target.settings AND yp.vault_index=target.vault_index AND yp.wallet_address=target.wallet AND yp.status='active' AND yp.current_liquidity_mint=target.token_mint
-WHERE target.id=$1 AND NULLIF(yp.current_reserve,'') IS NOT NULL AND NULLIF(yp.current_market,'') IS NOT NULL
-ORDER BY yp.updated_at DESC,yp.id DESC LIMIT 1 FOR SHARE OF mv,rp,yp`, id).Scan(&positionID)
+WHERE target.id=$1
+LIMIT 1 FOR SHARE OF mv,rp`, id).Scan(&policyID)
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return err
 			}

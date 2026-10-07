@@ -12,6 +12,13 @@ import (
 // CURRENT_RESERVE_PROJECTION_MAX_AGE_SECONDS.
 const currentReserveProjectionMaxAge = 900 * time.Second
 
+// The TS executor's defaultEarnTarget (loyal-actions
+// getKaminoUsdcEarnTargetForCluster, mainnet): Kamino's main-market USDC reserve.
+const (
+	defaultEarnMarket  = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
+	defaultEarnReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+)
+
 // ErrUnresolvedCurrentReserve is the TS executor's
 // UNRESOLVED_CURRENT_RESERVE_MARKER: no destination may be guessed.
 var ErrUnresolvedCurrentReserve = errors.New("Autodeposit target reserve could not be resolved against chain truth")
@@ -28,9 +35,11 @@ type LiveVaultPosition struct {
 }
 
 // reserveResolution is the TS CurrentReserveResolution: keep the pointer,
-// redirect to the one live reserve, or refuse with a reason.
+// redirect to the one live reserve, fall back to the default reserve when the
+// vault holds nothing, or refuse with a reason.
 type reserveResolution struct {
 	Reconciled   *LiveVaultPosition
+	Default      bool
 	Reason       string
 	LiveReserves []string
 }
@@ -40,7 +49,9 @@ type reserveResolution struct {
 // another reserve without updating it, and depositing into the stale reserve
 // recreates a position the fleet then drains again (ASK-2051). Redirecting
 // moves user funds, so it overrides only on a fresh observation of exactly one
-// live position in the target's mint; anything else refuses the pull.
+// live position in the target's mint. A vault that holds nothing has no
+// position to fragment, so it takes the default reserve, as the TS executor
+// did for a target without a pointer; anything else refuses the pull.
 func resolveCurrentReserve(currentReserve, tokenMint string, positions []LiveVaultPosition, now time.Time) (reserveResolution, error) {
 	var live []LiveVaultPosition
 	var liveReserves []string
@@ -70,13 +81,14 @@ func resolveCurrentReserve(currentReserve, tokenMint string, positions []LiveVau
 	}
 	if len(live) == 0 {
 		// A fresh zero row in the target's own mint proves the user withdrew
-		// everything; no row at all is a silent projector.
+		// everything; no row at all is a vault never observed holding.
+		reason := "no_live_position"
 		for _, position := range positions {
 			if position.LiquidityMint == tokenMint && fresh(position.ObservedAt) {
-				return refuse("vault_drained")
+				reason = "vault_drained"
 			}
 		}
-		return refuse("no_live_position")
+		return reserveResolution{Default: true, Reason: reason}, nil
 	}
 	if len(live) > 1 {
 		return refuse("multiple_live_positions")
@@ -98,20 +110,37 @@ func resolveCurrentReserve(currentReserve, tokenMint string, positions []LiveVau
 // ResolveDepositReserve points a fresh claim's destination at the vault's
 // observed holding before any funds move, and writes the corrected pointer
 // back with a compare-and-set on the stale value, as the TS executor did. A
-// lost race refuses: the winner's observation is at least as fresh.
+// lost race refuses: the winner's observation is at least as fresh. The
+// default destination is not written back; once the deposit lands the vault
+// holds it and the next claim reconciles to it.
 func (s *Store) ResolveDepositReserve(ctx context.Context, target *TargetExecutionContext, now time.Time) error {
-	if target.CurrentReserve == nil || *target.CurrentReserve == "" {
-		return nil
-	}
+	current := derefString(target.CurrentReserve)
 	positions, err := s.loadLiveVaultPositions(ctx, target)
 	if err != nil {
 		return err
 	}
-	resolution, err := resolveCurrentReserve(*target.CurrentReserve, target.TokenMint, positions, now)
-	if err != nil || resolution.Reconciled == nil {
+	resolution, err := resolveCurrentReserve(current, target.TokenMint, positions, now)
+	if err != nil {
 		return err
 	}
+	if resolution.Default {
+		if target.TokenMint != USDCMint {
+			return fmt.Errorf("%w; refusing to pull. resolution={\"reason\":\"default_reserve_mint_mismatch\",\"tokenMint\":%q}",
+				ErrUnresolvedCurrentReserve, target.TokenMint)
+		}
+		reserve, market, mint := defaultEarnReserve, defaultEarnMarket, USDCMint
+		target.CurrentReserve, target.CurrentMarket, target.CurrentLiquidityMint = &reserve, &market, &mint
+		return nil
+	}
 	to := resolution.Reconciled
+	if to == nil {
+		return nil
+	}
+	if current == "" {
+		// No pointer to correct: the vault's one live holding is the destination.
+		target.CurrentReserve, target.CurrentMarket, target.CurrentLiquidityMint = &to.Reserve, &to.Market, &to.LiquidityMint
+		return nil
+	}
 	tag, err := s.pool.Exec(ctx, `
 UPDATE loyal_yield.user_yield_positions AS position
 SET current_reserve = $6,
@@ -127,14 +156,14 @@ WHERE position.settings = $1
   AND position.wallet_address = $4
   AND position.status = 'active'
   AND position.current_reserve = $5`,
-		target.Settings, target.VaultIndex, target.VaultPubkey, target.Wallet, *target.CurrentReserve,
+		target.Settings, target.VaultIndex, target.VaultPubkey, target.Wallet, current,
 		to.Reserve, to.Market, to.LiquidityMint, to.AmountRaw, to.ObservedSlot, to.ObservedAt)
 	if err != nil {
 		return fmt.Errorf("persist reconciled autodeposit reserve: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("%w; refusing to pull. resolution={\"reason\":\"lost_reconciliation_race\",\"currentReserve\":%q,\"reconciledTo\":%q,\"persistedPositions\":%d}",
-			ErrUnresolvedCurrentReserve, *target.CurrentReserve, to.Reserve, tag.RowsAffected())
+			ErrUnresolvedCurrentReserve, current, to.Reserve, tag.RowsAffected())
 	}
 	target.CurrentReserve, target.CurrentMarket, target.CurrentLiquidityMint = &to.Reserve, &to.Market, &to.LiquidityMint
 	return nil

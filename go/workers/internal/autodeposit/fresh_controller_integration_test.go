@@ -404,3 +404,72 @@ func TestControllerRefusesPullWhenLiveReserveIsAmbiguous(t *testing.T) {
 		t.Fatalf("ambiguous reserve outcome=%v error=%v wires=%v, want released before any wire", code, err, wires.built)
 	}
 }
+
+// A vault that holds nothing has no position to fragment: the TS executor
+// deposited a pointerless target into its default Earn reserve, and the owner
+// extended that to a drained vault. Refusing left these users' deposits waiting.
+func TestControllerDepositsEmptyVaultIntoDefaultReserve(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		dropPointer bool
+		wantPointer string
+	}{
+		{name: "drained", wantPointer: "fresh-reserve"},
+		// current_reserve is NOT NULL: a pointerless target has no position
+		// row until settlement records the deposit.
+		{name: "pointerless", dropPointer: true, wantPointer: defaultEarnReserve},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := integrationStore(t)
+			ctx := context.Background()
+			seeded, slot := seedFreshControllerTarget(t, store, tc.name)
+			if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.vault_reserve_positions_current SET amount_raw=0, has_value=false WHERE vault_id=$1 AND reserve='fresh-reserve'`, seeded.ManagedVaultID); err != nil {
+				t.Fatal(err)
+			}
+			if tc.dropPointer {
+				if _, err := store.pool.Exec(ctx, `DELETE FROM loyal_yield.user_yield_positions AS yp USING loyal_yield.balance_sweep_targets AS target WHERE target.id=$1 AND yp.settings=target.settings AND yp.wallet_address=target.wallet`, seeded.TargetID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wallet, custody := "itest-wallet-usdc-"+tc.name, "itest-vault-usdc-"+tc.name
+			pull, topup := "itest-controller-pull-sig-"+tc.name, "itest-controller-topup-sig-"+tc.name
+			chain := &scriptedControllerChain{
+				balances: map[string]int64{wallet: 9_000_000, custody: 0},
+				observations: map[string]AttemptObservation{
+					pull:  {State: AttemptConfirmed, ConfirmedSlot: ptrInt64(870_301)},
+					topup: {State: AttemptConfirmed, ConfirmedSlot: ptrInt64(870_302)},
+				},
+				receipts: map[string]ReceiptEvidence{
+					pull: {Signature: pull, Slot: 870_301, Effects: []ReceiptEffect{
+						{TokenAccount: wallet, Mint: USDCMint, PreRaw: 9_000_000, PostRaw: 4_000_000},
+						{TokenAccount: custody, Mint: USDCMint, PreRaw: 0, PostRaw: 5_000_000},
+					}},
+					topup: {Signature: topup, Slot: 870_302, Effects: []ReceiptEffect{
+						{TokenAccount: custody, Mint: USDCMint, PreRaw: 5_000_000, PostRaw: 0},
+						{TokenAccount: "itest-liquidity-supply", Mint: USDCMint, PreRaw: 10, PostRaw: 5_000_010},
+					}},
+				},
+				positions: map[string][2]int64{defaultEarnReserve: {5_000_000, 870_302}},
+			}
+			controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: &scriptedControllerWires{suffix: "-" + tc.name}, Facts: testFacts()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot}); err != nil || code != ResultCompleted {
+				t.Fatalf("%s controller outcome=%v error=%v", tc.name, code, err)
+			}
+			var planReserve, planMarket, pointer string
+			if err := store.pool.QueryRow(ctx, `
+SELECT claim.autodeposit_deposit_plan->>'reserve', claim.autodeposit_deposit_plan->>'market', COALESCE(yp.current_reserve, '')
+FROM loyal_yield.balance_sweep_lot_claims AS claim
+JOIN loyal_yield.balance_sweep_targets AS target ON target.id = claim.target_id
+LEFT JOIN loyal_yield.user_yield_positions AS yp ON yp.settings = target.settings AND yp.wallet_address = target.wallet AND yp.status = 'active'
+WHERE claim.target_id=$1`, seeded.TargetID).Scan(&planReserve, &planMarket, &pointer); err != nil {
+				t.Fatal(err)
+			}
+			if planReserve != defaultEarnReserve || planMarket != defaultEarnMarket || pointer != tc.wantPointer {
+				t.Fatalf("deposit planned into %q/%q with pointer %q, want the default reserve and pointer %q", planReserve, planMarket, pointer, tc.wantPointer)
+			}
+		})
+	}
+}
