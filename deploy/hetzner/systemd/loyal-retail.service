@@ -29,10 +29,7 @@ Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9102
 Environment=RETAIL_MODE=active
 Environment=RETAIL_SLOT_DURATION=400ms
 Environment=RETAIL_TIMESCALE_SCHEMA=kamino
-# Retained Rust KLend builder child until it is ported to Go.
-Environment=RETAIL_KLEND_PROXY_PATH=/opt/loyal/bin/loyal-klend-proxy
-# Non-secret host values: RETAIL_KLEND_PROXY_SHA256 (changes per build),
-# RETAIL_CROSS_MINT_ENABLED, RETAIL_LOOKUP_MODE. Active lookup mode also
+# Non-secret host values: RETAIL_CROSS_MINT_ENABLED, RETAIL_LOOKUP_MODE. Active lookup mode also
 # needs LoadCredentialEncrypted=RETAIL_LOOKUP_MANAGER_KEYPAIR in a drop-in.
 EnvironmentFile=/etc/loyal/loyal-retail.env
 

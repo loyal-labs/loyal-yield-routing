@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
+	solanago "github.com/gagliardetto/solana-go"
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
@@ -39,7 +41,8 @@ type Runtime struct {
 	ata           *ata.Handler
 	earnStore     *earn.Store
 	earn          *earn.Handler
-	bridge        *earn.Bridge
+	earnApp       *earn.Application
+	apy           *earn.APYRefresher
 	handler       *DurableHandler
 }
 
@@ -74,28 +77,42 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 	ataHandler := ata.NewHandler(timescale, cfg.ATAStream, rpc)
 	earnStore := earn.NewStore(neon)
 	earnHandler := earn.NewHandler(earnStore, cfg.Cluster)
-	// The bridge child receives only the explicit allowlisted data-plane
-	// environment; ambient signing keys never reach it.
-	bridge, err := earn.StartBridge(ctx, logger, earn.BridgeConfig{
-		Binary:         cfg.BridgeBinary,
-		Env:            cfg.BridgeEnvironment(),
-		StartupTimeout: cfg.BridgeStartupTimeout,
-	})
+	delegate, err := solanago.PublicKeyFromBase58(cfg.EarnMaxDelegate)
 	if err != nil {
 		neon.Close()
 		timescale.Close()
 		apps.Close()
-		return nil, err
+		return nil, errors.New("EARN_MAX_DELEGATE must be a Solana public key")
 	}
-	runtime := &Runtime{cfg: cfg, logger: logger, facts: facts, neon: neon, apps: apps, timescale: timescale, rpc: rpc, watchLoader: watch.NewLoaderWithApps(neon, apps, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, bridge: bridge}
-	runtime.handler = &DurableHandler{Kamino: kaminoHandler, ATA: ataHandler, Earn: earnHandler, Bridge: bridge, Facts: facts}
+	handler := &DurableHandler{Kamino: kaminoHandler, ATA: ataHandler, Earn: earnHandler, Facts: facts}
+	earnApp, err := earn.NewApplication(startup, neon, rpc, cfg.Cluster, delegate, facts, logger, handler.streamAlive)
+	if err != nil {
+		neon.Close()
+		timescale.Close()
+		apps.Close()
+		return nil, fmt.Errorf("start Earn application: %w", err)
+	}
+	handler.EarnApp = earnApp
+	var apy *earn.APYRefresher
+	if len(cfg.APYRiskProfiles) > 0 {
+		var strategies []earn.APYStrategy
+		for _, profile := range cfg.APYRiskProfiles {
+			strategy, ok := earn.APYStrategyForRiskProfile(profile)
+			if !ok {
+				neon.Close()
+				timescale.Close()
+				apps.Close()
+				return nil, fmt.Errorf("unsupported Earn APY risk profile %s", profile)
+			}
+			strategies = append(strategies, strategy)
+		}
+		apy = earn.NewAPYRefresher(timescale, neon, strategies)
+	}
+	runtime := &Runtime{cfg: cfg, logger: logger, facts: facts, neon: neon, apps: apps, timescale: timescale, rpc: rpc, watchLoader: watch.NewLoaderWithApps(neon, apps, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, earnApp: earnApp, apy: apy, handler: handler}
 	return runtime, nil
 }
 
 func (r *Runtime) Close() {
-	if r.bridge != nil {
-		_ = r.bridge.Close()
-	}
 	if r.neon != nil {
 		r.neon.Close()
 	}
@@ -108,6 +125,15 @@ func (r *Runtime) Close() {
 }
 
 func (r *Runtime) Run(ctx context.Context) error {
+	appCtx, stopApp := context.WithCancel(ctx)
+	var appDone sync.WaitGroup
+	appDone.Add(1)
+	go func() { defer appDone.Done(); r.earnApp.RunConsumers(appCtx, r.cfg.ReconciliationWorkers) }()
+	if r.apy != nil {
+		appDone.Add(1)
+		go func() { defer appDone.Done(); r.refreshEarnAPY(appCtx) }()
+	}
+	defer func() { stopApp(); appDone.Wait() }()
 	startup, cancelStartup := context.WithTimeout(ctx, r.passTimeout())
 	defer cancelStartup()
 	currentWatch, targets, seedSlot, err := r.loadAndSeed(startup)
@@ -167,12 +193,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case err := <-r.bridge.Done():
-			if err == nil {
-				err = errors.New("earn domain bridge exited")
-			}
-			r.facts.Failed(engine.FamilyObserver, "earn_domain_bridge_stopped")
-			return fmt.Errorf("earn domain bridge stopped: %w", err)
 		case err := <-manager.Errors():
 			r.facts.Failed(engine.FamilyObserver, "combined_stream_stopped")
 			r.handler.lastSlotAt.Store(0)
@@ -358,6 +378,24 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 
 // A whole pass gets one budget, including its SQL and every RPC batch. Leave
 // at least half the progress window for control/error processing between passes.
+// refreshEarnAPY writes hourly Earn APY snapshots until ctx ends.
+func (r *Runtime) refreshEarnAPY(ctx context.Context) {
+	for {
+		written, err := r.apy.Refresh(ctx, time.Now())
+		if err != nil {
+			r.facts.Failed(engine.FamilyObserver, "earn_apy_refresh")
+			r.logger.Error("Earn APY snapshot refresh failed", "event", "earn_apy_refresh_stalled", "error", err)
+		} else {
+			r.logger.Info("refreshed Earn APY snapshots", "inserted_or_updated", written)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(earn.APYRefreshInterval):
+		}
+	}
+}
+
 func (r *Runtime) passTimeout() time.Duration {
 	return min(r.cfg.ProgressTimeout/2, 30*time.Second)
 }

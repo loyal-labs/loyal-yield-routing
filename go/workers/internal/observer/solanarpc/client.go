@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+var errNull = errors.New("null")
+
 type Client struct {
 	url       string
 	http      *http.Client
@@ -62,10 +64,10 @@ func (c *Client) call(ctx context.Context, method string, params any, target any
 		return fmt.Errorf("decode Solana %s response: %w", method, err)
 	}
 	if envelope.Error != nil {
-		return fmt.Errorf("solana %s RPC %d: %s", method, envelope.Error.Code, envelope.Error.Message)
+		return &RPCError{Method: method, Code: envelope.Error.Code, Message: envelope.Error.Message}
 	}
 	if len(envelope.Result) == 0 || bytes.Equal(envelope.Result, []byte("null")) {
-		return errors.New("solana " + method + " returned null")
+		return fmt.Errorf("solana %s returned %w", method, errNull)
 	}
 	if err := json.Unmarshal(envelope.Result, target); err != nil {
 		return fmt.Errorf("decode Solana %s result: %w", method, err)
@@ -171,8 +173,75 @@ func (c *Client) SignaturesForAddress(ctx context.Context, address, commitment, 
 	return result, nil
 }
 
-func (c *Client) Transaction(ctx context.Context, signature string, commitment string) (json.RawMessage, error) {
+// RPCError is a JSON-RPC error response.
+type RPCError struct {
+	Method  string
+	Code    int
+	Message string
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("solana %s RPC %d: %s", e.Method, e.Code, e.Message)
+}
+
+// MinContextSlotNotReached is JSON_RPC_SERVER_ERROR_MIN_CONTEXT_SLOT_NOT_REACHED.
+const MinContextSlotNotReached = -32016
+
+// IsBehind reports whether the RPC rejected a read below its minimum context slot.
+func IsBehind(err error) bool {
+	var rpcErr *RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Code == MinContextSlotNotReached
+}
+
+// Transaction reads one confirmed transaction in the given encoding. found is
+// false while the node cannot serve it yet; that is not proof of absence.
+// Every transaction version is accepted (maxSupportedTransactionVersion 255,
+// ASK-2252): pinning version 0 made newer transactions fail forever.
+func (c *Client) Transaction(ctx context.Context, signature, encoding, commitment string) (json.RawMessage, bool, error) {
 	var result json.RawMessage
-	err := c.call(ctx, "getTransaction", []any{signature, map[string]any{"commitment": commitment, "encoding": "json", "maxSupportedTransactionVersion": 0}}, &result)
-	return result, err
+	err := c.call(ctx, "getTransaction", []any{signature, map[string]any{"commitment": commitment, "encoding": encoding, "maxSupportedTransactionVersion": 255}}, &result)
+	if errors.Is(err, errNull) {
+		return nil, false, nil
+	}
+	return result, err == nil, err
+}
+
+// KeyedAccount is one getTokenAccountsByOwner entry.
+type KeyedAccount struct {
+	Pubkey  string
+	Account Account
+}
+
+// TokenAccountsByOwner lists an owner's accounts of one token program.
+func (c *Client) TokenAccountsByOwner(ctx context.Context, owner, program, commitment string, minimumSlot uint64) (uint64, []KeyedAccount, error) {
+	var result struct {
+		Context struct {
+			Slot uint64 `json:"slot"`
+		} `json:"context"`
+		Value []struct {
+			Pubkey  string `json:"pubkey"`
+			Account struct {
+				Lamports   uint64   `json:"lamports"`
+				Owner      string   `json:"owner"`
+				Data       []string `json:"data"`
+				Executable bool     `json:"executable"`
+			} `json:"account"`
+		} `json:"value"`
+	}
+	config := map[string]any{"encoding": "base64", "commitment": commitment, "minContextSlot": minimumSlot}
+	if err := c.call(ctx, "getTokenAccountsByOwner", []any{owner, map[string]any{"programId": program}, config}, &result); err != nil {
+		return 0, nil, err
+	}
+	accounts := make([]KeyedAccount, 0, len(result.Value))
+	for _, value := range result.Value {
+		if len(value.Account.Data) < 1 {
+			return 0, nil, fmt.Errorf("token account %s omitted base64 data", value.Pubkey)
+		}
+		data, err := base64.StdEncoding.DecodeString(value.Account.Data[0])
+		if err != nil {
+			return 0, nil, fmt.Errorf("decode token account %s: %w", value.Pubkey, err)
+		}
+		accounts = append(accounts, KeyedAccount{Pubkey: value.Pubkey, Account: Account{Lamports: value.Account.Lamports, Owner: value.Account.Owner, Data: data, Executable: value.Account.Executable}})
+	}
+	return result.Context.Slot, accounts, nil
 }

@@ -1052,19 +1052,25 @@ func derivePolicyAccount(settings string, seed uint64) (string, uint8, error) {
 }
 
 func fingerprintCrossMintManifest(binding CrossMintPolicyBindings, mints []string, program string) string {
+	return CrossMintManifestFingerprint(binding.Settings, binding.VaultPubkey, binding.DelegatedSigner, binding.VaultIndex, binding.Swap.MaxSlippageBPS, binding.Swap.DailySourceMintSpendingCap, mints, program)
+}
+
+// CrossMintManifestFingerprint is generalized_cross_mint_manifest_fingerprint,
+// shared by the observer projection and the route revalidator.
+func CrossMintManifestFingerprint(settings, vault, delegate string, vaultIndex uint8, maxSlippageBPS uint16, dailyCap uint64, mints []string, program string) string {
 	h := sha256.New()
 	field := func(v string) { h.Write([]byte(v)); h.Write([]byte{0}) }
 	field("canonical_stables_v1")
-	field(binding.Settings)
-	field(binding.VaultPubkey)
-	field(binding.DelegatedSigner)
-	field(strconv.Itoa(int(binding.VaultIndex)))
-	field(strconv.Itoa(int(binding.Swap.MaxSlippageBPS)))
+	field(settings)
+	field(vault)
+	field(delegate)
+	field(strconv.Itoa(int(vaultIndex)))
+	field(strconv.Itoa(int(maxSlippageBPS)))
 	for _, mint := range mints {
 		field(mint)
 		field(program)
 		var cap [8]byte
-		binary.LittleEndian.PutUint64(cap[:], binding.Swap.DailySourceMintSpendingCap)
+		binary.LittleEndian.PutUint64(cap[:], dailyCap)
 		h.Write(cap[:])
 	}
 	for _, mint := range earnStableMints {

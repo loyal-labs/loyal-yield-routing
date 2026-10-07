@@ -24,8 +24,6 @@ LoadCredentialEncrypted=TIMESCALEDB_URL:/etc/credstore.encrypted/loyal-observer/
 Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9101
 Environment=SOLANA_CLUSTER=mainnet-beta
 Environment=BALANCE_SWEEP_ATA_STREAM=production
-# Retained Rust Earn bridge child until it is ported to Go.
-Environment=EARN_DOMAIN_BRIDGE_BINARY=/opt/loyal/bin/earn-domain-bridge
 # Non-secret host values: LASERSTREAM_ENDPOINT, EARN_MAX_DELEGATE.
 EnvironmentFile=/etc/loyal/loyal-observer.env
 

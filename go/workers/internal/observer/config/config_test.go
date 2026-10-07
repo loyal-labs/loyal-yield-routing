@@ -79,68 +79,26 @@ func TestFromEnvNormalizesProductionClusterAliases(t *testing.T) {
 	}
 }
 
-func TestBridgeEnvironmentIsAStrictAllowlist(t *testing.T) {
-	setRequiredEnv(t)
-	t.Setenv("SOLANA_CLUSTER", "mainnet-beta")
-	t.Setenv("POLICY_KEYPAIR", "signing-capability")
-	cfg, err := FromEnv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(cfg.BridgeEnvironment(), "\n")
-	for _, forbidden := range []string{"POLICY_KEYPAIR", "signing-capability", "HELIUS_API_KEY", "OBSERVER_APPS_DATABASE_URL", "apps-fixture"} {
-		if strings.Contains(joined, forbidden) {
-			t.Fatalf("bridge environment leaked %s: %s", forbidden, joined)
-		}
-	}
-	for _, required := range []string{"NEON_DATABASE_URL=postgresql://fixture", "SOLANA_RPC_URL=https://rpc.invalid", "SOLANA_CLUSTER=mainnet-beta", "EARN_MAX_DELEGATE=11111111111111111111111111111111", "TIMESCALEDB_URL=postgresql://fixture", "EARN_RECONCILIATION_CONCURRENCY=4", "AUTODEPOSIT_RECONCILIATION_CONCURRENCY=0"} {
-		if !strings.Contains(joined, required) {
-			t.Fatalf("bridge environment omitted %s: %s", required, joined)
-		}
-	}
-}
-
-func TestObserverCannotStartCompetingAutodepositConsumer(t *testing.T) {
-	for _, value := range []string{"", "0", "4", "-1", "invalid"} {
-		t.Run(value, func(t *testing.T) {
-			setRequiredEnv(t)
-			t.Setenv("AUTODEPOSIT_RECONCILIATION_CONCURRENCY", value)
-			cfg, err := FromEnv()
-			if value != "" && value != "0" {
-				if err == nil || !strings.Contains(err.Error(), "AUTODEPOSIT_RECONCILIATION_CONCURRENCY") {
-					t.Fatalf("competing family ownership accepted: %v", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, setting := range cfg.BridgeEnvironment() {
-				if strings.HasPrefix(setting, "AUTODEPOSIT_RECONCILIATION_CONCURRENCY=") && setting != "AUTODEPOSIT_RECONCILIATION_CONCURRENCY=0" {
-					t.Fatalf("bridge gained Autodeposit ownership: %s", setting)
-				}
-			}
-		})
-	}
-}
-
-func TestFromEnvDefaultsBridgeStartupAndReadyBounds(t *testing.T) {
+func TestFromEnvSelectsEarnAPYProfiles(t *testing.T) {
 	setRequiredEnv(t)
 	cfg, err := FromEnv()
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(cfg.APYRiskProfiles) != 1 || cfg.APYRiskProfiles[0] != "safe" {
+		t.Fatalf("default APY profiles = %v, %v", cfg.APYRiskProfiles, err)
 	}
-	if cfg.BridgeStartupTimeout <= 0 {
-		t.Fatalf("bridge startup %s, want positive default", cfg.BridgeStartupTimeout)
+	t.Setenv("DISABLE_EARN_APY_REFRESH", "true")
+	if cfg, err = FromEnv(); err != nil || len(cfg.APYRiskProfiles) != 0 {
+		t.Fatalf("disabled APY refresh still selected %v, %v", cfg.APYRiskProfiles, err)
+	}
+	t.Setenv("DISABLE_EARN_APY_REFRESH", "yes")
+	if _, err = FromEnv(); err == nil {
+		t.Fatal("non-boolean DISABLE_EARN_APY_REFRESH accepted")
 	}
 }
 
 func TestFromEnvRejectsUnrepresentableBounds(t *testing.T) {
 	for _, tc := range []struct{ name, value string }{
 		{"LASERSTREAM_HANDOFF_TIMEOUT_SECONDS", "18446744073709551615"},
-		{"EARN_DOMAIN_BRIDGE_STARTUP_TIMEOUT_SECONDS", "9223372037"},
 		{"EARN_RECONCILIATION_CONCURRENCY", "65"},
-		{"AUTODEPOSIT_RECONCILIATION_CONCURRENCY", "18446744073709551615"},
 		{"LASERSTREAM_REPLAY_OVERLAP_SLOTS", "9223372036854775808"},
 		{"EARN_MAX_DELEGATE", "not-a-public-key"},
 	} {

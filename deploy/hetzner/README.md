@@ -27,18 +27,10 @@ sha256sum bin/*
 stamps the release identity `sha-<commit>` into
 `internal/engine.Release`.
 
-Until they are ported to Go, two Rust children are still required:
-`loyal-klend-proxy` (retail) and `earn-domain-bridge` (observer). Build them
-with `cargo build --locked --release -p loyal-yield-orchestrator --bin
-loyal-klend-proxy -p balance-sweep-ata-monitor --bin earn-domain-bridge` on a
-glibc host that matches the server (they link libssl3), install them into
-`/opt/loyal/bin/`, and put the proxy's sha256 in
-`RETAIL_KLEND_PROXY_SHA256` in `/etc/loyal/loyal-retail.env`.
-
 ## Install (once per host)
 
 ```sh
-install -m 0555 bin/loyal-observer bin/loyal-engine loyal-klend-proxy earn-domain-bridge /opt/loyal/bin/
+install -m 0555 bin/loyal-observer bin/loyal-engine /opt/loyal/bin/
 install -m 0644 deploy/hetzner/systemd/*.service /etc/systemd/system/
 install -d -m 0755 /etc/loyal       # non-secret <unit>.env files, see unit comments
 install -d -m 0700 /etc/credstore.encrypted/loyal-retail   # likewise per unit

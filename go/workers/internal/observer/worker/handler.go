@@ -19,8 +19,10 @@ type DurableHandler struct {
 	Kamino *kamino.Handler
 	ATA    *ata.Handler
 	Earn   *earn.Handler
-	Bridge *earn.Bridge
-	Facts  *engine.Facts
+	// EarnApp projects confirmed policy transactions and reports observer
+	// progress once the Earn application has caught up.
+	EarnApp *earn.Application
+	Facts   *engine.Facts
 	// lastSlotAt is when the stream last delivered a durable slot; zero after
 	// a reconnect. The runtime restarts a session that stops delivering.
 	lastSlotAt atomic.Int64
@@ -33,6 +35,14 @@ func (h *DurableHandler) stalled(timeout time.Duration) bool {
 	last := h.lastSlotAt.Load()
 	return last > 0 && time.Since(time.Unix(0, last)) > timeout
 }
+
+// streamAlive reports whether the session delivered a slot recently.
+func (h *DurableHandler) streamAlive() bool {
+	last := h.lastSlotAt.Load()
+	return last > 0 && time.Since(time.Unix(0, last)) < streamLiveness
+}
+
+const streamLiveness = 30 * time.Second
 
 func (h *DurableHandler) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
 	if update == nil {
@@ -72,7 +82,7 @@ func (h *DurableHandler) Handle(ctx context.Context, update *pb.SubscribeUpdate)
 		handled = true
 	}
 	if _, ok := filters[subscription.EarnMaxPolicyTransactions]; ok {
-		if err := h.Bridge.HandleTransaction(ctx, update); err != nil {
+		if err := h.EarnApp.HandlePolicyTransaction(ctx, update); err != nil {
 			h.failed("earn_policy_projection")
 			return err
 		}
@@ -81,7 +91,6 @@ func (h *DurableHandler) Handle(ctx context.Context, update *pb.SubscribeUpdate)
 	if _, ok := filters[subscription.StreamProgress]; ok {
 		if slot := update.GetSlot(); slot != nil {
 			h.lastSlotAt.Store(time.Now().UnixNano())
-			h.Facts.Progress(engine.FamilyObserver)
 			handled = true
 		}
 	}

@@ -440,8 +440,9 @@ type ExpectedEffects struct {
 	// this field must never be omitted from the persisted JSONB.
 	TokenAmountsBefore []TokenAmountBefore `json:"tokenAmountsBefore"`
 	TokenDeltas        []TokenDelta        `json:"tokenDeltas"`
-	ObligationBefore   *ObligationBefore   `json:"obligationBefore,omitempty"`
-	ObligationDelta    *ObligationDelta    `json:"obligationDelta,omitempty"`
+	// Rust writes absent obligation fields as explicit nulls; so must Go.
+	ObligationBefore *ObligationBefore `json:"obligationBefore"`
+	ObligationDelta  *ObligationDelta  `json:"obligationDelta"`
 }
 
 // MarshalJSON keeps the Rust serde contract: tokenAmountsBefore is always a
