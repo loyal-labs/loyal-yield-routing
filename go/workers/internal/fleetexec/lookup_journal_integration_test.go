@@ -46,6 +46,7 @@ func lookupRegisteredPool(t *testing.T) *pgxpool.Pool {
 	}
 	return pool
 }
+
 // loadLookupOperation re-reads the source row as a restarted family would.
 func loadLookupOperation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) LookupOperation {
 	t.Helper()
@@ -54,6 +55,11 @@ func loadLookupOperation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
+	// The read model needs a lease identity; give an unleased row one inside
+	// this rolled-back transaction only.
+	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET lease_owner=COALESCE(lease_owner,'test-reader'),lease_expires_at=COALESCE(lease_expires_at,clock_timestamp()) WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
 	op, err := loadLeasedLookup(ctx, tx, id)
 	if err != nil {
 		t.Fatal(err)

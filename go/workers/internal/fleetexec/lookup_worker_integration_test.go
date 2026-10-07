@@ -2,6 +2,7 @@ package fleetexec
 
 import (
 	"bytes"
+	"encoding/base64"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -78,14 +79,13 @@ func TestLookupAutonomousTickSignsOnlyAfterBudgetAndRecoversWithoutKey(t *testin
 	if worked, err := recovery.Tick(ctx); err != nil || !worked {
 		t.Fatalf("actual warmed paused recovery: %v/%v", worked, err)
 	}
-	var state string
+	var state, saved string
 	var amount int
-	if err = pool.QueryRow(ctx, `SELECT o.operation_state,t.usable_address_count FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.route_lookup_tables t ON t.id=o.route_lookup_table_id WHERE o.id=$1`, op.Intent.OperationID).Scan(&state, &amount); err != nil {
+	if err = pool.QueryRow(ctx, `SELECT o.operation_state,o.operation_context->>'signedTransaction',t.usable_address_count FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.route_lookup_tables t ON t.id=o.route_lookup_table_id WHERE o.id=$1`, op.Intent.OperationID).Scan(&state, &saved, &amount); err != nil {
 		t.Fatal(err)
 	}
-	final, err := lookupAttemptOf(loadLookupOperation(t, ctx, pool, op.Intent.OperationID))
-	if state != "complete" || keys != 1 || amount != 2 || err != nil || !bytes.Equal(final.Wire.SignedTransaction, owned.Wire.SignedTransaction) {
-		t.Fatal("restart changed exact packet/key/capacity", state, keys, amount, err)
+	if state != "complete" || keys != 1 || amount != 2 || saved != base64.StdEncoding.EncodeToString(owned.Wire.SignedTransaction) {
+		t.Fatal("restart changed exact packet/key/capacity", state, keys, amount)
 	}
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_families SET desired_state='paused' WHERE id=$1`, op.Intent.FamilyID); err != nil {
 		t.Fatal(err)

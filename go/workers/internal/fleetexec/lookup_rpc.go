@@ -59,6 +59,7 @@ func (r *LookupRPC) SignatureStatus(ctx context.Context, sig string) (SignatureS
 	}
 	return out, nil
 }
+
 type lookupRPCAccount struct {
 	Owner      string            `json:"owner"`
 	Lamports   *uint64           `json:"lamports"`
