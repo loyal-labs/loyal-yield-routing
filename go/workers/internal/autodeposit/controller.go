@@ -392,7 +392,9 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string, target ExecutableTarget, frozen DepositPlan) (ExecutorResult, error) {
 	ready, err := c.ensureDestinationSetup(scope, claimToken, frozen)
 	if err != nil {
-		return ResultPreflightBlocked, err
+		// No pull wire exists yet, so the wallet never moved: release like
+		// every other pre-pull refusal, as the TS executor did.
+		return c.release(scope, claimToken, ResultPreflightBlocked, err)
 	}
 	if !ready {
 		return ResultRecoveryPending, nil

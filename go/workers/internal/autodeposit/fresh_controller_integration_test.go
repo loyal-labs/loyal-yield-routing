@@ -136,3 +136,52 @@ FROM loyal_yield.balance_sweep_lot_claims AS claim WHERE claim.target_id=$1`, se
 		t.Fatalf("claim %s with %d attempts, want released with none", status, attempts)
 	}
 }
+
+type refusingSetupWires struct {
+	*scriptedControllerWires
+	refusal error
+}
+
+func (w refusingSetupWires) InspectDestinationSetup(context.Context, DepositPlan) (*DestinationSetupPlan, error) {
+	return nil, w.refusal
+}
+
+func (w refusingSetupWires) BuildDestinationSetup(context.Context, DepositPlan, DestinationSetupPlan, string, int64) (BuiltWire, error) {
+	return BuiltWire{}, w.refusal
+}
+
+func (w refusingSetupWires) ReadbackDestinationSetup(context.Context, DepositPlan, DestinationSetupPlan, int64) error {
+	return w.refusal
+}
+
+// A destination the setup inspection refuses (production target 7940: its
+// obligation holds a foreign deposit) moved no wallet funds, so the claim is
+// released like every other pre-pull refusal instead of held and retried.
+func TestControllerReleasesClaimWhenSetupInspectionRefuses(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	seeded, slot := seedFreshControllerTarget(t, store, "setup-refused")
+	chain := &scriptedControllerChain{balances: map[string]int64{
+		"itest-wallet-usdc-setup-refused": 9_000_000, "itest-vault-usdc-setup-refused": 0,
+	}}
+	scripted := &scriptedControllerWires{suffix: "-setup-refused"}
+	refusal := errors.New("setup obligation contains foreign deposit")
+	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: refusingSetupWires{scripted, refusal}, Facts: testFacts()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot})
+	if code != ResultPreflightBlocked || !errors.Is(err, refusal) {
+		t.Fatalf("outcome=%v error=%v, want a preflight block", code, err)
+	}
+	if len(scripted.built) != 0 {
+		t.Fatalf("built %v after the setup refusal", scripted.built)
+	}
+	var status string
+	if err := store.pool.QueryRow(ctx, `SELECT status::text FROM loyal_yield.balance_sweep_lot_claims WHERE target_id=$1`, seeded.TargetID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "released" {
+		t.Fatalf("claim %s, want released: no wallet funds moved", status)
+	}
+}
