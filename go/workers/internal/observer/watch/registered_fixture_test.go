@@ -29,42 +29,31 @@ type watchATA struct {
 }
 type watchMax struct{ route, vault, policy string }
 type registeredFixture struct {
-	t               *testing.T
-	ctx             context.Context
-	yield, apps     *pgxpool.Pool
-	prefix          string
-	counter         int
-	settings, users []string
+	t        *testing.T
+	ctx      context.Context
+	yield    *pgxpool.Pool
+	prefix   string
+	counter  int
+	settings []string
 }
 
 func registeredWatchFixture(t *testing.T) *registeredFixture {
 	t.Helper()
-	yieldURL, appsURL := os.Getenv("TEST_WATCH_DATABASE_URL"), os.Getenv("TEST_WATCH_APPS_DATABASE_URL")
-	if yieldURL == "" && appsURL == "" {
-		t.Skip("registered watch Yield and Apps fixture URLs required")
+	yieldURL := os.Getenv("TEST_WATCH_DATABASE_URL")
+	if yieldURL == "" {
+		t.Skip("registered watch Yield fixture URL required")
 	}
-	if yieldURL == "" || appsURL == "" {
-		t.Fatal("both registered watch fixture URLs required; partial acceptance cannot skip")
+	parsed, err := url.Parse(yieldURL)
+	port := 0
+	if parsed != nil {
+		port, _ = strconv.Atoi(parsed.Port())
 	}
-	check := func(raw string, apps bool) {
-		parsed, err := url.Parse(raw)
-		port := 0
-		if parsed != nil {
-			port, _ = strconv.Atoi(parsed.Port())
-		}
-		validPath := parsed != nil && parsed.Path == "/workers_v2_observer_watch"
-		if apps {
-			validPath = parsed != nil && parsed.Path == "/workers_v2_observer_apps"
-		}
-		if err != nil || parsed == nil || !validPath || parsed.Hostname() != "127.0.0.1" || port < 1024 || port > 65535 || parsed.User == nil || parsed.User.Username() != "workers_v2" || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
-			t.Fatal("registered watch fixture outside dedicated allowlist")
-		}
-		if _, present := parsed.User.Password(); present {
-			t.Fatal("registered watch fixture must not contain credentials")
-		}
+	if err != nil || parsed == nil || parsed.Path != "/workers_v2_observer_watch" || parsed.Hostname() != "127.0.0.1" || port < 1024 || port > 65535 || parsed.User == nil || parsed.User.Username() != "workers_v2" || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
+		t.Fatal("registered watch fixture outside dedicated allowlist")
 	}
-	check(yieldURL, false)
-	check(appsURL, true)
+	if _, present := parsed.User.Password(); present {
+		t.Fatal("registered watch fixture must not contain credentials")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
 	yield, err := pgxpool.New(ctx, yieldURL)
@@ -72,36 +61,20 @@ func registeredWatchFixture(t *testing.T) *registeredFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(yield.Close)
-	apps, err := pgxpool.New(ctx, appsURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(apps.Close)
-	for _, item := range []struct {
-		pool *pgxpool.Pool
-		name string
-	}{{yield, "workers_v2_observer_watch"}, {apps, "workers_v2_observer_apps"}} {
-		var database, role string
-		if err := item.pool.QueryRow(ctx, `SELECT current_database(),current_user`).Scan(&database, &role); err != nil || database != item.name || role != "workers_v2" {
-			t.Fatalf("registered fixture identity mismatch: %s/%s %v", database, role, err)
-		}
+	var database, role string
+	if err := yield.QueryRow(ctx, `SELECT current_database(),current_user`).Scan(&database, &role); err != nil || database != "workers_v2_observer_watch" || role != "workers_v2" {
+		t.Fatalf("registered fixture identity mismatch: %s/%s %v", database, role, err)
 	}
 	var migrations int
 	if err := yield.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.schema_migrations WHERE version IN(1,36,54,67)`).Scan(&migrations); err != nil || migrations != 4 {
 		t.Fatalf("registered Yield migration provenance missing: %v", err)
 	}
-	var uuidType string
-	if err := apps.QueryRow(ctx, `SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='app_users' AND column_name='id'`).Scan(&uuidType); err != nil || uuidType != "uuid" {
-		t.Fatal("actual Apps UUID migration schema missing")
+	// Production Yield has no Apps identity tables; neither does the fixture.
+	var appsAbsent bool
+	if err := yield.QueryRow(ctx, `SELECT to_regclass('public.app_users') IS NULL AND to_regclass('public.app_user_smart_accounts') IS NULL`).Scan(&appsAbsent); err != nil || !appsAbsent {
+		t.Fatal("Yield watch fixture must not contain Apps identity tables")
 	}
-	var appsAbsent, yieldAbsent bool
-	if err := yield.QueryRow(ctx, `SELECT to_regclass('public.app_users') IS NULL`).Scan(&appsAbsent); err != nil || !appsAbsent {
-		t.Fatal("separate Yield fixture must not hide incorrect Apps pool routing")
-	}
-	if err := apps.QueryRow(ctx, `SELECT to_regclass('loyal_yield.balance_sweep_targets') IS NULL`).Scan(&yieldAbsent); err != nil || !yieldAbsent {
-		t.Fatal("separate Apps fixture must not hide incorrect Yield pool routing")
-	}
-	f := &registeredFixture{t: t, ctx: ctx, yield: yield, apps: apps, prefix: fmt.Sprintf("watch:%s:%d", t.Name(), time.Now().UnixNano())}
+	f := &registeredFixture{t: t, ctx: ctx, yield: yield, prefix: fmt.Sprintf("watch:%s:%d", t.Name(), time.Now().UnixNano())}
 	t.Cleanup(func() {
 		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
 		defer done()
@@ -109,9 +82,6 @@ func registeredWatchFixture(t *testing.T) *registeredFixture {
 			if _, err := yield.Exec(cleanup, `DELETE FROM loyal_yield.`+table+` WHERE settings=ANY($1::text[])`, f.settings); err != nil {
 				t.Errorf("cleanup owned %s: %v", table, err)
 			}
-		}
-		if _, err := apps.Exec(cleanup, `DELETE FROM public.app_users WHERE id=ANY($1::uuid[])`, f.users); err != nil {
-			t.Errorf("cleanup owned Apps users: %v", err)
 		}
 	})
 	return f
@@ -125,18 +95,6 @@ func (f *registeredFixture) key(label string) string {
 func (f *registeredFixture) identity() watchIdentity {
 	i := watchIdentity{f.key("settings"), f.key("wallet")}
 	f.settings = append(f.settings, i.settings)
-	return i
-}
-func (f *registeredFixture) app(state, environment string) watchIdentity {
-	i := f.identity()
-	var id string
-	if err := f.apps.QueryRow(f.ctx, `INSERT INTO public.app_users(provider,subject_address) VALUES('solana',$1) RETURNING id`, i.wallet).Scan(&id); err != nil {
-		f.t.Fatal(err)
-	}
-	f.users = append(f.users, id)
-	if _, err := f.apps.Exec(f.ctx, `INSERT INTO public.app_user_smart_accounts(user_id,solana_env,settings_pda,state) VALUES($1::uuid,$2,$3,$4)`, id, environment, i.settings, state); err != nil {
-		f.t.Fatal(err)
-	}
 	return i
 }
 func (f *registeredFixture) vault(i watchIdentity, index uint8) string {

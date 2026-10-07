@@ -15,11 +15,10 @@ func setRequiredEnv(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CREDENTIALS_DIRECTORY", dir)
 	for name, value := range map[string]string{
-		"HELIUS_API_KEY":             "fixture",
-		"SOLANA_RPC_URL":             "https://rpc.invalid",
-		"NEON_DATABASE_URL":          "postgresql://fixture",
-		"OBSERVER_APPS_DATABASE_URL": "postgresql://apps-fixture",
-		"TIMESCALEDB_URL":            "postgresql://fixture",
+		"HELIUS_API_KEY":    "fixture",
+		"SOLANA_RPC_URL":    "https://rpc.invalid",
+		"NEON_DATABASE_URL": "postgresql://fixture",
+		"TIMESCALEDB_URL":   "postgresql://fixture",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(value+"\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -36,7 +35,7 @@ func TestFromEnvRequiresEveryProductionDependency(t *testing.T) {
 	if err == nil {
 		t.Fatal("missing production dependencies were accepted")
 	}
-	for _, name := range []string{"EARN_MAX_DELEGATE", "HELIUS_API_KEY", "LASERSTREAM_ENDPOINT", "NEON_DATABASE_URL", "SOLANA_RPC_URL", "TIMESCALEDB_URL", "OBSERVER_APPS_DATABASE_URL"} {
+	for _, name := range []string{"EARN_MAX_DELEGATE", "HELIUS_API_KEY", "LASERSTREAM_ENDPOINT", "NEON_DATABASE_URL", "SOLANA_RPC_URL", "TIMESCALEDB_URL"} {
 		if !strings.Contains(err.Error(), name) {
 			t.Fatalf("missing-variable error omitted %s: %v", name, err)
 		}
@@ -109,5 +108,24 @@ func TestFromEnvRejectsUnrepresentableBounds(t *testing.T) {
 				t.Fatalf("invalid bound accepted or unnamed: %v", err)
 			}
 		})
+	}
+}
+
+// The Apps hourly crons own the read-model tables until the Phase 2 handover,
+// and Rust never wrote them: the observer must not become a second writer
+// unless explicitly enabled. The Earn APY writer, which Rust ran, stays on.
+func TestFromEnvLeavesReadModelsToAppsUnlessEnabled(t *testing.T) {
+	setRequiredEnv(t)
+	cfg, err := FromEnv()
+	if err != nil || cfg.ReadModelsEnabled || len(cfg.APYRiskProfiles) == 0 {
+		t.Fatalf("default read models=%v APY=%v err=%v; want read models off, APY on", cfg.ReadModelsEnabled, cfg.APYRiskProfiles, err)
+	}
+	t.Setenv("OBSERVER_READ_MODELS_ENABLED", "true")
+	if cfg, err = FromEnv(); err != nil || !cfg.ReadModelsEnabled {
+		t.Fatalf("explicit enable ignored: %v %v", cfg.ReadModelsEnabled, err)
+	}
+	t.Setenv("OBSERVER_READ_MODELS_ENABLED", "yes")
+	if _, err = FromEnv(); err == nil || !strings.Contains(err.Error(), "OBSERVER_READ_MODELS_ENABLED") {
+		t.Fatalf("non-boolean OBSERVER_READ_MODELS_ENABLED accepted: %v", err)
 	}
 }

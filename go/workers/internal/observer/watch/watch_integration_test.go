@@ -6,54 +6,64 @@ import (
 	"testing"
 )
 
-// These tests consume registered Yield and pinned Apps migrations. They never
-// create, replace or drop relations, and acceptance exercises the full Load.
-func TestLoaderRegisteredAppsAndYieldCompleteWatchCoverage(t *testing.T) {
+// These tests consume the registered Yield migrations. They never create,
+// replace or drop relations, and acceptance exercises the full Load. The
+// expected set is Rust's load_earn_subscription_targets over the Yield
+// database alone (loyal-yield-store store.rs), which is what production ran.
+func TestLoaderRegisteredYieldCompleteWatchCoverage(t *testing.T) {
 	f := registeredWatchFixture(t)
-	ready := f.app("ready", "mainnet")
-	pending := f.app("provisioning", "mainnet")
-	closed := f.app("failed", "mainnet")
-	foreign := f.app("ready", "devnet")
-	activePolicy, activeVault, _ := f.managed(ready, 1, true, "mainnet-beta", 200)
-	setup := f.policy(ready, 1, true, "mainnet-beta", 180)
+	owner := f.identity()
+	closed := f.identity()
+	unregistered := f.identity()
+	pending := f.identity()
+	devnetOwner := f.identity()
+	activePolicy, activeVault, _ := f.managed(owner, 1, true, "mainnet-beta", 200)
+	setup := f.policy(owner, 1, true, "mainnet-beta", 180)
 	if _, err := f.yield.Exec(f.ctx, `UPDATE loyal_yield.managed_vaults SET setup_policy_id=$2 WHERE vault_pubkey=$1`, activeVault, setup.id); err != nil {
 		t.Fatal(err)
 	}
 	closedPolicy, closedVault, _ := f.managed(closed, 1, false, "mainnet-beta", 80)
-	f.managed(foreign, 1, true, "devnet", 300)
-	f.managed(f.identity(), 1, true, "mainnet-beta", 300)
+	unregisteredPolicy, _, _ := f.managed(unregistered, 1, true, "mainnet-beta", 300)
 	f.onboarding(pending)
-	f.position(ready, activePolicy, activeVault)
-	crossPolicy := f.cross(ready, true, "mainnet-beta")
-	inactiveCross := f.cross(ready, false, "mainnet-beta")
-	foreignCross := f.cross(foreign, true, "devnet")
-	activeATA := f.autodeposit(ready, true, "active", "mainnet-beta", nil, nil)
+	f.position(owner, activePolicy, activeVault)
+	crossPolicy := f.cross(owner, true, "mainnet-beta")
+	inactiveCross := f.cross(owner, false, "mainnet-beta")
+	devnetCross := f.cross(devnetOwner, true, "devnet")
+	activeATA := f.autodeposit(owner, true, "active", "mainnet-beta", nil, nil)
 	delegation := f.key("delegation")
 	pausedATA := f.autodeposit(f.identity(), false, "pending", "mainnet-beta", nil, &delegation)
 	closedATA := f.autodeposit(f.identity(), false, "closed", "mainnet-beta", nil, nil)
-	foreignATA := f.autodeposit(foreign, true, "active", "devnet", nil, nil)
+	devnetATA := f.autodeposit(devnetOwner, true, "active", "devnet", nil, nil)
 	max := f.earnMax()
-	set, err := NewLoaderWithApps(f.yield, f.apps, "mainnet-beta").Load(f.ctx)
+	set, err := NewLoader(f.yield, "mainnet-beta").Load(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(set.Vaults) != 5 || len(set.Channels[EarnIdleTokenAccounts]) != 30 || len(set.Channels[EarnWalletTokenAccounts]) != 24 || len(set.Channels[EarnObligations]) != 25 {
-		t.Fatalf("full watch role coverage changed: vaults=%d idle=%d wallet_tokens=%d obligations=%d", len(set.Vaults), len(set.Channels[EarnIdleTokenAccounts]), len(set.Channels[EarnWalletTokenAccounts]), len(set.Channels[EarnObligations]))
+	// owner, closed, unregistered, pending, paused and the Earn MAX vault.
+	if len(set.Vaults) != 6 {
+		t.Fatalf("watched vaults = %d, want 6", len(set.Vaults))
+	}
+	for _, vault := range set.Vaults {
+		if len(vault.Accounts) == 0 {
+			t.Fatalf("vault %s watched without accounts", vault.Vault)
+		}
 	}
 	if len(set.ATAs) != 1 || set.ATAs[activeATA.walletATA].ID != activeATA.id {
 		t.Fatalf("enabled ATA coverage: %#v", set.ATAs)
 	}
-	for _, omitted := range []string{pausedATA.walletATA, closedATA.walletATA, foreignATA.walletATA} {
+	for _, omitted := range []string{pausedATA.walletATA, closedATA.walletATA, devnetATA.walletATA} {
 		if slices.Contains(set.Channels[BalanceSweepWalletATAs], omitted) {
 			t.Fatal("nonenabled ATA entered pull channel")
 		}
 	}
-	for _, expected := range []Account{{ready.settings, "smart_account"}, {activeVault, "vault"}, {activePolicy.account, "policy"}, {setup.account, "policy"}, {crossPolicy, "policy"}, {pausedATA.vault, "vault"}, {delegation, "recurring_delegation"}, {max.policy, "policy"}} {
+	// No Apps identity gates the Yield rows: a managed vault without any Apps
+	// account is watched exactly like one with it.
+	for _, expected := range []Account{{owner.settings, "smart_account"}, {activeVault, "vault"}, {activePolicy.account, "policy"}, {setup.account, "policy"}, {crossPolicy, "policy"}, {unregisteredPolicy.account, "policy"}, {unregistered.settings, "smart_account"}, {pending.settings, "smart_account"}, {pausedATA.vault, "vault"}, {delegation, "recurring_delegation"}, {max.policy, "policy"}} {
 		if !slices.Contains(set.Channels[ChannelForRole(expected.Role)], expected.Pubkey) {
 			t.Fatalf("full Load omitted %s %s", expected.Role, expected.Pubkey)
 		}
 	}
-	for _, omitted := range []string{closedPolicy.account, inactiveCross, foreignCross} {
+	for _, omitted := range []string{closedPolicy.account, inactiveCross, devnetCross} {
 		if slices.Contains(set.Channels[EarnPolicyAccounts], omitted) {
 			t.Fatalf("closed/inactive/foreign policy still watched: %s", omitted)
 		}
@@ -61,13 +71,13 @@ func TestLoaderRegisteredAppsAndYieldCompleteWatchCoverage(t *testing.T) {
 	if slices.Contains(set.Channels[EarnSubscriptionAuthorities], delegation) {
 		t.Fatal("nullable subscription shifted delegation role")
 	}
-	if len(set.AffectedVaults(closedVault)) != 1 || len(set.AffectedVaults(foreign.settings)) != 0 {
-		t.Fatal("closed identity lost or foreign Apps environment leaked")
+	if len(set.AffectedVaults(closedVault)) != 1 || len(set.AffectedVaults(devnetOwner.settings)) != 0 {
+		t.Fatal("closed mainnet identity lost or devnet-only identity leaked")
 	}
 	var sawMax, sawClosed bool
 	for _, vault := range set.Vaults {
 		if vault.Environment != "mainnet-beta" {
-			t.Fatal("Apps spelling changed durable namespace")
+			t.Fatal("watch changed durable namespace")
 		}
 		if vault.Vault == max.vault {
 			sawMax = vault.EarnMax && vault.VaultIndex == 0 && vault.ObservationStartSlot != nil && *vault.ObservationStartSlot == 400
@@ -86,16 +96,13 @@ func TestLoaderRegisteredAppsAndYieldCompleteWatchCoverage(t *testing.T) {
 			}
 		}
 	}
-	if _, err := NewLoaderWithApps(f.yield, f.yield, "mainnet-beta").Load(f.ctx); err == nil {
-		t.Fatal("wrong Apps pool declared complete watch coverage")
-	}
 }
 
 func TestLoaderRegisteredCustodyAndReplayCorruptionHoldCoverage(t *testing.T) {
 	for _, corruption := range []string{"wallet_ata", "negative_max_slot", "foreign_vault", "invalid_policy", "invalid_market"} {
 		t.Run(corruption, func(t *testing.T) {
 			f := registeredWatchFixture(t)
-			owner := f.app("ready", "mainnet")
+			owner := f.identity()
 			policy, vault, _ := f.managed(owner, 1, true, "mainnet-beta", 200)
 			var err error
 			switch corruption {
@@ -115,52 +122,57 @@ func TestLoaderRegisteredCustodyAndReplayCorruptionHoldCoverage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := NewLoaderWithApps(f.yield, f.apps, "mainnet-beta").Load(f.ctx); err == nil {
+			if _, err := NewLoader(f.yield, "mainnet-beta").Load(f.ctx); err == nil {
 				t.Fatal("corrupt custody/coverage returned healthy watch set")
 			}
 		})
 	}
 }
 
-func TestLoaderRegisteredConfiguredMissingAppsAndCancelledReadHold(t *testing.T) {
+func TestLoaderRegisteredCancelledReadHolds(t *testing.T) {
 	f := registeredWatchFixture(t)
-	if _, err := NewLoaderWithApps(f.yield, nil, "mainnet-beta").Load(f.ctx); err == nil {
-		t.Fatal("configured Apps capability fell back to Yield")
-	}
+	f.managed(f.identity(), 1, true, "mainnet-beta", 200)
 	ctx, cancel := context.WithCancel(f.ctx)
 	cancel()
-	if _, err := NewLoaderWithApps(f.yield, f.apps, "mainnet-beta").Load(ctx); err == nil {
+	if _, err := NewLoader(f.yield, "mainnet-beta").Load(ctx); err == nil {
 		t.Fatal("cancelled read returned positive watch set")
 	}
 }
 
-func TestLoaderRegisteredLegacyUnknownClusterNeedsActualAppsIdentity(t *testing.T) {
+// Rust's managed-vault predicate is (vault.active AND active_policy.active)
+// OR <cluster match>. An active vault with an active policy is watched with
+// its policies whatever the policy's cluster label, so production's legacy
+// cluster='unknown' rows stay covered; an inactive vault is watched (without
+// policies) only inside the loader's cluster.
+func TestLoaderRegisteredManagedVaultPredicateMatchesRust(t *testing.T) {
 	f := registeredWatchFixture(t)
-	owner := f.app("ready", "mainnet")
-	legacy, _, _ := f.managed(owner, 1, true, "unknown", 170)
-	unowned, _, _ := f.managed(f.identity(), 1, true, "unknown", 170)
-	foreign, foreignVault, _ := f.managed(owner, 2, true, "devnet", 170)
-	devnetOwner := f.app("ready", "devnet")
-	devnetUnknown, _, _ := f.managed(devnetOwner, 1, true, "unknown", 170)
-	set, err := NewLoaderWithApps(f.yield, f.apps, "mainnet-beta").Load(f.ctx)
+	legacy, legacyVault, _ := f.managed(f.identity(), 1, true, "unknown", 170)
+	devnet, devnetVault, _ := f.managed(f.identity(), 1, true, "devnet", 170)
+	inactiveLegacy, inactiveLegacyVault, _ := f.managed(f.identity(), 1, false, "unknown", 170)
+	inactiveMainnet, inactiveMainnetVault, _ := f.managed(f.identity(), 1, false, "mainnet", 170)
+	inactiveDevnet, inactiveDevnetVault, _ := f.managed(f.identity(), 1, false, "devnet", 170)
+	set, err := NewLoader(f.yield, "mainnet-beta").Load(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(set.Channels[EarnPolicyAccounts], legacy.account) || slices.Contains(set.Channels[EarnPolicyAccounts], unowned.account) || slices.Contains(set.Channels[EarnPolicyAccounts], foreign.account) || len(set.AffectedVaults(foreignVault)) != 0 {
-		t.Fatal("legacy observation coverage escaped current Apps ownership or admitted known foreign cluster")
+	for _, active := range []struct{ policy, vault string }{{legacy.account, legacyVault}, {devnet.account, devnetVault}} {
+		if !slices.Contains(set.Channels[EarnPolicyAccounts], active.policy) || len(set.AffectedVaults(active.vault)) != 1 {
+			t.Fatalf("active vault %s with active policy not watched", active.vault)
+		}
 	}
-	compatibility, err := NewLoader(f.yield, "mainnet-beta").Load(f.ctx)
+	if len(set.AffectedVaults(inactiveMainnetVault)) != 1 || slices.Contains(set.Channels[EarnPolicyAccounts], inactiveMainnet.account) {
+		t.Fatal("inactive mainnet vault must stay watched without its closed policy")
+	}
+	for _, foreign := range []struct{ policy, vault string }{{inactiveLegacy.account, inactiveLegacyVault}, {inactiveDevnet.account, inactiveDevnetVault}} {
+		if len(set.AffectedVaults(foreign.vault)) != 0 || slices.Contains(set.Channels[EarnPolicyAccounts], foreign.policy) {
+			t.Fatalf("inactive vault %s outside the cluster was watched", foreign.vault)
+		}
+	}
+	devnetSet, err := NewLoader(f.yield, "devnet").Load(f.ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.Contains(compatibility.Channels[EarnPolicyAccounts], legacy.account) {
-		t.Fatal("compatibility constructor inferred legacy namespace without configured Apps ownership")
-	}
-	devnet, err := NewLoaderWithApps(f.yield, f.apps, "devnet").Load(f.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if slices.Contains(devnet.Channels[EarnPolicyAccounts], devnetUnknown.account) {
-		t.Fatal("mainnet legacy recovery exception was inferred for another namespace")
+	if len(devnetSet.AffectedVaults(inactiveDevnetVault)) != 1 || len(devnetSet.AffectedVaults(inactiveMainnetVault)) != 0 || len(devnetSet.AffectedVaults(legacyVault)) != 1 {
+		t.Fatal("devnet loader did not apply the same predicate")
 	}
 }

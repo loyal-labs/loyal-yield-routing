@@ -23,7 +23,14 @@ var mediumMainnetMarkets = []string{
 	"CF32kn7AY8X1bW7ZkGcHc4X9ZWTxqKGCJk6QwrQkDcdw",
 }
 
+// NewMaintenance returns the read-model lane, or nil when read models are not
+// enabled: the Apps hourly crons own those tables until the Phase 2 handover
+// (config.Config.ReadModelsEnabled), so a disabled observer opens no price
+// RPC, checks no read-model schema and reports no read_models failures.
 func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, error) {
+	if r != nil && !r.cfg.ReadModelsEnabled {
+		return nil, nil
+	}
 	if r == nil || r.cfg.Cluster != "mainnet-beta" {
 		return nil, errors.New("fixed product read models require mainnet-beta namespace")
 	}

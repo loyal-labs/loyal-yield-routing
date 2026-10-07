@@ -168,21 +168,13 @@ if timescale:
             raise SystemExit("Registered ATA stream migration missing")
         execute(ata_capture_url, file=stream_migration)
     print(json.dumps({"gate": "timescale_fixture", "verdict": "PASS", "schema_files": len(files)}))
-# Full observer discovery uses real Yield schema and a separate Apps UUID
-# database. These fixtures deliberately prove the cross-database boundary.
+# Observer discovery reads the Yield database alone, as the Rust monitor did
+# in production; its watch fixture holds only the registered Yield schema.
 watch_url = None
-watch_apps_url = None
 if "observer" in urls:
     execute(base, sql='CREATE DATABASE workers_v2_observer_watch')
     watch_url = urlunparse(parsed._replace(path="/workers_v2_observer_watch"))
     apply_yield_schema(watch_url)
-    execute(base, sql='CREATE DATABASE workers_v2_observer_apps')
-    watch_apps_url = urlunparse(parsed._replace(path="/workers_v2_observer_apps"))
-    for entry in json.loads((schema / "apps-watch-manifest.json").read_text()):
-        file = schema / entry["file"]
-        if file.parent != schema or hashlib.sha256(file.read_bytes()).hexdigest() != entry["sha256"]:
-            raise SystemExit("Actual Apps identity fixture provenance drifted")
-        execute(watch_apps_url, file=file)
 # The C capacity handoff has its own registered database; connected SVM
 # terminal-evidence databases are not reused or reset by these SQL tests.
 if "fleet" in urls and "fleet_cross_mint_capture" not in urls:
@@ -191,14 +183,13 @@ if "fleet" in urls and "fleet_cross_mint_capture" not in urls:
     apply_yield_schema(urls["fleet_cross_mint_capture"])
 print(json.dumps({"gate": "fixture", "verdict": "PASS", "registry": str(registry.relative_to(repo)),
                   "registered_schema_files": len(migrations), "databases": list(urls),
-                  "watch_yield_database": bool(watch_url), "watch_apps_database": bool(watch_apps_url),
+                  "watch_yield_database": bool(watch_url),
                   "scope": "isolated behavior schema; historical app baseline plus registered Yield schema, excludes production-bound 0071 data activation"}))
 out = os.environ.get("GITHUB_ENV")
 if out:
     with open(out, "a") as target:
         if watch_url:
             target.write("TEST_WATCH_DATABASE_URL=" + watch_url + "\n")
-            target.write("TEST_WATCH_APPS_DATABASE_URL=" + watch_apps_url + "\n")
             target.write("READMODELS_TEST_DATABASE_URL=" + urls["observer"] + "\n")
         for key, family in (("FLEET_TEST_DATABASE_URL", "fleet"),
                             ("FLEET_EXEC_TEST_DATABASE_URL", "fleetexec"),

@@ -82,11 +82,12 @@ with the same credentials.
 Observer retains its reviewed transport configuration in
 `internal/observer/config/config.go` and runs the Earn domain application
 (`internal/observer/earn`) in process: policy projection, the durable Earn
-reconciliation queue and the hourly Earn APY snapshots. Each family
-requires its own database boundary: observer watches use `NEON_DATABASE_URL`
-for Yield and explicit `OBSERVER_APPS_DATABASE_URL` for Apps identities. The
-Apps connection is read-only in the observer. The fixed watch catalog verifies actual mainnet genesis before
-opening writers and on every watch refresh.
+reconciliation queue and the hourly Earn APY snapshots. Like the Rust
+monitors, observer watches come from the Yield database (`NEON_DATABASE_URL`)
+alone. Product read models stay with the Apps crons until
+`OBSERVER_READ_MODELS_ENABLED=true` hands them over. The fixed watch catalog
+verifies actual mainnet genesis before opening writers and on every watch
+refresh.
 Each family
 owns SQL beside its lifecycle code. Shared packages provide concrete pool,
 lease, amount and process-lifetime behavior; there is no workflow framework.

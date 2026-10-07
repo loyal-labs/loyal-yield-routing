@@ -14,49 +14,58 @@ import (
 // The stream must start from the cursors, inside the provider window.
 func TestReplayStartFollowsDurableCursorsInsideProviderWindow(t *testing.T) {
 	const current = 449_073_607
-	requested, from, err := selectReplayStart(current, current-50, current-400, current-300, current-200, 32)
+	requested, err := selectReplayStart(current, current-50, current-400, current-300, current-200, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requested != current-432 || from != requested {
-		t.Fatalf("replay requested=%d from=%d, want continuity from oldest cursor %d", requested, from, current-432)
+	if requested != current-432 || clampToReplayWindow(requested, current) != requested {
+		t.Fatalf("replay requested=%d, want continuity from oldest cursor %d inside the window", requested, current-432)
 	}
 }
 
 // ASK-2252 shape: a cursor 1M slots behind. Rust clamps to the window edge
-// (clamp_laserstream_replay_start); the caller sees requested < from and
-// recovers the skipped range from confirmed account state.
+// (clamp_laserstream_replay_start); the plan reports the gap so every binding
+// is recovered from confirmed account state.
 func TestReplayStartOutsideProviderWindowIsClampedAndReported(t *testing.T) {
 	const current = 449_073_607
-	requested, from, err := selectReplayStart(current, current-50, current-1_051_842, current-300, current-200, 32)
+	requested, err := selectReplayStart(current, current-50, current-1_051_842, current-300, current-200, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if from != current-laserStreamReplaySlots {
-		t.Fatalf("from_slot = %d, want provider window edge %d", from, current-laserStreamReplaySlots)
-	}
-	if requested != current-1_051_874 || requested >= from {
-		t.Fatalf("requested = %d, want the unreplayable cursor start reported for snapshot recovery", requested)
+	plan := streamPlan{requested: requested, from: clampToReplayWindow(requested, current)}
+	if plan.from != current-laserStreamReplaySlots || plan.requested != current-1_051_874 || !plan.gap() {
+		t.Fatalf("plan = %+v, want window edge %d with the unreplayable start reported", plan, current-laserStreamReplaySlots)
 	}
 }
 
 func TestReplayStartFollowsDurableWatchObservation(t *testing.T) {
-	_, from, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 500, 32)
+	requested, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 500, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if from != 468 {
-		t.Fatalf("replay = %d, want watch observation overlap 468", from)
+	if requested != 468 {
+		t.Fatalf("replay = %d, want watch observation overlap 468", requested)
 	}
 }
 
 func TestFirstDeploymentUsesBoundedDiscoveryReplay(t *testing.T) {
-	_, from, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 0, 32)
+	requested, err := selectReplayStart(100_000, 99_000, 98_000, 97_000, 0, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if from != 90_000 {
-		t.Fatalf("first-deployment replay = %d, want bounded discovery floor 90000", from)
+	if requested != 90_000 {
+		t.Fatalf("first-deployment replay = %d, want bounded discovery floor 90000", requested)
+	}
+}
+
+// A reconnect has no seed; an absent seed must not become slot 1.
+func TestReconnectWithoutSeedFollowsDurableCursors(t *testing.T) {
+	requested, err := selectReplayStart(100_000, 0, 98_000, 97_000, 96_000, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requested != 95_968 {
+		t.Fatalf("seedless replay = %d, want durable watch cursor overlap 95968", requested)
 	}
 }
 

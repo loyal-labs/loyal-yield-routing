@@ -50,11 +50,17 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	lanes := []engine.Lane{runtime, projector, metrics}
+	// Read models stay with the Apps hourly crons until the Phase 2 handover
+	// sets OBSERVER_READ_MODELS_ENABLED=true; disabled, there is no lane.
 	maintenance, err := runtime.NewMaintenance(ctx)
 	if err != nil {
 		return err
 	}
-	err = engine.Run(ctx, runtime, projector, maintenance, metrics)
+	if maintenance != nil {
+		lanes = append(lanes, maintenance)
+	}
+	err = engine.Run(ctx, lanes...)
 	// A lost lock cancels ctx; report it as a failure, not a clean stop.
 	if cause := context.Cause(ctx); errors.Is(cause, errLockLost) {
 		return cause

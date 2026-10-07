@@ -18,7 +18,6 @@ TimeoutStopSec=60s
 LoadCredentialEncrypted=HELIUS_API_KEY:/etc/credstore.encrypted/loyal-observer/HELIUS_API_KEY
 LoadCredentialEncrypted=SOLANA_RPC_URL:/etc/credstore.encrypted/loyal-observer/SOLANA_RPC_URL
 LoadCredentialEncrypted=NEON_DATABASE_URL:/etc/credstore.encrypted/loyal-observer/NEON_DATABASE_URL
-LoadCredentialEncrypted=OBSERVER_APPS_DATABASE_URL:/etc/credstore.encrypted/loyal-observer/OBSERVER_APPS_DATABASE_URL
 LoadCredentialEncrypted=TIMESCALEDB_URL:/etc/credstore.encrypted/loyal-observer/TIMESCALEDB_URL
 
 Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9101

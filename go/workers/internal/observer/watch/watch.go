@@ -102,21 +102,18 @@ func (s *Set) Fingerprint() string {
 	return string(encoded)
 }
 
+// Loader builds the watch set from the Yield database alone, as Rust's
+// load_earn_subscription_targets (loyal-yield-store store.rs) did in
+// production. That function also consulted app_users/app_user_smart_accounts
+// when they existed in the same database; production keeps Apps identities in
+// a separate database, so that branch never ran and is not carried over.
 type Loader struct {
-	pool        *pgxpool.Pool
-	apps        *pgxpool.Pool
-	cluster     string
-	requireApps bool
+	pool    *pgxpool.Pool
+	cluster string
 }
 
-// NewLoader retains the single-database fixture compatibility path. Production
-// uses NewLoaderWithApps so an absent Apps database cannot imply full coverage.
 func NewLoader(pool *pgxpool.Pool, cluster string) *Loader {
-	return &Loader{pool: pool, apps: pool, cluster: cluster}
-}
-
-func NewLoaderWithApps(yieldPool, appsPool *pgxpool.Pool, cluster string) *Loader {
-	return &Loader{pool: yieldPool, apps: appsPool, cluster: cluster, requireApps: true}
+	return &Loader{pool: pool, cluster: cluster}
 }
 
 func (l *Loader) Load(ctx context.Context) (*Set, error) {
@@ -380,37 +377,13 @@ type earnTarget struct {
 	ObservationStartSlot                 *uint64
 }
 
-func appSettingsFilter(enabled bool, qualifiedColumn string) string {
-	if !enabled {
-		return ""
-	}
-	return fmt.Sprintf(`
-			  AND %s IN (
-			      SELECT unnest($2::text[])
-			  )`, qualifiedColumn)
-}
-
 func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 	type watchQuery struct {
-		sql        string
-		scan       func(rowScanner) (earnTarget, error)
-		filterApps bool
+		sql  string
+		scan func(rowScanner) (earnTarget, error)
 	}
 	var queries []watchQuery
-	result, settings, appReady, err := l.loadAppTargets(ctx)
-	if err != nil {
-		return nil, err
-	}
-	onboardingFilter := appSettingsFilter(appReady, "onboarding.settings")
-	positionFilter := appSettingsFilter(appReady, "position.settings")
-	managedVaultFilter := appSettingsFilter(appReady, "vault.settings")
-	crossMintFilter := appSettingsFilter(appReady, "cross_mint_swap_policies.settings")
-	legacyActiveCluster := ""
-	if l.requireApps && appReady && (l.cluster == "mainnet-beta" || l.cluster == "mainnet") {
-		// Legacy cluster='unknown' is observation coverage only, bounded by
-		// actual current-environment Apps ownership through the filter below.
-		legacyActiveCluster = " OR (active_policy.cluster='unknown' AND vault.active AND active_policy.active)"
-	}
+	var result []earnTarget
 	managedVaultsReady, err := l.relationsExist(ctx, "loyal_yield.managed_vaults", "loyal_yield.route_policies")
 	if err != nil {
 		return nil, err
@@ -429,12 +402,15 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			  ON active_policy.id = vault.active_policy_id
 			LEFT JOIN loyal_yield.route_policies AS setup_policy
 			  ON setup_policy.id = vault.setup_policy_id
-		WHERE (active_policy.cluster=$1 OR ($1='mainnet-beta' AND active_policy.cluster='mainnet')` + legacyActiveCluster + `)` + managedVaultFilter, scanManagedVaultTarget, appReady})
+		WHERE (vault.active AND active_policy.active)
+		   OR CASE WHEN $1 IN ('mainnet', 'mainnet-beta')
+		       THEN active_policy.cluster IN ('mainnet', 'mainnet-beta')
+		       ELSE active_policy.cluster = $1
+		   END`, scanManagedVaultTarget})
 	}
 	optional := []struct {
 		relation, sql string
 		scan          func(rowScanner) (earnTarget, error)
-		filterApps    bool
 	}{
 		{"loyal_yield.earn_deposit_onboarding_attempts", `
 			SELECT $1::text, onboarding.wallet_address, onboarding.settings,
@@ -442,7 +418,7 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			       onboarding.policy_account, onboarding.setup_policy_account,
 			       onboarding.market
 			FROM loyal_yield.earn_deposit_onboarding_attempts AS onboarding
-		WHERE onboarding.status <> 'complete'` + onboardingFilter, scanOnboardingTarget, appReady},
+		WHERE onboarding.status <> 'complete'`, scanOnboardingTarget},
 		{"loyal_yield.user_yield_positions", `
 			SELECT $1::text, position.wallet_address, position.settings,
 			       position.vault_index, position.vault_pubkey,
@@ -457,7 +433,7 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			  ON active_policy.id = vault.active_policy_id
 			LEFT JOIN loyal_yield.route_policies AS setup_policy
 			  ON setup_policy.id = vault.setup_policy_id
-		WHERE position.status = 'active'` + positionFilter, scanPositionTarget, appReady},
+		WHERE position.status = 'active'`, scanPositionTarget},
 		{"loyal_yield.cross_mint_swap_policies", `
 			SELECT $1::text, cross_mint_swap_policies.authority,
 			       cross_mint_swap_policies.settings,
@@ -468,18 +444,18 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			FROM loyal_yield.cross_mint_swap_policies AS cross_mint_swap_policies
 			WHERE cross_mint_swap_policies.cluster = $1
 			  AND cross_mint_swap_policies.active
-			  AND cross_mint_swap_policies.source_shard IN ('classic', 'token_2022')` + crossMintFilter + `
+			  AND cross_mint_swap_policies.source_shard IN ('classic', 'token_2022')
 			GROUP BY cross_mint_swap_policies.authority,
 			         cross_mint_swap_policies.settings,
 			         cross_mint_swap_policies.vault_index,
-		         cross_mint_swap_policies.vault_pubkey`, scanCrossMintTarget, appReady},
+		         cross_mint_swap_policies.vault_pubkey`, scanCrossMintTarget},
 		{"loyal_yield.balance_sweep_targets", `
 			SELECT $1::text, target.settings, target.wallet, target.vault_index,
 			       target.vault_pubkey, target.policy_account,
 			       target.subscription_authority, target.recurring_delegation
 			FROM loyal_yield.balance_sweep_targets AS target
 			WHERE target.cluster = $1
-		  AND target.chain_status <> 'closed'`, scanAutodepositTarget, false},
+		  AND target.chain_status <> 'closed'`, scanAutodepositTarget},
 		{"loyal_yield.multiply_route_states", `
 			SELECT $1::text, route.settings, route.vault_index, route.vault,
 			       ARRAY(
@@ -496,7 +472,7 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			 AND policy.vault = route.vault
 			WHERE route.state ->> 'engineVersion' = 'earn_max_v2'
 			  AND policy.manifest_version = 'earn-max-v2'
-		  AND policy.status = 'ready'`, scanEarnMaxTarget, false},
+		  AND policy.status = 'ready'`, scanEarnMaxTarget},
 	}
 	for _, item := range optional {
 		exists, err := l.relationsExist(ctx, item.relation)
@@ -504,15 +480,11 @@ func (l *Loader) loadEarnTargets(ctx context.Context) ([]earnTarget, error) {
 			return nil, err
 		}
 		if exists {
-			queries = append(queries, watchQuery{item.sql, item.scan, item.filterApps})
+			queries = append(queries, watchQuery{item.sql, item.scan})
 		}
 	}
 	for _, query := range queries {
-		args := []any{l.cluster}
-		if query.filterApps {
-			args = append(args, settings)
-		}
-		rows, err := l.pool.Query(ctx, query.sql, args...)
+		rows, err := l.pool.Query(ctx, query.sql, l.cluster)
 		if err != nil {
 			return nil, fmt.Errorf("load Earn watch targets: %w", err)
 		}
@@ -548,12 +520,6 @@ func (l *Loader) relationsExist(ctx context.Context, relations ...string) (bool,
 
 type rowScanner interface{ Scan(...any) error }
 
-func scanAppTarget(row rowScanner) (earnTarget, error) {
-	var t earnTarget
-	t.VaultIndex = 1
-	err := row.Scan(&t.Environment, &t.Settings, &t.Wallet)
-	return t, err
-}
 func scanOnboardingTarget(row rowScanner) (earnTarget, error) {
 	var t earnTarget
 	var policy, setup, market *string

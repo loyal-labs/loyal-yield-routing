@@ -34,9 +34,9 @@ type Runtime struct {
 	logger        *slog.Logger
 	facts         *engine.Facts
 	neon          *pgxpool.Pool
-	apps          *pgxpool.Pool
 	timescale     *pgxpool.Pool
 	rpc           *solanarpc.Client
+	connector     stream.Connector
 	watchLoader   *watch.Loader
 	kaminoStore   *kamino.Store
 	kaminoCatalog *kamino.CatalogClient
@@ -52,9 +52,6 @@ type Runtime struct {
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *engine.Facts) (*Runtime, error) {
 	startup, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelStartup()
-	if cfg.AppsDatabaseURL == "" {
-		return nil, errors.New("observer requires explicit Apps database for complete watch coverage")
-	}
 	rpc := solanarpc.New(cfg.SolanaRPCURL, 30*time.Second)
 	if err := validateWatchNamespace(startup, cfg.Cluster, rpc); err != nil {
 		return nil, err
@@ -68,12 +65,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 		neon.Close()
 		return nil, fmt.Errorf("connect Timescale: %w", err)
 	}
-	apps, err := db.Open(startup, cfg.AppsDatabaseURL, 2)
-	if err != nil {
-		neon.Close()
-		timescale.Close()
-		return nil, errors.New("connect observer Apps database failed")
-	}
 	kaminoStore := kamino.NewStore(timescale, "kamino")
 	kaminoCatalog := kamino.NewCatalogClient(cfg.KaminoAPIBase, 30*time.Second)
 	kaminoHandler := kamino.NewHandler(kaminoStore, rpc, logger, 400, false)
@@ -84,7 +75,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 	if err != nil {
 		neon.Close()
 		timescale.Close()
-		apps.Close()
 		return nil, errors.New("EARN_MAX_DELEGATE must be a Solana public key")
 	}
 	handler := &DurableHandler{Kamino: kaminoHandler, ATA: ataHandler, Earn: earnHandler, Facts: facts}
@@ -92,7 +82,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 	if err != nil {
 		neon.Close()
 		timescale.Close()
-		apps.Close()
 		return nil, fmt.Errorf("start Earn application: %w", err)
 	}
 	handler.EarnApp = earnApp
@@ -104,14 +93,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 			if !ok {
 				neon.Close()
 				timescale.Close()
-				apps.Close()
 				return nil, fmt.Errorf("unsupported Earn APY risk profile %s", profile)
 			}
 			strategies = append(strategies, strategy)
 		}
 		apy = earn.NewAPYRefresher(timescale, neon, strategies)
 	}
-	runtime := &Runtime{cfg: cfg, logger: logger, facts: facts, neon: neon, apps: apps, timescale: timescale, rpc: rpc, watchLoader: watch.NewLoaderWithApps(neon, apps, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, earnApp: earnApp, apy: apy, handler: handler}
+	runtime := &Runtime{cfg: cfg, logger: logger, facts: facts, neon: neon, timescale: timescale, rpc: rpc, connector: stream.GRPCConnector{Endpoint: cfg.LaserStreamEndpoint, APIKey: cfg.HeliusAPIKey}, watchLoader: watch.NewLoader(neon, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, earnApp: earnApp, apy: apy, handler: handler}
 	return runtime, nil
 }
 
@@ -121,9 +109,6 @@ func (r *Runtime) Close() {
 	}
 	if r.timescale != nil {
 		r.timescale.Close()
-	}
-	if r.apps != nil {
-		r.apps.Close()
 	}
 }
 
@@ -148,46 +133,23 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	firstWatchObservation := watchObservationSlot == 0
-	requestedSlot, fromSlot, err := r.replayStart(startup, seedSlot, watchObservationSlot)
-	if err != nil {
-		return err
-	}
-	replayGap := fromSlot > requestedSlot
-	if replayGap {
-		r.logger.Error("LaserStream cursor is outside the replay window; recovering every Earn binding from confirmed account state", "event", "laserstream_replay_window_exceeded", "requestedFromSlot", requestedSlot, "clampedFromSlot", fromSlot, "skippedSlots", fromSlot-requestedSlot)
-	}
-	if err = currentWatch.AnchorNewEarnBindings(nil, fromSlot); err != nil {
-		return err
-	}
-	request, err := r.request(currentWatch, targets, fromSlot)
-	if err != nil {
-		return err
-	}
-	if err := startup.Err(); err != nil {
-		return err
-	}
-	// Only initialization belongs to this deadline. The promoted stream must
-	// remain owned by the process context after startup succeeds.
+	// Only initialization belongs to this deadline. The stream and the
+	// binding recovery it may need are owned by the process context.
 	cancelStartup()
-	// Replay cannot reach state older than the provider window, and the first
-	// watch observation has no earlier scan of the bindings. Both read every
-	// binding's confirmed state instead, outside the startup deadline.
-	if firstWatchObservation || replayGap {
-		recovered, recoveryErr := r.recoverWatchState(ctx, currentWatch, watchObservationConsumer, fromSlot)
-		if recoveryErr != nil {
-			return recoveryErr
-		}
-		r.logger.Info("recovered Earn binding state from confirmed RPC", "insertedJobs", recovered, "firstWatchObservation", firstWatchObservation, "replayGap", replayGap)
-		watchObservationSlot = max(watchObservationSlot, fromSlot)
-	}
-	manager := stream.NewManager(stream.GRPCConnector{Endpoint: r.cfg.LaserStreamEndpoint, APIKey: r.cfg.HeliusAPIKey}, r.handler, stream.Config{ReplayOverlapSlots: r.cfg.ReplayOverlapSlots, HandoffTimeout: r.cfg.HandoffTimeout})
-	if err = manager.Start(ctx, request); err != nil {
+	manager, plan, watchObservationSlot, err := r.startSession(ctx, currentWatch, targets, seedSlot, 0, watchObservationConsumer, watchObservationSlot)
+	if err != nil {
 		return err
 	}
-	defer func() { manager.Close() }()
+	defer func() {
+		if manager != nil {
+			manager.Close()
+		}
+	}()
+	if err = currentWatch.AnchorNewEarnBindings(nil, plan.from); err != nil {
+		return err
+	}
 	sessionStarted := time.Now()
-	r.logger.Info("combined LaserStream worker started", "fromSlot", fromSlot, "kaminoReserves", len(targets), "ataTargets", len(currentWatch.ATAs), "earnVaults", len(currentWatch.Vaults))
+	r.logger.Info("combined LaserStream worker started", "fromSlot", plan.from, "kaminoReserves", len(targets), "ataTargets", len(currentWatch.ATAs), "earnVaults", len(currentWatch.Vaults))
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	watchRefresh, watchDone := startWatchRefreshSignals(watchCtx, r.cfg.NeonDatabaseURL, r.cfg.WatchRefresh, r.logger)
 	defer func() { cancelWatch(); <-watchDone }()
@@ -206,18 +168,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 			r.logger.Error("combined LaserStream session stopped; reconnecting from durable frontier", "event", "laserstream_worker_session_failed", "error", err)
 			frontier := manager.ActiveFrontier()
 			manager.Close()
-			from := request.GetFromSlot()
-			if frontier > 0 {
-				from = subtract(frontier, r.cfg.ReplayOverlapSlots)
-			}
-			var buildErr error
-			request, buildErr = r.request(currentWatch, targets, from)
-			if buildErr != nil {
-				return buildErr
-			}
-			manager = stream.NewManager(stream.GRPCConnector{Endpoint: r.cfg.LaserStreamEndpoint, APIKey: r.cfg.HeliusAPIKey}, r.handler, stream.Config{ReplayOverlapSlots: r.cfg.ReplayOverlapSlots, HandoffTimeout: r.cfg.HandoffTimeout})
-			if startErr := retryStart(ctx, manager, request, r.logger); startErr != nil {
-				return startErr
+			var resumeErr error
+			manager, watchObservationSlot, resumeErr = r.resumeSession(ctx, currentWatch, targets, frontier, watchObservationConsumer, watchObservationSlot)
+			if resumeErr != nil {
+				return resumeErr
 			}
 			sessionStarted = time.Now()
 		case <-watchRefresh:
@@ -310,7 +264,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 					}
 					watchObservationSlot = scanBoundary
 				}
-				request = replacement
 				currentWatch, targets = nextWatch, nextTargets
 				r.logger.Info("combined filter-set handoff promoted", "frontier", manager.ActiveFrontier(), "kaminoReserves", len(targets), "ataTargets", len(currentWatch.ATAs), "earnVaults", len(currentWatch.Vaults))
 				return nil
@@ -441,31 +394,113 @@ func clampToReplayWindow(start, current uint64) uint64 {
 	return start
 }
 
-// replayStart returns the continuity start the durable cursors ask for and
-// the start actually requested from LaserStream.
-func (r *Runtime) replayStart(ctx context.Context, seed uint64, watchCursor uint64) (uint64, uint64, error) {
+// streamPlan is where one LaserStream session starts: requested is the
+// continuity point, from is requested clamped into the provider window.
+type streamPlan struct{ requested, from uint64 }
+
+// gap reports a continuity point the provider can no longer replay.
+func (p streamPlan) gap() bool { return p.from > p.requested }
+
+// planSession chooses the from_slot of every LaserStream session, the first
+// one and each reconnect, so their replay rules cannot diverge. A session that
+// delivered slots is continued from its durable frontier; otherwise (process
+// start, or a session that failed before its first slot) from the durable
+// cursors, as Rust's resume_from_durable_cursor does. seed is the Kamino/ATA
+// seed slot and is zero after process start.
+func (r *Runtime) planSession(ctx context.Context, seed, frontier, watchCursor uint64) (streamPlan, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.passTimeout())
+	defer cancel()
 	current, err := r.rpc.Slot(ctx, "confirmed")
 	if err != nil {
-		return 0, 0, err
+		return streamPlan{}, err
 	}
-	earnCursor, err := r.earnStore.ReplayCursor(ctx, r.earn.ConsumerName())
+	var requested uint64
+	if frontier > 0 {
+		requested = min(subtract(frontier, r.cfg.ReplayOverlapSlots), current)
+	} else {
+		earnCursor, err := r.earnStore.ReplayCursor(ctx, r.earn.ConsumerName())
+		if err != nil {
+			return streamPlan{}, err
+		}
+		policyCursor, err := r.earnStore.ProjectionCursor(ctx, earn.PolicyProjectionConsumer)
+		if err != nil {
+			return streamPlan{}, err
+		}
+		if requested, err = selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, r.cfg.ReplayOverlapSlots); err != nil {
+			return streamPlan{}, err
+		}
+	}
+	return streamPlan{requested: requested, from: clampToReplayWindow(requested, current)}, nil
+}
+
+// startSession opens one LaserStream session through planSession. Replay
+// cannot reach state older than the provider window, and the first watch
+// observation has no earlier scan of the bindings: in both cases every Earn
+// binding is read from confirmed state (recoverWatchState) before the stream
+// starts. It returns the started manager, the plan and the watch observation
+// cursor.
+func (r *Runtime) startSession(ctx context.Context, set *watch.Set, targets []kamino.Target, seed, frontier uint64, watchConsumer string, watchCursor uint64) (*stream.Manager, streamPlan, uint64, error) {
+	plan, err := r.planSession(ctx, seed, frontier, watchCursor)
 	if err != nil {
-		return 0, 0, err
+		return nil, plan, watchCursor, err
 	}
-	policyCursor, err := r.earnStore.ProjectionCursor(ctx, earn.PolicyProjectionConsumer)
+	if plan.gap() {
+		r.logger.Error("LaserStream cursor is outside the replay window; recovering every Earn binding from confirmed account state", "event", "laserstream_replay_window_exceeded", "requestedFromSlot", plan.requested, "clampedFromSlot", plan.from, "skippedSlots", plan.from-plan.requested)
+	}
+	request, err := r.request(set, targets, plan.from)
 	if err != nil {
-		return 0, 0, err
+		return nil, plan, watchCursor, err
 	}
-	return selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, r.cfg.ReplayOverlapSlots)
+	if watchCursor == 0 || plan.gap() {
+		recovered, err := r.recoverWatchState(ctx, set, watchConsumer, plan.from)
+		if err != nil {
+			return nil, plan, watchCursor, err
+		}
+		r.logger.Info("recovered Earn binding state from confirmed RPC", "insertedJobs", recovered, "firstWatchObservation", watchCursor == 0, "replayGap", plan.gap())
+		watchCursor = max(watchCursor, plan.from)
+	}
+	manager := stream.NewManager(r.connector, r.handler, stream.Config{ReplayOverlapSlots: r.cfg.ReplayOverlapSlots, HandoffTimeout: r.cfg.HandoffTimeout})
+	if err := manager.Start(ctx, request); err != nil {
+		manager.Close()
+		return nil, plan, watchCursor, err
+	}
+	return manager, plan, watchCursor, nil
+}
+
+// resumeSession replaces a failed session. Every attempt plans afresh, so an
+// outage longer than the provider window cannot keep requesting a slot that
+// has left it, and a clamped plan recovers bindings before the stream resumes.
+func (r *Runtime) resumeSession(ctx context.Context, set *watch.Set, targets []kamino.Target, frontier uint64, watchConsumer string, watchCursor uint64) (*stream.Manager, uint64, error) {
+	delay := 500 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		manager, _, cursor, err := r.startSession(ctx, set, targets, 0, frontier, watchConsumer, watchCursor)
+		watchCursor = cursor
+		if err == nil {
+			return manager, watchCursor, nil
+		}
+		if ctx.Err() != nil {
+			return nil, watchCursor, ctx.Err()
+		}
+		r.logger.Error("LaserStream reconnect failed", "attempt", attempt, "retryIn", delay, "error", err)
+		select {
+		case <-ctx.Done():
+			return nil, watchCursor, ctx.Err()
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 30*time.Second)
+	}
 }
 
 // selectReplayStart takes the oldest durable cursor, as Rust's
-// laserstream_replay_start_slot does per stream, and clamps it into the
-// provider window. Earn observation anchors (route_policies.last_seen_slot)
-// are not continuity cursors: most predate the window, and the bindings they
-// anchor are recovered from confirmed state when no cursor covers them.
-func selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, overlap uint64) (uint64, uint64, error) {
-	starts := []uint64{subtract(seed, overlap)}
+// laserstream_replay_start_slot does per stream. Earn observation anchors
+// (route_policies.last_seen_slot) are not continuity cursors: most predate the
+// provider window, and the bindings they anchor are recovered from confirmed
+// state when no cursor covers them. A zero seed or cursor is absent.
+func selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, overlap uint64) (uint64, error) {
+	var starts []uint64
+	if seed > 0 {
+		starts = append(starts, subtract(seed, overlap))
+	}
 	if earnCursor > 0 {
 		starts = append(starts, subtract(earnCursor, overlap))
 	}
@@ -486,10 +521,11 @@ func selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, ove
 		}
 	}
 	if requested == 0 {
-		return 0, 0, errors.New("combined replay start resolved to zero")
+		return 0, errors.New("combined replay start resolved to zero")
 	}
-	return requested, clampToReplayWindow(requested, current), nil
+	return requested, nil
 }
+
 func (r *Runtime) request(set *watch.Set, targets []kamino.Target, from uint64) (*pb.SubscribeRequest, error) {
 	accounts := make(map[string]subscription.AccountFilter, len(set.Channels)+1)
 	reserves := make([]string, len(targets))
@@ -599,16 +635,32 @@ func (r *Runtime) recoverEarnBindingBatch(ctx context.Context, next *watch.Set, 
 	if response.Slot == 0 || len(response.Accounts) != len(addresses) {
 		return 0, fmt.Errorf("earn binding recovery returned slot %d and %d/%d accounts", response.Slot, len(response.Accounts), len(addresses))
 	}
-	events := make([]earn.QueuedEvent, len(batch))
+	events := make([]earn.QueuedEvent, 0, len(batch))
 	for index, binding := range batch {
-		vaults := next.AffectedVaults(binding.address)
-		if len(vaults) == 0 {
+		affected := next.AffectedVaults(binding.address)
+		if len(affected) == 0 {
 			return 0, fmt.Errorf("earn binding %s has no affected vault", binding.address)
 		}
 		eventKey, kind := bindingRecoveryEvent(binding.address, response.Accounts[index])
+		// Only vaults that can apply an unsigned state read receive one; the
+		// rest would fail until dead-lettered (earn.SnapshotApplicable).
+		vaults := make([]watch.Vault, 0, len(affected))
+		for _, vault := range affected {
+			if earn.SnapshotApplicable(vault, binding.address, kind == "account_deleted") {
+				vaults = append(vaults, vault)
+			} else if !vault.EarnMax {
+				r.logger.Warn("Earn policy closed outside the replayable range; its closing transaction is not recoverable from account state", "event", "earn_policy_closed_unreplayed", "policy", binding.address, "vault", vault.Vault)
+			}
+		}
+		if len(vaults) == 0 {
+			continue
+		}
 		address := binding.address
 		update := earn.NormalizedUpdate{EventKey: &eventKey, Filters: binding.filters, EventKind: kind, AccountPubkey: &address, Slot: response.Slot}
-		events[index] = earn.QueuedEvent{EventKey: eventKey, Slot: response.Slot, Event: update, Vaults: vaults, Account: binding.address}
+		events = append(events, earn.QueuedEvent{EventKey: eventKey, Slot: response.Slot, Event: update, Vaults: vaults, Account: binding.address})
+	}
+	if len(events) == 0 {
+		return 0, nil
 	}
 	outcome, err := r.earnStore.EnqueueBatch(ctx, r.earn.ConsumerName(), events)
 	if err != nil {
@@ -729,20 +781,4 @@ func subtract(value, delta uint64) uint64 {
 		return 1
 	}
 	return value - delta
-}
-func retryStart(ctx context.Context, manager *stream.Manager, request *pb.SubscribeRequest, logger *slog.Logger) error {
-	delay := 500 * time.Millisecond
-	for attempt := 1; ; attempt++ {
-		if err := manager.Start(ctx, request); err == nil {
-			return nil
-		} else {
-			logger.Error("LaserStream reconnect failed", "attempt", attempt, "retryIn", delay, "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
-		delay = min(delay*2, 30*time.Second)
-	}
 }

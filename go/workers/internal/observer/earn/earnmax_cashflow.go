@@ -270,6 +270,22 @@ func usdcBalance(account solana.PublicKey, amount uint64) multiply.TokenBalance 
 }
 
 // projectEarnMaxAccountUpdate is project_earn_max_account_update.
+// SnapshotApplicable reports whether a confirmed-state read of address,
+// recovered without the transaction that changed it, can be applied to vault.
+// Rust never enqueued such a job: every Rust Earn job carried its signature.
+// Two facts are proven only by their transaction, so an unsigned job for them
+// fails until it is dead-lettered. An Earn MAX claim-custody change needs its
+// exact transfer; its custody history is recovered by signature instead
+// (recoverEarnMaxGaps, Rust's enqueue_earn_max_rpc_gap_updates). A closed
+// classic policy needs its closing transaction for the refund or cleanup.
+func SnapshotApplicable(vault watch.Vault, address string, deleted bool) bool {
+	if vault.EarnMax {
+		vaultKey, err := solana.PublicKeyFromBase58(vault.Vault)
+		return err == nil && address != associatedToken(vaultKey, usdcMint, tokenProgram).String()
+	}
+	return !deleted || !isPolicyDeletion(NormalizedUpdate{EventKind: "account_deleted", AccountPubkey: &address}, vault)
+}
+
 func (a *Application) projectEarnMaxAccountUpdate(ctx context.Context, update NormalizedUpdate, vault watch.Vault) error {
 	idle := false
 	for _, filter := range update.Filters {

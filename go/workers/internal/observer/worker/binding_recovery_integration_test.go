@@ -18,11 +18,14 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/earn"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 )
 
@@ -181,5 +184,166 @@ func TestWatchStateRecoveryIsBatchedUnboundedByOnePassAndIdempotent(t *testing.T
 	}
 	if inserted != 1 || jobs() != 251 || account != changed {
 		t.Fatalf("changed binding recovery inserted %d for %s (stored %d)", inserted, account, jobs())
+	}
+}
+
+// recordingConnector records each session's from_slot and keeps it open.
+type recordingConnector struct {
+	mu    sync.Mutex
+	froms []uint64
+}
+
+func (c *recordingConnector) Open(ctx context.Context, request *pb.SubscribeRequest) (stream.OpenStream, error) {
+	c.mu.Lock()
+	c.froms = append(c.froms, request.GetFromSlot())
+	c.mu.Unlock()
+	return &idleStream{ctx: ctx}, nil
+}
+
+type idleStream struct{ ctx context.Context }
+
+func (s *idleStream) Recv() (*pb.SubscribeUpdate, error) { <-s.ctx.Done(); return nil, s.ctx.Err() }
+func (*idleStream) Send(*pb.SubscribeRequest) error      { return nil }
+func (*idleStream) CloseSend() error                     { return nil }
+func (*idleStream) Close() error                         { return nil }
+
+// A session that fails after an outage longer than LaserStream's retention
+// must reconnect through the same plan as a first start: a replayable
+// from_slot, and the skipped range recovered from confirmed state before the
+// stream resumes. The old reconnect requested frontier-overlap unclamped and
+// failed every attempt with OutOfRange.
+func TestReconnectAfterProviderWindowClampsAndRecoversBindings(t *testing.T) {
+	pool := observerFixturePool(t, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const current = 449_073_607
+	accounts := []watch.Account{{Pubkey: solana.NewWallet().PublicKey().String(), Role: "policy"}, {Pubkey: solana.NewWallet().PublicKey().String(), Role: "smart_account"}}
+	set := &watch.Set{Vaults: []watch.Vault{{Environment: "mainnet-beta", Settings: accounts[1].Pubkey, Vault: solana.NewWallet().PublicKey().String(), VaultIndex: 1, Accounts: accounts}}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		var result any
+		switch body.Method {
+		case "getSlot":
+			result = current
+		case "getMultipleAccounts":
+			var addresses []string
+			_ = json.Unmarshal(body.Params[0], &addresses)
+			values := make([]map[string]any, len(addresses))
+			for index := range addresses {
+				values[index] = map[string]any{"lamports": 1, "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", "data": []string{"AA==", "base64"}, "executable": false, "rentEpoch": 0}
+			}
+			result = map[string]any{"context": map[string]any{"slot": current}, "value": values}
+		default:
+			t.Errorf("unexpected RPC %s", body.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
+	}))
+	defer server.Close()
+	store := earn.NewStore(pool)
+	handler := earn.NewHandler(store, "reconnect-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	watchConsumer := handler.ConsumerName() + ":watch-observation"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1`, handler.ConsumerName())
+		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name IN ($1,$2)`, handler.ConsumerName(), watchConsumer)
+	})
+	connector := &recordingConnector{}
+	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}, earnStore: store, earn: handler}
+	ancientFrontier := uint64(current - 1_000_000)
+	manager, watchCursor, err := runtime.resumeSession(ctx, set, []kamino.Target{{Reserve: "11111111111111111111111111111111"}}, ancientFrontier, watchConsumer, ancientFrontier-5_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	edge := uint64(current - laserStreamReplaySlots)
+	connector.mu.Lock()
+	froms := append([]uint64(nil), connector.froms...)
+	connector.mu.Unlock()
+	if len(froms) != 1 || froms[0] != edge {
+		t.Fatalf("reconnect from_slot = %v, want provider window edge %d", froms, edge)
+	}
+	var jobs int64
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1`, handler.ConsumerName()).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	durable, err := store.ReplayCursor(ctx, watchConsumer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 2 || watchCursor != edge || durable != edge {
+		t.Fatalf("skipped range recovered %d jobs, watch cursor %d (durable %d); want 2 at %d", jobs, watchCursor, durable, edge)
+	}
+}
+
+// Recovery must not enqueue unsigned jobs the consumer can only dead-letter:
+// Earn MAX claim custody (recovered by signature history instead) and a
+// classic policy found closed. Every other binding is still recovered.
+func TestWatchStateRecoverySkipsSignatureOnlyFacts(t *testing.T) {
+	pool := observerFixturePool(t, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	key := func() string { return solana.NewWallet().PublicKey().String() }
+	maxVault := watch.Vault{Environment: "mainnet-beta", Settings: key(), Vault: key(), VaultIndex: 0, EarnMax: true}
+	custody, err := watch.USDCATA(maxVault.Vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxPolicy, closedPolicy, classicSettings := key(), key(), key()
+	maxVault.Accounts = []watch.Account{{Pubkey: custody, Role: "idle_token"}, {Pubkey: maxPolicy, Role: "policy"}}
+	classic := watch.Vault{Environment: "mainnet-beta", Settings: classicSettings, Vault: key(), VaultIndex: 1, Accounts: []watch.Account{{Pubkey: closedPolicy, Role: "policy"}, {Pubkey: classicSettings, Role: "smart_account"}}}
+	set := &watch.Set{Vaults: []watch.Vault{maxVault, classic}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Params []json.RawMessage `json:"params"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		var addresses []string
+		_ = json.Unmarshal(body.Params[0], &addresses)
+		values := make([]any, len(addresses))
+		for index, address := range addresses {
+			if address != closedPolicy {
+				values[index] = map[string]any{"lamports": 1, "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", "data": []string{"AA==", "base64"}, "executable": false, "rentEpoch": 0}
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"context": map[string]any{"slot": 900}, "value": values}})
+	}))
+	defer server.Close()
+	store := earn.NewStore(pool)
+	handler := earn.NewHandler(store, "signature-only-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	watchConsumer := handler.ConsumerName() + ":watch-observation"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1`, handler.ConsumerName())
+		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name IN ($1,$2)`, handler.ConsumerName(), watchConsumer)
+	})
+	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), earnStore: store, earn: handler}
+	if _, err := runtime.recoverWatchState(ctx, set, watchConsumer, 800); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := pool.Query(ctx, `SELECT event_payload->>'account_pubkey' FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1`, handler.ConsumerName())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := map[string]bool{}
+	for rows.Next() {
+		var account string
+		if err := rows.Scan(&account); err != nil {
+			t.Fatal(err)
+		}
+		recovered[account] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if recovered[custody] || recovered[closedPolicy] {
+		t.Fatalf("recovery enqueued a signature-only fact: %v", recovered)
+	}
+	if !recovered[maxPolicy] || !recovered[classicSettings] || len(recovered) != 2 {
+		t.Fatalf("recovered bindings = %v, want the Earn MAX policy and classic smart account", recovered)
 	}
 }
