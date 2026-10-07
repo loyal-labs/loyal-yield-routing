@@ -25,6 +25,8 @@ type Chain interface {
 	// missing or malformed account is an error; zero requires an observed
 	// initialized token account with the expected wallet or vault authority.
 	ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, authority string) (int64, error)
+	// ConfirmedLamports reads one account's lamports; an absent account has 0.
+	ConfirmedLamports(ctx context.Context, address string) (uint64, error)
 	// RemainingDelegationAllowanceRaw reads the recurring delegation's unused
 	// authorization against the frozen identity. ErrAllowanceUnknown
 	// distinguishes "cannot read it" from "it is exhausted"; unknown never
@@ -229,6 +231,14 @@ func (c *RPCChain) ReadAccountsWithOptional(ctx context.Context, addresses []str
 		return 0, nil, err
 	}
 	return c.rpc.GetMultipleAccountsWithOptional(ctx, addresses, slot, optional...)
+}
+
+func (c *RPCChain) ConfirmedLamports(ctx context.Context, address string) (uint64, error) {
+	_, accounts, err := c.ReadAccountsWithOptional(ctx, []string{address}, address)
+	if err != nil {
+		return 0, err
+	}
+	return accounts[0].Lamports, nil
 }
 
 // SimulateExact simulates the persisted wire's exact bytes with signature

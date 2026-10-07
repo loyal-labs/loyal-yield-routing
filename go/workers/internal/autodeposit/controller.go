@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -38,6 +39,8 @@ type WireBuilder interface {
 	// ProveTopUpWire verifies a persisted top-up attempt's immutable wire
 	// byte-for-byte against the frozen plan and confirmed route.
 	ProveTopUpWire(plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error
+	// FeePayer is the account that pays for every wire this builder signs.
+	FeePayer() string
 }
 
 // PullWireRequest freezes every input of one pull wire.
@@ -79,10 +82,21 @@ type Controller struct {
 	// leaseRenewWindow is how often an in-flight execution renews its claim
 	// lease. Zero selects the default.
 	leaseRenewWindow time.Duration
+	notifier         *SweepNotifier
+	idleToleranceRaw int64
 }
 
 // DefaultLeaseRenewWindow renews well inside the ten-minute claim lease.
 const DefaultLeaseRenewWindow = 3 * time.Minute
+
+// The TS executor's fee-payer floors (04e792e0). Below the minimum the payer
+// cannot be trusted to land the setup, pull and top-up legs, so no pull
+// starts. Below the low mark it still works: about twelve hours of the 90th
+// percentile rent-dominated burn remain.
+const (
+	FeePayerMinimumLamports = 50_000_000
+	FeePayerLowLamports     = 550_000_000
+)
 
 // ControllerDependencies are the controller's explicit dependencies.
 type ControllerDependencies struct {
@@ -92,6 +106,11 @@ type ControllerDependencies struct {
 	Facts *engine.Facts
 	// LeaseRenewWindow is optional.
 	LeaseRenewWindow time.Duration
+	// Notifier tells the app a scheduled sweep failed. Nil disables it.
+	Notifier *SweepNotifier
+	// IdleToleranceRaw is the vault idle balance a direct deposit may leave
+	// beside it. Zero tolerates none.
+	IdleToleranceRaw int64
 }
 
 // NewController validates the dependencies. A controller without all three
@@ -116,8 +135,11 @@ func NewController(deps ControllerDependencies) (*Controller, error) {
 	if window < 0 || window > DefaultLeaseRenewWindow {
 		return nil, errors.New("claim renewal window must be positive and at most three minutes")
 	}
+	if deps.IdleToleranceRaw < 0 {
+		return nil, errors.New("autodeposit idle tolerance must not be negative")
+	}
 
-	return &Controller{store: deps.Store, chain: deps.Chain, wires: deps.Wires, facts: deps.Facts, leaseRenewWindow: window}, nil
+	return &Controller{store: deps.Store, chain: deps.Chain, wires: deps.Wires, facts: deps.Facts, leaseRenewWindow: window, notifier: deps.Notifier, idleToleranceRaw: deps.IdleToleranceRaw}, nil
 }
 
 // Execute resolves one dispatchable target and reports its end state through
@@ -345,6 +367,27 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 // and pays its own rent shortfall in one atomic transaction, so a stage
 // repeated after a crash fails on the existing account and costs only a fee.
 func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string, target ExecutableTarget, frozen DepositPlan) (ExecutorResult, error) {
+	// One payer pays setup, pull and top-up. Its balance is read here, before
+	// any of them is built: a payer that cannot finish the deposit never
+	// starts the pull, and the user hears their promised sweep did not land.
+	payer := c.wires.FeePayer()
+	lamports, err := c.chain.ConfirmedLamports(scope.ctx, payer)
+	if err != nil {
+		return ResultDependencyUnavailable, err
+	}
+	if lamports < FeePayerMinimumLamports {
+		if _, err := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); err != nil {
+			return ResultYieldPersistenceFailed, err
+		}
+		c.notifier.NotifyFailed(scope.ctx, frozen.Target.Wallet, target.ScheduledSlotID)
+		return ResultFeePayerExhausted, fmt.Errorf("autodeposit fee payer %s has %d lamports; %d required", payer, lamports, FeePayerMinimumLamports)
+	}
+	if lamports < FeePayerLowLamports {
+		c.facts.Failed(engine.FamilyAutodeposit, "autodeposit_fee_payer_low")
+		slog.Warn("autodeposit fee payer is running low", "code", "autodeposit_fee_payer_low", "feePayer", payer,
+			"balanceLamports", lamports, "lowLamports", FeePayerLowLamports, "minimumLamports", FeePayerMinimumLamports,
+			"remainingTransactions", lamports/FeePayerMinimumLamports)
+	}
 	ready, err := c.ensureDestinationSetup(scope, claimToken, frozen)
 	if err != nil {
 		return ResultPreflightBlocked, err
@@ -386,11 +429,18 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	if custodyBefore != 0 {
+	// Fleet same-mint routes withdraw all source collateral but deposit the
+	// planned liquidity, so the interest accrued since planning stays in the
+	// vault ATA, and nothing drains idle custody (fleet idle is shadow-only).
+	// That residue rides beside the pull: the top-up deposits only the pulled
+	// amount and every check is on deltas. Idle above the tolerance is not
+	// residue but custody someone else may own, so the pull waits for it.
+	if custodyBefore > c.idleToleranceRaw {
 		if _, err := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); err != nil {
 			return ResultYieldPersistenceFailed, err
 		}
-		return ResultPreflightBlocked, errors.New("direct autodeposit requires empty idle custody before pull")
+		c.facts.Failed(engine.FamilyAutodeposit, "autodeposit_idle_blocked")
+		return ResultDeferred, fmt.Errorf("existing idle vault balance must drain before direct autodeposit: %d", custodyBefore)
 	}
 	blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
 	if err != nil {
@@ -414,7 +464,7 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 		OperationKind:            OperationPull,
 		AmountRaw:                frozen.AmountRaw,
 		SourcePreBalanceRaw:      walletBalance,
-		DestinationPreBalanceRaw: 0,
+		DestinationPreBalanceRaw: custodyBefore,
 		ProtectionFloorRaw:       &targetContext.WalletBalanceFloorRaw,
 		Signature:                wire.Signature,
 		SignedTransactionBase64:  wire.SignedTransactionBase64,
