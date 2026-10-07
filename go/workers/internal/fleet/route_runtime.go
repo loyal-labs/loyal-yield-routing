@@ -38,7 +38,6 @@ type revalidationStore interface {
 type Revalidator struct {
 	store                    revalidationStore
 	rpc                      *RPCClient
-	proxy                    *KLendProxy
 	owner                    string
 	signer                   string
 	leaseTTL                 time.Duration
@@ -64,13 +63,13 @@ type RevalidatorConfig struct {
 	JupiterAPIKey            string
 }
 
-func NewRevalidator(store *Store, rpc *RPCClient, proxy *KLendProxy, config RevalidatorConfig) (*Revalidator, error) {
-	return newRevalidator(store, rpc, proxy, config)
+func NewRevalidator(store *Store, rpc *RPCClient, config RevalidatorConfig) (*Revalidator, error) {
+	return newRevalidator(store, rpc, config)
 }
 
-func newRevalidator(store revalidationStore, rpc *RPCClient, proxy *KLendProxy, config RevalidatorConfig) (*Revalidator, error) {
-	if store == nil || rpc == nil || proxy == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second {
-		return nil, errors.New("store, RPC, proxy, owner, signer, and lease TTL are required")
+func newRevalidator(store revalidationStore, rpc *RPCClient, config RevalidatorConfig) (*Revalidator, error) {
+	if store == nil || rpc == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second {
+		return nil, errors.New("store, RPC, owner, signer, and lease TTL are required")
 	}
 	if _, err := decodePublicKey(config.DelegatedSigner); err != nil {
 		return nil, fmt.Errorf("delegated signer: %w", err)
@@ -95,7 +94,7 @@ func newRevalidator(store revalidationStore, rpc *RPCClient, proxy *KLendProxy, 
 			return nil, err
 		}
 	}
-	return &Revalidator{store: store, rpc: rpc, proxy: proxy, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter}, nil
+	return &Revalidator{store: store, rpc: rpc, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter}, nil
 }
 
 // Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
@@ -170,9 +169,9 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 			return out, "lease_check", err
 		}
 	}
-	route, err := r.proxy.Build(ctx, input)
+	route, err := BuildSameMintRoute(input)
 	if err != nil {
-		return out, "proxy_build", err
+		return out, "klend_build", err
 	}
 	policy, err := ValidateFreshRouteEvidence(evidence, time.Now().UTC(), lease.IdempotencyKey, lease.OptimizerEpochKey, r.signer, route.Protected)
 	if err != nil {

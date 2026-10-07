@@ -91,7 +91,7 @@ func testWireBuilder(t *testing.T) *SweepWireBuilder {
 	if err != nil {
 		t.Fatalf("generate executor key: %v", err)
 	}
-	builder, err := NewSweepWireBuilder(nil, private, func(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error) {
+	builder, err := NewSweepWireBuilder(private, func(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error) {
 		plan, delegation := testPullPlan()
 		wallet, mint := mustKey(plan.Target.Wallet), mustKey(USDCMint)
 		authority, err := subscriptionAuthorityKey(wallet[:], mint[:])

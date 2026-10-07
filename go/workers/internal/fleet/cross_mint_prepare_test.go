@@ -3,15 +3,12 @@ package fleet
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -256,27 +253,15 @@ func TestCrossMintSourceRecoveryDoesNotReadMissingTargetSetup(t *testing.T) {
 }
 
 func TestRealKLendIndependentCrossMintPolicyArms(t *testing.T) {
-	path := os.Getenv("KAMINO_TEST_KLEND_PROXY_PATH")
-	if path == "" {
-		t.Skip("requires pinned compiled Rust KLend proxy")
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy, err := NewKLendProxy(path, fmt.Sprintf("%x", sha256.Sum256(raw)))
-	if err != nil {
-		t.Fatal(err)
-	}
 	q, plan, bank := crossMintPreparationFixture(t)
-	r := &Revalidator{proxy: proxy, signer: plan.Bindings.DelegatedSigner}
+	r := &Revalidator{signer: plan.Bindings.DelegatedSigner}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	route, err := proxy.BuildCrossMintLegs(ctx, KaminoSameMintRouteRequest{Vault: q.Movement.VaultPubkey, Source: bank.source.Position, Target: bank.target.Position, WithdrawCollateralAmount: 999, DepositLiquidityAmount: 999})
+	route, err := BuildCrossMintLegs(KaminoSameMintRouteRequest{Vault: q.Movement.VaultPubkey, Source: bank.source.Position, Target: bank.target.Position, WithdrawCollateralAmount: 999, DepositLiquidityAmount: 999})
 	if err != nil {
 		t.Fatal(err)
 	}
-	recovery, err := proxy.BuildIdleDeposit(ctx, KaminoIdleDepositRequest{Vault: q.Movement.VaultPubkey, Target: bank.source.Position, DepositLiquidityAmount: 999})
+	recovery, err := BuildIdleDeposit(KaminoIdleDepositRequest{Vault: q.Movement.VaultPubkey, Target: bank.source.Position, DepositLiquidityAmount: 999})
 	if err != nil {
 		t.Fatal(err)
 	}

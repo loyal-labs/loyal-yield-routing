@@ -294,11 +294,11 @@ func validateCrossMintPreparationRequest(q CrossMintPreparationRequest, signer, 
 	return plan, nil
 }
 
-// PrepareCrossMintLeg builds one independent leg, using the mature Rust KLend
-// proxy or strict Jupiter validator. It neither advances custody nor signs.
+// PrepareCrossMintLeg builds one independent leg, using the KLend builders or
+// the strict Jupiter validator. It neither advances custody nor signs.
 func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPreparationRequest) (CrossMintLegPreparation, error) {
 	var out CrossMintLegPreparation
-	if r == nil || r.rpc == nil || r.proxy == nil || !r.crossMintEnabled || r.computeLimit == 0 || r.slotDuration <= 0 {
+	if r == nil || r.rpc == nil || !r.crossMintEnabled || r.computeLimit == 0 || r.slotDuration <= 0 {
 		return out, errors.New("cross-mint preparation runtime is not configured")
 	}
 	plan, err := validateCrossMintPreparationRequest(q, r.signer, r.owner, time.Now())
@@ -664,7 +664,7 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 		if err != nil || backing == 0 {
 			return nil, effect, anchors, "", errors.New("cross-mint withdrawal lacks redeemable source backing")
 		}
-		route, err = r.proxy.BuildCrossMintLegs(ctx, KaminoSameMintRouteRequest{Vault: m.VaultPubkey, Source: bank.source.Position, Target: bank.target.Position, WithdrawCollateralAmount: values.Collateral, DepositLiquidityAmount: uint64(m.PlannedAmountRaw)})
+		route, err = BuildCrossMintLegs(KaminoSameMintRouteRequest{Vault: m.VaultPubkey, Source: bank.source.Position, Target: bank.target.Position, WithdrawCollateralAmount: values.Collateral, DepositLiquidityAmount: uint64(m.PlannedAmountRaw)})
 		if err != nil {
 			return nil, effect, anchors, "", err
 		}
@@ -689,7 +689,7 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 		if position.Position.VaultLiquidityATA != m.CustodyAccount || position.Position.LiquidityMint != m.CustodyMint {
 			return nil, effect, anchors, "", errors.New("deposit destination differs from attributed custody")
 		}
-		route, err = r.proxy.BuildIdleDeposit(ctx, KaminoIdleDepositRequest{Vault: m.VaultPubkey, Target: position.Position, DepositLiquidityAmount: uint64(m.CustodyAmountRaw)})
+		route, err = BuildIdleDeposit(KaminoIdleDepositRequest{Vault: m.VaultPubkey, Target: position.Position, DepositLiquidityAmount: uint64(m.CustodyAmountRaw)})
 		if err != nil {
 			return nil, effect, anchors, "", err
 		}

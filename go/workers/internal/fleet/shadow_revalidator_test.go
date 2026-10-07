@@ -77,7 +77,7 @@ func shadowTestRevalidator(t *testing.T, store *fakeRevalidationStore) *Revalida
 		http.Error(writer, "no", http.StatusBadRequest)
 	}))
 	t.Cleanup(server.Close)
-	return &Revalidator{store: store, rpc: NewRPCClient(server.URL), proxy: &KLendProxy{}, owner: "shadow", signer: testIdentity(9), leaseTTL: time.Second, computeLimit: defaultComputeLimit, slotDuration: 400 * time.Millisecond}
+	return &Revalidator{store: store, rpc: NewRPCClient(server.URL), owner: "shadow", signer: testIdentity(9), leaseTTL: time.Second, computeLimit: defaultComputeLimit, slotDuration: 400 * time.Millisecond}
 }
 
 func TestShadowCyclePerformsNoWrites(t *testing.T) {

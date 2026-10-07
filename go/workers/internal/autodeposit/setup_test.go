@@ -4,36 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"testing"
+
 	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"os"
-	"testing"
 )
 
-func setupProxy(t *testing.T) *fleet.KLendProxy {
-	t.Helper()
-	path := os.Getenv("KAMINO_TEST_KLEND_PROXY_PATH")
-	if path == "" {
-		t.Skip("requires locally built official Rust KLend proxy")
-	}
-	binary, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := sha256.Sum256(binary)
-	proxy, err := fleet.NewKLendProxy(path, hex.EncodeToString(hash[:]))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return proxy
-}
 func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPlan, DestinationSetupPlan, map[string]backyard.ConfirmedAccount) {
 	t.Helper()
-	proxy := setupProxy(t)
 	plan, _ := testPullPlan()
 	vault := mustKey(plan.Target.VaultPubkey)
 	ata, err := deriveVaultATA(vault, mustKey(USDCMint), mustKey(splTokenID))
@@ -100,7 +81,7 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, 32))
 	delegate := solana.PrivateKey(key).PublicKey().String()
 	request := fleet.DestinationSetupRequest{Stage: string(stage), Vault: plan.Target.VaultPubkey, Payer: delegate, Target: route.Position}
-	built, err := proxy.BuildDestinationSetup(t.Context(), request)
+	built, err := fleet.BuildDestinationSetup(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +114,7 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 		}
 		return 500, out, nil
 	}
-	builder, err := NewSweepWireBuilderWithSetup(proxy, key, read, func(context.Context, int) (uint64, error) { return 20_000_000, nil })
+	builder, err := NewSweepWireBuilderWithSetup(key, read, func(context.Context, int) (uint64, error) { return 20_000_000, nil })
 	if err != nil {
 		t.Fatal(err)
 	}

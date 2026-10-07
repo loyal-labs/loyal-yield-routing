@@ -25,7 +25,7 @@ func TestConfigRejectsShadowRevalidation(t *testing.T) {
 	config := Config{
 		DatabaseURL: "postgres://example", TimescaleURL: "postgres://evidence", TimescaleSchema: "kamino", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
 		Mode: ModePublish, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond,
-		RevalidatorEnabled: true, KLendProxyPath: "/proxy", KLendProxySHA256: strings.Repeat("a", 64), DelegatedSigner: testIdentity(9),
+		RevalidatorEnabled: true, DelegatedSigner: testIdentity(9),
 		RevalidationOwner: "go", RevalidationLeaseTTL: time.Minute, RevalidationPollInterval: time.Second, RevalidationConcurrency: 1, RevalidationComputeLimit: defaultComputeLimit,
 	}
 	if err := config.Validate(); err != nil {
@@ -80,7 +80,7 @@ func TestConfigShadowRevalidatorFlag(t *testing.T) {
 	config := Config{
 		DatabaseURL: "postgres://example", TimescaleURL: "postgres://evidence", TimescaleSchema: "kamino", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
 		Mode: ModeShadow, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond,
-		RevalidatorShadow: true, KLendProxyPath: "/proxy", KLendProxySHA256: strings.Repeat("a", 64), DelegatedSigner: testIdentity(9),
+		RevalidatorShadow: true, DelegatedSigner: testIdentity(9),
 		RevalidationOwner: "go", RevalidationPollInterval: time.Second, RevalidationConcurrency: 1, RevalidationComputeLimit: defaultComputeLimit,
 	}
 	if err := config.Validate(); err != nil {
@@ -94,8 +94,8 @@ func TestConfigShadowRevalidatorFlag(t *testing.T) {
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("both revalidator flags accepted: %v", err)
 	}
-	config.Mode, config.RevalidatorEnabled, config.KLendProxyPath = ModeShadow, false, ""
+	config.Mode, config.RevalidatorEnabled, config.DelegatedSigner = ModeShadow, false, ""
 	if err := config.Validate(); err == nil {
-		t.Fatal("shadow revalidator accepted without a pinned proxy")
+		t.Fatal("shadow revalidator accepted without a delegated signer")
 	}
 }

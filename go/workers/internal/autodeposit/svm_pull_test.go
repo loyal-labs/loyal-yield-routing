@@ -257,7 +257,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e != nil || len(seed) != 32 {
 		t.Fatal("invalid public test executor seed")
 	}
-	builder, e := NewSweepWireBuilder(setupProxy(t), ed25519.NewKeyFromSeed(seed), chain.ReadAccountsWithOptional)
+	builder, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(seed), chain.ReadAccountsWithOptional)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -294,7 +294,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 		amount int64
 	}{{"unauthorized", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{20}, 32)), f.AmountRaw}, {"over-budget", ed25519.NewKeyFromSeed(seed), f.BudgetRaw + 1}} {
 		t.Run(tc.name, func(t *testing.T) {
-			b, e := NewSweepWireBuilder(setupProxy(t), tc.key, chain.ReadAccountsWithOptional)
+			b, e := NewSweepWireBuilder(tc.key, chain.ReadAccountsWithOptional)
 			if e != nil {
 				t.Fatal(e)
 			}

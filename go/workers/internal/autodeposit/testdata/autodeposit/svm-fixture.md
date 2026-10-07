@@ -27,13 +27,12 @@ paths:
 - Optional `SQUADS_SMART_ACCOUNT_PROGRAM_SO` and `SUBSCRIPTIONS_PROGRAM_SO`:
   otherwise the existing checked-in SBF fixtures are used.
 
-Build the existing `fleet-local-svm` example and `loyal-klend-proxy` binary.
+Build the existing `fleet-local-svm` example.
 Run `go test -race ./internal/autodeposit -run '^TestSVM' -count=1 -v` from
 `go/workers` with:
 
 - `AUTODEPOSIT_TEST_SVM_FIXTURE_PATH`: generated JSON path.
 - `AUTODEPOSIT_TEST_SVM_PATH`: built `fleet-local-svm` executable.
-- `KAMINO_TEST_KLEND_PROXY_PATH`: built official proxy executable.
 - The same program artifact path environment variables used by the producer.
 - `AUTODEPOSIT_TEST_DATABASE_URL`: the existing allowlisted, disposable
   `workers_v2_autodeposit` fixture URL for the current-floor publication test.

@@ -1243,7 +1243,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 			return out, errors.New("finalized prewithdraw policy account is not funded Squads state")
 		}
 	}
-	route, err := r.proxy.BuildCrossMintLegs(ctx, KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: source.Position, Target: target.Position, WithdrawCollateralAmount: lease.SourceCollateralRaw, DepositLiquidityAmount: validated.MinimumOutput})
+	route, err := BuildCrossMintLegs(KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: source.Position, Target: target.Position, WithdrawCollateralAmount: lease.SourceCollateralRaw, DepositLiquidityAmount: validated.MinimumOutput})
 	if err != nil {
 		return out, err
 	}
@@ -1264,7 +1264,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 			return out, errors.New("finalized Earn policy does not authorize exact KLend instruction")
 		}
 		if i == 0 {
-			recovery, e := r.proxy.BuildIdleDeposit(ctx, KaminoIdleDepositRequest{Vault: lease.VaultPubkey, Target: source.Position, DepositLiquidityAmount: plan.Amount})
+			recovery, e := BuildIdleDeposit(KaminoIdleDepositRequest{Vault: lease.VaultPubkey, Target: source.Position, DepositLiquidityAmount: plan.Amount})
 			if e != nil {
 				return out, e
 			}

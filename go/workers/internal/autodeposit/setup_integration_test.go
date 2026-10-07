@@ -3,8 +3,9 @@ package autodeposit
 import (
 	"context"
 	"errors"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 )
 
 type setupReplayChain struct {

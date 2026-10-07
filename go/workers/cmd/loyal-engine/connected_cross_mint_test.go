@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
@@ -122,7 +121,7 @@ func TestConnectedRetailGoCrossMintExecution(t *testing.T) {
 	}
 	child := exec.CommandContext(ctx, producerPath, "-test.run=^TestConnectedGoCrossMintBankProducer$", "-test.v", "-test.timeout=115s")
 	child.Env = []string{"LC_ALL=C", "FLEET_TEST_GO_CROSS_MINT_DATABASE_URL=" + database, "KAMINO_CONNECTED_GO_CROSS_MINT_CALLBACK=" + callback.URL + "/bank", "KAMINO_CONNECTED_GO_CROSS_MINT_TOKEN=" + token}
-	for _, name := range []string{"KAMINO_TEST_KLEND_PROXY_PATH", "KAMINO_CONNECTED_SVM_PATH", "KAMINO_CONNECTED_WORKER_PATH", "MOCK_YIELD_PROTOCOLS_PROGRAM_SO"} {
+	for _, name := range []string{"KAMINO_CONNECTED_SVM_PATH", "KAMINO_CONNECTED_WORKER_PATH", "MOCK_YIELD_PROTOCOLS_PROGRAM_SO"} {
 		value := os.Getenv(name)
 		if value == "" {
 			t.Fatalf("configured proof lacks local artifact %s", name)
@@ -180,18 +179,8 @@ func TestConnectedRetailGoCrossMintExecution(t *testing.T) {
 	transport.TLSClientConfig = &tls.Config{RootCAs: trusted, MinVersion: tls.VersionTLS12}
 	http.DefaultTransport = transport
 	defer func() { transport.CloseIdleConnections(); http.DefaultTransport = originalTransport }()
-	proxyPath := os.Getenv("KAMINO_TEST_KLEND_PROXY_PATH")
-	proxyBytes, err := os.ReadFile(proxyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxyHash := sha256.Sum256(proxyBytes)
-	proxy, err := fleet.NewKLendProxy(proxyPath, hex.EncodeToString(proxyHash[:]))
-	if err != nil {
-		t.Fatal(err)
-	}
 	owner := "connected-retail-crossmint"
-	revalidator, err := fleet.NewRevalidator(plannerStore, fleet.NewRPCClient(bank.RPCURL), proxy, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: bank.Signer, LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: bank.BuildURL})
+	revalidator, err := fleet.NewRevalidator(plannerStore, fleet.NewRPCClient(bank.RPCURL), fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: bank.Signer, LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: bank.BuildURL})
 	if err != nil {
 		t.Fatal(err)
 	}
