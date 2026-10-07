@@ -22,16 +22,6 @@
       "target": "go/workers/internal/observer/config/config_test.go"
     },
     {
-      "source": "go/laserstream-worker/internal/earn/bridge.go",
-      "source_sha256": "eb37db0c4202587ab47be421566ec84de554a644c6ecfa220da42052dcd93247",
-      "target": "go/workers/internal/observer/earn/bridge.go"
-    },
-    {
-      "source": "go/laserstream-worker/internal/earn/bridge_test.go",
-      "source_sha256": "702412594d4cc79c9c4401f5d70728201e50636499ead225785b566204e0ca6c",
-      "target": "go/workers/internal/observer/earn/bridge_test.go"
-    },
-    {
       "source": "go/laserstream-worker/internal/earn/handler.go",
       "source_sha256": "3585c17cfc71264e2dc5668861d790281a4e33b11eab98872a83cd41a3bf832d",
       "target": "go/workers/internal/observer/earn/handler.go"

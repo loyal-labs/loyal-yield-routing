@@ -9,7 +9,7 @@ import (
 
 // The projection inputs below mirror loyal-yield-store's serde types field for
 // field (snake_case JSON). The Go Earn application writes the same rows as the
-// stopped Rust earn-domain-bridge, and the differential row test feeds one JSON
+// stopped Rust earn-domain-bridge; the parity test feeds one JSON
 // script to both implementations.
 
 // PolicyMatchInput is one detected route or setup policy (route_policies row).

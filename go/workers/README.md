@@ -6,8 +6,10 @@ is accepted and later merge/activation is authorized. See
 
 One module composes observer, retail engine and separately credentialed Backyard
 engine. The initial source-preserving imports retain existing schemas and tests.
-The observer may retain the reviewed Rust Earn bridge until Go application proof
-passes; Rust ABI/SVM proof and the official KLend helper remain authoritative.
+KLend instruction builders and the Earn domain application are Go; their byte
+and row parity with the retained Rust code is pinned by goldens the Rust code
+generates (`testdata/klend`, `testdata/earn`). Rust ABI/SVM proof remains
+authoritative.
 
 Run `make verify` for formatting, vet, race tests and the three binary builds.
 Use `GOTOOLCHAIN=local`; the language baseline is Go 1.25.1 and branch CI uses
@@ -71,12 +73,12 @@ keeps its existing meaning. One-shot operator commands run as
 with the same credentials.
 
 Observer retains its reviewed transport configuration in
-`internal/observer/config/config.go` and starts the separately supervised,
-unsigned Rust Earn bridge with an explicit environment allowlist. Each family
+`internal/observer/config/config.go` and runs the Earn domain application
+(`internal/observer/earn`) in process: policy projection, the durable Earn
+reconciliation queue and the hourly Earn APY snapshots. Each family
 requires its own database boundary: observer watches use `NEON_DATABASE_URL`
 for Yield and explicit `OBSERVER_APPS_DATABASE_URL` for Apps identities. The
-Apps connection is read-only in the observer and is excluded from the bridge
-environment. The fixed watch catalog verifies actual mainnet genesis before
+Apps connection is read-only in the observer. The fixed watch catalog verifies actual mainnet genesis before
 opening writers and on every watch refresh.
 Each family
 owns SQL beside its lifecycle code. Shared packages provide concrete pool,
@@ -94,7 +96,7 @@ alert rules live in `deploy/hetzner/monitoring/`. There is no readiness
 endpoint. Recovery preserves possibly sent bytes, even after user
 disablement; do not clear uncertainty by deleting rows.
 
-The Docker image includes the retained Earn bridge alongside the three Go
-binaries, runs as UID 65532, and records
+The Docker image contains only the three Go binaries, runs as UID 65532, and
+records
 artifact checksums. Branch CI builds and probes it without publishing. Main
 merge, migration acceptance and family writer activation remain separate gates.
