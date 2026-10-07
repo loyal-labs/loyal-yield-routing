@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earn"
 )
 
 // BuiltOperation mirrors builder::BuiltOperation.
@@ -324,16 +325,23 @@ func BuildOperation(plan *ActionPlan, observed *ObservedRoute, topology *EarnMax
 }
 
 // BuildWalletClaimInstruction binds the app-owned root wallet claim to the
-// saved request. The delegate never signs this instruction.
-func BuildWalletClaimInstruction(route *RouteState, topology *EarnMaxTopology, requestID string) (Instruction, error) {
+// saved request, paying earn.ClaimPayout of the claim custody's balance when
+// the transaction is built. The delegate never signs this instruction.
+func BuildWalletClaimInstruction(route *RouteState, topology *EarnMaxTopology, requestID string, request earn.ClaimRequest, custodyBalanceRaw uint64) (Instruction, error) {
 	if route == nil || topology == nil || route.Withdrawal == nil || route.CurrentOperationID != nil || route.Goal != GoalWithdraw || route.Withdrawal.Status != WithdrawalClaimable || route.Withdrawal.RequestID != requestID || requestID == "" {
 		return Instruction{}, errors.New("claim is not owned by a claimable withdrawal request")
 	}
 	if route.Settings != topology.Settings.String() || route.Vault != topology.Vault.String() || route.VaultIndex != topology.VaultIndex {
 		return Instruction{}, errors.New("claim route custody identity drifted")
 	}
-	amount := route.Withdrawal.AmountRaw
-	if amount == 0 || amount > math.MaxInt64 {
+	if !request.Full && request.AmountRaw != route.Withdrawal.AmountRaw {
+		return Instruction{}, errors.New("explicit claim request differs from the saved withdrawal")
+	}
+	amount, err := earn.ClaimPayout(request, custodyBalanceRaw)
+	if err != nil {
+		return Instruction{}, err
+	}
+	if amount > math.MaxInt64 {
 		return Instruction{}, errors.New("claim request amount is invalid")
 	}
 	destination, err := solana.PublicKeyFromBase58(route.Withdrawal.DestinationAccount)
@@ -358,8 +366,12 @@ type WalletClaimReceipt struct {
 	SourceBefore, SourceAfter, DestinationBefore, DestinationAfter TokenBalance
 }
 
-func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, requestID string, rootAuthority solana.PublicKey, receipt *WalletClaimReceipt) error {
-	expected, err := BuildWalletClaimInstruction(route, topology, requestID)
+func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, requestID string, request earn.ClaimRequest, rootAuthority solana.PublicKey, receipt *WalletClaimReceipt) error {
+	if receipt == nil {
+		return errors.New("claim has no successful confirmed root-wallet receipt")
+	}
+	// The source's pre-transaction balance is the balance the claim was built from.
+	expected, err := BuildWalletClaimInstruction(route, topology, requestID, request, receipt.SourceBefore.AmountRaw)
 	if err != nil {
 		return err
 	}
@@ -431,7 +443,7 @@ func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, re
 	if !found {
 		return errors.New("claim root instruction is missing")
 	}
-	amount := route.Withdrawal.AmountRaw
+	amount := binary.LittleEndian.Uint64(expected.Data[1:9])
 	src, dst := topology.ClaimCustody.String(), route.Withdrawal.DestinationAccount
 	for _, pair := range []struct {
 		pre, post TokenBalance
@@ -441,8 +453,11 @@ func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, re
 			return errors.New("claim receipt token identity drifted")
 		}
 	}
-	if receipt.SourceBefore.AmountRaw < amount || receipt.SourceAfter.AmountRaw != receipt.SourceBefore.AmountRaw-amount || receipt.DestinationAfter.AmountRaw < receipt.DestinationBefore.AmountRaw || receipt.DestinationAfter.AmountRaw-receipt.DestinationBefore.AmountRaw != amount {
-		return errors.New("claim receipt did not pay the saved request exactly")
+	if err := earn.VerifyClaimTransfer(request, receipt.SourceBefore.AmountRaw, receipt.SourceAfter.AmountRaw, amount); err != nil {
+		return err
+	}
+	if receipt.DestinationAfter.AmountRaw < receipt.DestinationBefore.AmountRaw || receipt.DestinationAfter.AmountRaw-receipt.DestinationBefore.AmountRaw != amount {
+		return errors.New("claim receipt did not credit the destination with the payout")
 	}
 	return nil
 }

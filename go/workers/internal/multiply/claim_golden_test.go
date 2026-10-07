@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earn"
 	"os"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func TestRootWalletClaimMatchesIndependentSVMReceipt(t *testing.T) {
 	}
 	receipt := WalletClaimReceipt{Signature: fixture.Signature, ConfirmationState: "confirmed", ConfirmedSlot: fixture.ConfirmedSlot, Wire: wire, SourceBefore: balance(fixture.Source, fixture.SourceBeforeRaw), SourceAfter: balance(fixture.Source, fixture.SourceAfterRaw), DestinationBefore: balance(fixture.Destination, fixture.DestinationBeforeRaw), DestinationAfter: balance(fixture.Destination, fixture.DestinationAfterRaw)}
 	root := mustKey(fixture.RootAuthority)
-	if err := ValidateWalletClaimReceipt(route, topology, fixture.RequestID, root, &receipt); err != nil {
+	if err := ValidateWalletClaimReceipt(route, topology, fixture.RequestID, earn.ClaimRequest{AmountRaw: fixture.AmountRaw}, root, &receipt); err != nil {
 		t.Fatalf("real Squads/SPL receipt refused: %v", err)
 	}
 	cases := []struct {
@@ -81,12 +82,12 @@ func TestRootWalletClaimMatchesIndependentSVMReceipt(t *testing.T) {
 			r.Withdrawal = &w
 			receiptCopy := receipt
 			tc.mutate(&r, &receiptCopy)
-			if err := ValidateWalletClaimReceipt(&r, topology, fixture.RequestID, root, &receiptCopy); err == nil {
+			if err := ValidateWalletClaimReceipt(&r, topology, fixture.RequestID, earn.ClaimRequest{AmountRaw: fixture.AmountRaw}, root, &receiptCopy); err == nil {
 				t.Fatal("receipt escaped saved request ownership")
 			}
 		})
 	}
-	if err := ValidateWalletClaimReceipt(route, topology, fixture.RequestID, fixtureKey(87), &receipt); err == nil {
+	if err := ValidateWalletClaimReceipt(route, topology, fixture.RequestID, earn.ClaimRequest{AmountRaw: fixture.AmountRaw}, fixtureKey(87), &receipt); err == nil {
 		t.Fatal("non-root signer accepted")
 	}
 	executor, _, _ := testExecutor(t)

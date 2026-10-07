@@ -786,13 +786,10 @@ func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *Ro
 	return &next, nil
 }
 
-// Apps commit 45de590113312d54de7585a710620a8a80b504db persists an exact
-// payout (apps/web/src/features/earn-max/server/repository.server.ts:193-225)
-// and prepares a user-signed transfer_checked for it (prepared.server.ts:
-// 287-308). This is newer source than the rewrite's initial Apps pin.
-// Completing the unwind is not proof that NAV after fees can fund
-// that payout. Shortfall remains derivable from the durable requested amount
-// and confirmed position snapshot; the worker never lowers user intent.
+// A withdrawal is claimable once its unwind is complete, as in Rust's
+// Complete transition. The payout is computed when the Claim is built
+// (earn.ClaimPayout); the saved amount of a "max" withdrawal is a pre-unwind
+// estimate and cannot gate the claim.
 func withdrawalClaimCondition(route *RouteState, observed *ObservedRoute, topology *EarnMaxTopology) (string, error) {
 	if route == nil || route.Withdrawal == nil || observed == nil || topology == nil || observed.Slot == 0 || !observed.ActiveStrategyIsCoherent() {
 		return "", errors.New("withdrawal claim evidence is absent or incoherent")
@@ -823,11 +820,8 @@ func withdrawalClaimCondition(route *RouteState, observed *ObservedRoute, topolo
 	if !destinationKnown {
 		return "", errors.New("withdrawal destination observation is missing")
 	}
-	if route.Withdrawal.AmountRaw == 0 {
-		return "", errors.New("withdrawal requested amount is invalid")
-	}
-	if observed.Claim.AmountRaw < route.Withdrawal.AmountRaw {
-		return "withdrawal_liquidity_shortfall", nil
+	if observed.Claim.AmountRaw == 0 {
+		return "withdrawal_custody_empty", nil
 	}
 	return "withdrawal_claimable", nil
 }

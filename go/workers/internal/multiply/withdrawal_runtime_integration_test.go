@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestWorkerWithdrawalShortfallPersistsAcrossRestartWithoutChangingPayout(t *testing.T) {
+func TestWorkerWithdrawalIsClaimableAfterFeeLossWithoutRewritingTheRequest(t *testing.T) {
 	store := integrationStore(t)
 	state, topology := runtimeFixtureRoute(t, store)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -38,44 +38,25 @@ func TestWorkerWithdrawalShortfallPersistsAcrossRestartWithoutChangingPayout(t *
 		}
 		return worker
 	}
-	for _, owner := range []string{"first-worker", "restarted-worker"} {
-		result, err := newWorker(owner).Tick(ctx)
-		if err != nil || result.Condition != "withdrawal_liquidity_shortfall" {
-			t.Fatalf("%s shortfall %v %v", owner, result, err)
-		}
-		saved, err := store.LoadRouteState(ctx, state.RouteKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if saved.State.Goal != GoalWithdraw || saved.State.Withdrawal.AmountRaw != 10_000_000 || saved.State.Withdrawal.Status != WithdrawalRequested || saved.State.CurrentOperationID != nil {
-			t.Fatal("shortfall changed intent or declared claimable")
-		}
-		var claim, collateral, debt string
-		if err := store.Pool().QueryRow(ctx, `SELECT claim_raw::text,collateral_raw::text,debt_raw::text FROM loyal_yield.multiply_position_snapshots WHERE route_key=$1 ORDER BY observed_slot DESC,id DESC LIMIT 1`, state.RouteKey).Scan(&claim, &collateral, &debt); err != nil {
-			t.Fatal(err)
-		}
-		if claim != "9990000" || collateral != "0" || debt != "0" {
-			t.Fatal("shortfall lacks durable confirmed financial evidence")
-		}
-	}
 	// A missing current destination observation never reuses an old balance
-	// to advance the withdrawal. Intent remains intact for later fresh evidence.
+	// to advance the withdrawal.
 	delete(reader.accounts, destination.String())
 	if _, err := newWorker("missing-observation-worker").Tick(ctx); err == nil {
 		t.Fatal("missing latest destination declared claimable")
 	}
 	reader.accounts[destination.String()] = observedToken(destination, USDCMint, fixtureKey(214), 0)
-	reader.accounts[topology.ClaimCustody.String()] = observedToken(topology.ClaimCustody, USDCMint, topology.Vault, 10_000_000)
 	reader.slot++
-	result, err := newWorker("funded-worker").Tick(ctx)
+	// Fees left 9.99 against a saved 10: the unwind is complete, so the
+	// withdrawal is claimable and the payout is built from the custody.
+	result, err := newWorker("unwound-worker").Tick(ctx)
 	if err != nil || result.Condition != "route_complete" {
-		t.Fatalf("exact payout completion %v %v", result, err)
+		t.Fatalf("fee-loss completion %v %v", result, err)
 	}
 	saved, err := store.LoadRouteState(ctx, state.RouteKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if saved.State.Withdrawal.Status != WithdrawalClaimable || saved.State.Withdrawal.AmountRaw != 10_000_000 || saved.State.Withdrawal.UnwindCompletedAt == nil {
-		t.Fatal("exact confirmed liquidity failed claimable transition")
+		t.Fatal("unwound withdrawal was not claimable or its saved request changed")
 	}
 }
