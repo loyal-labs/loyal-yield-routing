@@ -89,6 +89,9 @@ var ErrRouteNotExecutable = errors.New("autodeposit destination is not executabl
 type TopUpRoute struct {
 	Position   fleet.KaminoPositionAccounts `json:"position"`
 	Obligation string                       `json:"obligation"`
+	// MinimumDepositRaw is the smallest liquidity amount that mints one
+	// collateral unit at the confirmed reserve's exchange value.
+	MinimumDepositRaw uint64 `json:"-"`
 }
 
 // SweepWireBuilder is the production WireBuilder: it compiles and signs the
@@ -320,6 +323,9 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	}
 	if account, ok := byAddress[plan.Market]; !ok || account.Owner != KLendProgramID || account.Executable {
 		return TopUpRoute{}, fmt.Errorf("%w: market %s is not a confirmed KLend market", ErrRouteNotExecutable, plan.Market)
+	}
+	if route.MinimumDepositRaw, err = backyard.KaminoMinimumDepositAmount(reserve, plan.Market, plan.LiquidityMint); err != nil {
+		return TopUpRoute{}, fmt.Errorf("%w: reserve %s exchange value: %v", ErrRouteNotExecutable, plan.Reserve, err)
 	}
 	obligation, ok := byAddress[obligationKey]
 	if !ok || obligation.Owner != KLendProgramID || len(obligation.Data) != obligationDataLength || hexPrefix(obligation.Data[:8]) != hexPrefix(obligationDiscriminator[:]) {

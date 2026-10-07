@@ -418,8 +418,15 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	// Preflight the destination BEFORE the pull: the top-up must be executable
 	// against the frozen reserve, obligation and custody, or the wallet never
 	// moves. No funds have moved when this fails.
-	if _, err := c.wires.ConfirmTopUpRoute(scope.ctx, frozen); err != nil {
+	route, err := c.wires.ConfirmTopUpRoute(scope.ctx, frozen)
+	if err != nil {
 		return c.release(scope, claimToken, ResultPreflightBlocked, err)
+	}
+	// KLend refuses a deposit that mints no collateral, and a pulled amount it
+	// refuses can never leave custody. The TS executor's pre-pull dry run
+	// refused it here.
+	if uint64(frozen.AmountRaw) < route.MinimumDepositRaw {
+		return c.release(scope, claimToken, ResultPreflightBlocked, fmt.Errorf("%w: amount %d is below the reserve's minimum deposit %d", ErrRouteNotExecutable, frozen.AmountRaw, route.MinimumDepositRaw))
 	}
 
 	custodyBefore, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, frozen.Target.VaultUsdcAta, frozen.Target.VaultPubkey)

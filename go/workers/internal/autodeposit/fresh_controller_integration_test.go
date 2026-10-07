@@ -2,15 +2,16 @@ package autodeposit
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
-// Exercises a fresh claim through both transaction legs against the registered
-// SQL schema. RPC effects are explicit immutable receipts, not a live cluster.
-func TestControllerFreshClaimCompletesWithoutAppRepair(t *testing.T) {
-	store := integrationStore(t)
+// seedFreshControllerTarget seeds one projected 5,000,000 claimable slot on a
+// target with a delegation and an active yield position, and returns its slot.
+func seedFreshControllerTarget(t *testing.T, store *Store, name string) (integrationTarget, int64) {
+	t.Helper()
 	ctx := context.Background()
-	seeded := seedIntegrationTarget(t, store, "fresh-controller")
+	seeded := seedIntegrationTarget(t, store, name)
 	var previousOffset int64
 	if err := store.pool.QueryRow(ctx, `SELECT COALESCE(MAX(last_event_id),0) FROM loyal_yield.projection_offsets WHERE consumer_name=$1`, ConsumerName).Scan(&previousOffset); err != nil {
 		t.Fatal(err)
@@ -36,6 +37,19 @@ SELECT wallet,vault_pubkey,settings,vault_index,vault_pubkey,
 FROM loyal_yield.balance_sweep_targets WHERE id=$1`, seeded.TargetID, USDCMint); err != nil {
 		t.Fatal(err)
 	}
+	var slot int64
+	if err := store.pool.QueryRow(ctx, `SELECT id FROM loyal_yield.balance_sweep_scheduled_slots WHERE target_id=$1`, seeded.TargetID).Scan(&slot); err != nil {
+		t.Fatal(err)
+	}
+	return seeded, slot
+}
+
+// Exercises a fresh claim through both transaction legs against the registered
+// SQL schema. RPC effects are explicit immutable receipts, not a live cluster.
+func TestControllerFreshClaimCompletesWithoutAppRepair(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	seeded, slot := seedFreshControllerTarget(t, store, "fresh-controller")
 	wallet, custody := "itest-wallet-usdc-fresh-controller", "itest-vault-usdc-fresh-controller"
 	pull, topup := "itest-controller-pull-sig-fresh", "itest-controller-topup-sig-fresh"
 	chain := &scriptedControllerChain{
@@ -61,10 +75,6 @@ FROM loyal_yield.balance_sweep_targets WHERE id=$1`, seeded.TargetID, USDCMint);
 	if err != nil {
 		t.Fatal(err)
 	}
-	var slot int64
-	if err := store.pool.QueryRow(ctx, `SELECT id FROM loyal_yield.balance_sweep_scheduled_slots WHERE target_id=$1`, seeded.TargetID).Scan(&slot); err != nil {
-		t.Fatal(err)
-	}
 	code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot})
 	if err != nil || code != ResultCompleted {
 		t.Fatalf("fresh controller outcome=%v error=%v", code, err)
@@ -88,5 +98,41 @@ WHERE claim.target_id=$1`, seeded.TargetID).Scan(&state, &walletPre, &walletPost
 	}
 	if state != "executed" || walletPre != 9_000_000 || walletPost != 4_000_000 || custodyPre != 0 || custodyPost != 5_000_000 || completed != 2 || principal != 5_000_001 || position != 5_000_001 {
 		t.Fatalf("incorrect finalization: %s wallet=%d/%d custody=%d/%d completed=%d principal=%d position=%d", state, walletPre, walletPost, custodyPre, custodyPost, completed, principal, position)
+	}
+}
+
+// KLend refuses a deposit that mints no collateral. A claim below the
+// reserve's minimum deposit is released before the pull, so the wallet never
+// funds custody that can never be deposited (production target 7702 pulled 1
+// raw unit and its top-up failed with InvalidAmount on every retry).
+func TestControllerReleasesClaimBelowMinimumDepositBeforePull(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	seeded, slot := seedFreshControllerTarget(t, store, "below-minimum")
+	chain := &scriptedControllerChain{balances: map[string]int64{
+		"itest-wallet-usdc-below-minimum": 9_000_000, "itest-vault-usdc-below-minimum": 0,
+	}}
+	wires := &scriptedControllerWires{suffix: "-below-minimum", minimumDeposit: 5_000_001}
+	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, Facts: testFacts()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot})
+	if code != ResultPreflightBlocked || !errors.Is(err, ErrRouteNotExecutable) {
+		t.Fatalf("outcome=%v error=%v, want a preflight block before the pull", code, err)
+	}
+	if len(wires.built) != 0 {
+		t.Fatalf("built %v before refusing the amount", wires.built)
+	}
+	var status string
+	var attempts int64
+	if err := store.pool.QueryRow(ctx, `
+SELECT claim.status::text,
+ (SELECT count(*) FROM loyal_yield.balance_sweep_transaction_attempts AS attempt WHERE attempt.claim_token=claim.claim_token)
+FROM loyal_yield.balance_sweep_lot_claims AS claim WHERE claim.target_id=$1`, seeded.TargetID).Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "released" || attempts != 0 {
+		t.Fatalf("claim %s with %d attempts, want released with none", status, attempts)
 	}
 }

@@ -61,7 +61,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	byAddress := map[string]backyard.ConfirmedAccount{
-		plan.Reserve:                   {Address: plan.Reserve, Owner: KLendProgramID, Data: reserve},
+		plan.Reserve:                   {Address: plan.Reserve, Owner: KLendProgramID, Lamports: 1, Data: reserve},
 		plan.Market:                    {Address: plan.Market, Owner: KLendProgramID, Data: make([]byte, 8)},
 		obligation:                     {Address: obligation, Owner: KLendProgramID, Data: obligationData},
 		plan.Target.VaultUsdcAta:       {Address: plan.Target.VaultUsdcAta, Owner: splTokenID, Data: custody},

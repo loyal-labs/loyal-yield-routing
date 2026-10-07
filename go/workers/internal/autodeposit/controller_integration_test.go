@@ -406,10 +406,11 @@ func (s *scriptedControllerChain) ConfirmedVaultPositionRaw(ctx context.Context,
 }
 
 type scriptedControllerWires struct {
-	built      []string
-	suffix     string
-	routeErr   error
-	proofError error
+	built          []string
+	suffix         string
+	routeErr       error
+	proofError     error
+	minimumDeposit uint64
 }
 
 func (s *scriptedControllerWires) BuildPull(ctx context.Context, request PullWireRequest) (BuiltWire, error) {
@@ -424,7 +425,7 @@ func (s *scriptedControllerWires) ConfirmTopUpRoute(ctx context.Context, plan De
 		return TopUpRoute{}, s.routeErr
 	}
 	return TopUpRoute{Position: fleet.KaminoPositionAccounts{LiquiditySupply: "itest-liquidity-supply"},
-		Obligation: "itest-obligation"}, nil
+		Obligation: "itest-obligation", MinimumDepositRaw: s.minimumDeposit}, nil
 }
 
 func (s *scriptedControllerWires) BuildTopUp(ctx context.Context, request TopUpWireRequest) (BuiltWire, error) {
