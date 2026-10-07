@@ -830,7 +830,9 @@ func (c *Controller) readRemainingAllowance(ctx context.Context, targetContext *
 	if targetContext.StartTimestamp != nil && now < *targetContext.StartTimestamp {
 		return nil, ErrAllowanceUnknown
 	}
-	if targetContext.ExpiryTimestamp != nil && now >= *targetContext.ExpiryTimestamp {
+	// The Subscriptions program reads expiry 0 as a delegation that never
+	// expires; nearly every production delegation is created that way.
+	if targetContext.ExpiryTimestamp != nil && *targetContext.ExpiryTimestamp != 0 && now >= *targetContext.ExpiryTimestamp {
 		return nil, ErrAllowanceUnknown
 	}
 	allowance, err := c.chain.RemainingDelegationAllowanceRaw(ctx, targetContext.RecurringDelegation, DelegationIdentity{
