@@ -58,7 +58,7 @@ hands the session to next. Credentials by unit:
 - `loyal-retail`: `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`, `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR`, `RETAIL_FEE_PAYER_KEYPAIR`. Add `RETAIL_LOOKUP_MANAGER_KEYPAIR` only for active lookup mode.
 - `loyal-backyard`: `BACKYARD_DATABASE_URL`, `BACKYARD_SOLANA_RPC_URL`, `BACKYARD_POLICY_KEYPAIR`, `BACKYARD_TIMESCALE_DATABASE_URL`, `JUPITER_API_KEY`. Its selector mode and canary entry go in `/etc/loyal/loyal-backyard.env`.
 - Alertmanager: `telegram_bot_token`
-- Alertmanager: `heartbeat_url`, the external dead man's switch that the Watchdog alert pings.
+- Alertmanager: `heartbeat_url`, the external dead man's switch that the Watchdog alert pings. Not wired yet: until it exists the heartbeat receiver is empty, and nothing pages if the whole host or monitoring stack is down.
 - Collector: `CLICKSTACK_OTLP_ENDPOINT`, `CLICKSTACK_INGESTION_KEY`
 
 Then run `systemctl daemon-reload`. Do not enable a unit until its family
@@ -122,6 +122,11 @@ All files are in `monitoring/`. Everything listens on loopback.
   `alertmanager.service.d/telegram.conf` →
   `/etc/systemd/system/prometheus-alertmanager.service.d/`. It loads the bot
   token as a credential.
+- Ubuntu's packages listen on all interfaces and start on install. Write
+  `/etc/default/prometheus`, `/etc/default/prometheus-alertmanager` and
+  `/etc/default/prometheus-node-exporter` with loopback `ARGS` (Alertmanager
+  also `--cluster.listen-address=`) before `apt-get install`, and install
+  with `--force-confold` so dpkg keeps them.
 
 The alerts are:
 

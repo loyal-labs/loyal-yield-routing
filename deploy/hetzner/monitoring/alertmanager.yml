@@ -29,7 +29,9 @@ receivers:
         chat_id: -1000000000000 # placeholder: the alerts chat id
         parse_mode: HTML
         send_resolved: true
+  # Empty until the external dead man's switch exists. Then add:
+  #   webhook_configs:
+  #     - url_file: /run/credentials/prometheus-alertmanager.service/heartbeat_url
+  #       send_resolved: false
+  # and the heartbeat_url line in alertmanager.service.d/telegram.conf.
   - name: heartbeat
-    webhook_configs:
-      - url_file: /run/credentials/prometheus-alertmanager.service/heartbeat_url
-        send_resolved: false
