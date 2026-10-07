@@ -20,9 +20,9 @@ import (
 	"github.com/mr-tron/base58"
 )
 
-// ExecuteFresh consumes a signer-free, freshly admitted route. The publication
-// transaction rechecks all custody fences before the signed wire becomes
-// recoverable. Nothing is broadcast from this method.
+// ExecuteFresh signs and persists the route this process just admitted. The
+// publication transaction rechecks every custody fence the database holds
+// before the signed wire becomes recoverable. Nothing is broadcast here.
 func (w *Worker) ExecuteFresh(ctx context.Context, admission fleet.ExecutionAdmission) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -36,9 +36,6 @@ func (w *Worker) ExecuteFresh(ctx context.Context, admission fleet.ExecutionAdmi
 	}
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	if err := validateFreshPreparation(admission); err != nil {
-		return 0, err
-	}
 	wire, err := w.signer.SignPreparedRoute(admission.Preparation.Transaction, admission.LastValidBlockHeight)
 	if err != nil {
 		return 0, err
@@ -110,107 +107,11 @@ func admitFeeOnlySpend(ctx context.Context, tx pgx.Tx, cluster, payer, semantic 
 	return err
 }
 
-func validateFreshPreparation(a fleet.ExecutionAdmission) error {
-	l, p := a.Lease, a.Preparation
-	if l.OpportunityID <= 0 || l.OptimizerEpochID <= 0 || l.VaultID <= 0 || l.FencingToken <= 0 || l.Owner == "" || l.Cluster == "" || l.RouteKind != "same_mint" || !l.ExpiresAt.After(time.Now()) || l.FeeCapLamports <= 0 || l.LiquidityAmountRaw == 0 || l.LiquidityAmountRaw > math.MaxInt64 || a.LastValidBlockHeight <= 0 {
-		return errors.New("invalid fresh same-mint admission")
-	}
-	identityJSON, err := json.Marshal(a.SelectedALTs)
-	if err != nil {
-		return err
-	}
-	selectionHash := sha256.Sum256(identityJSON)
-	if hex.EncodeToString(selectionHash[:]) != a.AltSelectionFingerprint {
-		return errors.New("fresh ALT selection fingerprint differs from compiled identities")
-	}
-	if a.CapacityReservationID <= 0 || a.ReservationGeneration <= 0 || a.CapacityFencingToken <= 0 || len(a.ConflictKeys) < 2 || len(a.SelectedALTs) == 0 || a.AltSelectionFingerprint == "" {
-		return errors.New("fresh admission lacks exact capacity, conflicts or ALT selection")
-	}
-	e, b := a.Evidence, a.Anchors
-	if e.Slot <= 0 || e.ObservedAt.After(time.Now()) || time.Since(e.ObservedAt) > 15*time.Second || e.OpportunityID != l.OpportunityID || e.OpportunityKey != l.IdempotencyKey || e.EpochID != l.OptimizerEpochID || e.EpochFingerprint != l.OptimizerEpochKey || !reflect.DeepEqual(e.Anchors, b) || b.MinimumSlot != e.Slot || b.Owner != l.VaultPubkey || b.Mint != l.LiquidityMint || b.SourceReserve != l.SourceReserve || b.TargetReserve != l.TargetReserve || b.SourceObligation == "" || b.TargetObligation == "" || b.VaultLiquidityATA == "" || b.SourceMarket == "" || b.TargetMarket == "" || b.SourceCollateralMint == "" || b.TargetCollateralMint == "" || b.LiquidityTokenProgram == "" || b.SourceCollateralRaw == 0 || b.SourceCollateralRaw > math.MaxInt64 || b.TargetCollateralRaw > math.MaxInt64 || b.IdleLiquidityRaw > math.MaxInt64 {
-		return errors.New("fresh admission account anchors are incomplete, stale or differ from route identity")
-	}
-	sim := p.Simulation
-	if !sim.Succeeded || sim.Error != "" || sim.Slot <= 0 || sim.Slot < a.Evidence.Slot || sim.WireSHA256 != p.Transaction.WireSHA256 || sim.UnitsConsumed > p.Transaction.ComputeLimit || p.Transaction.FeeLamports > math.MaxInt64 || p.Transaction.FeeLamports == 0 || p.Transaction.FeeLamports > uint64(l.FeeCapLamports) {
-		return errors.New("fresh admission simulation/fee contract differs from exact prepared wire")
-	}
-	if p.RouteFingerprint == "" || p.RequirementsFingerprint == "" || !json.Valid(p.ExecutionPlan) {
-		return errors.New("fresh admission lacks immutable route evidence")
-	}
-	decoded, err := sdk.TransactionFromBytes(p.Transaction.UnsignedWire)
-	if err != nil {
-		return err
-	}
-	selected := make([]string, 0, len(a.SelectedALTs))
-	seen := map[int64]bool{}
-	for _, table := range a.SelectedALTs {
-		if table.TableID <= 0 || table.MutationEpoch < 0 || seen[table.TableID] || table.Address == "" || len(table.Addresses) == 0 {
-			return errors.New("invalid or duplicate selected ALT")
-		}
-		seen[table.TableID] = true
-		selected = append(selected, table.Address)
-	}
-	declared := make([]string, 0, len(decoded.Message.AddressTableLookups))
-	for _, lookup := range decoded.Message.AddressTableLookups {
-		declared = append(declared, lookup.AccountKey.String())
-	}
-	if !sameStrings(selected, declared) || !sameStrings(selected, p.Transaction.LookupTables) {
-		return errors.New("selected ALT identities differ from compiled message")
-	}
-	if err := verifyPreparedWritables(decoded, a); err != nil {
-		return err
-	}
-	return nil
-}
-
-func verifyPreparedWritables(tx *sdk.Transaction, a fleet.ExecutionAdmission) error {
-	h := tx.Message.Header
-	n := len(tx.Message.AccountKeys)
-	signed := int(h.NumRequiredSignatures)
-	if signed > n || int(h.NumReadonlySignedAccounts) > signed || int(h.NumReadonlyUnsignedAccounts) > n-signed {
-		return errors.New("prepared account header roles are invalid")
-	}
-	physical := []string{}
-	for i, key := range tx.Message.AccountKeys {
-		if i < signed-int(h.NumReadonlySignedAccounts) || i >= signed && i < n-int(h.NumReadonlyUnsignedAccounts) {
-			physical = append(physical, key.String())
-		}
-	}
-	byAddress := map[string]fleet.ExecutionALT{}
-	for _, table := range a.SelectedALTs {
-		byAddress[table.Address] = table
-	}
-	for _, lookup := range tx.Message.AddressTableLookups {
-		table, ok := byAddress[lookup.AccountKey.String()]
-		if !ok {
-			return errors.New("compiled lookup lacks selected member vector")
-		}
-		for _, index := range lookup.WritableIndexes {
-			if int(index) >= len(table.Addresses) {
-				return errors.New("compiled writable ALT index exceeds selected membership")
-			}
-			physical = append(physical, table.Addresses[index])
-		}
-		for _, index := range lookup.ReadonlyIndexes {
-			if int(index) >= len(table.Addresses) {
-				return errors.New("compiled readonly ALT index exceeds selected membership")
-			}
-		}
-	}
-	if !sameStrings(physical, a.Preparation.Transaction.WritableAccounts) {
-		return errors.New("prepared writable vector differs from exact message roles")
-	}
-	return nil
-}
-
 // PersistFreshAdmission mirrors the registered execute-opportunity trigger:
 // insert signed submission with decision=NULL, insert decision (links the
 // opportunity and submission), then bind capacity/conflicts/ALT usage, and
 // perform the final publication lifetime check before commit.
 func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmission, wire WireIdentity, balance *FeePayerBalance) (int64, error) {
-	if err := validateFreshPreparation(a); err != nil {
-		return 0, err
-	}
 	sum := sha256.Sum256(wire.SignedTransaction)
 	if hex.EncodeToString(sum[:]) != wire.SignedTransactionHash || wire.MessageHash != a.Preparation.Transaction.MessageSHA256 || wire.LastValidBlockHeight != a.LastValidBlockHeight {
 		return 0, errors.New("signed admission identity differs from preparation")
