@@ -11,7 +11,7 @@ func TestExecutorFailureContract(t *testing.T) {
 		{ResultKaminoTopUpFailed, "kamino_top_up_failed", "top_up_autodeposit_to_kamino", false, false},
 		{ResultYieldPersistenceFailed, "yield_persistence_failed", "persist_autodeposit_yield_position", false, false},
 		{ResultPreflightBlocked, "autodeposit_preflight_blocked", "preflight_autodeposit_route", true, false},
-		{ResultFeePayerExhausted, "autodeposit_fee_payer_exhausted", "fund_autodeposit_fee_payer", true, false},
+		{ResultClaimTransitionFailed, "autodeposit_claim_transition_failed", "release_autodeposit_claim", true, false},
 		{ResultTransactionEffectAmbig, "autodeposit_transaction_effect_ambiguous", "reconcile_autodeposit_transaction", false, false},
 		{ResultIdleHandoffFailed, "autodeposit_idle_handoff_failed", "publish_autodeposit_idle_vault_balance", true, false},
 		{ResultDependencyUnavailable, "autodeposit_dependency_unavailable", "retry_autodeposit_after_dependency_recovers", true, true},

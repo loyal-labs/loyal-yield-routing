@@ -74,30 +74,43 @@ tests:
             exp_annotations:
               summary: "fleet failed 15 times with expired in 15m"
 
-  # Idle blocking a deposit pages only once it has lasted an hour, never
-  # through LoyalFamilyFailing; blocking that clears stays silent.
-  - interval: 5m
+  # Owed Autodeposit work pages past an hour; younger work is silent.
+  - interval: 1m
     input_series:
-      - series: 'loyal_family_failed_total{family="autodeposit",code="autodeposit_idle_blocked",unit="loyal-retail.service"}'
-        values: '0+1x20'
+      - series: 'loyal_autodeposit_oldest_due_lot_age_seconds{unit="loyal-retail.service"}'
+        values: '3000+60x20'
     alert_rule_test:
-      - eval_time: 30m
-        alertname: LoyalFamilyFailing
-      - eval_time: 30m
-        alertname: LoyalAutodepositIdleOverdue
-      - eval_time: 90m
-        alertname: LoyalAutodepositIdleOverdue
+      - eval_time: 5m
+        alertname: LoyalAutodepositOverdue
+      - eval_time: 15m
+        alertname: LoyalAutodepositOverdue
         exp_alerts:
-          - exp_labels: {severity: page, family: autodeposit, code: autodeposit_idle_blocked}
+          - exp_labels: {severity: page, unit: loyal-retail.service}
             exp_annotations:
-              summary: "autodeposit idle drain is overdue; inspect fleet economic eligibility without bypassing the vault balance guard"
-  - interval: 5m
+              summary: "autodeposit has owed a deposit for 1h 5m 0s"
+
+  # The payer warns below 0.55 SOL after 5m and pages below 0.05 SOL at once.
+  - interval: 1m
     input_series:
-      - series: 'loyal_family_failed_total{family="autodeposit",code="autodeposit_idle_blocked",unit="loyal-retail.service"}'
-        values: '0+1x6 6x14'
+      - series: 'loyal_fee_payer_balance_lamports{payer="Payer1",unit="loyal-retail.service"}'
+        values: '600000000x2 500000000x10 40000000x5'
     alert_rule_test:
-      - eval_time: 90m
-        alertname: LoyalAutodepositIdleOverdue
+      - eval_time: 1m
+        alertname: LoyalFeePayerLow
+      - eval_time: 9m
+        alertname: LoyalFeePayerLow
+        exp_alerts:
+          - exp_labels: {severity: warning, payer: Payer1, unit: loyal-retail.service}
+            exp_annotations:
+              summary: "fee payer Payer1 is below 0.55 SOL; top it up"
+      - eval_time: 9m
+        alertname: LoyalFeePayerExhausted
+      - eval_time: 14m
+        alertname: LoyalFeePayerExhausted
+        exp_alerts:
+          - exp_labels: {severity: page, payer: Payer1, unit: loyal-retail.service}
+            exp_annotations:
+              summary: "fee payer Payer1 is out of SOL and Autodeposit has stopped; top it up"
 
   # Inflight with no terminal outcome is stuck; inflight that keeps landing,
   # or keeps failing terminally, is not stuck.

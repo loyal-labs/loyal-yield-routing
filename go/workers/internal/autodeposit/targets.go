@@ -7,6 +7,8 @@ type ExecutableTarget struct {
 	ScheduledSlotID int64
 	// ClaimToken is non-empty for a recovery row: an existing claim to resume.
 	ClaimToken string
+	// Wallet is a fresh slot's owner, the address its failed-sweep push names.
+	Wallet string
 }
 
 func (t ExecutableTarget) isRecovery() bool { return t.ClaimToken != "" }

@@ -28,21 +28,33 @@ groups:
 
       # Operations ending without their outcome, per stable code.
       - alert: LoyalFamilyFailing
-        expr: sum by (family, code) (increase(loyal_family_failed_total{code!="autodeposit_idle_blocked"}[15m])) >= 3
+        expr: sum by (family, code) (increase(loyal_family_failed_total[15m])) >= 3
         for: 5m
         labels: {severity: page}
         annotations:
           summary: "{{ $labels.family }} failed {{ $value | humanize }} times with {{ $labels.code }} in 15m"
 
-      # A deposit waiting on vault idle above AUTODEPOSIT_IDLE_TOLERANCE_RAW is
-      # retried every 5m. Idle that is in-flight custody clears within minutes;
-      # blocked for an hour it is overdue (Rust autodeposit_progress_overdue).
-      - alert: LoyalAutodepositIdleOverdue
-        expr: sum by (family, code) (increase(loyal_family_failed_total{code="autodeposit_idle_blocked"}[15m])) > 0
-        for: 1h
+      # The oldest deposit Autodeposit owes: a selected claim, or a slot idle
+      # custody has blocked since its first deferral (Rust's overdue clocks).
+      - alert: LoyalAutodepositOverdue
+        expr: loyal_autodeposit_oldest_due_lot_age_seconds > 3600
         labels: {severity: page}
         annotations:
-          summary: "autodeposit idle drain is overdue; inspect fleet economic eligibility without bypassing the vault balance guard"
+          summary: "autodeposit has owed a deposit for {{ $value | humanizeDuration }}"
+
+      # The payer of every Autodeposit wire, read every pass. Below 0.55 SOL
+      # about twelve hours of observed burn remain; below 0.05 SOL nothing starts.
+      - alert: LoyalFeePayerLow
+        expr: loyal_fee_payer_balance_lamports < 550e6
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "fee payer {{ $labels.payer }} is below 0.55 SOL; top it up"
+      - alert: LoyalFeePayerExhausted
+        expr: loyal_fee_payer_balance_lamports < 50e6
+        labels: {severity: page}
+        annotations:
+          summary: "fee payer {{ $labels.payer }} is out of SOL and Autodeposit has stopped; top it up"
 
       # land() makes every signed operation terminal by confirmation or by
       # block height passing last_valid_block_height (~150 blocks, 60-90s).

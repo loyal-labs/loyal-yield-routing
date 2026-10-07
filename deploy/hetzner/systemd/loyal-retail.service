@@ -22,10 +22,6 @@ LoadCredentialEncrypted=RETAIL_SOLANA_RPC_URL:/etc/credstore.encrypted/loyal-ret
 LoadCredentialEncrypted=RETAIL_JUPITER_API_KEY:/etc/credstore.encrypted/loyal-retail/RETAIL_JUPITER_API_KEY
 LoadCredentialEncrypted=RETAIL_DELEGATE_KEYPAIR:/etc/credstore.encrypted/loyal-retail/RETAIL_DELEGATE_KEYPAIR
 LoadCredentialEncrypted=RETAIL_FEE_PAYER_KEYPAIR:/etc/credstore.encrypted/loyal-retail/RETAIL_FEE_PAYER_KEYPAIR
-# The app's failed-sweep push (Rust/TS SOLANA_WEEK_NOTIFY_*). Drop both lines
-# to disable it; one without the other refuses to start.
-LoadCredentialEncrypted=RETAIL_SWEEP_NOTIFY_ENDPOINT:/etc/credstore.encrypted/loyal-retail/RETAIL_SWEEP_NOTIFY_ENDPOINT
-LoadCredentialEncrypted=RETAIL_SWEEP_NOTIFY_SECRET:/etc/credstore.encrypted/loyal-retail/RETAIL_SWEEP_NOTIFY_SECRET
 
 Environment=LOYAL_WORKER_SCOPE=retail
 Environment=LOYAL_WORKER_INSTANCE=primary
@@ -46,6 +42,12 @@ Environment=RETAIL_TIMESCALE_SCHEMA=kamino
 # needs LoadCredentialEncrypted=RETAIL_LOOKUP_MANAGER_KEYPAIR in a drop-in.
 # AUTODEPOSIT_IDLE_TOLERANCE_RAW (raw USDC, default 25000000) is the vault
 # idle residue a direct autodeposit leaves beside it, as in the TS executor.
+# The app's failed-sweep push (Rust/TS SOLANA_WEEK_NOTIFY_*) is optional; with
+# autodeposit in RETAIL_FAMILIES add both in
+# /etc/systemd/system/loyal-retail.service.d/sweep-notify.conf:
+#   [Service]
+#   LoadCredentialEncrypted=RETAIL_SWEEP_NOTIFY_ENDPOINT:/etc/credstore.encrypted/loyal-retail/RETAIL_SWEEP_NOTIFY_ENDPOINT
+#   LoadCredentialEncrypted=RETAIL_SWEEP_NOTIFY_SECRET:/etc/credstore.encrypted/loyal-retail/RETAIL_SWEEP_NOTIFY_SECRET
 EnvironmentFile=/etc/loyal/loyal-retail.env
 
 DynamicUser=yes

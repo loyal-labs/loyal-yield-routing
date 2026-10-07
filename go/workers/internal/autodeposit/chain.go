@@ -53,6 +53,9 @@ type Chain interface {
 	ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute) (int64, int64, error)
 }
 
+// ErrTokenAccountAbsent reports a token account that does not exist (yet).
+var ErrTokenAccountAbsent = errors.New("required autodeposit token account is absent")
+
 // ErrAllowanceUnknown reports that the delegated allowance could not be read.
 // The controller defers instead of treating the unknown as exhaustion.
 var ErrAllowanceUnknown = errors.New("autodeposit recurring delegation allowance is unreadable")
@@ -113,13 +116,13 @@ func (c *RPCChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, a
 	if tokenAccount == "" {
 		return 0, errors.New("token account address is required")
 	}
-	_, accounts, err := c.rpc.GetMultipleAccounts(ctx, []string{tokenAccount}, 1)
+	_, accounts, err := c.rpc.GetMultipleAccountsWithOptional(ctx, []string{tokenAccount}, 1, tokenAccount)
 	if err != nil {
 		return 0, fmt.Errorf("read autodeposit token account %s: %w", tokenAccount, err)
 	}
 	account := accounts[0]
 	if account.Owner == "" {
-		return 0, errors.New("required autodeposit token account is absent")
+		return 0, ErrTokenAccountAbsent
 	}
 
 	if account.Owner != splTokenID || account.Executable || len(account.Data) != splTokenAccountLength || base58Key(account.Data[:32]) != USDCMint || base58Key(account.Data[32:64]) != authority || authority == "" || account.Data[108] != 1 {

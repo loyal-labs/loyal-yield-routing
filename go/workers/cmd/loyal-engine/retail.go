@@ -157,7 +157,8 @@ func loadRetailConfig() (retailConfig, error) {
 		return cfg, retailError("fleet configuration", err)
 	}
 	// The TS executor's name and default ($25): idle vault residue a direct
-	// deposit leaves beside it, since nothing drains idle custody yet.
+	// deposit leaves beside it. Deleted once fleet deposits what it redeems
+	// and the existing residue is drained.
 	cfg.idleToleranceRaw = 25_000_000
 	if value := strings.TrimSpace(os.Getenv("AUTODEPOSIT_IDLE_TOLERANCE_RAW")); value != "" {
 		if cfg.idleToleranceRaw, err = strconv.ParseInt(value, 10, 64); err != nil || cfg.idleToleranceRaw < 0 {
@@ -388,7 +389,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Autodeposit wires", err)
 	}
-	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: chain, Wires: wires, Facts: facts, Notifier: cfg.sweepNotifier, IdleToleranceRaw: cfg.idleToleranceRaw})
+	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: chain, Wires: wires, Facts: facts, IdleToleranceRaw: cfg.idleToleranceRaw})
 	if err != nil {
 		return retailError("Autodeposit controller", err)
 	}
@@ -428,7 +429,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("lookup planner", err)
 	}
-	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, Facts: facts})
+	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, Facts: facts, FeePayer: controller, Notifier: cfg.sweepNotifier})
 	if err != nil {
 		return retailError("Autodeposit worker", err)
 	}

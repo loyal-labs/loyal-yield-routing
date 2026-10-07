@@ -33,6 +33,10 @@ type WorkerDependencies struct {
 	// Facts receives the family's progress, inflight count and failure codes.
 	// Required.
 	Facts *engine.Facts
+	// FeePayer reads the payer every pass. Required.
+	FeePayer FeePayerReader
+	// Notifier tells the app a due sweep could not start. Nil disables it.
+	Notifier *SweepNotifier
 
 	PollInterval          time.Duration
 	ProjectionBatchLimit  int64
@@ -48,6 +52,8 @@ type Worker struct {
 	store           *Store
 	executor        TargetExecutor
 	facts           *engine.Facts
+	feePayer        FeePayerReader
+	notifier        *SweepNotifier
 	executionErrors int
 
 	pollInterval          time.Duration
@@ -67,6 +73,15 @@ const (
 	DefaultReleaseBatchLimit    = 100
 )
 
+// FeePayerReader reads the balance of the one account that pays every wire.
+type FeePayerReader interface {
+	FeePayerLamports(ctx context.Context) (payer string, lamports uint64, err error)
+}
+
+// notifyBudget bounds one pass's failed-sweep pushes, so a hung app endpoint
+// cannot eat the pass (each push has its own 5 s timeout).
+const notifyBudget = 15 * time.Second
+
 // WakeupChannel carries {"scheduled_slot_id": N} for each slot that becomes
 // requested (migration 0016's trigger on balance_sweep_scheduled_slots).
 const WakeupChannel = "loyal_yield_autodeposit_wakeup"
@@ -82,10 +97,15 @@ func NewWorker(deps WorkerDependencies) (*Worker, error) {
 	if deps.Facts == nil {
 		return nil, errors.New("autodeposit worker requires facts")
 	}
+	if deps.FeePayer == nil {
+		return nil, errors.New("autodeposit worker requires a fee payer reader")
+	}
 	worker := &Worker{
 		store:                 deps.Store,
 		executor:              deps.Executor,
 		facts:                 deps.Facts,
+		feePayer:              deps.FeePayer,
+		notifier:              deps.Notifier,
 		pollInterval:          deps.PollInterval,
 		projectionBatchLimit:  deps.ProjectionBatchLimit,
 		dispatchLimit:         deps.DispatchLimit,
@@ -124,6 +144,15 @@ type TickReport struct {
 	// ExecutorErrors includes errors accompanying a nonfatal family outcome.
 	// Such an outcome can retain custody safely without proving runtime health.
 	ExecutorErrors int
+	// FeePayerExhausted means the pass claimed and sent nothing.
+	FeePayerExhausted bool
+}
+
+// settled reports a pass that left nothing undone: every due target landed
+// or had nothing to act on (a capped allowance or a drained vault).
+func (r TickReport) settled() bool {
+	o := r.Outcome
+	return !r.FeePayerExhausted && o.ExecutionsAttempted == o.ExecutionsCompleted+o.ExecutionsNoop+o.ExecutionsNotActionable
 }
 
 // Tick runs one complete pass:
@@ -159,7 +188,7 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 		return report, w.failed("autodeposit_execution_queue_preparation_failed", err)
 	}
 	report.Outcome.StaleRequestedSlotsFailed = staleSlots
-	if staleSlots > 0 {
+	for range staleSlots {
 		w.failed("autodeposit_requested_slot_timed_out", nil)
 	}
 
@@ -168,16 +197,32 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 		return report, w.failed("autodeposit_execution_queue_preparation_failed", err)
 	}
 	report.Outcome.StaleClaimsReleased = staleClaims
-	if staleClaims > 0 {
+	for range staleClaims {
 		w.failed("autodeposit_stale_claim_released", nil)
 	}
 	if err := w.store.RepairUnsignedSchedules(ctx, w.releaseBatchLimit); err != nil {
 		return report, w.failed("autodeposit_execution_queue_preparation_failed", err)
 	}
 
+	// One payer pays setup, pull and top-up. It is read once per pass, before
+	// any claim: a payer that cannot finish a deposit starts none (04e792e0).
+	payer, lamports, err := w.feePayer.FeePayerLamports(ctx)
+	if err != nil {
+		return report, w.failed("autodeposit_dependency_unavailable", err)
+	}
+	w.facts.FeePayerBalance(payer, lamports)
+	report.FeePayerExhausted = lamports < FeePayerMinimumLamports
+
 	targets, err := w.store.LoadExecutableTargets(ctx, w.dispatchLimit, hints)
 	if err != nil {
 		return report, w.failed("autodeposit_execution_queue_preparation_failed", err)
+	}
+	if report.FeePayerExhausted {
+		slog.Error("autodeposit fee payer is out of SOL; top up the delegated signer", "code", "autodeposit_fee_payer_exhausted",
+			"feePayer", payer, "balanceLamports", lamports, "minimumLamports", FeePayerMinimumLamports, "dueTargets", len(targets))
+		w.facts.Failed(engine.FamilyAutodeposit, "autodeposit_fee_payer_exhausted")
+		w.notifyUnstarted(ctx, targets)
+		return report, nil
 	}
 	report.Dispatched = targets
 	report.Outcome.TargetsScanned = len(targets)
@@ -185,6 +230,25 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 	report.Alerts = w.dispatch(ctx, targets, &report.Outcome)
 	report.ExecutorErrors = w.executionErrors
 	return report, nil
+}
+
+// notifyUnstarted pushes each due fresh slot the failed sweep the TS executor
+// reported on fee-payer exhaustion (6557c221); the app keeps one push per
+// slot. Claims already holding custody are not a promise this pass breaks.
+func (w *Worker) notifyUnstarted(ctx context.Context, targets []ExecutableTarget) {
+	if w.notifier == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, notifyBudget)
+	defer cancel()
+	for _, target := range targets {
+		if ctx.Err() != nil {
+			return
+		}
+		if !target.isRecovery() {
+			w.notifier.NotifyFailed(ctx, target.Wallet, target.ScheduledSlotID)
+		}
+	}
 }
 
 // failed counts and logs one stable failure code. Shutdown is not a failure.
@@ -273,10 +337,9 @@ func (w *Worker) Run(ctx context.Context) error {
 	var hints []int64
 	for {
 		cycle, cycleCancel := context.WithTimeout(ctx, runtimeCycleTimeout)
-		if _, err := w.tick(cycle, hints); err == nil {
-			var inflight int
-			if err = w.store.pool.QueryRow(cycle, `SELECT count(*) FROM loyal_yield.balance_sweep_transaction_attempts WHERE attempt_state IN ('prepared','submitted','unknown','ambiguous')`).Scan(&inflight); err == nil {
-				w.facts.Inflight(engine.FamilyAutodeposit, inflight)
+		if report, err := w.tick(cycle, hints); err == nil {
+			if err = w.passFacts(cycle); err == nil && report.settled() {
+				// A landing marks progress itself; so does a pass with nothing undone.
 				w.facts.Progress(engine.FamilyAutodeposit)
 			}
 		}
@@ -303,6 +366,38 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// passFacts reads the inflight count and the age of the oldest deposit the
+// family owes, from the rows. The clocks are the Rust overdue check's
+// (OVERDUE_AUTODEPOSIT_WORK_SQL): a selected claim's created_at, and an
+// idle-blocked slot's first-blocked time. Neither moves on retry, unlike
+// eligible_after. Lots that are due but legitimately wait (a capped period
+// allowance, an expired delegation) write nothing and are not counted.
+func (w *Worker) passFacts(ctx context.Context) error {
+	var inflight int
+	var oldest float64
+	err := w.store.pool.QueryRow(ctx, `
+SELECT
+  (SELECT count(*) FROM loyal_yield.balance_sweep_transaction_attempts
+   WHERE attempt_state IN ('prepared','submitted','unknown','ambiguous')),
+  COALESCE(EXTRACT(EPOCH FROM now() - LEAST(
+    (SELECT min(created_at) FROM loyal_yield.balance_sweep_lot_claims WHERE status = 'selected'),
+    (SELECT min(to_timestamp(substring(slot.last_error FROM $1)::double precision))
+     FROM loyal_yield.balance_sweep_targets AS target
+     JOIN loyal_yield.balance_sweep_surplus_lots AS lot
+       ON lot.target_id = target.id AND lot.status = 'open' AND lot.remaining_amount_raw > 0
+     JOIN loyal_yield.balance_sweep_scheduled_slots AS slot ON slot.id = lot.scheduled_slot_id
+     WHERE target.token_mint = $2 AND target.desired_active AND target.chain_status = 'active'
+       AND slot.status IN ('scheduled', 'requested') AND slot.last_error LIKE $3)
+  ))::float8, 0)`, idleBlockedSincePattern,
+		USDCMint, idleDeferralPrefix+"%").Scan(&inflight, &oldest)
+	if err != nil {
+		return w.failed("autodeposit_progress_check_failed", err)
+	}
+	w.facts.Inflight(engine.FamilyAutodeposit, inflight)
+	w.facts.AutodepositOldestDueAge(oldest)
+	return nil
 }
 
 // listen holds one LISTEN session and turns each requested-slot notification

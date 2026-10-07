@@ -72,7 +72,7 @@ FROM loyal_yield.balance_sweep_targets WHERE id=$1`, seeded.TargetID, USDCMint, 
 	return freshScenario{store: store, target: seeded, slot: slot, chain: chain, wires: &scriptedControllerWires{suffix: "-" + suffix}, wallet: "itest-wallet-" + suffix}
 }
 
-func (f freshScenario) worker(t *testing.T, deps ControllerDependencies) (*Worker, *prometheus.Registry) {
+func (f freshScenario) worker(t *testing.T, deps ControllerDependencies, notifier *SweepNotifier) (*Worker, *prometheus.Registry) {
 	t.Helper()
 	registry := prometheus.NewRegistry()
 	facts := engine.NewFacts(registry)
@@ -81,7 +81,7 @@ func (f freshScenario) worker(t *testing.T, deps ControllerDependencies) (*Worke
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker, err := NewWorker(WorkerDependencies{Store: f.store, Executor: controller, Facts: facts})
+	worker, err := NewWorker(WorkerDependencies{Store: f.store, Executor: controller, Facts: facts, FeePayer: controller, Notifier: notifier})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func (s signalExecutor) Execute(_ context.Context, target ExecutableTarget) (Exe
 func TestRequestedSlotWakesTheWorkerBeforeThePoll(t *testing.T) {
 	scenario := newFreshScenario(t, "wakeup", 0)
 	executor := signalExecutor{dispatched: make(chan ExecutableTarget, 4)}
-	worker, err := NewWorker(WorkerDependencies{Store: scenario.store, Executor: executor, Facts: testFacts(), PollInterval: time.Hour})
+	worker, err := NewWorker(WorkerDependencies{Store: scenario.store, Executor: executor, Facts: testFacts(), FeePayer: fundedPayer{}, PollInterval: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -43,7 +43,7 @@ func TestUnsignedRepairNeverReopensPersistedWire(t *testing.T) {
 			if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_surplus_lots SET status='open',remaining_amount_raw=original_amount_raw WHERE target_id=$1`, target.TargetID); err != nil {
 				t.Fatal(err)
 			}
-			w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{}, Facts: testFacts()})
+			w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{}, Facts: testFacts(), FeePayer: fundedPayer{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -84,7 +84,7 @@ func TestWorkerRepairsUnsignedMissingPositionWithoutAppReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := NewWorker(WorkerDependencies{Store: s, Executor: controller, Facts: testFacts()})
+	w, err := NewWorker(WorkerDependencies{Store: s, Executor: controller, Facts: testFacts(), FeePayer: fundedPayer{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestUnsignedStaleRepairClearsOnlyUnheldRows(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_wallet_balances_current SET amount_raw=4000000,observed_slot=2 WHERE target_id=$1`, target.TargetID); err != nil {
 		t.Fatal(err)
 	}
-	w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{}, Facts: testFacts()})
+	w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{}, Facts: testFacts(), FeePayer: fundedPayer{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestUnsignedStaleRepairClearsOnlyUnheldRows(t *testing.T) {
 }
 
 // elapseReleaseDelay moves a target's released work to the end of its retry
-// delay, as waiting ReleasedClaimRetryDelay would.
+// delay, as waiting PreSendRetryDelay would.
 func elapseReleaseDelay(t *testing.T, s *Store, targetID int64) {
 	t.Helper()
 	for _, table := range []string{"balance_sweep_surplus_lots", "balance_sweep_scheduled_slots"} {

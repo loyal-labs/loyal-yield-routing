@@ -235,3 +235,20 @@ FROM loyal_yield.balance_sweep_targets WHERE id = $1`, seeded.TargetID, position
 		t.Fatalf("zero floor or matching mint context lost: %+v %v", target, err)
 	}
 }
+
+// A release that fails moved no funds and touched no yield, yet the port
+// returned yield_persistence_failed and paged as a bookkeeping fault. It is
+// the Rust trigger's claim transition failure.
+func TestFailedReleaseIsAClaimTransitionFailure(t *testing.T) {
+	store := releaseContextStore(t)
+	_, claim, _ := selectedReleaseClaim(t, store, "release-fails")
+	controller, err := NewController(ControllerDependencies{Store: store, Chain: &scriptedControllerChain{}, Wires: &scriptedControllerWires{}, Facts: testFacts()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := controller.release(executionScope{ctx: t.Context(), leaseToken: "lease-stale"}, claim, ResultPreflightBlocked, nil)
+	if result != ResultClaimTransitionFailed || !errors.Is(err, ErrOwnershipLost) {
+		t.Fatalf("failed release reported %q %v", result, err)
+	}
+	assertReleaseCustodyUnchanged(t, store, claim)
+}

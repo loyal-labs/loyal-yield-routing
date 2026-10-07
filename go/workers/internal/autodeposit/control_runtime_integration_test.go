@@ -64,7 +64,7 @@ func TestSignedCustodyCannotBeAdoptedByRepeatedTicks(t *testing.T) {
 			}
 			// Each fresh worker models a restart; none may adopt the signed intent.
 			for i := 0; i < 2; i++ {
-				w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{results: []ExecutorResult{ResultRecoveryPending}}, Facts: testFacts()})
+				w, err := NewWorker(WorkerDependencies{Store: s, Executor: &scriptedExecutor{results: []ExecutorResult{ResultRecoveryPending}}, Facts: testFacts(), FeePayer: fundedPayer{}})
 				if err != nil {
 					t.Fatal(err)
 				}

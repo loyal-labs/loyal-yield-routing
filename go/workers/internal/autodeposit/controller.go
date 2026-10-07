@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -82,21 +81,16 @@ type Controller struct {
 	// leaseRenewWindow is how often an in-flight execution renews its claim
 	// lease. Zero selects the default.
 	leaseRenewWindow time.Duration
-	notifier         *SweepNotifier
 	idleToleranceRaw int64
 }
 
 // DefaultLeaseRenewWindow renews well inside the ten-minute claim lease.
 const DefaultLeaseRenewWindow = 3 * time.Minute
 
-// The TS executor's fee-payer floors (04e792e0). Below the minimum the payer
-// cannot be trusted to land the setup, pull and top-up legs, so no pull
-// starts. Below the low mark it still works: about twelve hours of the 90th
-// percentile rent-dominated burn remain.
-const (
-	FeePayerMinimumLamports = 50_000_000
-	FeePayerLowLamports     = 550_000_000
-)
+// FeePayerMinimumLamports is the TS executor's fee-payer floor (04e792e0):
+// below it the payer cannot be trusted to land setup, pull and top-up, so no
+// claim starts. The 0.55 SOL warning is an alert rule on the balance gauge.
+const FeePayerMinimumLamports = 50_000_000
 
 // ControllerDependencies are the controller's explicit dependencies.
 type ControllerDependencies struct {
@@ -106,8 +100,6 @@ type ControllerDependencies struct {
 	Facts *engine.Facts
 	// LeaseRenewWindow is optional.
 	LeaseRenewWindow time.Duration
-	// Notifier tells the app a scheduled sweep failed. Nil disables it.
-	Notifier *SweepNotifier
 	// IdleToleranceRaw is the vault idle balance a direct deposit may leave
 	// beside it. Zero tolerates none.
 	IdleToleranceRaw int64
@@ -139,7 +131,23 @@ func NewController(deps ControllerDependencies) (*Controller, error) {
 		return nil, errors.New("autodeposit idle tolerance must not be negative")
 	}
 
-	return &Controller{store: deps.Store, chain: deps.Chain, wires: deps.Wires, facts: deps.Facts, leaseRenewWindow: window, notifier: deps.Notifier, idleToleranceRaw: deps.IdleToleranceRaw}, nil
+	return &Controller{store: deps.Store, chain: deps.Chain, wires: deps.Wires, facts: deps.Facts, leaseRenewWindow: window, idleToleranceRaw: deps.IdleToleranceRaw}, nil
+}
+
+// FeePayerLamports reads the balance of the one account that pays every wire.
+func (c *Controller) FeePayerLamports(ctx context.Context) (string, uint64, error) {
+	payer := c.wires.FeePayer()
+	lamports, err := c.chain.ConfirmedLamports(ctx, payer)
+	return payer, lamports, err
+}
+
+// release returns an unspent claim's lots; a release that fails is a claim
+// transition failure, never a yield-persistence one.
+func (c *Controller) release(scope executionScope, claimToken string, result ExecutorResult, cause error) (ExecutorResult, error) {
+	if _, err := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); err != nil {
+		return ResultClaimTransitionFailed, err
+	}
+	return result, cause
 }
 
 // Execute resolves one dispatchable target and reports its end state through
@@ -287,10 +295,7 @@ func (c *Controller) executeRecovery(ctx context.Context, target ExecutableTarge
 		return c.finishTopUpLeg(scope, target.ClaimToken, target, recovery.Plan, settlement)
 	}
 	// Conclusive pull failure or expiry: the funds provably never left.
-	if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, target.ClaimToken, scope.leaseToken); releaseErr != nil {
-		return ResultRecoveryPending, releaseErr
-	}
-	return ResultDeferred, nil
+	return c.release(scope, target.ClaimToken, ResultDeferred, nil)
 }
 
 // executeFresh claims and sweeps one scheduled slot.
@@ -322,6 +327,30 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	if err != nil {
 		return ResultDeferred, err
 	}
+	// Rust fleet same-mint routes withdraw all source collateral but deposit
+	// the planned liquidity, so interest accrued since planning stays in the
+	// vault ATA, and nothing drains idle custody. Residue up to the tolerance
+	// rides beside the pull (the top-up deposits the pulled amount; every check
+	// is on deltas). Idle above it may be custody another family owns: the TS
+	// executor defers the slot before claiming, and so does this.
+	// The tolerance is deleted once fleet deposits what it redeems and the
+	// existing residue is drained.
+	custody, err := c.chain.ConfirmedTokenBalanceRaw(ctx, targetContext.VaultUsdcAta, targetContext.VaultPubkey)
+	if errors.Is(err, ErrTokenAccountAbsent) {
+		custody, err = 0, nil
+	}
+	if err != nil {
+		return ResultDependencyUnavailable, err
+	}
+	if custody > c.idleToleranceRaw && walletBalance > targetContext.WalletBalanceFloorRaw && *remainingAllowance > 0 {
+		deferred, err := c.store.DeferIdleScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID, custody)
+		if err != nil {
+			return ResultDependencyUnavailable, err
+		}
+		if deferred {
+			return ResultDeferred, fmt.Errorf("%s%d", idleDeferralPrefix, custody)
+		}
+	}
 
 	claimToken, err := newClaimToken()
 	if err != nil {
@@ -330,7 +359,7 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	claim, err := c.store.ClaimEligibleLotsOnce(ctx, target.TargetID, claimToken, &target.ScheduledSlotID,
 		walletBalance, targetContext.WalletBalanceFloorRaw, targetContext.MaxAmountPerPeriodRaw, remainingAllowance)
 	if err != nil {
-		return ResultYieldPersistenceFailed, err
+		return ResultClaimTransitionFailed, err
 	}
 	if claim.Status != ClaimSelected {
 		return ResultNoop, nil
@@ -344,18 +373,12 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 
 	// Freeze amount and destination before any pull wire exists.
 	if !targetContext.hasReserveIdentity() {
-		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return ResultYieldPersistenceFailed, releaseErr
-		}
-		return ResultPreflightBlocked, fmt.Errorf("autodeposit target %d has no observed reserve identity", target.TargetID)
+		return c.release(scope, claimToken, ResultPreflightBlocked, fmt.Errorf("autodeposit target %d has no observed reserve identity", target.TargetID))
 	}
 	plan := targetContext.depositPlan(claim.AmountRaw)
 	frozen, err := c.store.FreezeDepositPlan(scope.ctx, claimToken, scope.leaseToken, plan)
 	if err != nil {
-		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return ResultYieldPersistenceFailed, releaseErr
-		}
-		return ResultRecoveryPending, err
+		return c.release(scope, claimToken, ResultRecoveryPending, err)
 	}
 
 	return c.executeFrozenClaim(scope, claimToken, target, frozen)
@@ -367,27 +390,6 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 // and pays its own rent shortfall in one atomic transaction, so a stage
 // repeated after a crash fails on the existing account and costs only a fee.
 func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string, target ExecutableTarget, frozen DepositPlan) (ExecutorResult, error) {
-	// One payer pays setup, pull and top-up. Its balance is read here, before
-	// any of them is built: a payer that cannot finish the deposit never
-	// starts the pull, and the user hears their promised sweep did not land.
-	payer := c.wires.FeePayer()
-	lamports, err := c.chain.ConfirmedLamports(scope.ctx, payer)
-	if err != nil {
-		return ResultDependencyUnavailable, err
-	}
-	if lamports < FeePayerMinimumLamports {
-		if _, err := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); err != nil {
-			return ResultYieldPersistenceFailed, err
-		}
-		c.notifier.NotifyFailed(scope.ctx, frozen.Target.Wallet, target.ScheduledSlotID)
-		return ResultFeePayerExhausted, fmt.Errorf("autodeposit fee payer %s has %d lamports; %d required", payer, lamports, FeePayerMinimumLamports)
-	}
-	if lamports < FeePayerLowLamports {
-		c.facts.Failed(engine.FamilyAutodeposit, "autodeposit_fee_payer_low")
-		slog.Warn("autodeposit fee payer is running low", "code", "autodeposit_fee_payer_low", "feePayer", payer,
-			"balanceLamports", lamports, "lowLamports", FeePayerLowLamports, "minimumLamports", FeePayerMinimumLamports,
-			"remainingTransactions", lamports/FeePayerMinimumLamports)
-	}
 	ready, err := c.ensureDestinationSetup(scope, claimToken, frozen)
 	if err != nil {
 		return ResultPreflightBlocked, err
@@ -400,8 +402,7 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 		return ResultDependencyUnavailable, err
 	}
 	if targetContext == nil || !targetContext.FreshActionable || targetContext.RecurringDelegation == "" || targetContext.SweepPolicyAccount != frozen.Target.SweepPolicyAccount || targetContext.Wallet != frozen.Target.Wallet || targetContext.VaultPubkey != frozen.Target.VaultPubkey {
-		_, err = c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken)
-		return ResultDeferred, err
+		return c.release(scope, claimToken, ResultDeferred, nil)
 	}
 	walletBalance, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, frozen.Target.WalletUsdcAta, frozen.Target.Wallet)
 	if err != nil {
@@ -412,35 +413,23 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 		return ResultDeferred, err
 	}
 	if walletBalance < frozen.AmountRaw || targetContext.WalletBalanceFloorRaw < 0 || walletBalance-frozen.AmountRaw < targetContext.WalletBalanceFloorRaw || *allowance < frozen.AmountRaw || (targetContext.MaxAmountPerPeriodRaw != nil && *targetContext.MaxAmountPerPeriodRaw < frozen.AmountRaw) {
-		_, err = c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken)
-		return ResultDeferred, err
+		return c.release(scope, claimToken, ResultDeferred, nil)
 	}
 	// Preflight the destination BEFORE the pull: the top-up must be executable
 	// against the frozen reserve, obligation and custody, or the wallet never
 	// moves. No funds have moved when this fails.
 	if _, err := c.wires.ConfirmTopUpRoute(scope.ctx, frozen); err != nil {
-		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return ResultYieldPersistenceFailed, releaseErr
-		}
-		return ResultPreflightBlocked, err
+		return c.release(scope, claimToken, ResultPreflightBlocked, err)
 	}
 
 	custodyBefore, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, frozen.Target.VaultUsdcAta, frozen.Target.VaultPubkey)
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	// Fleet same-mint routes withdraw all source collateral but deposit the
-	// planned liquidity, so the interest accrued since planning stays in the
-	// vault ATA, and nothing drains idle custody (fleet idle is shadow-only).
-	// That residue rides beside the pull: the top-up deposits only the pulled
-	// amount and every check is on deltas. Idle above the tolerance is not
-	// residue but custody someone else may own, so the pull waits for it.
+	// Idle above the tolerance arrived after the pre-claim check, or this is a
+	// frozen claim resumed after a crash: the pull still waits for it.
 	if custodyBefore > c.idleToleranceRaw {
-		if _, err := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); err != nil {
-			return ResultYieldPersistenceFailed, err
-		}
-		c.facts.Failed(engine.FamilyAutodeposit, "autodeposit_idle_blocked")
-		return ResultDeferred, fmt.Errorf("existing idle vault balance must drain before direct autodeposit: %d", custodyBefore)
+		return c.release(scope, claimToken, ResultDeferred, fmt.Errorf("%s%d", idleDeferralPrefix, custodyBefore))
 	}
 	blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
 	if err != nil {
@@ -452,10 +441,7 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	})
 	if err != nil {
 		// A wire that was never signed never moved funds: release the claim.
-		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return ResultYieldPersistenceFailed, releaseErr
-		}
-		return ResultPreflightBlocked, err
+		return c.release(scope, claimToken, ResultPreflightBlocked, err)
 	}
 	prepared, err := c.store.PersistPreparedAttempt(scope.ctx, PreparedAttempt{
 		ClaimToken:               claimToken,
@@ -488,10 +474,7 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	}
 	switch {
 	case AttemptAllowsSafeRequeue(settlement.Attempt.State):
-		if _, releaseErr := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); releaseErr != nil {
-			return ResultYieldPersistenceFailed, releaseErr
-		}
-		return ResultDeferred, nil
+		return c.release(scope, claimToken, ResultDeferred, nil)
 	case !AttemptHoldsClaim(settlement.Attempt.State):
 		return ResultRecoveryPending, nil
 	case settlement.Attempt.State != AttemptConfirmed:

@@ -322,7 +322,7 @@ type scriptedControllerChain struct {
 func (s *scriptedControllerChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, authority string) (int64, error) {
 	amount, known := s.balances[tokenAccount]
 	if !known {
-		return 0, errors.New("scripted token account is not observed")
+		return 0, ErrTokenAccountAbsent
 	}
 	return amount, nil
 }
