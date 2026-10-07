@@ -34,6 +34,17 @@ groups:
         annotations:
           summary: "{{ $labels.family }} failed {{ $value | humanize }} times with {{ $labels.code }} in 15m"
 
+      # A lane with no tick that finished without error. A family's lanes
+      # share its progress, so this is the fact that shows one lane failing
+      # every tick. Its clock starts when the lane starts; a transient error
+      # or a held catalog activation that clears on a later tick never pages.
+      - alert: LoyalLaneStalled
+        expr: time() - loyal_lane_last_success_timestamp_seconds > 900
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.family }} lane {{ $labels.lane }} has had no successful tick for 15m"
+
       # The oldest deposit Autodeposit owes: a selected claim, or a slot idle
       # custody has blocked since its first deferral (Rust's overdue clocks).
       - alert: LoyalAutodepositOverdue

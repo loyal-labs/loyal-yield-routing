@@ -227,3 +227,20 @@ tests:
           - exp_labels: {severity: none}
             exp_annotations:
               summary: "Alerting pipeline heartbeat"
+
+  # A lane that never finishes a tick without error pages after 15m plus
+  # grace; a lane whose ticks keep succeeding stays silent.
+  - interval: 1m
+    input_series:
+      - series: 'loyal_lane_last_success_timestamp_seconds{family="lookup",lane="lookup_planner",unit="loyal-retail.service"}'
+        values: '0x30'
+      - series: 'loyal_lane_last_success_timestamp_seconds{family="lookup",lane="lookup_writer",unit="loyal-retail.service"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LoyalLaneStalled
+      - eval_time: 17m
+        alertname: LoyalLaneStalled
+        exp_alerts:
+          - exp_labels: {severity: page, family: lookup, lane: lookup_planner, unit: loyal-retail.service}
+            exp_annotations: {summary: "lookup lane lookup_planner has had no successful tick for 15m"}

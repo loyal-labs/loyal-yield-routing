@@ -13,6 +13,7 @@ import (
 //	loyal_family_failed_total{family,code}               operations that ended without it, by stable code
 //	loyal_family_inflight{family}                        operations signed or sent and not yet terminal
 //	loyal_family_last_progress_timestamp_seconds{family} last time the family completed a unit of work
+//	loyal_lane_last_success_timestamp_seconds{family,lane} last tick a lane finished without error
 //	loyal_fee_payer_balance_lamports{payer}              lamports of a payer, read every pass
 //	loyal_autodeposit_oldest_due_lot_age_seconds         age of the oldest owned or blocked deposit
 type Facts struct {
@@ -20,6 +21,7 @@ type Facts struct {
 	failed    *prometheus.CounterVec
 	inflight  *prometheus.GaugeVec
 	progress  *prometheus.GaugeVec
+	lane      *prometheus.GaugeVec
 	payer     *prometheus.GaugeVec
 	oldestDue prometheus.Gauge
 }
@@ -38,6 +40,9 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		progress: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_family_last_progress_timestamp_seconds", Help: "Last time the family completed a unit of work.",
 		}, []string{"family"}),
+		lane: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_lane_last_success_timestamp_seconds", Help: "Last tick a lane finished without error; set at start.",
+		}, []string{"family", "lane"}),
 		payer: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_fee_payer_balance_lamports", Help: "Lamports of a fee payer, read every pass.",
 		}, []string{"payer"}),
@@ -45,7 +50,7 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 			Name: "loyal_autodeposit_oldest_due_lot_age_seconds", Help: "Age of the oldest Autodeposit claim or idle-blocked slot not yet deposited.",
 		}),
 	}
-	registerer.MustRegister(f.landed, f.failed, f.inflight, f.progress, f.payer, f.oldestDue)
+	registerer.MustRegister(f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue)
 	return f
 }
 
@@ -64,6 +69,13 @@ func (f *Facts) Inflight(family Family, n int) {
 
 func (f *Facts) Progress(family Family) {
 	f.progress.WithLabelValues(string(family)).Set(float64(time.Now().Unix()))
+}
+
+// LaneSucceeded records a lane tick that finished without error. A lane
+// shares its family's progress with the family's other lanes, so this is the
+// one fact that shows a single lane failing every tick.
+func (f *Facts) LaneSucceeded(family Family, lane string) {
+	f.lane.WithLabelValues(string(family), lane).Set(float64(time.Now().Unix()))
 }
 
 func (f *Facts) FeePayerBalance(payer string, lamports uint64) {
