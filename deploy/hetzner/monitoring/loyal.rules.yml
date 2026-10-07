@@ -3,17 +3,28 @@
 groups:
   - name: loyal-families
     rules:
-      # A family that stops completing work. Each Go process starts the
-      # clock of every family it owns at startup, so a family that never
-      # progresses is caught too. Thresholds are per family cadence.
+      # A family that stops completing work. Each Go process creates its
+      # families' progress series at 0, so a family that never progresses
+      # fires after `for` (the startup grace). max_over_time keeps the last
+      # real progress across restarts, so restarting cannot reset the clock.
       - alert: LoyalFamilyProgressStale
-        expr: |
-          time() - loyal_family_last_progress_timestamp_seconds{family="observer"} > 120
-          or time() - loyal_family_last_progress_timestamp_seconds{family=~"autodeposit|fleet"} > 600
-          or time() - loyal_family_last_progress_timestamp_seconds{family=~"multiply|lookup|backyard"} > 1800
-        labels: {severity: page}
+        expr: time() - max_over_time(loyal_family_last_progress_timestamp_seconds{family="observer"}[1h]) > 60
+        for: 2m
+        labels: {severity: page, stale_after: 3m}
         annotations:
-          summary: "{{ $labels.family }} has completed no work for {{ $value | humanizeDuration }}"
+          summary: "{{ $labels.family }} has completed no work recently"
+      - alert: LoyalFamilyProgressStale
+        expr: time() - max_over_time(loyal_family_last_progress_timestamp_seconds{family=~"autodeposit|fleet"}[1h]) > 300
+        for: 5m
+        labels: {severity: page, stale_after: 10m}
+        annotations:
+          summary: "{{ $labels.family }} has completed no work recently"
+      - alert: LoyalFamilyProgressStale
+        expr: time() - max_over_time(loyal_family_last_progress_timestamp_seconds{family=~"multiply|lookup|backyard"}[1h]) > 900
+        for: 15m
+        labels: {severity: page, stale_after: 30m}
+        annotations:
+          summary: "{{ $labels.family }} has completed no work recently"
 
       # Operations ending without their outcome, per stable code.
       - alert: LoyalFamilyFailing
@@ -39,16 +50,21 @@ groups:
 
   - name: loyal-units
     rules:
-      # A Go unit listed in loyal-targets.yml that does not serve /metrics.
+      # A Go unit systemd runs (or is restarting) that does not serve /metrics.
+      # A deliberately stopped or never-installed unit is not scraped and is silent.
       - alert: LoyalWorkerDown
-        expr: up{job="loyal"} == 0
+        expr: |
+          up{job="loyal"} == 0
+          and on (unit)
+            label_replace(node_systemd_unit_state{state=~"active|activating|deactivating|failed"} == 1, "unit", "$1", "name", "(.+)")
         for: 2m
         labels: {severity: page}
         annotations:
           summary: "{{ $labels.unit }} is not serving /metrics"
 
       # Any loyal-* unit (Go or Rust) that failed or is stuck starting.
-      # A deliberate `systemctl stop` leaves a unit inactive and is silent.
+      # Go units restart forever, so for them a crash loop shows as
+      # LoyalUnitRestartLoop rather than here.
       - alert: LoyalUnitDown
         expr: node_systemd_unit_state{name=~"loyal-.+\\.service", state=~"failed|activating"} == 1
         for: 2m
@@ -61,3 +77,23 @@ groups:
         labels: {severity: page}
         annotations:
           summary: "{{ $labels.name }} restarted {{ $value | humanize }} times in 15m"
+
+  - name: monitoring
+    rules:
+      # node_exporter, Prometheus or Alertmanager not scrapeable: the unit
+      # alerts above would go silent.
+      - alert: LoyalMonitoringDown
+        expr: up{job=~"node|prometheus|alertmanager"} == 0
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.job }} is not scrapeable"
+
+      # Always firing. Alertmanager sends it to an external dead man's
+      # switch, which pages when it stops arriving (Prometheus, Alertmanager
+      # or the host is down).
+      - alert: Watchdog
+        expr: vector(1)
+        labels: {severity: none}
+        annotations:
+          summary: "Alerting pipeline heartbeat"

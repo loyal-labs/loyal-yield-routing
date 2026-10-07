@@ -1,12 +1,20 @@
-# Alertmanager with its native Telegram receiver. The bot token is a
-# systemd credential (see alertmanager.service.d/telegram.conf); the chat
+# Alertmanager with its native Telegram receiver. The bot token and the
+# heartbeat URL are systemd credentials (alertmanager.service.d/); the chat
 # id below is a placeholder the operator replaces at install time.
 route:
   receiver: telegram
-  group_by: [alertname, family, name, unit]
+  group_by: [alertname, family, name, unit, job]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
+  routes:
+    # The always-firing Watchdog pings an external dead man's switch, which
+    # pages on its own when the pings stop.
+    - matchers: [alertname="Watchdog"]
+      receiver: heartbeat
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 1m
 
 inhibit_rules:
   # A unit that is down explains its own stale families and missing metrics.
@@ -21,3 +29,7 @@ receivers:
         chat_id: -1000000000000 # placeholder: the alerts chat id
         parse_mode: HTML
         send_resolved: true
+  - name: heartbeat
+    webhook_configs:
+      - url_file: /run/credentials/prometheus-alertmanager.service/heartbeat_url
+        send_resolved: false

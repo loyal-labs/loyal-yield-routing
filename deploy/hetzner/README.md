@@ -27,10 +27,18 @@ sha256sum bin/*
 stamps the release identity `sha-<commit>` into
 `internal/engine.Release`.
 
+Until they are ported to Go, two Rust children are still required:
+`loyal-klend-proxy` (retail) and `earn-domain-bridge` (observer). Build them
+with `cargo build --locked --release -p loyal-yield-orchestrator --bin
+loyal-klend-proxy -p balance-sweep-ata-monitor --bin earn-domain-bridge` on a
+glibc host that matches the server (they link libssl3), install them into
+`/opt/loyal/bin/`, and put the proxy's sha256 in
+`RETAIL_KLEND_PROXY_SHA256` in `/etc/loyal/loyal-retail.env`.
+
 ## Install (once per host)
 
 ```sh
-install -m 0555 bin/loyal-observer bin/loyal-engine /opt/loyal/bin/
+install -m 0555 bin/loyal-observer bin/loyal-engine loyal-klend-proxy earn-domain-bridge /opt/loyal/bin/
 install -m 0644 deploy/hetzner/systemd/*.service /etc/systemd/system/
 install -d -m 0755 /etc/loyal       # non-secret <unit>.env files, see unit comments
 install -d -m 0700 /etc/credstore.encrypted/loyal-retail   # likewise per unit
@@ -54,6 +62,7 @@ the environment. Credentials by unit:
 - `loyal-retail`: `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`, `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR`, `RETAIL_FEE_PAYER_KEYPAIR`. Add `RETAIL_LOOKUP_MANAGER_KEYPAIR` only for active lookup mode.
 - `loyal-backyard`: `BACKYARD_DATABASE_URL`, `BACKYARD_SOLANA_RPC_URL`, `BACKYARD_POLICY_KEYPAIR`
 - Alertmanager: `telegram_bot_token`
+- Alertmanager: `heartbeat_url`, the external dead man's switch that the Watchdog alert pings.
 - Collector: `CLICKSTACK_OTLP_ENDPOINT`, `CLICKSTACK_INGESTION_KEY`
 
 Then run `systemctl daemon-reload`. Do not enable a unit until its family
@@ -82,14 +91,24 @@ Rust is stopped by hand:
    in `planned|simulating|ready|submitted|confirming`, and so on for the
    family's operation rows.
 3. Run `systemctl stop <rust-unit>`. Never use `runtime.py stop`.
-4. Run `systemctl enable --now <go-unit>` and add the unit to
-   `/etc/prometheus/loyal-targets.yml`.
+4. Run `systemctl enable --now <go-unit>`.
 5. Watch `loyal_family_last_progress_timestamp_seconds{family=...}` advance.
 
-To fall back, reverse these steps. Remove the target, wait for
-`loyal_family_inflight{family=...} == 0`, run `systemctl stop <go-unit>`,
-then run `systemctl start <rust-unit>`. Go keeps the row states and legacy
-lease columns that Rust reads.
+To fall back, wait for `loyal_family_inflight{family=...} == 0`, then run
+`systemctl stop <go-unit>`, then `systemctl start <rust-unit>`. Go keeps the
+row states and legacy lease columns that Rust reads. A stopped Go unit is
+inactive, so it does not alert.
+
+During the swap window, a family whose Go and Rust units are both stopped
+emits nothing. Rust units are named per host, so add one host-local rule per
+family until phase 2 retires Rust:
+
+```yaml
+- alert: LoyalFamilyNoWriter
+  expr: absent(node_systemd_unit_state{name=~"loyal-retail\\.service|<rust-units>", state="active"} == 1)
+  for: 5m
+  labels: {severity: page, family: autodeposit}
+```
 
 ## Monitoring
 
@@ -97,8 +116,6 @@ All files are in `monitoring/`. Everything listens on loopback.
 
 - `prometheus.yml` → `/etc/prometheus/prometheus.yml`
 - `loyal.rules.yml` → `/etc/prometheus/loyal.rules.yml`
-- `loyal-targets.yml` → `/etc/prometheus/loyal-targets.yml`. This file
-  lists the Go units that should be running now.
 - node_exporter flags: `--collector.systemd
   --collector.systemd.unit-include='loyal-.+\.service'
   --collector.systemd.enable-restarts-metrics
@@ -114,12 +131,17 @@ The alerts are:
 
 | Alert | Fires when |
 |---|---|
-| LoyalFamilyProgressStale | No completed work for 2m (observer), 10m (autodeposit, fleet) or 30m (multiply, lookup, backyard) |
+| LoyalFamilyProgressStale | No completed work for about 3m (observer), 10m (autodeposit, fleet) or 30m (multiply, lookup, backyard). Restarts do not reset this clock |
 | LoyalFamilyFailing | At least 3 terminal failures with one code in 15m, sustained for 5m |
 | LoyalInflightStuck | Work in flight with no landed or failed outcome for 3m, twice the blockhash expiry |
-| LoyalWorkerDown | A listed Go unit is not serving `/metrics` for 2m |
-| LoyalUnitDown | Any `loyal-*` unit is `failed`, or stuck `activating`, for 2m |
+| LoyalWorkerDown | A Go unit that systemd is running does not serve `/metrics` for 2m |
+| LoyalUnitDown | Any `loyal-*` unit is `failed`, or stuck `activating`, for 2m (in practice Rust units, since Go units restart forever) |
 | LoyalUnitRestartLoop | Any `loyal-*` unit restarts more than 3 times in 15m |
+| LoyalMonitoringDown | node_exporter, Prometheus or Alertmanager is not scrapeable for 2m |
+| Watchdog | Always firing. It goes to the heartbeat receiver, and the external switch pages when it stops |
+
+A family whose Go process does not report facts yet stays at progress 0 and
+pages after its grace. Enable a Go unit only after its families emit facts.
 
 Check the monitoring config with these commands:
 
