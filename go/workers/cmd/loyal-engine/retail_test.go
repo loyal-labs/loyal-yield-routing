@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,7 +179,7 @@ func TestRetailShutdownJoinsLanesBeforeReturning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runRetailLanes(ctx, lane) }()
+	go func() { done <- engine.Run(ctx, lane) }()
 	select {
 	case <-lane.started:
 	case <-time.After(time.Second):
@@ -204,5 +205,17 @@ func TestRetailShutdownJoinsLanesBeforeReturning(t *testing.T) {
 	case <-lane.drained:
 	default:
 		t.Fatal("dependencies could close before lane drained")
+	}
+}
+
+func TestRetailFamiliesNameEachWriterOnce(t *testing.T) {
+	families, err := retailFamilies("fleet, lookup")
+	if err != nil || len(families) != 2 || families[0] != engine.FamilyFleet || families[1] != engine.FamilyLookup {
+		t.Fatalf("families %v %v", families, err)
+	}
+	for _, bad := range []string{"", "fleet,fleet", "observer", "backyard"} {
+		if _, err := retailFamilies(bad); err == nil {
+			t.Fatalf("RETAIL_FAMILIES=%q accepted", bad)
+		}
 	}
 }

@@ -32,7 +32,10 @@ Environment=RETAIL_TIMESCALE_SCHEMA=kamino
 # Retained Rust KLend builder child until it is ported to Go.
 Environment=RETAIL_KLEND_PROXY_PATH=/opt/loyal/bin/loyal-klend-proxy
 # Non-secret host values: RETAIL_KLEND_PROXY_SHA256 (changes per build),
-# RETAIL_CROSS_MINT_ENABLED, RETAIL_LOOKUP_MODE. Active lookup mode also
+# RETAIL_CROSS_MINT_ENABLED, RETAIL_LOOKUP_MODE, and RETAIL_FAMILIES: the
+# families moved off their stopped Rust workers (autodeposit,fleet,multiply,
+# lookup). Each is held by a session lock on RETAIL_DATABASE_URL, which must
+# be the direct Neon DSN, not the pooler. Active lookup mode also
 # needs LoadCredentialEncrypted=RETAIL_LOOKUP_MANAGER_KEYPAIR in a drop-in.
 EnvironmentFile=/etc/loyal/loyal-retail.env
 

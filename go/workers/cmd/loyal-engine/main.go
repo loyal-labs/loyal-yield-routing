@@ -40,9 +40,8 @@ func run(ctx context.Context) error {
 	}
 	registry := prometheus.NewRegistry()
 	facts := engine.NewFacts(registry)
-	if scope == "retail" {
-		facts.Own(engine.FamilyAutodeposit, engine.FamilyFleet, engine.FamilyMultiply, engine.FamilyLookup)
-	} else {
+	// Retail owns the families it holds; see RETAIL_FAMILIES.
+	if scope == "backyard" {
 		facts.Own(engine.FamilyBackyard)
 	}
 	metrics, err := engine.ListenMetrics(os.Getenv("LOYAL_METRICS_ADDRESS"), registry)

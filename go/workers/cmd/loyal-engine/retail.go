@@ -199,8 +199,27 @@ func retailError(stage string, cause error) error {
 	return &retailStageFailure{stage: stage, cause: cause}
 }
 
-func runRetailLanes(ctx context.Context, lanes ...engine.Lane) error {
-	return retailError("lanes", engine.Run(ctx, lanes...))
+var errFamilyLockLost = errors.New("family lock lost")
+
+// retailFamilies parses RETAIL_FAMILIES: the families this process writes.
+// Each cutover moves one family from its stopped Rust worker to Go.
+func retailFamilies(value string) ([]engine.Family, error) {
+	var families []engine.Family
+	seen := map[engine.Family]bool{}
+	for _, name := range strings.Split(value, ",") {
+		family := engine.Family(strings.TrimSpace(name))
+		switch family {
+		case engine.FamilyAutodeposit, engine.FamilyFleet, engine.FamilyMultiply, engine.FamilyLookup:
+		default:
+			return nil, fmt.Errorf("RETAIL_FAMILIES has unknown retail family %q", family)
+		}
+		if seen[family] {
+			return nil, fmt.Errorf("RETAIL_FAMILIES repeats %q", family)
+		}
+		seen[family] = true
+		families = append(families, family)
+	}
+	return families, nil
 }
 
 // facts is the family health surface; metrics is the joined /metrics lane.
@@ -215,6 +234,28 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return err
 	}
+	families, err := retailFamilies(os.Getenv("RETAIL_FAMILIES"))
+	if err != nil {
+		return err
+	}
+	// One writer per family: hold each family's session lock on the direct
+	// database before any lane starts, and stop every lane if one is lost.
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	for _, family := range families {
+		lost, err := engine.HoldFamily(ctx, cfg.databaseURL, family)
+		if err != nil {
+			return retailError("family lock", err)
+		}
+		go func(family engine.Family) {
+			select {
+			case <-lost:
+				stop(fmt.Errorf("%s: %w", family, errFamilyLockLost))
+			case <-ctx.Done():
+			}
+		}(family)
+	}
+	facts.Own(families...)
 	// Every family lands its signed rows through the same send path.
 	landRPC, err := solana.NewLandRPC(cfg.rpcURL, 15*time.Second)
 	if err != nil {
@@ -379,5 +420,22 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err := startup.Err(); err != nil {
 		return err
 	}
-	return runRetailLanes(ctx, control, aWorker, planner, executor, crossMint, lookupPlanner, lookupWorker, multiplyWorker, metrics)
+	lanes := []engine.Lane{metrics}
+	for _, family := range families {
+		switch family {
+		case engine.FamilyAutodeposit:
+			lanes = append(lanes, control, aWorker)
+		case engine.FamilyFleet:
+			lanes = append(lanes, planner, executor, crossMint)
+		case engine.FamilyLookup:
+			lanes = append(lanes, lookupPlanner, lookupWorker)
+		case engine.FamilyMultiply:
+			lanes = append(lanes, multiplyWorker)
+		}
+	}
+	err = engine.Run(ctx, lanes...)
+	if cause := context.Cause(ctx); errors.Is(cause, errFamilyLockLost) {
+		return cause
+	}
+	return retailError("lanes", err)
 }

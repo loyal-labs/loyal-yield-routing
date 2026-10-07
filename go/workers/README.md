@@ -34,6 +34,13 @@ explicit `RETAIL_MODE=active`, `RETAIL_TIMESCALE_SCHEMA`, `RETAIL_SLOT_DURATION`
 `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`,
 `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR` and `RETAIL_FEE_PAYER_KEYPAIR`. The current Autodeposit
 and same-mint packet contracts require the latter two keys to be identical.
+`RETAIL_FAMILIES` names the families this process writes (`autodeposit`,
+`fleet`, `multiply`, `lookup`), each moved off its stopped Rust worker. The
+process holds each family's session advisory lock on `RETAIL_DATABASE_URL`,
+which must therefore be the direct Neon DSN, and exits when a lock is lost.
+Every family lands signed rows through one function, `solana.Land`: the
+bytes are written to the operation row before the first send and resent until
+they land or the finalized height passes their blockhash.
 `RETAIL_CROSS_MINT_ENABLED=true` opts the planner/controller into fresh cross-mint
 work; it defaults off. Existing signed recovery and custody continuation stay
 available with rollout off. Source database controls are checked independently.
