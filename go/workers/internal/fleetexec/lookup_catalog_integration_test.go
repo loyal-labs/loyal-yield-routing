@@ -31,7 +31,7 @@ func TestLookupPlannerCreatesExtendsAndRollsCatalogFromActualBank(t *testing.T) 
 	var observed uint64
 	planner.SetRuntimeReporter(func(r bool, s uint64) { ready, observed = r, s })
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, 32))
-	worker, err := NewLookupWorker(store, svm.rpc, LookupWorkerConfig{Cluster: "localnet", Owner: "catalog-worker", LeaseTTL: time.Minute, TickDeadline: 25 * time.Second, PollInterval: time.Second, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}}, func(context.Context, string) (ed25519.PrivateKey, error) { return key, nil })
+	worker, err := NewLookupWorker(store, svm.rpc, LookupWorkerConfig{Cluster: "localnet", Owner: "catalog-worker", LeaseTTL: time.Minute, TickDeadline: 25 * time.Second, PollInterval: time.Second, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}, Facts: testFacts()}, func(context.Context, string) (ed25519.PrivateKey, error) { return key, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestLookupPlannerCreatesExtendsAndRollsCatalogFromActualBank(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = svm.rpc.Send(ctx, wire); err != nil {
+	if err = svm.rpc.SendWire(ctx, wire, true); err != nil {
 		t.Fatal(err)
 	}
 	if err = svm.direct("advanceSlot", []any{1004}, nil); err != nil {

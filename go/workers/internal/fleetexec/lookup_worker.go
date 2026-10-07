@@ -3,11 +3,19 @@ package fleetexec
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"math"
 	"sync"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
+
+// lookupResendEvery matches the fleet landing cadence.
+var lookupResendEvery = time.Second
 
 // LookupWorkerConfig bounds one leased operation; planner/catalog polling is a
 // separate responsibility and never receives ManagerKey.
@@ -16,6 +24,7 @@ type LookupWorkerConfig struct {
 	LeaseTTL, TickDeadline, PollInterval time.Duration
 	Budget                               LookupBudget
 	ReconcileOnly                        bool
+	Facts                                *engine.Facts
 	// OnHealth must not block; nil means a successful tick with actual RPC evidence.
 	OnHealth func(error)
 }
@@ -31,7 +40,7 @@ type LookupWorker struct {
 }
 
 func NewLookupWorker(store *Store, chain *LookupRPC, config LookupWorkerConfig, managerKey func(context.Context, string) (ed25519.PrivateKey, error)) (*LookupWorker, error) {
-	if store == nil || store.pool == nil || chain == nil || config.Cluster == "" || config.Owner == "" || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 5*time.Minute || config.LeaseTTL%time.Second != 0 || config.TickDeadline <= 0 || config.TickDeadline+5*time.Second > config.LeaseTTL || config.PollInterval <= 0 || config.PollInterval > time.Minute || (!config.ReconcileOnly && managerKey == nil) || config.Budget.MaximumLamports <= 0 || config.Budget.RollingWindow < time.Second || config.Budget.RollingWindow > 365*24*time.Hour || config.Budget.RollingWindow%time.Second != 0 {
+	if store == nil || store.pool == nil || chain == nil || config.Cluster == "" || config.Owner == "" || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 5*time.Minute || config.LeaseTTL%time.Second != 0 || config.TickDeadline <= 0 || config.TickDeadline+5*time.Second > config.LeaseTTL || config.PollInterval <= 0 || config.PollInterval > time.Minute || config.Facts == nil || (!config.ReconcileOnly && managerKey == nil) || config.Budget.MaximumLamports <= 0 || config.Budget.RollingWindow < time.Second || config.Budget.RollingWindow > 365*24*time.Hour || config.Budget.RollingWindow%time.Second != 0 {
 		return nil, errors.New("lookup worker dependencies/configuration invalid")
 	}
 	return &LookupWorker{store: store, chain: chain, config: config, managerKey: managerKey, gate: make(chan struct{}, 1)}, nil
@@ -100,7 +109,15 @@ func (w *LookupWorker) Tick(parent context.Context) (worked bool, resultErr erro
 	defer func() { <-w.gate }()
 	var observedBank uint64
 	defer func() { w.reportRuntime(resultErr == nil && ctx.Err() == nil && observedBank > 0, observedBank) }()
-	return w.tick(ctx, &observedBank)
+	worked, resultErr = w.tick(ctx, &observedBank)
+	if resultErr == nil {
+		var inflight int
+		if resultErr = w.store.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.lookup_table_families f ON f.id=o.family_id WHERE f.cluster=$1 AND o.transaction_signature IS NOT NULL AND o.operation_state NOT IN ('complete','permanent_failure','cancelled')`, w.config.Cluster).Scan(&inflight); resultErr == nil {
+			w.config.Facts.Inflight(engine.FamilyLookup, inflight)
+			w.config.Facts.Progress(engine.FamilyLookup)
+		}
+	}
+	return worked, resultErr
 }
 
 func (w *LookupWorker) tick(ctx context.Context, observedBank *uint64) (bool, error) {
@@ -117,15 +134,12 @@ func (w *LookupWorker) tick(ctx context.Context, observedBank *uint64) (bool, er
 		}
 		return false, err
 	}
-	owned, err := w.store.LoadLookupAttempt(ctx, op.Intent.OperationID)
-	if err != nil {
-		return true, err
-	}
-	if owned != nil {
-		return true, w.recoverOwned(ctx, *op, *owned, observedBank)
-	}
-	if op.LegacySignature != nil || op.LegacyMessageHash != nil || op.LegacyBlockhash != nil || op.LegacyLastValidBlockHeight != nil {
-		return true, w.recoverLegacy(ctx, *op, observedBank)
+	if op.Signature != nil || op.MessageHash != nil || op.Blockhash != nil || op.LastValidBlockHeight != nil {
+		attempt, err := lookupAttemptOf(*op)
+		if err != nil {
+			return true, err
+		}
+		return true, w.land(ctx, *op, attempt, observedBank)
 	}
 	if op.Intent.Kind == LookupVerify {
 		snapshot, err := w.chain.LookupSnapshot(ctx, op.Intent.TableAddress, 0)
@@ -235,26 +249,60 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation, observed
 	if err != nil {
 		return err
 	}
-	return w.recoverOwned(ctx, op, prepared, observedBank)
+	return w.land(ctx, op, prepared, observedBank)
 }
 
-func (w *LookupWorker) recoverOwned(ctx context.Context, op LookupOperation, attempt LookupAttempt, observedBank *uint64) error {
+// land resends the operation's signed bytes until they finalize or expire,
+// then applies the finalized effect. A packet without bytes (signed by the
+// Rust provisioner) and reconcile-only mode resolve by signature status alone.
+// Expiry is the Rust retry: the operation gets a fresh packet.
+func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt LookupAttempt, observedBank *uint64) error {
+	if len(attempt.Wire.SignedTransaction) > 0 && !w.config.ReconcileOnly {
+		// Leave the tick time to record the outcome inside its own deadline.
+		landCtx, cancel := context.WithTimeout(ctx, w.config.TickDeadline/2)
+		out, err := solana.Land(landCtx, w.chain, solana.Attempt{
+			Wire: attempt.Wire.SignedTransaction, Signature: attempt.Wire.TransactionSignature,
+			LastValidBlockHeight: uint64(attempt.Wire.LastValidBlockHeight), Sends: attempt.BroadcastCount,
+			Required: solana.Finalized,
+		}, lookupResendEvery, func(sendCtx context.Context) error {
+			return w.store.RecordLookupSend(sendCtx, op, attempt)
+		})
+		cancel()
+		switch {
+		case errors.Is(err, ErrLookupPaused):
+			return w.store.deferLookupRecovery(ctx, op, "signed packet held by source controls")
+		case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+			return w.store.deferLookupRecovery(ctx, op, "landing continues")
+		case err != nil:
+			return err
+		case out.Kind == solana.Expired:
+			w.config.Facts.Failed(engine.FamilyLookup, "blockhash_expired")
+			return w.store.expireLookupOperation(ctx, op, attempt)
+		}
+	}
 	status, err := w.chain.SignatureStatus(ctx, attempt.Wire.TransactionSignature)
 	if err != nil {
 		return err
 	}
-	var receipt *LookupReceipt
-	if status.Finalized {
-		receipt, err = w.chain.LookupFinalizedReceipt(ctx, attempt.Wire.TransactionSignature)
-		if err != nil {
-			return err
-		}
+	if !status.Found && status.BlockHeight > attempt.Wire.LastValidBlockHeight {
+		w.config.Facts.Failed(engine.FamilyLookup, "blockhash_expired")
+		return w.store.expireLookupOperation(ctx, op, attempt)
 	}
-	minimum := attempt.SigningContextSlot
-	if receipt != nil && receipt.Slot > minimum {
-		minimum = receipt.Slot
+	if !status.Finalized {
+		return w.store.deferLookupRecovery(ctx, op, "signature not finalized")
 	}
-	snapshot, err := w.chain.LookupSnapshot(ctx, attempt.Intent.TableAddress, minimum)
+	receipt, err := w.chain.LookupFinalizedReceipt(ctx, attempt.Wire.TransactionSignature)
+	if err != nil {
+		return err
+	}
+	if receipt == nil {
+		return w.store.deferLookupRecovery(ctx, op, "finalized packet history unavailable")
+	}
+	if len(attempt.Wire.SignedTransaction) == 0 {
+		hash := sha256.Sum256(receipt.Wire)
+		attempt.Wire.SignedTransaction, attempt.Wire.SignedTransactionHash = receipt.Wire, hex.EncodeToString(hash[:])
+	}
+	snapshot, err := w.chain.LookupSnapshot(ctx, attempt.Intent.TableAddress, max(attempt.SigningContextSlot, receipt.Slot))
 	if err != nil {
 		return err
 	}
@@ -263,41 +311,13 @@ func (w *LookupWorker) recoverOwned(ctx context.Context, op LookupOperation, att
 	if err != nil {
 		return err
 	}
-	if recovery.proof != nil {
-		return w.store.commitLookupProof(ctx, op, attempt, recovery.proof)
+	if recovery.proof == nil {
+		return w.store.deferLookupRecovery(ctx, op, recovery.wait)
 	}
-	if !status.Found && status.BlockHeight > attempt.Wire.LastValidBlockHeight {
-		history, err := w.chain.lookupHistory(ctx, attempt, snapshot)
-		if err != nil {
-			if deferErr := w.store.deferLookupRecovery(ctx, op, attempt, "expired packet has no complete finalized landing-window proof"); deferErr != nil {
-				return deferErr
-			}
-			return err
-		}
-		proof, err := expireLookup(attempt, status, snapshot, history)
-		if err != nil {
-			return err
-		}
-		return w.store.commitLookupProof(ctx, op, attempt, proof)
+	if recovery.proof.state == LookupFailed {
+		w.config.Facts.Failed(engine.FamilyLookup, "transaction_failed")
+	} else {
+		w.config.Facts.Landed(engine.FamilyLookup)
 	}
-	if w.config.ReconcileOnly || attempt.BroadcastCount != 0 || attempt.State != LookupPrepared || status.Found {
-		return w.store.deferLookupRecovery(ctx, op, attempt, recovery.wait)
-	}
-	if !lookupUnchanged(attempt.Intent, snapshot) || (attempt.Intent.Kind == LookupClose && !lookupCloseReady(snapshot, *attempt.Intent.ExpectedDeactivationSlot)) {
-		return w.store.deferLookupRecovery(ctx, op, attempt, "prepared packet has changed pre-broadcast account")
-	}
-	if err = w.store.RecordLookupBroadcastIntent(ctx, op, attempt); err != nil {
-		if errors.Is(err, ErrLookupPaused) {
-			return w.store.deferLookupRecovery(ctx, op, attempt, "owned prepared packet held by source controls")
-		}
-		return err
-	}
-	// All Send outcomes schedule observation; even a timeout owns the same
-	// signature and never obtains another broadcast grant on restart.
-	sendErr := w.chain.Send(ctx, attempt.Wire.SignedTransaction)
-	reason := "owned packet broadcast; awaiting exact finalized receipt"
-	if sendErr != nil {
-		reason = "owned packet broadcast outcome unknown"
-	}
-	return w.store.deferLookupRecovery(ctx, op, attempt, reason)
+	return w.store.commitLookupProof(ctx, op, attempt, recovery.proof)
 }

@@ -480,12 +480,6 @@ const MIGRATIONS: &[Migration] = &[
         expected_checksum: None,
     },
     Migration {
-        version: 90,
-        name: "lookup_table_signed_attempts",
-        sql: include_str!("../../../loyal-yield-store/migrations/0090_lookup_table_signed_attempts.sql"),
-        expected_checksum: None,
-    },
-    Migration {
         version: 91,
         name: "autodeposit_desired_control_revisions",
         sql: include_str!("../../../loyal-yield-store/migrations/0091_autodeposit_desired_control_revisions.sql"),

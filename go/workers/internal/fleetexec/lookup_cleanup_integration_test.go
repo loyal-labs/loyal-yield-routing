@@ -20,7 +20,7 @@ func TestLookupPlannerQueuesRealRetiringCleanupAndExactCloseRefund(t *testing.T)
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, 32))
 	keys := 0
-	workerConfig := LookupWorkerConfig{Cluster: "localnet", Owner: "cleanup-writer", LeaseTTL: time.Minute, TickDeadline: 25 * time.Second, PollInterval: time.Second, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}}
+	workerConfig := LookupWorkerConfig{Cluster: "localnet", Owner: "cleanup-writer", LeaseTTL: time.Minute, TickDeadline: 25 * time.Second, PollInterval: time.Second, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}, Facts: testFacts()}
 	worker, err := NewLookupWorker(store, svm.rpc, workerConfig, func(context.Context, string) (ed25519.PrivateKey, error) { keys++; return key, nil })
 	if err != nil {
 		t.Fatal(err)

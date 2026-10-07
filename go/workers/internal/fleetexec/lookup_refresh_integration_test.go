@@ -29,7 +29,7 @@ func TestLookupUnsignedAgedReservationRefreshesOnlyToActualProducedBank(t *testi
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1`, op.Intent.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	worker, err := NewLookupWorker(store, svm.rpc, LookupWorkerConfig{Cluster: "localnet", Owner: "refresh-fixture", LeaseTTL: time.Minute, TickDeadline: 30 * time.Second, PollInterval: time.Second, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}}, func(context.Context, string) (ed25519.PrivateKey, error) {
+	worker, err := NewLookupWorker(store, svm.rpc, LookupWorkerConfig{Cluster: "localnet", Owner: "refresh-fixture", LeaseTTL: time.Minute, TickDeadline: 30 * time.Second, PollInterval: time.Second, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}, Facts: testFacts()}, func(context.Context, string) (ed25519.PrivateKey, error) {
 		return ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, 32)), nil
 	})
 	if err != nil {
@@ -38,8 +38,8 @@ func TestLookupUnsignedAgedReservationRefreshesOnlyToActualProducedBank(t *testi
 	if worked, err := worker.Tick(ctx); err != nil || !worked {
 		t.Fatal("actual aged reservation fresh tick", worked, err)
 	}
-	owned, err := store.LoadLookupAttempt(ctx, op.Intent.OperationID)
-	if err != nil || owned == nil || owned.Intent.TableAddress == f.Table || owned.Intent.RecentSlot == nil || !lookupProducedSlot(old.SlotHashes, *owned.Intent.RecentSlot) || owned.BroadcastCount != 1 {
+	owned, err := lookupAttemptOf(loadLookupOperation(t, ctx, pool, op.Intent.OperationID))
+	if err != nil || owned.Intent.TableAddress == f.Table || owned.Intent.RecentSlot == nil || !lookupProducedSlot(old.SlotHashes, *owned.Intent.RecentSlot) || owned.BroadcastCount < 1 {
 		t.Fatal("reservation invented slot or reused old address", owned, err)
 	}
 	receipt, err := svm.rpc.LookupFinalizedReceipt(ctx, owned.Wire.TransactionSignature)

@@ -46,7 +46,22 @@ func lookupRegisteredPool(t *testing.T) *pgxpool.Pool {
 	}
 	return pool
 }
-func TestLookupRegisteredJournalOwnsActualPacketAcrossPauseAndLeaseTransfer(t *testing.T) {
+// loadLookupOperation re-reads the source row as a restarted family would.
+func loadLookupOperation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) LookupOperation {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	op, err := loadLeasedLookup(ctx, tx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return op
+}
+
+func TestLookupSignedPacketLivesOnItsOperationAcrossPauseResendAndRestart(t *testing.T) {
 	pool := lookupRegisteredPool(t)
 	f := readLookupFixture(t)
 	svm := startLookupSVM(t, f)
@@ -56,64 +71,50 @@ func TestLookupRegisteredJournalOwnsActualPacketAcrossPauseAndLeaseTransfer(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, operation, prepared, owned := seedLookupJournal(t, ctx, pool, f, hash, height, bank)
+	store, operation, _, owned := seedLookupJournal(t, ctx, pool, f, hash, height, bank)
 	intent := operation.Intent
-	for _, query := range []string{
-		`UPDATE loyal_yield.lookup_table_operations SET transaction_signature=NULL,operation_state='retry_wait' WHERE id=$1`,
-		`UPDATE loyal_yield.lookup_table_operations SET operation_state='complete' WHERE id=$1`,
-	} {
-		if _, err = pool.Exec(ctx, query, intent.OperationID); err == nil {
-			t.Fatal("source writer reset/terminalized owned unresolved packet")
-		}
-	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables SET mutation_epoch=1 WHERE id=$1`, intent.TableID); err == nil {
-		t.Fatal("physical epoch changed under unresolved packet")
-	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_signed_attempts SET signed_transaction=substring(signed_transaction from 2) WHERE id=$1`, owned.ID); err == nil {
-		t.Fatal("owned packet mutated")
+	// The signed bytes are written to the source row before any send.
+	durable, err := lookupAttemptOf(loadLookupOperation(t, ctx, pool, intent.OperationID))
+	if err != nil || !bytes.Equal(durable.Wire.SignedTransaction, owned.Wire.SignedTransaction) || durable.BroadcastCount != 0 {
+		t.Fatalf("operation row lost its signed packet: %+v %v", durable, err)
 	}
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioner_controls SET paused=true,control_epoch=control_epoch+1 WHERE cluster='localnet'`); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.RecordLookupBroadcastIntent(ctx, operation, owned); !errors.Is(err, ErrLookupPaused) {
-		t.Fatalf("pause grant: %v", err)
-	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_families SET desired_state='paused' WHERE id=$1`, intent.FamilyID); err != nil {
-		t.Fatal(err)
-	}
-	replay, err := store.PersistLookupPrepared(ctx, operation, prepared)
-	if err != nil || replay.ID != owned.ID || !bytes.Equal(replay.Wire.SignedTransaction, owned.Wire.SignedTransaction) {
-		t.Fatalf("pause replaced prepared packet: %v", err)
-	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_families SET desired_state='active' WHERE id=$1`, intent.FamilyID); err != nil {
-		t.Fatal(err)
+	if err = store.RecordLookupSend(ctx, operation, owned); !errors.Is(err, ErrLookupPaused) {
+		t.Fatalf("pause permitted a first send: %v", err)
 	}
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioner_controls SET paused=false,control_epoch=control_epoch+1 WHERE cluster='localnet'`); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.RecordLookupBroadcastIntent(ctx, operation, owned); err != nil {
+	// One permit covers the signature; a resend of the same bytes only counts.
+	for range 2 {
+		if err = store.RecordLookupSend(ctx, operation, owned); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var permits int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.lookup_table_provisioner_broadcast_permits WHERE operation_id=$1`, intent.OperationID).Scan(&permits); err != nil || permits != 1 {
+		t.Fatalf("permits %d %v", permits, err)
+	}
+	if err = svm.rpc.SendWire(ctx, owned.Wire.SignedTransaction, true); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.RecordLookupBroadcastIntent(ctx, operation, owned); err == nil {
-		t.Fatal("duplicate broadcast intent accepted")
-	}
-	// The original authorized sender reached the bank, then lost its
-	// response before updating PostgreSQL. Recovery will only observe it.
-	if err = svm.rpc.Send(ctx, owned.Wire.SignedTransaction); err != nil {
-		t.Fatal(err)
-	}
-	// Crash/lease transfer after the durable send boundary. New owner recovers
-	// the immutable packet rather than creating a new signature or a new permit.
+	// Lease transfer: the old owner can no longer write the row.
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET lease_owner='lookup-recovery',fencing_token=2,lease_expires_at=clock_timestamp()+interval '60 seconds' WHERE id=$1`, intent.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.deferLookupRecovery(ctx, operation, owned, "stale sender"); !errors.Is(err, ErrStaleOwner) {
+	if err = store.deferLookupRecovery(ctx, operation, "stale sender"); !errors.Is(err, ErrStaleOwner) {
 		t.Fatalf("old lease updated recovery: %v", err)
 	}
 	operation.Lease.Owner, operation.Lease.FencingToken = "lookup-recovery", 2
-	durable, err := store.LoadLookupAttempt(ctx, intent.OperationID)
-	if err != nil || durable == nil || durable.BroadcastCount != 1 || durable.State != LookupUnknown || !bytes.Equal(durable.Wire.SignedTransaction, owned.Wire.SignedTransaction) {
-		t.Fatalf("restart owned packet: %+v %v", durable, err)
+	restarted := loadLookupOperation(t, ctx, pool, intent.OperationID)
+	if restarted.State != "submitted" {
+		t.Fatalf("restart state %s", restarted.State)
+	}
+	durable, err = lookupAttemptOf(restarted)
+	if err != nil || durable.BroadcastCount != 2 || !bytes.Equal(durable.Wire.SignedTransaction, owned.Wire.SignedTransaction) {
+		t.Fatalf("restart packet: %+v %v", durable, err)
 	}
 	receipt, err := svm.rpc.LookupFinalizedReceipt(ctx, durable.Wire.TransactionSignature)
 	if err != nil || receipt == nil {
@@ -127,7 +128,7 @@ func TestLookupRegisteredJournalOwnsActualPacketAcrossPauseAndLeaseTransfer(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := recoverLookup(*durable, status, receipt, snapshot)
+	result, err := recoverLookup(durable, status, receipt, snapshot)
 	if err != nil || result.proof != nil {
 		t.Fatal("same-bank growth was not held", err)
 	}
@@ -138,24 +139,22 @@ func TestLookupRegisteredJournalOwnsActualPacketAcrossPauseAndLeaseTransfer(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = recoverLookup(*durable, status, receipt, snapshot)
+	result, err = recoverLookup(durable, status, receipt, snapshot)
 	if err != nil || result.proof == nil {
 		t.Fatal("actual warmed proof missing", err)
 	}
-	if err = store.commitLookupProof(ctx, operation, *durable, result.proof); err != nil {
+	if err = store.commitLookupProof(ctx, operation, durable, result.proof); err != nil {
 		t.Fatal(err)
 	}
-	var attemptState, sourceState string
-	var broadcasts, count, usable int
+	var sourceState, permit string
+	var count, usable int
 	var epoch, fee, rent int64
-	var saved []byte
-	if err = pool.QueryRow(ctx, `SELECT a.attempt_state,a.broadcast_count,a.signed_transaction,o.operation_state,o.actual_fee_lamports,o.actual_rent_lamports,t.address_count,t.usable_address_count,t.mutation_epoch FROM loyal_yield.lookup_table_signed_attempts a JOIN loyal_yield.lookup_table_operations o ON o.id=a.operation_id JOIN loyal_yield.route_lookup_tables t ON t.id=a.route_lookup_table_id WHERE a.id=$1`, owned.ID).Scan(&attemptState, &broadcasts, &saved, &sourceState, &fee, &rent, &count, &usable, &epoch); err != nil {
+	if err = pool.QueryRow(ctx, `SELECT o.operation_state,o.actual_fee_lamports,o.actual_rent_lamports,t.address_count,t.usable_address_count,t.mutation_epoch,p.permit_state FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.route_lookup_tables t ON t.id=o.route_lookup_table_id JOIN loyal_yield.lookup_table_provisioner_broadcast_permits p ON p.operation_id=o.id WHERE o.id=$1`, intent.OperationID).Scan(&sourceState, &fee, &rent, &count, &usable, &epoch, &permit); err != nil {
 		t.Fatal(err)
 	}
-	if attemptState != "reconciled" || sourceState != "complete" || broadcasts != 1 || !bytes.Equal(saved, owned.Wire.SignedTransaction) || fee != 5000 || rent != int64(snapshot.Lamports) || count != 2 || usable != 2 || epoch != 1 {
-		t.Fatalf("incorrect actual source projection: %s/%s broadcasts%d fee%d rent%d count%d/%d epoch%d", attemptState, sourceState, broadcasts, fee, rent, count, usable, epoch)
+	if sourceState != "complete" || permit != "reconciled" || fee != 5000 || rent != int64(snapshot.Lamports) || count != 2 || usable != 2 || epoch != 1 {
+		t.Fatalf("incorrect actual source projection: %s/%s fee%d rent%d count%d/%d epoch%d", sourceState, permit, fee, rent, count, usable, epoch)
 	}
-	t.Log("registered source lease/budget/permit + immutable packet survives pause/restart/fence; actual ALT execution/readback atomically finalizes source membership and SOL accounting")
 }
 
 func lookupFixturePortInvalid(port string) bool {
@@ -236,30 +235,43 @@ func seedLookupSource(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f l
 	return store, operation
 }
 
-func TestLookupRegisteredJournalStructuralGuards(t *testing.T) {
+func TestLookupExpiredPacketReturnsToRetryLikeRust(t *testing.T) {
+	pool := lookupRegisteredPool(t)
+	f := readLookupFixture(t)
+	store, operation, _, owned := seedLookupJournal(t, t.Context(), pool, f, sdk.Hash([32]byte{42}).String(), 1150, 1000)
+	if err := store.RecordLookupSend(t.Context(), operation, owned); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.expireLookupOperation(t.Context(), operation, owned); err != nil {
+		t.Fatal(err)
+	}
+	var state, code, permit string
+	var signature *string
+	var history []map[string]any
+	var raw []byte
+	var stale bool
+	if err := pool.QueryRow(t.Context(), `SELECT o.operation_state,o.error_code,o.transaction_signature,o.operation_context->'attempt_history',o.operation_context ? 'signedTransaction',p.permit_state FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.lookup_table_provisioner_broadcast_permits p ON p.operation_id=o.id WHERE o.id=$1`, operation.Intent.OperationID).Scan(&state, &code, &signature, &raw, &stale, &permit); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &history); err != nil || len(history) != 1 || history[0]["transactionSignature"] != owned.Wire.TransactionSignature {
+		t.Fatalf("expired identity was not archived like Rust: %s %v", raw, err)
+	}
+	if state != "retry_wait" || code != "expired_transaction_not_observed" || signature != nil || stale || permit != "expired" {
+		t.Fatalf("expiry row %s %s %v bytes=%v permit=%s", state, code, signature, stale, permit)
+	}
+}
+
+func TestLookupStaleLeaseCannotSignOrSend(t *testing.T) {
 	pool := lookupRegisteredPool(t)
 	f := readLookupFixture(t)
 	store, operation, prepared, owned := seedLookupJournal(t, t.Context(), pool, f, sdk.Hash([32]byte{42}).String(), 1150, 1000)
-	if err := store.RecordLookupBroadcastIntent(t.Context(), operation, owned); err != nil {
+	if _, err := pool.Exec(t.Context(), `UPDATE loyal_yield.lookup_table_operations SET lease_owner='new-owner',fencing_token=fencing_token+1 WHERE id=$1`, operation.Intent.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordLookupBroadcastIntent(t.Context(), operation, owned); err == nil {
-		t.Fatal("second network intent accepted")
+	if _, err := store.PersistLookupPrepared(t.Context(), operation, prepared); !errors.Is(err, ErrStaleOwner) {
+		t.Fatalf("stale lease signed: %v", err)
 	}
-	current, err := store.LoadLookupAttempt(t.Context(), operation.Intent.OperationID)
-	if err != nil || current == nil || current.BroadcastCount != 1 || current.State != LookupUnknown {
-		t.Fatalf("durable unknown journal: %+v %v", current, err)
-	}
-	if _, err = pool.Exec(t.Context(), `UPDATE loyal_yield.lookup_table_operations SET operation_state='complete' WHERE id=$1`, operation.Intent.OperationID); err == nil {
-		t.Fatal("legacy terminalization erased unresolved packet")
-	}
-	if _, err = pool.Exec(t.Context(), `UPDATE loyal_yield.lookup_table_signed_attempts SET attempt_state='expired',history_complete=false WHERE id=$1`, owned.ID); err == nil {
-		t.Fatal("signature absence expired packet without actual history/noeffect evidence")
-	}
-	if _, err = pool.Exec(t.Context(), `UPDATE loyal_yield.lookup_table_operations SET lease_owner='new-owner',fencing_token=fencing_token+1 WHERE id=$1`, operation.Intent.OperationID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = store.PersistLookupPrepared(t.Context(), operation, prepared); !errors.Is(err, ErrStaleOwner) {
-		t.Fatalf("stale lease wrote journal: %v", err)
+	if err := store.RecordLookupSend(t.Context(), operation, owned); !errors.Is(err, ErrStaleOwner) {
+		t.Fatalf("stale lease counted a send: %v", err)
 	}
 }

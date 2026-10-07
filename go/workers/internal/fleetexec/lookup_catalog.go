@@ -158,7 +158,7 @@ func (s *Store) planLookupCatalog(ctx context.Context, c lookupCatalog, bank loo
 		if !exact || bank.authority != c.authority || bank.slot <= 0 {
 			return errors.New("lookup catalog family/bank changed")
 		}
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations o SET operation_state='cancelled',next_attempt_at=NULL,error_code='superseded_shared_market_catalog',error_detail='unsigned source catalog superseded',lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE family_id=$1 AND manifest_id IS DISTINCT FROM $2 AND operation_kind IN ('create','extend','rollover') AND (operation_state IN ('queued','retry_wait') OR operation_state='leased' AND lease_expires_at<=clock_timestamp()) AND transaction_signature IS NULL AND message_hash IS NULL AND recent_blockhash IS NULL AND last_valid_block_height IS NULL AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_signed_attempts WHERE operation_id=o.id AND attempt_state NOT IN ('reconciled','failed','expired'))`, c.familyID, c.manifestID); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations o SET operation_state='cancelled',next_attempt_at=NULL,error_code='superseded_shared_market_catalog',error_detail='unsigned source catalog superseded',lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE family_id=$1 AND manifest_id IS DISTINCT FROM $2 AND operation_kind IN ('create','extend','rollover') AND (operation_state IN ('queued','retry_wait') OR operation_state='leased' AND lease_expires_at<=clock_timestamp()) AND transaction_signature IS NULL AND message_hash IS NULL AND recent_blockhash IS NULL AND last_valid_block_height IS NULL`, c.familyID, c.manifestID); err != nil {
 			return err
 		}
 		target = 0

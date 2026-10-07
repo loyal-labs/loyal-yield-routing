@@ -12,12 +12,17 @@ import (
 	"time"
 
 	sdk "github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // LookupRPC uses one endpoint with bounded calls and no hidden retries. Query
 // credentials are supported but neither transport errors nor provider bodies
 // are rendered; redirecting a credential-bearing POST is forbidden.
-type LookupRPC struct{ adapter *RPCAdapter }
+// The embedded LandRPC is the shared send path.
+type LookupRPC struct {
+	adapter *RPCAdapter
+	*solana.LandRPC
+}
 
 func NewLookupRPC(endpoint string, deadline time.Duration) (*LookupRPC, error) {
 	u, err := url.Parse(endpoint)
@@ -29,7 +34,11 @@ func NewLookupRPC(endpoint string, deadline time.Duration) (*LookupRPC, error) {
 		return nil, err
 	}
 	a.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &LookupRPC{adapter: a}, nil
+	land, err := solana.NewLandRPC(endpoint, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return &LookupRPC{adapter: a, LandRPC: land}, nil
 }
 func (r *LookupRPC) call(ctx context.Context, out any, method string, params ...any) error {
 	if err := r.adapter.call(ctx, out, method, params...); err != nil {
@@ -50,10 +59,6 @@ func (r *LookupRPC) SignatureStatus(ctx context.Context, sig string) (SignatureS
 	}
 	return out, nil
 }
-func (r *LookupRPC) Send(ctx context.Context, wire []byte) error {
-	return r.call(ctx, nil, "sendTransaction", base64.StdEncoding.EncodeToString(wire), map[string]any{"encoding": "base64", "skipPreflight": true, "maxRetries": 0})
-}
-
 type lookupRPCAccount struct {
 	Owner      string            `json:"owner"`
 	Lamports   *uint64           `json:"lamports"`

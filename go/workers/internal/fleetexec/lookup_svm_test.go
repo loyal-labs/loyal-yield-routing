@@ -147,7 +147,7 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 		if err = svm.rpc.SimulateLookup(ctx, wire.SignedTransaction); err != nil {
 			t.Fatal(err)
 		}
-		if err = svm.rpc.Send(ctx, wire.SignedTransaction); err != nil {
+		if err = svm.rpc.SendWire(ctx, wire.SignedTransaction, true); err != nil {
 			t.Fatal(err)
 		}
 		receipt, err := svm.rpc.LookupFinalizedReceipt(ctx, wire.TransactionSignature)
@@ -214,7 +214,7 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = svm.rpc.Send(ctx, packet); err != nil {
+	if err = svm.rpc.SendWire(ctx, packet, true); err != nil {
 		t.Fatalf("actual mature readonly bank lookup: %v", err)
 	}
 	extendedIntent := intent
@@ -276,7 +276,7 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 	}
 	closed, receipt := execute(closeIntent, 2513)
 	recover(closed, receipt, true)
-	if err = svm.rpc.Send(ctx, closed.Wire.SignedTransaction); err != nil {
+	if err = svm.rpc.SendWire(ctx, closed.Wire.SignedTransaction, true); err != nil {
 		t.Fatal(err)
 	}
 	again, err := svm.rpc.LookupFinalizedReceipt(ctx, closed.Wire.TransactionSignature)

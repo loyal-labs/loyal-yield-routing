@@ -98,7 +98,7 @@ func (s *Store) refreshLookupReservation(ctx context.Context, op LookupOperation
 			return err
 		}
 		var rekeyable bool
-		if err = tx.QueryRow(ctx, `SELECT o.transaction_signature IS NULL AND o.message_hash IS NULL AND o.recent_blockhash IS NULL AND o.last_valid_block_height IS NULL AND t.create_signature IS NULL AND t.address_count=0 AND t.usable_address_count=0 AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_signed_attempts WHERE operation_id=o.id AND attempt_state NOT IN ('reconciled','failed','expired')) FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.route_lookup_tables t ON t.id=o.route_lookup_table_id WHERE o.id=$1`, op.Intent.OperationID).Scan(&rekeyable); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT o.transaction_signature IS NULL AND o.message_hash IS NULL AND o.recent_blockhash IS NULL AND o.last_valid_block_height IS NULL AND t.create_signature IS NULL AND t.address_count=0 AND t.usable_address_count=0 FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.route_lookup_tables t ON t.id=o.route_lookup_table_id WHERE o.id=$1`, op.Intent.OperationID).Scan(&rekeyable); err != nil {
 			return err
 		}
 		if !rekeyable {

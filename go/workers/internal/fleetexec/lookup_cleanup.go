@@ -29,7 +29,6 @@ func (s *Store) nextLookupCleanup(ctx context.Context, cluster string) (*lookupC
  AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_vault_bindings WHERE route_lookup_table_id=t.id AND (lifecycle_state IN ('preparing','warming','active','standby','retiring') OR rollback_until>clock_timestamp()))
  AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations WHERE route_lookup_table_id=t.id AND operation_state NOT IN ('complete','permanent_failure','cancelled'))
  AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations o WHERE route_lookup_table_id=t.id AND operation_kind IN ('deactivate','close') AND operation_state='permanent_failure' AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_terminal_repair_operations WHERE operation_id=o.id))
- AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_signed_attempts WHERE route_lookup_table_id=t.id AND attempt_state NOT IN ('reconciled','failed','expired'))
  AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_usage_leases WHERE route_lookup_table_id=t.id AND released_at IS NULL AND expires_at>clock_timestamp())
  AND NOT COALESCE((SELECT paused FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster=$1),false)
  ORDER BY t.last_verified_at NULLS FIRST,t.updated_at,t.id LIMIT 1`, cluster).Scan(&c.intent.Cluster, &c.intent.FamilyID, &c.intent.TableID, &c.intent.TableAddress, &c.intent.Authority, &c.intent.Payer, &c.intent.Generation, &c.intent.MutationEpoch, &c.shard, &c.deactivation, &c.intent.Kind, &c.intent.Prefix)
@@ -65,7 +64,7 @@ func (s *Store) queueLookupCleanup(ctx context.Context, c lookupCleanupCandidate
 			// Preserve the actual observed bank while cooldown holds. The
 			// selector orders by verification time so another eligible table
 			// can progress without inventing skipped SlotHashes entries.
-			_, err := s.pool.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables t SET last_verified_slot=$4,last_verified_at=clock_timestamp() WHERE id=$1 AND table_address=$2 AND mutation_epoch=$3 AND desired_state='deactivated' AND deactivated_slot=$5 AND address_hash=$6 AND (last_verified_slot IS NULL OR last_verified_slot<=$4) AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_signed_attempts WHERE route_lookup_table_id=t.id AND attempt_state NOT IN ('reconciled','failed','expired'))`, i.TableID, i.TableAddress, i.MutationEpoch, snapshot.Slot, c.deactivation, lookupOrderedAddressHash(i.Prefix))
+			_, err := s.pool.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables t SET last_verified_slot=$4,last_verified_at=clock_timestamp() WHERE id=$1 AND table_address=$2 AND mutation_epoch=$3 AND desired_state='deactivated' AND deactivated_slot=$5 AND address_hash=$6 AND (last_verified_slot IS NULL OR last_verified_slot<=$4)`, i.TableID, i.TableAddress, i.MutationEpoch, snapshot.Slot, c.deactivation, lookupOrderedAddressHash(i.Prefix))
 			if err != nil {
 				return 0, err
 			}

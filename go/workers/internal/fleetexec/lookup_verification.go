@@ -24,7 +24,7 @@ func (s *Store) finishLookupVerification(ctx context.Context, op LookupOperation
 			return err
 		}
 		var unsigned bool
-		if err := tx.QueryRow(ctx, `SELECT transaction_signature IS NULL AND message_hash IS NULL AND recent_blockhash IS NULL AND last_valid_block_height IS NULL AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_signed_attempts WHERE operation_id=$1 AND attempt_state NOT IN ('reconciled','failed','expired')) FROM loyal_yield.lookup_table_operations WHERE id=$1`, i.OperationID).Scan(&unsigned); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT transaction_signature IS NULL AND message_hash IS NULL AND recent_blockhash IS NULL AND last_valid_block_height IS NULL FROM loyal_yield.lookup_table_operations WHERE id=$1`, i.OperationID).Scan(&unsigned); err != nil {
 			return err
 		}
 		if !unsigned {

@@ -23,10 +23,10 @@ type lookupEffectReceipt struct {
 	TablePost uint64 `json:"table_post_lamports"`
 }
 
-// commitLookupProof resolves packet ownership before source projections in the
-// same short transaction. Terminal source flags never produce this proof.
+// commitLookupProof applies a verified finalized packet to its source
+// operation and physical table in one short transaction.
 func (s *Store) commitLookupProof(ctx context.Context, operation LookupOperation, attempt LookupAttempt, proof *lookupProof) error {
-	if proof == nil || proof.binding != lookupProofBinding(attempt) || proof.readbackSlot < attempt.SigningContextSlot || (proof.state != LookupReconciled && proof.state != LookupFailed && proof.state != LookupExpired) {
+	if proof == nil || proof.binding != lookupProofBinding(attempt) || proof.readbackSlot < attempt.SigningContextSlot || (proof.state != LookupReconciled && proof.state != LookupFailed) {
 		return errors.New("lookup terminal proof is missing or belongs to another packet")
 	}
 	var readback lookupEffectReadback
@@ -37,64 +37,48 @@ func (s *Store) commitLookupProof(ctx context.Context, operation LookupOperation
 		return errors.New("lookup readback proof identity changed")
 	}
 	var receipt lookupEffectReceipt
-	if proof.state != LookupExpired {
-		if err := json.Unmarshal(proof.receipt, &receipt); err != nil {
-			return err
-		}
+	if err := json.Unmarshal(proof.receipt, &receipt); err != nil {
+		return err
 	}
 	if receipt.Fee > math.MaxInt64 || receipt.TablePre > math.MaxInt64 || receipt.TablePost > math.MaxInt64 {
 		return errors.New("lookup actual SOL accounting exceeds durable range")
 	}
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		_, err := lookupLockSource(ctx, tx, attempt.Intent, operation.Lease)
-		if err != nil {
+		if _, err := lookupLockSource(ctx, tx, attempt.Intent, operation.Lease); err != nil {
 			return err
 		}
-		current, err := scanLookupAttempt(tx.QueryRow(ctx, `SELECT `+lookupAttemptColumns+` FROM loyal_yield.lookup_table_signed_attempts WHERE id=$1 FOR UPDATE`, attempt.ID))
-		if err != nil {
-			return err
-		}
-		if lookupProofBinding(current) != proof.binding {
-			return errors.New("lookup proof no longer matches durable packet")
-		}
-		if current.State == LookupReconciled || current.State == LookupFailed || current.State == LookupExpired {
-			return errors.New("lookup packet already resolved")
-		}
-		proofKind := "effect"
-		if proof.state == LookupFailed {
-			proofKind = "failed_receipt"
-		}
-		if proof.state == LookupExpired {
-			proofKind = "no_effect"
-		}
-		var finalized, history, height *int64
-		if proof.finalizedSlot > 0 {
-			finalized = &proof.finalizedSlot
-		}
-		if proof.historySlot > 0 {
-			history = &proof.historySlot
-		}
-		if proof.blockHeight > 0 {
-			height = &proof.blockHeight
-		}
-		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_signed_attempts SET attempt_state=$2,finalized_slot=$3,readback_slot=$4,history_context_slot=$5,history_complete=$6,observed_block_height=$7,proof_kind=$8,readback_evidence=$9,receipt_evidence=$10,last_status_checked_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1`, attempt.ID, proof.state, finalized, proof.readbackSlot, history, proof.historyComplete, height, proofKind, proof.readback, proof.receipt)
+		finalized := proof.finalizedSlot
+		return finishLookupSourceTx(ctx, tx, operation, attempt, proof, readback, receipt, &finalized)
+	})
+}
+
+// expireLookupOperation is the Rust provisioner's retry: the expired packet's
+// identity moves to operation_context.attempt_history and the operation
+// returns to retry_wait for a fresh packet.
+func (s *Store) expireLookupOperation(ctx context.Context, operation LookupOperation, attempt LookupAttempt) error {
+	const detail = "blockhash expired without the signature landing"
+	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state='retry_wait',next_attempt_at=clock_timestamp()+interval '5 seconds',error_code='expired_transaction_not_observed',error_detail=$5,
+ operation_context=jsonb_set(operation_context,'{attempt_history}',COALESCE(operation_context->'attempt_history','[]'::jsonb)||jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(
+  'fencingToken',fencing_token,'transactionSignature',transaction_signature,'messageHash',message_hash,'recentBlockhash',recent_blockhash,'lastValidBlockHeight',last_valid_block_height,
+  'estimatedFeeLamports',estimated_fee_lamports,'estimatedRentLamports',estimated_rent_lamports,'estimatedReclaimedRentLamports',operation_context->'signedExpectedReclaimedRentLamports',
+  'submittedSlot',submitted_slot,'submittedAt',submitted_at,'confirmedSlot',confirmed_slot,'confirmedAt',confirmed_at,'finalizedSlot',finalized_slot,'finalizedAt',finalized_at,
+  'reconciledSlot',reconciled_slot,'reconciledAt',reconciled_at,'archivedAt',now()))),true) - 'signedExpectedReclaimedRentLamports' - 'signedTransaction' - 'signingContextSlot' - 'broadcastCount',
+ transaction_signature=NULL,message_hash=NULL,recent_blockhash=NULL,last_valid_block_height=NULL,estimated_fee_lamports=NULL,estimated_rent_lamports=NULL,submitted_slot=NULL,submitted_at=NULL,
+ confirmed_slot=NULL,confirmed_at=NULL,finalized_slot=NULL,finalized_at=NULL,reconciled_slot=NULL,reconciled_at=NULL,completed_at=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
+ WHERE id=$1 AND transaction_signature=$2 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>clock_timestamp()`, attempt.Intent.OperationID, attempt.Wire.TransactionSignature, operation.Lease.Owner, operation.Lease.FencingToken, detail)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() != 1 {
 			return ErrStaleOwner
 		}
-		return finishLookupSourceTx(ctx, tx, operation, attempt, proof, readback, receipt, finalized)
+		_, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioner_broadcast_permits SET permit_state='expired',resolution_detail=$2,resolved_at=clock_timestamp(),updated_at=clock_timestamp() WHERE operation_id=$1 AND resolved_at IS NULL`, attempt.Intent.OperationID, detail)
+		return err
 	})
 }
 
-// Both new owned packets and exact finalized legacy packets share source effects.
-// The caller proves and locks its own immutable identity before reaching here.
 func finishLookupSourceTx(ctx context.Context, tx pgx.Tx, operation LookupOperation, attempt LookupAttempt, proof *lookupProof, readback lookupEffectReadback, receipt lookupEffectReceipt, finalized *int64) error {
-	return finishLookupSourceProjectionTx(ctx, tx, operation, attempt, proof, readback, receipt, finalized, false)
-}
-
-func finishLookupSourceProjectionTx(ctx context.Context, tx pgx.Tx, operation LookupOperation, attempt LookupAttempt, proof *lookupProof, readback lookupEffectReadback, receipt lookupEffectReceipt, finalized *int64, alreadyProjected bool) error {
 	var err error
 	i := attempt.Intent
 	rent, reclaimed := uint64(0), uint64(0)
@@ -103,38 +87,28 @@ func finishLookupSourceProjectionTx(ctx context.Context, tx pgx.Tx, operation Lo
 			if readback.Owner != lookupProgram || readback.Authority != i.Authority || readback.Absent || !lookupSameAddresses(readback.Addresses, append(append([]string{}, i.Prefix...), i.Extension...)) || readback.LastExtendedSlot >= uint64(proof.readbackSlot) {
 				return errors.New("lookup exact warmed growth proof changed")
 			}
-			if !alreadyProjected {
-				if err = lookupSourceMembership(ctx, tx, i); err != nil {
-					return err
-				}
-				for n, address := range i.Extension {
-					_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_addresses(route_lookup_table_id,address,ordinal,added_operation_id,added_slot,usable_after_slot,last_verified_slot,last_verified_at) VALUES($1,$2,$3,$4,$5::bigint,$5::bigint+1,$6,clock_timestamp())`, i.TableID, address, len(i.Prefix)+n, i.OperationID, int64(readback.LastExtendedSlot), proof.readbackSlot)
-					if err != nil {
-						return err
-					}
-				}
-				if _, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_addresses SET last_verified_slot=$2,last_verified_at=clock_timestamp() WHERE route_lookup_table_id=$1 AND last_verified_slot<=$2`, i.TableID, proof.readbackSlot); err != nil {
-					return err
-				}
-				addresses, err := json.Marshal(readback.Addresses)
+			if err = lookupSourceMembership(ctx, tx, i); err != nil {
+				return err
+			}
+			for n, address := range i.Extension {
+				_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_addresses(route_lookup_table_id,address,ordinal,added_operation_id,added_slot,usable_after_slot,last_verified_slot,last_verified_at) VALUES($1,$2,$3,$4,$5::bigint,$5::bigint+1,$6,clock_timestamp())`, i.TableID, address, len(i.Prefix)+n, i.OperationID, int64(readback.LastExtendedSlot), proof.readbackSlot)
 				if err != nil {
 					return err
 				}
-				tag, err := tx.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables SET address_count=$3,usable_address_count=$3,address_hash=$4,addresses=$5,mutation_epoch=mutation_epoch+1,last_extended_slot=$6,last_verified_slot=$7,last_verified_at=clock_timestamp(),desired_state=CASE WHEN desired_state IN ('preparing','warming') THEN 'active' ELSE desired_state END,status='usable',updated_at=clock_timestamp() WHERE id=$1 AND mutation_epoch=$2 AND (last_verified_slot IS NULL OR last_verified_slot<=$7)`, i.TableID, i.MutationEpoch, len(readback.Addresses), lookupOrderedAddressHash(readback.Addresses), addresses, int64(readback.LastExtendedSlot), proof.readbackSlot)
-				if err != nil {
-					return err
-				}
-				if tag.RowsAffected() != 1 {
-					return errors.New("lookup warmed projection is stale")
-				}
-			} else {
-				tag, err := tx.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables SET usable_address_count=address_count,last_verified_slot=$3,last_verified_at=clock_timestamp(),desired_state=CASE WHEN desired_state IN ('preparing','warming') THEN 'active' ELSE desired_state END,status='usable',updated_at=clock_timestamp() WHERE id=$1 AND mutation_epoch=$2 AND (last_verified_slot IS NULL OR last_verified_slot<=$3)`, i.TableID, i.MutationEpoch+1, proof.readbackSlot)
-				if err != nil {
-					return err
-				}
-				if tag.RowsAffected() != 1 {
-					return errors.New("legacy lookup projected bank is stale")
-				}
+			}
+			if _, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_addresses SET last_verified_slot=$2,last_verified_at=clock_timestamp() WHERE route_lookup_table_id=$1 AND last_verified_slot<=$2`, i.TableID, proof.readbackSlot); err != nil {
+				return err
+			}
+			addresses, err := json.Marshal(readback.Addresses)
+			if err != nil {
+				return err
+			}
+			tag, err := tx.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables SET address_count=$3,usable_address_count=$3,address_hash=$4,addresses=$5,mutation_epoch=mutation_epoch+1,last_extended_slot=$6,last_verified_slot=$7,last_verified_at=clock_timestamp(),desired_state=CASE WHEN desired_state IN ('preparing','warming') THEN 'active' ELSE desired_state END,status='usable',updated_at=clock_timestamp() WHERE id=$1 AND mutation_epoch=$2 AND (last_verified_slot IS NULL OR last_verified_slot<=$7)`, i.TableID, i.MutationEpoch, len(readback.Addresses), lookupOrderedAddressHash(readback.Addresses), addresses, int64(readback.LastExtendedSlot), proof.readbackSlot)
+			if err != nil {
+				return err
+			}
+			if tag.RowsAffected() != 1 {
+				return errors.New("lookup warmed projection is stale")
 			}
 			if _, err = tx.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables SET create_signature=CASE WHEN $2 IN ('create','rollover') THEN COALESCE(create_signature,$3) ELSE create_signature END,extend_signatures=CASE WHEN $4 AND NOT extend_signatures @> jsonb_build_array($3::text) THEN extend_signatures||jsonb_build_array($3::text) ELSE extend_signatures END,warmup_slot=$5::bigint+1 WHERE id=$1`, i.TableID, string(i.Kind), attempt.Wire.TransactionSignature, len(i.Extension) > 0, int64(readback.LastExtendedSlot)); err != nil {
 				return err
@@ -166,26 +140,16 @@ func finishLookupSourceProjectionTx(ctx context.Context, tx pgx.Tx, operation Lo
 		state = "permanent_failure"
 		permitState = "failed"
 	}
-	if proof.state == LookupExpired {
-		state = "retry_wait"
-		permitState = "expired"
-	}
-	// The retained Rust writer stores the current packet's actual accounting
-	// with COALESCE(new, old), not an accumulated operation history. Adoption
-	// may follow its earlier finalized write, so adding this receipt doubles
-	// fees. An expired packet has no receipt and must preserve prior accounting.
-	var actualFee, actualRent, actualReclaimed *int64
-	if proof.state != LookupExpired {
-		fee, rentValue, reclaimedValue := int64(receipt.Fee), int64(rent), int64(reclaimed)
-		actualFee, actualRent, actualReclaimed = &fee, &rentValue, &reclaimedValue
-	}
-	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state=$2,finalized_slot=COALESCE($3,finalized_slot),finalized_at=CASE WHEN $3::bigint IS NOT NULL THEN clock_timestamp() ELSE finalized_at END,reconciled_slot=CASE WHEN $2='complete' THEN $4 ELSE reconciled_slot END,reconciled_at=CASE WHEN $2='complete' THEN clock_timestamp() ELSE reconciled_at END,completed_at=CASE WHEN $2='complete' THEN clock_timestamp() ELSE completed_at END,actual_fee_lamports=COALESCE($5::bigint,actual_fee_lamports),actual_rent_lamports=COALESCE($6::bigint,actual_rent_lamports),reclaimed_rent_lamports=COALESCE($7::bigint,reclaimed_rent_lamports),transaction_signature=CASE WHEN $2='retry_wait' THEN NULL ELSE transaction_signature END,message_hash=CASE WHEN $2='retry_wait' THEN NULL ELSE message_hash END,recent_blockhash=CASE WHEN $2='retry_wait' THEN NULL ELSE recent_blockhash END,last_valid_block_height=CASE WHEN $2='retry_wait' THEN NULL ELSE last_valid_block_height END,next_attempt_at=CASE WHEN $2='retry_wait' THEN clock_timestamp()+interval '5 seconds' ELSE NULL END,lease_owner=NULL,lease_expires_at=NULL,error_code=NULL,error_detail=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$8 AND fencing_token=$9 AND lease_expires_at>clock_timestamp()`, i.OperationID, state, finalized, proof.readbackSlot, actualFee, actualRent, actualReclaimed, operation.Lease.Owner, operation.Lease.FencingToken)
+	// The Rust writer stores the current packet's actual accounting with
+	// COALESCE(new, old), not an accumulated operation history.
+	actualFee, actualRent, actualReclaimed := int64(receipt.Fee), int64(rent), int64(reclaimed)
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state=$2,finalized_slot=COALESCE($3,finalized_slot),finalized_at=CASE WHEN $3::bigint IS NOT NULL THEN clock_timestamp() ELSE finalized_at END,reconciled_slot=CASE WHEN $2='complete' THEN $4 ELSE reconciled_slot END,reconciled_at=CASE WHEN $2='complete' THEN clock_timestamp() ELSE reconciled_at END,completed_at=CASE WHEN $2='complete' THEN clock_timestamp() ELSE completed_at END,actual_fee_lamports=COALESCE($5::bigint,actual_fee_lamports),actual_rent_lamports=COALESCE($6::bigint,actual_rent_lamports),reclaimed_rent_lamports=COALESCE($7::bigint,reclaimed_rent_lamports),next_attempt_at=NULL,lease_owner=NULL,lease_expires_at=NULL,error_code=NULL,error_detail=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$8 AND fencing_token=$9 AND lease_expires_at>clock_timestamp()`, i.OperationID, state, finalized, proof.readbackSlot, actualFee, actualRent, actualReclaimed, operation.Lease.Owner, operation.Lease.FencingToken)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
 		return ErrStaleOwner
 	}
-	_, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioner_broadcast_permits SET permit_state=$2,resolution_detail='owned finalized packet and coherent effect proof',resolved_at=clock_timestamp(),updated_at=clock_timestamp() WHERE operation_id=$1 AND transaction_signature=$3 AND resolved_at IS NULL`, i.OperationID, permitState, attempt.Wire.TransactionSignature)
+	_, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioner_broadcast_permits SET permit_state=$2,resolution_detail='finalized packet and coherent effect proof',resolved_at=clock_timestamp(),updated_at=clock_timestamp() WHERE operation_id=$1 AND transaction_signature=$3 AND resolved_at IS NULL`, i.OperationID, permitState, attempt.Wire.TransactionSignature)
 	return err
 }

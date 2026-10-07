@@ -41,47 +41,38 @@ type LookupIntent struct {
 	Prefix, Extension                         []string
 }
 
-// LookupOperation is a leased source work item. Its context is retained for
-// reading the old protocol, never used as a replacement generic intent model.
+// LookupOperation is a leased source work item. A signed operation carries
+// its packet identity in the Rust columns and, when Go signed it, the exact
+// bytes in operation_context.
 type LookupOperation struct {
-	Intent                                              LookupIntent
-	State                                               string
-	Lease                                               LookupLease
-	FamilyState, FamilyKind, TableState                 string
-	ManifestID, BindingID                               *int64
-	CatalogRevisionID                                   *int64
-	Context                                             json.RawMessage
-	LegacySignature, LegacyMessageHash, LegacyBlockhash *string
-	LegacyLastValidBlockHeight                          *int64
-	PhysicalMutationEpoch                               int64
+	Intent                              LookupIntent
+	State                               string
+	Lease                               LookupLease
+	FamilyState, FamilyKind, TableState string
+	ManifestID, BindingID               *int64
+	CatalogRevisionID                   *int64
+	Context                             json.RawMessage
+	Signature, MessageHash, Blockhash   *string
+	LastValidBlockHeight                *int64
 }
 
+// Proof outcomes for one signed packet.
 type LookupAttemptState string
 
 const (
-	LookupPrepared   LookupAttemptState = "prepared"
-	LookupSubmitted  LookupAttemptState = "submitted"
-	LookupUnknown    LookupAttemptState = "unknown"
-	LookupConfirmed  LookupAttemptState = "confirmed"
-	LookupFinalized  LookupAttemptState = "finalized"
 	LookupReconciled LookupAttemptState = "reconciled"
 	LookupFailed     LookupAttemptState = "failed"
-	LookupExpired    LookupAttemptState = "expired"
 )
 
-// LookupAttempt owns one immutable signed packet alongside the source lifecycle.
-// Operation attempt_count counts source leases, so packet AttemptNumber is separate.
+// LookupAttempt is the signed packet a source operation row carries.
+// Wire.SignedTransaction is empty for a packet the Rust provisioner signed:
+// it can be resolved by its signature but never resent.
 type LookupAttempt struct {
-	ID                                                                      int64
-	AttemptNumber                                                           int
-	SourceFencingToken                                                      int64
 	SigningContextSlot                                                      int64
 	Intent                                                                  LookupIntent
 	Wire                                                                    WireIdentity
-	State                                                                   LookupAttemptState
 	BroadcastCount                                                          int
 	EstimatedFeeLamports, EstimatedRentLamports, EstimatedReclaimedLamports uint64
-	ConfirmedSlot, FinalizedSlot, ReadbackSlot                              *int64
 }
 
 // LookupSnapshot comes from a coherent finalized account/table+SlotHashes read.
@@ -122,5 +113,4 @@ type LookupChain interface {
 	LookupRent(context.Context, int) (uint64, error)
 	LookupBalance(context.Context, string) (uint64, error)
 	SimulateLookup(context.Context, []byte) error
-	Send(context.Context, []byte) error
 }

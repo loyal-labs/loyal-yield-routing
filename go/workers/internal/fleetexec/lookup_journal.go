@@ -2,6 +2,9 @@ package fleetexec
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math"
@@ -11,54 +14,39 @@ import (
 )
 
 func (s *Store) RequireLookupSchema(ctx context.Context) error {
-	var ready bool
-	err := s.pool.QueryRow(ctx, `SELECT to_regclass('loyal_yield.lookup_table_signed_attempts') IS NOT NULL
- AND to_regclass('loyal_yield.lookup_table_provisioner_broadcast_permits') IS NOT NULL
- AND to_regclass('loyal_yield.lookup_table_cluster_budget_reservations') IS NOT NULL
- AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='loyal_yield' AND table_name='lookup_table_signed_attempts' AND column_name='signing_context_slot')`).Scan(&ready)
-	if err != nil {
-		return err
-	}
-	if !ready {
-		return errors.New("registered lookup journal schema is missing")
-	}
-	return nil
+	return db.RequireTables(ctx, s.pool, "loyal_yield.lookup_table_operations", "loyal_yield.lookup_table_provisioner_broadcast_permits", "loyal_yield.lookup_table_cluster_budget_reservations")
 }
 
-const lookupAttemptColumns = `id,attempt_number,source_fencing_token,signing_context_slot,cluster,operation_id,family_id,route_lookup_table_id,
- operation_kind,table_address,authority,payer,COALESCE(recipient,''),generation,mutation_epoch,recent_slot,expected_deactivation_slot,
- prefix_addresses,extension_addresses,transaction_signature,message_hash,signed_transaction,signed_transaction_sha256,recent_blockhash,
- last_valid_block_height,attempt_state,broadcast_count,estimated_fee_lamports,estimated_rent_lamports,estimated_reclaimed_rent_lamports,
- confirmed_slot,finalized_slot,readback_slot`
+// lookupSignedContext is the part of a signed packet the Rust columns cannot
+// hold. It lives in operation_context next to signedExpectedReclaimedRentLamports.
+type lookupSignedContext struct {
+	SignedTransaction  string `json:"signedTransaction"`
+	SigningContextSlot int64  `json:"signingContextSlot"`
+	BroadcastCount     int    `json:"broadcastCount"`
+	Reclaimed          uint64 `json:"signedExpectedReclaimedRentLamports"`
+}
 
-func scanLookupAttempt(row pgx.Row) (LookupAttempt, error) {
-	var a LookupAttempt
-	var recent, deactivation *int64
-	var fee, rent, reclaimed int64
-	err := row.Scan(&a.ID, &a.AttemptNumber, &a.SourceFencingToken, &a.SigningContextSlot, &a.Intent.Cluster, &a.Intent.OperationID, &a.Intent.FamilyID, &a.Intent.TableID,
-		&a.Intent.Kind, &a.Intent.TableAddress, &a.Intent.Authority, &a.Intent.Payer, &a.Intent.Recipient, &a.Intent.Generation, &a.Intent.MutationEpoch, &recent, &deactivation,
-		&a.Intent.Prefix, &a.Intent.Extension, &a.Wire.TransactionSignature, &a.Wire.MessageHash, &a.Wire.SignedTransaction, &a.Wire.SignedTransactionHash, &a.Wire.RecentBlockhash,
-		&a.Wire.LastValidBlockHeight, &a.State, &a.BroadcastCount, &fee, &rent, &reclaimed, &a.ConfirmedSlot, &a.FinalizedSlot, &a.ReadbackSlot)
+// lookupAttemptOf reads the signed packet a source operation carries.
+func lookupAttemptOf(op LookupOperation) (LookupAttempt, error) {
+	if op.Signature == nil || op.MessageHash == nil || op.Blockhash == nil || op.LastValidBlockHeight == nil {
+		return LookupAttempt{}, errors.New("lookup signed packet identity incomplete")
+	}
+	var c lookupSignedContext
+	if err := json.Unmarshal(op.Context, &c); err != nil {
+		return LookupAttempt{}, err
+	}
+	a := LookupAttempt{Intent: op.Intent, SigningContextSlot: c.SigningContextSlot, BroadcastCount: c.BroadcastCount, EstimatedReclaimedLamports: c.Reclaimed,
+		Wire: WireIdentity{TransactionSignature: *op.Signature, MessageHash: *op.MessageHash, RecentBlockhash: *op.Blockhash, LastValidBlockHeight: *op.LastValidBlockHeight}}
+	if c.SignedTransaction == "" {
+		return a, nil
+	}
+	wire, err := base64.StdEncoding.DecodeString(c.SignedTransaction)
 	if err != nil {
 		return a, err
 	}
-	if recent != nil {
-		v := uint64(*recent)
-		a.Intent.RecentSlot = &v
-	}
-	if deactivation != nil {
-		v := uint64(*deactivation)
-		a.Intent.ExpectedDeactivationSlot = &v
-	}
-	a.EstimatedFeeLamports, a.EstimatedRentLamports, a.EstimatedReclaimedLamports = uint64(fee), uint64(rent), uint64(reclaimed)
+	sum := sha256.Sum256(wire)
+	a.Wire.SignedTransaction, a.Wire.SignedTransactionHash = wire, hex.EncodeToString(sum[:])
 	return a, proveLookupWire(a.Intent, a.Wire)
-}
-func (s *Store) LoadLookupAttempt(ctx context.Context, operation int64) (*LookupAttempt, error) {
-	a, err := scanLookupAttempt(s.pool.QueryRow(ctx, `SELECT `+lookupAttemptColumns+` FROM loyal_yield.lookup_table_signed_attempts WHERE operation_id=$1 AND attempt_state NOT IN ('reconciled','failed','expired')`, operation))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	return &a, err
 }
 
 type lookupLockedSource struct {
@@ -70,12 +58,6 @@ type lookupLockedSource struct {
 // in that order, then rechecks the live owner and fencing token. No RPC occurs
 // in this transaction. Packet ownership outlives control changes and leases.
 func lookupLockSource(ctx context.Context, tx pgx.Tx, i LookupIntent, lease LookupLease) (lookupLockedSource, error) {
-	return lookupLockSourceEpoch(ctx, tx, i, lease, i.MutationEpoch)
-}
-
-// Only finalized legacy adoption may use the separately committed physical
-// epoch. Its caller must prove exact projected membership and receipt lineage.
-func lookupLockSourceEpoch(ctx context.Context, tx pgx.Tx, i LookupIntent, lease LookupLease, physicalEpoch int64) (lookupLockedSource, error) {
 	var out lookupLockedSource
 	var cluster, authority, payer string
 	err := tx.QueryRow(ctx, `SELECT cluster,provisioning_authority,payer,desired_state,kind FROM loyal_yield.lookup_table_families WHERE id=$1 FOR UPDATE`, i.FamilyID).Scan(&cluster, &authority, &payer, &out.familyState, &out.familyKind)
@@ -92,7 +74,7 @@ func lookupLockSourceEpoch(ctx context.Context, tx pgx.Tx, i LookupIntent, lease
 	if err != nil {
 		return out, err
 	}
-	if family != i.FamilyID || tableCluster != i.Cluster || address != i.TableAddress || tableAuthority != i.Authority || tablePayer != i.Payer || generation != i.Generation || epoch != physicalEpoch {
+	if family != i.FamilyID || tableCluster != i.Cluster || address != i.TableAddress || tableAuthority != i.Authority || tablePayer != i.Payer || generation != i.Generation || epoch != i.MutationEpoch {
 		return out, errors.New("lookup physical identity/epoch changed")
 	}
 	var sourceKind string
@@ -140,33 +122,28 @@ func lookupSourceMembership(ctx context.Context, tx pgx.Tx, i LookupIntent) erro
 	return nil
 }
 
-// PersistLookupPrepared supplements the existing source signing transition.
-// A matching source budget reservation must already exist before signing. The
-// returned owned bytes, never a newly rebuilt packet, are eligible for send.
+// PersistLookupPrepared writes the signed packet onto its source operation
+// before any send: the Rust identity columns plus the exact bytes in
+// operation_context. A matching source budget reservation must already exist.
 func (s *Store) PersistLookupPrepared(ctx context.Context, operation LookupOperation, prepared LookupAttempt) (LookupAttempt, error) {
-	var out LookupAttempt
 	i := prepared.Intent
 	if operation.Intent.OperationID != i.OperationID || prepared.SigningContextSlot <= 0 || (i.RecentSlot != nil && (*i.RecentSlot > math.MaxInt64 || *i.RecentSlot > uint64(prepared.SigningContextSlot))) || (i.ExpectedDeactivationSlot != nil && *i.ExpectedDeactivationSlot > math.MaxInt64) || prepared.EstimatedFeeLamports > math.MaxInt64 || prepared.EstimatedRentLamports > math.MaxInt64 || prepared.EstimatedReclaimedLamports > math.MaxInt64 {
-		return out, errors.New("lookup prepared bank/accounting identity incomplete")
+		return prepared, errors.New("lookup prepared bank/accounting identity incomplete")
 	}
 	if err := proveLookupWire(i, prepared.Wire); err != nil {
-		return out, err
+		return prepared, err
 	}
-	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	signed, err := json.Marshal(lookupSignedContext{SignedTransaction: base64.StdEncoding.EncodeToString(prepared.Wire.SignedTransaction), SigningContextSlot: prepared.SigningContextSlot, Reclaimed: prepared.EstimatedReclaimedLamports})
+	if err != nil {
+		return prepared, err
+	}
+	err = db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		paused, err := lookupControlLock(ctx, tx, i, operation.Lease.Owner)
 		if err != nil {
 			return err
 		}
 		locked, err := lookupLockSource(ctx, tx, i, operation.Lease)
 		if err != nil {
-			return err
-		}
-		existing, err := scanLookupAttempt(tx.QueryRow(ctx, `SELECT `+lookupAttemptColumns+` FROM loyal_yield.lookup_table_signed_attempts WHERE operation_id=$1 AND attempt_state NOT IN ('reconciled','failed','expired') FOR UPDATE`, i.OperationID))
-		if err == nil {
-			out = existing
-			return nil
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if locked.state != "leased" || paused || !lookupFamilyAllows(locked.familyState, i.Kind) {
@@ -191,18 +168,14 @@ func (s *Store) PersistLookupPrepared(ctx context.Context, operation LookupOpera
 				return err
 			}
 		}
-		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state='signed',transaction_signature=$2,message_hash=$3,recent_blockhash=$4,last_valid_block_height=$5,estimated_fee_lamports=$6,estimated_rent_lamports=$7,operation_context=jsonb_set(operation_context,'{signedExpectedReclaimedRentLamports}',to_jsonb($8::bigint),true),error_code=NULL,error_detail=NULL,updated_at=clock_timestamp() WHERE id=$1 AND transaction_signature IS NULL AND message_hash IS NULL AND recent_blockhash IS NULL AND last_valid_block_height IS NULL`, i.OperationID, prepared.Wire.TransactionSignature, prepared.Wire.MessageHash, prepared.Wire.RecentBlockhash, prepared.Wire.LastValidBlockHeight, int64(prepared.EstimatedFeeLamports), int64(prepared.EstimatedRentLamports), int64(prepared.EstimatedReclaimedLamports))
+		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state='signed',transaction_signature=$2,message_hash=$3,recent_blockhash=$4,last_valid_block_height=$5,estimated_fee_lamports=$6,estimated_rent_lamports=$7,operation_context=operation_context||$8::jsonb,error_code=NULL,error_detail=NULL,updated_at=clock_timestamp() WHERE id=$1 AND transaction_signature IS NULL AND message_hash IS NULL AND recent_blockhash IS NULL AND last_valid_block_height IS NULL`, i.OperationID, prepared.Wire.TransactionSignature, prepared.Wire.MessageHash, prepared.Wire.RecentBlockhash, prepared.Wire.LastValidBlockHeight, int64(prepared.EstimatedFeeLamports), int64(prepared.EstimatedRentLamports), signed)
 		if err != nil {
 			return err
 		}
 		if tag.RowsAffected() != 1 {
 			return errors.New("lookup retained source signature requires reconciliation")
 		}
-		prefix, suffix := append([]string{}, i.Prefix...), append([]string{}, i.Extension...)
-		out, err = scanLookupAttempt(tx.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_signed_attempts(operation_id,attempt_number,source_fencing_token,signing_context_slot,cluster,family_id,route_lookup_table_id,operation_kind,table_address,authority,payer,recipient,generation,mutation_epoch,recent_slot,expected_deactivation_slot,prefix_addresses,extension_addresses,expected_prefix_hash,transaction_signature,message_hash,signed_transaction,signed_transaction_sha256,recent_blockhash,last_valid_block_height,estimated_fee_lamports,estimated_rent_lamports,estimated_reclaimed_rent_lamports)
- VALUES($1,(SELECT COALESCE(max(attempt_number),0)+1 FROM loyal_yield.lookup_table_signed_attempts WHERE operation_id=$1),$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''),$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING `+lookupAttemptColumns,
-			i.OperationID, operation.Lease.FencingToken, prepared.SigningContextSlot, i.Cluster, i.FamilyID, i.TableID, i.Kind, i.TableAddress, i.Authority, i.Payer, i.Recipient, i.Generation, i.MutationEpoch, i.RecentSlot, i.ExpectedDeactivationSlot, prefix, suffix, lookupOrderedAddressHash(prefix), prepared.Wire.TransactionSignature, prepared.Wire.MessageHash, prepared.Wire.SignedTransaction, prepared.Wire.SignedTransactionHash, prepared.Wire.RecentBlockhash, prepared.Wire.LastValidBlockHeight, int64(prepared.EstimatedFeeLamports), int64(prepared.EstimatedRentLamports), int64(prepared.EstimatedReclaimedLamports)))
-		return err
+		return nil
 	})
-	return out, err
+	return prepared, err
 }

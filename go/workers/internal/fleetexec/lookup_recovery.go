@@ -20,8 +20,6 @@ type lookupProof struct {
 	state                       LookupAttemptState
 	readbackSlot, finalizedSlot int64
 	readback, receipt           json.RawMessage
-	historySlot, blockHeight    int64
-	historyComplete             bool
 }
 type lookupRecovery struct {
 	proof *lookupProof
@@ -198,10 +196,10 @@ func lookupProofBinding(attempt LookupAttempt) string {
 	intent.Prefix = append([]string{}, intent.Prefix...)
 	intent.Extension = append([]string{}, intent.Extension...)
 	encoded, _ := json.Marshal(struct {
-		ID, SigningSlot     int64
+		SigningSlot         int64
 		Intent              LookupIntent
 		Signature, WireHash string
-	}{attempt.ID, attempt.SigningContextSlot, intent, attempt.Wire.TransactionSignature, attempt.Wire.SignedTransactionHash})
+	}{attempt.SigningContextSlot, intent, attempt.Wire.TransactionSignature, attempt.Wire.SignedTransactionHash})
 	h := sha256.Sum256(encoded)
 	return hex.EncodeToString(h[:])
 }

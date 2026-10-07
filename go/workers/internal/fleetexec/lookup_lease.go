@@ -61,11 +61,11 @@ func loadLeasedLookup(ctx context.Context, tx pgx.Tx, id int64) (LookupOperation
  o.operation_state,o.lease_owner,o.fencing_token,o.lease_expires_at,f.desired_state,f.kind,t.desired_state,o.manifest_id,o.binding_id,o.operation_context,
  o.transaction_signature,o.message_hash,o.recent_blockhash,o.last_valid_block_height,
  COALESCE((SELECT array_agg(address ORDER BY ordinal) FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id=t.id),'{}'::text[]),
- COALESCE((SELECT array_agg(address ORDER BY ordinal) FROM loyal_yield.lookup_table_operation_addresses WHERE operation_id=o.id),'{}'::text[]),t.mutation_epoch
+ COALESCE((SELECT array_agg(address ORDER BY ordinal) FROM loyal_yield.lookup_table_operation_addresses WHERE operation_id=o.id),'{}'::text[])
  FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.lookup_table_families f ON f.id=o.family_id JOIN loyal_yield.route_lookup_tables t ON t.id=o.route_lookup_table_id WHERE o.id=$1`, id).Scan(
 		&op.Intent.Cluster, &op.Intent.OperationID, &op.Intent.FamilyID, &op.Intent.TableID, &op.Intent.Kind, &op.Intent.TableAddress, &op.Intent.Authority, &op.Intent.Payer, &op.Intent.Generation, &op.Intent.MutationEpoch,
 		&op.State, &op.Lease.Owner, &op.Lease.FencingToken, &op.Lease.ExpiresAt, &op.FamilyState, &op.FamilyKind, &op.TableState, &op.ManifestID, &op.BindingID, &op.Context,
-		&op.LegacySignature, &op.LegacyMessageHash, &op.LegacyBlockhash, &op.LegacyLastValidBlockHeight, &op.Intent.Prefix, &op.Intent.Extension, &op.PhysicalMutationEpoch)
+		&op.Signature, &op.MessageHash, &op.Blockhash, &op.LastValidBlockHeight, &op.Intent.Prefix, &op.Intent.Extension)
 	if err != nil {
 		return op, err
 	}
@@ -108,7 +108,7 @@ func (s *Store) RenewLookupLease(ctx context.Context, op LookupOperation, ttl ti
 // Unsigned deferral never clears retained source signatures or owned packets.
 func (s *Store) deferLookupUnsigned(ctx context.Context, op LookupOperation, reason string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state='retry_wait',next_attempt_at=clock_timestamp()+interval '5 seconds',lease_owner=NULL,lease_expires_at=NULL,error_detail=$4,updated_at=clock_timestamp()
- WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp() AND transaction_signature IS NULL AND message_hash IS NULL AND recent_blockhash IS NULL AND last_valid_block_height IS NULL AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_signed_attempts WHERE operation_id=$1 AND attempt_state NOT IN ('reconciled','failed','expired'))`, op.Intent.OperationID, op.Lease.Owner, op.Lease.FencingToken, reason)
+ WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp() AND transaction_signature IS NULL AND message_hash IS NULL AND recent_blockhash IS NULL AND last_valid_block_height IS NULL`, op.Intent.OperationID, op.Lease.Owner, op.Lease.FencingToken, reason)
 	if err == nil && tag.RowsAffected() != 1 {
 		return ErrStaleOwner
 	}

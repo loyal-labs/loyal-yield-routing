@@ -203,7 +203,7 @@ func (s *Store) reportLookupCatalogDrift(ctx context.Context, c lookupCatalog, t
 			return errors.New("lookup drift source physical incarnation changed")
 		}
 		var pending bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations WHERE route_lookup_table_id=$1 AND operation_state NOT IN ('complete','permanent_failure','cancelled')) OR EXISTS(SELECT 1 FROM loyal_yield.lookup_table_signed_attempts WHERE route_lookup_table_id=$1 AND attempt_state NOT IN ('reconciled','failed','expired'))`, t.id).Scan(&pending); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations WHERE route_lookup_table_id=$1 AND operation_state NOT IN ('complete','permanent_failure','cancelled'))`, t.id).Scan(&pending); err != nil {
 			return err
 		}
 		if pending {

@@ -312,7 +312,7 @@ func runRetail(ctx context.Context, owner, release string) error {
 	lookupWorker, err := fleetexec.NewLookupWorker(dStore, lookupRPC, fleetexec.LookupWorkerConfig{
 		Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second,
 		TickDeadline: 20 * time.Second, PollInterval: time.Second,
-		Budget: cfg.lookup.budget, ReconcileOnly: !cfg.lookup.active,
+		Budget: cfg.lookup.budget, ReconcileOnly: !cfg.lookup.active, Facts: facts,
 		OnHealth: func(err error) {
 			if err != nil {
 				log.Print("retail lookup writer requires attention")
