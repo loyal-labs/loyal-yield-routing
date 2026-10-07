@@ -24,6 +24,22 @@ pub const RECEIPT_LEN: usize = 64;
 pub const BEGIN: &[u8; 8] = b"ONYCBEG1";
 pub const SETTLE: &[u8; 8] = b"ONYCEND1";
 pub const REPAY_DISC: [u8; 8] = [116, 174, 213, 76, 180, 53, 210, 144];
+pub const FLASH_BORROW_DISC: [u8; 8] = [135, 231, 52, 167, 7, 52, 212, 193];
+pub const FLASH_REPAY_DISC: [u8; 8] = [185, 117, 0, 203, 96, 245, 180, 186];
+pub const FLASH_KEYS: [Pubkey; 12] = [
+    EXECUTOR,
+    REPAY_KEYS[11],
+    MARKET,
+    DEBT,
+    USDC,
+    REPAY_KEYS[5],
+    REPAY_KEYS[6],
+    pubkey!("5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj"),
+    KLEND,
+    KLEND,
+    solana_program::sysvar::instructions::ID,
+    spl_token::ID,
+];
 pub const WITHDRAW_DISC: [u8; 8] = [235, 52, 119, 152, 149, 197, 20, 7];
 pub const REFRESH_RESERVE: [u8; 8] = [2, 218, 138, 235, 79, 201, 25, 102];
 pub const REFRESH_OBLIGATION: [u8; 8] = [33, 132, 147, 228, 151, 192, 72, 89];
