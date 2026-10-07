@@ -1,4 +1,6 @@
 //! Existing-policy mechanics only. Synthetic external capital is not exit proceeds.
+#[path = "settlement.rs"]
+mod settlement;
 use super::*;
 use klend_interface::helpers::{flash::flash_loan, ObligationContext, ReserveInfo};
 use solana_sdk::{
@@ -106,6 +108,35 @@ fn probe(
     ixs: &[Instruction],
     failure: Option<(usize, u32)>,
 ) -> Value {
+    probe_with_tables(
+        proof,
+        label,
+        ixs,
+        failure,
+        &[key("FyJcsUtFnzisYya2y82qSuUTTo8gm2gyc8MokSKfWnnY")],
+    )
+}
+
+fn lookup_tables(proof: &Proof, keys: &[Pubkey]) -> Vec<AddressLookupTableAccount> {
+    keys.iter()
+        .map(|address| {
+            let account = proof.svm.get_account(address).unwrap();
+            let table = AddressLookupTable::deserialize(&account.data).unwrap();
+            AddressLookupTableAccount {
+                key: *address,
+                addresses: table.addresses.to_vec(),
+            }
+        })
+        .collect()
+}
+
+fn probe_with_tables(
+    proof: &mut Proof,
+    label: &str,
+    ixs: &[Instruction],
+    failure: Option<(usize, u32)>,
+    table_keys: &[Pubkey],
+) -> Value {
     let executor = key(EXECUTOR);
     for ix in ixs {
         for a in &ix.accounts {
@@ -118,16 +149,10 @@ fn probe(
             }
         }
     }
-    let table_key = key("FyJcsUtFnzisYya2y82qSuUTTo8gm2gyc8MokSKfWnnY");
-    let table_account = proof.svm.get_account(&table_key).unwrap();
-    let table = AddressLookupTable::deserialize(&table_account.data).unwrap();
     let message = v0::Message::try_compile(
         &executor,
         ixs,
-        &[AddressLookupTableAccount {
-            key: table_key,
-            addresses: table.addresses.to_vec(),
-        }],
+        &lookup_tables(proof, table_keys),
         proof.svm.latest_blockhash(),
     )
     .unwrap();

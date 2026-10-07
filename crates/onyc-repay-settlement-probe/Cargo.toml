@@ -1,0 +1,17 @@
+[package]
+name = "onyc-repay-settlement-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Offline-only ONyc conditional settlement SBF proof; not a production program"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+no-entrypoint = []
+
+[dependencies]
+solana-program.workspace = true
+solana-system-interface.workspace = true
+spl-token = { workspace = true, features = ["no-entrypoint"] }
