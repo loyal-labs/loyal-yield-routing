@@ -38,6 +38,8 @@ type retailConfig struct {
 	jupiterBuildURL, jupiterAPIKey                     string
 	lookup                                             retailLookupConfig
 	voltrVaultID                                       int64
+	idleToleranceRaw                                   int64
+	sweepNotifier                                      *autodeposit.SweepNotifier
 }
 
 // Configuration is scoped to this capability. Legacy/background writer flags
@@ -153,6 +155,25 @@ func loadRetailConfig() (retailConfig, error) {
 	}
 	if err := cfg.fleetConfig().Validate(); err != nil {
 		return cfg, retailError("fleet configuration", err)
+	}
+	// The TS executor's name and default ($25): idle vault residue a direct
+	// deposit leaves beside it. Deleted once fleet deposits what it redeems
+	// and the existing residue is drained.
+	cfg.idleToleranceRaw = 25_000_000
+	if value := strings.TrimSpace(os.Getenv("AUTODEPOSIT_IDLE_TOLERANCE_RAW")); value != "" {
+		if cfg.idleToleranceRaw, err = strconv.ParseInt(value, 10, 64); err != nil || cfg.idleToleranceRaw < 0 {
+			return cfg, errors.New("AUTODEPOSIT_IDLE_TOLERANCE_RAW must be a non-negative raw USDC amount")
+		}
+	}
+	// The app's failed-sweep push. Both credentials, or neither (disabled).
+	endpoint, secret := optionalCredential("RETAIL_SWEEP_NOTIFY_ENDPOINT"), optionalCredential("RETAIL_SWEEP_NOTIFY_SECRET")
+	if (endpoint == "") != (secret == "") {
+		return cfg, errors.New("RETAIL_SWEEP_NOTIFY_ENDPOINT and RETAIL_SWEEP_NOTIFY_SECRET must both be set or both be absent")
+	}
+	if endpoint != "" {
+		if cfg.sweepNotifier, err = autodeposit.NewSweepNotifier(endpoint, secret); err != nil {
+			return cfg, errors.New("RETAIL_SWEEP_NOTIFY_ENDPOINT must be an absolute HTTPS URL without user info")
+		}
 	}
 	return cfg, nil
 }
@@ -368,7 +389,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Autodeposit wires", err)
 	}
-	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: chain, Wires: wires, Facts: facts})
+	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: chain, Wires: wires, Facts: facts, IdleToleranceRaw: cfg.idleToleranceRaw})
 	if err != nil {
 		return retailError("Autodeposit controller", err)
 	}
@@ -408,9 +429,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("lookup planner", err)
 	}
-	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, Facts: facts, OnError: func(error) { log.Print("retail autodeposit tick failed") }, OnAlert: func(autodeposit.ExecutorFailureAlert) {
-		log.Print("retail autodeposit execution requires attention")
-	}})
+	aWorker, err := autodeposit.NewWorker(autodeposit.WorkerDependencies{Store: aStore, Executor: controller, Facts: facts, FeePayer: controller, Notifier: cfg.sweepNotifier})
 	if err != nil {
 		return retailError("Autodeposit worker", err)
 	}

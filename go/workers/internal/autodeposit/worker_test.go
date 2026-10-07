@@ -6,6 +6,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // TestDepositPlanJSONMatchesLegacyExecutor pins the frozen plan's wire shape:
@@ -129,7 +132,7 @@ func TestWorkerDispatchKeepsRecoveryFirstAndClassifiesOutcomes(t *testing.T) {
 		results: []ExecutorResult{ResultCompleted, ResultRecoveryPending, ResultUnknown},
 		errs:    []error{nil, nil, errors.New("rpc connection reset")},
 	}
-	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor, Facts: testFacts()})
+	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor, Facts: testFacts(), FeePayer: fundedPayer{}})
 	if err != nil {
 		t.Fatalf("build worker: %v", err)
 	}
@@ -148,7 +151,7 @@ func TestWorkerDispatchKeepsRecoveryFirstAndClassifiesOutcomes(t *testing.T) {
 
 	// An unknown result cannot prove finished work or healthy execution.
 	zeroExecutor := &scriptedExecutor{results: []ExecutorResult{ResultUnknown}}
-	worker, err = NewWorker(WorkerDependencies{Store: &Store{}, Executor: zeroExecutor, Facts: testFacts()})
+	worker, err = NewWorker(WorkerDependencies{Store: &Store{}, Executor: zeroExecutor, Facts: testFacts(), FeePayer: fundedPayer{}})
 	if err != nil {
 		t.Fatalf("rebuild worker: %v", err)
 	}
@@ -167,7 +170,7 @@ func TestWorkerDispatchRetainsDecisionsAndRecoveryErrors(t *testing.T) {
 		results: []ExecutorResult{ResultDeferred, ResultRecoveryPending, ResultNotActionable, ResultNoop, ResultDependencyUnavailable, "future_outcome"},
 		errs:    []error{errors.New("allowance unknown"), errors.New("ownership lost")},
 	}
-	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor, Facts: testFacts()})
+	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor, Facts: testFacts(), FeePayer: fundedPayer{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,5 +181,99 @@ func TestWorkerDispatchRetainsDecisionsAndRecoveryErrors(t *testing.T) {
 	}
 	if len(alerts) != 2 || alerts[0].Code != "autodeposit_dependency_unavailable" || !alerts[0].SelfRecovering || alerts[1].Code != "autodeposit_executor_failed" {
 		t.Fatalf("alerts %+v", alerts)
+	}
+}
+
+// Root cause: the Go port collapsed every Autodeposit alert and tick failure
+// into one generic log line with no fact, so a failing family showed only as
+// stale progress. Each now counts loyal_family_failed_total under the Rust
+// trigger's OperationalError code for the same meaning.
+func TestWorkerCountsStableFailureCodes(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	facts := engine.NewFacts(registry)
+	executor := &scriptedExecutor{results: []ExecutorResult{ResultClaimTransitionFailed, ResultKaminoTopUpFailed, ResultDeferred, ResultClaimTransitionFailed}}
+	worker, err := NewWorker(WorkerDependencies{Store: &Store{}, Executor: executor, Facts: facts, FeePayer: fundedPayer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outcome ExecutorOutcome
+	worker.dispatch(context.Background(), []ExecutableTarget{{TargetID: 1}, {TargetID: 2}, {TargetID: 3}, {TargetID: 4}}, &outcome)
+	if _, err := worker.Tick(context.Background()); err == nil {
+		t.Fatal("a pass without a database succeeded")
+	}
+	for code, want := range map[string]float64{"autodeposit_claim_transition_failed": 2, "kamino_top_up_failed": 1, "autodeposit_projection_failed": 1, "yield_persistence_failed": 0} {
+		if got := failedCount(t, registry, code); got != want {
+			t.Errorf("failed{code=%s} = %v, want %v", code, got, want)
+		}
+	}
+	if total := failedCount(t, registry, ""); total != 0 {
+		t.Errorf("a failure was counted without a code: %v", total)
+	}
+}
+
+// fundedPayer is a fee payer that can always pay.
+type fundedPayer struct{}
+
+func (fundedPayer) FeePayerLamports(context.Context) (string, uint64, error) {
+	return "itest-fee-payer", 1_000_000_000, nil
+}
+
+// failedCount reads loyal_family_failed_total{family="autodeposit",code}.
+func failedCount(t *testing.T, registry *prometheus.Registry, code string) float64 {
+	t.Helper()
+	return metricValue(t, registry, "loyal_family_failed_total", map[string]string{"family": "autodeposit", "code": code})
+}
+
+// metricValue reads one counter or gauge series; absent reads as 0.
+func metricValue(t *testing.T, registry *prometheus.Registry, name string, labels map[string]string) float64 {
+	t.Helper()
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+	series:
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if want, named := labels[label.GetName()]; named && want != label.GetValue() {
+					continue series
+				}
+			}
+			if metric.GetGauge() != nil {
+				return metric.GetGauge().GetValue()
+			}
+			return metric.GetCounter().GetValue()
+		}
+	}
+	return 0
+}
+
+// LoyalFamilyProgressStale must mean something: a pass marks progress only
+// when nothing it was due to do is left undone. A noop (a capped allowance)
+// or a drained vault is nothing to do; a deferral, a held claim or an
+// exhausted payer is undone work.
+func TestOnlySettledPassesMarkProgress(t *testing.T) {
+	for _, c := range []struct {
+		results []ExecutorResult
+		payer   bool
+		settled bool
+	}{
+		{nil, false, true},
+		{[]ExecutorResult{ResultCompleted, ResultNoop, ResultNotActionable}, false, true},
+		{[]ExecutorResult{ResultCompleted, ResultDeferred}, false, false},
+		{[]ExecutorResult{ResultRecoveryPending}, false, false},
+		{nil, true, false},
+	} {
+		report := TickReport{FeePayerExhausted: c.payer}
+		for _, result := range c.results {
+			report.Outcome.ExecutionsAttempted++
+			report.Outcome.RecordExecutorResult(result)
+		}
+		if report.settled() != c.settled {
+			t.Errorf("results %v payer exhausted %v: settled %v", c.results, c.payer, report.settled())
+		}
 	}
 }

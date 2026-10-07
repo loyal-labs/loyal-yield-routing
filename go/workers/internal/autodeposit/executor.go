@@ -1,7 +1,5 @@
 package autodeposit
 
-import "fmt"
-
 // ExecutorResult is the family's durable execution outcome, independent of process status.
 type ExecutorResult string
 
@@ -16,10 +14,12 @@ const (
 	ResultKaminoTopUpFailed      ExecutorResult = "kamino_top_up_failed"
 	ResultYieldPersistenceFailed ExecutorResult = "yield_persistence_failed"
 	ResultPreflightBlocked       ExecutorResult = "preflight_blocked"
-	ResultFeePayerExhausted      ExecutorResult = "fee_payer_exhausted"
 	ResultTransactionEffectAmbig ExecutorResult = "transaction_effect_ambiguous"
 	ResultIdleHandoffFailed      ExecutorResult = "idle_handoff_failed"
 	ResultDependencyUnavailable  ExecutorResult = "dependency_unavailable"
+	// ResultClaimTransitionFailed is a claim that could not be released; no
+	// funds moved and no yield was involved.
+	ResultClaimTransitionFailed ExecutorResult = "claim_transition_failed"
 )
 
 // ExecutorFailureAlert is the operator-facing meaning of an execution outcome.
@@ -61,14 +61,6 @@ func ExecutorFailureAlertFor(result ExecutorResult) *ExecutorFailureAlert {
 			Summary:   "autodeposit route preflight blocked before any funds moved",
 			Retryable: true,
 		}
-	// Names the remedy rather than the symptom: the answer is to send SOL.
-	case ResultFeePayerExhausted:
-		return &ExecutorFailureAlert{
-			Code:      "autodeposit_fee_payer_exhausted",
-			Operation: "fund_autodeposit_fee_payer",
-			Summary:   "autodeposit fee payer is out of SOL; top up the delegated signer",
-			Retryable: true,
-		}
 	case ResultTransactionEffectAmbig:
 		return &ExecutorFailureAlert{
 			Code:      "autodeposit_transaction_effect_ambiguous",
@@ -89,6 +81,14 @@ func ExecutorFailureAlertFor(result ExecutorResult) *ExecutorFailureAlert {
 			Summary:        "autodeposit dependency returned a transient server error; execution will retry",
 			Retryable:      true,
 			SelfRecovering: true,
+		}
+	// The Rust trigger's code for a failed claim/release transition.
+	case ResultClaimTransitionFailed:
+		return &ExecutorFailureAlert{
+			Code:      "autodeposit_claim_transition_failed",
+			Operation: "release_autodeposit_claim",
+			Summary:   "autodeposit claim could not be released before any funds moved",
+			Retryable: true,
 		}
 	case ResultNotActionable, ResultCompleted, ResultDeferred, ResultRecoveryPending, ResultNoop:
 		return nil
@@ -168,7 +168,3 @@ const (
 	StaleRequestedSlotSeconds = 15 * 60
 	RequestedSlotTimeoutError = "Autodeposit request timed out before worker selection."
 )
-
-func (a ExecutorFailureAlert) String() string {
-	return fmt.Sprintf("%s (%s)", a.Code, a.Operation)
-}

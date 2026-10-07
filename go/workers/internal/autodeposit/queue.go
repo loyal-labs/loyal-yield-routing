@@ -235,7 +235,8 @@ func (s *Store) loadFreshTargets(ctx context.Context, limit int64, hintedSlotIDs
 	rows, err := s.pool.Query(ctx, `
 SELECT
     target.id AS target_id,
-    slot.id AS scheduled_slot_id
+    slot.id AS scheduled_slot_id,
+    target.wallet
 FROM loyal_yield.balance_sweep_scheduled_slots AS slot
 JOIN loyal_yield.balance_sweep_targets AS target
   ON target.id = slot.target_id
@@ -305,7 +306,7 @@ LIMIT $1`, limit, USDCMint, hintedSlotIDs)
 	targets := make([]ExecutableTarget, 0, len(hintedSlotIDs))
 	for rows.Next() {
 		var target ExecutableTarget
-		if err := rows.Scan(&target.TargetID, &target.ScheduledSlotID); err != nil {
+		if err := rows.Scan(&target.TargetID, &target.ScheduledSlotID, &target.Wallet); err != nil {
 			return nil, fmt.Errorf("scan fresh autodeposit target: %w", err)
 		}
 		targets = append(targets, target)

@@ -55,32 +55,3 @@ func TestDispatchOrderFromFixture(t *testing.T) {
 		})
 	}
 }
-
-func TestSlotHintQueueIsBoundedDeduplicatedAndFIFO(t *testing.T) {
-	queue := NewSlotHintQueue(3)
-	queue.Push(11)
-	queue.Push(12)
-	queue.Push(11)
-	queue.Push(13)
-	if got := queue.Drain(2); !reflect.DeepEqual(got, []int64{11, 12}) {
-		t.Fatalf("drained %v, want the first two arrivals", got)
-	}
-	queue.Push(14)
-	queue.Push(15)
-	if got := queue.Drain(4); !reflect.DeepEqual(got, []int64{13, 14, 15}) {
-		t.Fatalf("drained %v after eviction, want remaining arrivals in order", got)
-	}
-	if queue.Len() != 0 {
-		t.Fatalf("queue still holds %d hints after a full drain", queue.Len())
-	}
-	if got := queue.Drain(2); len(got) != 0 {
-		t.Fatalf("empty queue drained %v", got)
-	}
-	// Realtime wakeup slot ids are strictly positive; anything else is a payload
-	// defect, not a hint.
-	queue.Push(0)
-	queue.Push(-7)
-	if queue.Len() != 0 {
-		t.Fatalf("non-positive slot ids entered the hint queue: %v", queue.Drain(2))
-	}
-}

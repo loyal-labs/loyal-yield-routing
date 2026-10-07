@@ -25,6 +25,8 @@ type Chain interface {
 	// missing or malformed account is an error; zero requires an observed
 	// initialized token account with the expected wallet or vault authority.
 	ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, authority string) (int64, error)
+	// ConfirmedLamports reads one account's lamports; an absent account has 0.
+	ConfirmedLamports(ctx context.Context, address string) (uint64, error)
 	// RemainingDelegationAllowanceRaw reads the recurring delegation's unused
 	// authorization against the frozen identity. ErrAllowanceUnknown
 	// distinguishes "cannot read it" from "it is exhausted"; unknown never
@@ -50,6 +52,9 @@ type Chain interface {
 	// It is the post-confirm position amount finalization publishes.
 	ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute) (int64, int64, error)
 }
+
+// ErrTokenAccountAbsent reports a token account that does not exist (yet).
+var ErrTokenAccountAbsent = errors.New("required autodeposit token account is absent")
 
 // ErrAllowanceUnknown reports that the delegated allowance could not be read.
 // The controller defers instead of treating the unknown as exhaustion.
@@ -111,13 +116,13 @@ func (c *RPCChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, a
 	if tokenAccount == "" {
 		return 0, errors.New("token account address is required")
 	}
-	_, accounts, err := c.rpc.GetMultipleAccounts(ctx, []string{tokenAccount}, 1)
+	_, accounts, err := c.rpc.GetMultipleAccountsWithOptional(ctx, []string{tokenAccount}, 1, tokenAccount)
 	if err != nil {
 		return 0, fmt.Errorf("read autodeposit token account %s: %w", tokenAccount, err)
 	}
 	account := accounts[0]
 	if account.Owner == "" {
-		return 0, errors.New("required autodeposit token account is absent")
+		return 0, ErrTokenAccountAbsent
 	}
 
 	if account.Owner != splTokenID || account.Executable || len(account.Data) != splTokenAccountLength || base58Key(account.Data[:32]) != USDCMint || base58Key(account.Data[32:64]) != authority || authority == "" || account.Data[108] != 1 {
@@ -229,6 +234,14 @@ func (c *RPCChain) ReadAccountsWithOptional(ctx context.Context, addresses []str
 		return 0, nil, err
 	}
 	return c.rpc.GetMultipleAccountsWithOptional(ctx, addresses, slot, optional...)
+}
+
+func (c *RPCChain) ConfirmedLamports(ctx context.Context, address string) (uint64, error) {
+	_, accounts, err := c.ReadAccountsWithOptional(ctx, []string{address}, address)
+	if err != nil {
+		return 0, err
+	}
+	return accounts[0].Lamports, nil
 }
 
 // SimulateExact simulates the persisted wire's exact bytes with signature

@@ -121,6 +121,8 @@ func NewSweepWireBuilder(executor ed25519.PrivateKey, read AccountReader) (*Swee
 	}, nil
 }
 
+func (b *SweepWireBuilder) FeePayer() string { return b.delegate.String() }
+
 // wireAmount renders the frozen plan amount as the wire's u64 field.
 func wireAmount(plan DepositPlan) (uint64, error) {
 	if plan.AmountRaw <= 0 {

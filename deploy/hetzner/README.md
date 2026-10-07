@@ -55,7 +55,7 @@ held through a transaction pooler belongs to whichever client the pooler
 hands the session to next. Credentials by unit:
 
 - `loyal-observer`: `HELIUS_API_KEY`, `SOLANA_RPC_URL`, `NEON_DATABASE_URL`, `OBSERVER_APPS_DATABASE_URL`, `TIMESCALEDB_URL`
-- `loyal-retail`: `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`, `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR`, `RETAIL_FEE_PAYER_KEYPAIR`. Add `RETAIL_LOOKUP_MANAGER_KEYPAIR` only for active lookup mode.
+- `loyal-retail`: `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`, `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR`, `RETAIL_FEE_PAYER_KEYPAIR`. Add `RETAIL_LOOKUP_MANAGER_KEYPAIR` only for active lookup mode. When the unit writes Autodeposit, add `RETAIL_SWEEP_NOTIFY_ENDPOINT` and `RETAIL_SWEEP_NOTIFY_SECRET` (the app's failed-sweep push; the Rust/TS `SOLANA_WEEK_NOTIFY_ENDPOINT` and `SOLANA_WEEK_NOTIFY_SECRET`) in a drop-in, both or neither, as the unit's comment shows. A missing `LoadCredentialEncrypted=` file fails the unit (243/CREDENTIALS), so these optional credentials never go in the unit itself.
 - `loyal-backyard`: `BACKYARD_DATABASE_URL`, `BACKYARD_SOLANA_RPC_URL`, `BACKYARD_POLICY_KEYPAIR`, `BACKYARD_TIMESCALE_DATABASE_URL`, `JUPITER_API_KEY`. Its selector mode and canary entry go in `/etc/loyal/loyal-backyard.env`.
 - Alertmanager: `telegram_bot_token`
 - Alertmanager: `heartbeat_url`, the external dead man's switch that the Watchdog alert pings. Not wired yet: until it exists the heartbeat receiver is empty, and nothing pages if the whole host or monitoring stack is down.
@@ -141,12 +141,23 @@ The alerts are:
 |---|---|
 | LoyalFamilyProgressStale | No completed work for about 3m (observer), 10m (autodeposit, fleet) or 30m (multiply, lookup, backyard). Restarts do not reset this clock |
 | LoyalFamilyFailing | At least 3 terminal failures with one code in 15m, sustained for 5m |
+| LoyalAutodepositOverdue | A selected Autodeposit claim, or a slot blocked by vault idle above `AUTODEPOSIT_IDLE_TOLERANCE_RAW`, is over 1h old |
+| LoyalFeePayerLow | A fee payer has been below 0.55 SOL for 5m (warning) |
+| LoyalFeePayerExhausted | A fee payer is below 0.05 SOL: Autodeposit starts nothing |
 | LoyalInflightStuck | Work in flight with no landed or failed outcome for 3m, twice the blockhash expiry |
 | LoyalWorkerDown | A Go unit that systemd is running does not serve `/metrics` for 2m |
 | LoyalUnitDown | Any `loyal-*` unit is `failed`, or stuck `activating`, for 2m (in practice Rust units, since Go units restart forever) |
 | LoyalUnitRestartLoop | Any `loyal-*` unit restarts more than 3 times in 15m |
 | LoyalMonitoringDown | node_exporter, Prometheus or Alertmanager is not scrapeable for 2m |
 | Watchdog | Always firing. It goes to the heartbeat receiver, and the external switch pages when it stops |
+
+Known Autodeposit gaps:
+
+- The fee payer is read once per pass. A pass that sets up many new vaults
+  can spend it below 0.05 SOL partway through; the next pass stops.
+- A target blocked at route preflight is released, not deferred with a
+  marker, so `LoyalAutodepositOverdue` does not see it. This matches Rust's
+  overdue check; only the `autodeposit_preflight_blocked` code reports it.
 
 A family whose Go process does not report facts yet stays at progress 0 and
 pages after its grace. Enable a Go unit only after its families emit facts.

@@ -34,6 +34,28 @@ groups:
         annotations:
           summary: "{{ $labels.family }} failed {{ $value | humanize }} times with {{ $labels.code }} in 15m"
 
+      # The oldest deposit Autodeposit owes: a selected claim, or a slot idle
+      # custody has blocked since its first deferral (Rust's overdue clocks).
+      - alert: LoyalAutodepositOverdue
+        expr: loyal_autodeposit_oldest_due_lot_age_seconds > 3600
+        labels: {severity: page}
+        annotations:
+          summary: "autodeposit has owed a deposit for {{ $value | humanizeDuration }}"
+
+      # The payer of every Autodeposit wire, read every pass. Below 0.55 SOL
+      # about twelve hours of observed burn remain; below 0.05 SOL nothing starts.
+      - alert: LoyalFeePayerLow
+        expr: loyal_fee_payer_balance_lamports < 550e6
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "fee payer {{ $labels.payer }} is below 0.55 SOL; top it up"
+      - alert: LoyalFeePayerExhausted
+        expr: loyal_fee_payer_balance_lamports < 50e6
+        labels: {severity: page}
+        annotations:
+          summary: "fee payer {{ $labels.payer }} is out of SOL and Autodeposit has stopped; top it up"
+
       # land() makes every signed operation terminal by confirmation or by
       # block height passing last_valid_block_height (~150 blocks, 60-90s).
       # Work in flight for twice that with no terminal outcome is stuck.

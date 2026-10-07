@@ -308,6 +308,8 @@ type scriptedControllerChain struct {
 	observations map[string]AttemptObservation
 	receipts     map[string]ReceiptEvidence
 	positions    map[string][2]int64
+	// lamports scripts account balances; an unscripted payer holds one SOL.
+	lamports     map[string]uint64
 	simulateErr  error
 	broadcastErr error
 	// The scripted cluster: sent signatures, the last one asked about, and the
@@ -320,9 +322,16 @@ type scriptedControllerChain struct {
 func (s *scriptedControllerChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, authority string) (int64, error) {
 	amount, known := s.balances[tokenAccount]
 	if !known {
-		return 0, errors.New("scripted token account is not observed")
+		return 0, ErrTokenAccountAbsent
 	}
 	return amount, nil
+}
+
+func (s *scriptedControllerChain) ConfirmedLamports(_ context.Context, address string) (uint64, error) {
+	if lamports, scripted := s.lamports[address]; scripted {
+		return lamports, nil
+	}
+	return 1_000_000_000, nil
 }
 
 func (s *scriptedControllerChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegation string, identity DelegationIdentity) (int64, error) {
@@ -424,6 +433,8 @@ func (s *scriptedControllerWires) BuildTopUp(ctx context.Context, request TopUpW
 		SignedTransactionSHA256: wireSHA256("dG9wdXAtd2lyZQ=="), RecentBlockhash: request.RecentBlockhash,
 		LastValidBlockHeight: request.LastValidBlockHeight}, nil
 }
+
+func (s *scriptedControllerWires) FeePayer() string { return "itest-fee-payer" }
 
 func (s *scriptedControllerWires) ProveTopUpWire(plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
 	return s.proofError

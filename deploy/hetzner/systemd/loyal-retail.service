@@ -40,6 +40,14 @@ Environment=RETAIL_TIMESCALE_SCHEMA=kamino
 # BACKYARD_VOLTR_FLEET_VAULT_ID are set, and signs it only when the delegate
 # is the route guardian. Active lookup mode also
 # needs LoadCredentialEncrypted=RETAIL_LOOKUP_MANAGER_KEYPAIR in a drop-in.
+# AUTODEPOSIT_IDLE_TOLERANCE_RAW (raw USDC, default 25000000) is the vault
+# idle residue a direct autodeposit leaves beside it, as in the TS executor.
+# The app's failed-sweep push (Rust/TS SOLANA_WEEK_NOTIFY_*) is optional; with
+# autodeposit in RETAIL_FAMILIES add both in
+# /etc/systemd/system/loyal-retail.service.d/sweep-notify.conf:
+#   [Service]
+#   LoadCredentialEncrypted=RETAIL_SWEEP_NOTIFY_ENDPOINT:/etc/credstore.encrypted/loyal-retail/RETAIL_SWEEP_NOTIFY_ENDPOINT
+#   LoadCredentialEncrypted=RETAIL_SWEEP_NOTIFY_SECRET:/etc/credstore.encrypted/loyal-retail/RETAIL_SWEEP_NOTIFY_SECRET
 EnvironmentFile=/etc/loyal/loyal-retail.env
 
 DynamicUser=yes

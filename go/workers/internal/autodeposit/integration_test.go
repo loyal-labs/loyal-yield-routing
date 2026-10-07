@@ -344,7 +344,7 @@ VALUES ($1, 'itest-wallet', 'itest-wallet-usdc', 'itest-wallet-usdc', 9000000, $
 	}
 
 	executor := &scriptedExecutor{results: []ExecutorResult{ResultNoop}}
-	worker, err := NewWorker(WorkerDependencies{Store: store, Executor: executor, Facts: testFacts()})
+	worker, err := NewWorker(WorkerDependencies{Store: store, Executor: executor, Facts: testFacts(), FeePayer: fundedPayer{}})
 	if err != nil {
 		t.Fatalf("build worker: %v", err)
 	}
