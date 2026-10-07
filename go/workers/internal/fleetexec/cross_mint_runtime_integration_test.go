@@ -476,7 +476,9 @@ func TestCrossMintRuntimeExpiryPublishesConcreteNoEffectOnlyAfterKnownAnchorAndL
 			}
 			l = runtimeClaim(t, r, pool)
 			if mode == "late_processed" {
-				status.sequence = []SignatureStatus{status.status, {Found: true, Slot: 1018, ContextSlot: 1019, BlockHeight: 5001, Err: "processed error"}}
+				// The landing classifier reads the chain; the custody proof's
+				// late recheck is the next status read.
+				status.sequence = []SignatureStatus{{Found: true, Slot: 1018, ContextSlot: 1019, BlockHeight: 5001, Err: "processed error"}}
 			}
 			if mode == "external_restoration" {
 				history := r.history.(addressHistory)

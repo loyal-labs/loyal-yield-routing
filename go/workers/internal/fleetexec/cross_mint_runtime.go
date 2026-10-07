@@ -183,22 +183,23 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 	if l.Submission.State == StateReconciliationPending {
 		return r.reconcile(workCtx, l)
 	}
-	status, err := r.status.SignatureStatus(workCtx, l.Submission.Signature)
+	// One height-first classification, shared with land(); expiry still
+	// needs the custody proof before the leg may go terminal.
+	out, err := solana.Observe(workCtx, r.chain, r.attempt(l))
 	if err != nil {
 		return err
 	}
-	if status.Found {
-		if status.Finalized && status.Err == "" {
-			return r.store.markCrossMintFinalized(workCtx, l, status.Slot)
-		}
-		if status.Finalized && status.Err != "" {
-			return r.hold(workCtx, l, "finalized_failure_requires_manual_custody_proof", errors.New(status.Err))
-		}
+	switch {
+	case out.Kind == solana.Landed:
+		return r.store.markCrossMintFinalized(workCtx, l, int64(out.Slot))
+	case out.Kind == solana.Failed && out.Commitment == solana.Finalized:
+		return r.hold(workCtx, l, "finalized_failure_requires_manual_custody_proof", errors.New(out.Err))
+	case out.Kind == solana.Failed:
 		return r.store.deferCrossMintStatus(workCtx, l, nil, nil, "signature_seen_below_finalized", false)
-	}
-	if status.BlockHeight > l.Submission.LastValidBlockHeight {
+	case out.Kind == solana.Expired:
 		if l.Submission.EffectCheckSlot == nil || l.Submission.ExpiryObservedBlockHeight == nil {
-			return r.store.deferCrossMintStatus(workCtx, l, &status.ContextSlot, &status.BlockHeight, "expiry_requires_finalized_custody_and_history", true)
+			slot, height := int64(out.ContextSlot), int64(out.BlockHeight)
+			return r.store.deferCrossMintStatus(workCtx, l, &slot, &height, "expiry_requires_finalized_custody_and_history", true)
 		}
 		proofOwner := crossMintRecovery{store: r.store, accounts: r.accounts, history: r.history, status: r.status}
 		proof, e := proofOwner.inspect(workCtx, l.Submission, *l.Submission.EffectCheckSlot)
@@ -250,15 +251,16 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 	return r.land(workCtx, ctx, l, &m)
 }
 
+func (r *CrossMintRuntime) attempt(l SubmissionLease) solana.Attempt {
+	return solana.Attempt{Wire: l.Submission.SignedTransaction, Signature: l.Submission.Signature,
+		LastValidBlockHeight: uint64(l.Submission.LastValidBlockHeight), Sends: l.Submission.BroadcastCount, Required: solana.Finalized}
+}
+
 // land resends the leg's exact bytes until they finalize or expire. The first
 // send of an unsent leg is recorded with its full custody recheck; later sends
 // only count. If the lease window ends first, the next claim lands again.
 func (r *CrossMintRuntime) land(workCtx, ctx context.Context, l SubmissionLease, first *CrossMintMovement) error {
-	out, err := solana.Land(workCtx, r.chain, solana.Attempt{
-		Wire: l.Submission.SignedTransaction, Signature: l.Submission.Signature,
-		LastValidBlockHeight: uint64(l.Submission.LastValidBlockHeight), Sends: l.Submission.BroadcastCount,
-		Required: solana.Finalized,
-	}, resendEvery, func(sendCtx context.Context) error {
+	out, err := solana.Land(workCtx, r.chain, r.attempt(l), resendEvery, func(sendCtx context.Context) error {
 		if first != nil {
 			m := *first
 			first = nil

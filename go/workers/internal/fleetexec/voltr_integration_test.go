@@ -47,6 +47,10 @@ func TestVoltrLegPersistsRustRowsAndLandsThroughTheSharedPath(t *testing.T) {
 	if err != nil || planned == nil {
 		t.Fatal(planned, err)
 	}
+	// Claims are cluster-wide; earlier runs against this fixture must not win.
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='superseded',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,terminal_reason='newer_opportunity_published' WHERE cluster=$1 AND execution_plan->>'kind'='voltr_kamino' AND opportunity_state IN ('revalidate','ready','leased')`, r.Cluster); err != nil {
+		t.Fatal(err)
+	}
 	planner, err := fleet.NewStoreFromPool(pool)
 	if err != nil {
 		t.Fatal(err)
