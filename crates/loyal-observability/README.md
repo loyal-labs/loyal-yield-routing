@@ -80,7 +80,7 @@ Initialization must replace the binary's existing `tracing_subscriber::fmt().ini
 use loyal_observability::init_from_env;
 
 fn main() -> anyhow::Result<()> {
-    let observability = init_from_env("loyal-yield-orchestrator")?;
+    let observability = init_from_env("loyal-yield-realtime")?;
 
     // Keep the guard alive until shutdown.
     run_service(&observability)?;

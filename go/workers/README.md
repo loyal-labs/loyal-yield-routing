@@ -7,9 +7,9 @@ is accepted and later merge/activation is authorized. See
 One module composes observer, retail engine and separately credentialed Backyard
 engine. The initial source-preserving imports retain existing schemas and tests.
 KLend instruction builders and the Earn domain application are Go; their byte
-and row parity with the retained Rust code is pinned by goldens the Rust code
-generates (`testdata/klend`, `testdata/earn`). Rust ABI/SVM proof remains
-authoritative.
+and row parity with the retired Rust workers is pinned by recorded goldens
+(`testdata/klend`, `testdata/earn`). The Squads SVM proof in
+`crates/squads-test-harness` remains authoritative for policy execution.
 
 Run `make verify` for formatting, vet, race tests and the three binary builds.
 Use `GOTOOLCHAIN=local`; the language baseline is Go 1.25.1 and branch CI uses
@@ -94,10 +94,14 @@ lease, amount and process-lifetime behavior; there is no workflow framework.
 
 Disposable SQL verification uses `scripts/workers-v2-fixture.py`, with
 `WORKERS_V2_DISPOSABLE=1` and a password-free loopback `workers_v2` bootstrap
-database. It resolves the actual migration registry and pinned Apps baseline;
-the production-specific 0071 data activation and ledger entry are excluded.
-Branch CI provides actual PostgreSQL 17 and Timescale. No migration executable
-is packaged in the worker image, and tests never apply schema to production.
+database. It applies `migrations/yield` and `migrations/timescale` over the
+pinned Apps baseline; the production-specific 0071 data activation and ledger
+entry are excluded. Branch CI provides actual PostgreSQL 17 and Timescale.
+Tests never apply schema to production.
+
+`cmd/loyal-migrate` is the production runner (`-db yield|timescale status|up`).
+It keeps the ledger the retired Rust runners wrote: version, name and the
+SHA-256 of the file bytes. `status` is read-only and fails on drift.
 
 Health is the four family facts on `/metrics` (`internal/engine/facts.go`);
 alert rules live in `deploy/hetzner/monitoring/`. There is no readiness

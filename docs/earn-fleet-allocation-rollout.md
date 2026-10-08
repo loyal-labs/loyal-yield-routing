@@ -28,7 +28,7 @@ from a local environment name. The DDL batch has a five-second lock timeout
 and a 30-second statement timeout. Both entrypoints verify the table's
 columns, check constraints and primary key before recording success, and
 verify them again when the ledger is already current. Run
-`yield-migrations --check` after applying and confirm version 86's name and
+`loyal-migrate -db yield status` after applying and confirm version 86's name and
 checksum.
 
 The recorder reads each vault's latest complete snapshot through the 0085

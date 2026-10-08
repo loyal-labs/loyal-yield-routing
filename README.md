@@ -29,60 +29,27 @@ bun run build
 bun run lint
 ```
 
-Use the mounted 1Password env file for local non-critical secrets. Store the
-delegated yield router signer as `YIELD_ROUTER_KEYPAIR`, using a hex
-encoded private key. The orchestrator accepts either a 32-byte private seed or a
-64-byte Solana keypair encoded as hex, and exposes
-`yield_router_keypair_from_env()` so transaction code can load the signer
-without writing key material to disk or logs.
+Use the mounted 1Password env file for local non-critical secrets.
 
-## Squads Policy Monitor
+## Workers and migrations
 
-Run the Helius Squads policy monitor with the Neon-backed sink:
+The workers run on the Go engine in `go/workers` (see its README and
+`deploy/hetzner`). The only Rust service still deployed is
+`loyal-yield-realtime`, built by `Dockerfile.light-workers`.
 
-```bash
-op run --env-file=.env.1password -- sh -c 'cargo run -p loyal-squads-policy-monitor -- --postgres-url "$NEON_DATABASE_URL"'
-```
-
-The monitor also reads `NEON_DATABASE_URL` directly when `--postgres-url` is omitted.
-
-`NEON_DATABASE_URL` is the Yield Neon environment boundary. Mainnet and devnet
-deployments should point this single variable at their branch-specific Neon
-connection string; `loyal_yield` tables are not partitioned or queried by a
-database `cluster` column. Solana cluster arguments still select RPC and chain
-targets for monitors and action construction.
-
-For monitor SQLx validation against Neon, set `DATABASE_URL` from the same
-direct Neon URL. Avoid the pooled `-pooler` URL for these tests because SQLx
-prepared statements need a stable backend connection.
+SQL migrations live in `migrations/yield` (Neon, `NEON_DATABASE_URL`) and
+`migrations/timescale` (`TIMESCALEDB_URL`). `go/workers/cmd/loyal-migrate`
+records them in `loyal_yield.schema_migrations` and
+`loyal.timescale_schema_migrations` with each file's SHA-256:
 
 ```bash
-op run --env-file=.env.1password -- sh -c 'DATABASE_URL="$NEON_DATABASE_URL" cargo test -p loyal-squads-policy-monitor'
+op run --env-file=.env.1password -- sh -c 'bun run yield:migrate:check'
+op run --env-file=.env.1password -- sh -c 'bun run yield:migrate'
 ```
 
-## Loyal Timescale Migrations
-
-Kamino market data and Loyal telemetry live in the separate Timescale database.
-Its schema is managed by the Rust SQLx migration runner in
-`crates/loyal-timescale-migrations`.
-
-```bash
-op run --env-file=.env.1password -- sh -c 'bun run timescale:migrate'
-```
-
-Use `bun run timescale:migrate:check` in the same wrapper to verify that no
-migrations are pending.
-
-The runner reads `TIMESCALEDB_URL` from 1Password, applies checked-in SQL files
-under `crates/loyal-timescale-migrations/migrations`, and records applied
-versions in `loyal.timescale_schema_migrations`.
-
-Production and staging share the physical TimescaleDB for Kamino market data,
-but balance-sweep ATA telemetry is split inside that database. Set
-`BALANCE_SWEEP_ATA_STREAM=production` for production workers and
-`BALANCE_SWEEP_ATA_STREAM=staging` for staging workers. The selector is
-constrained by the Rust client and maps to the `loyal_prod` or `loyal_staging`
-ATA stream; do not replace it with arbitrary table or schema names.
+`status` (the `:check` scripts) is read-only and fails on checksum drift;
+`timescale:migrate` and `timescale:migrate:check` do the same for Timescale.
+Applied migration files are immutable.
 
 ## Squads Tests
 

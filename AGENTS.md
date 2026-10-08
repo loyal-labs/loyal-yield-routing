@@ -22,11 +22,11 @@ Keep shell variable expansion inside the `sh -c` subprocess so `op run` injects 
 
 ## Worker Deploys
 
-The Render background workers use prebuilt GHCR images instead of Render Docker builds. Keep them pinned. Build and push worker images with the `worker-images` GitHub Actions workflow, which publishes immutable `sha-<commit>` tags under `ghcr.io/loyal-labs/loyal-yield-routing`.
+The workers run on the Go engine in `go/workers`, deployed to Hetzner from `deploy/hetzner`. The Rust worker crates, their images and the Render Blueprint are retired.
 
-LaserStream-heavy monitors share `Dockerfile.laserstream-workers` / `laserstream-workers`: `loyal-kamino-reserve-monitor` and `loyal-balance-sweep-ata-monitor` stay separate Render services with separate commands. Lightweight SQL/background workers use `Dockerfile.light-workers` / `light-workers`, including `loyal-balance-sweep-ata-projector`.
+`loyal-yield-realtime` is the one Rust service still on Render. `Dockerfile.light-workers` builds it and the `realtime-image` workflow publishes immutable `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` tags on main. Render pulls the private image with the `loyal-ghcr` registry credential; keep the service pinned to an exact tag.
 
-Render pulls the private GHCR images with the `loyal-ghcr` registry credential configured in Render. Do not switch these workers back to `runtime: docker` or add worker `dockerfilePath` deploys for normal releases. See `docs/render-worker-images.md` for the live project/environment IDs and the current private-image Blueprint validation caveat.
+SQL migrations live in `migrations/yield` and `migrations/timescale`; apply them with `go/workers/cmd/loyal-migrate` and never edit an applied file.
 
 ## Architecture
 
