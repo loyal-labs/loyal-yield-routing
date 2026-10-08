@@ -19,6 +19,9 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 )
 
+// FarmsProgram owns Kamino obligation farm user states.
+const FarmsProgram = farmsProgram
+
 const (
 	farmsProgram = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
 	altProgram   = "AddressLookupTab1e1111111111111111111111111"
@@ -217,13 +220,6 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if err != nil {
 		return out, "wrap_policy", err
 	}
-	// Static program identities participate in v1 requirements hashing. The
-	// final wire carries compute-budget instructions; their data values do not
-	// change manifest identity, but omitting the program would change it.
-	manifest, err := buildRouteALTManifest(input, policies.settings, policies.accounts, r.signer, append(computeBudgetInstructions(uint32(r.computeLimit), 0), body...), nil, true)
-	if err != nil {
-		return out, "alt_manifest", err
-	}
 	tables, err := r.store.LoadReusableLookupTables(ctx, cluster, lease.VaultID, evidence.Slot, requiredLookupTableAddresses(body))
 	if err != nil {
 		return out, "lookup_tables", err
@@ -233,12 +229,18 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "lookup_tables", err
 	}
 	out.Tables = tables
-	blockhash, lastValidBlockHeight, err := r.rpc.LatestBlockhash(ctx, evidence.Slot)
+	// Finalized, as Rust compiles every route; see finalizedBlockhash. The
+	// evidence slot is confirmed, so it cannot floor a finalized read.
+	blockhash, lastValidBlockHeight, err := r.rpc.finalizedBlockhash(ctx, 0)
 	if err != nil {
 		return out, "blockhash", err
 	}
 	out.LastValidBlockHeight = lastValidBlockHeight
 	out.FeePayer = r.feePayer(ctx, cluster, lease, evidence.Slot, !input.setup())
+	manifest, err := sameMintRouteALTManifest(input, policies.settings, lease.PolicyAccount, lease.SetupPolicyAccount, out.FeePayer, body)
+	if err != nil {
+		return out, "alt_manifest", err
+	}
 	preview, missing, err := compileV0Transaction(out.FeePayer, blockhash, append(computeBudgetInstructions(uint32(r.computeLimit), 0), body...), tables, 1, r.computeLimit)
 	if err != nil {
 		return out, "compile", err
@@ -398,6 +400,21 @@ func wrapSameMintRoute(route []RouteInstruction, signer string, vaultIndex uint8
 		next++
 	}
 	return body, used, nil
+}
+
+// sameMintRouteALTManifest is the requirements manifest Rust records for a
+// same-mint route (fleet-worker lib.rs build_route_execution_plan, resolved
+// at :8038): the route's own instructions, without the compute-budget
+// instructions the final wire adds, paid by the route's selected fee payer,
+// and typed by same_mint_outer_lookup_table_requirements (:18844), which
+// names the route policy and the vault's setup policy. Membership follows the
+// instructions, so the setup policy enters only when init runs under it.
+func sameMintRouteALTManifest(input KaminoSameMintRouteRequest, settings, routePolicy, setupPolicy, feePayer string, body []RouteInstruction) (ALTManifest, error) {
+	policies := []string{routePolicy}
+	if setupPolicy != "" && setupPolicy != routePolicy {
+		policies = append(policies, setupPolicy)
+	}
+	return buildRouteALTManifest(input, settings, policies, feePayer, body, nil, true)
 }
 
 // shadowSeen remembers (opportunity, fencing_token) pairs the shadow already
@@ -731,55 +748,77 @@ const obligationLength = 3344
 func absent(a Account) bool { return a.Owner == "" && a.Lamports == 0 }
 
 func decodeRouteReserve(account Account, vault string) (decodedRoutePosition, error) {
+	position, err := DecodeReserveIdentity(account)
+	if err != nil {
+		return decodedRoutePosition{}, err
+	}
+	if position, err = DeriveVaultReserveAccounts(position, vault); err != nil {
+		return decodedRoutePosition{}, err
+	}
+	return decodedRoutePosition{Position: position, Obligation: position.Obligation, FarmUser: position.ObligationFarmUserState}, nil
+}
+
+// DecodeReserveIdentity reads a KLend reserve's account identities: market,
+// mints, supplies, token program, oracles and collateral farm (Rust
+// decode_kamino_reserve_summary). Vault-derived fields stay empty.
+func DecodeReserveIdentity(account Account) (KaminoPositionAccounts, error) {
 	if account.Owner != KLendProgram || len(account.Data) != reserveLength || !bytes.Equal(account.Data[:8], reserveDiscriminator[:]) {
-		return decodedRoutePosition{}, fmt.Errorf("reserve %s has invalid owner or data", account.Address)
+		return KaminoPositionAccounts{}, fmt.Errorf("reserve %s has invalid owner or data", account.Address)
 	}
 	key := func(offset int) string { return encodeBase58(account.Data[offset : offset+32]) }
-	market := key(32)
-	farm := key(64)
-	if farm == "11111111111111111111111111111111" {
-		farm = ""
-	}
-	position := KaminoPositionAccounts{Reserve: account.Address, Market: market, LiquidityMint: key(128), CollateralMint: key(2560), LiquiditySupply: key(160), CollateralSupply: key(2600), LiquidityTokenProgram: key(408), PythOracle: key(5224), SwitchboardPriceOracle: key(5160), SwitchboardTWAPOracle: key(5192), ScopePrices: key(5112), ReserveFarmState: farm}
-	for _, field := range []*string{&position.PythOracle, &position.SwitchboardPriceOracle, &position.SwitchboardTWAPOracle, &position.ScopePrices} {
+	position := KaminoPositionAccounts{Reserve: account.Address, Market: key(32), LiquidityMint: key(128), CollateralMint: key(2560), LiquiditySupply: key(160), CollateralSupply: key(2600), LiquidityTokenProgram: key(408), PythOracle: key(5224), SwitchboardPriceOracle: key(5160), SwitchboardTWAPOracle: key(5192), ScopePrices: key(5112), ReserveFarmState: key(64)}
+	for _, field := range []*string{&position.PythOracle, &position.SwitchboardPriceOracle, &position.SwitchboardTWAPOracle, &position.ScopePrices, &position.ReserveFarmState} {
 		if *field == "11111111111111111111111111111111" {
 			*field = ""
 		}
 	}
+	return position, nil
+}
+
+// DeriveVaultReserveAccounts fills the vault's accounts in a decoded
+// reserve's market: market authority, vanilla obligation, liquidity ATA under
+// the reserve's own token program, and the obligation's collateral farm user.
+func DeriveVaultReserveAccounts(position KaminoPositionAccounts, vault string) (KaminoPositionAccounts, error) {
 	program, _ := solana.PublicKeyFromBase58(KLendProgram)
-	marketKey, _ := solana.PublicKeyFromBase58(market)
+	marketKey, err := solana.PublicKeyFromBase58(position.Market)
+	if err != nil {
+		return KaminoPositionAccounts{}, err
+	}
 	vaultKey, err := solana.PublicKeyFromBase58(vault)
 	if err != nil {
-		return decodedRoutePosition{}, err
+		return KaminoPositionAccounts{}, err
 	}
 	marketAuthority, _, err := solana.FindProgramAddress([][]byte{[]byte("lma"), marketKey[:]}, program)
 	if err != nil {
-		return decodedRoutePosition{}, err
+		return KaminoPositionAccounts{}, err
 	}
 	zero := solana.PublicKey{}
 	obligation, _, err := solana.FindProgramAddress([][]byte{{0}, {0}, vaultKey[:], marketKey[:], zero[:], zero[:]}, program)
 	if err != nil {
-		return decodedRoutePosition{}, err
+		return KaminoPositionAccounts{}, err
 	}
 	mint, _ := solana.PublicKeyFromBase58(position.LiquidityMint)
 	tokenProgram, _ := solana.PublicKeyFromBase58(position.LiquidityTokenProgram)
 	associated, _ := solana.PublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
 	ata, _, err := solana.FindProgramAddress([][]byte{vaultKey[:], tokenProgram[:], mint[:]}, associated)
 	if err != nil {
-		return decodedRoutePosition{}, err
+		return KaminoPositionAccounts{}, err
 	}
 	position.MarketAuthority, position.Obligation, position.VaultLiquidityATA = marketAuthority.String(), obligation.String(), ata.String()
-	result := decodedRoutePosition{Position: position, Obligation: obligation.String()}
-	if farm != "" {
-		farmKey, _ := solana.PublicKeyFromBase58(farm)
-		farmsKey, _ := solana.PublicKeyFromBase58(farmsProgram)
-		user, _, e := solana.FindProgramAddress([][]byte{[]byte("user"), farmKey[:], obligation[:]}, farmsKey)
-		if e != nil {
-			return decodedRoutePosition{}, e
+	position.ObligationFarmUserState = ""
+	if position.ReserveFarmState != "" {
+		farmKey, err := solana.PublicKeyFromBase58(position.ReserveFarmState)
+		if err != nil {
+			return KaminoPositionAccounts{}, err
 		}
-		result.FarmUser, result.Position.ObligationFarmUserState = user.String(), user.String()
+		farmsKey, _ := solana.PublicKeyFromBase58(farmsProgram)
+		user, _, err := solana.FindProgramAddress([][]byte{[]byte("user"), farmKey[:], obligation[:]}, farmsKey)
+		if err != nil {
+			return KaminoPositionAccounts{}, err
+		}
+		position.ObligationFarmUserState = user.String()
 	}
-	return result, nil
+	return position, nil
 }
 
 func decodeObligation(account Account, expectedMarket, expectedOwner, expectedDeposit string, position *KaminoPositionAccounts) (uint64, error) {

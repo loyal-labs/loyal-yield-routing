@@ -475,6 +475,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	if body, err = json.Marshal(wire); err != nil {
 		t.Fatal(err)
 	}
+	confirmedHead := unique("confirmed-head-blockhash")
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/build" {
 			w.Header().Set("Content-Type", "application/json")
@@ -496,6 +497,29 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 			t.Errorf("SVM transport: %v", err)
 			http.Error(w, "SVM transport failed", 500)
 			return
+		}
+		if request.Method == "getLatestBlockhash" {
+			var config struct {
+				Commitment string `json:"commitment"`
+			}
+			if len(request.Params) > 0 {
+				_ = json.Unmarshal(request.Params[0], &config)
+			}
+			if config.Commitment != "finalized" {
+				// The production RPC is load balanced: a confirmed blockhash
+				// comes from a backend ahead of the one serving the next
+				// simulation or fee quote, which has not seen it. Only the
+				// finalized blockhash is known to every backend.
+				var envelope map[string]any
+				if json.Unmarshal(response, &envelope) == nil {
+					if result, ok := envelope["result"].(map[string]any); ok {
+						if value, ok := result["value"].(map[string]any); ok {
+							value["blockhash"] = confirmedHead
+							response, _ = json.Marshal(envelope)
+						}
+					}
+				}
+			}
 		}
 		if request.Method == "sendTransaction" {
 			bank.sends.Add(1)

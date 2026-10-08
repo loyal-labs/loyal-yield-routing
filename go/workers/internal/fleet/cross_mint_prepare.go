@@ -828,7 +828,7 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 
 func (r *Revalidator) compileCrossMintIndependentLeg(ctx context.Context, q CrossMintPreparationRequest, instructions []RouteInstruction, tables []LookupTable, slot int64) (RoutePreparation, int64, []string, error) {
 	var out RoutePreparation
-	blockhash, height, err := r.rpc.latestBlockhash(ctx, slot, "finalized")
+	blockhash, height, err := r.rpc.finalizedBlockhash(ctx, slot)
 	if err != nil {
 		return out, 0, nil, err
 	}

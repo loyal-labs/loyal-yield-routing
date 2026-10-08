@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -112,7 +112,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	for {
 		err := w.Tick(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Print("fleetexec tick failed")
+			slog.Error("fleetexec tick failed", "error", fleet.LogErrorText(err))
 		}
 		select {
 		case <-ctx.Done():
@@ -142,8 +142,9 @@ func (w *Worker) Tick(ctx context.Context) error {
 				defer w.wg.Done()
 				defer w.landing.Add(-1)
 				if err := w.handleLease(ctx, lease); err != nil && !errors.Is(err, ErrStaleOwner) && !errors.Is(err, context.Canceled) {
-					// Errors can carry RPC detail; the row itself holds the state.
-					log.Print("fleetexec submission handling failed")
+					// ErrorText strips the credential-bearing RPC URL; the row
+					// itself holds the state.
+					slog.Error("fleetexec submission handling failed", "submissionId", lease.Submission.ID, "error", fleet.LogErrorText(err))
 				}
 			}(lease)
 		}
@@ -155,7 +156,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	w.config.Facts.Inflight(engine.FamilyFleet, inflight)
 	w.config.Facts.Progress(engine.FamilyFleet)
 	if err := w.executeVoltr(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		log.Print("fleetexec voltr admission failed")
+		slog.Error("fleetexec voltr admission failed", "error", fleet.LogErrorText(err))
 	}
 	if w.fresh == nil {
 		return nil

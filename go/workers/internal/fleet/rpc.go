@@ -122,14 +122,32 @@ func (c *RPCClient) call(ctx context.Context, method string, params []any, outpu
 	return last
 }
 
+// LatestBlockhash is a confirmed blockhash at or after minimumSlot. Only the
+// Voltr manager build uses it, as Rust voltr.rs does.
 func (c *RPCClient) LatestBlockhash(ctx context.Context, minimumSlot int64) (string, int64, error) {
-	return c.latestBlockhash(ctx, minimumSlot, "confirmed")
+	return c.latestBlockhash(ctx, map[string]any{"commitment": "confirmed", "minContextSlot": minimumSlot}, minimumSlot)
 }
 
-func (c *RPCClient) latestBlockhash(ctx context.Context, minimumSlot int64, commitment string) (string, int64, error) {
-	if commitment != "confirmed" && commitment != "finalized" {
-		return "", 0, errors.New("invalid blockhash commitment")
+// finalizedBlockhash is the blockhash every fleet route is compiled,
+// simulated and priced with, as Rust prepares routes (fleet-worker lib.rs
+// 14319-14326, 46997c76). The RPC is load balanced: a confirmed blockhash from
+// one backend is often unknown to the backend that serves the next simulation
+// or getFeeForMessage (BlockhashNotFound, null fee); a finalized one is known
+// to all of them. minimumFinalizedSlot floors the read only when the caller's
+// evidence is itself finalized; zero sends no minContextSlot, because a
+// confirmed evidence slot is ahead of every finalized bank.
+func (c *RPCClient) finalizedBlockhash(ctx context.Context, minimumFinalizedSlot int64) (string, int64, error) {
+	if minimumFinalizedSlot < 0 {
+		return "", 0, errors.New("invalid finalized blockhash floor")
 	}
+	config := map[string]any{"commitment": "finalized"}
+	if minimumFinalizedSlot > 0 {
+		config["minContextSlot"] = minimumFinalizedSlot
+	}
+	return c.latestBlockhash(ctx, config, minimumFinalizedSlot)
+}
+
+func (c *RPCClient) latestBlockhash(ctx context.Context, config map[string]any, minimumSlot int64) (string, int64, error) {
 	var result struct {
 		Context struct {
 			Slot int64 `json:"slot"`
@@ -139,11 +157,11 @@ func (c *RPCClient) latestBlockhash(ctx context.Context, minimumSlot int64, comm
 			LastValidBlockHeight int64  `json:"lastValidBlockHeight"`
 		} `json:"value"`
 	}
-	if err := c.call(ctx, "getLatestBlockhash", []any{map[string]any{"commitment": commitment, "minContextSlot": minimumSlot}}, &result); err != nil {
+	if err := c.call(ctx, "getLatestBlockhash", []any{config}, &result); err != nil {
 		return "", 0, err
 	}
 	if result.Context.Slot < minimumSlot || result.Value.Blockhash == "" || result.Value.LastValidBlockHeight <= 0 {
-		return "", 0, fmt.Errorf("incoherent confirmed blockhash response")
+		return "", 0, fmt.Errorf("incoherent %v blockhash response", config["commitment"])
 	}
 	return result.Value.Blockhash, result.Value.LastValidBlockHeight, nil
 }
@@ -250,6 +268,12 @@ func (c *RPCClient) ConfirmedSlot(ctx context.Context) (int64, error) {
 
 func (c *RPCClient) ConfirmedAccounts(ctx context.Context, addresses []string, minimumSlot int64) (int64, []Account, error) {
 	return c.accounts(ctx, addresses, minimumSlot, "confirmed", false)
+}
+
+// ConfirmedAccountsAllowingAbsent is one coherent confirmed batch in which a
+// null account is returned as Account{Address} rather than an error.
+func (c *RPCClient) ConfirmedAccountsAllowingAbsent(ctx context.Context, addresses []string, minimumSlot int64) (int64, []Account, error) {
+	return c.accounts(ctx, addresses, minimumSlot, "confirmed", true)
 }
 
 func (c *RPCClient) FinalizedAccounts(ctx context.Context, addresses []string, minimumSlot int64) (int64, []Account, error) {

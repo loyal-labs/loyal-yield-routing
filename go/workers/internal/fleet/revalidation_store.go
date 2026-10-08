@@ -367,19 +367,34 @@ ORDER BY route_table.table_address`, cluster, vaultID, minimumSlot, requiredAddr
 	return result, nil
 }
 
+// RefreshCapacityEpoch is the planner's telemetry advance, Rust
+// refresh_target_capacity_from_market_epoch (loyal-yield-store
+// fleet_orchestration/capacity.rs:150-195). The verified market epoch is
+// routinely older than a frontier an executor already advanced from fresher
+// RPC, so an older reserve is a no-op for that reserve, never a failed
+// planning cycle.
 func (s *Store) RefreshCapacityEpoch(ctx context.Context, cluster string, epoch ImmutableMarketEpoch) error {
 	for _, reserve := range epoch.Reserves {
 		if !reserve.TargetEligible || !isEarnStableMint(reserve.LiquidityMint) {
 			continue
 		}
-		if err := s.RefreshTargetCapacity(ctx, cluster, reserve.Reserve, reserve.LiquidityMint, reserve.TotalSupplyUSDMicros, reserve.Slot); err != nil {
+		if err := s.refreshTargetCapacity(ctx, cluster, reserve.Reserve, reserve.LiquidityMint, reserve.TotalSupplyUSDMicros, reserve.Slot, true); err != nil {
 			return fmt.Errorf("refresh target capacity %s: %w", reserve.Reserve, err)
 		}
 	}
 	return nil
 }
 
+// RefreshTargetCapacity is the executor's admission observation, Rust
+// observe_target_capacity: its observation was just read for this route, so
+// one older than the durable frontier is an error.
 func (s *Store) RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error {
+	return s.refreshTargetCapacity(ctx, cluster, reserve, mint, supply, slot, false)
+}
+
+// olderIsNoop selects the planner contract: an observation older than the
+// durable frontier rolls back without releasing any reservation.
+func (s *Store) refreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64, olderIsNoop bool) error {
 	if s == nil || s.pool == nil || cluster == "" || reserve == "" || mint == "" || supply < 0 || slot <= 0 {
 		return errors.New("invalid target capacity observation")
 	}
@@ -404,6 +419,9 @@ func (s *Store) RefreshTargetCapacity(ctx context.Context, cluster, reserve, min
 		return err
 	}
 	if slot < durableSlot {
+		if olderIsNoop {
+			return nil
+		}
 		return errors.New("target capacity observation is older than durable telemetry")
 	}
 	if slot == durableSlot && (supply != durableSupply || maximum != durableMaximum) {
@@ -826,7 +844,16 @@ func lockWaitingALTIdentity(ctx context.Context, tx pgx.Tx, lease RevalidationLe
 	if pubkey != lease.VaultPubkey || index != int16(lease.VaultIndex) {
 		return errors.New("ALT manifest vault identity changed")
 	}
+	// The vault's setup policy is bound to the vault exactly like its route
+	// policy: a route that opens a target obligation runs init under it, and
+	// Rust names it in every route manifest (fleet-worker lib.rs
+	// same_mint_outer_lookup_table_requirements and
+	// policy_lookup_table_manifest). The route_policies row check below still
+	// proves each named policy belongs to this vault.
 	policies := map[string]bool{lease.PolicyAccount: true}
+	if lease.SetupPolicyAccount != "" {
+		policies[lease.SetupPolicyAccount] = true
+	}
 	if lease.RouteKind == "cross_mint_jupiter" {
 		var plan crossMintPlan
 		if err := json.Unmarshal(lease.ExecutionPlan, &plan); err != nil || plan.Bindings.Settings != settings || plan.Bindings.VaultPubkey != pubkey || plan.Bindings.VaultIndex != lease.VaultIndex || plan.Bindings.Withdraw.PolicyAccount != lease.PolicyAccount {

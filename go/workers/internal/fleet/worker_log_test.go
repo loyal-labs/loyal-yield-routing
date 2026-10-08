@@ -1,8 +1,19 @@
 package fleet
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/url"
+	"os"
+	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestRejectionCountsSummarizesFleetWithoutVaultIDs(t *testing.T) {
@@ -25,5 +36,29 @@ func TestRejectionCountsSummarizesFleetWithoutVaultIDs(t *testing.T) {
 	encoded, err = json.Marshal(rejectionCounts(nil))
 	if err != nil || string(encoded) != "{}" {
 		t.Fatalf("empty fleet summary: %s error=%v", encoded, err)
+	}
+}
+
+type failingEpochSource struct{ err error }
+
+func (f failingEpochSource) LoadImmutableMarketEpoch(context.Context) (ImmutableMarketEpoch, error) {
+	return ImmutableMarketEpoch{}, f.err
+}
+
+// A failed planning cycle names its cause. The one secret an error can carry,
+// the RPC URL with its API key, is reduced to the operation and cause.
+func TestPlanningCycleFailureLogsItsCauseWithoutTheRPCURL(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	cause := &url.Error{Op: "Post", URL: "https://rpc.example/?api-key=SECRET", Err: errors.New("dial tcp: connection refused")}
+	w := &Worker{config: Config{Mode: ModeShadow}, marketEvidence: failingEpochSource{fmt.Errorf("load market epoch: %w", cause)}, facts: engine.NewFacts(prometheus.NewRegistry())}
+	w.runtimeCycle(context.Background())
+	out := buf.String()
+	if !strings.Contains(out, "kamino_fleet_planner_cycle_failed") || !strings.Contains(out, "dial tcp: connection refused") {
+		t.Fatalf("planning failure logged without its cause: %s", out)
+	}
+	if strings.Contains(out, "SECRET") {
+		t.Fatalf("planning failure log leaked the RPC credential: %s", out)
 	}
 }

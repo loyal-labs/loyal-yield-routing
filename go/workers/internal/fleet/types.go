@@ -214,6 +214,10 @@ const submissionTerminalStates = `('reconciled','expired','failed')`
 
 var earnStableMints = []string{CashMint, USDGMint, PYUSDMint, USDCMint, USDTMint, USDSMint}
 
+// EarnStableMints is the canonical Earn registry in Rust EarnUniverse order
+// (CASH, USDG, PYUSD, USDC, USDT, USDS).
+func EarnStableMints() []string { return append([]string(nil), earnStableMints...) }
+
 type CrossMintEarnPolicyBinding struct {
 	PolicyAccount     string `json:"policy_account"`
 	ObservedSlot      uint64 `json:"observed_slot"`

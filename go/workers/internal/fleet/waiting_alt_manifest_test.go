@@ -108,7 +108,11 @@ func TestWaitingALTUsesCompleteTypedVectorsAndDistinctOrderContracts(t *testing.
 	}
 }
 
-func TestSameMintALTManifestIncludesActualStaticBudgetProgram(t *testing.T) {
+// A manifest taken over compute-budget instructions (Rust cross-mint
+// preflight, cross_mint.rs:2944-2955) hashes the static budget program but not
+// its data values. The same-mint manifest is taken before the budget is added;
+// see TestSameMintManifestMatchesRustSetupPolicyFingerprint.
+func TestALTManifestHashesStaticBudgetProgramNotItsValues(t *testing.T) {
 	input := KaminoSameMintRouteRequest{Vault: manifestKey(81), Source: KaminoPositionAccounts{Reserve: manifestKey(5)}}
 	instructions := []RouteInstruction{{Program: KLendProgram, Accounts: []InstructionAccount{{input.Vault, false, true}, {manifestKey(82), false, false}, {input.Source.Reserve, false, true}}}}
 	build := func(ixs []RouteInstruction) ALTManifest {

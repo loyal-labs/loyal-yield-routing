@@ -463,6 +463,17 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err := executor.SetFreshRevalidator(revalidator); err != nil {
 		return retailError("fleet fresh execution binding", err)
 	}
+	// Rust's reconciler refreshed every managed vault's positions on this
+	// cadence (render.yaml: --concurrency 64 --position-sweep-interval-seconds
+	// 300); the sweep matches the planner's routing universe.
+	sweepMints := cConfig.EnabledStableMints
+	if len(sweepMints) == 0 {
+		sweepMints = fleet.EarnStableMints()
+	}
+	positionSweep, err := fleetexec.NewPositionSweep(fleetexec.PositionSweepConfig{Cluster: cConfig.Cluster, DelegatedSigner: cConfig.DelegatedSigner, EnabledMints: sweepMints, Interval: 300 * time.Second, Concurrency: 64, Facts: facts}, dStore, fleetRPC)
+	if err != nil {
+		return retailError("fleet position sweep", err)
+	}
 	crossMint, err := composeRetailCrossMint(startup, cfg, owner, dStore, revalidator, executionRPC, evidence, facts)
 	if err != nil {
 		return retailError("cross-mint runtime", err)
@@ -484,7 +495,8 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		case engine.FamilyAutodeposit:
 			lanes = append(lanes, control, aWorker)
 		case engine.FamilyFleet:
-			lanes = append(lanes, planner, executor, crossMint)
+			facts.LaneSucceeded(family, "position_sweep")
+			lanes = append(lanes, planner, executor, crossMint, positionSweep)
 		case engine.FamilyLookup:
 			// Each lane's success clock starts when it starts.
 			facts.LaneSucceeded(family, "lookup_planner")
