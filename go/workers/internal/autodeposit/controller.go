@@ -326,7 +326,7 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 		return ResultDependencyUnavailable, err
 	}
 	if withdrawn {
-		skipped, err := c.store.SkipWithdrawnScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID)
+		skipped, err := c.store.SkipWithdrawnScheduledSlot(ctx, target.ScheduledSlotID)
 		if err != nil {
 			return ResultDependencyUnavailable, err
 		}

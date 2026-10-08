@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
@@ -566,6 +567,8 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
 			return err
 		}
 		var routePolicyID int64
+		var routeVaultIndex *int16
+		var routeVaultPubkey *string
 		err := tx.QueryRow(ctx, `
             UPDATE loyal_yield.route_policies
             SET active = FALSE,
@@ -579,7 +582,7 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
               AND settings = $6
               AND authority = $7
               AND $3 >= last_seen_slot
-            RETURNING id`, event.Cluster, event.SourceCommitment, slot, event.Signature, event.PolicyAccount, event.Settings, event.Authority).Scan(&routePolicyID)
+            RETURNING id, vault_index, vault_pubkey`, event.Cluster, event.SourceCommitment, slot, event.Signature, event.PolicyAccount, event.Settings, event.Authority).Scan(&routePolicyID, &routeVaultIndex, &routeVaultPubkey)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -589,6 +592,14 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
                 SET active = FALSE, last_seen_at = now()
                 WHERE active_policy_id = $1 AND active`, routePolicyID); err != nil {
 				return err
+			}
+			// A removed route policy leaves no Autodeposit target with a
+			// sweep policy to close, so its vault's work ends here. The
+			// targets stay active: the sweep policy itself was not removed.
+			if routeVaultIndex != nil && routeVaultPubkey != nil {
+				if _, err := autodeposit.SkipUnroutedVaultSlots(ctx, tx, event.Settings, *routeVaultIndex, *routeVaultPubkey); err != nil {
+					return err
+				}
 			}
 		}
 		_, err = tx.Exec(ctx, `

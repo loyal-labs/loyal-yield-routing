@@ -233,23 +233,7 @@ SELECT
     target.desired_active
         AND target.chain_status = 'active'
         AND target.cluster = 'mainnet-beta'
-        AND EXISTS (
-            SELECT 1
-            FROM loyal_yield.managed_vaults AS managed
-            JOIN loyal_yield.route_policies AS policy
-              ON policy.id = managed.active_policy_id
-             AND policy.active = true
-             AND policy.cluster = 'mainnet-beta'
-             AND policy.authority = target.authority
-             AND policy.settings = target.settings
-             AND policy.vault_index = target.vault_index
-             AND policy.vault_pubkey = target.vault_pubkey
-             AND 'same_mint_kamino' = ANY(policy.route_modes)
-            WHERE managed.active = true
-              AND managed.settings = target.settings
-              AND managed.vault_index = target.vault_index
-              AND managed.vault_pubkey = target.vault_pubkey
-        ) AS target_active,
+        AND `+targetRoutedSQL+` AS target_active,
     target.wallet_balance_floor_raw,
     COALESCE((
         SELECT attempt.amount_raw
