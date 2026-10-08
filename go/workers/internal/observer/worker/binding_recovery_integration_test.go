@@ -256,7 +256,7 @@ func TestReconnectAfterProviderWindowClampsAndRecoversBindings(t *testing.T) {
 	connector := &recordingConnector{}
 	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}, earnStore: store, earn: handler}
 	ancientFrontier := uint64(current - 1_000_000)
-	manager, watchCursor, err := runtime.resumeSession(ctx, set, []kamino.Target{{Reserve: "11111111111111111111111111111111"}}, ancientFrontier, watchConsumer, ancientFrontier-5_000)
+	manager, watchCursor, err := runtime.resumeSession(ctx, set, []kamino.Target{{Reserve: "11111111111111111111111111111111"}}, ancientFrontier, &reconnectBackoff{}, watchConsumer, ancientFrontier-5_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,5 +345,136 @@ func TestWatchStateRecoverySkipsSignatureOnlyFacts(t *testing.T) {
 	}
 	if !recovered[maxPolicy] || !recovered[classicSettings] || len(recovered) != 2 {
 		t.Fatalf("recovered bindings = %v, want the Earn MAX policy and classic smart account", recovered)
+	}
+}
+
+// slotRPC serves getSlot and an account read for every requested address.
+func slotRPC(t *testing.T, current uint64) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		var result any = current
+		if body.Method == "getMultipleAccounts" {
+			var addresses []string
+			_ = json.Unmarshal(body.Params[0], &addresses)
+			values := make([]map[string]any, len(addresses))
+			for index := range addresses {
+				values[index] = map[string]any{"lamports": 1, "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", "data": []string{"AA==", "base64"}, "executable": false, "rentEpoch": 0}
+			}
+			result = map[string]any{"context": map[string]any{"slot": current}, "value": values}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// Production at swap time: Rust's earn-smart-account:mainnet cursor is fresh
+// and the Go-only watch-observation cursor does not exist. Rust continued from
+// its Earn cursor by replay alone; Go must do the same instead of enqueuing a
+// state-recovery job for every binding (81,130 jobs in the rehearsal), and
+// must record that continuity as its watch observation. A database with no
+// Earn continuity at all is still recovered.
+func TestContinuingRustEarnCursorReplaysWithoutStateRecovery(t *testing.T) {
+	pool := observerFixturePool(t, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const current = 449_073_607
+	if policy, err := earn.NewStore(pool).ProjectionCursor(ctx, earn.PolicyProjectionConsumer); err != nil || (policy > 0 && policy < current-100_000) {
+		t.Fatalf("fixture policy cursor %d would gap this scenario: %v", policy, err)
+	}
+	server := slotRPC(t, current)
+	accounts := []watch.Account{{Pubkey: solana.NewWallet().PublicKey().String(), Role: "policy"}, {Pubkey: solana.NewWallet().PublicKey().String(), Role: "smart_account"}}
+	set := &watch.Set{Vaults: []watch.Vault{{Environment: "mainnet-beta", Settings: accounts[1].Pubkey, Vault: solana.NewWallet().PublicKey().String(), VaultIndex: 1, Accounts: accounts}}}
+	targets := []kamino.Target{{Reserve: "11111111111111111111111111111111"}}
+	for _, scenario := range []struct {
+		name       string
+		earnCursor uint64
+	}{{"continues_rust", current - 900}, {"fresh_database", 0}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			store := earn.NewStore(pool)
+			handler := earn.NewHandler(store, "continue-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+			watchConsumer := handler.ConsumerName() + ":watch-observation"
+			t.Cleanup(func() {
+				_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1`, handler.ConsumerName())
+				_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name IN ($1,$2)`, handler.ConsumerName(), watchConsumer)
+			})
+			if scenario.earnCursor > 0 {
+				// The row Rust left: its Earn cursor, and no watch observation.
+				if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.laserstream_replay_cursors(consumer_name,durable_slot) VALUES($1,$2)`, handler.ConsumerName(), int64(scenario.earnCursor)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			connector := &recordingConnector{}
+			runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}, earnStore: store, earn: handler}
+			manager, plan, watchCursor, err := runtime.startSession(ctx, set, targets, current-50, 0, watchConsumer, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer manager.Close()
+			var jobs int64
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1`, handler.ConsumerName()).Scan(&jobs); err != nil {
+				t.Fatal(err)
+			}
+			durable, err := store.ReplayCursor(ctx, watchConsumer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario.earnCursor > 0 {
+				if jobs != 0 || plan.from != scenario.earnCursor-32 || watchCursor != scenario.earnCursor || durable != scenario.earnCursor {
+					t.Fatalf("continuing Rust enqueued %d recovery jobs, from %d, watch %d (durable %d); want replay from %d and watch %d", jobs, plan.from, watchCursor, durable, scenario.earnCursor-32, scenario.earnCursor)
+				}
+				return
+			}
+			if jobs != 2 || watchCursor != plan.from || durable != plan.from {
+				t.Fatalf("fresh database recovered %d jobs, watch %d (durable %d), want 2 at %d", jobs, watchCursor, durable, plan.from)
+			}
+		})
+	}
+}
+
+// One poisoned update kills every session right after it starts. Each
+// reconnect must wait, and keep doubling while no session gets past the
+// failure; progress past it restarts at the base delay. The old reconnect
+// waited only when a start itself failed: 55 reconnects in 30 s.
+func TestEveryReconnectBacksOffUntilAFrontierPassesTheFailure(t *testing.T) {
+	const current = 449_073_607
+	server := slotRPC(t, current)
+	connector := &recordingConnector{}
+	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}}
+	set := &watch.Set{}
+	targets := []kamino.Target{{Reserve: "11111111111111111111111111111111"}}
+	var backoff reconnectBackoff
+	reconnect := func(frontier uint64) time.Duration {
+		started := time.Now()
+		manager, _, err := runtime.resumeSession(context.Background(), set, targets, frontier, &backoff, "unused", current-1_000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager.Close()
+		return time.Since(started)
+	}
+	poisoned := uint64(current - 100)
+	if waited := reconnect(poisoned); waited < reconnectBaseDelay {
+		t.Fatalf("first reconnect after a started session waited %s", waited)
+	}
+	if waited := reconnect(poisoned); waited < 2*reconnectBaseDelay {
+		t.Fatalf("second reconnect at the same failure waited %s, want doubled backoff", waited)
+	}
+	if waited := reconnect(poisoned + 50); waited < reconnectBaseDelay || waited >= 2*reconnectBaseDelay {
+		t.Fatalf("reconnect after progress waited %s, want the base delay", waited)
+	}
+	for range 8 {
+		backoff.next(poisoned + 50)
+	}
+	if backoff.delay != reconnectMaxDelay {
+		t.Fatalf("backoff grew to %s, want the %s ceiling", backoff.delay, reconnectMaxDelay)
 	}
 }

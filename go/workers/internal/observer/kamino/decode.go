@@ -160,8 +160,11 @@ func Decode(target Target, slot uint64, observedAt time.Time, data []byte, slotD
 	return snapshot, nil
 }
 
+// Compare reports the changed fields. "Nothing changed" is an empty list, as
+// Rust's ReserveDiff.changed_fields Vec is: reserve_updates.changed_fields is
+// TEXT[] NOT NULL and the diff JSON carries [], never null.
 func Compare(previous, current Snapshot) Diff {
-	var fields []string
+	fields := []string{}
 	checks := []struct {
 		name    string
 		changed bool

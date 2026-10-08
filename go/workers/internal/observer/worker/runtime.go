@@ -158,6 +158,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	progressTicker := time.NewTicker(5 * time.Second)
 	defer progressTicker.Stop()
 	verificationFailures := 0
+	var backoff reconnectBackoff
 	for {
 		select {
 		case <-ctx.Done():
@@ -169,7 +170,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 			frontier := manager.ActiveFrontier()
 			manager.Close()
 			var resumeErr error
-			manager, watchObservationSlot, resumeErr = r.resumeSession(ctx, currentWatch, targets, frontier, watchObservationConsumer, watchObservationSlot)
+			manager, watchObservationSlot, resumeErr = r.resumeSession(ctx, currentWatch, targets, frontier, &backoff, watchObservationConsumer, watchObservationSlot)
 			if resumeErr != nil {
 				return resumeErr
 			}
@@ -395,8 +396,14 @@ func clampToReplayWindow(start, current uint64) uint64 {
 }
 
 // streamPlan is where one LaserStream session starts: requested is the
-// continuity point, from is requested clamped into the provider window.
-type streamPlan struct{ requested, from uint64 }
+// continuity point, from is requested clamped into the provider window. watch
+// is the watch-observation continuity the plan used; fresh means no durable
+// Earn continuity exists at all (neither this observer's watch observation
+// nor an Earn cursor).
+type streamPlan struct {
+	requested, from, watch uint64
+	fresh                  bool
+}
 
 // gap reports a continuity point the provider can no longer replay.
 func (p streamPlan) gap() bool { return p.from > p.requested }
@@ -415,6 +422,7 @@ func (r *Runtime) planSession(ctx context.Context, seed, frontier, watchCursor u
 		return streamPlan{}, err
 	}
 	var requested uint64
+	continuity := watchCursor
 	if frontier > 0 {
 		requested = min(subtract(frontier, r.cfg.ReplayOverlapSlots), current)
 	} else {
@@ -426,19 +434,26 @@ func (r *Runtime) planSession(ctx context.Context, seed, frontier, watchCursor u
 		if err != nil {
 			return streamPlan{}, err
 		}
-		if requested, err = selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, r.cfg.ReplayOverlapSlots); err != nil {
+		// Rust never wrote a watch observation; it continued from its Earn
+		// cursor alone. Without this observer's own observation, that cursor
+		// is the continuity, so continuing Rust is not a first observation.
+		if continuity == 0 {
+			continuity = earnCursor
+		}
+		if requested, err = selectReplayStart(current, seed, earnCursor, policyCursor, continuity, r.cfg.ReplayOverlapSlots); err != nil {
 			return streamPlan{}, err
 		}
 	}
-	return streamPlan{requested: requested, from: clampToReplayWindow(requested, current)}, nil
+	return streamPlan{requested: requested, from: clampToReplayWindow(requested, current), watch: continuity, fresh: continuity == 0}, nil
 }
 
-// startSession opens one LaserStream session through planSession. Replay
-// cannot reach state older than the provider window, and the first watch
-// observation has no earlier scan of the bindings: in both cases every Earn
-// binding is read from confirmed state (recoverWatchState) before the stream
-// starts. It returns the started manager, the plan and the watch observation
-// cursor.
+// startSession opens one LaserStream session through planSession. Bindings
+// are read from confirmed state (recoverWatchState) only for a real gap: a
+// start clamped into the provider window, or no durable Earn continuity at
+// all. Continuing durable cursors (Rust's included) is covered by replay, as
+// it was for Rust, and that continuity becomes the recorded watch
+// observation. It returns the started manager, the plan and the watch
+// observation cursor.
 func (r *Runtime) startSession(ctx context.Context, set *watch.Set, targets []kamino.Target, seed, frontier uint64, watchConsumer string, watchCursor uint64) (*stream.Manager, streamPlan, uint64, error) {
 	plan, err := r.planSession(ctx, seed, frontier, watchCursor)
 	if err != nil {
@@ -451,13 +466,22 @@ func (r *Runtime) startSession(ctx context.Context, set *watch.Set, targets []ka
 	if err != nil {
 		return nil, plan, watchCursor, err
 	}
-	if watchCursor == 0 || plan.gap() {
+	switch {
+	case plan.fresh || plan.gap():
 		recovered, err := r.recoverWatchState(ctx, set, watchConsumer, plan.from)
 		if err != nil {
 			return nil, plan, watchCursor, err
 		}
-		r.logger.Info("recovered Earn binding state from confirmed RPC", "insertedJobs", recovered, "firstWatchObservation", watchCursor == 0, "replayGap", plan.gap())
+		r.logger.Info("recovered Earn binding state from confirmed RPC", "insertedJobs", recovered, "freshEarnState", plan.fresh, "replayGap", plan.gap())
 		watchCursor = max(watchCursor, plan.from)
+	case watchCursor == 0:
+		cursorCtx, cancel := context.WithTimeout(ctx, r.passTimeout())
+		err := r.earnStore.AdvanceReplayCursor(cursorCtx, watchConsumer, plan.watch)
+		cancel()
+		if err != nil {
+			return nil, plan, watchCursor, fmt.Errorf("record continued watch observation: %w", err)
+		}
+		watchCursor = plan.watch
 	}
 	manager := stream.NewManager(r.connector, r.handler, stream.Config{ReplayOverlapSlots: r.cfg.ReplayOverlapSlots, HandoffTimeout: r.cfg.HandoffTimeout})
 	if err := manager.Start(ctx, request); err != nil {
@@ -467,12 +491,47 @@ func (r *Runtime) startSession(ctx context.Context, set *watch.Set, targets []ka
 	return manager, plan, watchCursor, nil
 }
 
-// resumeSession replaces a failed session. Every attempt plans afresh, so an
-// outage longer than the provider window cannot keep requesting a slot that
-// has left it, and a clamped plan recovers bindings before the stream resumes.
-func (r *Runtime) resumeSession(ctx context.Context, set *watch.Set, targets []kamino.Target, frontier uint64, watchConsumer string, watchCursor uint64) (*stream.Manager, uint64, error) {
-	delay := 500 * time.Millisecond
+// reconnectBackoff paces every LaserStream reconnect with the Rust ATA/Earn
+// monitor policy (balance-sweep-ata-monitor lib.rs reconnect_backoff and
+// run_laserstream_loop): 500 ms doubling per reconnect up to 30 s, counted
+// whether the failed session had started or not. Rust restarted the count
+// only by rebuilding the session; here it restarts once a session moved the
+// durable frontier past the previous failure, so a session that starts and
+// dies on the same update keeps backing off instead of hammering LaserStream.
+type reconnectBackoff struct {
+	delay    time.Duration
+	failedAt uint64
+}
+
+const (
+	reconnectBaseDelay = 500 * time.Millisecond
+	reconnectMaxDelay  = 30 * time.Second
+)
+
+// next returns the wait before reconnecting after a session that reached
+// frontier (zero when it delivered no slot).
+func (b *reconnectBackoff) next(frontier uint64) time.Duration {
+	if b.delay == 0 || frontier > b.failedAt {
+		b.delay = reconnectBaseDelay
+	} else {
+		b.delay = min(b.delay*2, reconnectMaxDelay)
+	}
+	b.failedAt = max(b.failedAt, frontier)
+	return b.delay
+}
+
+// resumeSession replaces a failed session. Every attempt waits its backoff
+// first and plans afresh, so an outage longer than the provider window cannot
+// keep requesting a slot that has left it, and a clamped plan recovers
+// bindings before the stream resumes.
+func (r *Runtime) resumeSession(ctx context.Context, set *watch.Set, targets []kamino.Target, frontier uint64, backoff *reconnectBackoff, watchConsumer string, watchCursor uint64) (*stream.Manager, uint64, error) {
 	for attempt := 1; ; attempt++ {
+		delay := backoff.next(frontier)
+		select {
+		case <-ctx.Done():
+			return nil, watchCursor, ctx.Err()
+		case <-time.After(delay):
+		}
 		manager, _, cursor, err := r.startSession(ctx, set, targets, 0, frontier, watchConsumer, watchCursor)
 		watchCursor = cursor
 		if err == nil {
@@ -481,13 +540,7 @@ func (r *Runtime) resumeSession(ctx context.Context, set *watch.Set, targets []k
 		if ctx.Err() != nil {
 			return nil, watchCursor, ctx.Err()
 		}
-		r.logger.Error("LaserStream reconnect failed", "attempt", attempt, "retryIn", delay, "error", err)
-		select {
-		case <-ctx.Done():
-			return nil, watchCursor, ctx.Err()
-		case <-time.After(delay):
-		}
-		delay = min(delay*2, 30*time.Second)
+		r.logger.Error("LaserStream reconnect failed", "attempt", attempt, "waited", delay, "error", err)
 	}
 }
 
