@@ -24,7 +24,7 @@ Keep shell variable expansion inside the `sh -c` subprocess so `op run` injects 
 
 The workers run on the Go engine in `go/workers`, deployed to Hetzner from `deploy/hetzner`. The Rust worker crates, their images and the Render Blueprint are retired.
 
-`loyal-yield-realtime` is the one Rust service still on Render. `Dockerfile.light-workers` builds it and the `realtime-image` workflow publishes immutable `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` tags on main. Render pulls the private image with the `loyal-ghcr` registry credential; keep the service pinned to an exact tag.
+`loyal-yield-realtime` is the one Rust service left. It runs on the Hetzner workers host as a container, not on Render (all Render services are retired). `Dockerfile.light-workers` builds it and the `realtime-image` workflow publishes immutable `ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>` tags on main; keep the host pinned to an exact digest.
 
 SQL migrations live in `migrations/yield` and `migrations/timescale`; apply them with `go/workers/cmd/loyal-migrate` and never edit an applied file.
 
