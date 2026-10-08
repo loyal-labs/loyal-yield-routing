@@ -72,7 +72,9 @@ tests:
         exp_alerts:
           - exp_labels: {severity: page, family: fleet, code: expired}
             exp_annotations:
-              summary: "fleet failed 15 times with expired in 15m"
+              summary: "fleet has repeated failed attempts with expired in 15m"
+              impact: "Work may be delayed; repeated selector evaluations are not distinct failed transactions."
+              action: "Inspect the stable failure code and worker logs; verify confirmed state before retrying or changing configuration."
 
   # Owed Autodeposit work pages past an hour; younger work is silent.
   - interval: 1m
@@ -244,3 +246,226 @@ tests:
         exp_alerts:
           - exp_labels: {severity: page, family: lookup, lane: lookup_planner, unit: loyal-retail.service}
             exp_annotations: {summary: "lookup lane lookup_planner has had no successful tick for 15m"}
+
+  # Withdrawal state and telemetry are independent signals.
+  - name: attention debounces, deduplicates instances and clears on a durable assessment
+    interval: 1m
+    input_series:
+    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+      values: 0 1 1 1 0 0
+    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="two"}
+      values: 0 1 1 1 0 0
+    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+      values: 0+60x5
+    alert_rule_test:
+    - eval_time: 1m
+      alertname: LoyalBackyardWithdrawalAttention
+    - eval_time: 2m
+      alertname: LoyalBackyardWithdrawalAttention
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal needs operator attention on pooled-usdc
+          impact: A pending withdrawal needs intervention before funding can continue.
+          action: Inspect the persisted withdrawal health and confirmed funding state; follow the withdrawal attention runbook.
+    - eval_time: 4m
+      alertname: LoyalBackyardWithdrawalAttention
+    - eval_time: 4m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+  - name: stale observations page even when the attention gauge is zero
+    interval: 1m
+    input_series:
+    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+      values: '0x10'
+    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+      values: '0x10'
+    alert_rule_test:
+    - eval_time: 5m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+    - eval_time: 7m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal health is unavailable
+          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
+          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
+    - eval_time: 7m
+      alertname: LoyalBackyardWithdrawalAttention
+  - name: read errors and scrape loss do not clear attention; freshness pages separately
+    interval: 1m
+    input_series:
+    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+      values: 1 1 stale _ _ _ _ _ _ 1 0
+    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+      values: 0 60 stale _ _ _ _ _ _ 60 600
+    alert_rule_test:
+    - eval_time: 1m
+      alertname: LoyalBackyardWithdrawalAttention
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal needs operator attention on pooled-usdc
+          impact: A pending withdrawal needs intervention before funding can continue.
+          action: Inspect the persisted withdrawal health and confirmed funding state; follow the withdrawal attention runbook.
+    - eval_time: 8m
+      alertname: LoyalBackyardWithdrawalAttention
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal needs operator attention on pooled-usdc
+          impact: A pending withdrawal needs intervention before funding can continue.
+          action: Inspect the persisted withdrawal health and confirmed funding state; follow the withdrawal attention runbook.
+    - eval_time: 3m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal health is unavailable
+          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
+          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
+    - eval_time: 9m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal health is unavailable
+          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
+          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
+    - eval_time: 10m
+      alertname: LoyalBackyardWithdrawalAttention
+    - eval_time: 10m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+  - name: missing health metrics are unknown, not recovered
+    interval: 1m
+    input_series: []
+    alert_rule_test:
+    - eval_time: 0m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+    - eval_time: 1m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+        exp_annotations:
+          summary: Earn MAX withdrawal health is unavailable
+          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
+          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
+  - name: missing observation is unknown despite an available attention gauge
+    interval: 1m
+    input_series:
+    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+      values: '0x3'
+    alert_rule_test:
+    - eval_time: 1m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal health is unavailable
+          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
+          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
+  - name: one missing route is not hidden by a healthy sibling
+    interval: 1m
+    input_series:
+    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+      values: 0 stale _ _
+    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+      values: 0 stale _ _
+    - series: loyal_backyard_withdrawal_attention{family="backyard",route="other",instance="one"}
+      values: '0x3'
+    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="other",instance="one"}
+      values: 0+60x3
+    alert_rule_test:
+    - eval_time: 2m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal health is unavailable
+          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
+          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
+  - name: missing attention gauge is unknown with one route alert
+    interval: 1m
+    input_series:
+    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+      values: 0+60x3
+    alert_rule_test:
+    - eval_time: 1m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal health is unavailable
+          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
+          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
+  - name: total metric loss still pages after the route-history window expires
+    interval: 1m
+    input_series:
+    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+      values: 1 stale
+    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+      values: 0 stale
+    alert_rule_test:
+    - eval_time: 2m
+      alertname: LoyalBackyardWithdrawalAttention
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal needs operator attention on pooled-usdc
+          impact: A pending withdrawal needs intervention before funding can continue.
+          action: Inspect the persisted withdrawal health and confirmed funding state; follow the withdrawal attention runbook.
+    - eval_time: 2m
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+          route: pooled-usdc
+        exp_annotations:
+          summary: Earn MAX withdrawal health is unavailable
+          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
+          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
+    - eval_time: 25h
+      alertname: LoyalBackyardWithdrawalAttention
+    - eval_time: 25h
+      alertname: LoyalBackyardWithdrawalHealthUnavailable
+      exp_alerts:
+      - exp_labels:
+          severity: page
+          family: backyard
+        exp_annotations:
+          summary: Earn MAX withdrawal health is unavailable
+          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
+          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.

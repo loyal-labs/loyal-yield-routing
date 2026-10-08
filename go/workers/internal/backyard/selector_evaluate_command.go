@@ -188,6 +188,7 @@ var selectorEvaluateAdmissionHoldCodes = map[string]bool{
 	"selector_entry_requires_reconciled_idle":   true,
 	"selector_evaluation_not_current":           true,
 	"selector_finish_current_work_first":        true,
+	"selector_fee_evidence_unavailable":         true,
 	"selector_manual_recovery_active":           true,
 	"selector_requires_active_pilot":            true,
 	"selector_resolve_capital_recovery_first":   true,

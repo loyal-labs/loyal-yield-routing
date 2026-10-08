@@ -24,8 +24,8 @@ func setDebtCash(s *Snapshot, raw int64) {
 func TestExitCycleDecisionsOnEveryExitPath(t *testing.T) {
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		for path, mutate := range map[string]func(*Snapshot){
-			// >= 90% of equity: the full exit (a smaller demand is partial).
-			"withdrawal": func(s *Snapshot) { s.WithdrawalDemandRaw, s.VoltrIdleRaw = 950_000_000, 0 },
+			// Large demand needs its own explicitly admitted unwind.
+			"withdrawal": func(s *Snapshot) { s.WithdrawalDemandRaw, s.VoltrIdleRaw, s.Unwind = 950_000_000, 0, true },
 			"unwind":     func(s *Snapshot) { s.Unwind = true },
 			"down to 1x": func(s *Snapshot) { s.LeverageTargetLevel = 1 },
 		} {
@@ -116,7 +116,7 @@ func TestExitCycleRepayRespectsTheResidualFloor(t *testing.T) {
 // to 1x) releases, then swaps enough to pay off in full; no cycle leg ever.
 func TestLiveShaped15xExitsNeverCycle(t *testing.T) {
 	for path, mutate := range map[string]func(*Snapshot){
-		"withdrawal": func(s *Snapshot) { s.WithdrawalDemandRaw = 2_000_000_000 },
+		"withdrawal": func(s *Snapshot) { s.WithdrawalDemandRaw, s.Unwind = 2_000_000_000, true },
 		"unwind":     func(s *Snapshot) { s.Unwind = true },
 		"down to 1x": func(s *Snapshot) { s.LeverageTargetLevel = 1 },
 	} {

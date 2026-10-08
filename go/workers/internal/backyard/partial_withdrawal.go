@@ -13,14 +13,13 @@ import (
 // of equity and keeps the position at its level: release the collateral
 // share C*E/Eq, swap the debt share to debt and repay it (LTV back to the
 // level), convert the rest to USDC and stage it to Voltr. A shortfall of
-// >= 90% of equity, or a remainder below the minimum, keeps the installed
-// full exit. The decision is stateless: each leg is chosen from the
+// >= 90% of equity is excluded by this partial planner; exclusion does not
+// establish necessity or authority for a full exit. The decision is stateless: each leg is chosen from the
 // observed custody, so a restart resumes the same chain.
 const (
-	partialWithdrawalBufferBPS       int64 = 100        // 1% of S ...
-	partialWithdrawalMinimumBuffer   int64 = 1_000_000  // ... at least $1
-	partialWithdrawalFullExitBPS     int64 = 9_000      // E >= 90% equity -> full exit
-	partialWithdrawalMinRemainingRaw int64 = 50_000_000 // keep >= $50 of equity
+	partialWithdrawalBufferBPS     int64 = 100       // 1% of S ...
+	partialWithdrawalMinimumBuffer int64 = 1_000_000 // ... at least $1
+	partialWithdrawalFullExitBPS   int64 = 9_000     // E >= 90% equity -> hold for review
 	// Collateral or cash below this is rounding residue, not a leg.
 	partialWithdrawalDustRaw int64 = 1_000
 
@@ -31,7 +30,7 @@ const (
 	partialDebtToUSDCReason = "withdrawal_partial_debt_to_usdc"
 	// At most this many release rounds (each keeps LTV under the release
 	// ceiling); a shortfall under 90% of equity at 1.5x needs <= 6. More
-	// takes the full exit.
+	// requires review, not automatic full exit.
 	partialWithdrawalMaxRounds = 6
 )
 
@@ -69,7 +68,7 @@ func partialWithdrawalTargetLTVBPS(s Snapshot) (int64, bool) {
 }
 
 // partialWithdrawalStep returns the next partial-withdrawal leg, or ok=false
-// for the installed full chain. Callers run it inside the withdrawal branch,
+// when a partial path is not established. Callers hold withdrawal-only flows,
 // after hard LTV, recovery and the covered/staged checks.
 func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 	if !leverageLane(s.RouteLane) || !s.PilotActive || s.Unwind || s.CutoverDrain || (s.WithdrawalDemandRaw <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
@@ -104,15 +103,15 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 	if equity <= 0 || (shortfall <= 0 && !partialWithdrawalInFlight(s)) {
 		return "", "", 0, false
 	}
-	// Full-exit fallbacks: the partial would take (nearly) everything or
-	// leave less than the minimum. Judged on the whole shortfall, before any
-	// leg, so an in-flight chain never flips to a full exit midway.
+	// Keep the existing near-total exclusion. The $50 remainder heuristic
+	// is not a safety bound: safe release and positive residual checks below
+	// and at admission still apply to small positions.
 	total := equity + inflight
-	if !partialWithdrawalInFlight(s) && (shortfall*10_000 >= total*partialWithdrawalFullExitBPS || total-shortfall < partialWithdrawalMinRemainingRaw) {
+	if !partialWithdrawalInFlight(s) && (shortfall*10_000 >= total*partialWithdrawalFullExitBPS) {
 		return "", "", 0, false
 	}
 	// Bounded rounds: a shortfall a capped release cannot free within
-	// partialWithdrawalMaxRounds rounds takes the full exit. Judged against
+	// partialWithdrawalMaxRounds rounds remains unproven. Judged against
 	// the whole vault position so the answer is stable mid-chain.
 	if !partialWithdrawalInFlight(s) && !partialWithdrawalFitsRounds(s, shortfall, total) {
 		return "", "", 0, false

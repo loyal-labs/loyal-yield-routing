@@ -17,17 +17,25 @@ import (
 //	loyal_fee_payer_balance_lamports{payer}              lamports of a payer, read every pass
 //	loyal_autodeposit_oldest_due_lot_age_seconds         age of the oldest owned or blocked deposit
 type Facts struct {
-	landed    *prometheus.CounterVec
-	failed    *prometheus.CounterVec
-	inflight  *prometheus.GaugeVec
-	progress  *prometheus.GaugeVec
-	lane      *prometheus.GaugeVec
-	payer     *prometheus.GaugeVec
-	oldestDue prometheus.Gauge
+	withdrawalAttention *prometheus.GaugeVec
+	withdrawalObserved  *prometheus.GaugeVec
+	landed              *prometheus.CounterVec
+	failed              *prometheus.CounterVec
+	inflight            *prometheus.GaugeVec
+	progress            *prometheus.GaugeVec
+	lane                *prometheus.GaugeVec
+	payer               *prometheus.GaugeVec
+	oldestDue           prometheus.Gauge
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
 	f := &Facts{
+		withdrawalAttention: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_withdrawal_attention", Help: "Durable Backyard withdrawal requires operator attention.",
+		}, []string{"family", "route"}),
+		withdrawalObserved: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_withdrawal_observed_timestamp_seconds", Help: "Coherent observation time of durable Backyard withdrawal health.",
+		}, []string{"family", "route"}),
 		landed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "loyal_family_landed_total", Help: "Operations that reached their on-chain outcome.",
 		}, []string{"family"}),
@@ -50,8 +58,18 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 			Name: "loyal_autodeposit_oldest_due_lot_age_seconds", Help: "Age of the oldest Autodeposit claim or idle-blocked slot not yet deposited.",
 		}),
 	}
-	registerer.MustRegister(f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue)
+	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue)
 	return f
+}
+
+// BackyardWithdrawalHealth is called only after the display state commits.
+func (f *Facts) BackyardWithdrawalHealth(route string, attention bool, observed time.Time) {
+	value := float64(0)
+	if attention {
+		value = 1
+	}
+	f.withdrawalAttention.WithLabelValues(string(FamilyBackyard), route).Set(value)
+	f.withdrawalObserved.WithLabelValues(string(FamilyBackyard), route).Set(float64(observed.Unix()))
 }
 
 func (f *Facts) Landed(family Family) {

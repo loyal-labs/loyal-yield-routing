@@ -140,7 +140,9 @@ The alerts are:
 | Alert | Fires when |
 |---|---|
 | LoyalFamilyProgressStale | No completed work for about 3m (observer), 10m (autodeposit, fleet) or 30m (multiply, lookup, backyard). Restarts do not reset this clock |
-| LoyalFamilyFailing | At least 3 terminal failures with one code in 15m, sustained for 5m |
+| LoyalFamilyFailing | At least 3 failed-attempt samples with one code in 15m, sustained for 5m; selector evaluations are not distinct transactions |
+| LoyalBackyardWithdrawalAttention | Persisted withdrawal attention for a stable family/route, sustained for 1m |
+| LoyalBackyardWithdrawalHealthUnavailable | Observation older than 5m or missing health metrics, sustained for 1m |
 | LoyalAutodepositOverdue | A selected Autodeposit claim, or a slot blocked by vault idle above `AUTODEPOSIT_IDLE_TOLERANCE_RAW`, is over 1h old |
 | LoyalFeePayerLow | A fee payer has been below 0.55 SOL for 5m (warning) |
 | LoyalFeePayerExhausted | A fee payer is below 0.05 SOL: Autodeposit starts nothing |
@@ -172,6 +174,53 @@ cd monitoring && promtool test rules loyal.rules.test.yml
 amtool check-config monitoring/alertmanager.yml
 systemd-analyze verify deploy/hetzner/systemd/*.service   # Linux only
 ```
+
+### Withdrawal attention
+
+`LoyalBackyardWithdrawalAttention` reports persisted, display-only withdrawal
+health. It grants no transaction authority. Alerts group by stable family and
+route, not changing causes or retry IDs. The 1m debounce absorbs brief state
+transitions; an ongoing incident repeats after 4h. Ordinary cooldown waits and
+the typed `selector_finish_current_work_first` deferral are not failures.
+Unknown selector failures remain covered by `LoyalFamilyFailing`; its existing
+threshold math is unchanged.
+
+1. Check the alert's route, the worker release and its logs. Read the persisted
+   withdrawal health and its observation time for the canonical vault, program
+   and cluster. Do not treat NAV-only activity as funding progress.
+2. Confirm the pending withdrawal demand, available funding, in-flight operation
+   and confirmed transaction state. Distinguish a covered cooldown from a
+   blocker or persistent lack of funding progress.
+3. Check the blocker against the worker's safety controls and obtain explicit
+   operator approval for any corrective financial action. Never clear latches,
+   raise limits or authorize full-debt repayment automatically to clear a page.
+4. After remediation, verify a fresh coherent assessment and confirmed funding
+   progress. Check on-chain claimability and payment separately. A resolved
+   alert does **not** mean the user has been paid.
+
+`loyal_backyard_withdrawal_attention{family="backyard",route="..."}` is 0 or 1.
+`loyal_backyard_withdrawal_observed_timestamp_seconds` has the same labels and
+advances only after a coherent assessment is durably written. Read errors must
+retain the last attention state and must not refresh the observation timestamp.
+A restart restores persisted health rather than assuming recovery.
+
+The attention rule retains the last sample for up to 24h across scrape gaps.
+The independent health-unavailable page detects stale observations and missing
+metric pairs; process/down/stale alerts remain active. Route-level missing-data
+coverage remembers routes for 24h. Total metric absence still pages after that
+window, but a route that has never emitted metrics cannot be identified without
+an expected-route inventory. Missing telemetry is unknown, not healthy. During
+an outage an attention alert can expire after 24h; check the health-unavailable
+alert before interpreting its resolved notification.
+
+Telegram uses an inline HTML-escaped template with firing/resolved status,
+severity, summary, impact, next action and this repository runbook. Recipients
+need repository access. It omits internal Prometheus links and arbitrary labels.
+Install the updated rules and Alertmanager config together, validate both with
+the commands above, then reload the monitoring services through the approved
+host deployment process. Confirm both metrics are emitted for the expected
+route and inspect the alert states. No host deployment is performed by editing
+these files.
 
 ## Logs
 

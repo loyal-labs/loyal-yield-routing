@@ -48,6 +48,15 @@ func newEvents(log *slog.Logger, facts *engine.Facts) *events {
 	return &events{log: log.With("family", string(engine.FamilyBackyard)), facts: facts, now: time.Now}
 }
 
+func (e *events) withdrawalHealthStored(h WithdrawalHealth) {
+	// Unavailable assessments must not refresh a healthy gauge on repeated
+	// errors; the last series stays in place and freshness ages out.
+	if e == nil || e.facts == nil || h.Status == "unavailable" {
+		return
+	}
+	e.facts.BackyardWithdrawalHealth(h.RouteKey, h.Status == "operator_attention", h.ObservedAt)
+}
+
 func (e *events) workerStart(owner, manifestSHA256 string) {
 	if e == nil {
 		return
@@ -193,7 +202,20 @@ func (e *events) selectorUnavailable(code string) {
 	if e == nil {
 		return
 	}
+	if code == "selector_finish_current_work_first" {
+		e.log.Info("backyard_selector_deferred", "code", code)
+		return
+	}
 	e.log.Warn("backyard_selector_unavailable", "code", code)
+}
+
+// selectorSampleError excludes only the exact typed expected deferral.
+func (e *events) selectorSampleError(err error) {
+	var hold *BudgetHold
+	if errors.As(err, &hold) && hold.Reason == "selector_finish_current_work_first" {
+		return
+	}
+	e.selectorSampleFailed(sanitizedSelectorEvaluateFailure(err))
 }
 
 // selectorSampleFailed counts every failed live sample. The log line above is

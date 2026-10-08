@@ -171,7 +171,7 @@ func TestWithdrawalDemandRemainsTruthfulAcrossTypedLanes(t *testing.T) {
 		s.VoltrIdleRaw = 0
 		s.SquadsIdleRaw = 40
 		got = Decide(s)
-		if got.Action != DeleverRouteStep || got.AmountRaw != 1 || got.Reason != "withdrawal_release_repayment_collateral" || s.WithdrawalDemandRaw != 10 {
+		if got.Action != Hold || got.AmountRaw != 0 || got.Reason != "withdrawal_full_exit_unproven" || s.WithdrawalDemandRaw != 10 {
 			t.Fatalf("uncovered %s: %+v", lane, got)
 		}
 		s = base()
@@ -329,6 +329,7 @@ func TestTypedUSDCRepaymentUsesCanonicalExecutionContract(t *testing.T) {
 		s.RouteLane = lane
 		s.WithdrawalDemandRaw = 1
 		s.HasPosition, s.PositionDebtRaw, s.SquadsIdleRaw = true, 5, 5
+		s.Unwind = true   // Canonical repay applies to an explicitly scoped full exit.
 		s.DebtIdleRaw = 0 // Same USDC account must not be counted twice.
 		d := Decide(s)
 		action, err := fixedRouteAction(d.Action, lane)

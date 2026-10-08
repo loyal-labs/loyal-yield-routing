@@ -82,3 +82,58 @@ func TestLatchedRouteStopsProgress(t *testing.T) {
 		t.Fatal("a cleared tick did not report progress")
 	}
 }
+
+func TestSelectorExpectedDeferralDoesNotCountAsFailed(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	e := newEvents(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), engine.NewFacts(registry))
+	e.selectorSampleError(budgetHold("selector_finish_current_work_first"))
+	e.selectorSampleError(errors.New("selector_finish_current_work_first"))
+	e.selectorSampleError(budgetHold("selector_fee_evidence_unavailable"))
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]float64{}
+	for _, family := range families {
+		if family.GetName() != "loyal_family_failed_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "code" {
+					got[label.GetValue()] = metric.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	if len(got) != 2 || got["selector_evaluate_unavailable"] != 1 || got["selector_fee_evidence_unavailable"] != 1 {
+		t.Fatalf("deferral/failure classification: %v", got)
+	}
+}
+
+func TestWithdrawalMetricsKeepAttentionAndClockWhenEvidenceUnavailable(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	e := newEvents(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), engine.NewFacts(registry))
+	now := time.Unix(1000, 0)
+	e.withdrawalHealthStored(WithdrawalHealth{RouteKey: productionRouteKey, Status: "operator_attention", ObservedAt: now})
+	e.withdrawalHealthStored(WithdrawalHealth{RouteKey: productionRouteKey, Status: "unavailable", ObservedAt: now.Add(time.Minute)})
+	check := func(attention, observed float64) {
+		t.Helper()
+		families, err := registry.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]float64{}
+		for _, family := range families {
+			if strings.HasPrefix(family.GetName(), "loyal_backyard_withdrawal_") {
+				got[family.GetName()] = family.GetMetric()[0].GetGauge().GetValue()
+			}
+		}
+		if got["loyal_backyard_withdrawal_attention"] != attention || got["loyal_backyard_withdrawal_observed_timestamp_seconds"] != observed {
+			t.Fatalf("health metrics: %v", got)
+		}
+	}
+	check(1, 1000)
+	e.withdrawalHealthStored(WithdrawalHealth{RouteKey: productionRouteKey, Status: "waiting", ObservedAt: now.Add(2 * time.Minute)})
+	check(0, 1120)
+}
