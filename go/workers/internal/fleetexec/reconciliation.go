@@ -41,6 +41,7 @@ type sameMintPostProof struct {
 	positions             []observedPosition
 	idleAmount            int64
 	idleATA, tokenProgram string
+	idleATAExists         bool
 	observedAt            time.Time
 	receipt               *TransactionReceipt
 }
@@ -203,9 +204,12 @@ func observeSameMintPost(ctx context.Context, rpc finalizedAccountReader, c same
 	}
 	// The second batch includes reserves again: obligation collateral and the
 	// conversion fraction share one finalized bank observation. An earlier reserve
-	// quote cannot be promoted to the later obligation slot.
+	// quote cannot be promoted to the later obligation slot. A full source exit
+	// closes the source obligation inside the route (KLend withdraw), so null
+	// accounts are returned rather than rejected; reserves stay required by
+	// reservePostIdentity and the target must still hold funded collateral.
 	keys := append(append(append([]string{}, reserves...), obligations...), ata)
-	slot, accounts, err := rpc.FinalizedAccounts(ctx, keys, discoverySlot)
+	slot, accounts, err := rpc.FinalizedAccountsAllowingAbsent(ctx, keys, discoverySlot)
 	if err != nil {
 		return nil, err
 	}
@@ -217,9 +221,16 @@ func observeSameMintPost(ctx context.Context, rpc finalizedAccountReader, c same
 			return nil, errors.New("post custody batch identity differs")
 		}
 	}
-	idle, err := custodyTokenAmount(accounts[len(accounts)-1], c.mint, c.vault)
-	if err != nil {
-		return nil, err
+	// Rust parity (decode_spl_token_account_amount(None)): a null liquidity ATA
+	// is a zero balance. A present account must still be the vault's exact ATA.
+	idleAccount := accounts[len(accounts)-1]
+	idleExists := accountExists(idleAccount)
+	idle := int64(0)
+	if idleExists {
+		idle, err = custodyTokenAmount(idleAccount, c.mint, c.vault)
+		if err != nil {
+			return nil, err
+		}
 	}
 	for i := range positions {
 		p := &positions[i]
@@ -239,7 +250,7 @@ func observeSameMintPost(ctx context.Context, rpc finalizedAccountReader, c same
 		obligationAccount := accounts[len(reserves)+i]
 		// Missing accounts are zero only when the finalized RPC returned a null
 		// account. A malformed funded envelope is never interpreted as absent.
-		p.exists = obligationAccount.Lamports != 0 || len(obligationAccount.Data) != 0 || obligationAccount.Owner != ""
+		p.exists = accountExists(obligationAccount)
 		if p.exists {
 			p.amount, e = obligationCollateral(obligationAccount, p.market, c.vault, p.reserve)
 			if e != nil {
@@ -254,7 +265,13 @@ func observeSameMintPost(ctx context.Context, rpc finalizedAccountReader, c same
 	if positions[len(positions)-1].amount <= 0 {
 		return nil, errors.New("post-state target collateral is not funded")
 	}
-	return &sameMintPostProof{contract: c, slot: slot, positions: positions, idleAmount: idle, idleATA: ata, tokenProgram: program, observedAt: time.Now().UTC(), receipt: receipt}, nil
+	return &sameMintPostProof{contract: c, slot: slot, positions: positions, idleAmount: idle, idleATA: ata, idleATAExists: idleExists, tokenProgram: program, observedAt: time.Now().UTC(), receipt: receipt}, nil
+}
+
+// accountExists distinguishes the null account returned by an
+// absent-allowing read from any account the chain actually holds.
+func accountExists(a fleet.Account) bool {
+	return a.Lamports != 0 || len(a.Data) != 0 || a.Owner != ""
 }
 
 // KLend Fraction is U68F60. total_supply is available + borrowed - all three
@@ -344,7 +361,7 @@ func (s *Store) publishSameMintPost(ctx context.Context, lease SubmissionLease, 
 			return err
 		}
 		for _, p := range proof.positions {
-			metadata, e := json.Marshal(map[string]any{"amount_semantics": "kamino_obligation_collateral_deposited_amount", "source_collateral_amount_raw": fmt.Sprint(p.amount), "redeemable_source_liquidity_amount_raw": fmt.Sprint(p.redeemable), "redeemable_liquidity_amount_raw": fmt.Sprint(p.redeemable), "obligation": p.obligation, "obligation_exists": p.exists, "vault_liquidity_ata": proof.idleATA, "vault_liquidity_ata_exists": true, "idle_vault_liquidity_amount_raw": fmt.Sprint(proof.idleAmount), "vault_liquidity_amount_raw": fmt.Sprint(proof.idleAmount), "collateral_mint": p.collateralMint, "liquidity_token_program": proof.tokenProgram})
+			metadata, e := json.Marshal(map[string]any{"amount_semantics": "kamino_obligation_collateral_deposited_amount", "source_collateral_amount_raw": fmt.Sprint(p.amount), "redeemable_source_liquidity_amount_raw": fmt.Sprint(p.redeemable), "redeemable_liquidity_amount_raw": fmt.Sprint(p.redeemable), "obligation": p.obligation, "obligation_exists": p.exists, "vault_liquidity_ata": proof.idleATA, "vault_liquidity_ata_exists": proof.idleATAExists, "idle_vault_liquidity_amount_raw": fmt.Sprint(proof.idleAmount), "vault_liquidity_amount_raw": fmt.Sprint(proof.idleAmount), "collateral_mint": p.collateralMint, "liquidity_token_program": proof.tokenProgram})
 			if e != nil {
 				return e
 			}

@@ -90,3 +90,33 @@ func TestRPCCancellationInterruptsBackoff(t *testing.T) {
 		t.Fatalf("cancelled call made requests: calls=%d error=%v", calls, err)
 	}
 }
+
+// A closed KLend obligation reads back as JSON null. The finalized proof read
+// returns it as Account{Address} without weakening commitment or slot fence;
+// the strict read still refuses it.
+func TestFinalizedAccountsAllowingAbsentKeepsFenceAndReturnsNullAccount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Params []json.RawMessage `json:"params"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		var opts struct {
+			Commitment string `json:"commitment"`
+			Min        int64  `json:"minContextSlot"`
+		}
+		json.Unmarshal(req.Params[1], &opts)
+		if opts.Min != 1000 || opts.Commitment != "finalized" {
+			t.Errorf("weakened finalized fence: %+v", opts)
+		}
+		fmt.Fprint(w, `{"result":{"context":{"slot":1001},"value":[{"owner":"owner","lamports":1,"data":["AQ==","base64"]},null]}}`)
+	}))
+	defer server.Close()
+	c := NewRPCClient(server.URL)
+	slot, accounts, err := c.FinalizedAccountsAllowingAbsent(context.Background(), []string{"reserve", "closed-obligation"}, 1000)
+	if err != nil || slot != 1001 || len(accounts) != 2 || accounts[0].Owner != "owner" || accounts[1].Address != "closed-obligation" || accounts[1].Owner != "" || accounts[1].Lamports != 0 || accounts[1].Data != nil {
+		t.Fatalf("slot=%d accounts=%+v err=%v", slot, accounts, err)
+	}
+	if _, _, err = c.FinalizedAccounts(context.Background(), []string{"reserve", "closed-obligation"}, 1000); err == nil {
+		t.Fatal("strict finalized read accepted a null account")
+	}
+}

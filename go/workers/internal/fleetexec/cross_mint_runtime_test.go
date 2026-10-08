@@ -128,6 +128,44 @@ func TestCrossMintPostBankUsesOneSlotAndSourceMinimumDepositDecoder(t *testing.T
 	}
 }
 
+// A withdraw leg that empties the source makes KLend close the obligation in
+// the same transaction. The finalized bank must record that as a closed,
+// zero-collateral position rather than fail the whole proof forever; the
+// reserve and token anchors stay required.
+func TestCrossMintPostBankRecordsClosedSourceObligation(t *testing.T) {
+	f := mustSignedFixture(t)
+	c := sameMintPostContract{vault: f.FeePayer, source: f.SecondaryAccount, target: f.RecentBlockhash, mint: fleet.USDCMint, minimumSlot: 1000, sourceKind: "reserve_position"}
+	market, obligation, _, program, err := reservePostIdentity(postFixture(t, c, 1005, 0, 1051).accounts[c.source], c.mint, c.vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ata, err := associatedCustodyAccount(c.vault, c.mint, program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre := CrossMintBalanceAnchors{Credit: &CrossMintTokenAmount{Mint: c.mint, TokenAccount: ata, AmountRaw: 50}, Position: &CrossMintPositionAnchor{Reserve: c.source, Market: market, Obligation: obligation, ObligationExists: true, CollateralRaw: 1001}}
+	m := CrossMintMovement{VaultPubkey: c.vault, Phase: CrossMintSourceReserve, SourceMint: c.mint, CustodyMint: c.mint}
+	history := addressHistory{pages: map[string][]finalizedAddressSignature{ata: {{Signature: "receipt", Slot: 1000, ConfirmationStatus: "finalized"}}, obligation: {{Signature: "receipt", Slot: 1000, ConfirmationStatus: "finalized"}}}}
+	for _, missing := range []string{obligation, c.source, ata} {
+		reader := postFixture(t, c, 1005, 0, 1051)
+		delete(reader.accounts, obligation)
+		delete(reader.accounts, missing)
+		post, _, err := observeCrossMintBank(context.Background(), reader, history, m, pre, 1000, 1000, map[string]bool{"receipt": true}, true)
+		if missing != obligation {
+			if err == nil {
+				t.Fatalf("absent required account %s accepted", missing)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("closed source obligation blocked the finalized bank: %v", err)
+		}
+		if post.Position == nil || post.Position.ObligationExists || post.Position.CollateralRaw != 0 || post.Credit.AmountRaw != 1051 {
+			t.Fatalf("closed obligation not recorded as zero collateral: %+v", post)
+		}
+	}
+}
+
 func TestCrossMintRPCMetadataKeepsMissingValuesUnknown(t *testing.T) {
 	pre := rpcTokenBalance{AccountIndex: 0, Mint: fleet.USDCMint, Owner: "owner", ProgramID: sdk.TokenProgramID.String()}
 	pre.UITokenAmount.Amount = "1000"

@@ -127,9 +127,66 @@ func TestSameMintPostObservationKeepsResidualAndCoherentConversions(t *testing.T
 	}
 }
 
+// Mainnet 4x7SmHXG (vault 1027): the route withdrew the whole source deposit
+// and KLend closed the emptied source obligation 78dVfK in the same
+// transaction. The closed account proves zero collateral (Rust parity); it
+// never proves the deposit target, and reserves stay required.
+func TestSameMintPostObservationProvesClosedSourceObligationAsZero(t *testing.T) {
+	f := mustSignedFixture(t)
+	c := sameMintPostContract{vault: f.FeePayer, source: f.SecondaryAccount, target: f.RecentBlockhash, mint: fleet.USDCMint, minimumSlot: 1000, sourceKind: "reserve_position"}
+	closed := func() (fixtureAccounts, string, string) {
+		rpc := postFixture(t, c, 1001, 0, 11)
+		_, source, _, _, err := reservePostIdentity(rpc.accounts[c.source], c.mint, c.vault)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, target, _, _, err := reservePostIdentity(rpc.accounts[c.target], c.mint, c.vault)
+		if err != nil {
+			t.Fatal(err)
+		}
+		delete(rpc.accounts, source)
+		return rpc, source, target
+	}
+	rpc, _, target := closed()
+	proof, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond)
+	if err != nil {
+		t.Fatalf("closed source obligation blocked reconciliation: %v", err)
+	}
+	s, d := proof.positions[0], proof.positions[1]
+	if s.reserve != c.source || s.exists || s.amount != 0 || s.redeemable != 0 {
+		t.Fatalf("closed source is not a proven zero position: %+v", s)
+	}
+	if d.reserve != c.target || !d.exists || d.amount != 60 || d.redeemable != 120 || proof.idleAmount != 11 || !proof.idleATAExists {
+		t.Fatalf("target custody changed: %+v idle=%d", d, proof.idleAmount)
+	}
+
+	rpc, _, _ = closed()
+	delete(rpc.accounts, proof.idleATA)
+	if p, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond); err != nil || p.idleAmount != 0 || p.idleATAExists {
+		t.Fatalf("absent liquidity ATA is not a zero balance: %+v %v", p, err)
+	}
+
+	rpc, _, target = closed()
+	delete(rpc.accounts, target)
+	if _, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond); err == nil {
+		t.Fatal("absent target obligation accepted as a landed deposit")
+	}
+	for _, reserve := range []string{c.source, c.target} {
+		rpc, _, _ = closed()
+		delete(rpc.accounts, reserve)
+		if _, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond); err == nil {
+			t.Fatalf("absent reserve %s accepted", reserve)
+		}
+	}
+}
+
 func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *testing.T) {
-	for _, sourceKind := range []string{"reserve_position", "idle_vault_usdc"} {
-		t.Run(sourceKind, func(t *testing.T) {
+	for _, name := range []string{"reserve_position", "idle_vault_usdc", "closed_source_obligation"} {
+		sourceKind := name
+		if name == "closed_source_obligation" {
+			sourceKind = "reserve_position"
+		}
+		t.Run(name, func(t *testing.T) {
 			store, pool := integrationStore(t)
 			ctx := context.Background()
 			suffix := fmt.Sprint(time.Now().UnixNano())
@@ -184,7 +241,18 @@ func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *t
 			}
 			message, _ := tx.Message.MarshalBinary()
 			receipt := &TransactionReceipt{Slot: 1000, Signature: wire.TransactionSignature, SignedTransaction: wire.SignedTransaction, MessageB64: base64.StdEncoding.EncodeToString(message)}
-			proof, err := observeSameMintPost(ctx, postFixture(t, c, 1001, 7, 11), c, receipt, 400*time.Millisecond)
+			post := postFixture(t, c, 1001, 7, 11)
+			residual := int64(7)
+			if name == "closed_source_obligation" {
+				// KLend closed the emptied source obligation inside the route.
+				_, obligation, _, _, err := reservePostIdentity(post.accounts[source], fleet.USDCMint, vault)
+				if err != nil {
+					t.Fatal(err)
+				}
+				delete(post.accounts, obligation)
+				residual = 0
+			}
+			proof, err := observeSameMintPost(ctx, post, c, receipt, 400*time.Millisecond)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -208,8 +276,11 @@ func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *t
 				t.Fatalf("unobserved reserve overwritten: %d %v", amount, err)
 			}
 			if sourceKind == "reserve_position" {
-				if err := pool.QueryRow(ctx, `SELECT amount_raw FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1 AND reserve=$2`, vaultID, source).Scan(&amount); err != nil || amount != 7 {
-					t.Fatalf("source residual erased: %d %v", amount, err)
+				if err := pool.QueryRow(ctx, `SELECT amount_raw FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1 AND reserve=$2`, vaultID, source).Scan(&amount); err != nil || amount != residual {
+					t.Fatalf("source position %d, want %d: %v", amount, residual, err)
+				}
+				if err := pool.QueryRow(ctx, `SELECT amount_raw FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1 AND reserve=$2`, vaultID, target).Scan(&amount); err != nil || amount != 60 {
+					t.Fatalf("target position %d, want deposited 60: %v", amount, err)
 				}
 			} else {
 				if err := pool.QueryRow(ctx, `SELECT amount_raw FROM loyal_yield.vault_idle_token_balances_current WHERE vault_id=$1 AND mint=$2`, vaultID, fleet.USDCMint).Scan(&amount); err != nil || amount != 11 {

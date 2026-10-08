@@ -273,7 +273,9 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 		history[a.TokenAccount] = statuses
 	}
 	if p := anchors.Position; p != nil {
-		observed, actual, e := v.accounts.FinalizedAccounts(ctx, []string{p.Reserve, p.Obligation}, slot)
+		// The anchor may record a closed obligation (full source exit); the
+		// reserve stays required by its envelope check below.
+		observed, actual, e := v.accounts.FinalizedAccountsAllowingAbsent(ctx, []string{p.Reserve, p.Obligation}, slot)
 		if e != nil {
 			return nil, e
 		}
@@ -289,7 +291,7 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 		if e != nil || market != p.Market || obligation != p.Obligation {
 			return nil, errors.New("cross-mint position binding changed")
 		}
-		exists := actual[1].Lamports != 0 || len(actual[1].Data) != 0 || actual[1].Owner != ""
+		exists := accountExists(actual[1])
 		amount := int64(0)
 		if exists {
 			amount, e = obligationCollateral(actual[1], p.Market, owner, p.Reserve)
