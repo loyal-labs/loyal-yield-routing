@@ -88,7 +88,17 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 			if _, err = tx.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET chain_status=$2,chain_observation_slot=$3,last_seen_at=now(),last_seen_slot=GREATEST(last_seen_slot,$3) WHERE id=$1`, request.TargetID, status, o.ObservedSlot); err != nil {
 				return err
 			}
-			if status == "active" && (bootstrap == nil || *bootstrap != target.SetupGeneration) && floor != nil {
+			// The initial surplus is automatic work and needs the Earn route as
+			// its destination, as every projected lot does: a lot scheduled on an
+			// unrouted vault is never dispatched, skipped or closed. Bootstrap
+			// waits for the route; the wallet change of the first Earn deposit
+			// raises the next control observation. (Intentional correction of the
+			// Yield store's bootstrap, which wrote lots on unrouted vaults.)
+			var routed bool
+			if err = tx.QueryRow(ctx, `SELECT `+targetRoutedSQL+` FROM loyal_yield.balance_sweep_targets AS target WHERE target.id=$1`, request.TargetID).Scan(&routed); err != nil {
+				return err
+			}
+			if status == "active" && routed && (bootstrap == nil || *bootstrap != target.SetupGeneration) && floor != nil {
 				if *floor < 0 {
 					return errors.New("control target protection floor is negative")
 				}

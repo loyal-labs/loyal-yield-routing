@@ -225,3 +225,41 @@ func TestControlClosedTargetCannotResurrect(t *testing.T) {
 		t.Fatalf("closed target status=%s err=%v", status, err)
 	}
 }
+
+// Bootstrap on a vault without an Earn route would schedule work dispatch can
+// never select; it waits for the route instead and then schedules the
+// surplus observed at that point.
+func TestControlBootstrapWaitsForEarnRoute(t *testing.T) {
+	s := integrationStore(t)
+	ctx := context.Background()
+	target := seedControlTarget(t, s, "control-unrouted")
+	setRoute := func(active bool) {
+		t.Helper()
+		if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.route_policies AS policy SET active=$2 FROM loyal_yield.managed_vaults AS vault, loyal_yield.balance_sweep_targets AS target WHERE target.id=$1 AND vault.settings=target.settings AND policy.id=vault.active_policy_id`, target.TargetID, active); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := func() (lots int, bootstrap *int64) {
+		t.Helper()
+		if err := s.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM loyal_yield.balance_sweep_surplus_lots WHERE target_id=$1),bootstrap_generation FROM loyal_yield.balance_sweep_targets WHERE id=$1`, target.TargetID).Scan(&lots, &bootstrap); err != nil {
+			t.Fatal(err)
+		}
+		return lots, bootstrap
+	}
+	o := ControlObservation{Target: target, ObservedSlot: 991001, PolicyExists: true, DelegationExists: true, PolicyValid: true, AuthorityValid: true, DelegationValid: true, TokenDelegateValid: true, WalletBalanceRaw: 9_000_000, WalletAccountDataSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	setRoute(false)
+	if err := s.ApplyControlObservation(ctx, claimControlRequest(t, s, target.TargetID, 991000, "control-unrouted"), "control-unrouted", o); err != nil {
+		t.Fatal(err)
+	}
+	if lots, bootstrap := state(); lots != 0 || bootstrap != nil {
+		t.Fatalf("unrouted bootstrap lots=%d generation=%v, want no lot and bootstrap pending", lots, bootstrap)
+	}
+	setRoute(true)
+	o.ObservedSlot = 991003
+	if err := s.ApplyControlObservation(ctx, claimControlRequest(t, s, target.TargetID, 991002, "control-routed"), "control-routed", o); err != nil {
+		t.Fatal(err)
+	}
+	if lots, bootstrap := state(); lots != 1 || bootstrap == nil || *bootstrap != 3 {
+		t.Fatalf("routed bootstrap lots=%d generation=%v, want one lot at generation 3", lots, bootstrap)
+	}
+}
