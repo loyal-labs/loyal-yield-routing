@@ -256,9 +256,15 @@ shortfall. The default position reader loads all four exact route positions
 from confirmed RPC; `--positions <POSITION_EVIDENCE_JSON>` is allowed only for
 a separately produced route-bound position artifact.
 
-The shared Earn adapter is a replay artifact, not another planner. Produce it
-from the exact Rust observation/planner replay and bind it to the same lifecycle
-and request-protected context:
+The shared Earn adapter is a replay artifact, not another planner. Its
+`replayInput` holds three saved `loyal-evidence --kind voltr` inputs (confirmed
+Voltr observation, market epoch, optimizer epoch row, vault id, clock): the
+source observation at the source withdrawal's protected-before context, the
+destination observation at the idle readback context, and the same vault with
+the scanner's positive withdrawal demand. The tool replays each through the Go
+planner (`go run ./cmd/loyal-evidence -kind voltr` -> `fleet.PlanVoltr`; Go
+must be installed) and binds the result to the same lifecycle and
+request-protected context:
 
 ```sh
 bun src/cli.ts verify earn-adapter \
@@ -266,9 +272,12 @@ bun src/cli.ts verify earn-adapter \
   --artifact-out ../../docs/evidence/backyard-voltr-four-market/earn-adapter-confirmed-v1.json
 ```
 
-The producer input must use the maintained `loyal-yield-orchestrator` and
-`loyal-yield-store` outputs. Hand-editing a replay or claiming that normal Earn
-optimization restored a withdrawal is rejected by the final verifier.
+The planner must choose a zero-demand `yield_optimization` withdrawal of the
+exact amount out of the source strategy, then an `idle_allocation` of the same
+amount into the destination, and positive demand must displace optimization.
+The verifier replays the persisted input again and rejects any byte of drift,
+including a changed Go planner source. Hand-editing a replay or claiming that
+normal Earn optimization restored a withdrawal is rejected.
 
 ## Lifecycle evidence
 
