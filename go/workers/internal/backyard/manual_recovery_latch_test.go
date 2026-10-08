@@ -48,9 +48,9 @@ func TestManualRecoveryLatchLifecycleAgainstDatabase(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_operations WHERE route_key = $1`, routeKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state)
-		 VALUES($1,'{"generation":1,"cycle":1}')
-		 ON CONFLICT (route_key) DO UPDATE SET state = '{"generation":1,"cycle":1}', lease_owner = NULL, lease_expires_at = NULL`, routeKey); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version)
+		 VALUES($1,'{"generation":1,"cycle":1}',1)
+		 ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = EXCLUDED.state_version, lease_owner = NULL, lease_expires_at = NULL`, routeKey); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.AcquireRouteLease(ctx, routeKey, "latch-facts-writer", time.Minute); err != nil {
@@ -383,8 +383,8 @@ func TestManualRecoveryDerivedLatchBlocksWithoutLatchRow(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_operations WHERE route_key = $1`, productionRouteKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,'{"generation":1,"cycle":1}')
-		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1,"cycle":1}',1)
+		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = EXCLUDED.state_version, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations
@@ -551,8 +551,8 @@ func TestManualRecoveryConstructionRefreshPersistsHoldBeforeDispatch(t *testing.
 	if _, err := db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_operations WHERE route_key = $1`, productionRouteKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,'{"generation":1,"cycle":1}')
-		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1,"cycle":1}',1)
+		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = EXCLUDED.state_version, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.AcquireRouteLease(ctx, productionRouteKey, "manual-recovery-refresh", time.Minute); err != nil {
