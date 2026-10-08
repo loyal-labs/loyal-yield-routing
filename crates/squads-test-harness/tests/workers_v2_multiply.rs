@@ -1,5 +1,3 @@
-#[path = "workers_v2_multiply/abi.rs"]
-mod abi;
 #[path = "workers_v2_multiply/bank.rs"]
 mod bank;
 // Independent Squads/SPL execution receipt for the Go wallet-claim parser.
