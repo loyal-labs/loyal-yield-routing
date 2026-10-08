@@ -36,7 +36,7 @@ receivers:
           {{ if eq .Status "firing" }}Impact: {{ if .Annotations.impact }}{{ .Annotations.impact | html }}{{ else }}Worker reliability may be affected; inspect the condition above.{{ end }}
           Next action: {{ if .Annotations.action }}{{ .Annotations.action | html }}{{ else }}Check the worker state and logs using the runbook.{{ end }}{{ else }}The alert condition is no longer firing. This does not confirm that a withdrawal was paid.
           Next action: Verify fresh worker health and confirmed on-chain withdrawal state.{{ end }}
-          <a href="https://github.com/loyal-labs/loyal-yield-routing/blob/ca424e3f3f07e0a09827d195e33a7f9e820bef9c/deploy/hetzner/README.md">Runbook</a>
+          <a href="https://github.com/loyal-labs/loyal-yield-routing/blob/e6165b8cffe97acf51ecfa53559da25870ccd546/deploy/hetzner/README.md#withdrawal-attention">Runbook</a>
 
           {{ end }}
   # Empty until the external dead man's switch exists. Then add:
