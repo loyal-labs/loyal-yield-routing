@@ -21,7 +21,7 @@ import {
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const AUTH_KIND = "backyard-voltr-four-market-policy-authorization";
-const AUTH_PATH = "docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v25.json";
+const AUTH_PATH = "docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v26.json";
 const SOURCE_PATHS = [
   "Cargo.toml",
   "Cargo.lock",
