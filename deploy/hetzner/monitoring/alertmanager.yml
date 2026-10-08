@@ -39,7 +39,7 @@ receivers:
           Impact: {{ if .Annotations.impact }}{{ .Annotations.impact | html }}{{ else }}Impact is unclassified. Identify the affected component from the rule and context above; do not infer transaction failure or payment.{{ end }}
           Next: {{ if .Annotations.action }}{{ .Annotations.action | html }}{{ else }}Find this rule and its first matching event at the alert time. Check the component's current status and dependencies; verify any in-flight transaction before retrying.{{ end }}{{ else }}Signal: This alert condition is no longer firing.
           Verify: {{ if .Annotations.recovery }}{{ .Annotations.recovery | html }}{{ else }}Confirm fresh telemetry and recovery of the component named above. Missing data or an expired alert window is not proof that the cause was fixed.{{ end }}{{ end }}
-          <a href="https://github.com/loyal-labs/loyal-yield-routing/blob/e6165b8cffe97acf51ecfa53559da25870ccd546/deploy/hetzner/README.md">Alert runbook</a>
+          <a href="https://github.com/loyal-labs/loyal-yield-routing/blob/d0e22283b67657e11d064855fb4820e76dc3b174/deploy/hetzner/README.md#backyard-alert-response">Alert runbook</a>
 
           {{ end }}
   # Empty until the external dead man's switch exists. Then add:
