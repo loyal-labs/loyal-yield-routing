@@ -152,8 +152,7 @@ func TestInitializerAutoScopeMigrationExpandsOnlyInitializerScope(t *testing.T) 
 // database on the already-running disposable Postgres instance and shapes its
 // journal from the actual shipped migration files, so the candidate AUTO
 // initializer rows below are journaled through the real expanded constraint
-// while the shared test database — which stays on migration 0079 — is never
-// touched. The database is dropped on cleanup.
+// without changing the shared test database. The database is dropped on cleanup.
 func openInitializerAutoScopeServiceDatabase(t *testing.T, name string, timeout time.Duration) (context.Context, context.CancelFunc, *Database) {
 	t.Helper()
 	url := os.Getenv("PHASE3_TEST_DATABASE_URL")
@@ -225,12 +224,16 @@ func openInitializerAutoScopeServiceDatabase(t *testing.T, name string, timeout 
 		cancel()
 		t.Fatal(err)
 	}
-	// The signed-wire fence columns the real nonterminal load reads, in the
-	// shipped 0053 shape; the manual-recovery stand-in predates them.
+	// The build, signed-wire and reconciliation columns the real lifecycle
+	// reads and writes; the manual-recovery stand-in predates them.
 	if _, err = db.pool.Exec(ctx, `ALTER TABLE loyal_yield.multiply_operations
+	 ADD COLUMN IF NOT EXISTS message_sha256 text CHECK (message_sha256 IS NULL OR message_sha256 ~ '^[0-9a-f]{64}$'),
 	 ADD COLUMN IF NOT EXISTS signed_wire_sha256 text CHECK (signed_wire_sha256 IS NULL OR signed_wire_sha256 ~ '^[0-9a-f]{64}$'),
 	 ADD COLUMN IF NOT EXISTS recent_blockhash text,
-	 ADD COLUMN IF NOT EXISTS last_valid_block_height bigint`); err != nil {
+	 ADD COLUMN IF NOT EXISTS last_valid_block_height bigint,
+	 ADD COLUMN IF NOT EXISTS confirmation_status text,
+	 ADD COLUMN IF NOT EXISTS reconciliation_sha256 text,
+	 ADD COLUMN IF NOT EXISTS reconciled_effects jsonb`); err != nil {
 		db.Close()
 		cancel()
 		t.Fatal(err)
@@ -522,6 +525,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		// baseline: nothing has been consumed since.
 		binary.LittleEndian.PutUint64(accountAt(batch, bridgeIdleATA).Data[64:72], 2_000_000)
 		binary.LittleEndian.PutUint64(accountAt(batch, bridgeVoltrVault).Data[168:176], 53-11+2_000_000)
+		binary.LittleEndian.PutUint16(accountAt(batch, bridgeVoltrVault).Data[514:516], uint16(approvedAdminPerformanceFeeBPS))
 		binary.LittleEndian.PutUint64(accountAt(batch, bridgeSquadsATA).Data[64:72], 0)
 		binary.LittleEndian.PutUint64(accountAt(batch, reportTicketPDA).Data[48:56], 0)
 		// The strategy receipt reports the just-now book the real chain books at

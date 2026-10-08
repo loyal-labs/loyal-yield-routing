@@ -102,9 +102,10 @@ func (c *slotClock) jupiter(next http.RoundTripper, latency time.Duration) http.
 // This drives the real production bridge admission (exit pricing and the
 // locked persist) and the real build gate on a chain clock where an RPC round
 // trip costs 1/4 slot and a Jupiter round trip 7/8 slot (100/350 ms at 400 ms
-// slots, scaled 10x down; the serial pricer then spends the ~25 slots seen
-// live), then simulates and sends. The report must still be inside its age
-// limit, and the send inside the admitted valuation window.
+// slots), then simulates and sends. Keep real-scale durations so host CPU and
+// race instrumentation overhead are not magnified into simulated chain slots.
+// The report must still be inside its age limit, and the send inside the
+// admitted valuation window.
 func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 60*time.Second)
 	defer cancel()
@@ -148,7 +149,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const slotTime, rpcLatency, jupiterLatency = 40 * time.Millisecond, 10 * time.Millisecond, 35 * time.Millisecond
+	const slotTime, rpcLatency, jupiterLatency = 400 * time.Millisecond, 100 * time.Millisecond, 350 * time.Millisecond
 	// Observation, preparation, custody proof and decision record already
 	// spent two slots of the tick when admission starts.
 	clock := &slotClock{start: time.Now(), origin: s.Slot + 2, slotTime: slotTime}

@@ -358,51 +358,6 @@ func seedAutoInitializerReconcilingOperation(t *testing.T, ctx context.Context, 
 	return id, op
 }
 
-// relaxInitializerScopeForSyntheticTest captures migration 0079's
-// multiply_operations_backyard_initializer_scope definition, drops it for the
-// synthetic candidate journal rows, and registers a cleanup that deletes
-// exactly the route keys the owning test created — never a wildcard prefix —
-// and restores the constraint exactly as migration 0079 created it. Every
-// cleanup step reports its error, so a passing test guarantees the shared
-// fixture database keeps no synthetic AUTO journal rows and never keeps the
-// initializer scope absent. The relaxation is synthetic-only: the constraint
-// is a remaining deployment gate, not production schema proof. The keys
-// accessor is read at cleanup time so tests that seed after dropping the
-// constraint can hand back the keys they created.
-func relaxInitializerScopeForSyntheticTest(t *testing.T, ctx context.Context, db *Database, routeKeys func() []string) {
-	t.Helper()
-	var def string
-	if err := db.pool.QueryRow(ctx, `SELECT pg_get_constraintdef(oid) FROM pg_constraint
-	 WHERE conrelid='loyal_yield.multiply_operations'::regclass AND conname='multiply_operations_backyard_initializer_scope'`).Scan(&def); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		for _, key := range routeKeys() {
-			if _, err := db.pool.Exec(context.Background(), `DELETE FROM loyal_yield.multiply_operations WHERE route_key=$1`, key); err != nil {
-				t.Errorf("cleanup: delete synthetic initializer operations for %s: %v", key, err)
-			}
-			if _, err := db.pool.Exec(context.Background(), `DELETE FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key); err != nil {
-				t.Errorf("cleanup: delete synthetic initializer route state for %s: %v", key, err)
-			}
-		}
-		if _, err := db.pool.Exec(context.Background(), `ALTER TABLE loyal_yield.multiply_operations DROP CONSTRAINT IF EXISTS multiply_operations_backyard_initializer_scope`); err != nil {
-			t.Errorf("cleanup: drop the relaxed initializer scope: %v", err)
-		}
-		if _, err := db.pool.Exec(context.Background(), `ALTER TABLE loyal_yield.multiply_operations ADD CONSTRAINT multiply_operations_backyard_initializer_scope `+def); err != nil {
-			t.Errorf("cleanup: restore the initializer scope constraint: %v", err)
-			return
-		}
-		var restored string
-		if err := db.pool.QueryRow(context.Background(), `SELECT pg_get_constraintdef(oid) FROM pg_constraint
-		 WHERE conrelid='loyal_yield.multiply_operations'::regclass AND conname='multiply_operations_backyard_initializer_scope'`).Scan(&restored); err != nil || restored != def {
-			t.Errorf("cleanup: initializer scope definition not restored: %v %q", err, restored)
-		}
-	})
-	if _, err := db.pool.Exec(ctx, `ALTER TABLE loyal_yield.multiply_operations DROP CONSTRAINT multiply_operations_backyard_initializer_scope`); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func autoRecoverySettlementState(t *testing.T, ctx context.Context, db *Database, id string) (string, int, int64) {
 	t.Helper()
 	var status string
@@ -424,27 +379,9 @@ func autoRecoverySettlementState(t *testing.T, ctx context.Context, db *Database
 // public embedded-manifest settlement nor a replay after completion can settle
 // or release a second time.
 func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
+	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_locked_settlement_test", 30*time.Second)
 	defer cancel()
-	// Close runs after the constraint restore (registered inside relax...),
-	// so the shared fixture database never keeps the initializer scope absent.
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.pool.Exec(ctx, `ALTER TABLE loyal_yield.multiply_operations
-	 ADD COLUMN IF NOT EXISTS signed_wire bytea,
-	 ADD COLUMN IF NOT EXISTS signed_wire_sha256 text,
-	 ADD COLUMN IF NOT EXISTS confirmation_status text,
-	 ADD COLUMN IF NOT EXISTS reconciliation_sha256 text,
-	 ADD COLUMN IF NOT EXISTS reconciled_effects jsonb`); err != nil {
-		t.Fatal(err)
-	}
-	// Production gate (reported, not redesigned): migration 0079's
-	// multiply_operations_backyard_initializer_scope still restricts
-	// INITIALIZE_KAMINO_OBLIGATION rows to the three installed selector lanes,
-	// so a candidate AUTO journal row cannot exist in production yet. The
-	// relaxation below is synthetic-fixture-only, scoped to this test's own
-	// route key, and restored with reported errors on cleanup.
 	routeKey := "auto-initializer-recovery-settlement-" + time.Now().Format("150405.000000000")
-	relaxInitializerScopeForSyntheticTest(t, ctx, db, func() []string { return []string{routeKey} })
 	f := newAutoInitializerRecoveryFixture(t)
 	id, _ := seedAutoInitializerReconcilingOperation(t, ctx, db, f, routeKey)
 	defer db.ReleaseRouteLease(ctx)
@@ -524,21 +461,9 @@ func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 // recovery stops. The public embedded-manifest entrypoint keeps the candidate
 // lane closed at decode.
 func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
+	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_restart_recovery_test", 30*time.Second)
 	defer cancel()
-	// Close runs after the constraint restore (registered inside relax...),
-	// so the shared fixture database never keeps the initializer scope absent.
-	t.Cleanup(func() { db.Close() })
-	if _, err := db.pool.Exec(ctx, `ALTER TABLE loyal_yield.multiply_operations
-	 ADD COLUMN IF NOT EXISTS signed_wire bytea,
-	 ADD COLUMN IF NOT EXISTS signed_wire_sha256 text,
-	 ADD COLUMN IF NOT EXISTS confirmation_status text,
-	 ADD COLUMN IF NOT EXISTS reconciliation_sha256 text,
-	 ADD COLUMN IF NOT EXISTS reconciled_effects jsonb`); err != nil {
-		t.Fatal(err)
-	}
 	var routeKeys []string
-	relaxInitializerScopeForSyntheticTest(t, ctx, db, func() []string { return routeKeys })
 
 	newFixture := func() (string, PersistedOperation, autoInitializerRecoveryFixture) {
 		f := newAutoInitializerRecoveryFixture(t)
@@ -640,14 +565,10 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 // embedded manifest, and the produced build effects decode only through that
 // same manifest on recovery.
 func TestAutoInitializerBuildPersistsThroughReviewedManifest(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
+	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_build_persistence_test", 30*time.Second)
 	defer cancel()
-	// Close runs after the constraint restore (registered inside relax...),
-	// so the shared fixture database never keeps the initializer scope absent.
-	t.Cleanup(func() { db.Close() })
 	f := newAutoInitializerRecoveryFixture(t)
 	key := "auto-initializer-build-" + time.Now().Format("150405.000000000")
-	relaxInitializerScopeForSyntheticTest(t, ctx, db, func() []string { return []string{key} })
 	id := key + "-op"
 	budget := emptyTestBudget()
 	state, _ := json.Marshal(map[string]any{"generation": 1, "phase3": budget})

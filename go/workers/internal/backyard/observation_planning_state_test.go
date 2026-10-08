@@ -86,8 +86,27 @@ func TestRoutePlanningStateSharesValidatedAuthorityAndSelectors(t *testing.T) {
 			if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set($2::jsonb,ARRAY[$3]::text[],'{}'::jsonb) WHERE route_key=$1`, key, raw, field); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.readRoutePlanningState(ctx, key, true); err == nil {
-				t.Fatal("accepted malformed planning authority")
+			planning, err := db.readRoutePlanningState(ctx, key, true)
+			if field != "selectorEntry" {
+				if err == nil {
+					t.Fatal("accepted malformed planning authority")
+				}
+				return
+			}
+			if err != nil || planning.entry != nil {
+				t.Fatalf("invalid entry retained planning authority: %+v %v", planning, err)
+			}
+			manifest := requireEmbeddedInstalledBinding(t)
+			snapshot := initializationPlanningFixture(entry.Lane).Snapshot
+			snapshot.SelectorBorrowRaw = 1
+			if err = manifest.applySelectorEntry(&snapshot, planning.entry, time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+			if !snapshot.SelectorEntryPaused || snapshot.SelectorEntryEquityRaw != 0 || snapshot.SelectorBorrowRaw != 0 || admittedEntryAllocationReady(snapshot) {
+				t.Fatalf("invalid entry authorized allocation: %+v", snapshot)
+			}
+			if decision := manifest.DecideOnManifest(snapshot); decision.Action == InitializeKaminoObligation || decision.Action == VoltrAllocateToSquads {
+				t.Fatalf("invalid entry authorized a fresh entry: %+v", decision)
 			}
 		})
 	}
