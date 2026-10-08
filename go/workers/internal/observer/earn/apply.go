@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
@@ -953,6 +954,10 @@ func applyCleanup(ctx context.Context, tx pgx.Tx, m EarnCleanupMutation) error {
 			return err
 		}
 	}
-	_, err = tx.Exec(ctx, `UPDATE loyal_yield.managed_vaults SET active = FALSE, last_seen_at = now() WHERE id = $1`, vaultID)
+	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.managed_vaults SET active = FALSE, last_seen_at = now() WHERE id = $1`, vaultID); err != nil {
+		return err
+	}
+	// The vault's Autodeposit work had only this route as its destination.
+	_, err = autodeposit.SkipUnroutedVaultSlots(ctx, tx, m.Settings, int16(m.VaultIndex), m.VaultPubkey)
 	return err
 }
