@@ -130,9 +130,9 @@ tests:
       exp_annotations:
         action: Inspect the persisted operation and chain confirmation/finalized-expiry evidence. Reconcile any landed effects and retain ambiguous reservations before any retry or replacement.
         impact: Execution or confirmation failed or remains uncertain; funds must not be assumed unsent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: fleet has repeated failed attempts with expired in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'fleet failure incident: expired'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
 - interval: 1m
   input_series:
   - series: loyal_autodeposit_oldest_due_lot_age_seconds{unit="loyal-retail.service"}
@@ -719,9 +719,9 @@ tests:
       exp_annotations:
         action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with build_token_valuation_unavailable in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: build_token_valuation_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: confirmed_observation_unavailable
@@ -729,9 +729,9 @@ tests:
       exp_annotations:
         action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with confirmed_observation_unavailable in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: confirmed_observation_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: database_08006
@@ -739,9 +739,9 @@ tests:
       exp_annotations:
         action: Check the SQLSTATE/code, database connectivity, query cancellations and blocking locks at the alert time. Preserve the operation journal; do not delete rows or force-release locks to resume work.
         impact: Database admission or state reads are failing; strategy decisions may not be refreshed.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with database_08006 in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: database_08006'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: debt_clear_confirmation_required
@@ -749,9 +749,9 @@ tests:
       exp_annotations:
         action: Check the current withdrawal demand, safe partial path, and applicable consent or verified emergency evidence. Do not authorize full repayment merely because a partial plan failed.
         impact: Debt repayment is blocked by a consent, scope or necessity-proof guard.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with debt_clear_confirmation_required in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: debt_clear_confirmation_required'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: duplicate_move_quote
@@ -759,9 +759,9 @@ tests:
       exp_annotations:
         action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with duplicate_move_quote in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: duplicate_move_quote'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: finalized_transaction_failed
@@ -769,9 +769,9 @@ tests:
       exp_annotations:
         action: Inspect the persisted operation and chain confirmation/finalized-expiry evidence. Reconcile any landed effects and retain ambiguous reservations before any retry or replacement.
         impact: Execution or confirmation failed or remains uncertain; funds must not be assumed unsent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with finalized_transaction_failed in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: finalized_transaction_failed'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: fresh_build_cost_exceeds_reservation
@@ -779,9 +779,9 @@ tests:
       exp_annotations:
         action: Compare the exact code and current quote with recorded reservations and configured limits. Investigate stale evidence or configuration drift; do not increase limits or release reservations solely to clear the page.
         impact: A cost, capital, policy or reservation guard rejected the attempted work.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with fresh_build_cost_exceeds_reservation in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: fresh_build_cost_exceeds_reservation'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: initializer_native_funding_unavailable
@@ -789,9 +789,9 @@ tests:
       exp_annotations:
         action: Check the initializer payer SOL balance, rent and fee estimate, and funding configuration. Obtain approval for any required funding; do not raise policy or cost limits to bypass the guard.
         impact: Account initialization cannot proceed because required native funding is unavailable.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with initializer_native_funding_unavailable in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: initializer_native_funding_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: invalid_pilot_canary_request
@@ -799,9 +799,9 @@ tests:
       exp_annotations:
         action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
         impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with invalid_pilot_canary_request in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: invalid_pilot_canary_request'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: invalid_selector_route_state
@@ -809,9 +809,9 @@ tests:
       exp_annotations:
         action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
         impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with invalid_selector_route_state in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: invalid_selector_route_state'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: manual_recovery_latched
@@ -819,9 +819,9 @@ tests:
       exp_annotations:
         action: Read the persisted recovery reason, operation status and chain finality. Resolve the underlying condition using the recovery runbook; do not clear the latch just to silence the alert.
         impact: A recovery guard requires operator review before normal work can safely continue.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with manual_recovery_latched in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: manual_recovery_latched'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: new_unclassified_guard
@@ -829,9 +829,9 @@ tests:
       exp_annotations:
         action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
         impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with new_unclassified_guard in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: new_unclassified_guard'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: pilot_canary_history_full
@@ -839,9 +839,9 @@ tests:
       exp_annotations:
         action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
         impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with pilot_canary_history_full in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: pilot_canary_history_full'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: pilot_canary_request_id_reused
@@ -849,9 +849,9 @@ tests:
       exp_annotations:
         action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
         impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with pilot_canary_request_id_reused in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: pilot_canary_request_id_reused'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: route_lease_lost
@@ -859,9 +859,9 @@ tests:
       exp_annotations:
         action: Check the current lease owner, fencing token and competing worker processes. Restore one intended owner through the runbook; never force a lease while signed work may still land.
         impact: The worker cannot establish exclusive route ownership, so guarded work may stop.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with route_lease_lost in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: route_lease_lost'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_allocation_bind_failed
@@ -869,9 +869,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_allocation_bind_failed in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_allocation_bind_failed'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_allocation_not_bound
@@ -879,9 +879,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_allocation_not_bound in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_allocation_not_bound'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_already_allocated
@@ -889,9 +889,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_already_allocated in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_already_allocated'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_authority_mismatch
@@ -899,9 +899,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_authority_mismatch in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_authority_mismatch'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_borrow_fee_exceeded
@@ -909,9 +909,9 @@ tests:
       exp_annotations:
         action: Compare the exact code and current quote with recorded reservations and configured limits. Investigate stale evidence or configuration drift; do not increase limits or release reservations solely to clear the page.
         impact: A cost, capital, policy or reservation guard rejected the attempted work.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_borrow_fee_exceeded in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_borrow_fee_exceeded'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_borrow_mismatch
@@ -919,9 +919,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_borrow_mismatch in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_borrow_mismatch'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_borrow_unavailable
@@ -929,9 +929,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_borrow_unavailable in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_borrow_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_cash_changed
@@ -939,9 +939,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_cash_changed in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_cash_changed'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_has_outstanding_exit
@@ -949,9 +949,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_has_outstanding_exit in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_has_outstanding_exit'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_lane_deferred
@@ -959,9 +959,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_lane_deferred in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_lane_deferred'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_quote_expired
@@ -969,9 +969,9 @@ tests:
       exp_annotations:
         action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_quote_expired in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_quote_expired'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_quote_missing
@@ -979,9 +979,9 @@ tests:
       exp_annotations:
         action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_quote_missing in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_quote_missing'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_entry_requires_reconciled_idle
@@ -989,9 +989,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_entry_requires_reconciled_idle in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_entry_requires_reconciled_idle'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_evaluate_lock_timeout
@@ -999,9 +999,9 @@ tests:
       exp_annotations:
         action: Check the SQLSTATE/code, database connectivity, query cancellations and blocking locks at the alert time. Preserve the operation journal; do not delete rows or force-release locks to resume work.
         impact: Database admission or state reads are failing; strategy decisions may not be refreshed.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_evaluate_lock_timeout in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_lock_timeout'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_evaluate_query_cancelled
@@ -1009,9 +1009,9 @@ tests:
       exp_annotations:
         action: Check the SQLSTATE/code, database connectivity, query cancellations and blocking locks at the alert time. Preserve the operation journal; do not delete rows or force-release locks to resume work.
         impact: Database admission or state reads are failing; strategy decisions may not be refreshed.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_evaluate_query_cancelled in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_query_cancelled'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_evaluate_route_fence_unavailable
@@ -1019,9 +1019,9 @@ tests:
       exp_annotations:
         action: Check the current lease owner, fencing token and competing worker processes. Restore one intended owner through the runbook; never force a lease while signed work may still land.
         impact: The worker cannot establish exclusive route ownership, so guarded work may stop.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_evaluate_route_fence_unavailable in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_route_fence_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_evaluate_timeout
@@ -1029,9 +1029,9 @@ tests:
       exp_annotations:
         action: Check RPC and database latency, lock waits and the first timed-out stage. Inspect any in-flight signature before retrying; confirm successful work resumes after the dependency recovers.
         impact: Worker or selector attempts are timing out; this does not establish whether a transaction landed.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_evaluate_timeout in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_timeout'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_evaluate_unavailable
@@ -1039,9 +1039,9 @@ tests:
       exp_annotations:
         action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
         impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_evaluate_unavailable in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_evaluation_not_current
@@ -1049,9 +1049,9 @@ tests:
       exp_annotations:
         action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_evaluation_not_current in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluation_not_current'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_fee_evidence_unavailable
@@ -1059,9 +1059,9 @@ tests:
       exp_annotations:
         action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_fee_evidence_unavailable in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_fee_evidence_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_finish_current_work_first
@@ -1069,9 +1069,9 @@ tests:
       exp_annotations:
         action: Check the deployed worker version and whether this is an old metric window. Inspect the in-flight operation if it is stalled; do not cancel it or restart solely for this expected deferral.
         impact: The selector is waiting for existing work; this code alone is not a failed transaction.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_finish_current_work_first in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_finish_current_work_first'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_manual_recovery_active
@@ -1079,9 +1079,9 @@ tests:
       exp_annotations:
         action: Read the persisted recovery reason, operation status and chain finality. Resolve the underlying condition using the recovery runbook; do not clear the latch just to silence the alert.
         impact: A recovery guard requires operator review before normal work can safely continue.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_manual_recovery_active in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_manual_recovery_active'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_requires_active_pilot
@@ -1089,9 +1089,9 @@ tests:
       exp_annotations:
         action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
         impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_requires_active_pilot in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_requires_active_pilot'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_resolve_capital_recovery_first
@@ -1099,9 +1099,9 @@ tests:
       exp_annotations:
         action: Compare the exact code and current quote with recorded reservations and configured limits. Investigate stale evidence or configuration drift; do not increase limits or release reservations solely to clear the page.
         impact: A cost, capital, policy or reservation guard rejected the attempted work.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_resolve_capital_recovery_first in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_resolve_capital_recovery_first'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_state_changed_during_quote
@@ -1109,9 +1109,9 @@ tests:
       exp_annotations:
         action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_state_changed_during_quote in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_state_changed_during_quote'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: selector_unwind_quote_missing
@@ -1119,9 +1119,9 @@ tests:
       exp_annotations:
         action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with selector_unwind_quote_missing in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_unwind_quote_missing'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: timeout
@@ -1129,9 +1129,9 @@ tests:
       exp_annotations:
         action: Check RPC and database latency, lock waits and the first timed-out stage. Inspect any in-flight signature before retrying; confirm successful work resumes after the dependency recovers.
         impact: Worker or selector attempts are timing out; this does not establish whether a transaction landed.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with timeout in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: timeout'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: unwind_requires_existing_exit_reservation
@@ -1139,9 +1139,9 @@ tests:
       exp_annotations:
         action: Compare the exact code and current quote with recorded reservations and configured limits. Investigate stale evidence or configuration drift; do not increase limits or release reservations solely to clear the page.
         impact: A cost, capital, policy or reservation guard rejected the attempted work.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with unwind_requires_existing_exit_reservation in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: unwind_requires_existing_exit_reservation'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: withdrawal_full_exit_unproven
@@ -1149,9 +1149,9 @@ tests:
       exp_annotations:
         action: Check the current withdrawal demand, safe partial path, and applicable consent or verified emergency evidence. Do not authorize full repayment merely because a partial plan failed.
         impact: Debt repayment is blocked by a consent, scope or necessity-proof guard.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with withdrawal_full_exit_unproven in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: withdrawal_full_exit_unproven'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
         code: worker_fault
@@ -1159,6 +1159,200 @@ tests:
       exp_annotations:
         action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
         impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
-        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
-        summary: backyard has repeated failed attempts with worker_fault in 15m
-        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: worker_fault'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+- name: periodic_dependency_bursts_remain_one_incident_then_resolve_after_recovery_hold
+  interval: 1m
+  input_series:
+  - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_unavailable"}
+    values: 0 1 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 5 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6
+  alert_rule_test:
+  - eval_time: 7m
+    alertname: LoyalFamilyFailing
+    exp_alerts: []
+  - eval_time: 9m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 20m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 24m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 40m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 64m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 72m
+    alertname: LoyalFamilyFailing
+    exp_alerts: []
+- name: one_isolated_failure_does_not_page
+  interval: 1m
+  input_series:
+  - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_unavailable"}
+    values: 0 1+0x70
+  alert_rule_test:
+  - eval_time: 20m
+    alertname: LoyalFamilyFailing
+    exp_alerts: []
+- name: autodeposit_dependency_bursts_do_not_repage_after_short_quiet_periods
+  interval: 1m
+  input_series:
+  - series: loyal_family_failed_total{family="autodeposit",code="autodeposit_dependency_unavailable"}
+    values: 0 1 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 5 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6
+  alert_rule_test:
+  - eval_time: 7m
+    alertname: LoyalFamilyFailing
+    exp_alerts: []
+  - eval_time: 9m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: autodeposit
+        code: autodeposit_dependency_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'autodeposit failure incident: autodeposit_dependency_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 20m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: autodeposit
+        code: autodeposit_dependency_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'autodeposit failure incident: autodeposit_dependency_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 24m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: autodeposit
+        code: autodeposit_dependency_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'autodeposit failure incident: autodeposit_dependency_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 40m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: autodeposit
+        code: autodeposit_dependency_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'autodeposit failure incident: autodeposit_dependency_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 64m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: autodeposit
+        code: autodeposit_dependency_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'autodeposit failure incident: autodeposit_dependency_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+  - eval_time: 72m
+    alertname: LoyalFamilyFailing
+    exp_alerts: []
+- name: new_failure_code_still_pages_during_an_existing_incident
+  interval: 1m
+  input_series:
+  - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_unavailable"}
+    values: 0 1 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 5 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6
+  - series: loyal_family_failed_total{family="backyard",code="finalized_transaction_failed"}
+    values: 0 0 0 0 0 0 0 0 0 0 0 0 1 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3
+  alert_rule_test:
+  - eval_time: 21m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: selector_evaluate_unavailable'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
+    - exp_labels:
+        family: backyard
+        code: finalized_transaction_failed
+        severity: page
+      exp_annotations:
+        action: Inspect the persisted operation and chain confirmation/finalized-expiry evidence. Reconcile any landed effects and retain ambiguous reservations before any retry or replacement.
+        impact: Execution or confirmation failed or remains uncertain; funds must not be assumed unsent.
+        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
+        summary: 'backyard failure incident: finalized_transaction_failed'
+        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.

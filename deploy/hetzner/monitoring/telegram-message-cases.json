@@ -84,9 +84,9 @@
     "annotations": {
       "action": "Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.",
       "impact": "Repeated work attempts failed; the cause has not been classified and payment status is unknown.",
-      "recovery": "The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.",
-      "summary": "backyard has repeated failed attempts with selector_evaluate_unavailable in 15m",
-      "trigger": "Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions."
+      "recovery": "The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.",
+      "summary": "backyard failure incident: selector_evaluate_unavailable",
+      "trigger": "Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering."
     }
   },
   {

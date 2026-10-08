@@ -140,7 +140,7 @@ The alerts are:
 | Alert | Fires when |
 |---|---|
 | LoyalFamilyProgressStale | No completed work for about 3m (observer), 10m (autodeposit, fleet) or 30m (multiply, lookup, backyard). Restarts do not reset this clock |
-| LoyalFamilyFailing | At least 3 failed-attempt samples with one code in 15m, sustained for 5m; selector evaluations are not distinct transactions |
+| LoyalFamilyFailing | At least 3 failed-attempt samples with one code in 15m, sustained for 5m; then held until the condition stays clear for 30m. Selector evaluations are not distinct transactions |
 | LoyalBackyardWithdrawalAttention | Persisted withdrawal attention for a stable family/route, sustained for 1m |
 | LoyalBackyardWithdrawalHealthUnavailable | Observation older than 5m or missing health metrics, sustained for 1m |
 | LoyalAutodepositOverdue | A selected Autodeposit claim, or a slot blocked by vault idle above `AUTODEPOSIT_IDLE_TOLERANCE_RAW`, is over 1h old |
@@ -238,8 +238,15 @@ and exports OTLP/HTTP to ClickStack.
 Every checked-in rule has a signal description, impact, action and recovery
 check. Telegram shows the rule and available stable code, service, lane or
 route. Distinct causes/resources use separate groups to avoid combining
-unrelated failures in one long message. Detection thresholds, debounces,
-four-hour repeats, receivers and inhibition rules are unchanged.
+unrelated failures in one long message. Failure detection thresholds and the five-minute firing delay are unchanged.
+`LoyalFamilyFailing` now uses a 30-minute recovery hold: bursts within that
+window remain one incident instead of resetting the four-hour reminder timer.
+A firing incident can therefore include a recovering worker. The hold delays
+resolution, not the first page. Missing samples also count as a clear condition,
+so operators must check fresh telemetry and the independent down/stale alerts
+before declaring recovery. Receivers, four-hour reminders and inhibition rules
+are unchanged. Withdrawal-attention, in-flight and service-down rules do not
+use this additional delay.
 
 | Alert | First checks | Recovery evidence |
 |---|---|---|
