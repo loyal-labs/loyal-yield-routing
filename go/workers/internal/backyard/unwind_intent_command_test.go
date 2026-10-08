@@ -21,6 +21,12 @@ func unwindIntentCommandRequest(lane string) UnwindIntentCommitRequest {
 	}
 }
 
+func confirmedUnwindIntentCommandRequest(lane string) UnwindIntentCommitRequest {
+	req := unwindIntentCommandRequest(lane)
+	req.Confirmation = &DebtClearConfirmation{RequestID: sha256Bytes([]byte("operator-confirmation:" + lane)), ConfirmedBy: "test-operator", ConfirmationRecord: sha256Bytes([]byte("explicit-debt-clear-record")), AcknowledgeUnavailableReborrow: true, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}
+	return req
+}
+
 // The dry-run default validates the exact intent shape and the installed
 // embedded manifest's lane authority without opening any database connection.
 func TestUnwindIntentCommitDryRunValidatesWithoutDatabase(t *testing.T) {
@@ -57,7 +63,7 @@ func TestUnwindIntentCommitDryRunValidatesWithoutDatabase(t *testing.T) {
 func TestUnwindIntentCommitExecuteRequiresDatabaseConfig(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := RunUnwindIntentCommit(ctx, "", unwindIntentCommandRequest(SelectedRouteID), true)
+	_, err := RunUnwindIntentCommit(ctx, "", confirmedUnwindIntentCommandRequest(SelectedRouteID), true)
 	assertBudgetHold(t, err, "invalid_unwind_intent_config")
 }
 
@@ -120,7 +126,7 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
 		t.Fatal(err)
 	}
-	committed, err := runUnwindIntentCommitOnManifest(ctx, reviewed, url, key, unwindIntentCommandRequest(autoAUTOPYUSD.Lane), true)
+	committed, err := runUnwindIntentCommitOnManifest(ctx, reviewed, url, key, confirmedUnwindIntentCommandRequest(autoAUTOPYUSD.Lane), true)
 	if err != nil {
 		t.Fatal("candidate execute through the reviewed core failed:", err)
 	}
@@ -165,7 +171,7 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = 1, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey, publicState); err != nil {
 		t.Fatal(err)
 	}
-	_, publicErr := RunUnwindIntentCommit(ctx, url, unwindIntentCommandRequest(autoAUTOPYUSD.Lane), true)
+	_, publicErr := RunUnwindIntentCommit(ctx, url, confirmedUnwindIntentCommandRequest(autoAUTOPYUSD.Lane), true)
 	assertBudgetHold(t, publicErr, "unwind_requires_existing_exit_reservation")
 }
 
@@ -208,7 +214,8 @@ func TestUnwindIntentCommitExecuteCommitsUnderOwnLease(t *testing.T) {
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, productionRouteKey, state); err != nil {
 		t.Fatal(err)
 	}
-	result, err := RunUnwindIntentCommit(ctx, url, unwindIntentCommandRequest(SelectedRouteID), true)
+	request := confirmedUnwindIntentCommandRequest(SelectedRouteID)
+	result, err := RunUnwindIntentCommit(ctx, url, request, true)
 	if err != nil {
 		t.Fatal("execute refused a funded installed-lane unwind:", err)
 	}
@@ -223,13 +230,17 @@ func TestUnwindIntentCommitExecuteCommitsUnderOwnLease(t *testing.T) {
 	if err != nil || committed == nil || !sameUnwindIntent(*committed, result.Intent) {
 		t.Fatalf("execute lost the committed intent: %+v %v", committed, err)
 	}
-	// A repeat execute builds a fresh CreatedAt, so it is a different intent
-	// and the durable commit refuses to replace it.
-	if _, err = RunUnwindIntentCommit(ctx, url, unwindIntentCommandRequest(SelectedRouteID), true); err == nil {
-		t.Fatal("repeat execute replaced the committed unwind")
-	} else {
-		assertBudgetHold(t, err, "another_unwind_is_committed")
+	// The same explicit confirmation is idempotent, not another debt-clear flow.
+	repeated, err := RunUnwindIntentCommit(ctx, url, request, true)
+	if err != nil || !sameUnwindIntent(repeated.Intent, result.Intent) {
+		t.Fatal("repeat confirmation changed its flow", err)
 	}
+	changed := request
+	confirmation := *request.Confirmation
+	confirmation.ConfirmationRecord = sha256Bytes([]byte("different-record"))
+	changed.Confirmation = &confirmation
+	_, err = RunUnwindIntentCommit(ctx, url, changed, true)
+	assertBudgetHold(t, err, "debt_clear_confirmation_reused")
 	// The command's short lease is released, so the worker can take the route.
 	if _, err = db.AcquireRouteLease(ctx, productionRouteKey, "unwind-command-after", time.Minute); err != nil {
 		t.Fatal("command lease was not released:", err)

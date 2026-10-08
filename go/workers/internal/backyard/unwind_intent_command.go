@@ -13,6 +13,7 @@ import (
 // goal and the source lane, so the command cannot promise a different budget
 // identity than the one the commit itself enforces.
 type UnwindIntentCommitRequest struct {
+	Confirmation     *DebtClearConfirmation
 	Lane             string
 	Reason           string
 	ObservationID    string
@@ -80,6 +81,12 @@ func runUnwindIntentCommitOnManifest(ctx context.Context, manifest RouteManifest
 	if !execute {
 		return UnwindIntentCommitResult{DryRun: true, Intent: intent}, nil
 	}
+	if req.Confirmation == nil {
+		return UnwindIntentCommitResult{}, budgetHold("debt_clear_confirmation_required")
+	}
+	if err = req.Confirmation.validate(time.Now().UTC()); err != nil {
+		return UnwindIntentCommitResult{}, err
+	}
 	if databaseURL == "" {
 		return UnwindIntentCommitResult{}, budgetHold("invalid_unwind_intent_config")
 	}
@@ -108,7 +115,7 @@ func runUnwindIntentCommitOnManifest(ctx context.Context, manifest RouteManifest
 			err = ErrUnwindIntentCommittedReleaseUnconfirmed
 		}
 	}()
-	if err = db.CommitUnwindIntentOnManifest(ctx, manifest, routeKey, intent); err != nil {
+	if err = db.commitUnwindIntentWithConfirmation(ctx, routeKey, &intent, manifest, *req.Confirmation); err != nil {
 		var hold *BudgetHold
 		if errors.As(err, &hold) {
 			return UnwindIntentCommitResult{}, hold

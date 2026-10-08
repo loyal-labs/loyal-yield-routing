@@ -92,8 +92,8 @@ func testPhase3BudgetInitialization(t *testing.T, url string) {
 			if result.ProofLevel != "BOOKKEEPING_NOT_ACTIVATION" || result.Closed || result.Initialization.GoalID != Phase3GoalID || result.Initialization.Generation != 2 {
 				t.Fatalf("incorrect initialization result: %+v", result)
 			}
-			if !marker.CreatedAt.IsZero() && marker != result.Initialization {
-				t.Fatal("concurrent initialization changed marker")
+			if !marker.CreatedAt.IsZero() && (marker.GoalID != result.Initialization.GoalID || marker.Generation != result.Initialization.Generation || !marker.CreatedAt.Equal(result.Initialization.CreatedAt)) {
+				t.Fatalf("concurrent initialization changed marker: first=%+v next=%+v", marker, result.Initialization)
 			}
 			marker = result.Initialization
 		}
@@ -141,7 +141,7 @@ func testPhase3BudgetInitialization(t *testing.T, url string) {
 			t.Fatal(err)
 		}
 		result, err := other.initializePhase3Budget(ctx, key)
-		if err != nil || result.Created || !result.Closed || result.Initialization != marker || readState(t, other, key) != before {
+		if err != nil || result.Created || !result.Closed || result.Initialization.GoalID != marker.GoalID || result.Initialization.Generation != marker.Generation || !result.Initialization.CreatedAt.Equal(marker.CreatedAt) || readState(t, other, key) != before {
 			t.Fatalf("restart replenished or reopened budget: %+v %v", result, err)
 		}
 		var operations int

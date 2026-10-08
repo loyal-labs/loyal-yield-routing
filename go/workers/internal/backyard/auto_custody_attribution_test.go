@@ -824,6 +824,7 @@ func custodyAttributionSchema(ctx context.Context, t *testing.T, db *Database) {
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS recent_blockhash text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS last_valid_block_height bigint;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS simulation_slot bigint;
+	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS simulation_result jsonb;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS action text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS strategy_key text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS transaction_signature text,
@@ -948,6 +949,10 @@ func TestSharedCustodyAttributionDatabaseRoundtrip(t *testing.T) {
 	_, err = validateSharedCustodyAttribution(3_100_000_000, 500, cfg, evidence, 0)
 	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_foreign_lane" {
 		t.Fatalf("foreign newer touch not refused through the database read: %s", reason)
+	}
+	// Isolate the next refusal from this deliberately foreign custody touch.
+	if _, err = db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND route_key=$2`, foreign.OperationID, routeKey); err != nil {
+		t.Fatal(err)
 	}
 	// Root regression, against the REAL database: a manual-recovery record
 	// with a NULL slot, NULL receipts, and no custody substring sorts LAST in

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -131,7 +132,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return backyard.SelectorOff, nil
 }
 
-const backyardUsage = `usage: loyal-engine backyard [prepare-pilot-cleanup | inspect-pilot-flat-state | activate-pilot-budget | selector-shadow | selector-evaluate [--execute] | inspect-phase3 lane ... | inspect-phase3-setup-rent | initialize-phase3-budget | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [prepare-pilot-cleanup | inspect-pilot-flat-state | activate-pilot-budget | selector-shadow | selector-evaluate [--execute] | inspect-phase3 lane ... | inspect-phase3-setup-rent | initialize-phase3-budget | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
@@ -264,11 +265,16 @@ func parseSettleManualRestoreFlags(args []string) (backyard.ManualRestoreReproce
 // stay with the shared unwind-intent validation.
 func parseUnwindIntentFlags(args []string) (backyard.UnwindIntentCommitRequest, bool, error) {
 	request, execute := backyard.UnwindIntentCommitRequest{}, false
-	usage := `usage: loyal-engine backyard commit-unwind-intent --lane <lane> --reason <economic_rotation|withdrawal_shortfall|hard_ltv_reduction> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--execute]`
+	usage := `usage: loyal-engine backyard commit-unwind-intent --lane <lane> --reason <economic_rotation|withdrawal_shortfall|hard_ltv_reduction> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute]`
 	texts := map[string]*string{"--lane": &request.Lane, "--reason": &request.Reason, "--observation-id": &request.ObservationID, "--evidence-id": &request.EvidenceID}
 	numbers := map[string]*int64{"--max-collateral-raw": &request.MaxCollateralRaw, "--max-debt-raw": &request.MaxDebtRaw, "--cost-bound-raw": &request.CostBoundRaw}
+	seen := make(map[string]bool)
 	for index := 0; index < len(args); index++ {
 		arg := args[index]
+		if seen[arg] {
+			return request, execute, fmt.Errorf("commit-unwind-intent: duplicate argument %q", arg)
+		}
+		seen[arg] = true
 		if arg == "--execute" {
 			execute = true
 			continue
@@ -276,7 +282,13 @@ func parseUnwindIntentFlags(args []string) (backyard.UnwindIntentCommitRequest, 
 		if index+1 >= len(args) {
 			return request, execute, fmt.Errorf("commit-unwind-intent: %s requires a value\n%s", arg, usage)
 		}
-		if target, ok := numbers[arg]; ok {
+		if arg == "--confirmation-file" {
+			confirmation, err := readDebtClearConfirmation(args[index+1])
+			if err != nil {
+				return request, execute, err
+			}
+			request.Confirmation = confirmation
+		} else if target, ok := numbers[arg]; ok {
 			value, err := strconv.ParseInt(args[index+1], 10, 64)
 			if err != nil {
 				return request, execute, fmt.Errorf("commit-unwind-intent: %s requires an integer\n%s", arg, usage)
@@ -292,5 +304,33 @@ func parseUnwindIntentFlags(args []string) (backyard.UnwindIntentCommitRequest, 
 	if request.Lane == "" || request.Reason == "" || request.ObservationID == "" || request.EvidenceID == "" {
 		return request, execute, fmt.Errorf("commit-unwind-intent: --lane, --reason, --observation-id and --evidence-id are required\n%s", usage)
 	}
+	if execute && request.Confirmation == nil {
+		return request, execute, errors.New("commit-unwind-intent: --execute requires --confirmation-file acknowledging full debt repayment")
+	}
 	return request, execute, nil
+}
+
+// The file records an explicit privileged-operator attestation, not proof of
+// human identity. The domain layer validates its bounds before any DB mutation.
+func readDebtClearConfirmation(path string) (*backyard.DebtClearConfirmation, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, errors.New("commit-unwind-intent: cannot read confirmation file")
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil || len(data) > 4096 {
+		return nil, errors.New("commit-unwind-intent: confirmation file exceeds 4096 bytes or cannot be read")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var confirmation *backyard.DebtClearConfirmation
+	if err := decoder.Decode(&confirmation); err != nil || confirmation == nil {
+		return nil, errors.New("commit-unwind-intent: invalid confirmation JSON")
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return nil, errors.New("commit-unwind-intent: confirmation file must contain exactly one JSON object")
+	}
+	return confirmation, nil
 }

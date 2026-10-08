@@ -111,11 +111,9 @@ func seedAutoInitializerPilotOperation(t *testing.T, ctx context.Context, db *Da
 // validation — still refuses the same durable rows.
 func TestAutoInitializerPilotEntryAuthorizesLockedBuildAndSend(t *testing.T) {
 	f := autoInitializerAuthorizationFixture(t)
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
+	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_pilot_entry_test", 30*time.Second)
 	defer cancel()
-	t.Cleanup(func() { db.Close() })
 	var routeKeys []string
-	relaxInitializerScopeForSyntheticTest(t, ctx, db, func() []string { return routeKeys })
 	rpc, sends := autoInitializerAuthorizationRPC(t, f)
 	measured, err := f.manifest.observePhase3KnownBuildCost(ctx, rpc, f.request, f.effects)
 	if err != nil {
@@ -253,17 +251,41 @@ func TestAutoInitializerPilotEntryAuthorizesLockedBuildAndSend(t *testing.T) {
 	// Missing durable entry.
 	missingID, _ := newPilotOp("missing-entry", nil, false)
 	expectBuildHold(missingID, "selector_entry_authority_mismatch")
-	// Slot-expired quote: the wall clock must not revive the window. The debt
-	// price stays coherent with the earlier sample — observed at slot 30,
-	// valued through the quote's own end at 41 — so the entry passes the exact
-	// shape checks and the fence refuses it on slot currentness alone.
+	// A slot-expired quote may still initialize the empty obligation before
+	// the entry's wall-clock expiry, but cannot allocate principal. Keep the
+	// debt price coherent with the older sample so only slot currentness differs.
 	slotExpired := autoSelectorEntryFixture(time.Now().UTC(), 3_000_000, &price)
 	slotExpired.Quote.SampleSlot, slotExpired.Quote.ValidThroughSlot = 30, 41
 	earlyPrice := price
 	earlyPrice.ObservedSlot, earlyPrice.ValidThroughSlot = 30, 30+budgetMaxObservationLagSlots
 	slotExpired.Quote.DebtPrice = &earlyPrice
 	slotID, _ := newPilotOp("slot-expired", &slotExpired, true)
-	expectBuildHold(slotID, "selector_entry_quote_expired")
+	if err = f.manifest.authorizePhase3ProductionBuild(ctx, db, rpc, slotID, f.request, f.effects, f.raw); err != nil {
+		t.Fatalf("slot-late initializer refused before entry expiry: %v", err)
+	}
+	var slotStatus, slotAllocation string
+	var slotWire, slotSend bool
+	if err = db.pool.QueryRow(ctx, `SELECT o.status,COALESCE(s.state->'selectorEntry'->>'allocationOperationId',''),o.signed_wire IS NOT NULL,o.broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations o JOIN loyal_yield.multiply_route_states s USING(route_key) WHERE operation_id=$1`, slotID).Scan(&slotStatus, &slotAllocation, &slotWire, &slotSend); err != nil {
+		t.Fatal(err)
+	}
+	if slotStatus != "decided" || slotAllocation != "" || slotWire || slotSend || loadAutoInitializerAuth(t, ctx, db, slotID).BuildInput == nil {
+		t.Fatal("slot-late initializer changed allocation, wire, or journal state")
+	}
+	// The same persisted quote must fail the real locked allocation fence.
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	slotBudget, _, err := db.readPhase3BudgetTx(ctx, tx, slotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocation := BridgeBuildRequest{Action: VoltrAllocateToSquads, AmountRaw: uint64(slotExpired.EquityRaw)}
+	assertBudgetHold(t, db.authorizeSelectorEntryTxOnManifest(ctx, f.manifest, tx, slotID, slotBudget, allocation, ExpectedEffects{}, measured.ObservationSlot, true), "selector_entry_quote_expired")
+	if err = tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
 	// Wall-clock expired quote: validate still accepts the shape, the fence
 	// refuses allocation.
 	wallExpired := autoSelectorEntryFixture(time.Now().UTC().Add(-time.Minute), 3_000_000, &price)

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
 type phase3OperationAuthorization struct {
+	DebtClear                 *debtClearAuthority     `json:"debtClear,omitempty"`
 	PilotAuthorityID          string                  `json:"pilotAuthorityId,omitempty"`
 	BookedExecutionCostMicros int64                   `json:"bookedExecutionCostMicros,omitempty"`
 	GoalID                    string                  `json:"goalId"`
@@ -290,6 +292,10 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 	if err != nil {
 		return err
 	}
+	risk, err := verifyDebtClearEmergency(manifest, observation, decision, operationID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -355,6 +361,9 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 		if err != nil {
 			return err
 		}
+	}
+	if err = d.authorizeDebtClearTx(ctx, tx, manifest, operationID, request, effects, &plan, &auth, risk, slot, true); err != nil {
+		return err
 	}
 	if err = d.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, budget, request, effects, slot, true); err != nil {
 		return err
@@ -489,7 +498,7 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 	if err = budget.Admit(r); err != nil {
 		return err
 	}
-	auth = phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: intent, BuildInput: plan.Input, BridgeAdmission: &plan}
+	auth = phase3OperationAuthorization{DebtClear: auth.DebtClear, GoalID: Phase3GoalID, IntentSHA256: intent, BuildInput: plan.Input, BridgeAdmission: &plan}
 	if custody.SpendRaw > 0 {
 		// writePhase3BudgetTx performs this transaction's generation increment
 		// (any earlier in-transaction increment, e.g. a new selector entry, has
@@ -508,11 +517,6 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 		custody.Generation = admittedGeneration + 1
 		custodyBinding := custody
 		auth.CustodyProof = &custodyBinding
-	}
-	if plan.RepaymentProjection != nil && decision.Reason == "hard_ltv_partial_repay" {
-		if err = d.persistPartialRepaymentUnwindTx(ctx, tx, plan, budget, intent); err != nil {
-			return err
-		}
 	}
 	if budget.Pilot != nil {
 		auth.PilotAuthorityID = budget.Pilot.AuthorityID
@@ -573,6 +577,10 @@ func (d *Database) authorizePhase3BuildOnManifest(ctx context.Context, manifest 
 		return err
 	}
 	if _, err = d.currentLease(); err != nil {
+		return err
+	}
+	risk, err := d.observeDebtClearOriginRisk(ctx, rpc, manifest, operationID)
+	if err != nil {
 		return err
 	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -665,6 +673,13 @@ func (d *Database) authorizePhase3BuildOnManifest(ctx context.Context, manifest 
 			return budgetHold("stale_bridge_admission_snapshot")
 		}
 	}
+	debtEffects, err := decodeExpectedEffectsWithManifest(manifest, effects)
+	if err != nil {
+		return err
+	}
+	if err = d.authorizeDebtClearTx(ctx, tx, manifest, operationID, request, debtEffects, auth.BridgeAdmission, &auth, risk, entrySlot, false); err != nil {
+		return err
+	}
 	if err = d.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, budget, request, selectorEffects, entrySlot, false); err != nil {
 		return err
 	}
@@ -729,7 +744,7 @@ func (d *Database) authorizePhase3SendTx(ctx context.Context, tx pgx.Tx, operati
 // persisted executable input and the pilot reservation fence resolve through
 // the explicit reviewed manifest, while the wire/status/goal identity, intent
 // and cost gates stay byte-identical. The public form above is unchanged.
-func (d *Database) authorizePhase3SendTxOnManifest(ctx context.Context, manifest RouteManifest, tx pgx.Tx, operationID, intent, wireHash string, cost ValuedTransactionCost, confirmedSlot int64) error {
+func (d *Database) authorizePhase3SendTxOnManifest(ctx context.Context, manifest RouteManifest, tx pgx.Tx, operationID, intent, wireHash string, cost ValuedTransactionCost, confirmedSlot int64, originRisk ...*debtClearRiskProof) error {
 	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
 	if err != nil {
 		return err
@@ -779,6 +794,13 @@ func (d *Database) authorizePhase3SendTxOnManifest(ctx context.Context, manifest
 	if auth.BuildInput != nil {
 		request, effects, _, err := auth.BuildInput.decodeWithManifest(manifest)
 		if err != nil {
+			return err
+		}
+		var risk *debtClearRiskProof
+		if len(originRisk) == 1 {
+			risk = originRisk[0]
+		}
+		if err = d.authorizeDebtClearTx(ctx, tx, manifest, operationID, request, effects, auth.BridgeAdmission, &auth, risk, confirmedSlot, false); err != nil {
 			return err
 		}
 		if err = d.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, budget, request, effects, confirmedSlot, false); err != nil {

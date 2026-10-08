@@ -2,6 +2,24 @@ name: Workers v2 branch verification
 
 on:
   push:
+    branches: [main, codex/workers-v2, codex/workers-v2-simplify, codex/workers-v2-golive, ask-2316-confirm-debt-clear]
+    paths:
+      - go/workers/**
+      - scripts/verify-workers-v2.sh
+      - scripts/workers-v2-fixture.py
+      - migrations/**
+      - .github/workflows/workers-v2-verify.yml
+      # Sources bound by the Backyard Voltr policy authorization.
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - package.json
+      - bun.lock
+      - crates/**
+      - tools/backyard-voltr/**
+      - docs/evidence/backyard-voltr-four-market/**
+
+  pull_request:
     branches: [main, codex/workers-v2, codex/workers-v2-simplify, codex/workers-v2-golive]
     paths:
       - go/workers/**
@@ -12,9 +30,17 @@ on:
       # Sources bound by the Backyard Voltr policy authorization.
       - Cargo.toml
       - Cargo.lock
-      - crates/loyal-actions/**
+      - rust-toolchain.toml
+      - package.json
+      - bun.lock
+      - crates/**
       - tools/backyard-voltr/**
       - docs/evidence/backyard-voltr-four-market/**
+
+env:
+  CARGO_BUILD_JOBS: "2"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
 
 permissions:
   contents: read
@@ -26,7 +52,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:17
@@ -34,6 +60,9 @@ jobs:
           POSTGRES_USER: workers_v2
           POSTGRES_DB: workers_v2_bootstrap
           POSTGRES_HOST_AUTH_METHOD: trust
+        # The Phase3 tests require this disposable socket prefix and their own DB.
+        volumes:
+          - /private/tmp/backyard-phase3-pg.ci:/var/run/postgresql
         ports: [5432/tcp]
         options: >-
           --health-cmd "pg_isready -U workers_v2 -d workers_v2_bootstrap"
@@ -60,20 +89,54 @@ jobs:
         with:
           go-version: '1.26.6'
           cache-dependency-path: go/workers/go.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install locked SDK oracle dependencies
+        run: |
+          bun install --frozen-lockfile
+          cd tools/backyard-voltr
+          bun install --frozen-lockfile
+      - name: Install pinned SBF build tools
+        run: |
+          curl --fail --location --retry 3 https://github.com/anza-xyz/agave/releases/download/v3.1.12/solana-release-x86_64-unknown-linux-gnu.tar.bz2 -o "$RUNNER_TEMP/solana-release.tar.bz2"
+          echo "4d45dab6ccfe5321292ad6dc152f7ace71ccbddde5ecda0aaa3f92bbfe8ed803  $RUNNER_TEMP/solana-release.tar.bz2" | sha256sum --check
+          tar -xjf "$RUNNER_TEMP/solana-release.tar.bz2" -C "$RUNNER_TEMP"
+          rm "$RUNNER_TEMP/solana-release.tar.bz2"
+          echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
+      - name: Build local connected execution fixtures
+        run: |
+          cargo build-sbf --tools-version v1.52 --manifest-path crates/mock-yield-protocols-program/Cargo.toml -- --locked
+          cargo build --locked -p squads-test-harness --example fleet-local-svm
+          test -s target/deploy/mock_yield_protocols_program.so
+          test -x target/debug/examples/fleet-local-svm
       - name: Apply actual schema to isolated family databases
         env:
           WORKERS_V2_DISPOSABLE: '1'
-          WORKERS_V2_FIXTURE_URL: postgresql://workers_v2@127.0.0.1:${{ job.services.postgres.ports[5432] }}/workers_v2_bootstrap
-          WORKERS_V2_TIMESCALE_FIXTURE_URL: postgresql://workers_v2@127.0.0.1:${{ job.services.timescale.ports[5432] }}/workers_v2_bootstrap
+          WORKERS_V2_FIXTURE_URL: postgresql://workers_v2@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/workers_v2_bootstrap
+          WORKERS_V2_TIMESCALE_FIXTURE_URL: postgresql://workers_v2@127.0.0.1:${{ job.services.timescale.ports['5432'] }}/workers_v2_bootstrap
         run: python3 scripts/workers-v2-fixture.py
+      - name: Create the separate Phase3 test database
+        # Tests create their own stand-in schema; do not apply family migrations here.
+        env:
+          PGHOST: /private/tmp/backyard-phase3-pg.ci
+          PGPORT: '5432'
+          PGUSER: workers_v2
+          PGDATABASE: workers_v2_bootstrap
+        run: psql -X -v ON_ERROR_STOP=1 -c 'CREATE DATABASE phase3_budget_test'
       - name: Verify offline and enabled database behavior
+        env:
+          PHASE3_TEST_DATABASE_URL: postgresql://workers_v2@/phase3_budget_test?host=/private/tmp/backyard-phase3-pg.ci&port=5432
+          KAMINO_CONNECTED_SVM_PATH: ${{ github.workspace }}/target/debug/examples/fleet-local-svm
+          MOCK_YIELD_PROTOCOLS_PROGRAM_SO: ${{ github.workspace }}/target/deploy/mock_yield_protocols_program.so
+          SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ github.workspace }}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so
         run: bash scripts/verify-workers-v2.sh
 
   backyard-voltr-authorization:
     # Every authorization-gated Backyard Voltr command refuses when a bound
     # source drifts from the committed policy catalog authorization.
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,6 +145,8 @@ jobs:
         with:
           # Verified to install bun.lock (configVersion 1) frozen.
           bun-version: 1.3.14
+      - name: Build the policy compiler before the timed authorization test
+        run: cargo build --locked -p loyal-actions --bin compile-voltr-kamino-runtime-policy
       - name: Committed authorization binds the checked-out sources
         working-directory: tools/backyard-voltr
         run: |

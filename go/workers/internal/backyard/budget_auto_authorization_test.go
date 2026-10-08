@@ -154,13 +154,9 @@ func loadAutoInitializerAuth(t *testing.T, ctx context.Context, db *Database, id
 // binding all refuse it without transitioning the journal.
 func TestAutoInitializerBuildAuthorizationThroughReviewedManifest(t *testing.T) {
 	f := autoInitializerAuthorizationFixture(t)
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
+	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_build_authorization_test", 30*time.Second)
 	defer cancel()
-	// Close runs after the constraint restore (registered inside relax...),
-	// so the shared fixture database never keeps the initializer scope absent.
-	t.Cleanup(func() { db.Close() })
 	var routeKeys []string
-	relaxInitializerScopeForSyntheticTest(t, ctx, db, func() []string { return routeKeys })
 	rpc, sends := autoInitializerAuthorizationRPC(t, f)
 	digest, err := Phase3IntentDigest(f.request, f.raw)
 	if err != nil {
@@ -260,15 +256,11 @@ func TestAutoInitializerBuildAuthorizationThroughReviewedManifest(t *testing.T) 
 // authorization cannot be replayed.
 func TestAutoInitializerSignedTransitionThroughReviewedManifest(t *testing.T) {
 	f := autoInitializerAuthorizationFixture(t)
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
+	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_signed_transition_test", 30*time.Second)
 	defer cancel()
-	t.Cleanup(func() { db.Close() })
-	var routeKeys []string
-	relaxInitializerScopeForSyntheticTest(t, ctx, db, func() []string { return routeKeys })
 	rpc, sends := autoInitializerAuthorizationRPC(t, f)
 
 	key := "auto-initializer-send-" + time.Now().Format("150405.000000000")
-	routeKeys = append(routeKeys, key)
 	// Production admission reserves the measured fresh cost, bounded by the
 	// legacy transaction cap that Admit enforces.
 	measured, err := f.manifest.observePhase3KnownBuildCost(ctx, rpc, f.request, f.effects)
@@ -345,7 +337,6 @@ func TestAutoInitializerSignedTransitionThroughReviewedManifest(t *testing.T) {
 	// any valuation RPC and before any transition — on its own still-signed
 	// operation, seeded and build-authorized exactly like the first.
 	identityKey := "auto-initializer-identity-" + time.Now().Format("150405.000000000")
-	routeKeys = append(routeKeys, identityKey)
 	identityID := seedAutoInitializerDecidedOperation(t, ctx, db, f, identityKey, measured.TotalMicros, true)
 	if err := f.manifest.authorizePhase3ProductionBuild(ctx, db, rpc, identityID, f.request, f.effects, f.raw); err != nil {
 		t.Fatal(err)

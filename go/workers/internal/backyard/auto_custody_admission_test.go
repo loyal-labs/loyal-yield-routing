@@ -316,8 +316,21 @@ func TestSharedCustodyAdmissionSpendProofLifecycle(t *testing.T) {
 	// absent fixture (the shipped pre-install state) still refuses the
 	// persisted candidate entry, while the embedded manifest — which carries
 	// the installed binding after the release — decodes it back exactly.
-	if _, err := db.readRoutePlanningStateOnManifest(ctx, autoAbsentBindingManifest(t), key, true); err == nil {
-		t.Fatal("absent binding decoded a persisted candidate AUTO selector entry")
+	absent := autoAbsentBindingManifest(t)
+	paused, err := db.readRoutePlanningStateOnManifest(ctx, absent, key, true)
+	if err != nil || paused.entry != nil {
+		t.Fatalf("absent binding retained candidate entry authority: %+v %v", paused, err)
+	}
+	pausedSnapshot := initializationPlanningFixture(autoAUTOPYUSD.Lane).Snapshot
+	pausedSnapshot.SelectorBorrowRaw = entry.Quote.BorrowReceiveRaw
+	if err = absent.applySelectorEntry(&pausedSnapshot, paused.entry, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if !pausedSnapshot.SelectorEntryPaused || pausedSnapshot.SelectorEntryEquityRaw != 0 || pausedSnapshot.SelectorBorrowRaw != 0 || admittedEntryAllocationReady(pausedSnapshot) {
+		t.Fatalf("absent binding authorized entry sizing: %+v", pausedSnapshot)
+	}
+	if decision := absent.DecideOnManifest(pausedSnapshot); decision.Action == InitializeKaminoObligation || decision.Action == VoltrAllocateToSquads {
+		t.Fatalf("absent binding authorized a fresh entry: %+v", decision)
 	}
 	decoded, err := db.readRoutePlanningStateOnManifest(ctx, requireEmbeddedInstalledBinding(t), key, true)
 	if err != nil {

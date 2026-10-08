@@ -75,7 +75,7 @@ func TestAllocationSentWindowKeysIntentTimeAndCountsManualRecovery(t *testing.T)
 		t.Fatal(err)
 	}
 	route := fmt.Sprintf("phase3-window-%d", time.Now().UnixNano())
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key) VALUES($1)`, route); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, route); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
