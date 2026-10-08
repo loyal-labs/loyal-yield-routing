@@ -303,17 +303,17 @@ func (a *Application) processNextJob(ctx context.Context, owner string) (jobOutc
 	return jobOutcome{deferred: true, jobID: job.ID, attempt: job.AttemptCount, kind: kind, err: errors.New(message)}, nil
 }
 
-// caughtUp reports whether no runnable Earn job has waited longer than the
-// backlog horizon. A job deferred to a later attempt is not runnable: its
-// failure is reported through Failed at the alert thresholds, while consumers
-// that fall behind the runnable queue stop observer progress.
+// caughtUp reports whether no claimable Earn job has waited longer than the
+// backlog horizon. A job deferred to a later attempt, or queued behind an
+// earlier pending job of its vault, is not claimable: the head's failure is
+// reported through Failed at the alert thresholds, while consumers that fall
+// behind the claimable queue stop observer progress.
 func (a *Application) caughtUp(ctx context.Context) (bool, error) {
 	var oldest *time.Time
 	if err := a.store.pool.QueryRow(ctx, `
         SELECT MIN(next_attempt_at)
         FROM loyal_yield.earn_reconciliation_jobs
-        WHERE consumer_name=$1 AND completed_at IS NULL AND next_attempt_at <= now()
-          AND (claim_expires_at IS NULL OR claim_expires_at <= now())`, a.consumer).Scan(&oldest); err != nil {
+        WHERE `+claimableJob, a.consumer).Scan(&oldest); err != nil {
 		return false, err
 	}
 	return oldest == nil || time.Since(*oldest) < earnBacklogHorizon, nil

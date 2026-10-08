@@ -66,4 +66,31 @@ func TestJobConsumerDeadLettersAndBacklogProgress(t *testing.T) {
 	if ok, err := app.caughtUp(ctx); err != nil || !ok {
 		t.Fatalf("an empty runnable queue stalled progress: %v %v", ok, err)
 	}
+	// A vault whose head job keeps failing holds its later jobs behind it.
+	// Those jobs are not claimable, so they are not backlog either: the
+	// head's failure is reported through Failed, not a stalled observer.
+	vault.Vault = "blocked-vault"
+	for slot, key := range map[uint64]string{7: "head", 8: "behind"} {
+		if _, err := app.store.Enqueue(ctx, app.consumer, key, slot, json.RawMessage(`"not an event"`), []watch.Vault{vault}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.earn_reconciliation_jobs
+        SET next_attempt_at = CASE event_key WHEN 'head' THEN now() + interval '5 minutes' ELSE now() - interval '2 minutes' END,
+            attempt_count = CASE event_key WHEN 'head' THEN 12 ELSE 0 END
+        WHERE event_key IN ('head', 'behind')`); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := app.caughtUp(ctx); err != nil || !ok {
+		t.Fatalf("jobs queued behind a deferred head job stalled progress: %v %v", ok, err)
+	}
+	if outcome, err := app.processNextJob(ctx, "owner"); err != nil || !outcome.idle {
+		t.Fatalf("a job behind its vault's pending head was claimed: %+v %v", outcome, err)
+	}
+	if _, err := pool.Exec(ctx, "UPDATE loyal_yield.earn_reconciliation_jobs SET next_attempt_at = now() - interval '2 minutes' WHERE event_key = 'head'"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := app.caughtUp(ctx); err != nil || ok {
+		t.Fatalf("an overdue head job kept progress: %v %v", ok, err)
+	}
 }

@@ -26,15 +26,12 @@ type Job struct {
 	AttemptCount int32
 }
 
-// ClaimJob leases the oldest ready job whose vault has no earlier pending job.
-func (s *Store) ClaimJob(ctx context.Context, consumer, owner string, leaseSeconds int64) (*Job, error) {
-	var job Job
-	var slot int64
-	err := s.pool.QueryRow(ctx, `
-            WITH candidate AS (
-                SELECT id
-                FROM loyal_yield.earn_reconciliation_jobs
-                WHERE consumer_name = $1
+// claimableJob is the readiness predicate over loyal_yield.earn_reconciliation_jobs
+// for consumer $1: due, unleased, and not behind an earlier pending job of the
+// same vault. ClaimJob and the observer's backlog check share it, so a vault
+// blocked behind a failing head job is backlog for neither.
+const claimableJob = `
+consumer_name = $1
                   AND completed_at IS NULL
                   AND next_attempt_at <= NOW()
                   AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
@@ -56,7 +53,17 @@ func (s *Store) ClaimJob(ctx context.Context, consumer, owner string, leaseSecon
                             AND earlier.claim_owner IS NULL
                             AND earlier.claim_expires_at IS NULL
                         )
-                  )
+                  )`
+
+// ClaimJob leases the oldest ready job whose vault has no earlier pending job.
+func (s *Store) ClaimJob(ctx context.Context, consumer, owner string, leaseSeconds int64) (*Job, error) {
+	var job Job
+	var slot int64
+	err := s.pool.QueryRow(ctx, `
+            WITH candidate AS (
+                SELECT id
+                FROM loyal_yield.earn_reconciliation_jobs
+                WHERE `+claimableJob+`
                 ORDER BY durable_slot, id
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
