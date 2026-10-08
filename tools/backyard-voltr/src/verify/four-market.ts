@@ -99,15 +99,12 @@ const EXECUTION_SOURCE_CONTRACT_PATHS = [
   "tools/backyard-voltr/src/runtime/manager.ts",
   "tools/backyard-voltr/src/runtime/commands.ts",
   "tools/backyard-voltr/src/integrations/solana-compat.ts",
-  "tools/backyard-voltr/src/runtime/restoration-bridge.ts",
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-restoration-bridge.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/voltr_restoration.rs",
-  "tools/backyard-voltr/src/runtime/restoration-evidence.ts",
+  "go/workers/internal/fleet/voltr_plan.go",
+  "go/workers/internal/fleetexec/voltr.go",
+  "go/workers/internal/fleet/worker.go",
   "tools/backyard-voltr/src/runtime/withdrawal-restoration.ts",
   "tools/backyard-voltr/src/runtime/withdrawal-scanner.ts",
   "tools/backyard-voltr/src/runtime/receipt.ts",
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-restoration-readback.rs",
-  "crates/loyal-yield-orchestrator/src/bin/fleet-opportunity-planner.rs",
   "tools/backyard-voltr/src/verify/four-market.ts",
   "tools/backyard-voltr/src/runtime/protected-state.ts",
 ] as const;
@@ -151,26 +148,22 @@ function executionSourceContract(): Readonly<{ pass: boolean; observed: JsonReco
   const manager = files[EXECUTION_SOURCE_CONTRACT_PATHS[0]]!.source;
   const commands = files[EXECUTION_SOURCE_CONTRACT_PATHS[1]]!.source;
   const transport = files[EXECUTION_SOURCE_CONTRACT_PATHS[2]]!.source;
-  const restorationAdapter = files[EXECUTION_SOURCE_CONTRACT_PATHS[3]]!.source;
-  const restorationBridge = files[EXECUTION_SOURCE_CONTRACT_PATHS[4]]!.source;
-  const restorationStore = files[EXECUTION_SOURCE_CONTRACT_PATHS[5]]!.source;
+  // Withdrawal restoration is planned and executed by the Go engine's fleet
+  // Voltr family, not by an operator-driven TypeScript/outbox handoff.
+  const goPlanner = files[EXECUTION_SOURCE_CONTRACT_PATHS[3]]!.source;
+  const goExecutor = files[EXECUTION_SOURCE_CONTRACT_PATHS[4]]!.source;
   const persistedManagerCall = manager.indexOf("const persistedIntent = persistManagerIntent");
-  const restorationPhaseACall = manager.indexOf("restorationPhaseA = prepareRestorationBridge", persistedManagerCall);
-  const managerSendCall = manager.indexOf("sendPreparedConfirmedOnce(", restorationPhaseACall);
-  const restorationPhaseBCall = manager.indexOf("restorationPhaseB = confirmRestorationBridge", managerSendCall);
-  const restorationReadbackGuard = manager.indexOf("if (managerReadbackExact) {", managerSendCall);
-  const restorationReadbackElse = manager.indexOf("} else {", restorationReadbackGuard);
-  const bridgeLease = restorationBridge.indexOf("lease_exact_voltr_restoration_handoff");
-  const bridgeConflictFence = restorationBridge.indexOf("acquire_voltr_restoration_logical_conflict_lease", bridgeLease);
-  const bridgeSignedWire = restorationBridge.indexOf("persist_voltr_manager_signed_intent", bridgeConflictFence);
-  const bridgeBroadcastIntent = restorationBridge.indexOf("mark_voltr_manager_broadcast_intent", bridgeSignedWire);
+  const managerSendCall = manager.indexOf("sendPreparedConfirmedOnce(", persistedManagerCall);
+  const plannerRestoration = goPlanner.indexOf('"withdrawal_restoration", "withdraw"');
+  const plannerAllocation = goPlanner.indexOf('"idle_allocation", "deposit"', plannerRestoration);
+  const plannerOptimization = goPlanner.indexOf('"yield_optimization", "withdraw"', plannerAllocation);
+  const executorSign = goExecutor.indexOf("w.signVoltr(ctx, *l)");
+  const executorPersist = goExecutor.indexOf("w.store.persistVoltr(ctx", executorSign);
   const checks = {
     managerPersistsBeforeSend: persistedManagerCall >= 0 && managerSendCall > persistedManagerCall,
-    restorationPhaseABeforeSend: restorationPhaseACall > persistedManagerCall && managerSendCall > restorationPhaseACall,
-    restorationPhaseBAfterConfirmedReadback: restorationReadbackGuard > managerSendCall && restorationPhaseBCall > restorationReadbackGuard && restorationReadbackElse > restorationPhaseBCall,
-    restorationAdapterUsesPrebuiltNoShellBinary: restorationAdapter.includes("execFileSync(binary, [\"--input\", inputPath]") && restorationAdapter.includes("inputFileSha256") && !restorationAdapter.includes("shell: true"),
-    restorationDurableOrdering: bridgeLease >= 0 && bridgeConflictFence > bridgeLease && bridgeSignedWire > bridgeConflictFence && bridgeBroadcastIntent > bridgeSignedWire,
-    restorationStoreFencesExactBroadcastIntent: restorationStore.includes("broadcast_intent_persisted") && restorationStore.includes("'{execution,broadcastCount}', '1'::jsonb") && restorationStore.includes("input.remaining_shortfall_raw != 0"),
+    goPlannerRestoresBeforeAllocationAndOptimization: plannerRestoration >= 0 && plannerAllocation > plannerRestoration && plannerOptimization > plannerAllocation,
+    goExecutorClaimsRestorationFirst: goExecutor.includes("WHEN 'withdrawal_restoration' THEN 0"),
+    goExecutorPersistsSignedWireBeforeLanding: executorSign >= 0 && executorPersist > executorSign && goExecutor.includes("INSERT INTO loyal_yield.signed_route_submissions"),
     managerExpectedSignatureRecovery: manager.includes("expectedSignature") && manager.includes("Do not resend"),
     userPersistsIntent: commands.includes("persistRuntimeIntent") && commands.includes("intentPath"),
     oneSendAndContextFence: transport.includes("sendRawTransaction") && transport.includes("maxRetries: 0") && transport.includes("minContextSlot") && transport.includes("MAX_IDENTICAL_SUBMISSION_ATTEMPTS") && transport.includes("getSignatureStatuses"),
@@ -178,7 +171,7 @@ function executionSourceContract(): Readonly<{ pass: boolean; observed: JsonReco
   return {
     pass: Object.values(checks).every(Boolean),
     observed: { files: Object.fromEntries(Object.entries(files).map(([path, value]) => [path, value.sha256])), checks, residual: "source inspection proves the maintained contract shape, not historical process execution or provider truth" },
-    expected: { checks: { managerPersistsBeforeSend: true, restorationPhaseABeforeSend: true, restorationPhaseBAfterConfirmedReadback: true, restorationAdapterUsesPrebuiltNoShellBinary: true, restorationDurableOrdering: true, restorationStoreFencesExactBroadcastIntent: true, managerExpectedSignatureRecovery: true, userPersistsIntent: true, oneSendAndContextFence: true } },
+    expected: { checks: { managerPersistsBeforeSend: true, goPlannerRestoresBeforeAllocationAndOptimization: true, goExecutorClaimsRestorationFirst: true, goExecutorPersistsSignedWireBeforeLanding: true, managerExpectedSignatureRecovery: true, userPersistsIntent: true, oneSendAndContextFence: true } },
   };
 }
 function managerTransactionDescriptor(name: TxName): Readonly<{ strategyId: StrategyId; operation: "deposit" | "withdraw" }> | null {
@@ -498,7 +491,7 @@ export function buildFourMarketManifestFromArtifacts(input: Readonly<{
     protectedEvidenceByName.set(name, protectedEvidence);
     if (name === "managerMainRestorationWithdraw") {
       assertRestorationBridgeOutput(manifestPath, value, intent, wire, signature, messageSha256, slot, protectedState);
-    } else if (managerDescriptor && value.restorationBridge !== null) {
+    } else if (managerDescriptor && value.restorationBridge !== undefined) {
       throw new Error(`${name} unexpectedly used the withdrawal-restoration durable bridge`);
     }
     return [name, { ...childRef(path), signature, intentSha256: derivedIntentSha256, messageSha256, slot, protectedAddressSetSha256: shaField(protectedState, "addressSetSha256", `${name}.protectedState`), protectedPrestateSha256: protectedEvidence.before.stateSha256, protectedPoststateSha256: protectedEvidence.after.stateSha256, protectedBeforeContextSlot: protectedEvidence.before.contextSlot, protectedAfterContextSlot: protectedEvidence.after.contextSlot, protectedPreAttestationSha256: protectedEvidence.preSendAttestation.attestationSha256, protectedSettlementAttestationSha256: protectedEvidence.settlementAttestation.attestationSha256 }];

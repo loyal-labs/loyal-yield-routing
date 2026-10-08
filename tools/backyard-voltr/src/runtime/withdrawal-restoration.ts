@@ -229,50 +229,6 @@ export function parseWithdrawalRestorationScanFile(path: string): WithdrawalRest
   return { verdict: "PARTNER_WITHDRAWAL_DEMAND_SCAN_PASS", routeId: root.routeId as string, routeSpecSha256: root.routeSpecSha256 as string, vault: root.vault as string, observationContextSlot, generationFingerprint, rawQuerySha256: queryProof.rawQuerySha256, queryConfigSha256: queryProof.queryConfigSha256, requestOrigin, receipts, demand: parsedDemand };
 }
 
-/** Strictly parse the deterministic plan retained by the maintained CLI. */
-export function parseWithdrawalRestorationPlanFile(path: string): WithdrawalRestorationPlan {
-  let parsed: unknown;
-  try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch (error) { throw new Error(`cannot read withdrawal restoration plan ${path}: ${error instanceof Error ? error.message : String(error)}`); }
-  const envelope = object(parsed, "withdrawal restoration plan envelope");
-  const root = "plan" in envelope ? object(envelope.plan, "withdrawal restoration plan") : envelope;
-  exactKeys(root, ["schemaVersion", "routeId", "routeSpecSha256", "vault", "generation", "originId", "origin", "requestedRaw", "plannedRaw", "durability", "legs", "outbox"], "withdrawal restoration plan");
-  if (root.schemaVersion !== 1 || root.routeId !== PARTNER_FOUR_MARKET_ROUTE.id || root.routeSpecSha256 !== fourMarketRouteSpecSha256() || root.vault !== PARTNER_ROUTE.vault) throw new Error("withdrawal restoration plan is not bound to the exact four-market route");
-  const generation = numberField(root, "generation", "withdrawal restoration plan");
-  const originId = shaField(root, "originId", "withdrawal restoration plan");
-  const origin = object(root.origin, "withdrawal restoration plan.origin");
-  exactKeys(origin, ["kind", "scanGenerationFingerprint", "observationContextSlot", "receiptIds"], "withdrawal restoration plan.origin");
-  if (origin.kind !== "voltr-withdrawal-demand" || !Array.isArray(origin.receiptIds) || origin.receiptIds.length === 0 || origin.receiptIds.some((receipt) => typeof receipt !== "string" || receipt.length === 0)) throw new Error("withdrawal restoration plan origin is malformed");
-  const parsedOrigin = { kind: "voltr-withdrawal-demand" as const, scanGenerationFingerprint: shaField(origin, "scanGenerationFingerprint", "withdrawal restoration plan.origin"), observationContextSlot: numberField(origin, "observationContextSlot", "withdrawal restoration plan.origin"), receiptIds: [...origin.receiptIds] as string[] };
-  const durabilityRoot = object(root.durability, "withdrawal restoration plan.durability");
-  exactKeys(durabilityRoot, ["lifecycleId", "routeAuthorizationSha256", "requestOrigin", "protectedCheckpoint"], "withdrawal restoration plan.durability");
-  const requestOriginRoot = object(durabilityRoot.requestOrigin, "withdrawal restoration plan.durability.requestOrigin");
-  exactKeys(requestOriginRoot, ["signature", "eventIndex", "receipt", "rawAccountSha256", "generationFingerprint"], "withdrawal restoration plan.durability.requestOrigin");
-  const eventIndex = requestOriginRoot.eventIndex;
-  if (typeof eventIndex !== "number" || !Number.isSafeInteger(eventIndex) || eventIndex < 0) throw new Error("withdrawal restoration plan request event index is malformed");
-  const requestOrigin: WithdrawalRestorationRequestOrigin = { signature: stringField(requestOriginRoot, "signature", "withdrawal restoration plan.durability.requestOrigin"), eventIndex, receipt: stringField(requestOriginRoot, "receipt", "withdrawal restoration plan.durability.requestOrigin"), rawAccountSha256: shaField(requestOriginRoot, "rawAccountSha256", "withdrawal restoration plan.durability.requestOrigin"), generationFingerprint: shaField(requestOriginRoot, "generationFingerprint", "withdrawal restoration plan.durability.requestOrigin") };
-  const checkpoint = object(durabilityRoot.protectedCheckpoint, "withdrawal restoration plan.durability.protectedCheckpoint");
-  exactKeys(checkpoint, ["addressSetSha256", "stateSha256", "contextSlot"], "withdrawal restoration plan.durability.protectedCheckpoint");
-  const durability: WithdrawalRestorationDurabilityContext = { lifecycleId: shaField(durabilityRoot, "lifecycleId", "withdrawal restoration plan.durability"), routeAuthorizationSha256: shaField(durabilityRoot, "routeAuthorizationSha256", "withdrawal restoration plan.durability"), requestOrigin, protectedCheckpoint: { addressSetSha256: shaField(checkpoint, "addressSetSha256", "withdrawal restoration plan.durability.protectedCheckpoint"), stateSha256: shaField(checkpoint, "stateSha256", "withdrawal restoration plan.durability.protectedCheckpoint"), contextSlot: numberField(checkpoint, "contextSlot", "withdrawal restoration plan.durability.protectedCheckpoint") } };
-  if (!Array.isArray(root.legs) || root.legs.length === 0) throw new Error("withdrawal restoration plan must contain at least one leg");
-  const legs = root.legs.map((raw, index): WithdrawalRestorationLeg => {
-    const row = object(raw, `withdrawal restoration plan.legs[${index}]`);
-    exactKeys(row, ["legId", "strategyId", "reserve", "amountRaw", "sourceAvailableRaw", "netYieldLossBps", "unwindCostLamports", "sourceObservedContextSlot", "positionFingerprint", "managerRequest"], `withdrawal restoration plan.legs[${index}]`);
-    const strategyId = stringField(row, "strategyId", `withdrawal restoration plan.legs[${index}]`) as PartnerStrategyId;
-    const identity = PARTNER_FOUR_MARKET_STRATEGIES.find(({ id }) => id === strategyId);
-    if (!identity || row.reserve !== identity.reserve) throw new Error(`withdrawal restoration plan leg ${index} is not an approved strategy/reserve`);
-    const legId = shaField(row, "legId", `withdrawal restoration plan.legs[${index}]`);
-    const amountRaw = bigintField(row, "amountRaw", `withdrawal restoration plan.legs[${index}]`);
-    const managerRequest = object(row.managerRequest, `withdrawal restoration plan.legs[${index}].managerRequest`);
-    exactKeys(managerRequest, ["strategyId", "reserve", "amountRaw", "operation", "originId"], `withdrawal restoration plan.legs[${index}].managerRequest`);
-    if (managerRequest.strategyId !== strategyId || managerRequest.reserve !== identity.reserve || bigintField(managerRequest, "amountRaw", `withdrawal restoration plan.legs[${index}].managerRequest`) !== amountRaw || managerRequest.operation !== "manager-withdraw" || managerRequest.originId !== originId) throw new Error(`withdrawal restoration plan leg ${index} manager request differs from its logical leg`);
-    return { legId, strategyId, reserve: identity.reserve, amountRaw, sourceAvailableRaw: bigintField(row, "sourceAvailableRaw", `withdrawal restoration plan.legs[${index}]`), netYieldLossBps: bigintField(row, "netYieldLossBps", `withdrawal restoration plan.legs[${index}]`), unwindCostLamports: bigintField(row, "unwindCostLamports", `withdrawal restoration plan.legs[${index}]`), sourceObservedContextSlot: numberField(row, "sourceObservedContextSlot", `withdrawal restoration plan.legs[${index}]`), positionFingerprint: shaField(row, "positionFingerprint", `withdrawal restoration plan.legs[${index}]`), managerRequest: { strategyId, reserve: identity.reserve, amountRaw, operation: "manager-withdraw", originId } };
-  });
-  const outbox = object(root.outbox, "withdrawal restoration plan.outbox");
-  exactKeys(outbox, ["idempotencyKey", "eventType", "pendingLegIds"], "withdrawal restoration plan.outbox");
-  if (outbox.idempotencyKey !== `backyard-voltr:${originId}:${generation}` || outbox.eventType !== "backyard_voltr_manager_withdraw" || !Array.isArray(outbox.pendingLegIds) || JSON.stringify(outbox.pendingLegIds) !== JSON.stringify(legs.map(({ legId }) => legId))) throw new Error("withdrawal restoration plan outbox identity differs from its legs");
-  return { schemaVersion: 1, routeId: PARTNER_FOUR_MARKET_ROUTE.id, routeSpecSha256: fourMarketRouteSpecSha256(), vault: PARTNER_ROUTE.vault, generation, originId, origin: parsedOrigin, requestedRaw: bigintField(root, "requestedRaw", "withdrawal restoration plan"), plannedRaw: bigintField(root, "plannedRaw", "withdrawal restoration plan"), durability, legs, outbox: { idempotencyKey: outbox.idempotencyKey as string, eventType: "backyard_voltr_manager_withdraw", pendingLegIds: [...outbox.pendingLegIds] as string[] } };
-}
-
 /** Strictly parse position evidence emitted by loadFourMarketRestorationSources. */
 export function parseFourMarketPositionEvidenceFile(path: string, minimumContextSlot: number): readonly WithdrawalRestorationSource[] {
   let parsed: unknown;
@@ -293,27 +249,6 @@ export function parseFourMarketPositionEvidenceFile(path: string, minimumContext
     if (slot < minimumContextSlot) throw new Error(`position evidence source ${index} predates the withdrawal scan`);
     return { strategyId: identity.id, reserve: identity.reserve, availableRaw: bigintField(row, "availableRaw", `position evidence.sources[${index}]`), netYieldLossBps: bigintField(row, "netYieldLossBps", `position evidence.sources[${index}]`), unwindCostLamports: bigintField(row, "unwindCostLamports", `position evidence.sources[${index}]`), observedContextSlot: slot, positionFingerprint: stringField(row, "positionFingerprint", `position evidence.sources[${index}]`) };
   });
-}
-
-export function restorationPlanAsOutboxInput(plan: WithdrawalRestorationPlan, cluster: string): Readonly<Record<string, unknown>> {
-  const durability = plan.durability;
-  if (!durability) throw new Error("outbox input requires lifecycle, route authorization, request origin, and protected checkpoint bindings");
-  return { cluster, vault: plan.vault, routeId: plan.routeId, routeSpecSha256: plan.routeSpecSha256, routeAuthorizationSha256: durability.routeAuthorizationSha256, lifecycleId: durability.lifecycleId, requestOrigin: durability.requestOrigin, protectedCheckpoint: durability.protectedCheckpoint, originId: plan.originId, generation: plan.generation, scanGenerationFingerprint: plan.origin.scanGenerationFingerprint, observationContextSlot: plan.origin.observationContextSlot, requestedRaw: plan.requestedRaw, legs: plan.legs.map(({ legId, strategyId, reserve, amountRaw, sourceAvailableRaw, sourceObservedContextSlot, positionFingerprint }) => ({ legId, strategyId, reserve, amountRaw, sourceAvailableRaw, sourceObservedContextSlot, positionFingerprint })) };
-}
-
-/**
- * The existing Earn/Neon implementation owns SQL transactions, leases, and
- * fencing. This adapter is intentionally an interface, rather than a second
- * database or scheduler. `upsertPlan` must atomically get-or-create by
- * originId/generation and enqueue each manager request in the existing
- * orchestration outbox. Replaying the same scan must return duplicate=true
- * and must not append another movement or outbox event.
- */
-export interface WithdrawalRestorationPersistence {
-  upsertPlan(input: Readonly<{
-    plan: WithdrawalRestorationPlan;
-    duplicateOfOriginId?: string;
-  }>): Promise<Readonly<{ plan: WithdrawalRestorationPlan; duplicate: boolean }> | Readonly<{ duplicate: true; plan: WithdrawalRestorationPlan }>>;
 }
 
 const MAX_RESTORATION_RAW = PARTNER_ROUTE.asset.maxManagerOperationRaw;
@@ -472,17 +407,6 @@ export function planWithdrawalRestoration(
     legs,
     outbox,
   };
-}
-
-/** Persist through the existing Earn store/outbox; no local scheduler or DB is permitted. */
-export async function persistWithdrawalRestoration(
-  persistence: WithdrawalRestorationPersistence,
-  plan: WithdrawalRestorationPlan,
-): Promise<Readonly<{ plan: WithdrawalRestorationPlan; duplicate: boolean }>> {
-  if (plan.routeId !== PARTNER_FOUR_MARKET_ROUTE.id || plan.routeSpecSha256 !== fourMarketRouteSpecSha256() || plan.vault !== PARTNER_ROUTE.vault) throw new Error("refusing to persist a restoration plan for a different route");
-  if (!plan.durability) throw new Error("refusing to persist an offline restoration plan without durable lifecycle bindings");
-  if (plan.legs.length === 0 || plan.plannedRaw !== plan.requestedRaw || plan.outbox.pendingLegIds.length !== plan.legs.length) throw new Error("restoration plan is incomplete");
-  return persistence.upsertPlan({ plan });
 }
 
 /** Narrow offline verifier used by the partner proof; it exercises fail-closed invariants without RPC or secrets. */

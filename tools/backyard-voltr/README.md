@@ -196,8 +196,7 @@ withdrawal request, and withdrawal claim evidence/intents are bound to the
 four-market route id and hash, while the canonical Voltr vault builder remains
 the exact vault-level SDK surface.
 
-The four-market restoration worker begins with the read-only confirmed receipt
-scan:
+Withdrawal demand starts with the read-only confirmed receipt scan:
 
 ```sh
 bun src/cli.ts runtime scan-withdrawals \
@@ -214,7 +213,7 @@ an aligned confirmed observation slot, the exact raw RPC query/config hashes,
 raw account bytes, and a request-signature/event-index/receipt-generation
 fingerprint when those origin flags are supplied. The slot is not a durable
 first-observation marker; restart dedupe and execution ownership live in the
-existing orchestration outbox. `idleShortfallRaw` is a
+Go engine's rebalance opportunity rows. `idleShortfallRaw` is a
 conservative bigint sum: each fixed-point receipt amount is rounded up to raw
 USDC units before pending demand is compared with the configured idle floor.
 For a restoration scan, all three request-origin flags are required together
@@ -222,10 +221,21 @@ and must come from the same confirmed request artifact. The CLI does not
 default the event index or infer a receipt from a multi-receipt scan. Omit all
 three flags only for an unbound inventory scan.
 
-Turn the confirmed scan into a restoration plan with exact four-market position
-evidence. The default loads positions from confirmed RPC at or after the scan
-slot; `--positions` accepts a previously produced, route-bound position
-artifact:
+Withdrawal restoration is owned by the Go engine. When
+`BACKYARD_VOLTR_ORCHESTRATION_ENABLED` is set, the fleet family observes the
+vault (`go/workers/internal/fleet/voltr.go`), plans a `withdrawal_restoration`
+leg before any idle allocation or yield optimization
+(`go/workers/internal/fleet/voltr_plan.go`), and the executor claims
+restoration legs first and persists the signed wire before landing it
+(`go/workers/internal/fleetexec/voltr.go`). This tool no longer enqueues
+restoration work, drives a restoration leg through `execute-manager`, or reads
+restoration rows back from the database; those paths called the retired Rust
+`fleet-opportunity-planner`, `backyard-voltr-restoration-bridge`, and
+`backyard-voltr-restoration-readback` binaries.
+
+`runtime plan-withdrawal-restoration` remains a read-only diagnostic. It turns
+the confirmed scan into the deterministic restoration plan with exact
+four-market position evidence; it loads no signer and writes nothing:
 
 ```sh
 op run --env-file=../../.env.1password -- sh -c '
@@ -236,52 +246,15 @@ op run --env-file=../../.env.1password -- sh -c '
     --route-authorization-sha256 <EFFECTIVE_ROUTE_AUTH_SHA256> \
     --protected-address-set-sha256 <PROTECTED_ADDRESS_SET_SHA256> \
     --protected-state-sha256 <REQUEST_POSTSTATE_SHA256> \
-    --protected-context-slot <REQUEST_POSTSTATE_SLOT> \
-    --outbox-input-out ../../docs/evidence/backyard-voltr-four-market/restoration-outbox-input-v1.json
+    --protected-context-slot <REQUEST_POSTSTATE_SLOT>
 '
 ```
 
-The planner is read-only and refuses stale or mixed slots, non-positive or
-over-cap legs, missing request-origin bindings, and a plan that does not restore
-the exact shortfall. The default position reader loads all four exact route
-positions from confirmed RPC; `--positions <POSITION_EVIDENCE_JSON>` is allowed
-only for a separately produced route-bound position artifact. Submit the emitted outbox JSON through the existing Rust
-Earn boundary; do not add a second TypeScript scheduler:
-
-```sh
-cargo run -p loyal-yield-orchestrator --bin fleet-opportunity-planner -- \
-  --enqueue-voltr-restoration-json \
-  ../../docs/evidence/backyard-voltr-four-market/restoration-outbox-input-v1.json
-```
-
-The bridge worker then executes only the exact Main restoration withdrawal legs
-authorized by that durable outbox movement. Supply the full restoration bridge
-binding to `runtime execute-manager --strategy-id main --operation withdraw`:
-`--restoration-origin-id`, generation, leg id, owner, protected address/state
-hashes, protected context slot, and evidence directory. After confirmation,
-persist the manager intent/readback and run the maintained readback command
-shown below. The readback must be combined with the exact manager transaction
-artifact before claim; it does not manufacture chain evidence.
-
-After each canonical TypeScript manager restoration leg is confirmed and its
-signed intent/confirmation is persisted through the existing Neon outbox
-boundary, reload the database-owned rows with the maintained one-shot
-readback command:
-
-```sh
-cargo run -p loyal-yield-orchestrator --bin backyard-voltr-restoration-readback -- \
-  --input ../../docs/evidence/backyard-voltr-four-market/restoration-readback-input.json
-```
-
-The input contains only the route cluster, immutable restoration `originId`,
-generation, and expected leg count. `NEON_DATABASE_URL` is required; no
-signer, Solana packet, or broadcast is loaded. The command refuses pending,
-partial, duplicate, cross-generation, or unacknowledged rows and derives the
-verifier's `durableOutbox` rows from PostgreSQL payloads, including the exact
-manager signature, fence, confirmed slot, and transaction-anchored readback
-context. The operator then combines this readback with the canonical manager
-transaction artifacts and independently verified shortfall recomputations;
-the readback command does not manufacture chain evidence.
+The planner refuses stale or mixed slots, non-positive or over-cap legs,
+missing request-origin bindings, and a plan that does not restore the exact
+shortfall. The default position reader loads all four exact route positions
+from confirmed RPC; `--positions <POSITION_EVIDENCE_JSON>` is allowed only for
+a separately produced route-bound position artifact.
 
 The shared Earn adapter is a replay artifact, not another planner. Produce it
 from the exact Rust observation/planner replay and bind it to the same lifecycle
