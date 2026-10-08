@@ -81,8 +81,11 @@ func (w *Worker) SetMarketEvidence(source MarketEpochSource) error {
 	return nil
 }
 
-// runtimeCycle plans once; a completed cycle is fleet progress. The Voltr
-// vault is planned on its own five-second probe, as in the Rust planner.
+// runtimeCycle plans once; a completed cycle is fleet progress and the
+// planner lane's success. The executor also marks fleet progress every tick,
+// so only the lane fact shows a planner failing every cycle (Oct 8 2026: stale
+// market evidence). The Voltr vault is planned on its own five-second probe,
+// as in the Rust planner.
 func (w *Worker) runtimeCycle(ctx context.Context) {
 	if w.voltr != nil && w.config.Mode == ModePublish && !time.Now().Before(w.nextVoltr) {
 		w.nextVoltr = time.Now().Add(5 * time.Second)
@@ -97,6 +100,7 @@ func (w *Worker) runtimeCycle(ctx context.Context) {
 		return
 	}
 	w.facts.Progress(engine.FamilyFleet)
+	w.facts.LaneSucceeded(engine.FamilyFleet, "planner")
 }
 
 // voltrCycle is run_backyard_voltr_planning_cycle: one confirmed observation

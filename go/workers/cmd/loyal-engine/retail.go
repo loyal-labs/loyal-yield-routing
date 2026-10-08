@@ -496,6 +496,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 			lanes = append(lanes, control, aWorker)
 		case engine.FamilyFleet:
 			facts.LaneSucceeded(family, "position_sweep")
+			facts.LaneSucceeded(family, "planner")
 			lanes = append(lanes, planner, executor, crossMint, positionSweep)
 		case engine.FamilyLookup:
 			// Each lane's success clock starts when it starts.

@@ -162,7 +162,8 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	defer shadowStore.Close()
 	shadowConfig := config
 	shadowConfig.Mode = ModeShadow
-	shadow, err := NewWorker(shadowConfig, shadowStore, NewRPCClient(server.URL), engine.NewFacts(prometheus.NewRegistry()))
+	shadowRegistry := prometheus.NewRegistry()
+	shadow, err := NewWorker(shadowConfig, shadowStore, NewRPCClient(server.URL), engine.NewFacts(shadowRegistry))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +176,10 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	shadow.config.Cluster = "shadow-" + suffix
 	if err := shadow.planningCycle(ctx); err != nil {
 		t.Fatalf("read-only shadow absent epoch: %v", err)
+	}
+	shadow.runtimeCycle(ctx)
+	if plannerLaneSucceededAt(t, shadowRegistry) == 0 {
+		t.Fatal("a successful planning cycle did not record planner lane success")
 	}
 	if err := shadow.SetRevalidator(&Revalidator{}); err == nil {
 		t.Fatal("shadow accepted a durable revalidator")
