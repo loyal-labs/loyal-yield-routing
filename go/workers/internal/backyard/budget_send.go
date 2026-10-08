@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -177,35 +178,9 @@ func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *RPCCli
 		}
 		return cost, nil
 	}
-	wire := operation.SignedWire
-	if auth.GoalID != Phase3GoalID || len(wire) <= 65 || wire[0] != 1 || auth.SignedWireSHA256 != sha256Bytes(wire) {
-		return ValuedTransactionCost{}, budgetHold("signed_wire_reservation_mismatch")
-	}
-	request, effects, message, err := auth.BuildInput.decodeWithManifest(m)
+	request, effects, err := m.validateDebtClearSignedIdentity(auth, operation)
 	if err != nil {
 		return ValuedTransactionCost{}, err
-	}
-	digest, err := Phase3IntentDigest(request, auth.BuildInput.Effects)
-	if err != nil || digest != auth.IntentSHA256 || !bytes.Equal(message, wire[65:]) {
-		return ValuedTransactionCost{}, budgetHold("persisted_build_intent_mismatch")
-	}
-	var blockhash string
-	var height int64
-	switch r := request.(type) {
-	case BridgeBuildRequest:
-		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
-	case KaminoPrimeUSDCRequest:
-		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
-	case KaminoInitializationRequest:
-		if m.validateInitializerDecision(operation.Decision, r) != nil {
-			return ValuedTransactionCost{}, budgetHold("initializer_journal_identity_mismatch")
-		}
-		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
-	case JupiterSwapRequest:
-		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
-	}
-	if operation.SignedWireSHA256 != auth.SignedWireSHA256 || operation.RecentBlockhash != blockhash || operation.LastValidBlockHeight != height || operation.TransactionSignature != encodeBase58(wire[1:65]) {
-		return ValuedTransactionCost{}, budgetHold("persisted_signature_or_expiry_mismatch")
 	}
 	revalueStart := time.Now()
 	cost, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
@@ -314,6 +289,28 @@ func (d *Database) RevalueAndMarkBroadcastIntentOnManifest(ctx context.Context, 
 	if json.Unmarshal(encoded, &auth) != nil {
 		return budgetHold("invalid_durable_budget")
 	}
+	var originRisk *debtClearRiskProof
+	if auth.PolicySetup == nil {
+		request, effects, err := manifest.validateDebtClearSignedIdentity(auth, operation)
+		if err != nil {
+			return err
+		}
+		if err = d.checkSignedDebtClearConsent(ctx, manifest, operation, auth, request, effects); err != nil {
+			var hold *BudgetHold
+			if errors.As(err, &hold) {
+				return &validatedSignedBudgetHold{hold}
+			}
+			return err
+		}
+		originRisk, err = d.observeDebtClearOriginRisk(ctx, rpc, manifest, operation.ID)
+		if err != nil {
+			var hold *BudgetHold
+			if errors.As(err, &hold) {
+				return &validatedSignedBudgetHold{hold}
+			}
+			return err
+		}
+	}
 	checkStart := time.Now()
 	// Shared final-send custody seam (doc 26 §4): for a positive AUTO-PYUSD
 	// spend, a FRESH confirmed custody observation (pinned token
@@ -354,10 +351,10 @@ func (d *Database) RevalueAndMarkBroadcastIntentOnManifest(ctx context.Context, 
 		return err
 	}
 	logStage("final_check_custody", checkStart)
-	err = d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, rpc, auth.IntentSHA256, sha256Bytes(operation.SignedWire), cost, custody)
+	err = d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, rpc, auth.IntentSHA256, sha256Bytes(operation.SignedWire), cost, custody, originRisk)
 	logStage("final_check_intent", checkStart)
 	var hold *BudgetHold
-	if errors.As(err, &hold) && (hold.Reason == "fresh_execution_cost_exceeds_reservation" || hold.Reason == "fresh_send_cost_exceeds_reservation" || hold.Reason == "send_valuation_expired" || hold.Reason == "send_valuation_slot_unavailable" || hold.Reason == "selector_entry_quote_expired") {
+	if errors.As(err, &hold) && (hold.Reason == "fresh_execution_cost_exceeds_reservation" || hold.Reason == "fresh_send_cost_exceeds_reservation" || hold.Reason == "send_valuation_expired" || hold.Reason == "send_valuation_slot_unavailable" || hold.Reason == "selector_entry_quote_expired" || strings.HasPrefix(hold.Reason, "debt_clear_")) {
 		return &validatedSignedBudgetHold{hold}
 	}
 	return err
@@ -389,4 +386,39 @@ func (d *Database) RecordPhase3SignedBudgetHold(ctx context.Context, operationID
 		return budgetHold("signed_budget_hold_state_changed")
 	}
 	return tx.Commit(ctx)
+}
+
+func (m RouteManifest) validateDebtClearSignedIdentity(auth phase3OperationAuthorization, operation PersistedOperation) (any, ExpectedEffects, error) {
+	wire := operation.SignedWire
+	if auth.GoalID != Phase3GoalID || len(wire) <= 65 || wire[0] != 1 || auth.SignedWireSHA256 != sha256Bytes(wire) {
+		return nil, ExpectedEffects{}, budgetHold("signed_wire_reservation_mismatch")
+	}
+	request, effects, message, err := auth.BuildInput.decodeWithManifest(m)
+	if err != nil {
+		return nil, ExpectedEffects{}, err
+	}
+	digest, err := Phase3IntentDigest(request, auth.BuildInput.Effects)
+	if err != nil || digest != auth.IntentSHA256 || !bytes.Equal(message, wire[65:]) {
+		return nil, ExpectedEffects{}, budgetHold("persisted_build_intent_mismatch")
+	}
+	var blockhash string
+	var height int64
+	switch r := request.(type) {
+	case BridgeBuildRequest:
+		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	case KaminoPrimeUSDCRequest:
+		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	case KaminoInitializationRequest:
+		if m.validateInitializerDecision(operation.Decision, r) != nil {
+			return nil, ExpectedEffects{}, budgetHold("initializer_journal_identity_mismatch")
+		}
+		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	case JupiterSwapRequest:
+		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	}
+	if operation.SignedWireSHA256 != auth.SignedWireSHA256 || operation.RecentBlockhash != blockhash || operation.LastValidBlockHeight != height || operation.TransactionSignature != encodeBase58(wire[1:65]) {
+		return nil, ExpectedEffects{}, budgetHold("persisted_signature_or_expiry_mismatch")
+	}
+
+	return request, effects, nil
 }

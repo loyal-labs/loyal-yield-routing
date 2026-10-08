@@ -235,15 +235,11 @@ func TestPartialRepaymentFundedTailRevalidatesPriceAndBacking(t *testing.T) {
 	}
 }
 
-func TestPartialRepaymentUnwindPersistsWithBudgetAndRollback(t *testing.T) {
+func TestPartialRepaymentUnverifiedRiskCannotCommitUnwind(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
 	o, decision, e, m, rpc, client := partialRepaymentFixture(t, "funded")
-	plan, err := observePhase3PartialRepaymentAdmission(ctx, rpc, client, m, o, decision, e)
-	if err != nil {
-		t.Fatal(err)
-	}
 	key := fmt.Sprintf("partial-unwind-%d", time.Now().UnixNano())
 	id := key + "-operation"
 	prior := emptyTestBudget()
@@ -272,108 +268,16 @@ func TestPartialRepaymentUnwindPersistsWithBudgetAndRollback(t *testing.T) {
 	if _, err = db.AcquireRouteLease(ctx, key, "partial", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	intent, err := Phase3IntentDigest(e.Request, plan.Input.Effects)
-	if err != nil {
+	// This historical fixture hand-sets LTV and has no coherent observer
+	// batch. A projected partial repay cannot manufacture emergency authority.
+	assertBudgetHold(t, db.admitPhase3Withdrawal(ctx, rpc, client, m, id, o, decision, e), "debt_clear_emergency_evidence_unavailable")
+	var unwind, admitted, wire, sent bool
+	if err = db.pool.QueryRow(ctx, `SELECT route.state->'selectorUnwind' IS NOT NULL,op.expected_effects ? 'phase3',op.signed_wire IS NOT NULL,op.broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route USING(route_key) WHERE operation_id=$1`, id).Scan(&unwind, &admitted, &wire, &sent); err != nil {
 		t.Fatal(err)
 	}
-	auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: intent, BuildInput: plan.Input, BridgeAdmission: &plan, PilotAuthorityID: budget.Pilot.AuthorityID}
-	for _, commit := range []bool{false, true} {
-		tx, err := db.pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, _, err := db.readPhase3BudgetTx(ctx, tx, id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = b.Admit(BudgetReservation{OperationID: id, Family: "Maple", IntentSHA256: intent, UpperMicros: plan.CurrentCost.TotalMicros, ExitAfterMicros: plan.ExitAfterMicros, Recovery: true, ExecutionCostUpperMicros: 1})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = db.persistPartialRepaymentUnwindTx(ctx, tx, plan, b, intent); err != nil {
-			t.Fatal(err)
-		}
-		if err = db.writePhase3BudgetTx(ctx, tx, id, b, auth); err != nil {
-			t.Fatal(err)
-		}
-		err = tx.Rollback(ctx)
-		if err == nil && commit {
-			err = db.admitPhase3Withdrawal(ctx, rpc, client, m, id, o, decision, e)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		unwind, err := db.LoadUnwindIntent(ctx, key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !commit {
-			if unwind != nil {
-				t.Fatal("rolled-back unwind escaped")
-			}
-			continue
-		}
-		if unwind == nil || unwind.Reason != "hard_ltv_reduction" {
-			t.Fatal("missing durable risk continuation")
-		}
-		// A fresh snapshot after restart/NAV must drain the residual cash, never
-		// classify it as another borrowing tranche.
-		s := o.Snapshot
-		s.PositionDebtRaw = 1
-		s.PositionDebtValueRaw = 1
-		s.PayoffDebtRaw = 2
-		s.SquadsIdleRaw = 2
-		s.LTVBPS = 1
-		s.PostMutationNAVRequired = false
-		if err = applyUnwindIntent(&s, unwind); err != nil {
-			t.Fatal(err)
-		}
-		if got := Decide(s); got.Reason != "withdrawal_repay_debt" || got.Action != DeleverRouteStep {
-			t.Fatalf("partial cash re-entered leverage: %+v", got)
-		}
-		var state struct {
-			Budget Phase3Budget `json:"phase3"`
-			Paused bool         `json:"selectorEntryPaused"`
-		}
-		if err = db.pool.QueryRow(ctx, `SELECT state FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&raw); err != nil {
-			t.Fatal(err)
-		}
-		if json.Unmarshal(raw, &state) != nil || !state.Paused || state.Budget.Families["Maple"].SpentMicros != 1_000_000 || !state.Budget.Reservations[id].Recovery || state.Budget.Reservations[id].ExitBeforeMicros != 90_000_000 {
-			t.Fatal("budget history/continuation drift")
-		}
+	if unwind || admitted || wire || sent {
+		t.Fatal("unverified risk mutated durable capital authority")
 	}
-	// Production admission is idempotent, and pre-signing authorization
-	// revalidates the retained partial simulation before signer access.
-	if err = db.admitPhase3Withdrawal(ctx, rpc, client, m, id, o, decision, e); err != nil {
-		t.Fatal("admission retry", err)
-	}
-	if err = db.authorizePhase3Build(ctx, rpc, id, e.Request, plan.Input.Effects, plan.CurrentCost); err != nil {
-		t.Fatal("partial build authorization", err)
-	}
-	// The production release helper is invoked only after the caller proves
-	// this unsigned decided attempt unspent. Keep the risk exit committed.
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = db.releasePhase3UnspentTx(ctx, tx, id); err != nil {
-		t.Fatal(err)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	unwind, err := db.LoadUnwindIntent(ctx, key)
-	if err != nil || unwind == nil || unwind.Reason != "hard_ltv_reduction" {
-		t.Fatal("unspent attempt discarded risk exit", err)
-	}
-	var restored Phase3Budget
-	if err = db.pool.QueryRow(ctx, `SELECT state->'phase3' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	if json.Unmarshal(raw, &restored) != nil || restored.Families["Maple"].SpentMicros != 1_000_000 || restored.Families["Maple"].ExitMicros != 90_000_000 || len(restored.Reservations) != 0 {
-		t.Fatal("unspent attempt did not restore original reserve")
-	}
-
 }
 
 // B2 1.75x exit cycle: exit_partial_repay on OnRe runs the same measured

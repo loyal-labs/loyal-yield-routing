@@ -24,8 +24,15 @@ func TestExpiredUnwindDebtRequiresReadmissionWithoutBlockingRisk(t *testing.T) {
 		t.Fatal("renewal blocked risk reduction", d)
 	}
 	s.PositionCollateralRaw++
-	if err := applyUnwindIntent(&s, &intent); err == nil {
-		t.Fatal("unexpected collateral growth bypassed original bound")
+	if err := applyUnwindIntent(&s, &intent); err != nil || !s.UnwindRefreshRequired {
+		t.Fatal("collateral envelope growth became integrity latch", err)
+	}
+	if d := Decide(s); d.Action != DeleverRouteStep || d.Reason != "hard_ltv_repay" {
+		t.Fatal("collateral envelope blocked risk", d)
+	}
+	s.LTVBPS = 3400
+	if d := Decide(s); d.Action != Hold || d.Reason != "unwind_requires_fresh_admission" {
+		t.Fatal("ordinary collateral growth escaped admission", d)
 	}
 }
 

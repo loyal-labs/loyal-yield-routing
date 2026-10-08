@@ -106,6 +106,13 @@ func (d *Database) renewSelectorUnwindOnManifest(ctx context.Context, manifest R
 	if err = tx.QueryRow(ctx, RouteStateForUpdate, routeKey, lease.Owner, lease.FencingToken).Scan(&version, &raw); err != nil {
 		return err
 	}
+	var debtClear debtClearRouteState
+	if json.Unmarshal(raw, &debtClear) != nil {
+		return budgetHold("debt_clear_state_invalid")
+	}
+	if debtClear.Authority != nil {
+		return budgetHold("debt_clear_confirmation_requires_new_bounds")
+	}
 	if version != expectedVersion {
 		return budgetHold("unwind_refresh_state_changed")
 	}

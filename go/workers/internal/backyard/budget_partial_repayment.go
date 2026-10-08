@@ -2,10 +2,7 @@ package backyard
 
 import (
 	"context"
-	"encoding/json"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // Partial repayment has the same recovery budget as any other exit. Its
@@ -60,45 +57,6 @@ func observePhase3PartialRepaymentAdmission(ctx context.Context, rpc *RPCClient,
 		plan.RepaymentProjection = &projection
 	}
 	return plan, err
-}
-
-// Called within the existing locked admission transaction. writePhase3BudgetTx
-// advances the generation for this combined mutation. A risk reduction always
-// continues to idle; residual cash must not be classified as borrowed capital.
-func (d *Database) persistPartialRepaymentUnwindTx(ctx context.Context, tx pgx.Tx, plan phase3BridgeAdmission, budget Phase3Budget, intentSHA string) error {
-	lease, err := d.currentLease()
-	if err != nil {
-		return err
-	}
-	var raw []byte
-	if err = tx.QueryRow(ctx, `SELECT state->'selectorUnwind' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, lease.RouteKey).Scan(&raw); err != nil {
-		return err
-	}
-	if len(raw) > 0 && string(raw) != "null" {
-		var old UnwindIntent
-		if json.Unmarshal(raw, &old) != nil || old.validate() != nil || old.SourceLane != plan.Snapshot.RouteLane || old.BudgetScope != budget.GoalID {
-			return budgetHold("partial_repayment_unwind_conflict")
-		}
-	} else {
-		s := plan.Snapshot
-		family := phase3BudgetFamilyForLane(s.RouteLane)
-		i := UnwindIntent{SourceLane: s.RouteLane, Reason: "hard_ltv_reduction", ObservationID: s.ObservationID, MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: max(s.PositionDebtRaw, s.PayoffDebtRaw), CostBoundRaw: budget.Families[family].ExitMicros, BudgetScope: budget.GoalID, BudgetFamily: family, EvidenceID: intentSHA, CreatedAt: time.Now().UTC()}
-		if err = i.validate(); err != nil {
-			return err
-		}
-		raw, err = json.Marshal(i)
-		if err != nil {
-			return err
-		}
-	}
-	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(jsonb_set(state,'{selectorUnwind}',$4::jsonb,true),'{selectorEntryPaused}','true'::jsonb,true),'{selectorEntry}','null'::jsonb,true) WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, lease.RouteKey, lease.Owner, lease.FencingToken, string(raw))
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() != 1 {
-		return ErrRouteLeaseLost
-	}
-	return nil
 }
 
 func validatePartialRepaymentProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, s Snapshot, p phase3KaminoProjection) (KaminoPayoffBound, error) {

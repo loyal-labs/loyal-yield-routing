@@ -1386,7 +1386,7 @@ func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, 
 // the final-send fence resolved through the explicit reviewed manifest; the
 // lease, freshness recheck and transition stay byte-identical. The public form
 // above loads the embedded manifest once and is unchanged.
-func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, rpc *RPCClient, intent, wireHash string, cost ValuedTransactionCost, custody *sharedCustodyAdmissionProof) error {
+func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, rpc *RPCClient, intent, wireHash string, cost ValuedTransactionCost, custody *sharedCustodyAdmissionProof, originRisk ...*debtClearRiskProof) error {
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -1411,7 +1411,7 @@ func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest R
 	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, cost, custody); err != nil {
 		return err
 	}
-	if err := d.authorizePhase3SendTxOnManifest(ctx, manifest, tx, operationID, intent, wireHash, cost, slot); err != nil {
+	if err := d.authorizePhase3SendTxOnManifest(ctx, manifest, tx, operationID, intent, wireHash, cost, slot, originRisk...); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)

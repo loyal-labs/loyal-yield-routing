@@ -68,13 +68,11 @@ func applyUnwindIntentWithLane(s *Snapshot, intent *UnwindIntent, laneAllowed fu
 	if s.RouteLane != intent.SourceLane {
 		return fmt.Errorf("unwind_source_changed_before_reconciliation")
 	}
-	// The admitted debt bound includes the payoff interest window. Exceeding it
-	// requires fresh admission, not a silent increase in the committed envelope.
-	if s.PositionCollateralRaw > intent.MaxCollateralRaw {
-		return fmt.Errorf("unwind_holdings_exceed_admitted_bounds")
-	}
+	// Amount-envelope growth is a scoped admission hold, not an integrity
+	// latch. Ordinary renewal cannot expand confirmed bounds. Fresh verified
+	// hard-LTV protection still runs before that hold and mints its own envelope.
 	s.Unwind = true
-	s.UnwindRefreshRequired = s.PositionDebtRaw > intent.MaxDebtRaw
+	s.UnwindRefreshRequired = s.PositionDebtRaw > intent.MaxDebtRaw || s.PositionCollateralRaw > intent.MaxCollateralRaw
 	return nil
 }
 func unwindComplete(s Snapshot) bool {
@@ -144,6 +142,15 @@ func (d *Database) CommitUnwindIntentOnManifest(ctx context.Context, manifest Ro
 }
 
 func (d *Database) commitUnwindIntentWithLane(ctx context.Context, routeKey string, intent UnwindIntent, laneAllowed func(string) bool) error {
+	return d.commitUnwindIntent(ctx, routeKey, &intent, laneAllowed, nil, RouteManifest{})
+}
+
+func (d *Database) commitUnwindIntentWithConfirmation(ctx context.Context, routeKey string, intent *UnwindIntent, manifest RouteManifest, confirmation DebtClearConfirmation) error {
+	return d.commitUnwindIntent(ctx, routeKey, intent, manifest.selectorEntryLaneAllowed, &confirmation, manifest)
+}
+
+func (d *Database) commitUnwindIntent(ctx context.Context, routeKey string, committed *UnwindIntent, laneAllowed func(string) bool, confirmation *DebtClearConfirmation, manifest RouteManifest) error {
+	intent := *committed
 	if err := validateUnwindIntent(intent, laneAllowed); err != nil {
 		return err
 	}
@@ -180,7 +187,7 @@ func (d *Database) commitUnwindIntentWithLane(ctx context.Context, routeKey stri
 			return err
 		}
 	}
-	if state.Unwind != nil {
+	if state.Unwind != nil && confirmation == nil {
 		if !sameUnwindIntent(*state.Unwind, intent) {
 			return budgetHold("another_unwind_is_committed")
 		}
@@ -202,11 +209,23 @@ func (d *Database) commitUnwindIntentWithLane(ctx context.Context, routeKey stri
 	if blocked {
 		return budgetHold("resolve_capital_recovery_before_unwind")
 	}
+	if confirmation != nil {
+		if state.Unwind != nil && state.Unwind.SourceLane != intent.SourceLane {
+			return budgetHold("debt_clear_scope_changed")
+		}
+		if err = d.commitDebtClearConfirmationTx(ctx, tx, manifest, routeKey, raw, &intent, *confirmation); err != nil {
+			return err
+		}
+	}
 	encoded, err := json.Marshal(intent)
 	if err != nil {
 		return err
 	}
-	return d.writeUnwindTx(ctx, tx, routeKey, version, encoded)
+	if err = d.writeUnwindTx(ctx, tx, routeKey, version, encoded); err != nil {
+		return err
+	}
+	*committed = intent
+	return nil
 }
 func (d *Database) writeUnwindTx(ctx context.Context, tx pgx.Tx, routeKey string, version int64, encoded []byte) error {
 	lease, err := d.currentLease()
@@ -216,7 +235,7 @@ func (d *Database) writeUnwindTx(ctx context.Context, tx pgx.Tx, routeKey string
 	if lease.RouteKey != routeKey {
 		return fmt.Errorf("unwind_route_lease_mismatch")
 	}
-	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(CASE WHEN $5::jsonb='null'::jsonb THEN jsonb_set(jsonb_set(state,'{selectorEntryPaused}','true'::jsonb,true),'{selectorEntry}','null'::jsonb,true) ELSE state END,'{selectorUnwind}',$5::jsonb,true),'{generation}',to_jsonb(state_version+1),true),state_version=state_version+1,updated_at=clock_timestamp() WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()`, routeKey, lease.Owner, lease.FencingToken, version, string(encoded))
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(CASE WHEN $5::jsonb='null'::jsonb THEN jsonb_set(jsonb_set(jsonb_set(state,'{selectorEntryPaused}','true'::jsonb,true),'{selectorEntry}','null'::jsonb,true),'{debtClearAuthority}','null'::jsonb,true) ELSE state END,'{selectorUnwind}',$5::jsonb,true),'{generation}',to_jsonb(state_version+1),true),state_version=state_version+1,updated_at=clock_timestamp() WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()`, routeKey, lease.Owner, lease.FencingToken, version, string(encoded))
 	if err != nil {
 		return err
 	}
