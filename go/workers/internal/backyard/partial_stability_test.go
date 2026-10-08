@@ -106,7 +106,12 @@ func applyPartialLeg(t *testing.T, s Snapshot, d Decision, price float64) Snapsh
 		s.DebtIdleRaw, s.SquadsIdleRaw = 0, s.SquadsIdleRaw+d.AmountRaw*99/100
 	case partialStageReason:
 		s.SquadsIdleRaw -= d.AmountRaw
+		s.VoltrStrategyIdleRaw += d.AmountRaw
+		s.StagedAmountRaw, s.StagedAmountKnown, s.StageTransient = s.VoltrStrategyIdleRaw, true, true
+	case "withdrawal_staged":
+		s.VoltrStrategyIdleRaw -= d.AmountRaw
 		s.VoltrIdleRaw += d.AmountRaw
+		s.StagedAmountRaw, s.StageTransient = 0, false
 	default:
 		t.Fatalf("unexpected leg %+v", d)
 	}

@@ -175,8 +175,9 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	case JupiterSwapRequest:
 		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 	case BridgeBuildRequest:
-		// B2 1.75x: a NAV before a multi-cycle exit prices from current state.
-		if (r.Action != ReportNAV && r.Action != StageSquadsToVoltr) || !leverageLane(s.RouteLane) {
+		// NAV and admitted partial bridge legs price the remaining position;
+		// this cost-only helper grants no permission to execute that exit.
+		if (r.Action != ReportNAV && r.Action != StageSquadsToVoltr && r.Action != VoltrRestoreIdle) || !leverageLane(s.RouteLane) {
 			return phase3BridgeAdmission{}, budgetHold("invalid_projected_return_request")
 		}
 		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}

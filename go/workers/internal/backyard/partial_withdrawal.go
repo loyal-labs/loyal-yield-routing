@@ -1,8 +1,10 @@
 package backyard
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"math"
 	"math/big"
 )
 
@@ -72,6 +74,14 @@ func partialWithdrawalTargetLTVBPS(s Snapshot) (int64, bool) {
 func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 	if !leverageLane(s.RouteLane) || !s.PilotActive || s.Unwind || s.CutoverDrain || (s.WithdrawalDemandRaw <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
 		s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw < 0 || s.PositionDebtRaw < 0 {
+		return "", "", 0, false
+	}
+	// A reconciled stage has left Squads but is not pooled idle yet. Finish
+	// only the exact journal-bound partial withdrawal, even if demand shrank.
+	if s.VoltrStrategyIdleRaw > 0 {
+		if s.PartialWithdrawalOperationID != "" && s.StagedAmountKnown && s.StagedAmountRaw == s.VoltrStrategyIdleRaw {
+			return VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw, true
+		}
 		return "", "", 0, false
 	}
 	target, ok := partialWithdrawalTargetLTVBPS(s)
@@ -222,12 +232,16 @@ func partialWithdrawalRepayRaw(s Snapshot, target int64) int64 {
 // position, the post-payoff return for a debt-free one. ok=false: not a
 // partial-withdrawal leg; the installed admission applies.
 func admitPartialWithdrawalLeg(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error, bool) {
+	s := o.Snapshot
 	switch d.Reason {
 	case partialReleaseReason, partialSwapToDebtReason, partialSwapToUSDCReason, partialStageReason, partialDebtToUSDCReason:
+	case "withdrawal_staged":
+		if !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 {
+			return phase3BridgeAdmission{}, nil, false // complete exits keep cash-only admission
+		}
 	default:
 		return phase3BridgeAdmission{}, nil, false
 	}
-	s := o.Snapshot
 	// The decision amount is the stable driver; the request carries the wire
 	// sized from the same snapshot, rechecked below.
 	if want, reason, amount, ok := partialWithdrawalStep(s); !ok || want != d.Action || reason != d.Reason || amount != d.AmountRaw || !decisionsEqual(m.DecideOnManifest(s), d) {
@@ -248,6 +262,32 @@ func admitPartialWithdrawalLeg(ctx context.Context, rpc *RPCClient, client *jupi
 		if wire <= 0 || got == 0 || got > uint64(wire) {
 			return phase3BridgeAdmission{}, budgetHold("partial_withdrawal_wire_mismatch"), true
 		}
+	}
+	postObservation := o
+	if d.Reason == "withdrawal_staged" {
+		r, ok := request.(BridgeBuildRequest)
+		if !ok || r.Action != VoltrRestoreIdle || r.AmountRaw != uint64(s.VoltrStrategyIdleRaw) ||
+			s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.StrategyNAVRaw < 0 || s.VoltrIdleRaw > math.MaxInt64-s.VoltrStrategyIdleRaw ||
+			r.Report.ObservedSlot != uint64(s.Slot) || r.Report.Sequence != uint64(s.Slot) || r.Report.NAVAfterRaw != uint64(s.StrategyNAVRaw) {
+			return phase3BridgeAdmission{}, budgetHold("partial_withdrawal_restore_mismatch"), true
+		}
+		want, _, _, err := bridgeExpectedEffects(d, uint64(s.VoltrIdleRaw), uint64(s.VoltrStrategyIdleRaw), uint64(s.SquadsIdleRaw))
+		if err != nil {
+			return phase3BridgeAdmission{}, err, true
+		}
+		want.Kind, want.ReturnData = "bridge", expectedAdaptorReturnData(r.Report.NAVAfterRaw)
+		expected, err := jsonMarshalExpectedEffects(want)
+		if err != nil {
+			return phase3BridgeAdmission{}, err, true
+		}
+		actual, err := jsonMarshalExpectedEffects(effects)
+		if err != nil || !bytes.Equal(expected, actual) {
+			return phase3BridgeAdmission{}, budgetHold("partial_withdrawal_restore_mismatch"), true
+		}
+		// Cost-only poststate: the current wire and retained position/NAV are
+		// unchanged. The remaining exit must not count this cash a second time.
+		postObservation.Snapshot.VoltrIdleRaw += s.VoltrStrategyIdleRaw
+		postObservation.Snapshot.VoltrStrategyIdleRaw = 0
 	}
 	current, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
 	if err != nil {
@@ -285,9 +325,12 @@ func admitPartialWithdrawalLeg(ctx context.Context, rpc *RPCClient, client *jupi
 			return phase3BridgeAdmission{}, err, true
 		}
 	}
-	plan, err := pricePartialWithdrawalRemainder(ctx, rpc, client, m, o, d, request, effects, current, route, post)
+	plan, err := pricePartialWithdrawalRemainder(ctx, rpc, client, m, postObservation, d, request, effects, current, route, post)
 	if err == nil {
 		plan.Snapshot = s
+		if d.Reason == "withdrawal_staged" {
+			plan.ValidThroughSlot = min(plan.ValidThroughSlot, s.Slot+adaptorMaxReportAgeSlots)
+		}
 	}
 	return plan, err, true
 }
