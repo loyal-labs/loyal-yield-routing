@@ -2,13 +2,19 @@ name: Workers v2 branch verification
 
 on:
   push:
-    branches: [codex/workers-v2, codex/workers-v2-simplify]
+    branches: [main, codex/workers-v2, codex/workers-v2-simplify, codex/workers-v2-golive]
     paths:
       - go/workers/**
       - scripts/verify-workers-v2.sh
       - scripts/workers-v2-fixture.py
       - migrations/**
       - .github/workflows/workers-v2-verify.yml
+      # Sources bound by the Backyard Voltr policy authorization.
+      - Cargo.toml
+      - Cargo.lock
+      - crates/loyal-actions/**
+      - tools/backyard-voltr/**
+      - docs/evidence/backyard-voltr-four-market/**
 
 permissions:
   contents: read
@@ -62,6 +68,25 @@ jobs:
         run: python3 scripts/workers-v2-fixture.py
       - name: Verify offline and enabled database behavior
         run: bash scripts/verify-workers-v2.sh
+
+  backyard-voltr-authorization:
+    # Every authorization-gated Backyard Voltr command refuses when a bound
+    # source drifts from the committed policy catalog authorization.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Verified to install bun.lock (configVersion 1) frozen.
+          bun-version: 1.3.14
+      - name: Committed authorization binds the checked-out sources
+        working-directory: tools/backyard-voltr
+        run: |
+          bun install --frozen-lockfile
+          bun test src/policies/authorization.test.ts
 
   image:
     # This job only builds and probes a local CI image. No registry credentials,
