@@ -280,7 +280,7 @@ func (s *Store) VoltrPlanningState(ctx context.Context, vaultID int64) (bool, *t
 // observation supersedes the vault's unclaimed opportunity; a live lease on
 // another opportunity defers it.
 func (s *Store) PublishVoltr(ctx context.Context, cluster string, epochID int64, v VoltrOpportunity) (bool, error) {
-	key := voltrOpportunityKey(cluster, epochID, v)
+	key := VoltrOpportunityKey(cluster, epochID, v)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -312,10 +312,10 @@ VALUES($1,$2,$2,1,$3,$4,$5,$6,$7,$8,$9,$9,$9,$10,$10,$11,$12,$13,$14,$15,$15,$15
 	return true, tx.Commit(ctx)
 }
 
-// voltrOpportunityKey follows rebalance_opportunity_idempotency_key's shape:
-// length-prefixed immutable evidence, so a re-observation with the same plan
-// is the same opportunity.
-func voltrOpportunityKey(cluster string, epochID int64, v VoltrOpportunity) string {
+// VoltrOpportunityKey is the idempotency_key PublishVoltr writes, in
+// rebalance_opportunity_idempotency_key's shape: length-prefixed immutable
+// evidence, so a re-observation with the same plan is the same opportunity.
+func VoltrOpportunityKey(cluster string, epochID int64, v VoltrOpportunity) string {
 	h := sha256.New()
 	for _, part := range []string{"loyal-rebalance-opportunity-v1", cluster, strconv.FormatInt(v.VaultID, 10), "idle", strconv.FormatInt(epochID, 10), string(v.Plan), v.ExpiresAt.UTC().Format(time.RFC3339Nano)} {
 		var n [8]byte
