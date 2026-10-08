@@ -17,7 +17,7 @@ test("Phase-1 manifest and verifier pin only the finalized bridge policy rollove
   const repository = resolve(import.meta.dirname, "../../../..");
   const manifestPath = resolve(repository, "docs/manifests/backyard-rwa-v1.json");
   const embeddedPath = resolve(repository,
-    "go/backyard-rwa-worker/internal/backyardrwa/manifest/backyard-rwa-v1.json");
+    "go/workers/internal/backyard/manifest/backyard-rwa-v1.json");
   const manifestBytes = readFileSync(manifestPath);
   assert.deepEqual(manifestBytes, readFileSync(embeddedPath));
   const manifest = JSON.parse(manifestBytes.toString("utf8")) as {

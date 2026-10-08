@@ -1,0 +1,18 @@
+{
+  "description": "Delegated fee-payer signing identity for fleet v0 route wire; deterministic test key, no chain value.",
+  "fee_payer_seed_base58": "Cs8KY3PiWrCMAytMsBRQo8EdGbticVtdvufLnb2UhXh",
+  "fee_payer": "8u8LCMQvMKrFxHbn326Ltcqv72HDPEC5FPMgPC3mXvxV",
+  "recent_blockhash": "2kzvcTkdKNgQZFjZPjgZ6vsnEvSXD5HkVKEkgXcofMwx",
+  "message_base64": "gAEAAQJ1XEy5JWynzcSs/cbP7tqEkBfluflRTpkZG9Z+Cw1Cdg4VHCMqMTg/Rk1UW2JpcHd+hYyTmqGor7a9xMvS2eDnGiEoLzY9REtSWWBnbnV8g4qRmJ+mrbS7wsnQ197l7PMBAQEAAaoA",
+  "unsigned_wire_base64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAQABAnVcTLklbKfNxKz9xs/u2oSQF+W5+VFOmRkb1n4LDUJ2DhUcIyoxOD9GTVRbYmlwd36FjJOaoaivtr3Ey9LZ4OcaISgvNj1ES1JZYGdudXyDipGYn6attLvCydDX3uXs8wEBAQABqgA=",
+  "message_sha256": "e6e0279a4e46d8ac61a3c749c6bb18ea02d8a3778bf6ed088de3f085693e007e",
+  "unsigned_wire_sha256": "c6b2be40717082bb5dceabd5b8292153f436ea2040ce7065aec6ab4ee10cf1cb",
+  "signed_wire_base64": "ATXPCLbtmROBSgm2l1lKhFGd5Cso75nAiDuBArdp/VuOpHXXHGCs2qXP4uZ7WQN9z5QNmnq17Fm/K/SkAuRt0AeAAQABAnVcTLklbKfNxKz9xs/u2oSQF+W5+VFOmRkb1n4LDUJ2DhUcIyoxOD9GTVRbYmlwd36FjJOaoaivtr3Ey9LZ4OcaISgvNj1ES1JZYGdudXyDipGYn6attLvCydDX3uXs8wEBAQABqgA=",
+  "signed_wire_sha256": "70288341f54faf6b1ac6ba0a0a37624d08a535759e7d82e9d0007a90b7204727",
+  "signature_base58": "25Q2CvBpxXCeqR89LdTEeFkA3g6yJiR9xKh9g5zRhQGEeUKWHpkTyStagNCzN8LFqxAdLd3Nj3a7yL5e4h2gRQeS",
+  "last_valid_block_height": 4000,
+  "fee_lamports": 5000,
+  "compute_limit": 200000,
+  "lookup_table": "3JMHksUi3m4Dfyjct8HuRw3tCC88banJxaa19Zybe2Xc",
+  "secondary_account": "wyNtrAWDo7gtAjUA9mXcRcdK1v78K3unREsyy5chN5U"
+}

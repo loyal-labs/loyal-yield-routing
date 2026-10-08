@@ -1,0 +1,175 @@
+{
+  "commit": "36a6664c125eeecd5e0ab5ea9218e72432da055d",
+  "files": [
+    {
+      "source": "go/laserstream-worker/internal/ata/handler.go",
+      "source_sha256": "ae79396b215314fa195ba9cc5298f32fb5d97c37e30e1cbb56ec01f1a9a9a672",
+      "target": "go/workers/internal/observer/ata/handler.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/ata/handler_integration_test.go",
+      "source_sha256": "7141f2445a47237fec979857a0fe8553e44cc860848626c4cd0a37c41605c3e5",
+      "target": "go/workers/internal/observer/ata/handler_integration_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/config/config.go",
+      "source_sha256": "5a2411ad00196fed813832e688ef56b2657e24737aad33b80dcaa19b66f8c1de",
+      "target": "go/workers/internal/observer/config/config.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/config/config_test.go",
+      "source_sha256": "28c6c696ec7aa43b6702029eda2cb9dfdeb85bcf42a9daa0ceeb0effcf7da929",
+      "target": "go/workers/internal/observer/config/config_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/earn/handler.go",
+      "source_sha256": "3585c17cfc71264e2dc5668861d790281a4e33b11eab98872a83cd41a3bf832d",
+      "target": "go/workers/internal/observer/earn/handler.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/earn/handler_integration_test.go",
+      "source_sha256": "e81fcef151fc1f3167db130ed57c89addbbdf64811fdbc6f22d487ede06818a2",
+      "target": "go/workers/internal/observer/earn/handler_integration_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/earn/store.go",
+      "source_sha256": "ac8e46f2cb44d9184eaa43754a15e2ccdb943a3f0e1c98b5edfe970122a86a63",
+      "target": "go/workers/internal/observer/earn/store.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/kamino/catalog.go",
+      "source_sha256": "34bcabfdb46ae4becbda55219b4018de056a7c2c6cd00d4fd0400b3238f667d8",
+      "target": "go/workers/internal/observer/kamino/catalog.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/kamino/catalog_test.go",
+      "source_sha256": "5db6206f6b7c31764179d8d8e53235c4d87808118be793bf637fdfbc3f527847",
+      "target": "go/workers/internal/observer/kamino/catalog_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/kamino/decode.go",
+      "source_sha256": "53dae483de87ee0efa2f695adeed52d36a7ff1b2f0829b55704eb39063c1a514",
+      "target": "go/workers/internal/observer/kamino/decode.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/kamino/decode_test.go",
+      "source_sha256": "3c68990d69662bc4730296251c58722985580a9ca4be9d828bb7343016922b10",
+      "target": "go/workers/internal/observer/kamino/decode_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/kamino/handler.go",
+      "source_sha256": "74d8dfd60aae3274f4effebcc20d47a2f97fd2bb95a599f2933ca6b5ac7bd3b6",
+      "target": "go/workers/internal/observer/kamino/handler.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/kamino/live_decode_test.go",
+      "source_sha256": "e7d8529842b807a8d45aa1657cc0da713fbb3f551f3f320ffbdc63486f440818",
+      "target": "go/workers/internal/observer/kamino/live_decode_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/kamino/store.go",
+      "source_sha256": "9986c1672a446ce9088181a8316b4c06083079dbbeaca1ac5b6a3d71069be518",
+      "target": "go/workers/internal/observer/kamino/store.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/kamino/store_integration_test.go",
+      "source_sha256": "b0153cfb2196f8e80287c990a5354224788a7e7d2fe1447bd5c4c037120cb09c",
+      "target": "go/workers/internal/observer/kamino/store_integration_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/kamino/verification.go",
+      "source_sha256": "44802d031f05cb462e9e014434c7d11ee0b97cd4ffb3153c0dc576e01daece25",
+      "target": "go/workers/internal/observer/kamino/verification.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/solanarpc/client.go",
+      "source_sha256": "ef73da5f5a811606089eccd97263b99e38c59ef4d4d6195f0af03a60ae61b64c",
+      "target": "go/workers/internal/observer/solanarpc/client.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/stream/connector.go",
+      "source_sha256": "f52ed03f525e9bb336ca422681cc54f77b7a0b12eb7881e3c7df9108e67f6536",
+      "target": "go/workers/internal/observer/stream/connector.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/stream/handoff_e2e_test.go",
+      "source_sha256": "3929be3201a18b44a231997fc9c4a9a80d14aa7f398c266d045bd7721dee53b2",
+      "target": "go/workers/internal/observer/stream/handoff_e2e_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/stream/manager.go",
+      "source_sha256": "8f4c70d9d89dffbd84f1c3cc1d5355a79fb68acd23bd17315167e49c93fc4c00",
+      "target": "go/workers/internal/observer/stream/manager.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/stream/manager_test.go",
+      "source_sha256": "eb0368d6863e169b674a7c89be53ff3c35ffd775c17350ea07de3f89d69a2f36",
+      "target": "go/workers/internal/observer/stream/manager_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/stream/router.go",
+      "source_sha256": "30f204f99c2886250b262251908539cf413246018b93ac9e86ea981d3695a4ae",
+      "target": "go/workers/internal/observer/stream/router.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/stream/router_test.go",
+      "source_sha256": "0ce198c05323aeed27132048aa1f7fccfbdae74a1512f745e87eb85f9f04e362",
+      "target": "go/workers/internal/observer/stream/router_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/subscription/spec.go",
+      "source_sha256": "4d8162c0b7c1c6190746662be7c25742f31c57856de9f43824e47c530241a278",
+      "target": "go/workers/internal/observer/subscription/spec.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/subscription/spec_test.go",
+      "source_sha256": "fed660e5ea12b410f966d89bb813936285897dedece5232b4ef8cd54bec59caf",
+      "target": "go/workers/internal/observer/subscription/spec_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/watch/live_test.go",
+      "source_sha256": "d5ffc5b74e9d29f21dcf2f6c346f9b8ccae2dd8b69e2ae7a08b7e1a8c453b69e",
+      "target": "go/workers/internal/observer/watch/live_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/watch/watch.go",
+      "source_sha256": "184a35b0539ff9545c5610c07c688b6be3dd740af14bcaa2897ad499d35a8b00",
+      "target": "go/workers/internal/observer/watch/watch.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/watch/watch_integration_test.go",
+      "source_sha256": "f83648fcebc16ab61d8b502f7c74a81845bdfba6deb03480091ddcee6a4afa4c",
+      "target": "go/workers/internal/observer/watch/watch_integration_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/watch/watch_test.go",
+      "source_sha256": "094c36d4f749d63c937c0edc1611b8c3f91603e78af6938326c7385442f918e0",
+      "target": "go/workers/internal/observer/watch/watch_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/worker/handler.go",
+      "source_sha256": "0c92b6b88844f53ae4a9132f35c326ecaee33dcaa6d9baee8604ee1777d937a2",
+      "target": "go/workers/internal/observer/worker/handler.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/worker/runtime.go",
+      "source_sha256": "4121e63f4af29f5451c08af1692a472b4442efe030720dafb11cfe88bd528ea5",
+      "target": "go/workers/internal/observer/worker/runtime.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/worker/runtime_test.go",
+      "source_sha256": "2a292d8437341ed8a761e8650b5b5764d66b1694165941408b14f4d9bcd84620",
+      "target": "go/workers/internal/observer/worker/runtime_test.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/worker/watch_refresh.go",
+      "source_sha256": "377fc2c157944103a1f473dee97a168b96c10ae8b967ce6812217ed63c35a841",
+      "target": "go/workers/internal/observer/worker/watch_refresh.go"
+    },
+    {
+      "source": "go/laserstream-worker/internal/worker/watch_refresh_test.go",
+      "source_sha256": "425f9625d88a10663a55abe7aac9fa3f3540bcd0cf37e25089697fc8ef192777",
+      "target": "go/workers/internal/observer/worker/watch_refresh_test.go"
+    }
+  ]
+}

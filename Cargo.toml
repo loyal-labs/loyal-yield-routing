@@ -1,26 +1,12 @@
 [workspace]
 members = ["crates/*"]
 default-members = [
-    "crates/balance-sweep-ata-monitor",
-    "crates/balance-sweep-ata-observations",
-    "crates/balance-sweep-ata-projector",
-    "crates/balance-sweep-autodeposit-trigger",
-    "crates/kamino-reserve-monitor",
-    "crates/loyal-fleet-worker",
-    "crates/loyal-kamino-codec",
-    "crates/loyal-kamino-data",
     "crates/loyal-actions",
     "crates/loyal-hub-abi",
     "crates/loyal-observability",
-    "crates/loyal-route-lookup-tables",
     "crates/loyal-solana-env",
-    "crates/loyal-squads-policy-monitor",
-    "crates/loyal-timescale-migrations",
-    "crates/loyal-yield-orchestrator",
-    "crates/loyal-yield-store",
     "crates/loyal-yield-realtime",
     "crates/loyal-yield-realtime-core",
-    "crates/loyal-yield-router",
 ]
 resolver = "2"
 

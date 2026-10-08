@@ -71,7 +71,7 @@ pub use protocols::{
     LoyalHubRebalanceBuilder, LoyalHubRebalanceTransfer, LoyalHubSwapExactIn,
 };
 pub use squads::{
-    compile_squads_inner_instruction,
+    build_canonical_subscription_sweep_policy_create, compile_squads_inner_instruction,
     create_deployed_semantic_program_interaction_policy_instruction,
     create_exact_program_interaction_policy_instruction,
     create_semantic_program_interaction_policy_instruction,

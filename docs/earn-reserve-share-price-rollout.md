@@ -7,13 +7,13 @@ so the earlier 0078 recorder registration must not be applied.
 Before applying, compare every registered migration checksum with the target
 database ledger. The recorder must be the only pending migration. Verify the
 production target independently; never infer it from a local environment name.
-The standalone `yield-migrations --apply` runner retains its advisory lock and
+The `loyal-migrate -db yield up` runner retains its advisory lock and
 checksum checks. The new DDL batch has a five-second lock timeout and a
 30-second statement timeout. Both entrypoints verify the new table's columns,
 positive finite price constraint, primary key, generated IDs and valid indexes
 before recording success; checksum-current recorder schemas are also verified.
 
-Run `yield-migrations --check` after applying and verify version 84's name and
+Run `loyal-migrate -db yield status` after applying and verify version 84's name and
 checksum. The migration does not alter existing position tables or ledger
 versions. On failure, inspect the catalog and retry after resolving the cause;
 `IF NOT EXISTS` alone does not prove an existing object has the correct shape.

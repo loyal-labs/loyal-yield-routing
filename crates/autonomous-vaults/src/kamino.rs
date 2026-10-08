@@ -20,9 +20,10 @@ use klend_interface::{
             WithdrawObligationCollateralAndRedeemReserveCollateralV2Accounts,
         },
     },
-    pda::farms_user_state,
-    state::Obligation,
+    pda::{farms_user_state, lending_market_authority},
+    state::{Obligation, Reserve},
     types::InitObligationArgs,
+    KLEND_PROGRAM_ID,
 };
 use loyal_actions::{
     autonomous_vaults::{
@@ -33,7 +34,6 @@ use loyal_actions::{
     SquadsDataValueView, SquadsInstructionConstraintView, ASSOCIATED_TOKEN_PROGRAM_ID,
     KAMINO_INIT_OBLIGATION_DISCRIMINATOR, KAMINO_LEND_PROGRAM_ID, USDC_MINT,
 };
-use loyal_kamino_codec::{decode_kamino_reserve_account, KaminoReserveCatalogAccount};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey;
 use solana_sdk::{
@@ -42,6 +42,54 @@ use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KaminoReserveCatalogAccount {
+    pub reserve: Pubkey,
+    pub market: Pubkey,
+    pub market_authority: Pubkey,
+    pub liquidity_mint: Pubkey,
+    pub liquidity_token_program: Pubkey,
+    pub liquidity_supply: Pubkey,
+    pub collateral_mint: Pubkey,
+    pub collateral_supply: Pubkey,
+    pub collateral_farm: Option<Pubkey>,
+    pub pyth_oracle: Option<Pubkey>,
+    pub switchboard_price_oracle: Option<Pubkey>,
+    pub switchboard_twap_oracle: Option<Pubkey>,
+    pub scope_prices: Option<Pubkey>,
+}
+
+fn decode_kamino_reserve_account(
+    reserve: Pubkey,
+    account: &Account,
+) -> Result<KaminoReserveCatalogAccount> {
+    if account.owner != KLEND_PROGRAM_ID {
+        bail!(
+            "reserve {reserve} is owned by {}, expected Kamino lend",
+            account.owner
+        );
+    }
+    let state = from_account_data::<Reserve>(&account.data)
+        .map_err(|error| anyhow::anyhow!("decode approved Kamino reserve {reserve}: {error}"))?;
+    let present = |value: Pubkey| (value != Pubkey::default()).then_some(value);
+    let token_info = &state.config.token_info;
+    Ok(KaminoReserveCatalogAccount {
+        reserve,
+        market: state.lending_market,
+        market_authority: lending_market_authority(&KLEND_PROGRAM_ID, &state.lending_market).0,
+        liquidity_mint: state.liquidity.mint_pubkey,
+        liquidity_token_program: state.liquidity.token_program,
+        liquidity_supply: state.liquidity.supply_vault,
+        collateral_mint: state.collateral.mint_pubkey,
+        collateral_supply: state.collateral.supply_vault,
+        collateral_farm: present(state.farm_collateral),
+        pyth_oracle: present(token_info.pyth_configuration.price),
+        switchboard_price_oracle: present(token_info.switchboard_configuration.price_aggregator),
+        switchboard_twap_oracle: present(token_info.switchboard_configuration.twap_aggregator),
+        scope_prices: present(token_info.scope_configuration.price_feed),
+    })
+}
 
 pub const KAMINO_OPERATIONS_POLICY_SEED: u64 = 1;
 pub const KAMINO_INIT_POLICY_SEED: u64 = 2;
@@ -117,8 +165,7 @@ pub fn load_plan(
             bail!("internal approved Kamino reserve ordering mismatch");
         }
         let account = account.context("approved Kamino reserve account is absent")?;
-        let decoded = decode_kamino_reserve_account(reserve_address, &account)
-            .context("decode approved Kamino reserve")?;
+        let decoded = decode_kamino_reserve_account(reserve_address, &account)?;
         validate_reserve(&decoded, *expected_market, reserve_address)?;
         let obligation = derive_kamino_vanilla_obligation(vault, *expected_market);
         let obligation_farm_user_state = decoded

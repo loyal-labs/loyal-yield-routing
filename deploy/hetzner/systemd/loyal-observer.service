@@ -1,0 +1,64 @@
+# Observer family. Static Go binary, no container, no controller.
+# Secrets: systemd-creds encrypted with the host key; names only here.
+[Unit]
+Description=Loyal observer (Go)
+Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting; restart loops are an alert, not a stop.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/opt/loyal/bin/loyal-observer
+Restart=always
+RestartSec=5s
+TimeoutStopSec=60s
+
+LoadCredentialEncrypted=HELIUS_API_KEY:/etc/credstore.encrypted/loyal-observer/HELIUS_API_KEY
+LoadCredentialEncrypted=SOLANA_RPC_URL:/etc/credstore.encrypted/loyal-observer/SOLANA_RPC_URL
+LoadCredentialEncrypted=NEON_DATABASE_URL:/etc/credstore.encrypted/loyal-observer/NEON_DATABASE_URL
+LoadCredentialEncrypted=TIMESCALEDB_URL:/etc/credstore.encrypted/loyal-observer/TIMESCALEDB_URL
+
+Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9101
+Environment=SOLANA_CLUSTER=mainnet-beta
+Environment=BALANCE_SWEEP_ATA_STREAM=production
+# Non-secret host values: LASERSTREAM_ENDPOINT, EARN_MAX_DELEGATE.
+EnvironmentFile=/etc/loyal/loyal-observer.env
+
+DynamicUser=yes
+User=loyal-observer
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loyal-observer
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

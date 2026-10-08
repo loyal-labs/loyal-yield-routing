@@ -498,6 +498,128 @@ pub fn create_deployed_semantic_program_interaction_policy_instruction(
     })
 }
 
+/// Canonical deployed Autodeposit policy from Loyal Apps
+/// 45de590: smart-account-vaults/client.ts1894..2004. Its mutable wallet floor
+/// is deliberately absent. Preserve every owner/data restriction here, in the
+/// source action SDK, rather than re-encoding this security contract in a worker.
+#[allow(clippy::too_many_arguments)]
+pub fn build_canonical_subscription_sweep_policy_create(
+    settings: Pubkey,
+    root_authority: Pubkey,
+    payer: Pubkey,
+    delegated_signer: Pubkey,
+    policy_seed: u64,
+    wallet: Pubkey,
+    vault: Pubkey,
+    max_amount_per_period: u64,
+) -> Result<Instruction> {
+    if policy_seed == 0
+        || max_amount_per_period == 0
+        || vault != derive_squads_vault(&settings, 1).0
+    {
+        return Err(LoyalActionError::InvalidPolicyConstraint);
+    }
+    let authority = derive_subscription_authority(wallet, USDC_MINT);
+    let wallet_ata = derive_classic_associated_token_account(wallet, USDC_MINT);
+    let vault_ata = derive_classic_associated_token_account(vault, USDC_MINT);
+    let equals = |offset, value| SquadsDataConstraint {
+        data_offset: offset,
+        data_value: value,
+        operator: SquadsDataOperator::Equals,
+    };
+    let recurring = SquadsAccountConstraint {
+        account_index: 0,
+        owner: Some(SUBSCRIPTIONS_PROGRAM_ID),
+        account_constraint: SquadsAccountConstraintType::AccountData(vec![
+            equals(
+                SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET,
+                SquadsDataValue::U8(SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR),
+            ),
+            equals(
+                SUBSCRIPTION_RECURRING_DELEGATION_DELEGATOR_OFFSET,
+                SquadsDataValue::U8Slice(wallet.to_bytes().to_vec()),
+            ),
+            equals(
+                SUBSCRIPTION_RECURRING_DELEGATION_DELEGATEE_OFFSET,
+                SquadsDataValue::U8Slice(vault.to_bytes().to_vec()),
+            ),
+            equals(
+                SUBSCRIPTION_RECURRING_DELEGATION_AUTHORITY_OFFSET,
+                SquadsDataValue::U8Slice(authority.to_bytes().to_vec()),
+            ),
+            equals(
+                SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET,
+                SquadsDataValue::U8Slice(USDC_MINT.to_bytes().to_vec()),
+            ),
+            SquadsDataConstraint {
+                data_offset: SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET,
+                data_value: SquadsDataValue::U64Le(max_amount_per_period),
+                operator: SquadsDataOperator::LessThanOrEqualTo,
+            },
+        ]),
+    };
+    let pin = crate::protocols::pubkey_constraint;
+    let constraint = SquadsInstructionConstraint {
+        program_id: SUBSCRIPTIONS_PROGRAM_ID,
+        account_constraints: vec![
+            recurring,
+            pin(1, vec![authority], Some(SUBSCRIPTIONS_PROGRAM_ID)),
+            pin(2, vec![wallet_ata], Some(spl_token::ID)),
+            pin(3, vec![vault_ata], Some(spl_token::ID)),
+            pin(4, vec![USDC_MINT], Some(spl_token::ID)),
+            pin(5, vec![spl_token::ID], None),
+            pin(6, vec![vault], None),
+            pin(7, vec![derive_subscription_event_authority()], None),
+            pin(8, vec![SUBSCRIPTIONS_PROGRAM_ID], None),
+        ],
+        data_constraints: vec![
+            equals(0, SquadsDataValue::U8(SUBSCRIPTIONS_TRANSFER_RECURRING)),
+            equals(
+                SUBSCRIPTION_TRANSFER_DELEGATOR_OFFSET,
+                SquadsDataValue::U8Slice(wallet.to_bytes().to_vec()),
+            ),
+            equals(
+                SUBSCRIPTION_TRANSFER_MINT_OFFSET,
+                SquadsDataValue::U8Slice(USDC_MINT.to_bytes().to_vec()),
+            ),
+        ],
+    };
+    let action = SquadsSettingsAction::PolicyCreate {
+        seed: policy_seed,
+        policy_creation_payload: SquadsPolicyCreationPayload::LegacyProgramInteraction(
+            SquadsProgramInteractionPolicyCreationPayload {
+                account_index: 1,
+                instructions_constraints: vec![constraint],
+                pre_hook: None,
+                post_hook: None,
+                spending_limits: vec![],
+            },
+        ),
+        signers: vec![SquadsSmartAccountSigner {
+            key: delegated_signer,
+            permissions: SquadsPermissions {
+                mask: SQUADS_FULL_PERMISSIONS_MASK,
+            },
+        }],
+        threshold: 1,
+        time_lock: 0,
+        start_timestamp: None,
+        expiration_args: None,
+    };
+    Ok(Instruction {
+        program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::new(settings, false),
+            AccountMeta::new(payer, true),
+            AccountMeta::new_readonly(solana_sdk::system_program::ID, false),
+            AccountMeta::new_readonly(SQUADS_SMART_ACCOUNT_PROGRAM_ID, false),
+            AccountMeta::new_readonly(root_authority, true),
+            AccountMeta::new(derive_action_account(&settings, policy_seed).0, false),
+        ],
+        data: serialize_settings_actions(vec![action]),
+    })
+}
+
 fn semantic_program_interaction_constraints(
     specs: Vec<SemanticProgramInteractionConstraint>,
 ) -> Result<Vec<SquadsInstructionConstraint>> {

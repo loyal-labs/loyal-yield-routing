@@ -41,7 +41,7 @@ import {
   verifyExistingRuntimePolicies,
   type RuntimePolicyOperation,
 } from "./policies/commands.js";
-import { buildPolicyCatalogAuthorization } from "./policies/authorization.js";
+import { buildPolicyCatalogAuthorization, policyCatalogAuthorizationPath } from "./policies/authorization.js";
 import { verifyPartnerStructure } from "./verify/structure.js";
 import { verifyFinalizedLifecycle } from "./verify/finalized.js";
 import { verifyPrecreatedSquadsIsolation } from "./verify/squads.js";
@@ -53,7 +53,6 @@ import {
   executeManagerOperation,
   reconcileConfirmedManagerOperation,
   simulateManagerOperation,
-  type ManagerRestorationBridgeInput,
   type ManagerOperation,
 } from "./runtime/manager.js";
 import {
@@ -71,12 +70,10 @@ import { loadFourMarketProtectedState } from "./runtime/protected-state.js";
 import { reconcileConfirmedFinalConservation } from "./runtime/final-reconciliation.js";
 import { produceConfirmedNegativeMutationArtifact } from "./runtime/negative-mutations-mainnet.js";
 import { parseEarnAdapterProducerInput, produceEarnAdapterEvidence } from "./runtime/earn-adapter.js";
-import { assembleRestorationEvidenceFromFiles } from "./runtime/restoration-evidence.js";
 import {
   parseFourMarketPositionEvidenceFile,
   parseWithdrawalRestorationScanFile,
   planWithdrawalRestoration,
-  restorationPlanAsOutboxInput,
   verifyWithdrawalRestorationPlanner,
 } from "./runtime/withdrawal-restoration.js";
 import { buildFourMarketManifestFromInputsFile, verifyFourMarketLifecycle } from "./verify/four-market.js";
@@ -167,38 +164,6 @@ function requiredSha256Flag(flag: string): string {
   const value = valueAfter(flag);
   if (value === null || !/^[0-9a-f]{64}$/.test(value)) throw new Error(`${flag} requires a lowercase SHA-256 digest`);
   return value;
-}
-
-function managerRestorationBridgeInput(): ManagerRestorationBridgeInput | null {
-  const originId = valueAfter("--restoration-origin-id");
-  const requiredFlags = [
-    "--restoration-generation",
-    "--restoration-leg-id",
-    "--restoration-owner",
-    "--restoration-protected-address-set-sha256",
-    "--restoration-protected-prestate-sha256",
-    "--restoration-protected-context-slot",
-    "--restoration-evidence-directory",
-  ] as const;
-  const supplied = requiredFlags.filter((flag) => valueAfter(flag) !== null);
-  if (originId === null && supplied.length === 0) return null;
-  if (originId === null || supplied.length !== requiredFlags.length) throw new Error("restoration manager execution requires the complete origin/generation/leg/owner/protected-checkpoint/evidence-directory flag set");
-  const generation = positiveIntegerFlag("--restoration-generation")!;
-  const protectedContextSlot = positiveIntegerFlag("--restoration-protected-context-slot")!;
-  const leaseSecondsRaw = valueAfter("--restoration-lease-seconds");
-  const leaseSeconds = leaseSecondsRaw === null ? 600 : positiveIntegerFlag("--restoration-lease-seconds")!;
-  return {
-    originId: requiredSha256Flag("--restoration-origin-id"),
-    generation,
-    legId: requiredSha256Flag("--restoration-leg-id"),
-    owner: valueAfter("--restoration-owner")!,
-    leaseSeconds,
-    protectedAddressSetSha256: requiredSha256Flag("--restoration-protected-address-set-sha256"),
-    protectedPrestateSha256: requiredSha256Flag("--restoration-protected-prestate-sha256"),
-    protectedContextSlot,
-    evidenceDirectory: valueAfter("--restoration-evidence-directory")!,
-    binaryPath: valueAfter("--restoration-bridge-bin"),
-  };
 }
 
 async function verifyCurrent() {
@@ -397,7 +362,7 @@ async function main() {
   } else if (group === "policies" && operation === "authorization") {
     const artifact = valueAfter("--artifact");
     if (!artifact) throw new Error("policies authorization requires --artifact");
-    result = buildPolicyCatalogAuthorization(artifact, valueAfter("--authorization-out") ?? "docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v7.json");
+    result = buildPolicyCatalogAuthorization(artifact, valueAfter("--authorization-out") ?? policyCatalogAuthorizationPath());
   } else if (group === "policies" && operation === "verify") {
     const artifact = valueAfter("--artifact");
     if (!artifact) throw new Error("policies verify requires --artifact");
@@ -452,7 +417,6 @@ async function main() {
       confirmRouteAuthorizationSha256: valueAfter("--confirm-route-authorization-sha256"),
       lifecycleId: valueAfter("--lifecycle-id"),
       intentPath: valueAfter("--intent-path"),
-      restorationBridge: managerRestorationBridgeInput(),
     });
   } else if (group === "runtime" && (operation === "reconcile-manager" || operation === "reconcile-manager-operation")) {
     result = await reconcileConfirmedManagerOperation({
@@ -529,14 +493,6 @@ async function main() {
         contextSlot: protectedCheckpoint.contextSlot,
       },
     });
-    const outboxInput = restorationPlanAsOutboxInput(plan, PARTNER_ROUTE.cluster);
-    const outboxInputOut = valueAfter("--outbox-input-out");
-    const outboxInputFile = outboxInputOut === null ? null : (() => {
-      const path = resolve(outboxInputOut);
-      const serialized = json(outboxInput);
-      writeFileSync(path, serialized, { mode: 0o600 });
-      return { path, fileSha256: createHash("sha256").update(serialized, "utf8").digest("hex") };
-    })();
     result = {
       verdict: "BACKYARD_VOLTR_WITHDRAWAL_RESTORATION_PLAN_PASS",
       broadcast: false,
@@ -544,33 +500,11 @@ async function main() {
       scan,
       positionEvidence,
       plan,
-      outboxInput,
-      outboxInputFile,
       execution: {
-        state: "PLANNED_NOT_ENQUEUED",
-        blocker: "operator_must_run_the_maintained_rust_enqueue_then_the_manager_handoff_worker",
-        durableBoundary: "existing Neon orchestration_outbox via enqueue_voltr_withdrawal_restoration",
-        enqueueCommand: "fleet-opportunity-planner --json --enqueue-voltr-restoration-json <this outboxInput JSON>",
+        state: "PLANNED_NOT_EXECUTED",
+        owner: "the Go engine's fleet Voltr family plans and executes withdrawal_restoration legs (go/workers/internal/fleet/voltr_plan.go, go/workers/internal/fleetexec/voltr.go); this plan is read-only evidence",
       },
     };
-  } else if (group === "runtime" && operation === "enqueue-withdrawal-restoration") {
-    result = {
-      verdict: "BACKYARD_VOLTR_WITHDRAWAL_RESTORATION_ENQUEUE_BLOCKED",
-      broadcast: false,
-      signerLoaded: false,
-      state: "NOT_EXECUTED",
-      blocker: "typescript_cli_intentionally_has_no_database_writer; use fleet-opportunity-planner --json --enqueue-voltr-restoration-json with the emitted outboxInput",
-      requiredInput: "runtime plan-withdrawal-restoration --scan <scan.json> --positions <position-evidence.json> --vault-id <database-vault-id> --out <plan.json>",
-      noSecondScheduler: true,
-    };
-  } else if (group === "runtime" && operation === "assemble-restoration-evidence") {
-    const scanPath = valueAfter("--scan");
-    const planPath = valueAfter("--plan");
-    const managerPath = valueAfter("--manager");
-    const durableReadbackPath = valueAfter("--durable-readback");
-    const manifestPath = valueAfter("--manifest-path");
-    if (!scanPath || !planPath || !managerPath || !durableReadbackPath || !manifestPath) throw new Error("runtime assemble-restoration-evidence requires --scan, --plan, --manager, --durable-readback, and --manifest-path");
-    result = assembleRestorationEvidenceFromFiles({ scanPath, planPath, managerPath, durableReadbackPath, manifestPath });
   } else if (group === "runtime" && (operation === "simulate-withdraw-claim-premature" || operation === "simulate-claim-premature")) {
     result = await simulatePrematureWithdrawClaim(valueAfter("--request-signature") ?? undefined);
   } else if (group === "runtime" && (operation === "simulate-withdraw-claim-post-deadline" || operation === "simulate-claim-post-deadline")) {

@@ -1,0 +1,3690 @@
+[
+  {
+    "name": "mature",
+    "output": {
+      "instructions": [
+        {
+          "accounts": [
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEmAAAAAQoRAAECAwQFBgcICQoLCwwKCg0QAOs0d5iVxRQHFc1bBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAABAQEmAAAAAQoRAAECAwQFBgcICQoLCwwKCg0QANjgvxvMl2avAA4nBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        }
+      ],
+      "routeSteps": [
+        "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+        "kamino_refresh_obligation",
+        "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
+      ]
+    },
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 23942400,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 0
+    }
+  },
+  {
+    "name": "mature with ready farms",
+    "output": {
+      "instructions": [
+        {
+          "accounts": [
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEmAAAAAQoRAAECAwQFBgcICQoLCwwNCA4QAOs0d5iVxRQHFc1bBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAABAQEmAAAAAQoRAAECAwQFBgcICQoLCwwNBg4QANjgvxvMl2avAA4nBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        }
+      ],
+      "routeSteps": [
+        "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+        "kamino_refresh_obligation",
+        "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
+      ]
+    },
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 23942400,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": true,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": true,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 0
+    }
+  },
+  {
+    "name": "farm users missing on both sides",
+    "output": {
+      "instructions": [
+        {
+          "accounts": [
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": true
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "SysvarRent111111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "11111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "iD8PutOYqKQA",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": true
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "SysvarRent111111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "11111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "iD8PutOYqKQA",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEmAAAAAQoRAAECAwQFBgcICQoLCwwNCA4QAOs0d5iVxRQHFc1bBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAABAQEmAAAAAQoRAAECAwQFBgcICQoLCwwNBg4QANjgvxvMl2avAA4nBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        }
+      ],
+      "routeSteps": [
+        "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+        "kamino_refresh_obligation",
+        "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
+      ]
+    },
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 23942400,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 0
+    }
+  },
+  {
+    "name": "target obligation missing, route policy init, rent top-up",
+    "output": {
+      "instructions": [
+        {
+          "accounts": [
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEmAAAAAQoRAAECAwQFBgcICQoLCwwKCg0QAOs0d5iVxRQHFc1bBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": true
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "AgAAAMASXgEAAAAA",
+          "program": "11111111111111111111111111111111"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "11111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FjpdtvuQn5fuhDfgAMjrcmWA2dvFo2K9k7hzZwJTJSyJ",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "SysvarRent111111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAACAQEYAAAAAQYJAAABAgMDBAUDCgD7CudMGwufYAAA",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAABAQEmAAAAAQoRAAECAwQFBgcICQoLCwwKCg0QANjgvxvMl2avAA4nBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        }
+      ],
+      "routeSteps": [
+        "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+        "system_transfer_vault_rent_top_up",
+        "kamino_init_obligation",
+        "kamino_refresh_obligation",
+        "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
+      ]
+    },
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 23942400,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [],
+        "obligationExists": false,
+        "obligationFarmUserState": "",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 1000000
+    }
+  },
+  {
+    "name": "target obligation missing, setup policy init, funded vault",
+    "output": {
+      "instructions": [
+        {
+          "accounts": [
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEmAAAAAQoRAAECAwQFBgcICQoLCwwKCg0QAOs0d5iVxRQHFc1bBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "2MLV8YVauuByu8xUxpgSS3pdMaQsJ7Cwb3fpVjVXZEv9",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "11111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FjpdtvuQn5fuhDfgAMjrcmWA2dvFo2K9k7hzZwJTJSyJ",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "SysvarRent111111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEYAAAAAQYJAAABAgMDBAUDCgD7CudMGwufYAAA",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAABAQEmAAAAAQoRAAECAwQFBgcICQoLCwwKCg0QANjgvxvMl2avAA4nBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        }
+      ],
+      "routeSteps": [
+        "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+        "kamino_init_obligation",
+        "kamino_refresh_obligation",
+        "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
+      ]
+    },
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 23942400,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "setupPolicy": "2MLV8YVauuByu8xUxpgSS3pdMaQsJ7Cwb3fpVjVXZEv9",
+      "setupPolicyData": "3ocHo+uxIUQMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKwIAAAAAAAAA/wAAAAAAAAAAAAAAAAAAAAABAAAA6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwHAQAAAAAAAwEBAAAABLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgJAAAAAAABAAAAJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYAAQABAAAAJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYAAgABAAAAAEvMISiGgCU8xACh14xm5G6dVTWLp8q01gN8GFehlYkAAwACAAAAAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgAEAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAEAAADa+9+P7o/umWe2rZr5AjHpFOC45iJPs3FENAU3CTrvrQAHAAEAAAAGp9UXGSxcUSGMyUw9SvF/WNruCJuh/UTj29mKAAAAAAAIAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAFCgAAAPsK50wbC59gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [],
+        "obligationExists": false,
+        "obligationFarmUserState": "",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 30000000
+    }
+  },
+  {
+    "name": "target obligation and farm user missing, setup policy, unfunded vault",
+    "output": {
+      "instructions": [
+        {
+          "accounts": [
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEmAAAAAQoRAAECAwQFBgcICQoLCwwNCA4QAOs0d5iVxRQHFc1bBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": true
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "AgAAAABVbQEAAAAA",
+          "program": "11111111111111111111111111111111"
+        },
+        {
+          "accounts": [
+            {
+              "address": "2MLV8YVauuByu8xUxpgSS3pdMaQsJ7Cwb3fpVjVXZEv9",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "11111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FjpdtvuQn5fuhDfgAMjrcmWA2dvFo2K9k7hzZwJTJSyJ",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "SysvarRent111111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEYAAAAAQYJAAABAgMDBAUDCgD7CudMGwufYAAA",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": true
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "SysvarRent111111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "11111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "iD8PutOYqKQA",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAABAQEmAAAAAQoRAAECAwQFBgcICQoLCwwNBg4QANjgvxvMl2avAA4nBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        }
+      ],
+      "routeSteps": [
+        "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+        "system_transfer_vault_rent_top_up",
+        "kamino_init_obligation",
+        "kamino_refresh_obligation",
+        "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
+      ]
+    },
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 23942400,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "setupPolicy": "2MLV8YVauuByu8xUxpgSS3pdMaQsJ7Cwb3fpVjVXZEv9",
+      "setupPolicyData": "3ocHo+uxIUQMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKwIAAAAAAAAA/wAAAAAAAAAAAAAAAAAAAAABAAAA6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iwHAQAAAAAAAwEBAAAABLKssRJYzONoLEGLqHL/PfkRAnEvFa8Str5ps0NbAAgJAAAAAAABAAAAJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYAAQABAAAAJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYAAgABAAAAAEvMISiGgCU8xACh14xm5G6dVTWLp8q01gN8GFehlYkAAwACAAAAAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgAEAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAAEAAADa+9+P7o/umWe2rZr5AjHpFOC45iJPs3FENAU3CTrvrQAHAAEAAAAGp9UXGSxcUSGMyUw9SvF/WNruCJuh/UTj29mKAAAAAAAIAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAFCgAAAPsK50wbC59gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": true,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [],
+        "obligationExists": false,
+        "obligationFarmUserState": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 0
+    }
+  },
+  {
+    "name": "every oracle, empty target footprint",
+    "output": {
+      "instructions": [
+        {
+          "accounts": [
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEmAAAAAQoRAAECAwQFBgcICQoLCwwKCg0QAOs0d5iVxRQHFc1bBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAABAQEmAAAAAQoRAAECAwQFBgcICQoLCwwKCg0QANjgvxvMl2avAA4nBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        }
+      ],
+      "routeSteps": [
+        "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+        "kamino_refresh_obligation",
+        "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
+      ]
+    },
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 23942400,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "switchboardTwapOracle": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [],
+        "obligationExists": true,
+        "obligationFarmUserState": "",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 0
+    }
+  },
+  {
+    "name": "source farm user missing",
+    "output": {
+      "instructions": [
+        {
+          "accounts": [
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "AtqK60/JGWY=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": true
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "SysvarRent111111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "11111111111111111111111111111111",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "iD8PutOYqKQA",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAAAAQEmAAAAAQoRAAECAwQFBgcICQoLCwwNCA4QAOs0d5iVxRQHFc1bBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        },
+        {
+          "accounts": [
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            }
+          ],
+          "data": "IYST5JfASFk=",
+          "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        },
+        {
+          "accounts": [
+            {
+              "address": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
+          ],
+          "data": "WlG7USdGgE4BAQEBAQEAAAABAQEmAAAAAQoRAAECAwQFBgcICQoLCwwNBg4QANjgvxvMl2avAA4nBwAAAAA=",
+          "program": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+        }
+      ],
+      "routeSteps": [
+        "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
+        "kamino_refresh_obligation",
+        "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
+      ]
+    },
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 23942400,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "EfmGJWBSonyYH7r3Qqe2BpaeH4jc5wvhsrRsSEq8s7kn",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": true,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "4MeZoexw19hqNnugowsA7aoZxxnEEg7HXwn2CCzZcWVX",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 0
+    }
+  },
+  {
+    "error": "target obligation 12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS is missing, active policy 4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6 has no authorized init_obligation path for target market ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu, and no setup_policy_id is recorded for vault 1",
+    "name": "target obligation missing without init authority",
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 23942400,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [],
+        "obligationExists": false,
+        "obligationFarmUserState": "",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 0
+    }
+  },
+  {
+    "error": "route_setup_rent_cap_exceeded: RPC requires 25000001 lamports for a Kamino obligation, above the 25000000 lamport cap",
+    "name": "target obligation missing, rent above cap",
+    "request": {
+      "amountRaw": 120000000,
+      "feePayer": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+      "payerLamports": 1000000000,
+      "policyKeypair": "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3StnzFNUx8FKCPPPPpR479qsw5zv2WNBKmgiz7WqgAJfM",
+      "rentLamports": 25000001,
+      "routePolicy": "4ofgtPt82ckEL6GUDstJWRTeYSCw8gZYAkGCJGAypcr6",
+      "routePolicyData": "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",
+      "settings": "p3SR8gTfEqwEeKa6iwh96oidSx2cPschZz7iwTeiPEi",
+      "source": {
+        "amountRaw": 123456789,
+        "collateralMint": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+        "collateralSupply": "QWmroo4YnnMqYW3cnxWkFdaTxGD3P7vMSzwMHGbUzwF",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "LbUiWL3xVV8hTFYBVdbTNrpDo41NKS6o3LHHuDzjfcY",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR",
+        "marketAuthority": "5BocWDHpToMuWFgayYFf3BqNmgZoSNbg4kP7fuikzzA",
+        "obligation": "HEMdq4eNwYrB4RD9ni5AGFp3Tz3Sxpx1fTJ8CRq9fdxU",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [
+          "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+        ],
+        "obligationExists": true,
+        "obligationFarmUserState": "",
+        "pythOracle": "YMN9Qj5jPNp7j14VPcML1B6xGgcPWVZUGLFU3Mnyfaf",
+        "redeemableAmountRaw": 120000000,
+        "reserve": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+        "reserveFarmState": "",
+        "scopePrices": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "target": {
+        "amountRaw": 0,
+        "collateralMint": "25hjHpTATmkdET17ynDhf1MCuYNDn1z7wXfVw5iaxLAK",
+        "collateralSupply": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj",
+        "farmUserExists": false,
+        "liquidityMint": "3S5e9qmNHjhA2G1Ghkk5UWnTniaFFHiX7gzd6gcZtzcT",
+        "liquiditySupply": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+        "liquidityTokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "market": "ws91DX9HBAAxGW77BZs5FogRDwpRtcUpiLBpKdPTfWu",
+        "marketAuthority": "3ZeWENMVBFMAhNC2RnPkt1Ye68vQfYiN7dsMfVpw374T",
+        "obligation": "12A34ie3F27dmaJgmxUpkLbHx1qiP68qGx6C51qn1eoS",
+        "obligationBorrowReserves": [],
+        "obligationDepositReserves": [],
+        "obligationExists": false,
+        "obligationFarmUserState": "",
+        "pythOracle": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9",
+        "redeemableAmountRaw": 0,
+        "reserve": "swqrv48gsrwpBFbftEwnP2vB4jckpvfGJfXkwaniLCC",
+        "reserveFarmState": "",
+        "scopePrices": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr",
+        "switchboardPriceOracle": "",
+        "switchboardTwapOracle": "",
+        "vaultLiquidityAta": "GfMRtap51LTnFetrvcXFeL4JcSfw9RkVhJLctZ5VSa6S"
+      },
+      "vault": "3ZvESShPULHcJSWHaMPv4GKzH2zebR6AEWKwDShmPfFs",
+      "vaultIndex": 1,
+      "vaultLamports": 0
+    }
+  }
+]

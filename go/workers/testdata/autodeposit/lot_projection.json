@@ -1,0 +1,55 @@
+{
+  "description": "Wallet balance observations that decide whether a surplus lot is scheduled. Floor interactions are financial: scheduling the whole deposit would sweep money the user keeps, and scheduling below-floor refills would sweep the floor.",
+  "observedAt": "2026-06-16T12:30:00Z",
+  "cases": [
+    {
+      "name": "first observation schedules balance above floor",
+      "floorRaw": 5000000,
+      "amountAfterRaw": 12000000,
+      "deltaRaw": null,
+      "expect": { "schedules": true, "amountRaw": 7000000 }
+    },
+    {
+      "name": "first observation at or below floor schedules nothing",
+      "floorRaw": 5000000,
+      "amountAfterRaw": 5000000,
+      "deltaRaw": null,
+      "expect": { "schedules": false }
+    },
+    {
+      "name": "target without a configured floor never schedules",
+      "floorRaw": null,
+      "amountAfterRaw": 99000000,
+      "deltaRaw": null,
+      "expect": { "schedules": false }
+    },
+    {
+      "name": "deposit fully below floor schedules nothing",
+      "floorRaw": 5000000,
+      "amountAfterRaw": 4500000,
+      "deltaRaw": 1500000,
+      "expect": { "schedules": false }
+    },
+    {
+      "name": "deposit that only refills a drawdown schedules only the new surplus",
+      "floorRaw": 5000000,
+      "amountAfterRaw": 8000000,
+      "deltaRaw": 4500000,
+      "expect": { "schedules": true, "amountRaw": 3000000 }
+    },
+    {
+      "name": "deposit entirely above the floor schedules the full delta",
+      "floorRaw": 5000000,
+      "amountAfterRaw": 12000000,
+      "deltaRaw": 4000000,
+      "expect": { "schedules": true, "amountRaw": 4000000 }
+    },
+    {
+      "name": "zero or negative delta is never schedulable",
+      "floorRaw": 5000000,
+      "amountAfterRaw": 5000000,
+      "deltaRaw": 0,
+      "expect": { "schedules": false }
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "routing_base": "05338bbb70ce2e5287956f6e3659964e37bfa2f6",
+  "apps_base": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
+  "observer_candidate": "36a6664c125eeecd5e0ab5ea9218e72432da055d",
+  "additional_reviewed_sources": [
+    {
+      "repository": "loyal-apps",
+      "revision": "45de590113312d54de7585a710620a8a80b504db",
+      "scope": "EarnMax exact saved payout amount and authenticated balance floor writer; source study only, not a wholesale import",
+      "integration": "Selected Apps floor SQL exercised against actual Go controller locks; exact saved Claim payout enforced in Go and retained Rust bridge; no wholesale source import."
+    }
+  ],
+  "mechanical_imports": [
+    "go/kamino-fleet-planner/internal/fleet",
+    "go/backyard-rwa-worker/internal/backyardrwa"
+  ],
+  "changes": [
+    "Backyard package renamed to backyard; no financial behavior changes in seed",
+    "Selected observer transport retains the Rust Earn domain bridge until equivalent Go application evidence passes",
+    "Autodeposit and fleet use the official locked loyal-klend-proxy for KLend instruction construction",
+    "Additive branch-only 0087 setup attempt journal and 0088 immutable Multiply evidence side table preserve existing attempt/effects contracts",
+    "Additive branch-only 0089 imports retained Apps floor_rebaseline classification; corrected bounded 0069 event sequence remains unchanged.",
+    "Additive branch-only 0090 protects immutable ALT packets and unresolved source ownership; autonomous planning retains existing family/catalog/binding/operation schemas.",
+    "Branch-only 0091 was reverted for go-live phase 1: Apps keeps writing desired_active and the floor rebaseline, and the Go engine reads them on the target row."
+  ],
+  "intentional_corrections": [
+    "collateral-liquidity units",
+    "continuous funded APY coverage",
+    "desired-intent vs observed target vocabulary",
+    "heap priorities after shared-reserve effects",
+    "fresh same-mint admission is tied to exact normalized ALT generations and source collateral backing",
+    "expired unsigned admissions release capacity only when no signed attempt or decision exists; re-admission changes fences",
+    "cross-mint modeled profit uses wide intermediates before checked SQL BIGINT conversion",
+    "Multiply uses retained vault index 0 and exact root-wallet payout requests rather than delegated claim execution",
+    "Multiply orphan debt custody is swapped to collateral before claim unwinding; saved payout shortfalls remain held",
+    "KLend farm-absent instruction placeholders use the pinned SDK KLend program identity",
+    "modeled maintenance returns are labeled modeled and preserve actual reserve update clocks",
+    "legacy unscoped product projection namespace is checked at startup and before each maintenance pass",
+    "Retained observer Claim admission requires exact saved requested amount and actual signed Squads Transaction-mode SDK envelope; a partial transfer cannot close a withdrawal."
+  ],
+  "proof_classification": {
+    "postgresql": "Task-owned loopback PostgreSQL 17 and hash-pinned Apps schema fixtures; the current registered source contains 80 schema files, including 0090 (0091 reverted). Fresh fixtures exclude production-bound 0071 data activation and its ledger entry. Existing proof databases retain their recorded migration ledger and are not implicitly reset or upgraded.",
+    "timescale": "real extension in branch CI; local extension-backed tests skipped",
+    "multiply_abi": "44 independently generated pinned Rust SDK recipe cases, including farm and token-program variants",
+    "multiply_claim_svm": "actual checked-in Squads SBF plus SPL Token execution in LiteSVM; root payout succeeds, delegate fails",
+    "multiply_controller_svm": "current Go Worker.Tick leveraged deploy/unwind to exact claimable payout, immutable receipts and keyless recovery; actual Squads/SPL with strictly validated fixed-price mock KLend/Jupiter envelopes. No mature lending, real swap price, interest or consensus claim.",
+    "ata_projection": "actual separate capture/Yield databases with exact registered source DDL; local PostgreSQL omits extension/hypertable calls, which are required in branch Timescale CI. Capture ID allocation is serialized through commit; old-producer quiescence remains a cutover requirement.",
+    "fleet_connected_svm": "separate gate using actual Squads SBF with mock KLend/Jupiter protocol SBF; no mature KLend execution claim",
+    "lookup_controller_svm": "Actual Go unsigned catalog/request planning, ordered membership, generation rollover, binding publication and request satisfaction against registered PostgreSQL and the real ALT program in LiteSVM. Real deactivation, SlotHashes cooldown, close refund and paused keyless recovery pass. C Store.Publish waits before Go satisfaction and readmits the same immutable opportunity afterward; waiting consumer setup uses a registered SQL fixture, not a new full CommitRevalidation producer proof.",
+    "serialization_only": "testdata/multiply/route_state_schema9.json is a synthetic serialization fixture, not independent financial proof",
+    "planner_oracle": "independent greedy enumeration and bounded exhaustive cumulative marginal-gain study; no global NAV optimum claim",
+    "autodeposit_creator": "Independent pinned Apps45 Solita legacy/v0 creator ABI bytes; exact canonical legacy creator executes through checked-in real Squads SBF with valid sequential policy seed. Program fixture authority initialization uses explicitly recorded low-rent profile followed by real lamport top-ups and default Rent restoration; no deployed rent correctness claim."
+  },
+  "implementation_acceptance": {
+    "scope": "Reviewed branch implementation and isolated contracts 1-9; no main merge, deployment, migration cutover, live activation or legacy service retirement.",
+    "runtime_revision": "85e92d0831d7e9aa0a66f45c54830a7ca16ab5f3",
+    "apps_revision": "1ee615bcb22f29b04af3864cf73264a3b11eca40",
+    "ci_run": "https://github.com/loyal-labs/loyal-yield-routing/actions/runs/37183509997",
+    "ci_conclusion": "success",
+    "ci_jobs": [
+      "verify",
+      "image"
+    ],
+    "local_financial_proofs": "Separately enabled registered SQL/current Go bank suites; real Squads/Subscriptions/SPL and actual ALT program, with explicit fixed-price KLend/Jupiter mocks. These are separate from generic CI package PASS.",
+    "apps_typecheck": "74 whole-web diagnostics, none in changed paths; no full typecheck PASS.",
+    "retained_owners": [
+      "unsigned Rust Earn application/Claim bridge",
+      "official Rust KLend instruction helper",
+      "Apps user-wallet POSTs and withdrawal cleanup",
+      "TypeScript personal calculator and timezone formatting",
+      "existing SSE and legacy services until explicit cutover"
+    ],
+    "planner_policy": "Exact greedy full-rescore reference retained; dependency heap deferred until profiling, bounded assignment repair shadow-only; no global optimum claim."
+  }
+}

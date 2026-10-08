@@ -1,0 +1,47 @@
+{
+  "scope": "go/workers/internal, non-test Go; includes comments and SQL",
+  "packages": {
+    "autodeposit": {
+      "files": 31,
+      "physical_lines": 9128
+    },
+    "backyard": {
+      "files": 29,
+      "physical_lines": 8584
+    },
+    "db": {
+      "files": 2,
+      "physical_lines": 73
+    },
+    "engine": {
+      "files": 4,
+      "physical_lines": 150
+    },
+    "fleet": {
+      "files": 29,
+      "physical_lines": 11961
+    },
+    "fleetexec": {
+      "files": 47,
+      "physical_lines": 11759
+    },
+    "multiply": {
+      "files": 13,
+      "physical_lines": 7702
+    },
+    "observer": {
+      "files": 28,
+      "physical_lines": 6829
+    },
+    "solana": {
+      "files": 3,
+      "physical_lines": 84
+    },
+    "squadspolicy": {
+      "files": 1,
+      "physical_lines": 879
+    }
+  },
+  "total_files": 187,
+  "total_physical_lines": 57149
+}

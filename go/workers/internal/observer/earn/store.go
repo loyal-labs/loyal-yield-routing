@@ -1,0 +1,171 @@
+package earn
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+)
+
+const PolicyProjectionConsumer = "earn_max_policy_sets_laserstream_v2"
+
+type Store struct{ pool *pgxpool.Pool }
+
+func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+
+type EnqueueOutcome struct {
+	InsertedJobs, CoalescedAutodeposits int64
+	Cursor                              uint64
+}
+
+// QueuedEvent is one normalized Earn event and the vaults it affects.
+type QueuedEvent struct {
+	EventKey string
+	Slot     uint64
+	Event    any
+	Vaults   []watch.Vault
+	Account  string
+}
+
+func (s *Store) Enqueue(ctx context.Context, consumer, eventKey string, slot uint64, event any, vaults []watch.Vault, account string) (EnqueueOutcome, error) {
+	return s.EnqueueBatch(ctx, consumer, []QueuedEvent{{EventKey: eventKey, Slot: slot, Event: event, Vaults: vaults, Account: account}})
+}
+
+// EnqueueBatch commits every event's jobs, Autodeposit demand and the consumer
+// cursor in one transaction, so a batch is captured completely or not at all.
+func (s *Store) EnqueueBatch(ctx context.Context, consumer string, events []QueuedEvent) (EnqueueOutcome, error) {
+	if len(events) == 0 {
+		return EnqueueOutcome{}, fmt.Errorf("earn enqueue batch is empty")
+	}
+	payloads := make([][]byte, len(events))
+	for index, event := range events {
+		if event.Slot > math.MaxInt64 {
+			return EnqueueOutcome{}, fmt.Errorf("earn slot exceeds PostgreSQL BIGINT")
+		}
+		if len(event.Vaults) == 0 {
+			return EnqueueOutcome{}, fmt.Errorf("earn event has no affected vault")
+		}
+		eventJSON, err := json.Marshal(event.Event)
+		if err != nil {
+			return EnqueueOutcome{}, err
+		}
+		payloads[index] = eventJSON
+	}
+	var outcome EnqueueOutcome
+	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		outcome = EnqueueOutcome{}
+		for index, event := range events {
+			if err := enqueueEvent(ctx, tx, consumer, event, payloads[index], &outcome); err != nil {
+				return err
+			}
+			outcome.Cursor = max(outcome.Cursor, event.Slot)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.laserstream_replay_cursors(consumer_name,durable_slot) VALUES($1,$2) ON CONFLICT(consumer_name) DO UPDATE SET durable_slot=GREATEST(loyal_yield.laserstream_replay_cursors.durable_slot,EXCLUDED.durable_slot),updated_at=now()`, consumer, int64(outcome.Cursor)); err != nil {
+			return fmt.Errorf("advance Earn durable cursor: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return EnqueueOutcome{}, err
+	}
+	return outcome, nil
+}
+
+func enqueueEvent(ctx context.Context, tx pgx.Tx, consumer string, event QueuedEvent, eventJSON []byte, outcome *EnqueueOutcome) error {
+	for _, vault := range event.Vaults {
+		vaultJSON, err := json.Marshal(vault)
+		if err != nil {
+			return err
+		}
+		result, err := tx.Exec(ctx, `INSERT INTO loyal_yield.earn_reconciliation_jobs(consumer_name,event_key,durable_slot,settings,vault_index,vault_pubkey,event_payload,vault_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(consumer_name,event_key,settings,vault_index,vault_pubkey) DO NOTHING`, consumer, event.EventKey, int64(event.Slot), vault.Settings, int16(vault.VaultIndex), vault.Vault, eventJSON, vaultJSON)
+		if err != nil {
+			return fmt.Errorf("enqueue Earn reconciliation job: %w", err)
+		}
+		outcome.InsertedJobs += result.RowsAffected()
+		var targetID int64
+		err = tx.QueryRow(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE settings=$1 AND vault_pubkey=$2 AND chain_status<>'closed' AND (policy_account=$3 OR subscription_authority=$3 OR recurring_delegation=$3 OR wallet_token_ata=$3) ORDER BY policy_seed DESC LIMIT 1`, vault.Settings, vault.Vault, event.Account).Scan(&targetID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("load Autodeposit reconciliation target: %w", err)
+		}
+		if err == nil {
+			result, err := tx.Exec(ctx, `INSERT INTO loyal_yield.autodeposit_reconciliation_requests(target_id,requested_slot) VALUES($1,$2) ON CONFLICT(target_id) DO UPDATE SET requested_slot=EXCLUDED.requested_slot,next_attempt_at=LEAST(loyal_yield.autodeposit_reconciliation_requests.next_attempt_at,now()),updated_at=now() WHERE EXCLUDED.requested_slot>=loyal_yield.autodeposit_reconciliation_requests.requested_slot`, targetID, int64(event.Slot))
+			if err != nil {
+				return err
+			}
+			outcome.CoalescedAutodeposits += result.RowsAffected()
+		}
+	}
+	return nil
+}
+
+func (s *Store) AdvanceReplayCursor(ctx context.Context, consumer string, slot uint64) error {
+	if slot == 0 || slot > math.MaxInt64 {
+		return fmt.Errorf("replay cursor slot is invalid")
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO loyal_yield.laserstream_replay_cursors(consumer_name,durable_slot) VALUES($1,$2) ON CONFLICT(consumer_name) DO UPDATE SET durable_slot=GREATEST(loyal_yield.laserstream_replay_cursors.durable_slot,EXCLUDED.durable_slot),updated_at=now()`, consumer, int64(slot))
+	if err != nil {
+		return fmt.Errorf("advance replay cursor: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReplayCursor(ctx context.Context, consumer string) (uint64, error) {
+	var value int64
+	err := s.pool.QueryRow(ctx, `SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name=$1`, consumer).Scan(&value)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("load Earn replay cursor: %w", err)
+	}
+	if value < 0 {
+		return 0, fmt.Errorf("earn replay cursor is negative")
+	}
+	return uint64(value), nil
+}
+
+// ApplicationCursor is capped before the oldest unapplied job. The policy
+// transaction projection has its own cursor and does not prove account-job
+// application. Capture and job inserts share one transaction.
+func (s *Store) ApplicationCursor(ctx context.Context, consumer string) (uint64, error) {
+	var cursor int64
+	err := s.pool.QueryRow(ctx, `SELECT LEAST(
+        COALESCE((SELECT durable_slot FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name=$1),0),
+        COALESCE((SELECT GREATEST(0,MIN(durable_slot)-1) FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1 AND completed_at IS NULL),9223372036854775807)
+    )`, consumer).Scan(&cursor)
+	if err != nil {
+		return 0, err
+	}
+	if cursor < 0 {
+		return 0, fmt.Errorf("negative application cursor")
+	}
+	return uint64(cursor), nil
+}
+
+func (s *Store) ProjectionCursor(ctx context.Context, consumer string) (uint64, error) {
+	var value int64
+	err := s.pool.QueryRow(ctx, `SELECT last_event_id FROM loyal_yield.projection_offsets WHERE consumer_name=$1`, consumer).Scan(&value)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("load policy projection cursor: %w", err)
+	}
+	if value < 0 {
+		return 0, fmt.Errorf("policy projection cursor is negative")
+	}
+	return uint64(value), nil
+}
+func (s *Store) AdvanceProjectionCursor(ctx context.Context, consumer string, slot uint64) error {
+	if slot > math.MaxInt64 {
+		return fmt.Errorf("projection slot exceeds BIGINT")
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO loyal_yield.projection_offsets(consumer_name,last_event_id) VALUES($1,$2) ON CONFLICT(consumer_name) DO UPDATE SET last_event_id=GREATEST(loyal_yield.projection_offsets.last_event_id,EXCLUDED.last_event_id),updated_at=now()`, consumer, int64(slot))
+	return err
+}

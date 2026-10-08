@@ -76,12 +76,6 @@ import {
   type ProtectedSettlementAttestation,
   type ProtectedSnapshotEvidence,
 } from "./protected-state.js";
-import {
-  confirmRestorationBridge,
-  prepareRestorationBridge,
-  type RestorationBridgePhaseAResult,
-  type RestorationBridgePhaseBResult,
-} from "./restoration-bridge.js";
 
 export type ManagerOperation = "deposit" | "withdraw";
 const MANAGER_COMPUTE_UNIT_LIMIT = 500_000;
@@ -89,7 +83,6 @@ const MANAGER_HEAP_FRAME_BYTES = 256 * 1_024;
 const KAMINO_OBLIGATION_DATA_LENGTH = Obligation.layout.span + Obligation.discriminator.length;
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const MANAGER_INTENT_ROOT = resolve(REPOSITORY_ROOT, "docs/evidence/backyard-voltr-four-market/intents");
-const RESTORATION_BRIDGE_ROOT = resolve(REPOSITORY_ROOT, "docs/evidence/backyard-voltr-four-market/restoration-bridge");
 type ManagerPreparationApproval = Readonly<{
   confirmArtifactSha256?: string | null;
   confirmWrapperDataSha256?: string | null;
@@ -98,19 +91,6 @@ type ManagerPreparationApproval = Readonly<{
   authorizationPath?: string | null;
   minimumContextSlot?: number;
   lifecycleId?: string | undefined;
-}>;
-
-export type ManagerRestorationBridgeInput = Readonly<{
-  originId: string;
-  generation: number;
-  legId: string;
-  owner: string;
-  leaseSeconds: number;
-  protectedAddressSetSha256: string;
-  protectedPrestateSha256: string;
-  protectedContextSlot: number;
-  evidenceDirectory: string;
-  binaryPath?: string | null;
 }>;
 
 type ManagerExecutionEnvelope = Readonly<{
@@ -169,34 +149,6 @@ function requireManagerIntentPath(value: string): string {
     throw new Error("manager execute --intent-path must be inside docs/evidence/backyard-voltr-four-market/intents");
   }
   return path;
-}
-
-function normalizeRestorationBridgeInput(
-  value: ManagerRestorationBridgeInput | null | undefined,
-  strategyId: PartnerStrategyId,
-  operation: ManagerOperation,
-): ManagerRestorationBridgeInput | null {
-  if (value === null || value === undefined) return null;
-  if (strategyId !== "main" || operation !== "withdraw") throw new Error("restoration bridge is allowed only for the exact Main manager withdrawal");
-  const exactSha = (candidate: string, label: string) => {
-    if (!/^[0-9a-f]{64}$/.test(candidate)) throw new Error(`${label} must be a lowercase SHA-256 digest`);
-  };
-  exactSha(value.originId, "restoration origin id");
-  exactSha(value.legId, "restoration leg id");
-  exactSha(value.protectedAddressSetSha256, "restoration protected address-set hash");
-  exactSha(value.protectedPrestateSha256, "restoration protected prestate hash");
-  if (!Number.isSafeInteger(value.generation) || value.generation <= 0) throw new Error("restoration generation must be a positive safe integer");
-  if (!Number.isSafeInteger(value.leaseSeconds) || value.leaseSeconds < 60 || value.leaseSeconds > 900) throw new Error("restoration lease must be 60..900 seconds");
-  if (!Number.isSafeInteger(value.protectedContextSlot) || value.protectedContextSlot <= 0) throw new Error("restoration protected context slot must be a positive safe integer");
-  if (!value.owner || value.owner.length > 128) throw new Error("restoration bridge owner must be 1..128 characters");
-  const evidenceDirectory = resolve(value.evidenceDirectory);
-  const relativePath = relative(RESTORATION_BRIDGE_ROOT, evidenceDirectory);
-  if (relativePath === ".." || relativePath.startsWith("../") || relativePath.startsWith("/")) throw new Error("restoration bridge evidence directory must be inside the maintained restoration-bridge root");
-  return { ...value, evidenceDirectory };
-}
-
-function restorationManagerIntentId(originId: string, generation: number, legId: string): string {
-  return sha256(Buffer.from(`backyard-voltr-manager-intent-v1:${originId}:${generation}:${legId}`, "utf8"));
 }
 
 function assertIntentNotExpired(intent: ManagerRuntimeIntent): void {
@@ -1395,10 +1347,8 @@ export async function executeManagerOperation(input: Readonly<{
   confirmAmountRaw: string | null;
   confirmWrapperDataSha256: string | null;
   intentPath: string | null;
-  restorationBridge?: ManagerRestorationBridgeInput | null;
 }>) {
   const route = partnerBuilderRoute(input.strategyId);
-  const restorationBridge = normalizeRestorationBridgeInput(input.restorationBridge, input.strategyId, input.operation);
   if (process.env.CONFIRM_MAINNET !== "1") throw new Error("execute manager operation requires CONFIRM_MAINNET=1");
   if (input.confirmVault !== route.vault) throw new Error(`execute manager operation requires --confirm-vault ${route.vault}`);
   if (input.confirmAmountRaw !== input.amountRaw.toString()) throw new Error(`execute manager operation requires --confirm-amount-raw ${input.amountRaw}`);
@@ -1586,63 +1536,6 @@ export async function executeManagerOperation(input: Readonly<{
     sendAuthorizationContextSlot,
   );
   verifyPersistedManagerIntent(persistedIntent, { ...preparation, protectedPreSend: finalProtectedPrestate, preSendAttestation });
-  let restorationPhaseA: RestorationBridgePhaseAResult | null = null;
-  let restorationPhaseB: RestorationBridgePhaseBResult | null = null;
-  let restorationRequiredIdleRaw: bigint | null = null;
-  if (restorationBridge) {
-    if (restorationBridge.protectedAddressSetSha256 !== finalProtectedPrestate.addressSetSha256
-      || restorationBridge.protectedPrestateSha256 !== finalProtectedPrestate.stateSha256
-      || restorationBridge.protectedContextSlot > finalProtectedPrestate.contextSlot) {
-      throw new Error("restoration bridge checkpoint is not the exact unchanged request poststate authorized by the manager simulation");
-    }
-    const idleBefore = tokenAmount(accountMap(preparation.before).get(preparation.accounts.idleAta) ?? null);
-    if (idleBefore === null) throw new Error("restoration bridge cannot derive the exact pre-send idle balance");
-    restorationRequiredIdleRaw = idleBefore + input.amountRaw;
-    const managerIntentId = restorationManagerIntentId(restorationBridge.originId, restorationBridge.generation, restorationBridge.legId);
-    const writableAccountKeys = unique(preparation.wrapper.expectedAccounts
-      .filter(({ address: value, writable }) => writable || value === route.squads.guardian)
-      .map(({ address: value }) => value));
-    restorationPhaseA = prepareRestorationBridge({
-      schemaVersion: 1,
-      phase: "prepare",
-      cluster: "mainnet-beta",
-      routeId: PARTNER_FOUR_MARKET_ROUTE.id,
-      routeSpecSha256: fourMarketRouteSpecSha256(),
-      vault: PARTNER_ROUTE.vault,
-      owner: restorationBridge.owner,
-      leaseSeconds: restorationBridge.leaseSeconds,
-      originId: restorationBridge.originId,
-      generation: restorationBridge.generation,
-      legId: restorationBridge.legId,
-      signedIntent: {
-        managerIntentId,
-        lifecycleId: preparation.intent.lifecycleId,
-        strategyId: input.strategyId,
-        reserve: route.strategy.reserve,
-        amountRaw: Number(input.amountRaw),
-        routeAuthorizationSha256: preparation.intent.routeAuthorizationSha256,
-        protectedPrestateSha256: restorationBridge.protectedPrestateSha256,
-        protectedAddressSetSha256: restorationBridge.protectedAddressSetSha256,
-        protectedContextSlot: restorationBridge.protectedContextSlot,
-        signedTransactionHex: Buffer.from(preparation.prepared.serializedTransaction).toString("hex"),
-        signedTransactionSha256: sha256(preparation.prepared.serializedTransaction),
-        messageSha256: sha256(preparation.prepared.serializedMessage),
-        expectedSignature: preparation.prepared.expectedSignature,
-        recentBlockhash: preparation.prepared.latestBlockhash.blockhash,
-        lastValidBlockHeight: preparation.prepared.latestBlockhash.lastValidBlockHeight,
-        feePayer: route.squads.guardian,
-        compiledFeeLamports: preparation.prepared.feeLamports,
-        writableAccountKeys,
-        logicalConflictKeys: [
-          `kamino:reserve:${route.strategy.reserve}`,
-          `voltr:vault:${PARTNER_ROUTE.vault}`,
-        ],
-      },
-    }, {
-      evidenceDirectory: restorationBridge.evidenceDirectory,
-      ...(restorationBridge.binaryPath ? { binaryPath: restorationBridge.binaryPath } : {}),
-    });
-  }
   let finalized: Awaited<ReturnType<typeof sendPreparedConfirmedOnce>> | null = null;
   try {
     finalized = await sendPreparedConfirmedOnce(rpcUrl(), preparation.prepared, sendAuthorizationContextSlot);
@@ -1797,53 +1690,6 @@ export async function executeManagerOperation(input: Readonly<{
     add(gates, "finalized guardian pays exactly the bounded transaction fee", finalized.feeLamports !== null && finalized.feeLamports <= 100_000 && guardianLamportDelta === -BigInt(finalized.feeLamports), { guardianLamportDelta, feeLamports: finalized.feeLamports }, { guardianLamportDelta: finalized.feeLamports === null ? null : -BigInt(finalized.feeLamports), maximumFeeLamports: 100_000 });
     const deploymentsFinal = await loadDeploymentIdentities(rpcUrl(), route, state.contextSlot, "confirmed");
     gates.push(...await deploymentGates(preparation.deploymentBefore, deploymentsFinal));
-    let restorationRemainingShortfallRaw: bigint | null = null;
-    if (restorationBridge && restorationPhaseA && restorationRequiredIdleRaw !== null) {
-      restorationRemainingShortfallRaw = idleAfter === null || restorationRequiredIdleRaw <= idleAfter
-        ? 0n
-        : restorationRequiredIdleRaw - idleAfter;
-      const managerReadbackExact = idleAfter !== null
-        && gates.every(({ pass }) => pass)
-        && restorationRemainingShortfallRaw === 0n;
-      if (managerReadbackExact) {
-        const readbackFingerprint = sha256(Buffer.from(JSON.stringify({
-          signature: finalized.signature,
-          confirmedSlot: finalized.confirmedSlot,
-          readbackContextSlot: state.contextSlot,
-          idleRawAfter: idleAfter.toString(),
-          remainingShortfallRaw: restorationRemainingShortfallRaw.toString(),
-          protectedPoststateSha256: protectedAfter.stateSha256,
-        }), "utf8"));
-        try {
-          restorationPhaseB = confirmRestorationBridge(restorationPhaseA.token, {
-            managerIntentId: restorationPhaseA.token.managerIntentId,
-            lifecycleId: preparation.intent.lifecycleId,
-            strategyId: input.strategyId,
-            reserve: route.strategy.reserve,
-            amountRaw: Number(input.amountRaw),
-            routeAuthorizationSha256: preparation.intent.routeAuthorizationSha256,
-            signedTransactionSha256: sha256(preparation.prepared.serializedTransaction),
-            messageSha256: sha256(preparation.prepared.serializedMessage),
-            expectedSignature: finalized.signature,
-            confirmedSlot: finalized.confirmedSlot,
-            readbackContextSlot: state.contextSlot,
-            commitment: "confirmed",
-            managerTransactionSignature: finalized.signature,
-            idleRawAfter: Number(idleAfter),
-            remainingShortfallRaw: Number(restorationRemainingShortfallRaw),
-            readbackFingerprint,
-          }, {
-            evidenceDirectory: restorationBridge.evidenceDirectory,
-            ...(restorationBridge.binaryPath ? { binaryPath: restorationBridge.binaryPath } : {}),
-          });
-          add(gates, "durable restoration fence acknowledged after exact confirmed readback", restorationPhaseB.completion.acknowledged === true, restorationPhaseB, "exact Phase-B acknowledgement of the Phase-A token");
-        } catch (error) {
-          add(gates, "durable restoration fence acknowledged after exact confirmed readback", false, error instanceof Error ? error.message : String(error), "exact Phase-B acknowledgement of the Phase-A token");
-        }
-      } else {
-        add(gates, "durable restoration fence acknowledged after exact confirmed readback", false, { idleAfter, restorationRequiredIdleRaw, restorationRemainingShortfallRaw, managerReadbackGatesPass: gates.every(({ pass }) => pass) }, { idleAfter: `>=${restorationRequiredIdleRaw}`, remainingShortfallRaw: 0n, managerReadbackGatesPass: true });
-      }
-    }
     const failedGateCount = gates.filter(({ pass }) => !pass).length;
     return {
       verdict: failedGateCount === 0 ? "PARTNER_MANAGER_OPERATION_FINALIZED_AND_VERIFIED" : "PARTNER_MANAGER_OPERATION_FINALIZED_READBACK_FAIL",
@@ -1877,12 +1723,6 @@ export async function executeManagerOperation(input: Readonly<{
         confirmedSlot: finalized.confirmedSlot,
       },
       persistenceContract: persistedIntent.persistenceContract,
-      restorationBridge: restorationPhaseA ? {
-        phaseA: restorationPhaseA,
-        phaseB: restorationPhaseB,
-        requiredIdleRaw: restorationRequiredIdleRaw,
-        remainingShortfallRaw: restorationRemainingShortfallRaw,
-      } : null,
       authorizationContextSlot: sendAuthorizationContextSlot,
       preflight: preparation.report,
       finalized,
@@ -1922,7 +1762,6 @@ export async function executeManagerOperation(input: Readonly<{
           oneSendOnly: true,
           confirmedSlot: finalized.confirmedSlot,
         },
-        restorationBridge: restorationPhaseA ? { phaseA: restorationPhaseA, phaseB: restorationPhaseB } : null,
         error: error instanceof Error ? error.message : String(error),
         recoveryInstruction: "Do not resend. The manager transaction is finalized; rerun read-only manager/strategy reconciliation.",
       } as const;
@@ -1955,7 +1794,6 @@ export async function executeManagerOperation(input: Readonly<{
         oneSendOnly: true,
         confirmedSlot: 0,
       },
-      restorationBridge: restorationPhaseA ? { phaseA: restorationPhaseA, phaseB: restorationPhaseB } : null,
       error: error instanceof Error ? error.message : String(error),
       recoveryInstruction: "Do not resend. Verify this exact signature and finalized manager/idle/strategy state.",
     } as const;

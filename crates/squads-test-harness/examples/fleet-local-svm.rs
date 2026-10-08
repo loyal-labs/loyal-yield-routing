@@ -2,16 +2,17 @@
 //! JSON lines on stdin/stdout; no network listener and no production credentials.
 //! Unknown operations fail closed. Account injection is permitted exactly once,
 //! before any simulation or submission. Transaction effects come from LiteSVM.
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use litesvm::LiteSVM;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use solana_sdk::{
-    account::Account, message::VersionedMessage, pubkey::Pubkey, transaction::VersionedTransaction,
+    account::Account, message::VersionedMessage, pubkey::Pubkey, sysvar::slot_hashes::SlotHashes,
+    transaction::VersionedTransaction,
 };
 use spl_token::solana_program::program_pack::Pack;
 use squads_test_harness::{
     add_mock_jupiter_program, add_mock_kamino_lend_program,
-    add_squads_program_from_env_or_sibling_checkout,
+    add_squads_program_from_env_or_sibling_checkout, add_subscriptions_program_from_env_or_fixture,
 };
 use std::{
     collections::BTreeMap,
@@ -37,6 +38,8 @@ impl LocalChain {
         let mut svm = LiteSVM::new();
         add_squads_program_from_env_or_sibling_checkout(&mut svm)?
             .ok_or("required Squads SBF missing")?;
+        add_subscriptions_program_from_env_or_fixture(&mut svm)?
+            .ok_or("required Subscriptions SBF missing")?;
         add_mock_kamino_lend_program(&mut svm)?;
         add_mock_jupiter_program(&mut svm)?;
         svm.warp_to_slot(1000);
@@ -91,20 +94,41 @@ impl LocalChain {
             "getGenesisHash" => Ok(json!(
                 solana_sdk::hash::Hash::new_from_array([42; 32]).to_string()
             )),
+            // Explicit fixture-only bank operation. Unlike warp_to_slot,
+            // LiteSVM's own method advances its real recent-blockhash sysvar.
+            // It does not synthesize a signature, transaction or receipt.
+            "expireBlockhash" => {
+                let svm = self.svm.as_mut().unwrap();
+                svm.expire_blockhash();
+                Ok(json!(svm.latest_blockhash().to_string()))
+            }
             "advanceSlot" => {
                 let slot = params[0].as_u64().ok_or("missing slot")?;
                 if slot <= self.slot {
                     return Err("local slot must advance".into());
                 }
-                self.svm.as_mut().unwrap().warp_to_slot(slot);
+                let svm = self.svm.as_mut().unwrap();
+                svm.warp_to_slot(slot);
+                // One actual fixture bank advancement contributes one entry.
+                // Numeric gaps do not fabricate produced blocks or cooldown.
+                let mut slot_hashes: SlotHashes = svm.get_sysvar();
+                slot_hashes.add(slot, svm.latest_blockhash());
+                svm.set_sysvar(&slot_hashes);
                 self.slot = slot;
                 Ok(json!(slot))
             }
             "getSlot" | "getBlockHeight" => Ok(json!(self.slot)),
+            // Height and its slot from one answer, as Go's landing reads them.
+            "getEpochInfo" => Ok(json!({"absoluteSlot":self.slot,"blockHeight":self.slot})),
             // No contention in the deterministic local chain.
             "getRecentPrioritizationFees" => Ok(json!([{"slot":1000,"prioritizationFee":0}])),
+            // This controlled bank starts at slot 1000 and retains every
+            // transaction submitted through this process. It does not import
+            // historical ledger blocks or model mainnet pruning/consensus.
+            "getFirstAvailableBlock" => Ok(json!(1000u64)),
+            // Existing local slot-as-blockheight approximation; no PoH model.
             "getLatestBlockhash" => Ok(json!({"context":{"slot":self.slot},"value":{
-                "blockhash":self.svm.as_ref().unwrap().latest_blockhash().to_string(),"lastValidBlockHeight":1150
+                "blockhash":self.svm.as_ref().unwrap().latest_blockhash().to_string(),"lastValidBlockHeight":self.slot.checked_add(150).ok_or("fixture height overflow")?
             }})),
             "getAccountInfo" => {
                 let key = Pubkey::from_str(params[0].as_str().ok_or("missing address")?)?;
@@ -175,6 +199,9 @@ impl LocalChain {
                 }
                 let svm = self.svm.as_mut().unwrap();
                 let (keys, loaded) = transaction_keys(svm, &tx)?;
+                if keys.iter().collect::<std::collections::BTreeSet<_>>().len() != keys.len() {
+                    return Err("duplicate resolved message account in fixture".into());
+                }
                 let pre_balances = lamport_balances(svm, &keys);
                 let pre_tokens = token_balances(svm, &keys)?;
                 let tx_signature = tx.signatures[0];
@@ -193,9 +220,27 @@ impl LocalChain {
                 };
                 let post_balances = lamport_balances(svm, &keys);
                 let post_tokens = token_balances(svm, &keys)?;
-                let fee = pre_balances[0]
-                    .checked_sub(post_balances[0])
-                    .ok_or("unexpected fee-payer credit")?;
+                // Controlled fixture bank conservation isolates the actual charged
+                // fee from rent transfers and close refunds. All message keys
+                // are complete and distinct, including created/closed accounts.
+                // Locked LiteSVM 0.7.1 lib.rs:834 passes priority fee 0 to
+                // calculate_fee; this is not mainnet priority-fee correctness.
+                if pre_balances.len() != keys.len() || post_balances.len() != keys.len() {
+                    return Err("incomplete fixture SOL balances".into());
+                }
+                let pre_total = pre_balances
+                    .iter()
+                    .try_fold(0u128, |sum, value| sum.checked_add(u128::from(*value)))
+                    .ok_or("fixture pre-balance overflow")?;
+                let post_total = post_balances
+                    .iter()
+                    .try_fold(0u128, |sum, value| sum.checked_add(u128::from(*value)))
+                    .ok_or("fixture post-balance overflow")?;
+                let fee = u64::try_from(
+                    pre_total
+                        .checked_sub(post_total)
+                        .ok_or("fixture transaction created SOL")?,
+                )?;
                 let status = if error.is_null() {
                     json!({"Ok":null})
                 } else {
@@ -295,6 +340,17 @@ impl LocalChain {
                 Ok(
                     json!({"context":{"slot":self.slot},"value":{"amount":mint.supply.to_string(),"decimals":mint.decimals,"uiAmount":null,"uiAmountString":format!("{}", mint.supply as f64 / 10_f64.powi(i32::from(mint.decimals)))}}),
                 )
+            }
+            "getMinimumBalanceForRentExemption" => {
+                let size = params
+                    .get(0)
+                    .and_then(Value::as_u64)
+                    .ok_or("rent exemption account size missing")?;
+                let size = usize::try_from(size)?;
+                if size > 10 * 1024 * 1024 {
+                    return Err("rent exemption account size exceeds fixture bound".into());
+                }
+                Ok(json!(self.svm.as_ref().unwrap().minimum_balance_for_rent_exemption(size)))
             }
             "getBalance" => {
                 let key = Pubkey::from_str(params[0].as_str().ok_or("missing account")?)?;

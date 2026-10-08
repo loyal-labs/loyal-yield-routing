@@ -175,6 +175,7 @@ function compilerInstruction(instruction: CanonicalInstruction): CompilerInstruc
 function compilerArgs(...args: string[]): string[] {
   return [
     "run",
+    "--locked",
     "--quiet",
     "-p",
     "loyal-actions",
@@ -194,9 +195,11 @@ function runCompiler(args: readonly string[], input?: string): unknown {
     env: process.env,
   });
   if (result.error) throw result.error;
+  // A killed or toolchain-failing cargo is not a compiler verdict: only the
+  // compiler's own non-zero exit is a refusal, reported with its exit code.
+  if (result.status === null) throw new Error(`runtime policy compiler was terminated by ${result.signal ?? "an unknown signal"}`);
   if (result.status !== 0) {
-    const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.status}`;
-    throw new Error(`runtime policy compiler refused input: ${detail}`);
+    throw new Error(`runtime policy compiler exited ${result.status}: ${result.stderr.trim() || result.stdout.trim()}`);
   }
   try {
     return JSON.parse(result.stdout);

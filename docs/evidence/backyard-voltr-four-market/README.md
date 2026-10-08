@@ -55,13 +55,18 @@ confirmed-provider observations; ordinary RPC cannot replay all historical
 account bytes independently.
 
 The current source freeze is
-`policy-catalog-authorization-v7.json`: file SHA-256
-`4d372de507c54f00fd3d70c7d055af64cd7afc73966de1e97168ee34f82290f6`,
+`policy-catalog-authorization-v26.json`: file SHA-256
+`fc148c9fe88bf9a096db8264ce43cb7cacb868175f8409e19aa050f8e56bfdfb`,
 authorization SHA-256
-`23fecae0d2d0a239645b33bee30117eedb5f44a5a096ecab7678f7e302525c55`,
+`b94a02aa15d10eab17fb230521178cfde101ade1799451608a1351190bb007b0`,
 and effective route authorization SHA-256
-`00232644ed6643b8f7a2d8af37c0c34e01589d38453310a5ccf8aba05053c8b6`.
-Authorization v6 and its lifecycle outputs are historical only.
+`638172c4750782e0c5d1e5443980ee149f55656f40a65e2521f81927923d529c`.
+It authorizes the same `runtime-policy-catalog-v2.json` entries, seeds,
+policy PDAs, and create/execution data hashes as v24 and v25. v25 moved the
+source binding from the retired Rust worker crates to the Go engine files that
+now own Voltr planning, replay, and restoration-first execution; v26 rebinds
+the compiler runner after it started passing `--locked` to cargo. v23 to v25
+are historical only.
 
 Any earlier wait-0 or alternate-timeout simulation is retained only as
 historical diagnostic evidence. It is non-authorizing and cannot satisfy the

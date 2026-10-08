@@ -1,0 +1,76 @@
+package backyard
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestEmbeddedManifestIsExactCheckedInManifest(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "manifests", "backyard-rwa-v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(source, embeddedBackyardManifest) {
+		t.Fatal("embedded runtime manifest drifted from docs/manifests/backyard-rwa-v2.json")
+	}
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The basic policy set (seeds 141-144) is installed on mainnet and its
+	// readback is pinned into the manifest, so the v2 manifest must be
+	// executable: any blocker here means a hash or unresolved entry regressed.
+	if blocker := manifest.executionBlocker(); blocker != nil {
+		t.Fatalf("v2 manifest is blocked after the policy install readback: %v", blocker)
+	}
+}
+
+func TestManifestPacketTemplatePatchesOnlyTheV2Amount(t *testing.T) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := append(append([]byte(nil), kaminoDepositCollateral...), make([]byte, 8)...)
+	overlay, err := json.Marshal(map[string]any{"packets": []any{map[string]any{
+		"action": OpenPrimeUSDCStep, "policy": bridgeAllocationPolicy,
+		"policyAccountDataSha256": "11" + string(bytes.Repeat([]byte{'1'}, 62)),
+		"policyConstraintIndex":   0, "accounts": manifestAccounts(kaminoDepositMetas()),
+		"dataBase64": base64.StdEncoding.EncodeToString(data),
+	}}})
+	if err != nil || json.Unmarshal(overlay, &manifest.RuntimeBindings.PrimeUSDC) != nil {
+		t.Fatal("could not create packet fixture")
+	}
+	request, err := manifest.primeUSDCPacket(OpenPrimeUSDCStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9})
+	if err != nil || request.AmountRaw != 77 || readU64(request.Data[8:]) != 77 || !bytes.Equal(request.Data[:8], kaminoDepositCollateral) {
+		t.Fatalf("request=%+v err=%v", request, err)
+	}
+}
+
+func TestManifestRollsOnlyForwardJupiterPolicy(t *testing.T) {
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	forward, err := manifest.jupiterPolicy(SwapUSDCToPrimeStep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverse, err := manifest.jupiterPolicy(SwapPrimeToUSDCStep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forward.Policy != "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG" ||
+		forward.PolicyAccountDataSHA256 != "e7ecc7e0150859e8ce22519cd1428a101ac453386e1b4e2324910c076feba1ee" ||
+		len(forward.ConstraintBindings) != 2 {
+		t.Fatal("forward Jupiter action is not bound to the exact seed-66 policy")
+	}
+	if reverse.Policy != "Fks3YBQWBYA1d6ZZKEAEunjhVMXZA9gY7vfWUWWbQtDx" ||
+		reverse.PolicyAccountDataSHA256 != "6cdf12f0cd4623d60b32dc6d58b655e1fcbddf82ae7f75cd7b12783087b9ecc7" ||
+		reverse.PolicyConstraintIndex != 1 || len(reverse.ConstraintBindings) != 0 {
+		t.Fatal("reverse Jupiter action drifted from the legacy policy constraint")
+	}
+}

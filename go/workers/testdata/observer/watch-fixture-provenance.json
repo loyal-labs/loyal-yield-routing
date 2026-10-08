@@ -1,0 +1,6 @@
+{
+  "commit": "36a6664c125eeecd5e0ab5ea9218e72432da055d",
+  "source": "test-fixtures/earn-watch-production-schema.sql",
+  "sha256": "1c682725c7de459e97021eedff4817abe92cc38b5159d74236f2471dcfba74dd",
+  "scope": "sampled compatibility fixture, not registered schema acceptance"
+}

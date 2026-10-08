@@ -1,0 +1,90 @@
+{
+  "description": "One scan's dispatch order. Recovery of an existing claim outranks hinted fresh work, and a target with several eligible slots is dispatched once so a vault never carries concurrent pulls.",
+  "cases": [
+    {
+      "name": "unfinished signed attempts precede new hinted work",
+      "targets": [
+        { "targetId": 1, "scheduledSlotId": 101 },
+        { "targetId": 7, "scheduledSlotId": 107, "claimToken": "existing-claim" },
+        { "targetId": 2, "scheduledSlotId": 102 }
+      ],
+      "hintedSlotIds": [102, 101],
+      "limit": 3,
+      "expectOrder": [
+        { "targetId": 7, "scheduledSlotId": 107, "claimToken": "existing-claim" },
+        { "targetId": 2, "scheduledSlotId": 102 },
+        { "targetId": 1, "scheduledSlotId": 101 }
+      ]
+    },
+    {
+      "name": "recovery row wins over a fresh hinted slot on the same target",
+      "targets": [
+        { "targetId": 7068, "scheduledSlotId": 870641 },
+        { "targetId": 7068, "scheduledSlotId": 870640, "claimToken": "existing-claim" },
+        { "targetId": 3, "scheduledSlotId": 103 }
+      ],
+      "hintedSlotIds": [870641],
+      "limit": 10,
+      "expectOrder": [
+        { "targetId": 7068, "scheduledSlotId": 870640, "claimToken": "existing-claim" },
+        { "targetId": 3, "scheduledSlotId": 103 }
+      ]
+    },
+    {
+      "name": "one dispatch per target keeps the highest priority slot and its siblings wait",
+      "targets": [
+        { "targetId": 7068, "scheduledSlotId": 870640 },
+        { "targetId": 7068, "scheduledSlotId": 870641 },
+        { "targetId": 7068, "scheduledSlotId": 870642 },
+        { "targetId": 2, "scheduledSlotId": 102 }
+      ],
+      "hintedSlotIds": [870641],
+      "limit": 10,
+      "expectOrder": [
+        { "targetId": 7068, "scheduledSlotId": 870641 },
+        { "targetId": 2, "scheduledSlotId": 102 }
+      ]
+    },
+    {
+      "name": "two stuck claims on one target are both dispatched; dropping either starves it",
+      "targets": [
+        { "targetId": 7068, "scheduledSlotId": 870640, "claimToken": "claim-a" },
+        { "targetId": 7068, "scheduledSlotId": 870642 },
+        { "targetId": 7068, "scheduledSlotId": 870641, "claimToken": "claim-b" }
+      ],
+      "hintedSlotIds": [],
+      "limit": 10,
+      "expectOrder": [
+        { "targetId": 7068, "scheduledSlotId": 870640, "claimToken": "claim-a" },
+        { "targetId": 7068, "scheduledSlotId": 870641, "claimToken": "claim-b" }
+      ]
+    },
+    {
+      "name": "hints prioritize without inventing ineligible targets",
+      "targets": [
+        { "targetId": 1, "scheduledSlotId": 101 },
+        { "targetId": 2, "scheduledSlotId": 102 },
+        { "targetId": 3, "scheduledSlotId": 103 }
+      ],
+      "hintedSlotIds": [999, 103, 101],
+      "limit": 3,
+      "expectOrder": [
+        { "targetId": 3, "scheduledSlotId": 103 },
+        { "targetId": 1, "scheduledSlotId": 101 },
+        { "targetId": 2, "scheduledSlotId": 102 }
+      ]
+    },
+    {
+      "name": "limit truncates after recovery rows win their places",
+      "targets": [
+        { "targetId": 1, "scheduledSlotId": 101 },
+        { "targetId": 9, "scheduledSlotId": 901, "claimToken": "claim-9" }
+      ],
+      "hintedSlotIds": [],
+      "limit": 1,
+      "expectOrder": [
+        { "targetId": 9, "scheduledSlotId": 901, "claimToken": "claim-9" }
+      ]
+    }
+  ]
+}

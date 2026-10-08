@@ -6,35 +6,37 @@ import { fileURLToPath } from "node:url";
 
 import {
   PARTNER_FOUR_MARKET_ROUTE,
+  PARTNER_ROUTE,
   fourMarketRouteSpecSha256,
   partnerStrategyIdentity,
   type PartnerStrategyId,
 } from "../domain/route-spec.js";
 
 /**
- * The adapter is deliberately not an economic planner.  Earn owns market
- * observation, ranking, and durable outbox publication; this module only
- * validates the replay envelope that Earn emits for the Voltr handoff.
- * Keeping this boundary projection-only prevents a second TypeScript planner
- * from silently diverging from `fleet_orchestration::{observation,planner}`.
+ * The adapter is deliberately not an economic planner. The Go engine's fleet
+ * Voltr family owns observation, planning, and durable opportunity
+ * publication; this module replays saved planner inputs through that exact Go
+ * planner (`loyal-evidence --kind voltr` -> `fleet.PlanVoltr`) and validates
+ * the result. Keeping this boundary projection-only prevents a second
+ * TypeScript planner from silently diverging from the engine.
  */
-export const EARN_ADAPTER_REPLAY_KIND = "loyal-earn-shared-observation-planner-replay-v1" as const;
-export const EARN_ADAPTER_REPLAY_SOURCE =
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-earn-replay.rs + crates/loyal-yield-orchestrator/src/fleet_orchestration/{mod,observation,planner}.rs + crates/loyal-yield-store/src/fleet_orchestration/{domain,queue}.rs" as const;
+export const EARN_ADAPTER_REPLAY_KIND = "loyal-earn-go-voltr-planner-replay-v2" as const;
+export const EARN_ADAPTER_REPLAY_IMPLEMENTATION = "go/workers/cmd/loyal-evidence --kind voltr -> fleet.PlanVoltr" as const;
 
 const EARN_ADAPTER_SOURCE_PATHS = [
-  "crates/loyal-yield-orchestrator/src/fleet_orchestration/observation.rs",
-  "crates/loyal-yield-orchestrator/src/fleet_orchestration/planner.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/queue.rs",
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-earn-replay.rs",
-  "crates/loyal-yield-orchestrator/src/fleet_orchestration/mod.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/domain.rs",
+  "go/workers/cmd/loyal-evidence/main.go",
+  "go/workers/internal/fleet/types.go",
+  "go/workers/internal/fleet/voltr.go",
+  "go/workers/internal/fleet/voltr_plan.go",
+  "go/workers/internal/fleet/voltr_route.json",
   "tools/backyard-voltr/src/domain/route-spec.ts",
   "tools/backyard-voltr/src/runtime/earn-adapter.ts",
 ] as const;
 
 type JsonObject = Readonly<Record<string, unknown>>;
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
+const GO_MODULE_ROOT = resolve(REPOSITORY_ROOT, "go/workers");
+const VOLTR_IDLE_TARGET = `voltr_idle:${PARTNER_ROUTE.vault}`;
 
 function object(value: unknown, label: string): JsonObject {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -62,172 +64,227 @@ function positiveInteger(value: unknown, label: string): number {
   return value;
 }
 
-function bigintString(value: unknown, label: string): bigint {
-  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) throw new Error(`${label} must be a canonical non-negative integer string`);
-  return BigInt(value);
+function nonNegativeInteger(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative safe integer`);
+  return value;
 }
 
-export type EarnSharedReplay = Readonly<{
-  kind: typeof EARN_ADAPTER_REPLAY_KIND;
-  observation: Readonly<{
-    contextSlot: number;
-    inputSha256: string;
-    configuredIdleFloorRaw?: string;
-    confirmedIdleRaw: string;
-    withdrawalDemandRaw: string;
-    requiredIdleRaw: string;
-    idleShortfallRaw: string;
-  }>;
-  planner: Readonly<{
-    implementation: "loyal-yield-orchestrator::fleet_orchestration::{observation,planner}";
-    inputSha256: string;
-    outputSha256: string;
-    recomputed: true;
-    selectedOpportunityId?: number;
-    selectedCount?: 1;
-    decision: "normal-optimization";
-    selectedSourceStrategyId: string;
-    selectedSourceReserve: string;
-    selectedTargetReserve: string;
-    selectedAmountRaw: string;
-    selectedNotionalUsdMicros: string;
-    target: string;
-    path: readonly string[];
-  }>;
-  normalOptimization: Readonly<{
-    status: "eligible";
-    withdrawalDemandRaw: string;
-    sourceReserve: string;
-    targetReserve: string;
-    path: readonly string[];
-    selectedOpportunityId: number;
-    selectedNotionalUsdMicros: string;
-    semanticSha256: string;
-  }>;
-  priorityProbe: Readonly<{
-    inputSha256: string;
-    outputSha256: string;
-    withdrawalDemandRaw: string;
-    normalOptimization: Readonly<{ status: "blocked"; reason: "positive-withdrawal-demand"; candidateCount: number; selectedCount: 0; deferredCount: number }>;
-    preRequestManagerPair: Readonly<{ present: boolean; restoresLaterRequest: false; semantic: "not-a-restoration-proof" }>;
-  }>;
-  durable: Readonly<{
-    implementation: "loyal-yield-store::fleet_orchestration::queue";
-    eventKind: "rebalance_opportunity";
-    aggregateKind: "rebalance_opportunity";
-    originId: string;
-    generation: number;
-    movementId: string;
-    outboxRows: number;
-    replayed: true;
-    duplicateRows: number;
-    leaseFenced: true;
-    idempotencyKeySha256: string;
-    movementPath: readonly string[];
-  }>;
-  rustReplay: Readonly<{
-    input: JsonObject;
-    outputSha256: string;
-    sourceBindings: readonly Readonly<{ path: string; sha256: string }>[];
-  }>;
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as JsonObject).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256Canonical(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+/** One saved `loyal-evidence --kind voltr` input, passed to Go verbatim. */
+export type GoVoltrReplayCall = Readonly<{
+  Observation: JsonObject;
+  Epoch: JsonObject;
+  OptimizerEpochRowID: number;
+  VaultID: number;
+  LastOptimization: string | null;
+  EvaluatedAt: string;
 }>;
 
 /**
- * Validate and normalize an Earn replay.  This checks only identities and
- * arithmetic that can be checked from the persisted replay; it intentionally
- * does not claim to recreate the Rust planner in TypeScript.
+ * The confirmed Earn movement is two planner decisions on two confirmed
+ * observations: a zero-demand yield leg out of the source strategy, then an
+ * idle allocation into the destination. The priority call replays the same
+ * vault with the scanner's positive withdrawal demand.
  */
-export function validateEarnSharedReplay(
-  value: unknown,
-  expected: Readonly<{ movementId: string; sourceStrategyId: string; destinationStrategyId?: string; sourceReserve: string; targetReserve?: string; amountRaw: bigint; expectedContextSlot?: number; /** @deprecated source-tx lower bound is intentionally ignored; use expectedContextSlot. */ minimumContextSlot?: number; expectedObservation: Readonly<{ configuredIdleFloorRaw?: bigint; confirmedIdleRaw: bigint; withdrawalDemandRaw: bigint; requiredIdleRaw: bigint; idleShortfallRaw: bigint }>; rustSourceBindings: readonly Readonly<{ path: string; sha256: string }>[] }>,
-): EarnSharedReplay {
-  const root = object(value, "earnAdapter.sharedReplay");
-  exactKeys(root, ["kind", "observation", "planner", "normalOptimization", "priorityProbe", "durable", "rustReplay"], "earnAdapter.sharedReplay");
-  if (root.kind !== EARN_ADAPTER_REPLAY_KIND) throw new Error("Earn replay kind is not the maintained shared replay contract");
-  const observation = object(root.observation, "earnAdapter.sharedReplay.observation");
-  exactKeys(observation, ["contextSlot", "inputSha256", "configuredIdleFloorRaw", "confirmedIdleRaw", "withdrawalDemandRaw", "requiredIdleRaw", "idleShortfallRaw"], "earnAdapter.sharedReplay.observation");
-  const contextSlot = positiveInteger(observation.contextSlot, "earnAdapter.sharedReplay.observation.contextSlot");
-  if (expected.expectedContextSlot === undefined || contextSlot !== expected.expectedContextSlot) throw new Error("Earn replay observation is not the exact protected-before context");
-  const inputSha256 = sha(observation.inputSha256, "earnAdapter.sharedReplay.observation.inputSha256");
-  const configuredIdleFloorRaw = bigintString(observation.configuredIdleFloorRaw, "earnAdapter.sharedReplay.observation.configuredIdleFloorRaw");
-  const confirmedIdleRaw = bigintString(observation.confirmedIdleRaw, "earnAdapter.sharedReplay.observation.confirmedIdleRaw");
-  const withdrawalDemandRaw = bigintString(observation.withdrawalDemandRaw, "earnAdapter.sharedReplay.observation.withdrawalDemandRaw");
-  const requiredIdleRaw = bigintString(observation.requiredIdleRaw, "earnAdapter.sharedReplay.observation.requiredIdleRaw");
-  const idleShortfallRaw = bigintString(observation.idleShortfallRaw, "earnAdapter.sharedReplay.observation.idleShortfallRaw");
-  if (configuredIdleFloorRaw !== 0n || requiredIdleRaw !== configuredIdleFloorRaw + withdrawalDemandRaw || idleShortfallRaw !== (requiredIdleRaw > confirmedIdleRaw ? requiredIdleRaw - confirmedIdleRaw : 0n)) throw new Error("Earn replay observation demand arithmetic is inconsistent with the frozen idle floor");
-  if (expected.expectedObservation.configuredIdleFloorRaw === undefined || configuredIdleFloorRaw !== expected.expectedObservation.configuredIdleFloorRaw || confirmedIdleRaw !== expected.expectedObservation.confirmedIdleRaw || withdrawalDemandRaw !== expected.expectedObservation.withdrawalDemandRaw || requiredIdleRaw !== expected.expectedObservation.requiredIdleRaw || idleShortfallRaw !== expected.expectedObservation.idleShortfallRaw) throw new Error("Earn replay observation does not equal the exact confirmed withdrawal scanner demand");
+export type EarnReplayInput = Readonly<{
+  schemaVersion: 2;
+  routeId: string;
+  movementId: string;
+  sourceStrategyId: PartnerStrategyId;
+  destinationStrategyId: PartnerStrategyId;
+  amountRaw: number;
+  source: GoVoltrReplayCall;
+  destination: GoVoltrReplayCall;
+  priority: GoVoltrReplayCall;
+}>;
 
-  const planner = object(root.planner, "earnAdapter.sharedReplay.planner");
-  exactKeys(planner, ["implementation", "inputSha256", "outputSha256", "recomputed", "selectedOpportunityId", "selectedSourceStrategyId", "selectedSourceReserve", "selectedTargetReserve", "selectedAmountRaw", "selectedNotionalUsdMicros", "selectedCount", "decision", "target", "path"], "earnAdapter.sharedReplay.planner");
-  if (planner.implementation !== "loyal-yield-orchestrator::fleet_orchestration::{observation,planner}" || planner.recomputed !== true || planner.decision !== "normal-optimization" || typeof planner.target !== "string" || planner.target === "voltr-idle") throw new Error("Earn replay is not produced by the normal shared planner boundary");
-  const plannerInputSha256 = sha(planner.inputSha256, "earnAdapter.sharedReplay.planner.inputSha256");
-  const outputSha256 = sha(planner.outputSha256, "earnAdapter.sharedReplay.planner.outputSha256");
-  if (planner.selectedSourceStrategyId !== expected.sourceStrategyId || planner.selectedCount !== 1 || typeof planner.selectedOpportunityId !== "number" || !Number.isSafeInteger(planner.selectedOpportunityId) || planner.selectedOpportunityId <= 0 || bigintString(planner.selectedAmountRaw, "earnAdapter.sharedReplay.planner.selectedAmountRaw") !== expected.amountRaw || bigintString(planner.selectedNotionalUsdMicros, "earnAdapter.sharedReplay.planner.selectedNotionalUsdMicros") !== expected.amountRaw || planner.selectedSourceReserve !== expected.sourceReserve || (expected.targetReserve !== undefined && planner.selectedTargetReserve !== expected.targetReserve) || planner.target !== planner.selectedTargetReserve || !Array.isArray(planner.path) || JSON.stringify(planner.path) !== JSON.stringify([expected.sourceReserve, "voltr-idle", planner.selectedTargetReserve])) throw new Error("Earn planner decision is not the exact normal Voltr movement");
-  const normalOptimization = object(root.normalOptimization, "earnAdapter.sharedReplay.normalOptimization");
-  exactKeys(normalOptimization, ["status", "withdrawalDemandRaw", "sourceReserve", "targetReserve", "path", "selectedOpportunityId", "selectedNotionalUsdMicros", "semanticSha256"], "earnAdapter.sharedReplay.normalOptimization");
-  if (normalOptimization.status !== "eligible" || bigintString(normalOptimization.withdrawalDemandRaw, "earnAdapter.sharedReplay.normalOptimization.withdrawalDemandRaw") !== 0n || normalOptimization.sourceReserve !== expected.sourceReserve || normalOptimization.targetReserve !== planner.selectedTargetReserve || JSON.stringify(normalOptimization.path) !== JSON.stringify([expected.sourceReserve, "voltr-idle", planner.selectedTargetReserve]) || normalOptimization.selectedOpportunityId !== planner.selectedOpportunityId || bigintString(normalOptimization.selectedNotionalUsdMicros, "earnAdapter.sharedReplay.normalOptimization.selectedNotionalUsdMicros") !== expected.amountRaw) throw new Error("Earn normal optimization path is not source reserve -> idle -> exact target reserve");
-  const normalSemantic = { sourceReserve: expected.sourceReserve, targetReserve: planner.selectedTargetReserve, path: [expected.sourceReserve, "voltr-idle", planner.selectedTargetReserve], withdrawalDemandRaw: 0, selectedNotionalUsdMicros: Number(expected.amountRaw) };
-  if (sha(normalOptimization.semanticSha256, "earnAdapter.sharedReplay.normalOptimization.semanticSha256") !== sha256RustJson(normalSemantic)) throw new Error("Earn normal optimization semantic hash does not bind the exact path and notional");
-  const priorityProbe = object(root.priorityProbe, "earnAdapter.sharedReplay.priorityProbe");
-  exactKeys(priorityProbe, ["inputSha256", "outputSha256", "withdrawalDemandRaw", "normalOptimization", "preRequestManagerPair"], "earnAdapter.sharedReplay.priorityProbe");
-  if (bigintString(priorityProbe.withdrawalDemandRaw, "earnAdapter.sharedReplay.priorityProbe.withdrawalDemandRaw") <= 0n) throw new Error("Earn priority probe must use positive withdrawal demand");
-  const probeNormal = object(priorityProbe.normalOptimization, "earnAdapter.sharedReplay.priorityProbe.normalOptimization");
-  exactKeys(probeNormal, ["status", "reason", "candidateCount", "selectedCount", "deferredCount"], "earnAdapter.sharedReplay.priorityProbe.normalOptimization");
-  if (probeNormal.status !== "blocked" || probeNormal.reason !== "positive-withdrawal-demand" || probeNormal.selectedCount !== 0 || typeof probeNormal.candidateCount !== "number" || !Number.isSafeInteger(probeNormal.candidateCount) || probeNormal.candidateCount <= 0 || probeNormal.deferredCount !== probeNormal.candidateCount) throw new Error("Earn positive-demand priority probe does not block/defer normal optimization");
-  const preRequestPair = object(priorityProbe.preRequestManagerPair, "earnAdapter.sharedReplay.priorityProbe.preRequestManagerPair");
-  exactKeys(preRequestPair, ["present", "restoresLaterRequest", "semantic"], "earnAdapter.sharedReplay.priorityProbe.preRequestManagerPair");
-  if (typeof preRequestPair.present !== "boolean" || preRequestPair.restoresLaterRequest !== false || preRequestPair.semantic !== "not-a-restoration-proof") throw new Error("Earn priority probe makes an invalid pre-request manager restoration claim");
+export type EarnReplayLeg = Readonly<{
+  class: string;
+  operation: string;
+  strategyId: string;
+  sourceReserve: string | null;
+  targetReserve: string;
+  amountRaw: string;
+  sourceApyBps: number;
+  targetApyBps: number;
+  protectedContextSlot: number;
+  intentSha256: string;
+  planSha256: string;
+  opportunityKey: string;
+}>;
 
-  const durable = object(root.durable, "earnAdapter.sharedReplay.durable");
-  exactKeys(durable, ["implementation", "eventKind", "aggregateKind", "originId", "generation", "movementId", "outboxRows", "replayed", "duplicateRows", "leaseFenced", "idempotencyKeySha256", "movementPath"], "earnAdapter.sharedReplay.durable");
-  if (durable.implementation !== "loyal-yield-store::fleet_orchestration::queue" || durable.eventKind !== "rebalance_opportunity" || durable.aggregateKind !== "rebalance_opportunity" || durable.movementId !== expected.movementId || durable.replayed !== true || durable.leaseFenced !== true || positiveInteger(durable.generation, "earnAdapter.sharedReplay.durable.generation") !== durable.generation || positiveInteger(durable.outboxRows, "earnAdapter.sharedReplay.durable.outboxRows") !== durable.outboxRows || durable.outboxRows !== 1 || durable.duplicateRows !== 1 || !Array.isArray(durable.movementPath) || JSON.stringify(durable.movementPath) !== JSON.stringify([expected.sourceReserve, "voltr-idle", planner.selectedTargetReserve])) throw new Error("Earn durable replay is not the exact idempotent normal optimization outbox movement");
-  const originId = sha(durable.originId, "earnAdapter.sharedReplay.durable.originId");
-  if (typeof durable.duplicateRows !== "number" || !Number.isSafeInteger(durable.duplicateRows) || durable.duplicateRows !== 1) throw new Error("Earn durable replay must prove one duplicate replay was absorbed");
-  const rustReplay = object(root.rustReplay, "earnAdapter.sharedReplay.rustReplay");
-  exactKeys(rustReplay, ["input", "outputSha256", "sourceBindings"], "earnAdapter.sharedReplay.rustReplay");
-  if (!Array.isArray(rustReplay.sourceBindings)) throw new Error("earnAdapter.sharedReplay.rustReplay.sourceBindings must be an array");
-  const persistedSources = rustReplay.sourceBindings.map((raw, index) => {
-    const row = object(raw, `earnAdapter.sharedReplay.rustReplay.sourceBindings[${index}]`);
-    exactKeys(row, ["path", "sha256"], `earnAdapter.sharedReplay.rustReplay.sourceBindings[${index}]`);
-    return { path: stringField(row, "path", `earnAdapter.sharedReplay.rustReplay.sourceBindings[${index}]`), sha256: sha(row.sha256, `earnAdapter.sharedReplay.rustReplay.sourceBindings[${index}]`) };
-  });
-  if (JSON.stringify(persistedSources) !== JSON.stringify(expected.rustSourceBindings)) throw new Error("persisted Rust replay source bindings do not match the maintained executable/dependency source set");
-  const rustInput = object(rustReplay.input, "earnAdapter.sharedReplay.rustReplay.input");
-  const rustOutput = runRustReplay(rustInput);
-  const expectedOutputSha256 = sha(rustReplay.outputSha256, "earnAdapter.sharedReplay.rustReplay.outputSha256");
-  if (rustOutput.outputSha256 !== expectedOutputSha256) throw new Error("Rust replay output hash differs from the persisted adapter evidence");
-  if (rustOutput.kind !== EARN_ADAPTER_REPLAY_KIND || rustOutput.routeId !== "loyal-backyard-four-market-usdc-v1" || rustOutput.movementId !== expected.movementId || rustOutput.sourceStrategyId !== expected.sourceStrategyId || (expected.destinationStrategyId !== undefined && rustOutput.destinationStrategyId !== expected.destinationStrategyId) || rustOutput.sourceReserve !== expected.sourceReserve || (expected.targetReserve !== undefined && rustOutput.targetReserve !== expected.targetReserve) || rustOutput.amountRaw !== Number(expected.amountRaw)) throw new Error("Rust replay output is not bound to the exact Voltr movement");
-  const rustPriorityInput = object(rustInput.priorityProbe, "Rust replay input priorityProbe");
-  if (sha(priorityProbe.inputSha256, "earnAdapter.sharedReplay.priorityProbe.inputSha256") !== sha256CanonicalReplay(rustPriorityInput)) throw new Error("Earn priority probe input hash does not bind the Rust replay input");
-  const rustObservation = object(rustOutput.observation, "Rust replay observation");
-  const rustPlanner = object(rustOutput.planner, "Rust replay planner");
-  const rustDurable = object(rustOutput.durable, "Rust replay durable");
-  if (rustObservation.contextSlot !== contextSlot || rustObservation.inputSha256 !== inputSha256 || rustPlanner.inputSha256 !== rustInputPlannerSha256(rustInput) || rustPlanner.inputSha256 !== plannerInputSha256 || rustPlanner.outputSha256 !== outputSha256 || rustPlanner.selectedSourceReserve !== expected.sourceReserve || rustPlanner.selectedTargetReserve !== planner.selectedTargetReserve || rustPlanner.selectedAmountRaw !== Number(expected.amountRaw) || rustPlanner.selectedNotionalUsdMicros !== Number(expected.amountRaw) || rustPlanner.decision !== "normal-optimization" || rustPlanner.target !== planner.selectedTargetReserve || rustDurable.movementId !== expected.movementId || rustDurable.replayed !== true || rustDurable.duplicateRows !== 1 || rustDurable.leaseFenced !== true) throw new Error("Rust replay does not reproduce the persisted normal optimization/outbox decision");
-  const rustPriorityOutput = { withdrawalDemandRaw: Number(bigintString(priorityProbe.withdrawalDemandRaw, "earnAdapter.sharedReplay.priorityProbe.withdrawalDemandRaw")), normalOptimization: priorityProbe.normalOptimization, preRequestManagerPair: priorityProbe.preRequestManagerPair };
-  if (sha(priorityProbe.outputSha256, "earnAdapter.sharedReplay.priorityProbe.outputSha256") !== sha256RustJson(rustPriorityOutput)) throw new Error("Earn priority probe output hash does not bind its blocked/deferred semantics");
-  const generatedSources = Array.isArray(rustOutput.sourceBindings) ? rustOutput.sourceBindings : [];
-  const normalizedSources = generatedSources.map((raw, index) => { const row = object(raw, `Rust replay sourceBindings[${index}]`); exactKeys(row, ["path", "sha256"], `Rust replay sourceBindings[${index}]`); return { path: stringField(row, "path", `Rust replay sourceBindings[${index}]`), sha256: sha(row.sha256, `Rust replay sourceBindings[${index}]`) }; });
-  if (JSON.stringify(normalizedSources) !== JSON.stringify(expected.rustSourceBindings) || JSON.stringify(normalizedSources) !== JSON.stringify(persistedSources)) throw new Error("Rust replay source bindings do not match the current maintained executable/dependency source set");
-  return { kind: EARN_ADAPTER_REPLAY_KIND, observation: { contextSlot, inputSha256, confirmedIdleRaw: confirmedIdleRaw.toString(), withdrawalDemandRaw: withdrawalDemandRaw.toString(), requiredIdleRaw: requiredIdleRaw.toString(), idleShortfallRaw: idleShortfallRaw.toString() }, planner: { implementation: planner.implementation as EarnSharedReplay["planner"]["implementation"], inputSha256: plannerInputSha256, outputSha256, recomputed: true, decision: "normal-optimization", selectedSourceStrategyId: planner.selectedSourceStrategyId as string, selectedSourceReserve: planner.selectedSourceReserve as string, selectedTargetReserve: planner.selectedTargetReserve as string, selectedAmountRaw: expected.amountRaw.toString(), selectedNotionalUsdMicros: expected.amountRaw.toString(), target: planner.target as string, path: planner.path as string[] }, normalOptimization: { status: "eligible", withdrawalDemandRaw: "0", sourceReserve: normalOptimization.sourceReserve as string, targetReserve: normalOptimization.targetReserve as string, path: normalOptimization.path as string[], selectedOpportunityId: normalOptimization.selectedOpportunityId as number, selectedNotionalUsdMicros: expected.amountRaw.toString(), semanticSha256: normalOptimization.semanticSha256 as string }, priorityProbe: { inputSha256: sha(priorityProbe.inputSha256, "earnAdapter.sharedReplay.priorityProbe.inputSha256"), outputSha256: sha(priorityProbe.outputSha256, "earnAdapter.sharedReplay.priorityProbe.outputSha256"), withdrawalDemandRaw: priorityProbe.withdrawalDemandRaw as string, normalOptimization: { status: "blocked", reason: "positive-withdrawal-demand", candidateCount: probeNormal.candidateCount as number, selectedCount: 0, deferredCount: probeNormal.deferredCount as number }, preRequestManagerPair: { present: preRequestPair.present as boolean, restoresLaterRequest: false, semantic: "not-a-restoration-proof" } }, durable: { implementation: durable.implementation as EarnSharedReplay["durable"]["implementation"], eventKind: "rebalance_opportunity", aggregateKind: "rebalance_opportunity", originId, generation: durable.generation as number, movementId: durable.movementId as string, outboxRows: durable.outboxRows as number, replayed: true, duplicateRows: 1, leaseFenced: true, idempotencyKeySha256: sha(durable.idempotencyKeySha256, "earnAdapter.sharedReplay.durable.idempotencyKeySha256"), movementPath: durable.movementPath as string[] }, rustReplay: { input: rustInput, outputSha256: expectedOutputSha256, sourceBindings: persistedSources } };
+export type EarnSharedReplay = Readonly<{
+  kind: typeof EARN_ADAPTER_REPLAY_KIND;
+  implementation: typeof EARN_ADAPTER_REPLAY_IMPLEMENTATION;
+  input: EarnReplayInput;
+  inputSha256: string;
+  sourceLeg: EarnReplayLeg;
+  destinationLeg: EarnReplayLeg;
+  priorityProbe: Readonly<{
+    withdrawalDemandRaw: string;
+    decision: string;
+    normalOptimization: "blocked";
+  }>;
+  outputSha256: string;
+  sourceBindings: readonly Readonly<{ path: string; sha256: string }>[];
+}>;
+
+function goCall(value: unknown, label: string): GoVoltrReplayCall {
+  const call = object(value, label);
+  exactKeys(call, ["Observation", "Epoch", "OptimizerEpochRowID", "VaultID", "LastOptimization", "EvaluatedAt"], label);
+  const observation = object(call.Observation, `${label}.Observation`);
+  exactKeys(observation, ["ContextSlot", "TotalValueRaw", "IdleRaw", "PositionsRaw", "PendingRaw", "EarliestRedeem", "Receipts", "State", "Addresses"], `${label}.Observation`);
+  positiveInteger(observation.ContextSlot, `${label}.Observation.ContextSlot`);
+  for (const key of ["TotalValueRaw", "IdleRaw", "PendingRaw", "EarliestRedeem"] as const) nonNegativeInteger(observation[key], `${label}.Observation.${key}`);
+  if (!Array.isArray(observation.PositionsRaw) || observation.PositionsRaw.length !== 4) throw new Error(`${label}.Observation.PositionsRaw must hold the four strategy positions`);
+  observation.PositionsRaw.forEach((raw, index) => nonNegativeInteger(raw, `${label}.Observation.PositionsRaw[${index}]`));
+  object(call.Epoch, `${label}.Epoch`);
+  positiveInteger(call.OptimizerEpochRowID, `${label}.OptimizerEpochRowID`);
+  positiveInteger(call.VaultID, `${label}.VaultID`);
+  if (call.LastOptimization !== null && (typeof call.LastOptimization !== "string" || Number.isNaN(Date.parse(call.LastOptimization)))) throw new Error(`${label}.LastOptimization must be null or an RFC 3339 time`);
+  if (typeof call.EvaluatedAt !== "string" || Number.isNaN(Date.parse(call.EvaluatedAt))) throw new Error(`${label}.EvaluatedAt must be an RFC 3339 time`);
+  return call as GoVoltrReplayCall;
 }
 
-function rustInputPlannerSha256(input: JsonObject): string {
-  const planner = input.planner;
-  if (planner === null || typeof planner !== "object" || Array.isArray(planner)) throw new Error("Rust replay input is missing planner");
-  return sha256CanonicalReplay(planner);
+function replayInput(value: unknown, label: string): EarnReplayInput {
+  const root = object(value, label);
+  exactKeys(root, ["schemaVersion", "routeId", "movementId", "sourceStrategyId", "destinationStrategyId", "amountRaw", "source", "destination", "priority"], label);
+  if (root.schemaVersion !== 2 || root.routeId !== PARTNER_FOUR_MARKET_ROUTE.id) throw new Error(`${label} is not the schema-2 four-market replay input`);
+  sha(root.movementId, `${label}.movementId`);
+  const sourceStrategyId = stringField(root, "sourceStrategyId", label) as PartnerStrategyId;
+  const destinationStrategyId = stringField(root, "destinationStrategyId", label) as PartnerStrategyId;
+  partnerStrategyIdentity(sourceStrategyId);
+  partnerStrategyIdentity(destinationStrategyId);
+  if (sourceStrategyId === destinationStrategyId) throw new Error(`${label} source and destination strategies must differ`);
+  positiveInteger(root.amountRaw, `${label}.amountRaw`);
+  goCall(root.source, `${label}.source`);
+  goCall(root.destination, `${label}.destination`);
+  goCall(root.priority, `${label}.priority`);
+  return root as EarnReplayInput;
 }
 
-function runRustReplay(input: JsonObject): JsonObject & { outputSha256: string } {
+/** Run one saved planner call through the Go engine. No DB, RPC, or signer. */
+function runGoVoltrReplay(call: GoVoltrReplayCall): Readonly<{ opportunity: JsonObject | null; opportunityKey: string | null }> {
   let stdout: string;
   try {
-    stdout = execFileSync("cargo", ["run", "--offline", "--quiet", "--manifest-path", `${REPOSITORY_ROOT}/crates/loyal-yield-orchestrator/Cargo.toml`, "--bin", "backyard-voltr-earn-replay"], { cwd: REPOSITORY_ROOT, input: `${JSON.stringify(input)}\n`, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+    stdout = execFileSync("go", ["run", "./cmd/loyal-evidence", "-kind", "voltr", "-snapshot", "/dev/stdin"], { cwd: GO_MODULE_ROOT, input: `${JSON.stringify(call)}\n`, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   } catch (error) {
-    throw new Error(`maintained Rust Earn replay command failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Go Voltr planner replay failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const parsed = JSON.parse(stdout) as unknown;
-  const output = object(parsed, "maintained Rust Earn replay output");
-  const outputSha256 = sha(output.outputSha256, "maintained Rust Earn replay output.outputSha256");
-  return { ...output, outputSha256 };
+  const output = object(JSON.parse(stdout) as unknown, "Go Voltr planner replay output");
+  exactKeys(output, ["Opportunity", "OpportunityKey"], "Go Voltr planner replay output");
+  if (output.Opportunity === null) {
+    if (output.OpportunityKey !== null) throw new Error("Go Voltr planner replay keyed an empty decision");
+    return { opportunity: null, opportunityKey: null };
+  }
+  return { opportunity: object(output.Opportunity, "Go Voltr planner replay opportunity"), opportunityKey: sha(output.OpportunityKey, "Go Voltr planner replay opportunity key") };
+}
+
+function replayLeg(call: GoVoltrReplayCall, label: string): EarnReplayLeg {
+  const { opportunity, opportunityKey } = runGoVoltrReplay(call);
+  if (!opportunity || !opportunityKey) throw new Error(`${label} planned no Voltr leg`);
+  const plan = object(opportunity.Plan, `${label}.Plan`);
+  const amount = positiveInteger(opportunity.AmountRaw, `${label}.AmountRaw`);
+  return {
+    class: stringField(opportunity, "Class", label),
+    operation: stringField(plan, "operation", `${label}.Plan`),
+    strategyId: stringField(plan, "strategy_id", `${label}.Plan`),
+    sourceReserve: opportunity.SourceReserve === null ? null : stringField(opportunity, "SourceReserve", label),
+    targetReserve: stringField(opportunity, "TargetReserve", label),
+    amountRaw: amount.toString(),
+    sourceApyBps: nonNegativeInteger(opportunity.SourceAPYBPS, `${label}.SourceAPYBPS`),
+    targetApyBps: nonNegativeInteger(opportunity.TargetAPYBPS, `${label}.TargetAPYBPS`),
+    protectedContextSlot: positiveInteger(plan.protected_context_slot, `${label}.Plan.protected_context_slot`),
+    intentSha256: sha(plan.intent_sha256, `${label}.Plan.intent_sha256`),
+    planSha256: sha256Canonical(plan),
+    opportunityKey,
+  };
+}
+
+function currentEarnSourceBindings(): readonly Readonly<{ path: string; sha256: string }>[] {
+  return EARN_ADAPTER_SOURCE_PATHS.map((path) => ({
+    path,
+    sha256: createHash("sha256").update(readFileSync(resolve(REPOSITORY_ROOT, path))).digest("hex"),
+  }));
+}
+
+/** Recompute the complete replay from its saved input through the Go planner. */
+function recomputeEarnSharedReplay(input: EarnReplayInput): EarnSharedReplay {
+  const sourceLeg = replayLeg(input.source, "Earn replay source leg");
+  const destinationLeg = replayLeg(input.destination, "Earn replay destination leg");
+  const probe = runGoVoltrReplay(input.priority);
+  const decision = probe.opportunity === null ? "none" : stringField(probe.opportunity, "Class", "Earn replay priority probe");
+  if (decision === "yield_optimization") throw new Error("positive withdrawal demand did not block normal Voltr optimization");
+  const priorityProbe = {
+    withdrawalDemandRaw: String(input.priority.Observation.PendingRaw),
+    decision,
+    normalOptimization: "blocked" as const,
+  };
+  return {
+    kind: EARN_ADAPTER_REPLAY_KIND,
+    implementation: EARN_ADAPTER_REPLAY_IMPLEMENTATION,
+    input,
+    inputSha256: sha256Canonical(input),
+    sourceLeg,
+    destinationLeg,
+    priorityProbe,
+    outputSha256: sha256Canonical({ sourceLeg, destinationLeg, priorityProbe }),
+    sourceBindings: currentEarnSourceBindings(),
+  };
+}
+
+export type EarnReplayExpectation = Readonly<{
+  movementId: string;
+  sourceStrategyId: PartnerStrategyId;
+  destinationStrategyId: PartnerStrategyId;
+  amountRaw: bigint;
+  /** Protected-before context of the confirmed source withdrawal. */
+  sourceContextSlot: number;
+  /** Confirmed idle readback context between the two legs. */
+  destinationContextSlot: number;
+  /** Idle balance in the source leg's confirmed prestate. */
+  confirmedIdleRaw: bigint;
+  /** Positive demand from the separately captured withdrawal scanner. */
+  priorityWithdrawalDemandRaw: bigint;
+}>;
+
+/** The replay must be the exact confirmed movement and priority probe. */
+function assertReplayIsMovement(replay: EarnSharedReplay, expected: EarnReplayExpectation): EarnSharedReplay {
+  const { input, sourceLeg, destinationLeg, priorityProbe } = replay;
+  const sourceReserve = partnerStrategyIdentity(expected.sourceStrategyId).reserve;
+  const destinationReserve = partnerStrategyIdentity(expected.destinationStrategyId).reserve;
+  const amountRaw = expected.amountRaw.toString();
+  if (input.movementId !== expected.movementId || input.sourceStrategyId !== expected.sourceStrategyId || input.destinationStrategyId !== expected.destinationStrategyId || BigInt(input.amountRaw) !== expected.amountRaw) throw new Error("Earn replay input is not the exact confirmed movement");
+  if (sourceLeg.class !== "yield_optimization" || sourceLeg.operation !== "withdraw" || sourceLeg.strategyId !== expected.sourceStrategyId || sourceLeg.sourceReserve !== sourceReserve || sourceLeg.targetReserve !== VOLTR_IDLE_TARGET || sourceLeg.amountRaw !== amountRaw || sourceLeg.targetApyBps <= sourceLeg.sourceApyBps || sourceLeg.protectedContextSlot !== expected.sourceContextSlot) throw new Error("Earn source leg is not the planner's exact zero-demand yield withdrawal into Voltr idle");
+  if (input.source.Observation.PendingRaw !== 0 || BigInt(input.source.Observation.IdleRaw as number) !== expected.confirmedIdleRaw) throw new Error("Earn source observation is not the confirmed zero-demand prestate");
+  if (destinationLeg.class !== "idle_allocation" || destinationLeg.operation !== "deposit" || destinationLeg.strategyId !== expected.destinationStrategyId || destinationLeg.sourceReserve !== null || destinationLeg.targetReserve !== destinationReserve || destinationLeg.amountRaw !== amountRaw || destinationLeg.protectedContextSlot !== expected.destinationContextSlot || input.destination.Observation.PendingRaw !== 0) throw new Error("Earn destination leg is not the planner's exact idle allocation into the destination strategy");
+  if (expected.priorityWithdrawalDemandRaw <= 0n || priorityProbe.withdrawalDemandRaw !== expected.priorityWithdrawalDemandRaw.toString()) throw new Error("Earn priority probe does not replay the exact positive scanner demand");
+  return replay;
+}
+
+/**
+ * Validate a persisted Earn replay: it must equal a fresh Go replay of its own
+ * input and the current sources, and that replay must be the exact confirmed
+ * movement.
+ */
+export function validateEarnSharedReplay(value: unknown, expected: EarnReplayExpectation): EarnSharedReplay {
+  const root = object(value, "earnAdapter.sharedReplay");
+  exactKeys(root, ["kind", "implementation", "input", "inputSha256", "sourceLeg", "destinationLeg", "priorityProbe", "outputSha256", "sourceBindings"], "earnAdapter.sharedReplay");
+  if (root.kind !== EARN_ADAPTER_REPLAY_KIND || root.implementation !== EARN_ADAPTER_REPLAY_IMPLEMENTATION) throw new Error("Earn replay is not the maintained Go Voltr planner replay contract");
+  const replay = recomputeEarnSharedReplay(replayInput(root.input, "earnAdapter.sharedReplay.input"));
+  if (canonicalJson(root) !== canonicalJson(replay)) throw new Error("persisted Earn replay differs from a fresh Go planner replay of its input and current sources");
+  return assertReplayIsMovement(replay, expected);
 }
 
 export type EarnAdapterProducerInput = Readonly<{
@@ -255,7 +312,7 @@ export type EarnAdapterProducerInput = Readonly<{
     timerDecisionCount: number;
     withdrawalDemandReservedRaw: bigint;
   }>;
-  /** Exact JSON input accepted by backyard-voltr-earn-replay. */
+  /** Exact saved planner inputs replayed through `loyal-evidence --kind voltr`. */
   replayInput: JsonObject;
 }>;
 
@@ -294,83 +351,6 @@ export type EarnAdapterEvidenceArtifact = Readonly<{
   sharedReplay: EarnSharedReplay;
 }>;
 
-export type EarnAdapterReplayFacts = Readonly<{
-  movementId: string;
-  sourceStrategyId: PartnerStrategyId;
-  destinationStrategyId: PartnerStrategyId;
-  amountRaw: bigint;
-  protectedBeforeContextSlot: number;
-  confirmedIdleRaw: bigint;
-  movementOpportunityId: number;
-  planner: Readonly<{
-    opportunities: readonly JsonObject[];
-    economicPolicy: JsonObject;
-    capacityCurves: readonly JsonObject[];
-    waveLimits: JsonObject;
-  }>;
-  durable: Readonly<{
-    originId: string;
-    generation: number;
-    outboxRows: number;
-    duplicateRows: number;
-    leaseFenced: true;
-  }>;
-  priorityProbe: Readonly<{
-    withdrawalDemandRaw: bigint;
-    preRequestManagerPairPresent: true;
-  }>;
-}>;
-
-/** Build the exact, ordered input envelope consumed by the maintained Rust replay. */
-export function buildEarnAdapterReplayInput(facts: EarnAdapterReplayFacts): JsonObject {
-  const amountRaw = safeRaw(facts.amountRaw, "Earn replay facts amountRaw", true);
-  const contextSlot = positiveInteger(facts.protectedBeforeContextSlot, "Earn replay facts protectedBeforeContextSlot");
-  const confirmedIdleRaw = safeRaw(facts.confirmedIdleRaw, "Earn replay facts confirmedIdleRaw");
-  const priorityWithdrawalDemandRaw = safeRaw(facts.priorityProbe.withdrawalDemandRaw, "Earn replay facts priorityWithdrawalDemandRaw", true);
-  if (facts.sourceStrategyId !== "main" || facts.destinationStrategyId !== "onre") throw new Error("Earn replay facts are intentionally bound to Main-withdraw -> OnRe-deposit");
-  if (!/^[0-9a-f]{64}$/.test(facts.movementId) || !/^[0-9a-f]{64}$/.test(facts.durable.originId)) throw new Error("Earn replay facts movement and origin ids must be lowercase SHA-256 values");
-  const sourceReserve = partnerStrategyIdentity(facts.sourceStrategyId).reserve;
-  const targetReserve = partnerStrategyIdentity(facts.destinationStrategyId).reserve;
-  if (!Number.isSafeInteger(facts.movementOpportunityId) || facts.movementOpportunityId <= 0) throw new Error("Earn replay facts movementOpportunityId must be positive");
-  if (facts.durable.generation <= 0 || facts.durable.outboxRows !== 1 || facts.durable.duplicateRows !== 1 || facts.durable.leaseFenced !== true) throw new Error("Earn replay facts durable contract is not exact");
-  return {
-    schemaVersion: 1,
-    routeId: PARTNER_FOUR_MARKET_ROUTE.id,
-    movementId: facts.movementId,
-    sourceStrategyId: facts.sourceStrategyId,
-    destinationStrategyId: facts.destinationStrategyId,
-    sourceReserve,
-    targetReserve,
-    amountRaw,
-    movementOpportunityId: facts.movementOpportunityId,
-    observation: {
-      contextSlot,
-      configuredIdleFloorRaw: Number(PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIdleFloorRaw),
-      confirmedIdleRaw,
-      withdrawalDemandRaw: 0,
-      requiredIdleRaw: Number(PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIdleFloorRaw),
-      idleShortfallRaw: 0,
-    },
-    planner: {
-      opportunities: facts.planner.opportunities,
-      economicPolicy: facts.planner.economicPolicy,
-      capacityCurves: facts.planner.capacityCurves,
-      waveLimits: facts.planner.waveLimits,
-    },
-    durable: {
-      originId: facts.durable.originId,
-      generation: facts.durable.generation,
-      outboxRows: facts.durable.outboxRows,
-      duplicateRows: facts.durable.duplicateRows,
-      leaseFenced: facts.durable.leaseFenced,
-    },
-    priorityProbe: {
-      withdrawalDemandRaw: priorityWithdrawalDemandRaw,
-      preRequestManagerPairPresent: facts.priorityProbe.preRequestManagerPairPresent,
-    },
-  };
-}
-
 function parsedBigint(value: unknown, label: string): bigint {
   if (typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value)) return BigInt(value);
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
@@ -386,8 +366,8 @@ function parsedSignedBigint(value: unknown, label: string): bigint {
 /** Parse the JSON-safe CLI form, converting raw integer strings to bigint. */
 export function parseEarnAdapterProducerInput(value: unknown): EarnAdapterProducerInput {
   const root = object(value, "earnAdapter producer input");
-  const movement = replayObjectField(root, "movement", "earnAdapter producer input");
-  const replayInput = replayObjectField(root, "replayInput", "earnAdapter producer input");
+  const movement = object(root.movement, "earnAdapter producer input.movement");
+  const replay = object(root.replayInput, "earnAdapter producer input.replayInput");
   const sourceStrategyId = stringField(movement, "sourceStrategyId", "earnAdapter producer input.movement") as PartnerStrategyId;
   const destinationStrategyId = stringField(movement, "destinationStrategyId", "earnAdapter producer input.movement") as PartnerStrategyId;
   return {
@@ -411,24 +391,8 @@ export function parseEarnAdapterProducerInput(value: unknown): EarnAdapterProduc
       timerDecisionCount: positiveInteger(movement.timerDecisionCount, "earnAdapter producer input.movement.timerDecisionCount"),
       withdrawalDemandReservedRaw: parsedBigint(movement.withdrawalDemandReservedRaw, "earnAdapter producer input.movement.withdrawalDemandReservedRaw"),
     },
-    replayInput,
+    replayInput: replay,
   };
-}
-
-function replayObjectField(root: JsonObject, key: string, label: string): JsonObject {
-  return object(root[key], `${label}.${key}`);
-}
-
-function requireString(value: unknown, expected: string, label: string): void {
-  if (value !== expected) throw new Error(`${label} must equal ${expected}`);
-}
-
-function requireNumber(value: unknown, expected: number, label: string): void {
-  if (value !== expected) throw new Error(`${label} must equal ${expected}`);
-}
-
-function requireBoolean(value: unknown, expected: boolean, label: string): void {
-  if (value !== expected) throw new Error(`${label} must equal ${expected}`);
 }
 
 function safeRaw(value: bigint, label: string, positive = false): number {
@@ -438,57 +402,26 @@ function safeRaw(value: bigint, label: string, positive = false): number {
   return Number(value);
 }
 
-function replayBigintString(value: unknown, label: string): string {
-  if (typeof value === "number") {
-    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative safe integer`);
-    return String(value);
-  }
-  return bigintString(value, label).toString();
-}
-
-function currentEarnSourceBindings(): readonly Readonly<{ path: string; sha256: string }>[] {
-  return EARN_ADAPTER_SOURCE_PATHS.map((path) => ({
-    path,
-    sha256: createHash("sha256").update(readFileSync(resolve(REPOSITORY_ROOT, path))).digest("hex"),
-  }));
-}
-
-function rustJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(rustJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as JsonObject).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${rustJson(entry)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function sha256RustJson(value: unknown): string {
-  return createHash("sha256").update(rustJson(value)).digest("hex");
-}
-
 /**
  * Produce the no-broadcast outer Earn evidence artifact from already-confirmed
- * lifecycle facts and an exact Rust replay input. This function never contacts
- * RPC, loads a signer, writes an outbox row, or broadcasts a transaction. It
- * fails closed if the replay is not the normal zero-demand source -> idle ->
- * destination movement or if the separate positive-demand probe is absent.
+ * lifecycle facts and saved Go planner inputs. This function never contacts
+ * RPC, loads a signer, writes a database row, or broadcasts a transaction. It
+ * fails closed unless the Go planner chooses the exact zero-demand source ->
+ * idle -> destination movement and positive demand blocks optimization.
  */
 export function produceEarnAdapterEvidence(input: EarnAdapterProducerInput): EarnAdapterEvidenceArtifact {
-  requireString(input.routeId, PARTNER_FOUR_MARKET_ROUTE.id, "Earn adapter routeId");
-  requireString(input.routeSpecSha256, fourMarketRouteSpecSha256(), "Earn adapter routeSpecSha256");
+  if (input.routeId !== PARTNER_FOUR_MARKET_ROUTE.id) throw new Error(`Earn adapter routeId must equal ${PARTNER_FOUR_MARKET_ROUTE.id}`);
+  if (input.routeSpecSha256 !== fourMarketRouteSpecSha256()) throw new Error(`Earn adapter routeSpecSha256 must equal ${fourMarketRouteSpecSha256()}`);
   const protectedBeforeContextSlot = positiveInteger(input.protectedBeforeContextSlot, "Earn adapter protectedBeforeContextSlot");
-  const confirmedIdleRaw = BigInt(input.confirmedIdleRaw);
-  const priorityWithdrawalDemandRaw = BigInt(input.priorityWithdrawalDemandRaw);
-  safeRaw(confirmedIdleRaw, "Earn adapter confirmedIdleRaw");
-  safeRaw(priorityWithdrawalDemandRaw, "Earn adapter priorityWithdrawalDemandRaw", true);
+  safeRaw(input.confirmedIdleRaw, "Earn adapter confirmedIdleRaw");
+  safeRaw(input.priorityWithdrawalDemandRaw, "Earn adapter priorityWithdrawalDemandRaw", true);
 
   const movement = input.movement;
-  const amountRaw = safeRaw(BigInt(movement.amountRaw), "Earn adapter movement.amountRaw", true);
+  safeRaw(movement.amountRaw, "Earn adapter movement.amountRaw", true);
   if (movement.sourceStrategyId !== "main" || movement.destinationStrategyId !== "onre") throw new Error("Earn adapter producer is intentionally bound to Main-withdraw -> OnRe-deposit");
-  const sourceIdentity = partnerStrategyIdentity(movement.sourceStrategyId);
-  const destinationIdentity = partnerStrategyIdentity(movement.destinationStrategyId);
-  if (typeof movement.movementId !== "string" || !/^[0-9a-f]{64}$/.test(movement.movementId)) throw new Error("Earn adapter movementId must be a lowercase SHA-256");
+  if (!/^[0-9a-f]{64}$/.test(movement.movementId)) throw new Error("Earn adapter movementId must be a lowercase SHA-256");
   for (const [label, value] of [["sourceWithdrawSignature", movement.sourceWithdrawSignature], ["destinationDepositSignature", movement.destinationDepositSignature]] as const) {
-    if (typeof value !== "string" || value.trim() === "") throw new Error(`Earn adapter ${label} must be non-empty`);
+    if (value.trim() === "") throw new Error(`Earn adapter ${label} must be non-empty`);
   }
   if (movement.sourceWithdrawSignature === movement.destinationDepositSignature) throw new Error("Earn adapter source and destination signatures must differ");
   const sourceWithdrawSlot = positiveInteger(movement.sourceWithdrawSlot, "Earn adapter sourceWithdrawSlot");
@@ -497,123 +430,18 @@ export function produceEarnAdapterEvidence(input: EarnAdapterProducerInput): Ear
   if (sourceWithdrawSlot < protectedBeforeContextSlot || destinationDepositSlot <= sourceWithdrawSlot || idleReadbackContextSlot < sourceWithdrawSlot || idleReadbackContextSlot > destinationDepositSlot) throw new Error("Earn adapter confirmed movement slots are not ordered protected-before <= source <= idle readback <= destination");
   if (movement.timerDecisionCount !== 1) throw new Error("Earn adapter must contain exactly one timer decision");
   if (movement.withdrawalDemandReservedRaw !== 0n) throw new Error("Earn adapter normal movement must reserve zero withdrawal demand");
-  if (movement.sourceIdleDeltaRaw <= 0n || movement.sourceIdleDeltaRaw > BigInt(amountRaw)) throw new Error("Earn adapter source idle delta is not a bounded positive movement");
-  if (movement.destinationIdleDeltaRaw !== -BigInt(amountRaw)) throw new Error("Earn adapter destination idle delta is not the exact negative movement");
+  if (movement.sourceIdleDeltaRaw <= 0n || movement.sourceIdleDeltaRaw > movement.amountRaw) throw new Error("Earn adapter source idle delta is not a bounded positive movement");
+  if (movement.destinationIdleDeltaRaw !== -movement.amountRaw) throw new Error("Earn adapter destination idle delta is not the exact negative movement");
 
-  const replayInput = input.replayInput;
-  requireNumber(replayInput.schemaVersion, 1, "Earn replay input schemaVersion");
-  requireString(replayInput.routeId, PARTNER_FOUR_MARKET_ROUTE.id, "Earn replay input routeId");
-  requireString(replayInput.movementId, movement.movementId, "Earn replay input movementId");
-  requireString(replayInput.sourceStrategyId, movement.sourceStrategyId, "Earn replay input sourceStrategyId");
-  requireString(replayInput.destinationStrategyId, movement.destinationStrategyId, "Earn replay input destinationStrategyId");
-  requireString(replayInput.sourceReserve, sourceIdentity.reserve, "Earn replay input sourceReserve");
-  requireString(replayInput.targetReserve, destinationIdentity.reserve, "Earn replay input targetReserve");
-  requireNumber(replayInput.amountRaw, amountRaw, "Earn replay input amountRaw");
-  const observationInput = replayObjectField(replayInput, "observation", "Earn replay input");
-  requireNumber(observationInput.contextSlot, protectedBeforeContextSlot, "Earn replay observation contextSlot");
-  requireNumber(observationInput.confirmedIdleRaw, safeRaw(confirmedIdleRaw, "Earn adapter confirmedIdleRaw"), "Earn replay observation confirmedIdleRaw");
-  requireNumber(observationInput.withdrawalDemandRaw, 0, "Earn replay observation withdrawalDemandRaw");
-  const priorityInput = replayObjectField(replayInput, "priorityProbe", "Earn replay input");
-  requireNumber(priorityInput.withdrawalDemandRaw, safeRaw(priorityWithdrawalDemandRaw, "Earn adapter priorityWithdrawalDemandRaw", true), "Earn replay priorityProbe withdrawalDemandRaw");
-  requireBoolean(priorityInput.preRequestManagerPairPresent, true, "Earn replay priorityProbe preRequestManagerPairPresent");
-
-  const rustOutput = runRustReplay(replayInput);
-  const rustObservation = replayObjectField(rustOutput, "observation", "Rust replay output");
-  const rustPlanner = replayObjectField(rustOutput, "planner", "Rust replay output");
-  const rustNormal = replayObjectField(rustOutput, "normalOptimization", "Rust replay output");
-  const rustPriority = replayObjectField(rustOutput, "priorityProbe", "Rust replay output");
-  const rustPriorityNormal = replayObjectField(rustPriority, "normalOptimization", "Rust replay priorityProbe");
-  const rustPriorityPair = replayObjectField(rustPriority, "preRequestManagerPair", "Rust replay priorityProbe");
-  const rustDurable = replayObjectField(rustOutput, "durable", "Rust replay output");
-  if (rustPriorityPair.present !== true) throw new Error("Rust replay priority probe lacks the required pre-request manager pair observation");
-  const sourceBindings = currentEarnSourceBindings();
-  const sharedReplay = {
-    kind: EARN_ADAPTER_REPLAY_KIND,
-    observation: {
-      contextSlot: positiveInteger(rustObservation.contextSlot, "Rust replay observation.contextSlot"),
-      inputSha256: sha(rustObservation.inputSha256, "Rust replay observation.inputSha256"),
-      configuredIdleFloorRaw: replayBigintString(rustObservation.configuredIdleFloorRaw, "Rust replay observation.configuredIdleFloorRaw"),
-      confirmedIdleRaw: replayBigintString(rustObservation.confirmedIdleRaw, "Rust replay observation.confirmedIdleRaw"),
-      withdrawalDemandRaw: replayBigintString(rustObservation.withdrawalDemandRaw, "Rust replay observation.withdrawalDemandRaw"),
-      requiredIdleRaw: replayBigintString(rustObservation.requiredIdleRaw, "Rust replay observation.requiredIdleRaw"),
-      idleShortfallRaw: replayBigintString(rustObservation.idleShortfallRaw, "Rust replay observation.idleShortfallRaw"),
-    },
-    planner: {
-      implementation: "loyal-yield-orchestrator::fleet_orchestration::{observation,planner}" as const,
-      inputSha256: sha(rustPlanner.inputSha256, "Rust replay planner.inputSha256"),
-      outputSha256: sha(rustPlanner.outputSha256, "Rust replay planner.outputSha256"),
-      recomputed: true as const,
-      selectedOpportunityId: positiveInteger(rustPlanner.selectedOpportunityId, "Rust replay planner.selectedOpportunityId"),
-      selectedSourceStrategyId: String(rustPlanner.selectedSourceStrategyId),
-      selectedSourceReserve: String(rustPlanner.selectedSourceReserve),
-      selectedTargetReserve: String(rustPlanner.selectedTargetReserve),
-      selectedAmountRaw: BigInt(Number(rustPlanner.selectedAmountRaw)).toString(),
-      selectedNotionalUsdMicros: BigInt(Number(rustPlanner.selectedNotionalUsdMicros)).toString(),
-      selectedCount: 1 as const,
-      decision: "normal-optimization" as const,
-      target: String(rustPlanner.target),
-      path: rustPlanner.path as string[],
-    },
-    normalOptimization: {
-      status: "eligible" as const,
-      withdrawalDemandRaw: "0",
-      sourceReserve: String(rustNormal.sourceReserve),
-      targetReserve: String(rustNormal.targetReserve),
-      path: rustNormal.path as string[],
-      selectedOpportunityId: positiveInteger(rustNormal.selectedOpportunityId, "Rust replay normalOptimization.selectedOpportunityId"),
-      selectedNotionalUsdMicros: BigInt(Number(rustNormal.selectedNotionalUsdMicros)).toString(),
-      semanticSha256: sha(rustNormal.semanticSha256, "Rust replay normalOptimization.semanticSha256"),
-    },
-    priorityProbe: {
-      inputSha256: sha(rustPriority.inputSha256, "Rust replay priorityProbe.inputSha256"),
-      outputSha256: sha(rustPriority.outputSha256, "Rust replay priorityProbe.outputSha256"),
-      withdrawalDemandRaw: replayBigintString(rustPriority.withdrawalDemandRaw, "Rust replay priorityProbe.withdrawalDemandRaw"),
-      normalOptimization: {
-        status: "blocked" as const,
-        reason: "positive-withdrawal-demand" as const,
-        candidateCount: positiveInteger(rustPriorityNormal.candidateCount, "Rust replay priorityProbe.normalOptimization.candidateCount"),
-        selectedCount: 0 as const,
-        deferredCount: positiveInteger(rustPriorityNormal.deferredCount, "Rust replay priorityProbe.normalOptimization.deferredCount"),
-      },
-      preRequestManagerPair: {
-        present: rustPriorityPair.present === true,
-        restoresLaterRequest: false as const,
-        semantic: "not-a-restoration-proof" as const,
-      },
-    },
-    durable: {
-      implementation: "loyal-yield-store::fleet_orchestration::queue" as const,
-      eventKind: "rebalance_opportunity" as const,
-      aggregateKind: "rebalance_opportunity" as const,
-      originId: sha(rustDurable.originId, "Rust replay durable.originId"),
-      generation: positiveInteger(rustDurable.generation, "Rust replay durable.generation"),
-      movementId: String(rustDurable.movementId),
-      outboxRows: positiveInteger(rustDurable.outboxRows, "Rust replay durable.outboxRows"),
-      replayed: true as const,
-      duplicateRows: 1,
-      leaseFenced: true as const,
-      idempotencyKeySha256: sha(rustDurable.idempotencyKeySha256, "Rust replay durable.idempotencyKeySha256"),
-      movementPath: rustDurable.movementPath as string[],
-    },
-    rustReplay: { input: replayInput, outputSha256: sha(rustOutput.outputSha256, "Rust replay outputSha256"), sourceBindings: sourceBindings.filter(({ path }) => path.startsWith("crates/")) },
-  };
-  const expectedObservation = {
-    configuredIdleFloorRaw: PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIdleFloorRaw,
-    confirmedIdleRaw,
-    withdrawalDemandRaw: 0n,
-    requiredIdleRaw: PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIdleFloorRaw,
-    idleShortfallRaw: 0n,
-  };
-  validateEarnSharedReplay(sharedReplay, {
+  const sharedReplay = assertReplayIsMovement(recomputeEarnSharedReplay(replayInput(input.replayInput, "Earn replay input")), {
     movementId: movement.movementId,
     sourceStrategyId: movement.sourceStrategyId,
     destinationStrategyId: movement.destinationStrategyId,
-    sourceReserve: sourceIdentity.reserve,
-    targetReserve: destinationIdentity.reserve,
-    amountRaw: BigInt(movement.amountRaw),
-    expectedContextSlot: protectedBeforeContextSlot,
-    expectedObservation,
-    rustSourceBindings: sourceBindings.filter(({ path }) => path.startsWith("crates/")),
+    amountRaw: movement.amountRaw,
+    sourceContextSlot: protectedBeforeContextSlot,
+    destinationContextSlot: idleReadbackContextSlot,
+    confirmedIdleRaw: input.confirmedIdleRaw,
+    priorityWithdrawalDemandRaw: input.priorityWithdrawalDemandRaw,
   });
   return {
     schemaVersion: 1,
@@ -624,7 +452,7 @@ export function produceEarnAdapterEvidence(input: EarnAdapterProducerInput): Ear
     executionKind: "voltr-manager",
     priority: "withdrawal-restoration-first",
     normalOptimizationIntervalSeconds: PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIntervalSeconds.toString(),
-    sourceBindings,
+    sourceBindings: sharedReplay.sourceBindings,
     outboxContract: {
       oneDurableMovement: true,
       sourceWithdrawThenDestinationDeposit: true,
@@ -638,7 +466,7 @@ export function produceEarnAdapterEvidence(input: EarnAdapterProducerInput): Ear
       movementId: movement.movementId,
       sourceStrategyId: movement.sourceStrategyId,
       destinationStrategyId: movement.destinationStrategyId,
-      amountRaw: BigInt(movement.amountRaw).toString(),
+      amountRaw: movement.amountRaw.toString(),
       sourceWithdrawSignature: movement.sourceWithdrawSignature,
       sourceWithdrawSlot,
       idleReadbackContextSlot,
@@ -651,6 +479,6 @@ export function produceEarnAdapterEvidence(input: EarnAdapterProducerInput): Ear
   };
 }
 
-export function sha256CanonicalReplay(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+export function earnAdapterSourcePaths(): readonly string[] {
+  return EARN_ADAPTER_SOURCE_PATHS;
 }

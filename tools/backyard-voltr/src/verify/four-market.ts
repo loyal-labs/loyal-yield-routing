@@ -47,7 +47,7 @@ import {
 } from "../runtime/protected-state.js";
 import { decodeReceipt } from "../runtime/receipt.js";
 import { planWithdrawalRestoration, type WithdrawalRestorationScan, type WithdrawalRestorationSource } from "../runtime/withdrawal-restoration.js";
-import { validateEarnSharedReplay } from "../runtime/earn-adapter.js";
+import { earnAdapterSourcePaths, validateEarnSharedReplay } from "../runtime/earn-adapter.js";
 import { scanWithdrawalDemand } from "../runtime/withdrawal-scanner.js";
 import {
   verifyAdaptorReceipt,
@@ -85,29 +85,17 @@ const REQUIRED_NEGATIVE_MUTATIONS = [
   "zero-amount", "over-limit-amount", "mixed-graph", "extra-instruction", "reordered-instruction",
 ] as const;
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-const EARN_ADAPTER_SOURCE_PATHS = [
-  "crates/loyal-yield-orchestrator/src/fleet_orchestration/observation.rs",
-  "crates/loyal-yield-orchestrator/src/fleet_orchestration/planner.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/queue.rs",
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-earn-replay.rs",
-  "crates/loyal-yield-orchestrator/src/fleet_orchestration/mod.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/domain.rs",
-  "tools/backyard-voltr/src/domain/route-spec.ts",
-  "tools/backyard-voltr/src/runtime/earn-adapter.ts",
-] as const;
+const EARN_ADAPTER_SOURCE_PATHS = earnAdapterSourcePaths();
 const EXECUTION_SOURCE_CONTRACT_PATHS = [
   "tools/backyard-voltr/src/runtime/manager.ts",
   "tools/backyard-voltr/src/runtime/commands.ts",
   "tools/backyard-voltr/src/integrations/solana-compat.ts",
-  "tools/backyard-voltr/src/runtime/restoration-bridge.ts",
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-restoration-bridge.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/voltr_restoration.rs",
-  "tools/backyard-voltr/src/runtime/restoration-evidence.ts",
+  "go/workers/internal/fleet/voltr_plan.go",
+  "go/workers/internal/fleetexec/voltr.go",
+  "go/workers/internal/fleet/worker.go",
   "tools/backyard-voltr/src/runtime/withdrawal-restoration.ts",
   "tools/backyard-voltr/src/runtime/withdrawal-scanner.ts",
   "tools/backyard-voltr/src/runtime/receipt.ts",
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-restoration-readback.rs",
-  "crates/loyal-yield-orchestrator/src/bin/fleet-opportunity-planner.rs",
   "tools/backyard-voltr/src/verify/four-market.ts",
   "tools/backyard-voltr/src/runtime/protected-state.ts",
 ] as const;
@@ -151,26 +139,22 @@ function executionSourceContract(): Readonly<{ pass: boolean; observed: JsonReco
   const manager = files[EXECUTION_SOURCE_CONTRACT_PATHS[0]]!.source;
   const commands = files[EXECUTION_SOURCE_CONTRACT_PATHS[1]]!.source;
   const transport = files[EXECUTION_SOURCE_CONTRACT_PATHS[2]]!.source;
-  const restorationAdapter = files[EXECUTION_SOURCE_CONTRACT_PATHS[3]]!.source;
-  const restorationBridge = files[EXECUTION_SOURCE_CONTRACT_PATHS[4]]!.source;
-  const restorationStore = files[EXECUTION_SOURCE_CONTRACT_PATHS[5]]!.source;
+  // Withdrawal restoration is planned and executed by the Go engine's fleet
+  // Voltr family, not by an operator-driven TypeScript/outbox handoff.
+  const goPlanner = files[EXECUTION_SOURCE_CONTRACT_PATHS[3]]!.source;
+  const goExecutor = files[EXECUTION_SOURCE_CONTRACT_PATHS[4]]!.source;
   const persistedManagerCall = manager.indexOf("const persistedIntent = persistManagerIntent");
-  const restorationPhaseACall = manager.indexOf("restorationPhaseA = prepareRestorationBridge", persistedManagerCall);
-  const managerSendCall = manager.indexOf("sendPreparedConfirmedOnce(", restorationPhaseACall);
-  const restorationPhaseBCall = manager.indexOf("restorationPhaseB = confirmRestorationBridge", managerSendCall);
-  const restorationReadbackGuard = manager.indexOf("if (managerReadbackExact) {", managerSendCall);
-  const restorationReadbackElse = manager.indexOf("} else {", restorationReadbackGuard);
-  const bridgeLease = restorationBridge.indexOf("lease_exact_voltr_restoration_handoff");
-  const bridgeConflictFence = restorationBridge.indexOf("acquire_voltr_restoration_logical_conflict_lease", bridgeLease);
-  const bridgeSignedWire = restorationBridge.indexOf("persist_voltr_manager_signed_intent", bridgeConflictFence);
-  const bridgeBroadcastIntent = restorationBridge.indexOf("mark_voltr_manager_broadcast_intent", bridgeSignedWire);
+  const managerSendCall = manager.indexOf("sendPreparedConfirmedOnce(", persistedManagerCall);
+  const plannerRestoration = goPlanner.indexOf('"withdrawal_restoration", "withdraw"');
+  const plannerAllocation = goPlanner.indexOf('"idle_allocation", "deposit"', plannerRestoration);
+  const plannerOptimization = goPlanner.indexOf('"yield_optimization", "withdraw"', plannerAllocation);
+  const executorSign = goExecutor.indexOf("w.signVoltr(ctx, *l)");
+  const executorPersist = goExecutor.indexOf("w.store.persistVoltr(ctx", executorSign);
   const checks = {
     managerPersistsBeforeSend: persistedManagerCall >= 0 && managerSendCall > persistedManagerCall,
-    restorationPhaseABeforeSend: restorationPhaseACall > persistedManagerCall && managerSendCall > restorationPhaseACall,
-    restorationPhaseBAfterConfirmedReadback: restorationReadbackGuard > managerSendCall && restorationPhaseBCall > restorationReadbackGuard && restorationReadbackElse > restorationPhaseBCall,
-    restorationAdapterUsesPrebuiltNoShellBinary: restorationAdapter.includes("execFileSync(binary, [\"--input\", inputPath]") && restorationAdapter.includes("inputFileSha256") && !restorationAdapter.includes("shell: true"),
-    restorationDurableOrdering: bridgeLease >= 0 && bridgeConflictFence > bridgeLease && bridgeSignedWire > bridgeConflictFence && bridgeBroadcastIntent > bridgeSignedWire,
-    restorationStoreFencesExactBroadcastIntent: restorationStore.includes("broadcast_intent_persisted") && restorationStore.includes("'{execution,broadcastCount}', '1'::jsonb") && restorationStore.includes("input.remaining_shortfall_raw != 0"),
+    goPlannerRestoresBeforeAllocationAndOptimization: plannerRestoration >= 0 && plannerAllocation > plannerRestoration && plannerOptimization > plannerAllocation,
+    goExecutorClaimsRestorationFirst: goExecutor.includes("WHEN 'withdrawal_restoration' THEN 0"),
+    goExecutorPersistsSignedWireBeforeLanding: executorSign >= 0 && executorPersist > executorSign && goExecutor.includes("INSERT INTO loyal_yield.signed_route_submissions"),
     managerExpectedSignatureRecovery: manager.includes("expectedSignature") && manager.includes("Do not resend"),
     userPersistsIntent: commands.includes("persistRuntimeIntent") && commands.includes("intentPath"),
     oneSendAndContextFence: transport.includes("sendRawTransaction") && transport.includes("maxRetries: 0") && transport.includes("minContextSlot") && transport.includes("MAX_IDENTICAL_SUBMISSION_ATTEMPTS") && transport.includes("getSignatureStatuses"),
@@ -178,7 +162,7 @@ function executionSourceContract(): Readonly<{ pass: boolean; observed: JsonReco
   return {
     pass: Object.values(checks).every(Boolean),
     observed: { files: Object.fromEntries(Object.entries(files).map(([path, value]) => [path, value.sha256])), checks, residual: "source inspection proves the maintained contract shape, not historical process execution or provider truth" },
-    expected: { checks: { managerPersistsBeforeSend: true, restorationPhaseABeforeSend: true, restorationPhaseBAfterConfirmedReadback: true, restorationAdapterUsesPrebuiltNoShellBinary: true, restorationDurableOrdering: true, restorationStoreFencesExactBroadcastIntent: true, managerExpectedSignatureRecovery: true, userPersistsIntent: true, oneSendAndContextFence: true } },
+    expected: { checks: { managerPersistsBeforeSend: true, goPlannerRestoresBeforeAllocationAndOptimization: true, goExecutorClaimsRestorationFirst: true, goExecutorPersistsSignedWireBeforeLanding: true, managerExpectedSignatureRecovery: true, userPersistsIntent: true, oneSendAndContextFence: true } },
   };
 }
 function managerTransactionDescriptor(name: TxName): Readonly<{ strategyId: StrategyId; operation: "deposit" | "withdraw" }> | null {
@@ -498,7 +482,7 @@ export function buildFourMarketManifestFromArtifacts(input: Readonly<{
     protectedEvidenceByName.set(name, protectedEvidence);
     if (name === "managerMainRestorationWithdraw") {
       assertRestorationBridgeOutput(manifestPath, value, intent, wire, signature, messageSha256, slot, protectedState);
-    } else if (managerDescriptor && value.restorationBridge !== null) {
+    } else if (managerDescriptor && value.restorationBridge !== undefined) {
       throw new Error(`${name} unexpectedly used the withdrawal-restoration durable bridge`);
     }
     return [name, { ...childRef(path), signature, intentSha256: derivedIntentSha256, messageSha256, slot, protectedAddressSetSha256: shaField(protectedState, "addressSetSha256", `${name}.protectedState`), protectedPrestateSha256: protectedEvidence.before.stateSha256, protectedPoststateSha256: protectedEvidence.after.stateSha256, protectedBeforeContextSlot: protectedEvidence.before.contextSlot, protectedAfterContextSlot: protectedEvidence.after.contextSlot, protectedPreAttestationSha256: protectedEvidence.preSendAttestation.attestationSha256, protectedSettlementAttestationSha256: protectedEvidence.settlementAttestation.attestationSha256 }];
@@ -1721,29 +1705,23 @@ function verifyEarnAdapterEvidence(value: JsonRecord, manifest: FourMarketManife
     const movementId = shaField(movement, "movementId", "earnAdapter.movement");
     const confirmedIdleRaw = tokenPreAmount(sourceResponse, PARTNER_FOUR_MARKET_ROUTE.commonVoltr.idleAta);
     if (!scan || confirmedIdleRaw === null) throw new Error("Earn replay requires the exact normal-movement prestate plus the separate confirmed withdrawal-demand probe");
+    if (typeof idleReadbackContextSlot !== "number" || !Number.isSafeInteger(idleReadbackContextSlot)) throw new Error("earnAdapter.movement.idleReadbackContextSlot must be a safe integer");
     const sharedReplay = validateEarnSharedReplay(value.sharedReplay, {
       movementId,
       sourceStrategyId,
       destinationStrategyId,
-      sourceReserve: partnerStrategyIdentity(sourceStrategyId).reserve,
-      targetReserve: partnerStrategyIdentity(destinationStrategyId).reserve,
       amountRaw,
-      expectedContextSlot: sourceTx.protectedBeforeContextSlot,
-      expectedObservation: {
-        configuredIdleFloorRaw: PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIdleFloorRaw,
-        confirmedIdleRaw,
-        withdrawalDemandRaw: 0n,
-        requiredIdleRaw: PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIdleFloorRaw,
-        idleShortfallRaw: 0n,
-      },
-      rustSourceBindings: currentBindings.filter(({ path }) => path.startsWith("crates/")),
+      sourceContextSlot: sourceTx.protectedBeforeContextSlot,
+      destinationContextSlot: idleReadbackContextSlot,
+      confirmedIdleRaw,
+      priorityWithdrawalDemandRaw: scan.demand.pendingWithdrawalUpperBoundRaw,
     });
     const sourceIdleDelta = sourceResponse ? tokenDelta(sourceResponse, PARTNER_FOUR_MARKET_ROUTE.commonVoltr.idleAta) : null;
     const destinationIdleDelta = destinationResponse ? tokenDelta(destinationResponse, PARTNER_FOUR_MARKET_ROUTE.commonVoltr.idleAta) : null;
-    const pass = value.schemaVersion === 1 && value.evidenceType === "backyard-voltr-shared-earn-adapter-confirmed" && value.broadcast === false && value.routeId === manifest.routeId && value.routeSpecSha256 === manifest.routeSpecSha256 && value.executionKind === "voltr-manager" && value.priority === "withdrawal-restoration-first" && integerString(value.normalOptimizationIntervalSeconds, "earnAdapter.normalOptimizationIntervalSeconds") === PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIntervalSeconds && canonicalJson(observedBindings) === canonicalJson(currentBindings) && outbox.oneDurableMovement === true && outbox.sourceWithdrawThenDestinationDeposit === true && outbox.leaseFencing === true && outbox.oneSend === true && outbox.confirmedReconciliation === true && outbox.recoveryKeepsMovementIdentity === true && outbox.directKaminoExecutorUsed === false && amountRaw === manifest.amounts.managerAssetRaw && movement.sourceWithdrawSignature === sourceTx.signature && movement.sourceWithdrawSlot === sourceTx.slot && typeof idleReadbackContextSlot === "number" && Number.isSafeInteger(idleReadbackContextSlot) && idleReadbackContextSlot >= sourceTx.slot && movement.destinationDepositSignature === destinationTx.signature && movement.destinationDepositSlot === destinationTx.slot && destinationTx.slot > sourceTx.slot && sourceIdleDelta !== null && sourceIdleDelta > 0n && sourceIdleDelta <= amountRaw && destinationIdleDelta === -amountRaw && movement.timerDecisionCount === 1 && integerString(movement.withdrawalDemandReservedRaw, "earnAdapter.movement.withdrawalDemandReservedRaw") === 0n && sharedReplay.priorityProbe.withdrawalDemandRaw === scan.demand.pendingWithdrawalUpperBoundRaw.toString() && sharedReplay.priorityProbe.preRequestManagerPair.present === true && sharedReplay.priorityProbe.preRequestManagerPair.restoresLaterRequest === false;
+    const pass = value.schemaVersion === 1 && value.evidenceType === "backyard-voltr-shared-earn-adapter-confirmed" && value.broadcast === false && value.routeId === manifest.routeId && value.routeSpecSha256 === manifest.routeSpecSha256 && value.executionKind === "voltr-manager" && value.priority === "withdrawal-restoration-first" && integerString(value.normalOptimizationIntervalSeconds, "earnAdapter.normalOptimizationIntervalSeconds") === PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIntervalSeconds && canonicalJson(observedBindings) === canonicalJson(currentBindings) && outbox.oneDurableMovement === true && outbox.sourceWithdrawThenDestinationDeposit === true && outbox.leaseFencing === true && outbox.oneSend === true && outbox.confirmedReconciliation === true && outbox.recoveryKeepsMovementIdentity === true && outbox.directKaminoExecutorUsed === false && amountRaw === manifest.amounts.managerAssetRaw && movement.sourceWithdrawSignature === sourceTx.signature && movement.sourceWithdrawSlot === sourceTx.slot && typeof idleReadbackContextSlot === "number" && Number.isSafeInteger(idleReadbackContextSlot) && idleReadbackContextSlot >= sourceTx.slot && movement.destinationDepositSignature === destinationTx.signature && movement.destinationDepositSlot === destinationTx.slot && destinationTx.slot > sourceTx.slot && sourceIdleDelta !== null && sourceIdleDelta > 0n && sourceIdleDelta <= amountRaw && destinationIdleDelta === -amountRaw && movement.timerDecisionCount === 1 && integerString(movement.withdrawalDemandReservedRaw, "earnAdapter.movement.withdrawalDemandReservedRaw") === 0n && sharedReplay.priorityProbe.withdrawalDemandRaw === scan.demand.pendingWithdrawalUpperBoundRaw.toString() && canonicalJson(sharedReplay.sourceBindings) === canonicalJson(currentBindings);
     add(gates, "Earn adapter exact shared planner/source/outbox/movement proof", pass, { sourceBindings: observedBindings, outbox, movement, sharedReplay }, { sourceBindings: currentBindings, executionKind: "voltr-manager", priority: "withdrawal-restoration-first", intervalSeconds: 3_600n, directKaminoExecutorUsed: false, sourceWithdrawThenConfirmedIdleThenDestinationDeposit: true }, "add the thin maintained Voltr adapter and bind one confirmed two-leg movement to the shared planner/outbox sources");
-    const replayPass = sharedReplay.planner.recomputed === true && sharedReplay.planner.selectedAmountRaw === amountRaw.toString() && sharedReplay.planner.selectedNotionalUsdMicros === amountRaw.toString() && sharedReplay.durable.movementId === movementId && sharedReplay.observation.contextSlot === sourceTx.protectedBeforeContextSlot && sharedReplay.observation.withdrawalDemandRaw === "0" && sharedReplay.normalOptimization.status === "eligible" && sharedReplay.priorityProbe.normalOptimization.status === "blocked" && sharedReplay.durable.replayed === true;
-    add(gates, "Earn shared observation/planner decision and durable movement independently replayed", replayPass, { sharedReplay, movementId }, "live shared observation inputs + recomputed planner output + exact durable movement/outbox rows + confirmed leg advancement", "generate the read-only Earn replay envelope from the maintained observer/planner and durable Voltr outbox");
+    const replayPass = sharedReplay.input.movementId === movementId && sharedReplay.sourceLeg.class === "yield_optimization" && sharedReplay.sourceLeg.amountRaw === amountRaw.toString() && sharedReplay.sourceLeg.protectedContextSlot === sourceTx.protectedBeforeContextSlot && sharedReplay.destinationLeg.class === "idle_allocation" && sharedReplay.destinationLeg.amountRaw === amountRaw.toString() && sharedReplay.priorityProbe.normalOptimization === "blocked";
+    add(gates, "Earn Go planner decisions independently replayed", replayPass, { sharedReplay, movementId }, "saved confirmed observations replayed through loyal-evidence --kind voltr: zero-demand yield withdrawal, idle allocation into the destination, and positive demand blocking optimization", "capture the saved Voltr observations/epochs and replay them through the Go planner");
   } catch (error) {
     add(gates, "Earn adapter exact shared planner/source/outbox/movement proof", false, error instanceof Error ? error.message : String(error), { sourcePaths: EARN_ADAPTER_SOURCE_PATHS, intervalSeconds: 3_600, executionKind: "voltr-manager" }, "wire the missing thin Earn adapter or regenerate its exact source-bound proof");
   }

@@ -1,0 +1,53 @@
+{
+  "provenance": {
+    "producer": "cargo build --offline --locked -p loyal-actions --bin compile-voltr-custom-execution",
+    "sourceFiles": {
+      "crates/loyal-actions/src/bin/compile_voltr_custom_execution.rs": "aaadcfcd57314774b22376d839784068d5cef216882e88b7609bc43d68cdb081",
+      "crates/loyal-actions/src/squads.rs": "d4bbf360cb090e7dcfd4f10d95c2be2262c3711ae3666966fe9164404f1231c3",
+      "Cargo.lock": "645e0208054e04ef19461d5e0a8adca10d7f775cc40dc28341a31876abc36eb8"
+    },
+    "inputSha256": "51ffa9c382b1271cb006e1a0c3bc59c85877f88098121710bd3cf0c05118c8cb",
+    "proofScope": "Rust Squads envelope ABI only; not KLend account recipes or chain execution"
+  },
+  "requestJson": "{\"policy\":\"6URwbPipuA4MJLG7LCRRZuWnms3JZ9cRG3z9indXWz8G\",\"delegatedSigner\":\"6YMEjhBqVTMaSRWcmVkLrnHZ22FWEDJEpTeonAg8GKSy\",\"accountIndex\":0,\"constraintIndices\":[1],\"inner\":[{\"programId\":\"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD\",\"accounts\":[{\"address\":\"6cGXszer5keoaWm8Co5G9f4KGBThuGz4NsKTqYij1emg\",\"signer\":false,\"writable\":false},{\"address\":\"6cGXszer5keoaWm8Co5G9f4KGBThuGz4NsKTqYij1emg\",\"signer\":true,\"writable\":true},{\"address\":\"6gBq2J7rg3x2ic1de6QBSXq5WLfuaLfswGz7tvmKkz6P\",\"signer\":false,\"writable\":true}],\"dataBase64\":\"qckefgbNZkQyeQYAAAAAAA==\"}]}\n",
+  "expected": {
+    "schema": "loyal-voltr-custom-execution/v2",
+    "sourceSha256": "51ffa9c382b1271cb006e1a0c3bc59c85877f88098121710bd3cf0c05118c8cb",
+    "instruction": {
+      "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+      "accounts": [
+        {
+          "address": "6URwbPipuA4MJLG7LCRRZuWnms3JZ9cRG3z9indXWz8G",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "address": "6YMEjhBqVTMaSRWcmVkLrnHZ22FWEDJEpTeonAg8GKSy",
+          "signer": true,
+          "writable": false
+        },
+        {
+          "address": "6cGXszer5keoaWm8Co5G9f4KGBThuGz4NsKTqYij1emg",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "6gBq2J7rg3x2ic1de6QBSXq5WLfuaLfswGz7tvmKkz6P",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "signer": false,
+          "writable": false
+        }
+      ],
+      "dataBase64": "WlG7USdGgE4AAQEBAQEAAAABAQAYAAAAAQIDAAABEACpyR5+Bs1mRDJ5BgAAAAAA"
+    }
+  }
+}

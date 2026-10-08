@@ -50,6 +50,9 @@ table to funded rows only.
 
 ## Who touches what
 
+Recorded 2026-09-22. The Rust services and `go/kamino-fleet-planner` listed
+here are retired; their roles moved to the Go engine in `go/workers`.
+
 | Service | Table | Access | Depends on rule |
 | --- | --- | --- | --- |
 | Rust `same-mint-reserve-swap --fleet-reconciler` (sweep) | snapshots, positions, current, idle | write | 1, 2, 3, 6 |

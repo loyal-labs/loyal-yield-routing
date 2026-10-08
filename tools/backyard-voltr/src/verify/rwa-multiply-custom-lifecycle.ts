@@ -1941,7 +1941,7 @@ function goWorkerCheck(): Check {
       GOCACHE: "/private/tmp/backyard-rwa-verifier-go-cache",
     })
     : null;
-  const migrations = filesUnder("crates/loyal-yield-store/migrations")
+  const migrations = filesUnder("migrations/yield")
     .filter((path) => /backyard.*rwa|rwa.*backyard/i.test(path));
   const migrationSource = sourceText(migrations);
   const schemaReadback = readBackyardSchema();
@@ -1980,8 +1980,8 @@ function goWorkerCheck(): Check {
     persistedBeforeSend: source.includes("broadcast_intent") || source.includes("broadcast intent"),
     noForbiddenRuntimeSurface: forbidden.length === 0,
     migrationReusesExistingTables: migrations.length === 2
-      && migrations[0] === "crates/loyal-yield-store/migrations/0070_backyard_rwa_worker.sql"
-      && migrations[1] === "crates/loyal-yield-store/migrations/0071_backyard_rwa_phase1_activation.sql"
+      && migrations[0] === "migrations/yield/0070_backyard_rwa_worker.sql"
+      && migrations[1] === "migrations/yield/0071_backyard_rwa_phase1_activation.sql"
       && migrationSource.includes("multiply_route_states")
       && migrationSource.includes("multiply_operations")
       && migrationSource.includes("multiply_route_states_schema_v8_v9_or_backyard_v1")

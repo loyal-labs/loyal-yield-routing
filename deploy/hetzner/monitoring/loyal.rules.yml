@@ -1,0 +1,235 @@
+# Alert rules over the family facts (internal/engine/facts.go) and
+# node_exporter's systemd collector, plus persisted withdrawal health.
+groups:
+  - name: loyal-families
+    rules:
+      # A family that stops completing work. Each Go process creates its
+      # families' progress series at 0, so a family that never progresses
+      # fires after `for` (the startup grace). max_over_time keeps the last
+      # real progress across restarts, so restarting cannot reset the clock.
+      - alert: LoyalFamilyProgressStale
+        expr: time() - max_over_time(loyal_family_last_progress_timestamp_seconds{family="observer"}[1h]) > 60
+        for: 2m
+        labels: {severity: page, stale_after: 3m}
+        annotations:
+          summary: "{{ $labels.family }} has completed no work recently"
+          trigger: "No recorded completed work for about 3m; restarting does not reset this check."
+          impact: "Vault management or withdrawal funding may be stalled even if the process is running."
+          action: "Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock."
+          recovery: "Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery."
+      - alert: LoyalFamilyProgressStale
+        expr: time() - max_over_time(loyal_family_last_progress_timestamp_seconds{family=~"autodeposit|fleet"}[1h]) > 300
+        for: 5m
+        labels: {severity: page, stale_after: 10m}
+        annotations:
+          summary: "{{ $labels.family }} has completed no work recently"
+          trigger: "No recorded completed work for about 10m; restarting does not reset this check."
+          impact: "Vault management or withdrawal funding may be stalled even if the process is running."
+          action: "Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock."
+          recovery: "Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery."
+      - alert: LoyalFamilyProgressStale
+        expr: time() - max_over_time(loyal_family_last_progress_timestamp_seconds{family=~"multiply|lookup|backyard"}[1h]) > 900
+        for: 15m
+        labels: {severity: page, stale_after: 30m}
+        annotations:
+          summary: "{{ $labels.family }} has completed no work recently"
+          trigger: "No recorded completed work for about 30m; restarting does not reset this check."
+          impact: "Vault management or withdrawal funding may be stalled even if the process is running."
+          action: "Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock."
+          recovery: "Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery."
+
+      # Keep attention across scrape gaps within the 24h history window.
+      # Freshness alerts below cover unknown state independently.
+      - alert: LoyalBackyardWithdrawalAttention
+        expr: max by (family, route) (last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h])) == 1
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "Earn MAX withdrawal needs operator attention on {{ $labels.route }}"
+          impact: "Pending vault withdrawals require operator attention; normal cooldown alone does not trigger this alert."
+          action: "Read the current scoped withdrawal-health reason and timestamp. Compare pending demand, available cash and active operation with confirmed chain state. Review the specific guard; never clear latches or grant full-debt repayment just to clear the alert."
+          trigger: "The persisted withdrawal-attention state remained active for 1 minute."
+          recovery: "Verify a fresh assessment showing the blocker removed or funding progress resumed. Missing metrics can expire an alert and do not prove recovery; verify each user payment separately."
+
+      # A successful scrape alone cannot establish withdrawal health. Remember
+      # routes for 24h so one missing route cannot hide behind a healthy sibling.
+      # absent() also covers initial startup and prolonged total metric loss.
+      - alert: LoyalBackyardWithdrawalHealthUnavailable
+        expr: |
+          (
+            max by (family, route) (last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h]))
+            or max by (family, route) (last_over_time(loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}[24h]))
+          )
+          unless on (family, route)
+          (
+            (time() - max by (family, route) (loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}) <= 300)
+            and on (family, route) max by (family, route) (loyal_backyard_withdrawal_attention{family="backyard"})
+          )
+          or (
+            absent(loyal_backyard_withdrawal_attention{family="backyard"})
+            unless on (family) max by (family) (
+              last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h])
+              or last_over_time(loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}[24h])
+            )
+          )
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "Earn MAX withdrawal health is unavailable"
+          impact: "Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered."
+          action: "Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone."
+          trigger: "Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute."
+          recovery: "Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment."
+
+      # Repeated failed attempts per stable code, including selector evaluations;
+      # these samples are not a count of distinct transactions.
+      - alert: LoyalFamilyFailing
+        expr: sum by (family, code) (increase(loyal_family_failed_total[15m])) >= 3
+        for: 5m
+        # Keep periodic dependency failures in one incident. Otherwise each
+        # quiet counter window resolves it and resets Alertmanager's repeat timer.
+        keep_firing_for: 30m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.family }} failure incident: {{ $labels.code }}"
+          impact: "{{ if eq $labels.code \"selector_finish_current_work_first\" }}The selector is waiting for existing work; this code alone is not a failed transaction.{{ else if eq $labels.code \"initializer_native_funding_unavailable\" }}Account initialization cannot proceed because required native funding is unavailable.{{ else if match \"^(selector_evaluate_lock_timeout|selector_evaluate_query_cancelled|database_.*)$\" $labels.code }}Database admission or state reads are failing; strategy decisions may not be refreshed.{{ else if match \"^(route_lease_lost|selector_evaluate_route_fence_unavailable)$\" $labels.code }}The worker cannot establish exclusive route ownership, so guarded work may stop.{{ else if match \"^(selector_evaluate_timeout|timeout)$\" $labels.code }}Worker or selector attempts are timing out; this does not establish whether a transaction landed.{{ else if match \"manual_recovery\" $labels.code }}A recovery guard requires operator review before normal work can safely continue.{{ else if match \"^(debt_clear_.*|withdrawal_full_exit_unproven)$\" $labels.code }}Debt repayment is blocked by a consent, scope or necessity-proof guard.{{ else if match \"(fee_evidence|valuation|oracle|quote|confirmed_observation|price_feed)\" $labels.code }}Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.{{ else if match \"(cap|budget|reservation|policy|slippage|spending_limit|cost_bound|fee_exceeded)\" $labels.code }}A cost, capital, policy or reservation guard rejected the attempted work.{{ else if match \"(transaction|signature|blockhash|broadcast|send|expired|simulation|confirmation)\" $labels.code }}Execution or confirmation failed or remains uncertain; funds must not be assumed unsent.{{ else if match \"^(selector_evaluate_unavailable|worker_fault)$\" $labels.code }}Repeated work attempts failed; the cause has not been classified and payment status is unknown.{{ else if match \"^selector_\" $labels.code }}The selector could not accept or commit a new strategy decision; the code names the blocked stage.{{ else }}Repeated work attempts failed; the cause has not been classified and payment status is unknown.{{ end }}"
+          action: "{{ if eq $labels.code \"selector_finish_current_work_first\" }}Check the deployed worker version and whether this is an old metric window. Inspect the in-flight operation if it is stalled; do not cancel it or restart solely for this expected deferral.{{ else if eq $labels.code \"initializer_native_funding_unavailable\" }}Check the initializer payer SOL balance, rent and fee estimate, and funding configuration. Obtain approval for any required funding; do not raise policy or cost limits to bypass the guard.{{ else if match \"^(selector_evaluate_lock_timeout|selector_evaluate_query_cancelled|database_.*)$\" $labels.code }}Check the SQLSTATE/code, database connectivity, query cancellations and blocking locks at the alert time. Preserve the operation journal; do not delete rows or force-release locks to resume work.{{ else if match \"^(route_lease_lost|selector_evaluate_route_fence_unavailable)$\" $labels.code }}Check the current lease owner, fencing token and competing worker processes. Restore one intended owner through the runbook; never force a lease while signed work may still land.{{ else if match \"^(selector_evaluate_timeout|timeout)$\" $labels.code }}Check RPC and database latency, lock waits and the first timed-out stage. Inspect any in-flight signature before retrying; confirm successful work resumes after the dependency recovers.{{ else if match \"manual_recovery\" $labels.code }}Read the persisted recovery reason, operation status and chain finality. Resolve the underlying condition using the recovery runbook; do not clear the latch just to silence the alert.{{ else if match \"^(debt_clear_.*|withdrawal_full_exit_unproven)$\" $labels.code }}Check the current withdrawal demand, safe partial path, and applicable consent or verified emergency evidence. Do not authorize full repayment merely because a partial plan failed.{{ else if match \"(fee_evidence|valuation|oracle|quote|confirmed_observation|price_feed)\" $labels.code }}Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.{{ else if match \"(cap|budget|reservation|policy|slippage|spending_limit|cost_bound|fee_exceeded)\" $labels.code }}Compare the exact code and current quote with recorded reservations and configured limits. Investigate stale evidence or configuration drift; do not increase limits or release reservations solely to clear the page.{{ else if match \"(transaction|signature|blockhash|broadcast|send|expired|simulation|confirmation)\" $labels.code }}Inspect the persisted operation and chain confirmation/finalized-expiry evidence. Reconcile any landed effects and retain ambiguous reservations before any retry or replacement.{{ else if match \"^(selector_evaluate_unavailable|worker_fault)$\" $labels.code }}Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.{{ else if match \"^selector_\" $labels.code }}Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.{{ else }}Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.{{ end }}"
+          trigger: "Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering."
+          recovery: "The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed."
+
+      # A lane with no tick that finished without error. A family's lanes
+      # share its progress, so this is the fact that shows one lane failing
+      # every tick. Its clock starts when the lane starts; a transient error
+      # or a held catalog activation that clears on a later tick never pages.
+      - alert: LoyalLaneStalled
+        expr: time() - loyal_lane_last_success_timestamp_seconds > 900
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.family }} lane {{ $labels.lane }} has had no successful tick for 15m"
+          trigger: "This lane had no successful tick for over 15 minutes; condition persisted for 1 minute."
+          impact: "One processing lane may be stuck while other lanes keep the worker healthy-looking."
+          action: "Identify the named lane and its oldest pending operation. Check its last error, downstream RPC/database dependency and ownership/reservation state. Resolve that lane without restarting or replaying unrelated lanes."
+          recovery: "Confirm this exact lane records new successful ticks and its backlog advances; progress in another lane is not sufficient."
+
+      # The oldest deposit Autodeposit owes: a selected claim, or a slot idle
+      # custody has blocked since its first deferral (Rust's overdue clocks).
+      - alert: LoyalAutodepositOverdue
+        expr: loyal_autodeposit_oldest_due_lot_age_seconds > 3600
+        labels: {severity: page}
+        annotations:
+          summary: "An autodeposit obligation has been waiting for over 1 hour"
+          trigger: "A selected deposit claim or continuously custody-blocked slot has waited over 1 hour."
+          impact: "At least one autodeposit obligation has not completed within the expected processing window."
+          action: "Inspect the oldest due claim or blocked slot, confirmed custody balances and existing pull/deposit transaction states. Resolve the actual blocker; do not pull the subscription again or mark the claim paid without chain evidence."
+          recovery: "Verify the overdue claim or slot is resolved from confirmed state and no newer overdue obligation remains."
+
+      # The payer of every Autodeposit wire, read every pass. Below 0.55 SOL
+      # about twelve hours of observed burn remain; below 0.05 SOL nothing starts.
+      - alert: LoyalFeePayerLow
+        expr: loyal_fee_payer_balance_lamports < 550e6
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Configured fee payer is below its warning reserve"
+          trigger: "The configured payer has stayed below the warning reserve threshold for 5 minutes."
+          impact: "The worker may soon lack enough SOL for transaction fees or account rent."
+          action: "Verify the payer identity and current confirmed SOL balance against the runbook reserve target. Arrange approved funding if needed; never substitute a user wallet or expose the signer key."
+          recovery: "Verify the intended payer is above the reserve threshold and can fund the next expected fee/rent requirement."
+      - alert: LoyalFeePayerExhausted
+        expr: loyal_fee_payer_balance_lamports < 50e6
+        labels: {severity: page}
+        annotations:
+          summary: "Configured fee payer is below its critical reserve"
+          trigger: "The configured payer is below the critical reserve threshold."
+          impact: "Fee/rent-dependent work may be blocked; the low balance alone does not establish which transactions already landed."
+          action: "Check the confirmed payer balance and in-flight signatures. Arrange approved funding for the configured payer, then verify work resumes; do not replay a subscription pull or replace the signer to bypass the block."
+          recovery: "Verify adequate confirmed SOL and successful subsequent work. Funding a payer does not itself complete pending user transactions."
+
+      # land() makes every signed operation terminal by confirmation or by
+      # block height passing last_valid_block_height (~150 blocks, 60-90s).
+      # Work in flight for twice that with no terminal outcome is stuck.
+      - alert: LoyalInflightStuck
+        expr: |
+          loyal_family_inflight > 0
+          unless on (family)
+            (sum by (family) (increase(loyal_family_landed_total[3m])) > 0
+             or sum by (family) (increase(loyal_family_failed_total[3m])) > 0)
+        for: 3m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.family }} has in-flight work without a terminal outcome"
+          trigger: "Work is in flight with no landed/failed outcome in the rolling 3-minute window, sustained for another 3 minutes."
+          impact: "A transaction may be pending, landed but unreconciled, or awaiting safe expiry handling."
+          action: "Inspect the persisted operation status, signature, last-valid block height and RPC health. Reconcile landed effects or verify finalized expiry and signature absence before replacing work. Keep ambiguous reservations; never blindly resend."
+          recovery: "Confirm a journaled terminal outcome backed by chain evidence. A drop in the in-flight gauge alone is not proof of payment or safe retry."
+
+  - name: loyal-units
+    rules:
+      # A Go unit systemd runs (or is restarting) that does not serve /metrics.
+      # A deliberately stopped or never-installed unit is not scraped and is silent.
+      - alert: LoyalWorkerDown
+        expr: |
+          up{job="loyal"} == 0
+          and on (unit)
+            label_replace(node_systemd_unit_state{state=~"active|activating|deactivating|failed"} == 1, "unit", "$1", "name", "(.+)")
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.unit }} is not serving /metrics"
+          trigger: "Systemd reports the unit active/starting/stopping/failed but its metrics scrape has failed for 2 minutes."
+          impact: "The worker may be down or its metrics endpoint may be unreachable; execution state is unknown."
+          action: "Check systemd state, the process, local metrics listener and recent startup/runtime logs. Distinguish a scrape problem from a crashed worker. Check persisted signed work before using the documented restart procedure."
+          recovery: "Confirm metrics scraping, expected release and healthy work progress; a reachable metrics endpoint alone is not full recovery."
+
+      # Any loyal-* unit (Go or Rust) that failed or is stuck starting.
+      # Go units restart forever, so for them a crash loop shows as
+      # LoyalUnitRestartLoop rather than here.
+      - alert: LoyalUnitDown
+        expr: node_systemd_unit_state{name=~"loyal-.+\\.service", state=~"failed|activating"} == 1
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.name }} is {{ $labels.state }}"
+          trigger: "The named service has remained failed or stuck activating for 2 minutes."
+          impact: "The service is not operating normally; its dependent processing may be unavailable."
+          action: "Check the intended service state and the first startup error in its journal, including credentials, executable and resource failures. Restore only an intended active service using the runbook; never revive a retired worker."
+          recovery: "Confirm the intended service is active on the expected release and its dependent work progresses. Disabled or removed services also stop this alert without proving recovery."
+
+      - alert: LoyalUnitRestartLoop
+        expr: increase(node_systemd_service_restart_total{name=~"loyal-.+\\.service"}[15m]) > 3
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.name }} is repeatedly restarting"
+          trigger: "The service restart counter increased by more than 3 in 15 minutes."
+          impact: "The service is unstable and may repeatedly interrupt work or lose fresh observations."
+          action: "Inspect the first exit cause, OOM/resource events, startup configuration and dependency failures. Check signed/in-flight state before remediation; stop repeated blind restarts and follow the release rollback/recovery runbook."
+          recovery: "Verify the restart count stabilizes and fresh work completes on the intended release; waiting for the counter window to expire is not a fix."
+
+  - name: monitoring
+    rules:
+      # node_exporter, Prometheus or Alertmanager not scrapeable: the unit
+      # alerts above would go silent.
+      - alert: LoyalMonitoringDown
+        expr: up{job=~"node|prometheus|alertmanager"} == 0
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.job }} is not scrapeable"
+          trigger: "The named monitoring component has not been scrapeable for 2 minutes."
+          impact: "Worker health or notification delivery may be invisible; absence of other alerts is not evidence that workers are healthy."
+          action: "Check the named exporter, Prometheus or Alertmanager service and local listener. For Alertmanager, inspect reload success and notification failure counters; after recovery verify worker scrapes, rule evaluation and notification delivery."
+          recovery: "Verify the affected component plus end-to-end scraping, rule evaluation and notifications. Check the external heartbeat separately if the whole host was unavailable."
+
+      # Always firing. Alertmanager sends it to an external dead man's
+      # switch, which pages when it stops arriving (Prometheus, Alertmanager
+      # or the host is down).
+      - alert: Watchdog
+        expr: vector(1)
+        labels: {severity: none}
+        annotations:
+          summary: "Alerting pipeline heartbeat"
+          trigger: "Continuous heartbeat; the external receiver must detect when it stops."
+          impact: "If heartbeat delivery stops, the host or monitoring stack may be unavailable and unable to alert for itself."
+          action: "Check the external heartbeat receiver, host reachability and monitoring services. Do not silence the dead-man switch without restoring an independent health signal."
+          recovery: "Verify the external receiver is receiving current heartbeats and that normal worker alert delivery works."
