@@ -128,12 +128,19 @@ func (s *Store) ActivateLookupCatalog(ctx context.Context, cluster string, famil
 				return errors.New("lookup catalog source membership differs from exact verified table")
 			}
 		}
+		// Live usage fences only a generation switch. Re-verifying the generation
+		// already active changes nothing that a route in flight relies on; holding
+		// it would fail every planner tick while the fleet routes through the
+		// catalog.
 		var protected bool
-		if err = tx.QueryRow(ctx, `SELECT
+		if switching := active == nil || *active != generation; switching {
+			err = tx.QueryRow(ctx, `SELECT
  EXISTS(SELECT 1 FROM loyal_yield.lookup_table_usage_leases WHERE route_lookup_table_id=ANY($1) AND released_at IS NULL AND expires_at>clock_timestamp()) OR
  EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations WHERE route_lookup_table_id=ANY($1) AND operation_state NOT IN ('complete','permanent_failure','cancelled')) OR
- EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s WHERE s.cluster=$2 AND s.submission_state NOT IN ('reconciled','failed','expired') AND (jsonb_typeof(s.alt_mutation_epochs->'tables') IS DISTINCT FROM 'array' OR EXISTS(SELECT 1 FROM unnest($1::bigint[]) id WHERE s.alt_mutation_epochs @> jsonb_build_object('tables',jsonb_build_array(jsonb_build_object('tableId',id))))))`, ids, cluster).Scan(&protected); err != nil {
-			return err
+ EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s WHERE s.cluster=$2 AND s.submission_state NOT IN ('reconciled','failed','expired') AND (jsonb_typeof(s.alt_mutation_epochs->'tables') IS DISTINCT FROM 'array' OR EXISTS(SELECT 1 FROM unnest($1::bigint[]) id WHERE s.alt_mutation_epochs @> jsonb_build_object('tables',jsonb_build_array(jsonb_build_object('tableId',id))))))`, ids, cluster).Scan(&protected)
+			if err != nil {
+				return err
+			}
 		}
 		if protected {
 			return errors.New("lookup catalog activation is held by source usage or unresolved packet custody")

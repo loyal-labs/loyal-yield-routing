@@ -98,4 +98,12 @@ func TestLookupCatalogActivationNeedsActualWarmShardsAndUsageFence(t *testing.T)
 	if err = pool.QueryRow(ctx, `SELECT rollback_until FROM loyal_yield.lookup_table_families WHERE id=$1`, op.Intent.FamilyID).Scan(&after); err != nil || !rollback.Equal(after) {
 		t.Fatal("catalog polling extended rollback and prevented cleanup", rollback, after, err)
 	}
+	// The fleet routes through the active catalog: its usage must not fail
+	// the planner's re-verification of the generation already active.
+	if _, err = pool.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_usage_leases(cluster,lease_kind,reference_key,route_lookup_table_id,expires_at) VALUES('localnet','prepared_transaction','active-usage',$1,clock_timestamp()+interval '1 hour')`, op.Intent.TableID); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.ActivateLookupCatalog(ctx, "localnet", op.Intent.FamilyID, revision, 0, []LookupSnapshot{snapshot}); err != nil {
+		t.Fatal("active catalog re-verification held by fleet usage:", err)
+	}
 }
