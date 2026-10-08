@@ -53,6 +53,12 @@
       "scope": "Saved shared-reserve priority counterexample; source provenance is in dilution-wave.provenance.json."
     },
     {
+      "file": "testdata/fleet/rust-burst-2026-10-07.json",
+      "sha256": "f7312c2b97f4bcc6ba6b4997a2b2b7ee664da3d691db605f831aa3bc5bb643bc",
+      "classification": "production_replay",
+      "scope": "Rust optimizer epoch 2113968 (2026-10-07T23:47:58Z) trimmed to USDC with its fingerprint recomputed, and the 128 vaults Rust published AYL4LM->D6q6wu from it in two cycles; vault identities are synthesized. Offline wave selection parity only; not an executable route."
+    },
+    {
       "file": "testdata/observer/earn-watch-schema-sample.sql",
       "sha256": "1c682725c7de459e97021eedff4817abe92cc38b5159d74236f2471dcfba74dd",
       "classification": "sampled_schema",
