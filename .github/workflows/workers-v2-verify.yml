@@ -2,7 +2,7 @@ name: Workers v2 branch verification
 
 on:
   push:
-    branches: [main, codex/workers-v2, codex/workers-v2-simplify, codex/workers-v2-golive]
+    branches: [main, 'codex/workers-v2*']
     paths:
       - go/workers/**
       - scripts/verify-workers-v2.sh
@@ -15,6 +15,12 @@ on:
       - crates/loyal-actions/**
       - tools/backyard-voltr/**
       - docs/evidence/backyard-voltr-four-market/**
+      # Go tests run the SDK oracles and the connected SVM helper from these.
+      - package.json
+      - bun.lock
+      - rust-toolchain.toml
+      - crates/squads-test-harness/**
+      - crates/mock-yield-protocols-program/**
 
 permissions:
   contents: read
@@ -26,7 +32,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:17
@@ -60,6 +66,31 @@ jobs:
         with:
           go-version: '1.26.6'
           cache-dependency-path: go/workers/go.sum
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install the SDK oracle packages
+        # backyard testdata/*.mjs resolve @solana/web3.js and the Squads SDK
+        # from the root package and the Kamino SDK from tools/backyard-voltr.
+        run: |
+          bun install --frozen-lockfile
+          (cd tools/backyard-voltr && bun install --frozen-lockfile)
+      - name: Install the pinned Rust and Solana SBF toolchains
+        run: |
+          rustup toolchain install
+          sh -c "$(curl -sSfL https://release.anza.xyz/v4.2.0/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workers-v2-connected-svm
+      - name: Build the connected SVM helper and mock protocol program
+        # Fleet connected execution runs Go against actual Squads SBF and the
+        # mock KLend/Jupiter SBF inside this LiteSVM helper.
+        run: |
+          cargo build --locked -p squads-test-harness --example fleet-local-svm
+          cargo build-sbf --manifest-path crates/mock-yield-protocols-program/Cargo.toml -- --locked
+          echo "KAMINO_CONNECTED_SVM_PATH=$PWD/target/debug/examples/fleet-local-svm" >> "$GITHUB_ENV"
+          echo "MOCK_YIELD_PROTOCOLS_PROGRAM_SO=$PWD/target/deploy/mock_yield_protocols_program.so" >> "$GITHUB_ENV"
       - name: Apply actual schema to isolated family databases
         env:
           WORKERS_V2_DISPOSABLE: '1'
@@ -73,7 +104,7 @@ jobs:
     # Every authorization-gated Backyard Voltr command refuses when a bound
     # source drifts from the committed policy catalog authorization.
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,11 +113,20 @@ jobs:
         with:
           # Verified to install bun.lock (configVersion 1) frozen.
           bun-version: 1.3.14
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: backyard-voltr-policy-compiler
+      - name: Build the runtime policy compiler
+        # Loading the authorization recompiles the catalog with this binary.
+        run: cargo build --locked -p loyal-actions --bin compile-voltr-kamino-runtime-policy
       - name: Committed authorization binds the checked-out sources
         working-directory: tools/backyard-voltr
         run: |
           bun install --frozen-lockfile
           bun test src/policies/authorization.test.ts
+          git diff --exit-code
 
   image:
     # This job only builds and probes a local CI image. No registry credentials,
