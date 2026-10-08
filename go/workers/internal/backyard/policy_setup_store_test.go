@@ -526,7 +526,7 @@ func testPolicySetupDurability(t *testing.T, url string) {
 		if _, err = tx.Exec(ctx, `CREATE TEMP TABLE phase3_actions(action text NOT NULL,engine_version text NOT NULL,strategy_key text) ON COMMIT DROP`); err != nil {
 			t.Fatal(err)
 		}
-		sql, err := os.ReadFile("../../../../crates/loyal-yield-store/migrations/0074_backyard_rwa_phase3_journal_actions.sql")
+		sql, err := os.ReadFile("../../../../migrations/yield/0074_backyard_rwa_phase3_journal_actions.sql")
 		if err != nil {
 			t.Fatal(err)
 		}

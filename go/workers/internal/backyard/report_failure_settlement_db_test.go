@@ -59,7 +59,7 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 	}
 	migrate := func(file string) {
 		t.Helper()
-		raw, err := os.ReadFile("../../../../crates/loyal-yield-store/migrations/" + file)
+		raw, err := os.ReadFile("../../../../migrations/yield/" + file)
 		if err != nil {
 			t.Fatal(err)
 		}

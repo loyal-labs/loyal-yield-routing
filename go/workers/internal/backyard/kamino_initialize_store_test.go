@@ -179,7 +179,7 @@ func TestInitializationMigrationRetainsEngineAndLaneBoundaries(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
 	defer db.Close()
-	migration, err := os.ReadFile("../../../../crates/loyal-yield-store/migrations/0079_backyard_rwa_initializer_actions.sql")
+	migration, err := os.ReadFile("../../../../migrations/yield/0079_backyard_rwa_initializer_actions.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

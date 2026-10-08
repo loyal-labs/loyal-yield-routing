@@ -204,7 +204,7 @@ func testPolicySetupPreSimulationMigration(t *testing.T, ctx context.Context, db
 		t.Fatal(err)
 	}
 	for _, file := range []string{"0074_backyard_rwa_phase3_journal_actions.sql", "0075_backyard_rwa_setup_pre_simulation_wire.sql"} {
-		sql, err := os.ReadFile("../../../../crates/loyal-yield-store/migrations/" + file)
+		sql, err := os.ReadFile("../../../../migrations/yield/" + file)
 		if err != nil {
 			t.Fatal(err)
 		}

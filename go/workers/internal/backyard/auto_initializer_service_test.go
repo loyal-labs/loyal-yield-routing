@@ -24,7 +24,7 @@ import (
 // under proof come from the shipped SQL, never from a test-local re-statement.
 func applyInitializerScopeMigrationFile(t *testing.T, ctx context.Context, db *Database, file string) {
 	t.Helper()
-	raw, err := os.ReadFile("../../../../crates/loyal-yield-store/migrations/" + file)
+	raw, err := os.ReadFile("../../../../migrations/yield/" + file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestInitializerAutoScopeMigrationExpandsOnlyInitializerScope(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, file := range []string{"0079_backyard_rwa_initializer_actions.sql", "0082_backyard_rwa_initializer_auto_scope.sql"} {
-		raw, err := os.ReadFile("../../../../crates/loyal-yield-store/migrations/" + file)
+		raw, err := os.ReadFile("../../../../migrations/yield/" + file)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -14,7 +14,7 @@ func TestStrategyJournalAssociationAgainstAuditedInventory(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
-	migration, err := os.ReadFile("../../../../crates/loyal-yield-store/migrations/0080_backyard_rwa_strategy_journal.sql")
+	migration, err := os.ReadFile("../../../../migrations/yield/0080_backyard_rwa_strategy_journal.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

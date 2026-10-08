@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the real registered Yield migrations only to allowlisted test databases."""
+"""Apply the repository Yield and Timescale migrations only to allowlisted test databases."""
 import hashlib
 import json
 import os
@@ -23,44 +23,18 @@ def allowlisted(url):
 parsed = allowlisted(base)
 
 repo = Path(__file__).resolve().parent.parent
-registry = repo / "crates/loyal-yield-orchestrator/src/bin/yield-migrations.rs"
-definition = registry.read_text().split("const MIGRATIONS:", 1)[1].split("\n];", 1)[0]
-paths = re.findall(r'include_str!\(\s*"([^"]+)"\s*\)', definition)
-migrations = [(registry.parent / p).resolve() for p in paths]
-if not migrations or any(not p.is_file() or p.parent != repo / "crates/loyal-yield-store/migrations" for p in migrations):
-    raise SystemExit("Actual Yield migration registry could not be resolved")
-entries = re.findall(
-    r'Migration\s*\{\s*version:\s*(\d+),\s*name:\s*"([^"]+)",\s*'
-    r'sql:\s*include_str!\(\s*"([^"]+)"\s*\),\s*'
-    r'expected_checksum:\s*(None|Some\("[0-9a-f]{64}"\)),\s*\}', definition)
-if len(entries) != len(migrations):
-    raise SystemExit("Actual Yield migration ledger definitions could not be resolved")
+# The same files, versions, names and sha256 ledger checksums that
+# go/workers/cmd/loyal-migrate applies to production, in version order.
+registry = repo / "migrations/yield"
+migrations = sorted(registry.glob("*.sql"))
+if not migrations:
+    raise SystemExit("Yield migration directory could not be resolved")
 ledger = {}
-for version, name, path, override in entries:
-    file = (registry.parent / path).resolve()
-    checksum = override[6:-2] if override.startswith('Some("') else hashlib.sha256(file.read_bytes()).hexdigest()
-    ledger[int(version)] = (name, checksum)
-
-# Production applied these outside the Yield registry: 0074-0083 through the
-# deployed Backyard worker's store migrations (origin/feat/voltr-rwa-selector
-# f821a78f6a) and 0085 as the separately rolled-out history index. The fixture
-# applies them at their production position and records the same ledger rows
-# (name, sha256 of the file) those runners wrote.
-out_of_band_root = repo / "crates/loyal-yield-store/migrations"
-out_of_band = {}
-for version, name in ((74, "backyard_rwa_phase3_journal_actions"), (75, "backyard_rwa_setup_pre_simulation_wire"),
-                      (76, "backyard_rwa_manual_recovery_latch"), (77, "backyard_rwa_manual_recovery_generation"),
-                      (78, "backyard_rwa_incident_resolution"), (79, "backyard_rwa_initializer_actions"),
-                      (80, "backyard_rwa_strategy_journal"), (81, "backyard_rwa_finalized_report_failure"),
-                      (82, "backyard_rwa_initializer_auto_scope"), (83, "backyard_rwa_finalized_restore_failure"),
-                      (85, "earn_vault_allocation_history_index")):
-    if version in ledger:
-        raise SystemExit("Out-of-band migration %d is now registered; drop it from the fixture list" % version)
-    file = out_of_band_root / ("%04d_%s.sql" % (version, name))
-    if not file.is_file():
-        raise SystemExit("Deployed out-of-band migration %s is missing" % file.name)
-    after = 73 if version < 84 else 84
-    out_of_band.setdefault(after, []).append((version, name, file))
+for file in migrations:
+    match = re.fullmatch(r"(\d{4})_([a-z0-9_]+)\.sql", file.name)
+    if not match or int(match.group(1)) in ledger:
+        raise SystemExit("Unexpected Yield migration file " + file.name)
+    ledger[int(match.group(1))] = (match.group(2), hashlib.sha256(file.read_bytes()).hexdigest())
 
 def execute(url, *, sql=None, file=None):
     args = ["psql", url, "-X", "-v", "ON_ERROR_STOP=1", "-q"]
@@ -89,7 +63,9 @@ def apply_yield_schema(url):
         if version == 13:
             for entry in app_schema:
                 execute(url, file=schema / entry["file"])
-            # Match migration_execution_sql in the authoritative Rust runner.
+            # Migration 13 guards optional app relations with eager
+            # ::regclass casts that fail on a blank database; production
+            # applied it over the app baseline above.
             sql = migration.read_text()
             for relation in ("user_yield_positions", "user_yield_position_holding_events", "earn_deposit_onboarding_attempts"):
                 cast = "'loyal_yield." + relation + "'::regclass"
@@ -116,11 +92,6 @@ def apply_yield_schema(url):
             raise SystemExit("Unsafe migration ledger name")
         execute(url, sql="INSERT INTO loyal_yield.schema_migrations(version,name,checksum) "
                 f"VALUES({version},'{name}','{checksum}')")
-        for extra_version, extra_name, extra_file in out_of_band.get(version, []):
-            execute(url, file=extra_file)
-            extra_checksum = hashlib.sha256(extra_file.read_bytes()).hexdigest()
-            execute(url, sql="INSERT INTO loyal_yield.schema_migrations(version,name,checksum) "
-                    f"VALUES({extra_version},'{extra_name}','{extra_checksum}')")
 
 def apply_apps_autodeposit_schema(url):
     for entry in json.loads((schema / "apps-autodeposit-manifest.json").read_text()):
@@ -150,12 +121,9 @@ timescale_url = None
 ata_capture_url = None
 if timescale:
     timescale_parsed = allowlisted(timescale)
-    timescale_registry = repo / "crates/loyal-timescale-migrations/src/main.rs"
-    sql = timescale_registry.read_text().split("const MIGRATIONS:", 1)[1].split("\n];", 1)[0]
-    files = [(timescale_registry.parent / p).resolve()
-             for p in re.findall(r'include_str!\(\s*"([^"]+)"\s*\)', sql)]
-    if not files or any(not f.is_file() or f.parent != repo / "crates/loyal-timescale-migrations/migrations" for f in files):
-        raise SystemExit("Actual Timescale migration registry could not be resolved")
+    files = sorted((repo / "migrations/timescale").glob("*.sql"))
+    if not files:
+        raise SystemExit("Timescale migration directory could not be resolved")
     execute(timescale, sql='CREATE DATABASE workers_v2_timescale')
     timescale_url = urlunparse(timescale_parsed._replace(path="/workers_v2_timescale"))
     for file in files:
@@ -163,7 +131,7 @@ if timescale:
     if "ata_projector" in urls:
         execute(timescale, sql='CREATE DATABASE workers_v2_ata_capture')
         ata_capture_url = urlunparse(timescale_parsed._replace(path="/workers_v2_ata_capture"))
-        stream_migration = repo / "crates/loyal-timescale-migrations/migrations/0004_split_balance_sweep_ata_streams.sql"
+        stream_migration = repo / "migrations/timescale/0004_split_balance_sweep_ata_streams.sql"
         if stream_migration not in files:
             raise SystemExit("Registered ATA stream migration missing")
         execute(ata_capture_url, file=stream_migration)

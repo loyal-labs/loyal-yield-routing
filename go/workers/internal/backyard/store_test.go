@@ -66,7 +66,7 @@ func TestFlatObservationProjectionRetainsConfirmedDashboardTruth(t *testing.T) {
 }
 
 func TestMigrationPreservesOneNonterminalAndTerminalHolds(t *testing.T) {
-	migrationsRoot := filepath.Join("..", "..", "..", "..", "crates", "loyal-yield-store", "migrations")
+	migrationsRoot := filepath.Join("..", "..", "..", "..", "migrations", "yield")
 	legacyPath := filepath.Join(migrationsRoot, "0055_backyard_rwa_worker.sql")
 	if _, err := os.Stat(legacyPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("colliding Backyard migration 0055 must not exist: %v", err)
@@ -123,21 +123,7 @@ func TestMigrationPreservesOneNonterminalAndTerminalHolds(t *testing.T) {
 	}
 }
 
-func TestMigration0070IsRegisteredAndSnapshotConflictMatches0067(t *testing.T) {
-	repositoryRoot := filepath.Join("..", "..", "..", "..")
-	for _, path := range []string{
-		filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "src", "store.rs"),
-		filepath.Join(repositoryRoot, "crates", "loyal-yield-orchestrator", "src", "bin", "yield-migrations.rs"),
-	} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		source := normalizeSQL(string(data))
-		if !strings.Contains(source, "version: 70") || !strings.Contains(source, "0070_backyard_rwa_worker.sql") {
-			t.Fatalf("migration 0070 is not registered in %s", path)
-		}
-	}
+func TestSnapshotConflictMatches0067(t *testing.T) {
 	if !strings.Contains(PositionSnapshotInsert, "ON CONFLICT (route_key, observed_slot) DO NOTHING") {
 		t.Fatal("position snapshot insert does not target the unique key installed by migration 0067")
 	}
@@ -147,8 +133,7 @@ func TestMigration0070IsRegisteredAndSnapshotConflictMatches0067(t *testing.T) {
 }
 
 func TestMigration0071UpgradesApplied0070ForPhaseOne(t *testing.T) {
-	repositoryRoot := filepath.Join("..", "..", "..", "..")
-	migrationsRoot := filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "migrations")
+	migrationsRoot := filepath.Join("..", "..", "..", "..", "migrations", "yield")
 	data, err := os.ReadFile(filepath.Join(migrationsRoot, "0071_backyard_rwa_phase1_activation.sql"))
 	if err != nil {
 		t.Fatal(err)
@@ -205,23 +190,10 @@ func TestMigration0071UpgradesApplied0070ForPhaseOne(t *testing.T) {
 			t.Fatalf("migration 0071 must preserve the canonical row and history; found %q", forbidden)
 		}
 	}
-	for _, path := range []string{
-		filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "src", "store.rs"),
-		filepath.Join(repositoryRoot, "crates", "loyal-yield-orchestrator", "src", "bin", "yield-migrations.rs"),
-	} {
-		source, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(source), "version: 71") || !strings.Contains(string(source), "0071_backyard_rwa_phase1_activation.sql") {
-			t.Fatalf("migration 0071 is not registered after 0070 in %s", path)
-		}
-	}
 }
 
 func TestMigration0072ScopesRouteNeutralActionsToSelectedStrategy(t *testing.T) {
-	repositoryRoot := filepath.Join("..", "..", "..", "..")
-	migrationsRoot := filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "migrations")
+	migrationsRoot := filepath.Join("..", "..", "..", "..", "migrations", "yield")
 	data, err := os.ReadFile(filepath.Join(migrationsRoot, "0072_backyard_rwa_phase2_route_neutral_actions.sql"))
 	if err != nil {
 		t.Fatal(err)
@@ -237,24 +209,10 @@ func TestMigration0072ScopesRouteNeutralActionsToSelectedStrategy(t *testing.T) 
 			t.Fatalf("migration 0072 lacks %s", required)
 		}
 	}
-	for _, path := range []string{
-		filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "src", "store.rs"),
-		filepath.Join(repositoryRoot, "crates", "loyal-yield-orchestrator", "src", "bin", "yield-migrations.rs"),
-	} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		source := normalizeSQL(string(data))
-		if !strings.Contains(source, "version: 72") || !strings.Contains(source, "0072_backyard_rwa_phase2_route_neutral_actions.sql") {
-			t.Fatalf("migration 0072 is not registered in %s", path)
-		}
-	}
 }
 
 func TestMigration0073PermitsOnlyDefinitivePostIntentFailure(t *testing.T) {
-	repositoryRoot := filepath.Join("..", "..", "..", "..")
-	migrationsRoot := filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "migrations")
+	migrationsRoot := filepath.Join("..", "..", "..", "..", "migrations", "yield")
 	data, err := os.ReadFile(filepath.Join(migrationsRoot, "0073_backyard_rwa_expired_absent_failure.sql"))
 	if err != nil {
 		t.Fatal(err)
@@ -270,19 +228,6 @@ func TestMigration0073PermitsOnlyDefinitivePostIntentFailure(t *testing.T) {
 	} {
 		if !strings.Contains(sql, required) {
 			t.Fatalf("migration 0073 lacks %q", required)
-		}
-	}
-	for _, path := range []string{
-		filepath.Join(repositoryRoot, "crates", "loyal-yield-store", "src", "store.rs"),
-		filepath.Join(repositoryRoot, "crates", "loyal-yield-orchestrator", "src", "bin", "yield-migrations.rs"),
-	} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		source := normalizeSQL(string(data))
-		if !strings.Contains(source, "version: 73") || !strings.Contains(source, "0073_backyard_rwa_expired_absent_failure.sql") {
-			t.Fatalf("migration 0073 is not registered in %s", path)
 		}
 	}
 }
@@ -457,7 +402,7 @@ func TestExpiredAbsentFailureIsNarrowAndRetryable(t *testing.T) {
 }
 
 func TestExistingRouteStateMigrationProvidesLeaseFence(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "..", "crates", "loyal-yield-store", "migrations", "0051_multiply_route_state.sql")
+	path := filepath.Join("..", "..", "..", "..", "migrations", "yield", "0051_multiply_route_state.sql")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

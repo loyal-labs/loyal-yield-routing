@@ -90,7 +90,7 @@ func TestIncidentResolutionMigrationPreservesFailureAndBindsDisposition(t *testi
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
 	defer db.Close()
-	migration, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "crates", "loyal-yield-store", "migrations", "0078_backyard_rwa_incident_resolution.sql"))
+	migration, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "migrations", "yield", "0078_backyard_rwa_incident_resolution.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
