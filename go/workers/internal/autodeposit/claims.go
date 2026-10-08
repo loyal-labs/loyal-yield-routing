@@ -619,9 +619,9 @@ WHERE claim_token = $1`, claimToken, executionID); err != nil {
 // releases and pages again.
 const PreSendRetryDelay = 5 * time.Minute
 
-// ReleaseClaimOnce returns an unspent claim's lots to the open pool, not
-// eligible before PreSendRetryDelay, and fails the slot; schedule repair
-// reschedules it at the lots' deadline. The locked claim must still belong to
+// ReleaseClaimOnce returns an unspent claim's lots to the open pool and the
+// claimed slot to the schedule, neither eligible before PreSendRetryDelay.
+// The locked claim must still belong to
 // this live executor lease, and no pull attempt or execution may hold custody.
 func (s *Store) ReleaseClaimOnce(ctx context.Context, claimToken, leaseToken string) (ClaimOutcome, error) {
 	var outcome ClaimOutcome
@@ -712,14 +712,8 @@ WHERE claim_token = $1
 			return fmt.Errorf("release autodeposit claim: %w", err)
 		}
 		if tag.RowsAffected() > 0 {
-			if _, err := tx.Exec(ctx, `
-UPDATE loyal_yield.balance_sweep_scheduled_slots
-SET status = 'failed',
-    claim_token = NULL,
-    last_error = 'claim released before autodeposit pull',
-    updated_at = now()
-WHERE claim_token = $1`, claimToken); err != nil {
-				return fmt.Errorf("fail autodeposit slot after release: %w", err)
+			if err := rescheduleReleasedSlot(ctx, tx, claimToken); err != nil {
+				return err
 			}
 		}
 		if tag.RowsAffected() == 0 {
@@ -733,6 +727,66 @@ WHERE claim_token = $1`, claimToken); err != nil {
 		return ClaimOutcome{}, err
 	}
 	return outcome, nil
+}
+
+// rescheduleReleasedSlot undoes the claim's slot split: the open lots that
+// moveResidualOpenLotsToNextSlot put on a fresh slot return to the claimed
+// slot, the untouched fresh slot is canceled, and the claimed slot is
+// scheduled again after PreSendRetryDelay. Failing the slot instead left one
+// dead slot per attempt and an undelayed residual, so a target blocked at
+// preflight grew ~540 slots a day and retried every other poll (target 7940,
+// Oct 2026).
+func rescheduleReleasedSlot(ctx context.Context, tx pgx.Tx, claimToken string) error {
+	var slotID int64
+	err := tx.QueryRow(ctx, `
+SELECT id FROM loyal_yield.balance_sweep_scheduled_slots
+WHERE claim_token = $1
+FOR UPDATE`, claimToken).Scan(&slotID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock released autodeposit slot: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+WITH residual AS (
+    UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+    SET status = 'canceled',
+        last_error = 'merged back into released slot ' || $2::bigint,
+        updated_at = now()
+    FROM loyal_yield.balance_sweep_lot_claims AS claim
+    -- The residual slot is inserted in the claim's transaction, so both rows
+    -- carry the same now(); it may hold lots the claim never touched.
+    WHERE claim.claim_token = $1
+      AND slot.target_id = claim.target_id
+      AND slot.created_at = claim.created_at
+      AND slot.id <> $2
+      AND slot.status = 'scheduled'
+      AND slot.request_source IS NULL
+      AND slot.claim_token IS NULL
+      AND slot.execution_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+        WHERE attempt.scheduled_slot_id = slot.id)
+    RETURNING slot.id
+)
+UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
+SET scheduled_slot_id = $2, updated_at = now()
+WHERE lot.scheduled_slot_id IN (SELECT id FROM residual)
+  AND lot.status = 'open'`, claimToken, slotID); err != nil {
+		return fmt.Errorf("merge residual autodeposit slot after release: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE loyal_yield.balance_sweep_scheduled_slots
+SET status = 'scheduled',
+    claim_token = NULL,
+    eligible_after = GREATEST(eligible_after, now() + $2 * interval '1 second'),
+    last_error = 'claim released before autodeposit pull',
+    updated_at = now()
+WHERE id = $1`, slotID, int64(PreSendRetryDelay/time.Second)); err != nil {
+		return fmt.Errorf("reschedule autodeposit slot after release: %w", err)
+	}
+	return nil
 }
 
 // ErrClaimCustodyHeld distinguishes a financial hold from executor ownership.

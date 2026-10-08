@@ -123,8 +123,8 @@ WHERE claim_token = $1`, claimToken); err != nil {
 		t.Fatal("the displaced lease must not renew")
 	}
 
-	// Restore: releasing the unspent claim gives the surplus back and fails
-	// the slot.
+	// Restore: releasing the unspent claim gives the surplus back and returns
+	// the slot to the schedule after the pre-send retry delay.
 	released, err := store.ReleaseClaimOnce(ctx, claimToken, "lease-two")
 	if err != nil {
 		t.Fatalf("release claim: %v", err)
@@ -140,13 +140,73 @@ SELECT remaining_amount_raw, status::text FROM loyal_yield.balance_sweep_surplus
 	if consumed != 5_000_000 || status != "open" {
 		t.Fatalf("restored lot remaining=%d status=%s, want the full 5000000 open", consumed, status)
 	}
+	var deferred bool
 	if err := store.pool.QueryRow(ctx, `
-SELECT status::text FROM loyal_yield.balance_sweep_scheduled_slots WHERE id = $1`, slotID).
-		Scan(&slotStatus); err != nil {
+SELECT status::text, eligible_after > now() + interval '4 minutes'
+FROM loyal_yield.balance_sweep_scheduled_slots WHERE id = $1`, slotID).
+		Scan(&slotStatus, &deferred); err != nil {
 		t.Fatalf("read released slot: %v", err)
 	}
-	if slotStatus != "failed" {
-		t.Fatalf("released slot status %s, want failed", slotStatus)
+	if slotStatus != "scheduled" || !deferred {
+		t.Fatalf("released slot status=%s deferred=%v, want scheduled after the retry delay", slotStatus, deferred)
+	}
+}
+
+// A target refused at preflight claims part of its slot, which moves the
+// remainder to a fresh slot, then releases. The release must undo that split:
+// otherwise every attempt leaves one dead slot and an undelayed residual
+// (target 7940 grew ~540 slots a day). Two attempts leave exactly one live,
+// deferred slot holding all the target's open lots.
+func TestReleasedPartialClaimKeepsOneDeferredSlot(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	seeded := seedIntegrationTarget(t, store, "partial-release")
+	seedProjectedSurplus(t, store, seeded, 9_300_101, 9_000_000)
+	var slotID int64
+	if err := store.pool.QueryRow(ctx, `
+SELECT id FROM loyal_yield.balance_sweep_scheduled_slots WHERE target_id = $1`, seeded.TargetID).Scan(&slotID); err != nil {
+		t.Fatalf("read projected slot: %v", err)
+	}
+	allowance := int64(2_000_000)
+	for attempt := 1; attempt <= 2; attempt++ {
+		claimToken := fmt.Sprintf("itest-partial-release-%d", attempt)
+		outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, claimToken, &slotID, 9_000_000, 4_000_000, &allowance, &allowance)
+		if err != nil || outcome.Status != ClaimSelected || outcome.AmountRaw != allowance {
+			t.Fatalf("attempt %d: partial claim %+v err=%v, want selected %d", attempt, outcome, err, allowance)
+		}
+		var residual int64
+		if err := store.pool.QueryRow(ctx, `
+SELECT count(*) FROM loyal_yield.balance_sweep_scheduled_slots
+WHERE target_id = $1 AND status = 'scheduled' AND id <> $2`, seeded.TargetID, slotID).Scan(&residual); err != nil || residual != 1 {
+			t.Fatalf("attempt %d: residual slots=%d err=%v, want the claim to split one off", attempt, residual, err)
+		}
+		if acquired, err := store.AcquireClaimLease(ctx, claimToken, seeded.TargetID, "lease"); err != nil || !acquired {
+			t.Fatalf("attempt %d: lease acquired=%v err=%v", attempt, acquired, err)
+		}
+		if released, err := store.ReleaseClaimOnce(ctx, claimToken, "lease"); err != nil || released.Status != ClaimReleased {
+			t.Fatalf("attempt %d: release %+v err=%v", attempt, released, err)
+		}
+		var live, foreignLots, openRaw int64
+		var deferred bool
+		if err := store.pool.QueryRow(ctx, `
+SELECT
+  (SELECT count(*) FROM loyal_yield.balance_sweep_scheduled_slots
+   WHERE target_id = $1 AND status NOT IN ('canceled')),
+  (SELECT eligible_after > now() + interval '4 minutes' FROM loyal_yield.balance_sweep_scheduled_slots WHERE id = $2 AND status = 'scheduled'),
+  (SELECT count(*) FROM loyal_yield.balance_sweep_surplus_lots
+   WHERE target_id = $1 AND status = 'open' AND scheduled_slot_id IS DISTINCT FROM $2),
+  (SELECT COALESCE(sum(remaining_amount_raw), 0) FROM loyal_yield.balance_sweep_surplus_lots
+   WHERE target_id = $1 AND status = 'open')`, seeded.TargetID, slotID).Scan(&live, &deferred, &foreignLots, &openRaw); err != nil {
+			t.Fatalf("attempt %d: read slots after release: %v", attempt, err)
+		}
+		if live != 1 || !deferred || foreignLots != 0 || openRaw != 5_000_000 {
+			t.Fatalf("attempt %d: live slots=%d deferred=%v lots elsewhere=%d open=%d, want one deferred slot holding the full 5000000", attempt, live, deferred, foreignLots, openRaw)
+		}
+		// The next poll after the delay retries the same slot.
+		if _, err := store.pool.Exec(ctx, `
+UPDATE loyal_yield.balance_sweep_scheduled_slots SET eligible_after = now() - interval '1 second' WHERE id = $1`, slotID); err != nil {
+			t.Fatalf("attempt %d: expire retry delay: %v", attempt, err)
+		}
 	}
 }
 
