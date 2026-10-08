@@ -193,11 +193,11 @@ function main() {
   const goStore = existsSync(path("go/workers/internal/backyard/store.go"))
     ? read("go/workers/internal/backyard/store.go")
     : "";
-  const workerMigration = existsSync(path("crates/loyal-yield-store/migrations/0070_backyard_rwa_worker.sql"))
-    ? read("crates/loyal-yield-store/migrations/0070_backyard_rwa_worker.sql")
+  const workerMigration = existsSync(path("migrations/yield/0070_backyard_rwa_worker.sql"))
+    ? read("migrations/yield/0070_backyard_rwa_worker.sql")
     : "";
-  const migration = existsSync(path("crates/loyal-yield-store/migrations/0072_backyard_rwa_phase2_route_neutral_actions.sql"))
-    ? read("crates/loyal-yield-store/migrations/0072_backyard_rwa_phase2_route_neutral_actions.sql")
+  const migration = existsSync(path("migrations/yield/0072_backyard_rwa_phase2_route_neutral_actions.sql"))
+    ? read("migrations/yield/0072_backyard_rwa_phase2_route_neutral_actions.sql")
     : "";
   const exactTwoRouteRuntime = selected && selectedLane !== null &&
     goConfig.includes(selectedLane) && goRoutes.includes(selectedLane.split("/")[1] ?? selectedLane) &&

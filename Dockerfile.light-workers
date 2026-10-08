@@ -1,14 +1,18 @@
 # syntax=docker/dockerfile:1.7
 
-FROM oven/bun:1.2.17-debian AS bun-deps
+# The light-workers image now carries only loyal-yield-realtime, the one Rust
+# service still on Render. The workers run on the Go engine (go/workers).
+FROM rust:1.89-bookworm AS build
 
-WORKDIR /app
-COPY package.json bun.lock ./
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --production --frozen-lockfile
+WORKDIR /source
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/source/target \
+    cargo build --locked --release -p loyal-yield-realtime \
+    && install -D -m 0755 target/release/loyal-yield-realtime /out/loyal-yield-realtime
 
-# Rust compilation happens once in rust-image-build.yml. This Dockerfile only
-# assembles the runtime image from the workflow artifact and Bun dependencies.
 FROM debian:bookworm-slim AS runtime
 
 ARG LOYAL_IMAGE_VERSION
@@ -18,27 +22,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+COPY --from=build /out/loyal-yield-realtime /usr/local/bin/loyal-yield-realtime
 
-COPY --from=bun-deps /usr/local/bin/bun /usr/local/bin/bun
-COPY --from=bun-deps /app/package.json /app/bun.lock ./
-COPY --from=bun-deps /app/node_modules ./node_modules
-COPY scripts/execute-autodeposit-policy.ts scripts/execute-autodeposit-policy.ts
-COPY scripts/autodeposit-idle-vault-handoff.ts scripts/autodeposit-idle-vault-handoff.ts
-COPY scripts/autodeposit-rpc-read.ts scripts/autodeposit-rpc-read.ts
-COPY scripts/autodeposit-accounted-recovery.ts scripts/autodeposit-accounted-recovery.ts
-COPY scripts/durable-autodeposit-confirmation.ts scripts/durable-autodeposit-confirmation.ts
-COPY --chmod=0755 build-artifacts/rust/balance-sweep-ata-projector /usr/local/bin/balance-sweep-ata-projector
-COPY --chmod=0755 build-artifacts/rust/balance-sweep-autodeposit-trigger /usr/local/bin/balance-sweep-autodeposit-trigger
-COPY --chmod=0755 build-artifacts/rust/loyal-yield-realtime /usr/local/bin/loyal-yield-realtime
-COPY --chmod=0755 build-artifacts/rust/loyal-squads-policy-monitor /usr/local/bin/loyal-squads-policy-monitor
-COPY --chmod=0755 build-artifacts/rust/yield-migrations /usr/local/bin/yield-migrations
-COPY --chmod=0755 build-artifacts/rust/same-mint-reserve-swap /usr/local/bin/same-mint-reserve-swap
-COPY --chmod=0755 build-artifacts/rust/same-mint-yield-monitor /usr/local/bin/same-mint-yield-monitor
-COPY --chmod=0755 build-artifacts/rust/fleet-opportunity-planner /usr/local/bin/fleet-opportunity-planner
-COPY --chmod=0755 build-artifacts/rust/fleet-health-projector /usr/local/bin/fleet-health-projector
-COPY --chmod=0755 build-artifacts/rust/fleet-route-confirmer /usr/local/bin/fleet-route-confirmer
-COPY --chmod=0755 build-artifacts/rust/multiply-route-worker /usr/local/bin/multiply-route-worker
-COPY --chmod=0755 build-artifacts/rust/route-lookup-table-provisioner /usr/local/bin/route-lookup-table-provisioner
-
-CMD ["/usr/local/bin/balance-sweep-ata-projector"]
+CMD ["/usr/local/bin/loyal-yield-realtime"]
