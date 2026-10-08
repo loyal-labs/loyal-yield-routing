@@ -60,6 +60,7 @@ func (s *Store) RequireSchema(ctx context.Context) error {
 		"loyal_yield.user_yield_positions",
 		"loyal_yield.user_yield_position_deposits",
 		"loyal_yield.user_yield_position_holding_events",
+		"loyal_yield.user_yield_position_withdrawals",
 	)
 }
 
@@ -89,6 +90,9 @@ type walletBalanceEventRow struct {
 	TxnSignature          *string
 	TargetActive          bool
 	WalletBalanceFloorRaw *int64
+	// OwnWithdrawal marks an event carried by the vault's own Earn
+	// withdrawal: the user moving yield back to the wallet.
+	OwnWithdrawal bool
 	// OwnPullRaw is the amount of this family's pull whose signature the
 	// event carries; its claim already took that amount from the lots.
 	OwnPullRaw int64
@@ -235,6 +239,14 @@ SELECT
         AND target.cluster = 'mainnet-beta'
         AND `+targetRoutedSQL+` AS target_active,
     target.wallet_balance_floor_raw,
+    EXISTS (
+        SELECT 1
+        FROM loyal_yield.user_yield_position_withdrawals AS withdrawal
+        WHERE withdrawal.withdrawal_signature = event.txn_signature
+          AND withdrawal.settings = target.settings
+          AND withdrawal.vault_index = target.vault_index
+          AND withdrawal.vault_pubkey = target.vault_pubkey
+    ) AS own_withdrawal,
     COALESCE((
         SELECT attempt.amount_raw
         FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
@@ -260,7 +272,7 @@ LIMIT $3`, lastEventID, USDCMint, limit)
 	for rows.Next() {
 		var event walletBalanceEventRow
 		if err := rows.Scan(&event.EventID, &event.TargetID, &event.AmountRaw, &event.DeltaAmountRaw,
-			&event.ObservedAt, &event.TxnSignature, &event.TargetActive, &event.WalletBalanceFloorRaw, &event.OwnPullRaw); err != nil {
+			&event.ObservedAt, &event.TxnSignature, &event.TargetActive, &event.WalletBalanceFloorRaw, &event.OwnWithdrawal, &event.OwnPullRaw); err != nil {
 			return nil, fmt.Errorf("scan autodeposit wallet event: %w", err)
 		}
 		events = append(events, event)
@@ -284,8 +296,12 @@ func insertInitialSurplusLot(ctx context.Context, tx pgx.Tx, event walletBalance
 		"initial wallet ATA balance above the configured floor scheduled for autodeposit after one hour")
 }
 
+// insertPositiveDeltaLot schedules an inflow. The user's own Earn withdrawal
+// landing in the wallet is no inflow: depositing it again would undo the
+// withdrawal. Earn retracts the lot instead when it records the withdrawal
+// after this projection ran (SuppressWithdrawalLots).
 func insertPositiveDeltaLot(ctx context.Context, tx pgx.Tx, event walletBalanceEventRow, deltaAmountRaw int64) (bool, error) {
-	if !event.TargetActive {
+	if !event.TargetActive || event.OwnWithdrawal {
 		return false, nil
 	}
 	amountRaw, ok := PositiveDeltaSurplusAmount(event.AmountRaw, deltaAmountRaw, event.WalletBalanceFloorRaw)
