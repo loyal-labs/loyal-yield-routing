@@ -280,6 +280,14 @@ func (c *RPCClient) FinalizedAccounts(ctx context.Context, addresses []string, m
 	return c.accounts(ctx, addresses, minimumSlot, "finalized", false)
 }
 
+// FinalizedAccountsAllowingAbsent is one coherent finalized batch in which a
+// null account is returned as Account{Address}. KLend closes an obligation
+// whose last deposit is withdrawn, so a closed obligation is chain evidence
+// of zero collateral; callers decide which addresses may be absent.
+func (c *RPCClient) FinalizedAccountsAllowingAbsent(ctx context.Context, addresses []string, minimumSlot int64) (int64, []Account, error) {
+	return c.accounts(ctx, addresses, minimumSlot, "finalized", true)
+}
+
 // MinimumBalanceForRentExemption is the chain's rent-exempt lamports for size bytes.
 func (c *RPCClient) MinimumBalanceForRentExemption(ctx context.Context, size int) (uint64, error) {
 	var lamports uint64

@@ -14,6 +14,10 @@ import (
 
 type finalizedAccountReader interface {
 	FinalizedAccounts(context.Context, []string, int64) (int64, []fleet.Account, error)
+	// Post-landing proofs read obligations with this: a full withdrawal makes
+	// KLend close the obligation, which proves zero collateral (Rust parity:
+	// decode_kamino_obligation_summary(None) is exists=false, amount 0).
+	FinalizedAccountsAllowingAbsent(context.Context, []string, int64) (int64, []fleet.Account, error)
 }
 
 type confirmedAccountReader interface {

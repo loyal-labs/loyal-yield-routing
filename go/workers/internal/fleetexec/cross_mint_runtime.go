@@ -668,7 +668,10 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader finalizedA
 	if len(keys) == 0 {
 		return out, 0, errors.New("cross-mint bank has no signed accounts")
 	}
-	slot, accounts, err := reader.FinalizedAccounts(ctx, keys, floor)
+	// A withdraw leg that empties the source closes its obligation inside the
+	// route (KLend), so null accounts are returned; token anchors and the
+	// reserve stay required by custodyTokenAmount and reservePostIdentity.
+	slot, accounts, err := reader.FinalizedAccountsAllowingAbsent(ctx, keys, floor)
 	if err != nil {
 		return out, 0, err
 	}
@@ -722,7 +725,7 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader finalizedA
 			return out, 0, errors.New("finalized position identity or token program changed")
 		}
 		account := byKey[p.Obligation]
-		exists := account.Lamports != 0 || len(account.Data) != 0 || account.Owner != ""
+		exists := accountExists(account)
 		collateral := int64(0)
 		if exists {
 			collateral, e = obligationCollateral(account, p.Market, m.VaultPubkey, p.Reserve)

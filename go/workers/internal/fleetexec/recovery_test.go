@@ -27,6 +27,19 @@ func (f fixtureAccounts) FinalizedAccounts(_ context.Context, addresses []string
 	}
 	return f.slot, out, nil
 }
+
+// Mirrors fleet.RPCClient: a null account comes back as Account{Address}.
+func (f fixtureAccounts) FinalizedAccountsAllowingAbsent(_ context.Context, addresses []string, floor int64) (int64, []fleet.Account, error) {
+	out := make([]fleet.Account, 0, len(addresses))
+	for _, address := range addresses {
+		a, ok := f.accounts[address]
+		if !ok {
+			a = fleet.Account{Address: address}
+		}
+		out = append(out, a)
+	}
+	return f.slot, out, nil
+}
 func TestObligationAbsenceProofUsesCollateralAndExactIdentity(t *testing.T) {
 	fixture := mustSignedFixture(t)
 	owner := sdk.MustPublicKeyFromBase58(fixture.FeePayer)
