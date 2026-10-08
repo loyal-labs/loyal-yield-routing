@@ -312,11 +312,14 @@ func TestTimescaleModelQueriesPreserveSourceSlotAndCandidateUniverse(t *testing.
 			t.Fatal(err)
 		}
 	}
+	insert(start.Add(-2*time.Minute), 99, false)
 	insert(start.Add(-time.Minute), 100, false)
-	insert(start.Add(30*time.Minute), 101, false)
+	insert(start.Add(10*time.Minute), 101, false)
 	insert(start.Add(30*time.Minute), 102, true)
+	// One seed row before start, then the latest row of the hour: 101 is
+	// binned away and the stale 102 is kept so it still evicts the reserve.
 	rows, err := m.loadModelRows(ctx, start, now)
-	if err != nil || len(rows) != 3 || rows[0].Slot != 100 || rows[1].Slot != 101 || rows[2].Slot != 102 {
+	if err != nil || len(rows) != 2 || rows[0].Slot != 100 || rows[1].Slot != 102 {
 		t.Fatalf("source sequence query: %+v %v", rows, err)
 	}
 	model, err := SimulatePublicModel(rows, start, now)
@@ -326,7 +329,7 @@ func TestTimescaleModelQueriesPreserveSourceSlotAndCandidateUniverse(t *testing.
 	if model.APYBPS >= 1000 || model.APYBPS <= 0 {
 		t.Fatalf("latest source stale row did not evict: %+v", model)
 	}
-	m.maxRows = 2
+	m.maxRows = 1
 	if _, err = m.loadModelRows(ctx, start, now); err == nil {
 		t.Fatal("truncated model evidence admitted")
 	}

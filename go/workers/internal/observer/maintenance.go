@@ -173,6 +173,7 @@ func (m *Maintenance) Tick(ctx context.Context, now time.Time) (MaintenanceRepor
 	if now.IsZero() {
 		return r, errors.New("maintenance observation time missing")
 	}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
 	if m.validateNamespace != nil {
@@ -221,11 +222,15 @@ func (m *Maintenance) Tick(ctx context.Context, now time.Time) (MaintenanceRepor
 			m.pricesHour = hour
 		}
 	}
-	if err = m.yield.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM loyal_yield.earn_forecast_snapshots WHERE strategy='medium_fee_aware_1bps' AND risk_profile='medium' AND fee_bps=1 AND generated_at >= $1 AND generated_at<=$2)`, now.UTC().Truncate(time.Hour), now).Scan(&due); err != nil {
+	// The public model is one snapshot per UTC day (the Apps cron ran it daily
+	// at 08:17), so it is due once per snapshot_date, not every hour.
+	if err = m.yield.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM loyal_yield.earn_forecast_snapshots WHERE strategy='medium_fee_aware_1bps' AND risk_profile='medium' AND fee_bps=1 AND snapshot_date=$1::date)`, now.UTC().Format("2006-01-02")).Scan(&due); err != nil {
 		return r, err
 	}
 	if due {
-		if err = m.RecordPublicModel(ctx, now); err != nil {
+		// The 30-day evidence read takes tens of seconds; it gets its own
+		// budget instead of the remainder of the 5 s health tick's.
+		if err = m.RecordPublicModel(parent, now); err != nil {
 			return r, err
 		}
 		r.ModelPublished = true
@@ -326,11 +331,17 @@ WHERE excluded.observed_at >= loyal_yield.earn_fleet_allocations_hourly.observed
 	return sample, prices, err
 }
 
+// loadModelRows reads the model evidence as the latest update per reserve per
+// hour (buckets anchored at start) plus each reserve's last update before
+// start. Every raw update in 30 days is ~1.7M rows on mainnet, far past the
+// evidence bound; this is the binning the Apps earnings path adopted for the
+// same reason (ASK-2209). The latest row of each hour is kept whether stale
+// or not, so a stale reserve is still evicted at that hour.
 func (m *Maintenance) loadModelRows(ctx context.Context, start, end time.Time) ([]ModelReserve, error) {
 	rows, err := m.timescale.Query(ctx, `
 WITH supported AS(SELECT DISTINCT reserve,liquidity_mint FROM kamino.supported_reserves WHERE active=true AND market=ANY($3::text[]) AND liquidity_mint=ANY($4::text[])),
-seed AS(SELECT DISTINCT ON(source.reserve) source.reserve,source.liquidity_mint,source.observed_at,source.slot,source.supply_apy,source.total_supply_usd_estimate,source.reserve_last_update_stale FROM kamino.reserve_updates AS source JOIN supported ON supported.reserve=source.reserve AND supported.liquidity_mint=source.liquidity_mint WHERE observed_at<$1 ORDER BY source.reserve,source.observed_at DESC,source.slot DESC),
-recent AS(SELECT source.reserve,source.liquidity_mint,source.observed_at,source.slot,source.supply_apy,source.total_supply_usd_estimate,source.reserve_last_update_stale FROM kamino.reserve_updates AS source JOIN supported ON supported.reserve=source.reserve AND supported.liquidity_mint=source.liquidity_mint WHERE observed_at >= $1 AND observed_at <= $2)
+seed AS(SELECT supported.reserve,supported.liquidity_mint,sample.observed_at,sample.slot,sample.supply_apy,sample.total_supply_usd_estimate,sample.reserve_last_update_stale FROM supported CROSS JOIN LATERAL(SELECT observed_at,slot,supply_apy,total_supply_usd_estimate,reserve_last_update_stale FROM kamino.reserve_updates AS source WHERE source.reserve=supported.reserve AND source.liquidity_mint=supported.liquidity_mint AND source.observed_at<$1 ORDER BY source.observed_at DESC,source.slot DESC LIMIT 1) AS sample),
+recent AS(SELECT supported.reserve,supported.liquidity_mint,sample.observed_at,sample.slot,sample.supply_apy,sample.total_supply_usd_estimate,sample.reserve_last_update_stale FROM supported CROSS JOIN generate_series($1::timestamptz,$2::timestamptz,interval '1 hour') AS bucket(started_at) CROSS JOIN LATERAL(SELECT observed_at,slot,supply_apy,total_supply_usd_estimate,reserve_last_update_stale FROM kamino.reserve_updates AS source WHERE source.reserve=supported.reserve AND source.liquidity_mint=supported.liquidity_mint AND source.observed_at>=bucket.started_at AND source.observed_at<bucket.started_at+interval '1 hour' AND source.observed_at<=$2 ORDER BY source.observed_at DESC,source.slot DESC LIMIT 1) AS sample)
 SELECT * FROM (SELECT * FROM seed UNION ALL SELECT * FROM recent) AS samples ORDER BY observed_at,reserve,slot LIMIT $5`, start, end, m.markets, stableMints, m.maxRows+1)
 	if err != nil {
 		return nil, err
@@ -353,8 +364,13 @@ SELECT * FROM (SELECT * FROM seed UNION ALL SELECT * FROM recent) AS samples ORD
 	}
 	return result, nil
 }
+
+// publicModelTimeout bounds the daily public model: the hourly-binned 30-day
+// evidence read is one index probe per reserve-hour (~17k on mainnet, ~25 s).
+const publicModelTimeout = 3 * time.Minute
+
 func (m *Maintenance) RecordPublicModel(ctx context.Context, now time.Time) error {
-	ctx, cancel := context.WithTimeout(ctx, m.timeout)
+	ctx, cancel := context.WithTimeout(ctx, publicModelTimeout)
 	defer cancel()
 	rows, err := m.loadModelRows(ctx, now.Add(-30*24*time.Hour), now)
 	if err != nil {
