@@ -243,6 +243,11 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		if action, reason, amount, ok := partialWithdrawalStep(s); ok {
 			return decision(action, reason, amount)
 		}
+		// Withdrawal size and partial-planner exclusions are not full-exit authority.
+		// Explicit unwind/cutover flows retain their separate admission gates.
+		if !s.Unwind && !s.CutoverDrain && s.PositionDebtRaw > 0 {
+			return decision(Hold, "withdrawal_full_exit_unproven", 0)
+		}
 		// B2 1.75x exit: repay the cycle's funding before another release.
 		if action, reason, amount, ok := exitCycleStep(s); ok {
 			return decision(action, reason, amount)

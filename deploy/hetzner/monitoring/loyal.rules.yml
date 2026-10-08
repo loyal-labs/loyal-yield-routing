@@ -1,5 +1,5 @@
 # Alert rules over the family facts (internal/engine/facts.go) and
-# node_exporter's systemd collector. No other health signal exists.
+# node_exporter's systemd collector, plus persisted withdrawal health.
 groups:
   - name: loyal-families
     rules:
@@ -26,13 +26,55 @@ groups:
         annotations:
           summary: "{{ $labels.family }} has completed no work recently"
 
-      # Operations ending without their outcome, per stable code.
+      # Keep attention across scrape gaps within the 24h history window.
+      # Freshness alerts below cover unknown state independently.
+      - alert: LoyalBackyardWithdrawalAttention
+        expr: max by (family, route) (last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h])) == 1
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "Earn MAX withdrawal needs operator attention on {{ $labels.route }}"
+          impact: "A pending withdrawal needs intervention before funding can continue."
+          action: "Inspect the persisted withdrawal health and confirmed funding state; follow the withdrawal attention runbook."
+
+      # A successful scrape alone cannot establish withdrawal health. Remember
+      # routes for 24h so one missing route cannot hide behind a healthy sibling.
+      # absent() also covers initial startup and prolonged total metric loss.
+      - alert: LoyalBackyardWithdrawalHealthUnavailable
+        expr: |
+          (
+            max by (family, route) (last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h]))
+            or max by (family, route) (last_over_time(loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}[24h]))
+          )
+          unless on (family, route)
+          (
+            (time() - max by (family, route) (loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}) <= 300)
+            and on (family, route) max by (family, route) (loyal_backyard_withdrawal_attention{family="backyard"})
+          )
+          or (
+            absent(loyal_backyard_withdrawal_attention{family="backyard"})
+            unless on (family) max by (family) (
+              last_over_time(loyal_backyard_withdrawal_attention{family="backyard"}[24h])
+              or last_over_time(loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard"}[24h])
+            )
+          )
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "Earn MAX withdrawal health is unavailable"
+          impact: "Withdrawal recovery cannot be verified; missing data does not mean users have been paid."
+          action: "Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status."
+
+      # Repeated failed attempts per stable code, including selector evaluations;
+      # these samples are not a count of distinct transactions.
       - alert: LoyalFamilyFailing
         expr: sum by (family, code) (increase(loyal_family_failed_total[15m])) >= 3
         for: 5m
         labels: {severity: page}
         annotations:
-          summary: "{{ $labels.family }} failed {{ $value | humanize }} times with {{ $labels.code }} in 15m"
+          summary: "{{ $labels.family }} has repeated failed attempts with {{ $labels.code }} in 15m"
+          impact: "Work may be delayed; repeated selector evaluations are not distinct failed transactions."
+          action: "Inspect the stable failure code and worker logs; verify confirmed state before retrying or changing configuration."
 
       # A lane with no tick that finished without error. A family's lanes
       # share its progress, so this is the fact that shows one lane failing

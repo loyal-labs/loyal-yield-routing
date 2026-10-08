@@ -145,20 +145,20 @@ func TestPartialWithdrawalDebtFree1xAndOnRe15x(t *testing.T) {
 	}
 }
 
-func TestPartialWithdrawalFallbacksKeepInstalledBehaviour(t *testing.T) {
-	// >= 90% of equity: the installed full exit.
+func TestPartialWithdrawalExclusionsNeverAuthorizeFullExit(t *testing.T) {
+	// >= 90% of equity: hold, never a proof of full-exit necessity.
 	s := livePartialSnapshot()
 	s.WithdrawalDemandRaw = 1_600_000_000
-	if d := Decide(s); d.Reason != "withdrawal_release_repayment_collateral" {
+	if d := Decide(s); d.Reason != "withdrawal_full_exit_unproven" {
 		t.Fatalf("large demand: %+v", d)
 	}
-	// Remainder below $50: full exit.
+	// A sub-$50 remainder is allowed when the existing safe partial fits.
 	s = livePartialSnapshot()
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 100_000_000, 102_090_000
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 34_000_000, 34_000_000, 34_100_000
 	s.WithdrawalDemandRaw = 30_000_000
-	if d := Decide(s); d.Reason == partialReleaseReason {
-		t.Fatalf("dust remainder went partial: %+v", d)
+	if d := Decide(s); d.Reason != partialReleaseReason {
+		t.Fatalf("safe small remainder was excluded: %+v", d)
 	}
 	// Demand covered by Voltr idle: withdrawal_covered, unchanged.
 	s = livePartialSnapshot()
@@ -166,7 +166,7 @@ func TestPartialWithdrawalFallbacksKeepInstalledBehaviour(t *testing.T) {
 	if d := Decide(s); d.Reason != "withdrawal_covered" && d.Reason != "withdrawal_covered_nav_due" {
 		t.Fatalf("covered: %+v", d)
 	}
-	// Unwind and Maple keep the full chain.
+	// Explicit unwind keeps its separately gated full chain; unsupported Maple holds.
 	s = livePartialSnapshot()
 	s.Unwind = true
 	if d := Decide(s); d.Reason == partialReleaseReason {
@@ -195,11 +195,11 @@ func TestPartialWithdrawalRoundsKeepLTVUnderTheCeiling(t *testing.T) {
 			s.RouteLane, s.StrategyKey = lane, lane
 			s.WithdrawalDemandRaw = 1_677_197_000 * pct / 100
 			if !partialWithdrawalFitsRounds(s, s.WithdrawalDemandRaw, 1_677_197_000) {
-				// Beyond three rounds: the installed full exit, unchanged.
-				if d := Decide(s); d.Reason != "withdrawal_release_repayment_collateral" {
+				// Exceeding the partial round cap is not full-exit authority.
+				if d := Decide(s); d.Reason != "withdrawal_full_exit_unproven" {
 					t.Fatalf("%s %d%%: beyond the round cap: %+v", lane, pct, d)
 				}
-				t.Logf("%s %d%%: full exit (beyond %d rounds)", lane, pct, partialWithdrawalMaxRounds)
+				t.Logf("%s %d%%: hold (beyond %d rounds)", lane, pct, partialWithdrawalMaxRounds)
 				continue
 			}
 			after, legs := runPartialWithdrawal(t, s, 1.0209)
@@ -228,6 +228,20 @@ func TestPartialWithdrawalRoundsKeepLTVUnderTheCeiling(t *testing.T) {
 		after, legs := runPartialWithdrawal(t, s, 1.0209)
 		if after.VoltrIdleRaw < after.WithdrawalDemandRaw || after.PositionDebtRaw != 0 || after.PositionCollateralRaw <= 0 || reasons(legs)[0] != partialReleaseReason {
 			t.Fatalf("1x %d%%: %v", pct, reasons(legs))
+		}
+	}
+}
+
+func TestSmallFiveDollarWithdrawalPreservesResidualDebt(t *testing.T) {
+	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
+		s := livePartialSnapshot()
+		s.RouteLane, s.StrategyKey = lane, lane
+		s.PositionCollateralRaw, s.PositionCollateralValueRaw = 30_000_000, 30_627_000
+		s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 10_200_000, 10_200_000, 10_300_000
+		s.WithdrawalDemandRaw = 5_000_000
+		after, legs := runPartialWithdrawal(t, s, 1.0209)
+		if after.VoltrIdleRaw < s.WithdrawalDemandRaw || after.PositionDebtRaw <= 0 || after.PositionCollateralRaw <= 0 {
+			t.Fatalf("$5 did not safely preserve residual position: %+v %v", after, reasons(legs))
 		}
 	}
 }

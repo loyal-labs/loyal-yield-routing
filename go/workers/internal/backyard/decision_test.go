@@ -179,6 +179,10 @@ func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
 
 	withdraw := entry
 	withdraw.WithdrawalDemandRaw = 99
+	if got := Decide(withdraw); got.Action != Hold || got.Reason != "withdrawal_full_exit_unproven" {
+		t.Fatal(got)
+	}
+	withdraw.Unwind = true // Full-chain planning remains scoped to explicit unwind.
 	if got := Decide(withdraw); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_release_repayment_collateral" {
 		t.Fatal(got)
 	}
@@ -214,6 +218,7 @@ func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
 	}
 
 	release := base()
+	release.Unwind = true
 	release.WithdrawalDemandRaw, release.HasPosition, release.PositionCollateralRaw, release.PositionDebtRaw = 99, true, 99, 40
 	if got := Decide(release); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_release_repayment_collateral" {
 		t.Fatal(got)

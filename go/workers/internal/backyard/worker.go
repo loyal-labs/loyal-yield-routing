@@ -41,6 +41,8 @@ type startupLeaseHandoffRuntime struct {
 }
 
 type tickRuntime struct {
+	withdrawalHealth                 func(context.Context, WithdrawalHealth) error
+	observeWithdrawalHealth          func(context.Context) (Observation, error)
 	prepareInitialization            func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
 	admitInitialization              func(context.Context, string, Observation, Decision, KaminoInitializationRequest) error
 	buildInitialization              func(context.Context, string, KaminoInitializationRequest) error
@@ -352,6 +354,16 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 		identity: newProgramIdentityWatcher(rpc).observe,
 	}
 	return tickRuntime{
+		withdrawalHealth: database.RecordWithdrawalHealth,
+		observeWithdrawalHealth: func(ctx context.Context) (Observation, error) {
+			// Latches and recovery skip normal observation. Read for display only;
+			// do not write position state or feed this back into execution.
+			o, err := state.batch(ctx)
+			if err == nil {
+				err = state.enrich(ctx, &o)
+			}
+			return o, err
+		},
 		refreshUnwind: func(ctx context.Context) error {
 			return database.refreshSelectorUnwind(ctx, rpc, manifest, state.observe)
 		},
@@ -517,10 +529,13 @@ func NewWorker(database *Database, rpc *RPCClient, config Config, credentials Cr
 	return &Worker{wake: make(chan struct{}, 1), routeKey: productionRouteKey, interval: config.PollInterval, manifest: manifest, runtime: productionTickRuntime(database, rpc, manifest, Credentials{PolicyKey: key})}, nil
 }
 
-func (w *Worker) Tick(ctx context.Context) error {
+func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	if w == nil || w.routeKey != productionRouteKey {
 		return fmt.Errorf("worker route is not the fixed production route")
 	}
+	var healthObservation Observation
+	var healthDecision Decision
+	defer func() { w.publishWithdrawalHealth(ctx, healthObservation, healthDecision, tickErr) }()
 	// The manual recovery latch is re-read before anything else in the tick, so
 	// a healthy batch, a restart, or a new worker state object can never resume
 	// execution behind a durable stop.
@@ -531,6 +546,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		}
 		backyardEvents.noteLatch(latched, latch.Reason)
 		if latched {
+			healthDecision = Decision{Action: HoldManualRecovery}
 			return w.recordLatchedHold(ctx, latch)
 		}
 	}
@@ -540,6 +556,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	}
 	backyardEvents.inflight(operation != nil)
 	if operation != nil {
+		healthDecision = Decision{Action: RecoverTransaction}
 		backyardEvents.noteAction(operation.Decision.Action)
 		if err := w.runtime.advance(ctx, *operation); err != nil {
 			if operation.BroadcastIntentRecorded || !preBroadcastStatus(operation.Status) {
@@ -556,7 +573,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 				return err
 			}
 			if remaining == nil {
-				_, err = w.runtime.observe(ctx)
+				healthObservation, err = w.runtime.observe(ctx)
 				return err
 			}
 		}
@@ -567,6 +584,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	healthObservation = observation
 	backyardEvents.noteSnapshot(observation.Snapshot)
 	if w.runtime.completeUnwind != nil {
 		completed, err := w.runtime.completeUnwind(ctx, observation)
@@ -578,6 +596,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		}
 	}
 	decision := w.manifest.DecideOnManifest(observation.Snapshot)
+	healthDecision = decision
 	w.borrowBlockedLog.note(time.Now(), decision)
 	if decision.Action == Hold && decision.Reason == "unwind_requires_fresh_admission" && w.runtime.refreshUnwind != nil {
 		if err = w.runtime.refreshUnwind(ctx); err == nil {
@@ -600,6 +619,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 	if err := w.manifest.validateDecision(decision); err != nil {
 		return err
 	}
+	healthDecision = decision
 	backyardEvents.noteAction(decision.Action)
 	if w.manifest.PolicyCatalog.SHA256 == nil || !sha256Pattern.MatchString(*w.manifest.PolicyCatalog.SHA256) {
 		return ErrBridgePrerequisitesUnavailable
@@ -629,6 +649,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		}
 	}
 	if decision.Action == Hold || decision.Action == HoldManualRecovery {
+		healthDecision = decision
 		if decision.Action == HoldManualRecovery {
 			return w.recordManualRecoveryDecision(ctx, observation, decision, policyHash)
 		}
@@ -673,10 +694,14 @@ func (w *Worker) Tick(ctx context.Context) error {
 	default:
 		return fmt.Errorf("action %s is not dispatchable", decision.Action)
 	}
+	if observation.Validate() == nil && observation.Snapshot.Fresh && observation.Snapshot.ManualReason == "" && !observation.Snapshot.StrategyReceiptIntegrityFault {
+		healthObservation = observation
+	}
 	// Construction refreshes the same confirmed inputs that will be sent. A
 	// refreshed manual-recovery decision is a new durable stop, not ordinary
 	// decision drift, and must be recorded before the tick returns.
 	if ok, persistErr := w.persistRefreshedManualRecovery(ctx, observation, policyHash); ok {
+		healthDecision = Decision{Action: HoldManualRecovery}
 		if persistErr != nil {
 			return persistErr
 		}
@@ -687,6 +712,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return err
 	}
 	decision = w.manifest.DecideOnManifest(observation.Snapshot)
+	healthDecision = decision
 	if err := w.manifest.validateDecision(decision); err != nil {
 		return err
 	}
@@ -781,6 +807,7 @@ func (w *Worker) Tick(ctx context.Context) error {
 			return err
 		}
 		if latched {
+			healthDecision = Decision{Action: HoldManualRecovery}
 			return w.recordLatchedHold(ctx, latch)
 		}
 	}

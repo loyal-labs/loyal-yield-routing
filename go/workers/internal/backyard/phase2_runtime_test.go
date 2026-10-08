@@ -47,7 +47,7 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 	}
 }
 
-func TestPhase2WithdrawalDemandDrainsEntireSelectedLane(t *testing.T) {
+func TestPhase2WithdrawalDemandRequiresExplicitDrain(t *testing.T) {
 	snapshot := Snapshot{
 		ObservationID: "maple-withdrawal", Slot: 42, RouteKind: RouteKind,
 		RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, Fresh: true,
@@ -59,6 +59,11 @@ func TestPhase2WithdrawalDemandDrainsEntireSelectedLane(t *testing.T) {
 	}
 
 	decision := Decide(snapshot)
+	if decision.Action != Hold || decision.Reason != "withdrawal_full_exit_unproven" {
+		t.Fatal(decision)
+	}
+	snapshot.Unwind = true
+	decision = Decide(snapshot)
 	// This buffer is not proven to cover all debt plus interest; release more
 	// collateral before quoting a bounded full-payoff funding swap.
 	if decision.Action != DeleverRouteStep || decision.Reason != "withdrawal_release_repayment_collateral" || decision.AmountRaw != 1 {

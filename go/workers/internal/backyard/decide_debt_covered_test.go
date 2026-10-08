@@ -17,12 +17,12 @@ func TestNonUSDCCoveredWithdrawalDoesNotUnwind(t *testing.T) {
 	if got := Decide(s); got.Action != ReportNAV || got.Reason != "withdrawal_covered_nav_due" {
 		t.Fatalf("covered demand skipped its report: %+v", got)
 	}
-	// Uncovered demand, an admitted unwind and hard LTV still exit.
+	// Unproven uncovered demand holds; admitted unwind and hard LTV retain priority.
 	s.LastReportAgeSeconds = 0
 	uncovered := s
 	uncovered.VoltrIdleRaw = 4_999_999
-	if got := Decide(uncovered); got.Action != DeleverRouteStep || got.Reason != "withdrawal_release_repayment_collateral" {
-		t.Fatalf("uncovered demand did not unwind: %+v", got)
+	if got := Decide(uncovered); got.Action != Hold || got.Reason != "withdrawal_full_exit_unproven" {
+		t.Fatalf("unproven demand started a full exit: %+v", got)
 	}
 	unwind := s
 	unwind.Unwind = true

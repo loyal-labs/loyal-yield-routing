@@ -3,7 +3,7 @@
 # id below is a placeholder the operator replaces at install time.
 route:
   receiver: telegram
-  group_by: [alertname, family, name, unit, job]
+  group_by: [alertname, family, route, name, unit, job]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
@@ -29,6 +29,16 @@ receivers:
         chat_id: -1000000000000 # placeholder: the alerts chat id
         parse_mode: HTML
         send_resolved: true
+        message: |-
+          {{ range .Alerts }}<b>{{ if eq .Status "firing" }}FIRING{{ else }}RESOLVED{{ end }} · {{ .Labels.severity | html }}</b>
+          <b>{{ .Annotations.summary | html }}</b>
+          {{ if .Labels.family }}Family: {{ .Labels.family | html }}{{ end }}{{ if .Labels.route }} · Route: {{ .Labels.route | html }}{{ end }}
+          {{ if eq .Status "firing" }}Impact: {{ if .Annotations.impact }}{{ .Annotations.impact | html }}{{ else }}Worker reliability may be affected; inspect the condition above.{{ end }}
+          Next action: {{ if .Annotations.action }}{{ .Annotations.action | html }}{{ else }}Check the worker state and logs using the runbook.{{ end }}{{ else }}The alert condition is no longer firing. This does not confirm that a withdrawal was paid.
+          Next action: Verify fresh worker health and confirmed on-chain withdrawal state.{{ end }}
+          <a href="https://github.com/loyal-labs/loyal-yield-routing/blob/e6165b8cffe97acf51ecfa53559da25870ccd546/deploy/hetzner/README.md#withdrawal-attention">Runbook</a>
+
+          {{ end }}
   # Empty until the external dead man's switch exists. Then add:
   #   webhook_configs:
   #     - url_file: /run/credentials/prometheus-alertmanager.service/heartbeat_url

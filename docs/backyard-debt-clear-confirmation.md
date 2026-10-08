@@ -86,3 +86,33 @@ into ordinary permission. Older worker binaries do not enforce this gate; a
 rollback alone does not preserve its protection. Follow `deploy/hetzner/README.md`
 for service operations. Keep host addresses and private infrastructure out of
 this public repository.
+
+## Withdrawal-only exclusions and display health
+
+A partial-planner exclusion (including the 90% threshold or round cap) is not
+proof that full repayment is necessary. A debt-bearing withdrawal-only flow
+without a validated partial path holds with `withdrawal_full_exit_unproven`.
+The former $50 residual-equity heuristic no longer excludes otherwise safe
+partials. Positive residual, LTV, custody, cost and policy checks still apply.
+No new automatic full-debt repayment authority is introduced.
+
+`multiply_route_states.state.withdrawalHealth` is a version-1 display projection,
+scoped to the fixed route, mainnet-beta, and canonical Voltr vault/program. It
+is lease-fenced and does not advance the execution generation or state version.
+It records coherent `observedAt`/`observedSlot`, a fixed safe reason, status
+(`none`, `waiting`, `operator_attention`, `unavailable`), and nullable
+`blockedSince`. Current intervention holds with an unfunded withdrawal set
+attention, including prepare/admission refusals before an operation exists.
+No demand clears it; covered withdrawals wait for the user/chain claim flow.
+Neither health nor a NAV report grants claimability or execution permission.
+Failed observations retain prior state and its older observation clock. Failed
+assessments and NAV/recovery-only ticks cannot erase prior attention. Attention
+onset survives process restarts. Metrics publish only after durable commit:
+`loyal_backyard_withdrawal_attention{family="backyard",route="<fixed route>"}` and
+`loyal_backyard_withdrawal_observed_timestamp_seconds` with the same labels.
+
+The 15-minute no-cash-progress escalation is not implemented in this stage:
+existing route state has no durable funding-progress clock. Adding one needs
+confirmed cash-progress evidence; NAV writes or process uptime are not substitutes.
+The exact typed `selector_finish_current_work_first` hold is an expected selector
+deferral, not a failed operation. Unknown selector errors remain failures.
