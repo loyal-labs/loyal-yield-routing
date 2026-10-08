@@ -145,3 +145,24 @@ WHERE target.settings = $1
 	}
 	return skipAutomaticSlots(ctx, tx, slotIDs)
 }
+
+// SuppressWithdrawalLots retracts surplus scheduled from the vault's own Earn
+// withdrawal when the wallet event was projected before Earn recorded the
+// withdrawal; once the withdrawal is known the projection refuses that inflow
+// itself. A slot left without lots is reused by the next inflow, as any
+// scheduled slot is.
+func SuppressWithdrawalLots(ctx context.Context, tx pgx.Tx, signature, settings string, vaultIndex int16, vaultPubkey string) error {
+	if _, err := tx.Exec(ctx, `
+UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
+SET status = 'suppressed', updated_at = now()
+FROM loyal_yield.balance_sweep_targets AS target
+WHERE target.id = lot.target_id
+  AND target.settings = $2
+  AND target.vault_index = $3
+  AND target.vault_pubkey = $4
+  AND lot.source_signature = $1
+  AND lot.status = 'open'`, signature, settings, vaultIndex, vaultPubkey); err != nil {
+		return fmt.Errorf("suppress autodeposit lots of Earn withdrawal %s: %w", signature, err)
+	}
+	return nil
+}

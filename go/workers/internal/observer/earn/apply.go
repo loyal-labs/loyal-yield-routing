@@ -761,6 +761,10 @@ func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) e
 	if err != nil {
 		return err
 	}
+	// The withdrawal landing in the wallet is no Autodeposit inflow.
+	if err := autodeposit.SuppressWithdrawalLots(ctx, tx, m.WithdrawalSignature, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.VaultPubkey); err != nil {
+		return err
+	}
 	// A reused position row whose later zero-balance boundary already settled
 	// the old principal gets history only.
 	if historyOnly {
