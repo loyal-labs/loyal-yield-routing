@@ -1,471 +1,1164 @@
-# promtool test rules loyal.rules.test.yml
 rule_files:
-  - loyal.rules.yml
+- loyal.rules.yml
 evaluation_interval: 1m
-
 tests:
-  # A family created at 0 that never progresses fires after its threshold
-  # plus grace; one that keeps progressing stays silent. (promtool's clock
-  # starts at the epoch, so time() - 0 grows from zero here.)
-  - interval: 1m
-    input_series:
-      - series: 'loyal_family_last_progress_timestamp_seconds{family="observer",unit="loyal-observer.service"}'
-        values: '0x40'
-      - series: 'loyal_family_last_progress_timestamp_seconds{family="fleet",unit="loyal-retail.service"}'
-        values: '0+60x40'
-      - series: 'loyal_family_last_progress_timestamp_seconds{family="autodeposit",unit="loyal-retail.service"}'
-        values: '0x40'
-      - series: 'loyal_family_last_progress_timestamp_seconds{family="backyard",unit="loyal-backyard.service"}'
-        values: '0x40'
-    alert_rule_test:
-      - eval_time: 3m
-        alertname: LoyalFamilyProgressStale
-      - eval_time: 4m
-        alertname: LoyalFamilyProgressStale
-        exp_alerts:
-          - exp_labels: {severity: page, stale_after: 3m, family: observer, unit: loyal-observer.service}
-            exp_annotations: {summary: "observer has completed no work recently"}
-      - eval_time: 11m
-        alertname: LoyalFamilyProgressStale
-        exp_alerts:
-          - exp_labels: {severity: page, stale_after: 3m, family: observer, unit: loyal-observer.service}
-            exp_annotations: {summary: "observer has completed no work recently"}
-          - exp_labels: {severity: page, stale_after: 10m, family: autodeposit, unit: loyal-retail.service}
-            exp_annotations: {summary: "autodeposit has completed no work recently"}
-      - eval_time: 31m
-        alertname: LoyalFamilyProgressStale
-        exp_alerts:
-          - exp_labels: {severity: page, stale_after: 3m, family: observer, unit: loyal-observer.service}
-            exp_annotations: {summary: "observer has completed no work recently"}
-          - exp_labels: {severity: page, stale_after: 10m, family: autodeposit, unit: loyal-retail.service}
-            exp_annotations: {summary: "autodeposit has completed no work recently"}
-          - exp_labels: {severity: page, stale_after: 30m, family: backyard, unit: loyal-backyard.service}
-            exp_annotations: {summary: "backyard has completed no work recently"}
-
-  # Progress stops at minute 5, and the process restarts every 4 minutes
-  # (series back to 0). Restarts cannot reset the staleness clock.
-  - interval: 1m
-    input_series:
-      - series: 'loyal_family_last_progress_timestamp_seconds{family="fleet",unit="loyal-retail.service"}'
-        values: '0 60 120 180 240 300 300 300 0 0 0 0 0 0 0 0 0 0 0 0 0'
-    alert_rule_test:
-      - eval_time: 9m
-        alertname: LoyalFamilyProgressStale
-      - eval_time: 16m
-        alertname: LoyalFamilyProgressStale
-        exp_alerts:
-          - exp_labels: {severity: page, stale_after: 10m, family: fleet, unit: loyal-retail.service}
-            exp_annotations: {summary: "fleet has completed no work recently"}
-
-  # Repeated terminal failures by code; a quiet code stays silent.
-  - interval: 1m
-    input_series:
-      - series: 'loyal_family_failed_total{family="fleet",code="expired",unit="loyal-retail.service"}'
-        values: '0+1x30'
-      - series: 'loyal_family_failed_total{family="fleet",code="simulation_failed",unit="loyal-retail.service"}'
-        values: '0x30'
-    alert_rule_test:
-      - eval_time: 3m
-        alertname: LoyalFamilyFailing
-      - eval_time: 20m
-        alertname: LoyalFamilyFailing
-        exp_alerts:
-          - exp_labels: {severity: page, family: fleet, code: expired}
-            exp_annotations:
-              summary: "fleet has repeated failed attempts with expired in 15m"
-              impact: "Work may be delayed; repeated selector evaluations are not distinct failed transactions."
-              action: "Inspect the stable failure code and worker logs; verify confirmed state before retrying or changing configuration."
-
-  # Owed Autodeposit work pages past an hour; younger work is silent.
-  - interval: 1m
-    input_series:
-      - series: 'loyal_autodeposit_oldest_due_lot_age_seconds{unit="loyal-retail.service"}'
-        values: '3000+60x20'
-    alert_rule_test:
-      - eval_time: 5m
-        alertname: LoyalAutodepositOverdue
-      - eval_time: 15m
-        alertname: LoyalAutodepositOverdue
-        exp_alerts:
-          - exp_labels: {severity: page, unit: loyal-retail.service}
-            exp_annotations:
-              summary: "autodeposit has owed a deposit for 1h 5m 0s"
-
-  # The payer warns below 0.55 SOL after 5m and pages below 0.05 SOL at once.
-  - interval: 1m
-    input_series:
-      - series: 'loyal_fee_payer_balance_lamports{payer="Payer1",unit="loyal-retail.service"}'
-        values: '600000000x2 500000000x10 40000000x5'
-    alert_rule_test:
-      - eval_time: 1m
-        alertname: LoyalFeePayerLow
-      - eval_time: 9m
-        alertname: LoyalFeePayerLow
-        exp_alerts:
-          - exp_labels: {severity: warning, payer: Payer1, unit: loyal-retail.service}
-            exp_annotations:
-              summary: "fee payer Payer1 is below 0.55 SOL; top it up"
-      - eval_time: 9m
-        alertname: LoyalFeePayerExhausted
-      - eval_time: 14m
-        alertname: LoyalFeePayerExhausted
-        exp_alerts:
-          - exp_labels: {severity: page, payer: Payer1, unit: loyal-retail.service}
-            exp_annotations:
-              summary: "fee payer Payer1 is out of SOL and Autodeposit has stopped; top it up"
-
-  # Inflight with no terminal outcome is stuck; inflight that keeps landing,
-  # or keeps failing terminally, is not stuck.
-  - interval: 1m
-    input_series:
-      - series: 'loyal_family_inflight{family="fleet",unit="loyal-retail.service"}'
-        values: '2x10'
-      - series: 'loyal_family_landed_total{family="fleet",unit="loyal-retail.service"}'
-        values: '5x10'
-      - series: 'loyal_family_inflight{family="multiply",unit="loyal-retail.service"}'
-        values: '1x10'
-      - series: 'loyal_family_inflight{family="autodeposit",unit="loyal-retail.service"}'
-        values: '1x10'
-      - series: 'loyal_family_landed_total{family="autodeposit",unit="loyal-retail.service"}'
-        values: '0+1x10'
-      - series: 'loyal_family_inflight{family="lookup",unit="loyal-retail.service"}'
-        values: '1x10'
-      - series: 'loyal_family_failed_total{family="lookup",code="expired",unit="loyal-retail.service"}'
-        values: '0+1x10'
-    alert_rule_test:
-      - eval_time: 2m
-        alertname: LoyalInflightStuck
-      - eval_time: 5m
-        alertname: LoyalInflightStuck
-        exp_alerts:
-          - exp_labels: {severity: page, family: fleet, unit: loyal-retail.service}
-            exp_annotations:
-              summary: "fleet has 2 operations in flight and none reached a terminal state in 3m"
-          - exp_labels: {severity: page, family: multiply, unit: loyal-retail.service}
-            exp_annotations:
-              summary: "multiply has 1 operations in flight and none reached a terminal state in 3m"
-
-  # A running Go unit that does not serve /metrics pages; a stopped one does not.
-  - interval: 1m
-    input_series:
-      - series: 'up{job="loyal",instance="127.0.0.1:9102",unit="loyal-retail.service"}'
-        values: '0x5'
-      - series: 'node_systemd_unit_state{name="loyal-retail.service",state="active"}'
-        values: '1x5'
-      - series: 'up{job="loyal",instance="127.0.0.1:9103",unit="loyal-backyard.service"}'
-        values: '0x5'
-      - series: 'node_systemd_unit_state{name="loyal-backyard.service",state="active"}'
-        values: '0x5'
-      - series: 'node_systemd_unit_state{name="loyal-backyard.service",state="inactive"}'
-        values: '1x5'
-      - series: 'up{job="loyal",instance="127.0.0.1:9101",unit="loyal-observer.service"}'
-        values: '1x5'
-    alert_rule_test:
-      - eval_time: 1m
-        alertname: LoyalWorkerDown
-      - eval_time: 3m
-        alertname: LoyalWorkerDown
-        exp_alerts:
-          - exp_labels: {severity: page, job: loyal, instance: "127.0.0.1:9102", unit: loyal-retail.service}
-            exp_annotations:
-              summary: "loyal-retail.service is not serving /metrics"
-
-  # Failed or stuck-starting units alert, Go or Rust; a stopped unit does not.
-  - interval: 1m
-    input_series:
-      - series: 'node_systemd_unit_state{name="loyal-retail.service",state="failed"}'
-        values: '1x5'
-      - series: 'node_systemd_unit_state{name="loyal-fleet-route-executor.service",state="activating"}'
-        values: '1x5'
-      - series: 'node_systemd_unit_state{name="loyal-observer.service",state="inactive"}'
-        values: '1x5'
-      - series: 'node_systemd_unit_state{name="loyal-observer.service",state="failed"}'
-        values: '0x5'
-      - series: 'node_systemd_unit_state{name="postgresql.service",state="failed"}'
-        values: '1x5'
-    alert_rule_test:
-      - eval_time: 3m
-        alertname: LoyalUnitDown
-        exp_alerts:
-          - exp_labels: {severity: page, name: loyal-retail.service, state: failed}
-            exp_annotations:
-              summary: "loyal-retail.service is failed"
-          - exp_labels: {severity: page, name: loyal-fleet-route-executor.service, state: activating}
-            exp_annotations:
-              summary: "loyal-fleet-route-executor.service is activating"
-
-  # Restart=always hides crashes from unit state; the restart counter does not.
-  - interval: 1m
-    input_series:
-      - series: 'node_systemd_service_restart_total{name="loyal-backyard.service"}'
-        values: '0+1x20'
-      - series: 'node_systemd_service_restart_total{name="loyal-observer.service"}'
-        values: '0x20'
-    alert_rule_test:
-      - eval_time: 20m
-        alertname: LoyalUnitRestartLoop
-        exp_alerts:
-          - exp_labels: {severity: page, name: loyal-backyard.service}
-            exp_annotations:
-              summary: "loyal-backyard.service restarted 15 times in 15m"
-
-  # The monitoring stack's own scrape targets, and the heartbeat.
-  - interval: 1m
-    input_series:
-      - series: 'up{job="node",instance="127.0.0.1:9100"}'
-        values: '0x5'
-      - series: 'up{job="alertmanager",instance="127.0.0.1:9093"}'
-        values: '1x5'
-    alert_rule_test:
-      - eval_time: 3m
-        alertname: LoyalMonitoringDown
-        exp_alerts:
-          - exp_labels: {severity: page, job: node, instance: "127.0.0.1:9100"}
-            exp_annotations:
-              summary: "node is not scrapeable"
-      - eval_time: 0m
-        alertname: Watchdog
-        exp_alerts:
-          - exp_labels: {severity: none}
-            exp_annotations:
-              summary: "Alerting pipeline heartbeat"
-
-  # A lane that never finishes a tick without error pages after 15m plus
-  # grace; a lane whose ticks keep succeeding stays silent.
-  - interval: 1m
-    input_series:
-      - series: 'loyal_lane_last_success_timestamp_seconds{family="lookup",lane="lookup_planner",unit="loyal-retail.service"}'
-        values: '0x30'
-      - series: 'loyal_lane_last_success_timestamp_seconds{family="lookup",lane="lookup_writer",unit="loyal-retail.service"}'
-        values: '0+60x30'
-    alert_rule_test:
-      - eval_time: 15m
-        alertname: LoyalLaneStalled
-      - eval_time: 17m
-        alertname: LoyalLaneStalled
-        exp_alerts:
-          - exp_labels: {severity: page, family: lookup, lane: lookup_planner, unit: loyal-retail.service}
-            exp_annotations: {summary: "lookup lane lookup_planner has had no successful tick for 15m"}
-
-  # Withdrawal state and telemetry are independent signals.
-  - name: attention debounces, deduplicates instances and clears on a durable assessment
-    interval: 1m
-    input_series:
-    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
-      values: 0 1 1 1 0 0
-    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="two"}
-      values: 0 1 1 1 0 0
-    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
-      values: 0+60x5
-    alert_rule_test:
-    - eval_time: 1m
-      alertname: LoyalBackyardWithdrawalAttention
-    - eval_time: 2m
-      alertname: LoyalBackyardWithdrawalAttention
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal needs operator attention on pooled-usdc
-          impact: A pending withdrawal needs intervention before funding can continue.
-          action: Inspect the persisted withdrawal health and confirmed funding state; follow the withdrawal attention runbook.
-    - eval_time: 4m
-      alertname: LoyalBackyardWithdrawalAttention
-    - eval_time: 4m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-  - name: stale observations page even when the attention gauge is zero
-    interval: 1m
-    input_series:
-    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
-      values: '0x10'
-    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
-      values: '0x10'
-    alert_rule_test:
-    - eval_time: 5m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-    - eval_time: 7m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal health is unavailable
-          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
-          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
-    - eval_time: 7m
-      alertname: LoyalBackyardWithdrawalAttention
-  - name: read errors and scrape loss do not clear attention; freshness pages separately
-    interval: 1m
-    input_series:
-    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
-      values: 1 1 stale _ _ _ _ _ _ 1 0
-    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
-      values: 0 60 stale _ _ _ _ _ _ 60 600
-    alert_rule_test:
-    - eval_time: 1m
-      alertname: LoyalBackyardWithdrawalAttention
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal needs operator attention on pooled-usdc
-          impact: A pending withdrawal needs intervention before funding can continue.
-          action: Inspect the persisted withdrawal health and confirmed funding state; follow the withdrawal attention runbook.
-    - eval_time: 8m
-      alertname: LoyalBackyardWithdrawalAttention
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal needs operator attention on pooled-usdc
-          impact: A pending withdrawal needs intervention before funding can continue.
-          action: Inspect the persisted withdrawal health and confirmed funding state; follow the withdrawal attention runbook.
-    - eval_time: 3m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal health is unavailable
-          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
-          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
-    - eval_time: 9m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal health is unavailable
-          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
-          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
-    - eval_time: 10m
-      alertname: LoyalBackyardWithdrawalAttention
-    - eval_time: 10m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-  - name: missing health metrics are unknown, not recovered
-    interval: 1m
-    input_series: []
-    alert_rule_test:
-    - eval_time: 0m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-    - eval_time: 1m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-        exp_annotations:
-          summary: Earn MAX withdrawal health is unavailable
-          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
-          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
-  - name: missing observation is unknown despite an available attention gauge
-    interval: 1m
-    input_series:
-    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
-      values: '0x3'
-    alert_rule_test:
-    - eval_time: 1m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal health is unavailable
-          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
-          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
-  - name: one missing route is not hidden by a healthy sibling
-    interval: 1m
-    input_series:
-    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
-      values: 0 stale _ _
-    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
-      values: 0 stale _ _
-    - series: loyal_backyard_withdrawal_attention{family="backyard",route="other",instance="one"}
-      values: '0x3'
-    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="other",instance="one"}
-      values: 0+60x3
-    alert_rule_test:
-    - eval_time: 2m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal health is unavailable
-          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
-          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
-  - name: missing attention gauge is unknown with one route alert
-    interval: 1m
-    input_series:
-    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
-      values: 0+60x3
-    alert_rule_test:
-    - eval_time: 1m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal health is unavailable
-          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
-          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
-  - name: total metric loss still pages after the route-history window expires
-    interval: 1m
-    input_series:
-    - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
-      values: 1 stale
-    - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
-      values: 0 stale
-    alert_rule_test:
-    - eval_time: 2m
-      alertname: LoyalBackyardWithdrawalAttention
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal needs operator attention on pooled-usdc
-          impact: A pending withdrawal needs intervention before funding can continue.
-          action: Inspect the persisted withdrawal health and confirmed funding state; follow the withdrawal attention runbook.
-    - eval_time: 2m
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-          route: pooled-usdc
-        exp_annotations:
-          summary: Earn MAX withdrawal health is unavailable
-          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
-          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
-    - eval_time: 25h
-      alertname: LoyalBackyardWithdrawalAttention
-    - eval_time: 25h
-      alertname: LoyalBackyardWithdrawalHealthUnavailable
-      exp_alerts:
-      - exp_labels:
-          severity: page
-          family: backyard
-        exp_annotations:
-          summary: Earn MAX withdrawal health is unavailable
-          impact: Withdrawal recovery cannot be verified; missing data does not mean users have been paid.
-          action: Check worker metrics, coherent assessment timestamps, database reads and durable writes before assessing withdrawal status.
+- interval: 1m
+  input_series:
+  - series: loyal_family_last_progress_timestamp_seconds{family="observer",unit="loyal-observer.service"}
+    values: '0x40'
+  - series: loyal_family_last_progress_timestamp_seconds{family="fleet",unit="loyal-retail.service"}
+    values: 0+60x40
+  - series: loyal_family_last_progress_timestamp_seconds{family="autodeposit",unit="loyal-retail.service"}
+    values: '0x40'
+  - series: loyal_family_last_progress_timestamp_seconds{family="backyard",unit="loyal-backyard.service"}
+    values: '0x40'
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: LoyalFamilyProgressStale
+  - eval_time: 4m
+    alertname: LoyalFamilyProgressStale
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        stale_after: 3m
+        family: observer
+        unit: loyal-observer.service
+      exp_annotations:
+        action: Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.
+        impact: Vault management or withdrawal funding may be stalled even if the process is running.
+        recovery: Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.
+        summary: observer has completed no work recently
+        trigger: No recorded completed work for about 3m; restarting does not reset this check.
+  - eval_time: 11m
+    alertname: LoyalFamilyProgressStale
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        stale_after: 3m
+        family: observer
+        unit: loyal-observer.service
+      exp_annotations:
+        action: Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.
+        impact: Vault management or withdrawal funding may be stalled even if the process is running.
+        recovery: Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.
+        summary: observer has completed no work recently
+        trigger: No recorded completed work for about 3m; restarting does not reset this check.
+    - exp_labels:
+        severity: page
+        stale_after: 10m
+        family: autodeposit
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.
+        impact: Vault management or withdrawal funding may be stalled even if the process is running.
+        recovery: Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.
+        summary: autodeposit has completed no work recently
+        trigger: No recorded completed work for about 10m; restarting does not reset this check.
+  - eval_time: 31m
+    alertname: LoyalFamilyProgressStale
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        stale_after: 3m
+        family: observer
+        unit: loyal-observer.service
+      exp_annotations:
+        action: Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.
+        impact: Vault management or withdrawal funding may be stalled even if the process is running.
+        recovery: Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.
+        summary: observer has completed no work recently
+        trigger: No recorded completed work for about 3m; restarting does not reset this check.
+    - exp_labels:
+        severity: page
+        stale_after: 10m
+        family: autodeposit
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.
+        impact: Vault management or withdrawal funding may be stalled even if the process is running.
+        recovery: Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.
+        summary: autodeposit has completed no work recently
+        trigger: No recorded completed work for about 10m; restarting does not reset this check.
+    - exp_labels:
+        severity: page
+        stale_after: 30m
+        family: backyard
+        unit: loyal-backyard.service
+      exp_annotations:
+        action: Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.
+        impact: Vault management or withdrawal funding may be stalled even if the process is running.
+        recovery: Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.
+        summary: backyard has completed no work recently
+        trigger: No recorded completed work for about 30m; restarting does not reset this check.
+- interval: 1m
+  input_series:
+  - series: loyal_family_last_progress_timestamp_seconds{family="fleet",unit="loyal-retail.service"}
+    values: 0 60 120 180 240 300 300 300 0 0 0 0 0 0 0 0 0 0 0 0 0
+  alert_rule_test:
+  - eval_time: 9m
+    alertname: LoyalFamilyProgressStale
+  - eval_time: 16m
+    alertname: LoyalFamilyProgressStale
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        stale_after: 10m
+        family: fleet
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.
+        impact: Vault management or withdrawal funding may be stalled even if the process is running.
+        recovery: Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.
+        summary: fleet has completed no work recently
+        trigger: No recorded completed work for about 10m; restarting does not reset this check.
+- interval: 1m
+  input_series:
+  - series: loyal_family_failed_total{family="fleet",code="expired",unit="loyal-retail.service"}
+    values: 0+1x30
+  - series: loyal_family_failed_total{family="fleet",code="simulation_failed",unit="loyal-retail.service"}
+    values: '0x30'
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: LoyalFamilyFailing
+  - eval_time: 20m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: fleet
+        code: expired
+      exp_annotations:
+        action: Inspect the persisted operation and chain confirmation/finalized-expiry evidence. Reconcile any landed effects and retain ambiguous reservations before any retry or replacement.
+        impact: Execution or confirmation failed or remains uncertain; funds must not be assumed unsent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: fleet has repeated failed attempts with expired in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+- interval: 1m
+  input_series:
+  - series: loyal_autodeposit_oldest_due_lot_age_seconds{unit="loyal-retail.service"}
+    values: 3000+60x20
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: LoyalAutodepositOverdue
+  - eval_time: 15m
+    alertname: LoyalAutodepositOverdue
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Inspect the oldest due claim or blocked slot, confirmed custody balances and existing pull/deposit transaction states. Resolve the actual blocker; do not pull the subscription again or mark the claim paid without chain evidence.
+        impact: At least one autodeposit obligation has not completed within the expected processing window.
+        recovery: Verify the overdue claim or slot is resolved from confirmed state and no newer overdue obligation remains.
+        summary: An autodeposit obligation has been waiting for over 1 hour
+        trigger: A selected deposit claim or continuously custody-blocked slot has waited over 1 hour.
+- interval: 1m
+  input_series:
+  - series: loyal_fee_payer_balance_lamports{payer="Payer1",unit="loyal-retail.service"}
+    values: 600000000x2 500000000x10 40000000x5
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: LoyalFeePayerLow
+  - eval_time: 9m
+    alertname: LoyalFeePayerLow
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        payer: Payer1
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Verify the payer identity and current confirmed SOL balance against the runbook reserve target. Arrange approved funding if needed; never substitute a user wallet or expose the signer key.
+        impact: The worker may soon lack enough SOL for transaction fees or account rent.
+        recovery: Verify the intended payer is above the reserve threshold and can fund the next expected fee/rent requirement.
+        summary: Configured fee payer is below its warning reserve
+        trigger: The configured payer has stayed below the warning reserve threshold for 5 minutes.
+  - eval_time: 9m
+    alertname: LoyalFeePayerExhausted
+  - eval_time: 14m
+    alertname: LoyalFeePayerExhausted
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        payer: Payer1
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Check the confirmed payer balance and in-flight signatures. Arrange approved funding for the configured payer, then verify work resumes; do not replay a subscription pull or replace the signer to bypass the block.
+        impact: Fee/rent-dependent work may be blocked; the low balance alone does not establish which transactions already landed.
+        recovery: Verify adequate confirmed SOL and successful subsequent work. Funding a payer does not itself complete pending user transactions.
+        summary: Configured fee payer is below its critical reserve
+        trigger: The configured payer is below the critical reserve threshold.
+- interval: 1m
+  input_series:
+  - series: loyal_family_inflight{family="fleet",unit="loyal-retail.service"}
+    values: 2x10
+  - series: loyal_family_landed_total{family="fleet",unit="loyal-retail.service"}
+    values: 5x10
+  - series: loyal_family_inflight{family="multiply",unit="loyal-retail.service"}
+    values: 1x10
+  - series: loyal_family_inflight{family="autodeposit",unit="loyal-retail.service"}
+    values: 1x10
+  - series: loyal_family_landed_total{family="autodeposit",unit="loyal-retail.service"}
+    values: 0+1x10
+  - series: loyal_family_inflight{family="lookup",unit="loyal-retail.service"}
+    values: 1x10
+  - series: loyal_family_failed_total{family="lookup",code="expired",unit="loyal-retail.service"}
+    values: 0+1x10
+  alert_rule_test:
+  - eval_time: 2m
+    alertname: LoyalInflightStuck
+  - eval_time: 5m
+    alertname: LoyalInflightStuck
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: fleet
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Inspect the persisted operation status, signature, last-valid block height and RPC health. Reconcile landed effects or verify finalized expiry and signature absence before replacing work. Keep ambiguous reservations; never blindly resend.
+        impact: A transaction may be pending, landed but unreconciled, or awaiting safe expiry handling.
+        recovery: Confirm a journaled terminal outcome backed by chain evidence. A drop in the in-flight gauge alone is not proof of payment or safe retry.
+        summary: fleet has in-flight work without a terminal outcome
+        trigger: Work is in flight with no landed/failed outcome in the rolling 3-minute window, sustained for another 3 minutes.
+    - exp_labels:
+        severity: page
+        family: multiply
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Inspect the persisted operation status, signature, last-valid block height and RPC health. Reconcile landed effects or verify finalized expiry and signature absence before replacing work. Keep ambiguous reservations; never blindly resend.
+        impact: A transaction may be pending, landed but unreconciled, or awaiting safe expiry handling.
+        recovery: Confirm a journaled terminal outcome backed by chain evidence. A drop in the in-flight gauge alone is not proof of payment or safe retry.
+        summary: multiply has in-flight work without a terminal outcome
+        trigger: Work is in flight with no landed/failed outcome in the rolling 3-minute window, sustained for another 3 minutes.
+- interval: 1m
+  input_series:
+  - series: up{job="loyal",instance="127.0.0.1:9102",unit="loyal-retail.service"}
+    values: '0x5'
+  - series: node_systemd_unit_state{name="loyal-retail.service",state="active"}
+    values: 1x5
+  - series: up{job="loyal",instance="127.0.0.1:9103",unit="loyal-backyard.service"}
+    values: '0x5'
+  - series: node_systemd_unit_state{name="loyal-backyard.service",state="active"}
+    values: '0x5'
+  - series: node_systemd_unit_state{name="loyal-backyard.service",state="inactive"}
+    values: 1x5
+  - series: up{job="loyal",instance="127.0.0.1:9101",unit="loyal-observer.service"}
+    values: 1x5
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: LoyalWorkerDown
+  - eval_time: 3m
+    alertname: LoyalWorkerDown
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        job: loyal
+        instance: 127.0.0.1:9102
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Check systemd state, the process, local metrics listener and recent startup/runtime logs. Distinguish a scrape problem from a crashed worker. Check persisted signed work before using the documented restart procedure.
+        impact: The worker may be down or its metrics endpoint may be unreachable; execution state is unknown.
+        recovery: Confirm metrics scraping, expected release and healthy work progress; a reachable metrics endpoint alone is not full recovery.
+        summary: loyal-retail.service is not serving /metrics
+        trigger: Systemd reports the unit active/starting/stopping/failed but its metrics scrape has failed for 2 minutes.
+- interval: 1m
+  input_series:
+  - series: node_systemd_unit_state{name="loyal-retail.service",state="failed"}
+    values: 1x5
+  - series: node_systemd_unit_state{name="loyal-fleet-route-executor.service",state="activating"}
+    values: 1x5
+  - series: node_systemd_unit_state{name="loyal-observer.service",state="inactive"}
+    values: 1x5
+  - series: node_systemd_unit_state{name="loyal-observer.service",state="failed"}
+    values: '0x5'
+  - series: node_systemd_unit_state{name="postgresql.service",state="failed"}
+    values: 1x5
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: LoyalUnitDown
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        name: loyal-retail.service
+        state: failed
+      exp_annotations:
+        action: Check the intended service state and the first startup error in its journal, including credentials, executable and resource failures. Restore only an intended active service using the runbook; never revive a retired worker.
+        impact: The service is not operating normally; its dependent processing may be unavailable.
+        recovery: Confirm the intended service is active on the expected release and its dependent work progresses. Disabled or removed services also stop this alert without proving recovery.
+        summary: loyal-retail.service is failed
+        trigger: The named service has remained failed or stuck activating for 2 minutes.
+    - exp_labels:
+        severity: page
+        name: loyal-fleet-route-executor.service
+        state: activating
+      exp_annotations:
+        action: Check the intended service state and the first startup error in its journal, including credentials, executable and resource failures. Restore only an intended active service using the runbook; never revive a retired worker.
+        impact: The service is not operating normally; its dependent processing may be unavailable.
+        recovery: Confirm the intended service is active on the expected release and its dependent work progresses. Disabled or removed services also stop this alert without proving recovery.
+        summary: loyal-fleet-route-executor.service is activating
+        trigger: The named service has remained failed or stuck activating for 2 minutes.
+- interval: 1m
+  input_series:
+  - series: node_systemd_service_restart_total{name="loyal-backyard.service"}
+    values: 0+1x20
+  - series: node_systemd_service_restart_total{name="loyal-observer.service"}
+    values: '0x20'
+  alert_rule_test:
+  - eval_time: 20m
+    alertname: LoyalUnitRestartLoop
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        name: loyal-backyard.service
+      exp_annotations:
+        action: Inspect the first exit cause, OOM/resource events, startup configuration and dependency failures. Check signed/in-flight state before remediation; stop repeated blind restarts and follow the release rollback/recovery runbook.
+        impact: The service is unstable and may repeatedly interrupt work or lose fresh observations.
+        recovery: Verify the restart count stabilizes and fresh work completes on the intended release; waiting for the counter window to expire is not a fix.
+        summary: loyal-backyard.service is repeatedly restarting
+        trigger: The service restart counter increased by more than 3 in 15 minutes.
+- interval: 1m
+  input_series:
+  - series: up{job="node",instance="127.0.0.1:9100"}
+    values: '0x5'
+  - series: up{job="alertmanager",instance="127.0.0.1:9093"}
+    values: 1x5
+  alert_rule_test:
+  - eval_time: 3m
+    alertname: LoyalMonitoringDown
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        job: node
+        instance: 127.0.0.1:9100
+      exp_annotations:
+        action: Check the named exporter, Prometheus or Alertmanager service and local listener. For Alertmanager, inspect reload success and notification failure counters; after recovery verify worker scrapes, rule evaluation and notification delivery.
+        impact: Worker health or notification delivery may be invisible; absence of other alerts is not evidence that workers are healthy.
+        recovery: Verify the affected component plus end-to-end scraping, rule evaluation and notifications. Check the external heartbeat separately if the whole host was unavailable.
+        summary: node is not scrapeable
+        trigger: The named monitoring component has not been scrapeable for 2 minutes.
+  - eval_time: 0m
+    alertname: Watchdog
+    exp_alerts:
+    - exp_labels:
+        severity: none
+      exp_annotations:
+        action: Check the external heartbeat receiver, host reachability and monitoring services. Do not silence the dead-man switch without restoring an independent health signal.
+        impact: If heartbeat delivery stops, the host or monitoring stack may be unavailable and unable to alert for itself.
+        recovery: Verify the external receiver is receiving current heartbeats and that normal worker alert delivery works.
+        summary: Alerting pipeline heartbeat
+        trigger: Continuous heartbeat; the external receiver must detect when it stops.
+- interval: 1m
+  input_series:
+  - series: loyal_lane_last_success_timestamp_seconds{family="lookup",lane="lookup_planner",unit="loyal-retail.service"}
+    values: '0x30'
+  - series: loyal_lane_last_success_timestamp_seconds{family="lookup",lane="lookup_writer",unit="loyal-retail.service"}
+    values: 0+60x30
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: LoyalLaneStalled
+  - eval_time: 17m
+    alertname: LoyalLaneStalled
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: lookup
+        lane: lookup_planner
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Identify the named lane and its oldest pending operation. Check its last error, downstream RPC/database dependency and ownership/reservation state. Resolve that lane without restarting or replaying unrelated lanes.
+        impact: One processing lane may be stuck while other lanes keep the worker healthy-looking.
+        recovery: Confirm this exact lane records new successful ticks and its backlog advances; progress in another lane is not sufficient.
+        summary: lookup lane lookup_planner has had no successful tick for 15m
+        trigger: This lane had no successful tick for over 15 minutes; condition persisted for 1 minute.
+- name: attention debounces, deduplicates instances and clears on a durable assessment
+  interval: 1m
+  input_series:
+  - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+    values: 0 1 1 1 0 0
+  - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="two"}
+    values: 0 1 1 1 0 0
+  - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+    values: 0+60x5
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: LoyalBackyardWithdrawalAttention
+  - eval_time: 2m
+    alertname: LoyalBackyardWithdrawalAttention
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Read the current scoped withdrawal-health reason and timestamp. Compare pending demand, available cash and active operation with confirmed chain state. Review the specific guard; never clear latches or grant full-debt repayment just to clear the alert.
+        impact: Pending vault withdrawals require operator attention; normal cooldown alone does not trigger this alert.
+        recovery: Verify a fresh assessment showing the blocker removed or funding progress resumed. Missing metrics can expire an alert and do not prove recovery; verify each user payment separately.
+        summary: Earn MAX withdrawal needs operator attention on pooled-usdc
+        trigger: The persisted withdrawal-attention state remained active for 1 minute.
+  - eval_time: 4m
+    alertname: LoyalBackyardWithdrawalAttention
+  - eval_time: 4m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+- name: stale observations page even when the attention gauge is zero
+  interval: 1m
+  input_series:
+  - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+    values: '0x10'
+  - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+    values: '0x10'
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+  - eval_time: 7m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.
+        impact: Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.
+        recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
+        summary: Earn MAX withdrawal health is unavailable
+        trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+  - eval_time: 7m
+    alertname: LoyalBackyardWithdrawalAttention
+- name: read errors and scrape loss do not clear attention; freshness pages separately
+  interval: 1m
+  input_series:
+  - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+    values: 1 1 stale _ _ _ _ _ _ 1 0
+  - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+    values: 0 60 stale _ _ _ _ _ _ 60 600
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: LoyalBackyardWithdrawalAttention
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Read the current scoped withdrawal-health reason and timestamp. Compare pending demand, available cash and active operation with confirmed chain state. Review the specific guard; never clear latches or grant full-debt repayment just to clear the alert.
+        impact: Pending vault withdrawals require operator attention; normal cooldown alone does not trigger this alert.
+        recovery: Verify a fresh assessment showing the blocker removed or funding progress resumed. Missing metrics can expire an alert and do not prove recovery; verify each user payment separately.
+        summary: Earn MAX withdrawal needs operator attention on pooled-usdc
+        trigger: The persisted withdrawal-attention state remained active for 1 minute.
+  - eval_time: 8m
+    alertname: LoyalBackyardWithdrawalAttention
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Read the current scoped withdrawal-health reason and timestamp. Compare pending demand, available cash and active operation with confirmed chain state. Review the specific guard; never clear latches or grant full-debt repayment just to clear the alert.
+        impact: Pending vault withdrawals require operator attention; normal cooldown alone does not trigger this alert.
+        recovery: Verify a fresh assessment showing the blocker removed or funding progress resumed. Missing metrics can expire an alert and do not prove recovery; verify each user payment separately.
+        summary: Earn MAX withdrawal needs operator attention on pooled-usdc
+        trigger: The persisted withdrawal-attention state remained active for 1 minute.
+  - eval_time: 3m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.
+        impact: Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.
+        recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
+        summary: Earn MAX withdrawal health is unavailable
+        trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+  - eval_time: 9m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.
+        impact: Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.
+        recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
+        summary: Earn MAX withdrawal health is unavailable
+        trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+  - eval_time: 10m
+    alertname: LoyalBackyardWithdrawalAttention
+  - eval_time: 10m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+- name: missing health metrics are unknown, not recovered
+  interval: 1m
+  input_series: []
+  alert_rule_test:
+  - eval_time: 0m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+  - eval_time: 1m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+      exp_annotations:
+        action: Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.
+        impact: Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.
+        recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
+        summary: Earn MAX withdrawal health is unavailable
+        trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+- name: missing observation is unknown despite an available attention gauge
+  interval: 1m
+  input_series:
+  - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+    values: '0x3'
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.
+        impact: Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.
+        recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
+        summary: Earn MAX withdrawal health is unavailable
+        trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+- name: one missing route is not hidden by a healthy sibling
+  interval: 1m
+  input_series:
+  - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+    values: 0 stale _ _
+  - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+    values: 0 stale _ _
+  - series: loyal_backyard_withdrawal_attention{family="backyard",route="other",instance="one"}
+    values: '0x3'
+  - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="other",instance="one"}
+    values: 0+60x3
+  alert_rule_test:
+  - eval_time: 2m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.
+        impact: Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.
+        recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
+        summary: Earn MAX withdrawal health is unavailable
+        trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+- name: missing attention gauge is unknown with one route alert
+  interval: 1m
+  input_series:
+  - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+    values: 0+60x3
+  alert_rule_test:
+  - eval_time: 1m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.
+        impact: Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.
+        recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
+        summary: Earn MAX withdrawal health is unavailable
+        trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+- name: total metric loss still pages after the route-history window expires
+  interval: 1m
+  input_series:
+  - series: loyal_backyard_withdrawal_attention{family="backyard",route="pooled-usdc",instance="one"}
+    values: 1 stale
+  - series: loyal_backyard_withdrawal_observed_timestamp_seconds{family="backyard",route="pooled-usdc",instance="one"}
+    values: 0 stale
+  alert_rule_test:
+  - eval_time: 2m
+    alertname: LoyalBackyardWithdrawalAttention
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Read the current scoped withdrawal-health reason and timestamp. Compare pending demand, available cash and active operation with confirmed chain state. Review the specific guard; never clear latches or grant full-debt repayment just to clear the alert.
+        impact: Pending vault withdrawals require operator attention; normal cooldown alone does not trigger this alert.
+        recovery: Verify a fresh assessment showing the blocker removed or funding progress resumed. Missing metrics can expire an alert and do not prove recovery; verify each user payment separately.
+        summary: Earn MAX withdrawal needs operator attention on pooled-usdc
+        trigger: The persisted withdrawal-attention state remained active for 1 minute.
+  - eval_time: 2m
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.
+        impact: Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.
+        recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
+        summary: Earn MAX withdrawal health is unavailable
+        trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+  - eval_time: 25h
+    alertname: LoyalBackyardWithdrawalAttention
+  - eval_time: 25h
+    alertname: LoyalBackyardWithdrawalHealthUnavailable
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+      exp_annotations:
+        action: Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.
+        impact: Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.
+        recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
+        summary: Earn MAX withdrawal health is unavailable
+        trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+- interval: 1m
+  input_series:
+  - series: loyal_family_failed_total{family="backyard",code="build_token_valuation_unavailable"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="confirmed_observation_unavailable"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="database_08006"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="debt_clear_confirmation_required"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="duplicate_move_quote"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="finalized_transaction_failed"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="fresh_build_cost_exceeds_reservation"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="initializer_native_funding_unavailable"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="invalid_pilot_canary_request"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="invalid_selector_route_state"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="manual_recovery_latched"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="new_unclassified_guard"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="pilot_canary_history_full"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="pilot_canary_request_id_reused"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="route_lease_lost"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_allocation_bind_failed"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_allocation_not_bound"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_already_allocated"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_authority_mismatch"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_borrow_fee_exceeded"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_borrow_mismatch"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_borrow_unavailable"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_cash_changed"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_has_outstanding_exit"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_lane_deferred"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_quote_expired"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_quote_missing"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_entry_requires_reconciled_idle"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_lock_timeout"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_query_cancelled"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_route_fence_unavailable"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_timeout"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_unavailable"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_evaluation_not_current"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_fee_evidence_unavailable"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_finish_current_work_first"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_manual_recovery_active"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_requires_active_pilot"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_resolve_capital_recovery_first"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_state_changed_during_quote"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="selector_unwind_quote_missing"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="timeout"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="unwind_requires_existing_exit_reservation"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="withdrawal_full_exit_unproven"}
+    values: 0+1x16
+  - series: loyal_family_failed_total{family="backyard",code="worker_fault"}
+    values: 0+1x16
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: LoyalFamilyFailing
+    exp_alerts:
+    - exp_labels:
+        family: backyard
+        code: build_token_valuation_unavailable
+        severity: page
+      exp_annotations:
+        action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
+        impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with build_token_valuation_unavailable in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: confirmed_observation_unavailable
+        severity: page
+      exp_annotations:
+        action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
+        impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with confirmed_observation_unavailable in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: database_08006
+        severity: page
+      exp_annotations:
+        action: Check the SQLSTATE/code, database connectivity, query cancellations and blocking locks at the alert time. Preserve the operation journal; do not delete rows or force-release locks to resume work.
+        impact: Database admission or state reads are failing; strategy decisions may not be refreshed.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with database_08006 in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: debt_clear_confirmation_required
+        severity: page
+      exp_annotations:
+        action: Check the current withdrawal demand, safe partial path, and applicable consent or verified emergency evidence. Do not authorize full repayment merely because a partial plan failed.
+        impact: Debt repayment is blocked by a consent, scope or necessity-proof guard.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with debt_clear_confirmation_required in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: duplicate_move_quote
+        severity: page
+      exp_annotations:
+        action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
+        impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with duplicate_move_quote in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: finalized_transaction_failed
+        severity: page
+      exp_annotations:
+        action: Inspect the persisted operation and chain confirmation/finalized-expiry evidence. Reconcile any landed effects and retain ambiguous reservations before any retry or replacement.
+        impact: Execution or confirmation failed or remains uncertain; funds must not be assumed unsent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with finalized_transaction_failed in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: fresh_build_cost_exceeds_reservation
+        severity: page
+      exp_annotations:
+        action: Compare the exact code and current quote with recorded reservations and configured limits. Investigate stale evidence or configuration drift; do not increase limits or release reservations solely to clear the page.
+        impact: A cost, capital, policy or reservation guard rejected the attempted work.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with fresh_build_cost_exceeds_reservation in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: initializer_native_funding_unavailable
+        severity: page
+      exp_annotations:
+        action: Check the initializer payer SOL balance, rent and fee estimate, and funding configuration. Obtain approval for any required funding; do not raise policy or cost limits to bypass the guard.
+        impact: Account initialization cannot proceed because required native funding is unavailable.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with initializer_native_funding_unavailable in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: invalid_pilot_canary_request
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with invalid_pilot_canary_request in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: invalid_selector_route_state
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with invalid_selector_route_state in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: manual_recovery_latched
+        severity: page
+      exp_annotations:
+        action: Read the persisted recovery reason, operation status and chain finality. Resolve the underlying condition using the recovery runbook; do not clear the latch just to silence the alert.
+        impact: A recovery guard requires operator review before normal work can safely continue.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with manual_recovery_latched in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: new_unclassified_guard
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with new_unclassified_guard in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: pilot_canary_history_full
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with pilot_canary_history_full in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: pilot_canary_request_id_reused
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with pilot_canary_request_id_reused in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: route_lease_lost
+        severity: page
+      exp_annotations:
+        action: Check the current lease owner, fencing token and competing worker processes. Restore one intended owner through the runbook; never force a lease while signed work may still land.
+        impact: The worker cannot establish exclusive route ownership, so guarded work may stop.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with route_lease_lost in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_allocation_bind_failed
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_allocation_bind_failed in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_allocation_not_bound
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_allocation_not_bound in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_already_allocated
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_already_allocated in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_authority_mismatch
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_authority_mismatch in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_borrow_fee_exceeded
+        severity: page
+      exp_annotations:
+        action: Compare the exact code and current quote with recorded reservations and configured limits. Investigate stale evidence or configuration drift; do not increase limits or release reservations solely to clear the page.
+        impact: A cost, capital, policy or reservation guard rejected the attempted work.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_borrow_fee_exceeded in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_borrow_mismatch
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_borrow_mismatch in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_borrow_unavailable
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_borrow_unavailable in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_cash_changed
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_cash_changed in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_has_outstanding_exit
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_has_outstanding_exit in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_lane_deferred
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_lane_deferred in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_quote_expired
+        severity: page
+      exp_annotations:
+        action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
+        impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_quote_expired in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_quote_missing
+        severity: page
+      exp_annotations:
+        action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
+        impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_quote_missing in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_entry_requires_reconciled_idle
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_entry_requires_reconciled_idle in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_lock_timeout
+        severity: page
+      exp_annotations:
+        action: Check the SQLSTATE/code, database connectivity, query cancellations and blocking locks at the alert time. Preserve the operation journal; do not delete rows or force-release locks to resume work.
+        impact: Database admission or state reads are failing; strategy decisions may not be refreshed.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_evaluate_lock_timeout in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_query_cancelled
+        severity: page
+      exp_annotations:
+        action: Check the SQLSTATE/code, database connectivity, query cancellations and blocking locks at the alert time. Preserve the operation journal; do not delete rows or force-release locks to resume work.
+        impact: Database admission or state reads are failing; strategy decisions may not be refreshed.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_evaluate_query_cancelled in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_route_fence_unavailable
+        severity: page
+      exp_annotations:
+        action: Check the current lease owner, fencing token and competing worker processes. Restore one intended owner through the runbook; never force a lease while signed work may still land.
+        impact: The worker cannot establish exclusive route ownership, so guarded work may stop.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_evaluate_route_fence_unavailable in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_timeout
+        severity: page
+      exp_annotations:
+        action: Check RPC and database latency, lock waits and the first timed-out stage. Inspect any in-flight signature before retrying; confirm successful work resumes after the dependency recovers.
+        impact: Worker or selector attempts are timing out; this does not establish whether a transaction landed.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_evaluate_timeout in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_evaluate_unavailable
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_evaluate_unavailable in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_evaluation_not_current
+        severity: page
+      exp_annotations:
+        action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
+        impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_evaluation_not_current in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_fee_evidence_unavailable
+        severity: page
+      exp_annotations:
+        action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
+        impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_fee_evidence_unavailable in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_finish_current_work_first
+        severity: page
+      exp_annotations:
+        action: Check the deployed worker version and whether this is an old metric window. Inspect the in-flight operation if it is stalled; do not cancel it or restart solely for this expected deferral.
+        impact: The selector is waiting for existing work; this code alone is not a failed transaction.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_finish_current_work_first in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_manual_recovery_active
+        severity: page
+      exp_annotations:
+        action: Read the persisted recovery reason, operation status and chain finality. Resolve the underlying condition using the recovery runbook; do not clear the latch just to silence the alert.
+        impact: A recovery guard requires operator review before normal work can safely continue.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_manual_recovery_active in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_requires_active_pilot
+        severity: page
+      exp_annotations:
+        action: Read the first matching selector event, current route generation, authority and outstanding operation/reservation. Fix the named dependency or state mismatch; do not force a switch or bypass admission.
+        impact: The selector could not accept or commit a new strategy decision; the code names the blocked stage.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_requires_active_pilot in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_resolve_capital_recovery_first
+        severity: page
+      exp_annotations:
+        action: Compare the exact code and current quote with recorded reservations and configured limits. Investigate stale evidence or configuration drift; do not increase limits or release reservations solely to clear the page.
+        impact: A cost, capital, policy or reservation guard rejected the attempted work.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_resolve_capital_recovery_first in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_state_changed_during_quote
+        severity: page
+      exp_annotations:
+        action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
+        impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_state_changed_during_quote in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: selector_unwind_quote_missing
+        severity: page
+      exp_annotations:
+        action: Check the named evidence source, observation slot/time, quote expiry and fee inputs. Wait for coherent fresh evidence and re-evaluation; never substitute guessed prices or reuse expired evidence.
+        impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with selector_unwind_quote_missing in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: timeout
+        severity: page
+      exp_annotations:
+        action: Check RPC and database latency, lock waits and the first timed-out stage. Inspect any in-flight signature before retrying; confirm successful work resumes after the dependency recovers.
+        impact: Worker or selector attempts are timing out; this does not establish whether a transaction landed.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with timeout in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: unwind_requires_existing_exit_reservation
+        severity: page
+      exp_annotations:
+        action: Compare the exact code and current quote with recorded reservations and configured limits. Investigate stale evidence or configuration drift; do not increase limits or release reservations solely to clear the page.
+        impact: A cost, capital, policy or reservation guard rejected the attempted work.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with unwind_requires_existing_exit_reservation in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: withdrawal_full_exit_unproven
+        severity: page
+      exp_annotations:
+        action: Check the current withdrawal demand, safe partial path, and applicable consent or verified emergency evidence. Do not authorize full repayment merely because a partial plan failed.
+        impact: Debt repayment is blocked by a consent, scope or necessity-proof guard.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with withdrawal_full_exit_unproven in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.
+    - exp_labels:
+        family: backyard
+        code: worker_fault
+        severity: page
+      exp_annotations:
+        action: Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.
+        impact: Repeated work attempts failed; the cause has not been classified and payment status is unknown.
+        recovery: The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.
+        summary: backyard has repeated failed attempts with worker_fault in 15m
+        trigger: Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions.

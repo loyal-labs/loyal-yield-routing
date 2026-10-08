@@ -1,0 +1,229 @@
+[
+  {
+    "labels": {
+      "alertname": "LoyalFamilyProgressStale",
+      "family": "backyard",
+      "severity": "page",
+      "stale_after": "3m"
+    },
+    "annotations": {
+      "action": "Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.",
+      "impact": "Vault management or withdrawal funding may be stalled even if the process is running.",
+      "recovery": "Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.",
+      "summary": "backyard has completed no work recently",
+      "trigger": "No recorded completed work for about 3m; restarting does not reset this check."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalFamilyProgressStale",
+      "family": "backyard",
+      "severity": "page",
+      "stale_after": "10m"
+    },
+    "annotations": {
+      "action": "Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.",
+      "impact": "Vault management or withdrawal funding may be stalled even if the process is running.",
+      "recovery": "Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.",
+      "summary": "backyard has completed no work recently",
+      "trigger": "No recorded completed work for about 10m; restarting does not reset this check."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalFamilyProgressStale",
+      "family": "backyard",
+      "severity": "page",
+      "stale_after": "30m"
+    },
+    "annotations": {
+      "action": "Check service and metrics availability first, then the oldest in-flight operation, recovery latch, and recent RPC/database errors. Verify finality before retrying; do not restart merely to reset the progress clock.",
+      "impact": "Vault management or withdrawal funding may be stalled even if the process is running.",
+      "recovery": "Confirm fresh completion timestamps and actual completed work. A vanished series or deliberately stopped worker is not proof of recovery.",
+      "summary": "backyard has completed no work recently",
+      "trigger": "No recorded completed work for about 30m; restarting does not reset this check."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBackyardWithdrawalAttention",
+      "family": "backyard",
+      "route": "test-route",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Read the current scoped withdrawal-health reason and timestamp. Compare pending demand, available cash and active operation with confirmed chain state. Review the specific guard; never clear latches or grant full-debt repayment just to clear the alert.",
+      "impact": "Pending vault withdrawals require operator attention; normal cooldown alone does not trigger this alert.",
+      "recovery": "Verify a fresh assessment showing the blocker removed or funding progress resumed. Missing metrics can expire an alert and do not prove recovery; verify each user payment separately.",
+      "summary": "Earn MAX withdrawal needs operator attention on test-route",
+      "trigger": "The persisted withdrawal-attention state remained active for 1 minute."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalBackyardWithdrawalHealthUnavailable",
+      "family": "backyard",
+      "route": "test-route",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Check the Backyard metrics endpoint, coherent observation timestamp, and database read/write errors. Restore the missing evidence path, then verify a new durable assessment; do not infer healthy withdrawals from a successful scrape alone.",
+      "impact": "Current withdrawal status cannot be established. Previously blocked withdrawals must not be treated as recovered.",
+      "recovery": "Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.",
+      "summary": "Earn MAX withdrawal health is unavailable",
+      "trigger": "Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalFamilyFailing",
+      "code": "selector_evaluate_unavailable",
+      "family": "backyard",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Find the first event with this exact code and alert time in the current worker release. Check RPC/database health and the persisted operation stage; verify chain finality before retrying signed work.",
+      "impact": "Repeated work attempts failed; the cause has not been classified and payment status is unknown.",
+      "recovery": "The failure-rate condition stopped firing. Confirm new attempts actually complete and telemetry is fresh; silence or an expired counter window does not prove the cause is fixed.",
+      "summary": "backyard has repeated failed attempts with selector_evaluate_unavailable in 15m",
+      "trigger": "Repeated failed-attempt samples over 15 minutes, sustained for 5 minutes; selector retries are not distinct transactions."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalLaneStalled",
+      "family": "backyard",
+      "lane": "test-lane",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Identify the named lane and its oldest pending operation. Check its last error, downstream RPC/database dependency and ownership/reservation state. Resolve that lane without restarting or replaying unrelated lanes.",
+      "impact": "One processing lane may be stuck while other lanes keep the worker healthy-looking.",
+      "recovery": "Confirm this exact lane records new successful ticks and its backlog advances; progress in another lane is not sufficient.",
+      "summary": "backyard lane test-lane has had no successful tick for 15m",
+      "trigger": "This lane had no successful tick for over 15 minutes; condition persisted for 1 minute."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalAutodepositOverdue",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Inspect the oldest due claim or blocked slot, confirmed custody balances and existing pull/deposit transaction states. Resolve the actual blocker; do not pull the subscription again or mark the claim paid without chain evidence.",
+      "impact": "At least one autodeposit obligation has not completed within the expected processing window.",
+      "recovery": "Verify the overdue claim or slot is resolved from confirmed state and no newer overdue obligation remains.",
+      "summary": "An autodeposit obligation has been waiting for over 1 hour",
+      "trigger": "A selected deposit claim or continuously custody-blocked slot has waited over 1 hour."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalFeePayerLow",
+      "severity": "warning"
+    },
+    "annotations": {
+      "action": "Verify the payer identity and current confirmed SOL balance against the runbook reserve target. Arrange approved funding if needed; never substitute a user wallet or expose the signer key.",
+      "impact": "The worker may soon lack enough SOL for transaction fees or account rent.",
+      "recovery": "Verify the intended payer is above the reserve threshold and can fund the next expected fee/rent requirement.",
+      "summary": "Configured fee payer is below its warning reserve",
+      "trigger": "The configured payer has stayed below the warning reserve threshold for 5 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalFeePayerExhausted",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Check the confirmed payer balance and in-flight signatures. Arrange approved funding for the configured payer, then verify work resumes; do not replay a subscription pull or replace the signer to bypass the block.",
+      "impact": "Fee/rent-dependent work may be blocked; the low balance alone does not establish which transactions already landed.",
+      "recovery": "Verify adequate confirmed SOL and successful subsequent work. Funding a payer does not itself complete pending user transactions.",
+      "summary": "Configured fee payer is below its critical reserve",
+      "trigger": "The configured payer is below the critical reserve threshold."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalInflightStuck",
+      "family": "backyard",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Inspect the persisted operation status, signature, last-valid block height and RPC health. Reconcile landed effects or verify finalized expiry and signature absence before replacing work. Keep ambiguous reservations; never blindly resend.",
+      "impact": "A transaction may be pending, landed but unreconciled, or awaiting safe expiry handling.",
+      "recovery": "Confirm a journaled terminal outcome backed by chain evidence. A drop in the in-flight gauge alone is not proof of payment or safe retry.",
+      "summary": "backyard has in-flight work without a terminal outcome",
+      "trigger": "Work is in flight with no landed/failed outcome in the rolling 3-minute window, sustained for another 3 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalWorkerDown",
+      "severity": "page",
+      "unit": "loyal-backyard.service"
+    },
+    "annotations": {
+      "action": "Check systemd state, the process, local metrics listener and recent startup/runtime logs. Distinguish a scrape problem from a crashed worker. Check persisted signed work before using the documented restart procedure.",
+      "impact": "The worker may be down or its metrics endpoint may be unreachable; execution state is unknown.",
+      "recovery": "Confirm metrics scraping, expected release and healthy work progress; a reachable metrics endpoint alone is not full recovery.",
+      "summary": "loyal-backyard.service is not serving /metrics",
+      "trigger": "Systemd reports the unit active/starting/stopping/failed but its metrics scrape has failed for 2 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalUnitDown",
+      "name": "loyal-backyard.service",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Check the intended service state and the first startup error in its journal, including credentials, executable and resource failures. Restore only an intended active service using the runbook; never revive a retired worker.",
+      "impact": "The service is not operating normally; its dependent processing may be unavailable.",
+      "recovery": "Confirm the intended service is active on the expected release and its dependent work progresses. Disabled or removed services also stop this alert without proving recovery.",
+      "summary": "loyal-backyard.service is ",
+      "trigger": "The named service has remained failed or stuck activating for 2 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalUnitRestartLoop",
+      "name": "loyal-backyard.service",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Inspect the first exit cause, OOM/resource events, startup configuration and dependency failures. Check signed/in-flight state before remediation; stop repeated blind restarts and follow the release rollback/recovery runbook.",
+      "impact": "The service is unstable and may repeatedly interrupt work or lose fresh observations.",
+      "recovery": "Verify the restart count stabilizes and fresh work completes on the intended release; waiting for the counter window to expire is not a fix.",
+      "summary": "loyal-backyard.service is repeatedly restarting",
+      "trigger": "The service restart counter increased by more than 3 in 15 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "LoyalMonitoringDown",
+      "job": "alertmanager",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Check the named exporter, Prometheus or Alertmanager service and local listener. For Alertmanager, inspect reload success and notification failure counters; after recovery verify worker scrapes, rule evaluation and notification delivery.",
+      "impact": "Worker health or notification delivery may be invisible; absence of other alerts is not evidence that workers are healthy.",
+      "recovery": "Verify the affected component plus end-to-end scraping, rule evaluation and notifications. Check the external heartbeat separately if the whole host was unavailable.",
+      "summary": "alertmanager is not scrapeable",
+      "trigger": "The named monitoring component has not been scrapeable for 2 minutes."
+    }
+  },
+  {
+    "labels": {
+      "alertname": "Watchdog",
+      "severity": "none"
+    },
+    "annotations": {
+      "action": "Check the external heartbeat receiver, host reachability and monitoring services. Do not silence the dead-man switch without restoring an independent health signal.",
+      "impact": "If heartbeat delivery stops, the host or monitoring stack may be unavailable and unable to alert for itself.",
+      "recovery": "Verify the external receiver is receiving current heartbeats and that normal worker alert delivery works.",
+      "summary": "Alerting pipeline heartbeat",
+      "trigger": "Continuous heartbeat; the external receiver must detect when it stops."
+    }
+  }
+]
