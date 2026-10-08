@@ -85,7 +85,10 @@ func TestWatchStateRecoveryIsBatchedUnboundedByOnePassAndIdempotent(t *testing.T
 	set := &watch.Set{Vaults: []watch.Vault{{Environment: "mainnet-beta", Settings: settings, Vault: vaultKey, VaultIndex: 1, Accounts: accounts}}}
 	changed := accounts[17].Pubkey
 
-	const passTimeout = 500 * time.Millisecond
+	// Each batch also commits up to 300 statements (job, target lookup and
+	// request per binding); the 60% of a pass left after the RPC must hold
+	// them on a shared CI database, so the pass is seconds, not milliseconds.
+	const passTimeout = 2 * time.Second
 	var slot atomic.Uint64
 	slot.Store(400_000_000)
 	var calls atomic.Int64
