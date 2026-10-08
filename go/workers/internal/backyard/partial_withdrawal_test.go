@@ -69,7 +69,12 @@ func runPartialWithdrawal(t *testing.T, s Snapshot, price float64) (Snapshot, []
 			s.DebtIdleRaw, s.SquadsIdleRaw = 0, s.SquadsIdleRaw+d.AmountRaw*99/100
 		case d.Reason == partialStageReason:
 			s.SquadsIdleRaw -= d.AmountRaw
+			s.VoltrStrategyIdleRaw += d.AmountRaw
+			s.StagedAmountRaw, s.StagedAmountKnown, s.StageTransient = s.VoltrStrategyIdleRaw, true, true
+		case d.Reason == "withdrawal_staged":
+			s.VoltrStrategyIdleRaw -= d.AmountRaw
 			s.VoltrIdleRaw += d.AmountRaw
+			s.StagedAmountRaw, s.StageTransient = 0, false
 		default:
 			return s, legs
 		}
