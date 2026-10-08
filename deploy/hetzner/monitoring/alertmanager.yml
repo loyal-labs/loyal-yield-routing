@@ -3,7 +3,8 @@
 # id below is a placeholder the operator replaces at install time.
 route:
   receiver: telegram
-  group_by: [alertname, family, route, name, unit, job]
+  # Keep distinct causes/resources in separate bounded Telegram messages.
+  group_by: [alertname, family, route, code, lane, name, unit, job, instance, payer]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
@@ -30,13 +31,15 @@ receivers:
         parse_mode: HTML
         send_resolved: true
         message: |-
-          {{ range .Alerts }}<b>{{ if eq .Status "firing" }}FIRING{{ else }}RESOLVED{{ end }} · {{ .Labels.severity | html }}</b>
+          {{ range .Alerts }}<b>{{ if eq .Status "firing" }}FIRING{{ else }}RESOLVED{{ end }} · {{ .Labels.severity | html }} · {{ if or (eq .Labels.family "backyard") (eq .Labels.unit "loyal-backyard.service") (eq .Labels.name "loyal-backyard.service") }}Earn MAX / Backyard{{ else if .Labels.family }}{{ .Labels.family | html }}{{ else }}Worker infrastructure{{ end }}</b>
           <b>{{ .Annotations.summary | html }}</b>
-          {{ if .Labels.family }}Family: {{ .Labels.family | html }}{{ end }}{{ if .Labels.route }} · Route: {{ .Labels.route | html }}{{ end }}
-          {{ if eq .Status "firing" }}Impact: {{ if .Annotations.impact }}{{ .Annotations.impact | html }}{{ else }}Worker reliability may be affected; inspect the condition above.{{ end }}
-          Next action: {{ if .Annotations.action }}{{ .Annotations.action | html }}{{ else }}Check the worker state and logs using the runbook.{{ end }}{{ else }}The alert condition is no longer firing. This does not confirm that a withdrawal was paid.
-          Next action: Verify fresh worker health and confirmed on-chain withdrawal state.{{ end }}
-          <a href="https://github.com/loyal-labs/loyal-yield-routing/blob/e6165b8cffe97acf51ecfa53559da25870ccd546/deploy/hetzner/README.md#withdrawal-attention">Runbook</a>
+          Rule: {{ .Labels.alertname | html }}{{ if .Labels.code }} · Code: {{ .Labels.code | html }}{{ end }}
+          {{ if .Labels.unit }}Service: {{ .Labels.unit | html }}{{ else if .Labels.name }}Service: {{ .Labels.name | html }}{{ end }}{{ if .Labels.job }} · Component: {{ .Labels.job | html }}{{ end }}{{ if .Labels.lane }} · Lane: {{ .Labels.lane | html }}{{ end }}{{ if .Labels.route }} · Route: {{ .Labels.route | html }}{{ end }}{{ if .Labels.payer }} · Payer: {{ .Labels.payer | html }}{{ end }}
+          {{ if eq .Status "firing" }}Signal: {{ if .Annotations.trigger }}{{ .Annotations.trigger | html }}{{ else }}No trigger description was supplied; inspect this rule before interpreting the condition.{{ end }}
+          Impact: {{ if .Annotations.impact }}{{ .Annotations.impact | html }}{{ else }}Impact is unclassified. Identify the affected component from the rule and context above; do not infer transaction failure or payment.{{ end }}
+          Next: {{ if .Annotations.action }}{{ .Annotations.action | html }}{{ else }}Find this rule and its first matching event at the alert time. Check the component's current status and dependencies; verify any in-flight transaction before retrying.{{ end }}{{ else }}Signal: This alert condition is no longer firing.
+          Verify: {{ if .Annotations.recovery }}{{ .Annotations.recovery | html }}{{ else }}Confirm fresh telemetry and recovery of the component named above. Missing data or an expired alert window is not proof that the cause was fixed.{{ end }}{{ end }}
+          <a href="https://github.com/loyal-labs/loyal-yield-routing/blob/d0e22283b67657e11d064855fb4820e76dc3b174/deploy/hetzner/README.md#backyard-alert-response">Alert runbook</a>
 
           {{ end }}
   # Empty until the external dead man's switch exists. Then add:

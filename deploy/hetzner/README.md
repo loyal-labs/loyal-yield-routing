@@ -172,6 +172,7 @@ promtool check config prometheus.yml   # with the rule/target paths pointed here
 promtool check rules monitoring/loyal.rules.yml
 cd monitoring && promtool test rules loyal.rules.test.yml
 amtool check-config monitoring/alertmanager.yml
+python3 monitoring/verify-alert-messages.py  # requires python3-yaml and amtool
 systemd-analyze verify deploy/hetzner/systemd/*.service   # Linux only
 ```
 
@@ -231,3 +232,46 @@ three units from journald and keeps its cursor across restarts. It sets
 `service.name` from each unit's syslog identifier (`loyal-observer`,
 `loyal-retail`, `loyal-backyard`), lifts the slog fields into attributes,
 and exports OTLP/HTTP to ClickStack.
+
+### Backyard alert response
+
+Every checked-in rule has a signal description, impact, action and recovery
+check. Telegram shows the rule and available stable code, service, lane or
+route. Distinct causes/resources use separate groups to avoid combining
+unrelated failures in one long message. Detection thresholds, debounces,
+four-hour repeats, receivers and inhibition rules are unchanged.
+
+| Alert | First checks | Recovery evidence |
+|---|---|---|
+| `LoyalFamilyFailing` | Exact code, first event, current release and dependency | Fresh attempts complete; not an expired counter window |
+| `LoyalFamilyProgressStale` | Process/metrics, oldest operation, recovery latch, RPC/DB | Actual completions with advancing timestamps |
+| `LoyalInflightStuck` | Persisted status, signature, last-valid height and finality | Reconciled terminal outcome; never blind resend |
+| `LoyalLaneStalled` | Named lane's oldest work and dependency errors | That lane completes work, not a healthy sibling |
+| `LoyalBackyardWithdrawalAttention` | Scoped health, cash/demand, active operation and guard | Blocker removed or funding progresses; payment checked separately |
+| `LoyalBackyardWithdrawalHealthUnavailable` | Metric pair, observation age, DB reads/writes | Fresh durable assessment from coherent chain evidence |
+| `LoyalWorkerDown` | Process, local metrics listener and first runtime error | Expected release, live metrics and work progress |
+| `LoyalUnitDown` | Intended state and startup error; never revive retired units | Intended active service and dependent progress |
+| `LoyalUnitRestartLoop` | First exit/OOM/configuration/dependency failure | Restarts stop and useful work resumes |
+| `LoyalMonitoringDown` | Named service/listener, reload and notification failures | Scrapes, rule evaluation and delivery work |
+| `Watchdog` | External receiver and host/monitoring reachability | Fresh external heartbeats and normal notifications |
+
+Failure guidance distinguishes initializer native funding, SQL/locks, route
+ownership, timeouts, recovery latches, debt-clear guards, quote/valuation
+inputs, budget/policy guards, transaction uncertainty and selector admission.
+The exact diagnostic code remains visible. Unknown causes, including
+`selector_evaluate_unavailable` and `worker_fault`, are explicitly unclassified;
+operators check the first matching event, release, dependencies and persisted
+execution stage instead of assuming funds were not sent.
+
+`selector_finish_current_work_first` is an expected deferral, no longer a
+failure metric in the current worker. Its legacy message directs operators to
+check the deployed version/window and existing work, not cancel or restart.
+Funding warnings require checking the intended payer and fee/rent requirement;
+any funding still requires operator approval. Alert text grants no permission
+to clear latches, loosen limits or repay the full debt.
+
+Resolved messages have condition-specific checks. They do not assert that the
+cause was fixed or a user was paid. Missing series and expired windows can clear
+alerts; check freshness/down signals before closing an incident. Shared
+Autodeposit and fee-payer alerts also have their own guidance rather than
+withdrawal-specific fallback text.
