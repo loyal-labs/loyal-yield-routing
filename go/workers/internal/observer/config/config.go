@@ -33,10 +33,17 @@ type Config struct {
 	// and earn-forecast-snapshot) own those tables until the Phase 2 handover
 	// retires them and flips this on; Rust never wrote them. One fact has one
 	// writer, so the default is off (OBSERVER_READ_MODELS_ENABLED=true|false).
-	ReadModelsEnabled     bool
-	ReplayOverlapSlots    uint64
-	WatchRefresh          time.Duration
-	VerifyRefresh         time.Duration
+	ReadModelsEnabled  bool
+	ReplayOverlapSlots uint64
+	WatchRefresh       time.Duration
+	// VerifyRefresh is the Kamino confirmed-read safety sweep for quiet
+	// reserves (Rust --confirmed-refresh-interval-secs, default 30). Stream
+	// updates are verified on their own within a 100 ms batch tick.
+	VerifyRefresh time.Duration
+	// CatalogRefresh renews the supported reserve catalog the planners read
+	// (Rust KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECS, default 120, at
+	// most 180 so a fetched_at stays inside the planners' 300 s age bound).
+	CatalogRefresh        time.Duration
 	ProgressTimeout       time.Duration
 	HandoffTimeout        time.Duration
 	ReconciliationWorkers int
@@ -47,6 +54,7 @@ func FromEnv() (Config, error) {
 		"LASERSTREAM_REPLAY_OVERLAP_SLOTS",
 		"BALANCE_SWEEP_TARGET_REFRESH_SECONDS",
 		"KAMINO_CONFIRMED_REFRESH_INTERVAL_SECONDS",
+		"KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECONDS",
 		"LASERSTREAM_PROGRESS_TIMEOUT_SECONDS",
 		"LASERSTREAM_HANDOFF_TIMEOUT_SECONDS",
 		"EARN_RECONCILIATION_CONCURRENCY",
@@ -73,7 +81,8 @@ func FromEnv() (Config, error) {
 		ATAStream:             strings.ToLower(envOr("BALANCE_SWEEP_ATA_STREAM", "production")),
 		ReplayOverlapSlots:    uintEnv("LASERSTREAM_REPLAY_OVERLAP_SLOTS", 32),
 		WatchRefresh:          durationEnv("BALANCE_SWEEP_TARGET_REFRESH_SECONDS", 300*time.Second),
-		VerifyRefresh:         durationEnv("KAMINO_CONFIRMED_REFRESH_INTERVAL_SECONDS", 60*time.Second),
+		VerifyRefresh:         durationEnv("KAMINO_CONFIRMED_REFRESH_INTERVAL_SECONDS", 30*time.Second),
+		CatalogRefresh:        durationEnv("KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECONDS", 120*time.Second),
 		ProgressTimeout:       durationEnv("LASERSTREAM_PROGRESS_TIMEOUT_SECONDS", 90*time.Second),
 		HandoffTimeout:        durationEnv("LASERSTREAM_HANDOFF_TIMEOUT_SECONDS", 120*time.Second),
 		ReconciliationWorkers: int(uintEnv("EARN_RECONCILIATION_CONCURRENCY", 4)),
@@ -98,6 +107,9 @@ func FromEnv() (Config, error) {
 	}
 	if cfg.ReplayOverlapSlots == 0 || cfg.WatchRefresh <= 0 || cfg.VerifyRefresh <= 0 || cfg.ProgressTimeout <= 0 {
 		return Config{}, errors.New("LaserStream intervals and replay overlap must be positive")
+	}
+	if cfg.CatalogRefresh <= 0 || cfg.CatalogRefresh > 180*time.Second {
+		return Config{}, errors.New("KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECONDS must be between 1 and 180")
 	}
 	switch strings.TrimSpace(os.Getenv("DISABLE_EARN_APY_REFRESH")) {
 	case "", "false":

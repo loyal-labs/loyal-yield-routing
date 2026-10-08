@@ -67,10 +67,11 @@ func TestRuntimeVerifyDeadlineCancelsActualRPC(t *testing.T) {
 	rpc, stopped := stalledRuntimeRPC(t, "getMultipleAccounts")
 	handler := kamino.NewHandler(nil, rpc, slog.New(slog.NewTextHandler(io.Discard, nil)), 400, false)
 	handler.SetTargets([]kamino.Target{{Reserve: "11111111111111111111111111111111"}})
+	handler.RequestSafetySweep()
 	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 100 * time.Millisecond}, kamino: handler}
 	started := time.Now()
-	if err := runtime.verifyPass(context.Background()); err == nil {
-		t.Fatal("blocked verification was accepted")
+	if ran, err := runtime.verifyPass(context.Background()); !ran || err == nil {
+		t.Fatalf("blocked verification was accepted: ran=%v err=%v", ran, err)
 	}
 	if time.Since(started) > time.Second {
 		t.Fatal("verification used the transport timeout instead of its pass budget")

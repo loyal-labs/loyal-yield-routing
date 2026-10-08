@@ -204,3 +204,92 @@ func (s *Store) upsertVerificationSQL() string {
 func (s *Store) advanceFloorSQL() string {
 	return fmt.Sprintf(`WITH observation_lock AS MATERIALIZED(SELECT pg_advisory_xact_lock(hashtextextended($1,%d))), advanced AS(INSERT INTO %[2]s.reserve_confirmed_observation_floors AS current(reserve,floor_slot,account_data_hash,state_valid,source,source_rank,observed_at) SELECT $1,$2,$3,$4,$5,$6,$7 FROM observation_lock ON CONFLICT(reserve) DO UPDATE SET floor_slot=CASE WHEN EXCLUDED.floor_slot>current.floor_slot THEN EXCLUDED.floor_slot ELSE current.floor_slot END,account_data_hash=CASE WHEN EXCLUDED.floor_slot>current.floor_slot THEN EXCLUDED.account_data_hash WHEN EXCLUDED.source_rank>current.source_rank THEN EXCLUDED.account_data_hash WHEN current.state_valid AND EXCLUDED.state_valid AND current.account_data_hash=EXCLUDED.account_data_hash THEN current.account_data_hash ELSE NULL END,state_valid=CASE WHEN EXCLUDED.floor_slot>current.floor_slot THEN EXCLUDED.state_valid WHEN EXCLUDED.source_rank>current.source_rank THEN EXCLUDED.state_valid ELSE current.state_valid AND EXCLUDED.state_valid AND current.account_data_hash=EXCLUDED.account_data_hash END,source=CASE WHEN EXCLUDED.floor_slot>current.floor_slot OR EXCLUDED.source_rank>=current.source_rank THEN EXCLUDED.source ELSE current.source END,source_rank=CASE WHEN EXCLUDED.floor_slot>current.floor_slot THEN EXCLUDED.source_rank ELSE GREATEST(current.source_rank,EXCLUDED.source_rank) END,observation_id=EXCLUDED.observation_id,observed_at=GREATEST(current.observed_at,EXCLUDED.observed_at),updated_at=now() WHERE EXCLUDED.floor_slot>current.floor_slot OR (EXCLUDED.floor_slot=current.floor_slot AND EXCLUDED.source_rank>=current.source_rank) RETURNING reserve,floor_slot,account_data_hash,state_valid) DELETE FROM %[2]s.reserve_confirmed_verifications verification USING advanced floor,%[2]s.reserve_current_states state WHERE verification.reserve=floor.reserve AND state.reserve=floor.reserve AND verification.state_event_id=state.state_event_id AND verification.account_data_hash=state.account_data_hash AND verification.verified_slot<=floor.floor_slot AND (NOT floor.state_valid OR verification.verified_slot=floor.floor_slot OR floor.floor_slot-verification.verified_slot>%[3]s) AND (NOT floor.state_valid OR floor.account_data_hash<>state.account_data_hash)`, floorLockSeed, s.schema, s.tolerance())
 }
+
+// supportedReserveCatalogLockKey is loyal-kamino-data timescale.rs
+// SUPPORTED_RESERVE_CATALOG_LOCK_KEY, shared with the Rust explicit sync.
+const supportedReserveCatalogLockKey int64 = 5_499_540_200_513_620
+
+// RefreshSupportedReserves is TimescaleSink::refresh_supported_reserves (the
+// ExactRefresh publication). It renews fetched_at, the freshness the planners'
+// 300 s catalog age bound reads, only when the API returned exactly the
+// committed decoding identities; a topology change needs the operator's
+// explicit sync. Validation and renewal share one advisory-locked transaction.
+func (s *Store) RefreshSupportedReserves(ctx context.Context, records []SupportedReserveRecord) error {
+	if len(records) == 0 {
+		return fmt.Errorf("supported reserve catalog response must not be empty")
+	}
+	incoming, err := supportedReserveIdentities(records)
+	if err != nil {
+		return fmt.Errorf("supported reserve catalog response contains duplicate decoding identities")
+	}
+	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, supportedReserveCatalogLockKey); err != nil {
+			return fmt.Errorf("acquire supported reserve catalog publication lock: %w", err)
+		}
+		rows, err := tx.Query(ctx, fmt.Sprintf(`SELECT market,liquidity_mint,reserve FROM %s.supported_reserves WHERE active=TRUE ORDER BY market,liquidity_mint,reserve`, s.schema))
+		if err != nil {
+			return fmt.Errorf("load active supported reserve identities: %w", err)
+		}
+		var committed []SupportedReserveRecord
+		for rows.Next() {
+			var record SupportedReserveRecord
+			if err := rows.Scan(&record.Market, &record.LiquidityMint, &record.Reserve); err != nil {
+				rows.Close()
+				return err
+			}
+			committed = append(committed, record)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		current, err := supportedReserveIdentities(committed)
+		if err != nil {
+			return fmt.Errorf("committed supported reserve catalog contains duplicate decoding identities")
+		}
+		if len(current) == 0 {
+			return fmt.Errorf("normal supported reserve refresh requires a bootstrapped catalog; run explicit sync first")
+		}
+		removed, added := 0, 0
+		for identity := range current {
+			if _, ok := incoming[identity]; !ok {
+				removed++
+			}
+		}
+		for identity := range incoming {
+			if _, ok := current[identity]; !ok {
+				added++
+			}
+		}
+		if removed != 0 || added != 0 {
+			return fmt.Errorf("normal supported reserve refresh rejected decoding topology change; removed_identity_count=%d added_identity_count=%d; run explicit sync and restart", removed, added)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`UPDATE %s.supported_reserves SET active=FALSE,updated_at=now() WHERE active=TRUE`, s.schema)); err != nil {
+			return fmt.Errorf("deactivate existing supported reserves: %w", err)
+		}
+		upsert := fmt.Sprintf(`INSERT INTO %s.supported_reserves(market,liquidity_mint,reserve,market_name,symbol,risk_baskets,source,active,fetched_at,updated_at)
+VALUES($1,$2,$3,$4,$5,$6,'kamino-api',TRUE,now(),now())
+ON CONFLICT(market,liquidity_mint) DO UPDATE SET reserve=EXCLUDED.reserve,market_name=EXCLUDED.market_name,symbol=EXCLUDED.symbol,risk_baskets=EXCLUDED.risk_baskets,source=EXCLUDED.source,active=TRUE,fetched_at=EXCLUDED.fetched_at,updated_at=EXCLUDED.updated_at`, s.schema)
+		for _, record := range records {
+			if _, err := tx.Exec(ctx, upsert, record.Market, record.LiquidityMint, record.Reserve, record.MarketName, record.Symbol, record.RiskBaskets); err != nil {
+				return fmt.Errorf("upsert supported reserve market %s mint %s: %w", record.Market, record.LiquidityMint, err)
+			}
+		}
+		return nil
+	})
+}
+
+// supportedReserveIdentities rejects a repeated (market, mint) pair or a
+// repeated (market, mint, reserve) identity.
+func supportedReserveIdentities(records []SupportedReserveRecord) (map[[3]string]struct{}, error) {
+	pairs := make(map[[2]string]struct{}, len(records))
+	identities := make(map[[3]string]struct{}, len(records))
+	for _, record := range records {
+		pairs[[2]string{record.Market, record.LiquidityMint}] = struct{}{}
+		identities[[3]string{record.Market, record.LiquidityMint, record.Reserve}] = struct{}{}
+	}
+	if len(pairs) != len(records) || len(identities) != len(records) {
+		return nil, fmt.Errorf("duplicate decoding identity")
+	}
+	return identities, nil
+}

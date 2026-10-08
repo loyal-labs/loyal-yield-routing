@@ -30,6 +30,7 @@ type Handler struct {
 	mu             sync.RWMutex
 	targets        map[string]Target
 	snapshots      map[string]snapshotRank
+	schedule       *verificationSchedule
 }
 
 type HandleOutcome struct {
@@ -38,7 +39,7 @@ type HandleOutcome struct {
 }
 
 func NewHandler(store *Store, rpc *solanarpc.Client, logger *slog.Logger, slotDurationMS float64, storeRaw bool) *Handler {
-	return &Handler{store: store, rpc: rpc, logger: logger, slotDurationMS: slotDurationMS, storeRaw: storeRaw, targets: make(map[string]Target), snapshots: make(map[string]snapshotRank)}
+	return &Handler{store: store, rpc: rpc, logger: logger, slotDurationMS: slotDurationMS, storeRaw: storeRaw, targets: make(map[string]Target), snapshots: make(map[string]snapshotRank), schedule: newVerificationSchedule()}
 }
 func (h *Handler) SetSlotDuration(value float64) {
 	if value <= 0 {
@@ -91,6 +92,7 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 		if err := h.store.RecordMalformed(ctx, reserve, accountUpdate.GetSlot(), observedAt); err != nil {
 			return HandleOutcome{}, err
 		}
+		h.schedule.markDirty(reserve)
 		h.logger.Error("invalid Kamino stream owner fenced", "reserve", reserve, "slot", accountUpdate.GetSlot(), "owner", owner)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
 	}
@@ -100,6 +102,7 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 		if floorErr := h.store.RecordMalformed(ctx, reserve, accountUpdate.GetSlot(), observedAt); floorErr != nil {
 			return HandleOutcome{}, fmt.Errorf("decode reserve: %v; record malformed floor: %w", err, floorErr)
 		}
+		h.schedule.markDirty(reserve)
 		h.logger.Error("invalid Kamino stream data fenced", "reserve", reserve, "slot", accountUpdate.GetSlot(), "error", err)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
 	}
@@ -130,16 +133,64 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 		h.snapshots[reserve] = snapshotRank{accountUpdate.GetSlot(), account.GetWriteVersion(), snapshot}
 	}
 	h.mu.Unlock()
+	// Rust marks every durably persisted stream state dirty so a confirmed
+	// read follows within one batch tick. That read inserts the
+	// http_confirmed_refresh state the planner's verified view requires;
+	// without it the stream floor evicts the reserve's verification.
+	h.schedule.markDirty(reserve)
 	return HandleOutcome{Slot: accountUpdate.GetSlot(), Inserted: outcome.Inserted}, nil
 }
 
-func (h *Handler) Seed(ctx context.Context) (uint64, error) { return h.verify(ctx, "http_snapshot") }
-func (h *Handler) Verify(ctx context.Context) error {
-	_, err := h.verify(ctx, "http_confirmed_refresh")
-	return err
+func (h *Handler) Seed(ctx context.Context) (uint64, error) {
+	return h.verify(ctx, "http_snapshot", h.Targets(), nil)
 }
-func (h *Handler) verify(ctx context.Context, source string) (uint64, error) {
+
+// RequestSafetySweep queues every watched reserve for a confirmed read. It is
+// Rust's confirmed_refresh_tick: only a sweep for quiet reserves, since every
+// stream write already queued its own reserve.
+func (h *Handler) RequestSafetySweep() {
 	targets := h.Targets()
+	reserves := make([]string, len(targets))
+	for index, target := range targets {
+		reserves[index] = target.Reserve
+	}
+	h.schedule.requestSafetySweep(reserves)
+}
+
+// VerifyDirty runs one confirmed refresh batch over the pending reserves, as
+// Rust's dirty_verification_tick does. It reports false when nothing was due.
+func (h *Handler) VerifyDirty(ctx context.Context) (bool, error) {
+	batch, ok := h.schedule.begin()
+	if !ok {
+		return false, nil
+	}
+	h.mu.RLock()
+	targets := make([]Target, 0, len(batch.generations))
+	for _, reserve := range batch.reserves() {
+		if target, watched := h.targets[reserve]; watched {
+			targets = append(targets, target)
+		}
+	}
+	h.mu.RUnlock()
+	if len(targets) == 0 {
+		h.schedule.completeSuccess(batch)
+		return true, nil
+	}
+	_, err := h.verify(ctx, "http_confirmed_refresh", targets, &batch)
+	return true, err
+}
+
+type confirmedState struct {
+	target     Target
+	account    *solanarpc.Account
+	slot       uint64
+	observedAt time.Time
+}
+
+// verify is Rust's ConfirmedReserveVerifier::fetch followed by
+// refresh_confirmed_snapshots. A batch from the dirty schedule admits only the
+// reserves not marked dirty again while their read was in flight.
+func (h *Handler) verify(ctx context.Context, source string, targets []Target, batch *verificationBatch) (uint64, error) {
 	h.mu.RLock()
 	slotDurationMS := h.slotDurationMS
 	h.mu.RUnlock()
@@ -147,90 +198,115 @@ func (h *Handler) verify(ctx context.Context, source string) (uint64, error) {
 		return 0, fmt.Errorf("kamino target catalog is empty")
 	}
 	minimum := uint64(^uint64(0))
+	states := make([]confirmedState, 0, len(targets))
 	for start := 0; start < len(targets); start += 100 {
-		end := start + 100
-		if end > len(targets) {
-			end = len(targets)
-		}
+		end := min(start+100, len(targets))
 		addresses := make([]string, end-start)
 		for index := start; index < end; index++ {
 			addresses[index-start] = targets[index].Reserve
 		}
 		response, err := h.rpc.MultipleAccounts(ctx, addresses, "confirmed", nil)
 		if err != nil {
+			if batch != nil {
+				h.schedule.completeFailure(*batch)
+			}
 			return 0, fmt.Errorf("verify Kamino accounts: %w", err)
 		}
-		if response.Slot < minimum {
-			minimum = response.Slot
-		}
-		type decodedState struct {
-			target     Target
-			snapshot   Snapshot
-			hash       string
-			raw        *string
-			observedAt time.Time
-		}
-		decoded := make(map[string]decodedState, len(response.Accounts))
-		verifications := make([]Verification, 0, len(response.Accounts))
+		minimum = min(minimum, response.Slot)
+		observedAt := time.Now().UTC()
 		for index, account := range response.Accounts {
-			target := targets[start+index]
-			observedAt := time.Now().UTC()
-			verification := Verification{Reserve: target.Reserve, VerifiedSlot: int64(response.Slot), VerifiedAt: observedAt, Commitment: "confirmed", Source: source}
-			if account != nil {
-				verification.AccountHash = accountHash(account.Data)
-			}
-			if account != nil && account.Owner == klendProgram {
-				snapshot, decodeErr := Decode(target, response.Slot, observedAt, account.Data, slotDurationMS)
-				if decodeErr == nil {
-					verification.StateValid = true
-					var raw *string
-					if h.storeRaw {
-						value := base64.StdEncoding.EncodeToString(account.Data)
-						raw = &value
-					}
-					decoded[target.Reserve] = decodedState{target, snapshot, verification.AccountHash, raw, observedAt}
-				} else {
-					h.logger.Error("confirmed Kamino state was malformed", "reserve", target.Reserve, "error", decodeErr)
-				}
-			}
-			verifications = append(verifications, verification)
-		}
-		verificationOutcome, err := h.store.VerifyStates(ctx, verifications)
-		if err != nil {
-			return 0, err
-		}
-		for reserve, state := range decoded {
-			if _, matched := verificationOutcome.Matched[reserve]; matched {
-				h.admitSnapshot(reserve, response.Slot, state.snapshot)
-				continue
-			}
-			if _, deferred := verificationOutcome.Deferred[reserve]; deferred {
-				continue
-			}
-			h.mu.RLock()
-			previous, hasPrevious := h.snapshots[reserve]
-			h.mu.RUnlock()
-			var diff *Diff
-			summary := "initial_snapshot"
-			if hasPrevious {
-				value := Compare(previous.snapshot, state.snapshot)
-				diff = &value
-				if value.Changed {
-					summary = joinFields(value.ChangedFields)
-				} else {
-					summary = "none"
-				}
-			}
-			outcome, insertErr := h.store.Insert(ctx, Record{Target: state.target, Snapshot: state.snapshot, Diff: diff, DiffSummary: summary, Source: source, SourceCommitment: "confirmed", AccountHash: state.hash, RawBase64: state.raw, ReceivedAt: state.observedAt, DecodedAt: time.Now().UTC()})
-			if insertErr != nil {
-				return 0, insertErr
-			}
-			if outcome.CurrentStateAdmitted && outcome.VerificationAdmitted {
-				h.admitSnapshot(reserve, response.Slot, state.snapshot)
-			}
+			states = append(states, confirmedState{target: targets[start+index], account: account, slot: response.Slot, observedAt: observedAt})
 		}
 	}
+	var accepted map[string]struct{}
+	if batch != nil {
+		accepted = h.schedule.completeSuccess(*batch)
+		current := states[:0]
+		for _, state := range states {
+			if _, ok := accepted[state.target.Reserve]; ok {
+				current = append(current, state)
+			}
+		}
+		states = current
+	}
+	if err := h.persistConfirmed(ctx, source, states, slotDurationMS); err != nil {
+		if batch != nil {
+			h.schedule.retry(accepted)
+		}
+		return 0, err
+	}
 	return minimum, nil
+}
+
+func (h *Handler) persistConfirmed(ctx context.Context, source string, states []confirmedState, slotDurationMS float64) error {
+	if len(states) == 0 {
+		return nil
+	}
+	type decodedState struct {
+		state    confirmedState
+		snapshot Snapshot
+		hash     string
+		raw      *string
+	}
+	decoded := make(map[string]decodedState, len(states))
+	verifications := make([]Verification, 0, len(states))
+	for _, state := range states {
+		target, account := state.target, state.account
+		verification := Verification{Reserve: target.Reserve, VerifiedSlot: int64(state.slot), VerifiedAt: state.observedAt, Commitment: "confirmed", Source: source}
+		if account != nil {
+			verification.AccountHash = accountHash(account.Data)
+		}
+		if account != nil && account.Owner == klendProgram {
+			snapshot, decodeErr := Decode(target, state.slot, state.observedAt, account.Data, slotDurationMS)
+			if decodeErr == nil {
+				verification.StateValid = true
+				var raw *string
+				if h.storeRaw {
+					value := base64.StdEncoding.EncodeToString(account.Data)
+					raw = &value
+				}
+				decoded[target.Reserve] = decodedState{state, snapshot, verification.AccountHash, raw}
+			} else {
+				h.logger.Error("confirmed Kamino state was malformed", "reserve", target.Reserve, "error", decodeErr)
+			}
+		}
+		verifications = append(verifications, verification)
+	}
+	verificationOutcome, err := h.store.VerifyStates(ctx, verifications)
+	if err != nil {
+		return err
+	}
+	for reserve, value := range decoded {
+		if _, matched := verificationOutcome.Matched[reserve]; matched {
+			h.admitSnapshot(reserve, value.state.slot, value.snapshot)
+			continue
+		}
+		if _, deferred := verificationOutcome.Deferred[reserve]; deferred {
+			continue
+		}
+		h.mu.RLock()
+		previous, hasPrevious := h.snapshots[reserve]
+		h.mu.RUnlock()
+		var diff *Diff
+		summary := "initial_snapshot"
+		if hasPrevious {
+			compared := Compare(previous.snapshot, value.snapshot)
+			diff = &compared
+			if compared.Changed {
+				summary = joinFields(compared.ChangedFields)
+			} else {
+				summary = "none"
+			}
+		}
+		outcome, insertErr := h.store.Insert(ctx, Record{Target: value.state.target, Snapshot: value.snapshot, Diff: diff, DiffSummary: summary, Source: source, SourceCommitment: "confirmed", AccountHash: value.hash, RawBase64: value.raw, ReceivedAt: value.state.observedAt, DecodedAt: time.Now().UTC()})
+		if insertErr != nil {
+			return insertErr
+		}
+		if outcome.CurrentStateAdmitted && outcome.VerificationAdmitted {
+			h.admitSnapshot(reserve, value.state.slot, value.snapshot)
+		}
+	}
+	return nil
 }
 
 func (h *Handler) admitSnapshot(reserve string, slot uint64, snapshot Snapshot) {

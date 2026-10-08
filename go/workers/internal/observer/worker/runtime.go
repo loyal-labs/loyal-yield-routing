@@ -27,7 +27,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 )
 
-const kaminoVerificationFailureThreshold = 3
+const (
+	kaminoVerificationFailureThreshold = 3
+	// kaminoVerificationBatchInterval is Rust's DIRTY_VERIFICATION_BATCH_INTERVAL.
+	kaminoVerificationBatchInterval = 100 * time.Millisecond
+)
 
 type Runtime struct {
 	cfg           config.Config
@@ -136,6 +140,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 	// Only initialization belongs to this deadline. The stream and the
 	// binding recovery it may need are owned by the process context.
 	cancelStartup()
+	appDone.Add(1)
+	go func() { defer appDone.Done(); r.refreshSupportedReserveCatalog(appCtx) }()
 	manager, plan, watchObservationSlot, err := r.startSession(ctx, currentWatch, targets, seedSlot, 0, watchObservationConsumer, watchObservationSlot)
 	if err != nil {
 		return err
@@ -153,11 +159,17 @@ func (r *Runtime) Run(ctx context.Context) error {
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	watchRefresh, watchDone := startWatchRefreshSignals(watchCtx, r.cfg.NeonDatabaseURL, r.cfg.WatchRefresh, r.logger)
 	defer func() { cancelWatch(); <-watchDone }()
-	verifyTicker := time.NewTicker(r.cfg.VerifyRefresh)
-	defer verifyTicker.Stop()
+	// Rust's monitor loop: the confirmed_refresh tick only requests a safety
+	// sweep, and a 100 ms batch tick verifies whatever the stream or the sweep
+	// marked dirty, one batch at a time.
+	sweepTicker := time.NewTicker(r.cfg.VerifyRefresh)
+	defer sweepTicker.Stop()
+	batchTicker := time.NewTicker(kaminoVerificationBatchInterval)
+	defer batchTicker.Stop()
 	progressTicker := time.NewTicker(5 * time.Second)
 	defer progressTicker.Stop()
 	verificationFailures := 0
+	var verificationFailingSince time.Time
 	var backoff reconnectBackoff
 	for {
 		select {
@@ -272,12 +284,20 @@ func (r *Runtime) Run(ctx context.Context) error {
 			if refreshErr != nil {
 				return refreshErr
 			}
-		case <-verifyTicker.C:
-			verifyErr := r.verifyPass(ctx)
+		case <-sweepTicker.C:
+			r.kamino.RequestSafetySweep()
+		case <-batchTicker.C:
+			ran, verifyErr := r.verifyPass(ctx)
+			if !ran {
+				continue
+			}
 			if verifyErr != nil {
+				if verificationFailures == 0 {
+					verificationFailingSince = time.Now()
+				}
 				verificationFailures++
 				r.facts.Failed(engine.FamilyObserver, "kamino_confirmed_verification")
-				if terminalErr := persistentVerificationError(verificationFailures, verifyErr); terminalErr != nil {
+				if terminalErr := persistentVerificationError(verificationFailures, time.Since(verificationFailingSince), r.verificationFailureBudget(), verifyErr); terminalErr != nil {
 					r.logger.Error("Kamino confirmed-state verification exhausted retries; restarting", "event", "kamino_confirmed_verification_stalled", "consecutiveFailures", verificationFailures, "error", verifyErr)
 					return terminalErr
 				}
@@ -320,6 +340,13 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 	set, targets, err := r.load(ctx)
 	if err != nil {
 		return nil, nil, 0, err
+	}
+	// Rust never starts from an arbitrarily old catalog: a complete API
+	// catalog is committed before the monitor seeds, and any failure aborts
+	// startup. load validated the cluster namespace first; an exact refresh
+	// cannot change the identities it selected, only renew fetched_at.
+	if _, err := r.publishSupportedReserves(ctx); err != nil {
+		return nil, nil, 0, fmt.Errorf("publish supported Kamino reserves before observer startup: %w", err)
 	}
 	r.ata.SetTargets(set.ATAs)
 	r.earn.SetWatchSet(set)
@@ -374,10 +401,57 @@ func (r *Runtime) passTimeout() time.Duration {
 	return min(r.cfg.ProgressTimeout/2, 30*time.Second)
 }
 
-func (r *Runtime) verifyPass(ctx context.Context) error {
+// verifyPass runs one dirty confirmed-read batch; false means none was due.
+func (r *Runtime) verifyPass(ctx context.Context) (bool, error) {
 	passCtx, cancel := context.WithTimeout(ctx, r.passTimeout())
 	defer cancel()
-	return r.kamino.Verify(passCtx)
+	return r.kamino.VerifyDirty(passCtx)
+}
+
+// verificationFailureBudget is how long confirmed reads may keep failing
+// before the observer restarts: the failure threshold in safety sweeps, so
+// the 100 ms batch retry cadence cannot turn a short RPC outage terminal.
+func (r *Runtime) verificationFailureBudget() time.Duration {
+	return kaminoVerificationFailureThreshold * r.cfg.VerifyRefresh
+}
+
+// refreshSupportedReserveCatalog is Rust's spawn_supported_reserve_catalog_refresh:
+// the observer owns kamino.supported_reserves and renews fetched_at, which the
+// planners admit for at most 300 s, every CatalogRefresh until ctx ends. A
+// failed pass is reported and the next tick retries, as in Rust.
+func (r *Runtime) refreshSupportedReserveCatalog(ctx context.Context) {
+	ticker := time.NewTicker(r.cfg.CatalogRefresh)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		passCtx, cancel := context.WithTimeout(ctx, r.passTimeout())
+		count, err := r.publishSupportedReserves(passCtx)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			r.facts.Failed(engine.FamilyObserver, "kamino_catalog_refresh")
+			r.logger.Warn("supported Kamino reserve catalog refresh failed; the committed catalog was not renewed", "event", "kamino_catalog_refresh_failed", "error", err)
+			continue
+		}
+		r.logger.Info("supported Kamino reserve catalog refreshed", "catalogCount", count)
+	}
+}
+
+func (r *Runtime) publishSupportedReserves(ctx context.Context) (int, error) {
+	records, err := r.kaminoCatalog.SupportedReserves(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.kaminoStore.RefreshSupportedReserves(ctx, records); err != nil {
+		return 0, err
+	}
+	return len(records), nil
 }
 
 // laserStreamReplaySlots is LASERSTREAM_MAX_REPLAY_SLOTS in the Rust monitor
@@ -807,11 +881,11 @@ func (r *Runtime) recoverEarnMaxGaps(ctx context.Context, set *watch.Set) (int64
 	return inserted, nil
 }
 
-func persistentVerificationError(consecutiveFailures int, cause error) error {
-	if consecutiveFailures < kaminoVerificationFailureThreshold {
+func persistentVerificationError(consecutiveFailures int, failingFor, budget time.Duration, cause error) error {
+	if consecutiveFailures < kaminoVerificationFailureThreshold || failingFor < budget {
 		return nil
 	}
-	return fmt.Errorf("Kamino confirmed-state verification failed %d consecutive times: %w", consecutiveFailures, cause)
+	return fmt.Errorf("Kamino confirmed-state verification failed %d consecutive times over %s: %w", consecutiveFailures, failingFor.Round(time.Second), cause)
 }
 
 func targetFingerprint(targets []kamino.Target) string {
