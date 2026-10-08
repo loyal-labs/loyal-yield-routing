@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -126,9 +125,9 @@ func TestIdleResidueRidesBesideThePull(t *testing.T) {
 // with generic text and schedule repair cleared last_error, so the Rust
 // trigger's overdue check (which reads the TS marker) could never see a stuck
 // deposit after a fallback. The deferral now happens before any claim, as
-// the TS executor's deferIdleVaultScheduledSlot does, and the Rust overdue
-// query itself reports the slot; the gauge reads the same first-blocked clock.
-func TestIdleAboveToleranceDefersBeforeClaimingWithTheRustVisibleMarker(t *testing.T) {
+// the TS executor's deferIdleVaultScheduledSlot does; the gauge reads the
+// marker's first-blocked clock.
+func TestIdleAboveToleranceDefersBeforeClaimingWithADurableMarker(t *testing.T) {
 	owned := newFreshScenario(t, "owned-idle", 25_000_001)
 	ctx := t.Context()
 	worker, registry := owned.worker(t, ControllerDependencies{IdleToleranceRaw: 25_000_000}, nil)
@@ -166,21 +165,9 @@ func TestIdleAboveToleranceDefersBeforeClaimingWithTheRustVisibleMarker(t *testi
 		t.Fatal("a deferral was counted as a failure")
 	}
 
-	// Blocked for two hours: the restarted Rust trigger's own overdue query
-	// reports it, and so does the gauge.
+	// Blocked for two hours: the gauge reads the marker's first-blocked clock.
 	if _, err := owned.store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET last_error = regexp_replace(last_error, 'idle_blocked_since=[0-9]+', 'idle_blocked_since=' || (extract(epoch FROM now())::bigint - 7200)) WHERE id=$1`, owned.slot); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := owned.store.pool.Exec(ctx, `INSERT INTO loyal_yield.vault_idle_token_balances_current(vault_id,mint,amount_raw,owner,token_account,observed_slot,observed_at,source_commitment,updated_at) SELECT $1,$2,25000001,vault_pubkey,'itest-vault-usdc-owned-idle',1,now(),'confirmed',now() FROM loyal_yield.managed_vaults WHERE id=$1`, owned.target.ManagedVaultID, USDCMint); err != nil {
-		t.Fatal(err)
-	}
-	var stage string
-	var slot int64
-	if err := owned.store.pool.QueryRow(ctx, `SELECT owning_stage, scheduled_slot_id FROM (`+rustOverdueSQL(t)+`) AS overdue`, USDCMint, int64(25_000_000)).Scan(&stage, &slot); err != nil {
-		t.Fatalf("Rust overdue check does not see the Go deferral: %v", err)
-	}
-	if stage != "preflight_idle_drain" || slot != owned.slot {
-		t.Fatalf("Rust overdue reported %s slot %d", stage, slot)
 	}
 	if err := worker.passFacts(ctx); err != nil {
 		t.Fatal(err)
@@ -188,22 +175,4 @@ func TestIdleAboveToleranceDefersBeforeClaimingWithTheRustVisibleMarker(t *testi
 	if age := metricValue(t, registry, "loyal_autodeposit_oldest_due_lot_age_seconds", nil); age < 7190 || age > 7300 {
 		t.Fatalf("oldest due age %v, want the two hours since first blocked", age)
 	}
-}
-
-// rustOverdueSQL is OVERDUE_AUTODEPOSIT_WORK_SQL from the Rust trigger, the
-// fallback's reader of these rows.
-func rustOverdueSQL(t *testing.T) string {
-	t.Helper()
-	source, err := os.ReadFile("../../../../crates/balance-sweep-autodeposit-trigger/src/main.rs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const start = `const OVERDUE_AUTODEPOSIT_WORK_SQL: &str = r#"`
-	text := string(source)
-	i := strings.Index(text, start)
-	j := strings.Index(text[i+len(start):], `"#;`)
-	if i < 0 || j < 0 {
-		t.Fatal("Rust overdue query not found")
-	}
-	return text[i+len(start) : i+len(start)+j]
 }

@@ -1,8 +1,8 @@
 package earn
 
-// Parity with the retained Rust implementation. The golden files are produced
-// by testdata/earn/golden-generator from loyal-actions, the Rust policy monitor
-// and loyal-yield-store; see its README to regenerate them.
+// Parity with the retired Rust implementation. The golden files are the
+// recorded output of loyal-actions, the Rust policy monitor and
+// loyal-yield-store; their generator was deleted with the Rust workers.
 
 import (
 	"bytes"

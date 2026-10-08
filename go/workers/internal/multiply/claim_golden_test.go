@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"testing"
@@ -22,9 +20,6 @@ func TestRootWalletClaimMatchesIndependentSVMReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var fixture struct {
-		Provenance struct {
-			ProgramSHA256 string `json:"programSha256"`
-		} `json:"provenance"`
 		Settings, RootAuthority, Vault, Source, Destination, Signature, RequestID                            string
 		WireBase64                                                                                           string
 		VaultIndex                                                                                           uint8
@@ -32,14 +27,6 @@ func TestRootWalletClaimMatchesIndependentSVMReceipt(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
-	}
-	program, err := os.ReadFile("../../../../crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so")
-	if err != nil {
-		t.Fatal(err)
-	}
-	programHash := sha256.Sum256(program)
-	if fixture.Provenance.ProgramSHA256 != hex.EncodeToString(programHash[:]) {
-		t.Fatal("SVM fixture program provenance drifted")
 	}
 	topology, err := DeriveEarnMaxTopology(mustKey(fixture.Settings), 320)
 	if err != nil {

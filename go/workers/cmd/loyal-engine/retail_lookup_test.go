@@ -4,20 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 )
-
-func TestRetailLookupAuthorityMatchesSource(t *testing.T) {
-	source, err := os.ReadFile("../../../../crates/loyal-solana-env/src/signer.rs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(source), `pub const STANDARD_POLICY_AUTHORITY: &str = "`+retailLookupAuthority+`";`) {
-		t.Fatal("production lookup authority differs from the retained source")
-	}
-}
 
 func TestRetailLookupDefaultHasNoKeyCapability(t *testing.T) {
 	for _, mode := range []string{"", "reconcile-only"} {
