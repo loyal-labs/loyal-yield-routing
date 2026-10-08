@@ -41,7 +41,7 @@ import {
   verifyExistingRuntimePolicies,
   type RuntimePolicyOperation,
 } from "./policies/commands.js";
-import { buildPolicyCatalogAuthorization } from "./policies/authorization.js";
+import { buildPolicyCatalogAuthorization, policyCatalogAuthorizationPath } from "./policies/authorization.js";
 import { verifyPartnerStructure } from "./verify/structure.js";
 import { verifyFinalizedLifecycle } from "./verify/finalized.js";
 import { verifyPrecreatedSquadsIsolation } from "./verify/squads.js";
@@ -362,7 +362,7 @@ async function main() {
   } else if (group === "policies" && operation === "authorization") {
     const artifact = valueAfter("--artifact");
     if (!artifact) throw new Error("policies authorization requires --artifact");
-    result = buildPolicyCatalogAuthorization(artifact, valueAfter("--authorization-out") ?? "docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v7.json");
+    result = buildPolicyCatalogAuthorization(artifact, valueAfter("--authorization-out") ?? policyCatalogAuthorizationPath());
   } else if (group === "policies" && operation === "verify") {
     const artifact = valueAfter("--artifact");
     if (!artifact) throw new Error("policies verify requires --artifact");

@@ -21,7 +21,7 @@ import {
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const AUTH_KIND = "backyard-voltr-four-market-policy-authorization";
-const AUTH_PATH = "docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v24.json";
+const AUTH_PATH = "docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v25.json";
 const SOURCE_PATHS = [
   "Cargo.toml",
   "Cargo.lock",
@@ -31,25 +31,18 @@ const SOURCE_PATHS = [
   "crates/loyal-actions/src/autonomous_vaults/mod.rs",
   "crates/loyal-actions/src/autonomous_vaults/voltr_kamino.rs",
   "crates/loyal-actions/src/bin/compile_voltr_kamino_runtime_policy.rs",
-  "crates/loyal-route-lookup-tables/Cargo.toml",
-  "crates/loyal-route-lookup-tables/src/lib.rs",
-  "crates/loyal-yield-store/Cargo.toml",
-  "crates/loyal-yield-store/src/lib.rs",
-  "crates/loyal-yield-store/src/store.rs",
-  "crates/loyal-yield-store/src/types.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/mod.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/domain.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/queue.rs",
-  "crates/loyal-yield-store/src/fleet_orchestration/voltr_restoration.rs",
-  "crates/loyal-yield-orchestrator/Cargo.toml",
-  "crates/loyal-yield-orchestrator/src/lib.rs",
-  "crates/loyal-yield-orchestrator/src/fleet_orchestration/mod.rs",
-  "crates/loyal-yield-orchestrator/src/fleet_orchestration/observation.rs",
-  "crates/loyal-yield-orchestrator/src/fleet_orchestration/planner.rs",
-  "crates/loyal-yield-orchestrator/src/bin/fleet-opportunity-planner.rs",
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-earn-replay.rs",
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-restoration-bridge.rs",
-  "crates/loyal-yield-orchestrator/src/bin/backyard-voltr-restoration-readback.rs",
+  // The Go engine owns what the retired Rust worker crates did for this
+  // route: Voltr observation and planning (fleet/voltr*.go, types.go), the
+  // saved-input planner replay (loyal-evidence), the durable opportunity queue
+  // with restoration-first execution (fleetexec/voltr.go) and its schema.
+  "go/workers/go.mod",
+  "go/workers/cmd/loyal-evidence/main.go",
+  "go/workers/internal/fleet/types.go",
+  "go/workers/internal/fleet/voltr.go",
+  "go/workers/internal/fleet/voltr_route.json",
+  "go/workers/internal/fleet/voltr_plan.go",
+  "go/workers/internal/fleetexec/voltr.go",
+  "migrations/yield/0052_voltr_opportunity_classes.sql",
   "tools/backyard-voltr/bun.lock",
   "tools/backyard-voltr/package.json",
   "tools/backyard-voltr/src/cli.ts",
@@ -67,8 +60,6 @@ const SOURCE_PATHS = [
   "tools/backyard-voltr/src/integrations/voltr.ts",
   "tools/backyard-voltr/src/runtime/manager.ts",
   "tools/backyard-voltr/src/runtime/protected-state.ts",
-  "tools/backyard-voltr/src/runtime/restoration-bridge.ts",
-  "tools/backyard-voltr/src/runtime/restoration-evidence.ts",
   "tools/backyard-voltr/src/runtime/commands.ts",
   "tools/backyard-voltr/src/runtime/earn-adapter.ts",
   "tools/backyard-voltr/src/runtime/final-reconciliation.ts",
@@ -463,6 +454,10 @@ export function loadPolicyCatalogAuthorization(
 
 export function policyCatalogEntries(): typeof ALL {
   return ALL;
+}
+
+export function policyCatalogSourcePaths(): readonly string[] {
+  return SOURCE_PATHS;
 }
 
 export function policyCatalogAuthorizationPath(): string {
