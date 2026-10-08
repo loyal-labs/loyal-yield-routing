@@ -110,6 +110,13 @@ func (w *Worker) voltrCycle(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// The main wave's publication fence (Rust insufficient_lifetime_after_planning):
+	// an envelope that cannot outlive planning is stale evidence, not a fault,
+	// so no epoch row is written and the next probe re-observes. Rust's Voltr
+	// cycle lacked this fence and failed its epoch invariant on the same input.
+	if !epoch.OptimizerEnvelopeExpiresAt().After(time.Now().Add(minimumUsableEpochLifetime)) {
+		return "no_fresh_market_epoch", nil
+	}
 	if err = epoch.Validate(); err != nil {
 		return "", err
 	}
