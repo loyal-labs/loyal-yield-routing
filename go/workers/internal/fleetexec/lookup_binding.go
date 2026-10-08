@@ -10,6 +10,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
+// errLookupBindingDeferred is the source LogicalHeadUsageLease deferral: the
+// binding is otherwise publishable, but this vault's head is still in use. It
+// is a not-ready outcome for one vault, never a planner failure.
+var errLookupBindingDeferred = errors.New("lookup binding has logical usage or unresolved packet custody")
+
 // ActivateLookupBinding publishes only the newest desired revision, after an
 // actual mature account read. Other vaults using an unchanged packed physical
 // table do not conflict with this logical-head publication.
@@ -148,7 +153,7 @@ func (s *Store) ActivateLookupBinding(ctx context.Context, bindingID int64, snap
 			return err
 		}
 		if protected {
-			return errors.New("lookup binding has logical usage or unresolved packet custody")
+			return errLookupBindingDeferred
 		}
 		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_vault_bindings SET lifecycle_state='failed',deactivated_at=COALESCE(deactivated_at,clock_timestamp()),updated_at=clock_timestamp() WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=$3 AND id<>$4 AND lifecycle_state IN ('preparing','warming')`, familyID, vaultID, ordinal, bindingID); err != nil {
 			return err
