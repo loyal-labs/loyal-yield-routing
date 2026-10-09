@@ -25,29 +25,10 @@ on:
       - tools/backyard-voltr/**
       - docs/evidence/backyard-voltr-four-market/**
 
+  # Every PR reports the required checks; the changes job skips them when
+  # no workers path changed.
   pull_request:
     branches: [main]
-    paths:
-      - go/workers/**
-      - scripts/verify-workers-v2.sh
-      - scripts/workers-v2-fixture.py
-      - migrations/**
-      - .github/workflows/workers-v2-verify.yml
-      # The Rust workspace the Voltr policy compiler builds in.
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - package.json
-      - bun.lock
-      # The crates the jobs below build: the connected SVM fixtures and the
-      # Voltr policy compiler with their workspace dependencies.
-      - crates/squads-test-harness/**
-      - crates/mock-yield-protocols-program/**
-      - crates/loyal-actions/**
-      - crates/loyal-solana-env/**
-      - crates/loyal-hub-abi/**
-      - tools/backyard-voltr/**
-      - docs/evidence/backyard-voltr-four-market/**
 
 env:
   CARGO_BUILD_JOBS: "2"
@@ -62,7 +43,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      workers: ${{ steps.diff.outputs.workers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        # Pushes are already filtered by the push paths above.
+        run: |
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|package\.json$|bun\.lock$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi)/|tools/backyard-voltr/|docs/evidence/backyard-voltr-four-market/)'; then
+            echo workers=true >> "$GITHUB_OUTPUT"
+          else
+            echo workers=false >> "$GITHUB_OUTPUT"
+          fi
+
   verify:
+    needs: changes
+    if: needs.changes.outputs.workers == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
@@ -172,6 +175,8 @@ jobs:
           key: workers-go-${{ hashFiles('go/workers/go.sum') }}-${{ github.sha }}
 
   backyard-voltr-authorization:
+    needs: changes
+    if: needs.changes.outputs.workers == 'true'
     # Every authorization-gated Backyard Voltr command refuses when the
     # committed policy catalog authorization no longer matches the compiled
     # catalog.
@@ -193,7 +198,9 @@ jobs:
           bun install --frozen-lockfile
           bun test src/policies/authorization.test.ts
 
-  image:
+  workers-image:
+    needs: changes
+    if: needs.changes.outputs.workers == 'true'
     # This job only builds and probes a local CI image. No registry credentials,
     # publishing, production environment or deployment permission is granted.
     runs-on: ubuntu-24.04
