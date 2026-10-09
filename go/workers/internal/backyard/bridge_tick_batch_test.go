@@ -29,10 +29,10 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	if decision.Action != ReportNAV {
 		t.Fatalf("fixture expected report: %+v", decision)
 	}
-	client, _ := NewRPCClient("https://rpc.invalid")
+	client := newFakeChain(t, nil)
 	slot := int64(78)
 	requests := map[string]int{}
-	client.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	rpcOf(client).Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var request struct {
 			Method string `json:"method"`
 		}

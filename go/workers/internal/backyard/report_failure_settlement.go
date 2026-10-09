@@ -11,6 +11,9 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // This is a finalized, exact-wire failed transaction receipt, not an estimate
@@ -19,17 +22,53 @@ import (
 // fee payer's sole permitted debit. The signed legacy envelope excludes nonce
 // advancement and pins the worker's Squads execution program.
 type finalizedFailureReceipt struct {
-	Slot        int64    `json:"slot"`
-	Transaction []string `json:"transaction"`
-	Meta        *struct {
-		Err               json.RawMessage   `json:"err"`
-		Fee               *uint64           `json:"fee"`
-		PreBalances       []uint64          `json:"preBalances"`
-		PostBalances      []uint64          `json:"postBalances"`
-		PreTokenBalances  []json.RawMessage `json:"preTokenBalances"`
-		PostTokenBalances []json.RawMessage `json:"postTokenBalances"`
-		LogMessages       []string          `json:"logMessages"`
-	} `json:"meta"`
+	Slot        int64                 `json:"slot"`
+	Transaction []string              `json:"transaction"`
+	Meta        *finalizedFailureMeta `json:"meta"`
+}
+
+type finalizedFailureMeta struct {
+	Err               json.RawMessage   `json:"err"`
+	Fee               *uint64           `json:"fee"`
+	PreBalances       []uint64          `json:"preBalances"`
+	PostBalances      []uint64          `json:"postBalances"`
+	PreTokenBalances  []json.RawMessage `json:"preTokenBalances"`
+	PostTokenBalances []json.RawMessage `json:"postTokenBalances"`
+	LogMessages       []string          `json:"logMessages"`
+}
+
+// failureReceipt writes the cluster's receipt in getTransaction's own shape,
+// the form the settlement proof validates and persists.
+func failureReceipt(r chain.Receipt) (finalizedFailureReceipt, error) {
+	errJSON, err := json.Marshal(r.Err)
+	if err != nil {
+		return finalizedFailureReceipt{}, err
+	}
+	rows := func(balances map[solana.PublicKey]chain.TokenBalance) ([]json.RawMessage, error) {
+		out := make([]json.RawMessage, 0, len(balances))
+		for index, key := range r.Keys {
+			balance, ok := balances[key]
+			if !ok {
+				continue
+			}
+			row, err := json.Marshal(map[string]any{"accountIndex": index, "mint": balance.Mint.String(), "owner": balance.Owner.String(), "programId": balance.Program.String(),
+				"uiTokenAmount": map[string]any{"amount": strconv.FormatUint(balance.Amount, 10), "decimals": balance.Decimals}})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, row)
+		}
+		return out, nil
+	}
+	fee := r.Fee
+	meta := &finalizedFailureMeta{Err: errJSON, Fee: &fee, PreBalances: r.PreLamports, PostBalances: r.PostLamports, LogMessages: r.Logs}
+	if meta.PreTokenBalances, err = rows(r.Pre); err != nil {
+		return finalizedFailureReceipt{}, err
+	}
+	if meta.PostTokenBalances, err = rows(r.Post); err != nil {
+		return finalizedFailureReceipt{}, err
+	}
+	return finalizedFailureReceipt{Slot: int64(r.Slot), Transaction: []string{base64.StdEncoding.EncodeToString(r.Wire), "base64"}, Meta: meta}, nil
 }
 
 type finalizedFailureSettlement struct {
@@ -212,13 +251,14 @@ func settleFailedFeeBudget(budget Phase3Budget, auth phase3OperationAuthorizatio
 // explicit manual state for rows the previous binary's action gate forced
 // into manual recovery with the unclassified marker. Same receipt proof, same
 // fee settlement, one guarded status transition per source state.
-func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *RPCClient, operation PersistedOperation, reason string, manualRecovery bool) error {
+func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *chain.Client, operation PersistedOperation, reason string, manualRecovery bool) error {
 	// A missing detailed receipt stays ambiguous even after finalized status.
-	var receipt finalizedFailureReceipt
-	if err := rpc.call(ctx, "getTransaction", []any{operation.TransactionSignature, map[string]any{"commitment": "finalized", "encoding": "base64", "maxSupportedTransactionVersion": 0}}, &receipt); err != nil {
+	read, err := finalizedReceipt(ctx, rpc, operation.TransactionSignature)
+	if err != nil {
 		return nil
 	}
-	if receipt.Meta == nil || len(receipt.Transaction) != 2 {
+	receipt, err := failureReceipt(read)
+	if err != nil {
 		return nil
 	}
 	if d == nil || d.pool == nil || operation.ID == "" {

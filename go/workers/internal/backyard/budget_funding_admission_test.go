@@ -15,13 +15,15 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func fundingAdmissionFixture(t *testing.T, output uint64) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func fundingAdmissionFixture(t *testing.T, output uint64) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	return fundingAdmissionFixtureForSource(t, output, SwapCollateralToDebtStep)
 }
 
-func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction Action) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction Action) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	var extra []ConfirmedAccount
 	if fundingAction == SwapUSDCToDebtStep {
@@ -307,7 +309,7 @@ func TestFundingAdmissionBindsDebtComparisonToSnapshotReserveBasis(t *testing.T)
 	nav.Report.Sequence, nav.Report.ObservedSlot = 42, 42
 	decision := func(o Observation) Decision { return Decision{Action: ReportNAV, StrategyKey: o.Snapshot.RouteLane} }
 
-	simulatedDebtBank := func(t *testing.T, rpc *RPCClient, accounts []ConfirmedAccount, obligationDebtRaw uint64) *bool {
+	simulatedDebtBank := func(t *testing.T, rpc *chain.Client, accounts []ConfirmedAccount, obligationDebtRaw uint64) *bool {
 		t.Helper()
 		route := ethenaUSDePYUSD
 		bank := map[string]ConfirmedAccount{}
@@ -332,8 +334,8 @@ func TestFundingAdmissionBindsDebtComparisonToSnapshotReserveBasis(t *testing.T)
 		obligation := append([]byte(nil), bank[route.Kamino.Obligation].Data...)
 		putScaledFraction(obligation[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(obligationDebtRaw), 60))
 		mutated := false
-		previous := rpc.client.Transport
-		rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		previous := rpcOf(rpc).Transport
+		rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
 				t.Fatalf("read rpc body: %v", err)

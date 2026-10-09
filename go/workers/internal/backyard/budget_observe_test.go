@@ -2,55 +2,14 @@ package backyard
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
 	"testing"
 	"time"
-)
 
-func TestPhase3ReadOnlySOLReferenceDiscovery(t *testing.T) {
-	if os.Getenv("PHASE3_READONLY_PRICE_PREFLIGHT") != "1" {
-		t.Skip("explicit read-only preflight gate required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	rpc, err := NewRPCClient(os.Getenv("SOLANA_RPC_URL"))
-	if err != nil {
-		t.Fatal("RPC configuration unavailable")
-	}
-	const market = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
-	const mint = "So11111111111111111111111111111111111111112"
-	var result struct {
-		Context struct {
-			Slot int64 `json:"slot"`
-		} `json:"context"`
-		Value []struct {
-			Pubkey  string `json:"pubkey"`
-			Account struct {
-				Owner string   `json:"owner"`
-				Data  []string `json:"data"`
-			} `json:"account"`
-		} `json:"value"`
-	}
-	params := []any{kaminoProgram, map[string]any{"encoding": "base64", "commitment": "confirmed", "withContext": true, "dataSlice": map[string]int{"offset": 0, "length": 224}, "filters": []any{map[string]int{"dataSize": kaminoReserveLength}, map[string]any{"memcmp": map[string]any{"offset": 32, "bytes": market}}, map[string]any{"memcmp": map[string]any{"offset": 128, "bytes": mint}}}}}
-	if err = rpc.call(ctx, "getProgramAccounts", params, &result); err != nil {
-		t.Fatal("SOL reference discovery RPC failed")
-	}
-	if result.Context.Slot <= 0 || len(result.Value) != 1 {
-		t.Fatalf("SOL reference discovery not unique: count=%d", len(result.Value))
-	}
-	row := result.Value[0]
-	if len(row.Account.Data) != 2 || row.Account.Owner != kaminoProgram {
-		t.Fatal("SOL reference owner/encoding mismatch")
-	}
-	data, err := base64.StdEncoding.DecodeString(row.Account.Data[0])
-	if err != nil || len(data) != 224 || !sameKey(data[32:64], market) || !sameKey(data[128:160], mint) {
-		t.Fatal("SOL reference identity mismatch")
-	}
-	t.Logf("READ_ONLY_SOL_REFERENCE reserve=%s market=%s mint=%s slot=%d", row.Pubkey, market, mint, result.Context.Slot)
-}
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+)
 
 // Optional read-only preflight. Stale reserves may be refreshed in an unsigned,
 // price-only simulation. No signer, journal mutation or submission is used.
@@ -61,11 +20,11 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	rpc, err := NewRPCClient(os.Getenv("SOLANA_RPC_URL"))
+	rpc, err := chain.New(os.Getenv("SOLANA_RPC_URL"), 15*time.Second)
 	if err != nil {
 		t.Fatal("RPC configuration unavailable")
 	}
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		t.Fatal("confirmed slot unavailable")
 	}
@@ -91,7 +50,7 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 			t.Logf("READ_ONLY_PRICE %s", encoded)
 		}
 	}
-	blockhash, err := rpc.LatestBlockhash(ctx)
+	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
 		t.Fatal("blockhash unavailable")
 	}
@@ -104,7 +63,7 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fee, err := rpc.ObserveMessageFee(ctx, message, slot)
+	fee, err := observeMessageFee(ctx, rpc, message, slot)
 	if err != nil {
 		t.Fatal("exact-message fee unavailable")
 	}

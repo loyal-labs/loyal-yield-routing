@@ -10,6 +10,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Produces unsigned current-compiler input for a captured-program experiment.
@@ -20,7 +22,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	if path == "" {
 		t.Skip("explicit public-RPC capture plan required")
 	}
-	rpc, err := NewRPCClient(os.Getenv("SOLANA_RPC_URL"))
+	rpc, err := chain.New(os.Getenv("SOLANA_RPC_URL"), 15*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,11 +32,11 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal("selected route absent")
 	}
-	minimumSlot, err := rpc.FinalizedSlot(ctx)
+	minimumSlot, err := finalizedSlot(ctx, rpc)
 	if err != nil {
 		t.Fatal("finalized slot unavailable")
 	}
-	slot, accounts, err := rpc.getMultipleAccountsAtCommitment(ctx, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}, minimumSlot, nil, "finalized")
+	slot, accounts, err := finalizedAccounts(ctx, rpc, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}, minimumSlot)
 	if err != nil {
 		t.Fatal("reserve capture unavailable")
 	}

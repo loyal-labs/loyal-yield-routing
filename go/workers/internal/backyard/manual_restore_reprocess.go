@@ -27,6 +27,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // ManualRestoreReprocessRequest pins the exact row: both fields are required
@@ -129,7 +131,7 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		return result, sanitizedStage(result.Stage)
 	}
 	defer db.Close()
-	rpc, err := NewRPCClient(rpcURL)
+	rpc, err := chain.New(rpcURL, 15*time.Second)
 	if err != nil {
 		result.Stage = "open_rpc"
 		return result, sanitizedStage(result.Stage)
@@ -152,7 +154,7 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 	// The same refusal classification the automatic walk would have used; the
 	// settlement below re-derives it from the finalized receipt and requires
 	// the exact match again.
-	evidence, err := rpc.FailedTransactionEvidence(ctx, operation.TransactionSignature)
+	evidence, err := failedTransactionEvidence(ctx, rpc, operation.TransactionSignature)
 	if err != nil {
 		result.Stage = "read_receipt"
 		return result, sanitizedStage(result.Stage)

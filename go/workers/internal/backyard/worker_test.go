@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func readyWorkerManifest(t *testing.T) RouteManifest {
@@ -270,7 +272,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 }
 
 func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {
-	if _, err := NewWorker(&Database{pool: &pgxpool.Pool{}}, &RPCClient{}, DefaultConfig(), Credentials{}); err == nil {
+	if _, err := NewWorker(&Database{pool: &pgxpool.Pool{}}, &chain.Client{}, DefaultConfig(), Credentials{}); err == nil {
 		t.Fatal("worker accepted a missing signing capability")
 	}
 }

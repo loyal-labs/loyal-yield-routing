@@ -69,6 +69,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // sharedCustodyProofBinding is the durable, comparable form of a proof: what
@@ -202,7 +204,7 @@ func (d *Database) ObserveSharedCustodyOwnershipProof(ctx context.Context, manif
 // records need the historical-expiry classification; it never reads
 // environment or global config inside the database helper. nil keeps every
 // non-RPC classification and fails closed on the expiry path.
-func (d *Database) ObserveSharedCustodyOwnershipProofWithRPC(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, rpc *RPCClient) (sharedCustodyAdmissionProof, error) {
+func (d *Database) ObserveSharedCustodyOwnershipProofWithRPC(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, rpc *chain.Client) (sharedCustodyAdmissionProof, error) {
 	return d.observeSharedCustodySpendProof(ctx, manifest, cfg, expected, observedRaw, observedSlot, nil, sharedCustodyOriginHeightResolver(rpc))
 }
 
@@ -219,7 +221,7 @@ func (d *Database) ObserveSharedCustodySendProof(ctx context.Context, manifest R
 // ObserveSharedCustodySendProofWithRPC is the send proof with the caller's
 // explicit RPC client for the origin block-height resolution, same contract
 // as ObserveSharedCustodyOwnershipProofWithRPC.
-func (d *Database) ObserveSharedCustodySendProofWithRPC(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, signed sharedCustodySignedSpend, rpc *RPCClient) (sharedCustodyAdmissionProof, error) {
+func (d *Database) ObserveSharedCustodySendProofWithRPC(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, signed sharedCustodySignedSpend, rpc *chain.Client) (sharedCustodyAdmissionProof, error) {
 	if signed.OperationID == "" || signed.SignedWireSHA256 == "" || signed.TransactionSignature == "" {
 		return sharedCustodyAdmissionProof{}, budgetHold("custody_attribution_current_operation_invalid")
 	}
@@ -233,14 +235,21 @@ func (d *Database) ObserveSharedCustodySendProofWithRPC(ctx context.Context, man
 // validator's origin block-height resolver: the finalized block height
 // containing the proven zero-origin slot. nil yields nil — the expiry
 // classification then holds fail-closed instead of silently passing.
-func sharedCustodyOriginHeightResolver(rpc *RPCClient) func(context.Context, int64) (int64, error) {
+func sharedCustodyOriginHeightResolver(rpc *chain.Client) func(context.Context, int64) (int64, error) {
 	if rpc == nil {
 		return nil
 	}
 	return func(ctx context.Context, slot int64) (int64, error) {
 		start := time.Now()
 		defer logStage("custody_proof_origin_height", start)
-		return rpc.FinalizedBlockHeightForSlot(ctx, slot)
+		if slot <= 0 {
+			return 0, fmt.Errorf("slot is required")
+		}
+		height, err := rpc.FinalizedBlockHeightAt(ctx, uint64(slot))
+		if err != nil {
+			return 0, confirmedObservationUnavailable(err)
+		}
+		return int64(height), nil
 	}
 }
 
@@ -320,7 +329,7 @@ func (d *Database) readSharedCustodyJournal(ctx context.Context, manifest RouteM
 // prepared observation. The proof is the same strict proof: a journal change
 // after the read fails the balance/tip binding here or the generation check
 // under the admission lock.
-func (d *Database) prefetchSharedCustodyOwnershipProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, rpc *RPCClient) custodyProofFinisher {
+func (d *Database) prefetchSharedCustodyOwnershipProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, rpc *chain.Client) custodyProofFinisher {
 	var inputs sharedCustodyProofInputs
 	var readErr error
 	done := make(chan struct{})
@@ -614,14 +623,14 @@ func requireSharedCustodyBuildBinding(lane, routeKey string, auth phase3Operatio
 }
 
 // observeConfirmedSharedCustodyRaw is the fresh confirmed custody observation
-// for the final-send seam: one confirmed GetMultipleAccounts read at the
+// for the final-send seam: one confirmed account read at the
 // caller's minimum slot, decoded through the shared DecodeTokenCustody with
 // the pinned owner program, mint and authority bytes.
-func observeConfirmedSharedCustodyRaw(ctx context.Context, rpc *RPCClient, cfg sharedCustodyAttributionConfig, minimumSlot int64) (uint64, int64, error) {
+func observeConfirmedSharedCustodyRaw(ctx context.Context, rpc *chain.Client, cfg sharedCustodyAttributionConfig, minimumSlot int64) (uint64, int64, error) {
 	if rpc == nil || minimumSlot <= 0 {
 		return 0, 0, budgetHold("custody_attribution_observation_invalid")
 	}
-	slot, accounts, err := rpc.GetMultipleAccounts(ctx, []string{cfg.Custody}, minimumSlot)
+	slot, accounts, err := confirmedAccounts(ctx, rpc, []string{cfg.Custody}, minimumSlot)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -681,7 +690,7 @@ func (d *Database) gatherSharedCustodySendProof(ctx context.Context, manifest Ro
 	return sharedCustodySendProof{applies: true, cfg: cfg, inputs: inputs}, err
 }
 
-func (p sharedCustodySendProof) finish(ctx context.Context, rpc *RPCClient, decoded ExpectedEffects, minimumSlot int64) (*sharedCustodyAdmissionProof, error) {
+func (p sharedCustodySendProof) finish(ctx context.Context, rpc *chain.Client, decoded ExpectedEffects, minimumSlot int64) (*sharedCustodyAdmissionProof, error) {
 	if !p.applies {
 		return nil, nil
 	}

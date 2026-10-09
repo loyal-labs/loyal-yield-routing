@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // DebtClearConfirmation is an explicit privileged-operator attestation, not
@@ -448,7 +450,7 @@ func (d *Database) authorizeDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteM
 	return nil
 }
 
-func (d *Database) observeDebtClearOriginRisk(ctx context.Context, rpc *RPCClient, m RouteManifest, operationID string) (*debtClearRiskProof, error) {
+func (d *Database) observeDebtClearOriginRisk(ctx context.Context, rpc *chain.Client, m RouteManifest, operationID string) (*debtClearRiskProof, error) {
 	var raw []byte
 	if err := d.pool.QueryRow(ctx, `SELECT COALESCE(expected_effects->'phase3','null'::jsonb) FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&raw); err != nil {
 		return nil, err

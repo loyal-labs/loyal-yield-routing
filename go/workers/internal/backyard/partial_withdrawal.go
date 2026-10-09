@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"math"
 	"math/big"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Partial withdrawals (AUTO and OnRe). A withdrawal shortfall S = demand -
@@ -230,7 +232,7 @@ func partialWithdrawalRepayRaw(s Snapshot, target int64) int64 {
 // release -> swap -> payoff -> withdraw -> return) for a leveraged
 // position, the post-payoff return for a debt-free one. ok=false: not a
 // partial-withdrawal leg; the installed admission applies.
-func admitPartialWithdrawalLeg(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error, bool) {
+func admitPartialWithdrawalLeg(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error, bool) {
 	s := o.Snapshot
 	switch d.Reason {
 	case partialReleaseReason, partialSwapToDebtReason, partialSwapToUSDCReason, partialStageReason, partialDebtToUSDCReason:
@@ -296,7 +298,7 @@ func admitPartialWithdrawalLeg(ctx context.Context, rpc *RPCClient, client *jupi
 	if route.Lane == autoAUTOPYUSD.Lane {
 		additional = append(additional, route.Kamino.Market)
 	}
-	_, accounts, err := rpc.GetMultipleAccounts(ctx, payoffWindowAddresses(route, additional...), max(s.Slot, current.ObservationSlot))
+	_, accounts, err := confirmedAccounts(ctx, rpc, payoffWindowAddresses(route, additional...), max(s.Slot, current.ObservationSlot))
 	if err != nil {
 		return phase3BridgeAdmission{}, err, true
 	}
@@ -338,7 +340,7 @@ func admitPartialWithdrawalLeg(ctx context.Context, rpc *RPCClient, client *jupi
 // poststate holds. A leveraged position goes through the projected pricer
 // (which also counts idle collateral and debt cash); a debt-free one prices
 // its withdraw -> swap -> return tail.
-func pricePartialWithdrawalRemainder(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, route RuntimeRoute, post []ConfirmedAccount) (phase3BridgeAdmission, error) {
+func pricePartialWithdrawalRemainder(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, route RuntimeRoute, post []ConfirmedAccount) (phase3BridgeAdmission, error) {
 	slot := int64(0)
 	if clock := accountAt(post, budgetClockAddress); len(clock.Data) == 40 {
 		slot = int64(binary.LittleEndian.Uint64(clock.Data[:8]))
@@ -353,7 +355,7 @@ func pricePartialWithdrawalRemainder(ctx context.Context, rpc *RPCClient, client
 // pricePhase3ProjectedDebtFreeReturn prices a debt-free position's complete
 // return from a cost-only poststate: withdraw every receipt -> NAV -> swap
 // the collateral (and any idle) to USDC -> NAV -> stage -> restore -> NAV.
-func pricePhase3ProjectedDebtFreeReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, route RuntimeRoute, projection phase3KaminoProjection) (phase3BridgeAdmission, error) {
+func pricePhase3ProjectedDebtFreeReturn(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, route RuntimeRoute, projection phase3KaminoProjection) (phase3BridgeAdmission, error) {
 	obligation, err := decodeKaminoObligation(accountAt(projection.Accounts, route.Kamino.Obligation), route.Kamino)
 	if err != nil || obligation.collateralDepositedRaw == 0 || obligation.debtRaw != 0 {
 		return phase3BridgeAdmission{}, budgetHold("partial_withdrawal_remainder_unavailable")
@@ -366,7 +368,7 @@ func pricePhase3ProjectedDebtFreeReturn(ctx context.Context, rpc *RPCClient, cli
 	if err != nil || amount == 0 {
 		return phase3BridgeAdmission{}, budgetHold("partial_withdrawal_remainder_unavailable")
 	}
-	blockhash, err := rpc.LatestBlockhash(ctx)
+	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}

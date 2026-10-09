@@ -23,7 +23,7 @@ func (d *Database) AuthorizePhase3Build(ctx context.Context, operationID string,
 
 // Storage-only legacy cases below isolate locking from fresh RPC valuation.
 // Production has no unpriced MarkBroadcastIntent method.
-func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) error {
+func (d *Database) MarkBroadcastIntent(t *testing.T, ctx context.Context, operationID string) error {
 	var encoded, wire []byte
 	if err := d.pool.QueryRow(ctx, `SELECT expected_effects->'phase3',signed_wire FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&encoded, &wire); err != nil {
 		return err
@@ -32,10 +32,9 @@ func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) 
 	if err := json.Unmarshal(encoded, &auth); err != nil {
 		return err
 	}
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return response(`{"jsonrpc":"2.0","id":1,"result":42}`), nil
-	})
+	}))
 	return d.markBroadcastIntent(ctx, operationID, rpc, auth.IntentSHA256, sha256Bytes(wire), ValuedTransactionCost{TotalMicros: 1, ObservationSlot: 42, ValidThroughSlot: 74})
 }
 
@@ -185,7 +184,7 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertBudgetHold(t, db.MarkBroadcastIntent(ctx, op), "signed_wire_reservation_mismatch")
+	assertBudgetHold(t, db.MarkBroadcastIntent(t, ctx, op), "signed_wire_reservation_mismatch")
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -216,9 +215,9 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	// the fence's own read fresh and let the stale quote reach the revaluation
 	// exactly as before.
 	staleQuoteRPC := budgetBuildRPC(t, 5_000, 75)
-	baseStaleTransport := staleQuoteRPC.client.Transport
+	baseStaleTransport := rpcOf(staleQuoteRPC).Transport
 	fenceReads := 0
-	staleQuoteRPC.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpcOf(staleQuoteRPC).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(request.Body)
 		request.Body = io.NopCloser(strings.NewReader(string(body)))
 		if fenceReads == 0 && strings.Contains(string(body), `"method":"getSlot"`) {
@@ -262,26 +261,26 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	}
 	// The old writer lost its fence; a durable intent is not a send permission
 	// for a new or stale process. This test makes no RPC or signer calls.
-	if err = db.MarkBroadcastIntent(ctx, op); err == nil {
+	if err = db.MarkBroadcastIntent(t, ctx, op); err == nil {
 		t.Fatal("stale writer retained authority")
 	}
 	// Exercise the real recovery coordinator and journal transition against
 	// a controlled RPC transport. No signer or network submission is possible.
-	rpc, _ := NewRPCClient("https://rpc.invalid")
+	rpc := newFakeChain(t, nil)
 	statusReads := 0
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(request.Body)
 		if strings.Contains(string(body), `"method":"getSignatureStatuses"`) {
 			statusReads++
-			return response(`{"jsonrpc":"2.0","id":1,"result":{"value":[null]}}`), nil
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":[null]}}`), nil
 		}
-		if strings.Contains(string(body), `"method":"getBlockHeight"`) && strings.Contains(string(body), `"commitment":"finalized"`) {
-			return response(`{"jsonrpc":"2.0","id":1,"result":11}`), nil
+		if strings.Contains(string(body), `"method":"getEpochInfo"`) && strings.Contains(string(body), `"commitment":"finalized"`) {
+			return response(finalizedEpochJSON(11)), nil
 		}
 		t.Fatalf("unexpected RPC during unspent release: %s", body)
 		return nil, fmt.Errorf("unexpected RPC")
 	})
-	operation := PersistedOperation{Operation: Operation{ID: op, RouteKey: key}, Status: BroadcastIntent, TransactionSignature: "controlled-signature", LastValidBlockHeight: 10}
+	operation := PersistedOperation{Operation: Operation{ID: op, RouteKey: key}, Status: BroadcastIntent, TransactionSignature: testSignature, LastValidBlockHeight: 10}
 	if err = AdvanceNonterminal(ctx, restarted, rpc, operation); err != nil {
 		t.Fatal(err)
 	}
@@ -430,19 +429,19 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 	expiredOperation := signedOperation
 	expiredOperation.ID = expiredID
 	expiryRPC := budgetBuildRPC(t, 20_000_000, 42)
-	baseTransport := expiryRPC.client.Transport
+	baseTransport := rpcOf(expiryRPC).Transport
 	absenceJSON := "[]"
-	expiryRPC.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpcOf(expiryRPC).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(request.Body)
 		request.Body = io.NopCloser(strings.NewReader(string(body)))
-		if strings.Contains(string(body), `"method":"getBlockHeight"`) {
+		if strings.Contains(string(body), `"method":"getEpochInfo"`) {
 			if !strings.Contains(string(body), `"commitment":"finalized"`) {
 				t.Fatal("expiry was not finalized")
 			}
-			return response(`{"jsonrpc":"2.0","id":1,"result":11}`), nil
+			return response(finalizedEpochJSON(11)), nil
 		}
 		if strings.Contains(string(body), `"method":"getSignatureStatuses"`) {
-			return response(`{"jsonrpc":"2.0","id":1,"result":{"value":` + absenceJSON + `}}`), nil
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":` + absenceJSON + `}}`), nil
 		}
 		return baseTransport.RoundTrip(request)
 	})

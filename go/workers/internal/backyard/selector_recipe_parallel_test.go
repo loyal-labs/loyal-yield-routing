@@ -100,9 +100,9 @@ func TestSelectorRecipeParallelFeesStayBoundToMessagesAndSlots(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rpc := budgetBuildRPC(t, 5000, 42)
-			base := rpc.client.Transport
+			base := rpcOf(rpc).Transport
 			var feeReads atomic.Int32
-			rpc.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			rpcOf(rpc).Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				raw, err := io.ReadAll(r.Body)
 				if err != nil {
 					return nil, err

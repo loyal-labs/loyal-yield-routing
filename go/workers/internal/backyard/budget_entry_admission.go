@@ -4,12 +4,14 @@ import (
 	"context"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // A prospective reverse quote is not evidence of current custody. Validate only
 // the persisted current entry against one fresh account batch, also at final
 // send. No entry is allowed to adopt an unaccounted open position or balance.
-func validateEntrySwap(ctx context.Context, rpc *RPCClient, request JupiterSwapRequest, effects ExpectedEffects, slot int64) (int64, error) {
+func validateEntrySwap(ctx context.Context, rpc *chain.Client, request JupiterSwapRequest, effects ExpectedEffects, slot int64) (int64, error) {
 	if selectorLane(request.RouteLane) && (len(effects.Accounts) == 0 || effects.Accounts[0].BeforeRaw != request.AmountRaw) {
 		return 0, budgetHold("entry_swap_must_consume_working_cash")
 	}
@@ -30,7 +32,7 @@ func validateEntrySwap(ctx context.Context, rpc *RPCClient, request JupiterSwapR
 	if err != nil || source != bridgeSquadsATA || sourceMint != bridgeUSDC || destination != route.CollateralCustody {
 		return 0, budgetHold("entry_swap_custody_mismatch")
 	}
-	observed, accounts, err := rpc.GetMultipleAccounts(ctx, []string{source, destination, route.DebtCustody, route.Kamino.Obligation}, slot)
+	observed, accounts, err := confirmedAccounts(ctx, rpc, []string{source, destination, route.DebtCustody, route.Kamino.Obligation}, slot)
 	if err != nil {
 		return 0, budgetHold("entry_swap_state_unavailable")
 	}
@@ -68,7 +70,7 @@ func validateEntrySwap(ctx context.Context, rpc *RPCClient, request JupiterSwapR
 // Reserve an immediate complete exit after the initial USDC/collateral swap.
 // The later deposit/borrow must independently reprice and extend this reserve;
 // pricing an entry conversion does not authorize those future transactions.
-func observePhase3EntrySwapAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3EntrySwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := observation.Snapshot, evidence.Request
@@ -125,7 +127,7 @@ func observePhase3EntrySwapAdmission(ctx context.Context, rpc *RPCClient, client
 	return plan, nil
 }
 
-func (d *Database) admitPhase3EntrySwap(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
+func (d *Database) admitPhase3EntrySwap(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
 	plan, err := observePhase3EntrySwapAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
 	if err != nil {
 		return err

@@ -226,16 +226,13 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 	})
 
 	t.Run("the failure receipt is read from the chain and classified", func(t *testing.T) {
-		evidence := `{"jsonrpc":"2.0","id":1,"result":{"slot":500,"meta":{"err":{"InstructionError":[0,{"Custom":9}]},"logMessages":` +
-			mustJSONLogs(t, adaptorFailureLogs(bridgeAdaptorProgram, 9)) + `}}}`
-		rpc, err := NewRPCClient("https://rpc.invalid")
-		if err != nil {
-			t.Fatal(err)
-		}
-		rpc.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		evidence := `{"jsonrpc":"2.0","id":1,"result":` + transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 9}}},
+			"fee": 5000, "preBalances": []uint64{1}, "postBalances": []uint64{1}, "logMessages": adaptorFailureLogs(bridgeAdaptorProgram, 9)}) + `}`
+		rpc := newFakeChain(t, nil)
+		rpcOf(rpc).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return response(evidence), nil
 		})
-		receipt, err := rpc.FailedTransactionEvidence(context.Background(), "5ignature")
+		receipt, err := failedTransactionEvidence(context.Background(), rpc, testSignature)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -252,7 +249,7 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 		classified, ok := database.classifyPersistedFailure(context.Background(), rpc, PersistedOperation{
 			Operation:            Operation{Decision: Decision{Action: VoltrAllocateToSquads}},
 			Status:               Submitted,
-			TransactionSignature: "5ignature",
+			TransactionSignature: testSignature,
 		})
 		if !ok || !classified.Retryable || classified.Reason != "adaptor_report_slot_refused" {
 			t.Fatalf("persisted classification = %+v ok=%t, want retryable adaptor_report_slot_refused", classified, ok)
@@ -313,14 +310,11 @@ func TestSignatureStatusFailureRequiresSettlement(t *testing.T) {
 		},
 	}
 	for _, testCase := range cases {
-		rpc, err := NewRPCClient("https://rpc.invalid")
-		if err != nil {
-			t.Fatal(err)
-		}
-		rpc.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-			return response(`{"jsonrpc":"2.0","id":1,"result":{"value":[` + testCase.value + `]}}`), nil
+		rpc := newFakeChain(t, nil)
+		rpcOf(rpc).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":50},"value":[` + testCase.value + `]}}`), nil
 		})
-		status, err := rpc.SignatureStatus(context.Background(), "5ignature")
+		status, err := signatureStatus(context.Background(), rpc, testSignature)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -346,16 +340,13 @@ func TestUnreadableFailureReceiptKeepsObservingUntilBounded(t *testing.T) {
 		t.Fatal("an exhausted receipt retry window never expired")
 	}
 
-	rpc, err := NewRPCClient("https://rpc.invalid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rpc.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("failure receipt pruned")
 	})
 	var database *Database
 	operation := PersistedOperation{
-		Operation: Operation{ID: "unreadable"}, Status: Submitted, TransactionSignature: "5ignature",
+		Operation: Operation{ID: "unreadable"}, Status: Submitted, TransactionSignature: testSignature,
 	}
 	classification, terminal := database.classifyPersistedFailure(context.Background(), rpc, operation)
 	if terminal || !classification.ReceiptUnavailable || classification.Retryable ||

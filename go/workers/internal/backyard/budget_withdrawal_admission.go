@@ -5,6 +5,8 @@ import (
 	"math"
 	"math/big"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Quote outputs are estimates, not enforceable maxima. Reserve the existing
@@ -24,7 +26,7 @@ func withdrawalUSDCExitEstimate(quoted uint64) (uint64, error) {
 	return n.Uint64(), nil
 }
 
-func observeWithdrawalExitPolicies(ctx context.Context, rpc *RPCClient, manifest RouteManifest, lane string, slot int64, conversions []Action) (int64, error) {
+func observeWithdrawalExitPolicies(ctx context.Context, rpc *chain.Client, manifest RouteManifest, lane string, slot int64, conversions []Action) (int64, error) {
 	// Pins are masked digests: the bridge policies carry their volatile
 	// spending-limit spans, and policies without a mask compare as the raw
 	// account digest.
@@ -46,7 +48,7 @@ func observeWithdrawalExitPolicies(ctx context.Context, rpc *RPCClient, manifest
 		pins[binding.Account] = observedPolicyPin{digest: binding.NormalizedDigest, mask: binding.MaskedByteRanges}
 		addresses = append(addresses, binding.Account)
 	}
-	observed, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, slot)
+	observed, accounts, err := confirmedAccounts(ctx, rpc, addresses, slot)
 	if err != nil {
 		return 0, budgetHold("withdrawal_exit_policy_observation_unavailable")
 	}
@@ -67,7 +69,7 @@ func observeWithdrawalExitPolicies(ctx context.Context, rpc *RPCClient, manifest
 // -> NAV -> staging -> NAV -> full restoration -> NAV return. This is recovery
 // admission, not a substitute for pricing entry, borrowing or debt repayment.
 // Future packets are cost templates only; none become the persisted current wire.
-func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3WithdrawalAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := observation.Snapshot, evidence.Request
@@ -114,7 +116,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *RPCClient, clien
 // Continue the same return after the withdrawal has reconciled. Both the
 // intervening NAV and full collateral/debt-residue-to-USDC swaps use the same
 // estimator. Outstanding position debt still requires separate repayment proof.
-func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error) {
+func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error) {
 	s := observation.Snapshot
 	// A payoff residue converted beside a debt-free position (plan B3) keeps
 	// that position; its complete return is priced after the swap below.
@@ -180,7 +182,7 @@ func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *RPCClient,
 // swap plus the complete position return from the post-swap custody: the
 // quoted USDC (with the two-sided margin) joins bridge cash, debt custody is
 // empty. Cost-only; the swap itself is the only current wire.
-func pricePhase3DebtResidueSwapReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, r JupiterSwapRequest, effects ExpectedEffects) (phase3BridgeAdmission, error) {
+func pricePhase3DebtResidueSwapReturn(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, r JupiterSwapRequest, effects ExpectedEffects) (phase3BridgeAdmission, error) {
 	s := observation.Snapshot
 	if r.AmountRaw != uint64(s.DebtIdleRaw) || r.FullPayoffFunding || r.EntryReturnReserved || r.PositionReturnReserved {
 		return phase3BridgeAdmission{}, budgetHold("collateral_return_intent_mismatch")
@@ -200,7 +202,7 @@ func pricePhase3DebtResidueSwapReturn(ctx context.Context, rpc *RPCClient, clien
 	return plan, nil
 }
 
-func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects, collateralRaw uint64, reportBeforeSwap bool, currentSwap *JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
+func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects, collateralRaw uint64, reportBeforeSwap bool, currentSwap *JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s := observation.Snapshot
@@ -344,14 +346,14 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *ju
 			return plan, err
 		}
 	}
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil || slot < policySlot || slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_withdrawal_exit_admission")
 	}
 	return plan, nil
 }
 
-func (d *Database) admitPhase3CollateralReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
+func (d *Database) admitPhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
 	plan, err := observePhase3CollateralReturnAdmission(ctx, rpc, client, manifest, observation, decision, request, effects)
 	if err != nil {
 		return err
@@ -359,7 +361,7 @@ func (d *Database) admitPhase3CollateralReturn(ctx context.Context, rpc *RPCClie
 	return d.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
 }
 
-func (d *Database) admitPhase3Withdrawal(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
+func (d *Database) admitPhase3Withdrawal(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
 	var plan phase3BridgeAdmission
 	var err error
 	if evidence.Request.RepaymentRelease {

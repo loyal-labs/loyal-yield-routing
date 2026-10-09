@@ -2,11 +2,14 @@ package backyard
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
+	"errors"
 	"math"
 	"time"
+
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Unsigned simulation output is a prospective exit-cost input, never current
@@ -26,7 +29,7 @@ func depositProjectionAddresses(route RuntimeRoute) []string {
 	return addresses
 }
 
-func (c *RPCClient) simulateKaminoEntryProjection(ctx context.Context, r KaminoPrimeUSDCRequest, minimumSlot int64) (phase3KaminoProjection, error) {
+func simulateKaminoEntryProjection(ctx context.Context, c *chain.Client, r KaminoPrimeUSDCRequest, minimumSlot int64) (phase3KaminoProjection, error) {
 	var projection phase3KaminoProjection
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
 	if c == nil || err != nil || (leg != kaminoLegDeposit && leg != kaminoLegBorrow) || r.Action != OpenRouteStep || minimumSlot <= 0 {
@@ -49,10 +52,10 @@ func (c *RPCClient) simulateKaminoEntryProjection(ctx context.Context, r KaminoP
 	} else if len(r.ObligationReserves) == 2 {
 		addresses = append(addresses, route.Kamino.DebtReserve, route.DebtLiquiditySupply)
 	}
-	return c.simulatePhase3EntryProjection(ctx, message, addresses, minimumSlot)
+	return simulatePhase3EntryProjection(ctx, c, message, addresses, minimumSlot)
 }
 
-func (c *RPCClient) simulatePhase3EntryProjection(ctx context.Context, message []byte, addresses []string, minimumSlot int64) (phase3KaminoProjection, error) {
+func simulatePhase3EntryProjection(ctx context.Context, c *chain.Client, message []byte, addresses []string, minimumSlot int64) (phase3KaminoProjection, error) {
 	var projection phase3KaminoProjection
 	if c == nil || minimumSlot <= 0 || len(addresses) == 0 {
 		return projection, budgetHold("invalid_deposit_projection_request")
@@ -61,39 +64,31 @@ func (c *RPCClient) simulatePhase3EntryProjection(ctx context.Context, message [
 	if err != nil {
 		return projection, err
 	}
+	keys, err := publicKeys(addresses)
+	if err != nil {
+		return projection, err
+	}
 	wire := append([]byte{1}, make([]byte, 64)...)
 	wire = append(wire, message...)
-	var response struct {
-		Context struct {
-			Slot int64 `json:"slot"`
-		} `json:"context"`
-		Value struct {
-			Err           json.RawMessage `json:"err"`
-			UnitsConsumed uint64          `json:"unitsConsumed"`
-			Accounts      []*struct {
-				Owner      string   `json:"owner"`
-				Lamports   uint64   `json:"lamports"`
-				Executable bool     `json:"executable"`
-				Data       []string `json:"data"`
-			} `json:"accounts"`
-		} `json:"value"`
-	}
-	if err = c.call(ctx, "simulateTransaction", []any{base64.StdEncoding.EncodeToString(wire), map[string]any{"encoding": "base64", "commitment": "confirmed", "sigVerify": false, "replaceRecentBlockhash": false, "minContextSlot": minimumSlot, "accounts": map[string]any{"encoding": "base64", "addresses": addresses}}}, &response); err != nil {
-		return projection, budgetHold("deposit_projection_unavailable")
-	}
-	if (len(response.Value.Err) > 0 && string(response.Value.Err) != "null") || response.Context.Slot < minimumSlot || response.Context.Slot-minimumSlot > observationLagSlots() || response.Value.UnitsConsumed == 0 || len(response.Value.Accounts) != len(addresses) {
+	minimum := uint64(minimumSlot)
+	simulated, accounts, err := c.SimulateCapture(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum}, keys)
+	var failure *chain.SimulationError
+	if errors.As(err, &failure) {
 		return projection, budgetHold("deposit_projection_failed")
 	}
-	projection.Slot, projection.MessageSHA256, projection.UnitsConsumed = response.Context.Slot, sha256Bytes(message), response.Value.UnitsConsumed
-	for i, a := range response.Value.Accounts {
-		if a == nil || a.Executable || len(a.Data) != 2 || a.Data[1] != "base64" {
+	if err != nil {
+		return projection, budgetHold("deposit_projection_unavailable")
+	}
+	slot := int64(simulated.Slot)
+	if slot-minimumSlot > observationLagSlots() || simulated.Units == 0 {
+		return projection, budgetHold("deposit_projection_failed")
+	}
+	projection.Slot, projection.MessageSHA256, projection.UnitsConsumed = slot, sha256Bytes(message), simulated.Units
+	for i, a := range accounts {
+		if a == nil || a.Executable {
 			return projection, budgetHold("deposit_projection_incomplete")
 		}
-		data, err := base64.StdEncoding.Strict().DecodeString(a.Data[0])
-		if err != nil {
-			return projection, budgetHold("deposit_projection_invalid")
-		}
-		projection.Accounts = append(projection.Accounts, ConfirmedAccount{Address: addresses[i], Owner: a.Owner, Lamports: a.Lamports, Data: data})
+		projection.Accounts = append(projection.Accounts, ConfirmedAccount{Address: addresses[i], Owner: a.Owner.String(), Lamports: a.Lamports, Data: a.Data})
 	}
 	return projection, nil
 }
@@ -166,8 +161,8 @@ func validateDepositProjection(r KaminoPrimeUSDCRequest, effects ExpectedEffects
 
 // collateralRaw is the obligation's admitted collateral: zero for an initial
 // deposit, the unchanged debt-free position for a plan B3 top-up deposit.
-func validateInitialDepositPrestate(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot int64, collateralRaw uint64) (int64, error) {
-	slot, accounts, err := rpc.GetMultipleAccounts(ctx, []string{route.Kamino.Obligation, route.DebtCustody}, minimumSlot)
+func validateInitialDepositPrestate(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot int64, collateralRaw uint64) (int64, error) {
+	slot, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.Obligation, route.DebtCustody}, minimumSlot)
 	if err != nil {
 		return 0, err
 	}
@@ -185,7 +180,7 @@ func validateInitialDepositPrestate(ctx context.Context, rpc *RPCClient, route R
 	return slot, nil
 }
 
-func observePhase3DepositAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3DepositAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	if observation.Snapshot.PositionDebtRaw > 0 {
 		return observePhase3RedepositAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
 	}
@@ -218,7 +213,7 @@ func observePhase3DepositAdmission(ctx context.Context, rpc *RPCClient, client *
 	if evidence.ExpectedEffects.Accounts[0].BeforeRaw != uint64(s.CollateralIdleRaw) {
 		return phase3BridgeAdmission{}, budgetHold("deposit_prestate_changed")
 	}
-	projection, err := rpc.simulateKaminoEntryProjection(ctx, r, max(slot, current.ObservationSlot))
+	projection, err := simulateKaminoEntryProjection(ctx, rpc, r, max(slot, current.ObservationSlot))
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -234,7 +229,7 @@ func observePhase3DepositAdmission(ctx context.Context, rpc *RPCClient, client *
 		return phase3BridgeAdmission{}, err
 	}
 	withdrawal.ObligationReserves = []string{route.Kamino.CollateralReserve}
-	_, policies, err := rpc.GetMultipleAccounts(ctx, []string{withdrawal.Policy}, projection.Slot)
+	_, policies, err := confirmedAccounts(ctx, rpc, []string{withdrawal.Policy}, projection.Slot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -284,7 +279,7 @@ func observePhase3DepositAdmission(ctx context.Context, rpc *RPCClient, client *
 	return plan, nil
 }
 
-func (d *Database) admitPhase3Deposit(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, id string, o Observation, decision Decision, e KaminoExecutionEvidence) error {
+func (d *Database) admitPhase3Deposit(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, id string, o Observation, decision Decision, e KaminoExecutionEvidence) error {
 	plan, err := observePhase3DepositAdmission(ctx, rpc, client, manifest, o, decision, e)
 	if err != nil {
 		return err

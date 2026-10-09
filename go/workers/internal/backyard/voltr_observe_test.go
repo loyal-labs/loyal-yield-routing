@@ -1,13 +1,7 @@
 package backyard
 
 import (
-	"context"
-	"encoding/base64"
 	"encoding/binary"
-	"fmt"
-	"io"
-	"net/http"
-	"strings"
 	"testing"
 )
 
@@ -65,64 +59,4 @@ func TestVoltrWithdrawalReceiptPDAMatchesSDKVector(t *testing.T) {
 	if err != nil || address != "BbpPz4dapzgmaZ28jwZRYwF4ZePgj7wXqK6FDaDDYpEz" || bump != 255 {
 		t.Fatalf("PDA=%s bump=%d err=%v", address, bump, err)
 	}
-}
-
-func TestScanVoltrWithdrawalDemandRetriesUntilReceiptsAndCustodyShareSlot(t *testing.T) {
-	program := "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
-	vault, user, mint, authority, idle := testPublicKey(11), testPublicKey(44), testPublicKey(77), testPublicKey(101), testPublicKey(133)
-	receiptAddress, receiptData := receiptFixture(t, program, vault, user, 7, 3<<48)
-	custody := custodyFixture(testKey(t, mint), testKey(t, authority), 4, false)
-	client, err := NewRPCClient("https://rpc.invalid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		body, _ := io.ReadAll(request.Body)
-		requestBody := string(body)
-		switch {
-		case strings.Contains(requestBody, `"method":"getSlot"`):
-			return response(`{"jsonrpc":"2.0","id":1,"result":90}`), nil
-		case strings.Contains(requestBody, `"method":"getProgramAccounts"`):
-			if !strings.Contains(requestBody, `"commitment":"confirmed"`) || !strings.Contains(requestBody, `"withContext":true`) || !strings.Contains(requestBody, `"bytes":"`) {
-				t.Fatalf("receipt scan lost canonical confirmed filters: %s", requestBody)
-			}
-			slot := 91
-			if strings.Contains(requestBody, `"minContextSlot":92`) {
-				slot = 93
-			}
-			return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":[{"pubkey":"%s","account":{"owner":"%s","lamports":1,"data":["%s","base64"],"executable":false}}]}}`, slot, receiptAddress, program, base64.StdEncoding.EncodeToString(receiptData))), nil
-		case strings.Contains(requestBody, `"method":"getMultipleAccounts"`):
-			if !strings.Contains(requestBody, `"commitment":"confirmed"`) {
-				t.Fatalf("custody read lost confirmed commitment: %s", requestBody)
-			}
-			slot := 92
-			if strings.Contains(requestBody, `"minContextSlot":92`) {
-				slot = 93
-			}
-			return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":%d},"value":[{"owner":"%s","lamports":1,"data":["%s","base64"],"executable":false}]}}`, slot, classicTokenProgram, base64.StdEncoding.EncodeToString(custody))), nil
-		default:
-			t.Fatalf("unexpected RPC request: %s", requestBody)
-			return nil, nil
-		}
-	})
-	result, err := client.ScanVoltrWithdrawalDemand(context.Background(), VoltrObservationConfig{
-		VoltrProgram: program, Vault: vault, IdleCustody: idle,
-		Custodies:    []TokenCustodySpec{{Address: idle, TokenProgram: classicTokenProgram, Mint: mint, Authority: authority}},
-		IdleFloorRaw: 2, VaultCapRaw: 10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Slot != 93 || result.ConfirmedIdleRaw != 4 || result.PendingWithdrawalUpperBound != 3 || result.RequiredIdleRaw != 5 || result.IdleShortfallRaw != 1 || len(result.Receipts) != 1 {
-		t.Fatalf("unexpected aligned demand result: %+v", result)
-	}
-}
-
-func testKey(t *testing.T, encoded string) [32]byte {
-	t.Helper()
-	value, err := decodeBase58PublicKey(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return value
 }

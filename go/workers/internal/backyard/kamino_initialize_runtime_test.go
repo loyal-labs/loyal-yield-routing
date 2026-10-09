@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func initializationPlanningFixture(lane string) Observation {
@@ -52,7 +54,7 @@ func TestInitializationDecisionPreservesRecoveryWithdrawalAndEntryGuards(t *test
 	}
 }
 
-func initializationRuntimeRPC(t *testing.T) (*RPCClient, RouteManifest, KaminoInitializationRequest, map[string]ConfirmedAccount) {
+func initializationRuntimeRPC(t *testing.T) (*chain.Client, RouteManifest, KaminoInitializationRequest, map[string]ConfirmedAccount) {
 	t.Helper()
 	r, accounts := initializationPrestateFixture(t)
 	m := initializerManifestFixture(t)
@@ -63,8 +65,8 @@ func initializationRuntimeRPC(t *testing.T) (*RPCClient, RouteManifest, KaminoIn
 		}
 	}
 	rpc := budgetBuildRPC(t, 5000, 42)
-	base := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	base := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		raw, err := io.ReadAll(req.Body)
 		if err != nil {
 			return nil, err
@@ -218,9 +220,9 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 		t.Fatal("quote expiry lost validated signed recovery", err)
 	}
 	assertBudgetHold(t, err, "selector_entry_quote_expired")
-	baseTransport := rpc.client.Transport
+	baseTransport := rpcOf(rpc).Transport
 	finalizedExpired, expiryRead, absenceRead := false, false, false
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		raw, err := io.ReadAll(req.Body)
 		if err != nil {
 			return nil, err
@@ -236,7 +238,7 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 		}
 		var result any
 		switch body.Method {
-		case "getBlockHeight":
+		case "getEpochInfo":
 			var config map[string]string
 			if len(body.Params) > 0 {
 				_ = json.Unmarshal(body.Params[0], &config)
@@ -245,9 +247,9 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 				return baseTransport.RoundTrip(req)
 			}
 			expiryRead = finalizedExpired
-			result = r.LastValidBlockHeight
+			result = finalizedEpoch(r.LastValidBlockHeight)
 			if finalizedExpired {
-				result = r.LastValidBlockHeight + 1
+				result = finalizedEpoch(r.LastValidBlockHeight + 1)
 			}
 		case "getSignatureStatuses":
 			if !expiryRead {

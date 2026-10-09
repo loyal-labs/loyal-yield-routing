@@ -155,8 +155,8 @@ func TestPilotReleaseRevalidationBindsCurrentLimitsAndMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var call struct {
 			Method string
 			Params []json.RawMessage
@@ -319,8 +319,8 @@ func TestPilotProjectedReleaseUsesEquivalentRefreshedSimulation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var call struct {
 			Method string
 			Params []json.RawMessage

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // KLend mints floor(request / receipt exchange rate), then transfers the ceil
@@ -72,7 +74,7 @@ func boundedKaminoDepositEffects(accounts []ConfirmedAccount, route RuntimeRoute
 	return effects, validateRepaymentEffects(effects)
 }
 
-func validateDepositRequest(ctx context.Context, rpc *RPCClient, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (int64, error) {
+func validateDepositRequest(ctx context.Context, rpc *chain.Client, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (int64, error) {
 	if _, err := MeasureExecutableDebit(request, effects); err != nil {
 		return 0, err
 	}
@@ -80,7 +82,7 @@ func validateDepositRequest(ctx context.Context, rpc *RPCClient, request KaminoP
 	if err != nil {
 		return 0, err
 	}
-	observed, accounts, err := rpc.GetMultipleAccounts(ctx, []string{route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, budgetClockAddress}, slot)
+	observed, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, budgetClockAddress}, slot)
 	if err != nil {
 		return 0, err
 	}

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func sfIntervalPrice(mint, program string, decimals byte, slot int64) BudgetPrice {
@@ -204,7 +206,7 @@ func quoteLegsTransport(t *testing.T, base http.RoundTripper, legs *[]uint64, im
 	})
 }
 
-func ladderLiveObservation(t *testing.T, nativeAPY float64) (RouteManifest, *RPCClient, *jupiterClient, Observation, LaneEconomics, SelectorPolicy) {
+func ladderLiveObservation(t *testing.T, nativeAPY float64) (RouteManifest, *chain.Client, *jupiterClient, Observation, LaneEconomics, SelectorPolicy) {
 	t.Helper()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	in := selectorFixture()

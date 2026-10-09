@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // This uses the same delegate, reservation, simulation and durable-wire
 // pipeline as the ordinary Kamino legs. A compiler alone never authorizes it.
-func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *Database, rpc *RPCClient, operationID string, manifest RouteManifest, request KaminoInitializationRequest, credentials Credentials) error {
+func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *Database, rpc *chain.Client, operationID string, manifest RouteManifest, request KaminoInitializationRequest, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("initializer runtime dependencies are required")
 	}
@@ -41,7 +43,7 @@ func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *
 	if err = database.markBuiltOnManifest(ctx, manifest, operationID, signed.messageSHA256, encoded); err != nil {
 		return err
 	}
-	simulation, err := rpc.SimulateSignedTransaction(ctx, wire)
+	simulation, err := simulateSigned(ctx, rpc, wire)
 	if err != nil {
 		return err
 	}

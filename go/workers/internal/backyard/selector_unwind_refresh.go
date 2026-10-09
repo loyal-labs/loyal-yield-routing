@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Renewal observes the same source again before replacing an expired interest
@@ -12,7 +14,7 @@ import (
 // Renewal authority resolves through the explicit reviewed manifest, the same
 // way the commit, decode and merge paths already do: the candidate AUTO
 // source renews exactly while that manifest's reviewed binding resolves.
-func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *RPCClient, manifest RouteManifest, observe func(context.Context) (Observation, error)) error {
+func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client, manifest RouteManifest, observe func(context.Context) (Observation, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var version int64
@@ -42,7 +44,7 @@ func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *RPCClient, ma
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}

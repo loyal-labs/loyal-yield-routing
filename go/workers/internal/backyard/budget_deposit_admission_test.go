@@ -11,15 +11,17 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Controlled transport, not deployed-program proof. Only the exact unsigned
 // initial deposit is simulatable; all signing/send RPCs remain rejected.
-func depositAdmissionFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func depositAdmissionFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	return depositAdmissionFixtureForPosition(t, variant, false)
 }
 
-func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit bool) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit bool) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	o, _, _, m, _, client, accounts := fundingAdmissionFixture(t, 20_000)
 	route := ethenaUSDePYUSD
@@ -73,8 +75,8 @@ func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit 
 	if err != nil {
 		t.Fatal(err)
 	}
-	underlying := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	underlying := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -104,7 +106,7 @@ func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit 
 		for _, address := range addresses {
 			expectedAddresses = append(expectedAddresses, address)
 		}
-		want := map[string]any{"encoding": "base64", "commitment": "confirmed", "sigVerify": false, "replaceRecentBlockhash": false, "minContextSlot": float64(42), "accounts": map[string]any{"encoding": "base64", "addresses": expectedAddresses}}
+		want := map[string]any{"encoding": "base64", "commitment": "confirmed", "minContextSlot": float64(42), "accounts": map[string]any{"encoding": "base64", "addresses": expectedAddresses}}
 		if err != nil || len(wire) < 65 || wire[0] != 1 || !allZero(wire[1:65]) || !bytes.Equal(wire[65:], message) || !reflect.DeepEqual(options, want) {
 			t.Fatal("simulation changed wire, signatures, or closed RPC options")
 		}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // A reentry forecast carries the completed source exit that precedes this
@@ -22,7 +24,7 @@ type selectorReentryForecast struct {
 // recipe always includes obligation-recreation rent and the exact initializer
 // fee. Every flat execution admission/build/send prerequisite stays enforced
 // where it already lives; nothing here relaxes one.
-func observeSelectorReentryDestinationSize(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, source selectorSourceQuote, maximum uint64, clampCapacity bool) (selectorDestinationQuote, error) {
+func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, source selectorSourceQuote, maximum uint64, clampCapacity bool) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s := o.Snapshot
@@ -75,7 +77,7 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *RPCClient, 
 // upper, the obligation present whenever the exit closes one, and no custody
 // residue beyond the idle amount that exit swaps back. An already-flat
 // destination belongs to the ordinary quote, not this forecast.
-func selectorReentryDestinationAccounts(ctx context.Context, rpc *RPCClient, m RouteManifest, route RuntimeRoute, minimumSlot int64, bound selectorExitBound, collateralIdle uint64) (int64, []ConfirmedAccount, KaminoPosition, error) {
+func selectorReentryDestinationAccounts(ctx context.Context, rpc *chain.Client, m RouteManifest, route RuntimeRoute, minimumSlot int64, bound selectorExitBound, collateralIdle uint64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
 	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, m, route, minimumSlot)
 	if err != nil {

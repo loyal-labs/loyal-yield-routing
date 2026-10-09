@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	o, _, _, m, rpc, client, accounts := fundingAdmissionFixture(t, output)
 	route := ethenaUSDePYUSD
@@ -35,8 +37,8 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 	if err != nil {
 		t.Fatal(err)
 	}
-	underlying := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	underlying := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -62,7 +64,7 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 		for _, a := range before {
 			addresses = append(addresses, a.Address)
 		}
-		want := map[string]any{"encoding": "base64", "commitment": "confirmed", "sigVerify": false, "replaceRecentBlockhash": false, "minContextSlot": float64(42), "accounts": map[string]any{"encoding": "base64", "addresses": addresses}}
+		want := map[string]any{"encoding": "base64", "commitment": "confirmed", "minContextSlot": float64(42), "accounts": map[string]any{"encoding": "base64", "addresses": addresses}}
 		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || !bytes.Equal(wire[65:], message) || !reflect.DeepEqual(options, want) {
 			t.Fatal("changed unsigned simulation wire/options")
 		}

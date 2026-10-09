@@ -6,6 +6,8 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Exact-receive borrowing adds the origination fee to both reserve debit and
@@ -81,7 +83,7 @@ func kaminoBorrowEffects(accounts []ConfirmedAccount, route RuntimeRoute, receiv
 
 // Fresh fee/config/custody validation runs at build and persisted-input send.
 // Reconciliation already checks exact three-account conservation per receipt.
-func validateBorrowRequest(ctx context.Context, rpc *RPCClient, r KaminoPrimeUSDCRequest, e ExpectedEffects, slot int64) (int64, error) {
+func validateBorrowRequest(ctx context.Context, rpc *chain.Client, r KaminoPrimeUSDCRequest, e ExpectedEffects, slot int64) (int64, error) {
 	if _, err := MeasureExecutableDebit(r, e); err != nil {
 		return 0, err
 	}
@@ -89,7 +91,7 @@ func validateBorrowRequest(ctx context.Context, rpc *RPCClient, r KaminoPrimeUSD
 	if err != nil {
 		return 0, err
 	}
-	observed, accounts, err := rpc.GetMultipleAccounts(ctx, []string{route.Kamino.DebtReserve, route.Kamino.Obligation, route.DebtLiquiditySupply, route.DebtCustody, route.DebtFeeReceiver, route.Kamino.CollateralReserve, budgetClockAddress}, slot)
+	observed, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.DebtReserve, route.Kamino.Obligation, route.DebtLiquiditySupply, route.DebtCustody, route.DebtFeeReceiver, route.Kamino.CollateralReserve, budgetClockAddress}, slot)
 	if err != nil {
 		return 0, err
 	}

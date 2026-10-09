@@ -3,6 +3,8 @@ package backyard
 import (
 	"context"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Reviewed Prime sibling swaps, installed USDe->PYUSD and explicitly bound V2
@@ -98,11 +100,11 @@ func validateJupiterLookupIdentities(r JupiterSwapRequest) error {
 	return nil
 }
 
-func observeJupiterLookupTables(ctx context.Context, rpc *RPCClient, addresses []string, minimumSlot int64) ([]LookupTableSnapshot, int64, error) {
+func observeJupiterLookupTables(ctx context.Context, rpc *chain.Client, addresses []string, minimumSlot int64) ([]LookupTableSnapshot, int64, error) {
 	if rpc == nil {
 		return nil, 0, budgetHold("lookup_observation_unavailable")
 	}
-	slot, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, minimumSlot)
+	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
 	if err != nil {
 		return nil, 0, budgetHold("lookup_observation_unavailable")
 	}
@@ -120,7 +122,7 @@ func observeJupiterLookupTables(ctx context.Context, rpc *RPCClient, addresses [
 // reviewed manifest. The manifest-owning observation path must use
 // (RouteManifest).prepareJupiterLookupTables so a candidate AUTO binding is
 // retained instead of reloading the embedded (binding-less) manifest.
-func prepareJupiterLookupTables(ctx context.Context, rpc *RPCClient, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
+func prepareJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return r, err
@@ -128,7 +130,7 @@ func prepareJupiterLookupTables(ctx context.Context, rpc *RPCClient, r JupiterSw
 	return manifest.prepareJupiterLookupTables(ctx, rpc, r, minimumSlot)
 }
 
-func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *RPCClient, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
+func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
 	if _, err := m.compileJupiterMessage(r, mustKey(bridgeDelegate)); err == nil {
 		return r, nil
 	}
@@ -151,7 +153,7 @@ func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *RPCC
 // Called by the common build-cost gate before signer access AND the persisted
 // wire's final-send revaluation. Appends are allowed, but can never change the
 // persisted message: its entire referenced prefix must still resolve identically.
-func revalidateJupiterLookupTables(ctx context.Context, rpc *RPCClient, r JupiterSwapRequest, minimumSlot int64) (int64, error) {
+func revalidateJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) (int64, error) {
 	if err := validateJupiterLookupIdentities(r); err != nil {
 		return 0, budgetHold("lookup_identity_invalid")
 	}

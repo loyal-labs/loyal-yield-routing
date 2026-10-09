@@ -3,9 +3,10 @@ package backyard
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type KaminoInitializationReceipt struct {
@@ -131,7 +132,7 @@ func reconcileKaminoInitializationAdmission(e ExpectedEffects, receipt Confirmed
 
 // Recovery reads the immutable receipt for the persisted wire. Account presence
 // alone never establishes which submission created it or authorizes a retry.
-func observeFinalizedKaminoInitialization(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
+func observeFinalizedKaminoInitialization(ctx context.Context, rpc *chain.Client, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
 	return observeFinalizedKaminoInitializationAdmission(ctx, rpc, r, op, CompileKaminoInitializationMessage, observeInitializerDecisionInstalled)
 }
 
@@ -149,7 +150,7 @@ func observeInitializerDecisionInstalled(d Decision, r KaminoInitializationReque
 // decision validation resolved through the explicit reviewed manifest, so
 // recovery re-derives the candidate AUTO wire from the binding that produced
 // it. The public form above is unchanged.
-func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
+func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context, rpc *chain.Client, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
 	return observeFinalizedKaminoInitializationAdmission(ctx, rpc, r, op, m.compileKaminoInitializationMessage, m.validateInitializerDecision)
 }
 
@@ -157,7 +158,7 @@ func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context,
 // the installed and manifest forms differ only in the compiler that must
 // reproduce the exact persisted wire and in the decision validator applied to
 // the journal decision.
-func observeFinalizedKaminoInitializationAdmission(ctx context.Context, rpc *RPCClient, r KaminoInitializationRequest, op PersistedOperation, compile func(KaminoInitializationRequest) ([]byte, error), validateDecision func(Decision, KaminoInitializationRequest) error) (ConfirmedTransactionEvidence, error) {
+func observeFinalizedKaminoInitializationAdmission(ctx context.Context, rpc *chain.Client, r KaminoInitializationRequest, op PersistedOperation, compile func(KaminoInitializationRequest) ([]byte, error), validateDecision func(Decision, KaminoInitializationRequest) error) (ConfirmedTransactionEvidence, error) {
 	var out ConfirmedTransactionEvidence
 	if rpc == nil {
 		return out, fmt.Errorf("initializer RPC unavailable")
@@ -174,42 +175,29 @@ func observeFinalizedKaminoInitializationAdmission(ctx context.Context, rpc *RPC
 		op.RecentBlockhash != r.RecentBlockhash || op.LastValidBlockHeight != r.LastValidBlockHeight {
 		return out, fmt.Errorf("initializer persisted wire differs")
 	}
-	var result struct {
-		Slot        int64    `json:"slot"`
-		Transaction []string `json:"transaction"`
-		Meta        *struct {
-			Err        json.RawMessage   `json:"err"`
-			Fee        *uint64           `json:"fee"`
-			Pre        []uint64          `json:"preBalances"`
-			Post       []uint64          `json:"postBalances"`
-			PreTokens  []json.RawMessage `json:"preTokenBalances"`
-			PostTokens []json.RawMessage `json:"postTokenBalances"`
-			ReturnData json.RawMessage   `json:"returnData"`
-		} `json:"meta"`
-	}
-	if err = rpc.call(ctx, "getTransaction", []any{op.TransactionSignature, map[string]any{"commitment": "finalized", "encoding": "base64", "maxSupportedTransactionVersion": 0}}, &result); err != nil {
+	receipt, err := finalizedReceipt(ctx, rpc, op.TransactionSignature)
+	if err != nil {
 		return out, err
 	}
-	if result.Slot <= 0 || result.Slot != op.ConfirmedSlot || len(result.Transaction) != 2 || result.Transaction[1] != "base64" || result.Meta == nil || result.Meta.Fee == nil || string(result.Meta.Err) != "null" {
+	if receipt.Slot == 0 || int64(receipt.Slot) != op.ConfirmedSlot || receipt.Err != nil {
 		return out, fmt.Errorf("initializer finalized receipt differs")
 	}
-	if len(result.Meta.PreTokens) != 0 || len(result.Meta.PostTokens) != 0 || (len(result.Meta.ReturnData) > 0 && string(result.Meta.ReturnData) != "null") {
+	if len(receipt.Pre) != 0 || len(receipt.Post) != 0 || !receipt.ReturnProgram.IsZero() {
 		return out, fmt.Errorf("initializer returned unexpected token or return data")
 	}
-	actual, err := base64.StdEncoding.Strict().DecodeString(result.Transaction[0])
-	if err != nil || !bytes.Equal(actual, wire) {
+	if !bytes.Equal(receipt.Wire, wire) {
 		return out, fmt.Errorf("initializer finalized wire differs")
 	}
 	route, _ := runtimeRoute(r.RouteLane)
-	slot, accounts, err := rpc.getMultipleAccountsAtCommitment(ctx, []string{route.Kamino.Obligation}, result.Slot, nil, "finalized")
+	slot, accounts, err := finalizedAccounts(ctx, rpc, []string{route.Kamino.Obligation}, int64(receipt.Slot))
 	if err != nil {
 		return out, err
 	}
 	if len(accounts) != 1 {
 		return out, fmt.Errorf("initializer finalized account unavailable")
 	}
-	out = ConfirmedTransactionEvidence{Finalized: true, Signature: op.TransactionSignature, Slot: result.Slot,
+	out = ConfirmedTransactionEvidence{Finalized: true, Signature: op.TransactionSignature, Slot: int64(receipt.Slot),
 		Initialization: &KaminoInitializationReceipt{MessageSHA256: sha256Bytes(message), SignedWireSHA256: op.SignedWireSHA256,
-			FeeLamports: *result.Meta.Fee, PreBalances: result.Meta.Pre, PostBalances: result.Meta.Post, AccountReadSlot: slot, Obligation: accounts[0]}}
+			FeeLamports: receipt.Fee, PreBalances: receipt.PreLamports, PostBalances: receipt.PostLamports, AccountReadSlot: slot, Obligation: accounts[0]}}
 	return out, nil
 }

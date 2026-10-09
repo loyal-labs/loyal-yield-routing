@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // restartJournalFixture is the reviewable signed-unsent restart journal kept in
@@ -180,7 +182,7 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 	unpinned := ed25519.NewKeyFromSeed([]byte(bytes32(1)))
 	base := EngineConfig{
 		Database:    &Database{pool: &pgxpool.Pool{}},
-		RPC:         &RPCClient{},
+		RPC:         &chain.Client{},
 		Credentials: Credentials{PolicyKey: unpinned},
 		Config:      DefaultConfig(),
 		Owner:       validOwner,

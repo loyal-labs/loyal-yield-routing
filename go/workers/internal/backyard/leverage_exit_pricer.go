@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"math"
 	"math/big"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // priceLeverageExitCycles prices the B2 1.75x exit cycles on cost-only
@@ -15,7 +17,7 @@ import (
 // patched), the debt cash left, and the payoff window (7 + 3N steps) the
 // final release must be sized over. Zero cycles returns the inputs as-is.
 // The legs' costs are left to the caller's concurrent cost reads.
-func priceLeverageExitCycles(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, *KaminoPayoffBound, error) {
+func priceLeverageExitCycles(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, *KaminoPayoffBound, error) {
 	accounts = append([]ConfirmedAccount(nil), accounts...)
 	var legs []phase3BridgeExitCost
 	idle := uint64(max(s.CollateralIdleRaw, 0))
@@ -206,7 +208,7 @@ func putLittleFraction(dst []byte, value *big.Int) error {
 // funding swap does, then prices the rest of the exit (partial repay, any
 // further cycle, the final release -> payoff -> return) from the swap's
 // guaranteed MINIMUM output over cost-only account copies.
-func observePhase3ExitCycleSwapAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, e JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3ExitCycleSwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, e JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
 	s, r := o.Snapshot, e.Request
 	cash := debtCashRaw(s)
 	if rpc == nil || client == nil || !s.Fresh || !s.PilotActive || !leverageLane(s.RouteLane) || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission ||
@@ -264,7 +266,7 @@ func observePhase3ExitCycleSwapAdmission(ctx context.Context, rpc *RPCClient, cl
 // priceLeverageExitFromCurrent prices a multi-cycle exit for a current
 // non-mutating step (a NAV report) from the observed accounts. ok=false:
 // one release still funds the payoff, so the installed path prices it.
-func priceLeverageExitFromCurrent(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, route RuntimeRoute, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
+func priceLeverageExitFromCurrent(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, route RuntimeRoute, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
 	need, err := leverageExitNeedsCycles(ctx, rpc, client, m, route, o.Snapshot, accounts)
 	if err != nil || !need {
 		return phase3BridgeAdmission{}, err, err != nil
@@ -286,7 +288,7 @@ func priceLeverageExitFromCurrent(ctx context.Context, rpc *RPCClient, client *j
 
 // priceLeverageExitAfterRelease prices the rest of a multi-cycle exit after
 // the current repayment release, from its cost-only projected poststate.
-func priceLeverageExitAfterRelease(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, r KaminoPrimeUSDCRequest, effects ExpectedEffects, bound KaminoReleaseBound, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
+func priceLeverageExitAfterRelease(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, r KaminoPrimeUSDCRequest, effects ExpectedEffects, bound KaminoReleaseBound, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
 	route, err := runtimeRoute(r.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err, true
@@ -323,7 +325,7 @@ func priceLeverageExitAfterRelease(ctx context.Context, rpc *RPCClient, client *
 
 // leverageExitNeedsCycles: one safe release plus idle collateral, swapped at
 // its quote minimum, cannot fund the full payoff.
-func leverageExitNeedsCycles(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount) (bool, error) {
+func leverageExitNeedsCycles(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount) (bool, error) {
 	// Pure pre-check first (no RPC, no Jupiter): a position the value-level
 	// planner clears with zero cycles, even with a 3% margin on the debt,
 	// keeps the installed single-release path. Only 1.75x-like or borderline

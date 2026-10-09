@@ -16,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
@@ -1364,7 +1366,7 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 	return tx.Commit(ctx)
 }
 
-func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, rpc *RPCClient, intent, wireHash string, cost ValuedTransactionCost) error {
+func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, rpc *chain.Client, intent, wireHash string, cost ValuedTransactionCost) error {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return err
@@ -1376,7 +1378,7 @@ func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, 
 // the final-send fence resolved through the explicit reviewed manifest; the
 // lease, freshness recheck and transition stay byte-identical. The public form
 // above loads the embedded manifest once and is unchanged.
-func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, rpc *RPCClient, intent, wireHash string, cost ValuedTransactionCost, custody *sharedCustodyAdmissionProof, originRisk ...*debtClearRiskProof) error {
+func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, rpc *chain.Client, intent, wireHash string, cost ValuedTransactionCost, custody *sharedCustodyAdmissionProof, originRisk ...*debtClearRiskProof) error {
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -1387,7 +1389,7 @@ func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest R
 	}
 	// Recheck freshness after acquiring the journal lock, not before waiting
 	// for it. A slow lock or RPC never extends an earlier price's validity.
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return budgetHold("send_valuation_slot_unavailable")
 	}

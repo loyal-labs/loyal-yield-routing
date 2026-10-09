@@ -31,6 +31,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // autoCleanupState is the post-payoff state the observer must actually
@@ -114,16 +116,16 @@ func autoCleanupWithdrawalEffects(t *testing.T, route RuntimeRoute, accounts []C
 	return effects, redeemed
 }
 
-func autoCleanupRPC(t *testing.T, slot int64, accounts []ConfirmedAccount) *RPCClient {
+func autoCleanupRPC(t *testing.T, slot int64, accounts []ConfirmedAccount) *chain.Client {
 	t.Helper()
 	return autoPayoffRPC(t, slot, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, autoAUTOPYUSD)...))
 }
 
-func autoCleanupStaleRPC(t *testing.T, slot int64, accounts []ConfirmedAccount) *RPCClient {
+func autoCleanupStaleRPC(t *testing.T, slot int64, accounts []ConfirmedAccount) *chain.Client {
 	t.Helper()
 	base := autoCleanupRPC(t, slot, accounts)
-	inner := base.client.Transport
-	base.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	inner := rpcOf(base).Transport
+	rpcOf(base).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			return nil, err

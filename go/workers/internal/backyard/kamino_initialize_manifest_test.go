@@ -80,8 +80,8 @@ func TestInitializationBuilderRejectsUnactivatedPolicyBeforeSigner(t *testing.T)
 	}
 	legacy.RuntimeBindings.MultiplyInitializers = nil // Keep the missing-authority refusal test explicit.
 	r, _ := initializationReconcileFixture(t)
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("unactivated initializer reached RPC")
 		return nil, nil
 	})

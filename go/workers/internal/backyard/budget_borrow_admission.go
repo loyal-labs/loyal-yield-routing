@@ -5,10 +5,12 @@ import (
 	"encoding/binary"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func validateInitialBorrowPrestate(ctx context.Context, rpc *RPCClient, route RuntimeRoute, s Snapshot, slot int64) (int64, error) {
-	observed, accounts, err := rpc.GetMultipleAccounts(ctx, []string{route.Kamino.Obligation, route.CollateralCustody, route.DebtCustody}, slot)
+func validateInitialBorrowPrestate(ctx context.Context, rpc *chain.Client, route RuntimeRoute, s Snapshot, slot int64) (int64, error) {
+	observed, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.Obligation, route.CollateralCustody, route.DebtCustody}, slot)
 	if err != nil {
 		return 0, err
 	}
@@ -85,7 +87,7 @@ func validateBorrowProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, s Sna
 
 // Borrow admission prices the immediate complete unwind, not permission for a
 // later leverage loop. Simulated accounts remain cost inputs; only r is current.
-func observePhase3BorrowAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3BorrowAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := o.Snapshot, e.Request
@@ -112,7 +114,7 @@ func observePhase3BorrowAdmission(ctx context.Context, rpc *RPCClient, client *j
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	projection, err := rpc.simulateKaminoEntryProjection(ctx, r, slot)
+	projection, err := simulateKaminoEntryProjection(ctx, rpc, r, slot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -138,7 +140,7 @@ func observePhase3BorrowAdmission(ctx context.Context, rpc *RPCClient, client *j
 // The simulation's poststate is used only for complete exit costing. Each
 // producer validates its own current transition before entering this function;
 // no projected account replaces a current build, RPC read or send prestate.
-func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, projection phase3KaminoProjection) (phase3BridgeAdmission, error) {
+func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, projection phase3KaminoProjection) (phase3BridgeAdmission, error) {
 	s := o.Snapshot
 	route, err := runtimeRoute(s.RouteLane)
 	if err != nil {
@@ -349,7 +351,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		payoffCost, err = observePhase3KnownBuildCost(ctx, rpc, payoff, payoffEffects)
 		return err
 	}, func(ctx context.Context) error {
-		_, rows, err := rpc.GetMultipleAccounts(ctx, addresses, projection.Slot)
+		_, rows, err := confirmedAccounts(ctx, rpc, addresses, projection.Slot)
 		if err != nil {
 			return err
 		}
@@ -443,7 +445,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	return plan, nil
 }
 
-func (d *Database) admitPhase3Borrow(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, id string, o Observation, decision Decision, e KaminoExecutionEvidence) error {
+func (d *Database) admitPhase3Borrow(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, id string, o Observation, decision Decision, e KaminoExecutionEvidence) error {
 	plan, err := observePhase3BorrowAdmission(ctx, rpc, client, m, o, decision, e)
 	if err != nil {
 		return err
@@ -451,7 +453,7 @@ func (d *Database) admitPhase3Borrow(ctx context.Context, rpc *RPCClient, client
 	return d.persistPhase3ExitAdmission(ctx, rpc, id, o, decision, plan)
 }
 
-func validateBorrowAdmissionPrestate(ctx context.Context, rpc *RPCClient, r KaminoPrimeUSDCRequest, p *phase3BridgeAdmission, slot int64) (int64, error) {
+func validateBorrowAdmissionPrestate(ctx context.Context, rpc *chain.Client, r KaminoPrimeUSDCRequest, p *phase3BridgeAdmission, slot int64) (int64, error) {
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
 	if err != nil || r.Action != OpenRouteStep || leg != kaminoLegBorrow || p == nil || p.Payoff == nil || p.BorrowProjection == nil || p.Snapshot.RouteLane != r.RouteLane {
 		return 0, budgetHold("borrow_projection_identity_mismatch")
@@ -464,7 +466,7 @@ func validateBorrowAdmissionPrestate(ctx context.Context, rpc *RPCClient, r Kami
 	if err != nil {
 		return 0, err
 	}
-	fresh, accounts, err := rpc.GetMultipleAccounts(ctx, []string{route.Kamino.DebtReserve, budgetClockAddress}, observed)
+	fresh, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.DebtReserve, budgetClockAddress}, observed)
 	if err != nil {
 		return 0, err
 	}

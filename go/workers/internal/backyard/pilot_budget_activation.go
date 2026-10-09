@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"math"
+	"slices"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Audit all existing runtime lanes, including retired canary siblings. A
@@ -148,15 +152,16 @@ func validatePilotFlatEvidence(e pilotFlatEvidence) error {
 	}
 	return nil
 }
-func observePilotFlatEvidence(ctx context.Context, rpc *RPCClient) (pilotFlatEvidence, error) {
+func observePilotFlatEvidence(ctx context.Context, rpc *chain.Client) (pilotFlatEvidence, error) {
 	if rpc == nil {
 		return pilotFlatEvidence{}, budgetHold("pilot_flat_rpc_unavailable")
 	}
-	genesis, err := rpc.GenesisHash(ctx)
+	hash, err := rpc.GenesisHash(ctx)
+	genesis := hash.String()
 	if err != nil || genesis != mainnetGenesisHash {
 		return pilotFlatEvidence{}, budgetHold("pilot_transition_wrong_chain")
 	}
-	minimum, err := rpc.FinalizedSlot(ctx)
+	minimum, err := finalizedSlot(ctx, rpc)
 	if err != nil {
 		return pilotFlatEvidence{}, err
 	}
@@ -164,7 +169,7 @@ func observePilotFlatEvidence(ctx context.Context, rpc *RPCClient) (pilotFlatEvi
 	if err != nil {
 		return pilotFlatEvidence{}, err
 	}
-	slot, accounts, err := rpc.getMultipleAccountsAtCommitment(ctx, addresses, minimum, optional, "finalized")
+	slot, accounts, err := finalizedAccounts(ctx, rpc, addresses, minimum, slices.Collect(maps.Keys(optional))...)
 	if err != nil {
 		return pilotFlatEvidence{}, err
 	}
@@ -181,7 +186,7 @@ type pilotBudgetActivation struct {
 // Explicit bookkeeping operation under the existing route lease. Never called
 // by Tick/admission and never loads a signer or enables deposits. Fresh chain
 // evidence is acquired while the route row is locked; no caller supplies it.
-func (d *Database) activatePilotBudget(ctx context.Context, rpc *RPCClient) (pilotBudgetActivation, error) {
+func (d *Database) activatePilotBudget(ctx context.Context, rpc *chain.Client) (pilotBudgetActivation, error) {
 	var result pilotBudgetActivation
 	lease, err := d.currentLease()
 	if err != nil || lease.RouteKey != productionRouteKey {
@@ -327,7 +332,7 @@ func canonicalPriorBudgetDigest(raw json.RawMessage) string {
 // InspectPilotBudgetFlatState is read-only and has no database or signer path.
 // Retain successfully read public accounts even when a readiness check fails.
 func InspectPilotBudgetFlatState(ctx context.Context, rpcURL string, out io.Writer) error {
-	rpc, err := NewRPCClient(rpcURL)
+	rpc, err := chain.New(rpcURL, 15*time.Second)
 	if err != nil {
 		return budgetHold("pilot_flat_rpc_unavailable")
 	}

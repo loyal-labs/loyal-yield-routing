@@ -2,8 +2,12 @@ package backyard
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
+
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const routeValuationLookupTable = "HSmmBwB7ZRWEsWf4q47w65hXfmqNrfP67KDtpuVrHK7T"
@@ -35,21 +39,21 @@ func budgetReserveRefreshInstructions(lane string) ([]compiledInstruction, error
 // This price-only simulation has no signer or send boundary. Its instruction
 // set is closed over the same permissionless reserve refreshes already in the
 // production transaction prefix. Account overrides are not used.
-func (c *RPCClient) simulateBudgetReserveRefresh(ctx context.Context, lane string, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+func simulateBudgetReserveRefresh(ctx context.Context, c *chain.Client, lane string, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	instructions, err := budgetReserveRefreshInstructions(lane)
 	if err != nil {
 		return 0, nil, err
 	}
-	return c.simulateBudgetRefreshInstructions(ctx, instructions, addresses, minimumSlot)
+	return simulateBudgetRefreshInstructions(ctx, c, instructions, addresses, minimumSlot)
 }
 
 // simulateBudgetReserveRefreshOptional mirrors simulateBudgetReserveRefresh for
 // batch observers whose pinned address set explicitly allows absent accounts,
 // such as an unopened obligation or farm user state. A null capture for such an
-// address stays absent — the same zero-value shape GetMultipleAccountsWithOptional
-// returns — instead of failing the whole capture; every other address must
+// address stays absent — the same zero-value shape confirmedAccounts returns
+// for an optional address — instead of failing the whole capture; every other address must
 // still resolve, and the simulated snapshot remains unsigned evidence only.
-func (c *RPCClient) simulateBudgetReserveRefreshOptional(ctx context.Context, lane string, addresses, optional []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+func simulateBudgetReserveRefreshOptional(ctx context.Context, c *chain.Client, lane string, addresses, optional []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	instructions, err := budgetReserveRefreshInstructions(lane)
 	if err != nil {
 		return 0, nil, err
@@ -58,20 +62,20 @@ func (c *RPCClient) simulateBudgetReserveRefreshOptional(ctx context.Context, la
 	for _, address := range optional {
 		allowed[address] = struct{}{}
 	}
-	return c.simulateBudgetRefreshInstructionsWithOptional(ctx, instructions, addresses, allowed, minimumSlot)
+	return simulateBudgetRefreshInstructionsWithOptional(ctx, c, instructions, addresses, allowed, minimumSlot)
 }
 
-func (c *RPCClient) simulateBudgetRefreshInstructions(ctx context.Context, instructions []compiledInstruction, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
-	return c.simulateBudgetRefreshInstructionsWithOptional(ctx, instructions, addresses, nil, minimumSlot)
+func simulateBudgetRefreshInstructions(ctx context.Context, c *chain.Client, instructions []compiledInstruction, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+	return simulateBudgetRefreshInstructionsWithOptional(ctx, c, instructions, addresses, nil, minimumSlot)
 }
 
-func (c *RPCClient) simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, instructions []compiledInstruction, addresses []string, optional map[string]struct{}, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain.Client, instructions []compiledInstruction, addresses []string, optional map[string]struct{}, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	for _, instruction := range instructions {
 		if instruction.program != mustKey(kaminoProgram) || !bytesEqual(instruction.data, kaminoRefreshReserve) || len(instruction.accounts) != 6 {
 			return 0, nil, budgetHold("invalid_price_refresh_instruction")
 		}
 	}
-	blockhash, err := c.LatestBlockhash(ctx)
+	blockhash, err := latestBlockhash(ctx, c)
 	if err != nil {
 		return 0, nil, budgetHold("price_refresh_blockhash_unavailable")
 	}
@@ -121,31 +125,22 @@ func (c *RPCClient) simulateBudgetRefreshInstructionsWithOptional(ctx context.Co
 	// bytes cannot be broadcast successfully and are never persisted as signed.
 	wire := append([]byte{1}, make([]byte, 64)...)
 	wire = append(wire, message...)
-	var result struct {
-		Context struct {
-			Slot int64 `json:"slot"`
-		} `json:"context"`
-		Value struct {
-			Err      json.RawMessage `json:"err"`
-			Accounts []*struct {
-				Owner      string   `json:"owner"`
-				Lamports   uint64   `json:"lamports"`
-				Executable bool     `json:"executable"`
-				Data       []string `json:"data"`
-			} `json:"accounts"`
-		} `json:"value"`
+	keys, err := publicKeys(addresses)
+	if err != nil {
+		return 0, nil, err
 	}
-	if err = c.call(ctx, "simulateTransaction", []any{base64.StdEncoding.EncodeToString(wire), map[string]any{"encoding": "base64", "commitment": "confirmed", "sigVerify": false, "minContextSlot": minimumSlot, "accounts": map[string]any{"encoding": "base64", "addresses": addresses}}}, &result); err != nil {
+	minimum := uint64(minimumSlot)
+	simulated, captured, err := c.SimulateCapture(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum}, keys)
+	var failure *chain.SimulationError
+	if errors.As(err, &failure) {
+		transactionError, _ := json.Marshal(failure.Err)
+		return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": string(transactionError)}}
+	}
+	if err != nil {
 		return 0, nil, budgetHold("price_refresh_simulation_unavailable")
 	}
-	if len(result.Value.Err) > 0 && string(result.Value.Err) != "null" {
-		return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": string(result.Value.Err)}}
-	}
-	if result.Context.Slot < minimumSlot || len(result.Value.Accounts) != len(addresses) {
-		return 0, nil, budgetHold("price_refresh_simulation_failed")
-	}
 	accounts := make([]ConfirmedAccount, len(addresses))
-	for i, a := range result.Value.Accounts {
+	for i, a := range captured {
 		if a == nil {
 			// Only an explicitly optional pinned address may stay absent.
 			if _, permitted := optional[addresses[i]]; permitted {
@@ -154,14 +149,7 @@ func (c *RPCClient) simulateBudgetRefreshInstructionsWithOptional(ctx context.Co
 			}
 			return 0, nil, budgetHold("price_refresh_capture_incomplete")
 		}
-		if len(a.Data) != 2 || a.Data[1] != "base64" {
-			return 0, nil, budgetHold("price_refresh_capture_incomplete")
-		}
-		data, err := base64.StdEncoding.Strict().DecodeString(a.Data[0])
-		if err != nil {
-			return 0, nil, budgetHold("price_refresh_capture_invalid")
-		}
-		accounts[i] = ConfirmedAccount{Address: addresses[i], Owner: a.Owner, Lamports: a.Lamports, Executable: a.Executable, Data: data}
+		accounts[i] = confirmedAccount(addresses[i], a)
 	}
-	return result.Context.Slot, accounts, nil
+	return int64(simulated.Slot), accounts, nil
 }

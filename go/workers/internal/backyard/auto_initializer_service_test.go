@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // applyInitializerScopeMigrationFile executes one actual store migration file,
@@ -353,15 +355,12 @@ func readyInitializerManifest(t *testing.T) (RouteManifest, map[string][]byte) {
 // reads, with the candidate prestate filled only after the real preparation
 // has produced its measured request. The transport refuses every broadcast:
 // the proof is the durable reservation, never a send.
-func autoInitializerServiceRPC(t *testing.T) (*RPCClient, map[string]ConfirmedAccount, *int, *bool) {
+func autoInitializerServiceRPC(t *testing.T) (*chain.Client, map[string]ConfirmedAccount, *int, *bool) {
 	t.Helper()
-	rpc, err := NewRPCClient("https://rpc.invalid")
-	if err != nil {
-		t.Fatal(err)
-	}
+	rpc := newFakeChain(t, nil)
 	prestate := map[string]ConfirmedAccount{}
 	sends, expired := 0, false
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		raw, err := io.ReadAll(request.Body)
 		if err != nil {
 			return nil, err
@@ -386,12 +385,12 @@ func autoInitializerServiceRPC(t *testing.T) (*RPCClient, map[string]ConfirmedAc
 			return serve(int64(42)), nil
 		case "getFeeForMessage":
 			return serve(map[string]any{"context": map[string]int{"slot": 42}, "value": uint64(5000)}), nil
-		case "getBlockHeight":
+		case "getEpochInfo":
 			height := int64(99)
 			if expired {
 				height = 100
 			}
-			return serve(height), nil
+			return serve(finalizedEpoch(height)), nil
 		case "getMinimumBalanceForRentExemption":
 			var size int
 			if err = json.Unmarshal(body.Params[0], &size); err != nil {

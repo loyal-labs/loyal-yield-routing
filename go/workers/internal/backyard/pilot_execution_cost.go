@@ -4,6 +4,8 @@ import (
 	"context"
 	"math"
 	"reflect"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // An execution-cost bound is booked at its admitted upper value, never as
@@ -161,7 +163,7 @@ func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedE
 // cost bound observation with the classification resolved through the explicit
 // reviewed manifest, so a candidate AUTO bound is classified against the same
 // binding that compiled its request.
-func (m RouteManifest) observePilotExecutionCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects, cost ValuedTransactionCost) (ValuedTransactionCost, error) {
+func (m RouteManifest) observePilotExecutionCost(ctx context.Context, rpc *chain.Client, request any, effects ExpectedEffects, cost ValuedTransactionCost) (ValuedTransactionCost, error) {
 	var credit *BudgetPrice
 	if r, ok := request.(JupiterSwapRequest); ok {
 		if len(effects.Accounts) != 2 || r.MinimumOutputRaw == 0 {
@@ -179,7 +181,7 @@ func (m RouteManifest) observePilotExecutionCost(ctx context.Context, rpc *RPCCl
 	if rpc == nil {
 		return cost, budgetHold("execution_cost_rpc_unavailable")
 	}
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return cost, err
 	}

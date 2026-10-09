@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type phase3OperationAuthorization struct {
@@ -248,7 +250,7 @@ func (d *Database) ReservePhase3(ctx context.Context, r BudgetReservation) error
 // Production bridge admission adds a measured reservation; it does not replace
 // authorizePhase3Build, the pinned signer check, or the final-send cost fence.
 // Existing caps, goal identity and missing-budget HOLD remain unchanged.
-func (d *Database) admitPhase3Bridge(ctx context.Context, rpc *RPCClient, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+func (d *Database) admitPhase3Bridge(ctx context.Context, rpc *chain.Client, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
 	plan, err := observePhase3BridgeAdmission(ctx, rpc, observation, decision, evidence)
 	if err != nil {
 		return err
@@ -261,7 +263,7 @@ func (d *Database) admitPhase3Bridge(ctx context.Context, rpc *RPCClient, operat
 // the current action (bridge or Kamino), not the type of the whole return graph.
 // The public form loads the embedded reviewed manifest exactly once and is
 // byte-identical to the installed behavior.
-func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClient, operationID string, observation Observation, decision Decision, plan phase3BridgeAdmission) error {
+func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *chain.Client, operationID string, observation Observation, decision Decision, plan phase3BridgeAdmission) error {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return err
@@ -276,7 +278,7 @@ func (d *Database) persistPhase3ExitAdmission(ctx context.Context, rpc *RPCClien
 // reviewed binding resolves), the reserved-cost validation and the initializer
 // snapshot/decision rechecks. Installed lanes resolve identically through the
 // embedded manifest.
-func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc *RPCClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, plan phase3BridgeAdmission) error {
+func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc *chain.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, plan phase3BridgeAdmission) error {
 	if d == nil || d.pool == nil {
 		return budgetHold("bridge_admission_database_unavailable")
 	}
@@ -334,7 +336,7 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 	}
 	// Recheck time after acquiring the existing route lock. Contention cannot
 	// promote an expired observation into a fresh authorization.
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return err
 	}
@@ -555,7 +557,7 @@ func phase3MaintenanceNAVReserve(budget Phase3Budget, family string, s Snapshot,
 
 // Called only after the production cost observation, before signer access.
 // A fresh known debit cannot inherit a smaller durable reservation.
-func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
+func (d *Database) authorizePhase3Build(ctx context.Context, rpc *chain.Client, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return err
@@ -567,7 +569,7 @@ func (d *Database) authorizePhase3Build(ctx context.Context, rpc *RPCClient, ope
 // only the pilot effects decode is resolved through the explicit reviewed
 // manifest, so a candidate AUTO reservation decodes the same effects the
 // reviewed manifest compiled while installed lanes keep the public path above.
-func (d *Database) authorizePhase3BuildOnManifest(ctx context.Context, manifest RouteManifest, rpc *RPCClient, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
+func (d *Database) authorizePhase3BuildOnManifest(ctx context.Context, manifest RouteManifest, rpc *chain.Client, operationID string, request any, effects []byte, knownCost ValuedTransactionCost) error {
 	intent, err := Phase3IntentDigest(request, effects)
 	if err != nil {
 		return err
@@ -657,7 +659,7 @@ func (d *Database) authorizePhase3BuildOnManifest(ctx context.Context, manifest 
 	}
 	entrySlot := knownCost.ObservationSlot
 	if budget.Pilot != nil {
-		entrySlot, err = rpc.ConfirmedSlot(ctx)
+		entrySlot, err = confirmedSlot(ctx, rpc)
 		if err != nil {
 			return err
 		}

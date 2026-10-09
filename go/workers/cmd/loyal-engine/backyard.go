@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
@@ -54,9 +55,13 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 		case <-ctx.Done():
 		}
 	}()
+	cluster, err := chain.New(cfg.RPCURL, 15*time.Second)
+	if err != nil {
+		return err
+	}
 	// Strategy-two cutover gate: never run while a legacy seed 62-65 policy
 	// still exists at finalized commitment (see the strategy-two runbook).
-	if _, err := backyard.AssertLegacyPoliciesRetired(ctx, cfg.RPCURL); err != nil {
+	if _, err := backyard.AssertLegacyPoliciesRetired(ctx, cluster); err != nil {
 		return err
 	}
 	database, err := backyard.OpenDatabase(ctx, cfg.DatabaseURL)
@@ -64,12 +69,8 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 		return err
 	}
 	defer database.Close()
-	rpc, err := backyard.NewRPCClient(cfg.RPCURL)
-	if err != nil {
-		return err
-	}
 	lane, err := backyard.NewEngine(backyard.EngineConfig{
-		Database: database, RPC: rpc, Credentials: credentials, Config: backyard.DefaultConfig(), Owner: owner,
+		Database: database, RPC: cluster, Credentials: credentials, Config: backyard.DefaultConfig(), Owner: owner,
 		Out: os.Stdout, Logger: slog.Default(), Facts: facts, JupiterAPIKey: cfg.JupiterAPIKey,
 		Selector: selector, TimescaleURL: cfg.TimescaleURL,
 	})

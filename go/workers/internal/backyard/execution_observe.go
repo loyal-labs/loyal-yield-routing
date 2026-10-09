@@ -9,6 +9,8 @@ import (
 	"math"
 	"math/big"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const adaptorConfigLength = 472
@@ -51,12 +53,12 @@ func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfi
 // Reuse the enriched, receipt-fenced bank owned by this Tick. Only the current
 // slot and blockhash need new RPC reads; admission, signing simulation, durable
 // authority binding and final send revalidation still run unchanged.
-func prepareBridgeFromTickObservation(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
+func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 	batch := observation.routeBatch
 	if rpc == nil || batch == nil || batch.Slot != observation.Snapshot.Slot || batch.ObservationID != observation.Snapshot.ObservationID || batch.ManifestSHA256 != manifest.SHA256 || observation.Validate() != nil || !freshAt(time.Now().UTC(), observation.ObservedAt, 30*time.Second) {
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation is missing or stale"))
 	}
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -66,7 +68,7 @@ func prepareBridgeFromTickObservation(ctx context.Context, rpc *RPCClient, manif
 	return prepareBridgeFromObservedAccounts(ctx, rpc, manifest, decision, observation, batch.Accounts)
 }
 
-func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, observation Observation, accounts []ConfirmedAccount) (Observation, BridgeExecutionEvidence, error) {
+func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation, accounts []ConfirmedAccount) (Observation, BridgeExecutionEvidence, error) {
 	policyPin, err := manifest.bridgePolicy(decision.Action)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
@@ -155,7 +157,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *RPCClient, mani
 	if decision.Action != StageSquadsToVoltr {
 		effects.ReturnData = expectedAdaptorReturnData(nav.Report.NAVAfterRaw)
 	}
-	blockhash, err := rpc.LatestBlockhash(ctx)
+	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -225,7 +227,7 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 
 func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 	ctx context.Context,
-	rpc *RPCClient,
+	rpc *chain.Client,
 	manifest RouteManifest,
 	decision Decision,
 	enrich func(context.Context, *Observation) error,
@@ -257,7 +259,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		position, err := observeKaminoFromFixedAccounts(ctx, rpc.GetMultipleAccounts, observation.Snapshot.Slot, accounts, route.Kamino)
+		position, err := observeKaminoFromFixedAccounts(ctx, confirmedReader(rpc), observation.Snapshot.Slot, accounts, route.Kamino)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
@@ -331,7 +333,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 				return Observation{}, KaminoExecutionEvidence{}, budgetHold("full_payoff_cash_insufficient")
 			}
 		}
-		blockhash, err := rpc.LatestBlockhash(ctx)
+		blockhash, err := latestBlockhash(ctx, rpc)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}

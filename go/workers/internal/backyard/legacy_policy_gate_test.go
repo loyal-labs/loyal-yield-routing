@@ -5,13 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // The gate derives seed 62-65 policy PDAs from the bridge Settings constant at
@@ -148,6 +149,15 @@ func (s stubLegacyRPC) ServeHTTP(writer http.ResponseWriter, request *http.Reque
 	}
 }
 
+func legacyGateClient(t *testing.T, url string) *chain.Client {
+	t.Helper()
+	client, err := chain.New(url, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
 func TestAssertLegacyPoliciesRetiredFailsClosedOnSurvivors(t *testing.T) {
 	addresses, err := legacyCustomPolicyAddresses()
 	if err != nil {
@@ -157,7 +167,7 @@ func TestAssertLegacyPoliciesRetiredFailsClosedOnSurvivors(t *testing.T) {
 		surviving: map[string]bool{addresses[2]: true}, anchor: true,
 	})
 	defer server.Close()
-	surviving, err := AssertLegacyPoliciesRetired(context.Background(), server.URL)
+	surviving, err := AssertLegacyPoliciesRetired(context.Background(), legacyGateClient(t, server.URL))
 	if err == nil || len(surviving) != 1 || surviving[0] != addresses[2] {
 		t.Fatalf("expected a refusal naming %s, got %v, %v", addresses[2], surviving, err)
 	}
@@ -167,7 +177,7 @@ func TestAssertLegacyPoliciesRetiredFailsClosedOnSurvivors(t *testing.T) {
 
 	clear := httptest.NewServer(stubLegacyRPC{anchor: true})
 	defer clear.Close()
-	surviving, err = AssertLegacyPoliciesRetired(context.Background(), clear.URL)
+	surviving, err = AssertLegacyPoliciesRetired(context.Background(), legacyGateClient(t, clear.URL))
 	if err != nil || surviving != nil {
 		t.Fatalf("expected a clear retirement read, got %v, %v", surviving, err)
 	}
@@ -176,85 +186,23 @@ func TestAssertLegacyPoliciesRetiredFailsClosedOnSurvivors(t *testing.T) {
 func TestAssertLegacyPoliciesRetiredRequiresAnchorForAllNullPolicies(t *testing.T) {
 	server := httptest.NewServer(stubLegacyRPC{anchor: true})
 	defer server.Close()
-	if surviving, err := AssertLegacyPoliciesRetired(context.Background(), server.URL); err != nil || surviving != nil {
+	if surviving, err := AssertLegacyPoliciesRetired(context.Background(), legacyGateClient(t, server.URL)); err != nil || surviving != nil {
 		t.Fatalf("valid finalized Settings anchor should permit all-null legacy policies: %v, %v", surviving, err)
 	}
 
 	withoutAnchor := httptest.NewServer(stubLegacyRPC{})
 	defer withoutAnchor.Close()
-	if surviving, err := AssertLegacyPoliciesRetired(context.Background(), withoutAnchor.URL); err == nil || surviving != nil {
+	if surviving, err := AssertLegacyPoliciesRetired(context.Background(), legacyGateClient(t, withoutAnchor.URL)); err == nil || surviving != nil {
 		t.Fatalf("all-null policies without the mandatory anchor must refuse startup: %v, %v", surviving, err)
 	}
 }
 
 func TestAssertLegacyPoliciesRetiredRefusesWrongGenesis(t *testing.T) {
 	server := httptest.NewServer(stubLegacyRPC{
-		genesis: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1", anchor: true,
+		genesis: bridgeVault, anchor: true,
 	})
 	defer server.Close()
-	if surviving, err := AssertLegacyPoliciesRetired(context.Background(), server.URL); err == nil || surviving != nil {
+	if surviving, err := AssertLegacyPoliciesRetired(context.Background(), legacyGateClient(t, server.URL)); err == nil || surviving != nil {
 		t.Fatalf("wrong genesis must refuse startup before trusting null policy values: %v, %v", surviving, err)
-	}
-}
-
-type fakeLegacyPolicyGateClock struct {
-	now    time.Time
-	sleeps []time.Duration
-	reads  int
-}
-
-func (clock *fakeLegacyPolicyGateClock) Now() time.Time {
-	return clock.now
-}
-
-func TestLegacyPolicyGateEnforcesOneGlobalDeadline(t *testing.T) {
-	start := time.Unix(1_000_000, 0)
-	deadline := start.Add(legacyPolicyGateTimeout)
-	clock := &fakeLegacyPolicyGateClock{now: start}
-	clientFactory := func(rpcURL string) (*RPCClient, error) {
-		client, err := NewRPCClient(rpcURL)
-		if err != nil {
-			return nil, err
-		}
-		client.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-			clock.reads++
-			remaining := deadline.Sub(clock.Now())
-			if remaining > 0 {
-				requestBudget := 15 * time.Second
-				if remaining < requestBudget {
-					requestBudget = remaining
-				}
-				clock.now = clock.now.Add(requestBudget)
-			}
-			return nil, errors.New("simulated RPC timeout")
-		})
-		client.sleep = func(ctx context.Context, duration time.Duration) error {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			clock.sleeps = append(clock.sleeps, duration)
-			clock.now = clock.now.Add(duration)
-			return nil
-		}
-		return client, nil
-	}
-
-	if surviving, err := assertLegacyPoliciesRetiredWithDeadline(
-		context.Background(), "https://rpc.example", legacyPolicyGateTimeout, clock.Now, clientFactory,
-	); err == nil || surviving != nil {
-		t.Fatalf("timed-out gate unexpectedly passed: surviving=%v err=%v", surviving, err)
-	} else if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("timed-out gate returned the wrong error: %v", err)
-	}
-	if elapsed := clock.Now().Sub(start); elapsed > legacyPolicyGateTimeout {
-		t.Fatalf("global gate deadline exceeded: elapsed=%s deadline=%s", elapsed, legacyPolicyGateTimeout)
-	}
-	if clock.reads != 4 {
-		t.Fatalf("expected the global deadline to stop the fifth request, got %d reads", clock.reads)
-	}
-	for index, sleep := range clock.sleeps {
-		if sleep != legacyPolicyGateRetryInterval {
-			t.Fatalf("retry %d used %s instead of fixed %s", index+1, sleep, legacyPolicyGateRetryInterval)
-		}
 	}
 }

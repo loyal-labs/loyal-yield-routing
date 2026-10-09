@@ -11,10 +11,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // The strategy receipt's absence is judged by the real RPC decoder and the
-// finalized gate, so these tests feed raw JSON-RPC responses to RPCClient and
+// finalized gate, so these tests feed raw JSON-RPC responses to the chain client and
 // drive the same batch function the production observe path wires.
 
 type jsonRPCAccounts struct {
@@ -79,7 +81,7 @@ func (f *jsonRPCAccounts) transport() roundTripFunc {
 // rawJSONRouteBatch serves the production batch accounts as real JSON-RPC. The
 // request's own address list drives the response, so an account that is absent
 // from the maps is answered with a genuine null entry.
-func rawJSONRouteBatch(t *testing.T, mutate func(map[string]ConfirmedAccount, map[string]ConfirmedAccount)) *RPCClient {
+func rawJSONRouteBatch(t *testing.T, mutate func(map[string]ConfirmedAccount, map[string]ConfirmedAccount)) *chain.Client {
 	t.Helper()
 	manifest := readyWorkerManifest(t)
 	fixture := &jsonRPCAccounts{slot: 77, confirmed: map[string]ConfirmedAccount{}, finalized: map[string]ConfirmedAccount{}}
@@ -98,15 +100,12 @@ func rawJSONRouteBatch(t *testing.T, mutate func(map[string]ConfirmedAccount, ma
 	if mutate != nil {
 		mutate(fixture.confirmed, fixture.finalized)
 	}
-	client, err := NewRPCClient("https://rpc.invalid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.client.Transport = fixture.transport()
+	client := newFakeChain(t, nil)
+	rpcOf(client).Transport = fixture.transport()
 	return client
 }
 
-func rawJSONProductionObserve(t *testing.T, client *RPCClient) (Observation, error) {
+func rawJSONProductionObserve(t *testing.T, client *chain.Client) (Observation, error) {
 	t.Helper()
 	state := productionObserveState{
 		routeKey: "rwa-multiply:test",

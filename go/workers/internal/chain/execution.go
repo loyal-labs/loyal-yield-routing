@@ -48,6 +48,7 @@ func (c *Client) Execution(ctx context.Context, signature solana.Signature, comm
 		Slot: out.Slot, Err: meta.Err, Fee: meta.Fee, Wire: out.Transaction.GetBinary(), Logs: meta.LogMessages,
 		Keys: keys, LoadedWritable: loaded.Writable, LoadedReadonly: loaded.ReadOnly,
 		PreLamports: meta.PreBalances, PostLamports: meta.PostBalances,
+		ReturnProgram: meta.ReturnData.ProgramId, ReturnData: meta.ReturnData.Data.Content,
 	}}
 	if execution.Pre, err = tokenBalances(keys, meta.PreTokenBalances); err != nil {
 		return Execution{}, err

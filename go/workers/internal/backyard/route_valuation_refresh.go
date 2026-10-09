@@ -3,6 +3,8 @@ package backyard
 import (
 	"context"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const routeRefreshValuationSource = "unsigned-reserve-refresh-simulation"
@@ -11,7 +13,7 @@ const routeRefreshValuationSource = "unsigned-reserve-refresh-simulation"
 // permissionless reserve refreshes. Custody, obligation, receipt and policy
 // accounts are read-only to these instructions. The simulation fee payer is
 // excluded: its virtual fee must never become observed operational spending.
-func (c *RPCClient) simulateRouteValuationRefresh(ctx context.Context, route RuntimeRoute, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+func simulateRouteValuationRefresh(ctx context.Context, c *chain.Client, route RuntimeRoute, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	for _, address := range addresses {
 		if address == bridgeDelegate {
 			return 0, nil, fmt.Errorf("valuation capture includes simulated fee payer")
@@ -30,7 +32,7 @@ func (c *RPCClient) simulateRouteValuationRefresh(ctx context.Context, route Run
 	}
 	optional := optionalLifecycleObligations(addresses)
 	optional = append(optional, bridgeStrategyReceipt)
-	slot, accounts, err := c.simulateBudgetReserveRefreshOptional(ctx, route.Lane, addresses, optional, minimumSlot)
+	slot, accounts, err := simulateBudgetReserveRefreshOptional(ctx, c, route.Lane, addresses, optional, minimumSlot)
 	if err != nil {
 		return 0, nil, err
 	}

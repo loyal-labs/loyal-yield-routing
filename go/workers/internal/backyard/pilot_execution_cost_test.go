@@ -192,7 +192,7 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 		t.Fatal(err)
 	}
 	advancedRPC := budgetBuildRPC(t, 5000, 43)
-	_, _ = advancedRPC.ConfirmedSlot(ctx)
+	_, _ = confirmedSlot(ctx, advancedRPC)
 	assertBudgetHold(t, db.authorizePhase3Build(ctx, advancedRPC, id, e.Request, auth.BuildInput.Effects, auth.BridgeAdmission.CurrentCost), "stale_bridge_admission_snapshot")
 	auth.BridgeAdmission.ValidThroughSlot = validThrough
 	restoredAuth, _ := json.Marshal(auth)

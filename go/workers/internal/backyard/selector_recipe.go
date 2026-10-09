@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const maxSelectorRecipeSteps = 32
@@ -87,7 +89,7 @@ func composeSelectorExpectedExpense(source, destination selectorRecipe) (int64, 
 // Price every compiled message, including repeated NAV reports. Share only
 // observed prices within this bounded sample; fees still bind exact messages.
 // The production build/send path keeps its actual custody/prestate validators.
-func priceSelectorRecipe(ctx context.Context, rpc *RPCClient, lane string, inputs []*phase3BuildInput, minimumSlot int64) (selectorRecipe, error) {
+func priceSelectorRecipe(ctx context.Context, rpc *chain.Client, lane string, inputs []*phase3BuildInput, minimumSlot int64) (selectorRecipe, error) {
 	return priceSelectorRecipeWithFloor(ctx, rpc, lane, inputs, minimumSlot, minimumSlot)
 }
 
@@ -95,7 +97,7 @@ func priceSelectorRecipe(ctx context.Context, rpc *RPCClient, lane string, input
 // slot accepted for fees/prices and final collection. The public entry keeps
 // the plain selector-lane gate and prices against the embedded manifest,
 // which carries no AUTO binding, so the persisted-build path stays closed.
-func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
+func priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
 	if !selectorLane(lane) {
 		return selectorRecipe{Inputs: inputs}, budgetHold("invalid_selector_recipe")
 	}
@@ -113,7 +115,7 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane stri
 // this manifest itself carries a fully validated binding — never a
 // request-supplied one — and this enables no live selection: AUTO stays out
 // of selectorLanes/selectorEntryLane.
-func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *RPCClient, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
+func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
 	out := selectorRecipe{Inputs: inputs}
 	authorized := selectorLane(lane)
 	if !authorized && lane == autoAUTOPYUSD.Lane {
@@ -199,7 +201,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *RP
 	if err := selectorRecipeReads(len(steps)+len(keys)+1, func(i int) (err error) {
 		switch {
 		case i < len(steps):
-			steps[i].fee, err = rpc.ObserveMessageFee(ctx, steps[i].message, floor)
+			steps[i].fee, err = observeMessageFee(ctx, rpc, steps[i].message, floor)
 		case i < len(steps)+len(keys):
 			j := i - len(steps)
 			tokenPrices[j], err = ObserveBudgetTokenPrice(ctx, rpc, lane, sources[keys[j]], floor)
@@ -226,7 +228,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *RP
 		slot = max(slot, tokenPrices[i].ObservedSlot)
 	}
 	slot = max(slot, sol.ObservedSlot)
-	nowSlot, err := rpc.ConfirmedSlot(ctx)
+	nowSlot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return out, err
 	}

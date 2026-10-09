@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // autoInitializerRecoveryFixture compiles the candidate AUTO initializer
@@ -217,10 +219,10 @@ func TestAutoInitializerDecisionValidatesOnlyThroughManifestBinding(t *testing.T
 
 // autoInitializerRecoveryRPC serves the finalized immutable receipt for the
 // exact persisted wire, plus the obligation account read anchored to it.
-func autoInitializerRecoveryRPC(t *testing.T, f autoInitializerRecoveryFixture, receiptSlot int64, mutate func(result any) any) *RPCClient {
+func autoInitializerRecoveryRPC(t *testing.T, f autoInitializerRecoveryFixture, receiptSlot int64, mutate func(result any) any) *chain.Client {
 	t.Helper()
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body struct {
 			Method string
 			Params []json.RawMessage
@@ -232,7 +234,7 @@ func autoInitializerRecoveryRPC(t *testing.T, f autoInitializerRecoveryFixture, 
 		var result any
 		switch body.Method {
 		case "getSignatureStatuses":
-			result = map[string]any{"value": []any{map[string]any{"slot": f.receipt.Slot, "err": nil, "confirmationStatus": "finalized"}}}
+			result = map[string]any{"context": map[string]any{"slot": f.receipt.Slot}, "value": []any{map[string]any{"slot": f.receipt.Slot, "err": nil, "confirmationStatus": "finalized"}}}
 		case "getTransaction":
 			var signature string
 			_ = json.Unmarshal(body.Params[0], &signature)
@@ -518,8 +520,8 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 	id, op, f := newFixture()
 	sent := 0
 	rpc = autoInitializerRecoveryRPC(t, f, 77, nil)
-	inner := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	inner := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		raw, _ := io.ReadAll(req.Body)
 		var body struct{ Method string }
 		_ = json.Unmarshal(raw, &body)

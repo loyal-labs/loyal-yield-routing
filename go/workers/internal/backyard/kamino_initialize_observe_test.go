@@ -110,8 +110,8 @@ func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testin
 			case "rent_nan":
 				change(rentAddress, func(a *ConfirmedAccount) { binary.LittleEndian.PutUint64(a.Data[8:16], math.Float64bits(math.NaN())) })
 			}
-			rpc, _ := NewRPCClient("https://rpc.invalid")
-			rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rpc := newFakeChain(t, nil)
+			rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				var body struct {
 					Method string
 					Params []json.RawMessage
@@ -169,8 +169,8 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 	}
 	op := PersistedOperation{Operation: Operation{Decision: Decision{Action: InitializeKaminoObligation, StrategyKey: r.RouteLane, Reason: "multiply_obligation_missing", IdempotencyKey: "initializer-controlled"}}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 	auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body struct {
 			Method string
 			Params []json.RawMessage
@@ -221,9 +221,9 @@ func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 			binary.LittleEndian.PutUint64(rent.Data, 1000)
 			e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
 			rpc := budgetBuildRPC(t, 5000, finalSlot)
-			base := rpc.client.Transport
+			base := rpcOf(rpc).Transport
 			slotReads := 0
-			rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				raw, err := io.ReadAll(req.Body)
 				if err != nil {
 					return nil, err

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func retainedEthenaExit(t *testing.T) (JupiterSwapRequest, ExpectedEffects) {
@@ -54,11 +56,11 @@ func retainedEthenaExit(t *testing.T) (JupiterSwapRequest, ExpectedEffects) {
 	}}
 }
 
-func lookupRPC(t *testing.T, tables []LookupTableSnapshot, mutate func(*LookupTableSnapshot), allowFee bool) (*RPCClient, *int) {
+func lookupRPC(t *testing.T, tables []LookupTableSnapshot, mutate func(*LookupTableSnapshot), allowFee bool) (*chain.Client, *int) {
 	t.Helper()
-	rpc, _ := NewRPCClient("https://rpc.invalid")
+	rpc := newFakeChain(t, nil)
 	reads := 0
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var body struct {
 			Method string
 			Params []json.RawMessage

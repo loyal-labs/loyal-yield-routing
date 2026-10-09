@@ -232,10 +232,11 @@ func (c *Client) Simulate(ctx context.Context, wire []byte, opts rpc.SimulateTra
 
 // TokenBalance is one token account's balance before or after a transaction.
 type TokenBalance struct {
-	Mint    solana.PublicKey
-	Owner   solana.PublicKey
-	Program solana.PublicKey
-	Amount  uint64
+	Mint     solana.PublicKey
+	Owner    solana.PublicKey
+	Program  solana.PublicKey
+	Amount   uint64
+	Decimals uint8
 }
 
 // Receipt is a landed transaction as the cluster recorded it. Err is the
@@ -256,6 +257,9 @@ type Receipt struct {
 	Pre                            map[solana.PublicKey]TokenBalance
 	Post                           map[solana.PublicKey]TokenBalance
 	Logs                           []string
+	// ReturnProgram set ReturnData last; zero when nothing returned data.
+	ReturnProgram solana.PublicKey
+	ReturnData    []byte
 }
 
 // Receipt reads signature's transaction at commitment (confirmed or
@@ -373,7 +377,7 @@ func tokenBalances(keys []solana.PublicKey, rows []rpc.TokenBalance) (map[solana
 		if _, dup := balances[key]; dup {
 			return nil, errors.New("getTransaction: duplicate token balance")
 		}
-		balances[key] = TokenBalance{Mint: row.Mint, Owner: *row.Owner, Program: *row.ProgramId, Amount: amount}
+		balances[key] = TokenBalance{Mint: row.Mint, Owner: *row.Owner, Program: *row.ProgramId, Amount: amount, Decimals: row.UiTokenAmount.Decimals}
 	}
 	return balances, nil
 }
@@ -418,4 +422,99 @@ func atLeast(slot uint64) *uint64 {
 		return nil
 	}
 	return &slot
+}
+
+// FeeAt is Fee at confirmed, read no older than minContextSlot, with the slot
+// it was read at.
+func (c *Client) FeeAt(ctx context.Context, message []byte, minContextSlot uint64) (fee, slot uint64, err error) {
+	out, err := c.rpc.GetFeeForMessageWithOpts(ctx, base64.StdEncoding.EncodeToString(message), &rpc.GetFeeForMessageOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: atLeast(minContextSlot)})
+	if err != nil {
+		return 0, 0, failed("getFeeForMessage", err)
+	}
+	if out == nil || out.Value == nil || out.Context.Slot == 0 || out.Context.Slot < minContextSlot {
+		return 0, 0, errors.New("getFeeForMessage: no fee for this blockhash")
+	}
+	return *out.Value, out.Context.Slot, nil
+}
+
+// SimulateCapture runs wire like Simulate and returns addresses as the
+// simulation left them, in order; an absent account is nil.
+func (c *Client) SimulateCapture(ctx context.Context, wire []byte, opts rpc.SimulateTransactionOpts, addresses []solana.PublicKey) (Simulated, []*Account, error) {
+	opts.Accounts = &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: addresses}
+	out, err := c.rpc.SimulateRawTransactionWithOpts(ctx, wire, &opts)
+	if err != nil {
+		return Simulated{}, nil, failed("simulateTransaction", err)
+	}
+	if out.Value == nil || out.Context.Slot == 0 || opts.MinContextSlot != nil && out.Context.Slot < *opts.MinContextSlot {
+		return Simulated{}, nil, errors.New("simulateTransaction: empty or stale result")
+	}
+	if out.Value.Err != nil {
+		return Simulated{}, nil, &SimulationError{Slot: out.Context.Slot, Err: out.Value.Err, Logs: out.Value.Logs}
+	}
+	if len(out.Value.Accounts) != len(addresses) {
+		return Simulated{}, nil, errors.New("simulateTransaction: captured accounts do not match the request")
+	}
+	simulated := Simulated{Slot: out.Context.Slot, Logs: out.Value.Logs}
+	if out.Value.UnitsConsumed != nil {
+		simulated.Units = *out.Value.UnitsConsumed
+	}
+	accounts := make([]*Account, len(addresses))
+	for i, value := range out.Value.Accounts {
+		if value != nil {
+			accounts[i] = &Account{Key: addresses[i], Owner: value.Owner, Lamports: value.Lamports, Data: value.Data.GetBinary(), Executable: value.Executable}
+		}
+	}
+	return simulated, accounts, nil
+}
+
+// AccountHeads reads the first length bytes of each key's data at confirmed:
+// the header of an account too large to read whole. An absent account is nil.
+func (c *Client) AccountHeads(ctx context.Context, keys []solana.PublicKey, length uint64) ([]*Account, error) {
+	offset := uint64(0)
+	out, err := c.rpc.GetMultipleAccountsWithOpts(ctx, keys, &rpc.GetMultipleAccountsOpts{Encoding: solana.EncodingBase64, Commitment: rpc.CommitmentConfirmed, DataSlice: &rpc.DataSlice{Offset: &offset, Length: &length}})
+	if err != nil {
+		return nil, failed("getMultipleAccounts", err)
+	}
+	if len(out.Value) != len(keys) {
+		return nil, errors.New("getMultipleAccounts: response does not match the request")
+	}
+	accounts := make([]*Account, len(keys))
+	for i, value := range out.Value {
+		if value != nil {
+			accounts[i] = &Account{Key: keys[i], Owner: value.Owner, Lamports: value.Lamports, Data: value.Data.GetBinary(), Executable: value.Executable}
+		}
+	}
+	return accounts, nil
+}
+
+// FinalizedBlockHeightAt is the block height of the finalized block at slot.
+// ErrNotFound means the cluster has no finalized block there.
+func (c *Client) FinalizedBlockHeightAt(ctx context.Context, slot uint64) (uint64, error) {
+	rewards, version := false, uint64(0)
+	out, err := c.rpc.GetBlockWithOpts(ctx, slot, &rpc.GetBlockOpts{TransactionDetails: rpc.TransactionDetailsNone, Rewards: &rewards, Commitment: rpc.CommitmentFinalized, MaxSupportedTransactionVersion: &version})
+	if errors.Is(err, rpc.ErrNotConfirmed) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, failed("getBlock", err)
+	}
+	if out.BlockHeight == nil || *out.BlockHeight == 0 {
+		return 0, errors.New("getBlock: no block height")
+	}
+	return *out.BlockHeight, nil
+}
+
+// SlotSamples sums the cluster's last n performance samples (one a minute)
+// that report both slots and seconds.
+func (c *Client) SlotSamples(ctx context.Context, n uint) (slots, seconds uint64, err error) {
+	out, err := c.rpc.GetRecentPerformanceSamples(ctx, &n)
+	if err != nil {
+		return 0, 0, failed("getRecentPerformanceSamples", err)
+	}
+	for _, sample := range out {
+		if sample != nil && sample.NumSlots > 0 && sample.SamplePeriodSecs > 0 {
+			slots, seconds = slots+sample.NumSlots, seconds+uint64(sample.SamplePeriodSecs)
+		}
+	}
+	return slots, seconds, nil
 }

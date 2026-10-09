@@ -153,7 +153,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	// Observation, preparation, custody proof and decision record already
 	// spent two slots of the tick when admission starts.
 	clock := &slotClock{start: time.Now(), origin: s.Slot + 2, slotTime: slotTime}
-	rpc.client.Transport = clock.rpc(rpc.client.Transport, rpcLatency)
+	rpcOf(rpc).Transport = clock.rpc(rpcOf(rpc).Transport, rpcLatency)
 	client.http.Transport = clock.jupiter(client.http.Transport, jupiterLatency)
 	// productionTickRuntime's admitBridge sends this report (debt on a
 	// position-return lane) to admitPhase3Funding with the production Jupiter
@@ -177,11 +177,11 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	// Sign locally and simulate (a heavier round trip), then the send fence's
 	// slot read and the broadcast itself.
 	time.Sleep(rpcLatency)
-	simulated, err := rpc.ConfirmedSlot(ctx)
+	simulated, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sent, err := rpc.ConfirmedSlot(ctx)
+	sent, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		t.Fatal(err)
 	}

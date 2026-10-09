@@ -309,10 +309,10 @@ func legacyAdmissionCostCheck(plan phase3BridgeAdmission, err error) (phase3Brid
 func TestBridgeAdmissionReadsIndependentValuationsTogether(t *testing.T) {
 	o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
 	rpc := budgetBuildRPC(t, 5_000, 42)
-	base := rpc.client.Transport
+	base := rpcOf(rpc).Transport
 	var started atomic.Int32
 	ready := make(chan struct{})
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			return nil, err
@@ -373,8 +373,8 @@ func TestBridgeAdmissionConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
 			rpc := budgetBuildRPC(t, 5_000, tc.finalSlot)
-			base := rpc.client.Transport
-			rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			base := rpcOf(rpc).Transport
+			rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				body, err := io.ReadAll(request.Body)
 				if err != nil {
 					return nil, err

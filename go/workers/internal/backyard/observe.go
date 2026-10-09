@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func (o Observation) Validate() error {
@@ -24,20 +26,20 @@ func (o Observation) Validate() error {
 // accounts and all three USDC custodies must share one confirmed slot. Kamino
 // state is intentionally not inferred here; without an exact current account
 // graph the decision engine can only HOLD or select a bridge/withdrawal action.
-func ObserveConfirmedBridgeSnapshot(ctx context.Context, rpc *RPCClient) (Observation, error) {
+func ObserveConfirmedBridgeSnapshot(ctx context.Context, rpc *chain.Client) (Observation, error) {
 	if rpc == nil {
 		return Observation{}, fmt.Errorf("RPC client is required")
 	}
-	minSlot, err := rpc.ConfirmedSlot(ctx)
+	minSlot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return Observation{}, err
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		receiptSlot, rawReceipts, err := rpc.getVoltrWithdrawalReceiptAccounts(ctx, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
+		receiptSlot, rawReceipts, err := getVoltrWithdrawalReceiptAccounts(ctx, rpc, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
 		if err != nil {
 			return Observation{}, err
 		}
-		custodySlot, accounts, err := rpc.GetMultipleAccounts(ctx, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, minSlot)
+		custodySlot, accounts, err := confirmedAccounts(ctx, rpc, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, minSlot)
 		if err != nil {
 			return Observation{}, err
 		}

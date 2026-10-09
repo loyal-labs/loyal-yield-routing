@@ -220,6 +220,7 @@ func TestReceiptResolvesLoadedAddresses(t *testing.T) {
 				"err": nil, "fee": 5000, "logMessages": []string{},
 				"preTokenBalances": balance("10"), "postTokenBalances": balance("25"),
 				"loadedAddresses": map[string]any{"writable": []string{loaded.String()}, "readonly": []string{}},
+				"returnData":      map[string]any{"programId": owner.String(), "data": []string{base64.StdEncoding.EncodeToString([]byte{4, 2}), "base64"}},
 			},
 		})
 	})
@@ -227,7 +228,112 @@ func TestReceiptResolvesLoadedAddresses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.Pre[loaded].Amount != 10 || receipt.Post[loaded].Amount != 25 || receipt.Post[loaded].Mint != mint || receipt.Err != nil {
+	if receipt.Pre[loaded].Amount != 10 || receipt.Post[loaded].Amount != 25 || receipt.Post[loaded].Mint != mint || receipt.Post[loaded].Decimals != 6 || receipt.Err != nil {
 		t.Fatalf("token balance not resolved through the loaded address: %+v", receipt)
+	}
+	if receipt.ReturnProgram != owner || string(receipt.ReturnData) != string([]byte{4, 2}) {
+		t.Fatalf("return data %s %v", receipt.ReturnProgram, receipt.ReturnData)
+	}
+}
+
+func TestFeeAtIsReadNoOlderThanTheAskedSlot(t *testing.T) {
+	var opts map[string]any
+	fee := any(5000)
+	client := serve(t, func(req request) (int, any) {
+		_ = json.Unmarshal(req.Params[1], &opts)
+		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": fee})
+	})
+	lamports, slot, err := client.FeeAt(context.Background(), []byte{1}, 42)
+	if err != nil || lamports != 5000 || slot != 44 || opts["minContextSlot"] != float64(42) || opts["commitment"] != "confirmed" {
+		t.Fatalf("fee %d at %d, %v, options %v", lamports, slot, err, opts)
+	}
+	fee = nil
+	if _, _, err := client.FeeAt(context.Background(), []byte{1}, 42); err == nil {
+		t.Fatal("a fee for an expired blockhash was accepted")
+	}
+}
+
+func TestSimulateCaptureReturnsAccountsAsSimulated(t *testing.T) {
+	present, absent := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
+	var opts map[string]any
+	failure := any(nil)
+	client := serve(t, func(req request) (int, any) {
+		_ = json.Unmarshal(req.Params[1], &opts)
+		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 50}, "value": map[string]any{"err": failure, "unitsConsumed": 9, "accounts": []any{
+			map[string]any{"lamports": 3, "owner": solana.TokenProgramID.String(), "data": []string{base64.StdEncoding.EncodeToString([]byte{8}), "base64"}, "executable": false}, nil}}})
+	})
+	minimum := uint64(48)
+	simulated, accounts, err := client.SimulateCapture(context.Background(), []byte{1}, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum}, []solana.PublicKey{present, absent})
+	captured, _ := opts["accounts"].(map[string]any)
+	if err != nil || simulated.Slot != 50 || simulated.Units != 9 || accounts[0].Key != present || accounts[0].Data[0] != 8 || accounts[1] != nil ||
+		captured["encoding"] != "base64" || opts["minContextSlot"] != float64(48) {
+		t.Fatalf("capture %+v %+v %v, options %v", simulated, accounts, err, opts)
+	}
+	failure = "BlockhashNotFound"
+	var simulationErr *SimulationError
+	if _, _, err := client.SimulateCapture(context.Background(), []byte{1}, rpc.SimulateTransactionOpts{}, []solana.PublicKey{present, absent}); !errors.As(err, &simulationErr) {
+		t.Fatalf("a failed simulation is not a SimulationError: %v", err)
+	}
+}
+
+func TestAccountHeadsReadOnlyTheHeader(t *testing.T) {
+	key := solana.NewWallet().PublicKey()
+	var opts map[string]any
+	client := serve(t, func(req request) (int, any) {
+		_ = json.Unmarshal(req.Params[1], &opts)
+		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 7}, "value": []any{
+			map[string]any{"lamports": 1, "owner": solana.BPFLoaderUpgradeableProgramID.String(), "data": []string{base64.StdEncoding.EncodeToString([]byte{3, 0, 0, 0}), "base64"}, "executable": false}, nil}})
+	})
+	accounts, err := client.AccountHeads(context.Background(), []solana.PublicKey{key, solana.NewWallet().PublicKey()}, 4)
+	slice, _ := opts["dataSlice"].(map[string]any)
+	if err != nil || accounts[0].Key != key || len(accounts[0].Data) != 4 || accounts[1] != nil || slice["length"] != float64(4) || slice["offset"] != float64(0) {
+		t.Fatalf("heads %+v %v, options %v", accounts, err, opts)
+	}
+}
+
+func TestProgramAccountsAreFilteredAndReadNoOlderThanTheAskedSlot(t *testing.T) {
+	program, owned := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
+	var opts map[string]any
+	client := serve(t, func(req request) (int, any) {
+		_ = json.Unmarshal(req.Params[1], &opts)
+		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 91}, "value": []any{map[string]any{"pubkey": owned.String(), "account": map[string]any{
+			"lamports": 2, "owner": program.String(), "data": []string{base64.StdEncoding.EncodeToString([]byte{1, 2}), "base64"}, "executable": false}}}})
+	})
+	slot, accounts, err := client.ProgramAccounts(context.Background(), program, []rpc.RPCFilter{{Memcmp: &rpc.RPCFilterMemcmp{Offset: 8, Bytes: owned[:]}}}, rpc.CommitmentConfirmed, 90)
+	filters, _ := opts["filters"].([]any)
+	if err != nil || slot != 91 || len(accounts) != 1 || accounts[0].Key != owned || accounts[0].Owner != program ||
+		opts["withContext"] != true || opts["minContextSlot"] != float64(90) || len(filters) != 1 {
+		t.Fatalf("program accounts at %d: %+v %v, options %v", slot, accounts, err, opts)
+	}
+}
+
+func TestFinalizedBlockHeightAtReadsTheBlockWithoutTransactions(t *testing.T) {
+	var opts map[string]any
+	block := any(map[string]any{"blockhash": solana.Hash{1}.String(), "previousBlockhash": solana.Hash{2}.String(), "parentSlot": 9, "blockHeight": 77})
+	client := serve(t, func(req request) (int, any) {
+		_ = json.Unmarshal(req.Params[1], &opts)
+		return http.StatusOK, result(block)
+	})
+	height, err := client.FinalizedBlockHeightAt(context.Background(), 10)
+	if err != nil || height != 77 || opts["transactionDetails"] != "none" || opts["commitment"] != "finalized" || opts["rewards"] != false {
+		t.Fatalf("height %d, %v, options %v", height, err, opts)
+	}
+	block = nil
+	if _, err := client.FinalizedBlockHeightAt(context.Background(), 10); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a slot without a finalized block: %v", err)
+	}
+}
+
+func TestSlotSamplesSumOnlyUsableSamples(t *testing.T) {
+	client := serve(t, func(request) (int, any) {
+		return http.StatusOK, result([]any{
+			map[string]any{"slot": 3, "numSlots": 150, "numTransactions": 1, "samplePeriodSecs": 60},
+			map[string]any{"slot": 2, "numSlots": 0, "numTransactions": 1, "samplePeriodSecs": 60},
+			map[string]any{"slot": 1, "numSlots": 72, "numTransactions": 1, "samplePeriodSecs": 0},
+		})
+	})
+	slots, seconds, err := client.SlotSamples(context.Background(), 5)
+	if err != nil || slots != 150 || seconds != 60 {
+		t.Fatalf("samples %d slots over %d s, %v", slots, seconds, err)
 	}
 }

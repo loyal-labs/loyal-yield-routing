@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const budgetMaxObservationLagSlots int64 = 32
@@ -52,7 +54,7 @@ func observationLagForSlotMillis(ms float64) int64 {
 // refreshObservationLagSlots re-measures the slot time at most once a minute,
 // at the start of a tick so one tick sees one window. A failed read keeps the
 // last value for 10 minutes, then falls back to 32 slots.
-func (c *RPCClient) refreshObservationLagSlots(ctx context.Context) {
+func refreshObservationLagSlots(ctx context.Context, c *chain.Client) {
 	observationLagMu.Lock()
 	defer observationLagMu.Unlock()
 	now := time.Now()
@@ -62,7 +64,7 @@ func (c *RPCClient) refreshObservationLagSlots(ctx context.Context) {
 	observationLagChecked = now
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	ms, err := c.recentSlotMillis(ctx)
+	ms, err := recentSlotMillis(ctx, c)
 	if err != nil {
 		if now.Sub(observationLagMeasured) > 10*time.Minute {
 			observationLag.Store(0)
@@ -76,19 +78,10 @@ func (c *RPCClient) refreshObservationLagSlots(ctx context.Context) {
 }
 
 // recentSlotMillis averages the chain's last five 60 s performance samples.
-func (c *RPCClient) recentSlotMillis(ctx context.Context) (float64, error) {
-	var samples []struct {
-		NumSlots         int64 `json:"numSlots"`
-		SamplePeriodSecs int64 `json:"samplePeriodSecs"`
-	}
-	if err := c.call(ctx, "getRecentPerformanceSamples", []any{5}, &samples); err != nil {
+func recentSlotMillis(ctx context.Context, c *chain.Client) (float64, error) {
+	slots, secs, err := c.SlotSamples(ctx, 5)
+	if err != nil {
 		return 0, err
-	}
-	var slots, secs int64
-	for _, s := range samples {
-		if s.NumSlots > 0 && s.SamplePeriodSecs > 0 {
-			slots, secs = slots+s.NumSlots, secs+s.SamplePeriodSecs
-		}
 	}
 	if slots == 0 {
 		return 0, fmt.Errorf("no usable performance samples")

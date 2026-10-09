@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // There is no write-capable observe method on this reader. The SQL connection
@@ -42,7 +44,7 @@ func (r shadowJournal) PilotRuntimeState(ctx context.Context, key string) (bool,
 
 // This observer enriches a separate snapshot without projecting NAV or taking
 // an execution lease. Broader ownership failures stay confined to shadow output.
-func observeSelectorShadow(ctx context.Context, database *Database, rpc *RPCClient, manifest RouteManifest, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {
+func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.Client, manifest RouteManifest, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {
 	planning, err := database.readRoutePlanningStateOnManifest(ctx, manifest, productionRouteKey, false)
 	if err != nil {
 		return Observation{}, err

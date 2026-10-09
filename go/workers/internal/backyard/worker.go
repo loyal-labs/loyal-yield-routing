@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const productionRouteKey = "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
@@ -334,12 +336,12 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	return nil
 }
 
-func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteManifest, credentials Credentials) tickRuntime {
+func productionTickRuntime(database *Database, rpc *chain.Client, manifest RouteManifest, credentials Credentials) tickRuntime {
 	state := productionObserveState{
 		manifest: manifest, routeKey: productionRouteKey,
 		journal: database,
 		batch: func(ctx context.Context) (Observation, error) {
-			rpc.refreshObservationLagSlots(ctx)
+			refreshObservationLagSlots(ctx, rpc)
 			planning, err := database.readRoutePlanningStateOnManifest(ctx, manifest, productionRouteKey, true)
 			if err != nil {
 				return Observation{}, err
@@ -351,7 +353,7 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 			observation.planning = planning
 			return observation, nil
 		},
-		identity: newProgramIdentityWatcher(rpc).observe,
+		identity: newProgramIdentityWatcher(chainProgramIdentity(rpc)).observe,
 	}
 	return tickRuntime{
 		withdrawalHealth: database.RecordWithdrawalHealth,
@@ -514,7 +516,7 @@ func confirmedObservationUnavailable(err error) error {
 // NewWorker constructs the single serialized lifecycle worker. The signing
 // capability is injected, validated here, and never derivable from a
 // decision, observation, or recovery input.
-func NewWorker(database *Database, rpc *RPCClient, config Config, credentials Credentials) (*Worker, error) {
+func NewWorker(database *Database, rpc *chain.Client, config Config, credentials Credentials) (*Worker, error) {
 	if database == nil || database.pool == nil || rpc == nil || config.validateLease() != nil {
 		return nil, fmt.Errorf("invalid concrete worker configuration")
 	}

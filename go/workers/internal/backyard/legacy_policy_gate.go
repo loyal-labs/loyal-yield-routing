@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math/big"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Strategy-two cutover gate: the worker must not run while any legacy custom
@@ -26,7 +28,6 @@ var legacyCustomPolicySeeds = []uint64{62, 63, 64, 65}
 const mainnetGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
 const legacyPolicyGateTimeout = 60 * time.Second
-const legacyPolicyGateRetryInterval = 2 * time.Second
 
 var squadsSettingsDiscriminator = [8]byte{223, 179, 163, 190, 177, 224, 67, 173}
 
@@ -58,36 +59,11 @@ func legacyCustomPolicyAddresses() ([]string, error) {
 // getMultipleAccounts response as the optional legacy policies, and the
 // genesis hash is checked before any null policy values are trusted. A
 // non-empty survivor list, an invalid anchor, a wrong cluster, or any read
-// failure is a startup refusal — the gate fails closed.
-func AssertLegacyPoliciesRetired(ctx context.Context, rpcURL string) ([]string, error) {
-	return assertLegacyPoliciesRetiredWithDeadline(
-		ctx, rpcURL, legacyPolicyGateTimeout, time.Now, NewRPCClient,
-	)
-}
-
-// assertLegacyPoliciesRetiredWithDeadline is split out so the gate's global
-// timeout and fixed retry spacing can be tested with a fake clock and
-// transport without waiting a real minute. Production always uses the public
-// AssertLegacyPoliciesRetired wrapper above.
-func assertLegacyPoliciesRetiredWithDeadline(
-	ctx context.Context,
-	rpcURL string,
-	timeout time.Duration,
-	now func() time.Time,
-	clientFactory func(string) (*RPCClient, error),
-) ([]string, error) {
-	if timeout <= 0 {
-		return nil, fmt.Errorf("legacy policy gate deadline must be positive")
-	}
-	if now == nil {
-		now = time.Now
-	}
-	if clientFactory == nil {
-		clientFactory = NewRPCClient
-	}
-	gateCtx, cancel := context.WithTimeout(ctx, timeout)
+// failure is a startup refusal — the gate fails closed, and the supervisor
+// starts the worker again.
+func AssertLegacyPoliciesRetired(ctx context.Context, client *chain.Client) ([]string, error) {
+	gateCtx, cancel := context.WithTimeout(ctx, legacyPolicyGateTimeout)
 	defer cancel()
-	deadline := now().Add(timeout)
 	legacyAddresses, err := legacyCustomPolicyAddresses()
 	if err != nil {
 		return nil, err
@@ -95,33 +71,19 @@ func assertLegacyPoliciesRetiredWithDeadline(
 	addresses := make([]string, 0, len(legacyAddresses)+1)
 	addresses = append(addresses, bridgeSettings)
 	addresses = append(addresses, legacyAddresses...)
-	client, err := clientFactory(rpcURL)
-	if err != nil {
-		return nil, fmt.Errorf("legacy policy gate rpc: %w", err)
-	}
-	// A finalized read may lag a confirmed tip. Give the whole gate one global
-	// 60-second deadline, with five attempts and a fixed 2-second spacing per
-	// RPC, while pinning the batch to a finalized slot.
-	client.retryBackoff = legacyPolicyGateRetryInterval
-	client.fixedRetryBackoff = true
-	client.retryDeadline = deadline
-	client.now = now
 	genesisHash, err := client.GenesisHash(gateCtx)
 	if err != nil {
 		return nil, fmt.Errorf("legacy policy gate genesis: %w", err)
 	}
-	if genesisHash != mainnetGenesisHash {
+	if genesisHash.String() != mainnetGenesisHash {
 		return nil, fmt.Errorf("legacy policy gate refuses non-mainnet genesis %q", genesisHash)
 	}
-	slot, err := client.FinalizedSlot(gateCtx)
+	// The batch is pinned to a finalized slot.
+	slot, err := finalizedSlot(gateCtx, client)
 	if err != nil {
 		return nil, fmt.Errorf("legacy policy gate finalized slot: %w", err)
 	}
-	optional := make(map[string]struct{}, len(addresses))
-	for _, address := range legacyAddresses {
-		optional[address] = struct{}{}
-	}
-	_, accounts, err := client.getMultipleAccountsAtCommitment(gateCtx, addresses, slot, optional, "finalized")
+	_, accounts, err := finalizedAccounts(gateCtx, client, addresses, slot, legacyAddresses...)
 	if err != nil {
 		return nil, fmt.Errorf("legacy policy gate read at finalized: %w", err)
 	}
