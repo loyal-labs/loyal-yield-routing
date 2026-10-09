@@ -157,7 +157,7 @@ func TestCrossMintExternalManifestBindsActualReadbackAndCompositeIdentity(t *tes
 	if err != nil || fp == original.Fingerprint || bound.Fingerprint != original.Fingerprint {
 		t.Fatal("external requirements lost separate raw v1 identity")
 	}
-	want, err := CrossMintRequirementsFingerprint(&original, snapshots)
+	want, err := crossMintExternalRequirementsFingerprint(original.Fingerprint, snapshots)
 	if err != nil || want != fp {
 		t.Fatal("manifest composite differs from mature source identity")
 	}

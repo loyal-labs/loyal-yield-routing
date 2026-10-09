@@ -208,11 +208,10 @@ CREATE TABLE %s.latest_verified_reserve_updates(
 			t.Fatal(err)
 		}
 	}
-	store, err := OpenMarketEvidenceStore(ctx, databaseURL, schema)
+	store, err := NewMarketEvidenceStoreFromPool(pool, schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
 	epoch, err := store.LoadImmutableMarketEpoch(ctx)
 	if err != nil {
 		t.Fatal(err)

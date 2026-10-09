@@ -2,14 +2,6 @@ package backyard
 
 import "fmt"
 
-// Observe all admitted pilot ownership accounts in the same confirmed batch.
-// Desired allocation never determines which assets disappear from accounting.
-// This pilot cannot report multiple simultaneous positions: keep them visible
-// as an explicit hold until a multi-position accounting path is proven.
-func observedSelectorRoute(accounts []ConfirmedAccount, preferred string) (RuntimeRoute, error) {
-	return observedSelectorRouteWithLane(accounts, preferred, selectorLane)
-}
-
 // observedSelectorRouteWithLane is the identical ownership observation with
 // the preferred-lane authority parameterized: an explicit reviewed manifest
 // may observe its candidate initializer lane, the installed closure is

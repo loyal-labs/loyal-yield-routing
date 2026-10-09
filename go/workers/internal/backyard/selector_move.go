@@ -28,7 +28,7 @@ func observeSelectorMove(ctx context.Context, rpc *RPCClient, client *jupiterCli
 	if equity == 0 {
 		return empty, budgetHold("selector_move_has_no_entry_cash")
 	}
-	destination, err := observeSelectorDestination(ctx, rpc, client, m, lane, equity, o.Snapshot.Slot)
+	destination, err := observeSelectorDestinationForecast(ctx, rpc, client, m, lane, equity, o.Snapshot.Slot, false, nil)
 	if err != nil {
 		return empty, err
 	}

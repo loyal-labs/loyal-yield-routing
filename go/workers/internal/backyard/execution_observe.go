@@ -48,17 +48,6 @@ func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfi
 	return observedAdaptorConfig{}, nil
 }
 
-func observeConfirmedBridgeExecutionEvidenceWithEnrichment(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, enrich func(context.Context, *Observation) error) (Observation, BridgeExecutionEvidence, error) {
-	if rpc == nil || enrich == nil {
-		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("RPC client is required")
-	}
-	observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(ctx, rpc, manifest, enrich)
-	if err != nil {
-		return Observation{}, BridgeExecutionEvidence{}, err
-	}
-	return prepareBridgeFromObservedAccounts(ctx, rpc, manifest, decision, observation, accounts)
-}
-
 // Reuse the enriched, receipt-fenced bank owned by this Tick. Only the current
 // slot and blockhash need new RPC reads; admission, signing simulation, durable
 // authority binding and final send revalidation still run unchanged.

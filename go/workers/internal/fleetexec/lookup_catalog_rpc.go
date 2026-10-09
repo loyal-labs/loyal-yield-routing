@@ -14,14 +14,6 @@ type lookupCatalogObservation struct {
 	reason   string
 }
 
-func (r *LookupRPC) lookupCatalogObservation(ctx context.Context, address string, minSlot int64) (lookupCatalogObservation, error) {
-	observations, err := r.lookupCatalogObservations(ctx, []string{address}, minSlot)
-	if err != nil {
-		return lookupCatalogObservation{}, err
-	}
-	return observations[0], nil
-}
-
 func (r *LookupRPC) lookupCatalogObservations(ctx context.Context, addresses []string, minSlot int64) ([]lookupCatalogObservation, error) {
 	var result struct {
 		Context struct {

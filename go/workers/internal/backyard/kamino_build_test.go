@@ -53,9 +53,6 @@ func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
 	if !exactKaminoMetas(deposit, kaminoDepositMetas()) || !exactKaminoMetas(borrow, kaminoBorrowMetas()) || !exactKaminoMetas(repay, kaminoRepayMetas()) || !exactKaminoMetas(withdraw, kaminoWithdrawMetas()) {
 		t.Fatal("shared layout changed the retained Prime account graph")
 	}
-	if _, ok := matchesKaminoStepForRoute(OpenPrimeUSDCStep, kaminoDepositCollateral, deposit, "uninstalled/lane"); ok {
-		t.Fatal("unknown lane inherited the Prime account graph")
-	}
 	// Controlled layout variation, not an installed or executable new lane.
 	route.CollateralTokenProgram, route.DebtTokenProgram = token2022Program, token2022Program
 	deposit, borrow, repay, withdraw = kaminoMetasForRoute(route)
@@ -67,7 +64,11 @@ func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
 	if borrow[10].key != mustKey(token2022Program) || repay[7].key != mustKey(token2022Program) {
 		t.Fatal("debt transfer used the wrong token program")
 	}
-	if _, ok := matchesKaminoStepForRoute(OpenPrimeUSDCStep, kaminoDepositCollateral, deposit, RouteID); ok {
+	installed, err := runtimeRoute(RouteID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := matchesKaminoStepForResolvedRoute(OpenPrimeUSDCStep, kaminoDepositCollateral, deposit, installed); ok {
 		t.Fatal("caller mutation changed an installed lane's token program")
 	}
 }
@@ -99,7 +100,7 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			if leg != test.leg || inner.program != mustKey(kaminoPrimeUSDCProgram) || len(inner.accounts) != test.count {
 				t.Fatal("did not build the pinned Kamino PRIME/USDC leg")
 			}
-			refresh := kaminoPrimeUSDCRefreshInstructions(leg)
+			refresh := kaminoPrimeUSDCRefreshInstructionsForRoute(leg, RouteID)
 			if len(refresh) != 3 || !bytes.Equal(refresh[0].data, kaminoRefreshReserve) ||
 				!bytes.Equal(refresh[1].data, kaminoRefreshReserve) || !bytes.Equal(refresh[2].data, kaminoRefreshObligation) {
 				t.Fatal("canonical KLend refresh prefix drifted")
@@ -287,7 +288,7 @@ func TestPersistedKaminoWireRejectsMutatedEnvelope(t *testing.T) {
 		})
 	}
 
-	depositRefresh := kaminoPrimeUSDCRefreshInstructions(kaminoLegDeposit)
+	depositRefresh := kaminoPrimeUSDCRefreshInstructionsForRoute(kaminoLegDeposit, RouteID)
 	borrowRequest := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegBorrow)
 	borrowInner, _, err := kaminoPrimeUSDCInstruction(borrowRequest)
 	if err != nil {
@@ -319,7 +320,7 @@ func TestPersistedKaminoWireRejectsMutatedEnvelope(t *testing.T) {
 	}
 	depositOuter.data = append(depositOuter.data, 0)
 	outerSuffixMessage, err := compileKaminoLegacyMessage(delegate, mustKey(bridgeVault),
-		append(kaminoPrimeUSDCRefreshInstructions(kaminoLegDeposit), depositOuter))
+		append(kaminoPrimeUSDCRefreshInstructionsForRoute(kaminoLegDeposit, RouteID), depositOuter))
 	if err != nil {
 		t.Fatal(err)
 	}

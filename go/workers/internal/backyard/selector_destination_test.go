@@ -187,7 +187,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 func TestSelectorDestinationPricesCompleteEntryWithoutMutatingAccounts(t *testing.T) {
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	before := hashConfirmedAccounts(accounts)
-	q, err := observeSelectorDestination(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 			case "capacity":
 				binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoOutsideBorrowLimitOffset:], 0)
 			}
-			if _, err := observeSelectorDestination(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42); err == nil {
+			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42, false, nil); err == nil {
 				t.Fatal("unready lane priced")
 			}
 		})
@@ -277,7 +277,7 @@ func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
 					return original.RoundTrip(req)
 				})
 			}
-			if _, err := observeSelectorDestination(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42); err == nil {
+			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42, false, nil); err == nil {
 				t.Fatal("unfundable destination quoted")
 			}
 		})
@@ -286,7 +286,7 @@ func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
 
 func TestSelectorDestinationFullPilotTrancheHasQuotedPayoff(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
-	q, err := observeSelectorDestination(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +339,7 @@ func TestSelectorDestinationIncludesPayoffLookupReadInFreshness(t *testing.T) {
 		}
 		return res, nil
 	})
-	_, err := observeSelectorDestination(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42)
+	_, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42, false, nil)
 	if !changed {
 		t.Fatal("fixture never read payoff lookups")
 	}

@@ -15,7 +15,7 @@ import (
 )
 
 func jupiterTestInstruction(action Action, amount, out uint64, v2 bool) JupiterSwapInstruction {
-	sourceMint, destinationMint, sourceATA, destinationATA, _ := jupiterEdge(action)
+	sourceMint, destinationMint, sourceATA, destinationATA, _ := jupiterEdgeForRoute(action, RouteID)
 	accounts := make([]JupiterInstructionAccount, 10)
 	for index := range accounts {
 		accounts[index] = JupiterInstructionAccount{Pubkey: bridgeTokenProgram}
@@ -116,11 +116,11 @@ func TestForwardJupiterBindingSelectsOnlyTheTwoInstalledRoutePrefixes(t *testing
 func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T) {
 	for _, v2 := range []bool{false, true} {
 		instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, v2)
-		if _, err := validateJupiterInstruction(instruction, SwapUSDCToPrimeStep, 100, 99, 98); err != nil {
+		if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err != nil {
 			t.Fatal(err)
 		}
 		instruction.Accounts[3].Pubkey = previousBackyardVault
-		if _, err := validateJupiterInstruction(instruction, SwapUSDCToPrimeStep, 100, 99, 98); err == nil {
+		if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err == nil {
 			t.Fatal("accepted drifted/prior custody")
 		}
 	}
@@ -128,7 +128,7 @@ func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T
 	data, _ := base64.StdEncoding.DecodeString(instruction.Data)
 	data[0] ^= 1
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
-	if _, err := validateJupiterInstruction(instruction, SwapUSDCToPrimeStep, 100, 99, 98); err == nil {
+	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err == nil {
 		t.Fatal("accepted arbitrary Jupiter dialect")
 	}
 }
@@ -182,7 +182,7 @@ func TestJupiterAcceptsCanonicalSystemProgramAccount(t *testing.T) {
 	instruction.Accounts = append(instruction.Accounts, JupiterInstructionAccount{
 		Pubkey: "11111111111111111111111111111111",
 	})
-	if _, err := validateJupiterInstruction(instruction, SwapUSDCToPrimeStep, 100, 95, 94); err != nil {
+	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 95, 94, RouteID); err != nil {
 		t.Fatal(err)
 	}
 	key, err := decodeKey("11111111111111111111111111111111")

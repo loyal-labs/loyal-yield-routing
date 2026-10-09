@@ -118,10 +118,6 @@ func productionJupiterClient() *jupiterClient {
 	return client
 }
 
-func jupiterEdge(action Action) (sourceMint, destinationMint, sourceATA, destinationATA string, err error) {
-	return jupiterEdgeForRoute(action, RouteID)
-}
-
 func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMint, sourceATA, destinationATA string, err error) {
 	if lane == "" {
 		lane = RouteID
@@ -343,10 +339,6 @@ func jsonNull(value json.RawMessage) bool {
 	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
 }
 
-func validateJupiterQuote(quote JupiterQuote, action Action, amount uint64) (uint64, uint64, error) {
-	return validateJupiterQuoteForRoute(quote, action, amount, RouteID)
-}
-
 func validateJupiterQuoteForRoute(quote JupiterQuote, action Action, amount uint64, lane string) (uint64, uint64, error) {
 	source, destination, _, _, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
@@ -367,10 +359,6 @@ func validateJupiterQuoteForRoute(quote JupiterQuote, action Action, amount uint
 		return 0, 0, fmt.Errorf("Jupiter quote identity or economics drifted")
 	}
 	return out, minimum, nil
-}
-
-func validateJupiterInstruction(value JupiterSwapInstruction, action Action, amount, out, minimum uint64) (compiledInstruction, error) {
-	return validateJupiterInstructionForRoute(value, action, amount, out, minimum, RouteID)
 }
 
 func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Action, amount, out, minimum uint64, lane string) (compiledInstruction, error) {

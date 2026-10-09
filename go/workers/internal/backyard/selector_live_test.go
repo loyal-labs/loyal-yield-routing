@@ -30,7 +30,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	unavailable.Lane = "OnRe/ONyc/USDC"
 	unavailable.EntryBlockedReason = "reserve_inactive_or_emergency"
 	markets := []LaneEconomics{market, unavailable}
-	if _, err := observeSelectorDestinationSize(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42, true); err != nil {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42, true, nil); err != nil {
 		t.Fatal("partial producer", err)
 	}
 	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, markets, in.Policy, -1)
@@ -46,7 +46,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	}
 	// The exact-size API still refuses, so callers cannot accidentally execute a
 	// different amount from the one they asked to price.
-	if _, err = observeSelectorDestination(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42); err == nil {
+	if _, err = observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42, false, nil); err == nil {
 		t.Fatal("exact-size contract silently clamped")
 	}
 	in.Markets, in.Quotes = observed, quotes

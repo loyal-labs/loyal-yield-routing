@@ -93,9 +93,7 @@ func seedControlTarget(t *testing.T, s *Store, suffix string) ControlTarget {
 func claimControlRequest(t *testing.T, s *Store, targetID, slot int64, owner string) ReconciliationRequest {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := s.EnqueueAutodepositReconciliationRequest(ctx, targetID, slot); err != nil {
-		t.Fatal(err)
-	}
+	enqueueReconciliationRequest(t, s, targetID, slot)
 	r, err := s.ClaimAutodepositReconciliationRequest(ctx, owner, 120)
 	if err != nil || r == nil {
 		t.Fatalf("claim: %v %v", r, err)
@@ -119,9 +117,7 @@ func TestControlBootstrapGenerationAndReadiness(t *testing.T) {
 	o := ControlObservation{Target: target, ObservedSlot: 990001, PolicyExists: true, DelegationExists: true, PolicyValid: true, AuthorityValid: true, DelegationValid: true, TokenDelegateValid: true, WalletBalanceRaw: 9_000_000, WalletAccountDataSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	r := claimControlRequest(t, s, target.TargetID, 990000, "control-owner")
 	// New asks raised under a running lease survive application.
-	if _, err := s.EnqueueAutodepositReconciliationRequest(ctx, target.TargetID, 990002); err != nil {
-		t.Fatal(err)
-	}
+	enqueueReconciliationRequest(t, s, target.TargetID, 990002)
 	if err := s.ApplyControlObservation(ctx, r, "control-owner", o); err != nil {
 		t.Fatal(err)
 	}

@@ -239,11 +239,3 @@ func appendU32LE(dst []byte, value uint32) []byte {
 	binary.LittleEndian.PutUint32(raw[:], value)
 	return append(dst, raw[:]...)
 }
-
-// StrategyForPlan resolves the strategy config a plan needs.
-func StrategyForPlan(topology *EarnMaxTopology, plan *ActionPlan) (StrategyConfig, error) {
-	if !plan.StrategyKey.Valid() {
-		return StrategyConfig{}, errors.New("operation requires a strategy")
-	}
-	return topology.Strategy(plan.StrategyKey)
-}

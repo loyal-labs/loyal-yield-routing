@@ -241,7 +241,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	destination, err := observeSelectorDestinationSize(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, o.Snapshot.Slot, true)
+	destination, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, o.Snapshot.Slot, true, nil)
 	if err != nil {
 		t.Fatal("largest destination quote", err)
 	}
@@ -319,7 +319,7 @@ func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) 
 
 func TestRecipeExpectedCostExcludesMarginWhileBoundKeepsFloor(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
-	q, err := observeSelectorDestination(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

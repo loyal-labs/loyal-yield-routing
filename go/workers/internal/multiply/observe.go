@@ -6,10 +6,8 @@ package multiply
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -904,9 +902,4 @@ func PositionBalance(observation *ObservedRoute, key StrategyKey, topology *Earn
 		TokenBalance{Account: config.DebtCustody.String(), Mint: config.DebtMint, TokenProgram: config.DebtTokenProgram.String(), AmountRaw: position.DebtRaw},
 		position.DebtAmountSF, health,
 	), nil
-}
-
-func hexHash(bytes []byte) string {
-	digest := sha256.Sum256(bytes)
-	return hex.EncodeToString(digest[:])
 }

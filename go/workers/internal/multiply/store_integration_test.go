@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
 func integrationStore(t *testing.T) *Store {
@@ -28,7 +29,11 @@ func integrationStore(t *testing.T) *Store {
 	if err := validateFixtureDSN(dsn); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewStore(context.Background(), dsn)
+	pool, err := db.Open(context.Background(), dsn, 4)
+	if err != nil {
+		t.Fatalf("configured database unavailable: %v", err)
+	}
+	store, err := NewStoreFromPool(context.Background(), pool)
 	if err != nil {
 		t.Fatalf("configured database unavailable: %v", err)
 	}

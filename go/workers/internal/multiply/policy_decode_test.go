@@ -14,7 +14,10 @@ import (
 func syntheticPolicy(t *testing.T, compact bool) []byte {
 	t.Helper()
 	settings, signer, program := solana.PublicKey{1}, solana.PublicKey{2}, solana.PublicKey{3}
-	_, bump := deriveActionAccountWithBump(settings, 7)
+	_, bump, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settings[:], {7, 0, 0, 0, 0, 0, 0, 0}}, mustKey(SquadsProgram))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var b bytes.Buffer
 	write := func(value any) {
 		if err := binary.Write(&b, binary.LittleEndian, value); err != nil {

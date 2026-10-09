@@ -6,8 +6,6 @@
 package autodeposit
 
 import (
-	"errors"
-	"fmt"
 	"time"
 )
 
@@ -41,42 +39,20 @@ type SurplusLot struct {
 	CreatedAt          time.Time
 }
 
-// PositiveDelta is a confirmed wallet balance increase above what the wallet
-// already held, from one observed event.
-type PositiveDelta struct {
-	SourceEventID   int64
-	SourceSignature *string
-	AmountRaw       int64
-	ObservedAt      time.Time
-	Confidence      string
-	Reason          string
-}
-
 // LotErrorCode distinguishes rejected financial input from other failures.
 type LotErrorCode string
 
 const (
-	LotErrNonPositiveDelta    LotErrorCode = "non_positive_delta"
-	LotErrNonPositiveOutflow  LotErrorCode = "non_positive_outflow"
-	LotErrInvalidLotRemaining LotErrorCode = "invalid_lot_remaining"
-	LotErrAmountOverflow      LotErrorCode = "amount_overflow"
+	LotErrAmountOverflow LotErrorCode = "amount_overflow"
 )
 
 // LotError rejects an amount transition that would corrupt custody accounting.
 type LotError struct {
-	Code               LotErrorCode
-	LotID              int64
-	RemainingAmountRaw int64
+	Code LotErrorCode
 }
 
 func (e *LotError) Error() string {
 	switch e.Code {
-	case LotErrNonPositiveDelta:
-		return "positive delta must be greater than zero"
-	case LotErrNonPositiveOutflow:
-		return "negative outflow amount must be greater than zero"
-	case LotErrInvalidLotRemaining:
-		return fmt.Sprintf("lot %d has invalid remaining amount %d", e.LotID, e.RemainingAmountRaw)
 	case LotErrAmountOverflow:
 		return "autodeposit amount arithmetic exceeded int64"
 	default:
@@ -151,103 +127,6 @@ func addChecked(a, b int64) (int64, bool) {
 		return 0, false
 	}
 	return sum, true
-}
-
-// PositiveDeltaToLot derives a stored lot from a plain balance increase.
-func PositiveDeltaToLot(nextLotID, sourceEventID int64, sourceSignature *string, amountRaw int64, observedAt time.Time) (SurplusLot, error) {
-	confidence := "derived"
-	reason := "wallet balance increase scheduled for autodeposit after one hour"
-	return LotFromPositiveDelta(nextLotID, PositiveDelta{
-		SourceEventID:   sourceEventID,
-		SourceSignature: sourceSignature,
-		AmountRaw:       amountRaw,
-		ObservedAt:      observedAt,
-		Confidence:      confidence,
-		Reason:          reason,
-	})
-}
-
-// LotFromPositiveDelta stamps a positive delta into a fresh open lot eligible
-// after the fixed one-hour delay.
-func LotFromPositiveDelta(nextLotID int64, delta PositiveDelta) (SurplusLot, error) {
-	if delta.AmountRaw <= 0 {
-		return SurplusLot{}, &LotError{Code: LotErrNonPositiveDelta}
-	}
-	if delta.ObservedAt.IsZero() {
-		return SurplusLot{}, errors.New("autodeposit positive delta has no observation time")
-	}
-	return SurplusLot{
-		ID:                 nextLotID,
-		SourceEventID:      delta.SourceEventID,
-		SourceSignature:    delta.SourceSignature,
-		OriginalAmountRaw:  delta.AmountRaw,
-		RemainingAmountRaw: delta.AmountRaw,
-		EligibleAfter:      ScheduledEligibleAfter(delta.ObservedAt),
-		Status:             LotOpen,
-		Confidence:         delta.Confidence,
-		Reason:             delta.Reason,
-		CreatedAt:          delta.ObservedAt,
-	}, nil
-}
-
-// ApplyExternalOutflowNewestFirst consumes an externally observed wallet
-// outflow from open lots, newest lot first. External spending must not free the
-// oldest money the user deposited first. It returns the amount actually
-// consumed; open lots may run out before the outflow does.
-func ApplyExternalOutflowNewestFirst(lots []SurplusLot, amountRaw int64) (int64, error) {
-	if amountRaw <= 0 {
-		return 0, &LotError{Code: LotErrNonPositiveOutflow}
-	}
-	sortLotsForExternalSpend(lots)
-	remaining := amountRaw
-	for i := len(lots) - 1; i >= 0; i-- {
-		if remaining == 0 {
-			break
-		}
-		lot := &lots[i]
-		if lot.Status != LotOpen || lot.RemainingAmountRaw == 0 {
-			continue
-		}
-		if lot.RemainingAmountRaw < 0 {
-			return 0, &LotError{Code: LotErrInvalidLotRemaining, LotID: lot.ID, RemainingAmountRaw: lot.RemainingAmountRaw}
-		}
-		consumed := min64(remaining, lot.RemainingAmountRaw)
-		next, ok := subChecked(lot.RemainingAmountRaw, consumed)
-		if !ok {
-			return 0, &LotError{Code: LotErrAmountOverflow}
-		}
-		lot.RemainingAmountRaw = next
-		remaining, _ = subChecked(remaining, consumed)
-		if lot.RemainingAmountRaw == 0 {
-			lot.Status = LotDepleted
-		}
-	}
-	consumed, ok := subChecked(amountRaw, remaining)
-	if !ok {
-		return 0, &LotError{Code: LotErrAmountOverflow}
-	}
-	return consumed, nil
-}
-
-// sortLotsForExternalSpend orders by (created_at, id) so the caller can walk
-// newest-first, matching the legacy Rust sort before its reverse iteration.
-func sortLotsForExternalSpend(lots []SurplusLot) {
-	sortLots(lots, func(a, b SurplusLot) bool {
-		if !a.CreatedAt.Equal(b.CreatedAt) {
-			return a.CreatedAt.Before(b.CreatedAt)
-		}
-		return a.ID < b.ID
-	})
-}
-
-func sortLots(lots []SurplusLot, less func(a, b SurplusLot) bool) {
-	// Insertion sort keeps the port dependency-free; lot batches are bounded by
-	// the projection batch limit.
-	for i := 1; i < len(lots); i++ {
-		for j := i; j > 0 && less(lots[j], lots[j-1]); j-- {
-			lots[j], lots[j-1] = lots[j-1], lots[j]
-		}
-	}
 }
 
 func min64(a, b int64) int64 {

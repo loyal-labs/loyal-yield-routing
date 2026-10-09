@@ -27,7 +27,6 @@ type waveCandidate struct {
 
 type waveCandidates []waveCandidate
 
-func (h waveCandidates) Len() int { return len(h) }
 func (h waveCandidates) Less(i, j int) bool {
 	a, b := h[i], h[j]
 	if a.d.EconomicPriority != b.d.EconomicPriority {

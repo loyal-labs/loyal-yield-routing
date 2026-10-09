@@ -121,28 +121,6 @@ func ValueRawUSDC(raw uint64, tokenDecimals uint8, priceMicros uint64, liability
 	return value.Int64(), nil
 }
 
-type ObligationNAV struct {
-	Address    string
-	Recognized bool
-	Nonzero    bool
-}
-
-func ValidateSingleObligation(obligations []ObligationNAV) error {
-	active := 0
-	for _, obligation := range obligations {
-		if obligation.Nonzero {
-			if !obligation.Recognized || obligation.Address == "" {
-				return fmt.Errorf("unknown active obligation")
-			}
-			active++
-		}
-	}
-	if active > 1 {
-		return fmt.Errorf("multiple active obligations")
-	}
-	return nil
-}
-
 type NAVComponent struct {
 	Account, Owner   string
 	Raw, Slot        int64

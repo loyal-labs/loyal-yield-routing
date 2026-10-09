@@ -174,12 +174,6 @@ func readVerifiedEconomics(ctx context.Context, pool *pgxpool.Pool, routes []Run
 	return out, nil
 }
 
-// combineEconomics is the public installed wrapper: lane acceptance stays the
-// installed selectorLane set, byte-identical to the pre-candidate behavior.
-func combineEconomics(routes []RuntimeRoute, reserves map[string]verifiedEconomicReserve, yields map[string]nativeYield, now time.Time, p SelectorPolicy) []LaneEconomics {
-	return combineEconomicsWithLane(routes, reserves, yields, now, p, selectorLane)
-}
-
 // combineEconomicsWithLane is the shared combine core with the lane authority
 // parameterized. Every identity, freshness, rate, debt and curve check is
 // unchanged; only WHICH lanes may contribute evidence moves, and the caller

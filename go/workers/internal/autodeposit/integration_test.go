@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
 // integrationStore opens the disposable database this package's DB tests run
@@ -29,9 +31,13 @@ func integrationStore(t *testing.T) *Store {
 	if _, hasPassword := parsed.User.Password(); hasPassword {
 		t.Fatal("disposable Autodeposit tests exclude password credentials")
 	}
-	store, err := OpenStore(context.Background(), databaseURL)
+	pool, err := WorkersDB.Open(context.Background(), databaseURL, 4)
 	if err != nil {
 		t.Fatalf("open integration database: %v", err)
+	}
+	store, err := NewStore(pool)
+	if err != nil {
+		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
 	if err := store.RequireSchema(context.Background()); err != nil {
@@ -216,36 +222,22 @@ WHERE target_id = $1 AND source_event_id = 9100002`, seeded.TargetID).
 	}
 }
 
-// TestReconciliationRequestCoalescesAndClaims pins the migration-0061 contract:
-// one high-water row per target, an older ask coalesced away, claim exclusivity
-// under concurrency, and completion reporting what is still pending.
-func TestReconciliationRequestCoalescesAndClaims(t *testing.T) {
+// enqueueReconciliationRequest raises a target's reconciliation high-water
+// mark the way the observer does.
+func enqueueReconciliationRequest(t *testing.T, s *Store, targetID, requestedSlot int64) {
+	t.Helper()
+	if _, err := s.pool.Exec(t.Context(), `INSERT INTO loyal_yield.autodeposit_reconciliation_requests(target_id,requested_slot) VALUES($1,$2) ON CONFLICT(target_id) DO UPDATE SET requested_slot=EXCLUDED.requested_slot,next_attempt_at=LEAST(loyal_yield.autodeposit_reconciliation_requests.next_attempt_at,now()),updated_at=now() WHERE EXCLUDED.requested_slot>=loyal_yield.autodeposit_reconciliation_requests.requested_slot`, targetID, requestedSlot); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReconciliationRequestClaimIsExclusive pins claim exclusivity under
+// concurrency on one high-water row.
+func TestReconciliationRequestClaimIsExclusive(t *testing.T) {
 	store := integrationStore(t)
 	ctx := context.Background()
 	seeded := seedIntegrationTarget(t, store, "reconcile")
-
-	changed, err := store.EnqueueAutodepositReconciliationRequest(ctx, seeded.TargetID, 100)
-	if err != nil || !changed {
-		t.Fatalf("first enqueue changed=%v err=%v", changed, err)
-	}
-	changed, err = store.EnqueueAutodepositReconciliationRequest(ctx, seeded.TargetID, 50)
-	if err != nil || changed {
-		t.Fatalf("older ask must coalesce into the existing row: changed=%v err=%v", changed, err)
-	}
-	changed, err = store.EnqueueAutodepositReconciliationRequest(ctx, seeded.TargetID, 300)
-	if err != nil || !changed {
-		t.Fatalf("higher ask must raise the high-water mark: changed=%v err=%v", changed, err)
-	}
-
-	var requestedSlot int64
-	if err := store.pool.QueryRow(ctx, `
-SELECT requested_slot FROM loyal_yield.autodeposit_reconciliation_requests WHERE target_id = $1`,
-		seeded.TargetID).Scan(&requestedSlot); err != nil {
-		t.Fatalf("read reconciliation request: %v", err)
-	}
-	if requestedSlot != 300 {
-		t.Fatalf("requested_slot %d, want the high-water mark 300", requestedSlot)
-	}
+	enqueueReconciliationRequest(t, store, seeded.TargetID, 300)
 
 	// One ready row, two claimers: exactly one wins, the other sees no work.
 	const claimers = 2
@@ -286,9 +278,7 @@ func TestReconciliationCompleteAdvancesHighWater(t *testing.T) {
 	ctx := context.Background()
 	seeded := seedIntegrationTarget(t, store, "complete")
 
-	if _, err := store.EnqueueAutodepositReconciliationRequest(ctx, seeded.TargetID, 500); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
+	enqueueReconciliationRequest(t, store, seeded.TargetID, 500)
 	request, err := store.ClaimAutodepositReconciliationRequest(ctx, "owner", 60)
 	if err != nil || request == nil {
 		t.Fatalf("claim: request=%v err=%v", request, err)

@@ -3,7 +3,6 @@ package backyard
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"sort"
 	"strings"
@@ -144,11 +143,4 @@ func decodeConfirmedWithdrawalDemand(receipts []programAccount) (int64, string, 
 	}
 	hash := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return int64(total), fmt.Sprintf("%x", hash[:]), nil
-}
-
-func tokenRaw(data []byte) uint64 {
-	if len(data) < 72 {
-		return 0
-	}
-	return binary.LittleEndian.Uint64(data[64:72])
 }

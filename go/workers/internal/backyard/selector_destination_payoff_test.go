@@ -1265,12 +1265,12 @@ func TestSelectorDestinationCandidateKeepsPublicGatesClosed(t *testing.T) {
 	if _, err := m.autoPolicyBinding(); err != nil {
 		t.Fatal("fixture manifest lost the candidate binding")
 	}
-	if _, err := observeSelectorDestination(context.Background(), rpc, client, m, testAutoLane, 1_000_000, slot); err == nil {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, testAutoLane, 1_000_000, slot, false, nil); err == nil {
 		t.Fatal("public destination priced the candidate lane")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")
 	}
-	if _, err := observeSelectorDestinationSize(context.Background(), rpc, client, m, testAutoLane, 1_000_000, slot, true); err == nil {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, testAutoLane, 1_000_000, slot, true, nil); err == nil {
 		t.Fatal("size evaluator priced the candidate lane")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")

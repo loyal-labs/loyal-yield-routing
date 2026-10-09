@@ -52,33 +52,6 @@ type decodedInstruction struct {
 	data     []byte
 }
 
-// Use the SDK parser, canonical re-encoding and signature verification. A
-// noncanonical or unsigned packet cannot serve as persisted spend evidence.
-func decodeSignedWireMessage(wire []byte) (decodedMessage, error) {
-	var out decodedMessage
-	if len(wire) == 0 || len(wire) > solanaPacketBytes {
-		return out, errors.New("signed packet size invalid")
-	}
-	tx, err := solana.TransactionFromBytes(wire)
-	if err != nil {
-		return out, err
-	}
-	if err = validateSignedMessageHeader(tx); err != nil {
-		return out, err
-	}
-	if tx.Message.GetVersion() != solana.MessageVersionLegacy && tx.Message.GetVersion() != solana.MessageVersionV0 || len(tx.Signatures) == 0 {
-		return out, errors.New("autodeposit requires a signed legacy or v0 message")
-	}
-	canonical, err := tx.MarshalBinary()
-	if err != nil || !bytes.Equal(canonical, wire) {
-		return out, errors.New("signed packet is not canonical")
-	}
-	if err := tx.VerifySignatures(); err != nil {
-		return out, err
-	}
-	return decodeSignedWireMessageTransaction(tx)
-}
-
 func persistedWireTransaction(attempt DurableAttempt) (*solana.Transaction, error) {
 	wire, err := base64StdDecode(attempt.SignedTransactionBase64)
 	if err != nil {

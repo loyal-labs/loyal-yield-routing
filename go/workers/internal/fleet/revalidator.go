@@ -343,16 +343,6 @@ func rescoreCandidate(snapshot MarketSnapshot, c waveCandidate, baseInflow, base
 	return c, true
 }
 
-func betterDecision(a, b Decision) bool {
-	if a.EconomicPriority != b.EconomicPriority {
-		return a.EconomicPriority > b.EconomicPriority
-	}
-	if a.ExpectedNetGainUSDMicros != b.ExpectedNetGainUSDMicros {
-		return a.ExpectedNetGainUSDMicros > b.ExpectedNetGainUSDMicros
-	}
-	return a.TargetReserve < b.TargetReserve
-}
-
 func canonicalExecutionPlan(snapshot MarketSnapshot, v FleetVault, d Decision) (json.RawMessage, error) {
 	source := snapshot.Reserves[d.SourceReserve]
 	target := snapshot.Reserves[d.TargetReserve]
@@ -1136,11 +1126,4 @@ func (c *wireCursor) u32() uint32 {
 		return 0
 	}
 	return binary.LittleEndian.Uint32(v)
-}
-func (c *wireCursor) u64() uint64 {
-	v := c.take(8)
-	if len(v) < 8 {
-		return 0
-	}
-	return binary.LittleEndian.Uint64(v)
 }

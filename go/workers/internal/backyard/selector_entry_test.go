@@ -585,7 +585,7 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	fresh := in.Snapshot
 	fresh.PositionDebtRaw = intent.MaxDebtRaw + 10
 	fresh.ObservationID = "new-source-after-downtime"
-	if err = applyUnwindIntent(&fresh, intent); err != nil || !fresh.UnwindRefreshRequired {
+	if err = applyUnwindIntentWithLane(&fresh, intent, selectorLane); err != nil || !fresh.UnwindRefreshRequired {
 		t.Fatal(err)
 	}
 	o := tickObservation(fresh)
@@ -619,7 +619,7 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	if err != nil || renewed == nil || renewed.MaxDebtRaw != source.ExitBound.MaxDebtRaw || renewed.BudgetScope != intent.BudgetScope || renewed.Reason != intent.Reason {
 		t.Fatal("renewal lost identity", err, renewed)
 	}
-	if err = applyUnwindIntent(&fresh, renewed); err != nil || fresh.UnwindRefreshRequired || !fresh.Unwind {
+	if err = applyUnwindIntentWithLane(&fresh, renewed, selectorLane); err != nil || fresh.UnwindRefreshRequired || !fresh.Unwind {
 		t.Fatal("renewed unwind did not resume", err)
 	}
 	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&storedBudget, &version); err != nil {

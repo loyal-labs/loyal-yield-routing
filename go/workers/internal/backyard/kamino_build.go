@@ -426,21 +426,6 @@ func kaminoConstraintIndex(leg kaminoPrimeUSDCLeg) byte {
 	return index
 }
 
-func matchesKaminoStep(action Action, discriminator []byte, accounts []accountMeta) (kaminoPrimeUSDCLeg, bool) {
-	return matchesKaminoStepForRoute(action, discriminator, accounts, RouteID)
-}
-
-func matchesKaminoStepForRoute(action Action, discriminator []byte, accounts []accountMeta, lane string) (kaminoPrimeUSDCLeg, bool) {
-	if lane == "" {
-		lane = RouteID
-	}
-	route, err := runtimeRoute(lane)
-	if err != nil {
-		return 0, false
-	}
-	return matchesKaminoStepForResolvedRoute(action, discriminator, accounts, route)
-}
-
 func matchesKaminoStepForResolvedRoute(action Action, discriminator []byte, accounts []accountMeta, route RuntimeRoute) (kaminoPrimeUSDCLeg, bool) {
 	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 	switch action {
@@ -529,10 +514,6 @@ func kaminoWithdrawMetas() []accountMeta {
 		kaminoMeta(kaminoPrimeUSDCProgram, false, false), kaminoMeta(kaminoPrimeUSDCProgram, false, false),
 		kaminoMeta(kaminoFarmsProgram, false, false),
 	}
-}
-
-func kaminoPrimeUSDCRefreshInstructions(leg kaminoPrimeUSDCLeg) []compiledInstruction {
-	return kaminoPrimeUSDCRefreshInstructionsForRoute(leg, RouteID)
 }
 
 func kaminoPrimeUSDCRefreshInstructionsForRoute(leg kaminoPrimeUSDCLeg, lane string) []compiledInstruction {

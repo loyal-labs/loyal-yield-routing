@@ -11,9 +11,6 @@ import (
 	"strings"
 )
 
-// retainedSameMintRequirementsFingerprint implements loyal-actions' v1 typed
-// manifest wire contract. Account access comes from the exact outer instructions;
-// roles come from decoded protocol accounts, never from an ALT's contents.
 // ALTManifestAddress is the retained durable provisioning row. Its ordinal
 // follows base58 address order, separately from the v1 raw-pubkey hash order.
 type ALTManifestAddress struct {
@@ -160,11 +157,6 @@ func (r *Revalidator) bindFinalizedCrossMintALTManifest(ctx context.Context, man
 		return ALTManifest{}, err
 	}
 	return manifest, nil
-}
-
-func retainedSameMintRequirementsFingerprint(input KaminoSameMintRouteRequest, policy, payer string, instructions []RouteInstruction) (string, error) {
-	manifest, err := BuildRouteALTManifest(input, "", policy, payer, instructions, nil)
-	return manifest.Fingerprint, err
 }
 
 // BuildRouteALTManifest derives typed provenance from decoded KLend positions

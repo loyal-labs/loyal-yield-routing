@@ -135,7 +135,7 @@ func TestSelectorReentryForecastIncludesObligationRecreation(t *testing.T) {
 		t.Fatal("reentry payoff unquoted", q.PayoffUpperRaw, q.PayoffSwap.Request.MinimumOutputRaw)
 	}
 	// The ordinary flat destination wrapper keeps refusing the funded lane.
-	_, err = observeSelectorDestination(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42)
+	_, err = observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42, false, nil)
 	assertBudgetHold(t, err, "selector_destination_not_flat")
 }
 

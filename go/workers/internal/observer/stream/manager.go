@@ -21,12 +21,6 @@ type Handler interface {
 	Handle(context.Context, *pb.SubscribeUpdate) error
 }
 
-type HandlerFunc func(context.Context, *pb.SubscribeUpdate) error
-
-func (f HandlerFunc) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
-	return f(ctx, update)
-}
-
 type Config struct {
 	ReplayOverlapSlots uint64
 	HandoffTimeout     time.Duration

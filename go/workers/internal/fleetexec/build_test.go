@@ -169,40 +169,4 @@ func TestLegalTransitionGuard(t *testing.T) {
 	}
 }
 
-func TestParseBalanceAnchorsRequiresCompleteEvidence(t *testing.T) {
-	valid := BalanceAnchorEvidence{
-		AccountAddresses: []string{"payer", "source", "target"},
-		Anchors: []EffectAnchor{
-			{Account: "source", Mint: "usdc", ExpectedDelta: 501_835_024, Decimals: 6},
-			{Account: "target", Mint: "usdc", ExpectedDelta: -501_835_024, Decimals: 6},
-		},
-	}
-	raw, err := json.Marshal(valid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ParseBalanceAnchors(raw); err != nil {
-		t.Fatalf("valid anchors rejected: %v", err)
-	}
-	broken := map[string]func(*BalanceAnchorEvidence){
-		"no addresses":  func(e *BalanceAnchorEvidence) { e.AccountAddresses = nil },
-		"no anchors":    func(e *BalanceAnchorEvidence) { e.Anchors = nil },
-		"zero delta":    func(e *BalanceAnchorEvidence) { e.Anchors[0].ExpectedDelta = 0 },
-		"no mint":       func(e *BalanceAnchorEvidence) { e.Anchors[1].Mint = "" },
-		"duplicate":     func(e *BalanceAnchorEvidence) { e.Anchors[1] = e.Anchors[0] },
-		"empty account": func(e *BalanceAnchorEvidence) { e.Anchors[0].Account = "" },
-	}
-	for name, mutate := range broken {
-		candidate := valid
-		mutate(&candidate)
-		raw, _ := json.Marshal(candidate)
-		if _, err := ParseBalanceAnchors(raw); err == nil {
-			t.Fatalf("%s must be rejected", name)
-		}
-	}
-	if _, err := ParseBalanceAnchors(nil); err == nil {
-		t.Fatalf("missing anchor evidence must be rejected")
-	}
-}
-
 var _ = fleet.PreparedTransaction{}

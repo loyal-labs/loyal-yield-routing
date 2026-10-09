@@ -280,14 +280,6 @@ func validateSelectorDestinationCommon(m RouteManifest, route RuntimeRoute, slot
 	return collateralCustody, nil
 }
 
-// Price the real one-pass entry graph. Future balances are explicit scalars;
-// no invented account image reaches an RPC simulation or execution admission.
-// The public gate stays strictly the reviewed selector lane set: it is
-// enforced here and by every wrapper below, never broadened.
-func observeSelectorDestination(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64) (selectorDestinationQuote, error) {
-	return observeSelectorDestinationSize(ctx, rpc, client, m, lane, equity, sampleSlot, false)
-}
-
 // selectorDestinationLaneAuthorized admits exactly the reviewed selector lanes,
 // plus — solely for the explicit candidate entry and its capacity precheck —
 // the AUTO lane when this manifest itself carries the fully validated
@@ -340,12 +332,6 @@ func observeSelectorDestinationCandidateReentry(ctx context.Context, rpc *RPCCli
 		return out, budgetHold("invalid_selector_destination")
 	}
 	return observeSelectorDestinationForecastAuthorized(ctx, rpc, client, m, autoAUTOPYUSD.Lane, equity, sampleSlot, false, reentry)
-}
-
-// The live evaluator can quote the exact partial size admitted by current pair
-// capacity. Exact-size callers retain their fail-closed size contract.
-func observeSelectorDestinationSize(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool) (selectorDestinationQuote, error) {
-	return observeSelectorDestinationForecast(ctx, rpc, client, m, lane, equity, sampleSlot, clampCapacity, nil)
 }
 
 // observeSelectorDestinationForecast prices the real one-pass entry graph from
@@ -761,16 +747,6 @@ type selectorPayoffTemplateState struct {
 	borrow           uint64
 	fee              uint64
 	rounding         uint64
-}
-
-// confirmedTokenRaw reads a token account's raw balance; zero when absent or
-// short. Forecast helpers use it only on observed snapshots, never to invent
-// balances.
-func confirmedTokenRaw(a ConfirmedAccount) uint64 {
-	if len(a.Data) < 72 {
-		return 0
-	}
-	return binary.LittleEndian.Uint64(a.Data[64:72])
 }
 
 // patchConfirmedTokenRaw copies accounts and rewrites one address's raw

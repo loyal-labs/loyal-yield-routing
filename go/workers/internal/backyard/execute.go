@@ -1,7 +1,5 @@
 package backyard
 
-import "fmt"
-
 func CanTransition(from, to OperationStatus) bool {
 	if from == Failed || from == ManualRecovery || from == Reconciled || from == Held {
 		return false
@@ -39,15 +37,4 @@ func WithdrawalPreemptsOpenLoop(action Action, status OperationStatus, withdrawa
 	default:
 		return false
 	}
-}
-
-// RecoveryWire returns only the persisted signed bytes. It never rebuilds or re-signs.
-func RecoveryWire(status OperationStatus, wire []byte) ([]byte, error) {
-	if status != Submitted && status != BroadcastIntent {
-		return nil, fmt.Errorf("operation is not recoverable: %s", status)
-	}
-	if len(wire) == 0 {
-		return nil, fmt.Errorf("missing persisted signed wire")
-	}
-	return append([]byte(nil), wire...), nil
 }

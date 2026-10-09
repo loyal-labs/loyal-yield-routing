@@ -247,6 +247,11 @@ func manifestFixture() (KaminoSameMintRouteRequest, string, string, []RouteInstr
 	return input, manifestKey(31), manifestKey(40), []RouteInstruction{ix}
 }
 
+func retainedSameMintRequirementsFingerprint(input KaminoSameMintRouteRequest, policy, payer string, instructions []RouteInstruction) (string, error) {
+	manifest, err := BuildRouteALTManifest(input, "", policy, payer, instructions, nil)
+	return manifest.Fingerprint, err
+}
+
 func manifestHash(t *testing.T, input KaminoSameMintRouteRequest, policy, payer string, ixs []RouteInstruction) string {
 	t.Helper()
 	got, err := retainedSameMintRequirementsFingerprint(input, policy, payer, ixs)

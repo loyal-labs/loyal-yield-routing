@@ -3,7 +3,6 @@ package fleetexec
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -362,20 +361,6 @@ func (l *stallLatch) claim(id int64) bool {
 
 func int64Ptr(v int64) *int64 { return &v }
 func errPtr(v string) *string { return &v }
-
-// reconciledEffect durably records what the verified receipt proved.
-func reconciledEffect(receipt *TransactionReceipt) []byte {
-	raw, err := json.Marshal(struct {
-		Signature string       `json:"signature"`
-		Slot      int64        `json:"slot"`
-		Message   string       `json:"message_base64"`
-		Deltas    []TokenDelta `json:"token_deltas"`
-	}{receipt.Signature, receipt.Slot, receipt.MessageB64, receipt.TokenDeltas})
-	if err != nil {
-		return nil
-	}
-	return raw
-}
 
 // Leave a bounded cancellation margin before the actual database lease ends.
 func leaseWorkDeadline(expires time.Time, ttl time.Duration) time.Time {
