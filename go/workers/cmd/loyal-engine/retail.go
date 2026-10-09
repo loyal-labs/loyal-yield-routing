@@ -365,7 +365,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		return retailError("mainnet genesis", err)
 	}
 	deposits := autodeposit.NewRPCChain(cluster)
-	wires, err := autodeposit.NewSweepWireBuilderWithSetup(cfg.delegate, deposits.ReadAccountsWithOptional, deposits.MinimumBalanceForRentExemption)
+	wires, err := autodeposit.NewSweepWireBuilderWithSetup(cfg.delegate, deposits.ReadAccounts, deposits.MinimumBalanceForRentExemption)
 	if err != nil {
 		return retailError("Autodeposit wires", err)
 	}

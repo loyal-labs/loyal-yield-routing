@@ -52,7 +52,10 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	copy(tokenData[76:108], authority[:])
 	tokenData[108] = 1
 	accounts := []testAccount{{Address: target.Policy, Owner: squadsProgramID, Data: policyData}, {Address: target.SubscriptionAuthority, Owner: SubscriptionsProgramID}, {Address: target.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(target.Wallet, target.Vault, USDCMint, uint64(budget), 0)}, {Address: walletATA, Owner: splTokenID, Data: tokenData}}
-	builder, err := NewSweepWireBuilder(key, func(context.Context, []string, ...string) (int64, []*chain.Account, error) {
+	builder, err := NewSweepWireBuilder(key, func(_ context.Context, minSlot int64, _ []string, _ ...string) (int64, []*chain.Account, error) {
+		if minSlot > 100 {
+			return 0, nil, chain.ErrBehind
+		}
 		out := make([]*chain.Account, len(accounts))
 		for i, account := range accounts {
 			out[i] = account.chainAccount()

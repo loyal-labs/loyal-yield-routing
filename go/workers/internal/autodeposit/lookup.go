@@ -23,7 +23,7 @@ func (b *SweepWireBuilder) resolvePersistedLookups(ctx context.Context, tx *sola
 		seen[address] = true
 		addresses = append(addresses, address)
 	}
-	slot, accounts, err := b.read(ctx, addresses)
+	slot, accounts, err := b.read(ctx, 0, addresses)
 	if err != nil {
 		return err
 	}

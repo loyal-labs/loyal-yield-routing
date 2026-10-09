@@ -19,7 +19,7 @@ func TestSVMCurrentFloorMutationRejectsActualSignedPullBeforeBroadcast(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder, err := NewSweepWireBuilder(ed25519.NewKeyFromSeed(seed), rpcChain.ReadAccountsWithOptional)
+	builder, err := NewSweepWireBuilder(ed25519.NewKeyFromSeed(seed), rpcChain.ReadAccounts)
 	if err != nil {
 		t.Fatal(err)
 	}

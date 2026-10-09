@@ -721,7 +721,11 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	if err := c.assertOwnership(scope, claimToken); err != nil {
 		return ResultRecoveryPending, err
 	}
-	positionAmountRaw, observedSlot, err := c.chain.ConfirmedVaultPositionRaw(scope.ctx, plan, route)
+	var confirmedSlot int64
+	if pull.Attempt.ConfirmedSlot != nil {
+		confirmedSlot = *pull.Attempt.ConfirmedSlot
+	}
+	positionAmountRaw, observedSlot, err := c.chain.ConfirmedVaultPositionRaw(scope.ctx, plan, route, confirmedSlot)
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}

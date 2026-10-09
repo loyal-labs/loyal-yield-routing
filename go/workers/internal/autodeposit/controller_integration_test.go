@@ -450,15 +450,11 @@ func (s *scriptedControllerChain) ConfirmedReceipt(ctx context.Context, signatur
 	return receipt, nil
 }
 
-func (s *scriptedControllerChain) ReadAccounts(ctx context.Context, addresses []string) (int64, []*chain.Account, error) {
-	return 1, nil, nil
-}
-
 func (s *scriptedControllerChain) SimulateExact(ctx context.Context, attempt DurableAttempt) error {
 	return s.simulateErr
 }
 
-func (s *scriptedControllerChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute) (int64, int64, error) {
+func (s *scriptedControllerChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, _ int64) (int64, int64, error) {
 	if position, seen := s.positions[plan.Reserve]; seen {
 		return position[0], position[1], nil
 	}

@@ -151,7 +151,7 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 		return nil, errors.New("setup custody is not the frozen vault ATA")
 	}
 	addresses := []string{plan.Reserve, plan.Market, plan.Target.VaultPubkey, ata, metadata, obligation}
-	slot, accounts, err := b.read(ctx, addresses, plan.Target.VaultPubkey, ata, metadata, obligation)
+	slot, accounts, err := b.read(ctx, 0, addresses, plan.Target.VaultPubkey, ata, metadata, obligation)
 	if err != nil {
 		return nil, err
 	}
@@ -209,12 +209,9 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	}
 	if stage == "" && route.Position.ObligationFarmUserState != "" {
 		farm := route.Position.ObligationFarmUserState
-		farmSlot, farmAccounts, err := b.read(ctx, []string{farm}, farm)
+		farmSlot, farmAccounts, err := b.read(ctx, slot, []string{farm}, farm)
 		if err != nil {
 			return nil, err
-		}
-		if farmSlot < slot || len(farmAccounts) != 1 {
-			return nil, errors.New("setup farm observation stale")
 		}
 		slot = farmSlot
 		if farmAccounts[0] == nil {
@@ -372,12 +369,9 @@ func (b *SweepWireBuilder) ReadbackDestinationSetup(ctx context.Context, plan De
 	if err := validateDestinationSetupPlan(plan, setup); err != nil {
 		return err
 	}
-	slot, accounts, err := b.read(ctx, []string{setup.Account})
+	_, accounts, err := b.read(ctx, max(minSlot, setup.ObservedSlot), []string{setup.Account})
 	if err != nil {
 		return err
-	}
-	if slot < minSlot || slot < setup.ObservedSlot || len(accounts) != 1 {
-		return errors.New("setup readback is older than confirmed transaction")
 	}
 	return validateSetupAccount(plan, setup, accounts[0])
 }

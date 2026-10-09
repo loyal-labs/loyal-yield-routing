@@ -37,10 +37,14 @@ func (a testAccount) chainAccount() *chain.Account {
 	return &chain.Account{Key: mustKey(a.Address), Owner: mustKey(a.Owner), Lamports: a.Lamports, Data: a.Data, Executable: a.Executable}
 }
 
-// fixtureReader serves fixtures the way the production reader does: a
-// required address must exist, an absent optional one is nil.
+// fixtureReader serves fixtures the way the production reader does: a node
+// below minSlot is behind, a required address must exist, an absent optional
+// one is nil.
 func fixtureReader(slot int64, fixtures map[string]testAccount) AccountReader {
-	return func(_ context.Context, addresses []string, optional ...string) (int64, []*chain.Account, error) {
+	return func(_ context.Context, minSlot int64, addresses []string, optional ...string) (int64, []*chain.Account, error) {
+		if slot < minSlot {
+			return 0, nil, chain.ErrBehind
+		}
 		out := make([]*chain.Account, len(addresses))
 		for i, address := range addresses {
 			fixture := fixtures[address]
@@ -127,7 +131,7 @@ func testWireBuilder(t *testing.T) *SweepWireBuilder {
 	if err != nil {
 		t.Fatalf("generate executor key: %v", err)
 	}
-	builder, err := NewSweepWireBuilder(private, func(ctx context.Context, addresses []string, optional ...string) (int64, []*chain.Account, error) {
+	builder, err := NewSweepWireBuilder(private, func(ctx context.Context, _ int64, addresses []string, optional ...string) (int64, []*chain.Account, error) {
 		plan, delegation := testPullPlan()
 		wallet, mint := mustKey(plan.Target.Wallet), mustKey(USDCMint)
 		authority, err := subscriptionAuthorityKey(wallet[:], mint[:])

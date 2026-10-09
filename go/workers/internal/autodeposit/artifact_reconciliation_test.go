@@ -45,7 +45,7 @@ func artifactFixture(t *testing.T) (artifactGolden, ArtifactTarget, *SweepWireBu
 		t.Fatal("unexpected source pin")
 	}
 	target := ArtifactTarget{ControlTarget: ControlTarget{Cluster: mainnetCluster, TargetID: 1, SetupGeneration: 3, PolicySeed: f.PolicySeed, Settings: f.Settings, Wallet: f.Wallet, WalletTokenATA: f.WalletATA, Vault: f.Vault, VaultTokenATA: f.VaultATA, Mint: USDCMint, Policy: f.Policy, SubscriptionAuthority: f.SubscriptionAuthority, RecurringDelegation: f.RecurringDelegation, Nonce: &f.Nonce, MaxAmountPerPeriod: &f.MaxAmountPerPeriod, StartTimestamp: &f.StartTimestamp}, RootAuthority: f.RootAuthority, PeriodLength: &f.PeriodLength, ExpiryTimestamp: &f.ExpiryTimestamp}
-	b, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, 32)), func(context.Context, []string, ...string) (int64, []*chain.Account, error) {
+	b, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, 32)), func(context.Context, int64, []string, ...string) (int64, []*chain.Account, error) {
 		return 0, nil, errors.New("unexpected account read")
 	})
 	if e != nil {
@@ -342,7 +342,7 @@ func TestArtifactV0CreatorBindsExternalPayerAndPinnedLookup(t *testing.T) {
 		key := mustKey(address)
 		copy(tableData[56+i*32:], key[:])
 	}
-	b.read = func(_ context.Context, addresses []string, _ ...string) (int64, []*chain.Account, error) {
+	b.read = func(_ context.Context, _ int64, addresses []string, _ ...string) (int64, []*chain.Account, error) {
 		if len(addresses) != 1 || addresses[0] != f.LookupKey {
 			return 0, nil, errors.New("unexpected lookup")
 		}
