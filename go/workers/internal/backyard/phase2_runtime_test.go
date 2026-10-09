@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 func basicPolicyFixtureManifest(t *testing.T) RouteManifest {
@@ -286,7 +288,7 @@ func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T
 }
 
 func TestPhase2JupiterQuotePinsManifestVenue(t *testing.T) {
-	quote := JupiterQuote{
+	quote := jupiter.Quote{
 		InputMint: bridgeUSDC, OutputMint: mapleSyrupUSDCUSDC.Kamino.CollateralMint,
 		InAmount: "1000000", OutAmount: "846514", OtherAmountThreshold: "842281",
 		SwapMode: "ExactIn", SlippageBPS: 50, PlatformFee: json.RawMessage("null"),

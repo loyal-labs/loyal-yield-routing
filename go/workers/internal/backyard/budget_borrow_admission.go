@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -88,7 +89,7 @@ func validateBorrowProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, s Sna
 
 // Borrow admission prices the immediate complete unwind, not permission for a
 // later leverage loop. Simulated accounts remain cost inputs; only r is current.
-func observePhase3BorrowAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3BorrowAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := o.Snapshot, e.Request
@@ -141,7 +142,7 @@ func observePhase3BorrowAdmission(ctx context.Context, rpc *chain.Client, client
 // The simulation's poststate is used only for complete exit costing. Each
 // producer validates its own current transition before entering this function;
 // no projected account replaces a current build, RPC read or send prestate.
-func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, projection phase3KaminoProjection) (phase3BridgeAdmission, error) {
+func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, projection phase3KaminoProjection) (phase3BridgeAdmission, error) {
 	s := o.Snapshot
 	route, err := runtimeRoute(s.RouteLane)
 	if err != nil {
@@ -446,7 +447,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	return plan, nil
 }
 
-func (d *Database) admitPhase3Borrow(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, id string, o Observation, decision Decision, e KaminoExecutionEvidence) error {
+func (d *Database) admitPhase3Borrow(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, id string, o Observation, decision Decision, e KaminoExecutionEvidence) error {
 	plan, err := observePhase3BorrowAdmission(ctx, rpc, client, m, o, decision, e)
 	if err != nil {
 		return err

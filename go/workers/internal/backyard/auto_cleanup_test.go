@@ -33,6 +33,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // autoCleanupState is the post-payoff state the observer must actually
@@ -144,7 +145,7 @@ func autoCleanupStaleRPC(t *testing.T, slot int64, accounts []ConfirmedAccount) 
 	return base
 }
 
-func autoCleanupClient(t *testing.T, route RuntimeRoute) *jupiterClient {
+func autoCleanupClient(t *testing.T, route RuntimeRoute) *jupiter.Client {
 	t.Helper()
 	return autoJupiterTransport(t, route, autoCollateralSellQuote(t, route, nil), nil)
 }

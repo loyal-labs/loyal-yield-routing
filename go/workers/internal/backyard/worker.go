@@ -416,7 +416,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 			if err != nil {
 				return Observation{}, JupiterExecutionEvidence{}, err
 			}
-			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, productionJupiterClient(), state.enrich)
+			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, productionJupiter, state.enrich)
 		},
 		allocationSentWindow: database.AllocationSentRawTrailingWindow,
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256, policyCatalogSHA256 string) (DecisionRecord, error) {
@@ -430,28 +430,28 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 		},
 		recordBudgetHold: database.RecordPhase3BudgetHold,
 		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
-			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
+			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiter, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
 				if err != nil {
 					return err
 				}
 				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
 			}
 			if evidence.Request.Action == VoltrAllocateToSquads && decision.Reason == topupAllocationReason {
-				return database.admitPhase3TopupAllocation(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+				return database.admitPhase3TopupAllocation(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
 			}
 			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionDebtRaw > 0 && positionReturnRoute(observation.Snapshot.RouteLane) {
-				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+				return database.admitPhase3Funding(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
 			}
 			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionCollateralRaw > 0 && observation.Snapshot.PositionDebtRaw == 0 {
-				return database.admitPhase3PositionReturnNAV(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+				return database.admitPhase3PositionReturnNAV(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
 			}
 			if observation.Snapshot.CollateralIdleRaw > 0 || observation.Snapshot.DebtIdleRaw > 0 {
-				return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+				return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
 			}
 			return database.admitPhase3Bridge(ctx, rpc, operationID, observation, decision, evidence)
 		},
 		admitKamino: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
-			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
+			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiter, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
 				if err != nil {
 					return err
 				}
@@ -462,37 +462,37 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 				return err
 			}
 			if leg == kaminoLegDeposit && evidence.Request.Action == OpenRouteStep {
-				return database.admitPhase3Deposit(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+				return database.admitPhase3Deposit(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
 			}
 			if leg == kaminoLegBorrow && evidence.Request.Action == OpenRouteStep {
-				return database.admitPhase3Borrow(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+				return database.admitPhase3Borrow(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
 			}
-			return database.admitPhase3Withdrawal(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+			return database.admitPhase3Withdrawal(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
 		},
 		admitJupiter: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
-			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
+			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiter, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
 				if err != nil {
 					return err
 				}
 				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
 			}
 			if evidence.Request.Action == SwapDebtToCollateralStep {
-				return database.admitPhase3LeverageSwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+				return database.admitPhase3LeverageSwap(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
 			}
 			if evidence.Request.Action == SwapCollateralToDebtStep && decision.Reason == exitCycleSwapReason {
-				plan, err := observePhase3ExitCycleSwapAdmission(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence)
+				plan, err := observePhase3ExitCycleSwapAdmission(ctx, rpc, productionJupiter, manifest, observation, decision, evidence)
 				if err != nil {
 					return err
 				}
 				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
 			}
 			if evidence.Request.Action == SwapStableToCollateralStep {
-				return database.admitPhase3EntrySwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
+				return database.admitPhase3EntrySwap(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
 			}
 			if evidence.Request.FullPayoffFunding {
-				return database.admitPhase3Funding(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+				return database.admitPhase3Funding(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
 			}
-			return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+			return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
 		},
 		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
 			return BuildSimulateAndPersistBridge(ctx, database, rpc, operationID, evidence, credentials)

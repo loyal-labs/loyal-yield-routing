@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 func validateLeverageSwap(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, e ExpectedEffects, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
@@ -80,7 +81,7 @@ func validateLeverageProjection(r JupiterSwapRequest, e ExpectedEffects, before 
 	return err
 }
 
-func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, e JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, e JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := o.Snapshot, e.Request
@@ -128,7 +129,7 @@ func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *chain.Client, 
 	return plan, nil
 }
 
-func (db *Database) admitPhase3LeverageSwap(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, id string, o Observation, d Decision, e JupiterExecutionEvidence) error {
+func (db *Database) admitPhase3LeverageSwap(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, id string, o Observation, d Decision, e JupiterExecutionEvidence) error {
 	plan, err := observePhase3LeverageSwapAdmission(ctx, rpc, client, m, o, d, e)
 	if err != nil {
 		return err

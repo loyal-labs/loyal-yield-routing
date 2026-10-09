@@ -13,9 +13,10 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	o, _, _, m, rpc, client, accounts := fundingAdmissionFixture(t, output)
 	route := ethenaUSDePYUSD

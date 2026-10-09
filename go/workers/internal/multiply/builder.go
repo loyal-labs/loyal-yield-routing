@@ -11,17 +11,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"math/big"
-	"net/http"
-	"net/url"
 	"strconv"
-	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -39,171 +35,19 @@ type BuiltOperation struct {
 }
 
 // QuoteClient is the consumer-defined Jupiter quote surface. The production
-// client hits lite-api.jup.ag; tests bind fixtures. Live network access stays
+// client is *jupiter.Client; tests bind fixtures. Live network access stays
 // outside the offline decision path.
 type QuoteClient interface {
-	FetchQuote(ctx contextT, request QuoteRequest) (*QuoteResponse, error)
-	FetchSwapInstructions(ctx contextT, quote *QuoteResponse, vault solana.PublicKey) (*SwapInstructionsResponse, error)
+	Quote(ctx contextT, request jupiter.QuoteRequest) (jupiter.Quote, error)
+	SwapInstructions(ctx contextT, quote jupiter.Quote, user solana.PublicKey, useSharedAccounts bool) (jupiter.SwapInstructions, error)
 }
 
 type contextT = context.Context
 
 const (
-	jupiterQuoteEndpoint            = "https://lite-api.jup.ag/swap/v1/quote"
-	jupiterSwapInstructionsEndpoint = "https://lite-api.jup.ag/swap/v1/swap-instructions"
-	jupiterSlippageBPS              = 50
-	jupiterMaximumRouteLegs         = 4
-	jupiterQuoteTimeout             = 15 * time.Second
+	jupiterSlippageBPS      = 50
+	jupiterMaximumRouteLegs = 4
 )
-
-// QuoteRequest is an ExactIn quote request.
-type QuoteRequest struct {
-	InputMint  string
-	OutputMint string
-	Amount     uint64
-}
-
-// QuoteResponse is the bounded subset of the Jupiter quote the builder trusts.
-type QuoteResponse struct {
-	RawJSON              json.RawMessage   `json:"-"`
-	SlippageBPS          uint16            `json:"slippageBps"`
-	InputMint            string            `json:"inputMint"`
-	OutputMint           string            `json:"outputMint"`
-	SwapMode             string            `json:"swapMode"`
-	InAmount             string            `json:"inAmount"`
-	OutAmount            string            `json:"outAmount"`
-	OtherAmountThreshold string            `json:"otherAmountThreshold"`
-	ContextSlot          uint64            `json:"contextSlot"`
-	RoutePlan            []json.RawMessage `json:"routePlan"`
-	PlatformFee          *json.RawMessage  `json:"platformFee"`
-}
-
-// Preserve the complete validated quote when reposting it to Jupiter. Its
-// route metadata is provider input, not a new financial authorization.
-func (q *QuoteResponse) UnmarshalJSON(raw []byte) error {
-	type fields QuoteResponse
-	var parsed fields
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return err
-	}
-	*q = QuoteResponse(parsed)
-	q.RawJSON = append(json.RawMessage(nil), raw...)
-	return nil
-}
-
-func (q QuoteResponse) MarshalJSON() ([]byte, error) {
-	if len(q.RawJSON) != 0 {
-		return append([]byte(nil), q.RawJSON...), nil
-	}
-	type fields QuoteResponse
-	return json.Marshal(fields(q))
-}
-
-func decodeJupiterResponse(body io.Reader, target any) error {
-	const maximumResponseBytes = 1 << 20
-	raw, err := io.ReadAll(io.LimitReader(body, maximumResponseBytes+1))
-	if err != nil {
-		return err
-	}
-	if len(raw) > maximumResponseBytes {
-		return errors.New("Jupiter response exceeds size bound")
-	}
-	return json.Unmarshal(raw, target)
-}
-
-// SwapInstructionsResponse is the bounded subset of the swap-instructions
-// response. Any extra instruction the API introduces is a hard error.
-type SwapInstructionsResponse struct {
-	SetupInstructions           []json.RawMessage `json:"setupInstructions"`
-	OtherInstructions           []json.RawMessage `json:"otherInstructions"`
-	SwapInstruction             *RawInstruction   `json:"swapInstruction"`
-	CleanupInstruction          *json.RawMessage  `json:"cleanupInstruction"`
-	TokenLedgerInstruction      *json.RawMessage  `json:"tokenLedgerInstruction"`
-	AddressLookupTableAddresses []string          `json:"addressLookupTableAddresses"`
-}
-
-// RawInstruction is one wire-level instruction from the Jupiter API.
-type RawInstruction struct {
-	ProgramID string           `json:"programId"`
-	Accounts  []RawAccountMeta `json:"accounts"`
-	Data      string           `json:"data"`
-}
-
-type RawAccountMeta struct {
-	PubKey     string `json:"pubkey"`
-	IsSigner   bool   `json:"isSigner"`
-	IsWritable bool   `json:"isWritable"`
-}
-
-// LiveQuoteClient is the production Jupiter client.
-type LiveQuoteClient struct {
-	HTTP *http.Client
-}
-
-// NewLiveQuoteClient bounds the HTTP client like the Rust builder.
-func NewLiveQuoteClient() *LiveQuoteClient {
-	return &LiveQuoteClient{HTTP: &http.Client{Timeout: jupiterQuoteTimeout}}
-}
-
-// FetchQuote implements QuoteClient.
-func (c *LiveQuoteClient) FetchQuote(ctx contextT, request QuoteRequest) (*QuoteResponse, error) {
-	query := url.Values{}
-	query.Set("inputMint", request.InputMint)
-	query.Set("outputMint", request.OutputMint)
-	query.Set("amount", strconv.FormatUint(request.Amount, 10))
-	query.Set("swapMode", "ExactIn")
-	query.Set("slippageBps", strconv.Itoa(jupiterSlippageBPS))
-	query.Set("maxAccounts", "32")
-	request0, err := http.NewRequestWithContext(ctx, http.MethodGet, jupiterQuoteEndpoint+"?"+query.Encode(), nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := c.HTTP.Do(request0)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Jupiter quote returned status %d", response.StatusCode)
-	}
-	var quote QuoteResponse
-	if err := decodeJupiterResponse(response.Body, &quote); err != nil {
-		return nil, err
-	}
-	return &quote, nil
-}
-
-// FetchSwapInstructions implements QuoteClient.
-func (c *LiveQuoteClient) FetchSwapInstructions(ctx contextT, quote *QuoteResponse, vault solana.PublicKey) (*SwapInstructionsResponse, error) {
-	body, err := json.Marshal(map[string]any{
-		"quoteResponse":           quote,
-		"userPublicKey":           vault.String(),
-		"useSharedAccounts":       true,
-		"wrapAndUnwrapSol":        false,
-		"dynamicComputeUnitLimit": false,
-	})
-	if err != nil {
-		return nil, err
-	}
-	request0, err := http.NewRequestWithContext(ctx, http.MethodPost, jupiterSwapInstructionsEndpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	request0.Header.Set("Content-Type", "application/json")
-	response, err := c.HTTP.Do(request0)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Jupiter swap instructions returned status %d", response.StatusCode)
-	}
-	var parsed SwapInstructionsResponse
-	if err := decodeJupiterResponse(response.Body, &parsed); err != nil {
-		return nil, err
-	}
-	return &parsed, nil
-}
 
 // BuildOperation mirrors build_operation for every plan the planner emits.
 // The user-side actions stay rejected: they are admitted from confirmed
@@ -653,11 +497,11 @@ func swapExactIn(quotes QuoteClient, ctx contextT, inputMint, outputMint string,
 	if err != nil {
 		return nil, err
 	}
-	quote, err := quotes.FetchQuote(ctx, QuoteRequest{InputMint: inputMint, OutputMint: outputMint, Amount: amount})
+	quote, err := quotes.Quote(ctx, jupiter.QuoteRequest{InputMint: inputMint, OutputMint: outputMint, Amount: amount, SlippageBPS: jupiterSlippageBPS, MaxAccounts: 32})
 	if err != nil {
 		return nil, err
 	}
-	if quote == nil || quote.ContextSlot == 0 || quote.SlippageBPS != jupiterSlippageBPS || quote.InputMint != inputMint || quote.OutputMint != outputMint || quote.SwapMode != "ExactIn" || quote.PlatformFee != nil {
+	if quote.ContextSlot == 0 || quote.SlippageBPS != jupiterSlippageBPS || quote.InputMint != inputMint || quote.OutputMint != outputMint || quote.SwapMode != "ExactIn" || !jupiter.Null(quote.PlatformFee) {
 		return nil, errors.New("Jupiter quote identity drifted")
 	}
 	if len(quote.RoutePlan) == 0 || len(quote.RoutePlan) > jupiterMaximumRouteLegs {
@@ -678,28 +522,21 @@ func swapExactIn(quotes QuoteClient, ctx contextT, inputMint, outputMint string,
 	if inputRaw != amount || inputRaw > math.MaxInt64 || outputRaw > math.MaxInt64 || thresholdRaw == 0 || outputRaw < thresholdRaw {
 		return nil, errors.New("Jupiter quote amount or threshold drifted")
 	}
-	response, err := quotes.FetchSwapInstructions(ctx, quote, vault)
+	response, err := quotes.SwapInstructions(ctx, quote, vault, true)
 	if err != nil {
 		return nil, err
 	}
-	if response == nil {
-		return nil, errors.New("Jupiter returned no instruction response")
-	}
-	if len(response.SetupInstructions) > 0 || len(response.OtherInstructions) > 0 ||
-		response.CleanupInstruction != nil || response.TokenLedgerInstruction != nil {
+	if response.Companions() {
 		return nil, errors.New("Jupiter introduced extra instructions")
 	}
-	if response.SwapInstruction == nil {
-		return nil, errors.New("swap instruction missing")
-	}
-	swap := *response.SwapInstruction
-	if swap.ProgramID != JupiterProgram {
+	swap := response.SwapInstruction
+	if swap.ProgramID != jupiter.ProgramID.String() {
 		return nil, errors.New("Jupiter program drifted")
 	}
 	accounts := make([]AccountMeta, 0, len(swap.Accounts))
 	sourceBound, destinationBound, vaultSigner := false, false, false
 	for _, entry := range swap.Accounts {
-		key, err := solana.PublicKeyFromBase58(entry.PubKey)
+		key, err := solana.PublicKeyFromBase58(entry.Pubkey)
 		if err != nil {
 			return nil, fmt.Errorf("swap key missing: %w", err)
 		}
@@ -721,7 +558,7 @@ func swapExactIn(quotes QuoteClient, ctx contextT, inputMint, outputMint string,
 	if err != nil {
 		return nil, fmt.Errorf("swap data missing: %w", err)
 	}
-	if err := validateEarnMaxJupiterRoute(Instruction{ProgramID: mustKey(JupiterProgram), Accounts: accounts, Data: data},
+	if err := validateEarnMaxJupiterRoute(Instruction{ProgramID: jupiter.ProgramID, Accounts: accounts, Data: data},
 		vault, source, destination, mustKey(inputMint), mustKey(outputMint), inputRaw, outputRaw, thresholdRaw); err != nil {
 		return nil, err
 	}
@@ -736,7 +573,7 @@ func swapExactIn(quotes QuoteClient, ctx contextT, inputMint, outputMint string,
 	contextSlot := quote.ContextSlot
 	return &BuiltOperation{
 		PolicyInstructions: []Instruction{{
-			ProgramID: mustKey(JupiterProgram), Accounts: accounts, Data: data,
+			ProgramID: jupiter.ProgramID, Accounts: accounts, Data: data,
 		}},
 		LookupTables: lookupTables,
 		ExpectedEffects: ExpectedEffects{
@@ -753,7 +590,8 @@ func swapExactIn(quotes QuoteClient, ctx contextT, inputMint, outputMint string,
 // loyal-actions/src/earn_max.rs. It binds fixed accounts and privileges, the
 // sole vault authority, exact amounts, slippage and zero platform fee.
 func validateEarnMaxJupiterRoute(instruction Instruction, vault, source, destination, inputMint, outputMint solana.PublicKey, inputAmount, quotedOutput, minimumOutput uint64) error {
-	if instruction.ProgramID != mustKey(JupiterProgram) || len(instruction.Data) < 32 || !equalBytes(instruction.Data[:8], JupiterSharedAccountsRouteDiscriminator[:]) {
+	route, err := jupiter.DecodeSharedAccountsRoute(instruction.Data)
+	if instruction.ProgramID != jupiter.ProgramID || err != nil {
 		return errors.New("Jupiter action is not SharedAccountsRoute")
 	}
 	expected := []struct {
@@ -779,12 +617,10 @@ func validateEarnMaxJupiterRoute(instruction Instruction, vault, source, destina
 	if signers != 1 {
 		return errors.New("Jupiter requires an unexpected authority")
 	}
-	routeCount := binary.LittleEndian.Uint32(instruction.Data[9:13])
-	if routeCount < 1 || routeCount > jupiterMaximumRouteLegs {
+	if route.Steps < 1 || route.Steps > jupiterMaximumRouteLegs {
 		return errors.New("Jupiter route must contain one to four legs")
 	}
-	tail := instruction.Data[len(instruction.Data)-19:]
-	if binary.LittleEndian.Uint64(tail[:8]) != inputAmount || binary.LittleEndian.Uint64(tail[8:16]) != quotedOutput || binary.LittleEndian.Uint16(tail[16:18]) != jupiterSlippageBPS || tail[18] != 0 {
+	if route.InAmount != inputAmount || route.QuotedOutAmount != quotedOutput || route.SlippageBPS != jupiterSlippageBPS || route.PlatformFeeBPS != 0 {
 		return errors.New("Jupiter exact amount, slippage or fee drifted")
 	}
 	// Keep multiplication wide rather than saturate the u64 product. All

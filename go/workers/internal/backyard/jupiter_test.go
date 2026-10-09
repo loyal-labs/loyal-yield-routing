@@ -10,35 +10,54 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
+
+var fixtureJupiterHTTP sync.Map // *jupiter.Client -> *http.Client
+
+// fixtureJupiter binds a fixture transport; fixtureHTTP returns the HTTP
+// client it holds so a test can wrap that transport.
+func fixtureJupiter(transport http.RoundTripper) (*jupiter.Client, error) {
+	httpClient := &http.Client{Transport: transport}
+	client, err := jupiter.NewClient("https://jupiter.invalid", "", httpClient)
+	fixtureJupiterHTTP.Store(client, httpClient)
+	return client, err
+}
+
+func fixtureHTTP(client *jupiter.Client) *http.Client {
+	httpClient, _ := fixtureJupiterHTTP.Load(client)
+	return httpClient.(*http.Client)
+}
 
 func jupiterTestInstruction(action Action, amount, out uint64, v2 bool) JupiterSwapInstruction {
 	sourceMint, destinationMint, sourceATA, destinationATA, _ := jupiterEdgeForRoute(action, RouteID)
-	accounts := make([]JupiterInstructionAccount, 10)
+	accounts := make([]jupiter.AccountMeta, 10)
 	for index := range accounts {
-		accounts[index] = JupiterInstructionAccount{Pubkey: bridgeTokenProgram}
+		accounts[index] = jupiter.AccountMeta{Pubkey: bridgeTokenProgram}
 	}
 	dataLength := 37
 	data := make([]byte, dataLength)
-	copy(data, jupiterSharedAccountsRoute)
-	accounts[0] = JupiterInstructionAccount{Pubkey: bridgeTokenProgram}
-	accounts[2] = JupiterInstructionAccount{Pubkey: bridgeVault, IsSigner: true}
-	accounts[3] = JupiterInstructionAccount{Pubkey: sourceATA, IsWritable: true}
-	accounts[6] = JupiterInstructionAccount{Pubkey: destinationATA, IsWritable: true}
-	accounts[7] = JupiterInstructionAccount{Pubkey: sourceMint}
-	accounts[8] = JupiterInstructionAccount{Pubkey: destinationMint}
+	copy(data, jupiter.SharedAccountsRouteDiscriminator[:])
+	accounts[0] = jupiter.AccountMeta{Pubkey: bridgeTokenProgram}
+	accounts[2] = jupiter.AccountMeta{Pubkey: bridgeVault, IsSigner: true}
+	accounts[3] = jupiter.AccountMeta{Pubkey: sourceATA, IsWritable: true}
+	accounts[6] = jupiter.AccountMeta{Pubkey: destinationATA, IsWritable: true}
+	accounts[7] = jupiter.AccountMeta{Pubkey: sourceMint}
+	accounts[8] = jupiter.AccountMeta{Pubkey: destinationMint}
 	if v2 {
 		data = make([]byte, 47)
-		copy(data, jupiterSharedAccountsRouteV2)
-		accounts[1] = JupiterInstructionAccount{Pubkey: bridgeVault, IsSigner: true}
-		accounts[2] = JupiterInstructionAccount{Pubkey: sourceATA, IsWritable: true}
-		accounts[5] = JupiterInstructionAccount{Pubkey: destinationATA, IsWritable: true}
-		accounts[6] = JupiterInstructionAccount{Pubkey: sourceMint}
-		accounts[7] = JupiterInstructionAccount{Pubkey: destinationMint}
-		accounts[8] = JupiterInstructionAccount{Pubkey: bridgeTokenProgram}
-		accounts[9] = JupiterInstructionAccount{Pubkey: bridgeTokenProgram}
+		copy(data, jupiter.SharedAccountsRouteV2Discriminator[:])
+		accounts[1] = jupiter.AccountMeta{Pubkey: bridgeVault, IsSigner: true}
+		accounts[2] = jupiter.AccountMeta{Pubkey: sourceATA, IsWritable: true}
+		accounts[5] = jupiter.AccountMeta{Pubkey: destinationATA, IsWritable: true}
+		accounts[6] = jupiter.AccountMeta{Pubkey: sourceMint}
+		accounts[7] = jupiter.AccountMeta{Pubkey: destinationMint}
+		accounts[8] = jupiter.AccountMeta{Pubkey: bridgeTokenProgram}
+		accounts[9] = jupiter.AccountMeta{Pubkey: bridgeTokenProgram}
 		data[25], data[26], data[27] = 50, 0, 0
 	}
 	for index := 0; index < 8; index++ {
@@ -48,7 +67,7 @@ func jupiterTestInstruction(action Action, amount, out uint64, v2 bool) JupiterS
 	if !v2 {
 		data[len(data)-3], data[len(data)-2], data[len(data)-1] = 50, 0, 0
 	}
-	return JupiterSwapInstruction{ProgramID: jupiterV6Program, Accounts: accounts, Data: base64.StdEncoding.EncodeToString(data)}
+	return JupiterSwapInstruction{ProgramID: jupiter.ProgramID.String(), Accounts: accounts, Data: base64.StdEncoding.EncodeToString(data)}
 }
 
 func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
@@ -154,7 +173,7 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 			}
 			body, _ := json.Marshal(map[string]any{"setupInstructions": func() []any {
 				if companion {
-					return []any{map[string]any{"programId": jupiterV6Program}}
+					return []any{map[string]any{"programId": jupiter.ProgramID.String()}}
 				}
 				return []any{}
 			}(), "otherInstructions": []any{}, "cleanupInstruction": nil, "tokenLedgerInstruction": nil, "swapInstruction": instruction})
@@ -164,22 +183,22 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
 	})
-	client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Timeout: time.Second, Transport: transport})
+	client, err := jupiter.NewClient("https://jupiter.invalid", "", &http.Client{Timeout: time.Second, Transport: transport})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := client.FreshSwap(context.Background(), SwapUSDCToPrimeStep, 100); err != nil {
+	if _, _, err := freshSwapForRoute(context.Background(), client, RouteID, SwapUSDCToPrimeStep, 100); err != nil {
 		t.Fatal(err)
 	}
 	companion = true
-	if _, _, err := client.FreshSwap(context.Background(), SwapUSDCToPrimeStep, 100); err == nil {
+	if _, _, err := freshSwapForRoute(context.Background(), client, RouteID, SwapUSDCToPrimeStep, 100); err == nil {
 		t.Fatal("accepted a setup instruction outside the policy contract")
 	}
 }
 
 func TestJupiterAcceptsCanonicalSystemProgramAccount(t *testing.T) {
 	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 95, false)
-	instruction.Accounts = append(instruction.Accounts, JupiterInstructionAccount{
+	instruction.Accounts = append(instruction.Accounts, jupiter.AccountMeta{
 		Pubkey: "11111111111111111111111111111111",
 	})
 	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 95, 94, RouteID); err != nil {

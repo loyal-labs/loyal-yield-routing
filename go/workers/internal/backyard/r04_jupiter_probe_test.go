@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 type jupiterProbeTransport struct {
@@ -25,7 +26,7 @@ func (p *jupiterProbeTransport) RoundTrip(r *http.Request) (*http.Response, erro
 	if err != nil || r.URL.Path != "/swap/v1/swap-instructions" {
 		return response, err
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, jupiterResponseBytes+1))
+	data, err := io.ReadAll(io.LimitReader(response.Body, 2<<20+1))
 	response.Body.Close()
 	if err != nil {
 		return nil, err
@@ -68,8 +69,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToDebtStep} {
 		d := Decision{Action: action, AmountRaw: int64(amount), StrategyKey: ethenaUSDePYUSD.Lane}
 		transport := &jupiterProbeTransport{}
-		client := productionJupiterClient()
-		client.http.Transport = transport
+		client, _ := jupiter.NewClient(jupiter.LiteBase, "", &http.Client{Timeout: 20 * time.Second, Transport: transport})
 		e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, d, amount, 0, slot)
 		if err != nil {
 			binding, _ := catalogJupiterBindingForRoute(action, ethenaUSDePYUSD.Lane)

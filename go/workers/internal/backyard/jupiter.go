@@ -1,65 +1,35 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"math/big"
-	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 const (
-	jupiterV6Program       = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
-	jupiterAPIBase         = "https://lite-api.jup.ag/swap/v1"
-	jupiterKeyedAPIBase    = "https://api.jup.ag/swap/v1"
 	previousBackyardVault  = "AdwKLBQWKxNewpkjMFMz4NyKit7qXygGpjkqHBCWcriK"
 	jupiterMaxSlippageBPS  = uint16(50)
 	jupiterMaxRoutePlanLeg = 4
-	jupiterResponseBytes   = 2 << 20
 )
 
-var (
-	jupiterSharedAccountsRoute   = []byte{0xc1, 0x20, 0x9b, 0x33, 0x41, 0xd6, 0x9c, 0x81}
-	jupiterSharedAccountsRouteV2 = []byte{209, 152, 83, 147, 124, 254, 216, 233}
-)
-
-type JupiterInstructionAccount struct {
-	Pubkey     string `json:"pubkey"`
-	IsSigner   bool   `json:"isSigner"`
-	IsWritable bool   `json:"isWritable"`
-}
-
+// JupiterSwapInstruction is the swap instruction as journaled in the request.
 type JupiterSwapInstruction struct {
-	ProgramID string                      `json:"programId"`
-	Accounts  []JupiterInstructionAccount `json:"accounts"`
-	Data      string                      `json:"data"`
+	ProgramID string                `json:"programId"`
+	Accounts  []jupiter.AccountMeta `json:"accounts"`
+	Data      string                `json:"data"`
 	// Quote metadata, not instruction bytes or authority. Tables must be read
 	// from chain and may only encode accounts already present above.
 	LookupTableAddresses []string `json:"lookupTableAddresses,omitempty"`
-}
-
-type JupiterQuote struct {
-	InputMint            string            `json:"inputMint"`
-	OutputMint           string            `json:"outputMint"`
-	InAmount             string            `json:"inAmount"`
-	OutAmount            string            `json:"outAmount"`
-	OtherAmountThreshold string            `json:"otherAmountThreshold"`
-	SwapMode             string            `json:"swapMode"`
-	SlippageBPS          uint16            `json:"slippageBps"`
-	PlatformFee          json.RawMessage   `json:"platformFee"`
-	RoutePlan            []json.RawMessage `json:"routePlan"`
 }
 
 type JupiterSwapRequest struct {
@@ -89,35 +59,9 @@ type JupiterExecutionEvidence struct {
 	ExpectedEffects ExpectedEffects
 }
 
-type jupiterClient struct {
-	base   string
-	http   *http.Client
-	apiKey string
-}
-
-func newJupiterClient(base string, client *http.Client) (*jupiterClient, error) {
-	parsed, err := url.Parse(base)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || client == nil {
-		return nil, fmt.Errorf("invalid Jupiter client")
-	}
-	return &jupiterClient{base: string(bytes.TrimRight([]byte(base), "/")), http: client}, nil
-}
-
-// jupiterAPIKey is set once by Engine.Run from the JUPITER_API_KEY credential.
-var jupiterAPIKey string
-
-// productionJupiterClient uses the keyed API when a key is configured. The
-// keyless lite endpoint allows too few requests for one selector round (about
-// 18 parallel quote calls; 2026-09-25). Both serve the same swap/v1 API.
-func productionJupiterClient() *jupiterClient {
-	base, key := jupiterAPIBase, strings.TrimSpace(jupiterAPIKey)
-	if key != "" {
-		base = jupiterKeyedAPIBase
-	}
-	client, _ := newJupiterClient(base, &http.Client{Timeout: 20 * time.Second})
-	client.apiKey = key
-	return client
-}
+// productionJupiter is the swap/v1 client the process was started with, set
+// once by Engine.Run or RunSelectorEvaluate.
+var productionJupiter *jupiter.Client
 
 func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMint, sourceATA, destinationATA string, err error) {
 	if lane == "" {
@@ -163,109 +107,66 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 	}
 }
 
-func (c *jupiterClient) FreshSwap(ctx context.Context, action Action, amount uint64) (JupiterQuote, JupiterSwapInstruction, error) {
-	return c.freshSwapForRoute(ctx, RouteID, action, amount)
-}
-
-func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, action Action, amount uint64) (JupiterQuote, JupiterSwapInstruction, error) {
-	if c == nil || amount == 0 {
-		return JupiterQuote{}, JupiterSwapInstruction{}, fmt.Errorf("invalid Jupiter quote request")
+func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string, action Action, amount uint64) (jupiter.Quote, JupiterSwapInstruction, error) {
+	if client == nil || amount == 0 {
+		return jupiter.Quote{}, JupiterSwapInstruction{}, fmt.Errorf("invalid Jupiter quote request")
 	}
 	sourceMint, destinationMint, _, _, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
+		return jupiter.Quote{}, JupiterSwapInstruction{}, err
 	}
-	query := url.Values{
-		"inputMint": {sourceMint}, "outputMint": {destinationMint},
-		"amount": {strconv.FormatUint(amount, 10)}, "slippageBps": {strconv.Itoa(int(jupiterMaxSlippageBPS))},
-		"swapMode": {"ExactIn"}, "maxAccounts": {"32"},
-	}
+	request := jupiter.QuoteRequest{InputMint: sourceMint, OutputMint: destinationMint, Amount: amount, SlippageBPS: jupiterMaxSlippageBPS, MaxAccounts: 32}
+	useSharedAccounts := true
 	if catalogJupiterRoute(lane) && lane != autoAUTOPYUSD.Lane {
 		// AUTO's dialect is fixed by its reviewed policy shape (legacy
 		// SharedAccountsRoute), not by the historical catalog entries.
 		binding, err := catalogJupiterBindingForRoute(action, lane)
 		if err != nil {
-			return JupiterQuote{}, JupiterSwapInstruction{}, err
+			return jupiter.Quote{}, JupiterSwapInstruction{}, err
 		}
 		if binding.fixedPrefixV2() {
-			query.Set("instructionVersion", "V2")
+			request.InstructionVersion = "V2"
 		}
+		useSharedAccounts = binding.DiscriminatorHex == hex.EncodeToString(jupiter.SharedAccountsRouteDiscriminator[:]) || binding.fixedPrefixV2()
 	}
 	if lane == SelectedRouteID {
 		// The selected RWA representative was reviewed against Manifest. Keep
 		// Jupiter's optimizer inside that one venue family instead of accepting
 		// whichever venue happens to quote one raw unit better.
-		query.Set("dexes", "Manifest")
+		request.Dexes = "Manifest"
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/quote?"+query.Encode(), nil)
+	quote, err := client.Quote(ctx, request)
 	if err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
-	}
-	var quote JupiterQuote
-	var quoteRaw json.RawMessage
-	if quoteRaw, err = c.doJSON(request); err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
-	}
-	if err := json.Unmarshal(quoteRaw, &quote); err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, fmt.Errorf("decode Jupiter quote: %w", err)
+		return jupiter.Quote{}, JupiterSwapInstruction{}, err
 	}
 	out, minimum, err := validateJupiterQuoteForRoute(quote, action, amount, lane)
 	if err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
+		return jupiter.Quote{}, JupiterSwapInstruction{}, err
 	}
-	useSharedAccounts := true
-	if catalogJupiterRoute(lane) && lane != autoAUTOPYUSD.Lane {
-		binding, err := catalogJupiterBindingForRoute(action, lane)
-		if err != nil {
-			return JupiterQuote{}, JupiterSwapInstruction{}, err
-		}
-		useSharedAccounts = binding.DiscriminatorHex == "c1209b3341d69c81" || binding.fixedPrefixV2()
-	}
-	body, err := json.Marshal(map[string]any{
-		"userPublicKey": bridgeVault, "quoteResponse": json.RawMessage(quoteRaw),
-		"wrapAndUnwrapSol": false, "useSharedAccounts": useSharedAccounts, "dynamicComputeUnitLimit": false,
-	})
+	response, err := client.SwapInstructions(ctx, quote, solana.MustPublicKeyFromBase58(bridgeVault), useSharedAccounts)
 	if err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
+		return jupiter.Quote{}, JupiterSwapInstruction{}, err
 	}
-	request, err = http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/swap-instructions", bytes.NewReader(body))
-	if err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
+	if response.Companions() {
+		return jupiter.Quote{}, JupiterSwapInstruction{}, fmt.Errorf("Jupiter route requires unapproved companion instructions")
 	}
-	request.Header.Set("content-type", "application/json")
-	responseRaw, err := c.doJSON(request)
-	if err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
-	}
-	var response struct {
-		AddressLookupTableAddresses []string               `json:"addressLookupTableAddresses"`
-		SetupInstructions           []json.RawMessage      `json:"setupInstructions"`
-		OtherInstructions           []json.RawMessage      `json:"otherInstructions"`
-		CleanupInstruction          json.RawMessage        `json:"cleanupInstruction"`
-		TokenLedgerInstruction      json.RawMessage        `json:"tokenLedgerInstruction"`
-		SwapInstruction             JupiterSwapInstruction `json:"swapInstruction"`
-	}
-	if err := json.Unmarshal(responseRaw, &response); err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, fmt.Errorf("decode Jupiter instructions: %w", err)
-	}
-	if len(response.SetupInstructions) != 0 || len(response.OtherInstructions) != 0 || !jsonNull(response.CleanupInstruction) || !jsonNull(response.TokenLedgerInstruction) {
-		return JupiterQuote{}, JupiterSwapInstruction{}, fmt.Errorf("Jupiter route requires unapproved companion instructions")
-	}
-	if _, err := validateJupiterInstructionForRoute(response.SwapInstruction, action, amount, out, minimum, lane); err != nil {
-		return JupiterQuote{}, JupiterSwapInstruction{}, err
+	swap := response.SwapInstruction
+	instruction := JupiterSwapInstruction{ProgramID: swap.ProgramID, Accounts: swap.Accounts, Data: swap.Data}
+	if _, err := validateJupiterInstructionForRoute(instruction, action, amount, out, minimum, lane); err != nil {
+		return jupiter.Quote{}, JupiterSwapInstruction{}, err
 	}
 	if lane == RouteID || lane == "" {
-		if err := validateInstalledJupiterHeader(action, response.SwapInstruction); err != nil {
-			return JupiterQuote{}, JupiterSwapInstruction{}, err
+		if err := validateInstalledJupiterHeader(action, instruction); err != nil {
+			return jupiter.Quote{}, JupiterSwapInstruction{}, err
 		}
 	}
 	if acceptsJupiterLookupHints(lane, action) {
-		response.SwapInstruction.LookupTableAddresses = response.AddressLookupTableAddresses
+		instruction.LookupTableAddresses = response.AddressLookupTableAddresses
 		if err := validateJupiterLookupCandidates(response.AddressLookupTableAddresses); err != nil {
-			return JupiterQuote{}, JupiterSwapInstruction{}, err
+			return jupiter.Quote{}, JupiterSwapInstruction{}, err
 		}
 	}
-	return quote, response.SwapInstruction, nil
+	return quote, instruction, nil
 }
 
 // The installed Phase 1 and selected Phase 2 policies accept only legacy 37-byte
@@ -274,7 +175,7 @@ func (c *jupiterClient) freshSwapForRoute(ctx context.Context, lane string, acti
 // the manifest after the fresh instruction is built.
 func validateInstalledJupiterHeader(action Action, instruction JupiterSwapInstruction) error {
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) < 8 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
+	if err != nil || len(data) < 8 || [8]byte(data[:8]) != jupiter.SharedAccountsRouteDiscriminator {
 		return fmt.Errorf("installed Phase 1 swap policy does not authorize this Jupiter dialect")
 	}
 	if action != SwapUSDCToPrimeStep && action != SwapPrimeToUSDCStep &&
@@ -284,63 +185,7 @@ func validateInstalledJupiterHeader(action Action, instruction JupiterSwapInstru
 	return nil
 }
 
-// jupiterRateLimitRetries bounds retries of an HTTP 429. Quote and
-// swap-instruction requests have no side effects, and the selector's parallel
-// entry quotes hit the keyless rate limit in bursts (2026-09-25).
-var jupiterRateLimitBackoff = []time.Duration{250 * time.Millisecond, 750 * time.Millisecond}
-
-func (c *jupiterClient) doJSON(request *http.Request) (json.RawMessage, error) {
-	if c.apiKey != "" {
-		request.Header.Set("x-api-key", c.apiKey)
-	}
-	response, err := c.http.Do(request)
-	for _, backoff := range jupiterRateLimitBackoff {
-		if err != nil || response.StatusCode != http.StatusTooManyRequests {
-			break
-		}
-		response.Body.Close()
-		if request, err = rewindJupiterRequest(request); err != nil {
-			return nil, err
-		}
-		select {
-		case <-request.Context().Done():
-			return nil, request.Context().Err()
-		case <-time.After(backoff):
-		}
-		response, err = c.http.Do(request)
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, jupiterResponseBytes+1))
-	if err != nil || len(data) > jupiterResponseBytes {
-		return nil, fmt.Errorf("Jupiter response exceeds bounded body")
-	}
-	if response.StatusCode != http.StatusOK || !json.Valid(data) {
-		return nil, fmt.Errorf("Jupiter returned invalid HTTP %d response", response.StatusCode)
-	}
-	return data, nil
-}
-
-func rewindJupiterRequest(request *http.Request) (*http.Request, error) {
-	next := request.Clone(request.Context())
-	if request.GetBody != nil {
-		body, err := request.GetBody()
-		if err != nil {
-			return nil, err
-		}
-		next.Body = body
-	}
-	return next, nil
-}
-
-func jsonNull(value json.RawMessage) bool {
-	trimmed := bytes.TrimSpace(value)
-	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
-}
-
-func validateJupiterQuoteForRoute(quote JupiterQuote, action Action, amount uint64, lane string) (uint64, uint64, error) {
+func validateJupiterQuoteForRoute(quote jupiter.Quote, action Action, amount uint64, lane string) (uint64, uint64, error) {
 	source, destination, _, _, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
 		return 0, 0, err
@@ -356,7 +201,7 @@ func validateJupiterQuoteForRoute(quote JupiterQuote, action Action, amount uint
 	floor := out * uint64(10_000-jupiterMaxSlippageBPS) / 10_000
 	if quote.InputMint != source || quote.OutputMint != destination || quote.InAmount != strconv.FormatUint(amount, 10) ||
 		quote.SwapMode != "ExactIn" || quote.SlippageBPS > jupiterMaxSlippageBPS || minimum < floor ||
-		len(quote.RoutePlan) == 0 || len(quote.RoutePlan) > jupiterMaxRoutePlanLeg || !jsonNull(quote.PlatformFee) {
+		len(quote.RoutePlan) == 0 || len(quote.RoutePlan) > jupiterMaxRoutePlanLeg || !jupiter.Null(quote.PlatformFee) {
 		return 0, 0, fmt.Errorf("Jupiter quote identity or economics drifted")
 	}
 	return out, minimum, nil
@@ -370,14 +215,14 @@ func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Act
 	if err != nil {
 		return compiledInstruction{}, err
 	}
-	if value.ProgramID != jupiterV6Program || len(value.Accounts) == 0 || len(value.Accounts) > 64 {
+	if value.ProgramID != jupiter.ProgramID.String() || len(value.Accounts) == 0 || len(value.Accounts) > 64 {
 		return compiledInstruction{}, fmt.Errorf("Jupiter program or account set drifted")
 	}
 	data, err := base64.StdEncoding.Strict().DecodeString(value.Data)
 	if err != nil || len(data) < 28 {
 		return compiledInstruction{}, fmt.Errorf("Jupiter instruction data is malformed")
 	}
-	legacy, v2 := bytes.Equal(data[:8], jupiterSharedAccountsRoute), bytes.Equal(data[:8], jupiterSharedAccountsRouteV2)
+	legacy, v2 := [8]byte(data[:8]) == jupiter.SharedAccountsRouteDiscriminator, [8]byte(data[:8]) == jupiter.SharedAccountsRouteV2Discriminator
 	autoLane := lane == autoAUTOPYUSD.Lane
 	if autoLane && !legacy {
 		return compiledInstruction{}, fmt.Errorf("AUTO policy requires legacy sharedAccountsRoute")
@@ -397,7 +242,7 @@ func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Act
 	if selectorLane(lane) || autoLane {
 		// Both the basic swap families and the combined AUTO policy pin the
 		// platform-fee account to the Jupiter program.
-		boundaries = append(boundaries, boundary{9, jupiterV6Program, false, false})
+		boundaries = append(boundaries, boundary{9, jupiter.ProgramID.String(), false, false})
 	}
 	slippageOffset, feeOffset := len(data)-3, len(data)-1
 	if legacy {
@@ -431,41 +276,26 @@ func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Act
 		feeOffset >= len(data) || data[feeOffset] != 0 || minimum == 0 || minimum > out {
 		return compiledInstruction{}, fmt.Errorf("Jupiter instruction economics drifted")
 	}
-	return compiledInstruction{program: mustKey(jupiterV6Program), accounts: accounts, data: data}, nil
+	return compiledInstruction{program: publicKey(jupiter.ProgramID), accounts: accounts, data: data}, nil
 }
 
-// jupiterLegacyGuaranteedFloor computes the exact output floor a legacy
+// jupiterInstructionWireFloor computes the exact output floor a legacy
 // sharedAccountsRoute wire can enforce: the on-wire quoted output scaled by
 // the on-wire slippage in wide integer arithmetic. The legacy dialect carries
 // no explicit minimum-out argument, so any larger JSON threshold is advisory
-// and must never be retained as a funding guarantee. The defensive re-checks
-// tie the tail offsets to the one dialect they are valid for.
-func jupiterLegacyGuaranteedFloor(data []byte) (uint64, bool) {
-	if len(data) < 19 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
-		return 0, false
-	}
-	slippage := uint16(data[len(data)-3]) | uint16(data[len(data)-3+1])<<8
-	if slippage > jupiterMaxSlippageBPS {
-		return 0, false
-	}
-	floor := new(big.Int).Mul(new(big.Int).SetUint64(readU64(data[len(data)-11:])), big.NewInt(int64(10_000-slippage)))
-	floor.Div(floor, big.NewInt(10_000))
-	if !floor.IsUint64() {
-		return 0, false
-	}
-	return floor.Uint64(), true
-}
-
+// and must never be retained as a funding guarantee. Other dialects have no
+// such floor.
 func jupiterInstructionWireFloor(instruction JupiterSwapInstruction) (uint64, error) {
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) < 19 {
+	if err != nil {
 		return 0, fmt.Errorf("Jupiter instruction data is malformed")
 	}
-	floor, ok := jupiterLegacyGuaranteedFloor(data)
-	if !ok {
+	route, err := jupiter.DecodeSharedAccountsRoute(data)
+	if err != nil || route.SlippageBPS > jupiterMaxSlippageBPS {
 		return 0, fmt.Errorf("Jupiter AUTO wire floor unavailable")
 	}
-	return floor, nil
+	floor := new(big.Int).Mul(new(big.Int).SetUint64(route.QuotedOutAmount), big.NewInt(int64(10_000-route.SlippageBPS)))
+	return floor.Div(floor, big.NewInt(10_000)).Uint64(), nil
 }
 
 // jupiterValidateAutoRetainedMinimum rejects a retained AUTO request whose
@@ -611,7 +441,7 @@ func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, execu
 }
 
 func wrapSquadsJupiterPolicy(policy, executor, expectedDelegate publicKey, constraintIndex byte, inner compiledInstruction) (compiledInstruction, error) {
-	if executor != expectedDelegate || inner.program != mustKey(jupiterV6Program) {
+	if executor != expectedDelegate || inner.program != publicKey(jupiter.ProgramID) {
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads Jupiter policy or delegate")
 	}
 	return wrapSquadsPolicy(policy, executor, []byte{constraintIndex}, inner)

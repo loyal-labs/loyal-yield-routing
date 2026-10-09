@@ -5,6 +5,7 @@ import (
 	"math"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // Plan B3 leg 1: move idle Voltr cash into Squads beside a funded debt-free
@@ -12,7 +13,7 @@ import (
 // the 32-slot report window. The reserved exit is the complete position
 // return priced with the allocated cash already in Squads: NAV, withdraw the
 // whole position, swap, stage all Squads cash, restore, NAV.
-func observePhase3TopupAllocationAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3TopupAllocationAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (phase3BridgeAdmission, error) {
 	s, r := observation.Snapshot, evidence.Request
 	if rpc == nil || client == nil || !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain || s.Unwind || s.WithdrawalDemandRaw != 0 ||
@@ -48,7 +49,7 @@ func observePhase3TopupAllocationAdmission(ctx context.Context, rpc *chain.Clien
 	return plan, nil
 }
 
-func (d *Database) admitPhase3TopupAllocation(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+func (d *Database) admitPhase3TopupAllocation(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
 	plan, err := observePhase3TopupAllocationAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
 	if err != nil {
 		return err

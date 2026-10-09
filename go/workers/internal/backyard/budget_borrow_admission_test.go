@@ -13,11 +13,12 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // Controlled simulation and quotes around actual compilers/valuation. Real
 // deployed borrow fee behavior is separately compared in kamino_borrow_test.
-func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	o, _, _, m, _, client, accounts := fundingAdmissionFixture(t, output)
 	route := ethenaUSDePYUSD

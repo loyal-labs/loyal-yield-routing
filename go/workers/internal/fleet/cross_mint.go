@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
@@ -30,7 +31,6 @@ import (
 )
 
 const (
-	jupiterProgram     = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 	jupiterEvent       = "D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf"
 	alphaQProgram      = "ALPHAQmeA7bjrVuccPsYPiCvsi428SNwte66Srvs4pHA"
 	instructionsSysvar = "Sysvar1nstructions1111111111111111111111111"
@@ -41,9 +41,7 @@ var (
 	tokenProgram     = solana.TokenProgramID.String()
 	token2022Program = solana.Token2022ProgramID.String()
 	computeProgram   = solana.ComputeBudget.String()
-
-	jupiterRouteV2Discriminator  = []byte{187, 100, 250, 204, 49, 196, 175, 20}
-	jupiterSharedV2Discriminator = []byte{209, 152, 83, 147, 124, 254, 216, 233}
+	jupiterProgram   = jupiter.ProgramID.String()
 )
 
 type JupiterBuildClient struct {
@@ -387,13 +385,13 @@ func validateJupiterSwap(ix RouteInstruction, raw rawJupiterBuild, routes []rawJ
 		return "", errors.New("unexpected Jupiter swap program")
 	}
 	dialect, amountOffset, slipOffset, feeOffset, core := "", 0, 0, 0, 0
-	if len(ix.Data) >= 8 && bytes.Equal(ix.Data[:8], jupiterRouteV2Discriminator) {
+	if len(ix.Data) >= 8 && bytes.Equal(ix.Data[:8], jupiter.RouteV2Discriminator[:]) {
 		dialect = "route_v2"
 		amountOffset = 8
 		slipOffset = 24
 		feeOffset = 26
 		core = 10
-	} else if len(ix.Data) >= 8 && bytes.Equal(ix.Data[:8], jupiterSharedV2Discriminator) {
+	} else if len(ix.Data) >= 8 && bytes.Equal(ix.Data[:8], jupiter.SharedAccountsRouteV2Discriminator[:]) {
 		dialect = "shared_accounts_route_v2"
 		amountOffset = 9
 		slipOffset = 25
@@ -863,10 +861,10 @@ func validateCrossMintSwapPolicy(policy DecodedSquadsPolicy, table []string, lim
 		if constraint.ProgramID.String() != jupiterProgram {
 			return errors.New("finalized swap policy authorizes a non-Jupiter program")
 		}
-		expectedDisc := jupiterRouteV2Discriminator
+		expectedDisc := jupiter.RouteV2Discriminator[:]
 		offset := uint64(24)
 		if i == 1 {
-			expectedDisc = jupiterSharedV2Discriminator
+			expectedDisc = jupiter.SharedAccountsRouteV2Discriminator[:]
 			offset = 25
 		}
 		if len(constraint.AccountConstraints) != 2 || len(constraint.DataConstraints) != 3 || constraint.AccountConstraints[0].AccountIndex != map[bool]uint8{true: 1, false: 0}[i == 1] || len(constraint.AccountConstraints[0].Pubkeys) != 1 || constraint.AccountConstraints[0].Pubkeys[0].String() != binding.VaultPubkey || constraint.AccountConstraints[0].Owner != nil || len(constraint.AccountConstraints[1].Pubkeys) != 6 || constraint.AccountConstraints[1].AccountIndex != map[bool]uint8{true: 5, false: 2}[i == 1] || !exactKeySet(constraint.AccountConstraints[1].Pubkeys, atas) || constraint.AccountConstraints[1].Owner != nil || constraint.DataConstraints[0].DataOffset != 0 || constraint.DataConstraints[0].DataValue.Kind != 5 || constraint.DataConstraints[0].Operator != 0 || !bytes.Equal(constraint.DataConstraints[0].DataValue.Bytes, expectedDisc) || constraint.DataConstraints[1].DataOffset != offset || constraint.DataConstraints[1].DataValue.Kind != 1 || constraint.DataConstraints[1].Operator != 5 || constraint.DataConstraints[1].DataValue.U16 != binding.Swap.MaxSlippageBPS || constraint.DataConstraints[2].DataOffset != offset+2 || constraint.DataConstraints[2].DataValue.Kind != 0 || constraint.DataConstraints[2].Operator != 0 || constraint.DataConstraints[2].DataValue.U8 != 0 {
@@ -884,7 +882,7 @@ func validateCrossMintSwapPolicy(policy DecodedSquadsPolicy, table []string, lim
 }
 
 func swapSourceMint(ix RouteInstruction) string {
-	if len(ix.Data) >= 8 && bytes.Equal(ix.Data[:8], jupiterRouteV2Discriminator) && len(ix.Accounts) > 3 {
+	if len(ix.Data) >= 8 && bytes.Equal(ix.Data[:8], jupiter.RouteV2Discriminator[:]) && len(ix.Accounts) > 3 {
 		return ix.Accounts[3].Address
 	}
 	if len(ix.Accounts) > 6 {

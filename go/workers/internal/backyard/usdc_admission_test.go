@@ -13,20 +13,21 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Reuse the existing complete-return fixture, changing only the route's concrete
 // identities and token program. Real compilers/admission run against controlled
 // transport; no simulation, signer or live-program success is claimed here.
-func usdcReturnFixture(t *testing.T) (Observation, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func usdcReturnFixture(t *testing.T) (Observation, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	return usdcReturnFixtureForLane(t, SelectedRouteID)
 }
 
 // usdcReturnFixtureForLane maps the controlled Ethena fixture onto one basic
 // USDC-debt lane (Maple or OnRe) and its recorded Jupiter exports.
-func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	old := ethenaUSDePYUSD
 	route, _ := runtimeRoute(lane)
@@ -106,7 +107,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 			LookupTables []string
 			Instruction  struct {
 				ProgramID, DataBase64 string
-				Accounts              []JupiterInstructionAccount
+				Accounts              []jupiter.AccountMeta
 			}
 		}
 	}
@@ -114,7 +115,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 		t.Fatal(err)
 	}
 	var instruction JupiterSwapInstruction
-	client, _ := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client, _ := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var payload any
 		if req.Method == "GET" {
 			q := req.URL.Query()
@@ -139,13 +140,13 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 			binary.LittleEndian.PutUint64(wire[len(wire)-11:], out)
 			binary.LittleEndian.PutUint16(wire[len(wire)-3:], 50)
 			instruction.Data = base64.StdEncoding.EncodeToString(wire)
-			payload = JupiterQuote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 9950 / 10000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			payload = jupiter.Quote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 9950 / 10000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else {
 			payload = map[string]any{"swapInstruction": instruction, "addressLookupTableAddresses": instruction.LookupTableAddresses}
 		}
 		data, _ := json.Marshal(payload)
 		return response(string(data)), nil
-	})})
+	}))
 	o.Snapshot.RouteLane, o.Snapshot.StrategyKey = route.Lane, route.Lane
 	o.Snapshot.SquadsIdleRaw, o.Snapshot.DebtIdleRaw = 11_000, 0
 	o.Snapshot.PositionDebtValueRaw = 1000

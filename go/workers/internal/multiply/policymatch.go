@@ -21,6 +21,7 @@ import (
 	"sort"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -69,7 +70,7 @@ func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (const
 	boundary := policyBoundary{
 		vault:            topology.Vault,
 		klendProgram:     kamino.ProgramID,
-		jupiterProgram:   mustKey(JupiterProgram),
+		jupiterProgram:   jupiter.ProgramID,
 		usdcCustody:      onyc.DebtCustody,
 		pyusdCustody:     pyusd.DebtCustody,
 		usdsCustody:      usds.DebtCustody,
@@ -169,7 +170,7 @@ func swapConstraint(boundary policyBoundary, sources, destinations []solana.Publ
 		DataConstraints: []squads.DataConstraintView{{
 			DataOffset: 0,
 			DataValue: squads.DataValueView{Kind: 1, U16: binary.LittleEndian.Uint16(
-				JupiterSharedAccountsRouteDiscriminator[:2])},
+				jupiter.SharedAccountsRouteDiscriminator[:2])},
 			Operator: squads.OpEquals,
 		}},
 	}

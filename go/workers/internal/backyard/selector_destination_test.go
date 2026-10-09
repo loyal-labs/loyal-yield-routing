@@ -15,13 +15,14 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Controlled real-layout accounts and captured Jupiter instruction topology.
 // Neither fixture transport supports simulation/signing/submission.
-func selectorDestinationFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func selectorDestinationFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	return selectorDestinationFixtureForLane(t, SelectedRouteID, nil)
 }
@@ -29,7 +30,7 @@ func selectorDestinationFixture(t *testing.T) (RouteManifest, *chain.Client, *ju
 // selectorDestinationFixtureForLane builds the same controlled destination
 // for any basic-policy lane; tweak may edit the accounts before the RPC
 // fixture captures them.
-func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]ConfirmedAccount)) (RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]ConfirmedAccount)) (RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	m := basicPolicyFixtureManifest(t)
 	route, _ := runtimeRoute(lane)
@@ -150,14 +151,14 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		tweak(accounts)
 	}
 	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
-	client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client, err := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var payload any
 		switch req.URL.Path {
 		case "/quote":
 			amount, _ := strconv.ParseUint(req.URL.Query().Get("amount"), 10, 64)
-			payload = JupiterQuote{InputMint: req.URL.Query().Get("inputMint"), OutputMint: req.URL.Query().Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(amount), OtherAmountThreshold: fmt.Sprint(amount * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			payload = jupiter.Quote{InputMint: req.URL.Query().Get("inputMint"), OutputMint: req.URL.Query().Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(amount), OtherAmountThreshold: fmt.Sprint(amount * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		case "/swap-instructions":
-			var body struct{ QuoteResponse JupiterQuote }
+			var body struct{ QuoteResponse jupiter.Quote }
 			if json.NewDecoder(req.Body).Decode(&body) != nil {
 				t.Fatal("quote body")
 			}
@@ -181,7 +182,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		}
 		raw, _ := json.Marshal(payload)
 		return response(string(raw)), nil
-	})})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,11 +272,11 @@ func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
 					dst[len(raw)-1-i] = b
 				}
 			case "repayment_quote":
-				original := client.http.Transport
-				client.http.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				original := fixtureHTTP(client).Transport
+				fixtureHTTP(client).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 					if req.URL.Path == "/quote" && req.URL.Query().Get("inputMint") != bridgeUSDC {
 						amount, _ := strconv.ParseUint(req.URL.Query().Get("amount"), 10, 64)
-						raw, _ := json.Marshal(JupiterQuote{InputMint: route.Kamino.CollateralMint, OutputMint: bridgeUSDC, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(amount / 2), OtherAmountThreshold: fmt.Sprint((amount / 2) * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}})
+						raw, _ := json.Marshal(jupiter.Quote{InputMint: route.Kamino.CollateralMint, OutputMint: bridgeUSDC, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(amount / 2), OtherAmountThreshold: fmt.Sprint((amount / 2) * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}})
 						return response(string(raw)), nil
 					}
 					return original.RoundTrip(req)

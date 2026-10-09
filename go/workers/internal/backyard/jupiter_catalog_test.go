@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *testing.T) {
@@ -28,7 +30,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 			LookupTables []string
 			Instruction  struct {
 				ProgramID, DataBase64 string
-				Accounts              []JupiterInstructionAccount
+				Accounts              []jupiter.AccountMeta
 			}
 		}
 	}
@@ -103,7 +105,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 							t.Fatal("constraint absent")
 						}
 						c := p.Constraints[b.ConstraintIndex]
-						if c.ProgramID != jupiterV6Program || len(c.AccountPubkeys) != len(pinned) || len(c.Data) != 4 {
+						if c.ProgramID != jupiter.ProgramID.String() || len(c.AccountPubkeys) != len(pinned) || len(c.Data) != 4 {
 							t.Fatal("omitted compiled constraint")
 						}
 						for _, a := range c.AccountPubkeys {
@@ -138,7 +140,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 				}
 				amount, out := readU64(data[b.AmountOffset:]), readU64(data[b.AmountOffset+8:])
 				calls := 0
-				client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				client, err := fixtureJupiter(roundTripFunc(func(r *http.Request) (*http.Response, error) {
 					calls++
 					var payload any
 					if r.Method == "GET" && r.URL.Path == "/quote" {
@@ -146,7 +148,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 						if q.Get("inputMint") != b.SourceMint || q.Get("outputMint") != b.DestinationMint || q.Get("amount") != fmt.Sprint(amount) {
 							t.Fatal("quote identity drift")
 						}
-						payload = JupiterQuote{InputMint: b.SourceMint, OutputMint: b.DestinationMint, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+						payload = jupiter.Quote{InputMint: b.SourceMint, OutputMint: b.DestinationMint, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 					} else if r.Method == "POST" && r.URL.Path == "/swap-instructions" {
 						var request struct {
 							UserPublicKey     string
@@ -167,11 +169,11 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 						t.Fatal(err)
 					}
 					return response(string(encoded)), nil
-				})})
+				}))
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, returned, err := client.freshSwapForRoute(context.Background(), lane, action, amount)
+				_, returned, err := freshSwapForRoute(context.Background(), client, lane, action, amount)
 				if err != nil || calls != 2 {
 					t.Fatal("production client failed exact retained layout", err, calls)
 				}
@@ -265,7 +267,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 				for index := range pinned {
 					for _, field := range []string{"key", "signer", "writable"} {
 						mutant := instruction
-						mutant.Accounts = append([]JupiterInstructionAccount(nil), instruction.Accounts...)
+						mutant.Accounts = append([]jupiter.AccountMeta(nil), instruction.Accounts...)
 						switch field {
 						case "key":
 							mutant.Accounts[index].Pubkey = bridgeSettings

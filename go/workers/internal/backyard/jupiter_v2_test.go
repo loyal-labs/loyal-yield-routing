@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -54,7 +55,7 @@ func candidateV2Catalog(t *testing.T, edges ...string) {
 func TestCandidateJupiterV2FixedPrefixAndClient(t *testing.T) {
 	var fixture struct {
 		Rows []struct {
-			Quote        JupiterQuote
+			Quote        jupiter.Quote
 			Instruction  JupiterSwapInstruction
 			LookupTables []string
 		}
@@ -123,13 +124,13 @@ func TestCandidateJupiterV2FixedPrefixAndClient(t *testing.T) {
 		}
 		for _, index := range []int{1, 2, 5, 6, 7, 8, 9} {
 			bad := r.Instruction
-			bad.Accounts = append([]JupiterInstructionAccount(nil), r.Instruction.Accounts...)
+			bad.Accounts = append([]jupiter.AccountMeta(nil), r.Instruction.Accounts...)
 			bad.Accounts[index].Pubkey = previousBackyardVault
 			if _, err = validateCatalogJupiterInstruction(bad, action, amount, out, minimum, ethenaUSDePYUSD.Lane); err == nil {
 				t.Fatal("accepted authority/custody mutation", index)
 			}
 		}
-		client, _ := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		client, _ := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			var payload any
 			if req.Method == "GET" {
 				if req.URL.Query().Get("instructionVersion") != "V2" {
@@ -148,8 +149,8 @@ func TestCandidateJupiterV2FixedPrefixAndClient(t *testing.T) {
 			}
 			encoded, _ := json.Marshal(payload)
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(encoded))}, nil
-		})})
-		_, got, err := client.freshSwapForRoute(context.Background(), ethenaUSDePYUSD.Lane, action, amount)
+		}))
+		_, got, err := freshSwapForRoute(context.Background(), client, ethenaUSDePYUSD.Lane, action, amount)
 		if err != nil || strings.Join(got.LookupTableAddresses, ",") != strings.Join(r.LookupTables, ",") {
 			t.Fatal("V2 client failed", err)
 		}

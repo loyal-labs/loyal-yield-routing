@@ -13,15 +13,16 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // Controlled transport, not deployed-program proof. Only the exact unsigned
 // initial deposit is simulatable; all signing/send RPCs remain rejected.
-func depositAdmissionFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func depositAdmissionFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	return depositAdmissionFixtureForPosition(t, variant, false)
 }
 
-func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit bool) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit bool) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	o, _, _, m, _, client, accounts := fundingAdmissionFixture(t, 20_000)
 	route := ethenaUSDePYUSD

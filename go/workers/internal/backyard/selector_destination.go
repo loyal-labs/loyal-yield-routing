@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -311,7 +312,7 @@ func selectorDestinationLaneAuthorized(m RouteManifest, lane string) bool {
 // AUTO to the reviewed lane set remains a coordinator-owned admission decision.
 // An absent AUTO obligation still reaches the initializer request, whose
 // Multiply binding does not exist for the candidate lane, so it holds.
-func observeSelectorDestinationCandidate(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, equity uint64, sampleSlot int64) (selectorDestinationQuote, error) {
+func observeSelectorDestinationCandidate(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, equity uint64, sampleSlot int64) (selectorDestinationQuote, error) {
 	out := selectorDestinationQuote{Lane: autoAUTOPYUSD.Lane, EquityRaw: equity}
 	if _, err := m.autoPolicyBinding(); err != nil {
 		return out, err
@@ -327,7 +328,7 @@ func observeSelectorDestinationCandidate(ctx context.Context, rpc *chain.Client,
 // not a proved complete unwind. It exists solely for that forecast — the
 // public reentry wrapper keeps refusing AUTO, and the execution prestate
 // stays strictly absent-only.
-func observeSelectorDestinationCandidateReentry(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, equity uint64, sampleSlot int64, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
+func observeSelectorDestinationCandidateReentry(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, equity uint64, sampleSlot int64, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
 	out := selectorDestinationQuote{Lane: autoAUTOPYUSD.Lane, EquityRaw: equity}
 	if _, err := m.autoPolicyBinding(); err != nil {
 		return out, err
@@ -344,7 +345,7 @@ func observeSelectorDestinationCandidateReentry(ctx context.Context, rpc *chain.
 // stay explicit scalars; no invented account image reaches an RPC simulation
 // or execution admission. Its gate is unchanged: strictly the reviewed
 // selector lane set, exactly as before the candidate entry existed.
-func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
+func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
 	if !selectorLane(lane) {
 		return out, budgetHold("invalid_selector_destination")
@@ -357,7 +358,7 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 // reviewed selector lane or — solely through the explicit candidate entry —
 // through the manifest-bound AUTO authorization. No other path reaches it
 // with a non-selector lane.
-func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
+func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
@@ -921,7 +922,7 @@ func unleveredEntryCapacityDebtRaw(position KaminoPosition, accounts []Confirmed
 // receipt, swap the guaranteed redemption back to USDC and return it to
 // Voltr idle. Every wire shape here is an existing one (flat deposit,
 // collateral-only withdraw, collateral->USDC swap, stage/restore/NAV).
-func appendSelectorUnleveredTail(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount, slot, observationFloor int64, blockhash LatestBlockhash,
+func appendSelectorUnleveredTail(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount, slot, observationFloor int64, blockhash LatestBlockhash,
 	swap JupiterExecutionEvidence, minimum, liquidity uint64, deposit func(uint64, uint64, uint64, []string) error,
 	appendInput func(any, ExpectedEffects) error, appendBridge func(Action, uint64, uint64, uint64, uint64) error, out *selectorDestinationQuote) error {
 	entry := swap.Request.MinimumOutputRaw

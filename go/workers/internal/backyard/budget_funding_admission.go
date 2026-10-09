@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -113,7 +114,7 @@ func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRe
 			return bound, nil, err
 		}
 		offset = binding.SlippageOffset
-	} else if len(wire) >= 8 && bytes.Equal(wire[:8], jupiterSharedAccountsRouteV2) {
+	} else if len(wire) >= 8 && bytes.Equal(wire[:8], jupiter.SharedAccountsRouteV2Discriminator[:]) {
 		offset = 25
 	}
 	if offset < 0 || offset+2 > len(wire) {
@@ -138,7 +139,7 @@ func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRe
 // Covers the actual funding swap, its preceding NAV, and the NAV after funding.
 // Reserve payoff, remaining collateral withdrawal, all residue and bridge/NAV
 // steps together. All projected balances below are cost-only, never RPC writes.
-func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error) {
+func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s := observation.Snapshot
@@ -460,7 +461,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 	return plan, nil
 }
 
-func (d *Database) admitPhase3Funding(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
+func (d *Database) admitPhase3Funding(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
 	plan, err := observePhase3FundingAdmission(ctx, rpc, client, manifest, observation, decision, request, effects)
 	if err != nil {
 		return err

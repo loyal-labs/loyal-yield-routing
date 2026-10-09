@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 
@@ -57,7 +58,7 @@ func connectedSwapPolicy(t *testing.T, binding CrossMintPolicyBindings, seed uin
 	t.Helper()
 	data, _ := connectedPolicyHeaderForIndex(t, binding.Settings, binding.DelegatedSigner, seed, binding.VaultIndex)
 	data = appendU32x(data, 2)
-	for i, disc := range [][]byte{jupiterRouteV2Discriminator, jupiterSharedV2Discriminator} {
+	for i, disc := range [][]byte{jupiter.RouteV2Discriminator[:], jupiter.SharedAccountsRouteV2Discriminator[:]} {
 		key, _ := decodePublicKey(jupiterProgram)
 		data = append(data, key[:]...)
 		data = appendU32x(data, 2)

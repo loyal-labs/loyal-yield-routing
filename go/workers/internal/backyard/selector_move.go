@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // A complete move includes the existing source exit and destination entry.
 // Its evidence authorizes no transaction; runtime still reserves and rebuilds
 // each leg against actual balances. A destination is reselected after unwind.
-func observeSelectorMove(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, lane string, requestedEquity, idleBuffer uint64) (MoveQuote, error) {
+func observeSelectorMove(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, lane string, requestedEquity, idleBuffer uint64) (MoveQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var empty MoveQuote

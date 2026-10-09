@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // Extracted from retained compiled+installed policy evidence, not fresh quotes.
@@ -151,7 +153,7 @@ func catalogJupiterBindingForRoute(action Action, lane string) (catalogJupiterBi
 }
 
 func (b catalogJupiterBinding) fixedPrefixV2() bool {
-	return b.DiscriminatorHex == "d19853937cfed8e9"
+	return b.DiscriminatorHex == hex.EncodeToString(jupiter.SharedAccountsRouteV2Discriminator[:])
 }
 
 // V2 places economics before its variable route vector. This only recognizes
@@ -179,7 +181,7 @@ func validateCatalogJupiterInstruction(value JupiterSwapInstruction, action Acti
 		return compiledInstruction{}, err
 	}
 	data, err := base64.StdEncoding.Strict().DecodeString(value.Data)
-	if err != nil || !b.matchesData(data) || value.ProgramID != jupiterV6Program || len(value.Accounts) > 64 ||
+	if err != nil || !b.matchesData(data) || value.ProgramID != jupiter.ProgramID.String() || len(value.Accounts) > 64 ||
 		amount == 0 || amount > b.MaxInputRaw || minimum == 0 || minimum > out ||
 		readU64(data[b.AmountOffset:]) != amount || readU64(data[b.AmountOffset+8:]) != out ||
 		uint16(data[b.SlippageOffset])|uint16(data[b.SlippageOffset+1])<<8 > b.MaxSlippageBPS || data[b.FeeOffset] != 0 {
@@ -213,5 +215,5 @@ func validateCatalogJupiterInstruction(value JupiterSwapInstruction, action Acti
 		}
 		accounts[i] = accountMeta{key: key, signer: input.IsSigner, writable: input.IsWritable}
 	}
-	return compiledInstruction{program: mustKey(jupiterV6Program), accounts: accounts, data: data}, nil
+	return compiledInstruction{program: publicKey(jupiter.ProgramID), accounts: accounts, data: data}, nil
 }

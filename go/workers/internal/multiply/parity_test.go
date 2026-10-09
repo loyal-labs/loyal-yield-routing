@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -341,8 +342,8 @@ func TestConstraintIndexesPerActionAndStrategy(t *testing.T) {
 			t.Fatal(err)
 		}
 		route := Instruction{
-			ProgramID: mustKey(JupiterProgram),
-			Data:      append([]byte(nil), JupiterSharedAccountsRouteDiscriminator[:]...),
+			ProgramID: jupiter.ProgramID,
+			Data:      append([]byte(nil), jupiter.SharedAccountsRouteDiscriminator[:]...),
 		}
 		route.Data = append(route.Data, 0, 2, 0, 0, 0) // routing enum + 2 legs
 		route.Data = append(route.Data, make([]byte, 24)...)
@@ -426,13 +427,13 @@ func TestBuildKlendOperationsWireShape(t *testing.T) {
 // bind the actual topology custodies the builder hands the request.
 type fakeQuoteClient struct{ topology *EarnMaxTopology }
 
-func (f fakeQuoteClient) FetchQuote(ctx contextT, request QuoteRequest) (*QuoteResponse, error) {
+func (f fakeQuoteClient) Quote(ctx contextT, request jupiter.QuoteRequest) (jupiter.Quote, error) {
 	if request.InputMint == request.OutputMint {
-		return nil, errors.New("fixture only supports real swaps")
+		return jupiter.Quote{}, errors.New("fixture only supports real swaps")
 	}
 	output := request.Amount * 99 / 100
 	minimum := (output*9_950 + 9_999) / 10_000
-	return &QuoteResponse{
+	return jupiter.Quote{
 		InputMint: request.InputMint, OutputMint: request.OutputMint, SwapMode: "ExactIn",
 		InAmount:             strconv.FormatUint(request.Amount, 10),
 		OutAmount:            strconv.FormatUint(output, 10),
@@ -443,10 +444,10 @@ func (f fakeQuoteClient) FetchQuote(ctx contextT, request QuoteRequest) (*QuoteR
 	}, nil
 }
 
-func (f fakeQuoteClient) FetchSwapInstructions(ctx contextT, quote *QuoteResponse, vault solana.PublicKey) (*SwapInstructionsResponse, error) {
+func (f fakeQuoteClient) SwapInstructions(ctx contextT, quote jupiter.Quote, vault solana.PublicKey, useSharedAccounts bool) (jupiter.SwapInstructions, error) {
 	config := f.topology.Strategies[SyrupUsdcUsdc]
 	source, destination := f.topology.ClaimCustody, config.CollateralCustody
-	data := append([]byte(nil), JupiterSharedAccountsRouteDiscriminator[:]...)
+	data := append([]byte(nil), jupiter.SharedAccountsRouteDiscriminator[:]...)
 	data = append(data, 0, 1, 0, 0, 0) // routing enum + one leg
 	data = append(data, make([]byte, 11)...)
 	input, _ := strconv.ParseUint(quote.InAmount, 10, 64)
@@ -456,19 +457,19 @@ func (f fakeQuoteClient) FetchSwapInstructions(ctx contextT, quote *QuoteRespons
 	binary.LittleEndian.PutUint64(tail[8:16], output)
 	binary.LittleEndian.PutUint16(tail[16:18], 50)
 	data = append(data, tail[:]...)
-	return &SwapInstructionsResponse{
-		SwapInstruction: &RawInstruction{
-			ProgramID: JupiterProgram,
-			Accounts: []RawAccountMeta{
-				{PubKey: fixtureKey(7).String()},
-				{PubKey: fixtureKey(8).String()},
-				{PubKey: vault.String(), IsSigner: true},
-				{PubKey: source.String(), IsWritable: true},
-				{PubKey: fixtureKey(10).String()},
-				{PubKey: fixtureKey(11).String()},
-				{PubKey: destination.String(), IsWritable: true},
-				{PubKey: USDCMint},
-				{PubKey: quote.OutputMint},
+	return jupiter.SwapInstructions{
+		SwapInstruction: jupiter.Instruction{
+			ProgramID: jupiter.ProgramID.String(),
+			Accounts: []jupiter.AccountMeta{
+				{Pubkey: fixtureKey(7).String()},
+				{Pubkey: fixtureKey(8).String()},
+				{Pubkey: vault.String(), IsSigner: true},
+				{Pubkey: source.String(), IsWritable: true},
+				{Pubkey: fixtureKey(10).String()},
+				{Pubkey: fixtureKey(11).String()},
+				{Pubkey: destination.String(), IsWritable: true},
+				{Pubkey: USDCMint},
+				{Pubkey: quote.OutputMint},
 			},
 			Data: base64.StdEncoding.EncodeToString(data),
 		},
@@ -487,7 +488,7 @@ func TestBuildSwapBindsCustodyAndChecksRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(built.PolicyInstructions) != 1 || built.PolicyInstructions[0].ProgramID != mustKey(JupiterProgram) {
+	if len(built.PolicyInstructions) != 1 || built.PolicyInstructions[0].ProgramID != jupiter.ProgramID {
 		t.Fatal("swap terminal drifted")
 	}
 	if built.ExpectedEffects.TokenDeltas[0].RawDelta != -1_000_000 ||

@@ -5,33 +5,34 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
 type residualQuoteFixture struct {
 	topology *EarnMaxTopology
-	request  *QuoteRequest
+	request  *jupiter.QuoteRequest
 	deny     bool
 }
 
-func (f *residualQuoteFixture) FetchQuote(ctx contextT, request QuoteRequest) (*QuoteResponse, error) {
+func (f *residualQuoteFixture) Quote(ctx contextT, request jupiter.QuoteRequest) (jupiter.Quote, error) {
 	copy := request
 	f.request = &copy
 	if f.deny {
-		return nil, errors.New("no executable market route")
+		return jupiter.Quote{}, errors.New("no executable market route")
 	}
-	return (fakeQuoteClient{f.topology}).FetchQuote(ctx, request)
+	return (fakeQuoteClient{f.topology}).Quote(ctx, request)
 }
-func (f *residualQuoteFixture) FetchSwapInstructions(ctx contextT, quote *QuoteResponse, vault solana.PublicKey) (*SwapInstructionsResponse, error) {
-	response, err := (fakeQuoteClient{f.topology}).FetchSwapInstructions(ctx, quote, vault)
+func (f *residualQuoteFixture) SwapInstructions(ctx contextT, quote jupiter.Quote, vault solana.PublicKey, useSharedAccounts bool) (jupiter.SwapInstructions, error) {
+	response, err := (fakeQuoteClient{f.topology}).SwapInstructions(ctx, quote, vault, useSharedAccounts)
 	if err != nil {
-		return nil, err
+		return jupiter.SwapInstructions{}, err
 	}
 	config := f.topology.Strategies[SyrupUsdcPyusd]
-	response.SwapInstruction.Accounts[3].PubKey = config.DebtCustody.String()
-	response.SwapInstruction.Accounts[6].PubKey = config.CollateralCustody.String()
-	response.SwapInstruction.Accounts[7].PubKey = quote.InputMint
-	response.SwapInstruction.Accounts[8].PubKey = quote.OutputMint
+	response.SwapInstruction.Accounts[3].Pubkey = config.DebtCustody.String()
+	response.SwapInstruction.Accounts[6].Pubkey = config.CollateralCustody.String()
+	response.SwapInstruction.Accounts[7].Pubkey = quote.InputMint
+	response.SwapInstruction.Accounts[8].Pubkey = quote.OutputMint
 	return response, nil
 }
 

@@ -9,11 +9,12 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // This is controlled production planning/admission, not execution of a release.
 // Real-program borrow/deposit witnesses remain separate verifier measurements.
-func fundingContinuationFixture(t *testing.T, output uint64) (Observation, Decision, BridgeExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func fundingContinuationFixture(t *testing.T, output uint64) (Observation, Decision, BridgeExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	o, _, _, m, rpc, client, accounts := fundingAdmissionFixtureForSource(t, output, SwapUSDCToDebtStep)
 	route := ethenaUSDePYUSD

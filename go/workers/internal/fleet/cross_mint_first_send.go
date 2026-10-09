@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -355,7 +356,7 @@ func decodeCrossMintSignedSwap(outer RouteInstruction, b CrossMintPolicyBindings
 		inner.Accounts[i].Signer, inner.Accounts[i].Writable = false, false
 	}
 	core := 10
-	if len(inner.Data) >= 8 && bytes.Equal(inner.Data[:8], jupiterSharedV2Discriminator) {
+	if len(inner.Data) >= 8 && bytes.Equal(inner.Data[:8], jupiter.SharedAccountsRouteV2Discriminator[:]) {
 		core = 12
 	}
 	if len(inner.Accounts) < core+14 || len(inner.Accounts) > core+16 {

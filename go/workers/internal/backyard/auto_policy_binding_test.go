@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -182,19 +183,19 @@ func autoJupiterTestInstruction(t *testing.T, action Action, amount, out uint64,
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts := make([]JupiterInstructionAccount, 10+filler)
+	accounts := make([]jupiter.AccountMeta, 10+filler)
 	for index := range accounts {
-		accounts[index] = JupiterInstructionAccount{Pubkey: autoVenueKey(byte(index))}
+		accounts[index] = jupiter.AccountMeta{Pubkey: autoVenueKey(byte(index))}
 	}
-	accounts[0] = JupiterInstructionAccount{Pubkey: classicTokenProgram}
-	accounts[2] = JupiterInstructionAccount{Pubkey: bridgeVault, IsSigner: true}
-	accounts[3] = JupiterInstructionAccount{Pubkey: sourceATA, IsWritable: true}
-	accounts[6] = JupiterInstructionAccount{Pubkey: destinationATA, IsWritable: true}
-	accounts[7] = JupiterInstructionAccount{Pubkey: sourceMint}
-	accounts[8] = JupiterInstructionAccount{Pubkey: destinationMint}
-	accounts[9] = JupiterInstructionAccount{Pubkey: jupiterV6Program}
+	accounts[0] = jupiter.AccountMeta{Pubkey: classicTokenProgram}
+	accounts[2] = jupiter.AccountMeta{Pubkey: bridgeVault, IsSigner: true}
+	accounts[3] = jupiter.AccountMeta{Pubkey: sourceATA, IsWritable: true}
+	accounts[6] = jupiter.AccountMeta{Pubkey: destinationATA, IsWritable: true}
+	accounts[7] = jupiter.AccountMeta{Pubkey: sourceMint}
+	accounts[8] = jupiter.AccountMeta{Pubkey: destinationMint}
+	accounts[9] = jupiter.AccountMeta{Pubkey: jupiter.ProgramID.String()}
 	data := make([]byte, 37)
-	copy(data, jupiterSharedAccountsRoute)
+	copy(data, jupiter.SharedAccountsRouteDiscriminator[:])
 	plan, err := hex.DecodeString("01010000007400640001")
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +206,7 @@ func autoJupiterTestInstruction(t *testing.T, action Action, amount, out uint64,
 		data[26+index] = byte(out >> (8 * index))
 	}
 	data[34], data[35], data[36] = 50, 0, 0
-	return JupiterSwapInstruction{ProgramID: jupiterV6Program, Accounts: accounts, Data: base64.StdEncoding.EncodeToString(data)}
+	return JupiterSwapInstruction{ProgramID: jupiter.ProgramID.String(), Accounts: accounts, Data: base64.StdEncoding.EncodeToString(data)}
 }
 
 func autoJupiterTestRequest(t *testing.T, action Action, amount, out uint64, filler int) JupiterSwapRequest {
@@ -528,7 +529,7 @@ func TestAutoJupiterCandidateCompilesOnlyAgainstTheReviewedBinding(t *testing.T)
 	// The combined policy pins the legacy SharedAccountsRoute dialect.
 	v2 := request
 	v2Data, _ := base64.StdEncoding.Strict().DecodeString(v2.Instruction.Data)
-	copy(v2Data[:8], jupiterSharedAccountsRouteV2)
+	copy(v2Data[:8], jupiter.SharedAccountsRouteV2Discriminator[:])
 	v2.Instruction.Data = base64.StdEncoding.EncodeToString(v2Data)
 	if _, err := manifest.compileJupiterMessage(v2, delegate); err == nil || !strings.Contains(err.Error(), "requires legacy sharedAccountsRoute") {
 		t.Fatalf("V2 dialect compiled under the combined policy: %v", err)
@@ -536,7 +537,7 @@ func TestAutoJupiterCandidateCompilesOnlyAgainstTheReviewedBinding(t *testing.T)
 	// Boundary 9 stays the Jupiter platform-fee pin. The account slice is
 	// shared between request copies, so the drift case needs its own vector.
 	drifted := request
-	drifted.Instruction.Accounts = append([]JupiterInstructionAccount(nil), request.Instruction.Accounts...)
+	drifted.Instruction.Accounts = append([]jupiter.AccountMeta(nil), request.Instruction.Accounts...)
 	drifted.Instruction.Accounts[9].Pubkey = classicTokenProgram
 	if _, err := manifest.compileJupiterMessage(drifted, delegate); err == nil || !strings.Contains(err.Error(), "boundary 9 drifted") {
 		t.Fatalf("platform-fee pin drift compiled: %v", err)
@@ -736,7 +737,7 @@ func TestAutoQuoteEvidenceThroughCandidateManifest(t *testing.T) {
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: newJSONBody(response), Header: make(http.Header)}, nil
 	})
-	client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: transport})
+	client, err := fixtureJupiter(transport)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -836,7 +837,7 @@ func TestAutoQuoteEvidencePreparesChainLookupTablesForOversizedEdges(t *testing.
 		}
 		return &http.Response{StatusCode: http.StatusOK, Body: newJSONBody(response), Header: make(http.Header)}, nil
 	})
-	client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: transport})
+	client, err := fixtureJupiter(transport)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // A prospective reverse quote is not evidence of current custody. Validate only
@@ -70,7 +71,7 @@ func validateEntrySwap(ctx context.Context, rpc *chain.Client, request JupiterSw
 // Reserve an immediate complete exit after the initial USDC/collateral swap.
 // The later deposit/borrow must independently reprice and extend this reserve;
 // pricing an entry conversion does not authorize those future transactions.
-func observePhase3EntrySwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3EntrySwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, observation Observation, decision Decision, evidence JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := observation.Snapshot, evidence.Request
@@ -127,7 +128,7 @@ func observePhase3EntrySwapAdmission(ctx context.Context, rpc *chain.Client, cli
 	return plan, nil
 }
 
-func (d *Database) admitPhase3EntrySwap(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
+func (d *Database) admitPhase3EntrySwap(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
 	plan, err := observePhase3EntrySwapAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
 	if err != nil {
 		return err

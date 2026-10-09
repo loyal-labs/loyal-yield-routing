@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -14,7 +15,7 @@ import (
 // largest possible debt residue (source balance minus minimum repayment), then
 // full collateral withdrawal, both conversions, and the complete bridge return.
 // Partial repayment/release-for-funding and new borrowing are different graphs.
-func observePhase3PayoffAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3PayoffAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, request := observation.Snapshot, evidence.Request
@@ -46,11 +47,11 @@ func observePhase3PayoffAdmission(ctx context.Context, rpc *chain.Client, client
 // Used both immediately after the proposed payoff (cost-only poststate) and
 // for the actual NAV following a reconciled payoff. Templates never become the
 // next current instruction: withdrawal is prepared and admitted again later.
-func pricePhase3PositionReturn(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool) (phase3BridgeAdmission, error) {
+func pricePhase3PositionReturn(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool) (phase3BridgeAdmission, error) {
 	return pricePhase3PositionReturnAfterFunding(ctx, rpc, client, manifest, post, decision, request, effects, afterPayoff, nil, nil)
 }
 
-func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence, release *KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence, release *KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	s := post.Snapshot
 	if rpc == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" ||
 		s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
@@ -225,7 +226,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	return plan, nil
 }
 
-func (d *Database) admitPhase3PositionReturnNAV(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+func (d *Database) admitPhase3PositionReturnNAV(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
 	if decision.Action != ReportNAV || evidence.Request.Action != ReportNAV || decision.AmountRaw != 0 || evidence.Request.AmountRaw != 0 ||
 		evidence.Request.Report.ObservedSlot != uint64(observation.Snapshot.Slot) || evidence.Request.Report.Sequence != uint64(observation.Snapshot.Slot) {
 		return budgetHold("post_payoff_nav_intent_mismatch")

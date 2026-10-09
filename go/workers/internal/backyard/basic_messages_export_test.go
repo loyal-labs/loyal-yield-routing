@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 type basicMessageAccount struct {
@@ -64,9 +66,9 @@ type basicMessageExport struct {
 }
 
 type recordedJupiterInstruction struct {
-	ProgramID  string                      `json:"programId"`
-	Accounts   []JupiterInstructionAccount `json:"accounts"`
-	DataBase64 string                      `json:"dataBase64"`
+	ProgramID  string                `json:"programId"`
+	Accounts   []jupiter.AccountMeta `json:"accounts"`
+	DataBase64 string                `json:"dataBase64"`
 }
 
 func (instruction recordedJupiterInstruction) runtime() JupiterSwapInstruction {
@@ -199,7 +201,7 @@ func exportBasicJupiterMessage(t *testing.T, manifest RouteManifest, lane string
 	for index := 0; index < row.Quote.RoutePlanLength; index++ {
 		quotePlan = append(quotePlan, json.RawMessage(`{"swapInfo":{"label":"recorded-policy-header"}}`))
 	}
-	quote := JupiterQuote{InAmount: row.Quote.InAmountRaw, OutAmount: row.Quote.OutAmountRaw, OtherAmountThreshold: row.Quote.OtherAmountThresholdRaw, SwapMode: "ExactIn", SlippageBPS: 50, PlatformFee: json.RawMessage("null"), RoutePlan: quotePlan}
+	quote := jupiter.Quote{InAmount: row.Quote.InAmountRaw, OutAmount: row.Quote.OutAmountRaw, OtherAmountThreshold: row.Quote.OtherAmountThresholdRaw, SwapMode: "ExactIn", SlippageBPS: 50, PlatformFee: json.RawMessage("null"), RoutePlan: quotePlan}
 	quote.InputMint, quote.OutputMint, _, _, _ = jupiterEdgeForRoute(action, lane)
 	amount, err := parseUint(quote.InAmount)
 	if err != nil {

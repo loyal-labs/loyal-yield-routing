@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // A reentry forecast carries the completed source exit that precedes this
@@ -24,7 +25,7 @@ type selectorReentryForecast struct {
 // recipe always includes obligation-recreation rent and the exact initializer
 // fee. Every flat execution admission/build/send prerequisite stays enforced
 // where it already lives; nothing here relaxes one.
-func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, source selectorSourceQuote, maximum uint64, clampCapacity bool) (selectorDestinationQuote, error) {
+func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, source selectorSourceQuote, maximum uint64, clampCapacity bool) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s := o.Snapshot

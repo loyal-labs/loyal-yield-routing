@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
@@ -38,7 +39,7 @@ func jupiterBuildForVault(t *testing.T, vault string, amount, quoted uint64, sli
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := append([]byte{}, jupiterRouteV2Discriminator...)
+	data := append([]byte{}, jupiter.RouteV2Discriminator[:]...)
 	data = appendU64x(data, amount)
 	data = appendU64x(data, quoted)
 	data = append(data, byte(slippage), byte(slippage>>8), 0)
