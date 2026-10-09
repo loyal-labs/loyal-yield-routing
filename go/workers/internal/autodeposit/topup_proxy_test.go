@@ -10,16 +10,18 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 	var err error
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, 32))
 	plan, _ := testPullPlan()
-	plan.Target.VaultUsdcAta, err = usdcATA(mustKey(plan.Target.VaultPubkey))
+	ata, err := spl.AssociatedTokenAddress(mustKey(plan.Target.VaultPubkey), mustKey(USDCMint), solana.TokenProgramID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	plan.Target.VaultUsdcAta = ata.String()
 	plan.Target.VaultTokenAta = plan.Target.VaultUsdcAta
 	obligation, err := vanillaObligationKey(mustKey(plan.Target.VaultPubkey), mustKey(plan.Market))
 	if err != nil {

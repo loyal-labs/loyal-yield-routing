@@ -20,6 +20,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -665,27 +666,21 @@ func (p *PositionSweep) observeVault(ctx context.Context, vault string, reserves
 	return out, nil
 }
 
-// positionSweepTokenAmount is Rust decode_spl_token_account_amount: a missing
-// account is zero; an existing one must be owned by the expected token
-// program and hold the expected mint.
+// positionSweepTokenAmount reads a vault token account: a missing account is
+// zero; an existing one must be a valid account of the expected token
+// program and mint.
 func positionSweepTokenAmount(a *chain.Account, mint, program string) (int64, bool, error) {
 	if a == nil {
 		return 0, false, nil
 	}
-	if a.Owner.String() != program {
-		return 0, false, sweepInvariant("token account %s is owned by %s, expected %s", a.Key, a.Owner, program)
+	held, err := spl.DecodeTokenAccount(a)
+	if err != nil || held.Program.String() != program || held.Mint.String() != mint {
+		return 0, false, sweepInvariant("token account %s is not a %s account of mint %s: %v", a.Key, program, mint, err)
 	}
-	if len(a.Data) < 72 {
-		return 0, false, sweepInvariant("token account %s data too short", a.Key)
-	}
-	if sdk.PublicKeyFromBytes(a.Data[:32]).String() != mint {
-		return 0, false, sweepInvariant("token account %s mint does not match expected %s", a.Key, mint)
-	}
-	amount := binary.LittleEndian.Uint64(a.Data[64:72])
-	if amount > math.MaxInt64 {
+	if held.Amount > math.MaxInt64 {
 		return 0, false, sweepInvariant("token account %s balance does not fit Postgres BIGINT", a.Key)
 	}
-	return int64(amount), true, nil
+	return int64(held.Amount), true, nil
 }
 
 type positionSweepObligationSummary struct {

@@ -613,10 +613,11 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 		if collateral[name] > math.MaxInt64 {
 			return bank, errors.New("cross-mint position amount exceeds SQL custody range")
 		}
-		if err := validateVaultTokenAccount(bank.at(p.Position.VaultLiquidityATA), mint, m.VaultPubkey); err != nil {
+		held, err := validateVaultTokenAccount(bank.at(p.Position.VaultLiquidityATA), mint, m.VaultPubkey)
+		if err != nil {
 			return bank, err
 		}
-		if binary.LittleEndian.Uint64(bank.accounts[p.Position.VaultLiquidityATA].Data[64:72]) > math.MaxInt64 {
+		if held.Amount > math.MaxInt64 {
 			return bank, errors.New("cross-mint aggregate balance exceeds SQL custody range")
 		}
 		if err := validateStableMint(bank.at(mint), mint); err != nil {
@@ -808,7 +809,7 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 		*bank = fresh
 		for _, mint := range additional {
 			ata, _ := deriveATA(m.VaultPubkey, mint, mustStableProgram(mint))
-			if err := validateVaultTokenAccount(bank.at(ata), mint, m.VaultPubkey); err != nil {
+			if _, err := validateVaultTokenAccount(bank.at(ata), mint, m.VaultPubkey); err != nil {
 				return nil, effect, anchors, err
 			}
 		}
@@ -970,10 +971,11 @@ func (r *Revalidator) checkCrossMintCustody(q CrossMintPreparationRequest, bank 
 		return errors.New("cross-mint custody is not the canonical vault ATA")
 	}
 	a := bank.accounts[m.CustodyAccount]
-	if err := validateVaultTokenAccount(&a, m.CustodyMint, m.VaultPubkey); err != nil {
+	held, err := validateVaultTokenAccount(&a, m.CustodyMint, m.VaultPubkey)
+	if err != nil {
 		return err
 	}
-	amount := binary.LittleEndian.Uint64(a.Data[64:72])
+	amount := held.Amount
 	if amount > math.MaxInt64 || int64(amount) != *m.CustodyObservedBalanceRaw || amount < uint64(m.CustodyAmountRaw) {
 		return errors.New("finalized custody aggregate differs from historical attribution")
 	}

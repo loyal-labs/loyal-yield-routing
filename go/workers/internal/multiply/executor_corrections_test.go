@@ -201,7 +201,7 @@ func TestEffectsRejectOverspendMissingAnchorsAndAcceptBoundedSwap(t *testing.T) 
 func TestPolicyUnderAnotherOwnerIsRefused(t *testing.T) {
 	executor, fake, _ := testExecutor(t)
 	policy := fixtureKey(4)
-	fake.accounts = map[solana.PublicKey]*chain.Account{policy: {Key: policy, Owner: mustKey(TokenProgram), Lamports: 1, Data: []byte{0}}}
+	fake.accounts = map[solana.PublicKey]*chain.Account{policy: {Key: policy, Owner: solana.TokenProgramID, Lamports: 1, Data: []byte{0}}}
 	if _, _, err := executor.policyAccount(context.Background(), policy, 0); err == nil {
 		t.Fatal("policy under wrong owner accepted")
 	}
@@ -218,7 +218,7 @@ func TestLookupTableRequiresActiveCompleteMetadata(t *testing.T) {
 	}
 	for _, bad := range []*chain.Account{
 		nil,
-		{Key: tableKey, Owner: mustKey(TokenProgram), Data: active.Data},
+		{Key: tableKey, Owner: solana.TokenProgramID, Data: active.Data},
 		{Key: tableKey, Owner: solana.AddressLookupTableProgramID, Data: active.Data[:len(active.Data)-1]},
 		{Key: tableKey, Owner: solana.AddressLookupTableProgramID, Data: make([]byte, len(active.Data))},
 	} {

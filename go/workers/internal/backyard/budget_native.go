@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/solana-foundation/solana-go/v2"
+
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
@@ -11,7 +13,8 @@ import (
 // program, market and mint filters. This is NOT an executable runtime lane.
 const budgetSOLReserve = "d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q"
 const budgetSOLMarket = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
-const budgetWrappedSOLMint = "So11111111111111111111111111111111111111112"
+
+var budgetWrappedSOLMint = solana.WrappedSol.String()
 
 func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, minimumSlot int64) (BudgetPrice, error) {
 	if rpc == nil || minimumSlot <= 0 {

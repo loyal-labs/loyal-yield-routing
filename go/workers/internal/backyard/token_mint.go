@@ -1,55 +1,29 @@
 package backyard
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
+)
 
 // validateExecutionMint checks current transfer semantics, not a stablecoin
 // symbol or historical mint snapshot. Authority identities still belong to the
 // lane's pinned evidence. Confidential account operations are not supported by
 // DecodeTokenCustody even when the mint permits creating such accounts.
 func validateExecutionMint(account ConfirmedAccount, program string, decimals uint8) error {
-	data := account.Data
-	if account.Owner != program || account.Executable || len(data) < 82 || decimals > 18 || data[44] != decimals || data[45] != 1 || binary.LittleEndian.Uint32(data[:4]) > 1 || binary.LittleEndian.Uint32(data[46:50]) > 1 {
-		return budgetHold("execution_mint_metadata_mismatch")
-	}
-	if program == classicTokenProgram {
-		if len(data) != 82 {
-			return budgetHold("execution_mint_layout_mismatch")
-		}
-		return nil
-	}
-	if program != token2022Program {
-		return budgetHold("execution_mint_program_mismatch")
-	}
-	if len(data) == 82 {
-		return nil
-	}
-	if len(data) < 170 || len(data) == 355 || data[165] != 1 {
+	owner, _ := solana.PublicKeyFromBase58(account.Owner)
+	mint, err := spl.DecodeMint(&chain.Account{Owner: owner, Executable: account.Executable, Data: account.Data})
+	if err != nil {
 		return budgetHold("execution_mint_layout_mismatch")
 	}
-	for _, b := range data[82:165] {
-		if b != 0 {
-			return budgetHold("execution_mint_layout_mismatch")
-		}
+	if account.Owner != program || decimals > 18 || mint.Decimals != decimals {
+		return budgetHold("execution_mint_metadata_mismatch")
 	}
-	seen := map[uint16]bool{}
-	for tail := data[166:]; len(tail) > 0; {
-		if len(tail) < 4 {
-			return budgetHold("execution_mint_tlv_truncated")
-		}
-		kind, length := binary.LittleEndian.Uint16(tail[:2]), int(binary.LittleEndian.Uint16(tail[2:4]))
-		if kind == 0 {
-			for _, b := range tail {
-				if b != 0 {
-					return budgetHold("execution_mint_padding_invalid")
-				}
-			}
-			return nil
-		}
-		if seen[kind] || length > len(tail)-4 {
-			return budgetHold("execution_mint_tlv_invalid")
-		}
-		seen[kind] = true
-		value := tail[4 : 4+length]
+	for _, extension := range mint.Extensions {
+		kind, value, length := extension.Type, extension.Value, len(extension.Value)
 		valid := false
 		switch kind {
 		case 1: // TransferFeeConfig: reject both current and scheduled fees.
@@ -82,7 +56,6 @@ func validateExecutionMint(account ConfirmedAccount, program string, decimals ui
 		if !valid {
 			return budgetHold("execution_mint_extension_malformed")
 		}
-		tail = tail[4+length:]
 	}
 	return nil
 }

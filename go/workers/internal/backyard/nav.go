@@ -3,12 +3,16 @@ package backyard
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"math/big"
 	"regexp"
 	"sort"
+
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 type DecodedTokenCustody struct {
@@ -16,91 +20,36 @@ type DecodedTokenCustody struct {
 	TokenProgram string
 }
 
-// DecodeTokenCustody handles the common 165-byte token-account base for both
-// programs and validates Token-2022's account-type marker before accepting TLV
-// extensions. The exact mint and custody authority are caller-pinned bytes.
+// DecodeTokenCustody decodes a plain, unfrozen custody account of either
+// token program: no delegate, close authority or wrapped SOL, and only
+// Token-2022 extensions that cannot change its spendability or accounting.
+// The exact mint and custody authority are caller-pinned bytes.
 func DecodeTokenCustody(programOwner string, data []byte, expectedMint, expectedAuthority [32]byte) (DecodedTokenCustody, error) {
 	if bytes.Equal(expectedMint[:], make([]byte, 32)) || bytes.Equal(expectedAuthority[:], make([]byte, 32)) {
 		return DecodedTokenCustody{}, fmt.Errorf("zero token identity")
 	}
-	switch programOwner {
-	case classicTokenProgram:
-		if len(data) != 165 {
-			return DecodedTokenCustody{}, fmt.Errorf("classic SPL token account has extensions or truncation")
-		}
-	case token2022Program:
-		if len(data) != 165 {
-			if err := validateCustodyExtensions(data); err != nil {
-				return DecodedTokenCustody{}, err
-			}
-		}
-	default:
-		return DecodedTokenCustody{}, fmt.Errorf("unknown token program owner")
+	owner, _ := solana.PublicKeyFromBase58(programOwner)
+	held, err := spl.DecodeTokenAccount(&chain.Account{Owner: owner, Data: data})
+	if err != nil {
+		return DecodedTokenCustody{}, err
 	}
-	if !bytes.Equal(data[:32], expectedMint[:]) || !bytes.Equal(data[32:64], expectedAuthority[:]) {
+	if held.Mint != expectedMint || held.Owner != expectedAuthority {
 		return DecodedTokenCustody{}, fmt.Errorf("token custody mint or authority mismatch")
 	}
-	// Frozen accounts (state=2) are readable but cannot safely participate in
-	// a money-moving lifecycle.
-	if data[108] != 1 {
+	// Frozen accounts are readable but cannot safely participate in a
+	// money-moving lifecycle.
+	if held.Frozen {
 		return DecodedTokenCustody{}, fmt.Errorf("token custody is not initialized")
 	}
 	// The MVP pins plain custody accounts. Extra authority state is not present
 	// in the manifest and therefore fails closed.
-	if binary.LittleEndian.Uint32(data[72:76]) != 0 ||
-		binary.LittleEndian.Uint32(data[109:113]) != 0 ||
-		binary.LittleEndian.Uint32(data[129:133]) != 0 {
+	if held.Delegate != nil || held.IsNative || held.HasCloseAuthority {
 		return DecodedTokenCustody{}, fmt.Errorf("token custody has unsupported authority state")
 	}
-	return DecodedTokenCustody{Raw: binary.LittleEndian.Uint64(data[64:72]), TokenProgram: programOwner}, nil
-}
-
-// Account-side checks only: mint transfer-fee schedules, hook program and
-// authorities must also be checked at execution observation. Unknown account
-// extensions cannot silently change the custody's spendability or accounting.
-func validateCustodyExtensions(data []byte) error {
-	if len(data) < 170 || len(data) == 355 || data[165] != 2 {
-		return fmt.Errorf("invalid extended Token-2022 custody layout")
+	if err := held.UnrestrictedBalance(); err != nil {
+		return DecodedTokenCustody{}, err
 	}
-	seen := map[uint16]bool{}
-	for tail := data[166:]; len(tail) > 0; {
-		if len(tail) < 4 {
-			return fmt.Errorf("truncated custody extension header")
-		}
-		kind := binary.LittleEndian.Uint16(tail[:2])
-		length := int(binary.LittleEndian.Uint16(tail[2:4]))
-		if kind == 0 {
-			for _, b := range tail {
-				if b != 0 {
-					return fmt.Errorf("nonzero custody extension padding")
-				}
-			}
-			return nil
-		}
-		if seen[kind] || length > len(tail)-4 {
-			return fmt.Errorf("duplicate or truncated custody extension")
-		}
-		seen[kind] = true
-		value := tail[4 : 4+length]
-		switch kind {
-		case 2: // TransferFeeAmount: withheld tokens are not spendable custody.
-			if length != 8 || binary.LittleEndian.Uint64(value) != 0 {
-				return fmt.Errorf("unsupported custody withheld fee")
-			}
-		case 7: // ImmutableOwner has an empty payload.
-			if length != 0 {
-				return fmt.Errorf("invalid immutable-owner extension")
-			}
-		case 15: // TransferHookAccount must not be in a transferring state.
-			if length != 1 || value[0] != 0 {
-				return fmt.Errorf("unsupported custody transfer-hook state")
-			}
-		default:
-			return fmt.Errorf("unsupported custody extension %d", kind)
-		}
-		tail = tail[4+length:]
-	}
-	return nil
+	return DecodedTokenCustody{Raw: held.Amount, TokenProgram: programOwner}, nil
 }
 
 // ValueRawUSDC converts token raw units at a micro-dollar price. Assets round

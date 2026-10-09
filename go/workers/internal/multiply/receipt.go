@@ -126,7 +126,7 @@ func validateConfirmedReceipt(op *MultiplyOperation, topology *EarnMaxTopology, 
 	}
 	for _, balances := range []map[solana.PublicKey]chain.TokenBalance{r.Pre, r.Post} {
 		for _, balance := range balances {
-			if balance.Mint.IsZero() || balance.Owner.IsZero() || (balance.Program != mustKey(TokenProgram) && balance.Program != mustKey(Token2022Program)) {
+			if balance.Mint.IsZero() || balance.Owner.IsZero() || (balance.Program != solana.TokenProgramID && balance.Program != solana.Token2022ProgramID) {
 				return nil, errors.New("receipt token metadata has an invalid mint, owner or program")
 			}
 		}

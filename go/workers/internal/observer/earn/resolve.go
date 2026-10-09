@@ -13,6 +13,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -264,27 +265,6 @@ func classifyCashFlow(t earnTransaction, update NormalizedUpdate, vault watch.Va
 	return result, nil
 }
 
-// decodeTokenAccount is decode_token_account for SPL Token and Token-2022.
-func decodeTokenAccount(account *chain.Account) (mint, owner solana.PublicKey, amount uint64, err error) {
-	data := account.Data
-	switch account.Owner {
-	case tokenProgram:
-		if len(data) != 165 {
-			return mint, owner, 0, errors.New("invalid SPL token account length")
-		}
-	case token2022Program:
-		if len(data) < 165 || len(data) > 165 && (len(data) < 166 || data[165] != 2) {
-			return mint, owner, 0, errors.New("invalid Token-2022 account layout")
-		}
-	default:
-		return mint, owner, 0, fmt.Errorf("account has unsupported token program %s", account.Owner)
-	}
-	if data[108] == 0 || data[108] > 2 {
-		return mint, owner, 0, errors.New("token account is not initialized")
-	}
-	return solana.PublicKeyFromBytes(data[0:32]), solana.PublicKeyFromBytes(data[32:64]), binary.LittleEndian.Uint64(data[64:72]), nil
-}
-
 type obligationState struct {
 	market, owner solana.PublicKey
 	deposits      []struct {
@@ -431,14 +411,14 @@ func readCleanupProof(ctx context.Context, rpc *chain.Client, vault watch.Vault,
 			if account == nil {
 				continue
 			}
-			mint, owner, amount, err := decodeTokenAccount(account)
+			held, err := spl.DecodeTokenAccount(account)
 			if err != nil {
 				return proof, err
 			}
-			if owner != vaultKey {
-				return proof, fmt.Errorf("idle account %s belongs to %s, expected %s", binding.Pubkey, owner, vaultKey)
+			if held.Owner != vaultKey {
+				return proof, fmt.Errorf("idle account %s belongs to %s, expected %s", binding.Pubkey, held.Owner, vaultKey)
 			}
-			if amount > 0 && (!knownStable(mint) || amount >= dustThreshold) {
+			if held.Amount > 0 && (!knownStable(held.Mint) || held.Amount >= dustThreshold) {
 				proof.balancesZero = false
 			}
 		case "obligation":
@@ -484,23 +464,23 @@ func blockingTokenInventory(ctx context.Context, rpc *chain.Client, vault solana
 		}
 		for _, account := range accounts {
 			address := account.Key
-			mint, owner, amount, err := decodeTokenAccount(&account)
+			held, err := spl.DecodeTokenAccount(&account)
 			if err != nil {
 				return false, fmt.Errorf("decode owner token account %s: %w", address, err)
 			}
-			if owner != vault {
-				return false, fmt.Errorf("token inventory query returned account %s for owner %s", address, owner)
+			if held.Owner != vault {
+				return false, fmt.Errorf("token inventory query returned account %s for owner %s", address, held.Owner)
 			}
-			if amount == 0 {
+			if held.Amount == 0 {
 				continue
 			}
 			productIdle := false
 			for _, stable := range earnStables {
-				if stable.program == program && stable.mint == mint && associatedToken(vault, stable.mint, stable.program) == address {
+				if stable.program == program && stable.mint == held.Mint && associatedToken(vault, stable.mint, stable.program) == address {
 					productIdle = true
 				}
 			}
-			if !productIdle || amount >= dustThreshold {
+			if !productIdle || held.Amount >= dustThreshold {
 				return true, nil
 			}
 		}
@@ -739,14 +719,14 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 		if account == nil {
 			continue
 		}
-		mint, owner, amount, err := decodeTokenAccount(account)
+		held, err := spl.DecodeTokenAccount(account)
 		if err != nil {
 			return vaultSnapshot{}, err
 		}
-		if owner != vaultKey {
-			return vaultSnapshot{}, fmt.Errorf("Earn idle account %s belongs to %s, expected %s", address, owner, vaultKey)
+		if held.Owner != vaultKey {
+			return vaultSnapshot{}, fmt.Errorf("Earn idle account %s belongs to %s, expected %s", address, held.Owner, vaultKey)
 		}
-		snapshot.idles = append(snapshot.idles, EarnIdleTokenMutation{Mint: mint.String(), AmountRaw: amount, Owner: owner.String(),
+		snapshot.idles = append(snapshot.idles, EarnIdleTokenMutation{Mint: held.Mint.String(), AmountRaw: held.Amount, Owner: held.Owner.String(),
 			TokenAccount: address.String(), ObservedSlot: slot, SourceCommitment: confirmedCommitment})
 	}
 	return snapshot, nil

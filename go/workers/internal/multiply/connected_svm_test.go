@@ -27,6 +27,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 type multiplySVMBank struct {
@@ -397,7 +398,7 @@ func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string
 		accounts[config.DebtFarmUser.String()] = &chain.Account{Key: *config.DebtFarmUser, Owner: mustKey(FarmsProgram), Data: []byte{0}, Lamports: 10_000_000}
 	}
 	for _, mint := range []solana.PublicKey{mustKey(USDCMint), mustKey(config.CollateralMint)} {
-		pool, err := DeriveAssociatedTokenAccount(multiplyBankSwapAuthority(), mint, mustKey(TokenProgram))
+		pool, err := spl.AssociatedTokenAddress(multiplyBankSwapAuthority(), mint, solana.TokenProgramID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -410,7 +411,7 @@ func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string
 		copy(data[4:36], config.MarketAuthority[:])
 		binary.LittleEndian.PutUint64(data[36:44], 1_000_000_000)
 		data[44], data[45] = 6, 1
-		accounts[mint.String()] = &chain.Account{Key: mint, Owner: mustKey(TokenProgram), Lamports: 10_000_000, Data: data}
+		accounts[mint.String()] = &chain.Account{Key: mint, Owner: solana.TokenProgramID, Lamports: 10_000_000, Data: data}
 	}
 	return accounts
 }
@@ -455,16 +456,16 @@ func (c multiplyBankQuoteClient) FetchSwapInstructions(ctx contextT, quote *Quot
 		return nil, err
 	}
 	inputMint, outputMint := mustKey(quote.InputMint), mustKey(quote.OutputMint)
-	source, err := DeriveAssociatedTokenAccount(vault, inputMint, mustKey(TokenProgram))
+	source, err := spl.AssociatedTokenAddress(vault, inputMint, solana.TokenProgramID)
 	if err != nil {
 		return nil, err
 	}
-	destination, err := DeriveAssociatedTokenAccount(vault, outputMint, mustKey(TokenProgram))
+	destination, err := spl.AssociatedTokenAddress(vault, outputMint, solana.TokenProgramID)
 	if err != nil {
 		return nil, err
 	}
-	poolSource, _ := DeriveAssociatedTokenAccount(multiplyBankSwapAuthority(), inputMint, mustKey(TokenProgram))
-	poolDestination, _ := DeriveAssociatedTokenAccount(multiplyBankSwapAuthority(), outputMint, mustKey(TokenProgram))
+	poolSource, _ := spl.AssociatedTokenAddress(multiplyBankSwapAuthority(), inputMint, solana.TokenProgramID)
+	poolDestination, _ := spl.AssociatedTokenAddress(multiplyBankSwapAuthority(), outputMint, solana.TokenProgramID)
 	event, _, err := solana.FindProgramAddress([][]byte{[]byte("__event_authority")}, mustKey(JupiterProgram))
 	if err != nil {
 		return nil, err
@@ -475,7 +476,7 @@ func (c multiplyBankQuoteClient) FetchSwapInstructions(ctx contextT, quote *Quot
 	binary.LittleEndian.PutUint64(tail[8:16], output)
 	binary.LittleEndian.PutUint16(tail[16:18], 50)
 	data = append(data, tail[:]...)
-	keys := []solana.PublicKey{mustKey(TokenProgram), multiplyBankSwapAuthority(), vault, source, poolSource, poolDestination, destination, inputMint, outputMint, mustKey(JupiterProgram), mustKey(JupiterProgram), event, mustKey(JupiterProgram)}
+	keys := []solana.PublicKey{solana.TokenProgramID, multiplyBankSwapAuthority(), vault, source, poolSource, poolDestination, destination, inputMint, outputMint, mustKey(JupiterProgram), mustKey(JupiterProgram), event, mustKey(JupiterProgram)}
 	var metas []RawAccountMeta
 	for i, key := range keys {
 		metas = append(metas, RawAccountMeta{PubKey: key.String(), IsSigner: i == 2, IsWritable: i >= 3 && i <= 6})

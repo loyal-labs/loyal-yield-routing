@@ -16,12 +16,14 @@ import (
 	"math/bits"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -31,14 +33,15 @@ const (
 	jupiterProgram     = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 	jupiterEvent       = "D8cy77BBepLMngZx6ZukaTff5hCt1HrWyKk3Hnd9oitf"
 	alphaQProgram      = "ALPHAQmeA7bjrVuccPsYPiCvsi428SNwte66Srvs4pHA"
-	tokenProgram       = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	token2022Program   = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
-	computeProgram     = "ComputeBudget111111111111111111111111111111"
 	instructionsSysvar = "Sysvar1nstructions1111111111111111111111111"
 	maxJupiterResponse = 2_000_000
 )
 
 var (
+	tokenProgram     = solana.TokenProgramID.String()
+	token2022Program = solana.Token2022ProgramID.String()
+	computeProgram   = solana.ComputeBudget.String()
+
 	jupiterRouteV2Discriminator  = []byte{187, 100, 250, 204, 49, 196, 175, 20}
 	jupiterSharedV2Discriminator = []byte{209, 152, 83, 147, 124, 254, 216, 233}
 )
@@ -464,7 +467,7 @@ func validateJupiterSwap(ix RouteInstruction, raw rawJupiterBuild, routes []rawJ
 	if len(ix.Accounts) != expectedCount {
 		return "", errors.New("invalid AlphaQ residual account count")
 	}
-	protected := map[string]bool{vault: true, inputATA: true, outputATA: true, raw.InputMint: true, raw.OutputMint: true, tokenProgram: true, token2022Program: true, "11111111111111111111111111111111": true, "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL": true, computeProgram: true, jupiterProgram: true, jupiterEvent: true, alphaQProgram: true, instructionsSysvar: true}
+	protected := map[string]bool{vault: true, inputATA: true, outputATA: true, raw.InputMint: true, raw.OutputMint: true, tokenProgram: true, token2022Program: true, solana.SystemProgramID.String(): true, solana.SPLAssociatedTokenAccountProgramID.String(): true, computeProgram: true, jupiterProgram: true, jupiterEvent: true, alphaQProgram: true, instructionsSysvar: true}
 	cursor := core
 	source := inputATA
 	if dialect == "shared_accounts_route_v2" {
@@ -535,37 +538,29 @@ func equalMetas(a, b []InstructionAccount) bool {
 	return true
 }
 func validateIdempotentATA(ix RouteInstruction, vault string) bool {
-	if ix.Program != "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL" || len(ix.Accounts) != 6 || !bytes.Equal(ix.Data, []byte{1}) || ix.Accounts[0] != (InstructionAccount{vault, true, true}) || ix.Accounts[2] != (InstructionAccount{vault, false, false}) || ix.Accounts[4] != (InstructionAccount{"11111111111111111111111111111111", false, false}) {
+	if len(ix.Accounts) != 6 {
 		return false
 	}
-	mint := ix.Accounts[3].Address
-	program, ok := stableTokenProgram(mint)
-	if !ok || ix.Accounts[5] != (InstructionAccount{program, false, false}) {
+	program, ok := stableTokenProgram(ix.Accounts[3].Address)
+	vaultKey, err := solana.PublicKeyFromBase58(vault)
+	if !ok || err != nil {
 		return false
 	}
-	ata, err := deriveATA(vault, mint, program)
-	return err == nil && ix.Accounts[1] == (InstructionAccount{ata, false, true})
+	want := RouteInstructionOf(ix.Step, spl.CreateIdempotentATA(vaultKey, vaultKey, solana.MustPublicKeyFromBase58(ix.Accounts[3].Address), solana.MustPublicKeyFromBase58(program)))
+	return ix.Program == want.Program && bytes.Equal(ix.Data, want.Data) && slices.Equal(ix.Accounts, want.Accounts)
 }
 
 func deriveATA(owner, mint, program string) (string, error) {
-	ownerKey, err := solana.PublicKeyFromBase58(owner)
-	if err != nil {
-		return "", err
+	keys := make([]solana.PublicKey, 3)
+	for i, value := range []string{owner, mint, program} {
+		key, err := solana.PublicKeyFromBase58(value)
+		if err != nil {
+			return "", err
+		}
+		keys[i] = key
 	}
-	mintKey, err := solana.PublicKeyFromBase58(mint)
-	if err != nil {
-		return "", err
-	}
-	programKey, err := solana.PublicKeyFromBase58(program)
-	if err != nil {
-		return "", err
-	}
-	ataProgram, _ := solana.PublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-	address, _, err := solana.FindProgramAddress([][]byte{ownerKey[:], programKey[:], mintKey[:]}, ataProgram)
-	if err != nil {
-		return "", err
-	}
-	return address.String(), nil
+	address, err := spl.AssociatedTokenAddress(keys[0], keys[1], keys[2])
+	return address.String(), err
 }
 
 func minimumProfitableCrossMintOutput(planJSON json.RawMessage, sourceAmount uint64, sourceAPY, targetAPY int64) (uint64, error) {
@@ -704,99 +699,53 @@ func (r *Revalidator) loadFinalizedJupiterTables(ctx context.Context, listed map
 	return tables, nil
 }
 
-func validateToken2022Extensions(data []byte, accountType byte) error {
-	if len(data) <= 165 {
-		return errors.New("Token-2022 account omits account type")
-	}
-	if data[165] != accountType {
-		return errors.New("Token-2022 account has wrong account type")
-	}
-	for offset := 166; offset < len(data); {
-		if len(data)-offset < 4 {
-			if bytes.Equal(data[offset:], make([]byte, len(data)-offset)) {
-				return nil
+// validateStableMintExtensions admits only mint extensions that cannot
+// change raw transfer accounting: no fee, hook or non-initialized default
+// account state.
+func validateStableMintExtensions(extensions []spl.Extension) error {
+	for _, extension := range extensions {
+		value := extension.Value
+		switch extension.Type {
+		case 3, 4, 12, 16, 18, 19:
+		case 6:
+			if len(value) != 1 || value[0] != 1 {
+				return errors.New("Token-2022 default account state is not initialized")
 			}
-			return errors.New("truncated Token-2022 extension")
-		}
-		kind := binary.LittleEndian.Uint16(data[offset:])
-		size := int(binary.LittleEndian.Uint16(data[offset+2:]))
-		offset += 4
-		if size > len(data)-offset {
-			return errors.New("truncated Token-2022 extension data")
-		}
-		value := data[offset : offset+size]
-		offset += size
-		if kind == 0 {
-			if !bytes.Equal(value, make([]byte, len(value))) {
-				return errors.New("nonzero Token-2022 padding")
+		case 1:
+			if len(value) != 108 || binary.LittleEndian.Uint64(value[80:88]) != 0 || binary.LittleEndian.Uint16(value[88:90]) != 0 || binary.LittleEndian.Uint64(value[98:106]) != 0 || binary.LittleEndian.Uint16(value[106:108]) != 0 {
+				return errors.New("Token-2022 mint has a nonzero transfer fee")
 			}
-			continue
-		}
-		if accountType == 1 {
-			switch kind {
-			case 3, 4, 12, 16, 18, 19:
-			case 6:
-				if len(value) != 1 || value[0] != 1 {
-					return errors.New("Token-2022 default account state is not initialized")
-				}
-			case 1:
-				if len(value) != 108 || binary.LittleEndian.Uint64(value[80:88]) != 0 || binary.LittleEndian.Uint16(value[88:90]) != 0 || binary.LittleEndian.Uint64(value[98:106]) != 0 || binary.LittleEndian.Uint16(value[106:108]) != 0 {
-					return errors.New("Token-2022 mint has a nonzero transfer fee")
-				}
-			case 14:
-				if len(value) != 64 || !bytes.Equal(value[32:], make([]byte, 32)) {
-					return errors.New("Token-2022 mint has an active transfer hook")
-				}
-			default:
-				return errors.New("Token-2022 mint has an unsupported extension")
+		case 14:
+			if len(value) != 64 || !bytes.Equal(value[32:], make([]byte, 32)) {
+				return errors.New("Token-2022 mint has an active transfer hook")
 			}
-		} else {
-			switch kind {
-			case 7:
-			case 2:
-				if len(value) != 8 || binary.LittleEndian.Uint64(value) != 0 {
-					return errors.New("Token-2022 account has withheld transfer fees")
-				}
-			case 15:
-				if len(value) != 1 || value[0] != 0 {
-					return errors.New("Token-2022 account is inside a transfer hook")
-				}
-			default:
-				return errors.New("Token-2022 token account has an unsupported extension")
-			}
+		default:
+			return errors.New("Token-2022 mint has an unsupported extension")
 		}
 	}
 	return nil
 }
 
-func validateStableAccount(account *chain.Account, mint, owner string) error {
+// validateStableAccount admits mint's canonical-program account held by
+// owner; a Token-2022 one must carry the extended layout.
+func validateStableAccount(account *chain.Account, mint, owner string) (spl.TokenAccount, error) {
 	program, ok := stableTokenProgram(mint)
-	if !ok || account == nil || account.Owner.String() != program {
-		return errors.New("stable token account has wrong canonical program")
+	held, err := spl.DecodeTokenAccount(account)
+	if !ok || err != nil || held.Program.String() != program || held.Mint.String() != mint || held.Owner.String() != owner || held.Frozen || program == token2022Program && len(account.Data) <= 165 {
+		return spl.TokenAccount{}, errors.New("stable token account program, binding or state is invalid")
 	}
-	if len(account.Data) < 165 || encodeBase58(account.Data[:32]) != mint || encodeBase58(account.Data[32:64]) != owner || account.Data[108] != 1 {
-		return errors.New("stable token account binding or state is invalid")
+	if err := held.UnrestrictedBalance(); err != nil {
+		return spl.TokenAccount{}, err
 	}
-	if program == token2022Program {
-		return validateToken2022Extensions(account.Data, 2)
-	}
-	if len(account.Data) != 165 {
-		return errors.New("classic token account has extensions")
-	}
-	return nil
+	return held, nil
 }
 func validateStableMint(account *chain.Account, mint string) error {
 	program, ok := stableTokenProgram(mint)
-	if !ok || account == nil || account.Key.String() != mint || account.Owner.String() != program || len(account.Data) < 82 || account.Data[44] != 6 || account.Data[45] != 1 {
+	decoded, err := spl.DecodeMint(account)
+	if !ok || err != nil || account.Key.String() != mint || decoded.Program.String() != program || decoded.Decimals != 6 || program == token2022Program && len(account.Data) <= 165 {
 		return errors.New("stable mint binding, decimals, or state is invalid")
 	}
-	if program == token2022Program {
-		return validateToken2022Extensions(account.Data, 1)
-	}
-	if len(account.Data) != 82 {
-		return errors.New("classic mint has extensions")
-	}
-	return nil
+	return validateStableMintExtensions(decoded.Extensions)
 }
 
 type swapSpendingLimit struct {
@@ -1238,7 +1187,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 		bank = fresh
 		for _, mint := range additionalMints {
 			ata, _ := deriveATA(lease.VaultPubkey, mint, mustStableProgram(mint))
-			if e := validateVaultTokenAccount(bank.at(ata), mint, lease.VaultPubkey); e != nil {
+			if _, e := validateVaultTokenAccount(bank.at(ata), mint, lease.VaultPubkey); e != nil {
 				return out, e
 			}
 		}

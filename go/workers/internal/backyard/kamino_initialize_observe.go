@@ -152,10 +152,8 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client,
 	if emergency, err := decodeKaminoMarketEmergency(accountAt(accounts, route.Kamino.Market), route.Kamino); err != nil || emergency {
 		return 0, budgetHold("initializer_market_unavailable")
 	}
-	// Each seed mint must exist under its route's own reviewed token program:
-	// installed lanes are classic/classic and keep the exact installed check;
-	// the candidate AUTO debt is PYUSD under Token-2022, so it goes through
-	// the same execution-mint parser as every other admitted leg (extension
+	// Each seed mint must exist under its route's own reviewed token program
+	// and pass the execution-mint parser every admitted leg uses (extension
 	// whitelist, transfer fee and transfer hook disabled). The parser's
 	// decimals argument pins the observed decimals byte to the supported
 	// scale, the same <=18 bound decodeKaminoReserve enforces elsewhere;
@@ -165,16 +163,7 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client,
 		{route.Kamino.DebtMint, route.DebtTokenProgram},
 	} {
 		a := accountAt(accounts, mint.address)
-		if a.Owner != mint.program || a.Executable || a.Lamports == 0 {
-			return 0, budgetHold("initializer_seed_mint_unavailable")
-		}
-		if mint.program == classicTokenProgram {
-			if len(a.Data) != 82 || a.Data[45] != 1 {
-				return 0, budgetHold("initializer_seed_mint_unavailable")
-			}
-			continue
-		}
-		if len(a.Data) < 82 || validateExecutionMint(a, token2022Program, a.Data[44]) != nil {
+		if a.Lamports == 0 || len(a.Data) < 82 || validateExecutionMint(a, mint.program, a.Data[44]) != nil {
 			return 0, budgetHold("initializer_seed_mint_unavailable")
 		}
 	}

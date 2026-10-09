@@ -13,6 +13,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 	"math"
@@ -107,7 +108,7 @@ func canonicalCustodyTokenProgram(mint string) (string, error) {
 	case fleet.USDCMint, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA":
 		return sdk.TokenProgramID.String(), nil
 	case "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo":
-		return "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", nil
+		return sdk.Token2022ProgramID.String(), nil
 	default:
 		return "", errors.New("custody mint is outside canonical Earn registry")
 	}
@@ -117,28 +118,14 @@ func custodyTokenAmount(a *chain.Account, mint, owner string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if a == nil || a.Owner.String() != program || a.Executable || a.Lamports == 0 || len(a.Data) < 165 || a.Data[108] != 1 || sdk.PublicKeyFromBytes(a.Data[:32]).String() != mint || sdk.PublicKeyFromBytes(a.Data[32:64]).String() != owner {
+	held, err := spl.DecodeTokenAccount(a)
+	if err != nil || a.Lamports == 0 || held.Program.String() != program || held.Frozen || held.Mint.String() != mint || held.Owner.String() != owner {
 		return 0, errors.New("custody token envelope, authority, mint or state differs")
 	}
-	if program == sdk.TokenProgramID.String() && len(a.Data) != 165 {
-		return 0, errors.New("classic SPL custody account has wrong length")
-	}
-	// StateWithExtensions<Account>::unpack permits an unextended 165-byte base;
-	// extended data must have AccountType::Account at 165 and a nonempty TLV
-	// slice. The multisig length is explicitly excluded by the pinned SDK.
-	if program != sdk.TokenProgramID.String() && len(a.Data) != 165 && (len(a.Data) <= 166 || len(a.Data) == 355 || a.Data[165] != 2) {
-		return 0, errors.New("Token-2022 custody account type or length differs")
-	}
-	for _, offset := range []int{72, 109, 129} {
-		if binary.LittleEndian.Uint32(a.Data[offset:offset+4]) > 1 {
-			return 0, errors.New("token account optional authority/native tag invalid")
-		}
-	}
-	raw := binary.LittleEndian.Uint64(a.Data[64:72])
-	if raw > math.MaxInt64 {
+	if held.Amount > math.MaxInt64 {
 		return 0, errors.New("custody balance exceeds BIGINT")
 	}
-	return int64(raw), nil
+	return int64(held.Amount), nil
 }
 
 // Token custody requires a recognized signature AT the anchor slot. Empty or

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -20,7 +21,7 @@ var (
 	loyalHubProgram      = solana.MustPublicKeyFromBase58("LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH")
 	subscriptionsProgram = solana.MustPublicKeyFromBase58("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44")
 	tokenProgram         = solana.TokenProgramID
-	token2022Program     = solana.MustPublicKeyFromBase58("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+	token2022Program     = solana.Token2022ProgramID
 	usdcMint             = solana.MustPublicKeyFromBase58(fleet.USDCMint)
 	rentSysvar           = solana.SysVarRentPubkey
 
@@ -92,7 +93,11 @@ func squadsVault(settings solana.PublicKey, index uint8) solana.PublicKey {
 }
 
 func associatedToken(owner, mint, program solana.PublicKey) solana.PublicKey {
-	return pda(solana.SPLAssociatedTokenAccountProgramID, owner[:], program[:], mint[:])
+	key, err := spl.AssociatedTokenAddress(owner, mint, program)
+	if err != nil {
+		panic(err)
+	}
+	return key
 }
 
 func vanillaObligation(vault, market solana.PublicKey) solana.PublicKey {

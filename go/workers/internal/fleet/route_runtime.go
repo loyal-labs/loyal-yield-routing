@@ -19,6 +19,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 // FarmsProgram owns Kamino obligation farm user states.
@@ -464,18 +465,16 @@ func paddedComputeUnits(measured uint64) uint64 {
 }
 
 func computeBudgetInstructions(limit uint32, price uint64) []RouteInstruction {
-	limitData := make([]byte, 5)
-	limitData[0] = 2
-	limitData[1] = byte(limit)
-	limitData[2] = byte(limit >> 8)
-	limitData[3] = byte(limit >> 16)
-	limitData[4] = byte(limit >> 24)
-	priceData := []byte{3}
-	for i := 0; i < 8; i++ {
-		priceData = append(priceData, byte(price))
-		price >>= 8
+	return []RouteInstruction{RouteInstructionOf("compute_unit_limit", spl.SetComputeUnitLimit(limit)), RouteInstructionOf("compute_unit_price", spl.SetComputeUnitPrice(price))}
+}
+
+// RouteInstructionOf is ix as one public route step.
+func RouteInstructionOf(step string, ix *solana.GenericInstruction) RouteInstruction {
+	out := RouteInstruction{Step: step, Program: ix.ProgID.String(), Data: ix.DataBytes}
+	for _, account := range ix.AccountValues {
+		out.Accounts = append(out.Accounts, InstructionAccount{account.PublicKey.String(), account.IsSigner, account.IsWritable})
 	}
-	return []RouteInstruction{{Step: "compute_unit_limit", Program: "ComputeBudget111111111111111111111111111111", Data: limitData}, {Step: "compute_unit_price", Program: "ComputeBudget111111111111111111111111111111", Data: priceData}}
+	return out
 }
 
 // Match the retained executor's stable_fingerprint identity contract. Exact
@@ -607,7 +606,8 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if freshSource.Position.LiquidityTokenProgram != freshTarget.Position.LiquidityTokenProgram || accounts[4] == nil || accounts[4].Owner.String() != freshSource.Position.LiquidityTokenProgram {
 		return f, errors.New("same-mint reserve token programs differ from vault custody")
 	}
-	if err := validateVaultTokenAccount(accounts[4], lease.LiquidityMint, lease.VaultPubkey); err != nil {
+	idle, err := validateVaultTokenAccount(accounts[4], lease.LiquidityMint, lease.VaultPubkey)
+	if err != nil {
 		return f, err
 	}
 	if accounts[5] == nil || accounts[5].Owner.String() != SquadsProgram {
@@ -661,7 +661,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 		}
 	}
 	f.evidence = FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey}
-	f.evidence.Anchors = ExecutionBalanceAnchors{SourceObligation: source.Obligation, TargetObligation: target.Obligation, VaultLiquidityATA: source.Position.VaultLiquidityATA, SourceReserve: lease.SourceReserve, TargetReserve: lease.TargetReserve, SourceMarket: source.Position.Market, TargetMarket: target.Position.Market, SourceCollateralMint: source.Position.CollateralMint, TargetCollateralMint: target.Position.CollateralMint, LiquidityTokenProgram: source.Position.LiquidityTokenProgram, Owner: lease.VaultPubkey, Mint: lease.LiquidityMint, SourceCollateralRaw: sourceCollateral, TargetCollateralRaw: targetCollateral, IdleLiquidityRaw: binary.LittleEndian.Uint64(accounts[4].Data[64:72]), MinimumSlot: slot}
+	f.evidence.Anchors = ExecutionBalanceAnchors{SourceObligation: source.Obligation, TargetObligation: target.Obligation, VaultLiquidityATA: source.Position.VaultLiquidityATA, SourceReserve: lease.SourceReserve, TargetReserve: lease.TargetReserve, SourceMarket: source.Position.Market, TargetMarket: target.Position.Market, SourceCollateralMint: source.Position.CollateralMint, TargetCollateralMint: target.Position.CollateralMint, LiquidityTokenProgram: source.Position.LiquidityTokenProgram, Owner: lease.VaultPubkey, Mint: lease.LiquidityMint, SourceCollateralRaw: sourceCollateral, TargetCollateralRaw: targetCollateral, IdleLiquidityRaw: idle.Amount, MinimumSlot: slot}
 	f.input = KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: freshSource.Position, Target: freshTarget.Position, WithdrawCollateralAmount: sourceCollateral, DepositLiquidityAmount: redeemable,
 		TargetObligationMissing: targetMissing, SourceFarmUserMissing: missingFarmUser[0], TargetFarmUserMissing: missingFarmUser[1], Payer: r.signer, VaultRentTopUpLamports: topUp}
 	return f, nil
@@ -725,8 +725,7 @@ func DeriveVaultReserveAccounts(position KaminoPositionAccounts, vault string) (
 	}
 	mint, _ := solana.PublicKeyFromBase58(position.LiquidityMint)
 	tokenProgram, _ := solana.PublicKeyFromBase58(position.LiquidityTokenProgram)
-	associated, _ := solana.PublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-	ata, _, err := solana.FindProgramAddress([][]byte{vaultKey[:], tokenProgram[:], mint[:]}, associated)
+	ata, err := spl.AssociatedTokenAddress(vaultKey, mint, tokenProgram)
 	if err != nil {
 		return KaminoPositionAccounts{}, err
 	}
@@ -782,9 +781,9 @@ func decodeObligation(account *chain.Account, expectedMarket, expectedOwner, exp
 	return expectedAmount, nil
 }
 
-func validateVaultTokenAccount(account *chain.Account, expectedMint, expectedOwner string) error {
-	if account == nil || account.Executable || account.Lamports == 0 {
-		return errors.New("vault token account is not funded token custody")
+func validateVaultTokenAccount(account *chain.Account, expectedMint, expectedOwner string) (spl.TokenAccount, error) {
+	if account == nil || account.Lamports == 0 {
+		return spl.TokenAccount{}, errors.New("vault token account is not funded token custody")
 	}
 	return validateStableAccount(account, expectedMint, expectedOwner)
 }

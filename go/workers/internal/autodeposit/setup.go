@@ -9,10 +9,10 @@ import (
 	"errors"
 
 	"github.com/solana-foundation/solana-go/v2"
-	"github.com/solana-foundation/solana-go/v2/programs/system"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 type SetupStage string
@@ -95,7 +95,9 @@ func validateDestinationSetupPlan(plan DepositPlan, setup DestinationSetupPlan) 
 	var account string
 	switch setup.Stage {
 	case SetupATA:
-		account, err = usdcATA(vault)
+		var ata solana.PublicKey
+		ata, err = spl.AssociatedTokenAddress(vault, mustKey(USDCMint), solana.TokenProgramID)
+		account = ata.String()
 	case SetupMetadata:
 		account, err = metadataKey(plan.Target.VaultPubkey)
 	case SetupObligation:
@@ -146,7 +148,8 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	if err != nil {
 		return nil, err
 	}
-	ata, err := usdcATA(vault)
+	vaultATA, err := spl.AssociatedTokenAddress(vault, mustKey(USDCMint), solana.TokenProgramID)
+	ata := vaultATA.String()
 	if err != nil || ata != plan.Target.VaultUsdcAta {
 		return nil, errors.New("setup custody is not the frozen vault ATA")
 	}
@@ -333,16 +336,7 @@ func (b *SweepWireBuilder) setupInstructions(ctx context.Context, plan DepositPl
 		if setup.RentTopUpLamports > maxSetupRentLamports || setup.Stage != SetupMetadata && setup.Stage != SetupObligation {
 			return nil, errors.New("invalid setup rent transfer")
 		}
-		transfer := system.NewTransferInstruction(setup.RentTopUpLamports, b.delegate, mustKey(plan.Target.VaultPubkey)).Build()
-		data, err := transfer.Data()
-		if err != nil {
-			return nil, err
-		}
-		ix := fleet.RouteInstruction{Program: system.ProgramID.String(), Data: data}
-		for _, a := range transfer.Accounts() {
-			ix.Accounts = append(ix.Accounts, fleet.InstructionAccount{Address: a.PublicKey.String(), Signer: a.IsSigner, Writable: a.IsWritable})
-		}
-		out = append(out, ix)
+		out = append(out, fleet.RouteInstructionOf("", spl.SystemTransfer(b.delegate, mustKey(plan.Target.VaultPubkey), setup.RentTopUpLamports)))
 	}
 	for i, ix := range append(append([]fleet.RouteInstruction{}, built.Public...), built.Protected...) {
 		if wrap && i >= len(built.Public) {

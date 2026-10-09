@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 func testPubkey(seed byte) string { return encodeBase58(bytes.Repeat([]byte{seed}, 32)) }
@@ -127,16 +129,12 @@ func TestJupiterFetchUsesNarrowDirectAlphaQContract(t *testing.T) {
 }
 
 func TestToken2022RejectsUnsupportedAndActiveExtensions(t *testing.T) {
-	base := make([]byte, 166)
-	base[165] = 1
-	unsupported := append(append([]byte{}, base...), 20, 0, 0, 0)
-	if err := validateToken2022Extensions(unsupported, 1); err == nil {
+	if err := validateStableMintExtensions([]spl.Extension{{Type: 20}}); err == nil {
 		t.Fatal("accepted unsupported mint extension")
 	}
-	hook := append(append([]byte{}, base...), 14, 0, 64, 0)
-	hook = append(hook, make([]byte, 64)...)
-	hook[len(hook)-1] = 1
-	if err := validateToken2022Extensions(hook, 1); err == nil {
+	hook := make([]byte, 64)
+	hook[63] = 1
+	if err := validateStableMintExtensions([]spl.Extension{{Type: 14, Value: hook}}); err == nil {
 		t.Fatal("accepted active transfer hook")
 	}
 }

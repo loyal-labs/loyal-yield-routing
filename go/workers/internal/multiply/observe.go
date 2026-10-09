@@ -17,6 +17,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 // ObservationReader is the consumer-defined chain read surface; *chain.Client
@@ -171,7 +172,7 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 	if err != nil {
 		return nil, err
 	}
-	claim, err := classicBalance(claimAccount, USDCMint, topology.Vault)
+	claim, err := tokenBalance(claimAccount, USDCMint, solana.TokenProgramID, &topology.Vault)
 	if err != nil {
 		return nil, err
 	}
@@ -221,14 +222,14 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 		}
 		collateralAmount := uint64(0)
 		if account := optional(config.CollateralCustody); account != nil {
-			collateralAmount, err = classicBalance(account, config.CollateralMint, topology.Vault)
+			collateralAmount, err = tokenBalance(account, config.CollateralMint, solana.TokenProgramID, &topology.Vault)
 			if err != nil {
 				return nil, err
 			}
 		}
 		debtAmount := uint64(0)
 		if account := optional(config.DebtCustody); account != nil {
-			debtAmount, err = tokenBalanceAmount(account, config.DebtMint, config.DebtTokenProgram, topology.Vault)
+			debtAmount, err = tokenBalance(account, config.DebtMint, config.DebtTokenProgram, &topology.Vault)
 			if err != nil {
 				return nil, err
 			}
@@ -258,14 +259,14 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 		if err != nil {
 			return nil, errors.New("external custody account is invalid")
 		}
-		if program != mustKey(TokenProgram) && program != mustKey(Token2022Program) {
+		if program != solana.TokenProgramID && program != solana.Token2022ProgramID {
 			return nil, errors.New("external custody token program is unsupported")
 		}
 		account, err := required(key)
 		if err != nil {
 			return nil, err
 		}
-		amount, err := tokenBalanceForOwner(account, custody.Mint, program, nil)
+		amount, err := tokenBalance(account, custody.Mint, program, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -303,71 +304,17 @@ func lessKey(left, right solana.PublicKey) bool {
 	return false
 }
 
-func tokenBalanceAmount(account *chain.Account, mint string, tokenProgram solana.PublicKey, owner solana.PublicKey) (uint64, error) {
-	if tokenProgram == mustKey(TokenProgram) {
-		return classicBalance(account, mint, owner)
-	}
-	if tokenProgram == mustKey(Token2022Program) {
-		return tokenBalanceForOwner(account, mint, tokenProgram, &owner)
-	}
-	return 0, errors.New("configured custody token program is unsupported")
-}
-
-func classicBalance(account *chain.Account, mint string, owner solana.PublicKey) (uint64, error) {
-	return tokenBalanceForOwner(account, mint, mustKey(TokenProgram), &owner)
-}
-
-// tokenBalanceForOwner validates an SPL token account (classic base layout;
-// Token-2022 shares it before extensions) and returns its raw amount.
-func tokenBalanceForOwner(account *chain.Account, mint string, tokenProgram solana.PublicKey, owner *solana.PublicKey) (uint64, error) {
-	if account == nil {
-		return 0, errors.New("token account is absent")
-	}
-	if account.Owner != tokenProgram {
-		return 0, errors.New("token account has the wrong owner")
-	}
-	if len(account.Data) < 165 {
-		return 0, errors.New("token account is too short")
-	}
-	if account.Executable || (account.Data[108] != 1 && account.Data[108] != 2) {
-		return 0, errors.New("token account is not initialized")
-	}
-	if tokenProgram == mustKey(TokenProgram) && len(account.Data) != 165 {
-		return 0, errors.New("classic token account layout drifted")
-	}
-	if tokenProgram == mustKey(Token2022Program) && len(account.Data) > 165 {
-		if len(account.Data) < 166 || account.Data[165] != 2 {
-			return 0, errors.New("Token-2022 account type drifted")
-		}
-		for offset := 166; offset < len(account.Data); {
-			if allZero(account.Data[offset:]) {
-				break
-			}
-			if len(account.Data)-offset < 4 {
-				return 0, errors.New("Token-2022 extension header is truncated")
-			}
-			length := int(binary.LittleEndian.Uint16(account.Data[offset+2 : offset+4]))
-			if length > len(account.Data)-offset-4 {
-				return 0, errors.New("Token-2022 extension is truncated")
-			}
-			offset += 4 + length
-		}
-	}
-	gotMint := solana.PublicKeyFromBytes(account.Data[0:32])
-	expectedMint, err := solana.PublicKeyFromBase58(mint)
+// tokenBalance is the raw amount of a mint's account under tokenProgram, held
+// by owner when owner is set.
+func tokenBalance(account *chain.Account, mint string, tokenProgram solana.PublicKey, owner *solana.PublicKey) (uint64, error) {
+	held, err := spl.DecodeTokenAccount(account)
 	if err != nil {
-		return 0, errors.New("custody mint is invalid")
+		return 0, err
 	}
-	if gotMint != expectedMint {
-		return 0, errors.New("custody mint or authority drifted")
+	if held.Program != tokenProgram || held.Mint.String() != mint || owner != nil && held.Owner != *owner {
+		return 0, errors.New("custody token program, mint or authority drifted")
 	}
-	if owner != nil {
-		gotOwner := solana.PublicKeyFromBytes(account.Data[32:64])
-		if gotOwner != *owner {
-			return 0, errors.New("custody mint or authority drifted")
-		}
-	}
-	return binary.LittleEndian.Uint64(account.Data[64:72]), nil
+	return held.Amount, nil
 }
 
 // KLend layout offsets, shared with the reviewed decoders in this module tree.
@@ -684,8 +631,6 @@ func zeroKey(data []byte) bool {
 	}
 	return true
 }
-
-func allZero(data []byte) bool { return zeroKey(data) }
 
 // APY: 500ms slot clock, matching the codec call site in observe.rs.
 const (

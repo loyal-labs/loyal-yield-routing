@@ -7,11 +7,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"github.com/solana-foundation/solana-go/v2"
 )
 
-const (
-	classicTokenProgram = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	token2022Program    = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+var (
+	classicTokenProgram = solana.TokenProgramID.String()
+	token2022Program    = solana.Token2022ProgramID.String()
+	// bridgeTokenProgram is the token program of the bridge and Kamino legs.
+	bridgeTokenProgram = classicTokenProgram
 )
 
 type ExpectedAccountEffect struct {

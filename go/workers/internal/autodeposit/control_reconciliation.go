@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 // ControlTarget follows the single-target projection introduced by migration
@@ -92,8 +93,8 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		owner   solana.PublicKey
 		account string
 	}{{wallet, target.WalletTokenATA}, {vault, target.VaultTokenATA}} {
-		ata, err := usdcATA(binding.owner)
-		if err != nil || ata != binding.account {
+		ata, err := spl.AssociatedTokenAddress(binding.owner, mustKey(USDCMint), solana.TokenProgramID)
+		if err != nil || ata.String() != binding.account {
 			return o, errors.New("control token account differs from canonical ATA")
 		}
 	}
@@ -154,14 +155,14 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		o.DelegationValid = true
 	}
 	if accounts[3] != nil {
-		balance, err := usdcTokenAccount(accounts[3], target.Wallet)
+		held, err := usdcTokenAccount(accounts[3], target.Wallet)
 		if err != nil {
 			return o, err
 		}
-		o.WalletBalanceRaw = balance
+		o.WalletBalanceRaw = int64(held.Amount)
 		hash := sha256.Sum256(accounts[3].Data)
 		o.WalletAccountDataSHA256 = hex.EncodeToString(hash[:])
-		o.TokenDelegateValid = binary.LittleEndian.Uint32(accounts[3].Data[72:76]) == 1 && base58Key(accounts[3].Data[76:108]) == target.SubscriptionAuthority
+		o.TokenDelegateValid = held.Delegate != nil && held.Delegate.String() == target.SubscriptionAuthority
 	}
 	return o, nil
 }

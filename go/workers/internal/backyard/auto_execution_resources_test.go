@@ -3,9 +3,10 @@ package backyard
 import (
 	"bytes"
 	"crypto/ed25519"
-	"encoding/hex"
 	"strings"
 	"testing"
+
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 type resourceTestInstruction struct {
@@ -94,33 +95,9 @@ func resourceInstructionIsCanonicalUnitLimit(t *testing.T, instruction resourceT
 	return isCanonicalUnitLimitFrame(key, len(instruction.accounts), instruction.data)
 }
 
-// The SDK identity bytes are pinned independently of the Go literal: base58
-// validity alone never proves identity. Several 1s-counts also decode to 32
-// bytes, and the first draft of this constant decoded to 33 bytes and would
-// have panicked; these bytes come from solana-sdk-ids-3.1.0 compute_budget
-// declare_id! and @solana/web3.js src/programs/compute-budget.ts programId.
-const computeBudgetProgramSDKBytesHex = "0306466fe5211732ffecadba72c39be7bc8ce5bbc5f7126b2c439b3a40000000"
-
-func TestComputeBudgetProgramIdentityMatchesTheSDK(t *testing.T) {
-	key, err := decodeKey(computeBudgetProgram)
-	if err != nil {
-		t.Fatalf("ComputeBudget program literal does not decode: %v", err)
-	}
-	sdk, err := hex.DecodeString(computeBudgetProgramSDKBytesHex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(key[:], sdk) {
-		t.Fatalf("ComputeBudget literal decodes to %x, but the SDK identity is %x", key[:], sdk)
-	}
-	if encodeBase58(key[:]) != computeBudgetProgram {
-		t.Fatalf("ComputeBudget literal is not the canonical base58 form of the SDK identity: %s", encodeBase58(key[:]))
-	}
-}
-
 func TestAutoExecutionHeapInstructionIsCanonical(t *testing.T) {
 	heap := autoComputeBudgetHeapInstruction()
-	if heap.program != mustKey(computeBudgetProgram) {
+	if heap.program != publicKey(solana.ComputeBudget) {
 		t.Fatal("heap instruction program drifted from the ComputeBudget identity")
 	}
 	if len(heap.accounts) != 0 {
@@ -212,7 +189,7 @@ func TestAutoKaminoExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 	}
 	heapKeys := 0
 	for _, key := range keys {
-		heapKeys += map[bool]int{true: 1, false: 0}[key == computeBudgetProgram]
+		heapKeys += map[bool]int{true: 1, false: 0}[key == solana.ComputeBudget.String()]
 	}
 	if heapKeys != 1 {
 		t.Fatalf("AUTO Kamino message references ComputeBudget %d times", heapKeys)
@@ -284,7 +261,7 @@ func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 	}
 	heapOnWire := false
 	for _, key := range staticKeys {
-		heapOnWire = heapOnWire || key == computeBudgetProgram
+		heapOnWire = heapOnWire || key == solana.ComputeBudget.String()
 	}
 	if !heapOnWire {
 		t.Fatal("AUTO v0 message dropped the ComputeBudget heap frame")
@@ -307,7 +284,7 @@ func TestAutoInitializerExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T
 		t.Fatalf("AUTO initializer wire drifted: %d instructions", len(instructions))
 	}
 	for _, key := range keys {
-		if key == computeBudgetProgram && instructions[1].program != bridgeSquadsProgram {
+		if key == solana.ComputeBudget.String() && instructions[1].program != bridgeSquadsProgram {
 			t.Fatal("AUTO initializer wire misordered the heap frame")
 		}
 	}
@@ -328,7 +305,7 @@ func TestAutoInitializerExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T
 		t.Fatalf("installed initializer wire drifted: %d instructions", len(publicInstructions))
 	}
 	for _, key := range publicKeys {
-		if key == computeBudgetProgram {
+		if key == solana.ComputeBudget.String() {
 			t.Fatal("installed initializer lane gained the ComputeBudget key")
 		}
 	}
@@ -350,7 +327,7 @@ func TestInstalledExecutionMessagesStayByteIdenticalWithoutResources(t *testing.
 		t.Fatalf("installed Kamino leg carries %d instructions, want the exact refresh-plus-policy four", len(instructions))
 	}
 	for _, key := range keys {
-		if key == computeBudgetProgram {
+		if key == solana.ComputeBudget.String() {
 			t.Fatal("installed Kamino lane gained the ComputeBudget key")
 		}
 	}
