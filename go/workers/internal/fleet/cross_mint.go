@@ -1390,7 +1390,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 		}
 		return out, errors.New("finalized cross-mint preflight simulation failed")
 	}
-	fee, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentFinalized, uint64(slot))
+	fee, _, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentFinalized, uint64(slot))
 	if err != nil {
 		return out, err
 	}

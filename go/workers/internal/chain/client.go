@@ -151,16 +151,17 @@ func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType, m
 }
 
 // Fee is what the cluster charges for message (the compiled message bytes,
-// not the signed wire) at commitment, from a node at or past minContextSlot.
-func (c *Client) Fee(ctx context.Context, message []byte, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, error) {
+// not the signed wire) at commitment, from a node at or past minContextSlot,
+// with the slot it was read at.
+func (c *Client) Fee(ctx context.Context, message []byte, commitment rpc.CommitmentType, minContextSlot uint64) (fee, slot uint64, err error) {
 	out, err := c.rpc.GetFeeForMessageWithOpts(ctx, base64.StdEncoding.EncodeToString(message), &rpc.GetFeeForMessageOpts{Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
 	if err != nil {
-		return 0, failed("getFeeForMessage", err)
+		return 0, 0, failed("getFeeForMessage", err)
 	}
-	if out == nil || out.Value == nil {
-		return 0, errors.New("getFeeForMessage: no fee for this blockhash")
+	if out == nil || out.Value == nil || out.Context.Slot < minContextSlot {
+		return 0, 0, errors.New("getFeeForMessage: no fee for this blockhash")
 	}
-	return *out.Value, nil
+	return *out.Value, out.Context.Slot, nil
 }
 
 // GenesisHash identifies the cluster.
@@ -207,6 +208,9 @@ type Simulated struct {
 	Slot  uint64
 	Units uint64
 	Logs  []string
+	// Accounts are opts.Accounts' addresses as the simulation left them, in
+	// order; an absent account is nil.
+	Accounts []*Account
 }
 
 // Simulate runs wire with opts; signature checks, blockhash replacement and
@@ -226,6 +230,18 @@ func (c *Client) Simulate(ctx context.Context, wire []byte, opts rpc.SimulateTra
 	simulated := Simulated{Slot: out.Context.Slot, Logs: out.Value.Logs}
 	if out.Value.UnitsConsumed != nil {
 		simulated.Units = *out.Value.UnitsConsumed
+	}
+	if opts.Accounts == nil {
+		return simulated, nil
+	}
+	if len(out.Value.Accounts) != len(opts.Accounts.Addresses) {
+		return Simulated{}, errors.New("simulateTransaction: captured accounts do not match the request")
+	}
+	simulated.Accounts = make([]*Account, len(out.Value.Accounts))
+	for i, value := range out.Value.Accounts {
+		if value != nil {
+			simulated.Accounts[i] = &Account{Key: opts.Accounts.Addresses[i], Owner: value.Owner, Lamports: value.Lamports, Data: value.Data.GetBinary(), Executable: value.Executable}
+		}
 	}
 	return simulated, nil
 }
@@ -422,49 +438,6 @@ func atLeast(slot uint64) *uint64 {
 		return nil
 	}
 	return &slot
-}
-
-// FeeAt is Fee at confirmed, read no older than minContextSlot, with the slot
-// it was read at.
-func (c *Client) FeeAt(ctx context.Context, message []byte, minContextSlot uint64) (fee, slot uint64, err error) {
-	out, err := c.rpc.GetFeeForMessageWithOpts(ctx, base64.StdEncoding.EncodeToString(message), &rpc.GetFeeForMessageOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: atLeast(minContextSlot)})
-	if err != nil {
-		return 0, 0, failed("getFeeForMessage", err)
-	}
-	if out == nil || out.Value == nil || out.Context.Slot == 0 || out.Context.Slot < minContextSlot {
-		return 0, 0, errors.New("getFeeForMessage: no fee for this blockhash")
-	}
-	return *out.Value, out.Context.Slot, nil
-}
-
-// SimulateCapture runs wire like Simulate and returns addresses as the
-// simulation left them, in order; an absent account is nil.
-func (c *Client) SimulateCapture(ctx context.Context, wire []byte, opts rpc.SimulateTransactionOpts, addresses []solana.PublicKey) (Simulated, []*Account, error) {
-	opts.Accounts = &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: addresses}
-	out, err := c.rpc.SimulateRawTransactionWithOpts(ctx, wire, &opts)
-	if err != nil {
-		return Simulated{}, nil, failed("simulateTransaction", err)
-	}
-	if out.Value == nil || out.Context.Slot == 0 || opts.MinContextSlot != nil && out.Context.Slot < *opts.MinContextSlot {
-		return Simulated{}, nil, errors.New("simulateTransaction: empty or stale result")
-	}
-	if out.Value.Err != nil {
-		return Simulated{}, nil, &SimulationError{Slot: out.Context.Slot, Err: out.Value.Err, Logs: out.Value.Logs}
-	}
-	if len(out.Value.Accounts) != len(addresses) {
-		return Simulated{}, nil, errors.New("simulateTransaction: captured accounts do not match the request")
-	}
-	simulated := Simulated{Slot: out.Context.Slot, Logs: out.Value.Logs}
-	if out.Value.UnitsConsumed != nil {
-		simulated.Units = *out.Value.UnitsConsumed
-	}
-	accounts := make([]*Account, len(addresses))
-	for i, value := range out.Value.Accounts {
-		if value != nil {
-			accounts[i] = &Account{Key: addresses[i], Owner: value.Owner, Lamports: value.Lamports, Data: value.Data.GetBinary(), Executable: value.Executable}
-		}
-	}
-	return simulated, accounts, nil
 }
 
 // AccountHeads reads the first length bytes of each key's data at confirmed:

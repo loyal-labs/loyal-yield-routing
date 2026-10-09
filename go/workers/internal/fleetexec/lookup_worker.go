@@ -165,7 +165,7 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 	if _, err = w.chain.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentFinalized, ReplaceRecentBlockhash: true}); err != nil {
 		return err
 	}
-	fee, err := w.chain.Fee(ctx, message, rpc.CommitmentFinalized, 0)
+	fee, _, err := w.chain.Fee(ctx, message, rpc.CommitmentFinalized, 0)
 	if err != nil {
 		return err
 	}

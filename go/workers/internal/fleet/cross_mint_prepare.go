@@ -879,7 +879,7 @@ func (r *Revalidator) compileCrossMintIndependentLeg(ctx context.Context, q Cros
 	if compute > r.computeLimit {
 		return out, 0, nil, errors.New("cross-mint measured compute exceeds configured maximum")
 	}
-	fee, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentFinalized, uint64(slot))
+	fee, _, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentFinalized, uint64(slot))
 	if err != nil || fee > uint64(q.RemainingFeeLamports) {
 		if err == nil {
 			err = errors.New("cross-mint baseline fee exhausts remaining movement budget")
@@ -904,7 +904,7 @@ func (r *Revalidator) compileCrossMintIndependentLeg(ctx context.Context, q Cros
 	if out.Transaction.PacketBytes > SolanaPacketLimit {
 		return RoutePreparation{}, 0, nil, errors.New("cross-mint final packet exceeds Solana limit")
 	}
-	out.Transaction.FeeLamports, err = r.rpc.Fee(ctx, out.Transaction.Message, rpc.CommitmentFinalized, uint64(slot))
+	out.Transaction.FeeLamports, _, err = r.rpc.Fee(ctx, out.Transaction.Message, rpc.CommitmentFinalized, uint64(slot))
 	if err != nil || out.Transaction.FeeLamports > uint64(q.RemainingFeeLamports) {
 		if err == nil {
 			err = errors.New("cross-mint final compiled fee exceeds remaining movement budget")

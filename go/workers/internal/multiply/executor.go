@@ -36,7 +36,7 @@ type ExecutorChain interface {
 	GenesisHash(context.Context) (solana.Hash, error)
 	Blockhash(context.Context, rpc.CommitmentType, uint64) (hash solana.Hash, lastValid, slot uint64, err error)
 	Accounts(context.Context, []solana.PublicKey, rpc.CommitmentType, uint64) (uint64, []*chain.Account, error)
-	Fee(context.Context, []byte, rpc.CommitmentType, uint64) (uint64, error)
+	Fee(context.Context, []byte, rpc.CommitmentType, uint64) (fee, slot uint64, err error)
 	Simulate(context.Context, []byte, rpc.SimulateTransactionOpts) (chain.Simulated, error)
 	Receipt(context.Context, solana.Signature, rpc.CommitmentType) (chain.Receipt, error)
 }
@@ -196,7 +196,7 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 	if err != nil {
 		return nil, 0, err
 	}
-	fee, err := e.Chain.Fee(ctx, message, rpc.CommitmentConfirmed, 0)
+	fee, _, err := e.Chain.Fee(ctx, message, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return nil, 0, err
 	}
