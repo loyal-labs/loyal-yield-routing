@@ -21,6 +21,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 const (
@@ -159,15 +160,24 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 			slot = *built.QuoteContextSlot
 		}
 	}
-	transactionAccounts := make([]AccountMeta, 0, 32)
-	inner := CompileSquadsInnerInstruction(&transactionAccounts, built.PolicyInstructions[0])
-	terminal := ExecuteProgramInteractionInstruction(policy, e.Delegate(), accountIndex, []CompiledInstruction{inner}, constraintIndexes, transactionAccounts)
+	inner := squads.Instruction{ProgramID: built.PolicyInstructions[0].ProgramID, Data: built.PolicyInstructions[0].Data}
+	for _, meta := range built.PolicyInstructions[0].Accounts {
+		inner.Accounts = append(inner.Accounts, solana.AccountMeta{PublicKey: meta.PubKey, IsSigner: meta.IsSigner, IsWritable: meta.IsWritable})
+	}
+	terminal, err := squads.ExecuteTransactionSyncV2(squads.ExecuteSync{Policy: policy, Signer: e.Delegate(), AccountIndex: accountIndex, ConstraintIndexes: constraintIndexes, Inner: []squads.Instruction{inner}})
+	if err != nil {
+		return nil, 0, err
+	}
 	outer := append(computeBudgetPreamble(), built.PreInstructions...)
-	outer = append(outer, terminal)
-	instructions := make([]solana.Instruction, 0, len(outer))
+	instructions := make([]solana.Instruction, 0, len(outer)+1)
 	for _, ix := range outer {
 		instructions = append(instructions, sdkInstruction(ix))
 	}
+	terminalMetas := make(solana.AccountMetaSlice, len(terminal.Accounts))
+	for i := range terminal.Accounts {
+		terminalMetas[i] = &terminal.Accounts[i]
+	}
+	instructions = append(instructions, solana.NewInstruction(terminal.ProgramID, terminalMetas, terminal.Data))
 	feePayer := solana.PublicKey(e.feePayer[32:])
 	opts := []solana.TransactionOption{solana.TransactionPayer(feePayer)}
 	if len(built.LookupTables) > 0 {
@@ -277,18 +287,18 @@ func (e *Executor) EnsureExactPolicy(ctx context.Context, topology *EarnMaxTopol
 	if err != nil {
 		return nil, err
 	}
-	data, _, err := e.policyAccount(ctx, policy.Account, 0)
+	account, _, err := e.policyAccount(ctx, policy.Account, 0)
 	if err != nil {
 		return nil, err
 	}
-	if len(data) == 0 {
+	if account == nil {
 		return nil, errors.New("exact ProgramInteraction policy is absent")
 	}
 	expected, err := CanonicalConstraints(topology, family)
 	if err != nil {
 		return nil, err
 	}
-	matches, err := CurrentPolicyMatches(data, policy, e.Delegate(), expected, topology.VaultIndex)
+	matches, err := CurrentPolicyMatches(account, policy, e.Delegate(), expected, topology.VaultIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +311,7 @@ func (e *Executor) EnsureExactPolicy(ctx context.Context, topology *EarnMaxTopol
 	}
 	return &PolicyEvidence{
 		Account:           policy.Account,
-		DataSHA256:        PolicyDataHash(data),
+		DataSHA256:        PolicyDataHash(account.Data),
 		ConstraintIndexes: constraintIndexes,
 	}, nil
 }
@@ -563,17 +573,14 @@ func (e *Executor) lookupTables(ctx context.Context, keys []solana.PublicKey) (m
 }
 
 // policyAccount reads one Squads policy account at confirmed, from a node at
-// or past minContextSlot: nil data when absent, with the slot it answered at.
-func (e *Executor) policyAccount(ctx context.Context, key solana.PublicKey, minContextSlot uint64) ([]byte, uint64, error) {
+// or past minContextSlot: nil when absent, with the slot it answered at.
+func (e *Executor) policyAccount(ctx context.Context, key solana.PublicKey, minContextSlot uint64) (*chain.Account, uint64, error) {
 	slot, accounts, err := e.Chain.Accounts(ctx, []solana.PublicKey{key}, rpc.CommitmentConfirmed, minContextSlot)
 	if err != nil {
 		return nil, 0, err
 	}
-	if accounts[0] == nil {
-		return nil, slot, nil
-	}
-	if accounts[0].Executable || accounts[0].Owner != mustKey(SquadsProgram) {
+	if accounts[0] != nil && (accounts[0].Executable || accounts[0].Owner != squads.ProgramID) {
 		return nil, 0, errors.New("policy account has invalid owner or context")
 	}
-	return accounts[0].Data, slot, nil
+	return accounts[0], slot, nil
 }

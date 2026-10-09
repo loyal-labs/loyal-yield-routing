@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, map[string]ConfirmedAccount) {
@@ -39,7 +41,7 @@ func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, m
 	}
 	delete(accounts, route.Kamino.Obligation)
 	accounts[bridgeSettings] = setupSettingsAccount(t)
-	accounts[policyAddress] = ConfirmedAccount{Address: policyAddress, Owner: bridgeSquadsProgram, Lamports: 1, Data: []byte("controlled policy")}
+	accounts[policyAddress] = ConfirmedAccount{Address: policyAddress, Owner: squads.ProgramID.String(), Lamports: 1, Data: []byte("controlled policy")}
 	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
 	accounts[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
 	m := ConfirmedAccount{Address: metadataAddress, Owner: kaminoProgram, Lamports: 1, Data: make([]byte, 1032)}
@@ -102,7 +104,7 @@ func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testin
 			case "market_emergency":
 				change(route.Kamino.Market, func(a *ConfirmedAccount) { a.Data[kaminoMarketEmergencyModeOffset] = 1 })
 			case "mint_program":
-				change(bridgeUSDC, func(a *ConfirmedAccount) { a.Owner = bridgeSquadsProgram })
+				change(bridgeUSDC, func(a *ConfirmedAccount) { a.Owner = squads.ProgramID.String() })
 			case "mint_uninitialized":
 				change(bridgeUSDC, func(a *ConfirmedAccount) { a.Data[45] = 0 })
 			case "rent_changed":
@@ -186,7 +188,7 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 			_ = json.Unmarshal(body.Params[0], &addresses)
 			values := make([]any, len(addresses))
 			for i, a := range addresses {
-				values[i] = map[string]any{"owner": bridgeSquadsProgram, "lamports": 1, "data": []string{"", "base64"}}
+				values[i] = map[string]any{"owner": squads.ProgramID.String(), "lamports": 1, "data": []string{"", "base64"}}
 				if a != bridgeSettings {
 					values[i] = nil
 				}
@@ -312,7 +314,7 @@ func setupSettingsAccount(t *testing.T) ConfirmedAccount {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ConfirmedAccount{Address: bridgeSettings, Owner: bridgeSquadsProgram, Lamports: 2_060_160, Data: data}
+	return ConfirmedAccount{Address: bridgeSettings, Owner: squads.ProgramID.String(), Lamports: 2_060_160, Data: data}
 }
 
 func TestPolicySetupSettingsMatchesSDKAndRejectsAuthorityDrift(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -119,7 +120,7 @@ func TestAutoExecutionHeapInstructionRejectsDrift(t *testing.T) {
 		"wrong heap size":     {program: canonical.program, data: []byte{1, 0, 0, 4, 0}},
 		"short data":          {program: canonical.program, data: []byte{1, 0, 0, 1}},
 		"extra byte":          {program: canonical.program, data: []byte{1, 0, 0, 1, 0, 0}},
-		"wrong program":       {program: mustKey(bridgeSquadsProgram), data: []byte{1, 0, 0, 1, 0}},
+		"wrong program":       {program: publicKey(squads.ProgramID), data: []byte{1, 0, 0, 1, 0}},
 		"with account":        {program: canonical.program, accounts: []accountMeta{meta(bridgeVault, false, false)}, data: []byte{1, 0, 0, 1, 0}},
 	}
 	for name, drifted := range drifts {
@@ -136,7 +137,7 @@ func TestAutoExecutionHeapInstructionRejectsDrift(t *testing.T) {
 // frame ahead of exactly one payload.
 func TestLegacyPublicCompilerGatesArePreserved(t *testing.T) {
 	delegate, hash := mustKey(bridgeDelegate), mustKey(bridgeSettings)
-	outer := compiledInstruction{program: mustKey(bridgeSquadsProgram), data: append([]byte(nil), squadsExecuteSyncDiscriminator...)}
+	outer := compiledInstruction{program: publicKey(squads.ProgramID), data: append([]byte(nil), squads.ExecuteTransactionSyncV2Discriminator[:]...)}
 	if _, err := compileLegacyMessage(delegate, hash, nil); err == nil {
 		t.Fatal("bridge compiler admitted an empty instruction list")
 	}
@@ -154,7 +155,7 @@ func TestLegacyPublicCompilerGatesArePreserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys, instructions := decodeResourceTestMessage(t, message)
-	if len(instructions) != 2 || !resourceInstructionIsCanonicalHeap(t, instructions[0]) || instructions[1].program != bridgeSquadsProgram {
+	if len(instructions) != 2 || !resourceInstructionIsCanonicalHeap(t, instructions[0]) || instructions[1].program != squads.ProgramID.String() {
 		t.Fatalf("AUTO legacy wrapper wire drifted: %d instructions, keys %v", len(instructions), keys)
 	}
 	if _, err := compileAutoResourceLegacyMessage(delegate, hash, compiledInstruction{}); err == nil {
@@ -199,7 +200,7 @@ func TestAutoKaminoExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 			t.Fatalf("AUTO refresh %d program drifted: %s", index, instructions[index].program)
 		}
 	}
-	if instructions[4].program != bridgeSquadsProgram {
+	if instructions[4].program != squads.ProgramID.String() {
 		t.Fatalf("AUTO policy outer program drifted: %s", instructions[4].program)
 	}
 	if len(compiled)+65 > solanaPacketBytes {
@@ -229,7 +230,7 @@ func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 	}
 	_, instructions := decodeResourceTestMessage(t, legacy)
 	if len(instructions) != 3 || !resourceInstructionIsCanonicalHeap(t, instructions[0]) ||
-		!resourceInstructionIsCanonicalUnitLimit(t, instructions[1]) || instructions[2].program != bridgeSquadsProgram {
+		!resourceInstructionIsCanonicalUnitLimit(t, instructions[1]) || instructions[2].program != squads.ProgramID.String() {
 		t.Fatalf("AUTO Jupiter legacy wire drifted: %d instructions", len(instructions))
 	}
 	t.Logf("AUTO Jupiter legacy execution message = %d bytes (+65 signature = %d of %d packet bytes)", len(legacy), len(legacy)+65, solanaPacketBytes)
@@ -256,7 +257,7 @@ func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 		t.Fatalf("AUTO v0 packet %d exceeds %d", len(v0)+65, solanaPacketBytes)
 	}
 	staticKeys, _, outerData := decodeV0OuterInstruction(t, v0)
-	if !bytes.Equal(outerData[:8], squadsExecuteSyncDiscriminator) {
+	if !bytes.Equal(outerData[:8], squads.ExecuteTransactionSyncV2Discriminator[:]) {
 		t.Fatal("AUTO v0 outer left the Squads execute")
 	}
 	heapOnWire := false
@@ -280,11 +281,11 @@ func TestAutoInitializerExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T
 		t.Fatal(err)
 	}
 	keys, instructions := decodeResourceTestMessage(t, message)
-	if len(instructions) != 2 || !resourceInstructionIsCanonicalHeap(t, instructions[0]) || instructions[1].program != bridgeSquadsProgram {
+	if len(instructions) != 2 || !resourceInstructionIsCanonicalHeap(t, instructions[0]) || instructions[1].program != squads.ProgramID.String() {
 		t.Fatalf("AUTO initializer wire drifted: %d instructions", len(instructions))
 	}
 	for _, key := range keys {
-		if key == solana.ComputeBudget.String() && instructions[1].program != bridgeSquadsProgram {
+		if key == solana.ComputeBudget.String() && instructions[1].program != squads.ProgramID.String() {
 			t.Fatal("AUTO initializer wire misordered the heap frame")
 		}
 	}
@@ -301,7 +302,7 @@ func TestAutoInitializerExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T
 		t.Fatal(err)
 	}
 	publicKeys, publicInstructions := decodeResourceTestMessage(t, public)
-	if len(publicInstructions) != 1 || publicInstructions[0].program != bridgeSquadsProgram {
+	if len(publicInstructions) != 1 || publicInstructions[0].program != squads.ProgramID.String() {
 		t.Fatalf("installed initializer wire drifted: %d instructions", len(publicInstructions))
 	}
 	for _, key := range publicKeys {
@@ -336,7 +337,7 @@ func TestInstalledExecutionMessagesStayByteIdenticalWithoutResources(t *testing.
 			t.Fatalf("installed refresh %d program drifted: %s", index, instructions[index].program)
 		}
 	}
-	if instructions[3].program != bridgeSquadsProgram {
+	if instructions[3].program != squads.ProgramID.String() {
 		t.Fatalf("installed policy outer program drifted: %s", instructions[3].program)
 	}
 	t.Logf("installed Kamino execution message = %d bytes (+65 signature = %d of %d packet bytes)", len(compiled), len(compiled)+65, solanaPacketBytes)

@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // embeddedBackyardManifest is a generated, byte-for-byte runtime counterpart
@@ -423,7 +425,7 @@ func (m RouteManifest) validateBindings() error {
 		m.Identities.AdaptorProgram != bridgeAdaptorProgram || m.Identities.V2StrategyConfig != bridgeStrategy ||
 		m.Identities.ReportTicket != reportTicketPDA || m.Identities.ReportTicketBump != int64(reportTicketBump) ||
 		m.Identities.ReportTicketLen != reportTicketStateLength ||
-		m.Identities.SquadsProgram != bridgeSquadsProgram || m.Identities.SquadsSettings != bridgeSettings ||
+		m.Identities.SquadsProgram != squads.ProgramID.String() || m.Identities.SquadsSettings != bridgeSettings ||
 		m.Identities.SquadsVaultIndex != 0 || m.Identities.SquadsVault != bridgeVault ||
 		m.Identities.DelegatedExecutor != bridgeDelegate || m.Identities.SquadsUSDCAta != bridgeSquadsATA ||
 		m.Identities.USDCMint != bridgeUSDC || m.Identities.ClassicToken != classicTokenProgram ||

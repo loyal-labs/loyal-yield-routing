@@ -3,7 +3,6 @@ package watch
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -99,7 +99,7 @@ func (f *registeredFixture) identity() watchIdentity {
 }
 func (f *registeredFixture) vault(i watchIdentity, index uint8) string {
 	settings := solana.MustPublicKeyFromBase58(i.settings)
-	vault, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), settings[:], []byte("smart_account"), {index}}, squadsProgram)
+	vault, _, err := squads.SmartAccountAddress(settings, index)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -109,9 +109,7 @@ func (f *registeredFixture) policy(i watchIdentity, index uint8, active bool, cl
 	f.counter++
 	seed := int64(f.counter)
 	settings := solana.MustPublicKeyFromBase58(i.settings)
-	encoded := make([]byte, 8)
-	binary.LittleEndian.PutUint64(encoded, uint64(seed))
-	account, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settings[:], encoded}, squadsProgram)
+	account, _, err := squads.PolicyAddress(settings, uint64(seed))
 	if err != nil {
 		f.t.Fatal(err)
 	}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // The gate derives seed 62-65 policy PDAs from the bridge Settings constant at
@@ -125,14 +126,14 @@ func (s stubLegacyRPC) ServeHTTP(writer http.ResponseWriter, request *http.Reque
 		values := make([]any, len(addresses))
 		for index, address := range addresses {
 			if index == 0 && address == bridgeSettings && s.anchor {
-				data := append(append([]byte{}, squadsSettingsDiscriminator[:]...), 1)
+				data := append(append([]byte{}, squads.SettingsDiscriminator[:]...), 1)
 				values[index] = map[string]any{
-					"owner": bridgeSquadsProgram, "lamports": 2_000_000,
+					"owner": squads.ProgramID.String(), "lamports": 2_000_000,
 					"data": []string{base64.StdEncoding.EncodeToString(data), "base64"}, "executable": false,
 				}
 			} else if s.surviving[address] {
 				values[index] = map[string]any{
-					"owner": bridgeSquadsProgram, "lamports": 2_000_000,
+					"owner": squads.ProgramID.String(), "lamports": 2_000_000,
 					"data": []string{"AAAAAA==", "base64"}, "executable": false,
 				}
 			}

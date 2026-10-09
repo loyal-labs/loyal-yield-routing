@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // The initializer-enabled candidate request carries the binding identity
@@ -61,7 +62,7 @@ func autoInitializerPrestateAccounts(t *testing.T, r KaminoInitializationRequest
 	// derived seed must stay strictly ahead of the bound policy seed.
 	binary.LittleEndian.PutUint64(settings.Data[159:167], r.PolicySeed)
 	accounts[bridgeSettings] = settings
-	accounts[policyAddress] = ConfirmedAccount{Address: policyAddress, Owner: bridgeSquadsProgram, Lamports: 1,
+	accounts[policyAddress] = ConfirmedAccount{Address: policyAddress, Owner: squads.ProgramID.String(), Lamports: 1,
 		Data: []byte(autoInitializerFixtureSyntheticAccountData)}
 	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
 	accounts[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
@@ -196,7 +197,7 @@ func TestAutoInitializerCandidateCompilesOnlyAgainstReviewedBinding(t *testing.T
 	}
 	// The Squads execute-sync payload pins the constraint index at a fixed
 	// offset behind the discriminator: exactly the appended eighth index.
-	wrapped := bytes.Index(message, squadsExecuteSyncDiscriminator)
+	wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:])
 	if wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitializerConstraintIndex {
 		t.Fatalf("initializer not wrapped at the appended index %d", autoInitializerConstraintIndex)
 	}

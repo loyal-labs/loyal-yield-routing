@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Test-local bindings only: installed JSON and production activation stay intact.
@@ -314,7 +316,7 @@ func checkPhase3JupiterCandidateMatchesGo(t *testing.T, returning bool) {
 		if returning && i == 1 {
 			found := false
 			for _, account := range snapshot.Accounts {
-				if account.Address == b.Policy && account.Present && !account.Executable && account.Owner == bridgeSquadsProgram {
+				if account.Address == b.Policy && account.Present && !account.Executable && account.Owner == squads.ProgramID.String() {
 					data, err := base64.StdEncoding.Strict().DecodeString(account.DataBase64)
 					found = err == nil && sha256Bytes(data) == b.PolicySHA256 && account.DataSHA256 == b.PolicySHA256
 				}

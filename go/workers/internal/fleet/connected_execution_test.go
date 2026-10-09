@@ -18,6 +18,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Go plans, persists the signed wire before any send, lands it through its own
@@ -271,7 +272,7 @@ func verifySameMintWire(t *testing.T, ctx context.Context, bank *fleet.Connected
 			t.Fatal(err)
 		}
 		switch program.String() {
-		case fleet.SquadsProgram:
+		case squads.ProgramID.String():
 			policies = append(policies, accounts[0].PublicKey.String())
 		case sdk.SystemProgramID.String():
 			if len(accounts) != 2 || accounts[1].PublicKey.String() != bank.Vault || binary.LittleEndian.Uint32(instruction.Data[:4]) != 2 {

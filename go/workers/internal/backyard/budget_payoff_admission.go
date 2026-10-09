@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // A funded full payoff uses a finite interest-window request. Reserve the
@@ -119,7 +120,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 		return phase3BridgeAdmission{}, err
 	}
 	policy := accountAt(policies, withdrawal.Policy)
-	if policy.Owner != bridgeSquadsProgram || policy.Lamports == 0 || policy.Executable || sha256Bytes(policy.Data) != withdrawal.PolicyAccountDataSHA256 {
+	if policy.Owner != squads.ProgramID.String() || policy.Lamports == 0 || policy.Executable || sha256Bytes(policy.Data) != withdrawal.PolicyAccountDataSHA256 {
 		return phase3BridgeAdmission{}, budgetHold("payoff_withdrawal_policy_drift")
 	}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)

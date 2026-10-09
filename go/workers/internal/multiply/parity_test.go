@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -357,38 +358,6 @@ func TestConstraintIndexesPerActionAndStrategy(t *testing.T) {
 	}
 }
 
-func TestSquadsExecutePayloadLayout(t *testing.T) {
-	topology := testTopology(t)
-	config := topology.Strategies[OnycUsdc]
-	terminal := Instruction{
-		ProgramID: mustKey(KlendProgram),
-		Data:      appendU64Instruction(DiscriminatorDepositCollateral[:], 42),
-	}
-	transactionAccounts := make([]AccountMeta, 0, 8)
-	inner := CompileSquadsInnerInstruction(&transactionAccounts, terminal)
-	if len(transactionAccounts) != 1 { // account then program
-		t.Fatalf("index space built %d entries", len(transactionAccounts))
-	}
-	constraintIndexes := []byte{0}
-	policy, _ := config.PolicyForAction(ActionDepositCollateral)
-	execute := ExecuteProgramInteractionInstruction(policy.Account,
-		fixtureKey(1), 0,
-		[]CompiledInstruction{inner}, constraintIndexes, transactionAccounts)
-	if execute.ProgramID != mustKey(SquadsProgram) {
-		t.Fatal("terminal program drifted")
-	}
-	if !equalBytes(execute.Data[:8], []byte{90, 81, 187, 81, 39, 70, 128, 78}) {
-		t.Fatal("sync v2 discriminator drifted")
-	}
-	// num_signers = 1, payload = Policy(1) = ProgramInteraction(1), Some(1).
-	if execute.Data[8] != 0 || execute.Data[9] != 1 || execute.Data[10] != 1 || execute.Data[11] != 1 || execute.Data[12] != 1 {
-		t.Fatalf("squads payload enum tags drifted: %x", execute.Data[8:16])
-	}
-	if !equalBytes(execute.Data[17:18], constraintIndexes) {
-		t.Fatal("constraint indexes misplaced")
-	}
-}
-
 // ---------------------------------------------------------------- builder
 
 func TestBuildKlendOperationsWireShape(t *testing.T) {
@@ -613,7 +582,7 @@ func TestPrepareAndSignWireShapeAndCapability(t *testing.T) {
 	message := signed.Wire[consumed+ed25519.SignatureSize:]
 	foundSquads := false
 	for offset := 0; offset+8 <= len(message); offset++ {
-		if equalBytes(message[offset:offset+8], []byte{90, 81, 187, 81, 39, 70, 128, 78}) {
+		if equalBytes(message[offset:offset+8], squads.ExecuteTransactionSyncV2Discriminator[:]) {
 			foundSquads = true
 			break
 		}

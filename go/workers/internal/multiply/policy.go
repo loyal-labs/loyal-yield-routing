@@ -2,8 +2,7 @@ package multiply
 
 // Policy contracts ported from
 // 91694cd9^:crates/loyal-fleet-worker/src/multiply/policy.rs: canonical KLend v2
-// discriminators, per-family constraint indexes, and the Squads sync
-// execution payload laid out by loyal-actions' Borsh serializers.
+// discriminators and per-family constraint indexes.
 
 import (
 	"encoding/binary"
@@ -16,13 +15,12 @@ import (
 // the reviewed fleet/backyard builders: deposit/borrow/withdraw/repay below
 // and the shared refresh tags).
 var (
-	DiscriminatorDepositCollateral   = [8]byte{216, 224, 191, 27, 204, 151, 102, 175}
-	DiscriminatorBorrowDebt          = [8]byte{161, 128, 143, 245, 171, 199, 194, 6}
-	DiscriminatorWithdrawCollateral  = [8]byte{235, 52, 119, 152, 149, 197, 20, 7}
-	DiscriminatorRepayDebt           = [8]byte{116, 174, 213, 76, 180, 53, 210, 144}
-	DiscriminatorRefreshReserve      = [8]byte{2, 218, 138, 235, 79, 201, 25, 102}
-	DiscriminatorRefreshObligation   = [8]byte{33, 132, 147, 228, 151, 192, 72, 89}
-	squadsExecuteSyncV2Discriminator = [8]byte{90, 81, 187, 81, 39, 70, 128, 78}
+	DiscriminatorDepositCollateral  = [8]byte{216, 224, 191, 27, 204, 151, 102, 175}
+	DiscriminatorBorrowDebt         = [8]byte{161, 128, 143, 245, 171, 199, 194, 6}
+	DiscriminatorWithdrawCollateral = [8]byte{235, 52, 119, 152, 149, 197, 20, 7}
+	DiscriminatorRepayDebt          = [8]byte{116, 174, 213, 76, 180, 53, 210, 144}
+	DiscriminatorRefreshReserve     = [8]byte{2, 218, 138, 235, 79, 201, 25, 102}
+	DiscriminatorRefreshObligation  = [8]byte{33, 132, 147, 228, 151, 192, 72, 89}
 )
 
 // PolicyFamily mirrors policy::PolicyFamily.
@@ -138,37 +136,6 @@ func equalBytes(left, right []byte) bool {
 	return true
 }
 
-// CompiledInstruction is a Squads inner instruction in transaction-account
-// index space (mirrors loyal_actions::SquadsCompiledInstruction).
-type CompiledInstruction struct {
-	ProgramIDIndex uint8
-	Accounts       []byte
-	Data           []byte
-}
-
-// CompileSquadsInnerInstruction mirrors compile_squads_inner_instruction:
-// push-or-merge every account (signer flags cleared later) and the program.
-func CompileSquadsInnerInstruction(transactionAccounts *[]AccountMeta, instruction Instruction) CompiledInstruction {
-	accounts := make([]byte, 0, len(instruction.Accounts))
-	for _, account := range instruction.Accounts {
-		accounts = append(accounts, pushOrUpdateAccountMeta(transactionAccounts, account))
-	}
-	programIDIndex := pushOrUpdateAccountMeta(transactionAccounts, AccountMeta{PubKey: instruction.ProgramID})
-	return CompiledInstruction{ProgramIDIndex: programIDIndex, Accounts: accounts, Data: instruction.Data}
-}
-
-func pushOrUpdateAccountMeta(accounts *[]AccountMeta, meta AccountMeta) uint8 {
-	for index := range *accounts {
-		if (*accounts)[index].PubKey == meta.PubKey {
-			(*accounts)[index].IsSigner = (*accounts)[index].IsSigner || meta.IsSigner
-			(*accounts)[index].IsWritable = (*accounts)[index].IsWritable || meta.IsWritable
-			return uint8(index)
-		}
-	}
-	*accounts = append(*accounts, meta)
-	return uint8(len(*accounts) - 1)
-}
-
 // AccountMeta mirrors solana_sdk::Instruction's account entry.
 type AccountMeta struct {
 	PubKey     solana.PublicKey
@@ -181,61 +148,4 @@ type Instruction struct {
 	ProgramID solana.PublicKey
 	Accounts  []AccountMeta
 	Data      []byte
-}
-
-// ExecuteProgramInteractionInstruction mirrors
-// loyal_actions::execute_program_interaction_policy_instruction with
-// num_signers = 1 (SQUADS_SYNC_SIGNER_COUNT).
-func ExecuteProgramInteractionInstruction(policy solana.PublicKey, signer solana.PublicKey, accountIndex uint8, compiled []CompiledInstruction, constraintIndexes []byte, transactionAccounts []AccountMeta) Instruction {
-	for index := range transactionAccounts {
-		transactionAccounts[index].IsSigner = false
-	}
-	accounts := make([]AccountMeta, 0, len(transactionAccounts)+3)
-	accounts = append(accounts, AccountMeta{PubKey: policy, IsWritable: true})
-	accounts = append(accounts, AccountMeta{PubKey: mustKey(SquadsProgram)})
-	accounts = append(accounts, AccountMeta{PubKey: signer, IsSigner: true})
-	accounts = append(accounts, transactionAccounts...)
-
-	payload := squadsCompiledInstructionPayload(compiled)
-	// Borsh layout from loyal-actions:
-	// SquadsSyncTransactionArgs { account_index: u8, num_signers: u8,
-	//   payload: SquadsSyncPayload::Policy(
-	//     SquadsPolicyPayload::ProgramInteraction(
-	//       SquadsProgramInteractionPayload {
-	//         instruction_constraint_indices: Option<Vec<u8>>,
-	//         transaction_payload: SyncTransaction(
-	//           SquadsProgramInteractionSyncPayload { account_index: u8, instructions: Vec<u8> }) }) }) }
-	data := make([]byte, 0, 64+len(payload))
-	data = append(data, squadsExecuteSyncV2Discriminator[:]...)
-	data = append(data, accountIndex, 1, 1, 1, 1)
-	data = appendU32LE(data, uint32(len(constraintIndexes)))
-	data = append(data, constraintIndexes...)
-	data = append(data, 1, accountIndex)
-	data = appendU32LE(data, uint32(len(payload)))
-	data = append(data, payload...)
-	return Instruction{ProgramID: mustKey(SquadsProgram), Accounts: accounts, Data: data}
-}
-
-func squadsCompiledInstructionPayload(instructions []CompiledInstruction) []byte {
-	payload := make([]byte, 1, 32)
-	payload[0] = uint8(len(instructions))
-	for _, instruction := range instructions {
-		payload = append(payload, instruction.ProgramIDIndex, uint8(len(instruction.Accounts)))
-		payload = append(payload, instruction.Accounts...)
-		payload = appendU16LE(payload, uint16(len(instruction.Data)))
-		payload = append(payload, instruction.Data...)
-	}
-	return payload
-}
-
-func appendU16LE(dst []byte, value uint16) []byte {
-	var raw [2]byte
-	binary.LittleEndian.PutUint16(raw[:], value)
-	return append(dst, raw[:]...)
-}
-
-func appendU32LE(dst []byte, value uint32) []byte {
-	var raw [4]byte
-	binary.LittleEndian.PutUint32(raw[:], value)
-	return append(dst, raw[:]...)
 }

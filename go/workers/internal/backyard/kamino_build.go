@@ -10,6 +10,7 @@ import (
 	"sort"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // KaminoPrimeUSDCAccounts is the exact account list produced by the checked
@@ -251,7 +252,7 @@ func compileKaminoLegacyMessage(feePayer, blockhash publicKey, instructions []co
 func validateKaminoRefreshSequence(instructions []compiledInstruction) error {
 	if len(instructions) != 4 || instructions[0].program != mustKey(kaminoPrimeUSDCProgram) ||
 		instructions[1].program != mustKey(kaminoPrimeUSDCProgram) || instructions[2].program != mustKey(kaminoPrimeUSDCProgram) ||
-		instructions[3].program != mustKey(bridgeSquadsProgram) || !bytesEqual(instructions[0].data, kaminoRefreshReserve) ||
+		instructions[3].program != publicKey(squads.ProgramID) || !bytesEqual(instructions[0].data, kaminoRefreshReserve) ||
 		!bytesEqual(instructions[1].data, kaminoRefreshReserve) || !bytesEqual(instructions[2].data, kaminoRefreshObligation) {
 		return fmt.Errorf("Kamino transaction is not the exact refresh-plus-policy sequence")
 	}
@@ -648,28 +649,7 @@ func wrapSquadsKaminoPolicy(policy, executor, expectedDelegate publicKey, constr
 	if executor != expectedDelegate || inner.program != mustKey(kaminoPrimeUSDCProgram) {
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads Kamino policy or delegate")
 	}
-	transactionAccounts := make([]accountMeta, 0, len(inner.accounts)+1)
-	indexes := make([]byte, 0, len(inner.accounts))
-	for _, account := range inner.accounts {
-		indexes = append(indexes, pushOrMergeMeta(&transactionAccounts, account))
-	}
-	programIndex := pushOrMergeMeta(&transactionAccounts, accountMeta{key: inner.program})
-	for i := range transactionAccounts {
-		transactionAccounts[i].signer = false
-	}
-	compiled := []byte{1, programIndex, byte(len(indexes))}
-	compiled = append(compiled, indexes...)
-	compiled = appendU16(compiled, uint16(len(inner.data)))
-	compiled = append(compiled, inner.data...)
-	data := append([]byte(nil), squadsExecuteSyncDiscriminator...)
-	data = append(data, 0, 1, 1, 1, 1)
-	data = appendU32(data, 1)
-	data = append(data, constraintIndex, 1, 0)
-	data = appendU32(data, uint32(len(compiled)))
-	data = append(data, compiled...)
-	accounts := []accountMeta{{key: policy, writable: true}, {key: mustKey(bridgeSquadsProgram)}, {key: executor, signer: true}}
-	accounts = append(accounts, transactionAccounts...)
-	return compiledInstruction{program: mustKey(bridgeSquadsProgram), accounts: accounts, data: data}, nil
+	return wrapSquadsPolicy(policy, executor, []byte{constraintIndex}, inner)
 }
 
 func (s SignedKaminoTransaction) BuildResult(simulationSlot int64) (BuildResult, error) {

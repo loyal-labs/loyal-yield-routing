@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -612,31 +611,10 @@ func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, execu
 }
 
 func wrapSquadsJupiterPolicy(policy, executor, expectedDelegate publicKey, constraintIndex byte, inner compiledInstruction) (compiledInstruction, error) {
-	if executor != expectedDelegate || inner.program != mustKey(jupiterV6Program) || len(inner.accounts) > math.MaxUint8 || len(inner.data) > math.MaxUint16 {
+	if executor != expectedDelegate || inner.program != mustKey(jupiterV6Program) {
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads Jupiter policy or delegate")
 	}
-	transactionAccounts := make([]accountMeta, 0, len(inner.accounts)+1)
-	indexes := make([]byte, 0, len(inner.accounts))
-	for _, account := range inner.accounts {
-		indexes = append(indexes, pushOrMergeMeta(&transactionAccounts, account))
-	}
-	programIndex := pushOrMergeMeta(&transactionAccounts, accountMeta{key: inner.program})
-	for index := range transactionAccounts {
-		transactionAccounts[index].signer = false
-	}
-	compiled := []byte{1, programIndex, byte(len(indexes))}
-	compiled = append(compiled, indexes...)
-	compiled = appendU16(compiled, uint16(len(inner.data)))
-	compiled = append(compiled, inner.data...)
-	data := append([]byte(nil), squadsExecuteSyncDiscriminator...)
-	data = append(data, 0, 1, 1, 1, 1)
-	data = appendU32(data, 1)
-	data = append(data, constraintIndex, 1, 0)
-	data = appendU32(data, uint32(len(compiled)))
-	data = append(data, compiled...)
-	accounts := []accountMeta{{key: policy, writable: true}, {key: mustKey(bridgeSquadsProgram)}, {key: executor, signer: true}}
-	accounts = append(accounts, transactionAccounts...)
-	return compiledInstruction{program: mustKey(bridgeSquadsProgram), accounts: accounts, data: data}, nil
+	return wrapSquadsPolicy(policy, executor, []byte{constraintIndex}, inner)
 }
 
 func (s SignedJupiterTransaction) BuildResult(simulationSlot int64) (BuildResult, error) {

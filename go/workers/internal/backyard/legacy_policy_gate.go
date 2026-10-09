@@ -4,52 +4,36 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"math/big"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Strategy-two cutover gate: the worker must not run while any legacy custom
 // policy at seeds 62-65 still exists on the Squads Settings, because those
 // policies still delegate to the retired executor this cutover is retiring.
-// The four policy addresses are program-derived addresses of
-//
-//	["smart_account", "policy", bridgeSettings, seed_le64]
-//
-// under bridgeSquadsProgram, derived at startup from the same constants the
-// bridge builder uses (build.go) rather than pinned as literals, so a change
-// to the Settings constant re-derives a different gate set instead of
-// silently gating the wrong addresses.
+// The four policy addresses are derived at startup from the same Settings
+// constant the bridge builder uses (build.go) rather than pinned as literals,
+// so a change to the Settings constant re-derives a different gate set instead
+// of silently gating the wrong addresses.
 var legacyCustomPolicySeeds = []uint64{62, 63, 64, 65}
 
 const mainnetGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
 const legacyPolicyGateTimeout = 60 * time.Second
 
-var squadsSettingsDiscriminator = [8]byte{223, 179, 163, 190, 177, 224, 67, 173}
-
 func legacyCustomPolicyAddresses() ([]string, error) {
-	settings, err := decodeKey(bridgeSettings)
-	if err != nil {
-		return nil, fmt.Errorf("decode bridge settings: %w", err)
-	}
-	program, err := decodeKey(bridgeSquadsProgram)
-	if err != nil {
-		return nil, fmt.Errorf("decode squads program: %w", err)
-	}
 	addresses := make([]string, 0, len(legacyCustomPolicySeeds))
 	for _, seed := range legacyCustomPolicySeeds {
-		var seedLe [8]byte
-		binary.LittleEndian.PutUint64(seedLe[:], seed)
-		derived, err := findProgramDerivedAddress([]byte("smart_account"), program[:],
-			[]byte("policy"), settings[:], seedLe[:])
+		derived, _, err := squads.PolicyAddress(solana.PublicKey(mustKey(bridgeSettings)), seed)
 		if err != nil {
 			return nil, fmt.Errorf("derive seed %d policy: %w", seed, err)
 		}
-		addresses = append(addresses, derived)
+		addresses = append(addresses, derived.String())
 	}
 	return addresses, nil
 }
@@ -88,9 +72,8 @@ func AssertLegacyPoliciesRetired(ctx context.Context, client *chain.Client) ([]s
 		return nil, fmt.Errorf("legacy policy gate read at finalized: %w", err)
 	}
 	anchor := accounts[0]
-	if anchor.Address != bridgeSettings || anchor.Owner != bridgeSquadsProgram || anchor.Lamports == 0 ||
-		len(anchor.Data) <= len(squadsSettingsDiscriminator) ||
-		!bytes.Equal(anchor.Data[:len(squadsSettingsDiscriminator)], squadsSettingsDiscriminator[:]) {
+	if anchor.Address != bridgeSettings || anchor.Owner != squads.ProgramID.String() || anchor.Lamports == 0 ||
+		len(anchor.Data) <= len(squads.SettingsDiscriminator) || !bytes.HasPrefix(anchor.Data, squads.SettingsDiscriminator[:]) {
 		return nil, fmt.Errorf("legacy policy gate Settings anchor is absent or invalid")
 	}
 	var surviving []string

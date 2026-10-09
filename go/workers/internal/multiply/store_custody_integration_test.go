@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -36,7 +37,7 @@ func TestFreshCustodyUsesExactVaultAndLegacyLock(t *testing.T) {
 	state, topology := runtimeFixtureRoute(t, store)
 	ctx := context.Background()
 	// A different derived Squads account index coexists with Multiply0.
-	otherVault, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), topology.Settings[:], []byte("smart_account"), {1}}, mustKey(SquadsProgram))
+	otherVault, _, err := squads.SmartAccountAddress(topology.Settings, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

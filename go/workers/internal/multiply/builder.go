@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -428,7 +429,7 @@ func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, re
 		if program == solana.ComputeBudget {
 			continue
 		}
-		if found || program != mustKey(SquadsProgram) {
+		if found || program != squads.ProgramID {
 			return errors.New("claim has an unexpected outer instruction")
 		}
 		found = true
@@ -476,10 +477,10 @@ func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, re
 		payload := append([]byte{1, position(token, false, false), 4}, inner...)
 		payload = binary.LittleEndian.AppendUint16(payload, uint16(len(transfer)))
 		payload = append(payload, transfer...)
-		data := append(append([]byte{}, squadsExecuteSyncV2Discriminator[:]...), 0, 1, 0)
+		data := append(append([]byte{}, squads.ExecuteTransactionSyncV2Discriminator[:]...), 0, 1, 0)
 		data = binary.LittleEndian.AppendUint32(data, uint32(len(payload)))
 		data = append(data, payload...)
-		expected := []solana.AccountMeta{{PublicKey: topology.Settings, IsWritable: true}, {PublicKey: mustKey(SquadsProgram)}, {PublicKey: accounts[2].PublicKey, IsSigner: true}}
+		expected := []solana.AccountMeta{{PublicKey: topology.Settings, IsWritable: true}, {PublicKey: squads.ProgramID}, {PublicKey: accounts[2].PublicKey, IsSigner: true}}
 		for _, a := range table {
 			expected = append(expected, solana.AccountMeta{PublicKey: a.PublicKey, IsWritable: a.IsWritable})
 		}

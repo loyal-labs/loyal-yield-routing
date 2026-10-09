@@ -16,7 +16,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
-	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -57,7 +57,7 @@ const confirmedCommitment = "confirmed"
 // ProcessPolicyInstructions returns the number of projected events. Only the
 // stream path waits (bounded) for an RPC behind the event slot; a durable job
 // defers instead and the queue retries it.
-func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature string, slot uint64, instructions []sp.Instruction, waitBehind bool) (int, error) {
+func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature string, slot uint64, instructions []squads.Instruction, waitBehind bool) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.seen[signature]; ok {
@@ -70,7 +70,7 @@ func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature
 	return emitted, err
 }
 
-func (m *PolicyMonitor) process(ctx context.Context, signature string, slot uint64, instructions []sp.Instruction, waitBehind bool) (int, error) {
+func (m *PolicyMonitor) process(ctx context.Context, signature string, slot uint64, instructions []squads.Instruction, waitBehind bool) (int, error) {
 	emitted := 0
 	earnMax := map[solana.PublicKey]uint64{}
 	for _, instruction := range instructions {
@@ -113,12 +113,12 @@ type policyEvent struct {
 // events classifies one instruction exactly as the Rust monitor emits:
 // a generalized cross-mint policy, else removals, else recognized creates,
 // else an incompatible update invalidating the policy.
-func (m *PolicyMonitor) events(signature string, slot uint64, instruction sp.Instruction) []policyEvent {
+func (m *PolicyMonitor) events(signature string, slot uint64, instruction squads.Instruction) []policyEvent {
 	if event, ok := detectCrossMintPolicy(instruction); ok {
 		event.Signature, event.Slot, event.Cluster, event.SourceCommitment = signature, slot, m.cluster, confirmedCommitment
 		return []policyEvent{{crossMint: &event}}
 	}
-	if removals, err := sp.DetectPolicyRemovals(instruction); err == nil && len(removals) > 0 {
+	if removals, err := squads.DetectPolicyRemovals(instruction); err == nil && len(removals) > 0 {
 		events := make([]policyEvent, 0, len(removals))
 		for _, removal := range removals {
 			input := m.removal(signature, slot, removal)
@@ -126,7 +126,7 @@ func (m *PolicyMonitor) events(signature string, slot uint64, instruction sp.Ins
 		}
 		return events
 	}
-	actions, err := sp.DecodeSettingsActions(instruction)
+	actions, err := squads.DecodeSettingsActions(instruction)
 	if err != nil {
 		return nil
 	}
@@ -146,7 +146,7 @@ func (m *PolicyMonitor) events(signature string, slot uint64, instruction sp.Ins
 		}
 	}
 	if len(events) == 0 {
-		if update, err := sp.DetectPolicyUpdateIdentity(instruction); err == nil && update != nil {
+		if update, err := squads.DetectPolicyUpdateIdentity(instruction); err == nil && update != nil {
 			input := m.removal(signature, slot, *update)
 			events = append(events, policyEvent{removal: &input})
 		}
@@ -172,7 +172,7 @@ func (m *PolicyMonitor) stamp(event *PolicyMatchInput, signature string, slot ui
 	event.Signature, event.Slot, event.Cluster, event.SourceCommitment = signature, slot, m.cluster, confirmedCommitment
 }
 
-func (m *PolicyMonitor) removal(signature string, slot uint64, identity sp.PolicyIdentity) PolicyRemovalInput {
+func (m *PolicyMonitor) removal(signature string, slot uint64, identity squads.PolicyIdentity) PolicyRemovalInput {
 	return PolicyRemovalInput{Signature: signature, Slot: slot, Cluster: m.cluster, SourceCommitment: confirmedCommitment,
 		Settings: identity.Settings.String(), Authority: identity.Authority.String(), PolicyAccount: identity.PolicyAccount.String()}
 }
@@ -189,9 +189,9 @@ func familyPolicy(strategy multiply.StrategyConfig, family multiply.PolicyFamily
 	return strategy.SwapPolicy
 }
 
-func (m *PolicyMonitor) affectedEarnMaxSettings(ctx context.Context, instruction sp.Instruction) (map[solana.PublicKey]uint64, error) {
+func (m *PolicyMonitor) affectedEarnMaxSettings(ctx context.Context, instruction squads.Instruction) (map[solana.PublicKey]uint64, error) {
 	out := map[solana.PublicKey]uint64{}
-	if actions, err := sp.DecodeSettingsActions(instruction); err == nil {
+	if actions, err := squads.DecodeSettingsActions(instruction); err == nil {
 		for _, action := range actions {
 			base, ok, err := m.earnMaxSeedBase(action)
 			if err != nil {
@@ -202,11 +202,11 @@ func (m *PolicyMonitor) affectedEarnMaxSettings(ctx context.Context, instruction
 			}
 		}
 	}
-	var identities []sp.PolicyIdentity
-	if removals, err := sp.DetectPolicyRemovals(instruction); err == nil {
+	var identities []squads.PolicyIdentity
+	if removals, err := squads.DetectPolicyRemovals(instruction); err == nil {
 		identities = append(identities, removals...)
 	}
-	if update, err := sp.DetectPolicyUpdateIdentity(instruction); err == nil && update != nil {
+	if update, err := squads.DetectPolicyUpdateIdentity(instruction); err == nil && update != nil {
 		identities = append(identities, *update)
 	}
 	for _, identity := range identities {
@@ -236,7 +236,7 @@ func (m *PolicyMonitor) affectedEarnMaxSettings(ctx context.Context, instruction
 
 // earnMaxSeedBase is earn_max_policy_seed_base: a canonical create or update
 // payload of one family at its seed base offset.
-func (m *PolicyMonitor) earnMaxSeedBase(action sp.SettingsAction) (uint64, bool, error) {
+func (m *PolicyMonitor) earnMaxSeedBase(action squads.SettingsAction) (uint64, bool, error) {
 	if action.Threshold != 1 || len(action.DelegatedSigners) != 1 || action.DelegatedSigners[0] != m.delegate {
 		return 0, false, nil
 	}
@@ -249,14 +249,14 @@ func (m *PolicyMonitor) earnMaxSeedBase(action sp.SettingsAction) (uint64, bool,
 		if err != nil {
 			return 0, false, err
 		}
-		if action.Payload.VaultIndex != 0 || len(action.Payload.SpendingLimits) != 0 || !sp.ConstraintsEqual(action.Payload.Constraints, constraints) {
+		if action.Payload.VaultIndex != 0 || len(action.Payload.SpendingLimits) != 0 || !squads.ConstraintsEqual(action.Payload.Constraints, constraints) {
 			continue
 		}
 		if action.PolicySeed < uint64(offset) {
 			return 0, false, nil
 		}
 		base := action.PolicySeed - uint64(offset)
-		account, _, err := sp.ActionAccount(action.Settings, action.PolicySeed)
+		account, _, err := squads.PolicyAddress(action.Settings, action.PolicySeed)
 		if err != nil {
 			return 0, false, err
 		}
@@ -300,7 +300,7 @@ func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings sol
 	type expected struct {
 		family      multiply.PolicyFamily
 		policy      multiply.PolicyConfig
-		constraints []sp.InstructionConstraintView
+		constraints []squads.InstructionConstraintView
 		semantic    string
 	}
 	var families []expected
@@ -311,7 +311,7 @@ func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings sol
 			return err
 		}
 		policy := familyPolicy(strategy, family)
-		update, err := sp.EncodeCompactPolicyUpdate(policy.Account, m.delegate, 0, constraints)
+		update, err := squads.EncodeCompactPolicyUpdate(policy.Account, m.delegate, 0, constraints)
 		if err != nil {
 			return err
 		}
@@ -333,8 +333,8 @@ func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings sol
 		if account != nil {
 			present++
 			matches := false
-			if account.Owner == sp.Program && !account.Executable {
-				if matches, err = multiply.CurrentPolicyMatches(account.Data, family.policy, m.delegate, family.constraints, 0); err != nil {
+			if account.Owner == squads.ProgramID && !account.Executable {
+				if matches, err = multiply.CurrentPolicyMatches(account, family.policy, m.delegate, family.constraints, 0); err != nil {
 					return err
 				}
 			}

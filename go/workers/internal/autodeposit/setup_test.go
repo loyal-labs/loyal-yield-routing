@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -93,7 +94,7 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 		if err != nil {
 			t.Fatal(err)
 		}
-		accounts[plan.Target.RoutePolicyAccount] = testAccount{Owner: squadsProgramID, Data: policy}
+		accounts[plan.Target.RoutePolicyAccount] = testAccount{Owner: squads.ProgramID.String(), Data: policy}
 		setup.PolicyAccount = plan.Target.RoutePolicyAccount
 		setup.RentTopUpLamports = 10_000_000
 	}

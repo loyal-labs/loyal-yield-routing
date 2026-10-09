@@ -24,7 +24,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -756,125 +756,42 @@ type swapSpendingLimit struct {
 	Exact   bool
 }
 
-func decodeStrictSwapPolicy(data []byte) (DecodedSquadsPolicy, []string, []swapSpendingLimit, error) {
-	policy, err := DecodeSquadsPolicy(data)
+func decodeStrictSwapPolicy(account *chain.Account) (DecodedSquadsPolicy, []string, []swapSpendingLimit, error) {
+	policy, err := DecodeSquadsPolicy(account)
 	if err != nil {
 		return policy, nil, nil, err
 	}
-	c := wireCursor{b: data}
-	c.skip(8 + 32 + 8 + 1 + 8 + 8)
-	n := c.u32()
-	for i := uint32(0); i < n; i++ {
-		c.skip(32)
-		if c.u8() != 7 {
+	for _, permissions := range policy.SignerPermissions {
+		if permissions != squads.FullPermissions {
 			return policy, nil, nil, errors.New("swap policy signer does not have full permissions")
 		}
 	}
-	if c.u16() != 1 {
-		return policy, nil, nil, errors.New("swap policy threshold is not one")
+	full := policy.full
+	if full == nil {
+		return policy, nil, nil, errors.New("swap policy payload tail does not decode")
 	}
-	c.skip(4)
-	if c.u8() != 3 {
-		return policy, nil, nil, errors.New("swap policy payload is not ProgramInteraction")
-	}
-	c.skip(1)
-	start := c
-	legacyPayload, end, legacyErr := squadspolicy.DecodeConstraints(c.b, c.i, policy.AccountIndex, false, 128, 256)
-	if legacyErr == nil && len(legacyPayload.Constraints) == 0 {
-		legacyErr = errors.New("invalid legacy policy constraint count")
-	}
-	if legacyErr == nil {
-		c.i = end
-	}
-	compact := false
-	var table []string
-	if legacyErr != nil {
-		compact = true
-		c = start
-		count := int(c.u8())
-		if count > 240 {
-			return policy, nil, nil, errors.New("compact swap policy table exceeds limit")
-		}
-		table = make([]string, count)
-		for i := range table {
-			table[i] = encodeBase58(c.take(32))
-		}
-		c = start
-		compactPayload, compactEnd, decodeErr := squadspolicy.DecodeConstraints(c.b, c.i, policy.AccountIndex, true, 128, 256)
-		err = decodeErr
-		if err == nil && len(compactPayload.Constraints) == 0 {
-			err = errors.New("invalid compact policy constraint count")
-		}
-		if err != nil {
-			return policy, nil, nil, err
-		}
-		c.i = compactEnd
-	}
-	if c.u8() != 0 || c.u8() != 0 {
+	if full.PreHook || full.PostHook {
 		return policy, nil, nil, errors.New("swap policy hooks are not allowed")
 	}
-	count := int(c.u32())
-	if compact {
-		c.i -= 4
-		count = int(c.u8())
-	}
-	if count != 3 {
+	if len(full.Payload.SpendingLimits) != 3 {
 		return policy, nil, nil, errors.New("swap policy must have three source spending limits")
 	}
 	limits := make([]swapSpendingLimit, 0, 3)
-	readOptionI64 := func() (bool, error) {
-		tag := c.u8()
-		if tag == 0 {
-			return false, nil
-		}
-		if tag == 1 {
-			c.skip(8)
-			return true, nil
-		}
-		return false, errors.New("invalid spending expiration option")
-	}
-	for i := 0; i < count; i++ {
-		var mint string
-		if compact {
-			idx := int(c.u8())
-			if idx >= len(table) {
-				return policy, nil, nil, errors.New("spending mint index is invalid")
-			}
-			mint = table[idx]
-		} else {
-			mint = encodeBase58(c.take(32))
-		}
-		started := int64(binary.LittleEndian.Uint64(c.take(8)))
-		expiration, e := readOptionI64()
-		if e != nil || expiration {
+	for _, limit := range full.Payload.SpendingLimits {
+		if limit.Expiration != nil {
 			return policy, nil, nil, errors.New("swap spending limit must not expire")
 		}
-		daily := c.u8() == 1
-		exact := true
-		maximum := uint64(0)
-		if compact {
-			maximum = binary.LittleEndian.Uint64(c.take(8))
-		} else {
-			accumulate := c.u8()
-			maximum = binary.LittleEndian.Uint64(c.take(8))
-			maxUse := binary.LittleEndian.Uint64(c.take(8))
-			enforce := c.u8()
-			remaining := binary.LittleEndian.Uint64(c.take(8))
-			lastReset := int64(binary.LittleEndian.Uint64(c.take(8)))
-			exact = accumulate == 0 && maxUse == 0 && enforce == 0 && remaining <= maximum && lastReset >= started
-		}
-		limits = append(limits, swapSpendingLimit{mint, started, daily, maximum, exact})
+		limits = append(limits, swapSpendingLimit{limit.Mint.String(), limit.Start, limit.Period == 1, limit.MaxPerPeriod, full.ExactSpendingLimits})
 	}
-	if c.err != nil {
-		return policy, nil, nil, c.err
-	}
-	policyStart := int64(binary.LittleEndian.Uint64(c.take(8)))
-	if c.u8() != 0 {
+	if full.HasExpiration {
 		return policy, nil, nil, errors.New("swap policy expiration is not allowed")
 	}
-	c.skip(32)
-	if c.err != nil || policyStart < 0 {
+	if full.Start < 0 {
 		return policy, nil, nil, errors.New("swap policy trailing state is invalid")
+	}
+	var table []string
+	for _, key := range policy.table {
+		table = append(table, key.String())
 	}
 	return policy, table, limits, nil
 }
@@ -995,10 +912,7 @@ func derivePolicyAccount(settings string, seed uint64) (string, uint8, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	program, _ := solana.PublicKeyFromBase58(SquadsProgram)
-	var raw [8]byte
-	binary.LittleEndian.PutUint64(raw[:], seed)
-	key, bump, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settingsKey[:], raw[:]}, program)
+	key, bump, err := squads.PolicyAddress(settingsKey, seed)
 	if err != nil {
 		return "", 0, err
 	}
@@ -1199,7 +1113,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	}
 	accounts := []chain.Account{bank.accounts[lease.SourceReserve], bank.accounts[lease.TargetReserve], bank.accounts[plan.SourceMint], bank.accounts[plan.TargetMint], bank.accounts[source.Position.VaultLiquidityATA], bank.accounts[target.Position.VaultLiquidityATA], bank.accounts[b.Withdraw.PolicyAccount], bank.accounts[b.Swap.PolicyAccount], bank.accounts[b.Deposit.PolicyAccount]}
 	for _, i := range []int{6, 7, 8} {
-		if accounts[i].Owner.String() != SquadsProgram || accounts[i].Executable || accounts[i].Lamports == 0 {
+		if accounts[i].Owner != squads.ProgramID || accounts[i].Executable || accounts[i].Lamports == 0 {
 			return out, errors.New("finalized prewithdraw policy account is not funded Squads state")
 		}
 	}
@@ -1211,7 +1125,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 		return out, errors.New("KLend cross-mint route did not return withdraw and deposit")
 	}
 	for i, policyIndex := range []int{6, 8} {
-		policy, err := DecodeSquadsPolicy(accounts[policyIndex].Data)
+		policy, err := DecodeSquadsPolicy(&accounts[policyIndex])
 		if err != nil {
 			return out, err
 		}
@@ -1233,7 +1147,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 			}
 		}
 	}
-	swapPolicy, swapTable, spendingLimits, err := decodeStrictSwapPolicy(accounts[7].Data)
+	swapPolicy, swapTable, spendingLimits, err := decodeStrictSwapPolicy(&accounts[7])
 	if err != nil {
 		return out, err
 	}

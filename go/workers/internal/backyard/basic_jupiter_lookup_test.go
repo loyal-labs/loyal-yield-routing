@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func exportedBasicJupiterRecord(t *testing.T, lane, leg string) basicMessageRecord {
@@ -120,7 +122,7 @@ func retainedOrReconstructedLookupTables(t *testing.T, hints, messageKeys, autho
 	if len(found) != 0 {
 		t.Fatal("partially retained hint set cannot be reconstructed honestly")
 	}
-	static := map[string]bool{bridgeDelegate: true, bridgeSquadsProgram: true, bridgeVault: true, bridgeSquadsATA: true}
+	static := map[string]bool{bridgeDelegate: true, squads.ProgramID.String(): true, bridgeVault: true, bridgeSquadsATA: true}
 	for _, authority := range authorities {
 		static[authority] = true
 	}
@@ -231,7 +233,7 @@ func decodeV0OuterInstruction(t *testing.T, message []byte) ([]string, []string,
 		if err != nil || programIndex >= staticCount {
 			t.Fatalf("v0 instruction %d program drifted: %v", index, err)
 		}
-		isOuter := staticKeys[programIndex] == bridgeSquadsProgram
+		isOuter := staticKeys[programIndex] == squads.ProgramID.String()
 		accountsCount, err := decodeShortVec(message, &offset)
 		if err != nil {
 			t.Fatal(err)
@@ -291,7 +293,7 @@ func TestOversizedBasicSwapLegsBuildV0FromQuotedLookupHints(t *testing.T) {
 				t.Fatalf("v0 packet %d did not replace the %d byte legacy packet", len(message)+65, record.SingleSignerPacketBytes)
 			}
 			staticKeys, accounts, outerData := decodeV0OuterInstruction(t, message)
-			for _, authority := range []string{record.PolicyAccount, bridgeSquadsProgram, bridgeDelegate} {
+			for _, authority := range []string{record.PolicyAccount, squads.ProgramID.String(), bridgeDelegate} {
 				found := false
 				for _, key := range staticKeys {
 					found = found || key == authority
@@ -303,7 +305,7 @@ func TestOversizedBasicSwapLegsBuildV0FromQuotedLookupHints(t *testing.T) {
 			if base64.StdEncoding.EncodeToString(outerData) != record.Instructions[0].DataBase64 {
 				t.Fatal("v0 outer instruction data left the recorded Squads execute")
 			}
-			if accounts[0] != record.PolicyAccount || accounts[1] != bridgeSquadsProgram || accounts[2] != bridgeDelegate {
+			if accounts[0] != record.PolicyAccount || accounts[1] != squads.ProgramID.String() || accounts[2] != bridgeDelegate {
 				t.Fatalf("v0 outer authority accounts drifted: %v", accounts)
 			}
 			covered := map[string]bool{}

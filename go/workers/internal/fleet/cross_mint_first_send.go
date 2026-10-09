@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -102,7 +103,7 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 		for _, observation := range []CrossMintCertificatePolicy{cert.FinalizedPolicyReadbacks.Withdraw, cert.FinalizedPolicyReadbacks.Deposit, cert.FinalizedPolicyReadbacks.Swap.CrossMintCertificatePolicy} {
 			account := bank.accounts[observation.PolicyAccount]
 			hash := sha256.Sum256(account.Data)
-			if account.Owner.String() != SquadsProgram || account.Executable || account.Lamports == 0 || hex.EncodeToString(hash[:]) != observation.DataSHA256 {
+			if account.Owner != squads.ProgramID || account.Executable || account.Lamports == 0 || hex.EncodeToString(hash[:]) != observation.DataSHA256 {
 				return errors.New("first-send initial withdrawal policy data changed since actual source certification")
 			}
 		}
@@ -156,12 +157,12 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 		if err := validateCrossMintSignedSwap(swap, index, plan, m, bank, r.crossMintMaxSlippageBPS, r.crossMintMaxValueLossBPS); err != nil {
 			return err
 		}
-		policy, table, limits, err := decodeStrictSwapPolicy(bank.accounts[input.PolicyAccount].Data)
+		account := bank.accounts[input.PolicyAccount]
+		policy, table, limits, err := decodeStrictSwapPolicy(&account)
 		if err != nil {
 			return err
 		}
-		account := bank.accounts[input.PolicyAccount]
-		if account.Owner.String() != SquadsProgram || account.Executable || account.Lamports == 0 {
+		if account.Owner != squads.ProgramID || account.Executable || account.Lamports == 0 {
 			return errors.New("first-send swap policy envelope changed")
 		}
 		dialect := "route_v2"
@@ -340,30 +341,18 @@ func decodeCrossMintSignedSwap(outer RouteInstruction, b CrossMintPolicyBindings
 	fail := func() (RouteInstruction, uint8, error) {
 		return inner, 0, errors.New("first-send Squads compact single-swap envelope is not canonical")
 	}
-	if outer.Program != SquadsProgram || len(outer.Accounts) < 4 || outer.Accounts[0].Address != b.Swap.PolicyAccount || outer.Accounts[1].Address != SquadsProgram || outer.Accounts[2].Address != signer || len(outer.Data) < 29 {
+	wrapper, err := squadsInstruction(outer)
+	if err != nil {
 		return fail()
 	}
-	prefix := []byte{90, 81, 187, 81, 39, 70, 128, 78, b.VaultIndex, 1, 1, 1, 1}
-	data := outer.Data
-	if !bytes.Equal(data[:13], prefix) || binary.LittleEndian.Uint32(data[13:17]) != 1 || data[17] > 1 || data[18] != 1 || data[19] != b.VaultIndex || uint64(binary.LittleEndian.Uint32(data[20:24])) != uint64(len(data)-24) {
+	execute, err := squads.DecodeExecuteTransactionSyncV2(wrapper)
+	if err != nil || execute.Policy.String() != b.Swap.PolicyAccount || execute.Signer.String() != signer || execute.AccountIndex != b.VaultIndex ||
+		len(execute.Inner) != 1 || execute.ConstraintIndexes[0] > 1 || len(execute.Inner[0].Accounts) == 0 {
 		return fail()
 	}
-	compact := data[24:]
-	if len(compact) < 5 || compact[0] != 1 {
-		return fail()
-	}
-	count := int(compact[2])
-	end := 3 + count
-	if count == 0 || end+2 > len(compact) || int(compact[1])+3 >= len(outer.Accounts) || int(binary.LittleEndian.Uint16(compact[end:end+2])) != len(compact)-end-2 {
-		return fail()
-	}
-	inner.Program = outer.Accounts[int(compact[1])+3].Address
-	inner.Data = bytes.Clone(compact[end+2:])
-	for _, index := range compact[3:end] {
-		if int(index)+3 >= len(outer.Accounts) {
-			return fail()
-		}
-		inner.Accounts = append(inner.Accounts, InstructionAccount{Address: outer.Accounts[int(index)+3].Address})
+	inner = routeInstruction("", execute.Inner[0])
+	for i := range inner.Accounts {
+		inner.Accounts[i].Signer, inner.Accounts[i].Writable = false, false
 	}
 	core := 10
 	if len(inner.Data) >= 8 && bytes.Equal(inner.Data[:8], jupiterSharedV2Discriminator) {
@@ -389,7 +378,7 @@ func decodeCrossMintSignedSwap(outer RouteInstruction, b CrossMintPolicyBindings
 	for _, i := range []int{3, 4, 5, 6, 7, 10} {
 		inner.Accounts[core+i].Writable = true
 	}
-	canonical, e := wrapSquadsPolicy(b.Swap.PolicyAccount, signer, b.VaultIndex, []uint8{data[17]}, []RouteInstruction{inner})
+	canonical, e := wrapSquadsPolicy(b.Swap.PolicyAccount, signer, b.VaultIndex, execute.ConstraintIndexes, []RouteInstruction{inner})
 	if e != nil || !bytes.Equal(canonical.Data, outer.Data) || len(canonical.Accounts) != len(outer.Accounts) {
 		return fail()
 	}
@@ -398,7 +387,7 @@ func decodeCrossMintSignedSwap(outer RouteInstruction, b CrossMintPolicyBindings
 			return fail()
 		}
 	}
-	return inner, data[17], nil
+	return inner, execute.ConstraintIndexes[0], nil
 }
 
 func validateCrossMintSignedSwap(ix RouteInstruction, index uint8, plan crossMintPlan, m CrossMintPreparationMovement, bank crossMintPreparationBank, localSlippage, localValueLoss uint16) error {

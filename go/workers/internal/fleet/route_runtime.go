@@ -14,6 +14,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
@@ -334,16 +335,16 @@ type sameMintPolicies struct {
 // withdrawal and deposit under the route policy; init_obligation under the
 // route policy when it carries a market-scoped init constraint, else under
 // the vault's setup policy (Rust's resolve_init_obligation_policy, ee8715ad).
-func wrapSameMintRoute(route []RouteInstruction, signer string, vaultIndex uint8, routePolicy string, routeData []byte, setupPolicy string, setupData []byte) ([]RouteInstruction, sameMintPolicies, error) {
+func wrapSameMintRoute(route []RouteInstruction, signer string, vaultIndex uint8, routePolicy string, routeAccount *chain.Account, setupPolicy string, setupAccount *chain.Account) ([]RouteInstruction, sameMintPolicies, error) {
 	var used sameMintPolicies
-	decode := func(data []byte) (DecodedSquadsPolicy, error) {
-		p, err := DecodeSquadsPolicy(data)
+	decode := func(account *chain.Account) (DecodedSquadsPolicy, error) {
+		p, err := DecodeSquadsPolicy(account)
 		if err == nil && p.AccountIndex != vaultIndex {
 			err = errors.New("policy account index differs from managed vault index")
 		}
 		return p, err
 	}
-	routeDecoded, err := decode(routeData)
+	routeDecoded, err := decode(routeAccount)
 	if err != nil {
 		return nil, used, err
 	}
@@ -372,10 +373,10 @@ func wrapSameMintRoute(route []RouteInstruction, signer string, vaultIndex uint8
 		if matched, err = validateDelegatedInstructions(routeDecoded, signer, rest); err != nil {
 			return nil, used, err
 		}
-		if len(setupData) == 0 {
+		if setupAccount == nil || len(setupAccount.Data) == 0 {
 			return nil, used, errors.New("target obligation is missing and no route or setup policy authorizes init_obligation")
 		}
-		setupDecoded, err := decode(setupData)
+		setupDecoded, err := decode(setupAccount)
 		if err != nil {
 			return nil, used, err
 		}
@@ -511,7 +512,7 @@ type decodedRoutePosition struct {
 type freshSameMint struct {
 	input                    KaminoSameMintRouteRequest
 	evidence                 FreshRouteEvidence
-	routePolicy, setupPolicy []byte
+	routePolicy, setupPolicy *chain.Account
 }
 
 // maxObligationRentLamports bounds the payer's rent top-up to the vault
@@ -610,12 +611,12 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if err != nil {
 		return f, err
 	}
-	if accounts[5] == nil || accounts[5].Owner.String() != SquadsProgram {
+	if accounts[5] == nil || accounts[5].Owner != squads.ProgramID {
 		return f, errors.New("fresh policy account owner mismatch")
 	}
-	f.routePolicy = accounts[5].Data
+	f.routePolicy = accounts[5]
 	if lease.SetupPolicyAccount != "" && accounts[7] != nil {
-		f.setupPolicy = accounts[7].Data
+		f.setupPolicy = accounts[7]
 	}
 	missingFarmUser := []bool{false, false}
 	for i, position := range []decodedRoutePosition{freshSource, freshTarget} {

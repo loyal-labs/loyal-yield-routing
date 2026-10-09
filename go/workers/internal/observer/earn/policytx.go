@@ -12,7 +12,7 @@ import (
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
-	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -37,7 +37,7 @@ type PolicyTransaction struct {
 	Signature    string
 	Slot         uint64
 	Signers      []solana.PublicKey
-	Instructions []sp.Instruction
+	Instructions []squads.Instruction
 	Memos        []Memo
 }
 
@@ -49,9 +49,9 @@ type accountTable struct {
 
 // meta mirrors the account_meta closure: signer and writable flags follow
 // the message header and the loaded-address split.
-func (t accountTable) meta(index int) (sp.AccountMeta, bool) {
+func (t accountTable) meta(index int) (solana.AccountMeta, bool) {
 	if index < 0 || index >= len(t.keys) {
-		return sp.AccountMeta{}, false
+		return solana.AccountMeta{}, false
 	}
 	signer := index < t.requiredSigners
 	var writable bool
@@ -63,11 +63,11 @@ func (t accountTable) meta(index int) (sp.AccountMeta, bool) {
 	default:
 		writable = index < t.staticLen+t.loadedWritable
 	}
-	return sp.AccountMeta{PublicKey: t.keys[index], IsSigner: signer, IsWritable: writable}, true
+	return solana.AccountMeta{PublicKey: t.keys[index], IsSigner: signer, IsWritable: writable}, true
 }
 
-func (t accountTable) metas(indexes []byte) []sp.AccountMeta {
-	out := make([]sp.AccountMeta, 0, len(indexes))
+func (t accountTable) metas(indexes []byte) []solana.AccountMeta {
+	out := make([]solana.AccountMeta, 0, len(indexes))
 	for _, index := range indexes {
 		if meta, ok := t.meta(int(index)); ok {
 			out = append(out, meta)
@@ -81,7 +81,7 @@ func (t accountTable) signers() []solana.PublicKey {
 }
 
 func isPolicyProgram(program solana.PublicKey) bool {
-	return program == sp.Program || program == subscriptionsProgram
+	return program == squads.ProgramID || program == subscriptionsProgram
 }
 
 func innerMemoIndex(group uint32, inner int) (uint16, error) {
@@ -145,7 +145,7 @@ func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot
 			continue
 		}
 		if isPolicyProgram(program) {
-			out.Instructions = append(out.Instructions, sp.Instruction{ProgramID: program, Accounts: table.metas(compiled.GetAccounts()), Data: compiled.GetData()})
+			out.Instructions = append(out.Instructions, squads.Instruction{ProgramID: program, Accounts: table.metas(compiled.GetAccounts()), Data: compiled.GetData()})
 		}
 	}
 	for _, group := range meta.GetInnerInstructions() {
@@ -157,7 +157,7 @@ func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot
 			program := table.keys[index]
 			accounts := table.metas(instruction.GetAccounts())
 			if isPolicyProgram(program) {
-				out.Instructions = append(out.Instructions, sp.Instruction{ProgramID: program, Accounts: accounts, Data: instruction.GetData()})
+				out.Instructions = append(out.Instructions, squads.Instruction{ProgramID: program, Accounts: accounts, Data: instruction.GetData()})
 			}
 			if program != memoProgram {
 				continue
@@ -172,7 +172,7 @@ func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot
 	return out, nil
 }
 
-func memoFrom(source uint16, accounts []sp.AccountMeta, data []byte) Memo {
+func memoFrom(source uint16, accounts []solana.AccountMeta, data []byte) Memo {
 	keys := make([]solana.PublicKey, 0, len(accounts))
 	for _, account := range accounts {
 		keys = append(keys, account.PublicKey)
@@ -209,7 +209,7 @@ func decodeRPCPolicyTransaction(read chain.Execution, signature string, expected
 			continue
 		}
 		if program := table.keys[compiled.ProgramIDIndex]; isPolicyProgram(program) {
-			out.Instructions = append(out.Instructions, sp.Instruction{ProgramID: program, Accounts: table.metas(byteIndexes(compiled.Accounts)), Data: compiled.Data})
+			out.Instructions = append(out.Instructions, squads.Instruction{ProgramID: program, Accounts: table.metas(byteIndexes(compiled.Accounts)), Data: compiled.Data})
 		}
 	}
 	for _, group := range read.Inner {
@@ -220,7 +220,7 @@ func decodeRPCPolicyTransaction(read chain.Execution, signature string, expected
 			program := table.keys[compiled.ProgramIDIndex]
 			accounts := table.metas(byteIndexes(compiled.Accounts))
 			if isPolicyProgram(program) {
-				out.Instructions = append(out.Instructions, sp.Instruction{ProgramID: program, Accounts: accounts, Data: compiled.Data})
+				out.Instructions = append(out.Instructions, squads.Instruction{ProgramID: program, Accounts: accounts, Data: compiled.Data})
 			}
 			if program != memoProgram {
 				continue

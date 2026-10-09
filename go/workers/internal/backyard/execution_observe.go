@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 const adaptorConfigLength = 472
@@ -28,7 +29,7 @@ func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfi
 	}
 	bindings := []string{
 		bridgeVoltrProgram, bridgeVoltrVault, bridgeStrategy, bridgeStrategyAuth,
-		bridgeSquadsProgram, bridgeSettings, bridgeSettingsSigner, bridgeVault,
+		squads.ProgramID.String(), bridgeSettings, bridgeSettingsSigner, bridgeVault,
 		bridgeUSDC, bridgeTokenProgram, bridgeSquadsATA, "",
 	}
 	for index, binding := range bindings {
@@ -99,14 +100,14 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 				return Observation{}, BridgeExecutionEvidence{}, err
 			}
 			account := accountAt(accounts, binding.Account)
-			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 ||
+			if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 ||
 				!maskedPolicyDigestMatches(account.Data, binding.MaskedByteRanges, binding.NormalizedDigest) {
 				return Observation{}, BridgeExecutionEvidence{}, budgetHold("bridge_exit_policy_unavailable")
 			}
 		}
 	}
 	policyAccount := accountAt(accounts, policyPin.Account)
-	if policyAccount.Owner != bridgeSquadsProgram || policyAccount.Executable ||
+	if policyAccount.Owner != squads.ProgramID.String() || policyAccount.Executable ||
 		policyAccount.Lamports == 0 || !maskedPolicyDigestMatches(policyAccount.Data, policyPin.MaskedByteRanges, policyPin.NormalizedDigest) {
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("bridge policy bytes or owner drifted")
 	}
@@ -359,7 +360,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		}
 		source, destination := kaminoLegCustodiesForRoute(leg, route)
 		policy := accountAt(accounts, request.Policy)
-		if policy.Owner != bridgeSquadsProgram || policy.Executable || policy.Lamports == 0 ||
+		if policy.Owner != squads.ProgramID.String() || policy.Executable || policy.Lamports == 0 ||
 			sha256Bytes(policy.Data) != request.PolicyAccountDataSHA256 {
 			return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("PRIME/USDC policy bytes or owner drifted")
 		}

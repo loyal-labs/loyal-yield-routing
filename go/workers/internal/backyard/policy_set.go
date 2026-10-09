@@ -1,8 +1,10 @@
 package backyard
 
 import (
-	"encoding/binary"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // BasicPolicyFamily identifies one of the four shared ProgramInteraction
@@ -34,19 +36,11 @@ var basicPolicySeeds = map[BasicPolicyFamily]uint64{
 // derivePolicyAccount derives the physical Squads policy PDA from the same
 // settings account and seed counter used by the Rust installer.
 func derivePolicyAccount(seed uint64) (string, error) {
-	settings, err := decodeKey(bridgeSettings)
+	policy, _, err := squads.PolicyAddress(solana.PublicKey(mustKey(bridgeSettings)), seed)
 	if err != nil {
-		return "", fmt.Errorf("decode settings: %w", err)
+		return "", fmt.Errorf("derive policy seed %d: %w", seed, err)
 	}
-	program, err := decodeKey(bridgeSquadsProgram)
-	if err != nil {
-		return "", fmt.Errorf("decode Squads program: %w", err)
-	}
-	var seedLE [8]byte
-	binary.LittleEndian.PutUint64(seedLE[:], seed)
-	return findProgramDerivedAddress(
-		[]byte("smart_account"), program[:], []byte("policy"), settings[:], seedLE[:],
-	)
+	return policy.String(), nil
 }
 
 func basicPolicyBinding(family BasicPolicyFamily) (BasicPolicyBinding, error) {

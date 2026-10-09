@@ -10,6 +10,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -85,8 +86,8 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 	}
 	settings, _ := solana.PublicKeyFromBase58(target.Settings)
 	// Loyal smart-accounts core spec/pda-registry.ts, smartAccount index 1.
-	expectedVault, err := findProgramAddress([][]byte{[]byte("smart_account"), settings[:], []byte("smart_account"), {1}}, squadsProgramID)
-	if err != nil || base58Key(expectedVault[:]) != target.Vault {
+	expectedVault, _, err := squads.SmartAccountAddress(settings, 1)
+	if err != nil || expectedVault.String() != target.Vault {
 		return o, errors.New("control vault differs from canonical settings PDA")
 	}
 	for _, binding := range []struct {
@@ -98,10 +99,8 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 			return o, errors.New("control token account differs from canonical ATA")
 		}
 	}
-	var seed [8]byte
-	binary.LittleEndian.PutUint64(seed[:], uint64(target.PolicySeed))
-	policy, err := findProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settings[:], seed[:]}, squadsProgramID)
-	if err != nil || base58Key(policy[:]) != target.Policy {
+	policy, policyBump, err := squads.PolicyAddress(settings, uint64(target.PolicySeed))
+	if err != nil || policy.String() != target.Policy {
 		return o, errors.New("control policy differs from canonical seed PDA")
 	}
 	addresses := []string{target.Policy, target.SubscriptionAuthority, target.RecurringDelegation, target.WalletTokenATA}
@@ -118,22 +117,21 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 	o.PolicyExists = accounts[0] != nil
 	o.DelegationExists = accounts[2] != nil
 	if o.PolicyExists {
-		if accounts[0].Owner.String() != squadsProgramID {
+		if accounts[0].Owner != squads.ProgramID {
 			return o, errors.New("control policy has foreign owner")
 		}
-		decoded, err := fleet.DecodeSquadsPolicy(accounts[0].Data)
+		decoded, err := fleet.DecodeSquadsPolicy(accounts[0])
 		if err != nil {
 			return o, err
 		}
-		_, bump, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settings[:], seed[:]}, mustKey(squadsProgramID))
-		if err != nil || decoded.Bump != bump || decoded.PolicySeed != uint64(target.PolicySeed) || decoded.AccountIndex != 1 || decoded.Settings != target.Settings {
+		if decoded.Bump != policyBump || decoded.PolicySeed != uint64(target.PolicySeed) || decoded.AccountIndex != 1 || decoded.Settings != target.Settings {
 			return o, errors.New("control policy header differs from target")
 		}
 		inner, err := transferRecurring(uint64(*target.MaxAmountPerPeriod), wallet, vault, mint, target.RecurringDelegation, target.WalletTokenATA, target.VaultTokenATA)
 		if err != nil {
 			return o, err
 		}
-		if _, err = fleet.BuildPolicyEnvelope(target.Policy, target.Settings, b.delegate.String(), accounts[0].Data, []fleet.RouteInstruction{inner}); err != nil {
+		if _, err = fleet.BuildPolicyEnvelope(target.Policy, target.Settings, b.delegate.String(), accounts[0], []fleet.RouteInstruction{inner}); err != nil {
 			return o, err
 		}
 		o.PolicyValid = true

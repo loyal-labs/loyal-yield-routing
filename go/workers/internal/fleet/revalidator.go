@@ -19,12 +19,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
 const (
-	SquadsProgram       = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
 	SolanaPacketLimit   = 1232
 	defaultComputeLimit = uint64(1_400_000)
 )
@@ -473,10 +473,10 @@ type DecodedSquadsPolicy struct {
 	AccountIndex          uint8
 	DelegatedSigners      []string
 	SignerPermissions     []uint8
-	InstructionPrograms   []string
-	InstructionData       [][]byte
 	AllowedIndexes        []uint8
-	Constraints           []squadspolicy.InstructionConstraintView
+	Constraints           []squads.InstructionConstraintView
+	table                 []solana.PublicKey
+	full                  *squads.FullPayload
 }
 
 func validateDelegatedInstructions(p DecodedSquadsPolicy, delegatedSigner string, protected []RouteInstruction) (DecodedSquadsPolicy, error) {
@@ -505,8 +505,8 @@ func validateDelegatedInstructions(p DecodedSquadsPolicy, delegatedSigner string
 // BuildPolicyEnvelope validates the actual deployed policy before wrapping its
 // exact protected instructions. Autodeposit and fleet share this ABI and the
 // constraint matcher; their journals and recovery protocols remain separate.
-func BuildPolicyEnvelope(policyAccount, settings, delegate string, data []byte, protected []RouteInstruction) (RouteInstruction, error) {
-	p, err := DecodeSquadsPolicy(data)
+func BuildPolicyEnvelope(policyAccount, settings, delegate string, account *chain.Account, protected []RouteInstruction) (RouteInstruction, error) {
+	p, err := DecodeSquadsPolicy(account)
 	if err != nil {
 		return RouteInstruction{}, err
 	}
@@ -529,49 +529,28 @@ func contains(v []string, s string) bool {
 	return false
 }
 
-// DecodeSquadsPolicy is a direct port of the mature Rust worker's deployed
-// ProgramInteraction decoder. It accepts both the legacy Borsh vectors and
-// Squads' compact pubkey-table layout, while retaining every account and data
-// constraint for exact instruction-index validation.
-func DecodeSquadsPolicy(data []byte) (DecodedSquadsPolicy, error) {
-	h, offset, err := squadspolicy.DecodeHeader(data)
+// DecodeSquadsPolicy reads a threshold-one ProgramInteraction policy,
+// retaining every account and data constraint for exact instruction-index
+// validation.
+func DecodeSquadsPolicy(account *chain.Account) (DecodedSquadsPolicy, error) {
+	decoded, err := squads.DecodeProgramInteractionPolicy(account)
 	if err != nil {
 		return DecodedSquadsPolicy{}, err
 	}
-	p := DecodedSquadsPolicy{Settings: h.Settings.String(), PolicySeed: h.PolicySeed, Bump: h.Bump, TransactionIndex: h.TransactionIndex, StaleTransactionIndex: h.StaleTransactionIndex, TimeLock: h.TimeLock, AccountIndex: h.VaultIndex, SignerPermissions: h.Permissions}
-	if len(h.Signers) == 0 {
+	p := DecodedSquadsPolicy{Settings: decoded.Settings.String(), PolicySeed: decoded.Seed, Bump: decoded.Bump, TransactionIndex: decoded.TransactionIndex, StaleTransactionIndex: decoded.StaleTransactionIndex, TimeLock: decoded.TimeLock, AccountIndex: decoded.VaultIndex, SignerPermissions: decoded.Permissions, Constraints: decoded.Constraints, table: decoded.PubkeyTable, full: decoded.Full}
+	if len(decoded.Signers) == 0 {
 		return p, errors.New("invalid policy signer count")
 	}
-	for _, signer := range h.Signers {
+	for _, signer := range decoded.Signers {
 		p.DelegatedSigners = append(p.DelegatedSigners, signer.String())
 	}
-	if h.Threshold != 1 || h.Kind != 3 {
+	if decoded.Threshold != 1 {
 		return p, errors.New("policy is not threshold-one ProgramInteraction")
-	}
-	payload, _, err := squadspolicy.DecodeConstraints(data, offset, h.VaultIndex, false, 128, 256)
-	if err != nil || len(payload.Constraints) == 0 {
-		payload, _, err = squadspolicy.DecodeConstraints(data, offset, h.VaultIndex, true, 128, 256)
-	}
-	if err != nil || len(payload.Constraints) == 0 {
-		return p, fmt.Errorf("decode ProgramInteraction constraints: %w", err)
-	}
-	constraints := payload.Constraints
-	p.Constraints = constraints
-	for _, constraint := range constraints {
-		p.InstructionPrograms = append(p.InstructionPrograms, constraint.ProgramID.String())
-		var exact []byte
-		for _, value := range constraint.DataConstraints {
-			if value.DataOffset == 0 && value.DataValue.Kind == 5 && value.Operator == 0 {
-				exact = append([]byte(nil), value.DataValue.Bytes...)
-				break
-			}
-		}
-		p.InstructionData = append(p.InstructionData, exact)
 	}
 	return p, nil
 }
 
-func policyConstraintMatches(constraint squadspolicy.InstructionConstraintView, instruction RouteInstruction) bool {
+func policyConstraintMatches(constraint squads.InstructionConstraintView, instruction RouteInstruction) bool {
 	if constraint.ProgramID.String() != instruction.Program {
 		return false
 	}
@@ -591,7 +570,7 @@ func policyConstraintMatches(constraint squadspolicy.InstructionConstraintView, 
 	return true
 }
 
-func policyDataMatches(constraint squadspolicy.DataConstraintView, data []byte) bool {
+func policyDataMatches(constraint squads.DataConstraintView, data []byte) bool {
 	offset := constraint.DataOffset
 	value := policyValueBytes(constraint.DataValue)
 	if offset > uint64(len(data)) || uint64(len(value)) > uint64(len(data))-offset {
@@ -640,7 +619,7 @@ func policyContainsKey(keys []solana.PublicKey, address string) bool {
 
 // Numeric variants retain their wire width and little-endian ordering. The
 // variant tag is checked before selecting its union field.
-func policyValueBytes(value squadspolicy.DataValueView) []byte {
+func policyValueBytes(value squads.DataValueView) []byte {
 	switch value.Kind {
 	case 0:
 		return []byte{value.U8}
@@ -669,7 +648,7 @@ func BuildExactPolicyFixture(settings, signer string, accountIndex uint8, instru
 	if err != nil {
 		return nil, err
 	}
-	b := []byte{222, 135, 7, 163, 235, 177, 33, 68}
+	b := append([]byte(nil), squads.PolicyDiscriminator[:]...)
 	b = append(b, s[:]...)
 	b = append(b, make([]byte, 8+1+8+8)...)
 	b = appendU32x(b, 1)
@@ -775,48 +754,50 @@ func prepareRoute(instructions []RouteInstruction, payer string, tables []Lookup
 }
 
 func wrapSquadsPolicy(policy, signer string, accountIndex uint8, indexes []uint8, inner []RouteInstruction) (RouteInstruction, error) {
-	if len(inner) == 0 || len(inner) > 255 {
-		return RouteInstruction{}, errors.New("invalid inner instruction count")
+	execute := squads.ExecuteSync{AccountIndex: accountIndex, ConstraintIndexes: indexes}
+	var err error
+	if execute.Policy, err = decodePublicKey(policy); err != nil {
+		return RouteInstruction{}, err
 	}
-	accounts := []InstructionAccount{}
-	push := func(a InstructionAccount) uint8 {
-		for i := range accounts {
-			if accounts[i].Address == a.Address {
-				accounts[i].Signer = accounts[i].Signer || a.Signer
-				accounts[i].Writable = accounts[i].Writable || a.Writable
-				return uint8(i)
-			}
-		}
-		accounts = append(accounts, a)
-		return uint8(len(accounts) - 1)
+	if execute.Signer, err = decodePublicKey(signer); err != nil {
+		return RouteInstruction{}, err
 	}
-	compiled := []byte{uint8(len(inner))}
 	for _, ix := range inner {
-		ai := make([]byte, len(ix.Accounts))
-		for i, a := range ix.Accounts {
-			ai[i] = push(a)
+		instruction, err := squadsInstruction(ix)
+		if err != nil {
+			return RouteInstruction{}, err
 		}
-		pi := push(InstructionAccount{Address: ix.Program})
-		compiled = append(compiled, pi, uint8(len(ai)))
-		compiled = append(compiled, ai...)
-		if len(ix.Data) > math.MaxUint16 {
-			return RouteInstruction{}, errors.New("inner data too large")
+		execute.Inner = append(execute.Inner, instruction)
+	}
+	wrapped, err := squads.ExecuteTransactionSyncV2(execute)
+	if err != nil {
+		return RouteInstruction{}, err
+	}
+	return routeInstruction("squads_execute_program_interaction", wrapped), nil
+}
+
+func squadsInstruction(ix RouteInstruction) (squads.Instruction, error) {
+	program, err := decodePublicKey(ix.Program)
+	if err != nil {
+		return squads.Instruction{}, err
+	}
+	out := squads.Instruction{ProgramID: program, Data: ix.Data}
+	for _, account := range ix.Accounts {
+		key, err := decodePublicKey(account.Address)
+		if err != nil {
+			return squads.Instruction{}, err
 		}
-		compiled = appendU16x(compiled, uint16(len(ix.Data)))
-		compiled = append(compiled, ix.Data...)
+		out.Accounts = append(out.Accounts, solana.AccountMeta{PublicKey: key, IsSigner: account.Signer, IsWritable: account.Writable})
 	}
-	for i := range accounts {
-		accounts[i].Signer = false
+	return out, nil
+}
+
+func routeInstruction(step string, ix squads.Instruction) RouteInstruction {
+	out := RouteInstruction{Step: step, Program: ix.ProgramID.String(), Data: ix.Data}
+	for _, account := range ix.Accounts {
+		out.Accounts = append(out.Accounts, InstructionAccount{Address: account.PublicKey.String(), Signer: account.IsSigner, Writable: account.IsWritable})
 	}
-	data := []byte{90, 81, 187, 81, 39, 70, 128, 78, accountIndex, 1, 1, 1, 1}
-	data = appendU32x(data, uint32(len(indexes)))
-	data = append(data, indexes...)
-	data = append(data, 1, accountIndex)
-	data = appendU32x(data, uint32(len(compiled)))
-	data = append(data, compiled...)
-	outer := []InstructionAccount{{policy, false, true}, {SquadsProgram, false, false}, {signer, true, false}}
-	outer = append(outer, accounts...)
-	return RouteInstruction{Step: "squads_execute_program_interaction", Program: SquadsProgram, Accounts: outer, Data: data}, nil
+	return out
 }
 
 func compileV0Transaction(payer, blockhash string, instructions []RouteInstruction, tables []LookupTable, fee, compute uint64) (PreparedTransaction, []string, error) {
@@ -1043,45 +1024,4 @@ func appendU64x(b []byte, v uint64) []byte {
 		v >>= 8
 	}
 	return b
-}
-
-type wireCursor struct {
-	b   []byte
-	i   int
-	err error
-}
-
-func (c *wireCursor) take(n int) []byte {
-	if c.err != nil {
-		return nil
-	}
-	if n < 0 || c.i+n > len(c.b) {
-		c.err = errors.New("truncated")
-		return nil
-	}
-	v := c.b[c.i : c.i+n]
-	c.i += n
-	return v
-}
-func (c *wireCursor) skip(n int) { c.take(n) }
-func (c *wireCursor) u8() uint8 {
-	v := c.take(1)
-	if len(v) == 0 {
-		return 0
-	}
-	return v[0]
-}
-func (c *wireCursor) u16() uint16 {
-	v := c.take(2)
-	if len(v) < 2 {
-		return 0
-	}
-	return binary.LittleEndian.Uint16(v)
-}
-func (c *wireCursor) u32() uint32 {
-	v := c.take(4)
-	if len(v) < 4 {
-		return 0
-	}
-	return binary.LittleEndian.Uint32(v)
 }

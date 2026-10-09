@@ -91,7 +91,7 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, policies, err := wrapSameMintRoute(route, testVault, 0, testPolicy, policyBytes, "", nil)
+	body, policies, err := wrapSameMintRoute(route, testVault, 0, testPolicy, squadsPolicyAccount(policyBytes), "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,10 +100,10 @@ func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	}
 	wrongPermissions := append([]byte(nil), policyBytes...)
 	wrongPermissions[101] = 0xff
-	if _, _, err = wrapSameMintRoute(route, testVault, 0, testPolicy, wrongPermissions, "", nil); err == nil {
+	if _, _, err = wrapSameMintRoute(route, testVault, 0, testPolicy, squadsPolicyAccount(wrongPermissions), "", nil); err == nil {
 		t.Fatal("accepted noncanonical policy signer permissions")
 	}
-	if _, _, err = wrapSameMintRoute(route, testVault, 1, testPolicy, policyBytes, "", nil); err == nil {
+	if _, _, err = wrapSameMintRoute(route, testVault, 1, testPolicy, squadsPolicyAccount(policyBytes), "", nil); err == nil {
 		t.Fatal("accepted a policy for another vault index")
 	}
 	all := []string{testSource, testTarget, testVault, testPolicy, testMarket, testMint}

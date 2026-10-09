@@ -17,7 +17,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
-	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -138,21 +138,21 @@ func (a *Application) reconcileTargetedPolicy(ctx context.Context, update Normal
 	if err != nil {
 		return notReconciled, err
 	}
-	var squads []sp.Instruction
+	var policyInstructions []squads.Instruction
 	for _, instruction := range transaction.Instructions {
-		if instruction.ProgramID != sp.Program {
+		if instruction.ProgramID != squads.ProgramID {
 			continue
 		}
 		for _, account := range instruction.Accounts {
 			if account.PublicKey == settings {
-				squads = append(squads, instruction)
+				policyInstructions = append(policyInstructions, instruction)
 				break
 			}
 		}
 	}
 	policyReconciled, intentReconciled, subscriptionObserved := false, false, false
-	if len(squads) > 0 {
-		if _, err := a.monitor.ProcessPolicyInstructions(ctx, transaction.Signature, transaction.Slot, squads, false); err != nil {
+	if len(policyInstructions) > 0 {
+		if _, err := a.monitor.ProcessPolicyInstructions(ctx, transaction.Signature, transaction.Slot, policyInstructions, false); err != nil {
 			return notReconciled, err
 		}
 		policyReconciled = true

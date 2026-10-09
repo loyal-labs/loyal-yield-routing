@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Check the enforced quote minimum against debt through swap -> NAV -> payoff,
@@ -355,7 +356,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 		return phase3BridgeAdmission{}, err
 	}
 	p := accountAt(policies, payoff.Policy)
-	if p.Owner != bridgeSquadsProgram || p.Executable || p.Lamports == 0 || sha256Bytes(p.Data) != payoff.PolicyAccountDataSHA256 {
+	if p.Owner != squads.ProgramID.String() || p.Executable || p.Lamports == 0 || sha256Bytes(p.Data) != payoff.PolicyAccountDataSHA256 {
 		return phase3BridgeAdmission{}, budgetHold("funding_payoff_policy_drift")
 	}
 	post := observation

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func payoffAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
@@ -67,7 +68,7 @@ func payoffAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...Co
 		if err != nil {
 			t.Fatal(err)
 		}
-		accounts = append(accounts, ConfirmedAccount{Address: p.PolicyAddress, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
+		accounts = append(accounts, ConfirmedAccount{Address: p.PolicyAddress, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 	}
 	accounts = append(accounts, extraAccounts...)
 	o, d, _, manifest, rpc, client := debtResidueAdmissionFixture(t, debtOutput, accounts...)

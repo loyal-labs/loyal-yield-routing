@@ -6,7 +6,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
-	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -89,7 +89,11 @@ func pda(program solana.PublicKey, seeds ...[]byte) solana.PublicKey {
 }
 
 func squadsVault(settings solana.PublicKey, index uint8) solana.PublicKey {
-	return pda(sp.Program, []byte("smart_account"), settings[:], []byte("smart_account"), []byte{index})
+	key, _, err := squads.SmartAccountAddress(settings, index)
+	if err != nil {
+		panic(err)
+	}
+	return key
 }
 
 func associatedToken(owner, mint, program solana.PublicKey) solana.PublicKey {
@@ -174,29 +178,29 @@ func presetFor(markets []solana.PublicKey) (preset, profile *string) {
 	return nil, nil
 }
 
-func accountsByIndex(constraint sp.InstructionConstraintView) map[uint8]sp.AccountConstraintView {
-	out := make(map[uint8]sp.AccountConstraintView, len(constraint.AccountConstraints))
+func accountsByIndex(constraint squads.InstructionConstraintView) map[uint8]squads.AccountConstraintView {
+	out := make(map[uint8]squads.AccountConstraintView, len(constraint.AccountConstraints))
 	for _, account := range constraint.AccountConstraints {
 		out[account.AccountIndex] = account
 	}
 	return out
 }
 
-func sameOwner(constraint sp.AccountConstraintView, owner *solana.PublicKey) bool {
+func sameOwner(constraint squads.AccountConstraintView, owner *solana.PublicKey) bool {
 	if constraint.Owner == nil || owner == nil {
 		return constraint.Owner == nil && owner == nil
 	}
 	return *constraint.Owner == *owner
 }
 
-func pubkeysOf(constraint sp.AccountConstraintView, ok bool, owner *solana.PublicKey) ([]solana.PublicKey, bool) {
+func pubkeysOf(constraint squads.AccountConstraintView, ok bool, owner *solana.PublicKey) ([]solana.PublicKey, bool) {
 	if !ok || !sameOwner(constraint, owner) || constraint.Pubkeys == nil {
 		return nil, false
 	}
 	return constraint.Pubkeys, true
 }
 
-func singleOf(constraint sp.AccountConstraintView, ok bool, owner *solana.PublicKey) (solana.PublicKey, bool) {
+func singleOf(constraint squads.AccountConstraintView, ok bool, owner *solana.PublicKey) (solana.PublicKey, bool) {
 	keys, ok := pubkeysOf(constraint, ok, owner)
 	if !ok || len(keys) != 1 {
 		return solana.PublicKey{}, false
@@ -204,17 +208,17 @@ func singleOf(constraint sp.AccountConstraintView, ok bool, owner *solana.Public
 	return keys[0], true
 }
 
-func singleIs(accounts map[uint8]sp.AccountConstraintView, index uint8, owner *solana.PublicKey, expected solana.PublicKey) bool {
+func singleIs(accounts map[uint8]squads.AccountConstraintView, index uint8, owner *solana.PublicKey, expected solana.PublicKey) bool {
 	constraint, ok := accounts[index]
 	key, ok := singleOf(constraint, ok, owner)
 	return ok && key == expected
 }
 
-func isSlice(c sp.DataConstraintView, offset uint64, expected []byte) bool {
-	return c.DataOffset == offset && c.Operator == sp.OpEquals && c.DataValue.Kind == 5 && bytes.Equal(c.DataValue.Bytes, expected)
+func isSlice(c squads.DataConstraintView, offset uint64, expected []byte) bool {
+	return c.DataOffset == offset && c.Operator == squads.OpEquals && c.DataValue.Kind == 5 && bytes.Equal(c.DataValue.Bytes, expected)
 }
 
-func hasSlice(constraints []sp.DataConstraintView, offset uint64, expected []byte) bool {
+func hasSlice(constraints []squads.DataConstraintView, offset uint64, expected []byte) bool {
 	for _, c := range constraints {
 		if isSlice(c, offset, expected) {
 			return true
@@ -223,9 +227,9 @@ func hasSlice(constraints []sp.DataConstraintView, offset uint64, expected []byt
 	return false
 }
 
-func hasBytes(constraints []sp.DataConstraintView, offset uint64, expected []byte) bool {
+func hasBytes(constraints []squads.DataConstraintView, offset uint64, expected []byte) bool {
 	for _, c := range constraints {
-		if c.Operator != sp.OpEquals || c.DataValue.Kind != 5 || offset < c.DataOffset {
+		if c.Operator != squads.OpEquals || c.DataValue.Kind != 5 || offset < c.DataOffset {
 			continue
 		}
 		relative := offset - c.DataOffset
@@ -236,11 +240,11 @@ func hasBytes(constraints []sp.DataConstraintView, offset uint64, expected []byt
 	return false
 }
 
-func isU8(c sp.DataConstraintView, offset uint64, expected uint8) bool {
-	return c.DataOffset == offset && c.Operator == sp.OpEquals && c.DataValue.Kind == 0 && c.DataValue.U8 == expected
+func isU8(c squads.DataConstraintView, offset uint64, expected uint8) bool {
+	return c.DataOffset == offset && c.Operator == squads.OpEquals && c.DataValue.Kind == 0 && c.DataValue.U8 == expected
 }
 
-func hasU8(constraints []sp.DataConstraintView, offset uint64, expected uint8) bool {
+func hasU8(constraints []squads.DataConstraintView, offset uint64, expected uint8) bool {
 	for _, c := range constraints {
 		if isU8(c, offset, expected) {
 			return true
@@ -249,16 +253,16 @@ func hasU8(constraints []sp.DataConstraintView, offset uint64, expected uint8) b
 	return false
 }
 
-func u16LTE(constraints []sp.DataConstraintView, offset uint64) (uint16, bool) {
+func u16LTE(constraints []squads.DataConstraintView, offset uint64) (uint16, bool) {
 	for _, c := range constraints {
-		if c.DataOffset == offset && c.Operator == sp.OpLessThanOrEqualTo && c.DataValue.Kind == 1 {
+		if c.DataOffset == offset && c.Operator == squads.OpLessThanOrEqualTo && c.DataValue.Kind == 1 {
 			return c.DataValue.U16, true
 		}
 	}
 	return 0, false
 }
 
-func hasTokenAuthority(constraint sp.AccountConstraintView, ok bool, authority solana.PublicKey) bool {
+func hasTokenAuthority(constraint squads.AccountConstraintView, ok bool, authority solana.PublicKey) bool {
 	return ok && constraint.Owner != nil && *constraint.Owner == tokenProgram && constraint.Pubkeys == nil && hasSlice(constraint.AccountData, 32, authority[:])
 }
 
@@ -283,7 +287,7 @@ func sameMintMarketsSupported(markets []solana.PublicKey) bool {
 	return true
 }
 
-func fullKaminoLeg(accounts map[uint8]sp.AccountConstraintView, vault solana.PublicKey) (kaminoLeg, bool) {
+func fullKaminoLeg(accounts map[uint8]squads.AccountConstraintView, vault solana.PublicKey) (kaminoLeg, bool) {
 	c9, ok9 := accounts[9]
 	if !hasTokenAuthority(c9, ok9, vault) || !singleIs(accounts, 11, nil, tokenProgram) || !singleIs(accounts, 12, nil, tokenProgram) {
 		return kaminoLeg{}, false
@@ -301,7 +305,7 @@ func fullKaminoLeg(accounts map[uint8]sp.AccountConstraintView, vault solana.Pub
 	return kaminoLeg{vault, markets, mints}, true
 }
 
-func compactSameMintLeg(accounts map[uint8]sp.AccountConstraintView, vault solana.PublicKey) (kaminoLeg, bool) {
+func compactSameMintLeg(accounts map[uint8]squads.AccountConstraintView, vault solana.PublicKey) (kaminoLeg, bool) {
 	c2, ok2 := accounts[2]
 	markets, ok := pubkeysOf(c2, ok2, nil)
 	if !ok {
@@ -329,7 +333,7 @@ func compactSameMintLeg(accounts map[uint8]sp.AccountConstraintView, vault solan
 	return kaminoLeg{vault, markets, mints}, true
 }
 
-func classifyKaminoWithdraw(constraint sp.InstructionConstraintView) (kaminoLeg, bool) {
+func classifyKaminoWithdraw(constraint squads.InstructionConstraintView) (kaminoLeg, bool) {
 	if constraint.ProgramID != klendProgram || !hasSlice(constraint.DataConstraints, 0, kaminoWithdrawDiscriminator) {
 		return kaminoLeg{}, false
 	}
@@ -345,7 +349,7 @@ func classifyKaminoWithdraw(constraint sp.InstructionConstraintView) (kaminoLeg,
 	return compactSameMintLeg(accounts, vault)
 }
 
-func classifyKaminoDeposit(constraint sp.InstructionConstraintView, vault solana.PublicKey) (kaminoLeg, bool) {
+func classifyKaminoDeposit(constraint squads.InstructionConstraintView, vault solana.PublicKey) (kaminoLeg, bool) {
 	if constraint.ProgramID != klendProgram || !hasSlice(constraint.DataConstraints, 0, kaminoDepositDiscriminator) {
 		return kaminoLeg{}, false
 	}
@@ -359,11 +363,11 @@ func classifyKaminoDeposit(constraint sp.InstructionConstraintView, vault solana
 	return compactSameMintLeg(accounts, vault)
 }
 
-func hasU8OrSlice(constraints []sp.DataConstraintView, offset uint64, expected uint8) bool {
+func hasU8OrSlice(constraints []squads.DataConstraintView, offset uint64, expected uint8) bool {
 	return hasU8(constraints, offset, expected) || hasBytes(constraints, offset, []byte{expected})
 }
 
-func classifyInitObligation(constraint sp.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, bool) {
+func classifyInitObligation(constraint squads.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, bool) {
 	if constraint.ProgramID != klendProgram || !hasBytes(constraint.DataConstraints, 0, kaminoInitObligationDiscriminator) ||
 		!hasU8OrSlice(constraint.DataConstraints, 8, 0) || !hasU8OrSlice(constraint.DataConstraints, 9, 0) {
 		return nil, false
@@ -403,7 +407,7 @@ func classifyInitObligation(constraint sp.InstructionConstraintView, vault solan
 	return markets, true
 }
 
-func classifyRefreshObligation(constraint sp.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, bool) {
+func classifyRefreshObligation(constraint squads.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, bool) {
 	if constraint.ProgramID != klendProgram || !hasSlice(constraint.DataConstraints, 0, kaminoRefreshObligationDiscriminator) {
 		return nil, false
 	}
@@ -441,7 +445,7 @@ type swapLane struct {
 	MaxFeeBPS            *uint16 `json:"max_fee_bps,omitempty"`
 }
 
-func classifyJupiterSwap(constraint sp.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, *swapLane, bool) {
+func classifyJupiterSwap(constraint squads.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, *swapLane, bool) {
 	if !hasSlice(constraint.DataConstraints, 0, jupiterRouteDiscriminator) {
 		return nil, nil, false
 	}
@@ -471,7 +475,7 @@ func classifyJupiterSwap(constraint sp.InstructionConstraintView, vault solana.P
 	return append(append([]solana.PublicKey(nil), input...), output...), &swapLane{Kind: "jupiter", ProgramID: constraint.ProgramID.String(), ExactInDiscriminator: discriminator}, true
 }
 
-func classifyHubSwap(constraint sp.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, *swapLane, bool) {
+func classifyHubSwap(constraint squads.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, *swapLane, bool) {
 	if constraint.ProgramID != loyalHubProgram || !hasU8(constraint.DataConstraints, hubSwapTagOffset, hubSwapExactIn) {
 		return nil, nil, false
 	}
@@ -507,7 +511,7 @@ func classifyHubSwap(constraint sp.InstructionConstraintView, vault solana.Publi
 }
 
 // detectYieldRoute is detect_yield_route_policy_create mapped to its event.
-func detectYieldRoute(action sp.SettingsAction) (PolicyMatchInput, bool) {
+func detectYieldRoute(action squads.SettingsAction) (PolicyMatchInput, bool) {
 	constraints := action.Payload.Constraints
 	if len(constraints) < 2 {
 		return PolicyMatchInput{}, false
@@ -595,7 +599,7 @@ func detectYieldRoute(action sp.SettingsAction) (PolicyMatchInput, bool) {
 }
 
 // detectYieldSetup is detect_yield_setup_policy_create mapped to its event.
-func detectYieldSetup(action sp.SettingsAction) (PolicyMatchInput, bool) {
+func detectYieldSetup(action squads.SettingsAction) (PolicyMatchInput, bool) {
 	if len(action.Payload.Constraints) != 1 {
 		return PolicyMatchInput{}, false
 	}
@@ -618,12 +622,12 @@ func detectYieldSetup(action sp.SettingsAction) (PolicyMatchInput, bool) {
 	}, true
 }
 
-func accountDataKey(constraint sp.AccountConstraintView, offset uint64) (solana.PublicKey, bool) {
+func accountDataKey(constraint squads.AccountConstraintView, offset uint64) (solana.PublicKey, bool) {
 	if constraint.Owner == nil || *constraint.Owner != subscriptionsProgram || constraint.Pubkeys != nil {
 		return solana.PublicKey{}, false
 	}
 	for _, c := range constraint.AccountData {
-		if c.DataOffset == offset && c.Operator == sp.OpEquals && c.DataValue.Kind == 5 && len(c.DataValue.Bytes) == 32 {
+		if c.DataOffset == offset && c.Operator == squads.OpEquals && c.DataValue.Kind == 5 && len(c.DataValue.Bytes) == 32 {
 			return solana.PublicKeyFromBytes(c.DataValue.Bytes), true
 		}
 	}
@@ -631,7 +635,7 @@ func accountDataKey(constraint sp.AccountConstraintView, offset uint64) (solana.
 }
 
 // detectBalanceSweep is detect_balance_sweep_policy_create mapped to its event.
-func detectBalanceSweep(action sp.SettingsAction) (BalanceSweepPolicyMatchInput, bool) {
+func detectBalanceSweep(action squads.SettingsAction) (BalanceSweepPolicyMatchInput, bool) {
 	if len(action.Payload.Constraints) != 1 {
 		return BalanceSweepPolicyMatchInput{}, false
 	}
@@ -665,7 +669,7 @@ func detectBalanceSweep(action sp.SettingsAction) (BalanceSweepPolicyMatchInput,
 	var perPeriod uint64
 	found := false
 	for _, c := range recurring.AccountData {
-		if c.DataOffset == delegationPerPeriodOffset && c.Operator == sp.OpLessThanOrEqualTo && c.DataValue.Kind == 3 {
+		if c.DataOffset == delegationPerPeriodOffset && c.Operator == squads.OpLessThanOrEqualTo && c.DataValue.Kind == 3 {
 			perPeriod, found = c.DataValue.U64, true
 			break
 		}
@@ -699,13 +703,13 @@ func detectBalanceSweep(action sp.SettingsAction) (BalanceSweepPolicyMatchInput,
 
 // detectCrossMintPolicy is detect_jupiter_cross_mint_policy_action mapped to
 // its manifest event.
-func detectCrossMintPolicy(instruction sp.Instruction) (CrossMintSwapPolicyManifestInput, bool) {
-	action, err := sp.DecodeStrictPolicyAction(instruction)
+func detectCrossMintPolicy(instruction squads.Instruction) (CrossMintSwapPolicyManifestInput, bool) {
+	action, err := squads.DecodeStrictPolicyAction(instruction)
 	if err != nil || action == nil {
 		return CrossMintSwapPolicyManifestInput{}, false
 	}
 	payload := action.Payload
-	if !sp.CreationTableIsTight(payload) || len(payload.Constraints) != 2 {
+	if !squads.CreationTableIsTight(payload) || len(payload.Constraints) != 2 {
 		return CrossMintSwapPolicyManifestInput{}, false
 	}
 	dialects := []struct {
@@ -739,7 +743,7 @@ func detectCrossMintPolicy(instruction sp.Instruction) (CrossMintSwapPolicyManif
 		if !isSlice(discriminator, 0, dialect.discriminator) || !isU8(fee, dialect.platformFeeOffset, 0) {
 			return CrossMintSwapPolicyManifestInput{}, false
 		}
-		if slippage.DataOffset != dialect.slippageOffset || slippage.Operator != sp.OpLessThanOrEqualTo || slippage.DataValue.Kind != 1 {
+		if slippage.DataOffset != dialect.slippageOffset || slippage.Operator != squads.OpLessThanOrEqualTo || slippage.DataValue.Kind != 1 {
 			return CrossMintSwapPolicyManifestInput{}, false
 		}
 		bps := slippage.DataValue.U16

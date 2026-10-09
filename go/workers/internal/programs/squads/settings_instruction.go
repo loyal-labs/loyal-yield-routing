@@ -1,7 +1,6 @@
-package squadspolicy
+package squads
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 
@@ -12,19 +11,6 @@ import (
 // detection.rs (decode_squads_policy_create_actions_from_parts,
 // detect_squads_policy_removals, detect_squads_policy_update_identity and the
 // strict settings envelope) and squads.rs (compact PolicyUpdate encoding).
-
-// AccountMeta is one resolved instruction account.
-type AccountMeta struct {
-	PublicKey            solana.PublicKey
-	IsSigner, IsWritable bool
-}
-
-// Instruction is one resolved Squads or Subscriptions instruction.
-type Instruction struct {
-	ProgramID solana.PublicKey
-	Accounts  []AccountMeta
-	Data      []byte
-}
 
 // SettingsAction mirrors SquadsSettingsActionView: one PolicyCreate (seeded)
 // or PolicyUpdate (policy_seed 0) carrying a ProgramInteraction payload.
@@ -45,13 +31,6 @@ type PolicyIdentity struct {
 // ErrUnsupportedSettingsInstruction is PolicyDetectionError::UnsupportedSettingsInstruction.
 var ErrUnsupportedSettingsInstruction = errors.New("instruction is not a supported Squads settings instruction")
 
-var settingsDiscriminator = func() [8]byte {
-	digest := sha256.Sum256([]byte("global:execute_settings_transaction_sync"))
-	var out [8]byte
-	copy(out[:], digest[:8])
-	return out
-}()
-
 const syncSignerCount = 1
 
 func settingsCursor(data []byte) *borshCursor {
@@ -63,7 +42,7 @@ func (c *borshCursor) requireSettingsDiscriminator() error {
 	if err != nil {
 		return err
 	}
-	if [8]byte(value) != settingsDiscriminator {
+	if [8]byte(value) != ExecuteSettingsTransactionSyncDiscriminator {
 		return ErrUnsupportedSettingsInstruction
 	}
 	return nil
@@ -73,7 +52,7 @@ func (c *borshCursor) remaining() int { return len(c.data) - c.offset }
 
 // DecodeSettingsActions is decode_squads_policy_create_actions.
 func DecodeSettingsActions(instruction Instruction) ([]SettingsAction, error) {
-	if instruction.ProgramID != Program {
+	if instruction.ProgramID != ProgramID {
 		return nil, nil
 	}
 	if len(instruction.Accounts) < 1 {
@@ -143,7 +122,7 @@ func decodeSettingsActions(settings, authority solana.PublicKey, hint *solana.Pu
 			account := solana.PublicKey{}
 			if hint != nil {
 				account = *hint
-			} else if account, _, err = ActionAccount(settings, seed); err != nil {
+			} else if account, _, err = PolicyAddress(settings, seed); err != nil {
 				return nil, err
 			}
 			actions = append(actions, SettingsAction{Settings: settings, Authority: authority, PolicySeed: seed, PolicyAccount: account, DelegatedSigners: signers, Threshold: threshold, Payload: *payload})
@@ -321,7 +300,7 @@ func (c *borshCursor) delegatedSigner() (*solana.PublicKey, error) {
 		if i == 0 {
 			signer = &key
 		}
-		exact = exact && permissions == FullPermissionsMask
+		exact = exact && permissions == FullPermissions
 	}
 	if !exact {
 		return nil, nil
@@ -573,7 +552,7 @@ func (c *borshCursor) skipCompiledHook() error {
 // settings instruction with a writable policy account.
 func StrictEnvelope(instruction Instruction) (PolicyIdentity, bool) {
 	a := instruction.Accounts
-	if instruction.ProgramID != Program || len(a) != 6 || a[2].PublicKey != solana.SystemProgramID || a[3].PublicKey != Program ||
+	if instruction.ProgramID != ProgramID || len(a) != 6 || a[2].PublicKey != solana.SystemProgramID || a[3].PublicKey != ProgramID ||
 		a[4].PublicKey != a[1].PublicKey || !a[1].IsSigner || !a[4].IsSigner || !a[5].IsWritable {
 		return PolicyIdentity{}, false
 	}
@@ -583,7 +562,7 @@ func StrictEnvelope(instruction Instruction) (PolicyIdentity, bool) {
 // DetectPolicyRemovals is detect_squads_policy_removals.
 func DetectPolicyRemovals(instruction Instruction) ([]PolicyIdentity, error) {
 	a := instruction.Accounts
-	if instruction.ProgramID != Program || len(a) < 6 || a[2].PublicKey != solana.SystemProgramID || a[3].PublicKey != Program ||
+	if instruction.ProgramID != ProgramID || len(a) < 6 || a[2].PublicKey != solana.SystemProgramID || a[3].PublicKey != ProgramID ||
 		a[4].PublicKey != a[1].PublicKey || !a[1].IsSigner || !a[4].IsSigner {
 		return nil, nil
 	}
@@ -743,7 +722,7 @@ func DecodeStrictPolicyAction(instruction Instruction) (*StrictPolicyAction, err
 		if err != nil {
 			return nil, err
 		}
-		if out.PolicyAccount, _, err = ActionAccount(envelope.Settings, out.PolicySeed); err != nil {
+		if out.PolicyAccount, _, err = PolicyAddress(envelope.Settings, out.PolicySeed); err != nil {
 			return nil, err
 		}
 		exact = threshold == 1 && timeLock == 0 && !start && !expiration
@@ -964,13 +943,13 @@ func EncodeCompactPolicyUpdate(policy, delegate solana.PublicKey, accountIndex u
 		}
 	}
 	body = append(body, 0, 0, 0) // pre_hook, post_hook, spending_limits
-	out := append([]byte(nil), settingsDiscriminator[:]...)
+	out := append([]byte(nil), ExecuteSettingsTransactionSyncDiscriminator[:]...)
 	out = append(out, syncSignerCount)
 	out = binary.LittleEndian.AppendUint32(out, 1)
 	out = append(out, 8)
 	out = append(out, policy[:]...)
 	out = binary.LittleEndian.AppendUint32(out, 1)
-	out = append(append(out, delegate[:]...), FullPermissionsMask)
+	out = append(append(out, delegate[:]...), FullPermissions)
 	out = binary.LittleEndian.AppendUint16(out, 1)
 	out = binary.LittleEndian.AppendUint32(out, 0)
 	out = append(out, 4, accountIndex, uint8(len(table)))

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -17,7 +18,7 @@ import (
 func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	ctx := context.Background()
 	settings, wallet, mint := mustKey(fixedKey("control-settings")), mustKey(fixedKey("control-wallet")), mustKey(USDCMint)
-	vault, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), settings[:], []byte("smart_account"), {1}}, mustKey(squadsProgramID))
+	vault, _, err := squads.SmartAccountAddress(settings, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,9 +30,7 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	budget := int64(5_000_000)
 	delegation, _ := delegationAccountKey(authority[:], wallet[:], vault[:], uint64(nonce))
 	event, _ := subscriptionEventAuthorityKey()
-	var seed [8]byte
-	binary.LittleEndian.PutUint64(seed[:], 9)
-	policy, bump, _ := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settings[:], seed[:]}, mustKey(squadsProgramID))
+	policy, bump, _ := squads.PolicyAddress(settings, 9)
 	target := ControlTarget{Cluster: mainnetCluster, TargetID: 1, SetupGeneration: 1, PolicySeed: 9, Settings: settings.String(), Wallet: wallet.String(), WalletTokenATA: walletATA, Vault: vault.String(), VaultTokenATA: vaultATA, Mint: USDCMint, Policy: policy.String(), SubscriptionAuthority: base58Key(authority[:]), RecurringDelegation: base58Key(delegation[:]), Nonce: &nonce, MaxAmountPerPeriod: &budget}
 	data := make([]byte, 73)
 	data[0] = 5
@@ -44,7 +43,7 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	copy(policyData[40:48], seed[:])
+	binary.LittleEndian.PutUint64(policyData[40:48], 9)
 	policyData[48] = bump
 	tokenData := make([]byte, 165)
 	copy(tokenData[:32], mint[:])
@@ -53,7 +52,7 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	binary.LittleEndian.PutUint32(tokenData[72:76], 1)
 	copy(tokenData[76:108], authority[:])
 	tokenData[108] = 1
-	accounts := []testAccount{{Address: target.Policy, Owner: squadsProgramID, Data: policyData}, {Address: target.SubscriptionAuthority, Owner: SubscriptionsProgramID}, {Address: target.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(target.Wallet, target.Vault, USDCMint, uint64(budget), 0)}, {Address: walletATA, Owner: splTokenID, Data: tokenData}}
+	accounts := []testAccount{{Address: target.Policy, Owner: squads.ProgramID.String(), Data: policyData}, {Address: target.SubscriptionAuthority, Owner: SubscriptionsProgramID}, {Address: target.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(target.Wallet, target.Vault, USDCMint, uint64(budget), 0)}, {Address: walletATA, Owner: splTokenID, Data: tokenData}}
 	builder, err := NewSweepWireBuilder(key, func(_ context.Context, minSlot int64, _ []string, _ ...string) (int64, []*chain.Account, error) {
 		if minSlot > 100 {
 			return 0, nil, chain.ErrBehind

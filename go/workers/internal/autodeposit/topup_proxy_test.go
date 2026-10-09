@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -66,7 +67,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 		plan.Market:                    {Address: plan.Market, Owner: KLendProgramID, Data: make([]byte, 8)},
 		obligation:                     {Address: obligation, Owner: KLendProgramID, Data: obligationData},
 		plan.Target.VaultUsdcAta:       {Address: plan.Target.VaultUsdcAta, Owner: splTokenID, Data: custody},
-		plan.Target.RoutePolicyAccount: {Address: plan.Target.RoutePolicyAccount, Owner: squadsProgramID, Data: policy},
+		plan.Target.RoutePolicyAccount: {Address: plan.Target.RoutePolicyAccount, Owner: squads.ProgramID.String(), Data: policy},
 	}
 	builder, err := NewSweepWireBuilder(key, fixtureReader(100, byAddress))
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Regression for the Go fleet path failing every cycle when the target
@@ -92,7 +93,7 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 	ata.Data[108] = 1
 	held[sourcePosition.Position.VaultLiquidityATA] = ata
 	policy := testIdentity(5)
-	held[policy] = fixtureAccount(policy, SquadsProgram, 1, []byte{1})
+	held[policy] = fixtureAccount(policy, squads.ProgramID.String(), 1, []byte{1})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var call struct {

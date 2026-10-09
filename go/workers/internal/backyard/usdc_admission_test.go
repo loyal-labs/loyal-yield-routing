@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Reuse the existing complete-return fixture, changing only the route's concrete
@@ -83,7 +84,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 		case BasicSwapRoutesB:
 			m.RuntimeBindings.SwapRoutesB.DataSHA256 = &hash
 		}
-		accounts = append(accounts, ConfirmedAccount{Address: b.Policy, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
+		accounts = append(accounts, ConfirmedAccount{Address: b.Policy, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 	}
 	tables := retainedJupiterLookups(t)
 	for _, leg := range []string{symbol + "->USDC"} {

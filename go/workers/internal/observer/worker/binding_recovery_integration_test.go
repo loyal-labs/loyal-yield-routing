@@ -25,6 +25,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -118,7 +119,7 @@ func TestWatchStateRecoveryIsBatchedUnboundedByOnePassAndIdempotent(t *testing.T
 				data = append([]byte(nil), changedData...)
 				mu.Unlock()
 			}
-			values[index] = map[string]any{"lamports": 2_039_280, "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", "data": []string{base64.StdEncoding.EncodeToString(data), "base64"}, "executable": false, "rentEpoch": 0}
+			values[index] = map[string]any{"lamports": 2_039_280, "owner": squads.ProgramID.String(), "data": []string{base64.StdEncoding.EncodeToString(data), "base64"}, "executable": false, "rentEpoch": 0}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"context": map[string]any{"slot": slot.Add(7)}, "value": values}})
 	}))
@@ -238,7 +239,7 @@ func TestReconnectAfterProviderWindowClampsAndRecoversBindings(t *testing.T) {
 			_ = json.Unmarshal(body.Params[0], &addresses)
 			values := make([]map[string]any, len(addresses))
 			for index := range addresses {
-				values[index] = map[string]any{"lamports": 1, "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", "data": []string{"AA==", "base64"}, "executable": false, "rentEpoch": 0}
+				values[index] = map[string]any{"lamports": 1, "owner": squads.ProgramID.String(), "data": []string{"AA==", "base64"}, "executable": false, "rentEpoch": 0}
 			}
 			result = map[string]any{"context": map[string]any{"slot": current}, "value": values}
 		default:
@@ -309,7 +310,7 @@ func TestWatchStateRecoverySkipsSignatureOnlyFacts(t *testing.T) {
 		values := make([]any, len(addresses))
 		for index, address := range addresses {
 			if address != closedPolicy {
-				values[index] = map[string]any{"lamports": 1, "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", "data": []string{"AA==", "base64"}, "executable": false, "rentEpoch": 0}
+				values[index] = map[string]any{"lamports": 1, "owner": squads.ProgramID.String(), "data": []string{"AA==", "base64"}, "executable": false, "rentEpoch": 0}
 			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"context": map[string]any{"slot": 900}, "value": values}})
@@ -367,7 +368,7 @@ func slotRPC(t *testing.T, current uint64) *httptest.Server {
 			_ = json.Unmarshal(body.Params[0], &addresses)
 			values := make([]map[string]any, len(addresses))
 			for index := range addresses {
-				values[index] = map[string]any{"lamports": 1, "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", "data": []string{"AA==", "base64"}, "executable": false, "rentEpoch": 0}
+				values[index] = map[string]any{"lamports": 1, "owner": squads.ProgramID.String(), "data": []string{"AA==", "base64"}, "executable": false, "rentEpoch": 0}
 			}
 			result = map[string]any{"context": map[string]any{"slot": current}, "value": values}
 		}

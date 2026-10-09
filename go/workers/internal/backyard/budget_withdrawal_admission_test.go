@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Controlled quote/RPC transport around actual compilers and installed Jupiter
@@ -48,7 +49,7 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 		p.NormalizedDigest = hash
 		p.MaskedByteRanges = nil
 		p.DataSHA256Raw = hash
-		extra = append(extra, ConfirmedAccount{Address: p.Account, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
+		extra = append(extra, ConfirmedAccount{Address: p.Account, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 	}
 	binding, err := catalogJupiterBindingForRoute(SwapCollateralToStableStep, route.Lane)
 	if err != nil {
@@ -74,7 +75,7 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 			if err != nil {
 				t.Fatal(err)
 			}
-			extra = append(extra, ConfirmedAccount{Address: p.PolicyAddress, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
+			extra = append(extra, ConfirmedAccount{Address: p.PolicyAddress, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 		}
 	}
 	reserve := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 42, new(big.Int).Lsh(big.NewInt(1), 60), 1_000_000_000, 1_000_000_000)
@@ -315,7 +316,7 @@ func installedAutoPolicyAccount(t *testing.T) ConfirmedAccount {
 	if err = json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	if fixture.Address != installedAutoPolicyKey || fixture.DataSHA256 != installedAutoPolicyDigest || fixture.Account.Owner != bridgeSquadsProgram || fixture.Account.Executable || fixture.Account.Lamports == 0 || len(fixture.Account.Data) != 2 || fixture.Account.Data[1] != "base64" {
+	if fixture.Address != installedAutoPolicyKey || fixture.DataSHA256 != installedAutoPolicyDigest || fixture.Account.Owner != squads.ProgramID.String() || fixture.Account.Executable || fixture.Account.Lamports == 0 || len(fixture.Account.Data) != 2 || fixture.Account.Data[1] != "base64" {
 		t.Fatal("installed AUTO policy capture identity drift")
 	}
 	data, err := base64.StdEncoding.Strict().DecodeString(fixture.Account.Data[0])

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func TestInitializationRPCBindsThePersistedWireAndRejectsUnexpectedMetadata(t *testing.T) {
@@ -83,7 +85,7 @@ func TestInitializationRPCBindsThePersistedWireAndRejectsUnexpectedMetadata(t *t
 						t.Fatal("account not anchored to receipt")
 					}
 					if drift == "account_owner" {
-						a.Owner = bridgeSquadsProgram
+						a.Owner = squads.ProgramID.String()
 					}
 					result = map[string]any{"context": map[string]any{"slot": 78}, "value": []any{map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}}}
 				default:
@@ -190,7 +192,7 @@ func TestInitializationRejectsNativeAndCreatedStateDrift(t *testing.T) {
 			r.Initialization.PostBalances[i]--
 		}},
 		{"old_account", func(r *ConfirmedTransactionEvidence) { r.Initialization.AccountReadSlot = 76 }},
-		{"wrong_program", func(r *ConfirmedTransactionEvidence) { r.Initialization.Obligation.Owner = bridgeSquadsProgram }},
+		{"wrong_program", func(r *ConfirmedTransactionEvidence) { r.Initialization.Obligation.Owner = squads.ProgramID.String() }},
 		{"wrong_owner", func(r *ConfirmedTransactionEvidence) { r.Initialization.Obligation.Data[64] ^= 1 }},
 		{"wrong_market", func(r *ConfirmedTransactionEvidence) { r.Initialization.Obligation.Data[32] ^= 1 }},
 		{"wrong_tag", func(r *ConfirmedTransactionEvidence) { r.Initialization.Obligation.Data[8] = 0 }},

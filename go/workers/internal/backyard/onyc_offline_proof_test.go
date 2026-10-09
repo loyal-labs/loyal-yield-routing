@@ -9,6 +9,8 @@ import (
 	"os"
 	"sort"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 type onycProofInput struct {
@@ -146,7 +148,7 @@ func TestExportONycOfflineProof(t *testing.T) {
 				valid = maskedPolicyDigestMatches(a.Data, p.MaskedByteRanges, hash)
 			}
 		}
-		if !valid || a.Owner != bridgeSquadsProgram || a.Lamports == 0 || a.Executable {
+		if !valid || a.Owner != squads.ProgramID.String() || a.Lamports == 0 || a.Executable {
 			t.Fatalf("installed policy mismatch: %s", address)
 		}
 	}
@@ -260,7 +262,7 @@ func TestExportONycOfflineProof(t *testing.T) {
 			t.Fatal(e)
 		}
 		a := accountAt(in.Accounts, address)
-		if a.Owner != bridgeSquadsProgram || a.Executable || a.Lamports == 0 || sha256Bytes(a.Data) != binding.AccountDataSHA256 {
+		if a.Owner != squads.ProgramID.String() || a.Executable || a.Lamports == 0 || sha256Bytes(a.Data) != binding.AccountDataSHA256 {
 			t.Fatal("initializer policy mismatch")
 		}
 		message, err = CompileKaminoInitializationMessage(r)

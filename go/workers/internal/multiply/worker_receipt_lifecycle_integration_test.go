@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
@@ -298,7 +299,7 @@ func TestCurrentGoMultiplyActualReceiptRejectsProviderDrift(t *testing.T) {
 		{"different-loaded-order", func(r *chain.Receipt) { r.LoadedWritable = []solana.PublicKey{fixtureKey(122)} }},
 		{"missing-token-balance", func(r *chain.Receipt) { r.Post = nil }},
 		{"foreign-token-authority", foreign(func(b *chain.TokenBalance) { b.Owner = fixtureKey(123) })},
-		{"foreign-token-program", foreign(func(b *chain.TokenBalance) { b.Program = mustKey(SquadsProgram) })},
+		{"foreign-token-program", foreign(func(b *chain.TokenBalance) { b.Program = squads.ProgramID })},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			changed := receipt
@@ -508,7 +509,7 @@ func TestCurrentGoMultiplyActualModelRejectsDebtAndSwapRecipeDrift(t *testing.T)
 		{"repay-wrong-destination", ActionPlan{Action: ActionRepayDebt, StrategyKey: SyrupUsdcUsdc, Amount: AmountAll}, func(ix *Instruction) {
 			ix.Accounts[5].PubKey = f.topology.Strategies[SyrupUsdcUsdc].CollateralLiquiditySupply
 		}},
-		{"repay-wrong-token-program", ActionPlan{Action: ActionRepayDebt, StrategyKey: SyrupUsdcUsdc, Amount: AmountAll}, func(ix *Instruction) { ix.Accounts[7].PubKey = mustKey(SquadsProgram) }},
+		{"repay-wrong-token-program", ActionPlan{Action: ActionRepayDebt, StrategyKey: SyrupUsdcUsdc, Amount: AmountAll}, func(ix *Instruction) { ix.Accounts[7].PubKey = squads.ProgramID }},
 		{"repay-wrong-count", ActionPlan{Action: ActionRepayDebt, StrategyKey: SyrupUsdcUsdc, Amount: AmountAll}, func(ix *Instruction) { ix.Accounts = ix.Accounts[:12] }},
 		{"swap-wrong-slippage", ActionPlan{Action: ActionSwapClaimToCollateral, StrategyKey: SyrupUsdcUsdc, Amount: AmountExact(650_000)}, func(ix *Instruction) { ix.Data[len(ix.Data)-3] = 100 }},
 		{"swap-wrong-recipe", ActionPlan{Action: ActionSwapClaimToCollateral, StrategyKey: SyrupUsdcUsdc, Amount: AmountExact(650_000)}, func(ix *Instruction) { ix.Data[13] = 255 }},

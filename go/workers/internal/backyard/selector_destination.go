@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // A destination forecast retains its hypothetical amounts separately from the
@@ -215,7 +216,7 @@ func validateSelectorDestinationCommon(m RouteManifest, route RuntimeRoute, slot
 	for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
 		p, _ := m.bridgePolicy(action)
 		a := accountAt(accounts, p.Account)
-		if a.Owner != bridgeSquadsProgram || a.Executable || a.Lamports == 0 || !maskedPolicyDigestMatches(a.Data, p.MaskedByteRanges, p.NormalizedDigest) {
+		if a.Owner != squads.ProgramID.String() || a.Executable || a.Lamports == 0 || !maskedPolicyDigestMatches(a.Data, p.MaskedByteRanges, p.NormalizedDigest) {
 			return 0, budgetHold("selector_destination_bridge_policy_unavailable")
 		}
 	}

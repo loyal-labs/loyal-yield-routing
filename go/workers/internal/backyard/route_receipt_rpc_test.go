@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // The strategy receipt's absence is judged by the real RPC decoder and the
@@ -89,7 +90,7 @@ func rawJSONRouteBatch(t *testing.T, mutate func(map[string]ConfirmedAccount, ma
 	// unless a test removes it: the neutral envelopes keep undecoded helper
 	// accounts present while the fixture provides the real images.
 	for _, address := range routeFixedAddresses(manifest) {
-		neutral := ConfirmedAccount{Address: address, Owner: bridgeSquadsProgram, Lamports: 1, Data: bytes.Repeat([]byte{7}, 96)}
+		neutral := ConfirmedAccount{Address: address, Owner: squads.ProgramID.String(), Lamports: 1, Data: bytes.Repeat([]byte{7}, 96)}
 		fixture.confirmed[address] = neutral
 		fixture.finalized[address] = neutral
 	}

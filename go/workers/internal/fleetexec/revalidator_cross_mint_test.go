@@ -3,7 +3,6 @@ package fleetexec
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"math"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -102,10 +102,8 @@ func TestRevalidatorCrossMintPreparationRejectsMalformedReceiptContracts(t *test
 func revalidatorCrossMintActivationFixture(t *testing.T) fleet.CrossMintActivationPreparation {
 	t.Helper()
 	key := func(n byte) string { return solana.PublicKeyFromBytes(bytes.Repeat([]byte{n}, 32)).String() }
-	var seed [8]byte
-	binary.LittleEndian.PutUint64(seed[:], 3)
 	settings := solana.MustPublicKeyFromBase58(key(1))
-	swapKey, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settings[:], seed[:]}, solana.MustPublicKeyFromBase58(fleet.SquadsProgram))
+	swapKey, _, err := squads.PolicyAddress(settings, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
