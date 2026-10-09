@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // ALTManifestAddress is the retained durable provisioning row. Its ordinal
@@ -105,12 +107,9 @@ func (r *Revalidator) filterFinalizedExternalALTManifest(ctx context.Context, ma
 	for i, table := range tables {
 		names[i] = table.Address
 	}
-	observedSlot, accounts, err := r.rpc.FinalizedAccounts(ctx, names, minimumSlot)
+	observedSlot, accounts, err := ReadAccounts(ctx, r.rpc, names, rpc.CommitmentFinalized, minimumSlot)
 	if err != nil {
 		return ALTManifest{}, err
-	}
-	if observedSlot < minimumSlot || len(accounts) != len(tables) {
-		return ALTManifest{}, fmt.Errorf("external ALT readback is incomplete or stale")
 	}
 	var snapshots []CrossMintExternalALT
 	external := map[string]bool{}

@@ -3,10 +3,10 @@ package fleetexec
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"math"
@@ -45,7 +45,7 @@ func TestRedeemableCollateralUsesWideFractionAndFloors(t *testing.T) {
 
 func postFixture(t *testing.T, c sameMintPostContract, slot int64, sourceResidual, idleAmount int64) fixtureAccounts {
 	t.Helper()
-	accounts := map[string]fleet.Account{}
+	accounts := map[string]chain.Account{}
 	reserves := []string{c.target}
 	if c.sourceKind == "reserve_position" {
 		reserves = []string{c.source, c.target}
@@ -70,9 +70,9 @@ func postFixture(t *testing.T, c sameMintPostContract, slot int64, sourceResidua
 			binary.LittleEndian.PutUint32(data[4856+64+n*8:], uint32(n*1000))
 			binary.LittleEndian.PutUint32(data[4856+68+n*8:], uint32(n*200))
 		}
-		a := fleet.Account{Address: reserve, Owner: fleet.KaminoProgram, Lamports: 1, Data: data}
+		a := fixtureAccount(reserve, fleet.KaminoProgram, 1, data)
 		accounts[reserve] = a
-		_, obligation, _, _, err := reservePostIdentity(a, c.mint, c.vault)
+		_, obligation, _, _, err := reservePostIdentity(&a, c.mint, c.vault)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,7 +87,7 @@ func postFixture(t *testing.T, c sameMintPostContract, slot int64, sourceResidua
 		reserveKey := sdk.MustPublicKeyFromBase58(reserve)
 		copy(od[96:128], reserveKey[:])
 		binary.LittleEndian.PutUint64(od[128:136], uint64(collateral))
-		accounts[obligation] = fleet.Account{Address: obligation, Owner: fleet.KaminoProgram, Lamports: 1, Data: od}
+		accounts[obligation] = fixtureAccount(obligation, fleet.KaminoProgram, 1, od)
 	}
 	ata, err := associatedCustodyAccount(c.vault, c.mint, token.String())
 	if err != nil {
@@ -98,7 +98,7 @@ func postFixture(t *testing.T, c sameMintPostContract, slot int64, sourceResidua
 	copy(ad[32:64], owner[:])
 	binary.LittleEndian.PutUint64(ad[64:72], uint64(idleAmount))
 	ad[108] = 1
-	accounts[ata] = fleet.Account{Address: ata, Owner: token.String(), Lamports: 1, Data: ad}
+	accounts[ata] = fixtureAccount(ata, token.String(), 1, ad)
 	return fixtureAccounts{accounts: accounts, slot: slot}
 }
 
@@ -106,7 +106,7 @@ func TestSameMintPostObservationKeepsResidualAndCoherentConversions(t *testing.T
 	f := mustSignedFixture(t)
 	c := sameMintPostContract{vault: f.FeePayer, source: f.SecondaryAccount, target: f.RecentBlockhash, mint: fleet.USDCMint, minimumSlot: 1000, sourceKind: "reserve_position"}
 	rpc := postFixture(t, c, 1001, 7, 11)
-	proof, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond)
+	proof, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,14 +115,14 @@ func TestSameMintPostObservationKeepsResidualAndCoherentConversions(t *testing.T
 	}
 	old := rpc
 	old.slot = 999
-	if _, err := observeSameMintPost(context.Background(), old, c, &TransactionReceipt{}, 400*time.Millisecond); err == nil {
+	if _, err := observeSameMintPost(context.Background(), old, c, chain.Receipt{}, 400*time.Millisecond); err == nil {
 		t.Fatal("old post-state accepted")
 	}
 	// Token account identity is part of custody, even with the expected amount.
 	a := rpc.accounts[proof.idleATA]
 	copy(a.Data[32:64], make([]byte, 32))
 	rpc.accounts[proof.idleATA] = a
-	if _, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond); err == nil {
+	if _, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond); err == nil {
 		t.Fatal("external token authority accepted")
 	}
 }
@@ -136,11 +136,11 @@ func TestSameMintPostObservationProvesClosedSourceObligationAsZero(t *testing.T)
 	c := sameMintPostContract{vault: f.FeePayer, source: f.SecondaryAccount, target: f.RecentBlockhash, mint: fleet.USDCMint, minimumSlot: 1000, sourceKind: "reserve_position"}
 	closed := func() (fixtureAccounts, string, string) {
 		rpc := postFixture(t, c, 1001, 0, 11)
-		_, source, _, _, err := reservePostIdentity(rpc.accounts[c.source], c.mint, c.vault)
+		_, source, _, _, err := reservePostIdentity(rpc.at(c.source), c.mint, c.vault)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, target, _, _, err := reservePostIdentity(rpc.accounts[c.target], c.mint, c.vault)
+		_, target, _, _, err := reservePostIdentity(rpc.at(c.target), c.mint, c.vault)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -148,7 +148,7 @@ func TestSameMintPostObservationProvesClosedSourceObligationAsZero(t *testing.T)
 		return rpc, source, target
 	}
 	rpc, _, target := closed()
-	proof, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond)
+	proof, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond)
 	if err != nil {
 		t.Fatalf("closed source obligation blocked reconciliation: %v", err)
 	}
@@ -162,19 +162,19 @@ func TestSameMintPostObservationProvesClosedSourceObligationAsZero(t *testing.T)
 
 	rpc, _, _ = closed()
 	delete(rpc.accounts, proof.idleATA)
-	if p, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond); err != nil || p.idleAmount != 0 || p.idleATAExists {
+	if p, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond); err != nil || p.idleAmount != 0 || p.idleATAExists {
 		t.Fatalf("absent liquidity ATA is not a zero balance: %+v %v", p, err)
 	}
 
 	rpc, _, target = closed()
 	delete(rpc.accounts, target)
-	if _, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond); err == nil {
+	if _, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond); err == nil {
 		t.Fatal("absent target obligation accepted as a landed deposit")
 	}
 	for _, reserve := range []string{c.source, c.target} {
 		rpc, _, _ = closed()
 		delete(rpc.accounts, reserve)
-		if _, err := observeSameMintPost(context.Background(), rpc, c, &TransactionReceipt{}, 400*time.Millisecond); err == nil {
+		if _, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond); err == nil {
 			t.Fatalf("absent reserve %s accepted", reserve)
 		}
 	}
@@ -235,17 +235,12 @@ func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *t
 			if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.vault_reserve_positions_current(vault_id,reserve,liquidity_mint,amount_raw,has_value,snapshot_id,observed_slot,observed_at) SELECT $1,'unobserved', $2,17,true,id,observed_slot,observed_at FROM loyal_yield.vault_position_snapshots WHERE vault_id=$1 AND is_current`, vaultID, fleet.USDCMint); err != nil {
 				t.Fatal(err)
 			}
-			tx, err := sdk.TransactionFromBytes(wire.SignedTransaction)
-			if err != nil {
-				t.Fatal(err)
-			}
-			message, _ := tx.Message.MarshalBinary()
-			receipt := &TransactionReceipt{Slot: 1000, Signature: wire.TransactionSignature, SignedTransaction: wire.SignedTransaction, MessageB64: base64.StdEncoding.EncodeToString(message)}
+			receipt := chain.Receipt{Slot: 1000, Wire: wire.SignedTransaction}
 			post := postFixture(t, c, 1001, 7, 11)
 			residual := int64(7)
 			if name == "closed_source_obligation" {
 				// KLend closed the emptied source obligation inside the route.
-				_, obligation, _, _, err := reservePostIdentity(post.accounts[source], fleet.USDCMint, vault)
+				_, obligation, _, _, err := reservePostIdentity(post.at(source), fleet.USDCMint, vault)
 				if err != nil {
 					t.Fatal(err)
 				}

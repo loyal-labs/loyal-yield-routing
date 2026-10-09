@@ -3,7 +3,6 @@ package fleetexec
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +14,7 @@ import (
 	"github.com/mr-tron/base58"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
@@ -37,7 +37,7 @@ func TestPersistentReconciliationFailureBacksOffAndReportsStall(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The finalized receipt never matches the signed message.
-	status := &finalizedStatus{receipt: &TransactionReceipt{Slot: 700, Signature: wire.TransactionSignature, MessageB64: base64.StdEncoding.EncodeToString([]byte("different-message")), accountAddresses: []string{"payer", "source", "target"}}}
+	status := &finalizedStatus{receipt: chain.Receipt{Slot: 700, Wire: []byte("different-wire")}}
 	registry := prometheus.NewRegistry()
 	worker, err := NewWorker(Config{Cluster: baseline.Cluster, Owner: "owner-stall", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second, Facts: engine.NewFacts(registry)}, store, &countingChain{}, status, DelegateSigner{})
 	if err != nil {
@@ -125,7 +125,11 @@ func TestIneligibleOpportunityIsRecordedAndDoesNotFailTheTick(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	revalidator, err := fleet.NewRevalidator(routes, fleet.NewRPCClient(node.URL), fleet.RevalidatorConfig{Owner: "owner-isolation", DelegatedSigner: signer, LeaseTTL: 30 * time.Second, SlotDuration: 400 * time.Millisecond, FusedExecute: true})
+	client, err := chain.New(node.URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revalidator, err := fleet.NewRevalidator(routes, client, fleet.RevalidatorConfig{Owner: "owner-isolation", DelegatedSigner: signer, LeaseTTL: 30 * time.Second, SlotDuration: 400 * time.Millisecond, FusedExecute: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +152,7 @@ func TestIneligibleOpportunityIsRecordedAndDoesNotFailTheTick(t *testing.T) {
 		t.Fatalf("one opportunity's outcome failed the tick: %v", err)
 	}
 	state, attempts, owner, reason, later := opportunity(first)
-	if state != "revalidate" || attempts != 1 || owner != nil || reason == nil || !strings.Contains(*reason, "code -32000") || !later {
+	if state != "revalidate" || attempts != 1 || owner != nil || reason == nil || !strings.Contains(*reason, "rpc error -32000") || !later {
 		t.Fatalf("failed opportunity not recorded: state=%s attempts=%d owner=%v reason=%v later=%v", state, attempts, owner, reason, later)
 	}
 	if _, attempts, _, _, _ := opportunity(second); attempts != 0 {

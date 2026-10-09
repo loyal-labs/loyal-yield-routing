@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -43,16 +44,12 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 		t.Fatal(err)
 	}
 	store := fleetexec.NewStore(bank.Pool)
-	adapter, err := fleetexec.NewRPCAdapter(bank.RPCURL, 5*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
 	land, err := chain.New(bank.RPCURL, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	config := fleetexec.Config{Cluster: bank.Cluster, Owner: owner, LeaseTTL: 20 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, SlotDuration: 400 * time.Millisecond, Facts: engine.NewFacts(prometheus.NewRegistry())}
-	worker, err := fleetexec.NewWorker(config, store, land, adapter, fleetexec.DelegateSigner{FeePayer: bank.Signer})
+	worker, err := fleetexec.NewWorker(config, store, land, land, fleetexec.DelegateSigner{FeePayer: bank.Signer})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +78,7 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 	connectedRPC(t, ctx, bank.RPCURL, "advanceSlot", []any{int64(1001)}, &advanced)
 	// A restarted owner without any key finishes reconciliation.
 	config.Owner = owner + "-restarted"
-	restarted, err := fleetexec.NewWorker(config, store, land, adapter, fleetexec.DelegateSigner{})
+	restarted, err := fleetexec.NewWorker(config, store, land, land, fleetexec.DelegateSigner{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +97,7 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 	}
 	// Independently of Go's reconciliation, the chain holds the collateral in
 	// the target obligation the route created or reused.
-	_, obligations, err := fleet.NewRPCClient(bank.RPCURL).FinalizedAccounts(ctx, []string{bank.Source.Obligation, bank.Target.Obligation}, 1001)
+	_, obligations, err := fleet.ReadAccounts(ctx, land, []string{bank.Source.Obligation, bank.Target.Obligation}, rpc.CommitmentFinalized, 1001)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,12 +129,12 @@ func TestConnectedCrossMintExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := fleetexec.NewStore(bank.Pool)
-	rpc, err := fleetexec.NewRPCAdapter(bank.RPCURL, 5*time.Second)
+	client, err := chain.New(bank.RPCURL, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	config := fleetexec.Config{Cluster: bank.Cluster, Owner: owner, LeaseTTL: 20 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, SlotDuration: 400 * time.Millisecond, Facts: engine.NewFacts(prometheus.NewRegistry())}
-	controller, err := fleetexec.NewCrossMintController(store, adapters, fleetexec.DelegateSigner{FeePayer: bank.Signer}, rpc, bank.Cluster, owner, config.LeaseTTL, true)
+	controller, err := fleetexec.NewCrossMintController(store, adapters, fleetexec.DelegateSigner{FeePayer: bank.Signer}, client, bank.Cluster, owner, config.LeaseTTL, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +147,7 @@ func TestConnectedCrossMintExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	controller.SetMarketEpochSource(publishedEpoch{epoch})
-	runtime, err := fleetexec.NewCrossMintRuntime(ctx, config, store, controller, rpc, adapters)
+	runtime, err := fleetexec.NewCrossMintRuntime(ctx, config, store, controller, client, adapters)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +171,7 @@ func TestConnectedCrossMintExecution(t *testing.T) {
 	// executed withdrawal from its signature.
 	recoveryConfig := config
 	recoveryConfig.Owner = owner + "-recovery"
-	recovery, err := fleetexec.NewCrossMintRecoveryRuntime(ctx, recoveryConfig, store, rpc, adapters)
+	recovery, err := fleetexec.NewCrossMintRecoveryRuntime(ctx, recoveryConfig, store, client, adapters)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +210,7 @@ func TestConnectedCrossMintExecution(t *testing.T) {
 	if *terminal != "completed_target" || custody != 0 || version != 3 || status != "confirmed" || opportunity != "completed" || legs != 3 || reconciled != 3 || once != 3 || !bytes.Equal(wire, recovered) || bank.Sends() != 3 || bank.LostResponses() != 1 {
 		t.Fatalf("terminal %s custody%d version%d %s/%s legs%d/%d/%d sends%d", *terminal, custody, version, status, opportunity, legs, reconciled, once, bank.Sends())
 	}
-	_, obligations, err := fleet.NewRPCClient(bank.RPCURL).FinalizedAccounts(ctx, []string{bank.Source.Obligation, bank.Target.Obligation}, 1000)
+	_, obligations, err := fleet.ReadAccounts(ctx, client, []string{bank.Source.Obligation, bank.Target.Obligation}, rpc.CommitmentFinalized, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,10 +323,13 @@ func waitSubmission(t *testing.T, ctx context.Context, bank *fleet.ConnectedBank
 }
 
 // obligationCollateral reads KLend's pinned Obligation layout directly.
-func obligationCollateral(t *testing.T, account fleet.Account, vault string) uint64 {
+func obligationCollateral(t *testing.T, account *chain.Account, vault string) uint64 {
 	t.Helper()
-	if account.Owner != fleet.KLendProgram || len(account.Data) != 3344 || !bytes.Equal(account.Data[:8], []byte{168, 206, 141, 106, 88, 76, 172, 167}) || sdk.PublicKeyFromBytes(account.Data[64:96]).String() != vault {
-		t.Fatalf("obligation %s identity differs", account.Address)
+	if account == nil {
+		t.Fatal("obligation is absent")
+	}
+	if account.Owner.String() != fleet.KLendProgram || len(account.Data) != 3344 || !bytes.Equal(account.Data[:8], []byte{168, 206, 141, 106, 88, 76, 172, 167}) || sdk.PublicKeyFromBytes(account.Data[64:96]).String() != vault {
+		t.Fatalf("obligation %s identity differs", account.Key)
 	}
 	return binary.LittleEndian.Uint64(account.Data[128:136])
 }

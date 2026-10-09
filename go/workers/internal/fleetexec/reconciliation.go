@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 	"math"
 	"math/big"
 	"time"
@@ -43,7 +45,7 @@ type sameMintPostProof struct {
 	idleATA, tokenProgram string
 	idleATAExists         bool
 	observedAt            time.Time
-	receipt               *TransactionReceipt
+	receipt               chain.Receipt
 }
 
 func (s *Store) loadPostContract(ctx context.Context, r SubmissionRecord) (sameMintPostContract, error) {
@@ -107,7 +109,7 @@ func (s *Store) loadPostContract(ctx context.Context, r SubmissionRecord) (sameM
 	return c, nil
 }
 
-func (v *sameMintRecovery) reconcile(ctx context.Context, lease SubmissionLease, receipt *TransactionReceipt) error {
+func (v *sameMintRecovery) reconcile(ctx context.Context, lease SubmissionLease, receipt chain.Receipt) error {
 	r := lease.Submission
 	if r.ConfirmedSlot == nil {
 		return errors.New("post-state lacks confirmed slot")
@@ -126,8 +128,8 @@ func (v *sameMintRecovery) reconcile(ctx context.Context, lease SubmissionLease,
 	return v.store.publishSameMintPost(ctx, lease, proof)
 }
 
-func reservePostIdentity(a fleet.Account, mint, owner string) (market, obligation, collateralMint, tokenProgram string, err error) {
-	if a.Owner != fleet.KaminoProgram || a.Executable || a.Lamports == 0 || len(a.Data) != 8624 || !bytes.Equal(a.Data[:8], []byte{43, 242, 204, 202, 26, 247, 59, 127}) || binary.LittleEndian.Uint64(a.Data[8:16]) != 1 || sdk.PublicKeyFromBytes(a.Data[128:160]).String() != mint {
+func reservePostIdentity(a *chain.Account, mint, owner string) (market, obligation, collateralMint, tokenProgram string, err error) {
+	if a == nil || a.Owner.String() != fleet.KaminoProgram || a.Executable || a.Lamports == 0 || len(a.Data) != 8624 || !bytes.Equal(a.Data[:8], []byte{43, 242, 204, 202, 26, 247, 59, 127}) || binary.LittleEndian.Uint64(a.Data[8:16]) != 1 || sdk.PublicKeyFromBytes(a.Data[128:160]).String() != mint {
 		return "", "", "", "", errors.New("post reserve envelope or mint differs")
 	}
 	market = sdk.PublicKeyFromBytes(a.Data[32:64]).String()
@@ -165,25 +167,19 @@ func associatedCustodyAccount(owner, mint, program string) (string, error) {
 	return a.String(), err
 }
 
-func observeSameMintPost(ctx context.Context, rpc finalizedAccountReader, c sameMintPostContract, receipt *TransactionReceipt, slotDuration time.Duration) (*sameMintPostProof, error) {
+func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c sameMintPostContract, receipt chain.Receipt, slotDuration time.Duration) (*sameMintPostProof, error) {
 	reserves := []string{c.target}
 	if c.sourceKind == "reserve_position" {
 		reserves = []string{c.source, c.target}
 	}
-	discoverySlot, discovery, err := rpc.FinalizedAccounts(ctx, reserves, c.minimumSlot)
+	discoverySlot, discovery, err := fleet.ReadAccounts(ctx, reader, reserves, rpc.CommitmentFinalized, c.minimumSlot)
 	if err != nil {
 		return nil, err
-	}
-	if discoverySlot < c.minimumSlot || len(discovery) != len(reserves) {
-		return nil, errors.New("post reserve discovery too old or incomplete")
 	}
 	positions := make([]observedPosition, len(reserves))
 	obligations := make([]string, len(reserves))
 	program := ""
 	for i, a := range discovery {
-		if a.Address != reserves[i] {
-			return nil, errors.New("post reserve address differs")
-		}
 		market, obligation, collateral, token, e := reservePostIdentity(a, c.mint, c.vault)
 		if e != nil {
 			return nil, e
@@ -193,7 +189,7 @@ func observeSameMintPost(ctx context.Context, rpc finalizedAccountReader, c same
 		}
 		program = token
 		obligations[i] = obligation
-		positions[i] = observedPosition{reserve: a.Address, market: market, mint: c.mint, obligation: obligation, collateralMint: collateral}
+		positions[i] = observedPosition{reserve: reserves[i], market: market, mint: c.mint, obligation: obligation, collateralMint: collateral}
 	}
 	ata, err := associatedCustodyAccount(c.vault, c.mint, program)
 	if err != nil {
@@ -209,22 +205,14 @@ func observeSameMintPost(ctx context.Context, rpc finalizedAccountReader, c same
 	// accounts are returned rather than rejected; reserves stay required by
 	// reservePostIdentity and the target must still hold funded collateral.
 	keys := append(append(append([]string{}, reserves...), obligations...), ata)
-	slot, accounts, err := rpc.FinalizedAccountsAllowingAbsent(ctx, keys, discoverySlot)
+	slot, accounts, err := fleet.ReadAccounts(ctx, reader, keys, rpc.CommitmentFinalized, discoverySlot)
 	if err != nil {
 		return nil, err
-	}
-	if slot < discoverySlot || len(accounts) != len(keys) {
-		return nil, errors.New("post custody observation too old or incomplete")
-	}
-	for i, key := range keys {
-		if accounts[i].Address != key {
-			return nil, errors.New("post custody batch identity differs")
-		}
 	}
 	// Rust parity (decode_spl_token_account_amount(None)): a null liquidity ATA
 	// is a zero balance. A present account must still be the vault's exact ATA.
 	idleAccount := accounts[len(accounts)-1]
-	idleExists := accountExists(idleAccount)
+	idleExists := idleAccount != nil
 	idle := int64(0)
 	if idleExists {
 		idle, err = custodyTokenAmount(idleAccount, c.mint, c.vault)
@@ -250,7 +238,7 @@ func observeSameMintPost(ctx context.Context, rpc finalizedAccountReader, c same
 		obligationAccount := accounts[len(reserves)+i]
 		// Missing accounts are zero only when the finalized RPC returned a null
 		// account. A malformed funded envelope is never interpreted as absent.
-		p.exists = accountExists(obligationAccount)
+		p.exists = obligationAccount != nil
 		if p.exists {
 			p.amount, e = obligationCollateral(obligationAccount, p.market, c.vault, p.reserve)
 			if e != nil {
@@ -266,12 +254,6 @@ func observeSameMintPost(ctx context.Context, rpc finalizedAccountReader, c same
 		return nil, errors.New("post-state target collateral is not funded")
 	}
 	return &sameMintPostProof{contract: c, slot: slot, positions: positions, idleAmount: idle, idleATA: ata, idleATAExists: idleExists, tokenProgram: program, observedAt: time.Now().UTC(), receipt: receipt}, nil
-}
-
-// accountExists distinguishes the null account returned by an
-// absent-allowing read from any account the chain actually holds.
-func accountExists(a fleet.Account) bool {
-	return a.Lamports != 0 || len(a.Data) != 0 || a.Owner != ""
 }
 
 // KLend Fraction is U68F60. total_supply is available + borrowed - all three

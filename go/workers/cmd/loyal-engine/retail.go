@@ -402,10 +402,9 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, OnError: func(err error) {
 		slog.Error("retail lane tick failed", "family", engine.FamilyAutodeposit, "lane", "autodeposit_control", "error", engine.ErrorText(err))
 	}, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
-	fleetRPC := fleet.NewRPCClient(cfg.rpcURL)
 	cConfig := cfg.fleetConfig()
 	cConfig.RevalidationOwner = owner
-	planner, err := fleet.NewWorker(cConfig, cStore, fleetRPC, facts)
+	planner, err := fleet.NewWorker(cConfig, cStore, cluster, facts)
 	if err != nil {
 		return retailError("fleet planner", err)
 	}
@@ -414,17 +413,13 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	// Compilation/verification remains available for recovery with rollout off.
 	// Only the planner and D controller receive fresh cross-mint enablement.
-	revalidator, err := fleet.NewRevalidator(cStore, fleetRPC, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, SlotDuration: cfg.slotDuration, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys()})
+	revalidator, err := fleet.NewRevalidator(cStore, cluster, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, SlotDuration: cfg.slotDuration, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys()})
 	if err != nil {
 		return retailError("fused fleet preparation", err)
 	}
 	// Fused preparation belongs to the executor. C.SetRevalidator would run the
 	// incompatible durable Cycle path and must never be installed here.
-	executionRPC, err := fleetexec.NewRPCAdapter(cfg.rpcURL, 15*time.Second)
-	if err != nil {
-		return retailError("fleet execution RPC", err)
-	}
-	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts, OnHealth: laneHealth(facts, engine.FamilyFleet, "executor")}, dStore, cluster, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
+	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts, OnHealth: laneHealth(facts, engine.FamilyFleet, "executor")}, dStore, cluster, cluster, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
 	if err != nil {
 		return retailError("fleet executor", err)
 	}
@@ -438,11 +433,11 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if len(sweepMints) == 0 {
 		sweepMints = fleet.EarnStableMints()
 	}
-	positionSweep, err := fleetexec.NewPositionSweep(fleetexec.PositionSweepConfig{Cluster: cConfig.Cluster, DelegatedSigner: cConfig.DelegatedSigner, EnabledMints: sweepMints, Interval: 300 * time.Second, Concurrency: 64, Facts: facts}, dStore, fleetRPC)
+	positionSweep, err := fleetexec.NewPositionSweep(fleetexec.PositionSweepConfig{Cluster: cConfig.Cluster, DelegatedSigner: cConfig.DelegatedSigner, EnabledMints: sweepMints, Interval: 300 * time.Second, Concurrency: 64, Facts: facts}, dStore, cluster)
 	if err != nil {
 		return retailError("fleet position sweep", err)
 	}
-	crossMint, err := composeRetailCrossMint(startup, cfg, owner, dStore, revalidator, executionRPC, evidence, facts)
+	crossMint, err := composeRetailCrossMint(startup, cfg, owner, dStore, revalidator, cluster, evidence, facts)
 	if err != nil {
 		return retailError("cross-mint runtime", err)
 	}

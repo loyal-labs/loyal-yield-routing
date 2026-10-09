@@ -367,7 +367,7 @@ func TestWaitingALTRegisteredExternalCoverageKeepsOriginalSourceIdentity(t *test
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"context": map[string]int{"slot": 101}, "value": []any{map[string]any{"owner": altProgram, "lamports": 1, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(data), "base64"}}}}})
 	}))
 	defer server.Close()
-	r := &Revalidator{rpc: NewRPCClient(server.URL)}
+	r := &Revalidator{rpc: testChain(t, server.URL)}
 	filtered, err := r.filterFinalizedExternalALTManifest(ctx, original, []LookupTable{{Address: tableAddress, Active: true, Addresses: covered}}, 100)
 	if err != nil {
 		t.Fatal(err)

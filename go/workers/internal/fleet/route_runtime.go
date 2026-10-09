@@ -11,11 +11,14 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"time"
 
 	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // FarmsProgram owns Kamino obligation farm user states.
@@ -38,7 +41,7 @@ type revalidationStore interface {
 
 type Revalidator struct {
 	store                    revalidationStore
-	rpc                      *RPCClient
+	rpc                      *chain.Client
 	owner                    string
 	signer                   string
 	leaseTTL                 time.Duration
@@ -67,12 +70,12 @@ type RevalidatorConfig struct {
 	FeeOnlyPayers []string
 }
 
-func NewRevalidator(store *Store, rpc *RPCClient, config RevalidatorConfig) (*Revalidator, error) {
-	return newRevalidator(store, rpc, config)
+func NewRevalidator(store *Store, client *chain.Client, config RevalidatorConfig) (*Revalidator, error) {
+	return newRevalidator(store, client, config)
 }
 
-func newRevalidator(store revalidationStore, rpc *RPCClient, config RevalidatorConfig) (*Revalidator, error) {
-	if store == nil || rpc == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second {
+func newRevalidator(store revalidationStore, client *chain.Client, config RevalidatorConfig) (*Revalidator, error) {
+	if store == nil || client == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second {
 		return nil, errors.New("store, RPC, owner, signer, and lease TTL are required")
 	}
 	if _, err := decodePublicKey(config.DelegatedSigner); err != nil {
@@ -98,7 +101,7 @@ func newRevalidator(store revalidationStore, rpc *RPCClient, config RevalidatorC
 			return nil, err
 		}
 	}
-	return &Revalidator{store: store, rpc: rpc, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...)}, nil
+	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...)}, nil
 }
 
 // Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
@@ -179,8 +182,8 @@ func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease Revali
 		payers = append(payers, shard.Payer)
 	}
 	ranked := RankFeePayers(cluster, lease.VaultPubkey, payers)
-	_, accounts, err := r.rpc.ConfirmedAccounts(ctx, ranked, slot)
-	if err != nil || len(accounts) != len(ranked) {
+	_, accounts, err := ReadAccounts(ctx, r.rpc, ranked, rpc.CommitmentConfirmed, slot)
+	if err != nil || slices.Contains(accounts, nil) {
 		return r.signer
 	}
 	for i, payer := range ranked {
@@ -227,11 +230,12 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	out.Tables = tables
 	// Finalized, as Rust compiles every route; see finalizedBlockhash. The
 	// evidence slot is confirmed, so it cannot floor a finalized read.
-	blockhash, lastValidBlockHeight, err := r.rpc.finalizedBlockhash(ctx, 0)
+	hash, lastValidBlockHeight, _, err := r.rpc.Blockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
 		return out, "blockhash", err
 	}
-	out.LastValidBlockHeight = lastValidBlockHeight
+	blockhash := hash.String()
+	out.LastValidBlockHeight = int64(lastValidBlockHeight)
 	out.FeePayer = r.feePayer(ctx, cluster, lease, evidence.Slot, !input.setup())
 	manifest, err := sameMintRouteALTManifest(input, policies.settings, lease.PolicyAccount, lease.SetupPolicyAccount, out.FeePayer, body)
 	if err != nil {
@@ -252,7 +256,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		out.WaitingALT, out.Missing, out.Preparation = true, missing, preparation
 		return out, "", nil
 	}
-	baselineSimulation, err := r.rpc.SimulateExactTransaction(ctx, preview.UnsignedWire, evidence.Slot)
+	baselineSimulation, err := SimulateExact(ctx, r.rpc, preview.UnsignedWire, rpc.CommitmentConfirmed, evidence.Slot)
 	if err != nil {
 		return out, "baseline_simulation", fmt.Errorf("baseline exact simulation failed: %w", err)
 	}
@@ -264,11 +268,11 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "baseline_simulation", fmt.Errorf("measured compute requirement %d exceeds configured limit %d", compute, r.computeLimit)
 	}
 	out.Compute = compute
-	baselineFee, err := r.rpc.FeeForMessage(ctx, preview.Message, evidence.Slot)
+	baselineFee, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentConfirmed)
 	if err != nil {
 		return out, "fee", err
 	}
-	recentPriority, err := r.rpc.RecentPriorityFee(ctx, preview.WritableAccounts)
+	recentPriority, err := recentPriorityFee(ctx, r.rpc, preview.WritableAccounts)
 	if err != nil {
 		return out, "fee", err
 	}
@@ -294,7 +298,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if len(missing) > 0 {
 		return out, "budgeted_compile", fmt.Errorf("budgeted ALT compilation changed coverage: %v", missing)
 	}
-	fee, err := r.rpc.FeeForMessage(ctx, budgetPreview.Message, evidence.Slot)
+	fee, err := r.rpc.Fee(ctx, budgetPreview.Message, rpc.CommitmentConfirmed)
 	if err != nil {
 		return out, "fee", err
 	}
@@ -303,7 +307,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	}
 	out.Fee = fee
 	preparation, err := prepareRoute(out.Instructions, out.FeePayer, tables, blockhash, fee, compute, func(wire []byte) (SimulationEvidence, error) {
-		return r.rpc.SimulateExactTransaction(ctx, wire, evidence.Slot)
+		return SimulateExact(ctx, r.rpc, wire, rpc.CommitmentConfirmed, evidence.Slot)
 	}, "same_mint_kamino_v0")
 	if err != nil {
 		return out, "prepare_route", err
@@ -529,11 +533,11 @@ func vaultRentTopUp(rent, vaultLamports uint64) (uint64, error) {
 
 func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease) (freshSameMint, error) {
 	var f freshSameMint
-	minimum, err := r.rpc.ConfirmedSlot(ctx)
+	minimum, err := r.rpc.Slot(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return f, err
 	}
-	_, preliminary, err := r.rpc.ConfirmedAccounts(ctx, []string{lease.SourceReserve, lease.TargetReserve}, minimum)
+	_, preliminary, err := ReadAccounts(ctx, r.rpc, []string{lease.SourceReserve, lease.TargetReserve}, rpc.CommitmentConfirmed, int64(minimum))
 	if err != nil {
 		return f, err
 	}
@@ -561,11 +565,11 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 			addresses = append(addresses, position.FarmUser)
 		}
 	}
-	minimum, err = r.rpc.ConfirmedSlot(ctx)
+	minimum, err = r.rpc.Slot(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return f, err
 	}
-	slot, accounts, err := r.rpc.accounts(ctx, addresses, minimum, "confirmed", true)
+	slot, accounts, err := ReadAccounts(ctx, r.rpc, addresses, rpc.CommitmentConfirmed, int64(minimum))
 	if err != nil {
 		return f, err
 	}
@@ -587,7 +591,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if lease.SourceCollateralRaw > 0 && sourceCollateral != lease.SourceCollateralRaw {
 		return f, errors.New("fresh source collateral amount differs from opportunity")
 	}
-	targetMissing := absent(accounts[3])
+	targetMissing := accounts[3] == nil
 	var targetCollateral uint64
 	if !targetMissing {
 		if targetCollateral, err = decodeObligation(accounts[3], freshTarget.Position.Market, lease.VaultPubkey, "", &freshTarget.Position); err != nil {
@@ -600,23 +604,23 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 			}
 		}
 	}
-	if freshSource.Position.LiquidityTokenProgram != freshTarget.Position.LiquidityTokenProgram || accounts[4].Owner != freshSource.Position.LiquidityTokenProgram {
+	if freshSource.Position.LiquidityTokenProgram != freshTarget.Position.LiquidityTokenProgram || accounts[4] == nil || accounts[4].Owner.String() != freshSource.Position.LiquidityTokenProgram {
 		return f, errors.New("same-mint reserve token programs differ from vault custody")
 	}
 	if err := validateVaultTokenAccount(accounts[4], lease.LiquidityMint, lease.VaultPubkey); err != nil {
 		return f, err
 	}
-	if accounts[5].Owner != SquadsProgram {
+	if accounts[5] == nil || accounts[5].Owner.String() != SquadsProgram {
 		return f, errors.New("fresh policy account owner mismatch")
 	}
 	f.routePolicy = accounts[5].Data
-	if lease.SetupPolicyAccount != "" {
+	if lease.SetupPolicyAccount != "" && accounts[7] != nil {
 		f.setupPolicy = accounts[7].Data
 	}
 	missingFarmUser := []bool{false, false}
 	for i, position := range []decodedRoutePosition{freshSource, freshTarget} {
 		if position.FarmUser != "" {
-			missingFarmUser[i] = absent(accounts[farmUsers])
+			missingFarmUser[i] = accounts[farmUsers] == nil
 			farmUsers++
 		}
 	}
@@ -635,7 +639,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	// least this exact floor, and its in-transaction refresh only accrues, so
 	// the deposit never consumes pre-existing idle custody. The estimate must
 	// still be backed: a stale high one means the plan no longer holds.
-	redeemable, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: accounts[0].Address, Owner: accounts[0].Owner, Lamports: accounts[0].Lamports, Data: accounts[0].Data, Executable: accounts[0].Executable}, freshSource.Position.Market, lease.LiquidityMint, sourceCollateral)
+	redeemable, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: accounts[0].Key.String(), Owner: accounts[0].Owner.String(), Lamports: accounts[0].Lamports, Data: accounts[0].Data, Executable: accounts[0].Executable}, freshSource.Position.Market, lease.LiquidityMint, sourceCollateral)
 	if err != nil {
 		return f, fmt.Errorf("fresh collateral backing: %w", err)
 	}
@@ -644,11 +648,15 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	}
 	var topUp uint64
 	if targetMissing {
-		rent, err := r.rpc.MinimumBalanceForRentExemption(ctx, obligationLength)
+		rent, err := r.rpc.RentExempt(ctx, obligationLength)
 		if err != nil {
 			return f, err
 		}
-		if topUp, err = vaultRentTopUp(rent, accounts[6].Lamports); err != nil {
+		vaultLamports := uint64(0)
+		if accounts[6] != nil {
+			vaultLamports = accounts[6].Lamports
+		}
+		if topUp, err = vaultRentTopUp(rent, vaultLamports); err != nil {
 			return f, err
 		}
 	}
@@ -662,10 +670,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 // obligationLength is the KLend Obligation account size, discriminator included.
 const obligationLength = 3344
 
-// absent reports an account the RPC returned as null.
-func absent(a Account) bool { return a.Owner == "" && a.Lamports == 0 }
-
-func decodeRouteReserve(account Account, vault string) (decodedRoutePosition, error) {
+func decodeRouteReserve(account *chain.Account, vault string) (decodedRoutePosition, error) {
 	position, err := DecodeReserveIdentity(account)
 	if err != nil {
 		return decodedRoutePosition{}, err
@@ -679,12 +684,15 @@ func decodeRouteReserve(account Account, vault string) (decodedRoutePosition, er
 // DecodeReserveIdentity reads a KLend reserve's account identities: market,
 // mints, supplies, token program, oracles and collateral farm (Rust
 // decode_kamino_reserve_summary). Vault-derived fields stay empty.
-func DecodeReserveIdentity(account Account) (KaminoPositionAccounts, error) {
-	if account.Owner != KLendProgram || len(account.Data) != reserveLength || !bytes.Equal(account.Data[:8], reserveDiscriminator[:]) {
-		return KaminoPositionAccounts{}, fmt.Errorf("reserve %s has invalid owner or data", account.Address)
+func DecodeReserveIdentity(account *chain.Account) (KaminoPositionAccounts, error) {
+	if account == nil {
+		return KaminoPositionAccounts{}, errors.New("reserve is absent")
+	}
+	if account.Owner.String() != KLendProgram || len(account.Data) != reserveLength || !bytes.Equal(account.Data[:8], reserveDiscriminator[:]) {
+		return KaminoPositionAccounts{}, fmt.Errorf("reserve %s has invalid owner or data", account.Key)
 	}
 	key := func(offset int) string { return encodeBase58(account.Data[offset : offset+32]) }
-	position := KaminoPositionAccounts{Reserve: account.Address, Market: key(32), LiquidityMint: key(128), CollateralMint: key(2560), LiquiditySupply: key(160), CollateralSupply: key(2600), LiquidityTokenProgram: key(408), PythOracle: key(5224), SwitchboardPriceOracle: key(5160), SwitchboardTWAPOracle: key(5192), ScopePrices: key(5112), ReserveFarmState: key(64)}
+	position := KaminoPositionAccounts{Reserve: account.Key.String(), Market: key(32), LiquidityMint: key(128), CollateralMint: key(2560), LiquiditySupply: key(160), CollateralSupply: key(2600), LiquidityTokenProgram: key(408), PythOracle: key(5224), SwitchboardPriceOracle: key(5160), SwitchboardTWAPOracle: key(5192), ScopePrices: key(5112), ReserveFarmState: key(64)}
 	for _, field := range []*string{&position.PythOracle, &position.SwitchboardPriceOracle, &position.SwitchboardTWAPOracle, &position.ScopePrices, &position.ReserveFarmState} {
 		if *field == "11111111111111111111111111111111" {
 			*field = ""
@@ -739,14 +747,17 @@ func DeriveVaultReserveAccounts(position KaminoPositionAccounts, vault string) (
 	return position, nil
 }
 
-func decodeObligation(account Account, expectedMarket, expectedOwner, expectedDeposit string, position *KaminoPositionAccounts) (uint64, error) {
+func decodeObligation(account *chain.Account, expectedMarket, expectedOwner, expectedDeposit string, position *KaminoPositionAccounts) (uint64, error) {
 	obligationDiscriminator := [8]byte{168, 206, 141, 106, 88, 76, 172, 167}
-	if account.Owner != KLendProgram || len(account.Data) != obligationLength || !bytes.Equal(account.Data[:8], obligationDiscriminator[:]) {
-		return 0, fmt.Errorf("obligation %s has invalid owner or data", account.Address)
+	if account == nil {
+		return 0, errors.New("obligation is absent")
+	}
+	if account.Owner.String() != KLendProgram || len(account.Data) != obligationLength || !bytes.Equal(account.Data[:8], obligationDiscriminator[:]) {
+		return 0, fmt.Errorf("obligation %s has invalid owner or data", account.Key)
 	}
 	key := func(offset int) string { return encodeBase58(account.Data[offset : offset+32]) }
 	if key(32) != expectedMarket || key(64) != expectedOwner {
-		return 0, fmt.Errorf("obligation %s market or owner mismatch", account.Address)
+		return 0, fmt.Errorf("obligation %s market or owner mismatch", account.Key)
 	}
 	var expectedAmount uint64
 	for i := 0; i < 8; i++ {
@@ -771,8 +782,8 @@ func decodeObligation(account Account, expectedMarket, expectedOwner, expectedDe
 	return expectedAmount, nil
 }
 
-func validateVaultTokenAccount(account Account, expectedMint, expectedOwner string) error {
-	if account.Executable || account.Lamports == 0 {
+func validateVaultTokenAccount(account *chain.Account, expectedMint, expectedOwner string) error {
+	if account == nil || account.Executable || account.Lamports == 0 {
 		return errors.New("vault token account is not funded token custody")
 	}
 	return validateStableAccount(account, expectedMint, expectedOwner)
@@ -815,32 +826,32 @@ func (r *Revalidator) verifyRouteLookupTables(ctx context.Context, tables []Look
 		for i := start; i < end; i++ {
 			addresses[i-start] = tables[i].Address
 		}
-		read := r.rpc.ConfirmedAccounts
+		commitment := rpc.CommitmentConfirmed
 		if finalized {
-			read = r.rpc.FinalizedAccounts
+			commitment = rpc.CommitmentFinalized
 		}
-		observedSlot, accounts, err := read(ctx, addresses, minimumSlot)
+		observedSlot, accounts, err := ReadAccounts(ctx, r.rpc, addresses, commitment, minimumSlot)
 		if err != nil {
 			return nil, err
 		}
 		for offset, account := range accounts {
 			table := tables[start+offset]
-			if account.Address != table.Address || account.Executable || account.Lamports == 0 || account.Owner != altProgram || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) {
-				return nil, fmt.Errorf("lookup table %s has invalid or deactivated chain data", account.Address)
+			if account == nil || account.Executable || account.Lamports == 0 || account.Owner.String() != altProgram || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) {
+				return nil, fmt.Errorf("lookup table %s has invalid or deactivated chain data", table.Address)
 			}
 			if observedSlot <= 0 || binary.LittleEndian.Uint64(account.Data[12:20]) >= uint64(observedSlot) {
-				return nil, fmt.Errorf("lookup table %s is not warm at observed slot", account.Address)
+				return nil, fmt.Errorf("lookup table %s is not warm at observed slot", table.Address)
 			}
-			chain := make([]string, 0, (len(account.Data)-56)/32)
+			members := make([]string, 0, (len(account.Data)-56)/32)
 			for offset := 56; offset < len(account.Data); offset += 32 {
-				chain = append(chain, encodeBase58(account.Data[offset:offset+32]))
+				members = append(members, encodeBase58(account.Data[offset:offset+32]))
 			}
-			if len(chain) != len(table.Addresses) {
-				return nil, fmt.Errorf("lookup table %s database/chain length mismatch", account.Address)
+			if len(members) != len(table.Addresses) {
+				return nil, fmt.Errorf("lookup table %s database/chain length mismatch", table.Address)
 			}
-			for j := range chain {
-				if chain[j] != table.Addresses[j] {
-					return nil, fmt.Errorf("lookup table %s database/chain member mismatch", account.Address)
+			for j := range members {
+				if members[j] != table.Addresses[j] {
+					return nil, fmt.Errorf("lookup table %s database/chain member mismatch", table.Address)
 				}
 			}
 		}

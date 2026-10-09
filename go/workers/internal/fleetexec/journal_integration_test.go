@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,6 +21,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/mr-tron/base58"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // The integration suite runs only against the explicitly provisioned
@@ -486,14 +486,11 @@ func (c *countingChain) SignatureState(context.Context, string) (chain.Signature
 	return chain.SignatureState{ContextSlot: 650}, nil
 }
 
+// fakeStatus is a cluster whose finalized history has no receipt yet.
 type fakeStatus struct{}
 
-func (f *fakeStatus) SignatureStatus(ctx context.Context, signature string) (SignatureStatus, error) {
-	return SignatureStatus{}, nil
-}
-
-func (f *fakeStatus) FinalizedTransaction(ctx context.Context, signature string) (*TransactionReceipt, error) {
-	return nil, nil
+func (f *fakeStatus) Receipt(context.Context, sdk.Signature, rpc.CommitmentType) (chain.Receipt, error) {
+	return chain.Receipt{}, chain.ErrNotFound
 }
 
 func TestStaleOwnerCannotMutate(t *testing.T) {
@@ -615,7 +612,7 @@ func TestReceiptMismatchRetainsCustody(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET submission_state='reconciliation_pending',confirmed_slot=700 WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	status := &finalizedStatus{receipt: &TransactionReceipt{Slot: 700, Signature: wire.TransactionSignature, MessageB64: base64.StdEncoding.EncodeToString([]byte("different-message")), accountAddresses: []string{"payer", "source", "target"}}}
+	status := &finalizedStatus{receipt: chain.Receipt{Slot: 700, Wire: []byte("different-wire")}}
 	worker, err := NewWorker(Config{Cluster: baseline.Cluster, Owner: "owner-reconcile", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second, Facts: testFacts()}, store, &countingChain{}, status, DelegateSigner{})
 	if err != nil {
 		t.Fatal(err)
@@ -637,15 +634,12 @@ func TestReceiptMismatchRetainsCustody(t *testing.T) {
 	}
 }
 
+// finalizedStatus is a cluster whose finalized history holds receipt.
 type finalizedStatus struct {
-	receipt *TransactionReceipt
+	receipt chain.Receipt
 }
 
-func (f *finalizedStatus) SignatureStatus(ctx context.Context, signature string) (SignatureStatus, error) {
-	return SignatureStatus{Found: true, Slot: 700, Confirmed: true, BlockHeight: 4_100}, nil
-}
-
-func (f *finalizedStatus) FinalizedTransaction(ctx context.Context, signature string) (*TransactionReceipt, error) {
+func (f *finalizedStatus) Receipt(context.Context, sdk.Signature, rpc.CommitmentType) (chain.Receipt, error) {
 	return f.receipt, nil
 }
 

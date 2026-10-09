@@ -50,15 +50,15 @@ type Worker struct {
 	config   Config
 	store    *Store
 	chain    chain.LandChain
-	status   StatusClient
+	receipts receiptReader
 	signer   DelegateSigner
 	recovery *sameMintRecovery
 	// balances reads a fee-only shard's balance right before admission.
-	balances confirmedAccountReader
+	balances fleet.AccountReader
 	// voltr is the Backyard Voltr route; the delegate signs it only when it
 	// is the route's guardian (Rust leaves the route dark otherwise).
 	voltr         *fleet.VoltrRoute
-	voltrRPC      *fleet.RPCClient
+	voltrChain    *chain.Client
 	voltrGuardian bool
 	fresh         *fleet.Revalidator
 	// landing counts claimed rows still being landed or reconciled; at most
@@ -69,26 +69,25 @@ type Worker struct {
 }
 
 // NewWorker composes the executor from its concrete dependencies.
-func NewWorker(config Config, store *Store, chain chain.LandChain, status StatusClient, signer DelegateSigner) (*Worker, error) {
+func NewWorker(config Config, store *Store, land chain.LandChain, receipts receiptReader, signer DelegateSigner) (*Worker, error) {
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
-	if store == nil || chain == nil || status == nil {
+	if store == nil || land == nil || receipts == nil {
 		return nil, errors.New("missing fleet executor dependency")
 	}
-	worker := &Worker{config: config, store: store, chain: chain, status: status, signer: signer}
-	if adapter, ok := status.(*RPCAdapter); ok {
+	worker := &Worker{config: config, store: store, chain: land, receipts: receipts, signer: signer}
+	if client, ok := receipts.(*chain.Client); ok {
 		if config.SlotDuration <= 0 || config.SlotDuration > 10*time.Second {
 			return nil, errors.New("real fleet reconciliation requires explicit slot duration")
 		}
-		accounts := fleet.NewRPCClient(adapter.url)
-		worker.recovery = &sameMintRecovery{store: store, accounts: accounts, slotDuration: config.SlotDuration}
-		worker.balances = accounts
+		worker.recovery = &sameMintRecovery{store: store, accounts: client, slotDuration: config.SlotDuration}
+		worker.balances = client
 		route, err := fleet.LoadVoltrRoute()
 		if err != nil {
 			return nil, err
 		}
-		worker.voltr, worker.voltrRPC = &route, accounts
+		worker.voltr, worker.voltrChain = &route, client
 		worker.voltrGuardian = len(signer.FeePayer) == ed25519.PrivateKeySize && base58.Encode(signer.FeePayer[32:]) == route.Guardian
 	}
 	return worker, nil
@@ -282,12 +281,12 @@ func (w *Worker) reconcileFinalized(ctx context.Context, lease SubmissionLease) 
 	if record.ConfirmedSlot == nil {
 		return fmt.Errorf("reconciliation submission %d has no confirmed slot", record.ID)
 	}
-	receipt, err := w.status.FinalizedTransaction(ctx, record.Signature)
+	receipt, err := finalizedReceipt(ctx, w.receipts, record.Signature)
+	if errors.Is(err, chain.ErrNotFound) {
+		return nil // Finality not reached; the durable backoff continues.
+	}
 	if err != nil {
 		return fmt.Errorf("finalized transaction: %w", err)
-	}
-	if receipt == nil {
-		return nil // Finality not reached; the durable backoff continues.
 	}
 	if err := VerifyReceiptIdentity(receipt, record, *record.ConfirmedSlot); err != nil {
 		return fmt.Errorf("receipt identity: %w", err)

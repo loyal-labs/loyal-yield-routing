@@ -11,11 +11,15 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	solana "github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Real RPC serialization/decoding and reserve decoding, with controlled complete
 // batches. Record every request so retries cannot silently lower the slot fence.
-func observationTestWorker(t *testing.T, batch func(int) (int64, []Account)) (*Worker, []string, map[string]ReserveIdentity, *[]int64) {
+func observationTestWorker(t *testing.T, batch func(int) (int64, []chain.Account)) (*Worker, []string, map[string]ReserveIdentity, *[]int64) {
 	t.Helper()
 	a := ReserveIdentity{Address: testIdentity(3), Market: testIdentity(40), Mint: USDCMint}
 	b := ReserveIdentity{Address: testIdentity(4), Market: testIdentity(40), Mint: USDCMint}
@@ -51,18 +55,18 @@ func observationTestWorker(t *testing.T, batch func(int) (int64, []Account)) (*W
 		json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"context": map[string]any{"slot": slot}, "value": values}})
 	}))
 	t.Cleanup(server.Close)
-	return &Worker{config: Config{SlotDuration: 400 * time.Millisecond}, rpc: NewRPCClient(server.URL)}, addresses, identities, &floors
+	return &Worker{config: Config{SlotDuration: 400 * time.Millisecond}, rpc: testChain(t, server.URL)}, addresses, identities, &floors
 }
 
-func observationAccounts() []Account {
-	return []Account{
+func observationAccounts() []chain.Account {
+	return []chain.Account{
 		reserveFixture(ReserveIdentity{Address: testIdentity(3), Market: testIdentity(40), Mint: USDCMint}, 50_000_000_000_000, 50_000_000_000_000),
 		reserveFixture(ReserveIdentity{Address: testIdentity(4), Market: testIdentity(40), Mint: USDCMint}, 50_000_000_000_000, 50_000_000_000_000),
 	}
 }
 
 func TestReserveObservationReplacesWholeInconsistentBatch(t *testing.T) {
-	w, addresses, identities, floors := observationTestWorker(t, func(attempt int) (int64, []Account) {
+	w, addresses, identities, floors := observationTestWorker(t, func(attempt int) (int64, []chain.Account) {
 		accounts := observationAccounts()
 		if attempt == 1 {
 			binary.LittleEndian.PutUint64(accounts[1].Data[16:24], 1002)
@@ -94,7 +98,7 @@ func TestReserveObservationReplacesWholeInconsistentBatch(t *testing.T) {
 }
 
 func TestReserveObservationPersistentMismatchFailsClosed(t *testing.T) {
-	w, addresses, identities, floors := observationTestWorker(t, func(attempt int) (int64, []Account) {
+	w, addresses, identities, floors := observationTestWorker(t, func(attempt int) (int64, []chain.Account) {
 		a := observationAccounts()
 		slot := int64(999 + attempt)
 		binary.LittleEndian.PutUint64(a[0].Data[16:24], uint64(slot+1))
@@ -116,12 +120,12 @@ func TestReserveObservationPersistentMismatchFailsClosed(t *testing.T) {
 func TestReserveObservationDoesNotRetryOtherInvalidEvidence(t *testing.T) {
 	for _, failure := range []string{"identity", "layout", "obsolete", "below_minimum_slot"} {
 		t.Run(failure, func(t *testing.T) {
-			w, addresses, identities, floors := observationTestWorker(t, func(int) (int64, []Account) {
+			w, addresses, identities, floors := observationTestWorker(t, func(int) (int64, []chain.Account) {
 				a := observationAccounts()
 				binary.LittleEndian.PutUint64(a[0].Data[16:24], 1002)
 				switch failure {
 				case "identity":
-					a[1].Owner = "wrong-owner"
+					a[1].Owner = solana.SystemProgramID
 				case "layout":
 					a[1].Data = a[1].Data[:100]
 				case "obsolete":
@@ -140,7 +144,7 @@ func TestReserveObservationDoesNotRetryOtherInvalidEvidence(t *testing.T) {
 }
 
 func TestReserveObservationCancellationStopsBackoff(t *testing.T) {
-	w, addresses, identities, floors := observationTestWorker(t, func(int) (int64, []Account) {
+	w, addresses, identities, floors := observationTestWorker(t, func(int) (int64, []chain.Account) {
 		a := observationAccounts()
 		binary.LittleEndian.PutUint64(a[0].Data[16:24], 1001)
 		return 1000, a

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
@@ -55,22 +56,22 @@ func crossMintFallbackFixture(t *testing.T, primaryEligible bool) (*CrossMintCon
 	binary.LittleEndian.PutUint64(account.Data[224:232], 1000000000000)
 	bank.accounts[fallback] = account
 	primary := account
-	primary.Address = m.ActiveTargetReserve
+	primary.Key = sdk.MustPublicKeyFromBase58(m.ActiveTargetReserve)
 	primary.Data = append([]byte(nil), account.Data...)
 	if !primaryEligible {
 		primary.Data[24] = 1
 	}
-	bank.accounts[primary.Address] = primary
+	bank.accounts[m.ActiveTargetReserve] = primary
 	var rows []fleet.MarketEpochReserve
-	for i, a := range []fleet.Account{primary, account} {
-		market, _, _, _, err := reservePostIdentity(a, m.TargetMint, m.VaultPubkey)
+	for i, a := range []chain.Account{primary, account} {
+		market, _, _, _, err := reservePostIdentity(&a, m.TargetMint, m.VaultPubkey)
 		if err != nil {
 			t.Fatal(err)
 		}
 		hash := sha256.Sum256(a.Data)
-		rows = append(rows, fleet.MarketEpochReserve{Reserve: a.Address, Market: &market, LiquidityMint: m.TargetMint, SupplyAPYBPS: int64(100 + i*100), TargetEligible: i == 1 || primaryEligible, Slot: 1016, StateSlot: 1016, AccountDataHash: hex.EncodeToString(hash[:])})
+		rows = append(rows, fleet.MarketEpochReserve{Reserve: a.Key.String(), Market: &market, LiquidityMint: m.TargetMint, SupplyAPYBPS: int64(100 + i*100), TargetEligible: i == 1 || primaryEligible, Slot: 1016, StateSlot: 1016, AccountDataHash: hex.EncodeToString(hash[:])})
 	}
-	c := &CrossMintController{store: r.store, factory: &fallbackFactory{err: ErrCrossMintTargetUnavailable}, cluster: m.Cluster, owner: r.config.Owner, ttl: time.Minute, accounts: bank, history: addressHistory{pages: map[string][]finalizedAddressSignature{ata: {{Signature: l.Submission.Signature, Slot: 1015, ConfirmationStatus: "finalized"}}}}}
+	c := &CrossMintController{store: r.store, factory: &fallbackFactory{err: ErrCrossMintTargetUnavailable}, cluster: m.Cluster, owner: r.config.Owner, ttl: time.Minute, accounts: bank, history: addressHistory{pages: map[string][]chain.Signed{ata: {{Signature: sdk.MustSignatureFromBase58(l.Submission.Signature), Slot: 1015}}}}}
 	c.SetMarketEpochSource(&fallbackEpochSource{epoch: fallbackEpochFixture(t, time.Now().UTC(), rows)})
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.cross_mint_movement_controls SET start_new_movements=false,generation=generation+1 WHERE cluster=$1`, m.Cluster); err != nil {
 		t.Fatal(err)
@@ -121,7 +122,7 @@ func TestCrossMintFallbackTransientPreparationAndChangedBankRetainOriginalCapaci
 			case "reserve_hash":
 				bank := c.accounts.(fixtureAccounts)
 				for k, a := range bank.accounts {
-					if k != m.ActiveTargetReserve && a.Owner == fleet.KaminoProgram && len(a.Data) == 8624 {
+					if k != m.ActiveTargetReserve && a.Owner.String() == fleet.KaminoProgram && len(a.Data) == 8624 {
 						a.Data = append([]byte(nil), a.Data...)
 						a.Data[224] ^= 1
 						bank.accounts[k] = a
@@ -130,7 +131,7 @@ func TestCrossMintFallbackTransientPreparationAndChangedBankRetainOriginalCapaci
 				c.accounts = bank
 			case "external_custody_history":
 				h := c.history.(addressHistory)
-				h.pages[m.CustodyAccount] = append([]finalizedAddressSignature{{Signature: "external", Slot: 1016, ConfirmationStatus: "finalized"}}, h.pages[m.CustodyAccount]...)
+				h.pages[m.CustodyAccount] = append([]chain.Signed{signed("external", 1016)}, h.pages[m.CustodyAccount]...)
 				c.history = h
 			}
 			if _, worked, err := c.ContinueOne(ctx); !worked || err == nil {

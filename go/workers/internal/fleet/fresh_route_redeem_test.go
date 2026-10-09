@@ -66,7 +66,7 @@ func TestKLendRedeemsAtLeastTheDepositedFloor(t *testing.T) {
 		if total.Sign() <= 0 {
 			continue
 		}
-		deposit, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: account.Address, Owner: account.Owner, Lamports: account.Lamports, Data: account.Data}, identity.Market, USDCMint, collateral)
+		deposit, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: account.Key.String(), Owner: account.Owner.String(), Lamports: account.Lamports, Data: account.Data}, identity.Market, USDCMint, collateral)
 		if err != nil {
 			t.Fatal(err)
 		}

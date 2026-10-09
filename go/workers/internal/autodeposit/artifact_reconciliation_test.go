@@ -272,7 +272,7 @@ type artifactHistoryFake struct {
 	limit    int
 }
 
-func (h *artifactHistoryFake) History(_ context.Context, address solana.PublicKey, limit int, before solana.Signature) ([]chain.Signed, error) {
+func (h *artifactHistoryFake) History(_ context.Context, address solana.PublicKey, limit int, before solana.Signature, _ rpc.CommitmentType, _ uint64) ([]chain.Signed, error) {
 	h.address, h.limit = address, limit
 	h.before = append(h.before, before)
 	return h.pages[before], nil

@@ -10,6 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
@@ -20,7 +23,7 @@ type MarketEpochSource interface {
 type Worker struct {
 	config            Config
 	store             *Store
-	rpc               *RPCClient
+	rpc               *chain.Client
 	marketEvidence    MarketEpochSource
 	revalidator       *Revalidator
 	lastConfirmedSlot int64
@@ -29,14 +32,14 @@ type Worker struct {
 	nextVoltr         time.Time
 }
 
-func NewWorker(config Config, store *Store, rpc *RPCClient, facts *engine.Facts) (*Worker, error) {
+func NewWorker(config Config, store *Store, client *chain.Client, facts *engine.Facts) (*Worker, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if store == nil || rpc == nil || facts == nil {
+	if store == nil || client == nil || facts == nil {
 		return nil, fmt.Errorf("store, RPC client and facts are required")
 	}
-	w := &Worker{config: config, store: store, rpc: rpc, facts: facts}
+	w := &Worker{config: config, store: store, rpc: client, facts: facts}
 	if config.VoltrVaultID > 0 {
 		route, err := LoadVoltrRoute()
 		if err != nil {
@@ -239,10 +242,11 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		}
 		identities[r.Reserve] = ReserveIdentity{Address: r.Reserve, Market: *r.Market, Mint: r.LiquidityMint}
 	}
-	minimumSlot, err := w.rpc.ConfirmedSlot(ctx)
+	confirmed, err := w.rpc.Slot(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return fmt.Errorf("observe confirmed slot: %w", err)
 	}
+	minimumSlot := int64(confirmed)
 	if w.lastConfirmedSlot > minimumSlot {
 		minimumSlot = w.lastConfirmedSlot
 	}

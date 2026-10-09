@@ -2,38 +2,28 @@ package fleetexec
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"errors"
 	"math"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
-type finalizedAccountReader interface {
-	FinalizedAccounts(context.Context, []string, int64) (int64, []fleet.Account, error)
-	// Post-landing proofs read obligations with this: a full withdrawal makes
-	// KLend close the obligation, which proves zero collateral (Rust parity:
-	// decode_kamino_obligation_summary(None) is exists=false, amount 0).
-	FinalizedAccountsAllowingAbsent(context.Context, []string, int64) (int64, []fleet.Account, error)
-}
-
-type confirmedAccountReader interface {
-	ConfirmedAccounts(context.Context, []string, int64) (int64, []fleet.Account, error)
-}
-
 // sameMintRecovery reconciles a landed same-mint route against finalized
-// account state.
+// account state. A full withdrawal makes KLend close the obligation, so an
+// absent obligation proves zero collateral (Rust parity:
+// decode_kamino_obligation_summary(None) is exists=false, amount 0).
 type sameMintRecovery struct {
 	slotDuration time.Duration
 	store        *Store
-	accounts     finalizedAccountReader
+	accounts     fleet.AccountReader
 }
 
-func obligationCollateral(a fleet.Account, market, owner, reserve string) (int64, error) {
-	if a.Owner != fleet.KaminoProgram || a.Executable || a.Lamports == 0 || len(a.Data) != 3344 || !bytes.Equal(a.Data[:8], []byte{168, 206, 141, 106, 88, 76, 172, 167}) || sdk.PublicKeyFromBytes(a.Data[32:64]).String() != market || sdk.PublicKeyFromBytes(a.Data[64:96]).String() != owner {
+func obligationCollateral(a *chain.Account, market, owner, reserve string) (int64, error) {
+	if a == nil || a.Owner.String() != fleet.KaminoProgram || a.Executable || a.Lamports == 0 || len(a.Data) != 3344 || !bytes.Equal(a.Data[:8], []byte{168, 206, 141, 106, 88, 76, 172, 167}) || sdk.PublicKeyFromBytes(a.Data[32:64]).String() != market || sdk.PublicKeyFromBytes(a.Data[64:96]).String() != owner {
 		return 0, errors.New("obligation envelope or owner/market changed")
 	}
 	seen := map[string]bool{}

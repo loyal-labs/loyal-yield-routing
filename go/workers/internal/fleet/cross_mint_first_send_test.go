@@ -155,9 +155,9 @@ func TestRealKLendCrossMintFirstSendRechecksExactOldWithdrawal(t *testing.T) {
 		address, bump, _ := derivePolicyAccount(plan.Bindings.Settings, seed)
 		binary.LittleEndian.PutUint64(data[40:48], seed)
 		data[48] = bump
-		bank.accounts[address] = Account{Address: address, Owner: SquadsProgram, Lamports: 1_000_000, Data: data}
+		bank.accounts[address] = fixtureAccount(address, SquadsProgram, 1_000_000, data)
 	}
-	bank.accounts[plan.Bindings.Swap.PolicyAccount] = Account{Address: plan.Bindings.Swap.PolicyAccount, Owner: SquadsProgram, Lamports: 1_000_000, Data: connectedSwapPolicy(t, plan.Bindings, 3)}
+	bank.accounts[plan.Bindings.Swap.PolicyAccount] = fixtureAccount(plan.Bindings.Swap.PolicyAccount, SquadsProgram, 1_000_000, connectedSwapPolicy(t, plan.Bindings, 3))
 	var cert CrossMintPreflightCertificate
 	if err := json.Unmarshal(q.Movement.PreflightCertification, &cert); err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestRealKLendCrossMintFirstSendRechecksExactOldWithdrawal(t *testing.T) {
 	for i, address := range addresses {
 		fixtureKey(t, data, 56+32*i, address)
 	}
-	bank.accounts[table.Address] = Account{Address: table.Address, Owner: altProgram, Lamports: 1_000_000, Data: data}
+	bank.accounts[table.Address] = fixtureAccount(table.Address, altProgram, 1_000_000, data)
 	prep, _, err := compileV0Transaction(signer, testPubkey(245), append(computeBudgetInstructions(200_000, 0), instructions...), []LookupTable{table}, 5000, 200_000)
 	if err != nil {
 		t.Fatal(err)
@@ -211,8 +211,8 @@ func TestRealKLendCrossMintFirstSendRechecksExactOldWithdrawal(t *testing.T) {
 				values = append(values, map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": a.Executable, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}})
 			}
 			return map[string]any{"context": map[string]any{"slot": bank.slot}, "value": values}
-		case "getBlockHeight":
-			return 1900
+		case "getEpochInfo":
+			return map[string]any{"absoluteSlot": bank.slot, "blockHeight": 1900}
 		case "simulateTransaction":
 			var encoded string
 			var options struct {
@@ -246,7 +246,7 @@ func TestRealKLendCrossMintFirstSendRechecksExactOldWithdrawal(t *testing.T) {
 	// A fresh policy envelope change must block the exact stored wire before
 	// simulation. No replacement policy/quote/message is synthesized.
 	a := bank.accounts[policy]
-	a.Owner = "11111111111111111111111111111111"
+	a.Owner = solana.SystemProgramID
 	bank.accounts[policy] = a
 	if err := r.ValidateCrossMintFirstSend(ctx, input); err == nil || simulations != 1 {
 		t.Fatalf("changed current policy reached old-wire simulation: count=%d err=%v", simulations, err)

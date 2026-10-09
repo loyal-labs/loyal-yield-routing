@@ -184,7 +184,7 @@ func TestHistoryIsBoundedConfirmedAndCursored(t *testing.T) {
 			map[string]any{"signature": failed.String(), "slot": 11, "err": map[string]any{"InstructionError": []any{0, "Custom"}}},
 		})
 	})
-	history, err := client.History(context.Background(), address, 2, before)
+	history, err := client.History(context.Background(), address, 2, before, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestHistoryIsBoundedConfirmedAndCursored(t *testing.T) {
 	if len(history) != 2 || history[0] != (Signed{Signature: landed, Slot: 12}) || history[1] != (Signed{Signature: failed, Slot: 11, Failed: true}) {
 		t.Fatalf("history %+v", history)
 	}
-	if _, err := client.History(context.Background(), address, 1, solana.Signature{}); err == nil {
+	if _, err := client.History(context.Background(), address, 1, solana.Signature{}, rpc.CommitmentConfirmed, 0); err == nil {
 		t.Fatal("a page longer than the limit was accepted")
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const (
@@ -32,19 +34,19 @@ func (e *ReserveSlotOrderMismatch) Error() string {
 
 type curvePoint struct{ utilization, rate float64 }
 
-func DecodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
+func DecodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
 	return decodeKaminoReserve(account, identity, contextSlot, slotDuration)
 }
 
 // DecodeKaminoSourceReserve names the source-only call site. Structurally valid
 // stale economics are decoded for both roles; Plan excludes them as targets,
 // while the route revalidator refreshes a stale source before withdraw.
-func DecodeKaminoSourceReserve(account Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
+func DecodeKaminoSourceReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
 	return decodeKaminoReserve(account, identity, contextSlot, slotDuration)
 }
 
-func decodeKaminoReserve(account Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
-	if account.Address != identity.Address || account.Owner != KaminoProgram || account.Executable || account.Lamports == 0 ||
+func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
+	if account == nil || account.Key.String() != identity.Address || account.Owner.String() != KaminoProgram || account.Executable || account.Lamports == 0 ||
 		len(account.Data) != reserveLength || !bytes.Equal(account.Data[:8], reserveDiscriminator[:]) {
 		return ReserveState{}, fmt.Errorf("reserve %s envelope or layout drifted", identity.Address)
 	}

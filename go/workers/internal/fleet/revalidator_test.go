@@ -184,7 +184,7 @@ func TestVerifyLookupTablesChunksFreshRPCAtSolanaLimit(t *testing.T) {
 		member := testIdentity(byte(index%100 + call))
 		tables[index] = LookupTable{Address: testIdentity(byte(index + 1)), Addresses: []string{member}}
 	}
-	revalidator := &Revalidator{rpc: NewRPCClient(server.URL)}
+	revalidator := &Revalidator{rpc: testChain(t, server.URL)}
 	verified, err := revalidator.verifyLookupTables(context.Background(), tables, 499)
 	if err != nil {
 		t.Fatal(err)

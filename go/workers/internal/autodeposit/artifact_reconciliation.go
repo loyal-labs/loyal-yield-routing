@@ -39,7 +39,7 @@ type ArtifactTarget struct {
 // ArtifactHistory is the chain reads a creator proof needs; *chain.Client is
 // the production one.
 type ArtifactHistory interface {
-	History(ctx context.Context, address solana.PublicKey, limit int, before solana.Signature) ([]chain.Signed, error)
+	History(ctx context.Context, address solana.PublicKey, limit int, before solana.Signature, commitment rpc.CommitmentType, minContextSlot uint64) ([]chain.Signed, error)
 	Receipt(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) (chain.Receipt, error)
 }
 
@@ -117,7 +117,7 @@ func (r *ArtifactProofReader) FindCreationProof(ctx context.Context, target Arti
 		return VerifiedArtifactCreationProof{}, fmt.Errorf("artifact account: %w", err)
 	}
 	for page := 0; page < maximumPages; page++ {
-		entries, err := r.History.History(ctx, address, maximumHistory, before)
+		entries, err := r.History.History(ctx, address, maximumHistory, before, rpc.CommitmentConfirmed, 0)
 		if err != nil {
 			return VerifiedArtifactCreationProof{}, err
 		}

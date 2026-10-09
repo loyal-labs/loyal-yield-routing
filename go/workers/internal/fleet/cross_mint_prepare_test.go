@@ -7,33 +7,34 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type crossMintPrepareTransport func(*http.Request) (*http.Response, error)
 
 func (f crossMintPrepareTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func crossMintPrepareRPC(t *testing.T, call func(string, []json.RawMessage) any) *RPCClient {
+func crossMintPrepareRPC(t *testing.T, call func(string, []json.RawMessage) any) *chain.Client {
 	t.Helper()
-	return &RPCClient{url: "http://mock.invalid", client: &http.Client{Transport: crossMintPrepareTransport(func(r *http.Request) (*http.Response, error) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Method string
 			Params []json.RawMessage
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			return nil, err
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
-		body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": call(request.Method, request.Params)})
-		if err != nil {
-			return nil, err
-		}
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{}}, nil
-	})}}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": call(request.Method, request.Params)})
+	}))
+	t.Cleanup(server.Close)
+	return testChain(t, server.URL)
 }
 
 func crossMintPreparationFixture(t *testing.T) (CrossMintPreparationRequest, crossMintPlan, crossMintPreparationBank) {
@@ -57,7 +58,7 @@ func crossMintPreparationFixture(t *testing.T) (CrossMintPreparationRequest, cro
 	fields["redeemable_source_liquidity_amount_raw"] = json.RawMessage(`999`)
 	raw, _ = json.Marshal(fields)
 	m := CrossMintPreparationMovement{DecisionID: 1, OpportunityID: 2, OptimizerEpochID: 3, VaultID: 4, Cluster: "localnet", VaultPubkey: vault, SourceReserve: testPubkey(51), IntendedTargetReserve: testPubkey(61), ActiveTargetReserve: testPubkey(61), SourceMint: USDCMint, TargetMint: USDTMint, PlannedAmountRaw: 999, ExecutionPlan: raw, PreflightCertification: json.RawMessage(`{"kind":"retained-preflight"}`), CustodyMint: USDCMint, CustodyAmountRaw: 999, Phase: "source_reserve"}
-	bank := crossMintPreparationBank{slot: 1000, observedAt: time.Now(), accounts: map[string]Account{}}
+	bank := crossMintPreparationBank{slot: 1000, observedAt: time.Now(), accounts: map[string]chain.Account{}}
 	for i, id := range []ReserveIdentity{{m.SourceReserve, testPubkey(52), USDCMint}, {m.IntendedTargetReserve, testPubkey(62), USDTMint}} {
 		a := reserveFixture(id, 1_000_000_000_000, 1_000_000_000_000)
 		fixtureKey(t, a.Data, 408, tokenProgram)
@@ -65,12 +66,12 @@ func crossMintPreparationFixture(t *testing.T) (CrossMintPreparationRequest, cro
 		fixtureKey(t, a.Data, 160, testPubkey(byte(73+i)))
 		fixtureKey(t, a.Data, 2600, testPubkey(byte(75+i)))
 		binary.LittleEndian.PutUint64(a.Data[2592:2600], 2_000_000_000_000)
-		bank.accounts[a.Address] = a
-		p, err := decodeRouteReserve(a, vault)
+		bank.accounts[id.Address] = a
+		p, err := decodeRouteReserve(&a, vault)
 		if err != nil {
 			t.Fatal(err)
 		}
-		obligation := Account{Address: p.Obligation, Owner: KLendProgram, Lamports: 1_000_000, Data: make([]byte, 3344)}
+		obligation := fixtureAccount(p.Obligation, KLendProgram, 1_000_000, make([]byte, 3344))
 		copy(obligation.Data, []byte{168, 206, 141, 106, 88, 76, 172, 167})
 		fixtureKey(t, obligation.Data, 32, id.Market)
 		fixtureKey(t, obligation.Data, 64, vault)
@@ -78,22 +79,22 @@ func crossMintPreparationFixture(t *testing.T) (CrossMintPreparationRequest, cro
 			fixtureKey(t, obligation.Data, 96, id.Address)
 			binary.LittleEndian.PutUint64(obligation.Data[128:136], 1000)
 		}
-		if _, err := decodeObligation(obligation, id.Market, vault, "", &p.Position); err != nil {
+		if _, err := decodeObligation(&obligation, id.Market, vault, "", &p.Position); err != nil {
 			t.Fatal(err)
 		}
 		bank.accounts[p.Obligation] = obligation
-		mint := Account{Address: id.Mint, Owner: tokenProgram, Lamports: 1_000_000, Data: make([]byte, 82)}
+		mint := fixtureAccount(id.Mint, tokenProgram, 1_000_000, make([]byte, 82))
 		mint.Data[44], mint.Data[45] = 6, 1
 		bank.accounts[id.Mint] = mint
-		ata := Account{Address: p.Position.VaultLiquidityATA, Owner: tokenProgram, Lamports: 1_000_000, Data: make([]byte, 165)}
+		ata := fixtureAccount(p.Position.VaultLiquidityATA, tokenProgram, 1_000_000, make([]byte, 165))
 		fixtureKey(t, ata.Data, 0, id.Mint)
 		fixtureKey(t, ata.Data, 32, vault)
 		ata.Data[108] = 1
-		bank.accounts[ata.Address] = ata
+		bank.accounts[p.Position.VaultLiquidityATA] = ata
 		if i == 0 {
 			bank.source = p
 			bank.sourceCollateral = 1000
-			m.CustodyAccount = ata.Address
+			m.CustodyAccount = p.Position.VaultLiquidityATA
 		} else {
 			bank.target = p
 			bank.active = p
@@ -182,7 +183,7 @@ func TestCrossMintPreparationAggregateIncludesUnattributedSurplus(t *testing.T) 
 	q.Movement.CustodyObservedBalanceRaw, q.Movement.CustodyReconciledSlot = &amount, &slot
 	account := bank.accounts[q.Movement.CustodyAccount]
 	binary.LittleEndian.PutUint64(account.Data[64:72], 1200)
-	bank.accounts[account.Address] = account
+	bank.accounts[q.Movement.CustodyAccount] = account
 	r := &Revalidator{}
 	if err := r.checkCrossMintCustody(q, bank); err != nil {
 		t.Fatal(err)
@@ -224,7 +225,7 @@ func TestCrossMintSourceRecoveryDoesNotReadMissingTargetSetup(t *testing.T) {
 	q.Movement.Phase, q.Movement.CustodyVersion = "source_idle", 1
 	amount, slot := int64(1200), int64(999)
 	q.Movement.CustodyObservedBalanceRaw, q.Movement.CustodyReconciledSlot = &amount, &slot
-	bank.accounts[plan.Bindings.Withdraw.PolicyAccount] = Account{Address: plan.Bindings.Withdraw.PolicyAccount, Owner: SquadsProgram, Lamports: 1, Data: []byte{1}}
+	bank.accounts[plan.Bindings.Withdraw.PolicyAccount] = fixtureAccount(plan.Bindings.Withdraw.PolicyAccount, SquadsProgram, 1, []byte{1})
 	r := &Revalidator{slotDuration: 400 * time.Millisecond, rpc: crossMintPrepareRPC(t, func(method string, params []json.RawMessage) any {
 		if method != "getMultipleAccounts" {
 			t.Fatalf("unexpected method %s", method)
@@ -265,7 +266,7 @@ func TestRealKLendIndependentCrossMintPolicyArms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	makePolicy := func(seed uint64, ixs []RouteInstruction) Account {
+	makePolicy := func(seed uint64, ixs []RouteInstruction) chain.Account {
 		data, err := connectedEarnPolicyData(plan.Bindings.Settings, r.signer, ixs, []KaminoPositionAccounts{bank.source.Position, bank.target.Position})
 		if err != nil {
 			t.Fatal(err)
@@ -276,7 +277,7 @@ func TestRealKLendIndependentCrossMintPolicyArms(t *testing.T) {
 		}
 		binary.LittleEndian.PutUint64(data[40:48], seed)
 		data[48] = bump
-		return Account{Address: name, Owner: SquadsProgram, Lamports: 1_000_000, Data: data}
+		return fixtureAccount(name, SquadsProgram, 1_000_000, data)
 	}
 	bank.accounts[plan.Bindings.Withdraw.PolicyAccount] = makePolicy(1, []RouteInstruction{route.Protected[0], recovery.Protected[0]})
 	bank.accounts[plan.Bindings.Deposit.PolicyAccount] = makePolicy(2, []RouteInstruction{route.Protected[1]})

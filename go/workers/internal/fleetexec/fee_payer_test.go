@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // feeOnlyPrepared compiles a v0 message the way the revalidator does for a
@@ -116,10 +118,10 @@ func TestFreshFeeOnlyRoutePersistsRustSpendReservation(t *testing.T) {
 // shardBalance answers every confirmed balance read with one lamport amount.
 type shardBalance uint64
 
-func (b shardBalance) ConfirmedAccounts(_ context.Context, addresses []string, slot int64) (int64, []fleet.Account, error) {
-	accounts := make([]fleet.Account, len(addresses))
-	for i, address := range addresses {
-		accounts[i] = fleet.Account{Address: address, Lamports: uint64(b)}
+func (b shardBalance) Accounts(_ context.Context, keys []sdk.PublicKey, _ rpc.CommitmentType, slot uint64) (uint64, []*chain.Account, error) {
+	accounts := make([]*chain.Account, len(keys))
+	for i, key := range keys {
+		accounts[i] = &chain.Account{Key: key, Owner: sdk.SystemProgramID, Lamports: uint64(b)}
 	}
 	return slot + 1, accounts, nil
 }
