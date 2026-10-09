@@ -34,9 +34,9 @@ const (
 // proves receipts through; *chain.Client is the production binding.
 type ExecutorChain interface {
 	GenesisHash(context.Context) (solana.Hash, error)
-	Blockhash(context.Context, rpc.CommitmentType) (hash solana.Hash, lastValid, slot uint64, err error)
+	Blockhash(context.Context, rpc.CommitmentType, uint64) (hash solana.Hash, lastValid, slot uint64, err error)
 	Accounts(context.Context, []solana.PublicKey, rpc.CommitmentType, uint64) (uint64, []*chain.Account, error)
-	Fee(context.Context, []byte, rpc.CommitmentType) (uint64, error)
+	Fee(context.Context, []byte, rpc.CommitmentType, uint64) (uint64, error)
 	Simulate(context.Context, []byte, rpc.SimulateTransactionOpts) (chain.Simulated, error)
 	Receipt(context.Context, solana.Signature, rpc.CommitmentType) (chain.Receipt, error)
 }
@@ -144,7 +144,7 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 	if !validPrivateKey(e.Signer) || !validPrivateKey(e.feePayer) {
 		return nil, 0, errors.New("executor lost its signing capability")
 	}
-	blockhash, lastValid, slot, err := e.Chain.Blockhash(ctx, rpc.CommitmentConfirmed)
+	blockhash, lastValid, slot, err := e.Chain.Blockhash(ctx, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return nil, 0, fmt.Errorf("fetch blockhash: %w", err)
 	}
@@ -196,7 +196,7 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 	if err != nil {
 		return nil, 0, err
 	}
-	fee, err := e.Chain.Fee(ctx, message, rpc.CommitmentConfirmed)
+	fee, err := e.Chain.Fee(ctx, message, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return nil, 0, err
 	}

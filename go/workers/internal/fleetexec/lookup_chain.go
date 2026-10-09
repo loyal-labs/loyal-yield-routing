@@ -169,7 +169,7 @@ func lookupFinalizedReceipt(ctx context.Context, c *chain.Client, sig string) (*
 // lookupBlockhash is a finalized blockhash, its expiry height and the bank
 // slot it was read at.
 func lookupBlockhash(ctx context.Context, c *chain.Client) (string, int64, int64, error) {
-	hash, height, slot, err := c.Blockhash(ctx, rpc.CommitmentFinalized)
+	hash, height, slot, err := c.Blockhash(ctx, rpc.CommitmentFinalized, 0)
 	return hash.String(), int64(height), int64(slot), err
 }
 

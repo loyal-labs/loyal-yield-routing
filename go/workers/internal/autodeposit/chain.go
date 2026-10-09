@@ -164,7 +164,7 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 }
 
 func (c *RPCChain) LatestBlockhash(ctx context.Context) (string, int64, error) {
-	hash, lastValid, _, err := c.Blockhash(ctx, rpc.CommitmentConfirmed)
+	hash, lastValid, _, err := c.Blockhash(ctx, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return "", 0, err
 	}
