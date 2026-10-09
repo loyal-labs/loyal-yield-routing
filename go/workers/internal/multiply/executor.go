@@ -281,7 +281,7 @@ func (e *Executor) EnsureExactPolicy(ctx context.Context, topology *EarnMaxTopol
 	if err != nil {
 		return nil, err
 	}
-	data, _, err := e.policyAccount(ctx, policy.Account)
+	data, _, err := e.policyAccount(ctx, policy.Account, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -566,10 +566,10 @@ func (e *Executor) lookupTables(ctx context.Context, keys []solana.PublicKey) (m
 	return tables, nil
 }
 
-// policyAccount reads one Squads policy account at confirmed: nil data when
-// absent, with the slot the read answered at.
-func (e *Executor) policyAccount(ctx context.Context, key solana.PublicKey) ([]byte, uint64, error) {
-	slot, accounts, err := e.Chain.Accounts(ctx, []solana.PublicKey{key}, rpc.CommitmentConfirmed, 0)
+// policyAccount reads one Squads policy account at confirmed, from a node at
+// or past minContextSlot: nil data when absent, with the slot it answered at.
+func (e *Executor) policyAccount(ctx context.Context, key solana.PublicKey, minContextSlot uint64) ([]byte, uint64, error) {
+	slot, accounts, err := e.Chain.Accounts(ctx, []solana.PublicKey{key}, rpc.CommitmentConfirmed, minContextSlot)
 	if err != nil {
 		return nil, 0, err
 	}

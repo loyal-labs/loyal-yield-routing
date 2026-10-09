@@ -22,7 +22,8 @@ func TestMain(m *testing.M) {
 func testFacts() *engine.Facts { return engine.NewFacts(prometheus.NewRegistry()) }
 
 // fakeChain is a cluster that answers every read at slot, simulates
-// successfully, has no receipts and records sends; landing sees no signature
+// successfully, has no receipts (or fails reading them with receiptErr) and
+// records sends; landing sees no signature
 // and the finalized height.
 type fakeChain struct {
 	genesis, blockhash solana.Hash
@@ -30,6 +31,7 @@ type fakeChain struct {
 	fee, height        uint64
 	accounts           map[solana.PublicKey]*chain.Account
 	sent               [][]byte
+	receiptErr         error
 }
 
 func (f *fakeChain) GenesisHash(context.Context) (solana.Hash, error) { return f.genesis, nil }
@@ -50,6 +52,9 @@ func (f *fakeChain) Simulate(context.Context, []byte, rpc.SimulateTransactionOpt
 	return chain.Simulated{Slot: f.slot}, nil
 }
 func (f *fakeChain) Receipt(context.Context, solana.Signature, rpc.CommitmentType) (chain.Receipt, error) {
+	if f.receiptErr != nil {
+		return chain.Receipt{}, f.receiptErr
+	}
 	return chain.Receipt{}, chain.ErrNotFound
 }
 func (f *fakeChain) SendWire(_ context.Context, wire []byte, _ bool) error {

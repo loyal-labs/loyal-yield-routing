@@ -14,7 +14,7 @@ import (
 )
 
 // A status-cache hit is not a transaction receipt. A missing or pruned receipt
-// and any failure to read one keep the original attempt owned, including after
+// and an unavailable endpoint keep the original attempt owned, including after
 // restart.
 var errReceiptUnavailable = errors.New("confirmed transaction receipt unavailable")
 
@@ -43,9 +43,14 @@ func (e *Executor) readReceipt(ctx context.Context, op *MultiplyOperation, topol
 	if err != nil {
 		return nil, err
 	}
+	// Only an absent receipt or an endpoint that cannot answer waits; a receipt
+	// the cluster returned but the client rejects is a verdict.
 	receipt, err := e.Chain.Receipt(ctx, signature, rpc.CommitmentConfirmed)
-	if err != nil {
+	if errors.Is(err, chain.ErrNotFound) || errors.Is(err, chain.ErrUnavailable) {
 		return nil, fmt.Errorf("%w: %w", errReceiptUnavailable, err)
+	}
+	if err != nil {
+		return nil, err
 	}
 	tx, err := decodeVerifiedTransaction(op.SignedWire)
 	if err != nil {

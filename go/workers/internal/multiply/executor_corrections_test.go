@@ -202,7 +202,7 @@ func TestPolicyUnderAnotherOwnerIsRefused(t *testing.T) {
 	executor, fake, _ := testExecutor(t)
 	policy := fixtureKey(4)
 	fake.accounts = map[solana.PublicKey]*chain.Account{policy: {Key: policy, Owner: mustKey(TokenProgram), Lamports: 1, Data: []byte{0}}}
-	if _, _, err := executor.policyAccount(context.Background(), policy); err == nil {
+	if _, _, err := executor.policyAccount(context.Background(), policy, 0); err == nil {
 		t.Fatal("policy under wrong owner accepted")
 	}
 }

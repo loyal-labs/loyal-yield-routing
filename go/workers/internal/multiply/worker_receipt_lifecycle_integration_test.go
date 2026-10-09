@@ -171,16 +171,7 @@ func TestCurrentGoMultiplyActualDepositThenWithdrawal(t *testing.T) {
 
 func TestCurrentGoMultiplyActualReceiptTerminalRollsBackOnStaleFence(t *testing.T) {
 	f := newMultiplySVMFixture(t)
-	f.mu.Lock()
-	f.lostResponse = true
-	f.mu.Unlock()
-	if _, err := f.worker(t, false).Tick(f.ctx); err == nil {
-		t.Fatal("response loss was hidden")
-	}
-	saved, err := f.store.LoadRouteState(f.ctx, f.state.RouteKey)
-	if err != nil || saved.Operation == nil {
-		t.Fatal("actual sent journal missing")
-	}
+	saved := f.landLostResponse(t)
 	lease, err := f.store.LeaseRoute(f.ctx, f.state.RouteKey, "actual-receipt-stale-proof", time.Now().Add(time.Minute))
 	if err != nil || lease == nil {
 		t.Fatal(err)
@@ -277,16 +268,7 @@ func TestCurrentGoMultiplyMockRejectsInvalidScopeRefresh(t *testing.T) {
 
 func TestCurrentGoMultiplyActualReceiptRejectsProviderDrift(t *testing.T) {
 	f := newMultiplySVMFixture(t)
-	f.mu.Lock()
-	f.lostResponse = true
-	f.mu.Unlock()
-	if _, err := f.worker(t, false).Tick(f.ctx); err == nil {
-		t.Fatal("response loss was hidden")
-	}
-	saved, err := f.store.LoadRouteState(f.ctx, f.state.RouteKey)
-	if err != nil || saved.Operation == nil {
-		t.Fatal("actual financial journal missing")
-	}
+	saved := f.landLostResponse(t)
 	signature := solana.MustSignatureFromBase58(*saved.Operation.TransactionSignature)
 	receipt, err := f.cluster.Receipt(f.ctx, signature, rpc.CommitmentConfirmed)
 	if err != nil {
@@ -584,16 +566,7 @@ func TestCurrentGoMultiplyActualModelRejectsDebtAndSwapRecipeDrift(t *testing.T)
 
 func TestCurrentGoMultiplyActualReceiptWaitsForCoherentBank(t *testing.T) {
 	f := newMultiplySVMFixture(t)
-	f.mu.Lock()
-	f.lostResponse = true
-	f.mu.Unlock()
-	if _, err := f.worker(t, false).Tick(f.ctx); err == nil {
-		t.Fatal("actual response loss was hidden")
-	}
-	saved, err := f.store.LoadRouteState(f.ctx, f.state.RouteKey)
-	if err != nil || saved.Operation == nil {
-		t.Fatal("actual financial journal absent")
-	}
+	saved := f.landLostResponse(t)
 	f.mu.Lock()
 	f.staleObservation = true
 	f.mu.Unlock()

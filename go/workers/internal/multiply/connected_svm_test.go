@@ -303,6 +303,17 @@ func (f *multiplySVMFixture) serveRPC(w http.ResponseWriter, r *http.Request) {
 		meta["postTokenBalances"] = []any{} // adversarial incomplete provider metadata
 		result, _ = json.Marshal(receipt)
 	}
+	// A lagging node at slot 999: it refuses a read pinned past its frontier,
+	// as Solana RPC does, and answers an unpinned one from its old bank.
+	var params []json.RawMessage
+	var pin struct {
+		MinContextSlot uint64 `json:"minContextSlot"`
+	}
+	if q.Method == "getMultipleAccounts" && f.staleObservation && err == nil && json.Unmarshal(q.Params, &params) == nil && len(params) == 2 && json.Unmarshal(params[1], &pin) == nil && pin.MinContextSlot > 999 {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": q.ID, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}})
+		return
+	}
 	if q.Method == "getMultipleAccounts" && f.staleObservation && err == nil {
 		var observed map[string]any
 		_ = json.Unmarshal(result, &observed)
@@ -481,18 +492,35 @@ func TestCurrentGoMultiplyFreshDepositAndActualReceipt(t *testing.T) {
 	f.assertReconciled(t, 1)
 }
 
-func TestCurrentGoMultiplyLostResponseKeylessRecovery(t *testing.T) {
-	f := newMultiplySVMFixture(t)
+// landLostResponse runs one signing Tick whose send response is lost and
+// whose receipt the provider does not have yet. Landing reads the signature
+// status, not the send answer, so the one send lands; the attempt stays owned
+// at broadcast_intent until a receipt proves it. The receipt then reappears.
+func (f *multiplySVMFixture) landLostResponse(t *testing.T) *StoredRoute {
+	t.Helper()
 	f.mu.Lock()
-	f.lostResponse = true
+	f.lostResponse, f.receiptMissing = true, true
 	f.mu.Unlock()
-	if _, err := f.worker(t, false).Tick(f.ctx); err == nil {
-		t.Fatal("actual response loss was hidden")
+	result, err := f.worker(t, false).Tick(f.ctx)
+	if err != nil || result.Condition != "awaiting_confirmed_transaction_receipt" {
+		t.Fatalf("lost send response without a receipt: %v %v", result, err)
 	}
 	saved, err := f.store.LoadRouteState(f.ctx, f.state.RouteKey)
 	if err != nil || saved.Operation == nil || saved.Operation.Status != StatusBroadcastIntent {
 		t.Fatalf("ambiguous send lost journal: %v", err)
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sends != 1 {
+		t.Fatalf("lost send response was sent %d times", f.sends)
+	}
+	f.receiptMissing = false
+	return saved
+}
+
+func TestCurrentGoMultiplyLostResponseKeylessRecovery(t *testing.T) {
+	f := newMultiplySVMFixture(t)
+	saved := f.landLostResponse(t)
 	f.mu.Lock()
 	f.receiptMissing = true
 	f.mu.Unlock()
@@ -516,10 +544,7 @@ func TestCurrentGoMultiplyLostResponseKeylessRecovery(t *testing.T) {
 
 func TestCurrentGoMultiplyRejectsIncompleteActualReceipt(t *testing.T) {
 	f := newMultiplySVMFixture(t)
-	f.mu.Lock()
-	f.lostResponse = true
-	f.mu.Unlock()
-	_, _ = f.worker(t, false).Tick(f.ctx)
+	f.landLostResponse(t)
 	f.mu.Lock()
 	f.corruptReceipt = true
 	f.mu.Unlock()

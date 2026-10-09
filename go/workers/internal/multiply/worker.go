@@ -629,15 +629,16 @@ func (w *Worker) receiptRecoveryFailure(ctx context.Context, lease *Lease, route
 var errReconciliationBankUnavailable = errors.New("confirmed reconciliation bank is stale or incoherent")
 
 // Reject a stale provider frontier before decoding financial account state.
-// The confirmed receipt is the minimum bank context, not a before-balance. An
-// endpoint that cannot answer is not a verdict on the bank either.
+// The confirmed receipt is the minimum bank context, not a before-balance: the
+// read asks for a node at or past it, and a lagging node (chain.ErrBehind) or
+// an endpoint that cannot answer is not a verdict on the bank.
 type reconciliationReader struct {
 	ObservationReader
 	minimumSlot uint64
 }
 
 func (r reconciliationReader) Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error) {
-	slot, accounts, err := r.ObservationReader.Accounts(ctx, keys, commitment, minContextSlot)
+	slot, accounts, err := r.ObservationReader.Accounts(ctx, keys, commitment, max(minContextSlot, r.minimumSlot))
 	if errors.Is(err, chain.ErrUnavailable) {
 		return 0, nil, fmt.Errorf("%w: %w", errReconciliationBankUnavailable, err)
 	}
@@ -701,7 +702,7 @@ func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *Ro
 	if err != nil {
 		return nil, err
 	}
-	policyData, policySlot, err := w.executor.policyAccount(ctx, policyAccount)
+	policyData, policySlot, err := w.executor.policyAccount(ctx, policyAccount, confirmedSlot)
 	if errors.Is(err, chain.ErrUnavailable) {
 		return nil, fmt.Errorf("%w: %w", errReconciliationBankUnavailable, err)
 	}

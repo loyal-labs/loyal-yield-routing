@@ -29,18 +29,45 @@ func (r *bankObservationReader) Accounts(_ context.Context, keys []solana.Public
 	return r.slot, accounts, nil
 }
 
-type unavailableReader struct{}
+// behindReader is a node that has not reached the slot it is asked for.
+type behindReader struct{ asked *uint64 }
 
-func (unavailableReader) Accounts(context.Context, []solana.PublicKey, rpc.CommitmentType, uint64) (uint64, []*chain.Account, error) {
-	return 0, nil, fmt.Errorf("getMultipleAccounts: %w", chain.ErrRateLimited)
+func (r behindReader) Accounts(_ context.Context, _ []solana.PublicKey, _ rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error) {
+	*r.asked = minContextSlot
+	return 0, nil, fmt.Errorf("getMultipleAccounts: %w", chain.ErrBehind)
 }
 
-func TestReconciliationEndpointFailureWaitsForTheBank(t *testing.T) {
-	// An endpoint that cannot answer says nothing about the confirmed bank, so
+func TestReconciliationWaitsForANodeAtTheConfirmedSlot(t *testing.T) {
+	// A lagging or unavailable node says nothing about the confirmed bank, so
 	// reconciliation waits instead of moving the route to manual recovery.
-	_, err := ObserveConfirmed(context.Background(), reconciliationReader{unavailableReader{}, 1}, testTopology(t), nil)
-	if !errors.Is(err, errReconciliationBankUnavailable) {
-		t.Fatalf("endpoint failure became a reconciliation verdict: %v", err)
+	var asked uint64
+	_, err := ObserveConfirmed(context.Background(), reconciliationReader{behindReader{&asked}, 1000}, testTopology(t), nil)
+	if asked != 1000 || !errors.Is(err, errReconciliationBankUnavailable) {
+		t.Fatalf("reconciliation read below the receipt slot or became a verdict: asked %d, %v", asked, err)
+	}
+}
+
+func TestReceiptReadWaitsOnlyForAbsenceOrUnavailability(t *testing.T) {
+	executor, fake, _ := testExecutor(t)
+	signed := signedWireFixture(t, false)
+	messageHash, err := MessageSHA256(signed.Wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := &MultiplyOperation{SignedWire: signed.Wire, SignedWireSHA256: &signed.WireSHA256, TransactionSignature: &signed.TransactionSignature, RecentBlockhash: &signed.RecentBlockhash, MessageSHA256: &messageHash}
+	for _, test := range []struct {
+		err   error
+		waits bool
+	}{
+		{chain.ErrNotFound, true},
+		{fmt.Errorf("getTransaction: %w", chain.ErrBehind), true},
+		{errors.New("getTransaction: invalid token amount"), false},
+	} {
+		fake.receiptErr = test.err
+		_, err := executor.readReceipt(context.Background(), op, testTopology(t))
+		if err == nil || errors.Is(err, errReceiptUnavailable) != test.waits {
+			t.Fatalf("receipt error %v: waits=%v, got %v", test.err, test.waits, err)
+		}
 	}
 }
 
