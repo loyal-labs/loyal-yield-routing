@@ -12,8 +12,8 @@ import (
 )
 
 // ProjectorConfig bounds the single-threaded capture-to-Yield projection loop.
-// Stream must be production or staging; each stream needs its own Yield event
-// namespace because the retained capture sequences start independently at one.
+// Stream must be production, the only capture stream (Timescale 0009 dropped
+// staging); it names the projector's Yield event namespace.
 type ProjectorConfig struct {
 	Stream       string
 	Cluster      string
@@ -45,15 +45,10 @@ func NewProjector(capture, yield *pgxpool.Pool, config ProjectorConfig) (*Projec
 	if capture == nil || yield == nil {
 		return nil, errors.New("ATA projector requires capture and Yield pools")
 	}
-	var schema string
-	switch config.Stream {
-	case "production":
-		schema = "loyal_prod"
-	case "staging":
-		schema = "loyal_staging"
-	default:
+	if config.Stream != "production" {
 		return nil, fmt.Errorf("unsupported ATA capture stream %q", config.Stream)
 	}
+	schema := "loyal_prod"
 	if config.Cluster != "mainnet-beta" && config.Cluster != "devnet" {
 		return nil, fmt.Errorf("unsupported ATA projection cluster %q", config.Cluster)
 	}

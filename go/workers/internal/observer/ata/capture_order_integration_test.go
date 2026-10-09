@@ -48,7 +48,7 @@ VALUES($1,$2,$3,$4,$5,$6,100,$7,400,now(),'capture-order-fixture','confirmed','f
 		}
 	}()
 	go func() {
-		out, err := NewHandler(p.capture, "production", nil).persist(workerCtx, observation{target: b, pubkey: b.WalletATA,
+		out, err := NewHandler(p.capture, nil).persist(workerCtx, observation{target: b, pubkey: b.WalletATA,
 			amount: 200, mint: b.Mint, slot: 401, source: laserStreamSource, data: []byte("second capture"), received: time.Now().UTC()})
 		completed <- result{out: out, err: err}
 	}()

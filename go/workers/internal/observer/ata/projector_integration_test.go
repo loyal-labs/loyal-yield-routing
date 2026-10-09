@@ -120,7 +120,7 @@ func captureProjectionObservation(t *testing.T, ctx context.Context, p *Projecto
 	programOwner := solana.TokenProgramID.String()
 	observed := observation{target: target, pubkey: target.WalletATA, lamports: 2039280, amount: amount,
 		owner: &programOwner, mint: target.Mint, slot: slot, source: laserStreamSource, data: data, received: time.Now().UTC()}
-	out, err := NewHandler(p.capture, "production", nil).persist(ctx, observed)
+	out, err := NewHandler(p.capture, nil).persist(ctx, observed)
 	if err != nil || !out.Inserted {
 		t.Fatalf("actual capture failed: %+v %v", out, err)
 	}
