@@ -310,7 +310,8 @@ func TestProjectorRunKeepsCaptureAliveAcrossDestinationOutage(t *testing.T) {
 	}
 	health := make(chan bool, 16)
 	errorsSeen := make(chan error, 16)
-	p.ioTimeout = 50 * time.Millisecond
+	// Also bounds the recovery tick: a full batch on a fresh connection, past 50ms under -race.
+	p.ioTimeout = 500 * time.Millisecond
 	p.onHealth = func(value bool) {
 		select {
 		case health <- value:
@@ -367,13 +368,13 @@ func TestProjectorRunKeepsCaptureAliveAcrossDestinationOutage(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case ok := <-health:
-		if !ok {
-			t.Fatal("restored destination did not become healthy")
+	// Ticks begun before the commit still report the outage.
+	for recovered, deadline := false, time.After(2*time.Second); !recovered; {
+		select {
+		case recovered = <-health:
+		case <-deadline:
+			t.Fatal("projection did not recover after destination outage")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("projection did not recover after destination outage")
 	}
 	assertProjectedDelta(t, ctx, p, id, nil, nil)
 	previous, delta := int64(100), int64(50)
