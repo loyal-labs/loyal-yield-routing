@@ -115,18 +115,48 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 	}
 }
 
-func TestRouteValuationCaptureRejectsFeePayerAndMixedBank(t *testing.T) {
-	accounts := []ConfirmedAccount{{Address: bridgeSquadsATA, ValuationSource: routeRefreshValuationSource, ValuationSlot: 78}}
-	addresses := []string{bridgeSquadsATA}
-	if err := validateRouteValuationCapture(78, accounts, addresses, 77); err != nil {
-		t.Fatal(err)
-	}
-	for _, change := range []func([]ConfirmedAccount){func(a []ConfirmedAccount) { a[0].ValuationSlot = 77 }, func(a []ConfirmedAccount) { a[0].ValuationSource = "" }, func(a []ConfirmedAccount) { a[0].Address = bridgeDelegate }} {
-		copyAccounts := append([]ConfirmedAccount(nil), accounts...)
-		change(copyAccounts)
-		if err := validateRouteValuationCapture(78, copyAccounts, addresses, 77); err == nil {
-			t.Fatal("invalid capture accepted")
+func TestRouteValuationCaptureFreshnessRequiresIntegrity(t *testing.T) {
+	const minimumSlot int64 = 77
+	for _, lag := range []int64{0, observationLagSlots(), observationLagSlots() + 1} {
+		slot := minimumSlot + lag
+		accounts := []ConfirmedAccount{{Address: bridgeSquadsATA, ValuationSource: routeRefreshValuationSource, ValuationSlot: slot}}
+		addresses := []string{bridgeSquadsATA}
+		err := validateRouteValuationCapture(slot, accounts, addresses, minimumSlot)
+		if lag <= observationLagSlots() {
+			if err != nil {
+				t.Fatal("fresh valid capture rejected", err)
+			}
+		} else if !errors.Is(err, errConfirmedObservationUnavailable) || !transientValuationRefreshFailure(err) {
+			t.Fatal("late valid capture did not require a retry", err)
 		}
+		for _, fault := range []string{"missing", "extra", "namespace", "fee_payer", "duplicate", "source", "slot"} {
+			copyAccounts := append([]ConfirmedAccount(nil), accounts...)
+			copyAddresses := append([]string(nil), addresses...)
+			switch fault {
+			case "missing":
+				copyAccounts = nil
+			case "extra":
+				copyAccounts = append(copyAccounts, accounts[0])
+			case "namespace":
+				copyAccounts[0].Address = kaminoDebtReserve
+			case "fee_payer":
+				copyAccounts[0].Address, copyAddresses[0] = bridgeDelegate, bridgeDelegate
+			case "duplicate":
+				copyAccounts = append(copyAccounts, accounts[0])
+				copyAddresses = append(copyAddresses, addresses[0])
+			case "source":
+				copyAccounts[0].ValuationSource = ""
+			case "slot":
+				copyAccounts[0].ValuationSlot = slot - 1
+			}
+			if err := validateRouteValuationCapture(slot, copyAccounts, copyAddresses, minimumSlot); err == nil || transientValuationRefreshFailure(err) {
+				t.Fatalf("invalid capture must fail hard even when late: lag=%d fault=%s err=%v", lag, fault, err)
+			}
+		}
+	}
+	accounts := []ConfirmedAccount{{Address: bridgeSquadsATA, ValuationSource: routeRefreshValuationSource, ValuationSlot: minimumSlot - 1}}
+	if err := validateRouteValuationCapture(minimumSlot-1, accounts, []string{bridgeSquadsATA}, minimumSlot); err == nil || transientValuationRefreshFailure(err) {
+		t.Fatal("regressed capture must fail hard", err)
 	}
 }
 
@@ -228,6 +258,61 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 	refreshSimulationFailures.Store(0)
 }
 
+func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
+	t.Cleanup(func() {
+		refreshSimulationFailures.Store(0)
+		kaminoStaleHolds.Store(0)
+	})
+	m := readyWorkerManifest(t)
+	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
+		binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
+		binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
+		binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
+	})
+	read, finalized := fixtureBatchRuntime(77, initial)
+	// Even near both latch thresholds, aged evidence must not count as bad health.
+	refreshSimulationFailures.Store(refreshSimulationLatchAfter - 1)
+	kaminoStaleHolds.Store(refreshSimulationLatchAfter - 1)
+	for _, malformed := range []bool{false, true} {
+		for i := 0; i <= refreshSimulationLatchAfter; i++ {
+			o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
+				confirmedSlot:    func(context.Context) (int64, error) { return 77, nil },
+				accounts:         read,
+				finalizedReceipt: finalized,
+				receipts:         func(context.Context, int64) (int64, []programAccount, error) { return 77, nil, nil },
+				now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+				refreshValuation: func(_ context.Context, _ RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
+					slot := min + observationLagSlots() + 1
+					capture := make([]ConfirmedAccount, len(addresses))
+					for j, address := range addresses {
+						capture[j] = accountAt(initial, address)
+						capture[j].Address = address
+						capture[j].ValuationSource, capture[j].ValuationSlot = routeRefreshValuationSource, slot
+					}
+					if malformed {
+						capture[0].ValuationSource = ""
+					}
+					// Match the production refresh boundary: reject before returning accounts.
+					return 0, nil, validateRouteValuationCapture(slot, capture, addresses, min)
+				},
+			})
+			if malformed {
+				if err != nil || o.Snapshot.ManualReason != "kamino_stale" || o.Snapshot.Fresh {
+					t.Fatal("mixed malformed/late capture escaped fail-closed hold", o.Snapshot, err)
+				}
+				break
+			}
+			if !errors.Is(err, errConfirmedObservationUnavailable) || o.Snapshot.ManualReason != "" || o.Snapshot.Fresh || len(accounts) != 0 {
+				t.Fatal("aged capture latched or escaped retry", i, o.Snapshot, err)
+			}
+			if refreshSimulationFailures.Load() != refreshSimulationLatchAfter-1 || kaminoStaleHolds.Load() != refreshSimulationLatchAfter-1 {
+				t.Fatal("aged capture changed a health failure streak")
+			}
+		}
+	}
+}
+
 func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 	refreshSimulationFailures.Store(0)
 	t.Cleanup(func() { refreshSimulationFailures.Store(0) })
@@ -249,7 +334,7 @@ func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 			now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 				if rejected {
-					return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed"}
+					return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
 				}
 				return 0, nil, context.DeadlineExceeded // transient: neither counts nor latches
 			},
