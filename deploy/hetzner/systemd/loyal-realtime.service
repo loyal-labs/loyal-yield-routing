@@ -20,11 +20,14 @@ Type=exec
 # pre-step copies the envelope into the runtime directory (tmpfs, removed on
 # stop) with the launcher's ownership, and a read-only bind puts it at the
 # fixed path. The launcher sets exactly --keys from the envelope and execs.
+# systemd 255 builds the mount namespace for the "+" pre-step too, before the
+# copy exists, so the bind source is optional ("-"): skipped for the pre-step,
+# bound for ExecStart. systemd creates the empty mount point on the host.
 LoadCredentialEncrypted=realtime-envelope:/etc/credstore.encrypted/loyal-realtime/realtime-envelope.cred
 RuntimeDirectory=loyal-realtime
 RuntimeDirectoryMode=0700
 ExecStartPre=+/usr/bin/install -m 0400 -o loyal-realtime -g loyal-realtime %d/realtime-envelope /run/loyal-realtime/envelope.json
-BindReadOnlyPaths=/run/loyal-realtime/envelope.json:/run/loyal-credential.json
+BindReadOnlyPaths=-/run/loyal-realtime/envelope.json:/run/loyal-credential.json
 ExecStart=/opt/loyal/bin/loyal-env-launcher \
   --service loyal-realtime --deployment loyal-realtime \
   --keys NEON_DATABASE_URL,REALTIME_ALLOWED_ORIGINS,REALTIME_ALLOWED_VERCEL_PREVIEW_PROJECT,REALTIME_ALLOWED_VERCEL_PREVIEW_TEAM,REALTIME_AUTH_SECRET,REALTIME_CATCH_UP_LIMIT,REALTIME_CHANNEL,REALTIME_CLIENT_BUFFER,REALTIME_HEARTBEAT_SECONDS,REALTIME_MAX_TOKEN_LIFETIME_SECONDS,REALTIME_READY_MAX_LAG,REALTIME_RETENTION_BATCH_SIZE,REALTIME_RETENTION_DAYS,REALTIME_RETENTION_INTERVAL_SECONDS,RUST_LOG \

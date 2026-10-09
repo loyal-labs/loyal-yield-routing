@@ -142,7 +142,9 @@ JSON envelope:
 `RUST_LOG`. A missing or extra key stops the launcher before the binary
 starts. The launcher accepts only `/run/loyal-credential.json` as the input
 path, with mode 0400, owned by the process's own uid and gid, on a read-only
-tmpfs. The unit's comment explains how it delivers the envelope there.
+tmpfs. The unit's comment explains how it delivers the envelope there. The
+empty, root-owned `/run/loyal-credential.json` on the host is the mount
+point that systemd creates for that bind. It holds no data.
 
 The unit sets `PORT=10000` and `REALTIME_RETENTION_CLEANUP_ENABLED=true`.
 Exactly one realtime instance may run with cleanup enabled. Never start a
