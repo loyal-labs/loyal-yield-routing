@@ -10,8 +10,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // ControlTarget follows the single-target projection introduced by migration
@@ -111,15 +112,15 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		return o, errors.New("control observation is incomplete or behind requested slot")
 	}
 	o.ObservedSlot = slot
-	for i, a := range accounts {
-		if a.Address != addresses[i] || a.Executable {
-			return o, errors.New("control account vector identity or executable flag invalid")
+	for _, a := range accounts {
+		if a != nil && a.Executable {
+			return o, errors.New("control account is executable")
 		}
 	}
-	o.PolicyExists = accounts[0].Owner != ""
-	o.DelegationExists = accounts[2].Owner != ""
+	o.PolicyExists = accounts[0] != nil
+	o.DelegationExists = accounts[2] != nil
 	if o.PolicyExists {
-		if accounts[0].Owner != squadsProgramID {
+		if accounts[0].Owner.String() != squadsProgramID {
 			return o, errors.New("control policy has foreign owner")
 		}
 		decoded, err := fleet.DecodeSquadsPolicy(accounts[0].Data)
@@ -150,15 +151,15 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		}
 		o.PolicyValid = true
 	}
-	if accounts[1].Owner != "" {
-		if accounts[1].Owner != SubscriptionsProgramID {
+	if accounts[1] != nil {
+		if accounts[1].Owner.String() != SubscriptionsProgramID {
 			return o, errors.New("control authority has foreign owner")
 		}
 		o.AuthorityValid = true
 	}
 	if o.DelegationExists {
 		nonce := uint64(*target.Nonce)
-		if _, err = RemainingDelegationAllowance(accounts[2].Owner, accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: &nonce}); err != nil {
+		if _, err = RemainingDelegationAllowance(accounts[2].Owner.String(), accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: &nonce}); err != nil {
 			return o, err
 		}
 		if binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:]) != uint64(*target.MaxAmountPerPeriod) {
@@ -166,7 +167,7 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		}
 		o.DelegationValid = true
 	}
-	if accounts[3].Owner != "" {
+	if accounts[3] != nil {
 		if err := validateVaultUSDCATA(accounts[3], target.WalletTokenATA, target.Wallet); err != nil {
 			return o, err
 		}

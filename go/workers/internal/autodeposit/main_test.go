@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestMain(m *testing.M) {

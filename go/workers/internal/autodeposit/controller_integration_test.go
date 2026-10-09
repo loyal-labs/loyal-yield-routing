@@ -8,12 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
@@ -450,7 +450,7 @@ func (s *scriptedControllerChain) ConfirmedReceipt(ctx context.Context, signatur
 	return receipt, nil
 }
 
-func (s *scriptedControllerChain) ReadAccounts(ctx context.Context, addresses []string) (int64, []backyard.ConfirmedAccount, error) {
+func (s *scriptedControllerChain) ReadAccounts(ctx context.Context, addresses []string) (int64, []*chain.Account, error) {
 	return 1, nil, nil
 }
 

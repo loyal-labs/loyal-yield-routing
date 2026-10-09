@@ -7,10 +7,11 @@ import (
 	"crypto/sha256"
 	"errors"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/programs/system"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 type SetupStage string
@@ -156,19 +157,16 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	if slot <= 0 || len(accounts) != len(addresses) {
 		return nil, errors.New("setup account snapshot incomplete")
 	}
-	by := map[string]backyard.ConfirmedAccount{}
+	by := make(map[string]*chain.Account, len(addresses))
 	for i, a := range accounts {
-		if a.Address != addresses[i] {
-			return nil, errors.New("setup account response ordering mismatch")
-		}
-		by[a.Address] = a
+		by[addresses[i]] = a
 	}
 	reserve := by[plan.Reserve]
-	if reserve.Owner != KLendProgramID || reserve.Executable || len(reserve.Data) != reserveDataLength || hexPrefix(reserve.Data[:8]) != reserveDiscriminator {
+	if reserve.Owner.String() != KLendProgramID || reserve.Executable || len(reserve.Data) != reserveDataLength || hexPrefix(reserve.Data[:8]) != reserveDiscriminator {
 		return nil, errors.New("setup reserve evidence invalid")
 	}
 	route := decodeReservePosition(plan.Reserve, reserve.Data)
-	if route.Position.Market != plan.Market || route.Position.LiquidityMint != USDCMint || route.Position.LiquidityTokenProgram != splTokenID || by[plan.Market].Owner != KLendProgramID || by[plan.Market].Executable {
+	if route.Position.Market != plan.Market || route.Position.LiquidityMint != USDCMint || route.Position.LiquidityTokenProgram != splTokenID || by[plan.Market].Owner.String() != KLendProgramID || by[plan.Market].Executable {
 		return nil, errors.New("setup reserve/market/token identity changed")
 	}
 	route.Obligation = obligation
@@ -185,14 +183,14 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	}
 	stage := SetupStage("")
 	account := ""
-	if by[ata].Owner == "" {
+	if by[ata] == nil {
 		stage = SetupATA
 		account = ata
 	} else if err := validateSetupAccount(plan, DestinationSetupPlan{Stage: SetupATA, Account: ata, Route: route}, by[ata]); err != nil {
 		return nil, err
 	}
 	// Check existing dependencies even when an earlier dependency is missing.
-	if by[metadata].Owner == "" {
+	if by[metadata] == nil {
 		if stage == "" {
 			stage = SetupMetadata
 			account = metadata
@@ -200,7 +198,7 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	} else if err := validateSetupAccount(plan, DestinationSetupPlan{Stage: SetupMetadata, Account: metadata, Route: route}, by[metadata]); err != nil {
 		return nil, err
 	}
-	if by[obligation].Owner == "" {
+	if by[obligation] == nil {
 		if stage == "" {
 			stage = SetupObligation
 			account = obligation
@@ -218,7 +216,7 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 			return nil, errors.New("setup farm observation stale")
 		}
 		slot = farmSlot
-		if farmAccounts[0].Owner == "" {
+		if farmAccounts[0] == nil {
 			stage = SetupFarm
 			account = farm
 		} else if err := validateSetupAccount(plan, DestinationSetupPlan{Stage: SetupFarm, Account: farm, Route: route}, farmAccounts[0]); err != nil {
@@ -244,12 +242,15 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 		if rent == 0 || rent > maxSetupRentLamports {
 			return nil, errors.New("setup rent exceeds source-backed bound")
 		}
-		vaultAccount := by[plan.Target.VaultPubkey]
-		if vaultAccount.Owner != "" && (vaultAccount.Owner != systemProgramZero || vaultAccount.Executable || len(vaultAccount.Data) != 0) {
-			return nil, errors.New("setup vault rent account is not plain system custody")
+		var vaultLamports uint64
+		if vaultAccount := by[plan.Target.VaultPubkey]; vaultAccount != nil {
+			if vaultAccount.Owner != solana.SystemProgramID || vaultAccount.Executable || len(vaultAccount.Data) != 0 {
+				return nil, errors.New("setup vault rent account is not plain system custody")
+			}
+			vaultLamports = vaultAccount.Lamports
 		}
-		if vaultAccount.Lamports < rent {
-			setup.RentTopUpLamports = rent - vaultAccount.Lamports
+		if vaultLamports < rent {
+			setup.RentTopUpLamports = rent - vaultLamports
 		}
 		// The exact constraint matcher chooses the route policy when it already
 		// authorizes init, otherwise the explicitly linked setup policy.
@@ -278,8 +279,8 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	return &setup, nil
 }
 
-func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a backyard.ConfirmedAccount) error {
-	if a.Address != setup.Account || a.Executable {
+func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a *chain.Account) error {
+	if a == nil || a.Key.String() != setup.Account || a.Executable {
 		return errors.New("setup readback address/executable mismatch")
 	}
 	switch setup.Stage {
@@ -293,11 +294,11 @@ func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a backya
 			return errors.New("setup custody token account is uninitialized")
 		}
 	case SetupMetadata:
-		if a.Owner != KLendProgramID || len(a.Data) != 1032 || !bytes.Equal(a.Data[:8], accountDiscriminator("UserMetadata")) || base58Key(a.Data[80:112]) != plan.Target.VaultPubkey {
+		if a.Owner.String() != KLendProgramID || len(a.Data) != 1032 || !bytes.Equal(a.Data[:8], accountDiscriminator("UserMetadata")) || base58Key(a.Data[80:112]) != plan.Target.VaultPubkey {
 			return errors.New("setup metadata identity invalid")
 		}
 	case SetupObligation:
-		if a.Owner != KLendProgramID || len(a.Data) != obligationDataLength || !bytes.Equal(a.Data[:8], obligationDiscriminator[:]) || base58Key(a.Data[32:64]) != plan.Market || base58Key(a.Data[64:96]) != plan.Target.VaultPubkey {
+		if a.Owner.String() != KLendProgramID || len(a.Data) != obligationDataLength || !bytes.Equal(a.Data[:8], obligationDiscriminator[:]) || base58Key(a.Data[32:64]) != plan.Market || base58Key(a.Data[64:96]) != plan.Target.VaultPubkey {
 			return errors.New("setup obligation identity invalid")
 		}
 		for i := 0; i < obligationDepositCount; i++ {
@@ -315,7 +316,7 @@ func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a backya
 		}
 	case SetupFarm:
 		// Pinned Farms Codama UserState layout: farm16, owner48, delegatee480.
-		if a.Owner != farmsProgramID || len(a.Data) != 920 || !bytes.Equal(a.Data[:8], []byte{72, 177, 85, 249, 76, 167, 186, 126}) || base58Key(a.Data[16:48]) != setup.Route.Position.ReserveFarmState || base58Key(a.Data[48:80]) != plan.Target.VaultPubkey || a.Data[80] != 1 || base58Key(a.Data[480:512]) != setup.Route.Obligation {
+		if a.Owner.String() != farmsProgramID || len(a.Data) != 920 || !bytes.Equal(a.Data[:8], []byte{72, 177, 85, 249, 76, 167, 186, 126}) || base58Key(a.Data[16:48]) != setup.Route.Position.ReserveFarmState || base58Key(a.Data[48:80]) != plan.Target.VaultPubkey || a.Data[80] != 1 || base58Key(a.Data[480:512]) != setup.Route.Obligation {
 			return errors.New("setup farm identity invalid")
 		}
 	default:

@@ -72,11 +72,11 @@ const (
 	obligationBorrowCount         = 5
 )
 
-// AccountReader reads one coherent confirmed account set: the required
-// addresses must all exist with a program owner, the optional ones may be
-// absent. The production adapter binds it to the family RPC client; tests
-// bind it to fixtures.
-type AccountReader func(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error)
+// AccountReader reads one coherent confirmed account set in address order:
+// the required addresses must all exist, an optional one is nil when absent.
+// The production adapter binds it to the chain client; tests bind it to
+// fixtures.
+type AccountReader func(ctx context.Context, addresses []string, optional ...string) (int64, []*chain.Account, error)
 
 // ErrRouteNotExecutable reports a destination that cannot take the deposit
 // today. No funds have moved when it is returned, and the controller refuses
@@ -300,15 +300,8 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if slot <= 0 || len(accounts) != 4 {
 		return TopUpRoute{}, errors.New("top-up account snapshot is incomplete")
 	}
-	byAddress := make(map[string]backyard.ConfirmedAccount, len(accounts))
-	for _, account := range accounts {
-		if _, duplicate := byAddress[account.Address]; duplicate {
-			return TopUpRoute{}, errors.New("top-up snapshot repeats an account")
-		}
-		byAddress[account.Address] = account
-	}
-	reserve, ok := byAddress[plan.Reserve]
-	if !ok || reserve.Owner != KLendProgramID || len(reserve.Data) != reserveDataLength || reserveDiscriminator != hexPrefix(reserve.Data[:8]) {
+	reserve, marketAccount, obligation, custody := accounts[0], accounts[1], accounts[2], accounts[3]
+	if reserve.Owner.String() != KLendProgramID || len(reserve.Data) != reserveDataLength || reserveDiscriminator != hexPrefix(reserve.Data[:8]) {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s is not a confirmed KLend reserve", ErrRouteNotExecutable, plan.Reserve)
 	}
 	route := decodeReservePosition(plan.Reserve, reserve.Data)
@@ -321,14 +314,13 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if route.Position.LiquiditySupply == "" || route.Position.CollateralMint == "" || route.Position.CollateralSupply == "" || route.Position.LiquidityTokenProgram != splTokenID {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s token accounts are not a routable USDC reserve", ErrRouteNotExecutable, plan.Reserve)
 	}
-	if account, ok := byAddress[plan.Market]; !ok || account.Owner != KLendProgramID || account.Executable {
+	if marketAccount.Owner.String() != KLendProgramID || marketAccount.Executable {
 		return TopUpRoute{}, fmt.Errorf("%w: market %s is not a confirmed KLend market", ErrRouteNotExecutable, plan.Market)
 	}
-	if route.MinimumDepositRaw, err = backyard.KaminoMinimumDepositAmount(reserve, plan.Market, plan.LiquidityMint); err != nil {
+	if route.MinimumDepositRaw, err = backyard.KaminoMinimumDepositAmount(backyard.ConfirmedAccount{Address: plan.Reserve, Owner: reserve.Owner.String(), Lamports: reserve.Lamports, Executable: reserve.Executable, Data: reserve.Data}, plan.Market, plan.LiquidityMint); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s exchange value: %v", ErrRouteNotExecutable, plan.Reserve, err)
 	}
-	obligation, ok := byAddress[obligationKey]
-	if !ok || obligation.Owner != KLendProgramID || len(obligation.Data) != obligationDataLength || hexPrefix(obligation.Data[:8]) != hexPrefix(obligationDiscriminator[:]) {
+	if obligation.Owner.String() != KLendProgramID || len(obligation.Data) != obligationDataLength || hexPrefix(obligation.Data[:8]) != hexPrefix(obligationDiscriminator[:]) {
 		return TopUpRoute{}, fmt.Errorf("%w: obligation %s does not exist; run the missing-obligation setup before a pull", ErrRouteNotExecutable, obligationKey)
 	}
 	if key := base58Key(obligation.Data[obligationMarketOffset : obligationMarketOffset+32]); key != plan.Market {
@@ -372,10 +364,6 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 		if deposit != plan.Reserve {
 			return TopUpRoute{}, fmt.Errorf("%w: obligation %s already deposits reserve %s", ErrRouteNotExecutable, obligationKey, deposit)
 		}
-	}
-	custody, ok := byAddress[plan.Target.VaultUsdcAta]
-	if !ok {
-		return TopUpRoute{}, fmt.Errorf("%w: custody %s does not exist yet", ErrRouteNotExecutable, plan.Target.VaultUsdcAta)
 	}
 	if err := validateVaultUSDCATA(custody, plan.Target.VaultUsdcAta, plan.Target.VaultPubkey); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: %v", ErrRouteNotExecutable, err)
@@ -446,11 +434,11 @@ func vanillaObligationKey(vault, market solana.PublicKey) (string, error) {
 
 // validateVaultUSDCATA proves a confirmed token account is the vault's USDC
 // ATA: the fleet validateVaultTokenAccount semantics pinned to spl-token.
-func validateVaultUSDCATA(account backyard.ConfirmedAccount, expectedAddress, expectedOwner string) error {
-	if account.Address != expectedAddress {
-		return fmt.Errorf("read account %s, want the custody %s", account.Address, expectedAddress)
+func validateVaultUSDCATA(account *chain.Account, expectedAddress, expectedOwner string) error {
+	if account.Key.String() != expectedAddress {
+		return fmt.Errorf("read account %s, want the custody %s", account.Key, expectedAddress)
 	}
-	if account.Owner != splTokenID {
+	if account.Owner.String() != splTokenID {
 		return fmt.Errorf("custody %s is owned by %s, want spl-token", expectedAddress, account.Owner)
 	}
 	if len(account.Data) < splTokenAccountLength ||
@@ -483,7 +471,7 @@ func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan,
 	if err != nil {
 		return compiledInstruction{}, err
 	}
-	if slot <= 0 || len(accounts) != 1 || accounts[0].Address != policyAccount || accounts[0].Owner != squadsProgramID || accounts[0].Executable {
+	if slot <= 0 || len(accounts) != 1 || accounts[0].Owner.String() != squadsProgramID || accounts[0].Executable {
 		return compiledInstruction{}, errors.New("policy account evidence is unavailable or has a foreign owner")
 	}
 	protected := fleet.RouteInstruction{Step: "autodeposit", Program: inner.program.String(), Data: inner.data}

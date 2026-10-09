@@ -6,15 +6,14 @@ import (
 	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"testing"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPlan, DestinationSetupPlan, map[string]backyard.ConfirmedAccount) {
+func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPlan, DestinationSetupPlan, map[string]testAccount) {
 	t.Helper()
 	plan, _ := testPullPlan()
 	vault := mustKey(plan.Target.VaultPubkey)
@@ -69,7 +68,7 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 	copy(obligationData, obligationDiscriminator[:])
 	put(obligationData, 32, plan.Market)
 	put(obligationData, 64, plan.Target.VaultPubkey)
-	accounts := map[string]backyard.ConfirmedAccount{
+	accounts := map[string]testAccount{
 		plan.Reserve:            {Address: plan.Reserve, Owner: KLendProgramID, Data: reserve},
 		plan.Market:             {Address: plan.Market, Owner: KLendProgramID},
 		plan.Target.VaultPubkey: {Address: plan.Target.VaultPubkey, Owner: systemProgramZero, Lamports: 10_000_000},
@@ -92,30 +91,11 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 		if err != nil {
 			t.Fatal(err)
 		}
-		accounts[plan.Target.SetupPolicyAccount] = backyard.ConfirmedAccount{}
-		accounts[plan.Target.RoutePolicyAccount] = backyard.ConfirmedAccount{Address: plan.Target.RoutePolicyAccount, Owner: squadsProgramID, Data: policy}
+		accounts[plan.Target.RoutePolicyAccount] = testAccount{Owner: squadsProgramID, Data: policy}
 		setup.PolicyAccount = plan.Target.RoutePolicyAccount
 		setup.RentTopUpLamports = 10_000_000
 	}
-	read := func(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error) {
-		optionalSet := map[string]bool{}
-		for _, address := range optional {
-			optionalSet[address] = true
-		}
-		out := make([]backyard.ConfirmedAccount, 0, len(addresses))
-		for _, address := range addresses {
-			account, exists := accounts[address]
-			if !exists {
-				if !optionalSet[address] {
-					return 0, nil, errors.New("required test account missing")
-				}
-				account = backyard.ConfirmedAccount{Address: address}
-			}
-			out = append(out, account)
-		}
-		return 500, out, nil
-	}
-	builder, err := NewSweepWireBuilderWithSetup(key, read, func(context.Context, int) (uint64, error) { return 20_000_000, nil })
+	builder, err := NewSweepWireBuilderWithSetup(key, fixtureReader(500, accounts), func(context.Context, int) (uint64, error) { return 20_000_000, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +151,7 @@ func TestSetupReadbackRejectsForeignIdentity(t *testing.T) {
 	copy(data, accountDiscriminator("UserMetadata"))
 	foreign := mustKey(fixedKey("foreign"))
 	copy(data[80:112], foreign[:])
-	accounts[setup.Account] = backyard.ConfirmedAccount{Address: setup.Account, Owner: KLendProgramID, Data: data}
+	accounts[setup.Account] = testAccount{Owner: KLendProgramID, Data: data}
 	if err := builder.ReadbackDestinationSetup(t.Context(), plan, setup, 500); err == nil {
 		t.Fatal("foreign metadata owner passed readback")
 	}

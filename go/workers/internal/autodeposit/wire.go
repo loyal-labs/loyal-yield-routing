@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const solanaPacketBytes = 1232

@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -365,19 +364,12 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("mainnet genesis", err)
 	}
-	chain, err := autodeposit.NewRPCChain(cfg.rpcURL)
-	if err != nil {
-		return retailError("Autodeposit chain", err)
-	}
-	rentRPC, err := backyard.NewRPCClient(cfg.rpcURL)
-	if err != nil {
-		return retailError("rent RPC", err)
-	}
-	wires, err := autodeposit.NewSweepWireBuilderWithSetup(cfg.delegate, chain.ReadAccountsWithOptional, rentRPC.MinimumBalanceForRentExemption)
+	deposits := autodeposit.NewRPCChain(cluster)
+	wires, err := autodeposit.NewSweepWireBuilderWithSetup(cfg.delegate, deposits.ReadAccountsWithOptional, deposits.MinimumBalanceForRentExemption)
 	if err != nil {
 		return retailError("Autodeposit wires", err)
 	}
-	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: chain, Wires: wires, Facts: facts, IdleToleranceRaw: cfg.idleToleranceRaw})
+	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: deposits, Wires: wires, Facts: facts, IdleToleranceRaw: cfg.idleToleranceRaw})
 	if err != nil {
 		return retailError("Autodeposit controller", err)
 	}

@@ -13,10 +13,10 @@ import (
 
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/solana-foundation/solana-go/v2"
+
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/solana-foundation/solana-go/v2"
 )
 
 var ErrArtifactCreationProofPending = errors.New("autodeposit artifact creator proof remains unavailable")
@@ -218,16 +218,16 @@ func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target Art
 	if err = verifyArtifactRoot(accounts[0], target); err != nil {
 		return err
 	}
-	for i := range accounts {
-		if accounts[i].Address != addresses[i] || accounts[i].Executable {
-			return errors.New("artifact account snapshot identity invalid")
+	for _, a := range accounts {
+		if a.Executable {
+			return errors.New("artifact account is executable")
 		}
 	}
-	if accounts[1].Owner != squadsProgramID {
+	if accounts[1].Owner.String() != squadsProgramID {
 		return errors.New("artifact policy has foreign owner")
 	}
 	nonce := uint64(*target.Nonce)
-	if _, err = RemainingDelegationAllowance(accounts[2].Owner, accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: &nonce}); err != nil {
+	if _, err = RemainingDelegationAllowance(accounts[2].Owner.String(), accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: &nonce}); err != nil {
 		return err
 	}
 	if binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:delegationPerPeriodOffset+8]) != uint64(*target.MaxAmountPerPeriod) {
@@ -240,9 +240,9 @@ func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target Art
 // the existing SDK/SVM SettingsWire fixture. It accepts the supported personal
 // root shape only: threshold1, one root signer with mask7, no external settings
 // authority. Multi-owner or handed-off roots require separate evidence.
-func verifyArtifactRoot(a backyard.ConfirmedAccount, target ArtifactTarget) error {
+func verifyArtifactRoot(a *chain.Account, target ArtifactTarget) error {
 	d := a.Data
-	if a.Address != target.Settings || a.Owner != squadsProgramID || a.Executable || len(d) < 94 || !bytes.Equal(d[:8], []byte{223, 179, 163, 190, 177, 224, 67, 173}) {
+	if a.Key.String() != target.Settings || a.Owner.String() != squadsProgramID || a.Executable || len(d) < 94 || !bytes.Equal(d[:8], []byte{223, 179, 163, 190, 177, 224, 67, 173}) {
 		return errors.New("artifact root settings owner or layout invalid")
 	}
 	if base58Key(d[24:56]) != systemProgramZero || binary.LittleEndian.Uint16(d[56:58]) != 1 || binary.LittleEndian.Uint32(d[58:62]) != 0 || binary.LittleEndian.Uint64(d[70:78]) > binary.LittleEndian.Uint64(d[62:70]) {

@@ -14,15 +14,12 @@ import (
 func TestSVMCurrentFloorMutationRejectsActualSignedPullBeforeBroadcast(t *testing.T) {
 	f := loadSVMAutodepositFixture(t)
 	svm := startAutodepositSVM(t, f)
-	chain, err := NewRPCChain(svm.server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	rpcChain := svmChain(t, svm.server.URL)
 	seed, err := base64.StdEncoding.DecodeString(f.ExecutorSeedBase64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	builder, err := NewSweepWireBuilder(ed25519.NewKeyFromSeed(seed), chain.ReadAccountsWithOptional)
+	builder, err := NewSweepWireBuilder(ed25519.NewKeyFromSeed(seed), rpcChain.ReadAccountsWithOptional)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +50,7 @@ func TestSVMCurrentFloorMutationRejectsActualSignedPullBeforeBroadcast(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := chain.ConfirmedTokenBalanceRaw(ctx, f.WalletATA, f.Wallet)
+	before, err := rpcChain.ConfirmedTokenBalanceRaw(ctx, f.WalletATA, f.Wallet)
 	if err != nil || before != f.WalletBeforeRaw {
 		t.Fatalf("actual source balance=%d err=%v", before, err)
 	}
@@ -76,7 +73,7 @@ func TestSVMCurrentFloorMutationRejectsActualSignedPullBeforeBroadcast(t *testin
 		account, owner string
 		amount         int64
 	}{{f.WalletATA, f.Wallet, before}, {f.VaultATA, f.Vault, 0}} {
-		if balance, e := chain.ConfirmedTokenBalanceRaw(ctx, want.account, want.owner); e != nil || balance != want.amount {
+		if balance, e := rpcChain.ConfirmedTokenBalanceRaw(ctx, want.account, want.owner); e != nil || balance != want.amount {
 			t.Fatalf("floor refusal moved real funds: %d %v", balance, e)
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"github.com/jackc/pgx/v5"
+
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 

@@ -248,13 +248,21 @@ func svmPullPlan(f svmAutodepositFixture) DepositPlan {
 func svmDurablePull(b BuiltWire, amount int64) DurableAttempt {
 	return DurableAttempt{OperationKind: OperationPull, State: AttemptPrepared, AmountRaw: amount, Signature: b.Signature, SignedTransactionBase64: b.SignedTransactionBase64, SignedTransactionSHA256: b.SignedTransactionSHA256, RecentBlockhash: b.RecentBlockhash, LastValidBlockHeight: b.LastValidBlockHeight}
 }
+
+// svmChain is the production chain adapter over the local SVM's RPC.
+func svmChain(t *testing.T, url string) *RPCChain {
+	t.Helper()
+	client, err := chain.New(url, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewRPCChain(client)
+}
+
 func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	f := loadSVMAutodepositFixture(t)
 	svm := startAutodepositSVM(t, f)
-	rpcChain, e := NewRPCChain(svm.server.URL)
-	if e != nil {
-		t.Fatal(e)
-	}
+	rpcChain := svmChain(t, svm.server.URL)
 	seed, e := base64.StdEncoding.DecodeString(f.ExecutorSeedBase64)
 	if e != nil || len(seed) != 32 {
 		t.Fatal("invalid public test executor seed")
@@ -467,10 +475,10 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 		t.Fatalf("actual collateral readback: %v", e)
 	}
 	for _, account := range collateral {
-		if account.Owner != splTokenID {
-			t.Fatalf("actual SPL owner changed: %s", account.Address)
+		if account.Owner.String() != splTokenID {
+			t.Fatalf("actual SPL owner changed: %s", account.Key)
 		}
-		switch account.Address {
+		switch account.Key.String() {
 		case f.MockTopUp.CollateralMint:
 			if len(account.Data) != 82 || binary.LittleEndian.Uint64(account.Data[36:44]) != uint64(1_000_000+f.AmountRaw) {
 				t.Fatal("actual collateral mint supply did not increase exactly once")

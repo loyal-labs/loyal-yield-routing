@@ -54,8 +54,13 @@ func TestClaimCustodyTransferNeedsOneExactCounterparty(t *testing.T) {
 		return map[string]any{"slot": 77, "transaction": []string{base64.StdEncoding.EncodeToString(wire), "base64"},
 			"meta": map[string]any{"err": nil, "preTokenBalances": pre, "postTokenBalances": post}}
 	}
-	// Accounts: 0 payer, 1 custody, 2 wallet.
-	deposit := confirmedTransactionServer(t, response(tokenRows([2]any{2, "900"}), tokenRows([2]any{1, "300"}, [2]any{2, "600"})))
+	// The compiled message orders same-privilege accounts by key.
+	at := map[solana.PublicKey]int{}
+	for i, key := range transaction.Message.AccountKeys {
+		at[key] = i
+	}
+	payerAt, custodyAt, walletAt := at[payer], at[custody], at[wallet]
+	deposit := confirmedTransactionServer(t, response(tokenRows([2]any{walletAt, "900"}), tokenRows([2]any{custodyAt, "300"}, [2]any{walletAt, "600"})))
 	transfer, err := readCustodyTransfer(context.Background(), deposit, signature, 77, custody)
 	if err != nil {
 		t.Fatal(err)
@@ -67,11 +72,11 @@ func TestClaimCustodyTransferNeedsOneExactCounterparty(t *testing.T) {
 		t.Fatal("a transfer at another slot than the account update was accepted")
 	}
 	// A claim debit may not hide an account creation behind a missing row.
-	claim := confirmedTransactionServer(t, response(tokenRows([2]any{1, "300"}), tokenRows([2]any{1, "0"}, [2]any{2, "300"})))
+	claim := confirmedTransactionServer(t, response(tokenRows([2]any{custodyAt, "300"}), tokenRows([2]any{custodyAt, "0"}, [2]any{walletAt, "300"})))
 	if _, err := readCustodyTransfer(context.Background(), claim, signature, 77, custody); err == nil {
 		t.Fatal("a claim without the destination's pre balance was accepted")
 	}
-	ambiguous := confirmedTransactionServer(t, response(tokenRows([2]any{0, "300"}, [2]any{2, "300"}), tokenRows([2]any{0, "0"}, [2]any{1, "300"}, [2]any{2, "0"})))
+	ambiguous := confirmedTransactionServer(t, response(tokenRows([2]any{payerAt, "300"}, [2]any{walletAt, "300"}), tokenRows([2]any{payerAt, "0"}, [2]any{custodyAt, "300"}, [2]any{walletAt, "0"})))
 	if _, err := readCustodyTransfer(context.Background(), ambiguous, signature, 77, custody); err == nil {
 		t.Fatal("two exact counterparties were accepted")
 	}

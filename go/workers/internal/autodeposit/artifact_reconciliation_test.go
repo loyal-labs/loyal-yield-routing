@@ -17,7 +17,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
@@ -46,7 +45,7 @@ func artifactFixture(t *testing.T) (artifactGolden, ArtifactTarget, *SweepWireBu
 		t.Fatal("unexpected source pin")
 	}
 	target := ArtifactTarget{ControlTarget: ControlTarget{Cluster: mainnetCluster, TargetID: 1, SetupGeneration: 3, PolicySeed: f.PolicySeed, Settings: f.Settings, Wallet: f.Wallet, WalletTokenATA: f.WalletATA, Vault: f.Vault, VaultTokenATA: f.VaultATA, Mint: USDCMint, Policy: f.Policy, SubscriptionAuthority: f.SubscriptionAuthority, RecurringDelegation: f.RecurringDelegation, Nonce: &f.Nonce, MaxAmountPerPeriod: &f.MaxAmountPerPeriod, StartTimestamp: &f.StartTimestamp}, RootAuthority: f.RootAuthority, PeriodLength: &f.PeriodLength, ExpiryTimestamp: &f.ExpiryTimestamp}
-	b, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, 32)), func(context.Context, []string, ...string) (int64, []backyard.ConfirmedAccount, error) {
+	b, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{13}, 32)), func(context.Context, []string, ...string) (int64, []*chain.Account, error) {
 		return 0, nil, errors.New("unexpected account read")
 	})
 	if e != nil {
@@ -204,8 +203,8 @@ func TestArtifactCreatorRequiresExactCreationSignatureAndFullMatrix(t *testing.T
 }
 func TestArtifactPersonalRootSeedAndAuthorityProof(t *testing.T) {
 	f, target, _ := artifactFixture(t)
-	a := backyard.ConfirmedAccount{Address: f.Settings, Owner: squadsProgramID, Data: goldenHex(t, f.SettingsDataHex)}
-	if e := verifyArtifactRoot(a, target); e != nil {
+	a := testAccount{Address: f.Settings, Owner: squadsProgramID, Data: goldenHex(t, f.SettingsDataHex)}
+	if e := verifyArtifactRoot(a.chainAccount(), target); e != nil {
 		t.Fatal(e)
 	}
 	for _, offset := range []int{8, 24, 56, 58, 88, 93} {
@@ -213,14 +212,14 @@ func TestArtifactPersonalRootSeedAndAuthorityProof(t *testing.T) {
 			changed := a
 			changed.Data = append([]byte(nil), a.Data...)
 			changed.Data[offset] ^= 1
-			if e := verifyArtifactRoot(changed, target); e == nil {
+			if e := verifyArtifactRoot(changed.chainAccount(), target); e == nil {
 				t.Fatalf("changed settings byte %d accepted", offset)
 			}
 		})
 	}
 	other := target
 	other.RootAuthority = f.DelegatedSigner
-	if verifyArtifactRoot(a, other) == nil {
+	if verifyArtifactRoot(a.chainAccount(), other) == nil {
 		t.Fatal("foreign root authority accepted")
 	}
 }
@@ -304,14 +303,8 @@ func installArtifactSnapshot(t *testing.T, f artifactGolden, b *SweepWireBuilder
 	binary.LittleEndian.PutUint64(token[64:72], 9_000_000)
 	binary.LittleEndian.PutUint32(token[72:76], 1)
 	copy(token[76:108], authority[:])
-	accounts := map[string]backyard.ConfirmedAccount{f.Settings: {Address: f.Settings, Owner: squadsProgramID, Data: goldenHex(t, f.SettingsDataHex)}, f.Policy: {Address: f.Policy, Owner: squadsProgramID, Data: goldenHex(t, f.PolicyDataHex)}, f.SubscriptionAuthority: {Address: f.SubscriptionAuthority, Owner: SubscriptionsProgramID}, f.RecurringDelegation: {Address: f.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(f.Wallet, f.Vault, USDCMint, uint64(f.MaxAmountPerPeriod), 0)}, f.WalletATA: {Address: f.WalletATA, Owner: splTokenID, Data: token}}
-	b.read = func(_ context.Context, addresses []string, _ ...string) (int64, []backyard.ConfirmedAccount, error) {
-		out := make([]backyard.ConfirmedAccount, 0, len(addresses))
-		for _, address := range addresses {
-			out = append(out, accounts[address])
-		}
-		return 200, out, nil
-	}
+	accounts := map[string]testAccount{f.Settings: {Address: f.Settings, Owner: squadsProgramID, Data: goldenHex(t, f.SettingsDataHex)}, f.Policy: {Address: f.Policy, Owner: squadsProgramID, Data: goldenHex(t, f.PolicyDataHex)}, f.SubscriptionAuthority: {Address: f.SubscriptionAuthority, Owner: SubscriptionsProgramID}, f.RecurringDelegation: {Address: f.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(f.Wallet, f.Vault, USDCMint, uint64(f.MaxAmountPerPeriod), 0)}, f.WalletATA: {Address: f.WalletATA, Owner: splTokenID, Data: token}}
+	b.read = fixtureReader(200, accounts)
 }
 func TestArtifactHistoryIsBoundedAndRoleFiltered(t *testing.T) {
 	f, target, b := artifactFixture(t)
@@ -349,11 +342,11 @@ func TestArtifactV0CreatorBindsExternalPayerAndPinnedLookup(t *testing.T) {
 		key := mustKey(address)
 		copy(tableData[56+i*32:], key[:])
 	}
-	b.read = func(_ context.Context, addresses []string, _ ...string) (int64, []backyard.ConfirmedAccount, error) {
+	b.read = func(_ context.Context, addresses []string, _ ...string) (int64, []*chain.Account, error) {
 		if len(addresses) != 1 || addresses[0] != f.LookupKey {
 			return 0, nil, errors.New("unexpected lookup")
 		}
-		return 500, []backyard.ConfirmedAccount{{Address: f.LookupKey, Owner: "AddressLookupTab1e1111111111111111111111111", Data: tableData}}, nil
+		return 500, []*chain.Account{testAccount{Address: f.LookupKey, Owner: solana.AddressLookupTableProgramID.String(), Data: tableData}.chainAccount()}, nil
 	}
 	wire, e := base64.StdEncoding.DecodeString(f.V0WireBase64)
 	if e != nil {
