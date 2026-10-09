@@ -45,8 +45,8 @@ func (f *fakeChain) Accounts(_ context.Context, keys []solana.PublicKey, _ rpc.C
 	}
 	return f.slot, accounts, nil
 }
-func (f *fakeChain) Fee(context.Context, []byte, rpc.CommitmentType, uint64) (uint64, error) {
-	return f.fee, nil
+func (f *fakeChain) Fee(context.Context, []byte, rpc.CommitmentType, uint64) (uint64, uint64, error) {
+	return f.fee, f.slot, nil
 }
 func (f *fakeChain) Simulate(context.Context, []byte, rpc.SimulateTransactionOpts) (chain.Simulated, error) {
 	return chain.Simulated{Slot: f.slot}, nil

@@ -173,7 +173,7 @@ func observeMessageFee(ctx context.Context, c *chain.Client, message []byte, min
 	if minimumSlot <= 0 {
 		return MessageFeeObservation{}, budgetHold("invalid_fee_observation_slot")
 	}
-	fee, slot, err := c.FeeAt(ctx, message, uint64(minimumSlot))
+	fee, slot, err := c.Fee(ctx, message, rpc.CommitmentConfirmed, uint64(minimumSlot))
 	if err != nil || fee == 0 {
 		return MessageFeeObservation{}, budgetHold("network_fee_unavailable")
 	}

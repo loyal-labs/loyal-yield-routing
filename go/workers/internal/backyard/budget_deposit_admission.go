@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -71,7 +72,7 @@ func simulatePhase3EntryProjection(ctx context.Context, c *chain.Client, message
 	wire := append([]byte{1}, make([]byte, 64)...)
 	wire = append(wire, message...)
 	minimum := uint64(minimumSlot)
-	simulated, accounts, err := c.SimulateCapture(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum}, keys)
+	simulated, err := c.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum, Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: keys}})
 	var failure *chain.SimulationError
 	if errors.As(err, &failure) {
 		return projection, budgetHold("deposit_projection_failed")
@@ -84,7 +85,7 @@ func simulatePhase3EntryProjection(ctx context.Context, c *chain.Client, message
 		return projection, budgetHold("deposit_projection_failed")
 	}
 	projection.Slot, projection.MessageSHA256, projection.UnitsConsumed = slot, sha256Bytes(message), simulated.Units
-	for i, a := range accounts {
+	for i, a := range simulated.Accounts {
 		if a == nil || a.Executable {
 			return projection, budgetHold("deposit_projection_incomplete")
 		}

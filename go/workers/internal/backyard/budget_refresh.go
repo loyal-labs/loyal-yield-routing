@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -130,7 +131,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		return 0, nil, err
 	}
 	minimum := uint64(minimumSlot)
-	simulated, captured, err := c.SimulateCapture(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum}, keys)
+	simulated, err := c.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum, Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: keys}})
 	var failure *chain.SimulationError
 	if errors.As(err, &failure) {
 		transactionError, _ := json.Marshal(failure.Err)
@@ -140,7 +141,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		return 0, nil, budgetHold("price_refresh_simulation_unavailable")
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
-	for i, a := range captured {
+	for i, a := range simulated.Accounts {
 		if a == nil {
 			// Only an explicitly optional pinned address may stay absent.
 			if _, permitted := optional[addresses[i]]; permitted {

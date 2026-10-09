@@ -236,24 +236,24 @@ func TestReceiptResolvesLoadedAddresses(t *testing.T) {
 	}
 }
 
-func TestFeeAtIsReadNoOlderThanTheAskedSlot(t *testing.T) {
+func TestFeeIsReadNoOlderThanTheAskedSlot(t *testing.T) {
 	var opts map[string]any
 	fee := any(5000)
 	client := serve(t, func(req request) (int, any) {
 		_ = json.Unmarshal(req.Params[1], &opts)
 		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": fee})
 	})
-	lamports, slot, err := client.FeeAt(context.Background(), []byte{1}, 42)
+	lamports, slot, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42)
 	if err != nil || lamports != 5000 || slot != 44 || opts["minContextSlot"] != float64(42) || opts["commitment"] != "confirmed" {
 		t.Fatalf("fee %d at %d, %v, options %v", lamports, slot, err, opts)
 	}
 	fee = nil
-	if _, _, err := client.FeeAt(context.Background(), []byte{1}, 42); err == nil {
+	if _, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42); err == nil {
 		t.Fatal("a fee for an expired blockhash was accepted")
 	}
 }
 
-func TestSimulateCaptureReturnsAccountsAsSimulated(t *testing.T) {
+func TestSimulateReturnsTheAskedAccountsAsSimulated(t *testing.T) {
 	present, absent := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
 	var opts map[string]any
 	failure := any(nil)
@@ -263,7 +263,9 @@ func TestSimulateCaptureReturnsAccountsAsSimulated(t *testing.T) {
 			map[string]any{"lamports": 3, "owner": solana.TokenProgramID.String(), "data": []string{base64.StdEncoding.EncodeToString([]byte{8}), "base64"}, "executable": false}, nil}}})
 	})
 	minimum := uint64(48)
-	simulated, accounts, err := client.SimulateCapture(context.Background(), []byte{1}, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum}, []solana.PublicKey{present, absent})
+	capture := &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: []solana.PublicKey{present, absent}}
+	simulated, err := client.Simulate(context.Background(), []byte{1}, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum, Accounts: capture})
+	accounts := simulated.Accounts
 	captured, _ := opts["accounts"].(map[string]any)
 	if err != nil || simulated.Slot != 50 || simulated.Units != 9 || accounts[0].Key != present || accounts[0].Data[0] != 8 || accounts[1] != nil ||
 		captured["encoding"] != "base64" || opts["minContextSlot"] != float64(48) {
@@ -271,7 +273,7 @@ func TestSimulateCaptureReturnsAccountsAsSimulated(t *testing.T) {
 	}
 	failure = "BlockhashNotFound"
 	var simulationErr *SimulationError
-	if _, _, err := client.SimulateCapture(context.Background(), []byte{1}, rpc.SimulateTransactionOpts{}, []solana.PublicKey{present, absent}); !errors.As(err, &simulationErr) {
+	if _, err := client.Simulate(context.Background(), []byte{1}, rpc.SimulateTransactionOpts{Accounts: capture}); !errors.As(err, &simulationErr) {
 		t.Fatalf("a failed simulation is not a SimulationError: %v", err)
 	}
 }

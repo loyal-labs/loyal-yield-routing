@@ -268,7 +268,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "baseline_simulation", fmt.Errorf("measured compute requirement %d exceeds configured limit %d", compute, r.computeLimit)
 	}
 	out.Compute = compute
-	baselineFee, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentConfirmed, uint64(evidence.Slot))
+	baselineFee, _, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentConfirmed, uint64(evidence.Slot))
 	if err != nil {
 		return out, "fee", err
 	}
@@ -298,7 +298,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if len(missing) > 0 {
 		return out, "budgeted_compile", fmt.Errorf("budgeted ALT compilation changed coverage: %v", missing)
 	}
-	fee, err := r.rpc.Fee(ctx, budgetPreview.Message, rpc.CommitmentConfirmed, uint64(evidence.Slot))
+	fee, _, err := r.rpc.Fee(ctx, budgetPreview.Message, rpc.CommitmentConfirmed, uint64(evidence.Slot))
 	if err != nil {
 		return out, "fee", err
 	}
