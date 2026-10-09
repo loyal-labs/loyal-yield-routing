@@ -19,12 +19,12 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 	"github.com/mr-tron/base58"
 )
 
@@ -327,7 +327,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	facts.Own(families...)
 	// Every family lands its signed rows through the same send path.
-	landRPC, err := solana.NewLandRPC(cfg.rpcURL, 15*time.Second)
+	landRPC, err := chain.New(cfg.rpcURL, 15*time.Second)
 	if err != nil {
 		return retailError("landing RPC", err)
 	}

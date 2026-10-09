@@ -17,8 +17,8 @@ import (
 
 	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 type runtimeStatus struct {
@@ -64,14 +64,14 @@ func (s *runtimeSend) FinalizedBlockHeight(context.Context) (uint64, uint64, err
 	return uint64(s.status.status.BlockHeight), 1, nil
 }
 
-func (s *runtimeSend) SignatureState(context.Context, string) (solana.SignatureState, error) {
+func (s *runtimeSend) SignatureState(context.Context, string) (chain.SignatureState, error) {
 	st := s.status.status
-	out := solana.SignatureState{Found: st.Found, Slot: uint64(st.Slot), Err: st.Err, ContextSlot: uint64(st.ContextSlot), Commitment: solana.Processed}
+	out := chain.SignatureState{Found: st.Found, Slot: uint64(st.Slot), Err: st.Err, ContextSlot: uint64(st.ContextSlot), Commitment: chain.Processed}
 	if st.Confirmed {
-		out.Commitment = solana.Confirmed
+		out.Commitment = chain.Confirmed
 	}
 	if st.Finalized {
-		out.Commitment = solana.Finalized
+		out.Commitment = chain.Finalized
 	}
 	return out, nil
 }

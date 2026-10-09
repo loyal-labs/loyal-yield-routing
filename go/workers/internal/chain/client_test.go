@@ -97,6 +97,41 @@ func TestAccountsPinsEveryBatchToTheFirstSlot(t *testing.T) {
 	}
 }
 
+func TestSendWireAsksTheNodeNotToRebroadcast(t *testing.T) {
+	var opts map[string]any
+	client := serve(t, func(req request) (int, any) {
+		_ = json.Unmarshal(req.Params[1], &opts)
+		return http.StatusOK, result(solana.Signature{1}.String())
+	})
+	if err := client.SendWire(context.Background(), []byte{1, 2, 3}, true); err != nil {
+		t.Fatal(err)
+	}
+	if opts["maxRetries"] != float64(0) || opts["skipPreflight"] != true || opts["encoding"] != "base64" {
+		t.Fatalf("send options %v", opts)
+	}
+}
+
+func TestSignatureStateReadsCommitmentAndChainError(t *testing.T) {
+	statuses := []any{
+		map[string]any{"slot": 77, "confirmationStatus": "confirmed", "err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 6}}}},
+		nil,
+	}
+	call := 0
+	client := serve(t, func(request) (int, any) {
+		status := statuses[call]
+		call++
+		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 90}, "value": []any{status}})
+	})
+	failed, err := client.SignatureState(context.Background(), solana.Signature{1}.String())
+	if err != nil || !failed.Found || failed.Slot != 77 || failed.Commitment != Confirmed || failed.Err != `{"InstructionError":[0,{"Custom":6}]}` || failed.ContextSlot != 90 {
+		t.Fatalf("failed signature read as %+v, %v", failed, err)
+	}
+	absent, err := client.SignatureState(context.Background(), solana.Signature{1}.String())
+	if err != nil || absent.Found || absent.ContextSlot != 90 {
+		t.Fatalf("absent signature read as %+v, %v", absent, err)
+	}
+}
+
 func TestReceiptResolvesLoadedAddresses(t *testing.T) {
 	payer, loaded, mint, owner := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
 	tx, err := solana.NewTransaction([]solana.Instruction{solana.NewInstruction(solana.SystemProgramID, solana.AccountMetaSlice{solana.Meta(payer).SIGNER().WRITE()}, nil)}, solana.Hash{1}, solana.TransactionPayer(payer))

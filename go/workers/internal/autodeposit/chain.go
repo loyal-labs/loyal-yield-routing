@@ -12,7 +12,7 @@ import (
 	"github.com/gagliardetto/solana-go"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
-	solwire "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 var base64Std = base64.StdEncoding
@@ -36,7 +36,7 @@ type Chain interface {
 	// window, required before any wire is built.
 	LatestBlockhash(ctx context.Context) (string, int64, error)
 	// LandChain is the shared send path persisted wires land through.
-	solwire.LandChain
+	chain.LandChain
 	// ConfirmedReceipt reads the immutable transaction receipt for the exact
 	// signature, for integer effect verification.
 	ConfirmedReceipt(ctx context.Context, signature string) (ReceiptEvidence, error)
@@ -91,7 +91,7 @@ func (e ReceiptEvidence) EffectFor(tokenAccount string) (ReceiptEffect, bool) {
 // receipts, simulation.
 type RPCChain struct {
 	rpc *backyard.RPCClient
-	*solwire.LandRPC
+	*chain.Client
 }
 
 // NewRPCChain builds the production chain adapter over an RPC endpoint URL.
@@ -105,11 +105,11 @@ func NewRPCChain(rpcURL string) (*RPCChain, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build autodeposit chain RPC: %w", err)
 	}
-	land, err := solwire.NewLandRPC(rpcURL, 15*time.Second)
+	land, err := chain.New(rpcURL, 15*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	return &RPCChain{rpc: client, LandRPC: land}, nil
+	return &RPCChain{rpc: client, Client: land}, nil
 }
 
 func (c *RPCChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, authority string) (int64, error) {
@@ -254,7 +254,7 @@ func (c *RPCChain) SimulateExact(ctx context.Context, attempt DurableAttempt) er
 	if err != nil {
 		return fmt.Errorf("decode persisted %s wire: %w", attempt.OperationKind, err)
 	}
-	if _, err := solwire.OwnSignedWire(wire, attempt.SignedTransactionSHA256); err != nil {
+	if _, err := chain.OwnSignedWire(wire, attempt.SignedTransactionSHA256); err != nil {
 		return fmt.Errorf("persisted %s wire failed the shared packet contract: %w", attempt.OperationKind, err)
 	}
 	if _, err := c.rpc.SimulateSignedTransaction(ctx, wire); err != nil {

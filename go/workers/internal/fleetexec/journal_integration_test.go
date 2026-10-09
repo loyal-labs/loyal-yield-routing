@@ -19,8 +19,8 @@ import (
 	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 	"github.com/mr-tron/base58"
 )
 
@@ -479,11 +479,11 @@ func (c *countingChain) FinalizedBlockHeight(context.Context) (uint64, uint64, e
 	return c.height, 1, nil
 }
 
-func (c *countingChain) SignatureState(context.Context, string) (solana.SignatureState, error) {
+func (c *countingChain) SignatureState(context.Context, string) (chain.SignatureState, error) {
 	if c.landOn > 0 && len(c.wires) >= c.landOn {
-		return solana.SignatureState{Found: true, Slot: 700, Commitment: solana.Confirmed, ContextSlot: 700}, nil
+		return chain.SignatureState{Found: true, Slot: 700, Commitment: chain.Confirmed, ContextSlot: 700}, nil
 	}
-	return solana.SignatureState{ContextSlot: 650}, nil
+	return chain.SignatureState{ContextSlot: 650}, nil
 }
 
 type fakeStatus struct{}

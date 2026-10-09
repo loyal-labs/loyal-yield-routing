@@ -12,8 +12,8 @@ import (
 	"github.com/gagliardetto/solana-go"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	solwire "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // Official program constants for the two family wires. Every offset below is
@@ -763,7 +763,7 @@ func (b *SweepWireBuilder) sign(plan DepositPlan, blockhash [32]byte, lastValidB
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	owned, err := solwire.OwnSignedWire(wire, hexPrefix(mustSHA256(wire)))
+	owned, err := chain.OwnSignedWire(wire, hexPrefix(mustSHA256(wire)))
 	if err != nil {
 		return BuiltWire{}, err
 	}

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gagliardetto/solana-go"
-	solwire "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const solanaPacketBytes = 1232
@@ -57,7 +57,7 @@ func persistedWireTransaction(attempt DurableAttempt) (*solana.Transaction, erro
 	if err != nil {
 		return nil, err
 	}
-	if _, err = solwire.OwnSignedWire(wire, attempt.SignedTransactionSHA256); err != nil {
+	if _, err = chain.OwnSignedWire(wire, attempt.SignedTransactionSHA256); err != nil {
 		return nil, err
 	}
 	tx, err := solana.TransactionFromBytes(wire)

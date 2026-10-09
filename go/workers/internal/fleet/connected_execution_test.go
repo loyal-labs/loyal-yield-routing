@@ -13,10 +13,10 @@ import (
 	sdk "github.com/gagliardetto/solana-go"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // Go plans, persists the signed wire before any send, lands it through its own
@@ -47,7 +47,7 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	land, err := solana.NewLandRPC(bank.RPCURL, 5*time.Second)
+	land, err := chain.New(bank.RPCURL, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

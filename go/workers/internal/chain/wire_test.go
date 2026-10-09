@@ -1,4 +1,4 @@
-package solana
+package chain
 
 import (
 	"crypto/sha256"

@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"strings"
 	"testing"
 	"time"
@@ -408,9 +408,9 @@ func (s *scriptedControllerChain) FinalizedBlockHeight(context.Context) (uint64,
 
 // SignatureState answers with the scripted observation; a controller-built
 // signature is unseen until its bytes are sent.
-func (s *scriptedControllerChain) SignatureState(_ context.Context, signature string) (solana.SignatureState, error) {
+func (s *scriptedControllerChain) SignatureState(_ context.Context, signature string) (chain.SignatureState, error) {
 	s.lastSignature = signature
-	unseen := solana.SignatureState{ContextSlot: 1}
+	unseen := chain.SignatureState{ContextSlot: 1}
 	if strings.HasPrefix(signature, "itest-controller-") && !s.sent[signature] {
 		return unseen, nil
 	}
@@ -420,9 +420,9 @@ func (s *scriptedControllerChain) SignatureState(_ context.Context, signature st
 	}
 	switch observation.State {
 	case AttemptConfirmed:
-		return solana.SignatureState{Found: true, Slot: uint64(*observation.ConfirmedSlot), Commitment: solana.Confirmed, ContextSlot: 1}, nil
+		return chain.SignatureState{Found: true, Slot: uint64(*observation.ConfirmedSlot), Commitment: chain.Confirmed, ContextSlot: 1}, nil
 	case AttemptFailed:
-		return solana.SignatureState{Found: true, Slot: 1, Commitment: solana.Confirmed, Err: "scripted failure", ContextSlot: 1}, nil
+		return chain.SignatureState{Found: true, Slot: 1, Commitment: chain.Confirmed, Err: "scripted failure", ContextSlot: 1}, nil
 	}
 	return unseen, nil
 }

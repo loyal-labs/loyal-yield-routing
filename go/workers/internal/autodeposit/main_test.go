@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
-	land "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -29,9 +29,9 @@ func svmWire(t *testing.T, attempt DurableAttempt) []byte {
 }
 
 // svmObserve reads one signature through the landing chain as an attempt state.
-func svmObserve(ctx context.Context, chain land.LandChain, attempt DurableAttempt) (AttemptObservation, error) {
-	state, err := chain.SignatureState(ctx, attempt.Signature)
-	if err != nil || !state.Found || state.Commitment < land.Confirmed {
+func svmObserve(ctx context.Context, cluster chain.LandChain, attempt DurableAttempt) (AttemptObservation, error) {
+	state, err := cluster.SignatureState(ctx, attempt.Signature)
+	if err != nil || !state.Found || state.Commitment < chain.Confirmed {
 		return AttemptObservation{State: AttemptUnknown}, err
 	}
 	if state.Err != "" {

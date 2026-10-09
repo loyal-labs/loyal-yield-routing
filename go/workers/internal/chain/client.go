@@ -6,6 +6,7 @@ package chain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -227,6 +228,68 @@ func (c *Client) Receipt(ctx context.Context, signature solana.Signature, commit
 
 // ErrNotFound is a signature or account the cluster has no record of.
 var ErrNotFound = errors.New("not found")
+
+// SendWire submits the exact bytes once; maxRetries 0 keeps the node from
+// rebroadcasting on its own. Land decides when to send again.
+func (c *Client) SendWire(ctx context.Context, wire []byte, skipPreflight bool) error {
+	none := uint(0)
+	if _, err := c.rpc.SendRawTransactionWithOpts(ctx, wire, rpc.TransactionOpts{Encoding: solana.EncodingBase64, SkipPreflight: skipPreflight, PreflightCommitment: rpc.CommitmentConfirmed, MaxRetries: &none}); err != nil {
+		return failed("sendTransaction", err)
+	}
+	return nil
+}
+
+// FinalizedBlockHeight is the finalized block height and its slot, read
+// together from one node.
+func (c *Client) FinalizedBlockHeight(ctx context.Context) (height, slot uint64, err error) {
+	out, err := c.rpc.GetEpochInfo(ctx, rpc.CommitmentFinalized)
+	if err != nil {
+		return 0, 0, failed("getEpochInfo", err)
+	}
+	if out == nil || out.BlockHeight == 0 || out.AbsoluteSlot == 0 {
+		return 0, 0, errors.New("getEpochInfo: zero height or slot")
+	}
+	return out.BlockHeight, out.AbsoluteSlot, nil
+}
+
+// SignatureState reads one signature's status with full history.
+func (c *Client) SignatureState(ctx context.Context, signature string) (SignatureState, error) {
+	sig, err := solana.SignatureFromBase58(signature)
+	if err != nil {
+		return SignatureState{}, fmt.Errorf("getSignatureStatuses: %w", err)
+	}
+	out, err := c.rpc.GetSignatureStatuses(ctx, true, sig)
+	if err != nil {
+		return SignatureState{}, failed("getSignatureStatuses", err)
+	}
+	if len(out.Value) != 1 || out.Context.Slot == 0 {
+		return SignatureState{}, errors.New("getSignatureStatuses: invalid shape or context")
+	}
+	state := SignatureState{ContextSlot: out.Context.Slot}
+	status := out.Value[0]
+	if status == nil {
+		return state, nil
+	}
+	state.Found, state.Slot = true, status.Slot
+	switch status.ConfirmationStatus {
+	case rpc.ConfirmationStatusProcessed:
+		state.Commitment = Processed
+	case rpc.ConfirmationStatusConfirmed:
+		state.Commitment = Confirmed
+	case rpc.ConfirmationStatusFinalized:
+		state.Commitment = Finalized
+	default:
+		return SignatureState{}, errors.New("getSignatureStatuses: unknown commitment")
+	}
+	if status.Err != nil {
+		text, err := json.Marshal(status.Err)
+		if err != nil {
+			return SignatureState{}, errors.New("getSignatureStatuses: invalid error")
+		}
+		state.Err = string(text)
+	}
+	return state, nil
+}
 
 func tokenBalances(keys []solana.PublicKey, rows []rpc.TokenBalance) (map[solana.PublicKey]TokenBalance, error) {
 	balances := make(map[solana.PublicKey]TokenBalance, len(rows))

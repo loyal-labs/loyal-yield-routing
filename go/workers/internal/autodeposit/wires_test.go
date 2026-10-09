@@ -11,8 +11,8 @@ import (
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	solwire "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // fixedKey renders a deterministic, genuinely valid 32-byte public key for a
@@ -177,7 +177,7 @@ func TestBuildPullProducesSignedSubscriptionsWire(t *testing.T) {
 		t.Fatal("wire digest is not the sha256 of the decoded bytes")
 	}
 	// The persisted digest reproduces through OwnSignedWire.
-	if _, err := solwire.OwnSignedWire(raw, wire.SignedTransactionSHA256); err != nil {
+	if _, err := chain.OwnSignedWire(raw, wire.SignedTransactionSHA256); err != nil {
 		t.Fatalf("wire fails the shared packet contract: %v", err)
 	}
 	tx, err := solana.TransactionFromBytes(raw)

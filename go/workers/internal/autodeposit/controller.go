@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // landResendEvery matches the fleet landing cadence; landWindow bounds one
@@ -202,9 +202,9 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 		return Settlement{}, fmt.Errorf("decode persisted %s wire: %w", attempt.OperationKind, err)
 	}
 	landCtx, cancel := context.WithTimeout(scope.ctx, landWindow)
-	out, err := solana.Land(landCtx, c.chain, solana.Attempt{
+	out, err := chain.Land(landCtx, c.chain, chain.Attempt{
 		Wire: wire, Signature: attempt.Signature, LastValidBlockHeight: uint64(attempt.LastValidBlockHeight),
-		Sends: attempt.BroadcastCount, Required: solana.Confirmed,
+		Sends: attempt.BroadcastCount, Required: chain.Confirmed,
 	}, landResendEvery, func(sendCtx context.Context) error {
 		if attempt.BroadcastCount == 0 {
 			// A simulation error leaves the wire prepared, unsent and claimed.
@@ -227,10 +227,10 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 	}
 	observation, code := AttemptObservation{State: AttemptExpired}, "blockhash_expired"
 	switch out.Kind {
-	case solana.Landed:
+	case chain.Landed:
 		slot := int64(out.Slot)
 		observation, code = AttemptObservation{State: AttemptConfirmed, ConfirmedSlot: &slot}, ""
-	case solana.Failed:
+	case chain.Failed:
 		observation, code = AttemptObservation{State: AttemptFailed, Err: errors.New("transaction failed on chain: " + out.Err)}, "transaction_failed"
 	}
 	recorded, err := c.store.RecordAttemptObservation(scope.ctx, attempt, observation, scope.leaseToken)
@@ -555,8 +555,8 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 			return false, err
 		}
 		landCtx, cancel := context.WithTimeout(scope.ctx, landWindow)
-		out, err := solana.Land(landCtx, c.chain, solana.Attempt{
-			Wire: bytes, Signature: wire.Signature, LastValidBlockHeight: uint64(wire.LastValidBlockHeight), Required: solana.Confirmed,
+		out, err := chain.Land(landCtx, c.chain, chain.Attempt{
+			Wire: bytes, Signature: wire.Signature, LastValidBlockHeight: uint64(wire.LastValidBlockHeight), Required: chain.Confirmed,
 		}, landResendEvery, func(context.Context) error { return c.assertOwnership(scope, claimToken) })
 		cancel()
 		if errors.Is(err, context.DeadlineExceeded) && scope.ctx.Err() == nil {
@@ -565,7 +565,7 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 		if err != nil {
 			return false, err
 		}
-		if out.Kind != solana.Landed {
+		if out.Kind != chain.Landed {
 			// Not landed: the next dispatch inspects the chain again.
 			return false, nil
 		}
