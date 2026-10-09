@@ -7,13 +7,11 @@ encrypted with the host key. Each process exposes its health on loopback
 alerts to Telegram. Logs are slog JSON on stdout, and the collector ships
 them from journald to ClickStack.
 
-| Unit | Binary | Families | `/metrics` | Rust services it replaces |
-|---|---|---|---|---|
-| `loyal-observer.service` | `loyal-observer` | observer | `127.0.0.1:9101` | kamino-reserve-monitor, balance-sweep-ata-monitor, balance-sweep-ata-projector, squads-policy-monitor |
-| `loyal-retail.service` | `loyal-engine` (scope `retail`) | autodeposit, fleet, multiply, lookup | `127.0.0.1:9102` | balance-sweep-autodeposit-trigger, fleet-opportunity-planner, kamino-fleet-planner, fleet-route-revalidator/executor/confirmer/reconciler, route-lookup-table-provisioner, multiply-route-worker |
-| `loyal-backyard.service` | `loyal-engine` (scope `backyard`) | backyard | `127.0.0.1:9103` | backyard-rwa-worker |
-
-The Rust fleet-health-projector stays until phase 2.
+| Unit | Binary | Families | `/metrics` |
+|---|---|---|---|
+| `loyal-observer.service` | `loyal-observer` | observer | `127.0.0.1:9101` |
+| `loyal-retail.service` | `loyal-engine` (scope `retail`) | autodeposit, fleet, multiply, lookup | `127.0.0.1:9102` |
+| `loyal-backyard.service` | `loyal-engine` (scope `backyard`) | backyard | `127.0.0.1:9103` |
 
 ## Build
 
@@ -55,14 +53,13 @@ held through a transaction pooler belongs to whichever client the pooler
 hands the session to next. Credentials by unit:
 
 - `loyal-observer`: `HELIUS_API_KEY`, `SOLANA_RPC_URL`, `NEON_DATABASE_URL`, `TIMESCALEDB_URL`
-- `loyal-retail`: `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`, `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR`, `RETAIL_FEE_PAYER_KEYPAIR`. Add `RETAIL_LOOKUP_MANAGER_KEYPAIR` only for active lookup mode. When the unit writes Autodeposit, add `RETAIL_SWEEP_NOTIFY_ENDPOINT` and `RETAIL_SWEEP_NOTIFY_SECRET` (the app's failed-sweep push; the Rust/TS `SOLANA_WEEK_NOTIFY_ENDPOINT` and `SOLANA_WEEK_NOTIFY_SECRET`) in a drop-in, both or neither, as the unit's comment shows. A missing `LoadCredentialEncrypted=` file fails the unit (243/CREDENTIALS), so these optional credentials never go in the unit itself.
+- `loyal-retail`: `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`, `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR`, `RETAIL_FEE_PAYER_KEYPAIR`. Add `RETAIL_LOOKUP_MANAGER_KEYPAIR` only for active lookup mode. When the unit writes Autodeposit, add `RETAIL_SWEEP_NOTIFY_ENDPOINT` and `RETAIL_SWEEP_NOTIFY_SECRET` (the app's failed-sweep push; the TS `SOLANA_WEEK_NOTIFY_ENDPOINT` and `SOLANA_WEEK_NOTIFY_SECRET`) in a drop-in, both or neither, as the unit's comment shows. A missing `LoadCredentialEncrypted=` file fails the unit (243/CREDENTIALS), so these optional credentials never go in the unit itself.
 - `loyal-backyard`: `BACKYARD_DATABASE_URL`, `BACKYARD_SOLANA_RPC_URL`, `BACKYARD_POLICY_KEYPAIR`, `BACKYARD_TIMESCALE_DATABASE_URL`, `JUPITER_API_KEY`. Its selector mode and canary entry go in `/etc/loyal/loyal-backyard.env`.
 - Alertmanager: `telegram_bot_token`
 - Alertmanager: `heartbeat_url`, the external dead man's switch that the Watchdog alert pings. Not wired yet: until it exists the heartbeat receiver is empty, and nothing pages if the whole host or monitoring stack is down.
 - Collector: `CLICKSTACK_OTLP_ENDPOINT`, `CLICKSTACK_INGESTION_KEY`
 
-Then run `systemctl daemon-reload`. Do not enable a unit until its family
-is swapped.
+Then run `systemctl daemon-reload`.
 
 ## Upgrade
 
@@ -72,46 +69,9 @@ systemctl restart loyal-retail
 ```
 
 On a restart, signed and sent rows stay on their operation rows, and the
-next start lands them (`land()`). Restart one unit at a time.
-
-## Swap a family from Rust to Go
-
-Only one writer per family may run. Go enforces this with `HoldFamily`,
-and a second Go process exits and restarts until the first one stops.
-Rust is stopped by hand:
-
-1. Close admission in the Rust worker for the family, using its existing
-   pause or disable control. No new operation may start.
-2. Wait until every in-flight operation is terminal: no Autodeposit
-   attempts in `prepared|submitted|unknown|ambiguous`, no fleet decisions
-   in `planned|simulating|ready|submitted|confirming`, and so on for the
-   family's operation rows.
-3. Run `systemctl disable --now <rust-unit>`. Never use `runtime.py stop`.
-4. Run `systemctl enable --now <go-unit>`.
-5. Watch `loyal_family_last_progress_timestamp_seconds{family=...}` advance.
-
-Which writer runs is the unit's boot enablement, so a swap always moves it
-with the running unit. A stop alone leaves Rust enabled, and after a reboot
-Rust and Go would both start.
-
-To fall back, wait for `loyal_family_inflight{family=...} == 0`, then run
-`systemctl disable --now <go-unit>`, then `rm /run/<rust-unit>/paused` and
-`systemctl enable --now <rust-unit>`. The Rust controllers' `quiesce` (what
-`systemctl stop` runs) writes that pause marker, and `supervise` refuses to
-start while it exists, so starting Rust without removing it leaves Rust
-down. Go keeps the row states and legacy lease columns that Rust reads. A
-stopped Go unit is inactive, so it does not alert.
-
-During the swap window, a family whose Go and Rust units are both stopped
-emits nothing. Rust units are named per host, so add one host-local rule per
-family until phase 2 retires Rust:
-
-```yaml
-- alert: LoyalFamilyNoWriter
-  expr: absent(node_systemd_unit_state{name=~"loyal-retail\\.service|<rust-units>", state="active"} == 1)
-  for: 5m
-  labels: {severity: page, family: autodeposit}
-```
+next start lands them (`land()`). Restart one unit at a time. Only one writer
+per family runs: with `HoldFamily`, a second process exits and restarts until
+the first one stops.
 
 ## Realtime (Rust)
 
@@ -245,8 +205,7 @@ All files are in `monitoring/`. Everything listens on loopback.
 - node_exporter flags: `--collector.systemd
   --collector.systemd.unit-include='loyal-.+\.service'
   --collector.systemd.enable-restarts-metrics
-  --web.listen-address=127.0.0.1:9100`. These cover the Go units and the
-  Rust units during the fallback window.
+  --web.listen-address=127.0.0.1:9100`.
 - `alertmanager.yml` → `/etc/prometheus/alertmanager.yml`. Replace the
   placeholder `chat_id` with the alerts chat id.
   `alertmanager.service.d/telegram.conf` →
@@ -272,7 +231,7 @@ The alerts are:
 | LoyalLaneStalled | A lane (lookup planner or writer; fleet planner, position sweep or executor) has had no tick finish without error for 15m. Its clock starts when the lane starts; transient errors that clear do not page. One opportunity or submission failing is recorded on its row and does not fail the executor tick |
 | LoyalInflightStuck | Work in flight with no landed or failed outcome for 3m, twice the blockhash expiry |
 | LoyalWorkerDown | A Go unit that systemd is running does not serve `/metrics` for 2m |
-| LoyalUnitDown | Any `loyal-*` unit is `failed`, or stuck `activating`, for 2m (in practice Rust units, since Go units restart forever) |
+| LoyalUnitDown | Any `loyal-*` unit is `failed`, or stuck `activating`, for 2m |
 | LoyalUnitRestartLoop | Any `loyal-*` unit restarts more than 3 times in 15m |
 | LoyalMonitoringDown | node_exporter, Prometheus or Alertmanager is not scrapeable for 2m |
 | Watchdog | Always firing. It goes to the heartbeat receiver, and the external switch pages when it stops |
@@ -282,8 +241,8 @@ Known Autodeposit gaps:
 - The fee payer is read once per pass. A pass that sets up many new vaults
   can spend it below 0.05 SOL partway through; the next pass stops.
 - A target blocked at route preflight is released, not deferred with a
-  marker, so `LoyalAutodepositOverdue` does not see it. This matches Rust's
-  overdue check; only the `autodeposit_preflight_blocked` code reports it.
+  marker, so `LoyalAutodepositOverdue` does not see it. Only the
+  `autodeposit_preflight_blocked` code reports it.
 
 A family whose Go process does not report facts yet stays at progress 0 and
 pages after its grace. Enable a Go unit only after its families emit facts.

@@ -1,8 +1,7 @@
-# Loyal workers v2
+# Loyal workers
 
-Isolated rewrite, kept off main and production until the infrastructure migration
-is accepted and later merge/activation is authorized. See
-`../../docs/workers-v2/contracts.md` for behavior and acceptance.
+See `../../docs/workers/facts.md` for the source of truth and the one writer of
+each fact.
 
 One module composes observer, retail engine and separately credentialed Backyard
 engine. The initial source-preserving imports retain existing schemas and tests.
@@ -37,7 +36,7 @@ and the credentials
 `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR` and `RETAIL_FEE_PAYER_KEYPAIR`. The current Autodeposit
 and same-mint packet contracts require the latter two keys to be identical.
 `RETAIL_FAMILIES` names the families this process writes (`autodeposit`,
-`fleet`, `multiply`, `lookup`), each moved off its stopped Rust worker. The
+`fleet`, `multiply`, `lookup`). The
 process holds each family's session advisory lock on `RETAIL_DATABASE_URL`,
 which must therefore be the direct Neon DSN, and exits when a lock is lost.
 Every family lands signed rows through one function, `solana.Land`: the
@@ -65,7 +64,6 @@ Packing retains the source defaults: eight reserved growth addresses per vault
 and at most sixteen vaults per shard. Reconcile-only mode repairs observed
 catalog state and publishes proved existing bindings; fresh provisioning and
 cleanup packets require active mode and independently fenced writer admission.
-Do not enable this rewrite against shared resources.
 
 Backyard (`LOYAL_WORKER_SCOPE=backyard`) is the production Voltr/Kamino RWA
 line ported from `origin/feat/voltr-rwa-selector`. It requires the credentials
@@ -82,9 +80,8 @@ with the same credentials.
 Observer retains its reviewed transport configuration in
 `internal/observer/config/config.go` and runs the Earn domain application
 (`internal/observer/earn`) in process: policy projection, the durable Earn
-reconciliation queue and the hourly Earn APY snapshots. Like the Rust
-monitors, observer watches come from the Yield database (`NEON_DATABASE_URL`)
-alone. Product read models stay with the Apps crons until
+reconciliation queue and the hourly Earn APY snapshots. Observer watches come
+from the Yield database (`NEON_DATABASE_URL`) alone. Product read models stay with the Apps crons until
 `OBSERVER_READ_MODELS_ENABLED=true` hands them over. The fixed watch catalog
 verifies actual mainnet genesis before opening writers and on every watch
 refresh.
@@ -110,5 +107,4 @@ disablement; do not clear uncertainty by deleting rows.
 
 The Docker image contains only the three Go binaries, runs as UID 65532, and
 records
-artifact checksums. Branch CI builds and probes it without publishing. Main
-merge, migration acceptance and family writer activation remain separate gates.
+artifact checksums. Branch CI builds and probes it without publishing.

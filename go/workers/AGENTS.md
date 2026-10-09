@@ -1,6 +1,6 @@
 # Workers v2 implementation
 
-All work stays on the assigned rewrite branch. Do not merge/push main, deploy,
+All work stays on the assigned branch. Do not merge/push main, deploy,
 run migrations against connected resources, submit chain transactions, or read
 production secrets. Use saved fixtures and explicitly disposable local databases.
 Do not read `.env*`, key material, unrelated agent logs or another lane's worktree.
@@ -10,7 +10,7 @@ integration. Each lane edits its allowlisted feature files only; request shared
 changes in its final report. Do not spawn nested agents. Root commits reviewed
 work; do not change git metadata from an implementation lane.
 
-Read `docs/workers-v2/contracts.md` and the assigned task before implementation.
+Read `docs/workers/facts.md` and the assigned task before implementation.
 Reuse existing code. Keep family SQL and typed lifecycle logic together. No
 generic workflow/operation/executor, ORM, plugin registry, global utility package,
 or speculative interfaces. Planner/observer never receive signing capabilities.
