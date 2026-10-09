@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -256,11 +255,8 @@ func (r *ControlReconciler) Run(ctx context.Context) error {
 		cycle, cancel := context.WithTimeout(ctx, runtimeCycleTimeout)
 		_, err := r.Tick(cycle)
 		cancel()
-		if err != nil && ctx.Err() == nil {
-			log.Print("autodeposit control_cycle_failed")
-			if r.OnError != nil {
-				r.OnError(errRuntimeProofUnavailable)
-			}
+		if err != nil && ctx.Err() == nil && r.OnError != nil {
+			r.OnError(err)
 		}
 		select {
 		case <-ctx.Done():
