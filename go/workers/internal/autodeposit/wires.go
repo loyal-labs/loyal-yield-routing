@@ -70,11 +70,11 @@ const (
 	obligationBorrowCount         = 5
 )
 
-// AccountReader reads one coherent confirmed account set in address order:
-// the required addresses must all exist, an optional one is nil when absent.
-// The production adapter binds it to the chain client; tests bind it to
-// fixtures.
-type AccountReader func(ctx context.Context, addresses []string, optional ...string) (int64, []*chain.Account, error)
+// AccountReader reads one coherent confirmed account set in address order, at
+// a slot no older than minSlot (0 for any): the required addresses must all
+// exist, an optional one is nil when absent. The production adapter binds it
+// to the chain client; tests bind it to fixtures.
+type AccountReader func(ctx context.Context, minSlot int64, addresses []string, optional ...string) (int64, []*chain.Account, error)
 
 // ErrRouteNotExecutable reports a destination that cannot take the deposit
 // today. No funds have moved when it is returned, and the controller refuses
@@ -242,7 +242,7 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if err != nil {
 		return TopUpRoute{}, err
 	}
-	slot, accounts, err := b.read(ctx, []string{plan.Reserve, plan.Market, obligationKey, plan.Target.VaultUsdcAta})
+	slot, accounts, err := b.read(ctx, 0, []string{plan.Reserve, plan.Market, obligationKey, plan.Target.VaultUsdcAta})
 	if err != nil {
 		return TopUpRoute{}, err
 	}
@@ -403,7 +403,7 @@ func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan,
 	if policyAccount == "" {
 		return fleet.RouteInstruction{}, errors.New("autodeposit wire has no frozen policy account")
 	}
-	slot, accounts, err := b.read(ctx, []string{policyAccount})
+	slot, accounts, err := b.read(ctx, 0, []string{policyAccount})
 	if err != nil {
 		return fleet.RouteInstruction{}, err
 	}

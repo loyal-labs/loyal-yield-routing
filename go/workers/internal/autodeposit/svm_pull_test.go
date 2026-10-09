@@ -267,7 +267,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e != nil || len(seed) != 32 {
 		t.Fatal("invalid public test executor seed")
 	}
-	builder, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(seed), rpcChain.ReadAccountsWithOptional)
+	builder, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(seed), rpcChain.ReadAccounts)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -304,7 +304,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 		amount int64
 	}{{"unauthorized", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{20}, 32)), f.AmountRaw}, {"over-budget", ed25519.NewKeyFromSeed(seed), f.BudgetRaw + 1}} {
 		t.Run(tc.name, func(t *testing.T) {
-			b, e := NewSweepWireBuilder(tc.key, rpcChain.ReadAccountsWithOptional)
+			b, e := NewSweepWireBuilder(tc.key, rpcChain.ReadAccounts)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -455,7 +455,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e = (&Controller{chain: rpcChain}).verifyTopUpEffects(t.Context(), plan, route, Settlement{Attempt: top}); e != nil {
 		t.Fatalf("actual exact top-up receipt: %v", e)
 	}
-	if position, slot, err := rpcChain.ConfirmedVaultPositionRaw(t.Context(), plan, route); err != nil || position != f.AmountRaw || slot != 1000 {
+	if position, slot, err := rpcChain.ConfirmedVaultPositionRaw(t.Context(), plan, route, 0); err != nil || position != f.AmountRaw || slot != 1000 {
 		t.Fatalf("actual mock obligation/collateral conversion=%d slot%d err=%v", position, slot, err)
 	}
 	if e = rpcChain.SendWire(t.Context(), svmWire(t, top), true); e != nil {
@@ -470,7 +470,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 			t.Fatalf("actual post-top-up/retry balance %s=%d want%d err=%v", expected.account, balance, expected.amount, err)
 		}
 	}
-	_, collateral, e := rpcChain.ReadAccounts(t.Context(), []string{f.MockTopUp.CollateralMint, f.MockTopUp.CollateralSupply, USDCMint})
+	_, collateral, e := rpcChain.ReadAccounts(t.Context(), 0, []string{f.MockTopUp.CollateralMint, f.MockTopUp.CollateralSupply, USDCMint})
 	if e != nil || len(collateral) != 3 {
 		t.Fatalf("actual collateral readback: %v", e)
 	}

@@ -208,12 +208,9 @@ func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target Art
 		return ErrArtifactCreationProofPending
 	}
 	addresses := []string{target.Settings, target.Policy, target.RecurringDelegation}
-	slot, accounts, err := b.read(ctx, addresses)
+	_, accounts, err := b.read(ctx, observation.ObservedSlot, addresses)
 	if err != nil {
 		return err
-	}
-	if slot < observation.ObservedSlot || len(accounts) != 3 {
-		return errors.New("artifact account snapshot is behind control evidence")
 	}
 	if err = verifyArtifactRoot(accounts[0], target); err != nil {
 		return err

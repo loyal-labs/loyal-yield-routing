@@ -104,12 +104,9 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		return o, errors.New("control policy differs from canonical seed PDA")
 	}
 	addresses := []string{target.Policy, target.SubscriptionAuthority, target.RecurringDelegation, target.WalletTokenATA}
-	slot, accounts, err := b.read(ctx, addresses, addresses...)
+	slot, accounts, err := b.read(ctx, minimumSlot, addresses, addresses...)
 	if err != nil {
 		return o, err
-	}
-	if slot <= 0 || slot < minimumSlot || len(accounts) != 4 {
-		return o, errors.New("control observation is incomplete or behind requested slot")
 	}
 	o.ObservedSlot = slot
 	for _, a := range accounts {

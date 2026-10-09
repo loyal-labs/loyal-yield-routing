@@ -41,9 +41,6 @@ type Chain interface {
 	// ConfirmedReceipt reads the immutable transaction receipt for the exact
 	// signature, for integer effect verification.
 	ConfirmedReceipt(ctx context.Context, signature string) (ReceiptEvidence, error)
-	// ReadAccounts reads one coherent confirmed account set. Every requested
-	// address must exist with a program owner, or the read fails.
-	ReadAccounts(ctx context.Context, addresses []string) (int64, []*chain.Account, error)
 	// SimulateExact simulates the persisted wire's exact bytes with signature
 	// verification, before the family records anything as settled. It never
 	// replaces the blockhash.
@@ -51,7 +48,8 @@ type Chain interface {
 	// ConfirmedVaultPositionRaw reads the vault's deposited liquidity in the
 	// frozen reserve from confirmed chain state, with the slot it was read at.
 	// It is the post-confirm position amount finalization publishes.
-	ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute) (int64, int64, error)
+	// The read is no older than minSlot, the top-up's confirmed slot.
+	ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, minSlot int64) (int64, int64, error)
 }
 
 // ErrTokenAccountAbsent reports a token account that does not exist (yet).
@@ -105,7 +103,7 @@ func (c *RPCChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, a
 	if tokenAccount == "" {
 		return 0, errors.New("token account address is required")
 	}
-	_, accounts, err := c.ReadAccountsWithOptional(ctx, []string{tokenAccount}, tokenAccount)
+	_, accounts, err := c.ReadAccounts(ctx, 0, []string{tokenAccount}, tokenAccount)
 	if err != nil {
 		return 0, fmt.Errorf("read autodeposit token account %s: %w", tokenAccount, err)
 	}
@@ -130,7 +128,7 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 	if identity.Nonce == nil || identity.WalletTokenAccount == "" {
 		return 0, fmt.Errorf("%w: confirmed delegation nonce and wallet token account required", ErrAllowanceUnknown)
 	}
-	_, accounts, err := c.ReadAccounts(ctx, []string{delegation, identity.WalletTokenAccount})
+	_, accounts, err := c.ReadAccounts(ctx, 0, []string{delegation, identity.WalletTokenAccount})
 	if err != nil {
 		return 0, fmt.Errorf("%w: read delegation %s: %v", ErrAllowanceUnknown, delegation, err)
 	}
@@ -189,15 +187,10 @@ func (c *RPCChain) ConfirmedReceipt(ctx context.Context, signature string) (Rece
 	return receiptEvidence(signature, receipt)
 }
 
-// ReadAccounts reads one coherent confirmed account set; every address must
-// exist.
-func (c *RPCChain) ReadAccounts(ctx context.Context, addresses []string) (int64, []*chain.Account, error) {
-	return c.ReadAccountsWithOptional(ctx, addresses)
-}
-
-// ReadAccountsWithOptional reads addresses at one confirmed slot. Only the
-// optional addresses may be absent; they come back nil.
-func (c *RPCChain) ReadAccountsWithOptional(ctx context.Context, addresses []string, optional ...string) (int64, []*chain.Account, error) {
+// ReadAccounts reads addresses at one confirmed slot no older than minSlot.
+// Only the optional addresses may be absent; they come back nil. A node
+// behind minSlot answers chain.ErrBehind.
+func (c *RPCChain) ReadAccounts(ctx context.Context, minSlot int64, addresses []string, optional ...string) (int64, []*chain.Account, error) {
 	keys := make([]solana.PublicKey, len(addresses))
 	for i, address := range addresses {
 		key, err := solana.PublicKeyFromBase58(address)
@@ -206,7 +199,7 @@ func (c *RPCChain) ReadAccountsWithOptional(ctx context.Context, addresses []str
 		}
 		keys[i] = key
 	}
-	slot, accounts, err := c.Accounts(ctx, keys, rpc.CommitmentConfirmed, 0)
+	slot, accounts, err := c.Accounts(ctx, keys, rpc.CommitmentConfirmed, uint64(max(minSlot, 0)))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -219,7 +212,7 @@ func (c *RPCChain) ReadAccountsWithOptional(ctx context.Context, addresses []str
 }
 
 func (c *RPCChain) ConfirmedLamports(ctx context.Context, address string) (uint64, error) {
-	_, accounts, err := c.ReadAccountsWithOptional(ctx, []string{address}, address)
+	_, accounts, err := c.ReadAccounts(ctx, 0, []string{address}, address)
 	if err != nil || accounts[0] == nil {
 		return 0, err
 	}
@@ -250,8 +243,8 @@ func (c *RPCChain) SimulateExact(ctx context.Context, attempt DurableAttempt) er
 // collateral exchange value, at one coherent confirmed slot. Borrowed liquidity
 // and fee liabilities remain in the 60-bit scaled-fraction domain until the
 // final flooring through the shared KLend decoder.
-func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute) (int64, int64, error) {
-	observedSlot, accounts, err := c.ReadAccounts(ctx, []string{route.Obligation, plan.Reserve})
+func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, minSlot int64) (int64, int64, error) {
+	observedSlot, accounts, err := c.ReadAccounts(ctx, minSlot, []string{route.Obligation, plan.Reserve})
 	if err != nil {
 		return 0, 0, err
 	}
