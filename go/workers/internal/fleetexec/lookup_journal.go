@@ -14,10 +14,6 @@ import (
 	"github.com/mr-tron/base58"
 )
 
-func (s *Store) RequireLookupSchema(ctx context.Context) error {
-	return db.RequireTables(ctx, s.pool, "loyal_yield.lookup_table_operations", "loyal_yield.lookup_table_provisioner_broadcast_permits", "loyal_yield.lookup_table_cluster_budget_reservations")
-}
-
 // lookupSignedContext is the part of a signed packet the Rust columns cannot
 // hold. It lives in operation_context next to signedExpectedReclaimedRentLamports.
 type lookupSignedContext struct {

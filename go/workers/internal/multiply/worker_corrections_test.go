@@ -29,7 +29,7 @@ func putReviewSF(destination []byte, value *big.Int) {
 // These cases assert the reference's debt-custody branch, using PYUSD so
 // debt custody and claim custody remain distinct. The deployed strategy
 // selection and USDC custody alias order are unchanged.
-func TestPlannerDebtCustodyThresholdMatchesRust(t *testing.T) {
+func TestPlannerDebtCustodyThreshold(t *testing.T) {
 	topology := testTopology(t)
 	for _, test := range []struct {
 		name   string

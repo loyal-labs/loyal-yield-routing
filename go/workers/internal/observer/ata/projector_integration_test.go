@@ -75,9 +75,6 @@ func projectorFixture(t *testing.T) (*Projector, context.Context) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.RequireSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
 	return p, ctx
 }
 

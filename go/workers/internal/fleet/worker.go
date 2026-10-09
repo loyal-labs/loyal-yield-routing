@@ -23,8 +23,6 @@ type Worker struct {
 	rpc               *RPCClient
 	marketEvidence    MarketEpochSource
 	revalidator       *Revalidator
-	shadowRevalidator *Revalidator
-	shadowSeen        shadowSeen
 	lastConfirmedSlot int64
 	facts             *engine.Facts
 	voltr             *VoltrRoute
@@ -53,23 +51,7 @@ func (w *Worker) SetRevalidator(revalidator *Revalidator) error {
 	if revalidator == nil {
 		return fmt.Errorf("revalidator is required")
 	}
-	if w.config.Mode != ModePublish {
-		return fmt.Errorf("shadow mode cannot run durable revalidation")
-	}
 	w.revalidator = revalidator
-	return nil
-}
-
-// SetShadowRevalidator installs the read-only shadow loop. Shadow mode only:
-// it peeks, prepares, and logs; it never leases or commits.
-func (w *Worker) SetShadowRevalidator(revalidator *Revalidator) error {
-	if revalidator == nil {
-		return fmt.Errorf("revalidator is required")
-	}
-	if w.config.Mode != ModeShadow {
-		return fmt.Errorf("publish mode cannot run the shadow revalidator")
-	}
-	w.shadowRevalidator = revalidator
 	return nil
 }
 
@@ -87,7 +69,7 @@ func (w *Worker) SetMarketEvidence(source MarketEpochSource) error {
 // market evidence). The Voltr vault is planned on its own five-second probe,
 // as in the Rust planner.
 func (w *Worker) runtimeCycle(ctx context.Context) {
-	if w.voltr != nil && w.config.Mode == ModePublish && !time.Now().Before(w.nextVoltr) {
+	if w.voltr != nil && !time.Now().Before(w.nextVoltr) {
 		w.nextVoltr = time.Now().Add(5 * time.Second)
 		if status, err := w.voltrCycle(ctx); err != nil {
 			logEvent(map[string]any{"event": "backyard_voltr_planning_failed", "vaultId": w.config.VoltrVaultID, "errorCategory": "cycle", "error": LogErrorText(err)})
@@ -169,17 +151,6 @@ func (w *Worker) Run(ctx context.Context) error {
 			}(i)
 		}
 	}
-	if w.shadowRevalidator != nil {
-		for i := 0; i < w.config.RevalidationConcurrency; i++ {
-			lanes.Add(1)
-			go func(index int) {
-				defer lanes.Done()
-				w.runRevalidator(ctx, index, "kamino_fleet_revalidation_shadow_failed", func(ctx context.Context, cluster string) (bool, error) {
-					return w.shadowRevalidator.ShadowCycle(ctx, cluster, &w.shadowSeen)
-				})
-			}(i)
-		}
-	}
 	poll := time.NewTicker(w.config.PollInterval)
 	defer poll.Stop()
 	w.runtimeCycle(ctx)
@@ -232,24 +203,20 @@ func (w *Worker) cycle(ctx context.Context) error {
 }
 
 func (w *Worker) planningCycle(ctx context.Context) error {
-	// Shadow never changes durable state. Keep Rust serving production while
-	// observing Go-specific successful-cycle logs, not the shared heartbeat.
-	if w.config.Mode == ModePublish {
-		if err := w.store.RegisterFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
-			return err
-		}
-		if _, err := w.store.RecoverUnsignedExecutionAdmissions(ctx, w.config.Cluster, 1000); err != nil {
-			return err
-		}
-		// Sweep before loading evidence: an RPC/Timescale outage must not leave
-		// expired unstarted routes blocking vaults indefinitely.
-		swept, err := w.store.SweepExpiredOpportunities(ctx, w.config.Cluster, 10_000)
-		if err != nil {
-			return err
-		}
-		if swept > 0 {
-			logEvent(map[string]any{"event": "kamino_fleet_planner_expiry_sweep", "cluster": w.config.Cluster, "sweptCount": swept})
-		}
+	if err := w.store.RegisterFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
+		return err
+	}
+	if _, err := w.store.RecoverUnsignedExecutionAdmissions(ctx, w.config.Cluster, 1000); err != nil {
+		return err
+	}
+	// Sweep before loading evidence: an RPC/Timescale outage must not leave
+	// expired unstarted routes blocking vaults indefinitely.
+	swept, err := w.store.SweepExpiredOpportunities(ctx, w.config.Cluster, 10_000)
+	if err != nil {
+		return err
+	}
+	if swept > 0 {
+		logEvent(map[string]any{"event": "kamino_fleet_planner_expiry_sweep", "cluster": w.config.Cluster, "sweptCount": swept})
 	}
 	if w.marketEvidence == nil {
 		return fmt.Errorf("complete durable market evidence is required")
@@ -298,7 +265,7 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		// fatal in every mode. Route-level freshness is enforced later by
 		// simulation against confirmed chain state before publication.
 		observationDifferences = 1
-		logEvent(map[string]any{"event": "kamino_fleet_planner_observation_difference", "mode": w.config.Mode, "errorCategory": "cycle_failed", "planningEvidence": "durable_verified_epoch"})
+		logEvent(map[string]any{"event": "kamino_fleet_planner_observation_difference", "errorCategory": "cycle_failed", "planningEvidence": "durable_verified_epoch"})
 	}
 	snapshot, err := marketSnapshotFromEpoch(epoch, addresses...)
 	if err != nil {
@@ -309,31 +276,18 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	// lifetime. An epoch need not contain USDC when the migrated fleet only
 	// uses another supported stablecoin.
 	snapshot.ExpiresAt = epoch.ExpiresAt
-	if w.config.Mode == ModePublish {
-		snapshot.OptimizerEpochID, err = w.store.EnsureOptimizerEpoch(ctx, w.config.Cluster, epoch)
-		if err == nil {
-			err = w.store.RefreshCapacityEpoch(ctx, w.config.Cluster, epoch)
-		}
-	} else {
-		snapshot.OptimizerEpochID, err = w.store.LookupOptimizerEpoch(ctx, w.config.Cluster, epoch.Fingerprint)
+	snapshot.OptimizerEpochID, err = w.store.EnsureOptimizerEpoch(ctx, w.config.Cluster, epoch)
+	if err == nil {
+		err = w.store.RefreshCapacityEpoch(ctx, w.config.Cluster, epoch)
 	}
 	if err != nil {
 		return fmt.Errorf("resolve optimizer/capacity epoch: %w", err)
 	}
-	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch, FleetLoadOptions{DelegatedSigner: w.config.DelegatedSigner, EnableCrossMint: w.config.CrossMintEnabled, CrossMintMaxValueLossBPS: w.config.CrossMintMaxValueLossBPS, OptimizerEpochID: snapshot.OptimizerEpochID, IncludeIdleShadowSources: w.config.Mode == ModeShadow})
+	vaults, err := w.store.LoadMigratedFleet(ctx, w.config.Cluster, epoch, FleetLoadOptions{DelegatedSigner: w.config.DelegatedSigner, EnableCrossMint: w.config.CrossMintEnabled, CrossMintMaxValueLossBPS: w.config.CrossMintMaxValueLossBPS, OptimizerEpochID: snapshot.OptimizerEpochID})
 	if err != nil {
 		return err
 	}
-	var idleSummary map[string]any
-	var fleetPlan FleetPlan
-	reserveSourceCount := len(vaults)
-	if w.config.Mode == ModeShadow {
-		reserveSources, summary := idleShadowChecks(snapshot, vaults)
-		reserveSourceCount, idleSummary = len(reserveSources), summary
-		fleetPlan, err = PlanFleetShadow(snapshot, vaults)
-	} else {
-		fleetPlan, err = PlanFleet(snapshot, vaults)
-	}
+	fleetPlan, err := PlanFleet(snapshot, vaults)
 	if err != nil {
 		return err
 	}
@@ -343,41 +297,22 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	}
 	published := 0
 	for _, opportunity := range fleetPlan.Opportunities {
-		result := PublishResult{Reason: "shadow"}
-		if w.config.Mode == ModePublish {
-			result, err = w.store.Publish(ctx, w.config.Cluster, epoch, positions[opportunity.Decision.VaultID], opportunity.Decision)
-			if err != nil {
-				return fmt.Errorf("publish fleet opportunity: %w", err)
-			}
-			if result.Inserted {
-				published++
-			}
+		result, err := w.store.Publish(ctx, w.config.Cluster, epoch, positions[opportunity.Decision.VaultID], opportunity.Decision)
+		if err != nil {
+			return fmt.Errorf("publish fleet opportunity: %w", err)
 		}
-		logEvent(map[string]any{"event": "kamino_fleet_planner_opportunity", "mode": w.config.Mode, "vaultId": opportunity.Decision.VaultID, "sourceReserve": opportunity.Decision.SourceReserve, "targetReserve": opportunity.Decision.TargetReserve, "idempotencyKey": opportunity.IdempotencyKey, "publishReason": result.Reason, "opportunityId": result.OpportunityID})
+		if result.Inserted {
+			published++
+		}
+		logEvent(map[string]any{"event": "kamino_fleet_planner_opportunity", "vaultId": opportunity.Decision.VaultID, "sourceReserve": opportunity.Decision.SourceReserve, "targetReserve": opportunity.Decision.TargetReserve, "idempotencyKey": opportunity.IdempotencyKey, "publishReason": result.Reason, "opportunityId": result.OpportunityID})
 	}
 	// Advance durable health only after evidence loading, coherent RPC
 	// verification, planning, and all requested publications have succeeded.
-	if w.config.Mode == ModePublish {
-		if err := w.store.HeartbeatFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
-			return err
-		}
+	if err := w.store.HeartbeatFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
+		return err
 	}
 	w.lastConfirmedSlot = slot
-	if idleSummary != nil {
-		idleSelected := 0
-		for _, o := range fleetPlan.Opportunities {
-			if o.Decision.RouteKind == "idle_vault_deposit" {
-				idleSelected++
-			}
-		}
-		idleSummary["candidateChecksOnly"] = false
-		idleSummary["executableIdleEnabled"] = false
-		idleSummary["jointAllocationChecked"] = true
-		idleSummary["jointSelectedIdleCount"] = idleSelected
-		idleSummary["jointSelectedReserveCount"] = len(fleetPlan.Opportunities) - idleSelected
-		logEvent(idleSummary)
-	}
-	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "mode": w.config.Mode, "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": reserveSourceCount, "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "observationDifferenceCount": observationDifferences, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
+	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "observationDifferenceCount": observationDifferences, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
 	return nil
 }
 

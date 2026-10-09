@@ -1,8 +1,0 @@
-[
-  {
-    "file": "apps-autodeposit-0006.sql",
-    "sha256": "0a76b1b4fdf0630da8ae8b7067027f175997706403eb1611b875b4110d016005",
-    "source": "loyal-apps/apps/web/src/lib/yield-optimization/migrations/0006_add_balance_sweep_policies.sql",
-    "scope": "actual historical DDL only; target backfill omitted in empty combined-schema fixture"
-  }
-]

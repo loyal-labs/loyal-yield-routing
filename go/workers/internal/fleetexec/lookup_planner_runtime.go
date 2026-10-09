@@ -45,13 +45,6 @@ func (p *LookupPlanner) report(err error) {
 }
 
 func (p *LookupPlanner) Run(ctx context.Context) error {
-	startup, cancel := context.WithTimeout(ctx, p.config.TickDeadline)
-	err := p.store.RequireLookupSchema(startup)
-	cancel()
-	if err != nil {
-		p.report(err)
-		return err
-	}
 	backoff := p.config.PollInterval
 	for {
 		_, err := p.Tick(ctx)

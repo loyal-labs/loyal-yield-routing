@@ -111,7 +111,7 @@ func TestWaveRescoresCandidatesWhosePriorityImprovesAfterSelection(t *testing.T)
 	for _, order := range [][]int{{0, 1, 2}, {2, 1, 0}, {1, 2, 0}} {
 		snapshot, vaults := dilutionRescoreFixture()
 		permuted := []FleetVault{vaults[order[0]], vaults[order[1]], vaults[order[2]]}
-		plan, err := PlanFleetWithLimitsAt(snapshot, permuted, WaveLimits{2, 1_000_000_000_000, 10, 10}, snapshot.ObservedAt)
+		plan, err := PlanFleetWithLimits(snapshot, permuted, WaveLimits{2, 1_000_000_000_000, 10, 10})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +139,7 @@ func TestWaveReconsidersInitiallyUneconomicPermittedTarget(t *testing.T) {
 	if before := Plan(snapshot, vaults[1].Position, "B", "C"); before.Eligible {
 		t.Fatalf("fixture did not begin below the economic gate: %+v", before)
 	}
-	plan, err := PlanFleetAt(snapshot, vaults[:2], snapshot.ObservedAt)
+	plan, err := PlanFleet(snapshot, vaults[:2])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func BenchmarkFleetWaveSparse(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				plan, err := PlanFleetWithLimitsAt(snapshot, vaults, limits, snapshot.ObservedAt)
+				plan, err := PlanFleetWithLimits(snapshot, vaults, limits)
 				if err != nil || len(plan.Opportunities) == 0 {
 					b.Fatalf("empty scale probe: %v", err)
 				}

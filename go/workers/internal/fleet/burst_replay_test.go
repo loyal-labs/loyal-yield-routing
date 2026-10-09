@@ -34,8 +34,8 @@ func syntheticPubkey(kind string, n int) string {
 // vaults through Go must select the same direction and count, cycle by cycle;
 // a Go planner that stays silent on this input is a planning regression, not
 // a quiet market.
-func TestPlanFleetReplaysRustBurst20261007(t *testing.T) {
-	raw, err := os.ReadFile("../../testdata/fleet/rust-burst-2026-10-07.json")
+func TestPlanFleetReplaysBurst20261007(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/fleet/burst-2026-10-07.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestPlanFleetReplaysRustBurst20261007(t *testing.T) {
 	// second cycle plans the vaults the first left behind.
 	selected := 0
 	for cycle := int64(1); cycle <= 2; cycle++ {
-		plan, err := PlanFleetAt(snapshot, vaults, epoch.CapturedAt)
+		plan, err := PlanFleet(snapshot, vaults)
 		if err != nil {
 			t.Fatal(err)
 		}

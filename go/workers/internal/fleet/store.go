@@ -118,17 +118,6 @@ SELECT count(*)::bigint FROM stale`, cluster, limit).Scan(&swept)
 	return swept, nil
 }
 
-// LookupOptimizerEpoch is read-only so parallel shadow evaluation cannot publish
-// epochs, refresh production health, or change the capacity frontier.
-func (s *Store) LookupOptimizerEpoch(ctx context.Context, cluster, fingerprint string) (int64, error) {
-	var id int64
-	err := s.pool.QueryRow(ctx, `SELECT id FROM loyal_yield.optimizer_epochs WHERE cluster=$1 AND epoch_key=$2`, cluster, fingerprint).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil
-	}
-	return id, err
-}
-
 func (s *Store) LoadVaultPosition(ctx context.Context, cluster string, vaultID int64, source, target ReserveIdentity) (VaultPosition, error) {
 	var position VaultPosition
 	position.VaultID = vaultID
@@ -214,8 +203,6 @@ WHERE vault.id=$6 AND position.has_value AND position.amount_raw>0
 }
 
 type FleetLoadOptions struct {
-	// Read-only candidate diagnostics only; never publish these as routes.
-	IncludeIdleShadowSources bool
 	DelegatedSigner          string
 	EnableCrossMint          bool
 	CrossMintMaxValueLossBPS uint16
@@ -384,13 +371,6 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options
 		return nil, err
 	}
 	rows.Close()
-	if options.IncludeIdleShadowSources {
-		idle, err := loadIdleShadowSources(ctx, tx, cluster, options.DelegatedSigner, epoch)
-		if err != nil {
-			return nil, err
-		}
-		fleet = append(fleet, idle...)
-	}
 	committedInflow, committedOutflow := map[string]int64{}, map[string]int64{}
 	commitRows, err := tx.Query(ctx, `
 WITH active_opportunities AS (
@@ -621,9 +601,6 @@ FROM candidate LIMIT 1`, cluster, durable.Fingerprint, *durable.MaximumMarketSlo
 }
 
 func (s *Store) Publish(ctx context.Context, cluster string, epoch ImmutableMarketEpoch, position VaultPosition, decision Decision) (PublishResult, error) {
-	if decision.RouteKind == "idle_vault_deposit" {
-		return PublishResult{}, errors.New("idle shadow candidates cannot be published")
-	}
 	if cluster == "" {
 		return PublishResult{}, fmt.Errorf("cluster is required")
 	}

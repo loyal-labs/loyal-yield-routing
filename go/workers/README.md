@@ -17,7 +17,7 @@ unless their explicitly disposable fixture inputs are supplied; an offline PASS
 does not prove those gates.
 
 `loyal-evidence -kind fleet-wave -snapshot saved.json` replays the runtime
-planner with an explicit `evaluatedAt` clock and no database, signing or RPC.
+planner with no database, signing or RPC.
 It also supports single `fleet` and `backyard` decisions. This is a modeled
 decision, not a realized return. Fixture provenance and proof limits are listed
 in `testdata/manifest.json`.
@@ -70,8 +70,7 @@ line ported from `origin/feat/voltr-rwa-selector`. It requires the credentials
 `BACKYARD_DATABASE_URL` (the direct, non-pooler DSN: it also holds the family
 lock), `BACKYARD_SOLANA_RPC_URL` and `BACKYARD_POLICY_KEYPAIR`; an optional
 `JUPITER_API_KEY` credential selects the keyed Jupiter API. The selector
-collector is off by default; `BACKYARD_RWA_SELECTOR_SHADOW=1` or
-`BACKYARD_RWA_SELECTOR_LIVE=1` enables it and then requires the
+collector is off by default; `BACKYARD_RWA_SELECTOR_LIVE=1` enables it and then requires the
 `BACKYARD_TIMESCALE_DATABASE_URL` credential. `BACKYARD_RWA_PILOT_CANARY_ENTRY`
 keeps its existing meaning. One-shot operator commands run as
 `loyal-engine backyard <command>` (for example `clear-hold --reason "<text>"`)

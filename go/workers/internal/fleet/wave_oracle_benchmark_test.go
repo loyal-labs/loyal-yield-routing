@@ -26,7 +26,7 @@ func BenchmarkWaveOracleSparsePermittedGraph(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for range b.N {
-					plan, err := PlanFleetWithLimitsAt(snapshot, vaults, limits, snapshot.ObservedAt)
+					plan, err := PlanFleetWithLimits(snapshot, vaults, limits)
 					if err != nil || len(plan.Opportunities) != 8 {
 						b.Fatalf("bounded sparse probe selected=%d err=%v", len(plan.Opportunities), err)
 					}

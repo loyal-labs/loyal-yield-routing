@@ -15,33 +15,12 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// Store is the typed journal over the legacy fleet route tables. It uses the
-// same rows and leases the Rust fleet worker and route confirmer use, so old
-// and new writers contend on identical custody records; there is no Go-only
-// lock table.
+// Store is the typed journal over the legacy fleet route tables.
 type Store struct{ pool *pgxpool.Pool }
 
-// NewStore adopts a caller-owned pool and verifies the legacy schema is
-// actually present. Pool sizing and lifecycle belong to the composition root;
-// this package never opens, migrates, or closes the database on its own.
-func NewStore(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
-	store := &Store{pool: pool}
-	if err := store.RequireSchema(ctx); err != nil {
-		return nil, err
-	}
-	return store, nil
-}
-
-// RequireSchema rejects a pool whose legacy fleet execution tables are absent.
-func (s *Store) RequireSchema(ctx context.Context) error {
-	return db.RequireTables(ctx, s.pool,
-		"loyal_yield.signed_route_submissions",
-		"loyal_yield.route_account_conflict_leases",
-		"loyal_yield.target_capacity_reservations",
-		"loyal_yield.target_capacity_frontiers",
-		"loyal_yield.lookup_table_usage_leases",
-	)
-}
+// NewStore adopts a caller-owned pool. Pool sizing and lifecycle belong to the
+// composition root; this package never opens, migrates, or closes the database.
+func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 // Pool exposes the caller-owned pool so the composition root retains its
 // lifecycle. The store never closes it.
@@ -391,8 +370,6 @@ type SubmissionRecord struct {
 }
 
 // ClaimRecoveryWork claims up to limit same-mint submissions the family owns.
-// It writes the Rust confirmation-lease columns, so a restarted Rust confirmer
-// skips rows Go is landing and takes them back once the lease lapses.
 func (s *Store) ClaimRecoveryWork(ctx context.Context, cluster, owner string, ttl time.Duration, limit int) ([]SubmissionLease, error) {
 	if cluster == "" || owner == "" || ttl <= 0 || limit <= 0 {
 		return nil, errors.New("incomplete claim request")

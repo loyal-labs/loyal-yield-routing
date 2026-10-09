@@ -42,10 +42,7 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := fleetexec.NewStore(ctx, bank.Pool)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := fleetexec.NewStore(bank.Pool)
 	adapter, err := fleetexec.NewRPCAdapter(bank.RPCURL, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -134,10 +131,7 @@ func TestConnectedCrossMintExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := fleetexec.NewStore(ctx, bank.Pool)
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := fleetexec.NewStore(bank.Pool)
 	rpc, err := fleetexec.NewRPCAdapter(bank.RPCURL, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)

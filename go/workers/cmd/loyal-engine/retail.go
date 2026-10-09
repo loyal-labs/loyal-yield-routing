@@ -250,7 +250,7 @@ func parseRetailKey(material string) (ed25519.PrivateKey, error) {
 }
 
 func (c retailConfig) fleetConfig() fleet.Config {
-	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", Mode: fleet.ModePublish, PollInterval: time.Second, SlotDuration: c.slotDuration, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey, VoltrVaultID: c.voltrVaultID}
+	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", PollInterval: time.Second, SlotDuration: c.slotDuration, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey, VoltrVaultID: c.voltrVaultID}
 }
 
 // The outer diagnostic retains error identity for cancellation and inspection
@@ -347,27 +347,15 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Autodeposit store", err)
 	}
-	if err := aStore.RequireSchema(startup); err != nil {
-		return retailError("Autodeposit schema", err)
-	}
 	cStore, err := fleet.NewStoreFromPool(yieldPool)
 	if err != nil {
 		return retailError("fleet store", err)
-	}
-	if err := db.RequireTables(startup, yieldPool, "loyal_yield.fleet_planning_clusters", "loyal_yield.optimizer_epochs", "loyal_yield.rebalance_opportunities", "loyal_yield.rebalance_decisions", "loyal_yield.vault_reserve_positions_current", "loyal_yield.lookup_table_addresses", "loyal_yield.lookup_table_families", "loyal_yield.lookup_table_operations", "loyal_yield.lookup_table_provisioning_requests", "loyal_yield.lookup_table_provisioning_request_consumers", "loyal_yield.lookup_table_vault_bindings", "loyal_yield.route_lookup_tables"); err != nil {
-		return retailError("fleet schema", err)
 	}
 	evidence, err := fleet.NewMarketEvidenceStoreFromPool(marketPool, cfg.timescaleSchema)
 	if err != nil {
 		return retailError("market evidence", err)
 	}
-	if err := db.RequireTables(startup, marketPool, cfg.timescaleSchema+".supported_reserves", cfg.timescaleSchema+".latest_verified_reserve_updates"); err != nil {
-		return retailError("market schema", err)
-	}
-	dStore, err := fleetexec.NewStore(startup, yieldPool)
-	if err != nil {
-		return retailError("fleet executor schema", err)
-	}
+	dStore := fleetexec.NewStore(yieldPool)
 	gStore, err := multiply.NewStoreFromPool(startup, yieldPool)
 	if err != nil {
 		return retailError("Multiply schema", err)
@@ -405,9 +393,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}, cfg.lookup.managerKey())
 	if err != nil {
 		return retailError("lookup writer", err)
-	}
-	if err := dStore.RequireLookupSchema(startup); err != nil {
-		return retailError("lookup writer schema", err)
 	}
 	// Retain the source provisioner's growth reservation (8) and vault cohort
 	// limit (16). This lane receives no manager key or broadcast capability.

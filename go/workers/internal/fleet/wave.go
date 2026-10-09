@@ -50,9 +50,6 @@ func (h waveCandidates) Less(i, j int) bool {
 	if a.d.VaultID != b.d.VaultID {
 		return a.d.VaultID < b.d.VaultID
 	}
-	if (a.vault.IdleTokenAccount == "") != (b.vault.IdleTokenAccount == "") {
-		return a.vault.IdleTokenAccount != ""
-	}
 	if a.vault.Position.Mint != b.vault.Position.Mint {
 		return a.vault.Position.Mint < b.vault.Position.Mint
 	}
@@ -64,11 +61,7 @@ func (h waveCandidates) Less(i, j int) bool {
 
 // Keep wave conflict admission and the durable execution manifest identical.
 func opportunityConflictKeys(position VaultPosition, decision Decision) []string {
-	source := decision.SourceReserve
-	if decision.RouteKind == "idle_vault_deposit" {
-		source = "idle"
-	}
-	keys := []string{"vault:" + position.VaultPubkey, "policy:" + fmt.Sprint(position.PolicyID), "source-reserve:" + source, "target-reserve:" + decision.TargetReserve}
+	keys := []string{"vault:" + position.VaultPubkey, "policy:" + fmt.Sprint(position.PolicyID), "source-reserve:" + decision.SourceReserve, "target-reserve:" + decision.TargetReserve}
 	if bindings := decision.PolicyBindings; decision.RouteKind == "cross_mint_jupiter" && bindings != nil {
 		keys = append(keys, "swap-policy:"+bindings.Swap.PolicyAccount, "earn-policy:"+bindings.Withdraw.PolicyAccount)
 		if bindings.Deposit.PolicyAccount != bindings.Withdraw.PolicyAccount {

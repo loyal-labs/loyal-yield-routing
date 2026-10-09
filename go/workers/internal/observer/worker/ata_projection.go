@@ -21,13 +21,7 @@ func (r *Runtime) NewATAProjector(ctx context.Context) (*ata.Projector, error) {
 		IOTimeout: 10 * time.Second,
 		OnError:   func(err error) { r.ataProjectionFailed(ctx, err) },
 	})
-	if err != nil {
-		return nil, err
-	}
-	if err := projector.RequireSchema(ctx); err != nil {
-		return nil, err
-	}
-	return projector, nil
+	return projector, err
 }
 
 func (r *Runtime) ataProjectionFailed(ctx context.Context, err error) {

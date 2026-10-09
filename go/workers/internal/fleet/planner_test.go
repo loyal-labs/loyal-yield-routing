@@ -137,40 +137,7 @@ func TestPlanAllowsStaleSourceThatRevalidatorWillRefresh(t *testing.T) {
 	}
 }
 
-func TestPlanMatchesProductionRustEconomicFixture(t *testing.T) {
-	now := time.Now().UTC()
-	const (
-		source       = "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo"
-		target       = "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z"
-		sourceMarket = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"
-		targetMarket = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"
-	)
-	snapshot := MarketSnapshot{
-		Slot: 443_977_358, ObservedAt: now, Hash: "production-fixture",
-		Reserves: map[string]ReserveState{
-			source: {ReserveIdentity: ReserveIdentity{Address: source, Market: sourceMarket, Mint: USDCMint}, Slot: 443_977_358, SupplyAPYBPS: 81, TotalSupplyUSDMicros: 3_440_032_614_297, EconomicLifetimeMillis: 300_000},
-			target: {ReserveIdentity: ReserveIdentity{Address: target, Market: targetMarket, Mint: USDCMint}, Slot: 443_977_358, SupplyAPYBPS: 920, TotalSupplyUSDMicros: 73_554_854_888_416, EconomicLifetimeMillis: 300_000},
-		},
-	}
-	position := VaultPosition{
-		VaultID: 1469, SourceReserve: source, Market: sourceMarket, Mint: USDCMint,
-		AmountRaw: 79_728_595, SourceCollateralAmountRaw: 75_728_931,
-		SourceAmountSemantics: amountSemanticsKaminoCollateralDeposited,
-		SnapshotID:            27_435_922, ObservedSlot: 443_977_220, ObservedAt: now,
-	}
-
-	decision := Plan(snapshot, position, source, target)
-	if !decision.Eligible {
-		t.Fatalf("production fixture was rejected: %s", decision.Reason)
-	}
-	if decision.SourceAPYBPS != 81 || decision.TargetAPYBPS != 919 || decision.EdgeBPS != 838 ||
-		decision.AnnualYieldGainUSDMicros != 6_675_120 || decision.ExpectedNetGainUSDMicros != 346_686 ||
-		decision.EconomicPriority != 48 || decision.EstimatedCostLamports != 17_334 {
-		t.Fatalf("Go/Rust production economic parity drifted: %+v", decision)
-	}
-}
-
-func TestRustOpportunityIdentityFencesEpochAndEconomics(t *testing.T) {
+func TestOpportunityIdentityFencesEpochAndEconomics(t *testing.T) {
 	snapshot, position := eligibleFixture()
 	decision := Plan(snapshot, position, "source", "target")
 	plan, err := canonicalSameMintExecutionPlan(position, decision, decision.SourceAPYBPS, decision.TargetAPYBPS, snapshot.Slot, snapshot.ObservedAt)
@@ -180,11 +147,11 @@ func TestRustOpportunityIdentityFencesEpochAndEconomics(t *testing.T) {
 	expires := snapshot.ObservedAt.Add(time.Minute)
 	first := opportunityIdentity("mainnet-beta", 10, decision, plan, expires)
 	if first == opportunityIdentity("mainnet-beta", 11, decision, plan, expires) {
-		t.Fatal("optimizer epoch did not fence Rust identity")
+		t.Fatal("optimizer epoch did not fence the identity")
 	}
 	decision.TargetAPYBPS++
 	if first == opportunityIdentity("mainnet-beta", 10, decision, plan, expires) {
-		t.Fatal("material economics did not change Rust identity")
+		t.Fatal("material economics did not change the identity")
 	}
 }
 

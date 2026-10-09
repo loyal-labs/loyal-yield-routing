@@ -107,12 +107,6 @@ func NewMaintenance(yield, timescale *pgxpool.Pool, c MaintenanceConfig) (*Maint
 	}
 	return &Maintenance{yield: yield, timescale: timescale, cluster: c.Cluster, markets: markets, maxVaults: c.MaxVaults, maxRows: c.MaxModelRows, timeout: c.Timeout, rpc: c.PriceRPC, poll: c.RecoveryPoll, observation: c.HealthObservation, logger: c.Logger, onError: c.OnError, retryInterval: c.RetryInterval, validateNamespace: c.ValidateNamespace}, nil
 }
-func (m *Maintenance) RequireSchema(ctx context.Context) error {
-	if err := workersdb.RequireTables(ctx, m.yield, "loyal_yield.managed_vaults", "loyal_yield.user_yield_positions", "loyal_yield.vault_position_snapshots", "loyal_yield.vault_position_snapshot_positions", "loyal_yield.vault_idle_token_balances_current", "loyal_yield.earn_fleet_allocations_hourly", "loyal_yield.earn_reserve_share_prices", "loyal_yield.earn_forecast_snapshots", "loyal_yield.fleet_orchestration_status", "loyal_yield.fleet_orchestration_health_snapshots", "loyal_yield.rebalance_opportunities", "loyal_yield.signed_route_submissions", "loyal_yield.orchestration_outbox"); err != nil {
-		return err
-	}
-	return workersdb.RequireTables(ctx, m.timescale, "kamino.reserve_updates", "kamino.supported_reserves")
-}
 
 type MaintenanceReport struct {
 	HealthPublished    bool

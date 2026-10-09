@@ -50,22 +50,18 @@ func decide(kind string, input io.Reader) (any, error) {
 		result = fleet.Plan(in.Snapshot, in.Position, in.Source, in.Target)
 	case "fleet-wave":
 		var in struct {
-			Snapshot    fleet.MarketSnapshot
-			Vaults      []fleet.FleetVault
-			Limits      *fleet.WaveLimits
-			EvaluatedAt time.Time
+			Snapshot fleet.MarketSnapshot
+			Vaults   []fleet.FleetVault
+			Limits   *fleet.WaveLimits
 		}
 		if err := decode.Decode(&in); err != nil {
 			return nil, err
-		}
-		if in.EvaluatedAt.IsZero() {
-			return nil, errors.New("fleet-wave requires an explicit evaluatedAt clock")
 		}
 		limits := fleet.DefaultWaveLimits()
 		if in.Limits != nil {
 			limits = *in.Limits
 		}
-		result, err = fleet.PlanFleetWithLimitsAt(in.Snapshot, in.Vaults, limits, in.EvaluatedAt)
+		result, err = fleet.PlanFleetWithLimits(in.Snapshot, in.Vaults, limits)
 		if err != nil {
 			return nil, err
 		}

@@ -24,10 +24,8 @@ type Config struct {
 	// SlotDuration is the same observed/configured economic clock used by planning.
 	SlotDuration time.Duration
 	Cluster      string
-	// Owner is written to the Rust confirmation-lease columns so a restarted
-	// Rust confirmer reads the rows correctly.
-	Owner    string
-	LeaseTTL time.Duration
+	Owner        string
+	LeaseTTL     time.Duration
 	// BatchSize bounds submissions claimed per tick.
 	BatchSize int
 	// TickInterval spaces recovery sweeps.
