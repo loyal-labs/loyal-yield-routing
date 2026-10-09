@@ -241,8 +241,9 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 	var ix RouteInstruction
 	switch r.Stage {
 	case "ata":
-		// The source-owned idempotent ATA instruction (autonomous-vaults
-		// kamino.rs) with the executor paying rent.
+		// The source-owned idempotent ATA instruction
+		// (c1aebfc0:crates/autonomous-vaults/src/kamino.rs) with the executor
+		// paying rent.
 		ata, err := deriveATA(owner, t.LiquidityMint, t.LiquidityTokenProgram)
 		if err != nil || ata != t.VaultLiquidityATA {
 			return KaminoSameMintRoute{}, fmt.Errorf("setup custody is not vault ATA")

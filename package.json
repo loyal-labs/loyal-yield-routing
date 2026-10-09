@@ -12,7 +12,6 @@
     "ci:wait-main": "bash scripts/wait-for-main-workflow.sh",
     "same-mint:alt-cleanup-paginated": "bun scripts/route-lookup-table-cleanup-paginated.ts",
     "hub:cli": "cargo run -p loyal-hub-cli --",
-    "vault:meteora": "cargo run -p autonomous-vaults --",
     "hub:devnet-smoke": "bash scripts/devnet-test-loyal-hub-swap-program.sh",
     "jupiter:swap": "bun scripts/jupiter-wallet-swap.mjs",
     "yield:migrate": "cd go/workers && go run ./cmd/loyal-migrate -db yield up",

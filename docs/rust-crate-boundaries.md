@@ -8,7 +8,6 @@ the Squads proof surface, and the realtime gateway:
 loyal-hub-abi ─────┬──> loyal-hub-swap-program, mock-yield-protocols-program
                    └──> loyal-actions <── loyal-solana-env
 loyal-actions ─────┬──> loyal-hub-cli
-                   ├──> autonomous-vaults
                    └──> squads-test-harness (tests only)
 loyal-solana-env ──> loyal-voltr-rwa-nav-adaptor-deployer
 loyal-voltr-rwa-nav-adaptor (on-chain program, no workspace deps)
