@@ -21,6 +21,7 @@ import (
 	"sort"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -67,7 +68,7 @@ func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (const
 	}
 	boundary := policyBoundary{
 		vault:            topology.Vault,
-		klendProgram:     mustKey(KlendProgram),
+		klendProgram:     kamino.ProgramID,
 		jupiterProgram:   mustKey(JupiterProgram),
 		usdcCustody:      onyc.DebtCustody,
 		pyusdCustody:     pyusd.DebtCustody,
@@ -87,8 +88,8 @@ func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (const
 	switch family {
 	case FamilyCollateral:
 		return []squads.InstructionConstraintView{
-			collateralConstraint(boundary, DiscriminatorDepositCollateral),
-			collateralConstraint(boundary, DiscriminatorWithdrawCollateral),
+			collateralConstraint(boundary, kamino.DepositV2Discriminator),
+			collateralConstraint(boundary, kamino.WithdrawV2Discriminator),
 		}, nil
 	case FamilyDebt:
 		return []squads.InstructionConstraintView{
@@ -100,7 +101,7 @@ func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (const
 					pinned(8, uniqueKeys(laneKeys(boundary.lanes, func(lane policyLane) solana.PublicKey { return lane.debtCustody }))...),
 					obligationOwnedByVault(boundary),
 				},
-				DataConstraints: []squads.DataConstraintView{sliceEquals(DiscriminatorBorrowDebt)},
+				DataConstraints: []squads.DataConstraintView{sliceEquals(kamino.BorrowV2Discriminator)},
 			},
 			{
 				ProgramID: boundary.klendProgram,
@@ -110,7 +111,7 @@ func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (const
 					pinned(6, uniqueKeys(laneKeys(boundary.lanes, func(lane policyLane) solana.PublicKey { return lane.debtCustody }))...),
 					obligationOwnedByVault(boundary),
 				},
-				DataConstraints: []squads.DataConstraintView{sliceEquals(DiscriminatorRepayDebt)},
+				DataConstraints: []squads.DataConstraintView{sliceEquals(kamino.RepayV2Discriminator)},
 			},
 		}, nil
 	case FamilySwap:

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func testIdentity(seed byte) string {
@@ -17,8 +18,8 @@ func testIdentity(seed byte) string {
 }
 
 func reserveFixture(identity ReserveIdentity, available, borrowed uint64) chain.Account {
-	data := make([]byte, reserveLength)
-	copy(data[:8], reserveDiscriminator[:])
+	data := make([]byte, kamino.ReserveSize)
+	copy(data[:8], kamino.ReserveDiscriminator[:])
 	binary.LittleEndian.PutUint64(data[8:16], 1)
 	binary.LittleEndian.PutUint64(data[16:24], 900)
 	market, _ := decodePublicKey(identity.Market)
@@ -28,14 +29,14 @@ func reserveFixture(identity ReserveIdentity, available, borrowed uint64) chain.
 	binary.LittleEndian.PutUint64(data[224:232], available)
 	putScaledInteger(data[232:248], borrowed)
 	binary.LittleEndian.PutUint64(data[272:280], 6)
-	config := data[reserveConfigOffset:]
+	config := data[4856:]
 	config[14] = 10
 	for index := 0; index < 11; index++ {
 		offset := 64 + index*8
 		binary.LittleEndian.PutUint32(config[offset:offset+4], uint32(index*1_000))
 		binary.LittleEndian.PutUint32(config[offset+4:offset+8], uint32(index*200))
 	}
-	return fixtureAccount(identity.Address, KaminoProgram, 1, data)
+	return fixtureAccount(identity.Address, kamino.ProgramID.String(), 1, data)
 }
 
 func putScaledInteger(output []byte, value uint64) {
@@ -86,8 +87,8 @@ func TestDecodeKaminoReserveStatusAdmission(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			account := reserveFixture(identity, 50_000_000_000_000, 50_000_000_000_000)
-			account.Data[reserveConfigOffset] = tc.status
-			account.Data[reserveConfigOffset+8] = tc.emergency
+			account.Data[4856] = tc.status
+			account.Data[4856+8] = tc.emergency
 			for _, decode := range []func(*chain.Account, ReserveIdentity, int64, time.Duration) (ReserveState, error){DecodeKaminoReserve, DecodeKaminoSourceReserve} {
 				state, err := decode(&account, identity, 1_000, 400*time.Millisecond)
 				if (err == nil) != tc.allowed {

@@ -1,5 +1,7 @@
 package backyard
 
+import "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+
 // These two exact bindings were resolved against installed policy bytes and
 // chain account identities in setup-feasibility-2026-09-04.json. Neither lane
 // requires a farm-account substitution. Registration is construction capability,
@@ -13,7 +15,7 @@ type kaminoPolicyBinding struct {
 var autoAUTOPYUSD = RuntimeRoute{
 	Lane: "AUTO/AUTO/PYUSD", Protocol: "AUTO", CollateralSymbol: "AUTO", DebtSymbol: "PYUSD",
 	Kamino: KaminoObservationConfig{
-		Program: kaminoProgram, Vault: bridgeVault,
+		Program: kamino.ProgramID.String(), Vault: bridgeVault,
 		Market:            "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk",
 		MarketAuthority:   "2eyLWowHqsWNuRavNc5g6e8NZiypgJTHEvW2hMum3BNS",
 		Obligation:        "DJhTPmvAh5xf4X3Cwfchn43psfCgXozRoNXUMJAiDS41",
@@ -41,7 +43,7 @@ var autoAUTOPYUSD = RuntimeRoute{
 var ethenaUSDePYUSD = RuntimeRoute{
 	Lane: "Ethena/USDe/PYUSD", Protocol: "Ethena", CollateralSymbol: "USDe", DebtSymbol: "PYUSD",
 	Kamino: KaminoObservationConfig{
-		Program: kaminoProgram, Vault: bridgeVault,
+		Program: kamino.ProgramID.String(), Vault: bridgeVault,
 		Market:            "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF",
 		MarketAuthority:   "GuWEkEJb5bh8Ai2gaYmZWMTUq8MrFeoaDZ89BrQfB1FZ",
 		Obligation:        "5CDZVkkC9wH3FTo4xy679qorb4xMt5cHf2nhsRcTUsQr",
@@ -73,7 +75,7 @@ var ethenaUSDePYUSD = RuntimeRoute{
 var primePRIMEPYUSD = RuntimeRoute{
 	Lane: "Prime/PRIME/PYUSD", Protocol: "Prime", CollateralSymbol: "PRIME", DebtSymbol: "PYUSD",
 	Kamino: KaminoObservationConfig{
-		Program: kaminoProgram, Vault: bridgeVault,
+		Program: kamino.ProgramID.String(), Vault: bridgeVault,
 		Market: "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
 		Obligation:        "GAnakFSJAhNMrH3B8PRLxHcEtWVL21xyALRiWx3baS5t",
 		CollateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", CollateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
@@ -94,7 +96,7 @@ var primePRIMEPYUSD = RuntimeRoute{
 var primePRIMEUSDS = RuntimeRoute{
 	Lane: "Prime/PRIME/USDS", Protocol: "Prime", CollateralSymbol: "PRIME", DebtSymbol: "USDS",
 	Kamino: KaminoObservationConfig{
-		Program: kaminoProgram, Vault: bridgeVault,
+		Program: kamino.ProgramID.String(), Vault: bridgeVault,
 		Market: "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
 		Obligation:        "6aqRhAxxjxdoAzgsEMrCCKCEEYMoLDLRKTu5t8nRuyYu",
 		CollateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", CollateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",

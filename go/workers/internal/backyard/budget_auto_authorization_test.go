@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // autoInitializerAuthorizationFixture recompiles the shared candidate fixture
@@ -26,7 +27,7 @@ import (
 func autoInitializerAuthorizationFixture(t *testing.T) autoInitializerRecoveryFixture {
 	t.Helper()
 	f := newAutoInitializerRecoveryFixture(t)
-	f.request.RentLamports = 289 * (kaminoObligationLength + 128)
+	f.request.RentLamports = 289 * (kamino.ObligationSize + 128)
 	var err error
 	f.effects.Initialization = &f.request
 	f.raw, err = jsonMarshalExpectedEffects(f.effects)
@@ -55,7 +56,7 @@ func autoInitializerAuthorizationRPC(t *testing.T, f autoInitializerRecoveryFixt
 	accounts := autoInitializerPrestateAccounts(t, f.request)
 	const rentAddress = "SysvarRent111111111111111111111111111111111"
 	rent := accounts[rentAddress]
-	binary.LittleEndian.PutUint64(rent.Data, f.request.RentLamports/(kaminoObligationLength+128))
+	binary.LittleEndian.PutUint64(rent.Data, f.request.RentLamports/(kamino.ObligationSize+128))
 	accounts[rentAddress] = rent
 	rpc := budgetBuildRPC(t, 5000, 42)
 	base := rpcOf(rpc).Transport

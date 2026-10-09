@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -56,8 +56,8 @@ func TestObligationAbsenceProofUsesCollateralAndExactIdentity(t *testing.T) {
 	owner := sdk.MustPublicKeyFromBase58(fixture.FeePayer)
 	market := sdk.MustPublicKeyFromBase58(fixture.SecondaryAccount)
 	reserve := sdk.MustPublicKeyFromBase58(fixture.RecentBlockhash)
-	a := &chain.Account{Owner: sdk.MustPublicKeyFromBase58(fleet.KaminoProgram), Lamports: 1, Data: make([]byte, 3344)}
-	copy(a.Data[:8], []byte{168, 206, 141, 106, 88, 76, 172, 167})
+	a := &chain.Account{Owner: kamino.ProgramID, Lamports: 1, Data: make([]byte, 3344)}
+	copy(a.Data[:8], kamino.ObligationDiscriminator[:])
 	copy(a.Data[32:64], market[:])
 	copy(a.Data[64:96], owner[:])
 	copy(a.Data[96:128], reserve[:])

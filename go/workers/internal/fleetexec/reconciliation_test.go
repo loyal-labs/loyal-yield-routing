@@ -6,42 +6,14 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	sdk "github.com/solana-foundation/solana-go/v2"
-	"math"
-	"math/big"
 	"testing"
 	"time"
-)
 
-func TestRedeemableCollateralUsesWideFractionAndFloors(t *testing.T) {
-	data := make([]byte, 8624)
-	binary.LittleEndian.PutUint64(data[224:232], 10)
-	binary.LittleEndian.PutUint64(data[2592:2600], 3)
-	if got, err := redeemableCollateral(data, 2); err != nil || got != 6 {
-		t.Fatalf("floor: %d %v", got, err)
-	}
-	// A half-unit fee remains fractional until the final floor, rather than
-	// being rounded away before applying the collateral exchange rate.
-	binary.LittleEndian.PutUint64(data[344:352], 1<<59)
-	if got, err := redeemableCollateral(data, 2); err != nil || got != 6 {
-		t.Fatalf("fractional fee: %d %v", got, err)
-	}
-	binary.LittleEndian.PutUint64(data[2592:2600], 0)
-	if got, err := redeemableCollateral(data, 9); err != nil || got != 9 {
-		t.Fatalf("initial ratio: %d %v", got, err)
-	}
-	binary.LittleEndian.PutUint64(data[2592:2600], 1)
-	binary.LittleEndian.PutUint64(data[224:232], math.MaxUint64)
-	if _, err := redeemableCollateral(data, math.MaxInt64); err == nil {
-		t.Fatal("wide overflow accepted")
-	}
-	binary.LittleEndian.PutUint64(data[224:232], 0)
-	if _, err := redeemableCollateral(data, 1); err == nil {
-		t.Fatal("negative fee-adjusted liquidity accepted")
-	}
-}
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+	sdk "github.com/solana-foundation/solana-go/v2"
+)
 
 func postFixture(t *testing.T, c sameMintPostContract, slot int64, sourceResidual, idleAmount int64) fixtureAccounts {
 	t.Helper()
@@ -55,7 +27,7 @@ func postFixture(t *testing.T, c sameMintPostContract, slot int64, sourceResidua
 	token := sdk.TokenProgramID
 	for i, reserve := range reserves {
 		data := make([]byte, 8624)
-		copy(data[:8], []byte{43, 242, 204, 202, 26, 247, 59, 127})
+		copy(data[:8], kamino.ReserveDiscriminator[:])
 		binary.LittleEndian.PutUint64(data[8:16], 1)
 		binary.LittleEndian.PutUint64(data[16:24], uint64(slot))
 		market := sdk.PublicKeyFromBytes(rotateSeed(44, byte(i)))
@@ -70,7 +42,7 @@ func postFixture(t *testing.T, c sameMintPostContract, slot int64, sourceResidua
 			binary.LittleEndian.PutUint32(data[4856+64+n*8:], uint32(n*1000))
 			binary.LittleEndian.PutUint32(data[4856+68+n*8:], uint32(n*200))
 		}
-		a := fixtureAccount(reserve, fleet.KaminoProgram, 1, data)
+		a := fixtureAccount(reserve, kamino.ProgramID.String(), 1, data)
 		accounts[reserve] = a
 		_, obligation, _, _, err := reservePostIdentity(&a, c.mint, c.vault)
 		if err != nil {
@@ -81,13 +53,13 @@ func postFixture(t *testing.T, c sameMintPostContract, slot int64, sourceResidua
 			collateral = sourceResidual
 		}
 		od := make([]byte, 3344)
-		copy(od[:8], []byte{168, 206, 141, 106, 88, 76, 172, 167})
+		copy(od[:8], kamino.ObligationDiscriminator[:])
 		copy(od[32:64], market[:])
 		copy(od[64:96], owner[:])
 		reserveKey := sdk.MustPublicKeyFromBase58(reserve)
 		copy(od[96:128], reserveKey[:])
 		binary.LittleEndian.PutUint64(od[128:136], uint64(collateral))
-		accounts[obligation] = fixtureAccount(obligation, fleet.KaminoProgram, 1, od)
+		accounts[obligation] = fixtureAccount(obligation, kamino.ProgramID.String(), 1, od)
 	}
 	ata, err := associatedCustodyAccount(c.vault, c.mint, token.String())
 	if err != nil {
@@ -283,17 +255,5 @@ func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *t
 				}
 			}
 		})
-	}
-}
-
-// Test conversion at a fractional boundary that float64 cannot represent.
-func TestRedeemableCollateralDoesNotRoundLargeRawBalances(t *testing.T) {
-	data := make([]byte, 8624)
-	binary.LittleEndian.PutUint64(data[224:232], (1<<53)+3)
-	binary.LittleEndian.PutUint64(data[2592:2600], 3)
-	got, err := redeemableCollateral(data, 2)
-	want := new(big.Int).Quo(new(big.Int).Mul(big.NewInt((1<<53)+3), big.NewInt(2)), big.NewInt(3)).Int64()
-	if err != nil || got != want {
-		t.Fatalf("exact raw: got %d want %d err %v", got, want, err)
 	}
 }

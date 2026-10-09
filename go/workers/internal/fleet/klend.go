@@ -1,26 +1,18 @@
 package fleet
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// KLend instruction builders. This is the Go port of the official
-// klend-interface builders (Kamino-Finance/klend 23b9f2b, libs/klend-interface)
-// that the retired loyal-klend-proxy child invoked. Byte parity with that Rust
-// proxy is pinned by testdata/klend/golden.json.
-
-const (
-	KLendProgram = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
-
-	systemProgram = "11111111111111111111111111111111"
-	rentSysvar    = "SysvarRent111111111111111111111111111111111"
-)
+// KLend routes. This is the Go port of the official klend-interface builders
+// (Kamino-Finance/klend 23b9f2b, libs/klend-interface) that the retired
+// loyal-klend-proxy child invoked. Byte parity with that Rust proxy is pinned
+// by testdata/klend/golden.json.
 
 type InstructionAccount struct {
 	Address  string `json:"address"`
@@ -113,42 +105,51 @@ func (r KaminoSameMintRouteRequest) setup() bool {
 // refresh it; deposit. Setup is part of the move: withdrawal and deposit share
 // one transaction, so funds never sit idle between transactions (ee8715ad).
 func BuildSameMintRoute(r KaminoSameMintRouteRequest) ([]RouteInstruction, error) {
-	s, t := &r.Source, &r.Target
-	if s.LiquidityMint != t.LiquidityMint || s.VaultLiquidityATA != t.VaultLiquidityATA || s.Reserve == t.Reserve || r.WithdrawCollateralAmount == 0 || r.DepositLiquidityAmount == 0 {
+	if r.Source.LiquidityMint != r.Target.LiquidityMint || r.Source.VaultLiquidityATA != r.Target.VaultLiquidityATA || r.Source.Reserve == r.Target.Reserve || r.WithdrawCollateralAmount == 0 || r.DepositLiquidityAmount == 0 {
 		return nil, fmt.Errorf("invalid same-mint route lane or amount")
 	}
 	vault, err := solana.PublicKeyFromBase58(r.Vault)
 	if err != nil {
 		return nil, err
 	}
-	if err = bindKLendPDAs(s, vault); err != nil {
+	s, err := bindKLendPDAs(&r.Source, vault)
+	if err != nil {
 		return nil, err
 	}
-	if err = bindKLendPDAs(t, vault); err != nil {
+	t, err := bindKLendPDAs(&r.Target, vault)
+	if err != nil {
 		return nil, err
 	}
 	// The retained worker refreshes every footprint reserve; this route reads
 	// and refreshes only its own two.
-	for _, reserve := range append(append(append(append([]string{}, s.ObligationDepositReserves...), s.ObligationBorrowReserves...), t.ObligationDepositReserves...), t.ObligationBorrowReserves...) {
+	for _, reserve := range append(append([]solana.PublicKey{}, s.reserves...), t.reserves...) {
 		if reserve != s.Reserve && reserve != t.Reserve {
 			return nil, fmt.Errorf("obligation footprint reserve %s is outside the route", reserve)
 		}
 	}
-	owner := vault.String()
 	protect := func(ix RouteInstruction) RouteInstruction { ix.Protected = true; return ix }
-	route := []RouteInstruction{refreshReserve(*s), refreshReserve(*t)}
+	route := []RouteInstruction{refreshReserve(s), refreshReserve(t)}
+	var sourceFarm, targetFarm RouteInstruction
 	if r.SourceFarmUserMissing {
-		route = append(route, initObligationFarm(r.Payer, owner, *s))
+		if sourceFarm, err = initObligationFarm(r.Payer, s); err != nil {
+			return nil, err
+		}
+		route = append(route, sourceFarm)
 	}
-	route = append(route, refreshObligation(*s, false))
-	withdraw := protect(withdrawV2(owner, *s, r.WithdrawCollateralAmount))
-	deposit := protect(depositV2(owner, *t, r.DepositLiquidityAmount))
+	if r.TargetFarmUserMissing {
+		if targetFarm, err = initObligationFarm(r.Payer, t); err != nil {
+			return nil, err
+		}
+	}
+	route = append(route, refreshObligation(s, false))
+	withdraw := protect(withdrawV2(s, r.WithdrawCollateralAmount))
+	deposit := protect(depositV2(t, r.DepositLiquidityAmount))
 	if !r.TargetObligationMissing {
 		if r.TargetFarmUserMissing {
-			route = append(route, initObligationFarm(r.Payer, owner, *t))
+			route = append(route, targetFarm)
 		}
-		route = append(route, refreshObligation(*t, false), withdraw, refreshObligation(*t, true), deposit)
-		return route, canonicalAccounts(KaminoSameMintRoute{Public: route})
+		route = append(route, refreshObligation(t, false), withdraw, refreshObligation(t, true), deposit)
+		return route, nil
 	}
 	route = append(route, withdraw)
 	if r.VaultRentTopUpLamports > 0 {
@@ -158,16 +159,16 @@ func BuildSameMintRoute(r KaminoSameMintRouteRequest) ([]RouteInstruction, error
 		}
 		route = append(route, RouteInstructionOf("system_transfer_vault_rent_top_up", spl.SystemTransfer(payer, vault, r.VaultRentTopUpLamports)))
 	}
-	metadata, err := findProgramAddress(KLendProgram, []byte("user_meta"), vault[:])
+	metadata, err := kamino.UserMetadataAddress(vault)
 	if err != nil {
 		return nil, err
 	}
-	route = append(route, protect(initObligation(owner, *t, metadata)))
+	route = append(route, protect(initObligation(vault, t, metadata)))
 	if r.TargetFarmUserMissing {
-		route = append(route, initObligationFarm(r.Payer, owner, *t))
+		route = append(route, targetFarm)
 	}
-	route = append(route, refreshObligation(*t, false), deposit)
-	return route, canonicalAccounts(KaminoSameMintRoute{Public: route})
+	route = append(route, refreshObligation(t, false), deposit)
+	return route, nil
 }
 
 // BuildCrossMintLegs builds the independent KLend withdrawal and deposit legs.
@@ -181,17 +182,18 @@ func BuildCrossMintLegs(r KaminoSameMintRouteRequest) (KaminoSameMintRoute, erro
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	if err = bindKLendPDAs(&r.Source, vault); err != nil {
+	s, err := bindKLendPDAs(&r.Source, vault)
+	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	if err = bindKLendPDAs(&r.Target, vault); err != nil {
+	t, err := bindKLendPDAs(&r.Target, vault)
+	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	route := KaminoSameMintRoute{Public: []RouteInstruction{refreshReserve(r.Source), refreshReserve(r.Target), refreshObligation(r.Source, false), refreshObligation(r.Target, true)}, Protected: []RouteInstruction{
-		withdrawV2(vault.String(), r.Source, r.WithdrawCollateralAmount),
-		depositV2(vault.String(), r.Target, r.DepositLiquidityAmount),
-	}}
-	return route, canonicalAccounts(route)
+	return KaminoSameMintRoute{
+		Public:    []RouteInstruction{refreshReserve(s), refreshReserve(t), refreshObligation(s, false), refreshObligation(t, true)},
+		Protected: []RouteInstruction{withdrawV2(s, r.WithdrawCollateralAmount), depositV2(t, r.DepositLiquidityAmount)},
+	}, nil
 }
 
 // BuildIdleDeposit deposits vault-ATA liquidity into an existing obligation
@@ -215,14 +217,14 @@ func BuildIdleDeposit(r KaminoIdleDepositRequest) (KaminoSameMintRoute, error) {
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	if err = bindKLendPDAs(t, vault); err != nil {
+	target, err := bindKLendPDAs(t, vault)
+	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	route := KaminoSameMintRoute{
-		Public:    []RouteInstruction{refreshReserve(*t), refreshObligation(*t, false)},
-		Protected: []RouteInstruction{depositV2(vault.String(), *t, r.DepositLiquidityAmount)},
-	}
-	return route, canonicalAccounts(route)
+	return KaminoSameMintRoute{
+		Public:    []RouteInstruction{refreshReserve(target), refreshObligation(target, false)},
+		Protected: []RouteInstruction{depositV2(target, r.DepositLiquidityAmount)},
+	}, nil
 }
 
 // BuildDestinationSetup builds one destination account-creation stage. The
@@ -233,35 +235,34 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	if err = bindKLendPDAs(&r.Target, vault); err != nil {
-		return KaminoSameMintRoute{}, err
-	}
-	owner := vault.String()
-	metadata, err := findProgramAddress(KLendProgram, []byte("user_meta"), vault[:])
+	t, err := bindKLendPDAs(&r.Target, vault)
 	if err != nil {
 		return KaminoSameMintRoute{}, err
 	}
-	t := r.Target
+	metadata, err := kamino.UserMetadataAddress(vault)
+	if err != nil {
+		return KaminoSameMintRoute{}, err
+	}
 	var ix RouteInstruction
 	switch r.Stage {
 	case "ata":
 		// The source-owned idempotent ATA instruction
 		// (c1aebfc0:crates/autonomous-vaults/src/kamino.rs) with the executor
 		// paying rent.
-		ata, err := deriveATA(owner, t.LiquidityMint, t.LiquidityTokenProgram)
+		ata, err := deriveATA(r.Vault, r.Target.LiquidityMint, r.Target.LiquidityTokenProgram)
 		payer, payerErr := solana.PublicKeyFromBase58(r.Payer)
-		if err != nil || payerErr != nil || ata != t.VaultLiquidityATA {
+		if err != nil || payerErr != nil || ata != r.Target.VaultLiquidityATA {
 			return KaminoSameMintRoute{}, fmt.Errorf("setup custody is not vault ATA")
 		}
-		ix = RouteInstructionOf("", spl.CreateIdempotentATA(payer, vault, solana.MustPublicKeyFromBase58(t.LiquidityMint), solana.MustPublicKeyFromBase58(t.LiquidityTokenProgram)))
+		ix = RouteInstructionOf("", spl.CreateIdempotentATA(payer, vault, t.LiquidityMint, t.LiquidityTokenProgram))
 	case "metadata":
-		ix = klendInstruction("init_user_metadata", make([]byte, 32), []InstructionAccount{
-			{owner, true, false}, {owner, true, true}, {metadata, false, true}, {KLendProgram, false, false}, {rentSysvar, false, false}, {systemProgram, false, false},
-		})
+		ix = RouteInstructionOf("", kamino.InitUserMetadata(vault, vault, metadata, solana.PublicKey{}))
 	case "obligation":
-		ix = initObligation(owner, t, metadata)
+		ix = initObligation(vault, t, metadata)
 	case "farm":
-		ix = initObligationFarm(r.Payer, owner, t)
+		if ix, err = initObligationFarm(r.Payer, t); err != nil {
+			return KaminoSameMintRoute{}, err
+		}
 	default:
 		return KaminoSameMintRoute{}, fmt.Errorf("unsupported destination setup stage")
 	}
@@ -270,143 +271,126 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 	if r.Stage == "metadata" || r.Stage == "obligation" {
 		route = KaminoSameMintRoute{Protected: []RouteInstruction{ix}}
 	}
-	return route, canonicalAccounts(route)
+	return route, nil
 }
 
 // initObligation creates the vault's vanilla (tag 0, id 0) obligation. The
 // vault is owner and rent payer: inside a Squads policy only the vault signs.
-func initObligation(owner string, t KaminoPositionAccounts, metadata string) RouteInstruction {
-	return klendInstruction("init_obligation", []byte{0, 0}, []InstructionAccount{
-		{owner, true, false}, {owner, true, true}, {t.Obligation, false, true}, {t.Market, false, false}, {systemProgram, false, false}, {systemProgram, false, false}, {metadata, false, false}, {rentSysvar, false, false}, {systemProgram, false, false},
-	})
+func initObligation(owner solana.PublicKey, t klendPosition, metadata solana.PublicKey) RouteInstruction {
+	return RouteInstructionOf("kamino_init_obligation", kamino.InitObligation(owner, owner, t.Obligation, t.LendingMarket, solana.PublicKey{}, solana.PublicKey{}, metadata, 0, 0))
 }
 
 // initObligationFarm creates the obligation's collateral farm user; the payer
-// funds it, so it stays outside the vault's policy.
-func initObligationFarm(payer, owner string, t KaminoPositionAccounts) RouteInstruction {
-	return klendInstruction("init_obligation_farms_for_reserve", []byte{0}, []InstructionAccount{
-		{payer, true, true}, {owner, false, false}, {t.Obligation, false, true}, {t.MarketAuthority, false, false}, {t.Reserve, false, true}, {t.ReserveFarmState, false, true}, {t.ObligationFarmUserState, false, true}, {t.Market, false, false}, {farmsProgram, false, false}, {rentSysvar, false, false}, {systemProgram, false, false},
-	})
+// funds it, so it stays outside the vault's policy. The reserve must have a
+// collateral farm.
+func initObligationFarm(payer string, t klendPosition) (RouteInstruction, error) {
+	key, err := solana.PublicKeyFromBase58(payer)
+	if err != nil || t.ReserveFarmState.IsZero() {
+		return RouteInstruction{}, fmt.Errorf("invalid KLend farm setup payer %q or reserve farm", payer)
+	}
+	return RouteInstructionOf("kamino_init_obligation_farms_for_reserve", kamino.InitObligationFarmsForReserve(kamino.InitObligationFarmsAccounts{
+		Payer: key, Owner: t.Owner, Obligation: t.Obligation, LendingMarketAuthority: t.LendingMarketAuthority, Reserve: t.Reserve,
+		ReserveFarmState: t.ReserveFarmState, ObligationFarmUserState: t.ObligationFarmUserState, LendingMarket: t.LendingMarket,
+	}, 0)), nil
+}
+
+// klendPosition is a position's KLend accounts, parsed for the vault.
+type klendPosition struct {
+	kamino.CollateralAccounts
+	oracles  kamino.RefreshReserveAccounts
+	reserves []solana.PublicKey // the obligation footprint, deposits then borrows
 }
 
 // bindKLendPDAs derives the market authority, the vanilla (tag 0, id 0)
 // obligation and the obligation farm user state. Supplied values must equal
-// the derivation; empty values are filled from it.
-func bindKLendPDAs(p *KaminoPositionAccounts, vault solana.PublicKey) error {
+// the derivation; empty values are filled from it. It returns the bound
+// position's parsed accounts.
+func bindKLendPDAs(p *KaminoPositionAccounts, vault solana.PublicKey) (klendPosition, error) {
 	market, err := solana.PublicKeyFromBase58(p.Market)
 	if err != nil {
-		return err
+		return klendPosition{}, err
 	}
-	authority, err := findProgramAddress(KLendProgram, []byte("lma"), market[:])
+	authority, err := kamino.LendingMarketAuthority(market)
 	if err != nil {
-		return err
+		return klendPosition{}, err
 	}
-	var zero solana.PublicKey
-	obligation, err := findProgramAddress(KLendProgram, []byte{0}, []byte{0}, vault[:], market[:], zero[:], zero[:])
+	obligation, err := kamino.VanillaObligation(vault, market)
 	if err != nil {
-		return err
+		return klendPosition{}, err
 	}
-	if p.MarketAuthority != "" && p.MarketAuthority != authority {
-		return fmt.Errorf("market authority does not match KLend PDA")
+	if p.MarketAuthority != "" && p.MarketAuthority != authority.String() {
+		return klendPosition{}, fmt.Errorf("market authority does not match KLend PDA")
 	}
-	if p.Obligation != "" && p.Obligation != obligation {
-		return fmt.Errorf("obligation does not match vanilla KLend PDA")
+	if p.Obligation != "" && p.Obligation != obligation.String() {
+		return klendPosition{}, fmt.Errorf("obligation does not match vanilla KLend PDA")
 	}
-	p.MarketAuthority, p.Obligation = authority, obligation
+	p.MarketAuthority, p.Obligation = authority.String(), obligation.String()
 	if p.ReserveFarmState == "" {
 		if p.ObligationFarmUserState != "" {
-			return fmt.Errorf("farm user state has no reserve farm")
+			return klendPosition{}, fmt.Errorf("farm user state has no reserve farm")
 		}
-		return nil
+		return p.klend(vault)
 	}
 	farm, err := solana.PublicKeyFromBase58(p.ReserveFarmState)
 	if err != nil {
-		return err
+		return klendPosition{}, err
 	}
-	obligationKey := solana.MustPublicKeyFromBase58(obligation)
-	user, err := findProgramAddress(farmsProgram, []byte("user"), farm[:], obligationKey[:])
+	user, err := kamino.ObligationFarmUserState(farm, obligation)
 	if err != nil {
-		return err
+		return klendPosition{}, err
 	}
-	if p.ObligationFarmUserState != "" && p.ObligationFarmUserState != user {
-		return fmt.Errorf("farm user state does not match Farms PDA")
+	if p.ObligationFarmUserState != "" && p.ObligationFarmUserState != user.String() {
+		return klendPosition{}, fmt.Errorf("farm user state does not match Farms PDA")
 	}
-	p.ObligationFarmUserState = user
-	return nil
+	p.ObligationFarmUserState = user.String()
+	return p.klend(vault)
 }
 
-func refreshReserve(p KaminoPositionAccounts) RouteInstruction {
-	return klendInstruction("refresh_reserve", nil, []InstructionAccount{
-		{p.Reserve, false, true}, {p.Market, false, false}, optionalKLendAccount(p.PythOracle, false), optionalKLendAccount(p.SwitchboardPriceOracle, false), optionalKLendAccount(p.SwitchboardTWAPOracle, false), optionalKLendAccount(p.ScopePrices, false),
-	})
+// klend parses the position's addresses; an empty optional one stays zero.
+func (p KaminoPositionAccounts) klend(owner solana.PublicKey) (klendPosition, error) {
+	var err error
+	parse := func(value string, optional bool) solana.PublicKey {
+		if err != nil || optional && value == "" {
+			return solana.PublicKey{}
+		}
+		key, parseErr := solana.PublicKeyFromBase58(value)
+		if parseErr != nil {
+			err = fmt.Errorf("invalid KLend account %q: %w", value, parseErr)
+		}
+		return key
+	}
+	out := klendPosition{CollateralAccounts: kamino.CollateralAccounts{
+		Owner: owner, Obligation: parse(p.Obligation, false), LendingMarket: parse(p.Market, false), LendingMarketAuthority: parse(p.MarketAuthority, false),
+		Reserve: parse(p.Reserve, false), LiquidityMint: parse(p.LiquidityMint, false), LiquiditySupply: parse(p.LiquiditySupply, false),
+		CollateralMint: parse(p.CollateralMint, false), CollateralSupply: parse(p.CollateralSupply, false), UserLiquidity: parse(p.VaultLiquidityATA, false),
+		LiquidityTokenProgram: parse(p.LiquidityTokenProgram, false), ObligationFarmUserState: parse(p.ObligationFarmUserState, true), ReserveFarmState: parse(p.ReserveFarmState, true),
+	}}
+	out.oracles = kamino.RefreshReserveAccounts{Reserve: out.Reserve, LendingMarket: out.LendingMarket, Pyth: parse(p.PythOracle, true),
+		SwitchboardPrice: parse(p.SwitchboardPriceOracle, true), SwitchboardTWAP: parse(p.SwitchboardTWAPOracle, true), Scope: parse(p.ScopePrices, true)}
+	for _, reserve := range append(append([]string{}, p.ObligationDepositReserves...), p.ObligationBorrowReserves...) {
+		out.reserves = append(out.reserves, parse(reserve, false))
+	}
+	return out, err
+}
+
+func refreshReserve(p klendPosition) RouteInstruction {
+	return RouteInstructionOf("kamino_refresh_reserve", kamino.RefreshReserve(p.oracles))
 }
 
 // refreshObligation lists the obligation's complete reserve footprint, or only
 // the target reserve after a deposit into it.
-func refreshObligation(p KaminoPositionAccounts, targetOnly bool) RouteInstruction {
-	accounts := []InstructionAccount{{p.Market, false, false}, {p.Obligation, false, true}}
-	reserves := append(append([]string{}, p.ObligationDepositReserves...), p.ObligationBorrowReserves...)
+func refreshObligation(p klendPosition, targetOnly bool) RouteInstruction {
+	reserves := p.reserves
 	if targetOnly {
-		reserves = []string{p.Reserve}
+		reserves = []solana.PublicKey{p.Reserve}
 	}
-	for _, reserve := range reserves {
-		accounts = append(accounts, InstructionAccount{reserve, false, true})
-	}
-	return klendInstruction("refresh_obligation", nil, accounts)
+	return RouteInstructionOf("kamino_refresh_obligation", kamino.RefreshObligation(p.LendingMarket, p.Obligation, reserves...))
 }
 
-func withdrawV2(owner string, p KaminoPositionAccounts, collateralAmount uint64) RouteInstruction {
-	return klendInstruction("withdraw_obligation_collateral_and_redeem_reserve_collateral_v2", binary.LittleEndian.AppendUint64(nil, collateralAmount), []InstructionAccount{
-		{owner, true, true}, {p.Obligation, false, true}, {p.Market, false, false}, {p.MarketAuthority, false, false}, {p.Reserve, false, true}, {p.LiquidityMint, false, false}, {p.CollateralSupply, false, true}, {p.CollateralMint, false, true}, {p.LiquiditySupply, false, true}, {p.VaultLiquidityATA, false, true}, optionalKLendAccount("", false), {tokenProgram, false, false}, {p.LiquidityTokenProgram, false, false}, {instructionsSysvar, false, false}, optionalKLendAccount(p.ObligationFarmUserState, true), optionalKLendAccount(p.ReserveFarmState, true), {farmsProgram, false, false},
-	})
+func withdrawV2(p klendPosition, collateralAmount uint64) RouteInstruction {
+	return RouteInstructionOf("kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2", kamino.WithdrawV2(p.CollateralAccounts, collateralAmount))
 }
 
-func depositV2(owner string, p KaminoPositionAccounts, liquidityAmount uint64) RouteInstruction {
-	return klendInstruction("deposit_reserve_liquidity_and_obligation_collateral_v2", binary.LittleEndian.AppendUint64(nil, liquidityAmount), []InstructionAccount{
-		{owner, true, true}, {p.Obligation, false, true}, {p.Market, false, false}, {p.MarketAuthority, false, false}, {p.Reserve, false, true}, {p.LiquidityMint, false, false}, {p.LiquiditySupply, false, true}, {p.CollateralMint, false, true}, {p.CollateralSupply, false, true}, {p.VaultLiquidityATA, false, true}, optionalKLendAccount("", false), {tokenProgram, false, false}, {p.LiquidityTokenProgram, false, false}, {instructionsSysvar, false, false}, optionalKLendAccount(p.ObligationFarmUserState, true), optionalKLendAccount(p.ReserveFarmState, true), {farmsProgram, false, false},
-	})
-}
-
-// optionalKLendAccount is klend-interface's optional_account: an absent
-// account is passed as the KLend program id, read-only.
-func optionalKLendAccount(address string, writable bool) InstructionAccount {
-	if address == "" {
-		return InstructionAccount{KLendProgram, false, false}
-	}
-	return InstructionAccount{address, false, writable}
-}
-
-func klendInstruction(name string, args []byte, accounts []InstructionAccount) RouteInstruction {
-	return RouteInstruction{Step: "kamino_" + name, Program: KLendProgram, Accounts: accounts, Data: append(anchorDiscriminator(name), args...)}
-}
-
-func anchorDiscriminator(name string) []byte {
-	digest := sha256.Sum256([]byte("global:" + name))
-	return append([]byte(nil), digest[:8]...)
-}
-
-func findProgramAddress(program string, seeds ...[]byte) (string, error) {
-	address, _, err := solana.FindProgramAddress(seeds, solana.MustPublicKeyFromBase58(program))
-	if err != nil {
-		return "", err
-	}
-	return address.String(), nil
-}
-
-// canonicalAccounts parses every emitted account as a public key and rewrites
-// it in canonical base58, exactly as the official builders' Pubkey values
-// serialize.
-func canonicalAccounts(route KaminoSameMintRoute) error {
-	for _, list := range [][]RouteInstruction{route.Public, route.Protected} {
-		for i := range list {
-			for j := range list[i].Accounts {
-				key, err := solana.PublicKeyFromBase58(list[i].Accounts[j].Address)
-				if err != nil {
-					return fmt.Errorf("invalid KLend account %q: %w", list[i].Accounts[j].Address, err)
-				}
-				list[i].Accounts[j].Address = key.String()
-			}
-		}
-	}
-	return nil
+func depositV2(p klendPosition, liquidityAmount uint64) RouteInstruction {
+	return RouteInstructionOf("kamino_deposit_reserve_liquidity_and_obligation_collateral_v2", kamino.DepositV2(p.CollateralAccounts, liquidityAmount))
 }

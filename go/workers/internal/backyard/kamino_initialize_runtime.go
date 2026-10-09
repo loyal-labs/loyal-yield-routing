@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func initializationSnapshotReady(s Snapshot) bool {
@@ -60,7 +61,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifes
 	if err = manifest.validateBindings(); err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
-	rent, err := rpc.RentExempt(ctx, kaminoObligationLength)
+	rent, err := rpc.RentExempt(ctx, kamino.ObligationSize)
 	if err != nil {
 		return o, KaminoInitializationRequest{}, budgetHold("initializer_rent_unavailable")
 	}

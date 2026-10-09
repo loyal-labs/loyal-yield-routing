@@ -1,22 +1,21 @@
 package fleetexec
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"time"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
-	"math"
-	"math/big"
-	"time"
 )
 
 // These values originate in the linked opportunity/decision, rather than a
@@ -130,23 +129,16 @@ func (v *sameMintRecovery) reconcile(ctx context.Context, lease SubmissionLease,
 }
 
 func reservePostIdentity(a *chain.Account, mint, owner string) (market, obligation, collateralMint, tokenProgram string, err error) {
-	if a == nil || a.Owner.String() != fleet.KaminoProgram || a.Executable || a.Lamports == 0 || len(a.Data) != 8624 || !bytes.Equal(a.Data[:8], []byte{43, 242, 204, 202, 26, 247, 59, 127}) || binary.LittleEndian.Uint64(a.Data[8:16]) != 1 || sdk.PublicKeyFromBytes(a.Data[128:160]).String() != mint {
+	reserve, err := kamino.DecodeReserve(a)
+	if err != nil || reserve.LiquidityMint.String() != mint {
 		return "", "", "", "", errors.New("post reserve envelope or mint differs")
 	}
-	market = sdk.PublicKeyFromBytes(a.Data[32:64]).String()
-	collateralMint = sdk.PublicKeyFromBytes(a.Data[2560:2592]).String()
-	tokenProgram = sdk.PublicKeyFromBytes(a.Data[408:440]).String()
-	ownerKey, e := sdk.PublicKeyFromBase58(owner)
-	if e != nil {
-		err = e
-		return
+	ownerKey, err := sdk.PublicKeyFromBase58(owner)
+	if err != nil {
+		return "", "", "", "", err
 	}
-	marketKey := sdk.PublicKeyFromBytes(a.Data[32:64])
-	zero := sdk.PublicKey{}
-	key, _, e := sdk.FindProgramAddress([][]byte{{0}, {0}, ownerKey[:], marketKey[:], zero[:], zero[:]}, sdk.MustPublicKeyFromBase58(fleet.KaminoProgram))
-	err = e
-	obligation = key.String()
-	return
+	key, err := kamino.VanillaObligation(ownerKey, reserve.LendingMarket)
+	return reserve.LendingMarket.String(), key.String(), reserve.CollateralMint.String(), reserve.LiquidityTokenProgram.String(), err
 }
 func associatedCustodyAccount(owner, mint, program string) (string, error) {
 	keys := make([]sdk.PublicKey, 3)
@@ -239,7 +231,7 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 				return nil, e
 			}
 		}
-		p.redeemable, e = redeemableCollateral(a.Data, p.amount)
+		p.redeemable, e = redeemableCollateral(a, p.amount)
 		if e != nil {
 			return nil, e
 		}
@@ -250,41 +242,21 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 	return &sameMintPostProof{contract: c, slot: slot, positions: positions, idleAmount: idle, idleATA: ata, idleATAExists: idleExists, tokenProgram: program, observedAt: time.Now().UTC(), receipt: receipt}, nil
 }
 
-// KLend Fraction is U68F60. total_supply is available + borrowed - all three
-// fee pools. collateral_to_liquidity floors the wide product; it does not pass
-// through float64 or assume that collateral and liquidity share raw units.
-// Source: pinned klend 23b9f2b state/reserve.rs ReserveLiquidity::total_supply,
-// ReserveCollateral::exchange_rate and CollateralExchangeRate conversion.
-func redeemableCollateral(data []byte, collateral int64) (int64, error) {
-	if len(data) != 8624 || collateral < 0 {
+// redeemableCollateral is the liquidity collateral redeems from reserve, in
+// the BIGINT range the position tables store.
+func redeemableCollateral(reserve *chain.Account, collateral int64) (int64, error) {
+	decoded, err := kamino.DecodeReserve(reserve)
+	if err != nil || collateral < 0 {
 		return 0, errors.New("invalid collateral conversion input")
 	}
-	scaled := new(big.Int).Lsh(new(big.Int).SetUint64(binary.LittleEndian.Uint64(data[224:232])), 60)
-	little := func(b []byte) *big.Int {
-		rev := bytes.Clone(b)
-		for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
-			rev[i], rev[j] = rev[j], rev[i]
-		}
-		return new(big.Int).SetBytes(rev)
+	liquidity, err := decoded.CollateralToLiquidity(uint64(collateral))
+	if err != nil {
+		return 0, err
 	}
-	scaled.Add(scaled, little(data[232:248]))
-	for _, offset := range []int{344, 360, 376} {
-		scaled.Sub(scaled, little(data[offset:offset+16]))
-	}
-	if scaled.Sign() < 0 {
-		return 0, errors.New("reserve fees exceed actual liquidity")
-	}
-	supply := binary.LittleEndian.Uint64(data[2592:2600])
-	if supply == 0 || scaled.Sign() == 0 {
-		return collateral, nil
-	} // pinned SDK initial rate = 1
-	numerator := new(big.Int).Mul(big.NewInt(collateral), scaled)
-	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(supply), 60)
-	result := new(big.Int).Quo(numerator, denominator)
-	if !result.IsInt64() || result.Sign() < 0 {
+	if liquidity > math.MaxInt64 {
 		return 0, errors.New("redeemable liquidity exceeds BIGINT")
 	}
-	return result.Int64(), nil
+	return int64(liquidity), nil
 }
 
 func (s *Store) publishSameMintPost(ctx context.Context, lease SubmissionLease, proof *sameMintPostProof) error {

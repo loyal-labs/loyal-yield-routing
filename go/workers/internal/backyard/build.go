@@ -9,10 +9,10 @@ import (
 	"math"
 	"sort"
 
-	"github.com/solana-foundation/solana-go/v2"
-
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 var ErrTransactionConstructionUnavailable = fmt.Errorf("transaction construction blocked: deployed adaptor v2 and complete policy catalog are required")
@@ -987,7 +987,7 @@ func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kamino
 	transactionAccounts := outer.accounts[3:]
 	programIndex := int(compact[1])
 	accountCount := int(compact[2])
-	if programIndex >= len(transactionAccounts) || transactionAccounts[programIndex] != mustKey(kaminoPrimeUSDCProgram) ||
+	if programIndex >= len(transactionAccounts) || transactionAccounts[programIndex] != publicKey(kamino.ProgramID) ||
 		accountCount == 0 || 3+accountCount+2 > len(compact) {
 		return false
 	}
@@ -999,7 +999,7 @@ func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kamino
 	for _, account := range wantAccounts {
 		pushOrMergeMeta(&expectedTransactionAccounts, account)
 	}
-	pushOrMergeMeta(&expectedTransactionAccounts, accountMeta{key: mustKey(kaminoPrimeUSDCProgram)})
+	pushOrMergeMeta(&expectedTransactionAccounts, accountMeta{key: publicKey(kamino.ProgramID)})
 	if len(transactionAccounts) != len(expectedTransactionAccounts) {
 		return false
 	}
@@ -1022,49 +1022,23 @@ func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kamino
 }
 
 func kaminoLegMetasForRoute(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
-	if lane != RouteID && lane != "" {
-		// The AUTO candidate lane is explicitly not BasicPolicy, but its
-		// envelope accounts are built from the same route-resolved metas the
-		// compiler emits through kaminoPacketForRoute — never the PRIME
-		// fallback below, and the route keeps BasicPolicy=false.
-		if route, err := runtimeRoute(lane); err == nil && (route.BasicPolicy || route.Lane == autoAUTOPYUSD.Lane) {
-			deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
-			switch leg {
-			case kaminoLegDeposit:
-				return deposit
-			case kaminoLegBorrow:
-				return borrow
-			case kaminoLegRepay:
-				return repay
-			case kaminoLegWithdraw:
-				return withdraw
-			}
-		}
+	// The basic lanes and the AUTO candidate lane (explicitly not BasicPolicy)
+	// use their own route-resolved metas, as the compiler emits them through
+	// kaminoPacketForRoute; every other lane keeps the installed PRIME graph.
+	route, err := runtimeRoute(lane)
+	if lane == RouteID || err != nil || !route.BasicPolicy && route.Lane != autoAUTOPYUSD.Lane {
+		route, _ = runtimeRoute(RouteID)
 	}
-	if lane == SelectedRouteID {
-		deposit, borrow, repay, withdraw := mapleKaminoMetas()
-		switch leg {
-		case kaminoLegDeposit:
-			return deposit
-		case kaminoLegBorrow:
-			return borrow
-		case kaminoLegRepay:
-			return repay
-		case kaminoLegWithdraw:
-			return withdraw
-		default:
-			return nil
-		}
-	}
+	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 	switch leg {
 	case kaminoLegDeposit:
-		return kaminoDepositMetas()
+		return deposit
 	case kaminoLegBorrow:
-		return kaminoBorrowMetas()
+		return borrow
 	case kaminoLegRepay:
-		return kaminoRepayMetas()
+		return repay
 	case kaminoLegWithdraw:
-		return kaminoWithdrawMetas()
+		return withdraw
 	default:
 		return nil
 	}
@@ -1073,13 +1047,13 @@ func kaminoLegMetasForRoute(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
 func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
 	switch leg {
 	case kaminoLegDeposit:
-		return kaminoDepositCollateral
+		return kamino.DepositV2Discriminator[:]
 	case kaminoLegBorrow:
-		return kaminoBorrowUSDC
+		return kamino.BorrowV2Discriminator[:]
 	case kaminoLegRepay:
-		return kaminoRepayUSDC
+		return kamino.RepayV2Discriminator[:]
 	case kaminoLegWithdraw:
-		return kaminoWithdrawCollateral
+		return kamino.WithdrawV2Discriminator[:]
 	default:
 		return nil
 	}

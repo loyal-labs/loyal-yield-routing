@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -115,7 +116,7 @@ func TestRetainedManifestCompositeKeepsBothBuilderProvenanceSets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	protected := RouteInstruction{Program: KLendProgram, Accounts: []InstructionAccount{{Address: bank.source.Position.Reserve, Writable: true}, {Address: bank.source.Obligation, Writable: true}, {Address: bank.source.Position.VaultLiquidityATA, Writable: true}}}
+	protected := RouteInstruction{Program: kamino.ProgramID.String(), Accounts: []InstructionAccount{{Address: bank.source.Position.Reserve, Writable: true}, {Address: bank.source.Obligation, Writable: true}, {Address: bank.source.Position.VaultLiquidityATA, Writable: true}}}
 	withdraw, err := wrapSquadsPolicy(plan.Bindings.Withdraw.PolicyAccount, plan.Bindings.DelegatedSigner, 0, []uint8{0}, []RouteInstruction{protected})
 	if err != nil {
 		t.Fatal(err)
@@ -341,7 +342,7 @@ func TestRetainedManifestSentinelsAndInfrastructure(t *testing.T) {
 	const zero = "11111111111111111111111111111111"
 	const token2022 = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
 	input := KaminoSameMintRouteRequest{}
-	ixs := []RouteInstruction{{Program: manifestKey(41), Accounts: []InstructionAccount{{Address: KLendProgram}, {Address: zero}, {Address: farmsProgram}}}}
+	ixs := []RouteInstruction{{Program: manifestKey(41), Accounts: []InstructionAccount{{Address: kamino.ProgramID.String()}, {Address: zero}, {Address: kamino.FarmsProgramID.String()}}}}
 	baseline := manifestHash(t, input, "", manifestKey(40), ixs)
 	// Independent Python wire oracle, 268 bytes: static 40:[0,1],41:[3];
 	// shared zero/KLend/farms:[10], sorted by decoded pubkey, all readonly.
@@ -355,7 +356,7 @@ func TestRetainedManifestSentinelsAndInfrastructure(t *testing.T) {
 	if got := manifestHash(t, input, "", manifestKey(40), ixs); got != baseline {
 		t.Fatal("absent optional accounts acquired roles")
 	}
-	input.Source.PythOracle = KLendProgram
+	input.Source.PythOracle = kamino.ProgramID.String()
 	if got := manifestHash(t, input, "", manifestKey(40), ixs); got == baseline {
 		t.Fatal("decoded non-default oracle must retain role even at KLend address")
 	}
@@ -383,7 +384,7 @@ func TestRetainedManifestRejectsMissingConflictingAndMalformedProvenance(t *test
 		{name: "missing", want: "missing typed provenance", payer: manifestKey(40), ixs: []RouteInstruction{{Program: manifestKey(41), Accounts: []InstructionAccount{{Address: manifestKey(99)}}}}},
 		{name: "unused_conflict", want: "conflicting typed provenance", payer: manifestKey(40), input: KaminoSameMintRouteRequest{Vault: manifestKey(10), Source: KaminoPositionAccounts{Market: manifestKey(10)}}},
 		{name: "static_conflict", want: "conflicting typed provenance", payer: manifestKey(10), input: KaminoSameMintRouteRequest{Vault: manifestKey(10), Source: KaminoPositionAccounts{Market: manifestKey(10)}}},
-		{name: "placeholder_in_decoded_farm_user", want: "conflicting typed provenance", payer: manifestKey(40), input: KaminoSameMintRouteRequest{Source: KaminoPositionAccounts{ObligationFarmUserState: KLendProgram}}},
+		{name: "placeholder_in_decoded_farm_user", want: "conflicting typed provenance", payer: manifestKey(40), input: KaminoSameMintRouteRequest{Source: KaminoPositionAccounts{ObligationFarmUserState: kamino.ProgramID.String()}}},
 		{name: "required_obligation_is_not_optional", want: "conflicting typed provenance", payer: manifestKey(40), input: KaminoSameMintRouteRequest{Source: KaminoPositionAccounts{Obligation: "11111111111111111111111111111111"}}},
 		{name: "malformed_role", want: "typed provenance", payer: manifestKey(40), input: KaminoSameMintRouteRequest{Source: KaminoPositionAccounts{PythOracle: "not a pubkey"}}},
 		{name: "malformed_payer", want: "manifest account", payer: ""},

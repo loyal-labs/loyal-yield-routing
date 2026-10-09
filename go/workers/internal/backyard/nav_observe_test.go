@@ -6,6 +6,8 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func TestCrossDecimalValuationUsesPricesAndConservativeRounding(t *testing.T) {
@@ -74,9 +76,9 @@ const kaminoFixtureUnix = int64(1_700_000_000)
 
 func marketFixture(t *testing.T, address string) ConfirmedAccount {
 	t.Helper()
-	data := make([]byte, kaminoMarketLength)
-	copy(data[:8], kaminoMarketDiscriminator[:])
-	return ConfirmedAccount{Address: address, Owner: kaminoProgram, Lamports: 1, Data: data}
+	data := make([]byte, kamino.LendingMarketSize)
+	copy(data[:8], kamino.LendingMarketDiscriminator[:])
+	return ConfirmedAccount{Address: address, Owner: kamino.ProgramID.String(), Lamports: 1, Data: data}
 }
 
 // clockFixture publishes kaminoFixtureUnix as the batch's chain time so the
@@ -128,8 +130,8 @@ func reserveFixture(t *testing.T, address, mint string, slot int64, priceSF *big
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := make([]byte, kaminoReserveLength)
-	copy(data[:8], kaminoReserveDiscriminator[:])
+	data := make([]byte, kamino.ReserveSize)
+	copy(data[:8], kamino.ReserveDiscriminator[:])
 	binary.LittleEndian.PutUint64(data[8:16], 1)
 	binary.LittleEndian.PutUint64(data[16:24], uint64(slot))
 	data[25] = kaminoRequiredPriceStatus
@@ -141,7 +143,7 @@ func reserveFixture(t *testing.T, address, mint string, slot int64, priceSF *big
 	binary.LittleEndian.PutUint64(data[264:272], uint64(kaminoFixtureUnix))
 	putScaledFraction(data[296:328], new(big.Int).Lsh(big.NewInt(1), 60))
 	binary.LittleEndian.PutUint64(data[2592:2600], collateralSupply)
-	return ConfirmedAccount{Address: address, Owner: kaminoProgram, Lamports: 1, Data: data}
+	return ConfirmedAccount{Address: address, Owner: kamino.ProgramID.String(), Lamports: 1, Data: data}
 }
 
 func obligationFixture(t *testing.T, slot int64, collateralReceiptRaw, debtRaw uint64) ConfirmedAccount {
@@ -150,8 +152,8 @@ func obligationFixture(t *testing.T, slot int64, collateralReceiptRaw, debtRaw u
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := make([]byte, kaminoObligationLength)
-	copy(data[:8], kaminoObligationDiscriminator[:])
+	data := make([]byte, kamino.ObligationSize)
+	copy(data[:8], kamino.ObligationDiscriminator[:])
 	binary.LittleEndian.PutUint64(data[16:24], uint64(slot))
 	data[25] = kaminoRequiredPriceStatus
 	putKey(t, data[32:64], config.Market)

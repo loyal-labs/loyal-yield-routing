@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func pilotFlatFixture(t *testing.T) pilotFlatEvidence {
@@ -36,8 +37,8 @@ func pilotFlatFixture(t *testing.T) pilotFlatEvidence {
 		if err != nil {
 			t.Fatal(err)
 		}
-		obligation := ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kaminoProgram, Lamports: 1, Data: make([]byte, kaminoObligationLength)}
-		copy(obligation.Data, kaminoObligationDiscriminator[:])
+		obligation := ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, kamino.ObligationSize)}
+		copy(obligation.Data, kamino.ObligationDiscriminator[:])
 		putKey(t, obligation.Data[32:64], route.Kamino.Market)
 		putKey(t, obligation.Data[64:96], bridgeVault)
 		values[obligation.Address] = obligation

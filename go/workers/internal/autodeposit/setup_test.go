@@ -5,13 +5,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
-	"encoding/hex"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
@@ -26,11 +26,7 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 	ata := ataKey.String()
 	plan.Target.VaultUsdcAta = ata
 	plan.Target.VaultTokenAta = ata
-	metadata, err := metadataKey(plan.Target.VaultPubkey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	obligation, err := vanillaObligationKey(vault, mustKey(plan.Market))
+	metadataKey, err := kamino.UserMetadataAddress(vault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,46 +34,30 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 		key := mustKey(value)
 		copy(data[offset:offset+32], key[:])
 	}
-	reserve := make([]byte, reserveDataLength)
-	disc, _ := hex.DecodeString(reserveDiscriminator)
-	copy(reserve, disc)
-	for offset, value := range map[int]string{reserveMarketOffset: plan.Market, reserveLiquidityMintOffset: USDCMint, reserveLiquidityProgramOffset: splTokenID, reserveCollateralMintOffset: fixedKey("setup-cmint"), reserveCollateralSupplyOffset: fixedKey("setup-csupply"), reserveLiquiditySupplyOffset: fixedKey("setup-lsupply")} {
-		put(reserve, offset, value)
-	}
+	farm := ""
 	if stage == SetupFarm {
-		put(reserve, reserveFarmOffset, fixedKey("setup-farm"))
+		farm = fixedKey("setup-farm")
 	}
-	route := decodeReservePosition(plan.Reserve, reserve)
-	route.Obligation = obligation
-	route.Position.Obligation = obligation
-	route.Position.VaultLiquidityATA = ata
-	if route.Position.ReserveFarmState != "" {
-		farm := mustKey(route.Position.ReserveFarmState)
-		obl := mustKey(obligation)
-		pda, err := findProgramAddress([][]byte{[]byte("user"), farm[:], obl[:]}, farmsProgramID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		route.Position.ObligationFarmUserState = base58Key(pda[:])
-	}
+	reserve, route := testReserve(t, plan, farm)
+	metadata, obligation := metadataKey.String(), route.Obligation
 	custodyData := make([]byte, 165)
 	put(custodyData, 0, USDCMint)
 	put(custodyData, 32, plan.Target.VaultPubkey)
 	custodyData[108] = 1
-	metadataData := make([]byte, 1032)
-	copy(metadataData, accountDiscriminator("UserMetadata"))
+	metadataData := make([]byte, kamino.UserMetadataSize)
+	copy(metadataData, kamino.UserMetadataDiscriminator[:])
 	put(metadataData, 80, plan.Target.VaultPubkey)
-	obligationData := make([]byte, obligationDataLength)
-	copy(obligationData, obligationDiscriminator[:])
+	obligationData := make([]byte, kamino.ObligationSize)
+	copy(obligationData, kamino.ObligationDiscriminator[:])
 	put(obligationData, 32, plan.Market)
 	put(obligationData, 64, plan.Target.VaultPubkey)
 	accounts := map[string]testAccount{
-		plan.Reserve:            {Address: plan.Reserve, Owner: KLendProgramID, Data: reserve},
-		plan.Market:             {Address: plan.Market, Owner: KLendProgramID},
+		plan.Reserve:            reserve,
+		plan.Market:             {Address: plan.Market, Owner: kamino.ProgramID.String()},
 		plan.Target.VaultPubkey: {Address: plan.Target.VaultPubkey, Owner: systemProgramZero, Lamports: 10_000_000},
 		ata:                     {Address: ata, Owner: splTokenID, Data: custodyData},
-		metadata:                {Address: metadata, Owner: KLendProgramID, Data: metadataData},
-		obligation:              {Address: obligation, Owner: KLendProgramID, Data: obligationData},
+		metadata:                {Address: metadata, Owner: kamino.ProgramID.String(), Lamports: 1, Data: metadataData},
+		obligation:              {Address: obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: obligationData},
 	}
 	address := map[SetupStage]string{SetupATA: ata, SetupMetadata: metadata, SetupObligation: obligation, SetupFarm: route.Position.ObligationFarmUserState}[stage]
 	delete(accounts, address)
@@ -150,11 +130,11 @@ func TestDestinationSetupAcceptsCustodyResidue(t *testing.T) {
 
 func TestSetupReadbackRejectsForeignIdentity(t *testing.T) {
 	builder, plan, setup, accounts := setupFixture(t, SetupMetadata)
-	data := make([]byte, 1032)
-	copy(data, accountDiscriminator("UserMetadata"))
+	data := make([]byte, kamino.UserMetadataSize)
+	copy(data, kamino.UserMetadataDiscriminator[:])
 	foreign := mustKey(fixedKey("foreign"))
 	copy(data[80:112], foreign[:])
-	accounts[setup.Account] = testAccount{Owner: KLendProgramID, Data: data}
+	accounts[setup.Account] = testAccount{Owner: kamino.ProgramID.String(), Lamports: 1, Data: data}
 	if err := builder.ReadbackDestinationSetup(t.Context(), plan, setup, 500); err == nil {
 		t.Fatal("foreign metadata owner passed readback")
 	}

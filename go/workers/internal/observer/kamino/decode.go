@@ -1,7 +1,6 @@
 package kamino
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -10,16 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/solana-foundation/solana-go/v2"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	klend "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 const (
-	reserveStructSize     = 8616
-	liquidityOffset       = 120
-	configOffset          = 4848
-	borrowedOutsideOffset = 6696
-	fractionBits          = 60
-	secondsPerYear        = 365.25 * 24 * 60 * 60
+	fractionBits   = 60
+	secondsPerYear = 365.25 * 24 * 60 * 60
 )
 
 type Target struct {
@@ -95,46 +91,42 @@ type Diff struct {
 	ChangedFields []string `json:"changed_fields"`
 }
 
-func Decode(target Target, slot uint64, observedAt time.Time, data []byte, slotDurationMS float64) (Snapshot, error) {
-	discriminator := sha256.Sum256([]byte("account:Reserve"))
-	if len(data) != 8+reserveStructSize {
-		return Snapshot{}, fmt.Errorf("reserve data is %d bytes, expected %d", len(data), 8+reserveStructSize)
+func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Account, slotDurationMS float64) (Snapshot, error) {
+	reserve, err := klend.DecodeReserve(account)
+	if err != nil {
+		return Snapshot{}, err
 	}
-	if string(data[:8]) != string(discriminator[:8]) {
-		return Snapshot{}, fmt.Errorf("reserve discriminator mismatch")
-	}
-	body := data[8:]
-	market := key(body[24:56])
-	liquidity := body[liquidityOffset : liquidityOffset+1232]
-	mint := key(liquidity[:32])
+	market, mint := reserve.LendingMarket.String(), reserve.LiquidityMint.String()
 	if target.Market != nil && *target.Market != market {
 		return Snapshot{}, fmt.Errorf("reserve %s market %s does not match target %s", target.Reserve, market, *target.Market)
 	}
 	if target.LiquidityMint != nil && *target.LiquidityMint != mint {
 		return Snapshot{}, fmt.Errorf("reserve %s mint %s does not match target %s", target.Reserve, mint, *target.LiquidityMint)
 	}
-	available := float64(u64(liquidity, 96))
-	borrowedInt := u128(liquidity[104:120])
+	available := float64(reserve.AvailableAmount)
+	borrowedInt := klend.U128(reserve.BorrowedAmountSF)
 	borrowed := scaledFraction(borrowedInt)
-	price := scaledFraction(u128(liquidity[120:136]))
-	protocolFees := scaledFraction(u128(liquidity[216:232]))
-	referrerFees := scaledFraction(u128(liquidity[232:248]))
-	pendingFees := scaledFraction(u128(liquidity[248:264]))
+	price := scaledFraction(klend.U128(reserve.MarketPriceSF))
+	protocolFees := scaledFraction(klend.U128(reserve.AccumulatedProtocolFeesSF))
+	referrerFees := scaledFraction(klend.U128(reserve.AccumulatedReferrerFeesSF))
+	pendingFees := scaledFraction(klend.U128(reserve.PendingReferrerFeesSF))
 	totalSupply := math.Max(0, available+borrowed-protocolFees-referrerFees-pendingFees)
 	utilization := 0.0
 	if totalSupply > 0 {
 		utilization = borrowed / totalSupply
 	}
-	config := body[configOffset : configOffset+952]
-	curve := curvePoints(config[64:152])
+	var curve [11]CurvePoint
+	for index, point := range reserve.BorrowRateCurve {
+		curve[index] = CurvePoint{point.UtilizationRateBPS, point.BorrowRateBPS}
+	}
 	curveAPR := borrowCurveAPR(curve, utilization) * (1000.0 / 2.0 / slotDurationMS)
-	hostBPS := binary.LittleEndian.Uint16(config[2:4])
+	hostBPS := reserve.HostFixedInterestRateBPS
 	hostAPR := float64(hostBPS) / 10000.0 * (1000.0 / 2.0 / slotDurationMS)
 	borrowAPR := curveAPR + hostAPR
-	supplyAPR := utilization * curveAPR * (1 - float64(config[14])/100)
+	supplyAPR := utilization * curveAPR * (1 - float64(reserve.ProtocolTakeRatePct)/100)
 	borrowAPY := aprToAPY(borrowAPR, slotDurationMS)
 	supplyAPY := aprToAPY(supplyAPR, slotDurationMS)
-	name := strings.TrimRight(string(config[176:208]), "\x00")
+	name := strings.TrimRight(string(reserve.Name[:]), "\x00")
 	symbol := target.Symbol
 	if symbol == nil && strings.TrimSpace(name) != "" {
 		value := strings.TrimSpace(name)
@@ -146,16 +138,18 @@ func Decode(target Target, slot uint64, observedAt time.Time, data []byte, slotD
 		}
 	}
 	marketValue := market
-	mintDecimals := u64(liquidity, 144)
-	mintFactor := math.Pow10(int(mintDecimals))
-	snapshot := Snapshot{ObservationSchemaVersion: 2, ObservedAt: observedAt, Slot: slot, Reserve: target.Reserve, Market: &marketValue, Symbol: symbol, LiquidityMint: mint, MintDecimals: mintDecimals,
-		ReserveLastUpdateSlot: u64(body, 8), ReserveLastUpdateStale: body[16] != 0, ReservePriceStatus: body[17], AvailableAmount: available, BorrowedAmount: borrowed, BorrowedAmountSF: borrowedInt.String(), TotalSupplyAmount: totalSupply, MarketPriceUSD: price, MarketPriceLastUpdatedTS: u64(liquidity, 136),
+	mintFactor := math.Pow10(int(reserve.MintDecimals))
+	withdrawalCap := func(c klend.WithdrawalCap) WithdrawalCap {
+		return WithdrawalCap{c.ConfigCapacity, c.CurrentTotal, c.LastIntervalStartTimestamp, c.IntervalLengthSeconds}
+	}
+	snapshot := Snapshot{ObservationSchemaVersion: 2, ObservedAt: observedAt, Slot: slot, Reserve: target.Reserve, Market: &marketValue, Symbol: symbol, LiquidityMint: mint, MintDecimals: reserve.MintDecimals,
+		ReserveLastUpdateSlot: reserve.LastUpdateSlot, ReserveLastUpdateStale: reserve.LastUpdateStale, ReservePriceStatus: reserve.PriceStatus, AvailableAmount: available, BorrowedAmount: borrowed, BorrowedAmountSF: borrowedInt.String(), TotalSupplyAmount: totalSupply, MarketPriceUSD: price, MarketPriceLastUpdatedTS: reserve.MarketPriceLastUpdatedTS,
 		TotalSupplyUSDEstimate: totalSupply * price / mintFactor, TotalBorrowUSDEstimate: borrowed * price / mintFactor, Utilization: utilization, BorrowAPR: borrowAPR, SupplyAPR: supplyAPR, BorrowAPY: borrowAPY, SupplyAPY: supplyAPY,
-		ProtocolTakeRatePct: config[14], HostFixedInterestRateBPS: hostBPS, ReserveStatus: config[0], EmergencyMode: config[8] != 0, LoanToValuePct: config[16], LiquidationThresholdPct: config[17], BorrowFactorPct: u64(config, 152), DepositLimit: u64(config, 160), BorrowLimit: u64(config, 168),
-		UtilizationLimitBlockBorrowingAbovePct: config[645], DisableUsageAsCollOutsideEmode: config[644] != 0, BorrowLimitOutsideElevationGroup: u64(config, 648), BorrowedAmountOutsideElevationGroup: u64(body, borrowedOutsideOffset), OriginationFeeSF: u64(config, 40), FlashLoanFeeSF: u64(config, 48), BorrowRateCurve: curve,
-		DepositWithdrawalCap: withdrawalCap(config[560:592]), DebtWithdrawalCap: withdrawalCap(config[592:624])}
+		ProtocolTakeRatePct: reserve.ProtocolTakeRatePct, HostFixedInterestRateBPS: hostBPS, ReserveStatus: reserve.Status, EmergencyMode: reserve.EmergencyMode, LoanToValuePct: reserve.LoanToValuePct, LiquidationThresholdPct: reserve.LiquidationThresholdPct, BorrowFactorPct: reserve.BorrowFactorPct, DepositLimit: reserve.DepositLimit, BorrowLimit: reserve.BorrowLimit,
+		UtilizationLimitBlockBorrowingAbovePct: reserve.UtilizationLimitBlockBorrowingAbovePct, DisableUsageAsCollOutsideEmode: reserve.DisableUsageAsCollOutsideEmode, BorrowLimitOutsideElevationGroup: reserve.BorrowLimitOutsideElevationGroup, BorrowedAmountOutsideElevationGroup: reserve.BorrowedAmountOutsideElevationGroup, OriginationFeeSF: reserve.BorrowFeeSF, FlashLoanFeeSF: reserve.FlashLoanFeeSF, BorrowRateCurve: curve,
+		DepositWithdrawalCap: withdrawalCap(reserve.DepositWithdrawalCap), DebtWithdrawalCap: withdrawalCap(reserve.DebtWithdrawalCap)}
 	for index := range 4 {
-		snapshot.CumulativeBorrowRateBSF[index] = u64(liquidity, 168+index*8)
+		snapshot.CumulativeBorrowRateBSF[index] = binary.LittleEndian.Uint64(reserve.CumulativeBorrowRateBSF[index*8:])
 	}
 	return snapshot, nil
 }
@@ -177,32 +171,9 @@ func Compare(previous, current Snapshot) Diff {
 	return Diff{Changed: len(fields) > 0, ChangedFields: fields}
 }
 
-func u64(data []byte, offset int) uint64 { return binary.LittleEndian.Uint64(data[offset : offset+8]) }
-func u128(data []byte) *big.Int {
-	reversed := make([]byte, len(data))
-	for index := range data {
-		reversed[len(data)-1-index] = data[index]
-	}
-	return new(big.Int).SetBytes(reversed)
-}
 func scaledFraction(value *big.Int) float64 {
 	result, _ := new(big.Rat).SetFrac(value, new(big.Int).Lsh(big.NewInt(1), fractionBits)).Float64()
 	return result
-}
-func key(data []byte) string {
-	var result solana.PublicKey
-	copy(result[:], data)
-	return result.String()
-}
-func curvePoints(data []byte) (points [11]CurvePoint) {
-	for index := range points {
-		offset := index * 8
-		points[index] = CurvePoint{binary.LittleEndian.Uint32(data[offset : offset+4]), binary.LittleEndian.Uint32(data[offset+4 : offset+8])}
-	}
-	return
-}
-func withdrawalCap(data []byte) WithdrawalCap {
-	return WithdrawalCap{int64(u64(data, 0)), int64(u64(data, 8)), u64(data, 16), u64(data, 24)}
 }
 func borrowCurveAPR(points [11]CurvePoint, utilization float64) float64 {
 	values := append([]CurvePoint(nil), points[:]...)

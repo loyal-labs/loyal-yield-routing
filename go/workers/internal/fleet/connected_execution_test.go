@@ -18,6 +18,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -329,7 +330,7 @@ func obligationCollateral(t *testing.T, account *chain.Account, vault string) ui
 	if account == nil {
 		t.Fatal("obligation is absent")
 	}
-	if account.Owner.String() != fleet.KLendProgram || len(account.Data) != 3344 || !bytes.Equal(account.Data[:8], []byte{168, 206, 141, 106, 88, 76, 172, 167}) || sdk.PublicKeyFromBytes(account.Data[64:96]).String() != vault {
+	if account.Owner.String() != kamino.ProgramID.String() || len(account.Data) != 3344 || !bytes.Equal(account.Data[:8], kamino.ObligationDiscriminator[:]) || sdk.PublicKeyFromBytes(account.Data[64:96]).String() != vault {
 		t.Fatalf("obligation %s identity differs", account.Key)
 	}
 	return binary.LittleEndian.Uint64(account.Data[128:136])

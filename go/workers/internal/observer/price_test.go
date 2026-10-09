@@ -2,7 +2,6 @@ package observer
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"math"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -47,9 +47,9 @@ func (r *priceFixtureRPC) BlockTime(ctx context.Context, slot uint64) (time.Time
 	return time.Unix(*r.clock, 0).UTC(), nil
 }
 func reserveFixture() *chain.Account {
-	data := make([]byte, 8624)
-	disc := sha256.Sum256([]byte("account:Reserve"))
-	copy(data[:8], disc[:8])
+	data := make([]byte, kamino.ReserveSize)
+	copy(data, kamino.ReserveDiscriminator[:])
+	binary.LittleEndian.PutUint64(data[8:16], 1)
 	copy(data[32:64], solana.MustPublicKeyFromBase58(benchmarkMarket).Bytes())
 	copy(data[128:160], solana.MustPublicKeyFromBase58(USDCMint).Bytes())
 	binary.LittleEndian.PutUint64(data[16:24], 900)
@@ -66,7 +66,7 @@ func reserveFixture() *chain.Account {
 	putSF(344, 5_000_000)
 	putSF(360, 3_000_000)
 	putSF(376, 2_000_000)
-	return &chain.Account{Owner: priceProgram, Data: data}
+	return &chain.Account{Owner: kamino.ProgramID, Lamports: 1, Data: data}
 }
 func TestIndependentPriceUsesBorrowingFeesAndActualReserveClock(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 30, 0, 0, time.UTC)

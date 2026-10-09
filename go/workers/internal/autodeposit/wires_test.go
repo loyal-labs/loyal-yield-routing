@@ -17,6 +17,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // fixedKey renders a deterministic, genuinely valid 32-byte public key for a
@@ -57,6 +58,29 @@ func fixtureReader(slot int64, fixtures map[string]testAccount) AccountReader {
 		}
 		return slot, out, nil
 	}
+}
+
+// testReserve is a current KLend USDC reserve in plan's market, with an
+// optional collateral farm, and the vault's route through it.
+func testReserve(t *testing.T, plan DepositPlan, farm string) (testAccount, TopUpRoute) {
+	t.Helper()
+	data := make([]byte, kamino.ReserveSize)
+	copy(data, kamino.ReserveDiscriminator[:])
+	binary.LittleEndian.PutUint64(data[8:16], 1)
+	binary.LittleEndian.PutUint64(data[16:24], 100)
+	fields := map[int]string{32: plan.Market, 128: USDCMint, 160: fixedKey("supply"), 408: splTokenID, 2560: fixedKey("collateral-mint"), 2600: fixedKey("collateral-supply"), 64: farm}
+	for offset, value := range fields {
+		if value != "" {
+			key := mustKey(value)
+			copy(data[offset:offset+32], key[:])
+		}
+	}
+	account := testAccount{Address: plan.Reserve, Owner: kamino.ProgramID.String(), Lamports: 1, Data: data}
+	route, err := reserveRoute(account.chainAccount(), plan.Target.VaultPubkey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return account, route
 }
 
 func fixedKey(label string) string {

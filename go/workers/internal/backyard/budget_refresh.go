@@ -9,6 +9,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 const routeValuationLookupTable = "HSmmBwB7ZRWEsWf4q47w65hXfmqNrfP67KDtpuVrHK7T"
@@ -72,7 +73,7 @@ func simulateBudgetRefreshInstructions(ctx context.Context, c *chain.Client, ins
 
 func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain.Client, instructions []compiledInstruction, addresses []string, optional map[string]struct{}, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	for _, instruction := range instructions {
-		if instruction.program != mustKey(kaminoProgram) || !bytesEqual(instruction.data, kaminoRefreshReserve) || len(instruction.accounts) != 6 {
+		if instruction.program != publicKey(kamino.ProgramID) || !bytesEqual(instruction.data, kamino.RefreshReserveDiscriminator[:]) || len(instruction.accounts) != 6 {
 			return 0, nil, budgetHold("invalid_price_refresh_instruction")
 		}
 	}

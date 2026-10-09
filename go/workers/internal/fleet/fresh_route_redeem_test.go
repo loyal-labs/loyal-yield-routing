@@ -5,8 +5,6 @@ import (
 	"math/big"
 	"math/rand"
 	"testing"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 )
 
 // Root cause of the vault idle residue Autodeposit tolerates (9467ebf5,
@@ -42,7 +40,7 @@ func putU128(data []byte, value *big.Int) {
 }
 
 // The deposit can never consume pre-existing idle custody: KLend redeems at
-// least the exact floor KaminoRedeemableLiquidity computes from the same
+// least the exact floor redeemableLiquidity computes from the same
 // reserve (the truncated rate only rounds the redemption up), and the route's
 // own refresh accrues interest, which only raises it. Verified against the
 // model above over random reserves, not against the connected-SVM harness.
@@ -66,7 +64,7 @@ func TestKLendRedeemsAtLeastTheDepositedFloor(t *testing.T) {
 		if total.Sign() <= 0 {
 			continue
 		}
-		deposit, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: account.Key.String(), Owner: account.Owner.String(), Lamports: account.Lamports, Data: account.Data}, identity.Market, USDCMint, collateral)
+		deposit, err := redeemableLiquidity(&account, identity.Market, USDCMint, collateral)
 		if err != nil {
 			t.Fatal(err)
 		}

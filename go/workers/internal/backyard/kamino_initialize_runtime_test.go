@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func initializationPlanningFixture(lane string) Observation {
@@ -117,7 +118,7 @@ func TestInitializerPreparationMeasuresNativeFundingAndRefusesAccountRace(t *tes
 		t.Fatalf("unmeasured initialization: %+v %v", r, err)
 	}
 	route, _ := runtimeRoute(r.RouteLane)
-	accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kaminoProgram, Lamports: 1}
+	accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1}
 	_, _, err = prepareKaminoInitialization(context.Background(), rpc, m, d, observe)
 	assertBudgetHold(t, err, "initializer_obligation_already_present")
 	delete(accounts, route.Kamino.Obligation)

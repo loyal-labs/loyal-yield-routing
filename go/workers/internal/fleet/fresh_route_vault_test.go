@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -80,8 +81,8 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 			sourcePosition = decoded
 		}
 	}
-	obligation := fixtureAccount(sourcePosition.Obligation, KLendProgram, 1, make([]byte, obligationLength))
-	copy(obligation.Data, []byte{168, 206, 141, 106, 88, 76, 172, 167})
+	obligation := fixtureAccount(sourcePosition.Obligation, kamino.ProgramID.String(), 1, make([]byte, kamino.ObligationSize))
+	copy(obligation.Data, kamino.ObligationDiscriminator[:])
 	fixtureKey(t, obligation.Data, 32, source.Market)
 	fixtureKey(t, obligation.Data, 64, vault)
 	fixtureKey(t, obligation.Data, 96, source.Address)
@@ -108,7 +109,7 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 		case "getMinimumBalanceForRentExemption":
 			var size int
 			_ = json.Unmarshal(call.Params[0], &size)
-			if size != obligationLength {
+			if size != kamino.ObligationSize {
 				t.Errorf("rent asked for %d bytes", size)
 			}
 			result = rent

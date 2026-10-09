@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // The production observe path is what arms the fail-closed monitors, so the
@@ -55,7 +57,7 @@ func productionRouteBatchAccounts(t *testing.T, slot int64, mutate func([]Confir
 	// both reserves plus the oracle account itself.
 	putKey(t, accountAt(accounts, kaminoCollateralReserve).Data[5112:5144], kaminoPrimeMint)
 	putKey(t, accountAt(accounts, kaminoDebtReserve).Data[5112:5144], kaminoPrimeMint)
-	accounts = append(accounts, ConfirmedAccount{Address: kaminoPrimeMint, Owner: kaminoProgram, Lamports: 1, Data: []byte{1}})
+	accounts = append(accounts, ConfirmedAccount{Address: kaminoPrimeMint, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}})
 	// The production observer validates oracle age against chain time from the
 	// same confirmed batch, so keep the Clock image beside the reserve images.
 	accounts = append(accounts, clockFixture())

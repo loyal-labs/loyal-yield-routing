@@ -22,6 +22,7 @@ import (
 	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func fixtureKey(t *testing.T, data []byte, offset int, address string) {
@@ -277,17 +278,15 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 			t.Fatal(err)
 		}
 		if i == 0 || kind != ConnectedSameMintSetup {
-			obligation := fixtureAccount(decoded.Obligation, KLendProgram, 1_000_000, make([]byte, obligationLength))
-			copy(obligation.Data, []byte{168, 206, 141, 106, 88, 76, 172, 167})
+			obligation := fixtureAccount(decoded.Obligation, kamino.ProgramID.String(), 1_000_000, make([]byte, kamino.ObligationSize))
+			copy(obligation.Data, kamino.ObligationDiscriminator[:])
 			fixtureKey(t, obligation.Data, 32, identity.Market)
 			fixtureKey(t, obligation.Data, 64, vault)
-			expected := ""
 			if i == 0 {
 				fixtureKey(t, obligation.Data, 96, identity.Address)
 				binary.LittleEndian.PutUint64(obligation.Data[128:136], amount)
-				expected = identity.Address
 			}
-			if _, err = decodeObligation(&obligation, identity.Market, vault, expected, &decoded.Position); err != nil {
+			if _, err = decodeObligation(&obligation, identity.Market, vault, &decoded.Position); err != nil {
 				t.Fatal(err)
 			}
 			accounts[decoded.Obligation] = obligation
@@ -329,11 +328,18 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	}
 	// Deposit amounts are finalized custody, not the planned amount: policies
 	// authorize the deposit discriminator; custody checks bound the amount.
-	withdraw := withdrawV2(vault, positions[0], amount)
-	if !sameMint {
-		withdraw = withdrawV2(vault, positions[0], amount-1)
+	klend := func(p KaminoPositionAccounts) klendPosition {
+		position, err := bindKLendPDAs(&p, vaultKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return position
 	}
-	deposit := depositV2(vault, positions[1], amount)
+	withdraw := withdrawV2(klend(positions[0]), amount)
+	if !sameMint {
+		withdraw = withdrawV2(klend(positions[0]), amount-1)
+	}
+	deposit := depositV2(klend(positions[1]), amount)
 	deposit.Data = deposit.Data[:8]
 	bank := &ConnectedBank{Store: store, Pool: store.pool, Cluster: cluster, Vault: vault, Settings: settings, Signer: key, Source: positions[0], Target: positions[1]}
 	earnPolicy, targetPolicy := "", ""
@@ -343,11 +349,11 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 		earnPolicy = installPolicy(1, []RouteInstruction{withdraw, deposit})
 		input := KaminoSameMintRouteRequest{Vault: vault, Source: positions[0], Target: positions[1], WithdrawCollateralAmount: amount, DepositLiquidityAmount: amount, Payer: signer}
 		if kind == ConnectedSameMintSetup {
-			metadata, err := findProgramAddress(KLendProgram, []byte("user_meta"), vaultKey[:])
+			metadata, err := kamino.UserMetadataAddress(vaultKey)
 			if err != nil {
 				t.Fatal(err)
 			}
-			bank.SetupPolicy = installPolicy(2, []RouteInstruction{initObligation(vault, positions[1], metadata)})
+			bank.SetupPolicy = installPolicy(2, []RouteInstruction{initObligation(vaultKey, klend(positions[1]), metadata)})
 			// Any top-up amount yields the same accounts for ALT coverage.
 			input.TargetObligationMissing, input.VaultRentTopUpLamports = true, 1
 		}
@@ -370,7 +376,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 			t.Fatal(err)
 		}
 		recovery.Protected[0].Data = recovery.Protected[0].Data[:8]
-		targetWithdraw := withdrawV2(vault, positions[1], amount-1)
+		targetWithdraw := withdrawV2(klend(positions[1]), amount-1)
 		earnPolicy = installPolicy(1, []RouteInstruction{route.Protected[0], recovery.Protected[0]})
 		targetPolicy = installPolicy(2, []RouteInstruction{targetWithdraw, deposit})
 		wrapped, err := wrapSquadsPolicy(earnPolicy, signer, vaultIndex, []uint8{0}, []RouteInstruction{route.Protected[0]})
@@ -410,7 +416,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 		fixtureKey(t, table.Data, 56+32*i, key)
 	}
 	accounts[providerTable] = table
-	sharedSet := map[string]bool{farmsProgram: true, instructionsSysvar: true, tokenProgram: true, rentSysvar: true}
+	sharedSet := map[string]bool{kamino.FarmsProgramID.String(): true, instructionsSysvar: true, tokenProgram: true, solana.SysVarRentPubkey.String(): true}
 	for _, p := range positions {
 		for _, key := range []string{p.Reserve, p.Market, p.MarketAuthority, p.LiquidityMint, p.CollateralMint, p.LiquiditySupply, p.CollateralSupply} {
 			sharedSet[key] = true

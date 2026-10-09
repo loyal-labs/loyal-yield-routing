@@ -13,25 +13,26 @@ import (
 	"math/big"
 	"sort"
 	"time"
+
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 const (
-	kaminoProgram             = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 	kaminoMarket              = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
 	kaminoPrimeUSDCObligation = "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv"
 	kaminoCollateralReserve   = "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh"
 	kaminoDebtReserve         = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu"
 	kaminoPrimeMint           = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
 	kaminoUSDCMint            = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	kaminoObligationLength    = 3344
-	kaminoReserveLength       = 8624
 	kaminoRequiredPriceStatus = 0x3f
 	kaminoReserveConfigOffset = 4856
 
 	// LendingMarket: 8-byte discriminator + size_of::<LendingMarket>() == 4656
 	// in the pinned klend-interface 23b9f2b. emergency_mode follows version,
 	// bump_seed, the two owner keys, quote_currency, and referral_fee_bps.
-	kaminoMarketLength              = 4664
 	kaminoMarketEmergencyModeOffset = 122
 
 	// ReserveConfig.status (0 = Active) sits at the config base, and its
@@ -50,14 +51,6 @@ const (
 	// reporting the last valuation. Every report-bearing action fails closed.
 	kaminoMaxReserveAgeSlots = int64(32)
 	kaminoOracleMaxAgeSecs   = int64(300)
-)
-
-var (
-	kaminoObligationDiscriminator = [8]byte{168, 206, 141, 106, 88, 76, 172, 167}
-	kaminoReserveDiscriminator    = [8]byte{43, 242, 204, 202, 26, 247, 59, 127}
-	// Verified against the live mainnet market account bytes as well as the
-	// pinned klend-interface layout.
-	kaminoMarketDiscriminator = [8]byte{246, 114, 50, 98, 72, 157, 28, 120}
 )
 
 // Fail-closed reserve health violations are sentinel errors so the observers
@@ -113,7 +106,7 @@ type KaminoObservationConfig struct {
 
 func pinnedKaminoObservationConfig() (KaminoObservationConfig, error) {
 	return KaminoObservationConfig{
-		Program: kaminoProgram, Market: kaminoMarket, Obligation: kaminoPrimeUSDCObligation,
+		Program: kamino.ProgramID.String(), Market: kaminoMarket, Obligation: kaminoPrimeUSDCObligation,
 		CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve,
 		Vault: bridgeVault, MarketAuthority: kaminoPrimeMarketAuthority, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint,
 	}, nil
@@ -141,7 +134,6 @@ type KaminoPosition struct {
 
 type decodedKaminoObligation struct {
 	refreshedSlot          int64
-	stale, priceStatus     byte
 	hasPosition            bool
 	collateralDepositedRaw uint64
 	debtRaw                uint64
@@ -150,8 +142,8 @@ type decodedKaminoObligation struct {
 }
 type decodedKaminoReserve struct {
 	refreshedSlot            int64
-	stale, priceStatus       byte
-	status, emergencyMode    byte
+	status                   byte
+	emergencyMode            bool
 	marketPriceLastUpdatedTS int64
 	marketPriceSF            [16]byte
 	mintDecimals             uint8
@@ -167,40 +159,46 @@ type decodedKaminoReserve struct {
 	cumulativeBorrowRate     [32]byte
 }
 
-func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig) (decodedKaminoObligation, error) {
-	if err := kaminoEnvelope(account, c.Obligation, kaminoObligationLength, kaminoObligationDiscriminator, c.Program); err != nil {
-		return decodedKaminoObligation{}, err
+// kaminoAccount is the confirmed account at address for the shared KLend
+// decoders; any other account is absent.
+func kaminoAccount(a ConfirmedAccount, address string) *chain.Account {
+	key, keyErr := solana.PublicKeyFromBase58(a.Address)
+	owner, ownerErr := solana.PublicKeyFromBase58(a.Owner)
+	if a.Address != address || keyErr != nil || ownerErr != nil {
+		return nil
 	}
-	if !sameKey(account.Data[32:64], c.Market) || !sameKey(account.Data[64:96], c.Vault) {
+	return &chain.Account{Key: key, Owner: owner, Lamports: a.Lamports, Data: a.Data, Executable: a.Executable}
+}
+
+func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig) (decodedKaminoObligation, error) {
+	obligation, err := kamino.DecodeObligation(kaminoAccount(account, c.Obligation))
+	if err != nil {
+		return decodedKaminoObligation{}, fmt.Errorf("Kamino account envelope or layout drifted")
+	}
+	if !sameKey(obligation.LendingMarket[:], c.Market) || !sameKey(obligation.Owner[:], c.Vault) {
 		return decodedKaminoObligation{}, fmt.Errorf("Kamino obligation market or owner drifted")
 	}
 	deposits, borrows := 0, 0
 	var collateralRaw, debtRaw uint64
 	var debtAmountSF [16]byte
 	var cumulativeBorrowRate [32]byte
-	for i := 0; i < 8; i++ {
-		off := 96 + i*136
-		amount := binary.LittleEndian.Uint64(account.Data[off+32 : off+40])
-		if !zeroKey(account.Data[off:off+32]) && amount > 0 {
-			if !sameKey(account.Data[off:off+32], c.CollateralReserve) {
+	for _, deposit := range obligation.Deposits {
+		if !deposit.Reserve.IsZero() && deposit.DepositedAmount > 0 {
+			if !sameKey(deposit.Reserve[:], c.CollateralReserve) {
 				return decodedKaminoObligation{}, fmt.Errorf("unsupported Kamino collateral reserve")
 			}
 			deposits++
-			collateralRaw = amount
+			collateralRaw = deposit.DepositedAmount
 		}
 	}
-	for i := 0; i < 5; i++ {
-		off := 1208 + i*200
-		if !zeroKey(account.Data[off:off+32]) && !allZero(account.Data[off+88:off+104]) {
-			if !sameKey(account.Data[off:off+32], c.DebtReserve) {
+	for _, borrow := range obligation.Borrows {
+		if !borrow.Reserve.IsZero() && !allZero(borrow.BorrowedAmountSF[:]) {
+			if !sameKey(borrow.Reserve[:], c.DebtReserve) {
 				return decodedKaminoObligation{}, fmt.Errorf("unsupported Kamino debt reserve")
 			}
 			borrows++
-			copy(debtAmountSF[:], account.Data[off+88:off+104])
-			copy(cumulativeBorrowRate[:], account.Data[off+32:off+64])
-			var err error
-			debtRaw, err = ceilScaledFraction(account.Data[off+88 : off+104])
-			if err != nil {
+			debtAmountSF, cumulativeBorrowRate = borrow.BorrowedAmountSF, borrow.CumulativeBorrowRateBSF
+			if debtRaw, err = ceilScaledFraction(borrow.BorrowedAmountSF[:]); err != nil {
 				return decodedKaminoObligation{}, err
 			}
 		}
@@ -208,76 +206,55 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 	if deposits > 1 || borrows > 1 {
 		return decodedKaminoObligation{}, fmt.Errorf("Kamino obligation topology is unsupported")
 	}
-	hasPosition := deposits > 0 || borrows > 0
 	return decodedKaminoObligation{
-		refreshedSlot: int64(binary.LittleEndian.Uint64(account.Data[16:24])), stale: account.Data[24],
-		priceStatus: account.Data[25], hasPosition: hasPosition,
+		refreshedSlot: int64(obligation.LastUpdateSlot), hasPosition: deposits > 0 || borrows > 0,
 		collateralDepositedRaw: collateralRaw, debtRaw: debtRaw,
 		debtAmountSF: debtAmountSF, cumulativeBorrowRate: cumulativeBorrowRate,
 	}, nil
 }
 
 func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservationConfig) (decodedKaminoReserve, error) {
-	if err := kaminoEnvelope(account, account.Address, kaminoReserveLength, kaminoReserveDiscriminator, c.Program); err != nil {
-		return decodedKaminoReserve{}, err
+	reserve, err := kamino.DecodeReserve(kaminoAccount(account, account.Address))
+	if err != nil {
+		return decodedKaminoReserve{}, fmt.Errorf("Kamino account envelope or layout drifted")
 	}
-	if binary.LittleEndian.Uint64(account.Data[8:16]) != 1 || !sameKey(account.Data[32:64], c.Market) || !sameKey(account.Data[128:160], mint) {
+	if !sameKey(reserve.LendingMarket[:], c.Market) || !sameKey(reserve.LiquidityMint[:], mint) {
 		return decodedKaminoReserve{}, fmt.Errorf("Kamino reserve identity drifted")
 	}
-	var price [16]byte
-	copy(price[:], account.Data[248:264])
-	var cumulativeBorrowRate [32]byte
-	// ReserveLiquidity BigFractionBytes starts at 296; its four u64 value
-	// limbs precede two padding limbs. Never interpret the padding as value.
-	copy(cumulativeBorrowRate[:], account.Data[296:328])
-	// ReserveLiquidity.mintDecimals is a u64 after marketPriceLastUpdatedTs.
-	decimals := binary.LittleEndian.Uint64(account.Data[272:280])
-	if decimals > 18 {
+	if reserve.MintDecimals > 18 {
 		return decodedKaminoReserve{}, fmt.Errorf("Kamino mint decimals exceed supported scale")
 	}
-	// These offsets are derived from the pinned KLend 8624-byte Reserve layout:
-	// ReserveConfig begins at 4856 and TokenInfo at 5032. Offset 645 is the
-	// reviewed u8 utilization borrowing gate; the oracle keys below are the
-	// only other config fields read. Curve and padding bytes remain ignored.
 	var oracles []string
-	for _, offset := range []int{5112, 5160, 5192, 5224} {
+	for _, oracle := range []solana.PublicKey{reserve.ScopePriceFeed, reserve.SwitchboardPriceAggregator, reserve.SwitchboardTWAPAggregator, reserve.PythPrice} {
 		// Drop ONLY the documented klend-sdk NULL_PUBKEY sentinel (see
 		// kaminoOracleSentinelPubkey): an unused oracle slot is not a
 		// configured oracle, and requesting it as an account can only fail
 		// the observation. Every real configured oracle still passes.
-		if key := keyString(account.Data[offset : offset+32]); key != kaminoOracleSentinelPubkey {
+		if key := keyString(oracle[:]); key != kaminoOracleSentinelPubkey {
 			oracles = append(oracles, key)
 		}
 	}
-	borrowedLiquiditySF := littleInt(account.Data[232:248])
-	totalLiquidity := new(big.Int).Set(borrowedLiquiditySF)
-	totalLiquidity.Add(totalLiquidity, new(big.Int).Lsh(new(big.Int).SetUint64(binary.LittleEndian.Uint64(account.Data[224:232])), 60))
-	for _, offset := range []int{344, 360, 376} {
-		fee := littleInt(account.Data[offset : offset+16])
-		if totalLiquidity.Cmp(fee) < 0 {
-			return decodedKaminoReserve{}, fmt.Errorf("Kamino reserve total liquidity underflowed fees")
-		}
-		totalLiquidity.Sub(totalLiquidity, fee)
+	totalLiquidity, err := reserve.TotalLiquiditySF()
+	if err != nil {
+		return decodedKaminoReserve{}, err
 	}
-	borrowedRaw, err := ceilScaledFraction(account.Data[232:248])
+	borrowedRaw, err := ceilScaledFraction(reserve.BorrowedAmountSF[:])
 	if err != nil {
 		return decodedKaminoReserve{}, err
 	}
 	return decodedKaminoReserve{
-		refreshedSlot: int64(binary.LittleEndian.Uint64(account.Data[16:24])), stale: account.Data[24],
-		priceStatus: account.Data[25], marketPriceSF: price, oracles: oracles,
-		status:                   account.Data[kaminoReserveStatusOffset],
-		emergencyMode:            account.Data[kaminoReserveEmergencyModeOffset],
-		marketPriceLastUpdatedTS: int64(binary.LittleEndian.Uint64(account.Data[kaminoMarketPriceLastUpdatedTSOffset : kaminoMarketPriceLastUpdatedTSOffset+8])),
-		mintDecimals:             uint8(decimals),
-		totalLiquiditySF:         totalLiquidity, collateralMintSupply: binary.LittleEndian.Uint64(account.Data[2592:2600]),
-		liquidationThresholdPct: account.Data[kaminoReserveConfigOffset+17],
-		depositLimitRaw:         binary.LittleEndian.Uint64(account.Data[kaminoReserveConfigOffset+160 : kaminoReserveConfigOffset+168]),
-		borrowLimitRaw:          binary.LittleEndian.Uint64(account.Data[kaminoReserveConfigOffset+168 : kaminoReserveConfigOffset+176]),
+		refreshedSlot: int64(reserve.LastUpdateSlot), marketPriceSF: reserve.MarketPriceSF, oracles: oracles,
+		status: reserve.Status, emergencyMode: reserve.EmergencyMode,
+		marketPriceLastUpdatedTS: int64(reserve.MarketPriceLastUpdatedTS),
+		mintDecimals:             uint8(reserve.MintDecimals),
+		totalLiquiditySF:         totalLiquidity, collateralMintSupply: reserve.CollateralMintTotalSupply,
+		liquidationThresholdPct: reserve.LiquidationThresholdPct,
+		depositLimitRaw:         reserve.DepositLimit,
+		borrowLimitRaw:          reserve.BorrowLimit,
 		borrowedRaw:             borrowedRaw,
-		borrowedLiquiditySF:     borrowedLiquiditySF,
-		utilizationLimitPct:     account.Data[kaminoReserveConfigOffset+645],
-		cumulativeBorrowRate:    cumulativeBorrowRate,
+		borrowedLiquiditySF:     kamino.U128(reserve.BorrowedAmountSF),
+		utilizationLimitPct:     reserve.UtilizationLimitBlockBorrowingAbovePct,
+		cumulativeBorrowRate:    reserve.CumulativeBorrowRateBSF,
 	}, nil
 }
 
@@ -425,53 +402,8 @@ func littleInt(value []byte) *big.Int {
 	return new(big.Int).SetBytes(reversed)
 }
 
-// KaminoRedeemableLiquidity converts collateral using the complete reserve
-// exchange value, including borrowed liquidity and all fee liabilities. Retail
-// families share this decoder rather than value deposits from idle cash.
-func KaminoRedeemableLiquidity(account ConfirmedAccount, market, mint string, collateralRaw uint64) (uint64, error) {
-	reserve, err := decodeKaminoReserve(account, mint, KaminoObservationConfig{Program: kaminoProgram, Market: market})
-	if err != nil {
-		return 0, err
-	}
-	return reserve.redeemLiquidityRaw(collateralRaw)
-}
-
-// KaminoMinimumDepositAmount is the first raw liquidity amount that can mint
-// one collateral unit, the retained Rust ceiling calculation.
-func KaminoMinimumDepositAmount(account ConfirmedAccount, market, mint string) (uint64, error) {
-	reserve, err := decodeKaminoReserve(account, mint, KaminoObservationConfig{Program: kaminoProgram, Market: market})
-	if err != nil {
-		return 0, err
-	}
-	if reserve.totalLiquiditySF == nil || reserve.totalLiquiditySF.Sign() < 0 {
-		return 0, fmt.Errorf("Kamino collateral exchange value is unknown")
-	}
-	if reserve.totalLiquiditySF.Sign() == 0 || reserve.collateralMintSupply == 0 {
-		return 1, nil
-	}
-	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(reserve.collateralMintSupply), 60)
-	amount := new(big.Int).Add(reserve.totalLiquiditySF, denominator)
-	amount.Sub(amount, big.NewInt(1)).Quo(amount, denominator)
-	if !amount.IsUint64() || amount.Sign() <= 0 {
-		return 0, fmt.Errorf("minimum Kamino deposit exceeds positive u64")
-	}
-	return amount.Uint64(), nil
-}
-
 func (r decodedKaminoReserve) redeemLiquidityRaw(collateralRaw uint64) (uint64, error) {
-	if collateralRaw == 0 {
-		return 0, nil
-	}
-	if r.totalLiquiditySF == nil || r.totalLiquiditySF.Sign() <= 0 || r.collateralMintSupply == 0 {
-		return 0, fmt.Errorf("Kamino collateral exchange rate is unavailable")
-	}
-	numerator := new(big.Int).Mul(new(big.Int).SetUint64(collateralRaw), r.totalLiquiditySF)
-	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(r.collateralMintSupply), 60)
-	result := numerator.Div(numerator, denominator)
-	if !result.IsUint64() {
-		return 0, fmt.Errorf("Kamino redeemable collateral exceeds u64")
-	}
-	return result.Uint64(), nil
+	return kamino.CollateralToLiquidity(r.totalLiquiditySF, r.collateralMintSupply, collateralRaw)
 }
 
 func (p KaminoPosition) targetLTVBorrowRaw() (uint64, error) {
@@ -507,13 +439,10 @@ func targetBorrowForCollateralRaw(underlying uint64, collateralDecimals, debtDec
 }
 
 // decodeKaminoMarketEmergency reads the market's global emergency-mode flag.
-// The account bytes are otherwise ignored: an unexpected length, owner, or
-// discriminator is an observation failure, never an assumed healthy market.
+// An unexpected length, owner, or discriminator is an observation failure,
+// never an assumed healthy market.
 func decodeKaminoMarketEmergency(account ConfirmedAccount, c KaminoObservationConfig) (bool, error) {
-	if err := kaminoEnvelope(account, c.Market, kaminoMarketLength, kaminoMarketDiscriminator, c.Program); err != nil {
-		return false, err
-	}
-	return account.Data[kaminoMarketEmergencyModeOffset] != 0, nil
+	return kamino.DecodeLendingMarketEmergencyMode(kaminoAccount(account, c.Market))
 }
 
 // validateKaminoReserveHealth is the fail-closed gate behind monitor M5. On
@@ -525,8 +454,8 @@ func validateKaminoReserveHealth(observedSlot int64, marketEmergencyMode bool, o
 		return fmt.Errorf("Kamino market is in emergency mode: %w", errKaminoMarketEmergency)
 	}
 	for _, reserve := range reserves {
-		if reserve.status != 0 || reserve.emergencyMode != 0 {
-			return fmt.Errorf("Kamino reserve %d/%d is not active: %w",
+		if reserve.status != 0 || reserve.emergencyMode {
+			return fmt.Errorf("Kamino reserve %d/%t is not active: %w",
 				reserve.status, reserve.emergencyMode, errKaminoReservePaused)
 		}
 		if reserve.refreshedSlot > observedSlot || observedSlot-reserve.refreshedSlot > kaminoMaxReserveAgeSlots {
@@ -591,12 +520,6 @@ func clockUnixTimestamp(accounts []ConfirmedAccount) int64 {
 	return int64(binary.LittleEndian.Uint64(clock.Data[32:40]))
 }
 
-func kaminoEnvelope(a ConfirmedAccount, address string, length int, discriminator [8]byte, program string) error {
-	if a.Address != address || a.Owner != program || a.Executable || a.Lamports == 0 || len(a.Data) != length || !bytes.Equal(a.Data[:8], discriminator[:]) {
-		return fmt.Errorf("Kamino account envelope or layout drifted")
-	}
-	return nil
-}
 func sameKey(data []byte, address string) bool {
 	want, err := decodeBase58PublicKey(address)
 	return err == nil && bytes.Equal(data, want[:])

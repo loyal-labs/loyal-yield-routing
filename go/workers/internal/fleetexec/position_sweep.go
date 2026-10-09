@@ -1,7 +1,6 @@
 package fleetexec
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -20,6 +19,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -46,12 +46,8 @@ const (
 	positionSweepAmountSemantics  = "kamino_obligation_collateral_deposited_amount"
 	positionSweepKind             = "fleet_position_sweep"
 	positionSweepCompleteScope    = "complete_product_vault"
-	positionSweepObligationLength = 3344
-	positionSweepUserMetadataSeed = "user_meta"
 	positionSweepSourceCommitment = "confirmed"
 )
-
-var positionSweepObligationDiscriminator = []byte{168, 206, 141, 106, 88, 76, 172, 167}
 
 // PositionSweepConfig is the explicit sweep configuration. Interval is
 // Rust's --position-sweep-interval-seconds and Concurrency its reconciler
@@ -540,7 +536,7 @@ func (p *PositionSweep) observeVault(ctx context.Context, vault string, reserves
 	if err != nil {
 		return out, sweepInvariant("vault %s is not a public key", vault)
 	}
-	userMetadata, _, err := sdk.FindProgramAddress([][]byte{[]byte(positionSweepUserMetadataSeed), vaultKey[:]}, sdk.MustPublicKeyFromBase58(fleet.KLendProgram))
+	userMetadata, err := kamino.UserMetadataAddress(vaultKey)
 	if err != nil {
 		return out, sweepInvariant("derive user metadata: %v", err)
 	}
@@ -598,8 +594,8 @@ func (p *PositionSweep) observeVault(ctx context.Context, vault string, reserves
 		accounts[ordered[i]] = value
 	}
 	out.slot, out.observedAt = slot, time.Now().UTC()
-	if a := accounts[userMetadata.String()]; a != nil && a.Owner.String() != fleet.KLendProgram {
-		return out, sweepInvariant("account %s is owned by %s, expected %s", a.Key, a.Owner, fleet.KLendProgram)
+	if a := accounts[userMetadata.String()]; a != nil && a.Owner != kamino.ProgramID {
+		return out, sweepInvariant("account %s is owned by %s, expected %s", a.Key, a.Owner, kamino.ProgramID)
 	}
 	out.idleTotal = new(big.Int)
 	for _, idle := range idleAccounts {
@@ -650,11 +646,11 @@ func (p *PositionSweep) observeVault(ctx context.Context, vault string, reserves
 			}
 		}
 		if position.ObligationFarmUserState != "" {
-			if a := accounts[position.ObligationFarmUserState]; a != nil && a.Owner.String() != fleet.FarmsProgram {
-				return out, sweepInvariant("account %s is owned by %s, expected %s", a.Key, a.Owner, fleet.FarmsProgram)
+			if a := accounts[position.ObligationFarmUserState]; a != nil && a.Owner != kamino.FarmsProgramID {
+				return out, sweepInvariant("account %s is owned by %s, expected %s", a.Key, a.Owner, kamino.FarmsProgramID)
 			}
 		}
-		redeemable, err := redeemableCollateral(accounts[position.Reserve].Data, obligation.amount)
+		redeemable, err := redeemableCollateral(accounts[position.Reserve], obligation.amount)
 		if err != nil {
 			return out, sweepInvariant("%v", err)
 		}
@@ -695,43 +691,32 @@ func positionSweepObligation(a *chain.Account, owner, market, reserve string) (p
 	if a == nil {
 		return out, nil
 	}
-	if a.Owner.String() != fleet.KLendProgram {
-		return out, sweepInvariant("obligation account %s is owned by %s, expected %s", a.Key, a.Owner, fleet.KLendProgram)
+	obligation, err := kamino.DecodeObligation(a)
+	if err != nil {
+		return out, sweepInvariant("%v", err)
 	}
-	if len(a.Data) != positionSweepObligationLength || !bytes.Equal(a.Data[:8], positionSweepObligationDiscriminator) {
-		return out, sweepInvariant("obligation account %s has invalid layout", a.Key)
-	}
-	if sdk.PublicKeyFromBytes(a.Data[64:96]).String() != owner {
+	if obligation.Owner.String() != owner {
 		return out, sweepInvariant("obligation account %s owner does not match vault %s", a.Key, owner)
 	}
-	if sdk.PublicKeyFromBytes(a.Data[32:64]).String() != market {
+	if obligation.LendingMarket.String() != market {
 		return out, sweepInvariant("obligation account %s market does not match reserve market %s", a.Key, market)
 	}
 	out.exists = true
-	found := false
-	for i := 0; i < 8; i++ {
-		offset := 96 + i*136
-		key := sdk.PublicKeyFromBytes(a.Data[offset : offset+32])
-		if key.IsZero() {
-			continue
-		}
-		out.deposits = append(out.deposits, key.String())
-		if !found && key.String() == reserve {
-			found = true
-			amount := binary.LittleEndian.Uint64(a.Data[offset+32 : offset+40])
-			if amount > math.MaxInt64 {
-				return out, sweepInvariant("obligation collateral does not fit Postgres BIGINT")
-			}
-			out.amount = int64(amount)
-		}
+	for _, deposit := range obligation.DepositReserves() {
+		out.deposits = append(out.deposits, deposit.String())
 	}
-	for i := 0; i < 5; i++ {
-		offset := 1208 + i*200
-		key := sdk.PublicKeyFromBytes(a.Data[offset : offset+32])
-		if !key.IsZero() {
-			out.borrows = append(out.borrows, key.String())
-		}
+	for _, borrow := range obligation.BorrowReserves() {
+		out.borrows = append(out.borrows, borrow.String())
 	}
+	reserveKey, err := sdk.PublicKeyFromBase58(reserve)
+	if err != nil {
+		return out, sweepInvariant("reserve %s is not a public key", reserve)
+	}
+	amount := obligation.Collateral(reserveKey)
+	if amount > math.MaxInt64 {
+		return out, sweepInvariant("obligation collateral does not fit Postgres BIGINT")
+	}
+	out.amount = int64(amount)
 	return out, nil
 }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -66,8 +67,8 @@ func autoInitializerPrestateAccounts(t *testing.T, r KaminoInitializationRequest
 		Data: []byte(autoInitializerFixtureSyntheticAccountData)}
 	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
 	accounts[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
-	m := ConfirmedAccount{Address: metadataAddress, Owner: kaminoProgram, Lamports: 1, Data: make([]byte, 1032)}
-	copy(m.Data, []byte{157, 214, 220, 235, 98, 135, 171, 28})
+	m := ConfirmedAccount{Address: metadataAddress, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, 1032)}
+	copy(m.Data, kamino.UserMetadataDiscriminator[:])
 	putKey(t, m.Data[80:112], bridgeVault)
 	accounts[metadataAddress] = m
 	accounts[route.Kamino.Market] = marketFixture(t, route.Kamino.Market)
@@ -156,8 +157,8 @@ func autoInitializerFundedObligation(t *testing.T, r KaminoInitializationRequest
 		t.Fatal(err)
 	}
 	accounts := autoInitializerPrestateAccounts(t, r)
-	data := make([]byte, kaminoObligationLength)
-	copy(data, kaminoObligationDiscriminator[:])
+	data := make([]byte, kamino.ObligationSize)
+	copy(data, kamino.ObligationDiscriminator[:])
 	binary.LittleEndian.PutUint64(data[8:16], 1)
 	putKey(t, data[32:64], route.Kamino.Market)
 	putKey(t, data[64:96], route.Kamino.Vault)
@@ -166,7 +167,7 @@ func autoInitializerFundedObligation(t *testing.T, r KaminoInitializationRequest
 	putKey(t, data[1208:1240], route.Kamino.DebtReserve)
 	binary.LittleEndian.PutUint64(data[1296:1304], debt<<60)
 	binary.LittleEndian.PutUint64(data[1304:1312], debt>>4)
-	accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kaminoProgram, Lamports: 1, Data: data}
+	accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: data}
 	return accounts
 }
 
@@ -248,7 +249,7 @@ func TestAutoInitializerCandidateCompilesOnlyAgainstReviewedBinding(t *testing.T
 	if _, err := CompileKaminoInitializationMessage(r); err == nil || !strings.Contains(err.Error(), "unreviewed Multiply initializer lane") {
 		t.Fatalf("public compiler admitted AUTO: %v", err)
 	}
-	funded := ConfirmedAccount{Lamports: r.RentLamports, Data: make([]byte, kaminoObligationLength)}
+	funded := ConfirmedAccount{Lamports: r.RentLamports, Data: make([]byte, kamino.ObligationSize)}
 	if err := validateInitializedKaminoObligation(r, funded); err == nil || !strings.Contains(err.Error(), "unreviewed initialized obligation") {
 		t.Fatalf("public initialized validator admitted AUTO: %v", err)
 	}
@@ -383,8 +384,8 @@ func TestAutoInitializerEmptyObligationValidatedThroughBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	empty := ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kaminoProgram, Lamports: r.RentLamports, Data: make([]byte, kaminoObligationLength)}
-	copy(empty.Data, kaminoObligationDiscriminator[:])
+	empty := ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: r.RentLamports, Data: make([]byte, kamino.ObligationSize)}
+	copy(empty.Data, kamino.ObligationDiscriminator[:])
 	binary.LittleEndian.PutUint64(empty.Data[8:16], 1)
 	putKey(t, empty.Data[32:64], route.Kamino.Market)
 	putKey(t, empty.Data[64:96], route.Kamino.Vault)
@@ -394,10 +395,10 @@ func TestAutoInitializerEmptyObligationValidatedThroughBinding(t *testing.T) {
 	funded := append([]byte(nil), empty.Data...)
 	putKey(t, funded[96:128], route.Kamino.CollateralReserve)
 	binary.LittleEndian.PutUint64(funded[128:136], 1)
-	if err := manifest.validateInitializedKaminoObligation(r, ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kaminoProgram, Lamports: r.RentLamports, Data: funded}); err == nil {
+	if err := manifest.validateInitializedKaminoObligation(r, ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: r.RentLamports, Data: funded}); err == nil {
 		t.Fatal("funded obligation validated as empty")
 	}
-	if err := manifest.validateInitializedKaminoObligation(r, ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kaminoProgram, Lamports: r.RentLamports + 1, Data: append([]byte(nil), empty.Data...)}); err == nil {
+	if err := manifest.validateInitializedKaminoObligation(r, ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: r.RentLamports + 1, Data: append([]byte(nil), empty.Data...)}); err == nil {
 		t.Fatal("changed rent validated")
 	}
 	// The post-state validator enforces the same request identity as compile

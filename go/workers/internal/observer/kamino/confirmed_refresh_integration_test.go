@@ -2,7 +2,6 @@ package kamino
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	klend "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -49,7 +49,7 @@ func (c *confirmedAccountRPC) ServeHTTP(w http.ResponseWriter, request *http.Req
 	c.mu.Unlock()
 	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": map[string]any{
 		"context": map[string]any{"slot": slot},
-		"value": []any{map[string]any{"lamports": 1, "owner": klendProgram, "executable": false, "rentEpoch": 0,
+		"value": []any{map[string]any{"lamports": 1, "owner": klend.ProgramID.String(), "executable": false, "rentEpoch": 0,
 			"data": []string{base64.StdEncoding.EncodeToString(data), "base64"}}},
 	}})
 }
@@ -57,13 +57,13 @@ func (c *confirmedAccountRPC) ServeHTTP(w http.ResponseWriter, request *http.Req
 // reserveAccount is a KLend reserve whose last refresh happened at
 // lastUpdateSlot with the given available liquidity.
 func reserveAccount(market, mint solana.PublicKey, lastUpdateSlot, available uint64) []byte {
-	data := make([]byte, 8+reserveStructSize)
-	discriminator := sha256.Sum256([]byte("account:Reserve"))
-	copy(data[:8], discriminator[:8])
+	data := make([]byte, klend.ReserveSize)
+	copy(data, klend.ReserveDiscriminator[:])
+	binary.LittleEndian.PutUint64(data[8:16], 1)
 	body := data[8:]
 	copy(body[24:56], market[:])
 	binary.LittleEndian.PutUint64(body[8:16], lastUpdateSlot)
-	liquidity := body[liquidityOffset : liquidityOffset+1232]
+	liquidity := data[128:1360]
 	copy(liquidity[:32], mint[:])
 	binary.LittleEndian.PutUint64(liquidity[96:104], available)
 	putFraction(liquidity[104:120], 50)
@@ -139,7 +139,7 @@ func TestStreamUpdateIsConfirmedOnNextBatchAndQuietReserveStaysVerified(t *testi
 	// enough past the verified slot that the floor evicts the old proof.
 	const streamSlot = seedSlot + 300
 	moved := reserveAccount(market, mint, streamSlot, 900_000)
-	update := &pb.SubscribeUpdate{Filters: []string{"kamino_reserves"}, UpdateOneof: &pb.SubscribeUpdate_Account{Account: &pb.SubscribeUpdateAccount{Slot: streamSlot, Account: &pb.SubscribeUpdateAccountInfo{Pubkey: reserveKey[:], Owner: solana.MustPublicKeyFromBase58(klendProgram).Bytes(), Data: moved, WriteVersion: 1, Lamports: 1}}}}
+	update := &pb.SubscribeUpdate{Filters: []string{"kamino_reserves"}, UpdateOneof: &pb.SubscribeUpdate_Account{Account: &pb.SubscribeUpdateAccount{Slot: streamSlot, Account: &pb.SubscribeUpdateAccountInfo{Pubkey: reserveKey[:], Owner: klend.ProgramID.Bytes(), Data: moved, WriteVersion: 1, Lamports: 1}}}}
 	if outcome, err := handler.HandleAccount(ctx, update); err != nil || !outcome.Inserted {
 		t.Fatalf("stream update not persisted: %+v %v", outcome, err)
 	}

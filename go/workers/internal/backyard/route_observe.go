@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -991,13 +992,13 @@ func manifestPacketLeg(data []byte) kaminoPrimeUSDCLeg {
 		return 0
 	}
 	switch {
-	case bytesEqual(data[:8], kaminoDepositCollateral):
+	case bytesEqual(data[:8], kamino.DepositV2Discriminator[:]):
 		return kaminoLegDeposit
-	case bytesEqual(data[:8], kaminoBorrowUSDC):
+	case bytesEqual(data[:8], kamino.BorrowV2Discriminator[:]):
 		return kaminoLegBorrow
-	case bytesEqual(data[:8], kaminoRepayUSDC):
+	case bytesEqual(data[:8], kamino.RepayV2Discriminator[:]):
 		return kaminoLegRepay
-	case bytesEqual(data[:8], kaminoWithdrawCollateral):
+	case bytesEqual(data[:8], kamino.WithdrawV2Discriminator[:]):
 		return kaminoLegWithdraw
 	default:
 		return 0

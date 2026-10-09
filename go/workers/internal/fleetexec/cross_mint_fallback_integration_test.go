@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -122,7 +123,7 @@ func TestCrossMintFallbackTransientPreparationAndChangedBankRetainOriginalCapaci
 			case "reserve_hash":
 				bank := c.accounts.(fixtureAccounts)
 				for k, a := range bank.accounts {
-					if k != m.ActiveTargetReserve && a.Owner.String() == fleet.KaminoProgram && len(a.Data) == 8624 {
+					if k != m.ActiveTargetReserve && a.Owner.String() == kamino.ProgramID.String() && len(a.Data) == 8624 {
 						a.Data = append([]byte(nil), a.Data...)
 						a.Data[224] ^= 1
 						bank.accounts[k] = a

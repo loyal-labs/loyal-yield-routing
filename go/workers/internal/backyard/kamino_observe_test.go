@@ -6,6 +6,8 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func TestKaminoAccruedDebtUsesUnroundedFractionAndFullRateLimbs(t *testing.T) {
@@ -119,12 +121,12 @@ func TestTargetBorrowRespectsNineDecimalCollateral(t *testing.T) {
 
 func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 	c := KaminoObservationConfig{
-		Program: kaminoProgram, Market: kaminoMarket, Obligation: bridgeSettings,
+		Program: kamino.ProgramID.String(), Market: kaminoMarket, Obligation: bridgeSettings,
 		CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve,
 		Vault: bridgeVault, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint,
 	}
-	reserve := make([]byte, kaminoReserveLength)
-	copy(reserve[:8], kaminoReserveDiscriminator[:])
+	reserve := make([]byte, kamino.ReserveSize)
+	copy(reserve[:8], kamino.ReserveDiscriminator[:])
 	binary.LittleEndian.PutUint64(reserve[8:16], 1)
 	binary.LittleEndian.PutUint64(reserve[16:24], 77)
 	reserve[25] = kaminoRequiredPriceStatus
@@ -147,12 +149,12 @@ func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 
 func TestKaminoObligationAcceptsTheFourLifecycleStates(t *testing.T) {
 	c := KaminoObservationConfig{
-		Program: kaminoProgram, Market: kaminoMarket, Obligation: bridgeSettings,
+		Program: kamino.ProgramID.String(), Market: kaminoMarket, Obligation: bridgeSettings,
 		CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve,
 		Vault: bridgeVault, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint,
 	}
-	data := make([]byte, kaminoObligationLength)
-	copy(data[:8], kaminoObligationDiscriminator[:])
+	data := make([]byte, kamino.ObligationSize)
+	copy(data[:8], kamino.ObligationDiscriminator[:])
 	putKey(t, data[32:64], c.Market)
 	putKey(t, data[64:96], c.Vault)
 	putKey(t, data[96:128], c.CollateralReserve)
@@ -244,10 +246,10 @@ func TestKaminoUtilizationGateCapsEntryAndBlocksBorrowAtBoundary(t *testing.T) {
 }
 
 func TestKaminoRefreshAcceptsIndependentRefreshMarkersAndRejectsOlderState(t *testing.T) {
-	o := decodedKaminoObligation{refreshedSlot: 10, stale: 1, hasPosition: true}
+	o := decodedKaminoObligation{refreshedSlot: 10, hasPosition: true}
 	if err := validateKaminoRefresh(o,
-		decodedKaminoReserve{refreshedSlot: 11, stale: 1, priceStatus: kaminoRequiredPriceStatus},
-		decodedKaminoReserve{refreshedSlot: 12, priceStatus: 0},
+		decodedKaminoReserve{refreshedSlot: 11},
+		decodedKaminoReserve{refreshedSlot: 12},
 	); err != nil {
 		t.Fatalf("independently refreshed reserves rejected: %v", err)
 	}

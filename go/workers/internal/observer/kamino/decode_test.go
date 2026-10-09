@@ -1,25 +1,27 @@
 package kamino
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"math"
 	"math/big"
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	klend "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+
 	"github.com/solana-foundation/solana-go/v2"
 )
 
 func TestDecodeReserveMatchesKlendLayout(t *testing.T) {
-	data := make([]byte, 8+reserveStructSize)
-	discriminator := sha256.Sum256([]byte("account:Reserve"))
-	copy(data[:8], discriminator[:8])
+	data := make([]byte, klend.ReserveSize)
+	copy(data, klend.ReserveDiscriminator[:])
+	binary.LittleEndian.PutUint64(data[8:16], 1)
 	body := data[8:]
 	market := solana.NewWallet().PublicKey()
 	mint := solana.NewWallet().PublicKey()
 	copy(body[24:56], market[:])
-	liquidity := body[liquidityOffset : liquidityOffset+1232]
+	liquidity := data[128:1360]
 	copy(liquidity[:32], mint[:])
 	binary.LittleEndian.PutUint64(body[8:16], 99)
 	body[16] = 1
@@ -35,7 +37,7 @@ func TestDecodeReserveMatchesKlendLayout(t *testing.T) {
 	for index := range 4 {
 		binary.LittleEndian.PutUint64(liquidity[168+index*8:], uint64(index+1))
 	}
-	config := body[configOffset : configOffset+952]
+	config := data[4856:5808]
 	config[0] = 2
 	binary.LittleEndian.PutUint16(config[2:4], 25)
 	config[8] = 1
@@ -53,10 +55,10 @@ func TestDecodeReserveMatchesKlendLayout(t *testing.T) {
 	config[644] = 1
 	config[645] = 91
 	binary.LittleEndian.PutUint64(config[648:656], 300)
-	binary.LittleEndian.PutUint64(body[borrowedOutsideOffset:], 12)
+	binary.LittleEndian.PutUint64(data[6704:], 12)
 	observedAt := time.Unix(1_700_000_000, 0).UTC()
 	marketString, mintString := market.String(), mint.String()
-	snapshot, err := Decode(Target{Reserve: solana.NewWallet().PublicKey().String(), Market: &marketString, LiquidityMint: &mintString}, 200, observedAt, data, 400)
+	snapshot, err := Decode(Target{Reserve: solana.NewWallet().PublicKey().String(), Market: &marketString, LiquidityMint: &mintString}, 200, observedAt, &chain.Account{Owner: klend.ProgramID, Lamports: 1, Data: data}, 400)
 	if err != nil {
 		t.Fatalf("decode fixture reserve: %v", err)
 	}

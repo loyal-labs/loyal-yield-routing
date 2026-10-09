@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
@@ -559,63 +560,10 @@ func resolveBorrow(amount PlannedAmount, observed *ObservedRoute, config Strateg
 	return raw.Uint64(), nil
 }
 
-// Instruction graph construction. Account vectors follow the reviewed KLend
-// v2 templates; the farm/referrer/placeholder semantics are documented at
-// each helper.
+// Instruction graph construction through the shared KLend builders.
 
 func keyMeta(key solana.PublicKey, signer, writable bool) AccountMeta {
 	return AccountMeta{PubKey: key, IsSigner: signer, IsWritable: writable}
-}
-
-func klendPlaceholder() AccountMeta { return keyMeta(mustKey(KlendProgram), false, false) }
-func farmsPlaceholder() AccountMeta { return keyMeta(mustKey(FarmsProgram), false, false) }
-func instructionsSysvar() AccountMeta {
-	return keyMeta(mustKey("Sysvar1nstructions1111111111111111111111111"), false, false)
-}
-
-func farmUserMeta(farm *solana.PublicKey) AccountMeta {
-	if farm == nil {
-		return klendPlaceholder()
-	}
-	return keyMeta(*farm, false, true)
-}
-
-func farmStateMeta(farm *solana.PublicKey) AccountMeta {
-	if farm == nil {
-		return klendPlaceholder()
-	}
-	return keyMeta(*farm, false, true)
-}
-
-func refreshReserveInstruction(config StrategyConfig, reserve solana.PublicKey) Instruction {
-	return Instruction{
-		ProgramID: mustKey(KlendProgram),
-		Accounts: []AccountMeta{
-			keyMeta(reserve, false, true),
-			keyMeta(config.Market, false, false),
-			klendPlaceholder(), klendPlaceholder(), klendPlaceholder(),
-			keyMeta(config.Oracle, false, false),
-		},
-		Data: append([]byte(nil), DiscriminatorRefreshReserve[:]...),
-	}
-}
-
-func refreshObligationInstruction(config StrategyConfig, includeCollateral, includeDebt bool) Instruction {
-	accounts := []AccountMeta{
-		keyMeta(config.Market, false, false),
-		keyMeta(config.Obligation, false, true),
-	}
-	if includeCollateral {
-		accounts = append(accounts, keyMeta(config.CollateralReserve, false, true))
-	}
-	if includeDebt {
-		accounts = append(accounts, keyMeta(config.DebtReserve, false, true))
-	}
-	return Instruction{
-		ProgramID: mustKey(KlendProgram),
-		Accounts:  accounts,
-		Data:      append([]byte(nil), DiscriminatorRefreshObligation[:]...),
-	}
 }
 
 func appendU64Instruction(prefix []byte, amount uint64) []byte {
@@ -625,123 +573,74 @@ func appendU64Instruction(prefix []byte, amount uint64) []byte {
 	return append(data, raw[:]...)
 }
 
+func klend(ix *solana.GenericInstruction) Instruction {
+	out := Instruction{ProgramID: ix.ProgID, Data: ix.DataBytes}
+	for _, account := range ix.AccountValues {
+		out.Accounts = append(out.Accounts, keyMeta(account.PublicKey, account.IsSigner, account.IsWritable))
+	}
+	return out
+}
+
+// optionalFarmKey is an absent farm account's zero key.
+func optionalFarmKey(key *solana.PublicKey) solana.PublicKey {
+	if key == nil {
+		return solana.PublicKey{}
+	}
+	return *key
+}
+
+// refreshes are the collateral and debt reserve refreshes and the
+// obligation refresh over the included reserves.
+func refreshes(config StrategyConfig, debtReserve, includeCollateral, includeDebt bool) []Instruction {
+	reserve := func(key solana.PublicKey) Instruction {
+		return klend(kamino.RefreshReserve(kamino.RefreshReserveAccounts{Reserve: key, LendingMarket: config.Market, Scope: config.Oracle}))
+	}
+	out := []Instruction{reserve(config.CollateralReserve)}
+	if debtReserve {
+		out = append(out, reserve(config.DebtReserve))
+	}
+	var reserves []solana.PublicKey
+	if includeCollateral {
+		reserves = append(reserves, config.CollateralReserve)
+	}
+	if includeDebt {
+		reserves = append(reserves, config.DebtReserve)
+	}
+	return append(out, klend(kamino.RefreshObligation(config.Market, config.Obligation, reserves...)))
+}
+
+func collateralAccounts(config StrategyConfig, vault solana.PublicKey) kamino.CollateralAccounts {
+	return kamino.CollateralAccounts{
+		Owner: vault, Obligation: config.Obligation, LendingMarket: config.Market, LendingMarketAuthority: config.MarketAuthority,
+		Reserve: config.CollateralReserve, LiquidityMint: mustKey(config.CollateralMint), LiquiditySupply: config.CollateralLiquiditySupply,
+		CollateralMint: config.CollateralReceiptMint, CollateralSupply: config.CollateralMintSupply, UserLiquidity: config.CollateralCustody,
+		LiquidityTokenProgram: solana.TokenProgramID, ObligationFarmUserState: optionalFarmKey(config.CollateralFarmUser), ReserveFarmState: optionalFarmKey(config.CollateralFarmState),
+	}
+}
+
+func debtAccounts(config StrategyConfig, vault solana.PublicKey) kamino.LiquidityAccounts {
+	return kamino.LiquidityAccounts{
+		Owner: vault, Obligation: config.Obligation, LendingMarket: config.Market, LendingMarketAuthority: config.MarketAuthority,
+		Reserve: config.DebtReserve, LiquidityMint: mustKey(config.DebtMint), LiquiditySupply: config.DebtLiquiditySupply,
+		FeeReceiver: config.DebtFeeVault, UserLiquidity: config.DebtCustody, TokenProgram: config.DebtTokenProgram,
+		ObligationFarmUserState: optionalFarmKey(config.DebtFarmUser), ReserveFarmState: optionalFarmKey(config.DebtFarmState),
+	}
+}
+
 func depositInstructions(config StrategyConfig, vault solana.PublicKey, amount uint64, includeCollateral, includeDebt bool) ([]Instruction, error) {
-	return []Instruction{
-		refreshReserveInstruction(config, config.CollateralReserve),
-		refreshReserveInstruction(config, config.DebtReserve),
-		refreshObligationInstruction(config, includeCollateral, includeDebt),
-		{
-			ProgramID: mustKey(KlendProgram),
-			Accounts: []AccountMeta{
-				keyMeta(vault, true, true),
-				keyMeta(config.Obligation, false, true),
-				keyMeta(config.Market, false, false),
-				keyMeta(config.MarketAuthority, false, false),
-				keyMeta(config.CollateralReserve, false, true),
-				keyMeta(mustKey(config.CollateralMint), false, false),
-				keyMeta(config.CollateralLiquiditySupply, false, true),
-				keyMeta(config.CollateralReceiptMint, false, true),
-				keyMeta(config.CollateralMintSupply, false, true),
-				keyMeta(config.CollateralCustody, false, true),
-				klendPlaceholder(),
-				keyMeta(solana.TokenProgramID, false, false),
-				keyMeta(solana.TokenProgramID, false, false),
-				instructionsSysvar(),
-				farmUserMeta(config.CollateralFarmUser),
-				farmStateMeta(config.CollateralFarmState),
-				farmsPlaceholder(),
-			},
-			Data: appendU64Instruction(DiscriminatorDepositCollateral[:], amount),
-		},
-	}, nil
+	return append(refreshes(config, true, includeCollateral, includeDebt), klend(kamino.DepositV2(collateralAccounts(config, vault), amount))), nil
 }
 
 func borrowInstructions(config StrategyConfig, vault solana.PublicKey, amount uint64, includeCollateral, includeDebt bool) ([]Instruction, error) {
-	return []Instruction{
-		refreshReserveInstruction(config, config.CollateralReserve),
-		refreshReserveInstruction(config, config.DebtReserve),
-		refreshObligationInstruction(config, includeCollateral, includeDebt),
-		{
-			ProgramID: mustKey(KlendProgram),
-			Accounts: []AccountMeta{
-				keyMeta(vault, true, false),
-				keyMeta(config.Obligation, false, true),
-				keyMeta(config.Market, false, false),
-				keyMeta(config.MarketAuthority, false, false),
-				keyMeta(config.DebtReserve, false, true),
-				keyMeta(mustKey(config.DebtMint), false, false),
-				keyMeta(config.DebtLiquiditySupply, false, true),
-				keyMeta(config.DebtFeeVault, false, true),
-				keyMeta(config.DebtCustody, false, true),
-				klendPlaceholder(),
-				keyMeta(config.DebtTokenProgram, false, false),
-				instructionsSysvar(),
-				farmUserMeta(config.DebtFarmUser),
-				farmStateMeta(config.DebtFarmState),
-				farmsPlaceholder(),
-			},
-			Data: appendU64Instruction(DiscriminatorBorrowDebt[:], amount),
-		},
-	}, nil
+	return append(refreshes(config, true, includeCollateral, includeDebt), klend(kamino.BorrowV2(debtAccounts(config, vault), amount))), nil
 }
 
 func withdrawInstructions(config StrategyConfig, vault solana.PublicKey, amount uint64, debtAware bool) ([]Instruction, error) {
-	result := []Instruction{refreshReserveInstruction(config, config.CollateralReserve)}
-	if debtAware {
-		result = append(result, refreshReserveInstruction(config, config.DebtReserve))
-	}
-	result = append(result, refreshObligationInstruction(config, true, debtAware),
-		Instruction{
-			ProgramID: mustKey(KlendProgram),
-			Accounts: []AccountMeta{
-				keyMeta(vault, true, true),
-				keyMeta(config.Obligation, false, true),
-				keyMeta(config.Market, false, false),
-				keyMeta(config.MarketAuthority, false, false),
-				keyMeta(config.CollateralReserve, false, true),
-				keyMeta(mustKey(config.CollateralMint), false, false),
-				keyMeta(config.CollateralMintSupply, false, true),
-				keyMeta(config.CollateralReceiptMint, false, true),
-				keyMeta(config.CollateralLiquiditySupply, false, true),
-				keyMeta(config.CollateralCustody, false, true),
-				klendPlaceholder(),
-				keyMeta(solana.TokenProgramID, false, false),
-				keyMeta(solana.TokenProgramID, false, false),
-				instructionsSysvar(),
-				farmUserMeta(config.CollateralFarmUser),
-				farmStateMeta(config.CollateralFarmState),
-				farmsPlaceholder(),
-			},
-			Data: appendU64Instruction(DiscriminatorWithdrawCollateral[:], amount),
-		})
-	return result, nil
+	return append(refreshes(config, debtAware, true, debtAware), klend(kamino.WithdrawV2(collateralAccounts(config, vault), amount))), nil
 }
 
 func repayInstructions(config StrategyConfig, vault solana.PublicKey, amount uint64) ([]Instruction, error) {
-	return []Instruction{
-		refreshReserveInstruction(config, config.CollateralReserve),
-		refreshReserveInstruction(config, config.DebtReserve),
-		refreshObligationInstruction(config, true, true),
-		{
-			ProgramID: mustKey(KlendProgram),
-			Accounts: []AccountMeta{
-				keyMeta(vault, true, false),
-				keyMeta(config.Obligation, false, true),
-				keyMeta(config.Market, false, false),
-				keyMeta(config.DebtReserve, false, true),
-				keyMeta(mustKey(config.DebtMint), false, false),
-				keyMeta(config.DebtLiquiditySupply, false, true),
-				keyMeta(config.DebtCustody, false, true),
-				keyMeta(config.DebtTokenProgram, false, false),
-				instructionsSysvar(),
-				farmUserMeta(config.DebtFarmUser),
-				farmStateMeta(config.DebtFarmState),
-				keyMeta(config.MarketAuthority, false, false),
-				farmsPlaceholder(),
-			},
-			Data: appendU64Instruction(DiscriminatorRepayDebt[:], amount),
-		},
-	}, nil
+	return append(refreshes(config, true, true, true), klend(kamino.RepayV2(debtAccounts(config, vault), amount))), nil
 }
 
 // swapExactIn ports the Jupiter swap arm: quote, validate, and bind the

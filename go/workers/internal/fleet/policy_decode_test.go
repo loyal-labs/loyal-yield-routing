@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -16,7 +17,7 @@ func squadsPolicyAccount(data []byte) *chain.Account {
 func TestPolicyPrefixRetainsByteLimitAndTailIndependence(t *testing.T) {
 	// Fleet's retained prefix ABI has no hooks, limits or account tail.
 	for _, size := range []int{128, 256, 257} {
-		instruction := RouteInstruction{Program: KLendProgram, Data: bytes.Repeat([]byte{7}, size)}
+		instruction := RouteInstruction{Program: kamino.ProgramID.String(), Data: bytes.Repeat([]byte{7}, size)}
 		data, err := BuildExactPolicyFixture(testMarket, testVault, 1, []RouteInstruction{instruction})
 		if err != nil {
 			t.Fatal(err)
@@ -65,7 +66,7 @@ func TestPolicyTypedValuesPreserveNumericWidthAndByteOperators(t *testing.T) {
 	}
 }
 func TestPolicyPrefixRejectsMalformedVectorsAndAuthority(t *testing.T) {
-	ix := RouteInstruction{Program: KLendProgram, Data: []byte{7}}
+	ix := RouteInstruction{Program: kamino.ProgramID.String(), Data: []byte{7}}
 	data, err := BuildExactPolicyFixture(testMarket, testVault, 1, []RouteInstruction{ix})
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +95,7 @@ func TestPolicyCompactPrefixBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	program, err := decodePublicKey(KLendProgram)
+	program, err := decodePublicKey(kamino.ProgramID.String())
 	if err != nil {
 		t.Fatal(err)
 	}

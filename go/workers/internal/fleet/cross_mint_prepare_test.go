@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -72,15 +73,15 @@ func crossMintPreparationFixture(t *testing.T) (CrossMintPreparationRequest, cro
 		if err != nil {
 			t.Fatal(err)
 		}
-		obligation := fixtureAccount(p.Obligation, KLendProgram, 1_000_000, make([]byte, 3344))
-		copy(obligation.Data, []byte{168, 206, 141, 106, 88, 76, 172, 167})
+		obligation := fixtureAccount(p.Obligation, kamino.ProgramID.String(), 1_000_000, make([]byte, kamino.ObligationSize))
+		copy(obligation.Data, kamino.ObligationDiscriminator[:])
 		fixtureKey(t, obligation.Data, 32, id.Market)
 		fixtureKey(t, obligation.Data, 64, vault)
 		if i == 0 {
 			fixtureKey(t, obligation.Data, 96, id.Address)
 			binary.LittleEndian.PutUint64(obligation.Data[128:136], 1000)
 		}
-		if _, err := decodeObligation(&obligation, id.Market, vault, "", &p.Position); err != nil {
+		if _, err := decodeObligation(&obligation, id.Market, vault, &p.Position); err != nil {
 			t.Fatal(err)
 		}
 		bank.accounts[p.Obligation] = obligation
@@ -210,7 +211,7 @@ func TestCrossMintMissingALTResultCannotBeSigned(t *testing.T) {
 		}
 		return map[string]any{"context": map[string]any{"slot": 1000}, "value": map[string]any{"blockhash": testPubkey(99), "lastValidBlockHeight": 2000}}
 	})}
-	ix := []RouteInstruction{{Step: "test", Program: KLendProgram, Accounts: []InstructionAccount{{Address: testPubkey(11), Writable: true}}, Data: []byte{1}}}
+	ix := []RouteInstruction{{Step: "test", Program: kamino.ProgramID.String(), Accounts: []InstructionAccount{{Address: testPubkey(11), Writable: true}}, Data: []byte{1}}}
 	p, height, missing, err := r.compileCrossMintIndependentLeg(context.Background(), q, ix, nil, 1000)
 	if err != nil || len(missing) != 1 || height != 0 || len(p.Transaction.Message) != 0 || len(p.Transaction.UnsignedWire) != 0 || calls != 1 || !bytes.Equal(p.ExecutionPlan, q.Movement.ExecutionPlan) {
 		t.Fatalf("missing ALT metadata became signable: %+v height=%d missing=%v err=%v", p, height, missing, err)

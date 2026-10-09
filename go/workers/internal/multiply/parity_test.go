@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -377,7 +378,7 @@ func TestBuildKlendOperationsWireShape(t *testing.T) {
 		t.Fatalf("deposit refresh chain has %d instructions", len(built.PreInstructions))
 	}
 	if len(built.PolicyInstructions) != 1 ||
-		!equalBytes(built.PolicyInstructions[0].Data[:8], DiscriminatorDepositCollateral[:]) {
+		!equalBytes(built.PolicyInstructions[0].Data[:8], kamino.DepositV2Discriminator[:]) {
 		t.Fatal("deposit terminal drifted")
 	}
 	var amountRaw uint64

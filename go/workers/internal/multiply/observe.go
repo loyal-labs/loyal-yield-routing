@@ -17,6 +17,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
@@ -200,11 +201,11 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 		if err != nil {
 			return nil, err
 		}
-		collateralAPY, err := reserveAPYBPS(collateralReserveAccount.Data, collateralReserve, true)
+		collateralAPY, err := reserveAPYBPS(collateralReserve, true)
 		if err != nil {
 			return nil, err
 		}
-		debtAPY, err := reserveAPYBPS(debtReserveAccount.Data, debtReserve, false)
+		debtAPY, err := reserveAPYBPS(debtReserve, false)
 		if err != nil {
 			return nil, err
 		}
@@ -317,67 +318,36 @@ func tokenBalance(account *chain.Account, mint string, tokenProgram solana.Publi
 	return held.Amount, nil
 }
 
-// KLend layout offsets, shared with the reviewed decoders in this module tree.
-const (
-	obligationLength        = 3344
-	obligationDiscriminator = "\xa8\xce\x8djXL\xac\xa7"
-	reserveLength           = 8624
-	reserveDiscriminator    = "+\xf2\xcc\xca\x1a\xf7;\x7f"
-	reserveConfigOffset     = 4856
-	// Cargo.lock pins klend-interface 23b9f2b; repr(C) Obligation includes
-	// four u128 value fields after five 200-byte borrow slots.
-	obligationUnhealthyOffset = 2256
-	obligationElevationOffset = 2285
-)
-
-func obligationEnvelope(account *chain.Account, address solana.PublicKey, market, vault solana.PublicKey) ([]byte, error) {
-	if err := klendEnvelope(account, address, obligationLength, obligationDiscriminator); err != nil {
-		return nil, err
-	}
-	if !sameKey(account.Data[32:64], market) || !sameKey(account.Data[64:96], vault) {
-		return nil, errors.New("obligation identity drifted")
-	}
-	return account.Data, nil
-}
-
-func klendEnvelope(account *chain.Account, address solana.PublicKey, length int, discriminator string) error {
-	if account == nil || account.Key != address || account.Owner != mustKey(KlendProgram) || account.Executable ||
-		account.Lamports == 0 || len(account.Data) != length || string(account.Data[:8]) != discriminator {
-		return errors.New("KLend account envelope or layout drifted")
-	}
-	return nil
-}
-
 func decodeObligation(account *chain.Account, config StrategyConfig, vault solana.PublicKey, collateralReserve, debtReserve *decodedReserve, collateralAPY, debtAPY uint64) (*StrategyObservation, error) {
-	data, err := obligationEnvelope(account, config.Obligation, config.Market, vault)
-	if err != nil {
-		return nil, err
+	obligation, err := kamino.DecodeObligation(account)
+	if err != nil || account.Key != config.Obligation {
+		return nil, errors.New("KLend account envelope or layout drifted")
+	}
+	if obligation.LendingMarket != config.Market || obligation.Owner != vault {
+		return nil, errors.New("obligation identity drifted")
 	}
 	deposits, borrows := 0, 0
 	var collateralDepositedRaw uint64
 	var debtSF *big.Int
-	for index := 0; index < 8; index++ {
-		offset := 96 + index*136
-		amount := binary.LittleEndian.Uint64(data[offset+32 : offset+40])
-		if zeroKey(data[offset : offset+32]) {
+	for _, deposit := range obligation.Deposits {
+		if deposit.Reserve.IsZero() {
 			continue
 		}
-		if !sameKey(data[offset:offset+32], config.CollateralReserve) {
+		if deposit.Reserve != config.CollateralReserve {
 			return nil, errors.New("obligation reserve topology drifted")
 		}
 		deposits++
-		collateralDepositedRaw = amount
+		collateralDepositedRaw = deposit.DepositedAmount
 	}
-	for index := 0; index < 5; index++ {
-		offset := 1208 + index*200
-		if zeroKey(data[offset : offset+32]) {
+	for _, borrow := range obligation.Borrows {
+		if borrow.Reserve.IsZero() {
 			continue
 		}
-		if !sameKey(data[offset:offset+32], config.DebtReserve) {
+		if borrow.Reserve != config.DebtReserve {
 			return nil, errors.New("obligation reserve topology drifted")
 		}
 		borrows++
-		debtSF = littleInt(data[offset+88 : offset+104])
+		debtSF = kamino.U128(borrow.BorrowedAmountSF)
 	}
 	if deposits > 1 || borrows > 1 {
 		return nil, errors.New("obligation reserve topology drifted")
@@ -391,10 +361,10 @@ func decodeObligation(account *chain.Account, config StrategyConfig, vault solan
 		}
 		debtRaw = ceil.Uint64()
 	}
-	if data[obligationElevationOffset] != 0 {
+	if obligation.ElevationGroup != 0 {
 		return nil, errors.New("obligation identity drifted")
 	}
-	unhealthy := littleInt(data[obligationUnhealthyOffset : obligationUnhealthyOffset+16])
+	unhealthy := kamino.U128(obligation.UnhealthyBorrowValueSF)
 	collateralValue, err := collateralMarketValueSF(collateralReserve, collateralDepositedRaw)
 	if err != nil {
 		return nil, err
@@ -413,7 +383,7 @@ func decodeObligation(account *chain.Account, config StrategyConfig, vault solan
 	}
 	return &StrategyObservation{
 		StrategyKey:                     config.Key,
-		ObligationLastUpdateSlot:        binary.LittleEndian.Uint64(data[16:24]),
+		ObligationLastUpdateSlot:        obligation.LastUpdateSlot,
 		CollateralReserveLastUpdateSlot: collateralReserve.LastUpdateSlot,
 		DebtReserveLastUpdateSlot:       debtReserve.LastUpdateSlot,
 		CollateralDepositedRaw:          collateralDepositedRaw,
@@ -461,6 +431,7 @@ type decodedReserve struct {
 	Decimals             uint64
 	CollateralMintSupply uint64
 	TotalLiquiditySF     *big.Int
+	reserve              kamino.Reserve
 }
 
 func decodeReserve(account *chain.Account, config StrategyConfig) (*decodedReserve, error) {
@@ -470,51 +441,30 @@ func decodeReserve(account *chain.Account, config StrategyConfig) (*decodedReser
 		address = config.DebtReserve
 		mint = config.DebtMint
 	}
-	if err := klendEnvelope(account, address, reserveLength, reserveDiscriminator); err != nil {
-		return nil, err
+	reserve, err := kamino.DecodeReserve(account)
+	if err != nil || account.Key != address {
+		return nil, errors.New("KLend account envelope or layout drifted")
 	}
-	if binary.LittleEndian.Uint64(account.Data[8:16]) != 1 || !sameKey(account.Data[32:64], config.Market) {
+	price := kamino.U128(reserve.MarketPriceSF)
+	if reserve.LendingMarket != config.Market || reserve.LiquidityMint != mustKey(mint) || reserve.Status != 0 || price.Sign() == 0 {
 		return nil, errors.New("reserve identity, status, or price drifted")
 	}
-	if !sameKey(account.Data[128:160], mustKey(mint)) {
-		return nil, errors.New("reserve identity, status, or price drifted")
-	}
-	status := account.Data[reserveConfigOffset]
-	if status != 0 {
-		return nil, errors.New("reserve identity, status, or price drifted")
-	}
-	price := littleInt(account.Data[248:264])
-	if price.Sign() == 0 {
-		return nil, errors.New("reserve identity, status, or price drifted")
-	}
-	totalLiquidity, err := reserveTotalLiquiditySF(account.Data)
+	totalLiquidity, err := reserve.TotalLiquiditySF()
 	if err != nil {
 		return nil, err
 	}
-	return &decodedReserve{
-		LastUpdateSlot:       binary.LittleEndian.Uint64(account.Data[16:24]),
-		Status:               status,
-		MarketPriceSF:        price,
-		Decimals:             binary.LittleEndian.Uint64(account.Data[272:280]),
-		CollateralMintSupply: binary.LittleEndian.Uint64(account.Data[2592:2600]),
-		TotalLiquiditySF:     totalLiquidity,
-	}, nil
-}
-
-func reserveTotalLiquiditySF(data []byte) (*big.Int, error) {
-	total := new(big.Int).Lsh(new(big.Int).SetUint64(binary.LittleEndian.Uint64(data[224:232])), 60)
-	total.Add(total, littleInt(data[232:248]))
-	for _, offset := range []int{344, 360, 376} {
-		fee := littleInt(data[offset : offset+16])
-		if total.Cmp(fee) < 0 {
-			return nil, errors.New("reserve total liquidity underflowed fees")
-		}
-		total.Sub(total, fee)
-	}
-	if total.Sign() == 0 {
+	if totalLiquidity.Sign() == 0 {
 		return nil, errors.New("reserve total liquidity is zero")
 	}
-	return total, nil
+	return &decodedReserve{
+		LastUpdateSlot:       reserve.LastUpdateSlot,
+		Status:               reserve.Status,
+		MarketPriceSF:        price,
+		Decimals:             reserve.MintDecimals,
+		CollateralMintSupply: reserve.CollateralMintTotalSupply,
+		TotalLiquiditySF:     totalLiquidity,
+		reserve:              reserve,
+	}, nil
 }
 
 const fractionOneSF = uint64(1) << 60
@@ -607,23 +557,7 @@ func ceilDiv60(value *big.Int) *big.Int {
 	return result
 }
 
-func littleInt(value []byte) *big.Int {
-	reversed := append([]byte(nil), value...)
-	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
-		reversed[left], reversed[right] = reversed[right], reversed[left]
-	}
-	return new(big.Int).SetBytes(reversed)
-}
-
-func sameKey(data []byte, key solana.PublicKey) bool {
-	if len(data) != 32 {
-		return false
-	}
-	got := solana.PublicKeyFromBytes(data)
-	return got == key
-}
-
-func zeroKey(data []byte) bool {
+func allZero(data []byte) bool {
 	for _, value := range data {
 		if value != 0 {
 			return false
@@ -641,12 +575,13 @@ const (
 
 // reserveAPYBPS ports the pinned loyal-kamino-codec curve calculation. Host
 // fixed interest belongs to borrowing APR, not supplier income.
-func reserveAPYBPS(data []byte, reserve *decodedReserve, supply bool) (uint64, error) {
-	available := float64(binary.LittleEndian.Uint64(data[224:232]))
-	borrowed := scaledFractionToFloat(data[232:248])
-	protocolFees := scaledFractionToFloat(data[344:360])
-	referrerFees := scaledFractionToFloat(data[360:376])
-	pendingFees := scaledFractionToFloat(data[376:392])
+func reserveAPYBPS(decoded *decodedReserve, supply bool) (uint64, error) {
+	reserve := decoded.reserve
+	available := float64(reserve.AvailableAmount)
+	borrowed := scaledFractionToFloat(reserve.BorrowedAmountSF)
+	protocolFees := scaledFractionToFloat(reserve.AccumulatedProtocolFeesSF)
+	referrerFees := scaledFractionToFloat(reserve.AccumulatedReferrerFeesSF)
+	pendingFees := scaledFractionToFloat(reserve.PendingReferrerFeesSF)
 	total := math.Max(0, available+borrowed-protocolFees-referrerFees-pendingFees)
 	if total <= 0 || math.IsInf(total, 0) || math.IsNaN(total) {
 		return 0, errors.New("reserve utilization is invalid")
@@ -655,17 +590,16 @@ func reserveAPYBPS(data []byte, reserve *decodedReserve, supply bool) (uint64, e
 	if !finiteFloat(utilization) || utilization < 0 || utilization > 1.01 {
 		return 0, errors.New("reserve utilization is invalid")
 	}
-	curveAPR := borrowCurveAPR(data, utilization) * (1000.0 / slotsPerSecond / slotDurationMS)
+	curveAPR := borrowCurveAPR(reserve.BorrowRateCurve, utilization) * (1000.0 / slotsPerSecond / slotDurationMS)
 	ratio := 0.0
 	if supply {
-		takeRate := data[reserveConfigOffset+14]
+		takeRate := reserve.ProtocolTakeRatePct
 		if takeRate > 100 {
 			return 0, errors.New("reserve take rate is invalid")
 		}
 		ratio = utilization * curveAPR * (1 - float64(takeRate)/100)
 	} else {
-		hostFixedBPS := binary.LittleEndian.Uint16(data[reserveConfigOffset+2 : reserveConfigOffset+4])
-		ratio = curveAPR + float64(hostFixedBPS)/10_000*(1000.0/slotsPerSecond/slotDurationMS)
+		ratio = curveAPR + float64(reserve.HostFixedInterestRateBPS)/10_000*(1000.0/slotsPerSecond/slotDurationMS)
 	}
 	if !finiteFloat(ratio) || ratio < 0 || ratio > float64(math.MaxUint64)/10_000.0 {
 		return 0, errors.New("reserve APY is outside the supported range")
@@ -685,16 +619,11 @@ func reserveAPYBPS(data []byte, reserve *decodedReserve, supply bool) (uint64, e
 	return uint64(bps), nil
 }
 
-func borrowCurveAPR(data []byte, utilization float64) float64 {
+func borrowCurveAPR(curve [11]kamino.CurvePoint, utilization float64) float64 {
 	type point struct{ utilization, rate float64 }
-	points := make([]point, 0, 11)
-	config := data[reserveConfigOffset:]
-	for index := 0; index < 11; index++ {
-		offset := 64 + index*8
-		points = append(points, point{
-			utilization: float64(binary.LittleEndian.Uint32(config[offset:offset+4])) / 10_000,
-			rate:        float64(binary.LittleEndian.Uint32(config[offset+4:offset+8])) / 10_000,
-		})
+	points := make([]point, 0, len(curve))
+	for _, value := range curve {
+		points = append(points, point{utilization: float64(value.UtilizationRateBPS) / 10_000, rate: float64(value.BorrowRateBPS) / 10_000})
 	}
 	sort.SliceStable(points, func(i, j int) bool { return points[i].utilization < points[j].utilization })
 	if len(points) == 0 {
@@ -716,7 +645,7 @@ func borrowCurveAPR(data []byte, utilization float64) float64 {
 	return points[len(points)-1].rate
 }
 
-func scaledFractionToFloat(value []byte) float64 {
+func scaledFractionToFloat(value [16]byte) float64 {
 	high := binary.LittleEndian.Uint64(value[8:16])
 	low := binary.LittleEndian.Uint64(value[:8])
 	return float64(high)*16 + float64(low)/float64(fractionOneSF)
@@ -726,22 +655,10 @@ func finiteFloat(value float64) bool { return !math.IsNaN(value) && !math.IsInf(
 
 // CollateralToLiquidityRaw mirrors collateral_to_liquidity_raw.
 func CollateralToLiquidityRaw(position *StrategyObservation, collateralRaw uint64) (uint64, error) {
-	if collateralRaw == 0 {
-		return 0, nil
+	if position == nil {
+		return kamino.CollateralToLiquidity(nil, 0, collateralRaw)
 	}
-	if position == nil || position.CollateralTotalLiquiditySF == nil || position.CollateralTotalLiquiditySF.Sign() <= 0 {
-		return 0, errors.New("collateral reserve liquidity is unknown")
-	}
-	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(position.CollateralTotalSupplyRaw), 60)
-	if denominator.Sign() == 0 {
-		return 0, errors.New("collateral reserve supply is zero")
-	}
-	liquidity := new(big.Int).Mul(new(big.Int).SetUint64(collateralRaw), position.CollateralTotalLiquiditySF)
-	liquidity.Div(liquidity, denominator)
-	if !liquidity.IsUint64() {
-		return 0, errors.New("redeemable collateral exceeds u64")
-	}
-	return liquidity.Uint64(), nil
+	return kamino.CollateralToLiquidity(position.CollateralTotalLiquiditySF, position.CollateralTotalSupplyRaw, collateralRaw)
 }
 
 // PositionBalance mirrors position_balance.

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
@@ -31,9 +32,7 @@ const (
 
 	MainnetGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
-	KlendProgram   = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 	JupiterProgram = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
-	FarmsProgram   = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
 
 	USDCMint  = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	USDSMint  = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
@@ -66,9 +65,6 @@ const (
 	syrupCollateralLiquiditySupply = "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i"
 	syrupCollateralReceiptMint     = "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu"
 	syrupCollateralMintSupply      = "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58"
-
-	multiplyObligationTag = 0x01
-	multiplyObligationID  = 0x00
 )
 
 // JupiterSharedAccountsRouteDiscriminator is EARN_MAX_SHARED_ACCOUNTS_ROUTE
@@ -220,27 +216,6 @@ func (t *EarnMaxTopology) StrategyCatalog() []StrategyConfig {
 	return catalog
 }
 
-// deriveKaminoObligation mirrors derive_kamino_obligation.
-func deriveKaminoObligation(vault, market solana.PublicKey, collateralMint, debtMint solana.PublicKey) (solana.PublicKey, error) {
-	key, _, err := solana.FindProgramAddress([][]byte{
-		{multiplyObligationTag}, {multiplyObligationID}, vault[:], market[:],
-		collateralMint[:], debtMint[:],
-	}, mustKey(KlendProgram))
-	if err != nil {
-		return solana.PublicKey{}, fmt.Errorf("derive obligation: %w", err)
-	}
-	return key, nil
-}
-
-// deriveKaminoFarmUserState mirrors derive_kamino_obligation_farm_user_state.
-func deriveKaminoFarmUserState(farmState, obligation solana.PublicKey) (solana.PublicKey, error) {
-	key, _, err := solana.FindProgramAddress([][]byte{[]byte("user"), farmState[:], obligation[:]}, mustKey(FarmsProgram))
-	if err != nil {
-		return solana.PublicKey{}, fmt.Errorf("derive farm user state: %w", err)
-	}
-	return key, nil
-}
-
 type strategyTemplate struct {
 	key                       StrategyKey
 	market                    string
@@ -343,7 +318,8 @@ func deriveStrategy(settings, vault solana.PublicKey, template strategyTemplate,
 	collateralMint := mustKey(template.collateralMint)
 	debtMint := mustKey(template.debtMint)
 	debtTokenProgram := mustKey(template.debtTokenProgram)
-	obligation, err := deriveKaminoObligation(vault, market, collateralMint, debtMint)
+	// The Multiply obligation is tag 1, id 0 over the collateral and debt mints.
+	obligation, err := kamino.ObligationAddress(1, 0, vault, market, collateralMint, debtMint)
 	if err != nil {
 		return StrategyConfig{}, err
 	}
@@ -372,7 +348,7 @@ func deriveStrategy(settings, vault solana.PublicKey, template strategyTemplate,
 	if template.debtFarmState != "" {
 		farm := optionalFarm(template.debtFarmState)
 		config.DebtFarmState = farm
-		user, err := deriveKaminoFarmUserState(*farm, obligation)
+		user, err := kamino.ObligationFarmUserState(*farm, obligation)
 		if err != nil {
 			return StrategyConfig{}, err
 		}

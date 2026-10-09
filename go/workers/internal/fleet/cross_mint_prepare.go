@@ -20,8 +20,8 @@ import (
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // These preparation DTOs have no signer or submission capability. The command
@@ -602,16 +602,11 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 		if obligation.Executable || obligation.Lamports == 0 {
 			return bank, errors.New("cross-mint destination obligation is not initialized")
 		}
-		if _, err := decodeObligation(&obligation, p.Position.Market, m.VaultPubkey, "", &p.Position); err != nil {
+		decoded, err := decodeObligation(&obligation, p.Position.Market, m.VaultPubkey, &p.Position)
+		if err != nil {
 			return bank, err
 		}
-		for i := 0; i < 8; i++ {
-			offset := 96 + i*136
-			if encodeBase58(obligation.Data[offset:offset+32]) == name {
-				collateral[name] = binary.LittleEndian.Uint64(obligation.Data[offset+32 : offset+40])
-			}
-		}
-		if collateral[name] > math.MaxInt64 {
+		if collateral[name] = decoded.Collateral(account.Key); collateral[name] > math.MaxInt64 {
 			return bank, errors.New("cross-mint position amount exceeds SQL custody range")
 		}
 		held, err := validateVaultTokenAccount(bank.at(p.Position.VaultLiquidityATA), mint, m.VaultPubkey)
@@ -627,7 +622,7 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 		if p.Position.ReserveFarmState != "" {
 			for _, name := range []string{p.Position.ReserveFarmState, p.FarmUser} {
 				a := bank.accounts[name]
-				if a.Owner.String() != farmsProgram || a.Executable || a.Lamports == 0 {
+				if a.Owner != kamino.FarmsProgramID || a.Executable || a.Lamports == 0 {
 					return bank, errors.New("cross-mint farm setup is not ready")
 				}
 			}
@@ -675,7 +670,7 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 			return nil, effect, anchors, "", errors.New("cross-mint source collateral no longer matches one-unit recovery anchor")
 		}
 		account := bank.accounts[m.SourceReserve]
-		backing, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: account.Key.String(), Owner: account.Owner.String(), Lamports: account.Lamports, Executable: account.Executable, Data: account.Data}, position.Position.Market, m.SourceMint, values.Collateral)
+		backing, err := redeemableLiquidity(&account, position.Position.Market, m.SourceMint, values.Collateral)
 		if err != nil || backing == 0 {
 			return nil, effect, anchors, "", errors.New("cross-mint withdrawal lacks redeemable source backing")
 		}

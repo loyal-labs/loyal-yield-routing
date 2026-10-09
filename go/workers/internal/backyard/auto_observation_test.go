@@ -32,6 +32,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 const (
@@ -93,8 +95,8 @@ func kaminoReserveImage(t *testing.T, market, address, mint string, slot int64, 
 // decoders must refuse.
 func kaminoObligationImage(t *testing.T, route RuntimeRoute, slot int64, collateralReceiptRaw, debtRaw uint64) ConfirmedAccount {
 	t.Helper()
-	data := make([]byte, kaminoObligationLength)
-	copy(data[:8], kaminoObligationDiscriminator[:])
+	data := make([]byte, kamino.ObligationSize)
+	copy(data[:8], kamino.ObligationDiscriminator[:])
 	binary.LittleEndian.PutUint64(data[16:24], uint64(slot))
 	data[25] = kaminoRequiredPriceStatus
 	putKey(t, data[32:64], route.Kamino.Market)
@@ -151,7 +153,7 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 		exactReportTicketAccount(t, 4),
 		autoObservationClock(slot),
 		// One configured oracle account serves every reserve image.
-		{Address: kaminoPrimeMint, Owner: kaminoProgram, Lamports: 1, Data: []byte{1}},
+		{Address: kaminoPrimeMint, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}},
 		// Legacy PRIME/USDC identities the candidate batch still requests.
 		kaminoReserveImage(t, kaminoMarket, kaminoCollateralReserve, kaminoPrimeMint, slot, oneAndHalf, 200, 0, 100, 6),
 		kaminoReserveImage(t, kaminoMarket, kaminoDebtReserve, kaminoUSDCMint, slot, peg, 100, 0, 100, 6),

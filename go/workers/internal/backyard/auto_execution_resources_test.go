@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -196,7 +197,7 @@ func TestAutoKaminoExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 		t.Fatalf("AUTO Kamino message references ComputeBudget %d times", heapKeys)
 	}
 	for index := 1; index <= 3; index++ {
-		if instructions[index].program != kaminoPrimeUSDCProgram {
+		if instructions[index].program != kamino.ProgramID.String() {
 			t.Fatalf("AUTO refresh %d program drifted: %s", index, instructions[index].program)
 		}
 	}
@@ -333,7 +334,7 @@ func TestInstalledExecutionMessagesStayByteIdenticalWithoutResources(t *testing.
 		}
 	}
 	for index := 0; index <= 2; index++ {
-		if instructions[index].program != kaminoPrimeUSDCProgram {
+		if instructions[index].program != kamino.ProgramID.String() {
 			t.Fatalf("installed refresh %d program drifted: %s", index, instructions[index].program)
 		}
 	}

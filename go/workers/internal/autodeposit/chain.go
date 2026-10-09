@@ -3,8 +3,6 @@ package autodeposit
 import (
 	"context"
 	"encoding/base64"
-	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -12,8 +10,8 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 var base64Std = base64.StdEncoding
@@ -249,40 +247,32 @@ func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPl
 	if err != nil {
 		return 0, 0, err
 	}
-	obligationAccount, reserveAccount := accounts[0], accounts[1]
-	if obligationAccount.Owner.String() != KLendProgramID || len(obligationAccount.Data) != obligationDataLength ||
-		hex.EncodeToString(obligationAccount.Data[:8]) != hex.EncodeToString(obligationDiscriminator[:]) {
+	obligation, err := kamino.DecodeObligation(accounts[0])
+	if err != nil {
 		return 0, 0, fmt.Errorf("obligation %s is not a confirmed KLend obligation", route.Obligation)
 	}
-	if reserveAccount.Owner.String() != KLendProgramID || len(reserveAccount.Data) != reserveDataLength ||
-		reserveDiscriminator != hex.EncodeToString(reserveAccount.Data[:8]) {
+	reserve, err := kamino.DecodeReserve(accounts[1])
+	if err != nil {
 		return 0, 0, fmt.Errorf("reserve %s is not a confirmed KLend reserve", plan.Reserve)
 	}
-	var collateralRaw uint64
-	for i := 0; i < obligationDepositCount; i++ {
-		offset := obligationDepositsOffset + i*obligationDepositStride
-		if base58Key(obligationAccount.Data[offset:offset+32]) != plan.Reserve {
-			continue
-		}
-		amount := binary.LittleEndian.Uint64(obligationAccount.Data[offset+32 : offset+40])
-		if amount > 1<<63-1 {
-			return 0, 0, fmt.Errorf("obligation %s collateral amount exceeds the family's int64 range", route.Obligation)
-		}
-		collateralRaw = amount
-		break
+	collateralRaw := obligation.Collateral(mustKey(plan.Reserve))
+	if collateralRaw > 1<<63-1 {
+		return 0, 0, fmt.Errorf("obligation %s collateral amount exceeds the family's int64 range", route.Obligation)
 	}
 	if collateralRaw == 0 {
 		return 0, 0, fmt.Errorf("obligation %s carries no confirmed deposit in the frozen reserve %s", route.Obligation, plan.Reserve)
 	}
-	if base58Key(obligationAccount.Data[32:64]) != plan.Market || base58Key(obligationAccount.Data[64:96]) != plan.Target.VaultPubkey {
+	if obligation.LendingMarket.String() != plan.Market || obligation.Owner.String() != plan.Target.VaultPubkey {
 		return 0, 0, errors.New("confirmed obligation identity differs from frozen plan")
 	}
-	obligationSlot := binary.LittleEndian.Uint64(obligationAccount.Data[16:24])
-	reserveSlot := binary.LittleEndian.Uint64(reserveAccount.Data[16:24])
+	obligationSlot, reserveSlot := obligation.LastUpdateSlot, reserve.LastUpdateSlot
 	if observedSlot <= 0 || obligationSlot == 0 || reserveSlot < obligationSlot || reserveSlot > uint64(observedSlot) || obligationSlot > uint64(observedSlot) {
 		return 0, 0, errors.New("confirmed collateral conversion snapshot is stale or incoherent")
 	}
-	liquidity, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: plan.Reserve, Owner: reserveAccount.Owner.String(), Lamports: reserveAccount.Lamports, Executable: reserveAccount.Executable, Data: reserveAccount.Data}, plan.Market, plan.LiquidityMint, collateralRaw)
+	if reserve.LendingMarket.String() != plan.Market || reserve.LiquidityMint.String() != plan.LiquidityMint {
+		return 0, 0, errors.New("Kamino reserve identity drifted")
+	}
+	liquidity, err := reserve.CollateralToLiquidity(collateralRaw)
 	if err != nil {
 		return 0, 0, err
 	}

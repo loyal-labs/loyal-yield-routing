@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -16,7 +17,6 @@ import (
 // and the loyal-squads-policy-monitor event builders.
 
 var (
-	klendProgram         = solana.MustPublicKeyFromBase58("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD")
 	jupiterProgram       = solana.MustPublicKeyFromBase58("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")
 	loyalHubProgram      = solana.MustPublicKeyFromBase58("LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH")
 	subscriptionsProgram = solana.MustPublicKeyFromBase58("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44")
@@ -54,12 +54,8 @@ var (
 		{solana.MustPublicKeyFromBase58(fleet.USDSMint), tokenProgram},
 	}
 
-	kaminoWithdrawDiscriminator          = []byte{235, 52, 119, 152, 149, 197, 20, 7}
-	kaminoDepositDiscriminator           = []byte{216, 224, 191, 27, 204, 151, 102, 175}
-	kaminoInitObligationDiscriminator    = []byte{251, 10, 231, 76, 27, 11, 159, 96}
-	kaminoRefreshObligationDiscriminator = []byte{33, 132, 147, 228, 151, 192, 72, 89}
-	jupiterRouteDiscriminator            = []byte{187, 100, 250, 204, 49, 196, 175, 20}
-	jupiterSharedRouteDiscriminator      = []byte{209, 152, 83, 147, 124, 254, 216, 233}
+	jupiterRouteDiscriminator       = []byte{187, 100, 250, 204, 49, 196, 175, 20}
+	jupiterSharedRouteDiscriminator = []byte{209, 152, 83, 147, 124, 254, 216, 233}
 )
 
 const (
@@ -102,11 +98,6 @@ func associatedToken(owner, mint, program solana.PublicKey) solana.PublicKey {
 		panic(err)
 	}
 	return key
-}
-
-func vanillaObligation(vault, market solana.PublicKey) solana.PublicKey {
-	zero := solana.PublicKey{}
-	return pda(klendProgram, []byte{0}, []byte{0}, vault[:], market[:], zero[:], zero[:])
 }
 
 func uniqueKeys(keys []solana.PublicKey) []solana.PublicKey {
@@ -334,7 +325,7 @@ func compactSameMintLeg(accounts map[uint8]squads.AccountConstraintView, vault s
 }
 
 func classifyKaminoWithdraw(constraint squads.InstructionConstraintView) (kaminoLeg, bool) {
-	if constraint.ProgramID != klendProgram || !hasSlice(constraint.DataConstraints, 0, kaminoWithdrawDiscriminator) {
+	if constraint.ProgramID != kamino.ProgramID || !hasSlice(constraint.DataConstraints, 0, kamino.WithdrawV2Discriminator[:]) {
 		return kaminoLeg{}, false
 	}
 	accounts := accountsByIndex(constraint)
@@ -350,7 +341,7 @@ func classifyKaminoWithdraw(constraint squads.InstructionConstraintView) (kamino
 }
 
 func classifyKaminoDeposit(constraint squads.InstructionConstraintView, vault solana.PublicKey) (kaminoLeg, bool) {
-	if constraint.ProgramID != klendProgram || !hasSlice(constraint.DataConstraints, 0, kaminoDepositDiscriminator) {
+	if constraint.ProgramID != kamino.ProgramID || !hasSlice(constraint.DataConstraints, 0, kamino.DepositV2Discriminator[:]) {
 		return kaminoLeg{}, false
 	}
 	accounts := accountsByIndex(constraint)
@@ -368,7 +359,7 @@ func hasU8OrSlice(constraints []squads.DataConstraintView, offset uint64, expect
 }
 
 func classifyInitObligation(constraint squads.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, bool) {
-	if constraint.ProgramID != klendProgram || !hasBytes(constraint.DataConstraints, 0, kaminoInitObligationDiscriminator) ||
+	if constraint.ProgramID != kamino.ProgramID || !hasBytes(constraint.DataConstraints, 0, kamino.InitObligationDiscriminator[:]) ||
 		!hasU8OrSlice(constraint.DataConstraints, 8, 0) || !hasU8OrSlice(constraint.DataConstraints, 9, 0) {
 		return nil, false
 	}
@@ -393,14 +384,18 @@ func classifyInitObligation(constraint squads.InstructionConstraintView, vault s
 		}
 		var expected []solana.PublicKey
 		for _, market := range markets {
-			expected = append(expected, vanillaObligation(vault, market))
+			obligation, err := kamino.VanillaObligation(vault, market)
+			if err != nil {
+				return nil, false
+			}
+			expected = append(expected, obligation)
 		}
 		if !sameKeySet(obligations, expected) {
 			return nil, false
 		}
 	}
-	userMetadata := pda(klendProgram, []byte("user_meta"), vault[:])
-	if !singleIs(accounts, 4, nil, solana.PublicKey{}) || !singleIs(accounts, 5, nil, solana.PublicKey{}) ||
+	userMetadata, err := kamino.UserMetadataAddress(vault)
+	if err != nil || !singleIs(accounts, 4, nil, solana.PublicKey{}) || !singleIs(accounts, 5, nil, solana.PublicKey{}) ||
 		!singleIs(accounts, 6, nil, userMetadata) || !singleIs(accounts, 7, nil, rentSysvar) || !singleIs(accounts, 8, nil, solana.SystemProgramID) {
 		return nil, false
 	}
@@ -408,7 +403,7 @@ func classifyInitObligation(constraint squads.InstructionConstraintView, vault s
 }
 
 func classifyRefreshObligation(constraint squads.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, bool) {
-	if constraint.ProgramID != klendProgram || !hasSlice(constraint.DataConstraints, 0, kaminoRefreshObligationDiscriminator) {
+	if constraint.ProgramID != kamino.ProgramID || !hasSlice(constraint.DataConstraints, 0, kamino.RefreshObligationDiscriminator[:]) {
 		return nil, false
 	}
 	accounts := accountsByIndex(constraint)
@@ -428,7 +423,11 @@ func classifyRefreshObligation(constraint squads.InstructionConstraintView, vaul
 	}
 	var expected []solana.PublicKey
 	for _, market := range markets {
-		expected = append(expected, vanillaObligation(vault, market))
+		obligation, err := kamino.VanillaObligation(vault, market)
+		if err != nil {
+			return nil, false
+		}
+		expected = append(expected, obligation)
 	}
 	if !sameKeySet(obligations, expected) {
 		return nil, false

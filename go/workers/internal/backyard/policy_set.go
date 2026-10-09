@@ -3,6 +3,7 @@ package backyard
 import (
 	"fmt"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -144,11 +145,8 @@ func deriveKaminoObligationFarmUserState(reserveFarmState, obligation string) (s
 	if err != nil {
 		return "", fmt.Errorf("decode obligation: %w", err)
 	}
-	farmsProgram, err := decodeKey("FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr")
-	if err != nil {
-		return "", fmt.Errorf("decode Farms program: %w", err)
-	}
-	return findProgramDerivedAddress([]byte("user"), farmsProgram[:], farm[:], obligationKey[:])
+	user, err := kamino.ObligationFarmUserState(solana.PublicKey(farm), solana.PublicKey(obligationKey))
+	return user.String(), err
 }
 
 const onreDebtFarmState = "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF"

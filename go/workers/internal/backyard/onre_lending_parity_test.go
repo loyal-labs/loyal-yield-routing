@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // This fixture is deliberately test-only. It describes the independently
@@ -17,7 +19,7 @@ func onreLendingParityRoute() RuntimeRoute {
 	return RuntimeRoute{
 		Lane: "OnRe/ONyc/USDC", Protocol: "OnRe", CollateralSymbol: "ONyc", DebtSymbol: "USDC",
 		Kamino: KaminoObservationConfig{
-			Program: kaminoProgram, Vault: bridgeVault,
+			Program: kamino.ProgramID.String(), Vault: bridgeVault,
 			Market:            "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
 			MarketAuthority:   "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
 			Obligation:        "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
@@ -121,16 +123,16 @@ func TestOnReConnectedLendingMatchesGoWithoutRegistration(t *testing.T) {
 			continue
 		}
 		t.Run(step.Leg, func(t *testing.T) {
-			op, leg, action, disc := step.Leg, kaminoLegDeposit, OpenRouteStep, kaminoDepositCollateral
+			op, leg, action, disc := step.Leg, kaminoLegDeposit, OpenRouteStep, kamino.DepositV2Discriminator[:]
 			switch step.Leg {
 			case "redeposit":
 				op = "deposit"
 			case "borrow":
-				leg, disc = kaminoLegBorrow, kaminoBorrowUSDC
+				leg, disc = kaminoLegBorrow, kamino.BorrowV2Discriminator[:]
 			case "repay":
-				leg, action, disc = kaminoLegRepay, DeleverRouteStep, kaminoRepayUSDC
+				leg, action, disc = kaminoLegRepay, DeleverRouteStep, kamino.RepayV2Discriminator[:]
 			case "withdraw":
-				leg, action, disc = kaminoLegWithdraw, DeleverRouteStep, kaminoWithdrawCollateral
+				leg, action, disc = kaminoLegWithdraw, DeleverRouteStep, kamino.WithdrawV2Discriminator[:]
 			}
 			policyHash := ""
 			for _, a := range step.Before {
