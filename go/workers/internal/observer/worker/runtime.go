@@ -844,7 +844,7 @@ func (r *Runtime) recoverEarnMaxGaps(ctx context.Context, set *watch.Set) (int64
 		var before solanago.Signature
 		vaultCandidateStart := len(candidates)
 		for {
-			page, err := r.rpc.History(ctx, custodyKey, 1_000, before)
+			page, err := r.rpc.History(ctx, custodyKey, 1_000, before, rpc.CommitmentConfirmed, 0)
 			if err != nil {
 				return 0, fmt.Errorf("read Earn MAX custody history for %s: %w", custody, err)
 			}

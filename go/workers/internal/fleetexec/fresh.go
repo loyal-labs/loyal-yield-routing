@@ -18,6 +18,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/mr-tron/base58"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // ExecuteFresh signs and persists the route this process just admitted. The
@@ -47,8 +48,8 @@ func (w *Worker) ExecuteFresh(ctx context.Context, admission fleet.ExecutionAdmi
 		if w.balances == nil {
 			return 0, errors.New("fee-only payer balance reader is not configured")
 		}
-		slot, accounts, err := w.balances.ConfirmedAccounts(ctx, []string{admission.FeePayer}, admission.Evidence.Slot)
-		if err != nil || len(accounts) != 1 || accounts[0].Lamports > math.MaxInt64 {
+		slot, accounts, err := fleet.ReadAccounts(ctx, w.balances, []string{admission.FeePayer}, rpc.CommitmentConfirmed, admission.Evidence.Slot)
+		if err != nil || accounts[0] == nil || accounts[0].Lamports > math.MaxInt64 {
 			return 0, fmt.Errorf("fee-only payer balance unavailable: %v", err)
 		}
 		balance = &FeePayerBalance{Lamports: int64(accounts[0].Lamports), Slot: slot, At: time.Now()}

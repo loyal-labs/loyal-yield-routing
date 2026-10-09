@@ -10,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 	"math"
 	"time"
 )
@@ -35,19 +37,23 @@ type crossMintAnchors struct {
 	Credit   *crossMintTokenAnchor    `json:"credit"`
 	Position *crossMintPositionAnchor `json:"kaminoPosition,omitempty"`
 }
-type finalizedAddressSignature struct {
-	Signature          string `json:"signature"`
-	Slot               int64  `json:"slot"`
-	ConfirmationStatus string `json:"confirmationStatus"`
+
+// historyReader lists an address's transactions, newest first.
+type historyReader interface {
+	History(ctx context.Context, address sdk.PublicKey, limit int, before sdk.Signature, commitment rpc.CommitmentType, minContextSlot uint64) ([]chain.Signed, error)
 }
-type finalizedHistoryReader interface {
-	FinalizedAddressSignatures(context.Context, string, string, int64) ([]finalizedAddressSignature, error)
+
+// signatureReader is the signature status and finalized height a no-effect
+// proof rechecks last.
+type signatureReader interface {
+	SignatureState(ctx context.Context, signature string) (chain.SignatureState, error)
+	FinalizedBlockHeight(ctx context.Context) (height, slot uint64, err error)
 }
 type crossMintRecovery struct {
 	store    *Store
-	accounts finalizedAccountReader
-	history  finalizedHistoryReader
-	status   StatusClient
+	accounts fleet.AccountReader
+	history  historyReader
+	status   signatureReader
 }
 type crossMintNoEffectProof struct {
 	observedSlot, historySlot, height, effectFloor, custodyAnchor int64
@@ -106,12 +112,12 @@ func canonicalCustodyTokenProgram(mint string) (string, error) {
 		return "", errors.New("custody mint is outside canonical Earn registry")
 	}
 }
-func custodyTokenAmount(a fleet.Account, mint, owner string) (int64, error) {
+func custodyTokenAmount(a *chain.Account, mint, owner string) (int64, error) {
 	program, err := canonicalCustodyTokenProgram(mint)
 	if err != nil {
 		return 0, err
 	}
-	if a.Owner != program || a.Executable || a.Lamports == 0 || len(a.Data) < 165 || a.Data[108] != 1 || sdk.PublicKeyFromBytes(a.Data[:32]).String() != mint || sdk.PublicKeyFromBytes(a.Data[32:64]).String() != owner {
+	if a == nil || a.Owner.String() != program || a.Executable || a.Lamports == 0 || len(a.Data) < 165 || a.Data[108] != 1 || sdk.PublicKeyFromBytes(a.Data[:32]).String() != mint || sdk.PublicKeyFromBytes(a.Data[32:64]).String() != owner {
 		return 0, errors.New("custody token envelope, authority, mint or state differs")
 	}
 	if program == sdk.TokenProgramID.String() && len(a.Data) != 165 {
@@ -135,65 +141,41 @@ func custodyTokenAmount(a fleet.Account, mint, owner string) (int64, error) {
 	return int64(raw), nil
 }
 
-func (a *RPCAdapter) FinalizedAddressSignatures(ctx context.Context, address, before string, floor int64) ([]finalizedAddressSignature, error) {
-	if _, err := sdk.PublicKeyFromBase58(address); err != nil {
-		return nil, err
-	}
-	config := map[string]any{"commitment": "finalized", "limit": 1000, "minContextSlot": floor}
-	if before != "" {
-		if _, err := sdk.SignatureFromBase58(before); err != nil {
-			return nil, err
-		}
-		config["before"] = before
-	}
-	var result []finalizedAddressSignature
-	if err := a.call(ctx, &result, "getSignaturesForAddress", address, config); err != nil {
-		return nil, err
-	}
-	if len(result) > 1000 {
-		return nil, errors.New("history page exceeds requested bound")
-	}
-	for _, s := range result {
-		if s.Slot < 0 || s.ConfirmationStatus != "finalized" {
-			return nil, errors.New("address history is not finalized")
-		}
-		if _, err := sdk.SignatureFromBase58(s.Signature); err != nil {
-			return nil, err
-		}
-	}
-	return result, nil
-}
-
 // Token custody requires a recognized signature AT the anchor slot. Empty or
 // truncated history cannot prove attribution. Obligation history uses the
 // source protocol's looser rule: no unrecognized signature since the anchor.
-func verifyCustodyHistory(ctx context.Context, rpc finalizedHistoryReader, address string, anchor, floor int64, recognized map[string]bool, requireAnchor bool) ([]finalizedAddressSignature, error) {
-	before := ""
+func verifyCustodyHistory(ctx context.Context, history historyReader, address string, anchor, floor int64, recognized map[string]bool, requireAnchor bool) ([]chain.Signed, error) {
+	key, err := sdk.PublicKeyFromBase58(address)
+	if err != nil {
+		return nil, err
+	}
+	var before sdk.Signature
 	observedAnchor := false
-	observed := []finalizedAddressSignature{}
-	seen := map[string]bool{}
+	observed := []chain.Signed{}
+	seen := map[sdk.Signature]bool{}
 	var previous int64 = math.MaxInt64
 	for pageNo := 0; pageNo < 32; pageNo++ {
-		page, err := rpc.FinalizedAddressSignatures(ctx, address, before, floor)
+		page, err := history.History(ctx, key, 1000, before, rpc.CommitmentFinalized, uint64(max(floor, 0)))
 		if err != nil {
 			return nil, err
 		}
 		reachedOld := false
 		for _, s := range page {
-			if s.Slot > previous || seen[s.Signature] || s.ConfirmationStatus != "finalized" {
-				return nil, errors.New("address history is repeated, unordered or unfinalized")
+			slot := int64(s.Slot)
+			if slot > previous || seen[s.Signature] {
+				return nil, errors.New("address history is repeated or unordered")
 			}
-			previous = s.Slot
+			previous = slot
 			seen[s.Signature] = true
-			if s.Slot < anchor {
+			if slot < anchor {
 				reachedOld = true
 				break
 			}
-			if !recognized[s.Signature] {
+			if !recognized[s.Signature.String()] {
 				return nil, errors.New("custody history contains external signature")
 			}
 			observed = append(observed, s)
-			observedAnchor = observedAnchor || s.Slot == anchor
+			observedAnchor = observedAnchor || slot == anchor
 		}
 		if reachedOld || len(page) < 1000 {
 			if requireAnchor && !observedAnchor {
@@ -249,19 +231,13 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 			addresses = append(addresses, a.TokenAccount)
 		}
 	}
-	slot, accounts, err := v.accounts.FinalizedAccounts(ctx, addresses, floor)
+	slot, accounts, err := fleet.ReadAccounts(ctx, v.accounts, addresses, rpc.CommitmentFinalized, floor)
 	if err != nil {
 		return nil, err
-	}
-	if slot < floor || len(accounts) != len(addresses) {
-		return nil, errors.New("cross-mint custody readback too old or incomplete")
 	}
 	evidence := map[string]any{"custodyAnchorSlot": *anchor, "finalizedAccountSlot": slot, "accounts": map[string]any{}}
 	history := evidence["accounts"].(map[string]any)
 	for i, a := range tokenAnchors {
-		if accounts[i].Address != a.TokenAccount {
-			return nil, errors.New("cross-mint account identity differs")
-		}
 		amount, e := custodyTokenAmount(accounts[i], a.Mint, owner)
 		if e != nil || amount != a.AmountRaw {
 			return nil, errors.New("cross-mint token custody binding or amount changed")
@@ -275,15 +251,12 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 	if p := anchors.Position; p != nil {
 		// The anchor may record a closed obligation (full source exit); the
 		// reserve stays required by its envelope check below.
-		observed, actual, e := v.accounts.FinalizedAccountsAllowingAbsent(ctx, []string{p.Reserve, p.Obligation}, slot)
+		observed, actual, e := fleet.ReadAccounts(ctx, v.accounts, []string{p.Reserve, p.Obligation}, rpc.CommitmentFinalized, slot)
 		if e != nil {
 			return nil, e
 		}
-		if observed < slot || len(actual) != 2 || actual[0].Address != p.Reserve || actual[1].Address != p.Obligation {
-			return nil, errors.New("cross-mint obligation readback incomplete")
-		}
 		// The anchor market and obligation must be the actual PDA for this vault.
-		if len(actual[0].Data) != 8624 {
+		if actual[0] == nil || len(actual[0].Data) != 8624 {
 			return nil, errors.New("cross-mint reserve envelope missing")
 		}
 		mint := sdk.PublicKeyFromBytes(actual[0].Data[128:160]).String()
@@ -291,7 +264,7 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 		if e != nil || market != p.Market || obligation != p.Obligation {
 			return nil, errors.New("cross-mint position binding changed")
 		}
-		exists := accountExists(actual[1])
+		exists := actual[1] != nil
 		amount := int64(0)
 		if exists {
 			amount, e = obligationCollateral(actual[1], p.Market, owner, p.Reserve)
@@ -311,11 +284,15 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 	}
 	// Recheck signature history AFTER balances and account history. A late seen
 	// signature (even processed with an error) vetoes no-effect publication.
-	status, err := v.status.SignatureStatus(ctx, r.Signature)
+	status, err := v.status.SignatureState(ctx, r.Signature)
 	if err != nil {
 		return nil, err
 	}
-	if status.Found || status.ContextSlot < slot || status.BlockHeight <= r.LastValidBlockHeight {
+	height, _, err := v.status.FinalizedBlockHeight(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if status.Found || int64(status.ContextSlot) < slot || int64(height) <= r.LastValidBlockHeight {
 		return nil, errors.New("late signature or incomplete history prevents cross-mint no-effect proof")
 	}
 	evidence["finalizedAccountSlot"] = slot
@@ -323,7 +300,7 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 	if err != nil {
 		return nil, err
 	}
-	return &crossMintNoEffectProof{observedSlot: slot, historySlot: status.ContextSlot, height: status.BlockHeight, effectFloor: floor, custodyAnchor: *anchor, signature: r.Signature, owner: owner, anchors: bytes.Clone(r.ExpectedBalanceAnchors), historyEvidence: rawEvidence, observedAt: time.Now().UTC()}, nil
+	return &crossMintNoEffectProof{observedSlot: slot, historySlot: int64(status.ContextSlot), height: int64(height), effectFloor: floor, custodyAnchor: *anchor, signature: r.Signature, owner: owner, anchors: bytes.Clone(r.ExpectedBalanceAnchors), historyEvidence: rawEvidence, observedAt: time.Now().UTC()}, nil
 }
 
 // Receipt and terminal leg transition share one transaction. A crash cannot

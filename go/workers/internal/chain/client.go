@@ -276,10 +276,15 @@ type Signed struct {
 	Failed    bool
 }
 
-// History lists up to limit of address's confirmed transactions, newest
-// first, starting below before (the zero signature starts at the head).
-func (c *Client) History(ctx context.Context, address solana.PublicKey, limit int, before solana.Signature) ([]Signed, error) {
-	out, err := c.rpc.GetSignaturesForAddressWithOpts(ctx, address, &rpc.GetSignaturesForAddressOpts{Limit: &limit, Before: before, Commitment: rpc.CommitmentConfirmed})
+// History lists up to limit of address's transactions at commitment, newest
+// first, starting below before (the zero signature starts at the head), from
+// a node at or past minContextSlot.
+func (c *Client) History(ctx context.Context, address solana.PublicKey, limit int, before solana.Signature, commitment rpc.CommitmentType, minContextSlot uint64) ([]Signed, error) {
+	opts := &rpc.GetSignaturesForAddressOpts{Limit: &limit, Before: before, Commitment: commitment}
+	if minContextSlot > 0 {
+		opts.MinContextSlot = &minContextSlot
+	}
+	out, err := c.rpc.GetSignaturesForAddressWithOpts(ctx, address, opts)
 	if err != nil {
 		return nil, failed("getSignaturesForAddress", err)
 	}
@@ -378,4 +383,42 @@ func tokenBalances(keys []solana.PublicKey, rows []rpc.TokenBalance) (map[solana
 		balances[key] = TokenBalance{Mint: row.Mint, Owner: *row.Owner, Program: *row.ProgramId, Amount: amount}
 	}
 	return balances, nil
+}
+
+// ProgramAccounts lists program's accounts that match every filter at
+// commitment, read from a node at or past minContextSlot.
+func (c *Client) ProgramAccounts(ctx context.Context, program solana.PublicKey, filters []rpc.RPCFilter, commitment rpc.CommitmentType, minContextSlot uint64) (slot uint64, accounts []Account, err error) {
+	opts := &rpc.GetProgramAccountsOpts{Encoding: solana.EncodingBase64, Commitment: commitment, Filters: filters}
+	if minContextSlot > 0 {
+		opts.MinContextSlot = &minContextSlot
+	}
+	out, err := c.rpc.GetProgramAccountsWithContext(ctx, program, opts)
+	if err != nil {
+		return 0, nil, failed("getProgramAccounts", err)
+	}
+	if out == nil || out.Context.Slot == 0 {
+		return 0, nil, errors.New("getProgramAccounts: response has no context")
+	}
+	accounts = make([]Account, 0, len(out.Value))
+	for _, value := range out.Value {
+		if value == nil || value.Account == nil || value.Account.Data == nil {
+			return 0, nil, errors.New("getProgramAccounts: incomplete account")
+		}
+		accounts = append(accounts, Account{Key: value.Pubkey, Owner: value.Account.Owner, Lamports: value.Account.Lamports, Data: value.Account.Data.GetBinary(), Executable: value.Account.Executable})
+	}
+	return out.Context.Slot, accounts, nil
+}
+
+// PriorityFees are the per-compute-unit prices, in micro-lamports, that
+// recent landed transactions writing any of writable paid, one per slot.
+func (c *Client) PriorityFees(ctx context.Context, writable []solana.PublicKey) ([]uint64, error) {
+	out, err := c.rpc.GetRecentPrioritizationFees(ctx, writable)
+	if err != nil {
+		return nil, failed("getRecentPrioritizationFees", err)
+	}
+	fees := make([]uint64, len(out))
+	for i, row := range out {
+		fees[i] = row.PrioritizationFee
+	}
+	return fees, nil
 }

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func TestCrossMintKeylessRuntimeCannotStartUnsignedWorkOrReportItsCustodyReady(t *testing.T) {
@@ -19,11 +21,11 @@ func TestCrossMintKeylessRuntimeCannotStartUnsignedWorkOrReportItsCustodyReady(t
 		t.Error("unsigned keyless custody must close readiness before RPC")
 	}))
 	defer server.Close()
-	adapter, err := NewRPCAdapter(server.URL, time.Second)
+	client, err := chain.New(server.URL, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := NewCrossMintRecoveryRuntime(ctx, Config{Cluster: movement.Cluster, Owner: "keyless-owner", LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store, adapter, &runtimeVerifier{})
+	runtime, err := NewCrossMintRecoveryRuntime(ctx, Config{Cluster: movement.Cluster, Owner: "keyless-owner", LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store, client, &runtimeVerifier{})
 	if err != nil {
 		t.Fatal(err)
 	}

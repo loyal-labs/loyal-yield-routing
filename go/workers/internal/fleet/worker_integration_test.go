@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -70,7 +71,7 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 		case "getSlot":
 			json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": 1_000})
 		case "getMultipleAccounts":
-			accountValue := func(account Account) map[string]any {
+			accountValue := func(account chain.Account) map[string]any {
 				return map[string]any{"owner": account.Owner, "lamports": account.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(account.Data), "base64"}}
 			}
 			var requested []string
@@ -101,15 +102,15 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
 	config.DelegatedSigner = delegatedSigner
 	registry := prometheus.NewRegistry()
-	worker, err := NewWorker(config, store, NewRPCClient(server.URL), engine.NewFacts(registry))
+	worker, err := NewWorker(config, store, testChain(t, server.URL), engine.NewFacts(registry))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceState, err := DecodeKaminoSourceReserve(sourceAccount, source, 1_000, config.SlotDuration)
+	sourceState, err := DecodeKaminoSourceReserve(&sourceAccount, source, 1_000, config.SlotDuration)
 	if err != nil {
 		t.Fatal(err)
 	}
-	targetState, err := DecodeKaminoReserve(targetAccount, target, 1_000, config.SlotDuration)
+	targetState, err := DecodeKaminoReserve(&targetAccount, target, 1_000, config.SlotDuration)
 	if err != nil {
 		t.Fatal(err)
 	}

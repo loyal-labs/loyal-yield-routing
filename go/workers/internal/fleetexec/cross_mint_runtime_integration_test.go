@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,16 +18,21 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
+// runtimeStatus is the scripted cluster the custody proof rechecks: the
+// signature's status, the finalized height and the finalized receipt (nil
+// while finality has not reached it).
 type runtimeStatus struct {
-	status   SignatureStatus
-	receipt  *TransactionReceipt
+	status   chain.SignatureState
+	height   uint64
+	receipt  *chain.Receipt
 	calls    int
-	sequence []SignatureStatus
+	sequence []chain.SignatureState
 }
 
-func (s *runtimeStatus) SignatureStatus(context.Context, string) (SignatureStatus, error) {
+func (s *runtimeStatus) SignatureState(context.Context, string) (chain.SignatureState, error) {
 	s.calls++
 	if len(s.sequence) > 0 {
 		next := s.sequence[0]
@@ -37,8 +41,16 @@ func (s *runtimeStatus) SignatureStatus(context.Context, string) (SignatureStatu
 	}
 	return s.status, nil
 }
-func (s *runtimeStatus) FinalizedTransaction(context.Context, string) (*TransactionReceipt, error) {
-	return s.receipt, nil
+
+func (s *runtimeStatus) FinalizedBlockHeight(context.Context) (uint64, uint64, error) {
+	return s.height, 1, nil
+}
+
+func (s *runtimeStatus) Receipt(context.Context, sdk.Signature, rpc.CommitmentType) (chain.Receipt, error) {
+	if s.receipt == nil {
+		return chain.Receipt{}, chain.ErrNotFound
+	}
+	return *s.receipt, nil
 }
 
 // runtimeSend is the landing chain over the same scripted status. A send
@@ -55,25 +67,17 @@ func (s *runtimeSend) SendWire(_ context.Context, wire []byte, _ bool) error {
 	s.calls++
 	s.wire = append([]byte(nil), wire...)
 	if s.calls == s.landOn {
-		s.status.status = SignatureStatus{Found: true, Confirmed: true, Finalized: true, Slot: 1010, ContextSlot: 1010, BlockHeight: s.status.status.BlockHeight}
+		s.status.status = chain.SignatureState{Found: true, Commitment: chain.Finalized, Slot: 1010, ContextSlot: 1010}
 	}
 	return s.err
 }
 
 func (s *runtimeSend) FinalizedBlockHeight(context.Context) (uint64, uint64, error) {
-	return uint64(s.status.status.BlockHeight), 1, nil
+	return s.status.height, 1, nil
 }
 
 func (s *runtimeSend) SignatureState(context.Context, string) (chain.SignatureState, error) {
-	st := s.status.status
-	out := chain.SignatureState{Found: st.Found, Slot: uint64(st.Slot), Err: st.Err, ContextSlot: uint64(st.ContextSlot), Commitment: chain.Processed}
-	if st.Confirmed {
-		out.Commitment = chain.Confirmed
-	}
-	if st.Finalized {
-		out.Commitment = chain.Finalized
-	}
-	return out, nil
+	return s.status.status, nil
 }
 
 type runtimeVerifier struct {
@@ -147,7 +151,7 @@ func crossMintRuntimeFixture(t *testing.T) (*CrossMintRuntime, *pgxpool.Pool, in
 	input.Capacity.TargetReserve = a.Lease.TargetReserve
 	c := sameMintPostContract{vault: a.Lease.VaultPubkey, source: a.Lease.SourceReserve, target: a.Lease.TargetReserve, mint: a.Lease.SourceLiquidityMint, minimumSlot: 1000, sourceKind: "reserve_position"}
 	reader := postFixture(t, c, 1005, 1001, 50)
-	market, obligation, _, program, err := reservePostIdentity(reader.accounts[c.source], c.mint, c.vault)
+	market, obligation, _, program, err := reservePostIdentity(reader.at(c.source), c.mint, c.vault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,8 +217,8 @@ func crossMintRuntimeFixture(t *testing.T) (*CrossMintRuntime, *pgxpool.Pool, in
 	if err != nil {
 		t.Fatal(err)
 	}
-	status := &runtimeStatus{status: SignatureStatus{ContextSlot: 1005, BlockHeight: 3999}}
-	return &CrossMintRuntime{config: Config{Cluster: m.Cluster, Owner: a.Lease.Owner, LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store: store, accounts: reader, history: addressHistory{pages: map[string][]finalizedAddressSignature{}}, status: status, chain: &runtimeSend{status: status, landOn: 1}, verifier: &runtimeVerifier{}}, pool, id
+	status := &runtimeStatus{status: chain.SignatureState{ContextSlot: 1005}, height: 3999}
+	return &CrossMintRuntime{config: Config{Cluster: m.Cluster, Owner: a.Lease.Owner, LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store: store, accounts: reader, history: addressHistory{pages: map[string][]chain.Signed{}}, status: status, receipts: status, chain: &runtimeSend{status: status, landOn: 1}, verifier: &runtimeVerifier{}}, pool, id
 }
 
 func runtimeClaim(t *testing.T, r *CrossMintRuntime, pool *pgxpool.Pool) SubmissionLease {
@@ -260,7 +264,7 @@ func TestCrossMintRuntimeLandsExactWireAcrossDroppedForwards(t *testing.T) {
 func TestCrossMintRuntimeInitialExpiryWithoutHistoryAnchorRetainsManualHold(t *testing.T) {
 	r, pool, _ := crossMintRuntimeFixture(t)
 	status := r.status.(*runtimeStatus)
-	status.status.BlockHeight = 4001
+	status.height = 4001
 	l := runtimeClaim(t, r, pool)
 	if err := r.handle(context.Background(), l); err != nil {
 		t.Fatal(err)
@@ -285,7 +289,7 @@ func TestCrossMintRuntimeInitialExpiryWithoutHistoryAnchorRetainsManualHold(t *t
 func TestCrossMintRuntimeFinalityCannotAdvanceCustodyBeforeExactReceipt(t *testing.T) {
 	r, pool, id := crossMintRuntimeFixture(t)
 	status := r.status.(*runtimeStatus)
-	status.status = SignatureStatus{Found: true, Confirmed: true, Finalized: true, Slot: 1010, ContextSlot: 1010, BlockHeight: 4000}
+	status.status, status.height = chain.SignatureState{Found: true, Commitment: chain.Finalized, Slot: 1010, ContextSlot: 1010}, 4000
 	l := runtimeClaim(t, r, pool)
 	if err := r.handle(context.Background(), l); err != nil {
 		t.Fatal(err)
@@ -325,7 +329,7 @@ func runtimeFinalizeWithdrawal(t *testing.T, r *CrossMintRuntime, pool *pgxpool.
 	}
 	r.verifier.(*runtimeVerifier).evidence = evidence
 	status := r.status.(*runtimeStatus)
-	status.status = SignatureStatus{Found: true, Confirmed: true, Finalized: true, Slot: 1010, ContextSlot: 1010, BlockHeight: 4000}
+	status.status, status.height = chain.SignatureState{Found: true, Commitment: chain.Finalized, Slot: 1010, ContextSlot: 1010}, 4000
 	if err = r.handle(ctx, l); err != nil {
 		t.Fatal(err)
 	}
@@ -338,20 +342,20 @@ func runtimeFinalizeWithdrawal(t *testing.T, r *CrossMintRuntime, pool *pgxpool.
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, err := tx.Message.MarshalBinary()
-	if err != nil {
-		t.Fatal(err)
+	keys := append([]sdk.PublicKey(nil), tx.Message.AccountKeys...)
+	for _, address := range evidence.SelectedALTs[0].Addresses {
+		keys = append(keys, sdk.MustPublicKeyFromBase58(address))
 	}
-	keys := []string{}
-	for _, key := range tx.Message.AccountKeys {
-		keys = append(keys, key.String())
-	}
-	keys = append(keys, evidence.SelectedALTs[0].Addresses...)
 	before, after := uint64(50), uint64(m.PlannedAmountRaw+50)
-	status.receipt = &TransactionReceipt{Slot: 1010, Signature: l.Submission.Signature, MessageB64: base64.StdEncoding.EncodeToString(message), SignedTransaction: l.Submission.SignedTransaction, accountAddresses: keys, TokenDeltas: []TokenDelta{{Account: pre.Credit.TokenAccount, Mint: m.SourceMint, PreRaw: &before, PostRaw: &after, PreOwner: m.VaultPubkey, PostOwner: m.VaultPubkey, PreProgram: sdk.TokenProgramID.String(), PostProgram: sdk.TokenProgramID.String()}}}
+	credit := sdk.MustPublicKeyFromBase58(pre.Credit.TokenAccount)
+	balance := func(amount uint64) map[sdk.PublicKey]chain.TokenBalance {
+		return map[sdk.PublicKey]chain.TokenBalance{credit: {Mint: sdk.MustPublicKeyFromBase58(m.SourceMint), Owner: sdk.MustPublicKeyFromBase58(m.VaultPubkey), Program: sdk.TokenProgramID, Amount: amount}}
+	}
+	status.receipt = &chain.Receipt{Slot: 1010, Wire: l.Submission.SignedTransaction, Keys: keys, Pre: balance(before), Post: balance(after)}
 	c := sameMintPostContract{vault: m.VaultPubkey, source: m.SourceReserve, target: m.ActiveTargetReserve, mint: m.SourceMint, minimumSlot: 1010, sourceKind: "reserve_position"}
 	r.accounts = postFixture(t, c, 1011, 1, int64(after))
-	r.history = addressHistory{pages: map[string][]finalizedAddressSignature{pre.Credit.TokenAccount: {{Signature: l.Submission.Signature, Slot: 1010, ConfirmationStatus: "finalized"}}, pre.Position.Obligation: {{Signature: l.Submission.Signature, Slot: 1010, ConfirmationStatus: "finalized"}}}}
+	landed := chain.Signed{Signature: sdk.MustSignatureFromBase58(l.Submission.Signature), Slot: 1010}
+	r.history = addressHistory{pages: map[string][]chain.Signed{pre.Credit.TokenAccount: {landed}, pre.Position.Obligation: {landed}}}
 	if err = r.handle(ctx, l); err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +441,7 @@ func runtimePublishSourceRecovery(t *testing.T, r *CrossMintRuntime, pool *pgxpo
 	_, key := integrationWire(t, 112)
 	signer := DelegateSigner{FeePayer: ed25519.PrivateKey(key)}
 	reader := r.accounts.(fixtureAccounts)
-	market, obligation, _, _, err := reservePostIdentity(reader.accounts[m.SourceReserve], m.SourceMint, m.VaultPubkey)
+	market, obligation, _, _, err := reservePostIdentity(reader.at(m.SourceReserve), m.SourceMint, m.VaultPubkey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +469,7 @@ func TestCrossMintRuntimeExpiryPublishesConcreteNoEffectOnlyAfterKnownAnchorAndL
 			m := runtimeFinalizeWithdrawal(t, r, pool, withdrawID)
 			id := runtimePublishSourceRecovery(t, r, pool, m)
 			status := r.status.(*runtimeStatus)
-			status.status = SignatureStatus{ContextSlot: 1019, BlockHeight: 5001}
+			status.status, status.height = chain.SignatureState{ContextSlot: 1019}, 5001
 			status.receipt = nil
 			reader := r.accounts.(fixtureAccounts)
 			reader.slot = 1019
@@ -478,11 +482,11 @@ func TestCrossMintRuntimeExpiryPublishesConcreteNoEffectOnlyAfterKnownAnchorAndL
 			if mode == "late_processed" {
 				// The landing classifier reads the chain; the custody proof's
 				// late recheck is the next status read.
-				status.sequence = []SignatureStatus{{Found: true, Slot: 1018, ContextSlot: 1019, BlockHeight: 5001, Err: "processed error"}}
+				status.sequence = []chain.SignatureState{{Found: true, Slot: 1018, ContextSlot: 1019, Commitment: chain.Processed, Err: "processed error"}}
 			}
 			if mode == "external_restoration" {
 				history := r.history.(addressHistory)
-				history.pages[m.CustodyAccount] = append([]finalizedAddressSignature{{Signature: "external-restored", Slot: 1015, ConfirmationStatus: "finalized"}}, history.pages[m.CustodyAccount]...)
+				history.pages[m.CustodyAccount] = append([]chain.Signed{signed("external-restored", 1015)}, history.pages[m.CustodyAccount]...)
 				r.history = history
 			}
 			err := r.handle(context.Background(), l)
@@ -539,7 +543,7 @@ func TestCrossMintRuntimeDisabledRolloutCancelsOnlyUnsignedSourceCustodyAndSkips
 	b := seedCrossMintMovement(t, ctx, pool) // DB start_new=true, generation1.
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		var q rpcRequest
+		var q struct{ Method string }
 		if err := json.NewDecoder(request.Body).Decode(&q); err != nil {
 			t.Error(err)
 			return
@@ -553,17 +557,17 @@ func TestCrossMintRuntimeDisabledRolloutCancelsOnlyUnsignedSourceCustodyAndSkips
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","result":777,"id":1}`))
 	}))
 	defer server.Close()
-	adapter, err := NewRPCAdapter(server.URL, time.Second)
+	client, err := chain.New(server.URL, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, key := integrationWire(t, 112)
 	factory := &rolloutFactory{}
-	controller, err := NewCrossMintController(store, factory, DelegateSigner{FeePayer: ed25519.PrivateKey(key)}, adapter, b.Cluster, "rollout-owner", time.Minute, false)
+	controller, err := NewCrossMintController(store, factory, DelegateSigner{FeePayer: ed25519.PrivateKey(key)}, client, b.Cluster, "rollout-owner", time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := NewCrossMintRuntime(ctx, Config{Cluster: b.Cluster, Owner: "rollout-owner", LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store, controller, adapter, &runtimeVerifier{})
+	runtime, err := NewCrossMintRuntime(ctx, Config{Cluster: b.Cluster, Owner: "rollout-owner", LeaseTTL: time.Minute, BatchSize: 1, TickInterval: time.Second, Facts: testFacts()}, store, controller, client, &runtimeVerifier{})
 	if err != nil {
 		t.Fatal(err)
 	}

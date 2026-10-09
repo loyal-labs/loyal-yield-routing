@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // Only a concrete deterministic target admission/policy/simulation refusal may
@@ -121,17 +122,16 @@ func (c *CrossMintController) verifyFallbackBank(ctx context.Context, m CrossMin
 		floor = *m.CustodyReconciledSlot
 	}
 	keys := []string{r.Reserve, m.CustodyAccount}
-	slot, accounts, err := c.accounts.FinalizedAccounts(ctx, keys, floor)
+	slot, accounts, err := fleet.ReadAccounts(ctx, c.accounts, keys, rpc.CommitmentFinalized, floor)
 	if err != nil {
 		return err
 	}
-	if slot < floor || len(accounts) != 2 || accounts[0].Address != keys[0] || accounts[1].Address != keys[1] {
-		return errors.New("fallback finalized bank is incomplete or stale")
-	}
-	hash := sha256.Sum256(accounts[0].Data)
 	market, _, _, program, err := reservePostIdentity(accounts[0], m.TargetMint, m.VaultPubkey)
 	canonical, tokenErr := canonicalCustodyTokenProgram(m.TargetMint)
-	if err != nil || tokenErr != nil || market != *r.Market || program != canonical || hex.EncodeToString(hash[:]) != r.AccountDataHash {
+	if err != nil || tokenErr != nil || market != *r.Market || program != canonical {
+		return errors.New("fallback finalized reserve differs from supported market evidence")
+	}
+	if hash := sha256.Sum256(accounts[0].Data); hex.EncodeToString(hash[:]) != r.AccountDataHash {
 		return errors.New("fallback finalized reserve differs from supported market evidence")
 	}
 	amount, err := custodyTokenAmount(accounts[1], m.CustodyMint, m.VaultPubkey)

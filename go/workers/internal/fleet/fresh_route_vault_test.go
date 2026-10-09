@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Regression for the Go fleet path failing every cycle when the target
@@ -59,7 +61,7 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 	source := ReserveIdentity{Address: testIdentity(1), Market: testIdentity(40), Mint: USDCMint}
 	target := ReserveIdentity{Address: testIdentity(2), Market: testIdentity(41), Mint: USDCMint}
 	const amount, rent = uint64(1_000_000_000), uint64(23_942_400)
-	chain := map[string]Account{}
+	held := map[string]chain.Account{}
 	var sourcePosition decodedRoutePosition
 	for i, identity := range []ReserveIdentity{source, target} {
 		account := reserveFixture(identity, 1_000_000_000_000, 1_000_000_000_000)
@@ -68,8 +70,8 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 		fixtureKey(t, account.Data, 160, testIdentity(byte(92+i)))
 		fixtureKey(t, account.Data, 2600, testIdentity(byte(94+i)))
 		binary.LittleEndian.PutUint64(account.Data[2592:2600], collateralSupply)
-		chain[account.Address] = account
-		decoded, err := decodeRouteReserve(account, vault)
+		held[identity.Address] = account
+		decoded, err := decodeRouteReserve(&account, vault)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -77,20 +79,20 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 			sourcePosition = decoded
 		}
 	}
-	obligation := Account{Address: sourcePosition.Obligation, Owner: KLendProgram, Lamports: 1, Data: make([]byte, obligationLength)}
+	obligation := fixtureAccount(sourcePosition.Obligation, KLendProgram, 1, make([]byte, obligationLength))
 	copy(obligation.Data, []byte{168, 206, 141, 106, 88, 76, 172, 167})
 	fixtureKey(t, obligation.Data, 32, source.Market)
 	fixtureKey(t, obligation.Data, 64, vault)
 	fixtureKey(t, obligation.Data, 96, source.Address)
 	binary.LittleEndian.PutUint64(obligation.Data[128:136], amount)
-	chain[obligation.Address] = obligation
-	ata := Account{Address: sourcePosition.Position.VaultLiquidityATA, Owner: tokenProgram, Lamports: 1, Data: make([]byte, 165)}
+	held[sourcePosition.Obligation] = obligation
+	ata := fixtureAccount(sourcePosition.Position.VaultLiquidityATA, tokenProgram, 1, make([]byte, 165))
 	fixtureKey(t, ata.Data, 0, USDCMint)
 	fixtureKey(t, ata.Data, 32, vault)
 	ata.Data[108] = 1
-	chain[ata.Address] = ata
+	held[sourcePosition.Position.VaultLiquidityATA] = ata
 	policy := testIdentity(5)
-	chain[policy] = Account{Address: policy, Owner: SquadsProgram, Lamports: 1, Data: []byte{1}}
+	held[policy] = fixtureAccount(policy, SquadsProgram, 1, []byte{1})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var call struct {
@@ -115,7 +117,7 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 			values := make([]any, len(addresses))
 			for i, address := range addresses {
 				// The target obligation and the vault are absent on chain.
-				if account, ok := chain[address]; ok {
+				if account, ok := held[address]; ok {
 					values[i] = map[string]any{"owner": account.Owner, "lamports": account.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(account.Data), "base64"}}
 				}
 			}
@@ -124,7 +126,7 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 	}))
 	t.Cleanup(server.Close)
-	r := &Revalidator{rpc: NewRPCClient(server.URL), slotDuration: 400 * time.Millisecond, signer: testIdentity(6)}
+	r := &Revalidator{rpc: testChain(t, server.URL), slotDuration: 400 * time.Millisecond, signer: testIdentity(6)}
 	lease := RevalidationLease{VaultPubkey: vault, SourceReserve: source.Address, TargetReserve: target.Address, LiquidityMint: USDCMint, PolicyAccount: policy, LiquidityAmountRaw: amount, PrincipalUSDMicros: int64(amount)}
 	fresh, err := r.loadFreshRoute(context.Background(), lease)
 	if err != nil {

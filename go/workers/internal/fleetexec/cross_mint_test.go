@@ -7,6 +7,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
@@ -15,6 +16,7 @@ func TestCrossMintIdleCustodyRequiresAggregateAndCompleteRecognizedHistory(t *te
 	f := mustSignedFixture(t)
 	owner := sdk.MustPublicKeyFromBase58(f.FeePayer)
 	mint := sdk.MustPublicKeyFromBase58(fleet.USDCMint)
+	custody := sweepKey("custody")
 	for _, tc := range []struct {
 		name                                       string
 		amount                                     uint64
@@ -23,14 +25,14 @@ func TestCrossMintIdleCustodyRequiresAggregateAndCompleteRecognizedHistory(t *te
 		foreignOwner, unknownHistory, prunedAnchor bool
 		allow                                      bool
 	}{
-		{name: "exact aggregate covers attributed delta", amount: 1045, slot: 101, address: "custody", allow: true},
-		{name: "attributed amount is not aggregate", amount: 995, slot: 101, address: "custody"},
-		{name: "changed larger aggregate", amount: 1046, slot: 101, address: "custody"},
-		{name: "stale finalized bank", amount: 1045, slot: 99, address: "custody"},
-		{name: "different account", amount: 1045, slot: 101, address: "other"},
-		{name: "foreign vault authority", amount: 1045, slot: 101, address: "custody", foreignOwner: true},
-		{name: "restored amount after external spend", amount: 1045, slot: 101, address: "custody", unknownHistory: true},
-		{name: "pruned anchor is unknown", amount: 1045, slot: 101, address: "custody", prunedAnchor: true},
+		{name: "exact aggregate covers attributed delta", amount: 1045, slot: 101, address: custody, allow: true},
+		{name: "attributed amount is not aggregate", amount: 995, slot: 101, address: custody},
+		{name: "changed larger aggregate", amount: 1046, slot: 101, address: custody},
+		{name: "stale finalized bank", amount: 1045, slot: 99, address: custody},
+		{name: "custody account absent", amount: 1045, slot: 101, address: sweepKey("other")},
+		{name: "foreign vault authority", amount: 1045, slot: 101, address: custody, foreignOwner: true},
+		{name: "restored amount after external spend", amount: 1045, slot: 101, address: custody, unknownHistory: true},
+		{name: "pruned anchor is unknown", amount: 1045, slot: 101, address: custody, prunedAnchor: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			data := make([]byte, 165)
@@ -41,16 +43,16 @@ func TestCrossMintIdleCustodyRequiresAggregateAndCompleteRecognizedHistory(t *te
 			}
 			data[108] = 1
 			binary.LittleEndian.PutUint64(data[64:72], tc.amount)
-			reader := fixtureAccounts{accounts: map[string]fleet.Account{"custody": {Address: tc.address, Owner: sdk.TokenProgramID.String(), Lamports: 1, Data: data}}, slot: tc.slot}
-			page := []finalizedAddressSignature{{Signature: "receipt", Slot: 100, ConfirmationStatus: "finalized"}}
+			reader := fixtureAccounts{accounts: map[string]chain.Account{tc.address: fixtureAccount(tc.address, sdk.TokenProgramID.String(), 1, data)}, slot: tc.slot}
+			page := []chain.Signed{signed("receipt", 100)}
 			if tc.unknownHistory {
-				page = append([]finalizedAddressSignature{{Signature: "external", Slot: 101, ConfirmationStatus: "finalized"}}, page...)
+				page = append([]chain.Signed{signed("external", 101)}, page...)
 			}
 			if tc.prunedAnchor {
 				page = nil
 			}
-			m := CrossMintMovement{Phase: CrossMintSourceIdle, VaultPubkey: owner.String(), CustodyMint: mint.String(), CustodyAccount: "custody", CustodyAmountRaw: 995, CustodyObservedBalanceRaw: crossInt(1045), CustodyReconciledSlot: crossInt(100)}
-			err := verifyCrossMintIdleCustody(context.Background(), m, reader, &historyPages{pages: [][]finalizedAddressSignature{page}}, map[string]bool{"receipt": true})
+			m := CrossMintMovement{Phase: CrossMintSourceIdle, VaultPubkey: owner.String(), CustodyMint: mint.String(), CustodyAccount: custody, CustodyAmountRaw: 995, CustodyObservedBalanceRaw: crossInt(1045), CustodyReconciledSlot: crossInt(100)}
+			err := verifyCrossMintIdleCustody(context.Background(), m, reader, &historyPages{pages: [][]chain.Signed{page}}, recognizedSignatures("receipt"))
 			if (err == nil) != tc.allow {
 				t.Fatalf("allow=%v err=%v", tc.allow, err)
 			}

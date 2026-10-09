@@ -21,8 +21,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 const (
@@ -650,15 +652,18 @@ func minimumEconomicOutput(amount uint64, bps uint16) (uint64, error) {
 	return q, nil
 }
 
-func decodeLookupTable(account Account, observedSlot int64) (LookupTable, error) {
-	if account.Owner != altProgram || account.Executable || account.Lamports == 0 || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) || observedSlot <= 0 {
-		return LookupTable{}, fmt.Errorf("lookup table %s is invalid or deactivated", account.Address)
+func decodeLookupTable(account *chain.Account, observedSlot int64) (LookupTable, error) {
+	if account == nil {
+		return LookupTable{}, errors.New("lookup table is absent")
+	}
+	if account.Owner.String() != altProgram || account.Executable || account.Lamports == 0 || len(account.Data) < 56 || (len(account.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(account.Data[:4]) != 1 || binary.LittleEndian.Uint64(account.Data[4:12]) != ^uint64(0) || observedSlot <= 0 {
+		return LookupTable{}, fmt.Errorf("lookup table %s is invalid or deactivated", account.Key)
 	}
 	lastExtended := binary.LittleEndian.Uint64(account.Data[12:20])
 	if lastExtended >= uint64(observedSlot) && len(account.Data) > 56 {
-		return LookupTable{}, fmt.Errorf("lookup table %s is not warmed at finalized slot", account.Address)
+		return LookupTable{}, fmt.Errorf("lookup table %s is not warmed at finalized slot", account.Key)
 	}
-	t := LookupTable{Address: account.Address, Active: true, UsableAfterSlot: int64(lastExtended) + 1, LastVerifiedSlot: observedSlot}
+	t := LookupTable{Address: account.Key.String(), Active: true, UsableAfterSlot: int64(lastExtended) + 1, LastVerifiedSlot: observedSlot}
 	for i := 56; i < len(account.Data); i += 32 {
 		t.Addresses = append(t.Addresses, encodeBase58(account.Data[i:i+32]))
 	}
@@ -682,7 +687,7 @@ func (r *Revalidator) loadFinalizedJupiterTables(ctx context.Context, listed map
 	if len(addresses) == 0 {
 		return nil, nil
 	}
-	observedSlot, accounts, err := r.rpc.FinalizedAccounts(ctx, addresses, minimum)
+	observedSlot, accounts, err := ReadAccounts(ctx, r.rpc, addresses, rpc.CommitmentFinalized, minimum)
 	if err != nil {
 		return nil, err
 	}
@@ -692,7 +697,7 @@ func (r *Revalidator) loadFinalizedJupiterTables(ctx context.Context, listed map
 		if err != nil {
 			return nil, err
 		}
-		if !equalStrings(tables[i].Addresses, listed[a.Address]) {
+		if !equalStrings(tables[i].Addresses, listed[addresses[i]]) {
 			return nil, errors.New("Jupiter lookup table declaration differs from finalized chain")
 		}
 	}
@@ -764,9 +769,9 @@ func validateToken2022Extensions(data []byte, accountType byte) error {
 	return nil
 }
 
-func validateStableAccount(account Account, mint, owner string) error {
+func validateStableAccount(account *chain.Account, mint, owner string) error {
 	program, ok := stableTokenProgram(mint)
-	if !ok || account.Owner != program {
+	if !ok || account == nil || account.Owner.String() != program {
 		return errors.New("stable token account has wrong canonical program")
 	}
 	if len(account.Data) < 165 || encodeBase58(account.Data[:32]) != mint || encodeBase58(account.Data[32:64]) != owner || account.Data[108] != 1 {
@@ -780,9 +785,9 @@ func validateStableAccount(account Account, mint, owner string) error {
 	}
 	return nil
 }
-func validateStableMint(account Account, mint string) error {
+func validateStableMint(account *chain.Account, mint string) error {
 	program, ok := stableTokenProgram(mint)
-	if !ok || account.Address != mint || account.Owner != program || len(account.Data) < 82 || account.Data[44] != 6 || account.Data[45] != 1 {
+	if !ok || account == nil || account.Key.String() != mint || account.Owner.String() != program || len(account.Data) < 82 || account.Data[44] != 6 || account.Data[45] != 1 {
 		return errors.New("stable mint binding, decimals, or state is invalid")
 	}
 	if program == token2022Program {
@@ -1198,14 +1203,14 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	if validated.MinimumOutput < minimumOutput {
 		return out, errors.New("signed Jupiter minimum output exceeds maximum value loss")
 	}
-	blockHeight, err := r.rpc.BlockHeight(ctx, "finalized")
+	blockHeight, _, err := r.rpc.FinalizedBlockHeight(ctx)
 	if err != nil {
 		return out, err
 	}
-	if uint64(blockHeight) > validated.LastValidBlockHeight {
+	if blockHeight > validated.LastValidBlockHeight {
 		return out, errors.New("Jupiter certification blockhash expired")
 	}
-	validated.ObservedBlockHeight = uint64(blockHeight)
+	validated.ObservedBlockHeight = blockHeight
 	var additionalMints []string
 	for _, mint := range earnStableMints {
 		if mint == plan.SourceMint || mint == plan.TargetMint {
@@ -1233,7 +1238,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 		bank = fresh
 		for _, mint := range additionalMints {
 			ata, _ := deriveATA(lease.VaultPubkey, mint, mustStableProgram(mint))
-			if e := validateVaultTokenAccount(bank.accounts[ata], mint, lease.VaultPubkey); e != nil {
+			if e := validateVaultTokenAccount(bank.at(ata), mint, lease.VaultPubkey); e != nil {
 				return out, e
 			}
 		}
@@ -1243,9 +1248,9 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	if collateral <= 1 || lease.SourceCollateralRaw != collateral-1 {
 		return out, errors.New("finalized collateral anchor differs from opportunity")
 	}
-	accounts := []Account{bank.accounts[lease.SourceReserve], bank.accounts[lease.TargetReserve], bank.accounts[plan.SourceMint], bank.accounts[plan.TargetMint], bank.accounts[source.Position.VaultLiquidityATA], bank.accounts[target.Position.VaultLiquidityATA], bank.accounts[b.Withdraw.PolicyAccount], bank.accounts[b.Swap.PolicyAccount], bank.accounts[b.Deposit.PolicyAccount]}
+	accounts := []chain.Account{bank.accounts[lease.SourceReserve], bank.accounts[lease.TargetReserve], bank.accounts[plan.SourceMint], bank.accounts[plan.TargetMint], bank.accounts[source.Position.VaultLiquidityATA], bank.accounts[target.Position.VaultLiquidityATA], bank.accounts[b.Withdraw.PolicyAccount], bank.accounts[b.Swap.PolicyAccount], bank.accounts[b.Deposit.PolicyAccount]}
 	for _, i := range []int{6, 7, 8} {
-		if accounts[i].Owner != SquadsProgram || accounts[i].Executable || accounts[i].Lamports == 0 {
+		if accounts[i].Owner.String() != SquadsProgram || accounts[i].Executable || accounts[i].Lamports == 0 {
 			return out, errors.New("finalized prewithdraw policy account is not funded Squads state")
 		}
 	}
@@ -1378,14 +1383,14 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	if preview.PacketBytes > SolanaPacketLimit {
 		return out, errors.New("prewithdraw verifier exceeds Solana packet size")
 	}
-	sim, err := r.rpc.simulateExactTransaction(ctx, preview.UnsignedWire, slot, "finalized")
+	sim, err := SimulateExact(ctx, r.rpc, preview.UnsignedWire, rpc.CommitmentFinalized, slot)
 	if err != nil || !sim.Succeeded || sim.UnitsConsumed > r.computeLimit {
 		if err != nil {
 			return out, fmt.Errorf("finalized cross-mint preflight simulation: %w", err)
 		}
 		return out, errors.New("finalized cross-mint preflight simulation failed")
 	}
-	fee, err := r.rpc.feeForMessage(ctx, preview.Message, slot, "finalized")
+	fee, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentFinalized)
 	if err != nil {
 		return out, err
 	}

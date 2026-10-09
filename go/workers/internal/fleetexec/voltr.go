@@ -18,6 +18,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/mr-tron/base58"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // The Backyard Voltr manager route on the generic signed-submission
@@ -149,7 +150,7 @@ func (w *Worker) signVoltr(ctx context.Context, l voltrLease) (voltrSigned, erro
 	if err != nil {
 		return voltrSigned{}, err
 	}
-	slot, accounts, err := w.voltrRPC.ConfirmedAccounts(ctx, []string{fleet.VoltrLookupTable}, p.Slot)
+	slot, accounts, err := fleet.ReadAccounts(ctx, w.voltrChain, []string{fleet.VoltrLookupTable}, rpc.CommitmentConfirmed, p.Slot)
 	if err != nil {
 		return voltrSigned{}, err
 	}
@@ -157,10 +158,11 @@ func (w *Worker) signVoltr(ctx context.Context, l voltrLease) (voltrSigned, erro
 	if err != nil {
 		return voltrSigned{}, err
 	}
-	blockhash, lastValid, err := w.voltrRPC.LatestBlockhash(ctx, p.Slot)
+	hash, lastValid, _, err := w.voltrChain.Blockhash(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return voltrSigned{}, err
 	}
+	blockhash := hash.String()
 	ix, err := r.ManagerInstruction(strategy, p.Operation, uint64(p.Amount))
 	if err != nil {
 		return voltrSigned{}, err
@@ -169,11 +171,11 @@ func (w *Worker) signVoltr(ctx context.Context, l voltrLease) (voltrSigned, erro
 	if err != nil {
 		return voltrSigned{}, err
 	}
-	simulation, err := w.voltrRPC.SimulateExactTransaction(ctx, tx.UnsignedWire, p.Slot)
+	simulation, err := fleet.SimulateExact(ctx, w.voltrChain, tx.UnsignedWire, rpc.CommitmentConfirmed, p.Slot)
 	if err != nil || !simulation.Succeeded {
 		return voltrSigned{}, fmt.Errorf("voltr unsigned simulation rejected: %v %s", err, simulation.Error)
 	}
-	fee, err := w.voltrRPC.FeeForMessage(ctx, tx.Message, p.Slot)
+	fee, err := w.voltrChain.Fee(ctx, tx.Message, rpc.CommitmentConfirmed)
 	if err != nil || int64(fee) > l.FeeCap {
 		return voltrSigned{}, fmt.Errorf("voltr compiled fee %d exceeds the opportunity cap: %v", fee, err)
 	}
@@ -196,7 +198,7 @@ func (w *Worker) signVoltr(ctx context.Context, l voltrLease) (voltrSigned, erro
 	}
 	return voltrSigned{
 		wire: WireIdentity{SignedTransaction: wire, SignedTransactionHash: hex.EncodeToString(wireHash[:]), MessageHash: hex.EncodeToString(messageHash[:]),
-			TransactionSignature: base58.Encode(signature), RecentBlockhash: blockhash, LastValidBlockHeight: lastValid},
+			TransactionSignature: base58.Encode(signature), RecentBlockhash: blockhash, LastValidBlockHeight: int64(lastValid)},
 		payer: r.Guardian, fee: int64(fee), writable: tx.WritableAccounts, conflicts: conflicts, requirements: requirements, epochs: epochs,
 		selection: stableFingerprint(requirements, "reusable", fleet.VoltrLookupTable, fleet.VoltrLookupTableOrderedSHA256, strconv.Itoa(fleet.VoltrLookupTableAddressCount)),
 	}, nil
@@ -333,7 +335,7 @@ func (w *Worker) reconcileVoltr(ctx context.Context, lease SubmissionLease) erro
 	if !ok || p.Amount <= 0 {
 		return errors.New("voltr reconciliation plan is invalid")
 	}
-	o, err := fleet.ObserveVoltr(ctx, w.voltrRPC, *w.voltr, *record.ConfirmedSlot)
+	o, err := fleet.ObserveVoltr(ctx, w.voltrChain, *w.voltr, *record.ConfirmedSlot)
 	if err != nil {
 		return err
 	}

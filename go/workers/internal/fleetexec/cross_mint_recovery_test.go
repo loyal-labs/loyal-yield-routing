@@ -5,18 +5,21 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	sdk "github.com/solana-foundation/solana-go/v2"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 type historyPages struct {
-	pages [][]finalizedAddressSignature
+	pages [][]chain.Signed
 	calls int
 }
 
-func (h *historyPages) FinalizedAddressSignatures(context.Context, string, string, int64) ([]finalizedAddressSignature, error) {
+func (h *historyPages) History(context.Context, sdk.PublicKey, int, sdk.Signature, rpc.CommitmentType, uint64) ([]chain.Signed, error) {
 	if h.calls >= len(h.pages) {
 		return nil, nil
 	}
@@ -24,22 +27,36 @@ func (h *historyPages) FinalizedAddressSignatures(context.Context, string, strin
 	h.calls++
 	return p, nil
 }
+
+// signed is one finalized history entry for the named test signature.
+func signed(name string, slot uint64) chain.Signed {
+	return chain.Signed{Signature: testSignature(name), Slot: slot}
+}
+
+func recognizedSignatures(names ...string) map[string]bool {
+	out := map[string]bool{}
+	for _, name := range names {
+		out[testSignature(name).String()] = true
+	}
+	return out
+}
+
 func TestCrossMintCustodyHistoryRequiresRecognizedAnchorAndRejectsRestoredBalance(t *testing.T) {
 	anchor := int64(100)
+	account := sdk.SystemProgramID.String()
 	for _, tc := range []struct {
 		name       string
-		statuses   []finalizedAddressSignature
+		statuses   []chain.Signed
 		recognized map[string]bool
 		allow      bool
 	}{
-		{"recognized anchor", []finalizedAddressSignature{{Signature: "known", Slot: 100, ConfirmationStatus: "finalized"}}, map[string]bool{"known": true}, true},
+		{"recognized anchor", []chain.Signed{signed("known", 100)}, recognizedSignatures("known"), true},
 		{"empty history", nil, map[string]bool{}, false},
-		{"anchor pruned", []finalizedAddressSignature{{Signature: "old", Slot: 99, ConfirmationStatus: "finalized"}}, map[string]bool{}, false},
-		{"external restored balance", []finalizedAddressSignature{{Signature: "external", Slot: 101, ConfirmationStatus: "finalized"}, {Signature: "known", Slot: 100, ConfirmationStatus: "finalized"}}, map[string]bool{"known": true}, false},
-		{"unfinalized", []finalizedAddressSignature{{Signature: "known", Slot: 100, ConfirmationStatus: "confirmed"}}, map[string]bool{"known": true}, false},
+		{"anchor pruned", []chain.Signed{signed("old", 99)}, map[string]bool{}, false},
+		{"external restored balance", []chain.Signed{signed("external", 101), signed("known", 100)}, recognizedSignatures("known"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := verifyCustodyHistory(context.Background(), &historyPages{pages: [][]finalizedAddressSignature{tc.statuses}}, "account", anchor, 101, tc.recognized, true)
+			_, err := verifyCustodyHistory(context.Background(), &historyPages{pages: [][]chain.Signed{tc.statuses}}, account, anchor, 101, tc.recognized, true)
 			if (err == nil) != tc.allow {
 				t.Fatalf("allow=%v err=%v", tc.allow, err)
 			}
@@ -47,16 +64,14 @@ func TestCrossMintCustodyHistoryRequiresRecognizedAnchorAndRejectsRestoredBalanc
 	}
 	// An exactly full first page must continue to its old boundary; duplicate
 	// signature cursors cannot be mistaken for a complete history page.
-	page := make([]finalizedAddressSignature, 1000)
-	recognized := map[string]bool{}
+	page := make([]chain.Signed, 1000)
+	recognized := recognizedSignatures("anchor")
 	for i := range page {
-		signature := fmt.Sprint(i)
-		page[i] = finalizedAddressSignature{Signature: signature, Slot: 1100 - int64(i), ConfirmationStatus: "finalized"}
-		recognized[signature] = true
+		page[i] = signed(fmt.Sprint(i), uint64(1100-i))
+		recognized[page[i].Signature.String()] = true
 	}
-	h := &historyPages{pages: [][]finalizedAddressSignature{page, {{Signature: "anchor", Slot: 100, ConfirmationStatus: "finalized"}, {Signature: "older", Slot: 99, ConfirmationStatus: "finalized"}}}}
-	recognized["anchor"] = true
-	if _, err := verifyCustodyHistory(context.Background(), h, "account", 100, 1200, recognized, true); err != nil || h.calls != 2 {
+	h := &historyPages{pages: [][]chain.Signed{page, {signed("anchor", 100), signed("older", 99)}}}
+	if _, err := verifyCustodyHistory(context.Background(), h, account, 100, 1200, recognized, true); err != nil || h.calls != 2 {
 		t.Fatalf("history pagination: %d %v", h.calls, err)
 	}
 }
@@ -75,7 +90,7 @@ func TestCrossMintTokenAccountUsesCanonicalProgramAndStrictBaseState(t *testing.
 		copy(data[32:64], owner[:])
 		data[108] = 1
 		binary.LittleEndian.PutUint64(data[64:72], 42)
-		a := fleet.Account{Owner: program, Lamports: 1, Data: data}
+		a := &chain.Account{Owner: sdk.MustPublicKeyFromBase58(program), Lamports: 1, Data: data}
 		if got, err := custodyTokenAmount(a, mint, owner.String()); err != nil || got != 42 {
 			t.Fatalf("token account %d %v", got, err)
 		}

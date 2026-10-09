@@ -17,9 +17,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // The vault-position sweep is Rust's fleet reconciler position sweep
@@ -65,16 +67,12 @@ type PositionSweepConfig struct {
 	Facts        *engine.Facts
 }
 
-type positionSweepRPC interface {
-	ConfirmedAccountsAllowingAbsent(ctx context.Context, addresses []string, minimumSlot int64) (int64, []fleet.Account, error)
-}
-
 // PositionSweep is the reconciler lane that keeps vault positions current.
 // It reads with confirmed commitment and never holds a signing capability.
 type PositionSweep struct {
 	config PositionSweepConfig
 	store  *Store
-	rpc    positionSweepRPC
+	rpc    fleet.AccountReader
 	nextID uint64
 	// summaries is Rust's shared reserve-summary cache: an address-derivation
 	// accelerator refreshed by every coherent vault read.
@@ -85,7 +83,7 @@ type PositionSweep struct {
 	database chan struct{}
 }
 
-func NewPositionSweep(config PositionSweepConfig, store *Store, rpc positionSweepRPC) (*PositionSweep, error) {
+func NewPositionSweep(config PositionSweepConfig, store *Store, rpc fleet.AccountReader) (*PositionSweep, error) {
 	if config.Interval <= 0 || config.Interval > 24*time.Hour || config.Concurrency <= 0 || config.Concurrency > 256 || config.Cluster == "" || config.Facts == nil {
 		return nil, errors.New("incomplete position sweep configuration")
 	}
@@ -373,19 +371,19 @@ func (p *PositionSweep) loadUniverse(ctx context.Context) (positionSweepUniverse
 	decoded := map[string]fleet.KaminoPositionAccounts{}
 	for start := 0; start < len(reserves); start += positionSweepAccountsPerBatch {
 		chunk := reserves[start:min(start+positionSweepAccountsPerBatch, len(reserves))]
-		_, accounts, err := p.rpc.ConfirmedAccountsAllowingAbsent(ctx, chunk, 1)
+		_, accounts, err := fleet.ReadAccounts(ctx, p.rpc, chunk, rpc.CommitmentConfirmed, 1)
 		if err != nil {
 			return universe, sweepTransport(err)
 		}
-		for _, account := range accounts {
-			if positionSweepAbsent(account) {
-				return universe, sweepTransport(fmt.Errorf("reserve account %s does not exist", account.Address))
+		for i, account := range accounts {
+			if account == nil {
+				return universe, sweepTransport(fmt.Errorf("reserve account %s does not exist", chunk[i]))
 			}
 			summary, err := fleet.DecodeReserveIdentity(account)
 			if err != nil {
 				return universe, sweepTransport(err)
 			}
-			decoded[account.Address] = summary
+			decoded[chunk[i]] = summary
 		}
 	}
 	p.mu.Lock()
@@ -522,8 +520,6 @@ type positionSweepObservation struct {
 	context    map[string]any
 }
 
-func positionSweepAbsent(a fleet.Account) bool { return a.Owner == "" && a.Lamports == 0 }
-
 // sameDerivation is Rust KaminoReserveSummary::derivation_identity_matches.
 func sameDerivation(a, b fleet.KaminoPositionAccounts) bool {
 	return a.Market == b.Market && a.LiquidityMint == b.LiquidityMint && a.LiquidityTokenProgram == b.LiquidityTokenProgram &&
@@ -592,23 +588,17 @@ func (p *PositionSweep) observeVault(ctx context.Context, vault string, reserves
 		ordered = append(ordered, key)
 	}
 	sort.Strings(ordered)
-	slot, values, err := p.rpc.ConfirmedAccountsAllowingAbsent(ctx, ordered, 1)
+	slot, values, err := fleet.ReadAccounts(ctx, p.rpc, ordered, rpc.CommitmentConfirmed, 1)
 	if err != nil {
 		return out, sweepTransport(err)
 	}
-	if len(values) != len(ordered) {
-		return out, sweepTransport(errors.New("getMultipleAccounts returned an incomplete vault batch"))
-	}
-	accounts := make(map[string]fleet.Account, len(values))
+	accounts := make(map[string]*chain.Account, len(values))
 	for i, value := range values {
-		if value.Address != ordered[i] {
-			return out, sweepTransport(errors.New("getMultipleAccounts returned a reordered vault batch"))
-		}
-		accounts[value.Address] = value
+		accounts[ordered[i]] = value
 	}
 	out.slot, out.observedAt = slot, time.Now().UTC()
-	if a := accounts[userMetadata.String()]; !positionSweepAbsent(a) && a.Owner != fleet.KLendProgram {
-		return out, sweepInvariant("account %s is owned by %s, expected %s", a.Address, a.Owner, fleet.KLendProgram)
+	if a := accounts[userMetadata.String()]; a != nil && a.Owner.String() != fleet.KLendProgram {
+		return out, sweepInvariant("account %s is owned by %s, expected %s", a.Key, a.Owner, fleet.KLendProgram)
 	}
 	out.idleTotal = new(big.Int)
 	for _, idle := range idleAccounts {
@@ -626,7 +616,7 @@ func (p *PositionSweep) observeVault(ctx context.Context, vault string, reserves
 	drift := ""
 	for i, position := range derived {
 		reserve := accounts[position.Reserve]
-		if positionSweepAbsent(reserve) {
+		if reserve == nil {
 			return out, sweepInvariant("reserve account %s does not exist", position.Reserve)
 		}
 		if refreshed[i], err = fleet.DecodeReserveIdentity(reserve); err != nil {
@@ -659,8 +649,8 @@ func (p *PositionSweep) observeVault(ctx context.Context, vault string, reserves
 			}
 		}
 		if position.ObligationFarmUserState != "" {
-			if a := accounts[position.ObligationFarmUserState]; !positionSweepAbsent(a) && a.Owner != fleet.FarmsProgram {
-				return out, sweepInvariant("account %s is owned by %s, expected %s", a.Address, a.Owner, fleet.FarmsProgram)
+			if a := accounts[position.ObligationFarmUserState]; a != nil && a.Owner.String() != fleet.FarmsProgram {
+				return out, sweepInvariant("account %s is owned by %s, expected %s", a.Key, a.Owner, fleet.FarmsProgram)
 			}
 		}
 		redeemable, err := redeemableCollateral(accounts[position.Reserve].Data, obligation.amount)
@@ -678,22 +668,22 @@ func (p *PositionSweep) observeVault(ctx context.Context, vault string, reserves
 // positionSweepTokenAmount is Rust decode_spl_token_account_amount: a missing
 // account is zero; an existing one must be owned by the expected token
 // program and hold the expected mint.
-func positionSweepTokenAmount(a fleet.Account, mint, program string) (int64, bool, error) {
-	if positionSweepAbsent(a) {
+func positionSweepTokenAmount(a *chain.Account, mint, program string) (int64, bool, error) {
+	if a == nil {
 		return 0, false, nil
 	}
-	if a.Owner != program {
-		return 0, false, sweepInvariant("token account %s is owned by %s, expected %s", a.Address, a.Owner, program)
+	if a.Owner.String() != program {
+		return 0, false, sweepInvariant("token account %s is owned by %s, expected %s", a.Key, a.Owner, program)
 	}
 	if len(a.Data) < 72 {
-		return 0, false, sweepInvariant("token account %s data too short", a.Address)
+		return 0, false, sweepInvariant("token account %s data too short", a.Key)
 	}
 	if sdk.PublicKeyFromBytes(a.Data[:32]).String() != mint {
-		return 0, false, sweepInvariant("token account %s mint does not match expected %s", a.Address, mint)
+		return 0, false, sweepInvariant("token account %s mint does not match expected %s", a.Key, mint)
 	}
 	amount := binary.LittleEndian.Uint64(a.Data[64:72])
 	if amount > math.MaxInt64 {
-		return 0, false, sweepInvariant("token account %s balance does not fit Postgres BIGINT", a.Address)
+		return 0, false, sweepInvariant("token account %s balance does not fit Postgres BIGINT", a.Key)
 	}
 	return int64(amount), true, nil
 }
@@ -705,22 +695,22 @@ type positionSweepObligationSummary struct {
 }
 
 // positionSweepObligation is Rust decode_kamino_obligation_summary.
-func positionSweepObligation(a fleet.Account, owner, market, reserve string) (positionSweepObligationSummary, error) {
+func positionSweepObligation(a *chain.Account, owner, market, reserve string) (positionSweepObligationSummary, error) {
 	var out positionSweepObligationSummary
-	if positionSweepAbsent(a) {
+	if a == nil {
 		return out, nil
 	}
-	if a.Owner != fleet.KLendProgram {
-		return out, sweepInvariant("obligation account %s is owned by %s, expected %s", a.Address, a.Owner, fleet.KLendProgram)
+	if a.Owner.String() != fleet.KLendProgram {
+		return out, sweepInvariant("obligation account %s is owned by %s, expected %s", a.Key, a.Owner, fleet.KLendProgram)
 	}
 	if len(a.Data) != positionSweepObligationLength || !bytes.Equal(a.Data[:8], positionSweepObligationDiscriminator) {
-		return out, sweepInvariant("obligation account %s has invalid layout", a.Address)
+		return out, sweepInvariant("obligation account %s has invalid layout", a.Key)
 	}
 	if sdk.PublicKeyFromBytes(a.Data[64:96]).String() != owner {
-		return out, sweepInvariant("obligation account %s owner does not match vault %s", a.Address, owner)
+		return out, sweepInvariant("obligation account %s owner does not match vault %s", a.Key, owner)
 	}
 	if sdk.PublicKeyFromBytes(a.Data[32:64]).String() != market {
-		return out, sweepInvariant("obligation account %s market does not match reserve market %s", a.Address, market)
+		return out, sweepInvariant("obligation account %s market does not match reserve market %s", a.Key, market)
 	}
 	out.exists = true
 	found := false

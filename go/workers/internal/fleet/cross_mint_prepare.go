@@ -16,8 +16,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // These preparation DTOs have no signer or submission capability. The command
@@ -333,7 +336,7 @@ func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPrepar
 		for _, p := range []CrossMintCertificatePolicy{certificate.FinalizedPolicyReadbacks.Withdraw, certificate.FinalizedPolicyReadbacks.Deposit, certificate.FinalizedPolicyReadbacks.Swap.CrossMintCertificatePolicy} {
 			a := bank.accounts[p.PolicyAccount]
 			hash := sha256.Sum256(a.Data)
-			if a.Owner != SquadsProgram || a.Executable || a.Lamports == 0 || hex.EncodeToString(hash[:]) != p.DataSHA256 {
+			if a.Owner.String() != SquadsProgram || a.Executable || a.Lamports == 0 || hex.EncodeToString(hash[:]) != p.DataSHA256 {
 				return out, errors.New("finalized policy data differs from prewithdraw certificate")
 			}
 		}
@@ -474,10 +477,17 @@ type crossMintPreparationBank struct {
 	source, target, active                               decodedRoutePosition
 	sourceCollateral, targetCollateral, activeCollateral uint64
 	sourceEconomics, targetEconomics                     ReserveState
-	accounts                                             map[string]Account
+	accounts                                             map[string]chain.Account
 	additionalMints                                      []string
 	swap                                                 *RouteInstruction
 	externalTables                                       []LookupTable
+}
+
+// at is name's account in the bank. A name the bank does not hold is the zero
+// account, which every decoder rejects.
+func (b crossMintPreparationBank) at(name string) *chain.Account {
+	a := b.accounts[name]
+	return &a
 }
 
 func sameCrossMintPreparationBank(a, b crossMintPreparationBank) bool {
@@ -527,7 +537,7 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 		}
 	}
 	bank.additionalMints = append([]string(nil), additionalMints...)
-	discoverySlot, discovery, err := r.rpc.FinalizedAccounts(ctx, reserves, floor)
+	discoverySlot, discovery, err := ReadAccounts(ctx, r.rpc, reserves, rpc.CommitmentFinalized, floor)
 	if err != nil {
 		return bank, err
 	}
@@ -540,12 +550,12 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 	if q.Leg != "deposit" {
 		addresses = append(addresses, m.SourceMint, m.TargetMint)
 	}
-	for _, account := range discovery {
+	for i, account := range discovery {
 		p, err := decodeRouteReserve(account, m.VaultPubkey)
 		if err != nil {
 			return bank, err
 		}
-		preliminary[account.Address] = p
+		preliminary[reserves[i]] = p
 		addresses = append(addresses, p.Obligation, p.Position.VaultLiquidityATA)
 		if p.Position.ReserveFarmState != "" {
 			addresses = append(addresses, p.Position.ReserveFarmState, p.FarmUser)
@@ -559,20 +569,23 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 		addresses = append(addresses, ata)
 	}
 	addresses = canonicalStrings(addresses)
-	bank.slot, discovery, err = r.rpc.FinalizedAccounts(ctx, addresses, discoverySlot)
+	bank.slot, discovery, err = ReadAccounts(ctx, r.rpc, addresses, rpc.CommitmentFinalized, discoverySlot)
 	if err != nil {
 		return bank, err
 	}
 	bank.observedAt = time.Now().UTC()
-	bank.accounts = map[string]Account{}
-	for _, account := range discovery {
-		bank.accounts[account.Address] = account
+	bank.accounts = map[string]chain.Account{}
+	for i, account := range discovery {
+		if account == nil {
+			return bank, fmt.Errorf("cross-mint account %s is absent", addresses[i])
+		}
+		bank.accounts[addresses[i]] = *account
 	}
 	positions := map[string]decodedRoutePosition{}
 	collateral := map[string]uint64{}
 	for _, name := range reserves {
 		account := bank.accounts[name]
-		p, err := decodeRouteReserve(account, m.VaultPubkey)
+		p, err := decodeRouteReserve(&account, m.VaultPubkey)
 		if err != nil || !reflect.DeepEqual(p, preliminary[name]) || account.Executable || account.Lamports == 0 {
 			return bank, errors.New("cross-mint reserve identity changed during finalized discovery")
 		}
@@ -588,7 +601,7 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 		if obligation.Executable || obligation.Lamports == 0 {
 			return bank, errors.New("cross-mint destination obligation is not initialized")
 		}
-		if _, err := decodeObligation(obligation, p.Position.Market, m.VaultPubkey, "", &p.Position); err != nil {
+		if _, err := decodeObligation(&obligation, p.Position.Market, m.VaultPubkey, "", &p.Position); err != nil {
 			return bank, err
 		}
 		for i := 0; i < 8; i++ {
@@ -600,19 +613,19 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 		if collateral[name] > math.MaxInt64 {
 			return bank, errors.New("cross-mint position amount exceeds SQL custody range")
 		}
-		if err := validateVaultTokenAccount(bank.accounts[p.Position.VaultLiquidityATA], mint, m.VaultPubkey); err != nil {
+		if err := validateVaultTokenAccount(bank.at(p.Position.VaultLiquidityATA), mint, m.VaultPubkey); err != nil {
 			return bank, err
 		}
 		if binary.LittleEndian.Uint64(bank.accounts[p.Position.VaultLiquidityATA].Data[64:72]) > math.MaxInt64 {
 			return bank, errors.New("cross-mint aggregate balance exceeds SQL custody range")
 		}
-		if err := validateStableMint(bank.accounts[mint], mint); err != nil {
+		if err := validateStableMint(bank.at(mint), mint); err != nil {
 			return bank, err
 		}
 		if p.Position.ReserveFarmState != "" {
 			for _, name := range []string{p.Position.ReserveFarmState, p.FarmUser} {
 				a := bank.accounts[name]
-				if a.Owner != farmsProgram || a.Executable || a.Lamports == 0 {
+				if a.Owner.String() != farmsProgram || a.Executable || a.Lamports == 0 {
 					return bank, errors.New("cross-mint farm setup is not ready")
 				}
 			}
@@ -622,17 +635,17 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 	bank.source, bank.target, bank.active = positions[m.SourceReserve], positions[m.IntendedTargetReserve], positions[m.ActiveTargetReserve]
 	bank.sourceCollateral, bank.targetCollateral, bank.activeCollateral = collateral[m.SourceReserve], collateral[m.IntendedTargetReserve], collateral[m.ActiveTargetReserve]
 	if q.Leg != "deposit" {
-		bank.sourceEconomics, err = DecodeKaminoReserve(bank.accounts[m.SourceReserve], ReserveIdentity{Address: m.SourceReserve, Market: bank.source.Position.Market, Mint: m.SourceMint}, bank.slot, r.slotDuration)
+		bank.sourceEconomics, err = DecodeKaminoReserve(bank.at(m.SourceReserve), ReserveIdentity{Address: m.SourceReserve, Market: bank.source.Position.Market, Mint: m.SourceMint}, bank.slot, r.slotDuration)
 		if err != nil {
 			return bank, err
 		}
-		bank.targetEconomics, err = DecodeKaminoReserve(bank.accounts[m.IntendedTargetReserve], ReserveIdentity{Address: m.IntendedTargetReserve, Market: bank.target.Position.Market, Mint: m.TargetMint}, bank.slot, r.slotDuration)
+		bank.targetEconomics, err = DecodeKaminoReserve(bank.at(m.IntendedTargetReserve), ReserveIdentity{Address: m.IntendedTargetReserve, Market: bank.target.Position.Market, Mint: m.TargetMint}, bank.slot, r.slotDuration)
 	} else {
 		p := bank.active
 		if q.Purpose == "recover_source" {
 			p = bank.source
 		}
-		_, err = DecodeKaminoReserve(bank.accounts[p.Position.Reserve], ReserveIdentity{Address: p.Position.Reserve, Market: p.Position.Market, Mint: p.Position.LiquidityMint}, bank.slot, r.slotDuration)
+		_, err = DecodeKaminoReserve(bank.at(p.Position.Reserve), ReserveIdentity{Address: p.Position.Reserve, Market: p.Position.Market, Mint: p.Position.LiquidityMint}, bank.slot, r.slotDuration)
 	}
 	return bank, err
 }
@@ -660,7 +673,7 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 			return nil, effect, anchors, "", errors.New("cross-mint source collateral no longer matches one-unit recovery anchor")
 		}
 		account := bank.accounts[m.SourceReserve]
-		backing, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: account.Address, Owner: account.Owner, Lamports: account.Lamports, Executable: account.Executable, Data: account.Data}, position.Position.Market, m.SourceMint, values.Collateral)
+		backing, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: account.Key.String(), Owner: account.Owner.String(), Lamports: account.Lamports, Executable: account.Executable, Data: account.Data}, position.Position.Market, m.SourceMint, values.Collateral)
 		if err != nil || backing == 0 {
 			return nil, effect, anchors, "", errors.New("cross-mint withdrawal lacks redeemable source backing")
 		}
@@ -703,7 +716,7 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 		return nil, effect, anchors, "", err
 	}
 	derived, bump, err := derivePolicyAccount(b.Settings, policy.PolicySeed)
-	if err != nil || derived != binding.PolicyAccount || bump != policy.Bump || policyAccount.Owner != SquadsProgram || policyAccount.Executable || policyAccount.Lamports == 0 || policy.Settings != b.Settings || policy.AccountIndex != b.VaultIndex || int(index) >= len(policy.Constraints) || !policyConstraintMatches(policy.Constraints[index], route.Protected[0]) {
+	if err != nil || derived != binding.PolicyAccount || bump != policy.Bump || policyAccount.Owner.String() != SquadsProgram || policyAccount.Executable || policyAccount.Lamports == 0 || policy.Settings != b.Settings || policy.AccountIndex != b.VaultIndex || int(index) >= len(policy.Constraints) || !policyConstraintMatches(policy.Constraints[index], route.Protected[0]) {
 		return nil, effect, anchors, "", errors.New("finalized Earn policy does not authorize exact cross-mint leg and index")
 	}
 	if _, err := validateDelegatedInstructions(policy, r.signer, route.Protected); err != nil {
@@ -795,13 +808,13 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 		*bank = fresh
 		for _, mint := range additional {
 			ata, _ := deriveATA(m.VaultPubkey, mint, mustStableProgram(mint))
-			if err := validateVaultTokenAccount(bank.accounts[ata], mint, m.VaultPubkey); err != nil {
+			if err := validateVaultTokenAccount(bank.at(ata), mint, m.VaultPubkey); err != nil {
 				return nil, effect, anchors, err
 			}
 		}
 	}
 	account := bank.accounts[b.Swap.PolicyAccount]
-	if account.Owner != SquadsProgram || account.Executable || account.Lamports == 0 {
+	if account.Owner.String() != SquadsProgram || account.Executable || account.Lamports == 0 {
 		return nil, effect, anchors, errors.New("cross-mint swap policy is not a funded finalized Squads account")
 	}
 	policy, table, limits, err := decodeStrictSwapPolicy(account.Data)
@@ -828,10 +841,11 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 
 func (r *Revalidator) compileCrossMintIndependentLeg(ctx context.Context, q CrossMintPreparationRequest, instructions []RouteInstruction, tables []LookupTable, slot int64) (RoutePreparation, int64, []string, error) {
 	var out RoutePreparation
-	blockhash, height, err := r.rpc.finalizedBlockhash(ctx, slot)
+	hash, lastValid, _, err := r.rpc.Blockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
 		return out, 0, nil, err
 	}
+	blockhash, height := hash.String(), int64(lastValid)
 	base := append(computeBudgetInstructions(uint32(r.computeLimit), 0), instructions...)
 	preview, static, err := compileV0Transaction(r.signer, blockhash, base, tables, 1, r.computeLimit)
 	if err != nil {
@@ -854,7 +868,7 @@ func (r *Revalidator) compileCrossMintIndependentLeg(ctx context.Context, q Cros
 		out = crossMintMissingALTPreparation(q, instructions, missing)
 		return out, 0, canonicalStrings(missing), nil
 	}
-	baseline, err := r.rpc.simulateExactTransaction(ctx, preview.UnsignedWire, slot, "finalized")
+	baseline, err := SimulateExact(ctx, r.rpc, preview.UnsignedWire, rpc.CommitmentFinalized, slot)
 	if err != nil || !baseline.Succeeded || baseline.UnitsConsumed > r.computeLimit || preview.PacketBytes > SolanaPacketLimit {
 		if err == nil {
 			err = errors.New("cross-mint independent baseline simulation failed")
@@ -865,14 +879,14 @@ func (r *Revalidator) compileCrossMintIndependentLeg(ctx context.Context, q Cros
 	if compute > r.computeLimit {
 		return out, 0, nil, errors.New("cross-mint measured compute exceeds configured maximum")
 	}
-	fee, err := r.rpc.feeForMessage(ctx, preview.Message, slot, "finalized")
+	fee, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentFinalized)
 	if err != nil || fee > uint64(q.RemainingFeeLamports) {
 		if err == nil {
 			err = errors.New("cross-mint baseline fee exhausts remaining movement budget")
 		}
 		return out, 0, nil, err
 	}
-	priority, err := r.rpc.RecentPriorityFee(ctx, preview.WritableAccounts)
+	priority, err := recentPriorityFee(ctx, r.rpc, preview.WritableAccounts)
 	if err != nil {
 		return out, 0, nil, err
 	}
@@ -890,14 +904,14 @@ func (r *Revalidator) compileCrossMintIndependentLeg(ctx context.Context, q Cros
 	if out.Transaction.PacketBytes > SolanaPacketLimit {
 		return RoutePreparation{}, 0, nil, errors.New("cross-mint final packet exceeds Solana limit")
 	}
-	out.Transaction.FeeLamports, err = r.rpc.feeForMessage(ctx, out.Transaction.Message, slot, "finalized")
+	out.Transaction.FeeLamports, err = r.rpc.Fee(ctx, out.Transaction.Message, rpc.CommitmentFinalized)
 	if err != nil || out.Transaction.FeeLamports > uint64(q.RemainingFeeLamports) {
 		if err == nil {
 			err = errors.New("cross-mint final compiled fee exceeds remaining movement budget")
 		}
 		return RoutePreparation{}, 0, nil, err
 	}
-	out.Simulation, err = r.rpc.simulateExactTransaction(ctx, out.Transaction.UnsignedWire, slot, "finalized")
+	out.Simulation, err = SimulateExact(ctx, r.rpc, out.Transaction.UnsignedWire, rpc.CommitmentFinalized, slot)
 	if err != nil || !out.Simulation.Succeeded || out.Simulation.UnitsConsumed > compute || out.Simulation.WireSHA256 != out.Transaction.WireSHA256 {
 		if err == nil {
 			err = errors.New("cross-mint exact final simulation failed")
@@ -956,7 +970,7 @@ func (r *Revalidator) checkCrossMintCustody(q CrossMintPreparationRequest, bank 
 		return errors.New("cross-mint custody is not the canonical vault ATA")
 	}
 	a := bank.accounts[m.CustodyAccount]
-	if err := validateVaultTokenAccount(a, m.CustodyMint, m.VaultPubkey); err != nil {
+	if err := validateVaultTokenAccount(&a, m.CustodyMint, m.VaultPubkey); err != nil {
 		return err
 	}
 	amount := binary.LittleEndian.Uint64(a.Data[64:72])

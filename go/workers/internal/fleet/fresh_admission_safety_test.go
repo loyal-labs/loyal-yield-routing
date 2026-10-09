@@ -10,6 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	solana "github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func TestFusedCycleCannotBypassTypedAdmission(t *testing.T) {
@@ -34,7 +38,7 @@ func TestFreshVaultTokenCustodyChecksProgramAndState(t *testing.T) {
 		fixtureKey(t, data, 0, mint)
 		fixtureKey(t, data, 32, owner)
 		data[108] = 1
-		a := Account{Owner: program, Lamports: 1, Data: data}
+		a := &chain.Account{Owner: solana.MustPublicKeyFromBase58(program), Lamports: 1, Data: data}
 		if err := validateVaultTokenAccount(a, mint, owner); err != nil {
 			t.Fatalf("valid %s custody rejected: %v", mint, err)
 		}
@@ -45,7 +49,7 @@ func TestFreshVaultTokenCustodyChecksProgramAndState(t *testing.T) {
 			}
 		}
 		a.Data[108] = 1
-		a.Owner = SquadsProgram
+		a.Owner = solana.MustPublicKeyFromBase58(SquadsProgram)
 		if err := validateVaultTokenAccount(a, mint, owner); err == nil {
 			t.Fatal("foreign token program accepted")
 		}
@@ -70,7 +74,7 @@ func TestFreshLookupTableRejectsCurrentSlotExtension(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"context": map[string]any{"slot": 500}, "value": []any{map[string]any{"owner": altProgram, "lamports": 1, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(data), "base64"}}}}})
 			}))
 			defer srv.Close()
-			r := &Revalidator{rpc: NewRPCClient(srv.URL)}
+			r := &Revalidator{rpc: testChain(t, srv.URL)}
 			_, err := r.verifyLookupTables(context.Background(), []LookupTable{{Address: table, Addresses: []string{member}}}, 499)
 			if (err == nil) != (extended < 500) {
 				t.Fatalf("extended=%d error=%v", extended, err)

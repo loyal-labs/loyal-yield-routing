@@ -19,6 +19,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	solana "github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func fixtureKey(t *testing.T, data []byte, offset int, address string) {
@@ -203,7 +205,11 @@ func (b *ConnectedBank) LostResponses() int64 { return b.lostResponses.Load() }
 // Revalidator is the Go route preparation bound to this bank's RPC and to a
 // Jupiter client that trusts only the bank's TLS fixture.
 func (b *ConnectedBank) Revalidator(owner string, fused bool) (*Revalidator, error) {
-	r, err := NewRevalidator(b.Store, NewRPCClient(b.RPCURL), RevalidatorConfig{Owner: owner, FusedExecute: fused, DelegatedSigner: encodeBase58(b.Signer.Public().(ed25519.PublicKey)), LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: b.buildURL})
+	client, err := chain.New(b.RPCURL, 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	r, err := NewRevalidator(b.Store, client, RevalidatorConfig{Owner: owner, FusedExecute: fused, DelegatedSigner: encodeBase58(b.Signer.Public().(ed25519.PublicKey)), LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: b.buildURL})
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +259,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 		target.Mint = USDCMint
 	}
 	const amount = uint64(1_000_000_000)
-	accounts := map[string]Account{}
+	accounts := map[string]chain.Account{}
 	positions := []KaminoPositionAccounts{}
 	states := map[string]ReserveState{}
 	for i, identity := range []ReserveIdentity{source, target} {
@@ -264,13 +270,13 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 		fixtureKey(t, account.Data, 160, testIdentity(byte(92+i)))
 		fixtureKey(t, account.Data, 2600, testIdentity(byte(94+i)))
 		binary.LittleEndian.PutUint64(account.Data[2592:2600], 2_000_000_000_000)
-		accounts[account.Address] = account
-		decoded, err := decodeRouteReserve(account, vault)
+		accounts[identity.Address] = account
+		decoded, err := decodeRouteReserve(&account, vault)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if i == 0 || kind != ConnectedSameMintSetup {
-			obligation := Account{Address: decoded.Obligation, Owner: KLendProgram, Lamports: 1_000_000, Data: make([]byte, obligationLength)}
+			obligation := fixtureAccount(decoded.Obligation, KLendProgram, 1_000_000, make([]byte, obligationLength))
 			copy(obligation.Data, []byte{168, 206, 141, 106, 88, 76, 172, 167})
 			fixtureKey(t, obligation.Data, 32, identity.Market)
 			fixtureKey(t, obligation.Data, 64, vault)
@@ -280,27 +286,27 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 				binary.LittleEndian.PutUint64(obligation.Data[128:136], amount)
 				expected = identity.Address
 			}
-			if _, err = decodeObligation(obligation, identity.Market, vault, expected, &decoded.Position); err != nil {
+			if _, err = decodeObligation(&obligation, identity.Market, vault, expected, &decoded.Position); err != nil {
 				t.Fatal(err)
 			}
-			accounts[obligation.Address] = obligation
+			accounts[decoded.Obligation] = obligation
 		}
 		positions = append(positions, decoded.Position)
-		state, err := DecodeKaminoReserve(account, identity, 1000, 400*time.Millisecond)
+		state, err := DecodeKaminoReserve(&account, identity, 1000, 400*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
 		}
 		states[identity.Address] = state
-		mint := Account{Address: identity.Mint, Owner: tokenProgram, Lamports: 1_000_000, Data: make([]byte, 82)}
+		mint := fixtureAccount(identity.Mint, tokenProgram, 1_000_000, make([]byte, 82))
 		mint.Data[44] = 6
 		mint.Data[45] = 1
 		binary.LittleEndian.PutUint64(mint.Data[36:44], 2_000_000_000_000)
-		accounts[mint.Address] = mint
-		ata := Account{Address: decoded.Position.VaultLiquidityATA, Owner: tokenProgram, Lamports: 1_000_000, Data: make([]byte, 165)}
+		accounts[identity.Mint] = mint
+		ata := fixtureAccount(decoded.Position.VaultLiquidityATA, tokenProgram, 1_000_000, make([]byte, 165))
 		fixtureKey(t, ata.Data, 0, identity.Mint)
 		fixtureKey(t, ata.Data, 32, vault)
 		ata.Data[108] = 1
-		accounts[ata.Address] = ata
+		accounts[decoded.Position.VaultLiquidityATA] = ata
 	}
 	body, _ := jupiterBuildForVault(t, vault, amount-1, amount-1, 1)
 	var envelope rawJupiterBuild
@@ -317,7 +323,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 		_, bump, _ := derivePolicyAccount(settings, seed)
 		putPolicySeed(policyData, seed, bump)
 		// Executable policy accounts include the full tail beyond constraints.
-		accounts[address] = Account{Address: address, Owner: SquadsProgram, Lamports: 1_000_000, Data: append(policyData, make([]byte, 2+4+8+1+32)...)}
+		accounts[address] = fixtureAccount(address, SquadsProgram, 1_000_000, append(policyData, make([]byte, 2+4+8+1+32)...))
 		return address
 	}
 	// Deposit amounts are finalized custody, not the planned amount: policies
@@ -375,7 +381,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	_, swapPolicy := connectedPolicyHeader(t, settings, signer, 11)
 	binding := CrossMintPolicyBindings{Settings: settings, VaultIndex: vaultIndex, VaultPubkey: vault, DelegatedSigner: signer, Withdraw: CrossMintEarnPolicyBinding{earnPolicy, 999, "local-withdraw", "finalized", 0}, Deposit: CrossMintEarnPolicyBinding{targetPolicy, 999, "local-deposit", "finalized", 1}, Swap: CrossMintSwapPolicyBinding{PolicyAccount: swapPolicy, SourceShard: "classic", EnrollmentGeneration: 1, ObservedSlot: 999, ObservedSignature: "local-swap", SourceCommitment: "finalized", MaxSlippageBPS: 50, DailySourceMintSpendingCap: 10_000_000_000}}
 	binding.Swap.ManifestFingerprint = fingerprintCrossMintManifest(binding, []string{USDCMint, USDTMint, USDSMint}, tokenProgram)
-	accounts[swapPolicy] = Account{Address: swapPolicy, Owner: SquadsProgram, Lamports: 1_000_000, Data: connectedSwapPolicy(t, binding, 11)}
+	accounts[swapPolicy] = fixtureAccount(swapPolicy, SquadsProgram, 1_000_000, connectedSwapPolicy(t, binding, 11))
 	// Managed ALT coverage: every address the route body needs, split into
 	// the shared market catalog and the vault's own shard.
 	coverage := map[string]bool{}
@@ -393,7 +399,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	}
 	covered := sortedKeys(coverage)
 	providerTable := unique("provider-alt")
-	table := Account{Address: providerTable, Owner: altProgram, Lamports: 1_000_000, Data: make([]byte, 56+32*len(covered))}
+	table := fixtureAccount(providerTable, altProgram, 1_000_000, make([]byte, 56+32*len(covered)))
 	binary.LittleEndian.PutUint32(table.Data[:4], 1)
 	binary.LittleEndian.PutUint64(table.Data[4:12], ^uint64(0))
 	binary.LittleEndian.PutUint64(table.Data[12:20], 900)
@@ -443,7 +449,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 		for i, address := range addresses {
 			fixtureKey(t, data, 56+32*i, address)
 		}
-		accounts[key] = Account{Address: key, Owner: altProgram, Lamports: 100_000_000, Data: data}
+		accounts[key] = fixtureAccount(key, altProgram, 100_000_000, data)
 	}
 	envelope.AddressesByLookupTableAddress = map[string][]string{providerTable: covered}
 	seedConnectedExecutionAccounts(t, accounts, positions, signer, vault)

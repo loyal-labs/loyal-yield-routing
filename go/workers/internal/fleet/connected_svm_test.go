@@ -14,7 +14,26 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	solana "github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
+
+// fixtureAccount is address's account as a test chain holds it.
+func fixtureAccount(address, owner string, lamports uint64, data []byte) chain.Account {
+	return chain.Account{Key: solana.MustPublicKeyFromBase58(address), Owner: solana.MustPublicKeyFromBase58(owner), Lamports: lamports, Data: data}
+}
+
+// testChain is the chain client against a local test endpoint.
+func testChain(t *testing.T, url string) *chain.Client {
+	t.Helper()
+	client, err := chain.New(url, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
 
 // The subprocess owns chain state for the lifetime of the connected scenario.
 // Only initialization can inject accounts; subsequent RPC calls execute against
@@ -26,7 +45,7 @@ type connectedSVM struct {
 	output    *bufio.Reader
 }
 
-func startConnectedSVM(t *testing.T, ctx context.Context, accounts map[string]Account) *connectedSVM {
+func startConnectedSVM(t *testing.T, ctx context.Context, accounts map[string]chain.Account) *connectedSVM {
 	t.Helper()
 	path := os.Getenv("KAMINO_CONNECTED_SVM_PATH")
 	if path == "" {
@@ -63,7 +82,11 @@ func startConnectedSVM(t *testing.T, ctx context.Context, accounts map[string]Ac
 		}
 	})
 	svm := &connectedSVM{input: input, output: bufio.NewReader(output)}
-	response, err := svm.call(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{"accounts": accounts}})
+	fixture := make(map[string]any, len(accounts))
+	for address, a := range accounts {
+		fixture[address] = map[string]any{"Address": address, "Owner": a.Owner.String(), "Lamports": a.Lamports, "Executable": a.Executable, "Data": a.Data}
+	}
+	response, err := svm.call(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{"accounts": fixture}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,33 +112,33 @@ func startConnectedSVM(t *testing.T, ctx context.Context, accounts map[string]Ac
 
 // Seed only initial protocol inventory. All subsequent balance changes must be
 // performed by the SBF programs; this helper is never used after initialization.
-func seedConnectedExecutionAccounts(t *testing.T, accounts map[string]Account, positions []KaminoPositionAccounts, signer, vault string) {
+func seedConnectedExecutionAccounts(t *testing.T, accounts map[string]chain.Account, positions []KaminoPositionAccounts, signer, vault string) {
 	t.Helper()
 	for _, address := range []string{signer, vault} {
-		accounts[address] = Account{Address: address, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000, Data: []byte{}}
+		accounts[address] = fixtureAccount(address, "11111111111111111111111111111111", 1_000_000_000, []byte{})
 	}
 	for _, p := range positions {
-		accounts[p.Market] = Account{Address: p.Market, Owner: KLendProgram, Lamports: 100_000_000, Data: make([]byte, 8)}
-		accounts[p.MarketAuthority] = Account{Address: p.MarketAuthority, Owner: "11111111111111111111111111111111", Lamports: 100_000_000, Data: []byte{}}
-		mint := Account{Address: p.CollateralMint, Owner: tokenProgram, Lamports: 100_000_000, Data: make([]byte, 82)}
+		accounts[p.Market] = fixtureAccount(p.Market, KLendProgram, 100_000_000, make([]byte, 8))
+		accounts[p.MarketAuthority] = fixtureAccount(p.MarketAuthority, "11111111111111111111111111111111", 100_000_000, []byte{})
+		mint := fixtureAccount(p.CollateralMint, tokenProgram, 100_000_000, make([]byte, 82))
 		binary.LittleEndian.PutUint32(mint.Data[:4], 1)
 		fixtureKey(t, mint.Data, 4, p.MarketAuthority)
 		binary.LittleEndian.PutUint64(mint.Data[36:44], 2_000_000_000_000)
 		mint.Data[44] = 6
 		mint.Data[45] = 1
-		accounts[mint.Address] = mint
+		accounts[mint.Key.String()] = mint
 		for _, token := range []struct{ address, mint string }{{p.LiquiditySupply, p.LiquidityMint}, {p.CollateralSupply, p.CollateralMint}} {
-			account := Account{Address: token.address, Owner: tokenProgram, Lamports: 100_000_000, Data: make([]byte, 165)}
+			account := fixtureAccount(token.address, tokenProgram, 100_000_000, make([]byte, 165))
 			fixtureKey(t, account.Data, 0, token.mint)
 			fixtureKey(t, account.Data, 32, p.MarketAuthority)
 			binary.LittleEndian.PutUint64(account.Data[64:72], 2_000_000_000_000)
 			account.Data[108] = 1
-			accounts[account.Address] = account
+			accounts[account.Key.String()] = account
 		}
 	}
 	for i, mint := range []string{USDCMint, USDTMint} {
 		address := testPubkey(byte(34 + i))
-		account := Account{Address: address, Owner: tokenProgram, Lamports: 100_000_000, Data: make([]byte, 165)}
+		account := fixtureAccount(address, tokenProgram, 100_000_000, make([]byte, 165))
 		fixtureKey(t, account.Data, 0, mint)
 		fixtureKey(t, account.Data, 32, jupiterEvent)
 		binary.LittleEndian.PutUint64(account.Data[64:72], 2_000_000_000_000)

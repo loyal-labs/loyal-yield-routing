@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // scriptedSweepRPC is one confirmed bank: the slot and accounts the next
@@ -20,27 +22,25 @@ import (
 type scriptedSweepRPC struct {
 	mu       sync.Mutex
 	slot     int64
-	accounts map[string]fleet.Account
+	accounts map[string]chain.Account
 	batches  int
 }
 
-func (r *scriptedSweepRPC) ConfirmedAccountsAllowingAbsent(_ context.Context, addresses []string, minimum int64) (int64, []fleet.Account, error) {
+func (r *scriptedSweepRPC) Accounts(_ context.Context, keys []sdk.PublicKey, _ rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if minimum <= 0 || r.slot < minimum || len(addresses) > 100 {
+	if minContextSlot == 0 || uint64(r.slot) < minContextSlot || len(keys) > 100 {
 		return 0, nil, fmt.Errorf("invalid scripted batch")
 	}
 	r.batches++
-	out := make([]fleet.Account, len(addresses))
-	for i, address := range addresses {
-		account, ok := r.accounts[address]
-		if !ok {
-			account = fleet.Account{Address: address}
+	out := make([]*chain.Account, len(keys))
+	for i, key := range keys {
+		if account, ok := r.accounts[key.String()]; ok {
+			account.Data = append([]byte(nil), account.Data...)
+			out[i] = &account
 		}
-		account.Data = append([]byte(nil), account.Data...)
-		out[i] = account
 	}
-	return r.slot, out, nil
+	return uint64(r.slot), out, nil
 }
 
 func sweepKey(label string) string {
@@ -54,7 +54,7 @@ func putKey(data []byte, offset int, address string) {
 }
 
 // sweepReserve is a KLend reserve whose collateral redeems at 2 liquidity.
-func sweepReserve(address, market string) fleet.Account {
+func sweepReserve(address, market string) chain.Account {
 	data := make([]byte, 8624)
 	copy(data[:8], []byte{43, 242, 204, 202, 26, 247, 59, 127})
 	binary.LittleEndian.PutUint64(data[8:16], 1)
@@ -66,10 +66,10 @@ func sweepReserve(address, market string) fleet.Account {
 	putKey(data, 2600, sweepKey(address+":collateral-supply"))
 	binary.LittleEndian.PutUint64(data[224:232], 1_000_000)
 	binary.LittleEndian.PutUint64(data[2592:2600], 500_000)
-	return fleet.Account{Address: address, Owner: fleet.KLendProgram, Lamports: 1, Data: data}
+	return fixtureAccount(address, fleet.KLendProgram, 1, data)
 }
 
-func sweepObligation(address, market, vault, reserve string, collateral uint64) fleet.Account {
+func sweepObligation(address, market, vault, reserve string, collateral uint64) chain.Account {
 	data := make([]byte, 3344)
 	copy(data[:8], positionSweepObligationDiscriminator)
 	putKey(data, 32, market)
@@ -78,16 +78,16 @@ func sweepObligation(address, market, vault, reserve string, collateral uint64) 
 		putKey(data, 96, reserve)
 		binary.LittleEndian.PutUint64(data[128:136], collateral)
 	}
-	return fleet.Account{Address: address, Owner: fleet.KLendProgram, Lamports: 1, Data: data}
+	return fixtureAccount(address, fleet.KLendProgram, 1, data)
 }
 
-func sweepTokenAccount(address, mint, owner string, amount uint64) fleet.Account {
+func sweepTokenAccount(address, mint, owner string, amount uint64) chain.Account {
 	data := make([]byte, 165)
 	putKey(data, 0, mint)
 	putKey(data, 32, owner)
 	binary.LittleEndian.PutUint64(data[64:72], amount)
 	data[108] = 1
-	return fleet.Account{Address: address, Owner: sdk.TokenProgramID.String(), Lamports: 1, Data: data}
+	return fixtureAccount(address, sdk.TokenProgramID.String(), 1, data)
 }
 
 func seedSweepCatalog(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cluster string, roles map[string]string) {
@@ -239,7 +239,7 @@ VALUES($1,$2,$3,0,$2,$4,$5,1,$6,$7,$8,$8,1000,$6,$7,$8,1000,900,now(),'sig','sig
 	if err != nil {
 		t.Fatal(err)
 	}
-	rpc := &scriptedSweepRPC{slot: 1_000, accounts: map[string]fleet.Account{
+	rpc := &scriptedSweepRPC{slot: 1_000, accounts: map[string]chain.Account{
 		reserves[0]:    sweepReserve(reserves[0], markets[0]),
 		reserves[1]:    sweepReserve(reserves[1], markets[1]),
 		obligations[0]: sweepObligation(obligations[0], markets[0], vault, reserves[0], 700),

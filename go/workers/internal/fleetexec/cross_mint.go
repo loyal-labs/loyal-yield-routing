@@ -9,7 +9,9 @@ import (
 	"math"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 type CrossMintPhase string
@@ -110,19 +112,19 @@ type CrossMintController struct {
 	cluster, owner string
 	ttl            time.Duration
 	swapEnabled    bool
-	accounts       finalizedAccountReader
-	history        finalizedHistoryReader
-	adapter        *RPCAdapter
+	accounts       fleet.AccountReader
+	history        historyReader
+	chain          *chain.Client
 	marketEvidence fleet.MarketEpochSource
 }
 
 // The controller only signs and journals. Broadcast, finalized receipt proof,
 // and ambiguity recovery remain the existing executor's responsibility.
-func NewCrossMintController(store *Store, factory CrossMintLegFactory, signer DelegateSigner, adapter *RPCAdapter, cluster, owner string, ttl time.Duration, swapEnabled bool) (*CrossMintController, error) {
-	if store == nil || store.pool == nil || factory == nil || adapter == nil || len(signer.FeePayer) != ed25519.PrivateKeySize || cluster == "" || owner == "" || ttl < 10*time.Second || ttl > 300*time.Second || ttl%time.Second != 0 {
+func NewCrossMintController(store *Store, factory CrossMintLegFactory, signer DelegateSigner, client *chain.Client, cluster, owner string, ttl time.Duration, swapEnabled bool) (*CrossMintController, error) {
+	if store == nil || store.pool == nil || factory == nil || client == nil || len(signer.FeePayer) != ed25519.PrivateKeySize || cluster == "" || owner == "" || ttl < 10*time.Second || ttl > 300*time.Second || ttl%time.Second != 0 {
 		return nil, errors.New("cross-mint controller requires store, factory, identities and 10-300 second lease")
 	}
-	return &CrossMintController{store: store, factory: factory, signer: signer, cluster: cluster, owner: owner, ttl: ttl, swapEnabled: swapEnabled, accounts: fleet.NewRPCClient(adapter.url), history: adapter, adapter: adapter}, nil
+	return &CrossMintController{store: store, factory: factory, signer: signer, cluster: cluster, owner: owner, ttl: ttl, swapEnabled: swapEnabled, accounts: client, history: client, chain: client}, nil
 }
 
 // ContinueOne is deliberately separate from Worker.Tick until the composed
@@ -153,10 +155,11 @@ func (c *CrossMintController) ContinueOne(ctx context.Context) (int64, bool, err
 		}
 	}
 	if request.Leg == LegWithdraw && !initialAllowed {
-		var slot int64
-		if err = c.adapter.call(workCtx, &slot, "getSlot", map[string]any{"commitment": "finalized"}); err != nil {
+		finalized, err := c.chain.Slot(workCtx, rpc.CommitmentFinalized)
+		if err != nil {
 			return 0, true, err
 		}
+		slot := int64(finalized)
 		if !c.swapEnabled {
 			err = c.store.cancelUntouchedCrossMint(workCtx, *lease, slot, crossMintRolloutDisabled)
 		} else {
@@ -233,16 +236,13 @@ func (c *CrossMintController) verifyIdleCustody(ctx context.Context, m CrossMint
 
 // This proof is shared by the two signing checks; recognized signatures must
 // come from this movement's reconciled durable journal, never an RPC allowlist.
-func verifyCrossMintIdleCustody(ctx context.Context, m CrossMintMovement, reader finalizedAccountReader, history finalizedHistoryReader, recognized map[string]bool) error {
+func verifyCrossMintIdleCustody(ctx context.Context, m CrossMintMovement, reader fleet.AccountReader, history historyReader, recognized map[string]bool) error {
 	if m.Phase != CrossMintSourceIdle && m.Phase != CrossMintTargetIdle || m.CustodyReconciledSlot == nil || *m.CustodyReconciledSlot <= 0 || m.CustodyObservedBalanceRaw == nil || m.CustodyAmountRaw <= 0 || *m.CustodyObservedBalanceRaw < m.CustodyAmountRaw || reader == nil || history == nil {
 		return errors.New("idle custody lacks finalized historical anchor or proof owner")
 	}
-	slot, accounts, err := reader.FinalizedAccounts(ctx, []string{m.CustodyAccount}, *m.CustodyReconciledSlot)
+	slot, accounts, err := fleet.ReadAccounts(ctx, reader, []string{m.CustodyAccount}, rpc.CommitmentFinalized, *m.CustodyReconciledSlot)
 	if err != nil {
 		return err
-	}
-	if slot < *m.CustodyReconciledSlot || len(accounts) != 1 || accounts[0].Address != m.CustodyAccount {
-		return errors.New("finalized custody account readback is incomplete or stale")
 	}
 	amount, err := custodyTokenAmount(accounts[0], m.CustodyMint, m.VaultPubkey)
 	if err != nil {

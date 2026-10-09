@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // observeConfirmedReserveCatalog retries only inconsistent slot ordering in an
@@ -16,7 +18,7 @@ func (w *Worker) observeConfirmedReserveCatalog(ctx context.Context, addresses [
 	defer cancel()
 	const attempts = 3
 	for attempt := 1; attempt <= attempts; attempt++ {
-		slot, accounts, err := w.rpc.ConfirmedAccounts(ctx, addresses, minimumSlot)
+		slot, accounts, err := ReadAccounts(ctx, w.rpc, addresses, rpc.CommitmentConfirmed, minimumSlot)
 		if err != nil {
 			return MarketSnapshot{}, err
 		}

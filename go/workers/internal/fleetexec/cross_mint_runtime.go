@@ -18,6 +18,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // The root adapts C's concrete finalized policy verifier. This capability has
@@ -53,20 +54,20 @@ type CrossMintRuntime struct {
 	config     Config
 	store      *Store
 	controller *CrossMintController
-	adapter    *RPCAdapter
-	accounts   finalizedAccountReader
-	history    finalizedHistoryReader
-	status     StatusClient
+	accounts   fleet.AccountReader
+	history    historyReader
+	status     signatureReader
+	receipts   receiptReader
 	chain      chain.LandChain
 	verifier   CrossMintFirstSendVerifier
 	admission  CrossMintActivationSource
 }
 
-func NewCrossMintRuntime(ctx context.Context, config Config, store *Store, controller *CrossMintController, adapter *RPCAdapter, verifier CrossMintFirstSendVerifier) (*CrossMintRuntime, error) {
+func NewCrossMintRuntime(ctx context.Context, config Config, store *Store, controller *CrossMintController, client *chain.Client, verifier CrossMintFirstSendVerifier) (*CrossMintRuntime, error) {
 	if controller == nil || controller.store != store || controller.cluster != config.Cluster || controller.owner != config.Owner {
 		return nil, errors.New("cross-mint runtime requires matching concrete owners, verifier and bounded whole-second lease")
 	}
-	runtime, err := NewCrossMintRecoveryRuntime(ctx, config, store, adapter, verifier)
+	runtime, err := NewCrossMintRecoveryRuntime(ctx, config, store, client, verifier)
 	if err != nil {
 		return nil, err
 	}
@@ -76,18 +77,14 @@ func NewCrossMintRuntime(ctx context.Context, config Config, store *Store, contr
 
 // NewCrossMintRecoveryRuntime owns existing signed packets without a signing
 // key. It cannot create a continuation or activation, even if a source is set.
-func NewCrossMintRecoveryRuntime(ctx context.Context, config Config, store *Store, adapter *RPCAdapter, verifier CrossMintFirstSendVerifier) (*CrossMintRuntime, error) {
+func NewCrossMintRecoveryRuntime(ctx context.Context, config Config, store *Store, client *chain.Client, verifier CrossMintFirstSendVerifier) (*CrossMintRuntime, error) {
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
-	if ctx == nil || store == nil || adapter == nil || verifier == nil || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 300*time.Second || config.LeaseTTL%time.Second != 0 || config.BatchSize > 100 {
+	if ctx == nil || store == nil || client == nil || verifier == nil || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 300*time.Second || config.LeaseTTL%time.Second != 0 || config.BatchSize > 100 {
 		return nil, errors.New("cross-mint recovery requires concrete owners, verifier and bounded whole-second lease")
 	}
-	land, err := chain.New(adapter.url, adapter.deadline)
-	if err != nil {
-		return nil, err
-	}
-	return &CrossMintRuntime{config: config, store: store, adapter: adapter, accounts: fleet.NewRPCClient(adapter.url), history: adapter, status: adapter, chain: land, verifier: verifier}, nil
+	return &CrossMintRuntime{config: config, store: store, accounts: client, history: client, status: client, receipts: client, chain: client, verifier: verifier}, nil
 }
 
 // Configure before Run. The root retains dependency and pool lifecycles.
@@ -308,6 +305,11 @@ func (s *Store) recordCrossMintResend(ctx context.Context, l SubmissionLease) er
 }
 
 func (r *CrossMintRuntime) hold(ctx context.Context, l SubmissionLease, reason string, cause error) error {
+	// A node that cannot answer says nothing about custody: the claim lapses
+	// and the next tick asks again.
+	if errors.Is(cause, chain.ErrUnavailable) {
+		return cause
+	}
 	if err := r.store.deferCrossMintStatus(ctx, l, nil, nil, reason, true); err != nil {
 		return err
 	}
@@ -627,7 +629,7 @@ func sameCrossMintAnchorAmounts(a, b CrossMintBalanceAnchors) bool {
 // Observe every token anchor and the reserve/obligation pair in ONE finalized
 // bank. History follows the balance observation, so restoration cannot hide
 // an external debit. The source-backed decoder owns exchange-rate rounding.
-func observeCrossMintBank(ctx context.Context, reader finalizedAccountReader, history finalizedHistoryReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool, requireTokenAnchor bool) (CrossMintBalanceAnchors, int64, error) {
+func observeCrossMintBank(ctx context.Context, reader fleet.AccountReader, history historyReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool, requireTokenAnchor bool) (CrossMintBalanceAnchors, int64, error) {
 	return observeCrossMintBankWithAnchorPolicy(ctx, reader, history, m, expected, floor, historyAnchor, recognized, requireTokenAnchor, "")
 }
 
@@ -635,7 +637,7 @@ func observeCrossMintBank(ctx context.Context, reader finalizedAccountReader, hi
 // account must retain the reconciled receipt anchor; other exact token anchors
 // must have no unrecognized activity, but need no invented prior receipt.
 // Receipt and expiry proofs retain the stricter all-account anchor policy.
-func observeCrossMintFirstSendBank(ctx context.Context, reader finalizedAccountReader, history finalizedHistoryReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool) (CrossMintBalanceAnchors, int64, error) {
+func observeCrossMintFirstSendBank(ctx context.Context, reader fleet.AccountReader, history historyReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool) (CrossMintBalanceAnchors, int64, error) {
 	if m.CustodyReconciledSlot == nil {
 		return observeCrossMintBank(ctx, reader, history, m, expected, floor, historyAnchor, recognized, false)
 	}
@@ -651,7 +653,7 @@ func observeCrossMintFirstSendBank(ctx context.Context, reader finalizedAccountR
 	return observeCrossMintBankWithAnchorPolicy(ctx, reader, history, m, expected, floor, historyAnchor, recognized, true, m.CustodyAccount)
 }
 
-func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader finalizedAccountReader, history finalizedHistoryReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool, requireTokenAnchor bool, custodyOnly string) (CrossMintBalanceAnchors, int64, error) {
+func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader fleet.AccountReader, history historyReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool, requireTokenAnchor bool, custodyOnly string) (CrossMintBalanceAnchors, int64, error) {
 	var out CrossMintBalanceAnchors
 	if reader == nil || history == nil || floor <= 0 || requireTokenAnchor && (historyAnchor <= 0 || historyAnchor > floor) {
 		return out, 0, errors.New("cross-mint bank needs finalized proof dependencies and positive floor")
@@ -671,19 +673,16 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader finalizedA
 	// A withdraw leg that empties the source closes its obligation inside the
 	// route (KLend), so null accounts are returned; token anchors and the
 	// reserve stay required by custodyTokenAmount and reservePostIdentity.
-	slot, accounts, err := reader.FinalizedAccountsAllowingAbsent(ctx, keys, floor)
+	slot, accounts, err := fleet.ReadAccounts(ctx, reader, keys, rpc.CommitmentFinalized, floor)
 	if err != nil {
 		return out, 0, err
 	}
-	if slot < floor || len(accounts) != len(keys) {
-		return out, 0, errors.New("cross-mint coherent bank is incomplete or stale")
-	}
-	byKey := map[string]fleet.Account{}
+	byKey := map[string]*chain.Account{}
 	for i, a := range accounts {
-		if a.Address != keys[i] || byKey[a.Address].Address != "" {
+		if _, repeated := byKey[keys[i]]; repeated {
 			return out, 0, errors.New("cross-mint bank contains wrong or repeated identity")
 		}
-		byKey[a.Address] = a
+		byKey[keys[i]] = a
 	}
 	for i, a := range []*CrossMintTokenAmount{expected.Debit, expected.Credit} {
 		if a == nil {
@@ -725,7 +724,7 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader finalizedA
 			return out, 0, errors.New("finalized position identity or token program changed")
 		}
 		account := byKey[p.Obligation]
-		exists := accountExists(account)
+		exists := account != nil
 		collateral := int64(0)
 		if exists {
 			collateral, e = obligationCollateral(account, p.Market, m.VaultPubkey, p.Reserve)
@@ -733,7 +732,7 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader finalizedA
 				return out, 0, e
 			}
 		}
-		minimum, e := backyard.KaminoMinimumDepositAmount(backyard.ConfirmedAccount{Address: reserve.Address, Owner: reserve.Owner, Lamports: reserve.Lamports, Data: reserve.Data, Executable: reserve.Executable}, market, mint)
+		minimum, e := backyard.KaminoMinimumDepositAmount(backyard.ConfirmedAccount{Address: reserve.Key.String(), Owner: reserve.Owner.String(), Lamports: reserve.Lamports, Data: reserve.Data, Executable: reserve.Executable}, market, mint)
 		if e != nil || minimum == 0 || minimum > math.MaxInt64 {
 			return out, 0, errors.New("finalized minimum-deposit conversion is unknown or out of range")
 		}
@@ -749,31 +748,22 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader finalizedA
 
 func crossRuntimeInt(v int64) *int64 { return &v }
 
-func crossMintReceiptEffects(receipt *TransactionReceipt, m CrossMintMovement, pre CrossMintBalanceAnchors) (CrossMintEffect, CrossMintBalanceAnchors, error) {
+func crossMintReceiptEffects(receipt chain.Receipt, m CrossMintMovement, pre CrossMintBalanceAnchors) (CrossMintEffect, CrossMintBalanceAnchors, error) {
 	var effect CrossMintEffect
 	var post CrossMintBalanceAnchors
-	if receipt == nil {
-		return effect, post, errors.New("cross-mint receipt is absent")
-	}
 	for i, anchor := range []*CrossMintTokenAmount{pre.Debit, pre.Credit} {
 		if anchor == nil {
 			continue
 		}
-		var match *TokenDelta
-		for n := range receipt.TokenDeltas {
-			d := &receipt.TokenDeltas[n]
-			if d.Account == anchor.TokenAccount {
-				if match != nil {
-					return effect, post, errors.New("receipt repeats anchored token account")
-				}
-				match = d
-			}
-		}
+		// A balance absent from either side is unknown, never zero.
+		account, keyErr := sdk.PublicKeyFromBase58(anchor.TokenAccount)
+		was, preKnown := receipt.Pre[account]
+		is, postKnown := receipt.Post[account]
 		program, err := canonicalCustodyTokenProgram(anchor.Mint)
-		if err != nil || match == nil || match.Mint != anchor.Mint || match.PreRaw == nil || match.PostRaw == nil || *match.PreRaw > math.MaxInt64 || *match.PostRaw > math.MaxInt64 || int64(*match.PreRaw) != anchor.AmountRaw || match.PreOwner != m.VaultPubkey || match.PostOwner != m.VaultPubkey || match.PreProgram != program || match.PostProgram != program {
+		if err != nil || keyErr != nil || !preKnown || !postKnown || was.Mint.String() != anchor.Mint || is.Mint != was.Mint || was.Amount > math.MaxInt64 || is.Amount > math.MaxInt64 || int64(was.Amount) != anchor.AmountRaw || was.Owner.String() != m.VaultPubkey || is.Owner.String() != m.VaultPubkey || was.Program.String() != program || is.Program.String() != program {
 			return effect, post, errors.New("receipt custody pre/post mint, owner, program or raw balance differs or is unknown")
 		}
-		before, after := int64(*match.PreRaw), int64(*match.PostRaw)
+		before, after := int64(was.Amount), int64(is.Amount)
 		amount := before - after
 		if i == 1 {
 			amount = after - before
@@ -796,13 +786,14 @@ func (r *CrossMintRuntime) reconcile(ctx context.Context, l SubmissionLease) err
 	if l.Submission.ConfirmedSlot == nil {
 		return r.hold(ctx, l, "finalized_slot_missing", errors.New("confirmed slot is unknown"))
 	}
-	receipt, err := r.status.FinalizedTransaction(ctx, l.Submission.Signature)
+	receipt, err := finalizedReceipt(ctx, r.receipts, l.Submission.Signature)
+	if errors.Is(err, chain.ErrNotFound) {
+		return r.store.deferCrossMintStatus(ctx, l, nil, nil, "finalized_receipt_not_yet_available", false)
+	}
 	if err != nil {
 		return err
 	}
-	if receipt == nil {
-		return r.store.deferCrossMintStatus(ctx, l, nil, nil, "finalized_receipt_not_yet_available", false)
-	}
+	slot := int64(receipt.Slot)
 	if err = VerifyReceiptIdentity(receipt, l.Submission, *l.Submission.ConfirmedSlot); err != nil {
 		return r.hold(ctx, l, "finalized_receipt_identity_invalid", err)
 	}
@@ -821,12 +812,12 @@ func (r *CrossMintRuntime) reconcile(ctx context.Context, l SubmissionLease) err
 	if err != nil {
 		return r.hold(ctx, l, "finalized_token_effect_invalid", err)
 	}
-	known, err := r.store.crossMintRecognizedSignatures(ctx, m.DecisionID, receipt.Slot)
+	known, err := r.store.crossMintRecognizedSignatures(ctx, m.DecisionID, slot)
 	if err != nil {
 		return err
 	}
 	known[l.Submission.Signature] = true // Exact finalized wire just verified above.
-	bank, _, err := observeCrossMintBank(ctx, r.accounts, r.history, m, pre, receipt.Slot, receipt.Slot, known, true)
+	bank, _, err := observeCrossMintBank(ctx, r.accounts, r.history, m, pre, slot, slot, known, true)
 	if err != nil {
 		return r.hold(ctx, l, "finalized_custody_history_unproven", err)
 	}
@@ -834,11 +825,11 @@ func (r *CrossMintRuntime) reconcile(ctx context.Context, l SubmissionLease) err
 	if !sameCrossMintAnchorAmounts(metaPost, bank) {
 		return r.hold(ctx, l, "finalized_aggregate_changed_after_receipt", errors.New("finalized account balance differs from receipt postbalance"))
 	}
-	_, err = r.store.ReconcileCrossMintLeg(ctx, l, CrossMintReconciliation{FinalizedSlot: receipt.Slot, Effect: effect, BalanceAnchors: bank})
+	_, err = r.store.ReconcileCrossMintLeg(ctx, l, CrossMintReconciliation{FinalizedSlot: slot, Effect: effect, BalanceAnchors: bank})
 	return err
 }
 
-func (s *Store) verifyCrossMintReceiptLoadedAccounts(ctx context.Context, record SubmissionRecord, receipt *TransactionReceipt) error {
+func (s *Store) verifyCrossMintReceiptLoadedAccounts(ctx context.Context, record SubmissionRecord, receipt chain.Receipt) error {
 	tx, err := sdk.TransactionFromBytes(record.SignedTransaction)
 	if err != nil {
 		return err
@@ -898,6 +889,15 @@ func (s *Store) verifyCrossMintReceiptLoadedAccounts(ctx context.Context, record
 			}
 		}
 	}
-	_, err = receipt.WithAccountAddresses(keys)
-	return err
+	// The receipt's balance indices resolve only through this durable
+	// index->address evidence.
+	if len(receipt.Keys) != len(keys) {
+		return errors.New("receipt account list differs from durable account index evidence")
+	}
+	for i, key := range receipt.Keys {
+		if key.String() != keys[i] {
+			return fmt.Errorf("receipt account %d differs from durable evidence", i)
+		}
+	}
+	return nil
 }

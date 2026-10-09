@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // barrierSweepRPC holds every vault read until the whole wave is in flight,
@@ -22,8 +25,8 @@ type barrierSweepRPC struct {
 	once    sync.Once
 }
 
-func (r *barrierSweepRPC) ConfirmedAccountsAllowingAbsent(ctx context.Context, addresses []string, minimum int64) (int64, []fleet.Account, error) {
-	if len(addresses) > 2 { // a vault batch, not the catalog universe read
+func (r *barrierSweepRPC) Accounts(ctx context.Context, keys []sdk.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error) {
+	if len(keys) > 2 { // a vault batch, not the catalog universe read
 		if r.arrived.Add(1) == int64(r.wave) {
 			r.once.Do(func() { close(r.release) })
 		}
@@ -34,7 +37,7 @@ func (r *barrierSweepRPC) ConfirmedAccountsAllowingAbsent(ctx context.Context, a
 			return 0, nil, ctx.Err()
 		}
 	}
-	return r.scriptedSweepRPC.ConfirmedAccountsAllowingAbsent(ctx, addresses, minimum)
+	return r.scriptedSweepRPC.Accounts(ctx, keys, commitment, minContextSlot)
 }
 
 // A 40-vault RPC wave on the production-sized 16-connection yield pool holds
@@ -72,7 +75,7 @@ func TestPositionSweepWaveLeavesTheSharedPoolToOtherLanes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rpc := &barrierSweepRPC{scriptedSweepRPC: scriptedSweepRPC{slot: 1_000, accounts: map[string]fleet.Account{
+	rpc := &barrierSweepRPC{scriptedSweepRPC: scriptedSweepRPC{slot: 1_000, accounts: map[string]chain.Account{
 		reserves[0]: sweepReserve(reserves[0], markets[0]),
 		reserves[1]: sweepReserve(reserves[1], markets[1]),
 	}}, wave: wave, release: make(chan struct{})}

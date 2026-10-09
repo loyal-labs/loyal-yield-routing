@@ -14,6 +14,7 @@ import (
 	"time"
 
 	solana "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // CrossMintFirstSendRequest carries the immutable journal wire, not a new route
@@ -101,14 +102,14 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 		for _, observation := range []CrossMintCertificatePolicy{cert.FinalizedPolicyReadbacks.Withdraw, cert.FinalizedPolicyReadbacks.Deposit, cert.FinalizedPolicyReadbacks.Swap.CrossMintCertificatePolicy} {
 			account := bank.accounts[observation.PolicyAccount]
 			hash := sha256.Sum256(account.Data)
-			if account.Owner != SquadsProgram || account.Executable || account.Lamports == 0 || hex.EncodeToString(hash[:]) != observation.DataSHA256 {
+			if account.Owner.String() != SquadsProgram || account.Executable || account.Lamports == 0 || hex.EncodeToString(hash[:]) != observation.DataSHA256 {
 				return errors.New("first-send initial withdrawal policy data changed since actual source certification")
 			}
 		}
 	}
 	if input.Leg != "withdraw" {
 		account, ok := bank.accounts[m.CustodyAccount]
-		if !ok || validateVaultTokenAccount(account, m.CustodyMint, m.VaultPubkey) != nil || binary.LittleEndian.Uint64(account.Data[64:72]) != uint64(*m.CustodyObservedBalanceRaw) {
+		if !ok || validateVaultTokenAccount(&account, m.CustodyMint, m.VaultPubkey) != nil || binary.LittleEndian.Uint64(account.Data[64:72]) != uint64(*m.CustodyObservedBalanceRaw) {
 			return errors.New("first-send aggregate differs from attributable custody anchor")
 		}
 	}
@@ -125,11 +126,11 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 	if _, err := r.verifyFinalizedLookupTables(ctx, providerTables, bank.slot); err != nil {
 		return err
 	}
-	height, err := r.rpc.BlockHeight(ctx, "finalized")
+	height, _, err := r.rpc.FinalizedBlockHeight(ctx)
 	if err != nil {
 		return err
 	}
-	if height > input.LastValidBlockHeight {
+	if int64(height) > input.LastValidBlockHeight {
 		return errors.New("first-send original blockhash expired")
 	}
 	if len(actual) < 3 || actual[0].Program != computeProgram || len(actual[0].Accounts) != 0 || len(actual[0].Data) != 5 || actual[0].Data[0] != 2 || actual[1].Program != computeProgram || len(actual[1].Accounts) != 0 || len(actual[1].Data) != 9 || actual[1].Data[0] != 3 {
@@ -159,7 +160,7 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 			return err
 		}
 		account := bank.accounts[input.PolicyAccount]
-		if account.Owner != SquadsProgram || account.Executable || account.Lamports == 0 {
+		if account.Owner.String() != SquadsProgram || account.Executable || account.Lamports == 0 {
 			return errors.New("first-send swap policy envelope changed")
 		}
 		dialect := "route_v2"
@@ -190,7 +191,7 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 	if err != nil || !bytes.Equal(canonical.Message, message) {
 		return errors.New("first-send signed message differs from current canonical protected leg")
 	}
-	sim, err := r.rpc.simulateExactTransaction(ctx, input.SignedWire, bank.slot, "finalized")
+	sim, err := SimulateExact(ctx, r.rpc, input.SignedWire, rpc.CommitmentFinalized, bank.slot)
 	if err != nil {
 		return err
 	}
