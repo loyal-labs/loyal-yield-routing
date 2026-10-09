@@ -13,6 +13,14 @@ import (
 	"strconv"
 
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
+)
+
+// The token programs as the TokenBalance strings carry them.
+var (
+	TokenProgram     = solana.TokenProgramID.String()
+	Token2022Program = solana.Token2022ProgramID.String()
 )
 
 const (
@@ -22,13 +30,10 @@ const (
 
 	MainnetGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
-	KlendProgram     = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
-	JupiterProgram   = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
-	FarmsProgram     = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
-	TokenProgram     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	Token2022Program = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
-	SquadsProgram    = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
-	ATokenProgram    = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+	KlendProgram   = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+	JupiterProgram = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+	FarmsProgram   = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+	SquadsProgram  = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
 
 	USDCMint  = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	USDSMint  = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
@@ -157,11 +162,11 @@ func DeriveEarnMaxTopology(settings solana.PublicKey, policySeedBase uint64) (*E
 	if err != nil {
 		return nil, fmt.Errorf("derive squads vault: %w", err)
 	}
-	claimCustody, err := DeriveAssociatedTokenAccount(vault, mustKey(USDCMint), mustKey(TokenProgram))
+	claimCustody, err := spl.AssociatedTokenAddress(vault, mustKey(USDCMint), solana.TokenProgramID)
 	if err != nil {
 		return nil, err
 	}
-	collateralCustody, err := DeriveAssociatedTokenAccount(vault, mustKey(syrupMint), mustKey(TokenProgram))
+	collateralCustody, err := spl.AssociatedTokenAddress(vault, mustKey(syrupMint), solana.TokenProgramID)
 	if err != nil {
 		return nil, err
 	}
@@ -215,15 +220,6 @@ func (t *EarnMaxTopology) StrategyCatalog() []StrategyConfig {
 		catalog = append(catalog, t.Strategies[key])
 	}
 	return catalog
-}
-
-// DeriveAssociatedTokenAccount mirrors derive_associated_token_account.
-func DeriveAssociatedTokenAccount(owner, mint, tokenProgram solana.PublicKey) (solana.PublicKey, error) {
-	key, _, err := solana.FindProgramAddress([][]byte{owner[:], tokenProgram[:], mint[:]}, mustKey(ATokenProgram))
-	if err != nil {
-		return solana.PublicKey{}, fmt.Errorf("derive ATA: %w", err)
-	}
-	return key, nil
 }
 
 // deriveKaminoObligation mirrors derive_kamino_obligation.
@@ -368,11 +364,11 @@ func deriveStrategy(settings, vault solana.PublicKey, template strategyTemplate,
 	if err != nil {
 		return StrategyConfig{}, err
 	}
-	collateralCustody, err := DeriveAssociatedTokenAccount(vault, collateralMint, mustKey(TokenProgram))
+	collateralCustody, err := spl.AssociatedTokenAddress(vault, collateralMint, solana.TokenProgramID)
 	if err != nil {
 		return StrategyConfig{}, err
 	}
-	debtCustody, err := DeriveAssociatedTokenAccount(vault, debtMint, debtTokenProgram)
+	debtCustody, err := spl.AssociatedTokenAddress(vault, debtMint, debtTokenProgram)
 	if err != nil {
 		return StrategyConfig{}, err
 	}

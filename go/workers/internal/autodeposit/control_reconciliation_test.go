@@ -11,6 +11,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
@@ -20,8 +21,9 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	walletATA, _ := usdcATA(wallet)
-	vaultATA, _ := usdcATA(vault)
+	walletKey, _ := spl.AssociatedTokenAddress(wallet, mint, solana.TokenProgramID)
+	vaultKey, _ := spl.AssociatedTokenAddress(vault, mint, solana.TokenProgramID)
+	walletATA, vaultATA := walletKey.String(), vaultKey.String()
 	authority, _ := subscriptionAuthorityKey(wallet[:], mint[:])
 	nonce := int64(7)
 	budget := int64(5_000_000)

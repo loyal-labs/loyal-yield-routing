@@ -1,8 +1,9 @@
 package backyard
 
 import (
-	"encoding/binary"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 // AUTO execution resources. The deployed Squads ELF cannot parse or execute
@@ -23,23 +24,13 @@ const (
 	// autoSwapComputeUnitLimit sets a fixed compute budget for AUTO Jupiter
 	// swaps above the 202842 units consumed before the default meter failed.
 	autoSwapComputeUnitLimit = 300000
-	// computeBudgetProgram is the exact ComputeBudget program identity from the
-	// authoritative SDK sources (@solana/web3.js src/programs/compute-budget.ts
-	// and solana-sdk-ids compute_budget declare_id!). Tests pin its decoded
-	// bytes independently; base58 validity alone never proves identity.
-	computeBudgetProgram          = "ComputeBudget111111111111111111111111111111"
-	requestHeapFrameDiscriminator = 1
-	setComputeUnitLimitFrameTag   = 2
 )
 
 // autoComputeBudgetHeapInstruction is the canonical ComputeBudget
-// requestHeapFrame(autoExecutionHeapBytes) instruction: discriminator byte 1
-// followed by the requested frame size as a little-endian u32, with no
-// accounts. The identical five bytes every AUTO leg must carry.
+// requestHeapFrame(autoExecutionHeapBytes) instruction with no accounts: the
+// identical five bytes every AUTO leg must carry.
 func autoComputeBudgetHeapInstruction() compiledInstruction {
-	data := []byte{requestHeapFrameDiscriminator, 0, 0, 0, 0}
-	binary.LittleEndian.PutUint32(data[1:], autoExecutionHeapBytes)
-	return compiledInstruction{program: mustKey(computeBudgetProgram), data: data}
+	return sdkInstruction(spl.RequestHeapFrame(autoExecutionHeapBytes))
 }
 
 // isAutoExecutionHeapInstruction reports whether an instruction is exactly the
@@ -61,14 +52,11 @@ func isCanonicalHeapFrame(program publicKey, accountCount int, data []byte) bool
 }
 
 // autoComputeBudgetUnitLimitInstruction is the canonical ComputeBudget
-// setComputeUnitLimit(autoSwapComputeUnitLimit) instruction: discriminator
-// byte 2 followed by the limit as a little-endian u32, with no accounts. It is
-// only ever emitted on AUTO Jupiter swap legs, immediately behind the heap
-// frame.
+// setComputeUnitLimit(autoSwapComputeUnitLimit) instruction with no accounts.
+// It is only ever emitted on AUTO Jupiter swap legs, immediately behind the
+// heap frame.
 func autoComputeBudgetUnitLimitInstruction() compiledInstruction {
-	data := []byte{setComputeUnitLimitFrameTag, 0, 0, 0, 0}
-	binary.LittleEndian.PutUint32(data[1:], autoSwapComputeUnitLimit)
-	return compiledInstruction{program: mustKey(computeBudgetProgram), data: data}
+	return sdkInstruction(spl.SetComputeUnitLimit(autoSwapComputeUnitLimit))
 }
 
 // isCanonicalUnitLimitFrame is the decode-shape form of the same check,

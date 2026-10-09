@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 // BuiltOperation mirrors builder::BuiltOperation.
@@ -370,7 +372,7 @@ func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, re
 	if tx.Signatures[0].String() != receipt.Signature {
 		return errors.New("claim receipt does not bind the signed transaction")
 	}
-	source, vault, usdc, token := topology.ClaimCustody, topology.Vault, mustKey(USDCMint), mustKey(TokenProgram)
+	source, vault, usdc, token := topology.ClaimCustody, topology.Vault, mustKey(USDCMint), solana.TokenProgramID
 	destination, err := solana.PublicKeyFromBase58(w.DestinationAccount)
 	if err != nil {
 		return err
@@ -469,8 +471,7 @@ func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, re
 			}
 			return 0
 		}
-		transfer := appendU64Instruction([]byte{12}, amount)
-		transfer = append(transfer, 6)
+		transfer := spl.TransferChecked(token, source, usdc, destination, vault, amount, 6).DataBytes
 		inner := []byte{position(source, true, false), position(usdc, false, false), position(destination, true, false), position(vault, false, true)}
 		payload := append([]byte{1, position(token, false, false), 4}, inner...)
 		payload = binary.LittleEndian.AppendUint16(payload, uint16(len(transfer)))
@@ -642,8 +643,8 @@ func depositInstructions(config StrategyConfig, vault solana.PublicKey, amount u
 				keyMeta(config.CollateralMintSupply, false, true),
 				keyMeta(config.CollateralCustody, false, true),
 				klendPlaceholder(),
-				keyMeta(mustKey(TokenProgram), false, false),
-				keyMeta(mustKey(TokenProgram), false, false),
+				keyMeta(solana.TokenProgramID, false, false),
+				keyMeta(solana.TokenProgramID, false, false),
 				instructionsSysvar(),
 				farmUserMeta(config.CollateralFarmUser),
 				farmStateMeta(config.CollateralFarmState),
@@ -703,8 +704,8 @@ func withdrawInstructions(config StrategyConfig, vault solana.PublicKey, amount 
 				keyMeta(config.CollateralLiquiditySupply, false, true),
 				keyMeta(config.CollateralCustody, false, true),
 				klendPlaceholder(),
-				keyMeta(mustKey(TokenProgram), false, false),
-				keyMeta(mustKey(TokenProgram), false, false),
+				keyMeta(solana.TokenProgramID, false, false),
+				keyMeta(solana.TokenProgramID, false, false),
 				instructionsSysvar(),
 				farmUserMeta(config.CollateralFarmUser),
 				farmStateMeta(config.CollateralFarmState),

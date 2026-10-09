@@ -31,6 +31,7 @@ func TestHandlerPersistsRealATAObservationSchema(t *testing.T) {
 	copy(data[:32], mint[:])
 	copy(data[32:64], tokenOwner[:])
 	binary.LittleEndian.PutUint64(data[64:72], 123)
+	data[108] = 1
 	handler := NewHandler(pool, nil)
 	handler.SetTargets(map[string]watch.ATATarget{ataKey.String(): {ID: 1, Cluster: "mainnet", Wallet: tokenOwner.String(), WalletATA: ataKey.String(), Vault: solana.NewWallet().PublicKey().String(), VaultATA: solana.NewWallet().PublicKey().String(), Mint: mint.String()}})
 	update := &pb.SubscribeUpdate{Filters: []string{watch.BalanceSweepWalletATAs}, UpdateOneof: &pb.SubscribeUpdate_Account{Account: &pb.SubscribeUpdateAccount{Slot: 50, Account: &pb.SubscribeUpdateAccountInfo{Pubkey: ataKey[:], Lamports: 2_039_280, Owner: solana.TokenProgramID[:], Data: data, TxnSignature: []byte{1, 2, 3}}}}}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 // KLend instruction builders. This is the Go port of the official
@@ -16,9 +18,8 @@ import (
 const (
 	KLendProgram = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 
-	systemProgram          = "11111111111111111111111111111111"
-	rentSysvar             = "SysvarRent111111111111111111111111111111111"
-	associatedTokenProgram = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+	systemProgram = "11111111111111111111111111111111"
+	rentSysvar    = "SysvarRent111111111111111111111111111111111"
 )
 
 type InstructionAccount struct {
@@ -151,8 +152,11 @@ func BuildSameMintRoute(r KaminoSameMintRouteRequest) ([]RouteInstruction, error
 	}
 	route = append(route, withdraw)
 	if r.VaultRentTopUpLamports > 0 {
-		route = append(route, RouteInstruction{Step: "system_transfer_vault_rent_top_up", Program: systemProgram, Accounts: []InstructionAccount{{r.Payer, true, true}, {owner, false, true}},
-			Data: binary.LittleEndian.AppendUint64([]byte{2, 0, 0, 0}, r.VaultRentTopUpLamports)})
+		payer, err := solana.PublicKeyFromBase58(r.Payer)
+		if err != nil {
+			return nil, err
+		}
+		route = append(route, RouteInstructionOf("system_transfer_vault_rent_top_up", spl.SystemTransfer(payer, vault, r.VaultRentTopUpLamports)))
 	}
 	metadata, err := findProgramAddress(KLendProgram, []byte("user_meta"), vault[:])
 	if err != nil {
@@ -245,12 +249,11 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 		// (c1aebfc0:crates/autonomous-vaults/src/kamino.rs) with the executor
 		// paying rent.
 		ata, err := deriveATA(owner, t.LiquidityMint, t.LiquidityTokenProgram)
-		if err != nil || ata != t.VaultLiquidityATA {
+		payer, payerErr := solana.PublicKeyFromBase58(r.Payer)
+		if err != nil || payerErr != nil || ata != t.VaultLiquidityATA {
 			return KaminoSameMintRoute{}, fmt.Errorf("setup custody is not vault ATA")
 		}
-		ix = RouteInstruction{Program: associatedTokenProgram, Data: []byte{1}, Accounts: []InstructionAccount{
-			{r.Payer, true, true}, {ata, false, true}, {owner, false, false}, {t.LiquidityMint, false, false}, {systemProgram, false, false}, {t.LiquidityTokenProgram, false, false},
-		}}
+		ix = RouteInstructionOf("", spl.CreateIdempotentATA(payer, vault, solana.MustPublicKeyFromBase58(t.LiquidityMint), solana.MustPublicKeyFromBase58(t.LiquidityTokenProgram)))
 	case "metadata":
 		ix = klendInstruction("init_user_metadata", make([]byte, 32), []InstructionAccount{
 			{owner, true, false}, {owner, true, true}, {metadata, false, true}, {KLendProgram, false, false}, {rentSysvar, false, false}, {systemProgram, false, false},

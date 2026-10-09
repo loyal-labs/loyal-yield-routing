@@ -11,16 +11,18 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPlan, DestinationSetupPlan, map[string]testAccount) {
 	t.Helper()
 	plan, _ := testPullPlan()
 	vault := mustKey(plan.Target.VaultPubkey)
-	ata, err := usdcATA(vault)
+	ataKey, err := spl.AssociatedTokenAddress(vault, mustKey(USDCMint), solana.TokenProgramID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ata := ataKey.String()
 	plan.Target.VaultUsdcAta = ata
 	plan.Target.VaultTokenAta = ata
 	metadata, err := metadataKey(plan.Target.VaultPubkey)

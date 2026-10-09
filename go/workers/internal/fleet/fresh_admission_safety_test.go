@@ -32,25 +32,24 @@ func TestFreshVaultTokenCustodyChecksProgramAndState(t *testing.T) {
 		}
 		data := make([]byte, 165)
 		if program == token2022Program {
-			data = make([]byte, 166)
-			data[165] = 2
+			data = append(make([]byte, 165), 2, 7, 0, 0, 0)
 		}
 		fixtureKey(t, data, 0, mint)
 		fixtureKey(t, data, 32, owner)
 		data[108] = 1
 		a := &chain.Account{Owner: solana.MustPublicKeyFromBase58(program), Lamports: 1, Data: data}
-		if err := validateVaultTokenAccount(a, mint, owner); err != nil {
+		if _, err := validateVaultTokenAccount(a, mint, owner); err != nil {
 			t.Fatalf("valid %s custody rejected: %v", mint, err)
 		}
 		for _, state := range []byte{0, 2} {
 			a.Data[108] = state
-			if err := validateVaultTokenAccount(a, mint, owner); err == nil {
+			if _, err := validateVaultTokenAccount(a, mint, owner); err == nil {
 				t.Fatal("uninitialized or frozen custody accepted")
 			}
 		}
 		a.Data[108] = 1
 		a.Owner = solana.MustPublicKeyFromBase58(SquadsProgram)
-		if err := validateVaultTokenAccount(a, mint, owner); err == nil {
+		if _, err := validateVaultTokenAccount(a, mint, owner); err == nil {
 			t.Fatal("foreign token program accepted")
 		}
 	}

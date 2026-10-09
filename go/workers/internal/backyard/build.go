@@ -8,6 +8,10 @@ import (
 	"fmt"
 	"math"
 	"sort"
+
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 var ErrTransactionConstructionUnavailable = fmt.Errorf("transaction construction blocked: deployed adaptor v2 and complete policy catalog are required")
@@ -121,7 +125,6 @@ const (
 	bridgeIdleATA         = "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh"
 	bridgeStrategyATA     = "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC"
 	bridgeSquadsATA       = "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe"
-	bridgeTokenProgram    = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 	bridgeAdaptorProgram  = "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
 )
 
@@ -321,12 +324,17 @@ func voltrWithdrawInstruction(data []byte) compiledInstruction {
 }
 
 func stageInstruction(amount uint64) compiledInstruction {
-	data := []byte{12}
-	data = appendU64(data, amount)
-	data = append(data, 6) // USDC decimals
-	return compiledInstruction{program: mustKey(bridgeTokenProgram), data: data, accounts: metas(
-		meta(bridgeSquadsATA, false, true), meta(bridgeUSDC, false, false), meta(bridgeStrategyATA, false, true), meta(bridgeVault, true, false),
-	)}
+	key := func(value string) solana.PublicKey { return solana.PublicKey(mustKey(value)) }
+	return sdkInstruction(spl.TransferChecked(solana.TokenProgramID, key(bridgeSquadsATA), key(bridgeUSDC), key(bridgeStrategyATA), key(bridgeVault), amount, 6))
+}
+
+// sdkInstruction is an instruction solana-go built.
+func sdkInstruction(ix *solana.GenericInstruction) compiledInstruction {
+	out := compiledInstruction{program: publicKey(ix.ProgID), data: ix.DataBytes}
+	for _, account := range ix.AccountValues {
+		out.accounts = append(out.accounts, accountMeta{key: publicKey(account.PublicKey), signer: account.IsSigner, writable: account.IsWritable})
+	}
+	return out
 }
 
 func wrapSquadsPolicyForDelegate(policy, executor, expectedDelegate publicKey, constraintIndexes []byte, inner []compiledInstruction) (compiledInstruction, error) {

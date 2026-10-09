@@ -111,7 +111,8 @@ func (c *RPCChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, a
 	if account == nil {
 		return 0, ErrTokenAccountAbsent
 	}
-	return usdcTokenAccount(account, authority)
+	held, err := usdcTokenAccount(account, authority)
+	return int64(held.Amount), err
 }
 
 // RemainingDelegationAllowanceRaw reads the delegation account and decodes its
@@ -153,12 +154,12 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 	if err != nil {
 		return 0, err
 	}
-	if _, err := usdcTokenAccount(wallet, identity.Delegator); err != nil || binary.LittleEndian.Uint32(wallet.Data[72:76]) != 1 || base58Key(wallet.Data[76:108]) != base58Key(authority[:]) {
+	held, err := usdcTokenAccount(wallet, identity.Delegator)
+	if err != nil || held.Delegate == nil || *held.Delegate != solana.PublicKey(authority) {
 		return 0, fmt.Errorf("%w: wallet token approval does not authorize the subscription authority", ErrAllowanceUnknown)
 	}
-	tokenAllowance := binary.LittleEndian.Uint64(wallet.Data[121:129])
-	if tokenAllowance < uint64(allowance) {
-		allowance = int64(tokenAllowance)
+	if held.DelegatedAmount < uint64(allowance) {
+		allowance = int64(held.DelegatedAmount)
 	}
 	return allowance, nil
 }

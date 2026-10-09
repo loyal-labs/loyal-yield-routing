@@ -20,6 +20,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 // The Backyard Voltr four-market manager route, ported from loyal-actions
@@ -258,15 +259,16 @@ func ObserveVoltr(ctx context.Context, c *chain.Client, r VoltrRoute, minSlot in
 	if slices.Contains(accounts, nil) {
 		return o, errors.New("voltr vault, idle account or strategy receipt is absent")
 	}
-	vault, idle := accounts[0].Data, accounts[1].Data
+	vault := accounts[0].Data
 	if accounts[0].Owner.String() != voltrVaultProgram || len(vault) != 928 || !bytes.Equal(vault[:8], voltrVaultDiscriminator) || encodeBase58(vault[104:136]) != USDCMint ||
 		encodeBase58(vault[368:400]) != r.Manager || binary.LittleEndian.Uint64(vault[456:464]) != voltrWithdrawalWaitSeconds || encodeBase58(vault[136:168]) != voltrIdleATA {
 		return o, errors.New("voltr vault owner, layout, manager, asset or withdrawal wait drifted")
 	}
-	if accounts[1].Owner.String() != tokenProgram || len(idle) != 165 || idle[108] != 1 || encodeBase58(idle[:32]) != USDCMint || encodeBase58(idle[32:64]) != r.IdleAuthority {
+	idle, err := spl.DecodeTokenAccount(accounts[1])
+	if err != nil || idle.Program != solana.TokenProgramID || idle.Frozen || idle.Mint.String() != USDCMint || idle.Owner.String() != r.IdleAuthority {
 		return o, errors.New("voltr idle ATA mint, owner or token program drifted")
 	}
-	o.ContextSlot, o.TotalValueRaw, o.IdleRaw = slot, binary.LittleEndian.Uint64(vault[168:176]), binary.LittleEndian.Uint64(idle[64:72])
+	o.ContextSlot, o.TotalValueRaw, o.IdleRaw = slot, binary.LittleEndian.Uint64(vault[168:176]), idle.Amount
 	positions := []string{}
 	sum := uint64(0)
 	for i, s := range r.Strategies {

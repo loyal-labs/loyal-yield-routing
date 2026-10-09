@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
@@ -295,7 +296,7 @@ func buildRouteALTManifest(input KaminoSameMintRouteRequest, settings string, po
 		}
 	}
 
-	for _, key := range []string{"11111111111111111111111111111111", "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "Sysvar1nstructions1111111111111111111111111", "SysvarRent111111111111111111111111111111111", KLendProgram, farmsProgram} {
+	for _, key := range []string{solana.SystemProgramID.String(), tokenProgram, solana.SPLAssociatedTokenAccountProgramID.String(), "Sysvar1nstructions1111111111111111111111111", "SysvarRent111111111111111111111111111111111", KLendProgram, farmsProgram} {
 		if err := add(key, 1, 10); err != nil {
 			return ALTManifest{}, err
 		}
@@ -343,7 +344,7 @@ func buildRouteALTManifest(input KaminoSameMintRouteRequest, settings string, po
 	// instruction, the System program, and the four-byte advance prefix count.
 	if len(instructions) > 0 {
 		ix := instructions[0]
-		if ix.Program == "11111111111111111111111111111111" && len(ix.Data) >= 4 &&
+		if ix.Program == solana.SystemProgramID.String() && len(ix.Data) >= 4 &&
 			bytes.Equal(ix.Data[:4], []byte{4, 0, 0, 0}) && len(ix.Accounts) > 0 {
 			nonce := byte(2)
 			if err := touch(ix.Accounts[0].Address, false, &nonce); err != nil {

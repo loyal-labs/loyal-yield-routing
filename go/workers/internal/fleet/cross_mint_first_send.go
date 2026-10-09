@@ -109,7 +109,8 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 	}
 	if input.Leg != "withdraw" {
 		account, ok := bank.accounts[m.CustodyAccount]
-		if !ok || validateVaultTokenAccount(&account, m.CustodyMint, m.VaultPubkey) != nil || binary.LittleEndian.Uint64(account.Data[64:72]) != uint64(*m.CustodyObservedBalanceRaw) {
+		held, err := validateVaultTokenAccount(&account, m.CustodyMint, m.VaultPubkey)
+		if !ok || err != nil || held.Amount != uint64(*m.CustodyObservedBalanceRaw) {
 			return errors.New("first-send aggregate differs from attributable custody anchor")
 		}
 	}

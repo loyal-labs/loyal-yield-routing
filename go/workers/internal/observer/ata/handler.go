@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	workersdb "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/mr-tron/base58"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -161,28 +161,18 @@ func decodeObservation(target watch.ATATarget, pubkey string, lamports uint64, o
 	if lamports == 0 {
 		return observation{target: target, pubkey: pubkey, amount: 0, mint: target.Mint, slot: slot, source: source, signature: signature, data: data, received: received}, nil
 	}
-	if owner != solana.TokenProgramID.String() {
-		return observation{}, fmt.Errorf("ATA %s owner is %s, expected SPL Token", pubkey, owner)
+	held, err := spl.DecodeTokenAccount(&chain.Account{Owner: solana.PublicKeyFromBytes(ownerBytes), Lamports: lamports, Data: data})
+	if err != nil || held.Program != solana.TokenProgramID {
+		return observation{}, fmt.Errorf("ATA %s owned by %s is not an SPL Token account: %v", pubkey, owner, err)
 	}
-	if len(data) < 72 {
-		return observation{}, fmt.Errorf("ATA %s data is %d bytes, expected at least 72", pubkey, len(data))
-	}
-	mint, err := publicKey(data[:32])
-	if err != nil {
-		return observation{}, err
-	}
-	tokenOwner, err := publicKey(data[32:64])
-	if err != nil {
-		return observation{}, err
-	}
+	mint, tokenOwner := held.Mint.String(), held.Owner.String()
 	if mint != usdcMint {
 		return observation{}, fmt.Errorf("ATA %s mint is %s, expected USDC", pubkey, mint)
 	}
-	amount := binary.LittleEndian.Uint64(data[64:72])
-	if amount > math.MaxInt64 {
+	if held.Amount > math.MaxInt64 {
 		return observation{}, fmt.Errorf("ATA amount exceeds PostgreSQL BIGINT")
 	}
-	return observation{target: target, pubkey: pubkey, lamports: lamports, amount: amount, owner: &tokenOwner, mint: mint, slot: slot, source: source, signature: signature, data: data, received: received}, nil
+	return observation{target: target, pubkey: pubkey, lamports: lamports, amount: held.Amount, owner: &tokenOwner, mint: mint, slot: slot, source: source, signature: signature, data: data, received: received}, nil
 }
 
 func (h *Handler) recheck(ctx context.Context, target watch.ATATarget, minimumSlot uint64, streamError error) (Outcome, error) {

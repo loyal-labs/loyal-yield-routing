@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 const (
@@ -27,11 +29,10 @@ const (
 )
 
 var (
-	squadsProgram          = solana.MustPublicKeyFromBase58("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG")
-	associatedTokenProgram = solana.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
-	tokenProgram           = solana.TokenProgramID
-	token2022Program       = solana.MustPublicKeyFromBase58("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
-	kaminoProgram          = solana.MustPublicKeyFromBase58("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD")
+	squadsProgram    = solana.MustPublicKeyFromBase58("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG")
+	tokenProgram     = solana.TokenProgramID
+	token2022Program = solana.Token2022ProgramID
+	kaminoProgram    = solana.MustPublicKeyFromBase58("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD")
 )
 
 type Stablecoin struct{ Mint, TokenProgram solana.PublicKey }
@@ -669,7 +670,10 @@ func USDCATA(owner string) (string, error) {
 }
 
 func associatedToken(owner solana.PublicKey, coin Stablecoin) string {
-	address, _, _ := solana.FindProgramAddress([][]byte{owner[:], coin.TokenProgram[:], coin.Mint[:]}, associatedTokenProgram)
+	address, err := spl.AssociatedTokenAddress(owner, coin.Mint, coin.TokenProgram)
+	if err != nil {
+		panic(err)
+	}
 	return address.String()
 }
 func ChannelForRole(role string) string {

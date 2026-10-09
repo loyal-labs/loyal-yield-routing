@@ -11,6 +11,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 	"math"
@@ -148,23 +149,16 @@ func reservePostIdentity(a *chain.Account, mint, owner string) (market, obligati
 	return
 }
 func associatedCustodyAccount(owner, mint, program string) (string, error) {
-	o, err := sdk.PublicKeyFromBase58(owner)
-	if err != nil {
-		return "", err
+	keys := make([]sdk.PublicKey, 3)
+	for i, value := range []string{owner, mint, program} {
+		key, err := sdk.PublicKeyFromBase58(value)
+		if err != nil {
+			return "", err
+		}
+		keys[i] = key
 	}
-	m, err := sdk.PublicKeyFromBase58(mint)
-	if err != nil {
-		return "", err
-	}
-	p, err := sdk.PublicKeyFromBase58(program)
-	if err != nil {
-		return "", err
-	}
-	if program != "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" && program != "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" {
-		return "", errors.New("unsupported liquidity token program")
-	}
-	a, _, err := sdk.FindProgramAddress([][]byte{o[:], p[:], m[:]}, sdk.MustPublicKeyFromBase58("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"))
-	return a.String(), err
+	address, err := spl.AssociatedTokenAddress(keys[0], keys[1], keys[2])
+	return address.String(), err
 }
 
 func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c sameMintPostContract, receipt chain.Receipt, slotDuration time.Duration) (*sameMintPostProof, error) {

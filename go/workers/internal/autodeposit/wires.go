@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -15,6 +16,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 // Official program constants for the two family wires. Every offset below is
@@ -47,7 +49,6 @@ var (
 )
 
 const (
-	splTokenAccountLength         = 165
 	systemProgramZero             = "11111111111111111111111111111111"
 	reserveMarketOffset           = 32
 	reserveFarmOffset             = 64
@@ -231,11 +232,11 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	}
 	vault := mustKey(plan.Target.VaultPubkey)
 	market := mustKey(plan.Market)
-	vaultATA, err := usdcATA(vault)
+	vaultATA, err := spl.AssociatedTokenAddress(vault, mustKey(USDCMint), solana.TokenProgramID)
 	if err != nil {
 		return TopUpRoute{}, err
 	}
-	if vaultATA != plan.Target.VaultUsdcAta {
+	if vaultATA.String() != plan.Target.VaultUsdcAta {
 		return TopUpRoute{}, fmt.Errorf("%w: frozen custody %s is not the vault's USDC ATA", ErrRouteNotExecutable, plan.Target.VaultUsdcAta)
 	}
 	obligationKey, err := vanillaObligationKey(vault, market)
@@ -360,12 +361,6 @@ func decodeReservePosition(reserve string, data []byte) TopUpRoute {
 	return route
 }
 
-// usdcATA is owner's associated USDC token account.
-func usdcATA(owner solana.PublicKey) (string, error) {
-	ata, _, err := solana.FindAssociatedTokenAddress(owner, mustKey(USDCMint))
-	return ata.String(), err
-}
-
 // vanillaObligationKey derives the vanilla obligation PDA: seeds
 // [tag 0, id 0, vault, market, zero, zero] over the KLend program, exactly as
 // derive_kamino_vanilla_obligation does in loyal-actions.
@@ -378,21 +373,17 @@ func vanillaObligationKey(vault, market solana.PublicKey) (string, error) {
 	return base58Key(derived[:]), nil
 }
 
-// usdcTokenAccount decodes an initialized SPL Token USDC account held by
-// owner and returns its raw balance in the family's int64 range.
-func usdcTokenAccount(account *chain.Account, owner string) (int64, error) {
-	d := account.Data
-	if account.Owner != solana.TokenProgramID || account.Executable || len(d) != splTokenAccountLength || d[108] != 1 {
-		return 0, fmt.Errorf("%s is not an initialized SPL Token account", account.Key)
+// usdcTokenAccount is owner's unfrozen SPL Token USDC account, whose balance
+// fits the family's int64 range.
+func usdcTokenAccount(account *chain.Account, owner string) (spl.TokenAccount, error) {
+	held, err := spl.DecodeTokenAccount(account)
+	if err != nil {
+		return spl.TokenAccount{}, err
 	}
-	if base58Key(d[:32]) != USDCMint || base58Key(d[32:64]) != owner {
-		return 0, fmt.Errorf("%s is not %s's USDC token account", account.Key, owner)
+	if held.Program != solana.TokenProgramID || held.Frozen || held.Mint.String() != USDCMint || held.Owner.String() != owner || held.Amount > math.MaxInt64 {
+		return spl.TokenAccount{}, fmt.Errorf("%s is not %s's USDC token account in the int64 range", account.Key, owner)
 	}
-	amount := binary.LittleEndian.Uint64(d[64:72])
-	if amount > 1<<63-1 {
-		return 0, fmt.Errorf("%s balance exceeds the family's int64 range", account.Key)
-	}
-	return int64(amount), nil
+	return held, nil
 }
 
 // wrapWithPolicy wraps one inner instruction in the Squads

@@ -78,7 +78,7 @@ func observedToken(key solana.PublicKey, mint string, owner solana.PublicKey, am
 	copy(data[32:64], owner[:])
 	binary.LittleEndian.PutUint64(data[64:72], amount)
 	data[108] = 1
-	return &chain.Account{Key: key, Owner: mustKey(TokenProgram), Lamports: 1, Data: data}
+	return &chain.Account{Key: key, Owner: solana.TokenProgramID, Lamports: 1, Data: data}
 }
 
 func emptyBankReader(topology *EarnMaxTopology) *bankObservationReader {

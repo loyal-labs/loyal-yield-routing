@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
-	computebudget "github.com/solana-foundation/solana-go/v2/programs/compute-budget"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 const (
@@ -122,7 +122,7 @@ func (e *Executor) Delegate() solana.PublicKey {
 // and the single Squads policy terminal, compile and sign the legacy wire,
 // and return the immutable SignedOperation. Nothing is sent here.
 func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, policy solana.PublicKey, accountIndex uint8, constraintIndexes []byte, minContextSlot uint64) (*SignedOperation, uint64, error) {
-	if built != nil && len(built.PolicyInstructions) == 1 && built.PolicyInstructions[0].ProgramID == mustKey(TokenProgram) {
+	if built != nil && len(built.PolicyInstructions) == 1 && built.PolicyInstructions[0].ProgramID == solana.TokenProgramID {
 		return nil, 0, errors.New("delegate cannot sign wallet-owned token claims")
 	}
 	if built == nil || len(built.PolicyInstructions) != 1 {
@@ -243,12 +243,8 @@ func sdkInstruction(ix Instruction) solana.Instruction {
 }
 
 func computeBudgetPreamble() []Instruction {
-	ix := computebudget.NewSetComputeUnitLimitInstruction(computeUnitLimit).Build()
-	data, err := ix.Data()
-	if err != nil {
-		panic(err)
-	}
-	return []Instruction{{ProgramID: ix.ProgramID(), Data: data}}
+	ix := spl.SetComputeUnitLimit(computeUnitLimit)
+	return []Instruction{{ProgramID: ix.ProgID, Data: ix.DataBytes}}
 }
 
 // PolicyEvidence mirrors executor::PolicyEvidence.
