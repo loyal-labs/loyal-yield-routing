@@ -35,7 +35,7 @@ type fakeChain struct {
 }
 
 func (f *fakeChain) GenesisHash(context.Context) (solana.Hash, error) { return f.genesis, nil }
-func (f *fakeChain) Blockhash(context.Context, rpc.CommitmentType) (solana.Hash, uint64, uint64, error) {
+func (f *fakeChain) Blockhash(context.Context, rpc.CommitmentType, uint64) (solana.Hash, uint64, uint64, error) {
 	return f.blockhash, f.lastValid, f.slot, nil
 }
 func (f *fakeChain) Accounts(_ context.Context, keys []solana.PublicKey, _ rpc.CommitmentType, _ uint64) (uint64, []*chain.Account, error) {
@@ -45,7 +45,7 @@ func (f *fakeChain) Accounts(_ context.Context, keys []solana.PublicKey, _ rpc.C
 	}
 	return f.slot, accounts, nil
 }
-func (f *fakeChain) Fee(context.Context, []byte, rpc.CommitmentType) (uint64, error) {
+func (f *fakeChain) Fee(context.Context, []byte, rpc.CommitmentType, uint64) (uint64, error) {
 	return f.fee, nil
 }
 func (f *fakeChain) Simulate(context.Context, []byte, rpc.SimulateTransactionOpts) (chain.Simulated, error) {

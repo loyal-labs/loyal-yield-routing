@@ -104,11 +104,7 @@ func (c *Client) Accounts(ctx context.Context, keys []solana.PublicKey, commitme
 	accounts = make([]*Account, 0, len(keys))
 	for start := 0; start < len(keys); start += maxAccountsPerCall {
 		batch := keys[start:min(start+maxAccountsPerCall, len(keys))]
-		opts := &rpc.GetMultipleAccountsOpts{Encoding: solana.EncodingBase64, Commitment: commitment}
-		if minContextSlot > 0 {
-			opts.MinContextSlot = &minContextSlot
-		}
-		out, err := c.rpc.GetMultipleAccountsWithOpts(ctx, batch, opts)
+		out, err := c.rpc.GetMultipleAccountsWithOpts(ctx, batch, &rpc.GetMultipleAccountsOpts{Encoding: solana.EncodingBase64, Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
 		if err != nil {
 			return 0, nil, failed("getMultipleAccounts", err)
 		}
@@ -140,10 +136,11 @@ func (c *Client) Slot(ctx context.Context, commitment rpc.CommitmentType) (uint6
 	return slot, nil
 }
 
-// Blockhash is a blockhash at commitment, the last block height it is valid
-// at and the slot it was read at.
-func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType) (hash solana.Hash, lastValid, slot uint64, err error) {
-	out, err := c.rpc.GetLatestBlockhash(ctx, commitment)
+// Blockhash is a blockhash at commitment from a node at or past
+// minContextSlot, the last block height it is valid at and the slot it was
+// read at.
+func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType, minContextSlot uint64) (hash solana.Hash, lastValid, slot uint64, err error) {
+	out, err := c.rpc.GetLatestBlockhashWithOpts(ctx, &rpc.GetLatestBlockhashOpts{Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
 	if err != nil {
 		return solana.Hash{}, 0, 0, failed("getLatestBlockhash", err)
 	}
@@ -154,9 +151,9 @@ func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType) (
 }
 
 // Fee is what the cluster charges for message (the compiled message bytes,
-// not the signed wire) at commitment.
-func (c *Client) Fee(ctx context.Context, message []byte, commitment rpc.CommitmentType) (uint64, error) {
-	out, err := c.rpc.GetFeeForMessage(ctx, base64.StdEncoding.EncodeToString(message), commitment)
+// not the signed wire) at commitment, from a node at or past minContextSlot.
+func (c *Client) Fee(ctx context.Context, message []byte, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, error) {
+	out, err := c.rpc.GetFeeForMessageWithOpts(ctx, base64.StdEncoding.EncodeToString(message), &rpc.GetFeeForMessageOpts{Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
 	if err != nil {
 		return 0, failed("getFeeForMessage", err)
 	}
@@ -280,11 +277,7 @@ type Signed struct {
 // first, starting below before (the zero signature starts at the head), from
 // a node at or past minContextSlot.
 func (c *Client) History(ctx context.Context, address solana.PublicKey, limit int, before solana.Signature, commitment rpc.CommitmentType, minContextSlot uint64) ([]Signed, error) {
-	opts := &rpc.GetSignaturesForAddressOpts{Limit: &limit, Before: before, Commitment: commitment}
-	if minContextSlot > 0 {
-		opts.MinContextSlot = &minContextSlot
-	}
-	out, err := c.rpc.GetSignaturesForAddressWithOpts(ctx, address, opts)
+	out, err := c.rpc.GetSignaturesForAddressWithOpts(ctx, address, &rpc.GetSignaturesForAddressOpts{Limit: &limit, Before: before, Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
 	if err != nil {
 		return nil, failed("getSignaturesForAddress", err)
 	}
@@ -388,11 +381,7 @@ func tokenBalances(keys []solana.PublicKey, rows []rpc.TokenBalance) (map[solana
 // ProgramAccounts lists program's accounts that match every filter at
 // commitment, read from a node at or past minContextSlot.
 func (c *Client) ProgramAccounts(ctx context.Context, program solana.PublicKey, filters []rpc.RPCFilter, commitment rpc.CommitmentType, minContextSlot uint64) (slot uint64, accounts []Account, err error) {
-	opts := &rpc.GetProgramAccountsOpts{Encoding: solana.EncodingBase64, Commitment: commitment, Filters: filters}
-	if minContextSlot > 0 {
-		opts.MinContextSlot = &minContextSlot
-	}
-	out, err := c.rpc.GetProgramAccountsWithContext(ctx, program, opts)
+	out, err := c.rpc.GetProgramAccountsWithContext(ctx, program, &rpc.GetProgramAccountsOpts{Encoding: solana.EncodingBase64, Commitment: commitment, Filters: filters, MinContextSlot: atLeast(minContextSlot)})
 	if err != nil {
 		return 0, nil, failed("getProgramAccounts", err)
 	}
@@ -421,4 +410,12 @@ func (c *Client) PriorityFees(ctx context.Context, writable []solana.PublicKey) 
 		fees[i] = row.PrioritizationFee
 	}
 	return fees, nil
+}
+
+// atLeast is the minContextSlot option: none for zero.
+func atLeast(slot uint64) *uint64 {
+	if slot == 0 {
+		return nil
+	}
+	return &slot
 }

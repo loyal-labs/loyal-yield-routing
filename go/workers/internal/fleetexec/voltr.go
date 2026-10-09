@@ -158,7 +158,7 @@ func (w *Worker) signVoltr(ctx context.Context, l voltrLease) (voltrSigned, erro
 	if err != nil {
 		return voltrSigned{}, err
 	}
-	hash, lastValid, _, err := w.voltrChain.Blockhash(ctx, rpc.CommitmentConfirmed)
+	hash, lastValid, _, err := w.voltrChain.Blockhash(ctx, rpc.CommitmentConfirmed, uint64(p.Slot))
 	if err != nil {
 		return voltrSigned{}, err
 	}
@@ -175,7 +175,7 @@ func (w *Worker) signVoltr(ctx context.Context, l voltrLease) (voltrSigned, erro
 	if err != nil || !simulation.Succeeded {
 		return voltrSigned{}, fmt.Errorf("voltr unsigned simulation rejected: %v %s", err, simulation.Error)
 	}
-	fee, err := w.voltrChain.Fee(ctx, tx.Message, rpc.CommitmentConfirmed)
+	fee, err := w.voltrChain.Fee(ctx, tx.Message, rpc.CommitmentConfirmed, uint64(p.Slot))
 	if err != nil || int64(fee) > l.FeeCap {
 		return voltrSigned{}, fmt.Errorf("voltr compiled fee %d exceeds the opportunity cap: %v", fee, err)
 	}
