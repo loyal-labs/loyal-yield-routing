@@ -20,8 +20,8 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	walletATA, _ := deriveVaultATA(wallet, mint, mustKey(splTokenID))
-	vaultATA, _ := deriveVaultATA(vault, mint, mustKey(splTokenID))
+	walletATA, _ := usdcATA(wallet)
+	vaultATA, _ := usdcATA(vault)
 	authority, _ := subscriptionAuthorityKey(wallet[:], mint[:])
 	nonce := int64(7)
 	budget := int64(5_000_000)

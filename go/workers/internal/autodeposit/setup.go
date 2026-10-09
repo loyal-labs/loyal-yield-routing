@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -94,7 +95,7 @@ func validateDestinationSetupPlan(plan DepositPlan, setup DestinationSetupPlan) 
 	var account string
 	switch setup.Stage {
 	case SetupATA:
-		account, err = deriveVaultATA(vault, mustKey(USDCMint), mustKey(splTokenID))
+		account, err = usdcATA(vault)
 	case SetupMetadata:
 		account, err = metadataKey(plan.Target.VaultPubkey)
 	case SetupObligation:
@@ -145,7 +146,7 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	if err != nil {
 		return nil, err
 	}
-	ata, err := deriveVaultATA(vault, mustKey(USDCMint), mustKey(splTokenID))
+	ata, err := usdcATA(vault)
 	if err != nil || ata != plan.Target.VaultUsdcAta {
 		return nil, errors.New("setup custody is not the frozen vault ATA")
 	}
@@ -162,7 +163,7 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 		by[addresses[i]] = a
 	}
 	reserve := by[plan.Reserve]
-	if reserve.Owner.String() != KLendProgramID || reserve.Executable || len(reserve.Data) != reserveDataLength || hexPrefix(reserve.Data[:8]) != reserveDiscriminator {
+	if reserve.Owner.String() != KLendProgramID || reserve.Executable || len(reserve.Data) != reserveDataLength || hex.EncodeToString(reserve.Data[:8]) != reserveDiscriminator {
 		return nil, errors.New("setup reserve evidence invalid")
 	}
 	route := decodeReservePosition(plan.Reserve, reserve.Data)
@@ -273,7 +274,7 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	if err != nil {
 		return nil, err
 	}
-	if _, err = b.transaction([32]byte{}, instructions); err != nil {
+	if _, err = b.transaction(solana.Hash{}, instructions); err != nil {
 		return nil, err
 	}
 	return &setup, nil
@@ -285,13 +286,10 @@ func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a *chain
 	}
 	switch setup.Stage {
 	case SetupATA:
-		if err := validateVaultUSDCATA(a, setup.Account, plan.Target.VaultPubkey); err != nil {
-			return err
-		}
 		// Identity only: custody residue is the controller's idle-tolerance
 		// decision before the pull, as in the TS executor.
-		if len(a.Data) != splTokenAccountLength || a.Data[108] != 1 {
-			return errors.New("setup custody token account is uninitialized")
+		if _, err := usdcTokenAccount(a, plan.Target.VaultPubkey); err != nil {
+			return err
 		}
 	case SetupMetadata:
 		if a.Owner.String() != KLendProgramID || len(a.Data) != 1032 || !bytes.Equal(a.Data[:8], accountDiscriminator("UserMetadata")) || base58Key(a.Data[80:112]) != plan.Target.VaultPubkey {
@@ -325,7 +323,7 @@ func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a *chain
 	return nil
 }
 
-func (b *SweepWireBuilder) setupInstructions(ctx context.Context, plan DepositPlan, setup DestinationSetupPlan, wrap bool) ([]compiledInstruction, error) {
+func (b *SweepWireBuilder) setupInstructions(ctx context.Context, plan DepositPlan, setup DestinationSetupPlan, wrap bool) ([]fleet.RouteInstruction, error) {
 	if err := validateDestinationSetupPlan(plan, setup); err != nil {
 		return nil, err
 	}
@@ -333,34 +331,29 @@ func (b *SweepWireBuilder) setupInstructions(ctx context.Context, plan DepositPl
 	if err != nil {
 		return nil, err
 	}
-	out := []compiledInstruction{}
+	out := []fleet.RouteInstruction{}
 	if setup.RentTopUpLamports > 0 {
 		if setup.RentTopUpLamports > maxSetupRentLamports || setup.Stage != SetupMetadata && setup.Stage != SetupObligation {
 			return nil, errors.New("invalid setup rent transfer")
 		}
-		ix := system.NewTransferInstruction(setup.RentTopUpLamports, b.delegate, mustKey(plan.Target.VaultPubkey)).Build()
-		data, err := ix.Data()
+		transfer := system.NewTransferInstruction(setup.RentTopUpLamports, b.delegate, mustKey(plan.Target.VaultPubkey)).Build()
+		data, err := transfer.Data()
 		if err != nil {
 			return nil, err
 		}
-		compiled := compiledInstruction{program: system.ProgramID, data: data}
-		for _, a := range ix.Accounts() {
-			compiled.accounts = append(compiled.accounts, accountMeta{a.PublicKey, a.IsSigner, a.IsWritable})
+		ix := fleet.RouteInstruction{Program: system.ProgramID.String(), Data: data}
+		for _, a := range transfer.Accounts() {
+			ix.Accounts = append(ix.Accounts, fleet.InstructionAccount{Address: a.PublicKey.String(), Signer: a.IsSigner, Writable: a.IsWritable})
 		}
-		out = append(out, compiled)
+		out = append(out, ix)
 	}
 	for i, ix := range append(append([]fleet.RouteInstruction{}, built.Public...), built.Protected...) {
-		compiled := compiledInstruction{program: mustKey(ix.Program), data: ix.Data}
-		for _, a := range ix.Accounts {
-			compiled.accounts = append(compiled.accounts, accountMeta{mustKey(a.Address), a.Signer, a.Writable})
-		}
 		if wrap && i >= len(built.Public) {
-			compiled, err = b.wrapWithPolicy(ctx, plan, setup.PolicyAccount, compiled)
-			if err != nil {
+			if ix, err = b.wrapWithPolicy(ctx, plan, setup.PolicyAccount, ix); err != nil {
 				return nil, err
 			}
 		}
-		out = append(out, compiled)
+		out = append(out, ix)
 	}
 	return out, nil
 }
@@ -369,7 +362,7 @@ func (b *SweepWireBuilder) BuildDestinationSetup(ctx context.Context, plan Depos
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	hash, err := blockhash32(blockhash)
+	hash, err := solana.HashFromBase58(blockhash)
 	if err != nil {
 		return BuiltWire{}, err
 	}

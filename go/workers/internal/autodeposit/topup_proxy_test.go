@@ -16,7 +16,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 	var err error
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, 32))
 	plan, _ := testPullPlan()
-	plan.Target.VaultUsdcAta, err = deriveVaultATA(mustKey(plan.Target.VaultPubkey), mustKey(USDCMint), mustKey(splTokenID))
+	plan.Target.VaultUsdcAta, err = usdcATA(mustKey(plan.Target.VaultPubkey))
 	if err != nil {
 		t.Fatal(err)
 	}

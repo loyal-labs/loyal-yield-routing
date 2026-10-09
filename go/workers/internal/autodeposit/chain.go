@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -112,14 +113,7 @@ func (c *RPCChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, a
 	if account == nil {
 		return 0, ErrTokenAccountAbsent
 	}
-	if account.Owner.String() != splTokenID || account.Executable || len(account.Data) != splTokenAccountLength || base58Key(account.Data[:32]) != USDCMint || base58Key(account.Data[32:64]) != authority || authority == "" || account.Data[108] != 1 {
-		return 0, errors.New("autodeposit balance requires an initialized USDC account owned by SPL Token")
-	}
-	amount := binary.LittleEndian.Uint64(account.Data[64:72])
-	if amount > 1<<63-1 {
-		return 0, fmt.Errorf("token account %s balance exceeds the family's int64 range", tokenAccount)
-	}
-	return int64(amount), nil
+	return usdcTokenAccount(account, authority)
 }
 
 // RemainingDelegationAllowanceRaw reads the delegation account and decodes its
@@ -161,7 +155,7 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 	if err != nil {
 		return 0, err
 	}
-	if wallet.Owner.String() != splTokenID || wallet.Executable || len(wallet.Data) != splTokenAccountLength || base58Key(wallet.Data[:32]) != identity.Mint || base58Key(wallet.Data[32:64]) != identity.Delegator || wallet.Data[108] != 1 || binary.LittleEndian.Uint32(wallet.Data[72:76]) != 1 || base58Key(wallet.Data[76:108]) != base58Key(authority[:]) {
+	if _, err := usdcTokenAccount(wallet, identity.Delegator); err != nil || binary.LittleEndian.Uint32(wallet.Data[72:76]) != 1 || base58Key(wallet.Data[76:108]) != base58Key(authority[:]) {
 		return 0, fmt.Errorf("%w: wallet token approval does not authorize the subscription authority", ErrAllowanceUnknown)
 	}
 	tokenAllowance := binary.LittleEndian.Uint64(wallet.Data[121:129])
@@ -263,11 +257,11 @@ func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPl
 	}
 	obligationAccount, reserveAccount := accounts[0], accounts[1]
 	if obligationAccount.Owner.String() != KLendProgramID || len(obligationAccount.Data) != obligationDataLength ||
-		hexPrefix(obligationAccount.Data[:8]) != hexPrefix(obligationDiscriminator[:]) {
+		hex.EncodeToString(obligationAccount.Data[:8]) != hex.EncodeToString(obligationDiscriminator[:]) {
 		return 0, 0, fmt.Errorf("obligation %s is not a confirmed KLend obligation", route.Obligation)
 	}
 	if reserveAccount.Owner.String() != KLendProgramID || len(reserveAccount.Data) != reserveDataLength ||
-		reserveDiscriminator != hexPrefix(reserveAccount.Data[:8]) {
+		reserveDiscriminator != hex.EncodeToString(reserveAccount.Data[:8]) {
 		return 0, 0, fmt.Errorf("reserve %s is not a confirmed KLend reserve", plan.Reserve)
 	}
 	var collateralRaw uint64

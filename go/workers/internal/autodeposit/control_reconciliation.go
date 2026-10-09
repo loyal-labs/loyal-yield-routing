@@ -92,7 +92,7 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		owner   solana.PublicKey
 		account string
 	}{{wallet, target.WalletTokenATA}, {vault, target.VaultTokenATA}} {
-		ata, err := deriveVaultATA(binding.owner, mint, mustKey(splTokenID))
+		ata, err := usdcATA(binding.owner)
 		if err != nil || ata != binding.account {
 			return o, errors.New("control token account differs from canonical ATA")
 		}
@@ -131,21 +131,10 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		if err != nil || decoded.Bump != bump || decoded.PolicySeed != uint64(target.PolicySeed) || decoded.AccountIndex != 1 || decoded.Settings != target.Settings {
 			return o, errors.New("control policy header differs from target")
 		}
-		event, err := subscriptionEventAuthorityKey()
+		inner, err := transferRecurring(uint64(*target.MaxAmountPerPeriod), wallet, vault, mint, target.RecurringDelegation, target.WalletTokenATA, target.VaultTokenATA)
 		if err != nil {
 			return o, err
 		}
-		data := make([]byte, 73)
-		data[0] = subscriptionsTransferRecurring
-		binary.LittleEndian.PutUint64(data[1:9], uint64(*target.MaxAmountPerPeriod))
-		copy(data[9:41], wallet[:])
-		copy(data[41:], mint[:])
-		inner := fleet.RouteInstruction{Step: "autodeposit", Program: SubscriptionsProgramID, Data: data, Accounts: []fleet.InstructionAccount{
-			{Address: target.RecurringDelegation, Writable: true}, {Address: target.SubscriptionAuthority},
-			{Address: target.WalletTokenATA, Writable: true}, {Address: target.VaultTokenATA, Writable: true},
-			{Address: target.Mint}, {Address: splTokenID}, {Address: target.Vault, Signer: true},
-			{Address: base58Key(event[:])}, {Address: SubscriptionsProgramID},
-		}}
 		if _, err = fleet.BuildPolicyEnvelope(target.Policy, target.Settings, b.delegate.String(), accounts[0].Data, []fleet.RouteInstruction{inner}); err != nil {
 			return o, err
 		}
@@ -168,17 +157,11 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		o.DelegationValid = true
 	}
 	if accounts[3] != nil {
-		if err := validateVaultUSDCATA(accounts[3], target.WalletTokenATA, target.Wallet); err != nil {
+		balance, err := usdcTokenAccount(accounts[3], target.Wallet)
+		if err != nil {
 			return o, err
 		}
-		if accounts[3].Data[108] != 1 {
-			return o, errors.New("control wallet token account is not initialized")
-		}
-		amount := binary.LittleEndian.Uint64(accounts[3].Data[64:72])
-		if amount > 1<<63-1 {
-			return o, errors.New("control wallet balance exceeds int64")
-		}
-		o.WalletBalanceRaw = int64(amount)
+		o.WalletBalanceRaw = balance
 		hash := sha256.Sum256(accounts[3].Data)
 		o.WalletAccountDataSHA256 = hex.EncodeToString(hash[:])
 		o.TokenDelegateValid = binary.LittleEndian.Uint32(accounts[3].Data[72:76]) == 1 && base58Key(accounts[3].Data[76:108]) == target.SubscriptionAuthority

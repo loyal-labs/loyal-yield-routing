@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"testing"
@@ -272,7 +273,7 @@ func TestBuildPullProducesSignedSubscriptionsWire(t *testing.T) {
 }
 
 func hexOrPanic(raw []byte) string {
-	return hexPrefix(mustSHA256(raw))
+	return hex.EncodeToString(mustSHA256(raw))
 }
 
 func TestBuildPullRejectsNonUSDCAndMissingDelegation(t *testing.T) {

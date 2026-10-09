@@ -17,7 +17,7 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 	t.Helper()
 	plan, _ := testPullPlan()
 	vault := mustKey(plan.Target.VaultPubkey)
-	ata, err := deriveVaultATA(vault, mustKey(USDCMint), mustKey(splTokenID))
+	ata, err := usdcATA(vault)
 	if err != nil {
 		t.Fatal(err)
 	}

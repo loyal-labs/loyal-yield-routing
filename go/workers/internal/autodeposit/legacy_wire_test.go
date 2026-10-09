@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/binary"
+	"encoding/hex"
 	"testing"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -35,7 +36,7 @@ func TestPersistedV0RetainsAllSignaturesAndResolvesPinnedLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt := DurableAttempt{Signature: tx.Signatures[0].String(), SignedTransactionBase64: base64Std.EncodeToString(raw), SignedTransactionSHA256: hexPrefix(mustSHA256(raw)), RecentBlockhash: tx.Message.RecentBlockhash.String()}
+	attempt := DurableAttempt{Signature: tx.Signatures[0].String(), SignedTransactionBase64: base64Std.EncodeToString(raw), SignedTransactionSHA256: hex.EncodeToString(mustSHA256(raw)), RecentBlockhash: tx.Message.RecentBlockhash.String()}
 	parsed, err := persistedWireTransaction(attempt)
 	if err != nil {
 		t.Fatal(err)
