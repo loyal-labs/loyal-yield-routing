@@ -2,7 +2,7 @@ name: Workers v2 branch verification
 
 on:
   push:
-    branches: [main, codex/workers-v2, codex/workers-v2-simplify, codex/workers-v2-golive, ask-2316-confirm-debt-clear]
+    branches: [main, codex/workers-v2, codex/workers-v2-simplify, codex/workers-v2-golive, ask-2316-confirm-debt-clear, ask-2316-kamino-capture-hotfix]
     paths:
       - go/workers/**
       - scripts/verify-workers-v2.sh
