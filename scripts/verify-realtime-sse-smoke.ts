@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 
-const DEFAULT_REALTIME_URL = "https://loyal-yield-realtime.onrender.com";
+const DEFAULT_REALTIME_URL = "https://realtime.askloyal.com";
 const DEFAULT_ALLOWED_ORIGIN = "https://askloyal.com";
 const WALLET = "11111111111111111111111111111111";
 const SETTINGS = "SysvarRent111111111111111111111111111111111";
