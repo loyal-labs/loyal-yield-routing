@@ -78,8 +78,9 @@ func testInitializationDatabaseSettlement(t *testing.T, pilot bool) {
 		t.Fatal(err)
 	}
 	reservation := BudgetReservation{OperationID: id, Family: "Maple", IntentSHA256: digest, UpperMicros: 900000}
+	var realized int64
 	if pilot {
-		reservation.ExecutionCostUpperMicros = 1000
+		reservation.ExecutionCostUpperMicros, realized = 1000, 750
 	}
 	if pilot {
 		assertBudgetHold(t, db.ReservePhase3(ctx, reservation), "pilot_requires_measured_execution_admission")
@@ -92,7 +93,9 @@ func testInitializationDatabaseSettlement(t *testing.T, pilot bool) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: digest, PilotAuthorityID: pilotBudgetAuthorityID, BuildInput: input}
+		// The send fence's priced fee: 5,000 lamports at $150/SOL is $0.00075.
+		send := ValuedTransactionCost{Fee: MessageFeeObservation{Lamports: 5000}, NativePrice: marketTestPrice(nativeSOLBudgetAsset, "11111111111111111111111111111111", 9, 150_000_000_000_000, 1_000_000_000_000, true), ObservationSlot: 42, ExecutionCost: &PilotExecutionCost{}}
+		auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: digest, PilotAuthorityID: pilotBudgetAuthorityID, BuildInput: input, SendKnownCost: &send}
 		seed, e := db.pool.Begin(ctx)
 		if e != nil {
 			t.Fatal(e)
@@ -156,7 +159,7 @@ func testInitializationDatabaseSettlement(t *testing.T, pilot bool) {
 			if status != "reconciling" || len(after.Reservations) != 1 || after.Families["Maple"].SpentMicros != 0 || after.Families["Maple"].ExecutionCostSpentMicros != 0 {
 				t.Fatal("invalid receipt released reservation")
 			}
-		} else if status != "reconciled" || len(after.Reservations) != 0 || after.Families["Maple"].SpentMicros != reservation.UpperMicros || after.Families["Maple"].ExecutionCostSpentMicros != reservation.ExecutionCostUpperMicros {
+		} else if status != "reconciled" || len(after.Reservations) != 0 || after.Families["Maple"].SpentMicros != reservation.UpperMicros || after.Families["Maple"].ExecutionCostSpentMicros != realized {
 			t.Fatal("native finality did not settle exactly once")
 		}
 		if drift == "" {
@@ -165,8 +168,8 @@ func testInitializationDatabaseSettlement(t *testing.T, pilot bool) {
 				t.Fatal(err)
 			}
 			var auth phase3OperationAuthorization
-			if json.Unmarshal(authJSON, &auth) != nil || auth.BookedSpentMicros != reservation.UpperMicros || auth.BookedExecutionCostMicros != reservation.ExecutionCostUpperMicros {
-				t.Fatal("journal settlement lost gross or expense bound")
+			if json.Unmarshal(authJSON, &auth) != nil || auth.BookedSpentMicros != reservation.UpperMicros || auth.BookedExecutionCostMicros != realized {
+				t.Fatal("journal settlement lost gross bound or realized expense")
 			}
 			if pilot && auth.PilotAuthorityID != pilotBudgetAuthorityID {
 				t.Fatal("settlement lost pilot authority")

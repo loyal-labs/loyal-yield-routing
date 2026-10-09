@@ -22,13 +22,23 @@ const onreONycUSDC = "OnRe/ONyc/USDC"
 // measured leg costs if small deposits matter.
 const topupMinimumRaw int64 = 10_000_000
 
-// topupStep is the plan B3 sequence beside a funded debt-free position:
-// convert a payoff debt residue to USDC, swap Squads cash to collateral,
-// deposit that collateral, then move idle Voltr cash into Squads. It runs
-// before any borrow, so a later borrow levers the whole collateral. Every
-// withdrawal, hard-LTV, unwind and report rule has already run.
+// debtTopupLane: the top-up also runs beside a debt-bearing position where
+// debt custody is not bridge cash (AUTO/PYUSD). On OnRe the debt is Squads
+// USDC, so Squads cash beside debt is borrowed cash the leverage loop swaps.
+func debtTopupLane(lane string) bool {
+	return leverageLane(lane) && !sharedUSDCDebt(lane)
+}
+
+// topupStep is the plan B3 sequence beside a funded position: convert a
+// payoff debt residue to USDC, swap Squads cash to collateral, deposit that
+// collateral, then move idle Voltr cash into Squads. Beside debt, idle debt
+// cash and idle collateral stay with the existing leverage legs (the
+// collateral-only single_loop_redeposit), so no top-up leg borrows or repays.
+// It runs before any borrow, so a later borrow levers the whole collateral.
+// Every withdrawal, hard-LTV, unwind and report rule has already run.
 func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (Decision, bool) {
-	if !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw != 0 || !s.PolicyReady || !s.ExitBuildable || hard <= TargetLTVBPS ||
+	if !s.HasPosition || s.PositionCollateralRaw <= 0 || !s.PolicyReady || !s.ExitBuildable || hard <= TargetLTVBPS ||
+		(s.PositionDebtRaw != 0 && (!debtTopupLane(s.RouteLane) || s.PositionDebtValueRaw <= 0 || s.DebtIdleRaw != 0 || s.CollateralIdleRaw != 0)) ||
 		s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.UnwindRefreshRequired || s.VoltrStrategyIdleRaw != 0 {
 		return Decision{}, false
 	}
@@ -267,8 +277,8 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	if action, reason, amount, ok := leverageDownPartialStep(s); ok {
 		return d(action, reason, amount)
 	}
-	// Plan B3 top-up tranche beside a funded debt-free position. It adds to
-	// the current loop, so it needs no new-lane selector entry authority.
+	// Plan B3 top-up tranche beside a funded position. It adds to the current
+	// loop, so it needs no new-lane selector entry authority.
 	if decision, ok := topupStep(s, hard, d); ok {
 		return decision
 	}

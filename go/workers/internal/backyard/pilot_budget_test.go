@@ -50,7 +50,7 @@ func TestPilotBudgetReusesPrincipalAcrossRotationsAndRestart(t *testing.T) {
 			if err := restarted.AuthorizeIntent(id, r.IntentSHA256); err != nil {
 				t.Fatal(err)
 			}
-			if err := restarted.Settle(id, r.IntentSHA256, r.UpperMicros); err != nil {
+			if err := restarted.Settle(id, r.IntentSHA256, r.UpperMicros, r.ExecutionCostUpperMicros); err != nil {
 				t.Fatal(err)
 			}
 			b = restarted
@@ -77,7 +77,7 @@ func TestPilotExecutionCostCapPreservesReservedUnwind(t *testing.T) {
 	if err := b.Admit(first); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Settle(first.OperationID, first.IntentSHA256, first.UpperMicros); err != nil {
+	if err := b.Settle(first.OperationID, first.IntentSHA256, first.UpperMicros, first.ExecutionCostUpperMicros); err != nil {
 		t.Fatal(err)
 	}
 	newEntry := BudgetReservation{OperationID: "another", Family: "Prime", IntentSHA256: sha256Bytes([]byte("another")), UpperMicros: 10_000_000, ExecutionCostUpperMicros: 1, ExitAfterMicros: 20_000_000}
@@ -91,7 +91,7 @@ func TestPilotExecutionCostCapPreservesReservedUnwind(t *testing.T) {
 	if err := b.Admit(exit); err != nil {
 		t.Fatal("blocked reserved unwind", err)
 	}
-	if err := b.Settle(exit.OperationID, exit.IntentSHA256, exit.UpperMicros); err != nil {
+	if err := b.Settle(exit.OperationID, exit.IntentSHA256, exit.UpperMicros, exit.ExecutionCostUpperMicros); err != nil {
 		t.Fatal(err)
 	}
 	if b.Families["Prime"].ExitMicros != 0 || b.Families["Prime"].ExecutionCostSpentMicros != PilotEntryExecutionCostCapMicros+20_000 {
@@ -170,7 +170,7 @@ func TestPilotReservedExitPreventsLimitNarrowing(t *testing.T) {
 	if err := b.Admit(r); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Settle(r.OperationID, r.IntentSHA256, r.UpperMicros); err != nil {
+	if err := b.Settle(r.OperationID, r.IntentSHA256, r.UpperMicros, r.ExecutionCostUpperMicros); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := json.Marshal(b)

@@ -47,7 +47,7 @@ func TestPilotCeilingIncreaseKeepsPersistedLimitsBinding(t *testing.T) {
 	if err := persisted.AuthorizeIntent(workingSize.OperationID, workingSize.IntentSHA256); err != nil {
 		t.Fatal(err)
 	}
-	if err := persisted.Settle(workingSize.OperationID, workingSize.IntentSHA256, workingSize.UpperMicros); err != nil {
+	if err := persisted.Settle(workingSize.OperationID, workingSize.IntentSHA256, workingSize.UpperMicros, workingSize.ExecutionCostUpperMicros); err != nil {
 		t.Fatal(err)
 	}
 	if got := persisted.Families["Maple"]; got.SpentMicros != 1_000_000+PilotWorkingTrancheCapRaw || got.ExecutionCostSpentMicros != 1_000+500_000 || got.ExitMicros != PilotWorkingTrancheCapRaw {

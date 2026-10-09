@@ -2,14 +2,18 @@ package backyard
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"reflect"
+	"strconv"
+	"strings"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// An execution-cost bound is booked at its admitted upper value, never as
-// claimed realized P&L. Principal/rent remains in the gross movement ledger.
+// An execution-cost bound is the worst case admission checks against the cap;
+// settlement books the realized cost (realizedPilotExecutionCost), never more
+// than this bound. Principal/rent remains in the gross movement ledger.
 // Interest, market P&L and performance fees remain in independently observed
 // NAV; this counter does not purport to measure investment performance.
 type PilotExecutionCost struct {
@@ -157,6 +161,70 @@ func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedE
 		return out, budgetHold("invalid_execution_cost_bound")
 	}
 	return out, nil
+}
+
+// realizedPilotExecutionCost is what one finalized operation cost, valued with
+// the final-send fence's own price observations at market (mid) price instead
+// of the bound's margined sides. The fee is the getFeeForMessage quote for the
+// signed message, which the network charges deterministically. A swap loses
+// its finalized debit less its finalized credit. Kamino protocol rounding is
+// not visible in token deltas, so its admitted bound stays booked.
+func realizedPilotExecutionCost(auth phase3OperationAuthorization, reconciledEffects []byte) (int64, error) {
+	cost := auth.SendKnownCost
+	if cost == nil || cost.ExecutionCost == nil || auth.BuildInput == nil {
+		return 0, budgetHold("realized_execution_cost_evidence_missing")
+	}
+	total, err := cost.NativePrice.valueMid(cost.Fee.Lamports, nativeSOLBudgetAsset, "11111111111111111111111111111111", cost.ObservationSlot, true)
+	if err != nil {
+		return 0, err
+	}
+	total, err = budgetSum(total, cost.ExecutionCost.ProtocolRoundingMicros)
+	if err != nil || auth.BuildInput.Kind != "jupiter" {
+		return total, err
+	}
+	effects, err := DecodeExpectedEffects(auth.BuildInput.Effects)
+	var finalized struct {
+		Accounts []string `json:"accounts"`
+	}
+	if err != nil || effects.Kind != "cross-mint-swap" || len(effects.Accounts) != 2 || cost.TokenPrice == nil || cost.ExecutionCost.CreditPrice == nil || json.Unmarshal(reconciledEffects, &finalized) != nil {
+		return 0, budgetHold("realized_swap_cost_evidence_missing")
+	}
+	source, destination := effects.Accounts[0], effects.Accounts[1]
+	debited, credited, ok := finalizedSwapDeltas(finalized.Accounts, source, destination)
+	if !ok {
+		return 0, budgetHold("realized_swap_cost_evidence_missing")
+	}
+	input, err := cost.TokenPrice.valueMid(debited, source.Mint, source.Owner, cost.ObservationSlot, true)
+	if err != nil {
+		return 0, err
+	}
+	output, err := cost.ExecutionCost.CreditPrice.valueMid(credited, destination.Mint, destination.Owner, cost.ObservationSlot, false)
+	if err != nil {
+		return 0, err
+	}
+	return budgetSum(total, max(0, input-output))
+}
+
+// finalizedSwapDeltas reads the source debit and destination credit from the
+// reconciler's canonical "address:owner:mint:authority:pre:post" rows.
+func finalizedSwapDeltas(rows []string, source, destination ExpectedAccountEffect) (uint64, uint64, bool) {
+	balances := func(effect ExpectedAccountEffect) (uint64, uint64, bool) {
+		for _, row := range rows {
+			fields := strings.Split(row, ":")
+			if len(fields) == 6 && fields[0] == effect.Address && fields[1] == effect.Owner && fields[2] == effect.Mint && fields[3] == effect.Authority {
+				pre, preErr := strconv.ParseUint(fields[4], 10, 64)
+				post, postErr := strconv.ParseUint(fields[5], 10, 64)
+				return pre, post, preErr == nil && postErr == nil
+			}
+		}
+		return 0, 0, false
+	}
+	sourcePre, sourcePost, sourceOK := balances(source)
+	destinationPre, destinationPost, destinationOK := balances(destination)
+	if !sourceOK || !destinationOK || sourcePost > sourcePre || destinationPost < destinationPre {
+		return 0, 0, false
+	}
+	return sourcePre - sourcePost, destinationPost - destinationPre, true
 }
 
 // observePilotExecutionCost is the manifest-aware form: the exact execution

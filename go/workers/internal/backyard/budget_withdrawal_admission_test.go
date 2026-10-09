@@ -227,7 +227,7 @@ func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T)
 		if err = budget.Admit(r); err != nil {
 			t.Fatal(err)
 		}
-		if err = budget.Settle(r.OperationID, digest, r.UpperMicros); err != nil {
+		if err = budget.Settle(r.OperationID, digest, r.UpperMicros, r.ExecutionCostUpperMicros); err != nil {
 			t.Fatal(err)
 		}
 		spent += r.UpperMicros
