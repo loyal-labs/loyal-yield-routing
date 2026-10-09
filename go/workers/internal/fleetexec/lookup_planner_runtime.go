@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
@@ -22,13 +23,13 @@ type LookupPlannerConfig struct {
 // independently owns each source operation and authorizes exact packet IO.
 type LookupPlanner struct {
 	store       *Store
-	chain       *LookupRPC
+	chain       *chain.Client
 	config      LookupPlannerConfig
 	gate        chan struct{}
 	nextCatalog time.Time
 }
 
-func NewLookupPlanner(store *Store, chain *LookupRPC, config LookupPlannerConfig) (*LookupPlanner, error) {
+func NewLookupPlanner(store *Store, chain *chain.Client, config LookupPlannerConfig) (*LookupPlanner, error) {
 	if store == nil || store.pool == nil || chain == nil || config.Cluster == "" || config.Owner == "" || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 5*time.Minute || config.LeaseTTL%time.Second != 0 || config.TickDeadline <= 0 || config.TickDeadline+5*time.Second > config.LeaseTTL || config.PollInterval <= 0 || config.PollInterval > time.Minute || config.CatalogInterval < time.Second || config.CatalogInterval > time.Hour || config.GrowthReservation < 0 || config.GrowthReservation > 256 || config.MaximumVaultCohort < 1 || config.MaximumVaultCohort > 65535 || config.Facts == nil {
 		return nil, errors.New("lookup planner configuration invalid")
 	}
@@ -77,7 +78,7 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 		return false, ctx.Err()
 	}
 	defer func() { p.report(err) }()
-	_, _, bank, err := p.chain.LookupBlockhash(ctx)
+	_, _, bank, err := lookupBlockhash(ctx, p.chain)
 	if err != nil {
 		return false, err
 	}
@@ -115,7 +116,7 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 		return false, err
 	}
 	for _, c := range candidates {
-		snapshot, e := p.chain.LookupSnapshot(ctx, c.table, bank)
+		snapshot, e := lookupSnapshot(ctx, p.chain, c.table, bank)
 		if e != nil {
 			return false, e
 		}
@@ -210,7 +211,7 @@ func (p *LookupPlanner) cleanupTick(ctx context.Context, bank int64) (worked boo
 		return worked, observed, e
 	}
 	if candidate != nil {
-		snapshot, e := p.chain.LookupSnapshot(ctx, candidate.intent.TableAddress, bank)
+		snapshot, e := lookupSnapshot(ctx, p.chain, candidate.intent.TableAddress, bank)
 		if e != nil {
 			return worked, observed, e
 		}
@@ -230,7 +231,7 @@ func (p *LookupPlanner) planningBank(ctx context.Context, authority string, minS
 	if err != nil {
 		return proof, err
 	}
-	first, err := p.chain.LookupSnapshot(ctx, address, minSlot)
+	first, err := lookupSnapshot(ctx, p.chain, address, minSlot)
 	if err != nil {
 		return proof, err
 	}
@@ -243,7 +244,7 @@ func (p *LookupPlanner) planningBank(ctx context.Context, authority string, minS
 		if err != nil {
 			return proof, err
 		}
-		snapshot, e := p.chain.LookupSnapshot(ctx, address, first.Slot)
+		snapshot, e := lookupSnapshot(ctx, p.chain, address, first.Slot)
 		if e != nil {
 			return proof, e
 		}

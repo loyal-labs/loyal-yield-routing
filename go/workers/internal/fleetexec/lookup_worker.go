@@ -11,6 +11,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // lookupResendEvery matches the fleet landing cadence.
@@ -30,13 +31,13 @@ type LookupWorkerConfig struct {
 
 type LookupWorker struct {
 	store      *Store
-	chain      *LookupRPC
+	chain      *chain.Client
 	config     LookupWorkerConfig
 	managerKey func(context.Context, string) (ed25519.PrivateKey, error)
 	gate       chan struct{}
 }
 
-func NewLookupWorker(store *Store, chain *LookupRPC, config LookupWorkerConfig, managerKey func(context.Context, string) (ed25519.PrivateKey, error)) (*LookupWorker, error) {
+func NewLookupWorker(store *Store, chain *chain.Client, config LookupWorkerConfig, managerKey func(context.Context, string) (ed25519.PrivateKey, error)) (*LookupWorker, error) {
 	if store == nil || store.pool == nil || chain == nil || config.Cluster == "" || config.Owner == "" || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 5*time.Minute || config.LeaseTTL%time.Second != 0 || config.TickDeadline <= 0 || config.TickDeadline+5*time.Second > config.LeaseTTL || config.PollInterval <= 0 || config.PollInterval > time.Minute || config.Facts == nil || (!config.ReconcileOnly && managerKey == nil) || config.Budget.MaximumLamports <= 0 || config.Budget.RollingWindow < time.Second || config.Budget.RollingWindow > 365*24*time.Hour || config.Budget.RollingWindow%time.Second != 0 {
 		return nil, errors.New("lookup worker dependencies/configuration invalid")
 	}
@@ -97,7 +98,7 @@ func (w *LookupWorker) tick(ctx context.Context) (bool, error) {
 	}
 	if op == nil {
 		// An idle source queue is not proof that its RPC dependency works.
-		_, _, _, err = w.chain.LookupBlockhash(ctx)
+		_, _, _, err = lookupBlockhash(ctx, w.chain)
 		return false, err
 	}
 	if op.Signature != nil || op.MessageHash != nil || op.Blockhash != nil || op.LastValidBlockHeight != nil {
@@ -108,7 +109,7 @@ func (w *LookupWorker) tick(ctx context.Context) (bool, error) {
 		return true, w.land(ctx, *op, attempt)
 	}
 	if op.Intent.Kind == LookupVerify {
-		snapshot, err := w.chain.LookupSnapshot(ctx, op.Intent.TableAddress, 0)
+		snapshot, err := lookupSnapshot(ctx, w.chain, op.Intent.TableAddress, 0)
 		if err != nil {
 			return true, err
 		}
@@ -121,11 +122,11 @@ func (w *LookupWorker) tick(ctx context.Context) (bool, error) {
 }
 
 func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
-	hash, height, bank, err := w.chain.LookupBlockhash(ctx)
+	hash, height, bank, err := lookupBlockhash(ctx, w.chain)
 	if err != nil {
 		return err
 	}
-	snapshot, err := w.chain.LookupSnapshot(ctx, op.Intent.TableAddress, bank)
+	snapshot, err := lookupSnapshot(ctx, w.chain, op.Intent.TableAddress, bank)
 	if err != nil {
 		return err
 	}
@@ -134,14 +135,14 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 		if err != nil {
 			return err
 		}
-		hash, height, bank, err = w.chain.LookupBlockhash(ctx)
+		hash, height, bank, err = lookupBlockhash(ctx, w.chain)
 		if err != nil {
 			return err
 		}
 		if bank < int64(*op.Intent.RecentSlot) {
 			return errors.New("lookup refreshed PDA bank is newer than signing bank")
 		}
-		snapshot, err = w.chain.LookupSnapshot(ctx, op.Intent.TableAddress, bank)
+		snapshot, err = lookupSnapshot(ctx, w.chain, op.Intent.TableAddress, bank)
 		if err != nil {
 			return err
 		}
@@ -160,16 +161,17 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 	if err != nil {
 		return err
 	}
-	if err = w.chain.SimulateLookup(ctx, wire); err != nil {
+	// Unsigned: the bank checks the program effects, not the signature.
+	if _, err = w.chain.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentFinalized, ReplaceRecentBlockhash: true}); err != nil {
 		return err
 	}
-	fee, err := w.chain.LookupFee(ctx, message)
+	fee, err := w.chain.Fee(ctx, message, rpc.CommitmentFinalized)
 	if err != nil {
 		return err
 	}
 	rent, reclaimed := uint64(0), uint64(0)
 	if op.Intent.Kind == LookupCreate || op.Intent.Kind == LookupRollover || op.Intent.Kind == LookupExtend {
-		minimum, err := w.chain.LookupRent(ctx, 56+32*(len(op.Intent.Prefix)+len(op.Intent.Extension)))
+		minimum, err := w.chain.RentExempt(ctx, uint64(56+32*(len(op.Intent.Prefix)+len(op.Intent.Extension))))
 		if err != nil {
 			return err
 		}
@@ -183,7 +185,7 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 	if fee > math.MaxInt64 || rent > math.MaxInt64 || fee > math.MaxInt64-rent || reclaimed > math.MaxInt64 {
 		return errors.New("lookup simulation accounting exceeds durable range")
 	}
-	balance, err := w.chain.LookupBalance(ctx, op.Intent.Payer)
+	balance, err := lookupBalance(ctx, w.chain, op.Intent.Payer)
 	if err != nil {
 		return err
 	}
@@ -251,7 +253,7 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 	case chain.Expired:
 		// Rust re-signs only when the mutation is also absent on chain; a
 		// landed packet the history has not indexed yet must not be archived.
-		snapshot, err := w.chain.LookupSnapshot(ctx, attempt.Intent.TableAddress, int64(out.ContextSlot))
+		snapshot, err := lookupSnapshot(ctx, w.chain, attempt.Intent.TableAddress, int64(out.ContextSlot))
 		if err != nil {
 			return err
 		}
@@ -264,7 +266,7 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 			return w.store.deferLookupRecovery(ctx, op, "failed packet not finalized", false)
 		}
 	}
-	receipt, err := w.chain.LookupFinalizedReceipt(ctx, attempt.Wire.TransactionSignature)
+	receipt, err := lookupFinalizedReceipt(ctx, w.chain, attempt.Wire.TransactionSignature)
 	if err != nil {
 		return err
 	}
@@ -275,11 +277,11 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 		hash := sha256.Sum256(receipt.Wire)
 		attempt.Wire.SignedTransaction, attempt.Wire.SignedTransactionHash = receipt.Wire, hex.EncodeToString(hash[:])
 	}
-	snapshot, err := w.chain.LookupSnapshot(ctx, attempt.Intent.TableAddress, max(attempt.SigningContextSlot, receipt.Slot))
+	snapshot, err := lookupSnapshot(ctx, w.chain, attempt.Intent.TableAddress, max(attempt.SigningContextSlot, receipt.Slot))
 	if err != nil {
 		return err
 	}
-	status := SignatureStatus{Found: true, Slot: int64(out.Slot), Confirmed: true, Finalized: true, Err: out.Err}
+	status := chain.SignatureState{Found: true, Slot: out.Slot, Commitment: chain.Finalized, Err: out.Err}
 	recovery, err := recoverLookup(attempt, status, receipt, snapshot)
 	if err != nil {
 		return w.store.markLookupDrift(ctx, op, attempt, err.Error())

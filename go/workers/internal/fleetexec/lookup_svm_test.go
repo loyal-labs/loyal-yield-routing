@@ -16,15 +16,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/programs/system"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 type lookupSVM struct {
 	mu     sync.Mutex
 	input  io.WriteCloser
 	output *bufio.Reader
-	rpc    *LookupRPC
+	rpc    *chain.Client
 }
 
 func startLookupSVM(t *testing.T, f lookupFixture) *lookupSVM {
@@ -93,7 +95,7 @@ func startLookupSVM(t *testing.T, f lookupFixture) *lookupSVM {
 			t.Error("local bank did not join")
 		}
 	})
-	svm.rpc, err = NewLookupRPC(server.URL, 5*time.Second)
+	svm.rpc, err = chain.New(server.URL, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +103,12 @@ func startLookupSVM(t *testing.T, f lookupFixture) *lookupSVM {
 		t.Fatal(err)
 	}
 	return svm
+}
+
+// simulate runs a packet the way the writer does: unsigned checks, current blockhash.
+func (s *lookupSVM) simulate(ctx context.Context, wire []byte) error {
+	_, err := s.rpc.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentFinalized, ReplaceRecentBlockhash: true})
+	return err
 }
 func (s *lookupSVM) direct(method string, params any, out any) error {
 	s.mu.Lock()
@@ -136,7 +144,7 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, 32))
 	execute := func(i LookupIntent, slot int64) (LookupAttempt, *LookupReceipt) {
 		t.Helper()
-		hash, height, contextSlot, err := svm.rpc.LookupBlockhash(ctx)
+		hash, height, contextSlot, err := lookupBlockhash(ctx, svm.rpc)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -144,13 +152,13 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = svm.rpc.SimulateLookup(ctx, wire.SignedTransaction); err != nil {
+		if err = svm.simulate(ctx, wire.SignedTransaction); err != nil {
 			t.Fatal(err)
 		}
 		if err = svm.rpc.SendWire(ctx, wire.SignedTransaction, true); err != nil {
 			t.Fatal(err)
 		}
-		receipt, err := svm.rpc.LookupFinalizedReceipt(ctx, wire.TransactionSignature)
+		receipt, err := lookupFinalizedReceipt(ctx, svm.rpc, wire.TransactionSignature)
 		if err != nil || receipt == nil || receipt.Slot != slot {
 			t.Fatalf("actual receipt %+v %v", receipt, err)
 		}
@@ -158,11 +166,11 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 	}
 	recover := func(a LookupAttempt, receipt *LookupReceipt, warmed bool) lookupRecovery {
 		t.Helper()
-		status, err := svm.rpc.SignatureStatus(ctx, a.Wire.TransactionSignature)
+		status, err := svm.rpc.SignatureState(ctx, a.Wire.TransactionSignature)
 		if err != nil {
 			t.Fatal(err)
 		}
-		snapshot, err := svm.rpc.LookupSnapshot(ctx, f.Table, receipt.Slot)
+		snapshot, err := lookupSnapshot(ctx, svm.rpc, f.Table, receipt.Slot)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,7 +194,7 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 	recover(created, receipt, true)
 	// A v0 System transfer loads a writable destination and a separate readonly
 	// address from the actual warmed table. The real bank validates ALT loading.
-	hash, _, _, err := svm.rpc.LookupBlockhash(ctx)
+	hash, _, _, err := lookupBlockhash(ctx, svm.rpc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,14 +249,14 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 	closeIntent.ExpectedDeactivationSlot = &deactivation
 	blocked := func() {
 		t.Helper()
-		snapshot, err := svm.rpc.LookupSnapshot(ctx, f.Table, 1002)
+		snapshot, err := lookupSnapshot(ctx, svm.rpc, f.Table, 1002)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if lookupCloseReady(snapshot, deactivation) {
 			t.Fatal("close bypassed actual produced-slot cooldown")
 		}
-		hash, height, _, err := svm.rpc.LookupBlockhash(ctx)
+		hash, height, _, err := lookupBlockhash(ctx, svm.rpc)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,7 +264,7 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = svm.rpc.SimulateLookup(ctx, wire.SignedTransaction); err == nil {
+		if err = svm.simulate(ctx, wire.SignedTransaction); err == nil {
 			t.Fatal("actual ALT program accepted close before cooldown")
 		}
 	}
@@ -270,7 +278,7 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	snapshot, err := svm.rpc.LookupSnapshot(ctx, f.Table, 2513)
+	snapshot, err := lookupSnapshot(ctx, svm.rpc, f.Table, 2513)
 	if err != nil || !lookupCloseReady(snapshot, deactivation) {
 		t.Fatalf("actual produced-slot cooldown never elapsed: %+v %v", snapshot, err)
 	}
@@ -279,7 +287,7 @@ func TestLookupGoPacketsExecuteActualALTProgram(t *testing.T) {
 	if err = svm.rpc.SendWire(ctx, closed.Wire.SignedTransaction, true); err != nil {
 		t.Fatal(err)
 	}
-	again, err := svm.rpc.LookupFinalizedReceipt(ctx, closed.Wire.TransactionSignature)
+	again, err := lookupFinalizedReceipt(ctx, svm.rpc, closed.Wire.TransactionSignature)
 	if err != nil || !bytes.Equal(again.Wire, receipt.Wire) {
 		t.Fatal("exact close retry lost packet identity")
 	}

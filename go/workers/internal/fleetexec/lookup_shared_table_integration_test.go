@@ -174,7 +174,7 @@ func TestLookupSecondVaultPlannedBehindInFlightExtendIsCoveredAndActivated(t *te
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.lookup_table_operations WHERE binding_id=$1 AND operation_kind='extend' AND operation_state='complete'`, second.BindingID).Scan(&extend); err != nil || extend != 1 {
 		t.Fatal("second vault was not covered by its own queued extend", extend, err)
 	}
-	snapshot, err := svm.rpc.LookupSnapshot(ctx, f.Table, slot)
+	snapshot, err := lookupSnapshot(ctx, svm.rpc, f.Table, slot)
 	if err != nil {
 		t.Fatal(err)
 	}

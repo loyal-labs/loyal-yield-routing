@@ -1,7 +1,6 @@
 package fleetexec
 
 import (
-	"context"
 	"encoding/json"
 	"time"
 )
@@ -100,17 +99,4 @@ type LookupReceipt struct {
 	FeeLamports               uint64
 	Addresses                 []string
 	PreLamports, PostLamports []uint64
-}
-
-// LookupChain contains only this writer's chain capabilities. Consumers which
-// plan catalog/shard allocation do not receive the provisioner's signing key.
-type LookupChain interface {
-	LookupSnapshot(context.Context, string, int64) (LookupSnapshot, error)
-	SignatureStatus(context.Context, string) (SignatureStatus, error)
-	LookupFinalizedReceipt(context.Context, string) (*LookupReceipt, error)
-	LookupBlockhash(context.Context) (string, int64, int64, error)
-	LookupFee(context.Context, []byte) (uint64, error)
-	LookupRent(context.Context, int) (uint64, error)
-	LookupBalance(context.Context, string) (uint64, error)
-	SimulateLookup(context.Context, []byte) error
 }
