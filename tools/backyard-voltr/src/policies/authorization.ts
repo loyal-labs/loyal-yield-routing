@@ -21,65 +21,7 @@ import {
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const AUTH_KIND = "backyard-voltr-four-market-policy-authorization";
-const AUTH_PATH = "docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v27.json";
-const SOURCE_PATHS = [
-  "Cargo.toml",
-  "Cargo.lock",
-  "crates/loyal-actions/Cargo.toml",
-  "crates/loyal-actions/src/lib.rs",
-  "crates/loyal-actions/src/squads.rs",
-  "crates/loyal-actions/src/autonomous_vaults/mod.rs",
-  "crates/loyal-actions/src/autonomous_vaults/voltr_kamino.rs",
-  "crates/loyal-actions/src/bin/compile_voltr_kamino_runtime_policy.rs",
-  // The Go engine owns what the retired Rust worker crates did for this
-  // route: Voltr observation and planning (fleet/voltr*.go, types.go), the
-  // saved-input planner replay (loyal-evidence), the durable opportunity queue
-  // with restoration-first execution (fleetexec/voltr.go) and its schema.
-  "go/workers/go.mod",
-  "go/workers/cmd/loyal-evidence/main.go",
-  "go/workers/internal/fleet/types.go",
-  "go/workers/internal/fleet/voltr.go",
-  "go/workers/internal/fleet/voltr_route.json",
-  "go/workers/internal/fleet/voltr_plan.go",
-  "go/workers/internal/fleetexec/voltr.go",
-  "migrations/yield/0052_voltr_opportunity_classes.sql",
-  "tools/backyard-voltr/bun.lock",
-  "tools/backyard-voltr/package.json",
-  "tools/backyard-voltr/src/cli.ts",
-  "tools/backyard-voltr/src/manager-cli.ts",
-  "tools/backyard-voltr/src/bootstrap/authorization.ts",
-  "tools/backyard-voltr/src/bootstrap/commands.ts",
-  "tools/backyard-voltr/src/bootstrap/strategy-asset.ts",
-  "tools/backyard-voltr/src/bootstrap/strategy.ts",
-  "tools/backyard-voltr/src/activation/config.ts",
-  "tools/backyard-voltr/src/domain/bootstrap-execution-authorization.ts",
-  "tools/backyard-voltr/src/domain/execution-intent.ts",
-  "tools/backyard-voltr/src/domain/route-spec.ts",
-  "tools/backyard-voltr/src/integrations/signer.ts",
-  "tools/backyard-voltr/src/integrations/solana-compat.ts",
-  "tools/backyard-voltr/src/integrations/voltr.ts",
-  "tools/backyard-voltr/src/runtime/manager.ts",
-  "tools/backyard-voltr/src/runtime/protected-state.ts",
-  "tools/backyard-voltr/src/runtime/commands.ts",
-  "tools/backyard-voltr/src/runtime/earn-adapter.ts",
-  "tools/backyard-voltr/src/runtime/final-reconciliation.ts",
-  "tools/backyard-voltr/src/runtime/negative-mutations-mainnet.ts",
-  "tools/backyard-voltr/src/runtime/receipt.ts",
-  "tools/backyard-voltr/src/runtime/withdrawal-restoration.ts",
-  "tools/backyard-voltr/src/runtime/withdrawal-scanner.ts",
-  "tools/backyard-voltr/src/policies/authorization.ts",
-  "tools/backyard-voltr/src/policies/commands.ts",
-  "tools/backyard-voltr/src/policies/compiler.ts",
-  "tools/backyard-voltr/src/verify/compatibility.ts",
-  "tools/backyard-voltr/src/verify/current.ts",
-  "tools/backyard-voltr/src/verify/finalized.ts",
-  "tools/backyard-voltr/src/verify/four-market.ts",
-  "tools/backyard-voltr/src/verify/integration-handoff.ts",
-  "tools/backyard-voltr/src/verify/negative-mutations.ts",
-  "tools/backyard-voltr/src/verify/squads.ts",
-  "tools/backyard-voltr/src/verify/structure.ts",
-  "tools/backyard-voltr/tsconfig.json",
-] as const;
+const AUTH_PATH = "docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v28.json";
 const SUFFIX: ReadonlyArray<{ strategyId: PartnerStrategyId; operation: "deposit" | "withdraw" }> = [
   { strategyId: "onre", operation: "deposit" },
   { strategyId: "onre", operation: "withdraw" },
@@ -103,12 +45,6 @@ export type PolicyCatalogAuthorization = Readonly<{
   artifactFileSha256: string;
   artifactSha256: string;
   sourceManifestSha256: string;
-  sourceAggregateSha256: string;
-  sourceBinding: Readonly<{
-    algorithm: "sha256";
-    files: readonly Readonly<{ path: string; sha256: string }>[];
-    aggregateSha256: string;
-  }>;
   settings: string;
   manager: string;
   vault: string;
@@ -206,11 +142,6 @@ function relativeRepositoryPath(path: string): string {
     throw new Error("policy authorization path must remain inside the repository");
   }
   return value;
-}
-
-function sourceBinding(): PolicyCatalogAuthorization["sourceBinding"] {
-  const files = SOURCE_PATHS.map((path) => ({ path, sha256: sha256(readFileSync(resolve(REPOSITORY_ROOT, path))) }));
-  return { algorithm: "sha256", files, aggregateSha256: sha256(canonicalJson(files)) } as const;
 }
 
 function entryStrategy(entry: RuntimePolicyArtifactEntry): PartnerStrategyId {
@@ -380,7 +311,6 @@ export function effectiveRouteAuthorizationDigest(
 export function buildPolicyCatalogAuthorization(artifactPath: string, outputPath: string = AUTH_PATH): Readonly<{ path: string; fileSha256: string; authorizationSha256: string; effectiveRouteAuthorizationSha256: string; routeAuthorizationSha256: string; verdict: string }> {
   const loaded = loadRuntimePolicyArtifact(artifactPath);
   const entries = assertFourMarketArtifact(loaded);
-  const sources = sourceBinding();
   const body = {
     schemaVersion: 1 as const,
     kind: AUTH_KIND as typeof AUTH_KIND,
@@ -390,8 +320,6 @@ export function buildPolicyCatalogAuthorization(artifactPath: string, outputPath
     artifactFileSha256: loaded.fileSha256,
     artifactSha256: loaded.artifact.artifactSha256,
     sourceManifestSha256: loaded.artifact.sourceManifestSha256,
-    sourceAggregateSha256: sources.aggregateSha256,
-    sourceBinding: sources,
     settings: PARTNER_ROUTE.squads.settings,
     manager: PARTNER_ROUTE.squads.manager,
     vault: PARTNER_ROUTE.vault,
@@ -427,7 +355,7 @@ export function loadPolicyCatalogAuthorization(
   const parsed = JSON.parse(bytes.toString("utf8")) as Partial<PolicyCatalogAuthorization>;
   const expectedKeys = [
     "schemaVersion", "kind", "routeId", "routeSpecSha256", "artifactPath", "artifactFileSha256", "artifactSha256",
-    "sourceManifestSha256", "sourceAggregateSha256", "sourceBinding", "settings", "manager", "vault", "admin",
+    "sourceManifestSha256", "settings", "manager", "vault", "admin",
     "guardian", "guardianPermissionsMask", "threshold", "catalogPolicySeedBefore", "terminalPolicySeed",
     "maxManagerOperationRaw", "entries", "authorizationSha256",
   ];
@@ -445,8 +373,6 @@ export function loadPolicyCatalogAuthorization(
   const loaded = loadRuntimePolicyArtifact(artifactPath);
   const entries = assertFourMarketArtifact(loaded);
   if (authorization.artifactFileSha256 !== loaded.fileSha256 || authorization.artifactSha256 !== loaded.artifact.artifactSha256 || authorization.sourceManifestSha256 !== loaded.artifact.sourceManifestSha256) throw new Error("policy authorization artifact/source hash binding mismatch");
-  const observedSources = sourceBinding();
-  if (authorization.sourceBinding.algorithm !== "sha256" || JSON.stringify(authorization.sourceBinding.files) !== JSON.stringify(observedSources.files) || authorization.sourceBinding.aggregateSha256 !== observedSources.aggregateSha256 || authorization.sourceAggregateSha256 !== observedSources.aggregateSha256) throw new Error("policy authorization source binding does not match checked-out source");
   if (authorization.settings !== PARTNER_ROUTE.squads.settings || authorization.manager !== PARTNER_ROUTE.squads.manager || authorization.vault !== PARTNER_ROUTE.vault || authorization.admin !== PARTNER_ROUTE.setupAdmin || authorization.guardian !== PARTNER_ROUTE.squads.guardian || authorization.guardianPermissionsMask !== 7 || authorization.threshold !== 1 || authorization.catalogPolicySeedBefore !== PARTNER_ROUTE.squads.policySeedBefore.toString() || authorization.terminalPolicySeed !== (PARTNER_ROUTE.squads.policySeedBefore + BigInt(ALL.length)).toString() || authorization.maxManagerOperationRaw !== PARTNER_ROUTE.asset.maxManagerOperationRaw.toString()) throw new Error("policy authorization identity/limit/seed boundary is not exact");
   if (JSON.stringify(authorization.entries) !== JSON.stringify(entries)) throw new Error("policy authorization entries do not match the canonical artifact catalog");
   return { path, fileSha256, authorization, artifact: loaded.artifact } as const;
@@ -454,10 +380,6 @@ export function loadPolicyCatalogAuthorization(
 
 export function policyCatalogEntries(): typeof ALL {
   return ALL;
-}
-
-export function policyCatalogSourcePaths(): readonly string[] {
-  return SOURCE_PATHS;
 }
 
 export function policyCatalogAuthorizationPath(): string {

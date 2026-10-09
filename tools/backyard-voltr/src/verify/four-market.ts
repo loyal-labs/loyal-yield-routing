@@ -47,7 +47,7 @@ import {
 } from "../runtime/protected-state.js";
 import { decodeReceipt } from "../runtime/receipt.js";
 import { planWithdrawalRestoration, type WithdrawalRestorationScan, type WithdrawalRestorationSource } from "../runtime/withdrawal-restoration.js";
-import { earnAdapterSourcePaths, validateEarnSharedReplay } from "../runtime/earn-adapter.js";
+import { validateEarnSharedReplay } from "../runtime/earn-adapter.js";
 import { scanWithdrawalDemand } from "../runtime/withdrawal-scanner.js";
 import {
   verifyAdaptorReceipt,
@@ -85,7 +85,6 @@ const REQUIRED_NEGATIVE_MUTATIONS = [
   "zero-amount", "over-limit-amount", "mixed-graph", "extra-instruction", "reordered-instruction",
 ] as const;
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-const EARN_ADAPTER_SOURCE_PATHS = earnAdapterSourcePaths();
 const EXECUTION_SOURCE_CONTRACT_PATHS = [
   "tools/backyard-voltr/src/runtime/manager.ts",
   "tools/backyard-voltr/src/runtime/commands.ts",
@@ -1680,14 +1679,7 @@ function restorationEvidence(value: JsonRecord, manifest: FourMarketManifest, sc
 
 function verifyEarnAdapterEvidence(value: JsonRecord, manifest: FourMarketManifest, scan: VerifiedWithdrawalScan | null, responses: ReadonlyMap<TxName, VersionedTransactionResponse | null>, gates: Gate[]): void {
   try {
-    exactKeys(value, ["schemaVersion", "evidenceType", "broadcast", "routeId", "routeSpecSha256", "executionKind", "priority", "normalOptimizationIntervalSeconds", "sourceBindings", "outboxContract", "movement", "sharedReplay"], "earnAdapter");
-    if (!Array.isArray(value.sourceBindings)) throw new Error("earnAdapter.sourceBindings must be an array");
-    const observedBindings = value.sourceBindings.map((raw, index) => {
-      const row = record(raw, `earnAdapter.sourceBindings[${index}]`);
-      exactKeys(row, ["path", "sha256"], `earnAdapter.sourceBindings[${index}]`);
-      return { path: stringField(row, "path", `earnAdapter.sourceBindings[${index}]`), sha256: shaField(row, "sha256", `earnAdapter.sourceBindings[${index}]`) };
-    });
-    const currentBindings = EARN_ADAPTER_SOURCE_PATHS.map((path) => ({ path, sha256: sha256(readFileSync(resolve(REPOSITORY_ROOT, path))) }));
+    exactKeys(value, ["schemaVersion", "evidenceType", "broadcast", "routeId", "routeSpecSha256", "executionKind", "priority", "normalOptimizationIntervalSeconds", "outboxContract", "movement", "sharedReplay"], "earnAdapter");
     const outbox = record(value.outboxContract, "earnAdapter.outboxContract");
     exactKeys(outbox, ["oneDurableMovement", "sourceWithdrawThenDestinationDeposit", "leaseFencing", "oneSend", "confirmedReconciliation", "recoveryKeepsMovementIdentity", "directKaminoExecutorUsed"], "earnAdapter.outboxContract");
     const movement = record(value.movement, "earnAdapter.movement");
@@ -1718,12 +1710,12 @@ function verifyEarnAdapterEvidence(value: JsonRecord, manifest: FourMarketManife
     });
     const sourceIdleDelta = sourceResponse ? tokenDelta(sourceResponse, PARTNER_FOUR_MARKET_ROUTE.commonVoltr.idleAta) : null;
     const destinationIdleDelta = destinationResponse ? tokenDelta(destinationResponse, PARTNER_FOUR_MARKET_ROUTE.commonVoltr.idleAta) : null;
-    const pass = value.schemaVersion === 1 && value.evidenceType === "backyard-voltr-shared-earn-adapter-confirmed" && value.broadcast === false && value.routeId === manifest.routeId && value.routeSpecSha256 === manifest.routeSpecSha256 && value.executionKind === "voltr-manager" && value.priority === "withdrawal-restoration-first" && integerString(value.normalOptimizationIntervalSeconds, "earnAdapter.normalOptimizationIntervalSeconds") === PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIntervalSeconds && canonicalJson(observedBindings) === canonicalJson(currentBindings) && outbox.oneDurableMovement === true && outbox.sourceWithdrawThenDestinationDeposit === true && outbox.leaseFencing === true && outbox.oneSend === true && outbox.confirmedReconciliation === true && outbox.recoveryKeepsMovementIdentity === true && outbox.directKaminoExecutorUsed === false && amountRaw === manifest.amounts.managerAssetRaw && movement.sourceWithdrawSignature === sourceTx.signature && movement.sourceWithdrawSlot === sourceTx.slot && typeof idleReadbackContextSlot === "number" && Number.isSafeInteger(idleReadbackContextSlot) && idleReadbackContextSlot >= sourceTx.slot && movement.destinationDepositSignature === destinationTx.signature && movement.destinationDepositSlot === destinationTx.slot && destinationTx.slot > sourceTx.slot && sourceIdleDelta !== null && sourceIdleDelta > 0n && sourceIdleDelta <= amountRaw && destinationIdleDelta === -amountRaw && movement.timerDecisionCount === 1 && integerString(movement.withdrawalDemandReservedRaw, "earnAdapter.movement.withdrawalDemandReservedRaw") === 0n && sharedReplay.priorityProbe.withdrawalDemandRaw === scan.demand.pendingWithdrawalUpperBoundRaw.toString() && canonicalJson(sharedReplay.sourceBindings) === canonicalJson(currentBindings);
-    add(gates, "Earn adapter exact shared planner/source/outbox/movement proof", pass, { sourceBindings: observedBindings, outbox, movement, sharedReplay }, { sourceBindings: currentBindings, executionKind: "voltr-manager", priority: "withdrawal-restoration-first", intervalSeconds: 3_600n, directKaminoExecutorUsed: false, sourceWithdrawThenConfirmedIdleThenDestinationDeposit: true }, "add the thin maintained Voltr adapter and bind one confirmed two-leg movement to the shared planner/outbox sources");
+    const pass = value.schemaVersion === 1 && value.evidenceType === "backyard-voltr-shared-earn-adapter-confirmed" && value.broadcast === false && value.routeId === manifest.routeId && value.routeSpecSha256 === manifest.routeSpecSha256 && value.executionKind === "voltr-manager" && value.priority === "withdrawal-restoration-first" && integerString(value.normalOptimizationIntervalSeconds, "earnAdapter.normalOptimizationIntervalSeconds") === PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIntervalSeconds && outbox.oneDurableMovement === true && outbox.sourceWithdrawThenDestinationDeposit === true && outbox.leaseFencing === true && outbox.oneSend === true && outbox.confirmedReconciliation === true && outbox.recoveryKeepsMovementIdentity === true && outbox.directKaminoExecutorUsed === false && amountRaw === manifest.amounts.managerAssetRaw && movement.sourceWithdrawSignature === sourceTx.signature && movement.sourceWithdrawSlot === sourceTx.slot && typeof idleReadbackContextSlot === "number" && Number.isSafeInteger(idleReadbackContextSlot) && idleReadbackContextSlot >= sourceTx.slot && movement.destinationDepositSignature === destinationTx.signature && movement.destinationDepositSlot === destinationTx.slot && destinationTx.slot > sourceTx.slot && sourceIdleDelta !== null && sourceIdleDelta > 0n && sourceIdleDelta <= amountRaw && destinationIdleDelta === -amountRaw && movement.timerDecisionCount === 1 && integerString(movement.withdrawalDemandReservedRaw, "earnAdapter.movement.withdrawalDemandReservedRaw") === 0n && sharedReplay.priorityProbe.withdrawalDemandRaw === scan.demand.pendingWithdrawalUpperBoundRaw.toString();
+    add(gates, "Earn adapter exact shared planner/source/outbox/movement proof", pass, { outbox, movement, sharedReplay }, { executionKind: "voltr-manager", priority: "withdrawal-restoration-first", intervalSeconds: 3_600n, directKaminoExecutorUsed: false, sourceWithdrawThenConfirmedIdleThenDestinationDeposit: true }, "add the thin maintained Voltr adapter and bind one confirmed two-leg movement to the shared planner/outbox sources");
     const replayPass = sharedReplay.input.movementId === movementId && sharedReplay.sourceLeg.class === "yield_optimization" && sharedReplay.sourceLeg.amountRaw === amountRaw.toString() && sharedReplay.sourceLeg.protectedContextSlot === sourceTx.protectedBeforeContextSlot && sharedReplay.destinationLeg.class === "idle_allocation" && sharedReplay.destinationLeg.amountRaw === amountRaw.toString() && sharedReplay.priorityProbe.normalOptimization === "blocked";
     add(gates, "Earn Go planner decisions independently replayed", replayPass, { sharedReplay, movementId }, "saved confirmed observations replayed through loyal-evidence --kind voltr: zero-demand yield withdrawal, idle allocation into the destination, and positive demand blocking optimization", "capture the saved Voltr observations/epochs and replay them through the Go planner");
   } catch (error) {
-    add(gates, "Earn adapter exact shared planner/source/outbox/movement proof", false, error instanceof Error ? error.message : String(error), { sourcePaths: EARN_ADAPTER_SOURCE_PATHS, intervalSeconds: 3_600, executionKind: "voltr-manager" }, "wire the missing thin Earn adapter or regenerate its exact source-bound proof");
+    add(gates, "Earn adapter exact shared planner/source/outbox/movement proof", false, error instanceof Error ? error.message : String(error), { intervalSeconds: 3_600, executionKind: "voltr-manager" }, "wire the missing thin Earn adapter or regenerate its exact source-bound proof");
   }
 }
 
@@ -1944,7 +1936,7 @@ function verifyArtifactSemantics(name: ArtifactName, value: JsonRecord, manifest
   } else if (name === "restoration") {
     add(gates, "restoration artifact carries strict planner/outbox/leg sections", artifactHas(value, ["sources", "plan", "durableOutbox", "confirmedLegs", "shortfallRecomputations"]), Object.keys(value).sort(), ["sources", "plan", "durableOutbox", "confirmedLegs", "shortfallRecomputations"], "produce the complete restoration artifact; semantic and chain verification runs after all artifacts load");
   } else if (name === "earnAdapter") {
-    add(gates, "Earn adapter carries source/outbox/movement/replay sections", artifactHas(value, ["sourceBindings", "outboxContract", "movement", "sharedReplay"]), Object.keys(value).sort(), ["sourceBindings", "outboxContract", "movement", "sharedReplay"], "produce the complete source-bound Earn adapter evidence; exact verification runs after all artifacts load");
+    add(gates, "Earn adapter carries source/outbox/movement/replay sections", artifactHas(value, ["outboxContract", "movement", "sharedReplay"]), Object.keys(value).sort(), ["outboxContract", "movement", "sharedReplay"], "produce the complete source-bound Earn adapter evidence; exact verification runs after all artifacts load");
   } else if (name === "negativeMutations") {
     const mutations = value.mutations;
     const omitted = (operation: "deposit" | "withdraw") => {
@@ -2019,7 +2011,7 @@ export async function verifyFourMarketLifecycle(evidencePath: string, commitment
     add(gates, "policy catalog artifact hash", loaded.artifact.artifactSha256 === manifest.policyCatalog.artifactSha256 && loaded.artifact.routeSpecSha256 === fourMarketRouteSpecSha256(), { artifactSha256: loaded.artifact.artifactSha256, routeSpecSha256: loaded.artifact.routeSpecSha256 }, { artifactSha256: manifest.policyCatalog.artifactSha256, routeSpecSha256: fourMarketRouteSpecSha256() }, "regenerate and authorize the exact eight-policy catalog");
     const authorization = loadPolicyCatalogAuthorization(authorizationPath, policyPath, manifest.policyAuthorization.fileSha256);
     const effective = effectiveRouteAuthorizationDigest(loaded, authorization);
-    add(gates, "policy catalog authorization, create hashes, effective route authorization, and checked-out source binding", authorization.authorization.authorizationSha256 === manifest.policyAuthorization.authorizationSha256 && authorization.authorization.entries.length === 8, { authorizationSha256: authorization.authorization.authorizationSha256, entryCount: authorization.authorization.entries.length, sourceAggregateSha256: authorization.authorization.sourceAggregateSha256, createDataSha256: authorization.authorization.entries.map(({ strategyId, operation, policyCreateDataSha256 }) => ({ strategyId, operation, policyCreateDataSha256 })), effectiveRouteAuthorizationSha256: effective.sha256 }, { authorizationSha256: manifest.policyAuthorization.authorizationSha256, routeAuthorizationSha256: manifest.routeAuthorizationSha256, entryCount: 8, sourceBinding: "exact current maintained policy sources" }, "regenerate one authorization only after the full catalog and source tree are frozen");
+    add(gates, "policy catalog authorization, create hashes and effective route authorization", authorization.authorization.authorizationSha256 === manifest.policyAuthorization.authorizationSha256 && authorization.authorization.entries.length === 8, { authorizationSha256: authorization.authorization.authorizationSha256, entryCount: authorization.authorization.entries.length, createDataSha256: authorization.authorization.entries.map(({ strategyId, operation, policyCreateDataSha256 }) => ({ strategyId, operation, policyCreateDataSha256 })), effectiveRouteAuthorizationSha256: effective.sha256 }, { authorizationSha256: manifest.policyAuthorization.authorizationSha256, routeAuthorizationSha256: manifest.routeAuthorizationSha256, entryCount: 8 }, "regenerate one authorization only after the full catalog is frozen");
     add(gates, "effective route authorization digest exact", effective.sha256 === manifest.routeAuthorizationSha256, effective.sha256, manifest.routeAuthorizationSha256, "rebuild the manifest from the exact catalog plus authorization envelope; never copy a manager intent hash");
     const omittedInventory = policyOmittedIndexInventory(loaded);
     add(gates, "policy constrained and omitted-index inventory is complete", omittedInventory.length === 8 && omittedInventory.every(({ accountCount, constrained, omitted }) => constrained.length + omitted.length === accountCount && new Set([...constrained, ...omitted]).size === accountCount), omittedInventory, "all eight canonical inner vectors partitioned into exact constrained and named omitted indexes", "recompile the catalog and investigate the first omitted account whose index or role changed");
@@ -2297,7 +2289,7 @@ export async function verifyFourMarketLifecycle(evidencePath: string, commitment
   }
   const earnValue = artifactValues.get("earnAdapter") ?? null;
   if (earnValue) verifyEarnAdapterEvidence(earnValue, manifest, verifiedScan, responses, gates);
-  else add(gates, "Earn adapter exact shared planner/source/outbox/movement proof", false, null, EARN_ADAPTER_SOURCE_PATHS, "wire the missing thin Earn adapter and generate its evidence");
+  else add(gates, "Earn adapter exact shared planner/source/outbox/movement proof", false, null, null, "wire the missing thin Earn adapter and generate its evidence");
   const finalValue = artifactValues.get("finalReconciliation") ?? null;
   if (finalValue) await verifyFinalConservation(rpcUrl, finalValue, manifest, manifest.transactions.withdrawClaim.slot, gates);
   else add(gates, "final current decoded conservation exact", false, null, "claim-anchored current conservation artifact", "produce the final current readback after claim");

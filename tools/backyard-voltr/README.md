@@ -61,14 +61,12 @@ bun src/cli.ts policies verify --artifact /tmp/backyard-runtime-policies.json
 
 Every authorization-gated command (policy install, manager, negative
 mutations, four-market verify) loads
-`docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v27.json`,
-which binds the runtime policy catalog to the SHA-256 of every source that
-builds, plans, or executes it (`SOURCE_PATHS` in
-`src/policies/authorization.ts`). A change to any bound file makes those
-commands refuse until a new version is written and reviewed. A source-binding
-refresh keeps the catalog, its entries, seeds, PDAs, and data hashes unchanged.
-`authorization.ts` is itself bound, so first point its `AUTH_PATH` at the next
-version, then write it:
+`docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v28.json`,
+which binds the runtime policy catalog by its artifact hashes and each entry's
+seed, PDA and create/execution data hashes, and is checked against a fresh
+compile of the catalog. Editing code around the catalog does not change the
+authorization; only a catalog change needs a new version. Point `AUTH_PATH` in
+`src/policies/authorization.ts` at the next version, then write it:
 
 ```sh
 bun src/cli.ts policies authorization \
@@ -76,8 +74,8 @@ bun src/cli.ts policies authorization \
   --authorization-out ../../docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v<N>.json
 ```
 
-`bun test` fails while the committed authorization does not match the
-checked-out sources.
+`bun test src/policies/authorization.test.ts` fails while the committed
+authorization does not load against the compiled catalog.
 
 The compiled artifact records one intentional Squads limitation: its
 `ProgramInteraction` data constraints pin the canonical 30-byte payload bytes,
@@ -159,7 +157,7 @@ bun src/cli.ts runtime simulate-instant-withdraw-rejection --amount-lp <LP_RAW>
 bun src/cli.ts runtime simulate-manager --operation deposit \
   --strategy-id main --amount-raw 500000 \
   --artifact ../../docs/evidence/backyard-voltr-four-market/runtime-policy-catalog-v2.json \
-  --authorization ../../docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v27.json
+  --authorization ../../docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v28.json
 
 # Execute only with an explicit, new intent path. The exact pre-send packet,
 # authorization/artifact hashes, expiry, and expected signature are persisted
@@ -168,7 +166,7 @@ bun src/cli.ts runtime simulate-manager --operation deposit \
 bun src/cli.ts runtime execute-manager --operation deposit \
   --strategy-id main --amount-raw 500000 \
   --artifact ../../docs/evidence/backyard-voltr-four-market/runtime-policy-catalog-v2.json \
-  --authorization ../../docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v27.json \
+  --authorization ../../docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v28.json \
   --confirm-authorization-sha256 <AUTHORIZATION_FILE_SHA256> \
   --confirm-route-authorization-sha256 <EFFECTIVE_ROUTE_AUTH_SHA256> \
   --lifecycle-id <LIFECYCLE_SHA256> \
