@@ -702,7 +702,7 @@ func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationI
 		return false, err
 	}
 	e := proofs[0].evidence
-	validated, err := validateConfirmedReceipt(op, topology, e.Transaction, e.LookupTables)
+	validated, err := validateConfirmedReceipt(op, topology, e.Receipt, e.LookupTables)
 	if err != nil {
 		return false, err
 	}

@@ -10,15 +10,15 @@ import (
 )
 
 func TestSwapQuoteFrontierBoundsSigningAndSimulation(t *testing.T) {
-	executor, rpc, _ := testExecutor(t)
-	quoteSlot := rpc.hash.ContextSlot + 100
+	executor, fake, _ := testExecutor(t)
+	quoteSlot := fake.slot + 100
 	built := &BuiltOperation{QuoteContextSlot: &quoteSlot, PolicyInstructions: []Instruction{{ProgramID: solana.SystemProgramID, Data: []byte{1}}}}
-	_, slot, err := executor.PrepareAndSign(context.Background(), built, fixtureKey(45), 0, []byte{0}, rpc.hash.ContextSlot)
+	_, slot, err := executor.PrepareAndSign(context.Background(), built, fixtureKey(45), 0, []byte{0}, fake.slot)
 	if err != nil || slot != quoteSlot {
 		t.Fatalf("signing discarded quote frontier: %d %v", slot, err)
 	}
 	quoteSlot = 0
-	if _, _, err := executor.PrepareAndSign(context.Background(), built, fixtureKey(45), 0, []byte{0}, rpc.hash.ContextSlot); err == nil {
+	if _, _, err := executor.PrepareAndSign(context.Background(), built, fixtureKey(45), 0, []byte{0}, fake.slot); err == nil {
 		t.Fatal("unknown quote frontier accepted")
 	}
 }
@@ -44,8 +44,8 @@ func TestWithdrawalCannotReverseExpectedEffectSigns(t *testing.T) {
 }
 
 func TestKeylessRecoveryCannotAcquireSigningCapability(t *testing.T) {
-	_, rpc, _ := testExecutor(t)
-	executor, err := NewRecoveryExecutorContext(context.Background(), rpc)
+	_, fake, _ := testExecutor(t)
+	executor, err := NewRecoveryExecutorContext(context.Background(), fake)
 	if err != nil {
 		t.Fatal(err)
 	}

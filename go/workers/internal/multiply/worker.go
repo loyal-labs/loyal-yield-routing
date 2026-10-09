@@ -18,6 +18,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // landResendEvery matches the fleet landing cadence.
@@ -73,7 +74,7 @@ func newWorker(deps WorkerDeps, recoveryOnly bool) (*Worker, error) {
 	if deps.Observer == nil {
 		return nil, errors.New("multiply worker requires an observation reader")
 	}
-	if deps.Executor == nil || deps.Executor.RPC == nil || (!recoveryOnly && len(deps.Executor.Signer) != ed25519.PrivateKeySize) {
+	if deps.Executor == nil || deps.Executor.Chain == nil || (!recoveryOnly && len(deps.Executor.Signer) != ed25519.PrivateKeySize) {
 		return nil, errors.New("multiply worker requires an executor holding the delegate capability")
 	}
 	if deps.Quotes == nil && !recoveryOnly {
@@ -420,10 +421,8 @@ func (w *Worker) signAndPersist(ctx context.Context, lease *Lease, operation *Mu
 	if err != nil {
 		return nil, err
 	}
-	if outcome, err := w.executor.Simulate(ctx, signed, minSlot); err != nil {
+	if _, err := w.executor.Simulate(ctx, signed, minSlot); err != nil {
 		return nil, err
-	} else if outcome.Err != nil {
-		return nil, fmt.Errorf("simulation failed: %s", *outcome.Err)
 	}
 	persisted, err := w.store.PersistSignedOperation(ctx, lease, operation.OperationID,
 		policy.Account.String(), policy.DataSHA256, messageHash, signed)
@@ -630,14 +629,19 @@ func (w *Worker) receiptRecoveryFailure(ctx context.Context, lease *Lease, route
 var errReconciliationBankUnavailable = errors.New("confirmed reconciliation bank is stale or incoherent")
 
 // Reject a stale provider frontier before decoding financial account state.
-// The confirmed receipt is the minimum bank context, not a before-balance.
+// The confirmed receipt is the minimum bank context, not a before-balance: the
+// read asks for a node at or past it, and a lagging node (chain.ErrBehind) or
+// an endpoint that cannot answer is not a verdict on the bank.
 type reconciliationReader struct {
 	ObservationReader
 	minimumSlot uint64
 }
 
-func (r reconciliationReader) GetMultipleAccounts(ctx context.Context, keys []solana.PublicKey) (uint64, []*Account, error) {
-	slot, accounts, err := r.ObservationReader.GetMultipleAccounts(ctx, keys)
+func (r reconciliationReader) Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error) {
+	slot, accounts, err := r.ObservationReader.Accounts(ctx, keys, commitment, max(minContextSlot, r.minimumSlot))
+	if errors.Is(err, chain.ErrUnavailable) {
+		return 0, nil, fmt.Errorf("%w: %w", errReconciliationBankUnavailable, err)
+	}
 	if err == nil && slot < r.minimumSlot {
 		return 0, nil, errReconciliationBankUnavailable
 	}
@@ -698,7 +702,10 @@ func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *Ro
 	if err != nil {
 		return nil, err
 	}
-	policyData, policySlot, err := w.executor.RPC.AccountAtConfirmed(ctx, policyAccount)
+	policyData, policySlot, err := w.executor.policyAccount(ctx, policyAccount, confirmedSlot)
+	if errors.Is(err, chain.ErrUnavailable) {
+		return nil, fmt.Errorf("%w: %w", errReconciliationBankUnavailable, err)
+	}
 	if err != nil {
 		return nil, err
 	}

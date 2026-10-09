@@ -542,80 +542,36 @@ func TestBuildSwapBindsCustodyAndChecksRoute(t *testing.T) {
 
 // --------------------------------------------------------------- executor
 
-type fakeRPC struct {
-	genesis  string
-	hash     BlockhashAndHeight
-	sent     [][]byte
-	statuses []*SignatureObservation
-	height   uint64
-}
-
-func (f *fakeRPC) GenesisHash(ctx context.Context) (string, error) { return f.genesis, nil }
-
-func (f *fakeRPC) LatestBlockhash(ctx context.Context) (*BlockhashAndHeight, error) {
-	return &f.hash, nil
-}
-
-func (f *fakeRPC) AccountAtConfirmed(ctx context.Context, key solana.PublicKey) ([]byte, uint64, error) {
-	return nil, f.hash.ContextSlot, nil
-}
-
-func (f *fakeRPC) SimulateTransaction(ctx context.Context, wire []byte, minContextSlot uint64) (*SimulationOutcome, error) {
-	return &SimulationOutcome{Logs: []string{"ok"}}, nil
-}
-
-func (f *fakeRPC) SendRawTransaction(ctx context.Context, wire []byte) (string, error) {
-	f.sent = append(f.sent, wire)
-	digest := sha256.Sum256(wire)
-	signature := make([]byte, 64)
-	signature[0] = digest[0]
-	return solana.Signature(signature).String(), nil
-}
-
-func (f *fakeRPC) SignatureStatus(ctx context.Context, signature string) (*SignatureObservation, error) {
-	if len(f.statuses) == 0 {
-		return nil, nil
-	}
-	next := f.statuses[0]
-	f.statuses = f.statuses[1:]
-	return next, nil
-}
-
-func (f *fakeRPC) BlockHeight(ctx context.Context) (uint64, error) { return f.height, nil }
-
 func testDelegateSeed() ed25519.PrivateKey {
 	var seed [ed25519.SeedSize]byte
 	copy(seed[:], []byte("multiply-test-delegate-key"))
 	return ed25519.NewKeyFromSeed(seed[:])
 }
 
-func testExecutor(t *testing.T) (*Executor, *fakeRPC, ed25519.PublicKey) {
+func testExecutor(t *testing.T) (*Executor, *fakeChain, ed25519.PublicKey) {
 	t.Helper()
 	key := testDelegateSeed()
-	rpc := &fakeRPC{
-		genesis: mainnetGenesisHash,
-		hash: BlockhashAndHeight{
-			RecentBlockhash:      fixtureKey(9).String(),
-			LastValidBlockHeight: 331_900_000, ContextSlot: 331_895_401,
-		},
+	fake := &fakeChain{
+		genesis: solana.MustHashFromBase58(mainnetGenesisHash), blockhash: solana.Hash(fixtureKey(9)),
+		lastValid: 331_900_000, slot: 331_895_401, fee: 5000,
 	}
-	executor, err := NewExecutor(rpc, key)
+	executor, err := NewExecutor(fake, key)
 	if err != nil {
 		t.Fatalf("executor: %v", err)
 	}
-	return executor, rpc, key.Public().(ed25519.PublicKey)
+	return executor, fake, key.Public().(ed25519.PublicKey)
 }
 
 func TestExecutorRejectsNonMainnet(t *testing.T) {
-	_, rpc, _ := testExecutor(t)
-	rpc.genesis = "EtWTRBDZvAw6t7WorldPlaceholder"
-	if _, err := NewExecutor(rpc, testDelegateSeed()); err == nil {
+	_, fake, _ := testExecutor(t)
+	fake.genesis = solana.Hash(fixtureKey(10))
+	if _, err := NewExecutor(fake, testDelegateSeed()); err == nil {
 		t.Fatal("non-mainnet genesis was accepted")
 	}
 }
 
 func TestPrepareAndSignWireShapeAndCapability(t *testing.T) {
-	executor, rpc, delegate := testExecutor(t)
+	executor, fake, delegate := testExecutor(t)
 	topology := testTopology(t)
 	observed := idleObserved(topology)
 	observed.Claim.AmountRaw = 1_500_000
@@ -665,7 +621,7 @@ func TestPrepareAndSignWireShapeAndCapability(t *testing.T) {
 	if !foundSquads {
 		t.Fatal("Squads sync v2 discriminator missing from the wire")
 	}
-	if len(rpc.sent) != 0 {
+	if len(fake.sent) != 0 {
 		t.Fatal("PrepareAndSign must never send")
 	}
 }

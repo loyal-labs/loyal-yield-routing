@@ -10,19 +10,17 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
-	computebudget "github.com/solana-foundation/solana-go/v2/programs/compute-budget"
-	"io"
 	"math"
-	"net/http"
-	"sync/atomic"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
+	computebudget "github.com/solana-foundation/solana-go/v2/programs/compute-budget"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const (
@@ -32,294 +30,34 @@ const (
 	solanaPacketBytes  = 1232
 )
 
-// BlockhashAndHeight is the fetched blockhash binding.
-type BlockhashAndHeight struct {
-	RecentBlockhash      string
-	LastValidBlockHeight uint64
-	ContextSlot          uint64
-}
-
-// SimulationOutcome is the bounded simulateTransaction result.
-type SimulationOutcome struct {
-	Err           *string
-	Logs          []string
-	UnitsConsumed uint64
-}
-
-// SignatureObservation is the bounded getSignatureStatuses result; nil
-// outcome means the RPC has not seen the signature.
-type SignatureObservation struct {
-	Slot              int64
-	ConfirmationState string // "processed" | "confirmed" | "finalized" | ""
-	Err               *string
-}
-
-// RPCSurface is the consumer-defined Solana surface the executor needs.
-// LiveRPCSurface is the production adapter; tests bind doubles. It is
-// deliberately narrow: no generic transaction submission, no account writes.
-type RPCSurface interface {
-	GenesisHash(ctx context.Context) (string, error)
-	LatestBlockhash(ctx context.Context) (*BlockhashAndHeight, error)
-	// AccountAtConfirmed reads one raw account (nil data when absent) with
-	// its context slot, used for the exact policy binding checks.
-	AccountAtConfirmed(ctx context.Context, key solana.PublicKey) ([]byte, uint64, error)
-	SimulateTransaction(ctx context.Context, wire []byte, minContextSlot uint64) (*SimulationOutcome, error)
-	SendRawTransaction(ctx context.Context, wire []byte) (string, error)
-	SignatureStatus(ctx context.Context, signature string) (*SignatureObservation, error)
-	BlockHeight(ctx context.Context) (uint64, error)
-	FeeForMessage(context.Context, []byte) (uint64, error)
-	LookupTables(context.Context, []solana.PublicKey) (map[solana.PublicKey]solana.PublicKeySlice, error)
-}
-
-// LiveRPCSurface is the production JSON-RPC adapter (id-correlated JSON-RPC
-// 2.0 over HTTP), bounded like the reviewed read-only clients.
-type LiveRPCSurface struct {
-	URL    string
-	HTTP   *http.Client
-	nextID atomic.Int64
-}
-
-// NewLiveRPCSurface bounds the production client.
-func NewLiveRPCSurface(url string) *LiveRPCSurface {
-	return &LiveRPCSurface{URL: url, HTTP: &http.Client{Timeout: 30 * time.Second}}
-}
-
-type rpcResponse struct {
-	ID      int64           `json:"id"`
-	JSONRPC string          `json:"jsonrpc"`
-	Result  json.RawMessage `json:"result"`
-	Error   *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-func (c *LiveRPCSurface) call(ctx context.Context, method string, params []any, output any) error {
-	requestID := c.nextID.Add(1)
-	payload, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0", "id": requestID, "method": method, "params": params,
-	})
-	if err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := c.HTTP.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, (1<<22)+1))
-	if err != nil {
-		return err
-	}
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("rpc %s returned status %d", method, response.StatusCode)
-	}
-	if len(body) > 1<<22 {
-		return errors.New("RPC response exceeded size limit")
-	}
-	var parsed rpcResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return fmt.Errorf("rpc %s response: %w", method, err)
-	}
-	if parsed.ID != requestID || parsed.JSONRPC != "2.0" {
-		return errors.New("RPC response identity mismatch")
-	}
-	if parsed.Error != nil {
-		return fmt.Errorf("rpc %s error %d: %s", method, parsed.Error.Code, parsed.Error.Message)
-	}
-	if len(parsed.Result) == 0 || bytes.Equal(parsed.Result, []byte("null")) {
-		return errors.New("RPC response omitted result")
-	}
-	if output != nil {
-		return json.Unmarshal(parsed.Result, output)
-	}
-	return nil
-}
-
-// GenesisHash implements RPCSurface.
-func (c *LiveRPCSurface) GenesisHash(ctx context.Context) (string, error) {
-	var genesis string
-	if err := c.call(ctx, "getGenesisHash", nil, &genesis); err != nil {
-		return "", err
-	}
-	return genesis, nil
-}
-
-// LatestBlockhash implements RPCSurface.
-func (c *LiveRPCSurface) LatestBlockhash(ctx context.Context) (*BlockhashAndHeight, error) {
-	var raw struct {
-		Context struct {
-			Slot uint64 `json:"slot"`
-		} `json:"context"`
-		Value struct {
-			Blockhash            string `json:"blockhash"`
-			LastValidBlockHeight uint64 `json:"lastValidBlockHeight"`
-		} `json:"value"`
-	}
-	if err := c.call(ctx, "getLatestBlockhash",
-		[]any{map[string]string{"commitment": "confirmed"}}, &raw); err != nil {
-		return nil, err
-	}
-	if raw.Value.Blockhash == "" || raw.Value.LastValidBlockHeight == 0 || raw.Context.Slot == 0 {
-		return nil, errors.New("rpc returned an incomplete blockhash")
-	}
-	return &BlockhashAndHeight{
-		RecentBlockhash:      raw.Value.Blockhash,
-		LastValidBlockHeight: raw.Value.LastValidBlockHeight,
-		ContextSlot:          raw.Context.Slot,
-	}, nil
-}
-
-// AccountAtConfirmed implements RPCSurface.
-func (c *LiveRPCSurface) AccountAtConfirmed(ctx context.Context, key solana.PublicKey) ([]byte, uint64, error) {
-	var raw struct {
-		Context struct {
-			Slot uint64 `json:"slot"`
-		} `json:"context"`
-		Value *struct {
-			Data       []interface{} `json:"data"`
-			Owner      string        `json:"owner"`
-			Executable bool          `json:"executable"`
-		} `json:"value"`
-	}
-	if err := c.call(ctx, "getAccountInfo",
-		[]any{key.String(), map[string]any{"encoding": "base64", "commitment": "confirmed"}}, &raw); err != nil {
-		return nil, 0, err
-	}
-	if raw.Value == nil || len(raw.Value.Data) != 2 {
-		return nil, raw.Context.Slot, nil
-	}
-	if raw.Context.Slot == 0 || raw.Value.Executable || raw.Value.Owner != SquadsProgram {
-		return nil, 0, errors.New("policy account has invalid owner or context")
-	}
-	encoded, ok := raw.Value.Data[0].(string)
-	if !ok || raw.Value.Data[1] != "base64" {
-		return nil, 0, errors.New("account encoding is invalid")
-	}
-	data, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, 0, fmt.Errorf("account data is not base64: %w", err)
-	}
-	return data, raw.Context.Slot, nil
-}
-
-// BlockHeight implements RPCSurface.
-func (c *LiveRPCSurface) BlockHeight(ctx context.Context) (uint64, error) {
-	var height uint64
-	if err := c.call(ctx, "getBlockHeight", []any{map[string]string{"commitment": "confirmed"}}, &height); err != nil {
-		return 0, err
-	}
-	return height, nil
-}
-
-type simulatedTransactionValue struct {
-	Err   *json.RawMessage `json:"err"`
-	Logs  []string         `json:"logs"`
-	Units *uint64          `json:"unitsConsumed"`
-}
-
-// SimulateTransaction implements RPCSurface with sigVerify=true and
-// replaceRecentBlockhash=false, exactly as the Rust executor simulates.
-func (c *LiveRPCSurface) SimulateTransaction(ctx context.Context, wire []byte, minContextSlot uint64) (*SimulationOutcome, error) {
-	options := map[string]any{
-		"commitment":             "confirmed",
-		"sigVerify":              true,
-		"replaceRecentBlockhash": false,
-		"encoding":               "base64",
-	}
-	if minContextSlot > 0 {
-		options["minContextSlot"] = minContextSlot
-	}
-	var raw struct {
-		Context struct {
-			Slot uint64 `json:"slot"`
-		} `json:"context"`
-		Value *simulatedTransactionValue `json:"value"`
-	}
-	if err := c.call(ctx, "simulateTransaction",
-		[]any{base64.StdEncoding.EncodeToString(wire), options}, &raw); err != nil {
-		return nil, err
-	}
-	if raw.Value == nil || raw.Context.Slot == 0 || raw.Context.Slot < minContextSlot {
-		return nil, errors.New("simulation context is missing or stale")
-	}
-	outcome := &SimulationOutcome{Logs: raw.Value.Logs}
-	if raw.Value.Units != nil {
-		outcome.UnitsConsumed = *raw.Value.Units
-	}
-	if raw.Value.Err != nil {
-		message := string(*raw.Value.Err)
-		outcome.Err = &message
-	}
-	return outcome, nil
-}
-
-// SendRawTransaction implements RPCSurface with skipPreflight=true and
-// maxRetries=0: one shot, no client-side retry of an ambiguous send.
-func (c *LiveRPCSurface) SendRawTransaction(ctx context.Context, wire []byte) (string, error) {
-	var signature string
-	if err := c.call(ctx, "sendTransaction", []any{
-		base64.StdEncoding.EncodeToString(wire),
-		map[string]any{"encoding": "base64", "skipPreflight": true, "maxRetries": 0},
-	}, &signature); err != nil {
-		return "", err
-	}
-	if _, err := solana.SignatureFromBase58(signature); err != nil {
-		return "", fmt.Errorf("rpc returned a malformed signature: %w", err)
-	}
-	return signature, nil
-}
-
-// SignatureStatus implements RPCSurface.
-func (c *LiveRPCSurface) SignatureStatus(ctx context.Context, signature string) (*SignatureObservation, error) {
-	var raw struct {
-		Value []struct {
-			Slot               int64            `json:"slot"`
-			ConfirmationStatus string           `json:"confirmationStatus"`
-			Err                *json.RawMessage `json:"err"`
-		} `json:"value"`
-	}
-	if err := c.call(ctx, "getSignatureStatuses",
-		[]any{[]string{signature}, map[string]any{"searchTransactionHistory": true}}, &raw); err != nil {
-		return nil, err
-	}
-	if len(raw.Value) != 1 {
-		return nil, errors.New("RPC signature result count mismatch")
-	}
-	if raw.Value[0].Slot == 0 {
-		return nil, nil
-	}
-	entry := raw.Value[0]
-	outcome := &SignatureObservation{Slot: entry.Slot, ConfirmationState: entry.ConfirmationStatus}
-	if entry.Err != nil {
-		message := string(*entry.Err)
-		outcome.Err = &message
-	}
-	return outcome, nil
+// ExecutorChain is the cluster surface the executor reads, simulates and
+// proves receipts through; *chain.Client is the production binding.
+type ExecutorChain interface {
+	GenesisHash(context.Context) (solana.Hash, error)
+	Blockhash(context.Context, rpc.CommitmentType) (hash solana.Hash, lastValid, slot uint64, err error)
+	Accounts(context.Context, []solana.PublicKey, rpc.CommitmentType, uint64) (uint64, []*chain.Account, error)
+	Fee(context.Context, []byte, rpc.CommitmentType) (uint64, error)
+	Simulate(context.Context, []byte, rpc.SimulateTransactionOpts) (chain.Simulated, error)
+	Receipt(context.Context, solana.Signature, rpc.CommitmentType) (chain.Receipt, error)
 }
 
 // Executor owns the delegate signing capability and the durable send path.
 type Executor struct {
-	RPC      RPCSurface
+	Chain    ExecutorChain
 	Signer   ed25519.PrivateKey // held here and nowhere else
 	feePayer ed25519.PrivateKey
 }
 
 // NewExecutor validates the signer capability and pins mainnet before any
 // other use, like Executor::new.
-func NewExecutor(rpc RPCSurface, signer ed25519.PrivateKey) (*Executor, error) {
-	return NewExecutorWithFeePayer(rpc, signer, signer)
+func NewExecutor(c ExecutorChain, signer ed25519.PrivateKey) (*Executor, error) {
+	return NewExecutorWithFeePayer(c, signer, signer)
 }
 
 // NewRecoveryExecutorContext pins the same chain identity without acquiring
 // private keys. Durable signed bytes are the only submission capability.
-func NewRecoveryExecutorContext(ctx context.Context, rpc RPCSurface) (*Executor, error) {
-	if ctx == nil || rpc == nil {
+func NewRecoveryExecutorContext(ctx context.Context, c ExecutorChain) (*Executor, error) {
+	if ctx == nil || c == nil {
 		return nil, errors.New("recovery executor requires context and RPC")
 	}
 	if err := ctx.Err(); err != nil {
@@ -327,26 +65,26 @@ func NewRecoveryExecutorContext(ctx context.Context, rpc RPCSurface) (*Executor,
 	}
 	probe, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	genesis, err := rpc.GenesisHash(probe)
+	genesis, err := c.GenesisHash(probe)
 	if probe.Err() != nil {
 		return nil, probe.Err()
 	}
 	if err != nil {
 		return nil, err
 	}
-	if genesis != mainnetGenesisHash {
+	if genesis.String() != mainnetGenesisHash {
 		return nil, errors.New("recovery RPC is not mainnet-beta")
 	}
-	return &Executor{RPC: rpc}, nil
+	return &Executor{Chain: c}, nil
 }
 
-func NewExecutorWithFeePayer(rpc RPCSurface, feePayer, signer ed25519.PrivateKey) (*Executor, error) {
-	return NewExecutorWithFeePayerContext(context.Background(), rpc, feePayer, signer)
+func NewExecutorWithFeePayer(c ExecutorChain, feePayer, signer ed25519.PrivateKey) (*Executor, error) {
+	return NewExecutorWithFeePayerContext(context.Background(), c, feePayer, signer)
 }
 
 // NewExecutorWithFeePayerContext pins mainnet under the engine startup context.
 // The local timeout bounds preflight without discarding caller cancellation.
-func NewExecutorWithFeePayerContext(ctx context.Context, rpc RPCSurface, feePayer, signer ed25519.PrivateKey) (*Executor, error) {
+func NewExecutorWithFeePayerContext(ctx context.Context, c ExecutorChain, feePayer, signer ed25519.PrivateKey) (*Executor, error) {
 	if ctx == nil {
 		return nil, errors.New("multiply executor requires caller context")
 	}
@@ -356,22 +94,22 @@ func NewExecutorWithFeePayerContext(ctx context.Context, rpc RPCSurface, feePaye
 	if !validPrivateKey(signer) || !validPrivateKey(feePayer) {
 		return nil, errors.New("multiply executor requires an ed25519 delegate key")
 	}
-	if rpc == nil {
-		return nil, errors.New("multiply executor requires an RPC surface")
+	if c == nil {
+		return nil, errors.New("multiply executor requires a chain client")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	genesis, err := rpc.GenesisHash(ctx)
+	genesis, err := c.GenesisHash(ctx)
 	if cancellation := ctx.Err(); cancellation != nil {
 		return nil, fmt.Errorf("genesis preflight: %w", cancellation)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("genesis preflight: %w", err)
 	}
-	if genesis != mainnetGenesisHash {
+	if genesis.String() != mainnetGenesisHash {
 		return nil, fmt.Errorf("rpc is not mainnet-beta (genesis %s)", genesis)
 	}
-	return &Executor{RPC: rpc, Signer: append(ed25519.PrivateKey(nil), signer...), feePayer: append(ed25519.PrivateKey(nil), feePayer...)}, nil
+	return &Executor{Chain: c, Signer: append(ed25519.PrivateKey(nil), signer...), feePayer: append(ed25519.PrivateKey(nil), feePayer...)}, nil
 }
 
 // Delegate returns the policy signer public key, which may differ from the fee payer.
@@ -406,11 +144,10 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 	if !validPrivateKey(e.Signer) || !validPrivateKey(e.feePayer) {
 		return nil, 0, errors.New("executor lost its signing capability")
 	}
-	blockhash, err := e.RPC.LatestBlockhash(ctx)
+	blockhash, lastValid, slot, err := e.Chain.Blockhash(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return nil, 0, fmt.Errorf("fetch blockhash: %w", err)
 	}
-	slot := blockhash.ContextSlot
 	if minContextSlot > slot {
 		slot = minContextSlot
 	}
@@ -421,10 +158,6 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 		if *built.QuoteContextSlot > slot {
 			slot = *built.QuoteContextSlot
 		}
-	}
-	blockhashKey, err := solana.HashFromBase58(blockhash.RecentBlockhash)
-	if err != nil {
-		return nil, 0, fmt.Errorf("blockhash: %w", err)
 	}
 	transactionAccounts := make([]AccountMeta, 0, 32)
 	inner := CompileSquadsInnerInstruction(&transactionAccounts, built.PolicyInstructions[0])
@@ -438,7 +171,7 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 	feePayer := solana.PublicKey(e.feePayer[32:])
 	opts := []solana.TransactionOption{solana.TransactionPayer(feePayer)}
 	if len(built.LookupTables) > 0 {
-		tables, err := e.RPC.LookupTables(ctx, built.LookupTables)
+		tables, err := e.lookupTables(ctx, built.LookupTables)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -452,7 +185,7 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 		}
 		opts = append(opts, solana.TransactionAddressTables(tables))
 	}
-	tx, err := solana.NewTransaction(instructions, blockhashKey, opts...)
+	tx, err := solana.NewTransaction(instructions, blockhash, opts...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -463,7 +196,7 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 	if err != nil {
 		return nil, 0, err
 	}
-	fee, err := e.RPC.FeeForMessage(ctx, message)
+	fee, err := e.Chain.Fee(ctx, message, rpc.CommitmentConfirmed)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -493,7 +226,7 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 	if len(wire) > solanaPacketBytes {
 		return nil, 0, fmt.Errorf("multiply packet is %d bytes, exceeds %d", len(wire), solanaPacketBytes)
 	}
-	signed, err := NewSignedOperation(wire, tx.Signatures[0].String(), blockhash.RecentBlockhash, blockhash.LastValidBlockHeight)
+	signed, err := NewSignedOperation(wire, tx.Signatures[0].String(), blockhash.String(), lastValid)
 	return signed, slot, err
 }
 
@@ -548,7 +281,7 @@ func (e *Executor) EnsureExactPolicy(ctx context.Context, topology *EarnMaxTopol
 	if err != nil {
 		return nil, err
 	}
-	data, _, err := e.RPC.AccountAtConfirmed(ctx, policy.Account)
+	data, _, err := e.policyAccount(ctx, policy.Account, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -647,10 +380,16 @@ func MessageSHA256(wire []byte) (string, error) {
 	return hexEncode(digest[:]), nil
 }
 
-// Simulate runs the persisted wire under sigVerify; failure before broadcast
-// keeps the operation in prepared.
-func (e *Executor) Simulate(ctx context.Context, signed *SignedOperation, minContextSlot uint64) (*SimulationOutcome, error) {
-	return e.RPC.SimulateTransaction(ctx, signed.Wire, minContextSlot)
+// Simulate runs the signed wire at confirmed with sigVerify and its own
+// blockhash, exactly as the Rust executor simulates. A failed transaction is
+// a *chain.SimulationError; failure before broadcast keeps the operation in
+// prepared.
+func (e *Executor) Simulate(ctx context.Context, signed *SignedOperation, minContextSlot uint64) (chain.Simulated, error) {
+	opts := rpc.SimulateTransactionOpts{SigVerify: true, Commitment: rpc.CommitmentConfirmed}
+	if minContextSlot > 0 {
+		opts.MinContextSlot = &minContextSlot
+	}
+	return e.Chain.Simulate(ctx, signed.Wire, opts)
 }
 
 // VerifyExpectedEffects compares confirmed balances against immutable persisted
@@ -788,64 +527,28 @@ func hexEncode(value []byte) string {
 	return string(out)
 }
 
-func (c *LiveRPCSurface) FeeForMessage(ctx context.Context, message []byte) (uint64, error) {
-	var raw struct {
-		Value *uint64 `json:"value"`
-	}
-	if err := c.call(ctx, "getFeeForMessage", []any{base64.StdEncoding.EncodeToString(message), map[string]string{"commitment": "confirmed"}}, &raw); err != nil {
-		return 0, err
-	}
-	if raw.Value == nil {
-		return 0, errors.New("RPC omitted transaction fee")
-	}
-	return *raw.Value, nil
-}
-
-func (c *LiveRPCSurface) LookupTables(ctx context.Context, keys []solana.PublicKey) (map[solana.PublicKey]solana.PublicKeySlice, error) {
+// lookupTables reads the active address lookup tables at confirmed.
+func (e *Executor) lookupTables(ctx context.Context, keys []solana.PublicKey) (map[solana.PublicKey]solana.PublicKeySlice, error) {
 	if len(keys) == 0 || len(keys) > 4 {
 		return nil, errors.New("lookup table count is invalid")
 	}
-	names := make([]string, len(keys))
 	seen := map[solana.PublicKey]bool{}
-	for i, key := range keys {
+	for _, key := range keys {
 		if seen[key] {
 			return nil, errors.New("duplicate lookup table")
 		}
 		seen[key] = true
-		names[i] = key.String()
 	}
-	var raw struct {
-		Value []*struct {
-			Owner      string            `json:"owner"`
-			Executable bool              `json:"executable"`
-			Data       []json.RawMessage `json:"data"`
-		} `json:"value"`
-	}
-	if err := c.call(ctx, "getMultipleAccounts", []any{names, map[string]string{"encoding": "base64", "commitment": "confirmed"}}, &raw); err != nil {
+	_, accounts, err := e.Chain.Accounts(ctx, keys, rpc.CommitmentConfirmed, 0)
+	if err != nil {
 		return nil, err
 	}
-	if len(raw.Value) != len(keys) {
-		return nil, errors.New("RPC lookup table result count mismatch")
-	}
 	tables := make(map[solana.PublicKey]solana.PublicKeySlice, len(keys))
-	for i, value := range raw.Value {
-		if value == nil || value.Owner != solana.AddressLookupTableProgramID.String() || value.Executable || len(value.Data) != 2 {
+	for i, account := range accounts {
+		if account == nil || account.Owner != solana.AddressLookupTableProgramID || account.Executable {
 			return nil, errors.New("lookup table is absent or invalid")
 		}
-		var encoded, encoding string
-		if err := json.Unmarshal(value.Data[0], &encoded); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(value.Data[1], &encoding); err != nil {
-			return nil, err
-		}
-		if encoding != "base64" {
-			return nil, errors.New("lookup table encoding is invalid")
-		}
-		data, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return nil, err
-		}
+		data := account.Data
 		// Solana lookup-table state has 56 bytes of metadata, then public keys.
 		if len(data) < 56 || (len(data)-56)%32 != 0 || binary.LittleEndian.Uint32(data[:4]) != 1 || binary.LittleEndian.Uint64(data[4:12]) != math.MaxUint64 || data[21] > 1 {
 			return nil, errors.New("lookup table state is inactive or malformed")
@@ -861,4 +564,20 @@ func (c *LiveRPCSurface) LookupTables(ctx context.Context, keys []solana.PublicK
 		tables[keys[i]] = addresses
 	}
 	return tables, nil
+}
+
+// policyAccount reads one Squads policy account at confirmed, from a node at
+// or past minContextSlot: nil data when absent, with the slot it answered at.
+func (e *Executor) policyAccount(ctx context.Context, key solana.PublicKey, minContextSlot uint64) ([]byte, uint64, error) {
+	slot, accounts, err := e.Chain.Accounts(ctx, []solana.PublicKey{key}, rpc.CommitmentConfirmed, minContextSlot)
+	if err != nil {
+		return nil, 0, err
+	}
+	if accounts[0] == nil {
+		return nil, slot, nil
+	}
+	if accounts[0].Executable || accounts[0].Owner != mustKey(SquadsProgram) {
+		return nil, 0, errors.New("policy account has invalid owner or context")
+	}
+	return accounts[0].Data, slot, nil
 }

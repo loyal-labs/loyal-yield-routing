@@ -5,25 +5,27 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/solana-foundation/solana-go/v2"
 )
 
-type startupCancellationRPC struct {
-	fakeRPC
+type startupCancellationChain struct {
+	fakeChain
 	started chan context.Context
 }
 
-func (r *startupCancellationRPC) GenesisHash(ctx context.Context) (string, error) {
+func (r *startupCancellationChain) GenesisHash(ctx context.Context) (solana.Hash, error) {
 	r.started <- ctx
 	<-ctx.Done()
 	// Simulates a transport returning a completed buffered response after the
 	// caller has stopped startup. Construction must still honor cancellation.
-	return mainnetGenesisHash, nil
+	return solana.MustHashFromBase58(mainnetGenesisHash), nil
 }
 
 func TestExecutorStartupCancellationCannotPublishCapability(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rpc := &startupCancellationRPC{started: make(chan context.Context, 1)}
+	rpc := &startupCancellationChain{started: make(chan context.Context, 1)}
 	result := make(chan error, 1)
 	go func() {
 		executor, err := NewExecutorWithFeePayerContext(ctx, rpc, testDelegateSeed(), testDelegateSeed())
