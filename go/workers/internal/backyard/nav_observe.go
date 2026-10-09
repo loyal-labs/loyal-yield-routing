@@ -10,6 +10,8 @@ import (
 	"math/big"
 	"sort"
 	"strings"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 const (
@@ -374,7 +376,7 @@ func navInputFingerprintForRoute(slot int64, accounts []ConfirmedAccount, custod
 // expected poststate; all identity, receipt, reserve, and obligation bytes are
 // still independently decoded from the confirmed batch.
 func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies) (RouteNAVSnapshot, error) {
-	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint, Market: kaminoMarket, Program: kaminoProgram, Vault: bridgeVault}, CollateralCustody: kaminoPrimeCustody}
+	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint, Market: kaminoMarket, Program: kamino.ProgramID.String(), Vault: bridgeVault}, CollateralCustody: kaminoPrimeCustody}
 	return computeRouteNAVForRoute(slot, accounts, manifest, override, route)
 }
 
@@ -522,8 +524,8 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	components := []NAVComponent{
 		{Account: bridgeSquadsATA, Owner: bridgeVault, Raw: int64(custodies.SquadsUSDCraw), Slot: slot, Known: true},
 		{Account: route.CollateralCustody, Owner: bridgeVault, Raw: int64(primeIdleValue), Slot: slot, Known: true},
-		{Account: kaminoConfig.Obligation + ":collateral", Owner: kaminoProgram, Raw: int64(collateralValue), Slot: slot, Known: true},
-		{Account: kaminoConfig.Obligation + ":debt", Owner: kaminoProgram, Raw: int64(debtValue), Slot: slot, Known: true, Liability: true},
+		{Account: kaminoConfig.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(collateralValue), Slot: slot, Known: true},
+		{Account: kaminoConfig.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(debtValue), Slot: slot, Known: true, Liability: true},
 	}
 	if kaminoConfig.DebtMint != bridgeUSDC {
 		components = append(components, NAVComponent{Account: route.DebtCustody, Owner: bridgeVault, Raw: int64(debtIdleValue), Slot: slot, Known: true})

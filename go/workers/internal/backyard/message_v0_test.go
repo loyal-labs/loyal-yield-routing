@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func retainedJupiterLookups(t *testing.T) []LookupTableSnapshot {
@@ -144,7 +146,7 @@ func TestVersionedMessageMatchesSDKAndRejectsInvalidLookupAccounts(t *testing.T)
 func TestVersionedCaptureMatchesSDKWithoutExtraInstructionsOrPrivileges(t *testing.T) {
 	tables := retainedJupiterLookups(t)
 	table, _ := decodeMessageLookupTable(tables[0])
-	payer, program := mustKey(bridgeDelegate), mustKey(kaminoProgram)
+	payer, program := mustKey(bridgeDelegate), publicKey(kamino.ProgramID)
 	ix := compiledInstruction{program: program, accounts: []accountMeta{{key: table.addresses[2], writable: true}}, data: []byte{1, 2, 3}}
 	capture := []publicKey{table.addresses[5], mustKey(bridgeVoltrVault), table.addresses[2], table.addresses[5], payer, program}
 	message, err := compileV0Message(payer, mustKey(bridgeUSDC), []compiledInstruction{ix}, tables, capture...)

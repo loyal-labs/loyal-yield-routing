@@ -1,6 +1,10 @@
 package backyard
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+)
 
 // RuntimeRoute is the small, typed surface shared by observation, decision,
 // and execution. It describes one reviewed route; it is not a user-provided
@@ -34,7 +38,7 @@ func basicRuntimeRoute(lane string) (RuntimeRoute, error) {
 	base := RuntimeRoute{
 		Lane: lane, BasicPolicy: true, DebtCustody: bridgeSquadsATA,
 		CollateralTokenProgram: classicTokenProgram, DebtTokenProgram: classicTokenProgram,
-		Kamino: KaminoObservationConfig{Program: kaminoProgram, Vault: bridgeVault, DebtMint: bridgeUSDC},
+		Kamino: KaminoObservationConfig{Program: kamino.ProgramID.String(), Vault: bridgeVault, DebtMint: bridgeUSDC},
 	}
 	switch lane {
 	case PhaseOneLaneID:
@@ -87,7 +91,7 @@ func basicRuntimeRoute(lane string) (RuntimeRoute, error) {
 var mapleSyrupUSDCUSDC = RuntimeRoute{
 	Lane: SelectedRouteID, Protocol: "Maple", CollateralSymbol: "syrupUSDC", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
-		Program: kaminoProgram, Market: "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+		Program: kamino.ProgramID.String(), Market: "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
 		Obligation:        "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
 		CollateralReserve: "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
 		DebtReserve:       "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",

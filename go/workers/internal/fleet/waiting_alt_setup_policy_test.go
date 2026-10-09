@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -43,7 +44,7 @@ FROM loyal_yield.route_policies WHERE id=(SELECT active_policy_id FROM loyal_yie
 	input.Target = input.Source
 	input.Target.Reserve, input.Target.Obligation = l.TargetReserve, manifestKey(62)
 	accounts := []InstructionAccount{{settings, false, false}, {l.VaultPubkey, false, true}, {l.PolicyAccount, false, false}, {setup, false, false}, {input.Source.Market, false, false}, {input.Source.Reserve, false, true}, {input.Target.Reserve, false, true}, {USDCMint, false, false}, {input.Source.Obligation, false, true}, {input.Target.Obligation, false, true}, {input.Source.VaultLiquidityATA, false, true}}
-	manifest, err := buildRouteALTManifest(input, settings, []string{l.PolicyAccount, setup}, payer, []RouteInstruction{{Program: KLendProgram, Accounts: accounts, Data: []byte{1}}}, nil, true)
+	manifest, err := buildRouteALTManifest(input, settings, []string{l.PolicyAccount, setup}, payer, []RouteInstruction{{Program: kamino.ProgramID.String(), Accounts: accounts, Data: []byte{1}}}, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}

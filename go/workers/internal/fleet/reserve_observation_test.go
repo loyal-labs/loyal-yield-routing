@@ -129,7 +129,7 @@ func TestReserveObservationDoesNotRetryOtherInvalidEvidence(t *testing.T) {
 				case "layout":
 					a[1].Data = a[1].Data[:100]
 				case "obsolete":
-					a[1].Data[reserveConfigOffset] = 1
+					a[1].Data[4856] = 1
 				case "below_minimum_slot":
 					return 998, a
 				}

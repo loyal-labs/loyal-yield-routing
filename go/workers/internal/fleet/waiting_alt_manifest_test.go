@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -37,7 +38,7 @@ func waitingManifestFixtureForRoute(t *testing.T, settings, vault, policy, sourc
 		input.Source.ObligationDepositReserves = append(input.Source.ObligationDepositReserves, key)
 		accounts = append(accounts, InstructionAccount{key, false, i%2 == 0})
 	}
-	manifest, err := BuildRouteALTManifest(input, settings, policy, payer, []RouteInstruction{{Program: KLendProgram, Accounts: accounts, Data: []byte{1}}}, nil)
+	manifest, err := BuildRouteALTManifest(input, settings, policy, payer, []RouteInstruction{{Program: kamino.ProgramID.String(), Accounts: accounts, Data: []byte{1}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +115,7 @@ func TestWaitingALTUsesCompleteTypedVectorsAndDistinctOrderContracts(t *testing.
 // see TestSameMintManifestMatchesRustSetupPolicyFingerprint.
 func TestALTManifestHashesStaticBudgetProgramNotItsValues(t *testing.T) {
 	input := KaminoSameMintRouteRequest{Vault: manifestKey(81), Source: KaminoPositionAccounts{Reserve: manifestKey(5)}}
-	instructions := []RouteInstruction{{Program: KLendProgram, Accounts: []InstructionAccount{{input.Vault, false, true}, {manifestKey(82), false, false}, {input.Source.Reserve, false, true}}}}
+	instructions := []RouteInstruction{{Program: kamino.ProgramID.String(), Accounts: []InstructionAccount{{input.Vault, false, true}, {manifestKey(82), false, false}, {input.Source.Reserve, false, true}}}}
 	build := func(ixs []RouteInstruction) ALTManifest {
 		t.Helper()
 		m, err := BuildRouteALTManifest(input, manifestKey(80), manifestKey(82), manifestKey(90), ixs, nil)

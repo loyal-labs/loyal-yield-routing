@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -853,7 +854,7 @@ func autoCandidateStack(t *testing.T, slot int64, extra func([]ConfirmedAccount)
 			t.Fatal(err)
 		}
 		for _, oracle := range uniqueNonzero(reserve.oracles) {
-			ensure(ConfirmedAccount{Address: oracle, Owner: kaminoProgram, Lamports: 1, Data: []byte{1}})
+			ensure(ConfirmedAccount{Address: oracle, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}})
 		}
 	}
 	// The redemption side validates the receipt mint and reads the strategy's
@@ -1344,7 +1345,7 @@ func TestSelectorDestinationCandidateRequiresCombinedAutoPolicy(t *testing.T) {
 // exemption threshold at 3480 lamports. The initializer prestate re-derives
 // the same product from its rent sysvar, so both sides must stay aligned.
 func autoCandidateInitializerRent() uint64 {
-	return uint64((128 + kaminoObligationLength) * 3480 * 2)
+	return uint64((128 + kamino.ObligationSize) * 3480 * 2)
 }
 
 // autoCandidateInitializerStack upgrades the coherent candidate stack to A's
@@ -1435,8 +1436,8 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 		}
 	}
 	metadata := prestate[metadataAddress]
-	metadata = ConfirmedAccount{Address: metadataAddress, Owner: kaminoProgram, Lamports: 1, Data: make([]byte, 1032)}
-	copy(metadata.Data, []byte{157, 214, 220, 235, 98, 135, 171, 28})
+	metadata = ConfirmedAccount{Address: metadataAddress, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, 1032)}
+	copy(metadata.Data, kamino.UserMetadataDiscriminator[:])
 	putKey(t, metadata.Data[80:112], bridgeVault)
 	prestate[metadataAddress] = metadata
 	if variant != nil {
@@ -1555,7 +1556,7 @@ func TestSelectorDestinationCandidateInitializerPrestateRefusals(t *testing.T) {
 		"existing_obligation": {
 			responseSlot: 77,
 			serve: func(route RuntimeRoute, prestate map[string]ConfirmedAccount) {
-				prestate[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kaminoProgram, Lamports: 1, Data: []byte{1}}
+				prestate[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}}
 			},
 			hold: "initializer_obligation_already_present",
 		},

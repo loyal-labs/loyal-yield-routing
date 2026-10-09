@@ -1,6 +1,7 @@
 package autodeposit
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
@@ -8,64 +9,27 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// Official program constants for the two family wires. Every offset below is
-// the same constant the fleet executor reads (fleet/route_runtime.go), so the
-// wire this family signs and the receipt it verifies share one identity.
+// Official program constants for the two family wires.
 const (
-	KLendProgramID = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 	splTokenID     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	farmsProgramID = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
 	instructionsID = "Sysvar1nstructions1111111111111111111111111"
 
-	kaminoDepositV2Step           = "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
 	kaminoDepositDataLength       = 16
-	kaminoRefreshReserveDisc      = "02da8aeb4fc91966"
-	kaminoRefreshObligationDisc   = "218493e497c04859"
-	kaminoDepositV2Disc           = "d8e0bf1bcc9766af"
 	depositInstructionAccountSize = 17
-
-	reserveDataLength    = 8624
-	reserveDiscriminator = "2bf2ccca1af73b7f"
-	obligationDataLength = 3344
-)
-
-// The obligation and wrapper discriminators are checked byte-for-byte.
-var (
-	obligationDiscriminator = [8]byte{168, 206, 141, 106, 88, 76, 172, 167}
 )
 
 const (
-	systemProgramZero             = "11111111111111111111111111111111"
-	reserveMarketOffset           = 32
-	reserveFarmOffset             = 64
-	reserveLiquidityMintOffset    = 128
-	reserveLiquiditySupplyOffset  = 160
-	reserveLiquidityProgramOffset = 408
-	reserveCollateralMintOffset   = 2560
-	reserveCollateralSupplyOffset = 2600
-	reserveScopePricesOffset      = 5112
-	reserveSwitchboardOffset      = 5160
-	reserveSwitchboardTWAPOffset  = 5192
-	reservePythOffset             = 5224
-	obligationMarketOffset        = 32
-	obligationOwnerOffset         = 64
-	obligationDepositsOffset      = 96
-	obligationDepositStride       = 136
-	obligationDepositCount        = 8
-	obligationBorrowsOffset       = 1208
-	obligationBorrowStride        = 200
-	obligationBorrowCount         = 5
+	systemProgramZero = "11111111111111111111111111111111"
 )
 
 // AccountReader reads one coherent confirmed account set in address order, at
@@ -236,88 +200,64 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if vaultATA.String() != plan.Target.VaultUsdcAta {
 		return TopUpRoute{}, fmt.Errorf("%w: frozen custody %s is not the vault's USDC ATA", ErrRouteNotExecutable, plan.Target.VaultUsdcAta)
 	}
-	obligationKey, err := vanillaObligationKey(vault, market)
+	obligationKey, err := kamino.VanillaObligation(vault, market)
 	if err != nil {
 		return TopUpRoute{}, err
 	}
-	slot, accounts, err := b.read(ctx, 0, []string{plan.Reserve, plan.Market, obligationKey, plan.Target.VaultUsdcAta})
+	slot, accounts, err := b.read(ctx, 0, []string{plan.Reserve, plan.Market, obligationKey.String(), plan.Target.VaultUsdcAta})
 	if err != nil {
 		return TopUpRoute{}, err
 	}
 	if slot <= 0 || len(accounts) != 4 {
 		return TopUpRoute{}, errors.New("top-up account snapshot is incomplete")
 	}
-	reserve, marketAccount, obligation, custody := accounts[0], accounts[1], accounts[2], accounts[3]
-	if reserve.Owner.String() != KLendProgramID || len(reserve.Data) != reserveDataLength || reserveDiscriminator != hex.EncodeToString(reserve.Data[:8]) {
+	reserveAccount, marketAccount, obligationAccount, custody := accounts[0], accounts[1], accounts[2], accounts[3]
+	reserve, err := kamino.DecodeReserve(reserveAccount)
+	if err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s is not a confirmed KLend reserve", ErrRouteNotExecutable, plan.Reserve)
 	}
-	route := decodeReservePosition(plan.Reserve, reserve.Data)
+	route, err := reserveRoute(reserveAccount, plan.Target.VaultPubkey)
+	if err != nil {
+		return TopUpRoute{}, fmt.Errorf("%w: reserve %s is not a confirmed KLend reserve", ErrRouteNotExecutable, plan.Reserve)
+	}
 	if route.Position.Market != plan.Market {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s moved to market %s, want the frozen %s", ErrRouteNotExecutable, plan.Reserve, route.Position.Market, plan.Market)
 	}
 	if route.Position.LiquidityMint != plan.LiquidityMint {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s liquidity mint is %s, want the frozen %s", ErrRouteNotExecutable, plan.Reserve, route.Position.LiquidityMint, plan.LiquidityMint)
 	}
-	if route.Position.LiquiditySupply == "" || route.Position.CollateralMint == "" || route.Position.CollateralSupply == "" || route.Position.LiquidityTokenProgram != splTokenID {
+	if route.Position.LiquidityTokenProgram != splTokenID {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s token accounts are not a routable USDC reserve", ErrRouteNotExecutable, plan.Reserve)
 	}
-	if marketAccount.Owner.String() != KLendProgramID || marketAccount.Executable {
+	if marketAccount.Owner != kamino.ProgramID || marketAccount.Executable {
 		return TopUpRoute{}, fmt.Errorf("%w: market %s is not a confirmed KLend market", ErrRouteNotExecutable, plan.Market)
 	}
-	if route.MinimumDepositRaw, err = backyard.KaminoMinimumDepositAmount(backyard.ConfirmedAccount{Address: plan.Reserve, Owner: reserve.Owner.String(), Lamports: reserve.Lamports, Executable: reserve.Executable, Data: reserve.Data}, plan.Market, plan.LiquidityMint); err != nil {
+	if route.MinimumDepositRaw, err = reserve.MinimumDeposit(); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s exchange value: %v", ErrRouteNotExecutable, plan.Reserve, err)
 	}
-	if obligation.Owner.String() != KLendProgramID || len(obligation.Data) != obligationDataLength || hex.EncodeToString(obligation.Data[:8]) != hex.EncodeToString(obligationDiscriminator[:]) {
+	obligation, err := kamino.DecodeObligation(obligationAccount)
+	if err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: obligation %s does not exist; run the missing-obligation setup before a pull", ErrRouteNotExecutable, obligationKey)
 	}
-	if key := base58Key(obligation.Data[obligationMarketOffset : obligationMarketOffset+32]); key != plan.Market {
-		return TopUpRoute{}, fmt.Errorf("%w: obligation %s belongs to market %s, want the frozen %s", ErrRouteNotExecutable, obligationKey, key, plan.Market)
+	if obligation.LendingMarket != market {
+		return TopUpRoute{}, fmt.Errorf("%w: obligation %s belongs to market %s, want the frozen %s", ErrRouteNotExecutable, obligationKey, obligation.LendingMarket, plan.Market)
 	}
-	if key := base58Key(obligation.Data[obligationOwnerOffset : obligationOwnerOffset+32]); key != plan.Target.VaultPubkey {
-		return TopUpRoute{}, fmt.Errorf("%w: obligation %s belongs to owner %s, want the frozen vault %s", ErrRouteNotExecutable, obligationKey, key, plan.Target.VaultPubkey)
+	if obligation.Owner != vault {
+		return TopUpRoute{}, fmt.Errorf("%w: obligation %s belongs to owner %s, want the frozen vault %s", ErrRouteNotExecutable, obligationKey, obligation.Owner, plan.Target.VaultPubkey)
 	}
-	for i := 0; i < obligationDepositCount; i++ {
-		offset := obligationDepositsOffset + i*obligationDepositStride
-		if key := base58Key(obligation.Data[offset : offset+32]); key != systemProgramZero {
-			route.Position.ObligationDepositReserves = append(route.Position.ObligationDepositReserves, key)
-		}
-	}
-	sort.Strings(route.Position.ObligationDepositReserves)
-	for i := 0; i < obligationBorrowCount; i++ {
-		offset := obligationBorrowsOffset + i*obligationBorrowStride
-		if key := base58Key(obligation.Data[offset : offset+32]); key != systemProgramZero {
-			return TopUpRoute{}, fmt.Errorf("%w: obligation %s carries a borrow, so it is not an idle deposit destination", ErrRouteNotExecutable, obligationKey)
-		}
+	if len(obligation.BorrowReserves()) != 0 {
+		return TopUpRoute{}, fmt.Errorf("%w: obligation %s carries a borrow, so it is not an idle deposit destination", ErrRouteNotExecutable, obligationKey)
 	}
 	route.Position.ObligationBorrowReserves = []string{}
-	// The reserve farm's user state is derived, not stored: it is the Farms
-	// PDA ["user", farm, obligation], exactly as the fleet route runtime does.
-	if route.Position.ReserveFarmState != "" {
-		farmKey, err := solana.PublicKeyFromBase58(route.Position.ReserveFarmState)
-		if err != nil {
-			return TopUpRoute{}, fmt.Errorf("%w: reserve farm %s is not a public key", ErrRouteNotExecutable, route.Position.ReserveFarmState)
-		}
-		obligationKey, err := solana.PublicKeyFromBase58(obligationKey)
-		if err != nil {
-			return TopUpRoute{}, err
-		}
-		farmsKey, err := findProgramAddress([][]byte{[]byte("user"), farmKey[:], obligationKey[:]}, farmsProgramID)
-		if err != nil {
-			return TopUpRoute{}, err
-		}
-		route.Position.ObligationFarmUserState = base58Key(farmsKey[:])
-	}
-	for _, deposit := range route.Position.ObligationDepositReserves {
-		if deposit != plan.Reserve {
+	for _, deposit := range obligation.DepositReserves() {
+		if deposit.String() != plan.Reserve {
 			return TopUpRoute{}, fmt.Errorf("%w: obligation %s already deposits reserve %s", ErrRouteNotExecutable, obligationKey, deposit)
 		}
+		route.Position.ObligationDepositReserves = append(route.Position.ObligationDepositReserves, deposit.String())
 	}
 	if _, err := usdcTokenAccount(custody, plan.Target.VaultPubkey); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: %v", ErrRouteNotExecutable, err)
 	}
-	route.Obligation = obligationKey
-	route.Position.Obligation = obligationKey
-	route.Position.VaultLiquidityATA = plan.Target.VaultUsdcAta
 	instructions, err := b.topUpInstructions(ctx, plan, route)
 	if err != nil {
 		return TopUpRoute{}, err
@@ -328,46 +268,15 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	return route, nil
 }
 
-// decodeReservePosition reads a confirmed reserve's token-account identity at
-// the fleet execution offsets (fleet decodeRouteReserve).
-func decodeReservePosition(reserve string, data []byte) TopUpRoute {
-	optional := func(offset int) string {
-		if key := base58Key(data[offset : offset+32]); key != systemProgramZero {
-			return key
-		}
-		return ""
+// reserveRoute is a confirmed reserve's identity with the vault's KLend
+// accounts in its market: market authority, vanilla obligation, the vault's
+// liquidity ATA and the obligation's collateral farm user.
+func reserveRoute(reserve *chain.Account, vault string) (TopUpRoute, error) {
+	position, err := fleet.DecodeReserveIdentity(reserve)
+	if err == nil {
+		position, err = fleet.DeriveVaultReserveAccounts(position, vault)
 	}
-	market := base58Key(data[reserveMarketOffset : reserveMarketOffset+32])
-	route := TopUpRoute{Position: fleet.KaminoPositionAccounts{
-		Reserve:                reserve,
-		Market:                 market,
-		LiquidityMint:          base58Key(data[reserveLiquidityMintOffset : reserveLiquidityMintOffset+32]),
-		CollateralMint:         base58Key(data[reserveCollateralMintOffset : reserveCollateralMintOffset+32]),
-		LiquiditySupply:        base58Key(data[reserveLiquiditySupplyOffset : reserveLiquiditySupplyOffset+32]),
-		CollateralSupply:       base58Key(data[reserveCollateralSupplyOffset : reserveCollateralSupplyOffset+32]),
-		LiquidityTokenProgram:  base58Key(data[reserveLiquidityProgramOffset : reserveLiquidityProgramOffset+32]),
-		PythOracle:             optional(reservePythOffset),
-		SwitchboardPriceOracle: optional(reserveSwitchboardOffset),
-		SwitchboardTWAPOracle:  optional(reserveSwitchboardTWAPOffset),
-		ScopePrices:            optional(reserveScopePricesOffset),
-		ReserveFarmState:       optional(reserveFarmOffset),
-	}}
-	if key, err := findProgramAddress([][]byte{[]byte("lma"), data[reserveMarketOffset : reserveMarketOffset+32]}, KLendProgramID); err == nil {
-		route.Position.MarketAuthority = base58Key(key[:])
-	}
-	return route
-}
-
-// vanillaObligationKey derives the vanilla obligation PDA: seeds
-// [tag 0, id 0, vault, market, zero, zero] over the KLend program, exactly as
-// derive_kamino_vanilla_obligation does in loyal-actions.
-func vanillaObligationKey(vault, market solana.PublicKey) (string, error) {
-	var zero [32]byte
-	derived, err := findProgramAddress([][]byte{{0}, {0}, vault[:], market[:], zero[:], zero[:]}, KLendProgramID)
-	if err != nil {
-		return "", err
-	}
-	return base58Key(derived[:]), nil
+	return TopUpRoute{Position: position, Obligation: position.Obligation}, err
 }
 
 // usdcTokenAccount is owner's unfrozen SPL Token USDC account, whose balance
@@ -460,11 +369,11 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 	if !delegateSigned {
 		return errors.New("persisted top-up executor signature is absent")
 	}
-	kLend := mustKey(KLendProgramID)
-	for i, disc := range []string{kaminoRefreshReserveDisc, kaminoRefreshObligationDisc} {
+	kLend := kamino.ProgramID
+	for i, disc := range [][8]byte{kamino.RefreshReserveDiscriminator, kamino.RefreshObligationDiscriminator} {
 		instruction := message.instructions[i]
-		if instruction.program != kLend || len(instruction.data) != 8 || hex.EncodeToString(instruction.data) != disc {
-			return fmt.Errorf("persisted top-up wire instruction %d is not the %s refresh", i, disc)
+		if instruction.program != kLend || !bytes.Equal(instruction.data, disc[:]) {
+			return fmt.Errorf("persisted top-up wire instruction %d is not the %x refresh", i, disc)
 		}
 	}
 	if len(message.instructions[0].accounts) != 6 || len(message.instructions[1].accounts) < 2 || len(message.instructions[1].accounts) > 3 {
@@ -472,7 +381,7 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 	}
 	optional := func(address string) string {
 		if address == "" {
-			return KLendProgramID
+			return kamino.ProgramID.String()
 		}
 		return address
 	}
@@ -510,7 +419,7 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 	for _, account := range execute.Inner[0].Accounts {
 		inner.accounts = append(inner.accounts, account.PublicKey)
 	}
-	if inner.program != kLend || len(inner.data) != kaminoDepositDataLength || hex.EncodeToString(inner.data[:8]) != kaminoDepositV2Disc {
+	if inner.program != kLend || len(inner.data) != kaminoDepositDataLength || !bytes.Equal(inner.data[:8], kamino.DepositV2Discriminator[:]) {
 		return fmt.Errorf("persisted top-up wrapped instruction is not the KLend deposit v2")
 	}
 	amount := binary.LittleEndian.Uint64(inner.data[8:16])
@@ -524,7 +433,7 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 		plan.Target.VaultPubkey, route.Obligation, plan.Market, route.Position.MarketAuthority,
 		plan.Reserve, plan.LiquidityMint, route.Position.LiquiditySupply,
 		route.Position.CollateralMint, route.Position.CollateralSupply,
-		plan.Target.VaultUsdcAta, KLendProgramID, splTokenID, route.Position.LiquidityTokenProgram,
+		plan.Target.VaultUsdcAta, kamino.ProgramID.String(), splTokenID, route.Position.LiquidityTokenProgram,
 		instructionsID,
 	}
 	for position, address := range expected {
@@ -544,13 +453,13 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 	for position, address := range optionalFarm {
 		want := address
 		if want == "" {
-			want = KLendProgramID
+			want = kamino.ProgramID.String()
 		}
 		if !keyEqual(inner.accounts[position], want) {
 			return fmt.Errorf("persisted top-up deposit farm account %d is %s, want %s", position, inner.accounts[position], want)
 		}
 	}
-	if !keyEqual(inner.accounts[16], farmsProgramID) {
+	if !keyEqual(inner.accounts[16], kamino.FarmsProgramID.String()) {
 		return fmt.Errorf("persisted top-up deposit account 16 is %s, want the Farms program", inner.accounts[16])
 	}
 	return nil

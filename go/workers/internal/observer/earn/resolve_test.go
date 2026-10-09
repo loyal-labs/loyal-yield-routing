@@ -12,6 +12,7 @@ import (
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -71,7 +72,7 @@ func TestPolicyRefundIsCreditedNetOfFee(t *testing.T) {
 }
 
 func TestIdleSweepWithoutKaminoWithdrawIsNotAReserveWithdrawal(t *testing.T) {
-	keys := []solana.PublicKey{squads.ProgramID, tokenProgram, klendProgram}
+	keys := []solana.PublicKey{squads.ProgramID, tokenProgram, kamino.ProgramID}
 	ran := func(outer []solana.CompiledInstruction, inner ...rpc.CompiledInstruction) earnTransaction {
 		return earnTransaction{chain.Execution{Receipt: chain.Receipt{Keys: keys}, Transaction: &solana.Transaction{Message: solana.Message{Instructions: outer}},
 			Inner: []rpc.InnerInstruction{{Index: 0, Instructions: inner}}}}
@@ -80,7 +81,7 @@ func TestIdleSweepWithoutKaminoWithdrawIsNotAReserveWithdrawal(t *testing.T) {
 	if len(sweep.kaminoWithdrawAccounts()) != 0 {
 		t.Fatal("an idle vault sweep was treated as a Kamino withdrawal")
 	}
-	withdrawal := ran(nil, rpc.CompiledInstruction{ProgramIDIndex: 2, Data: withdrawV2Discriminator})
+	withdrawal := ran(nil, rpc.CompiledInstruction{ProgramIDIndex: 2, Data: kamino.WithdrawV2Discriminator[:]})
 	if len(withdrawal.kaminoWithdrawAccounts()) != 1 {
 		t.Fatal("a Kamino withdraw v2 was not recognized")
 	}

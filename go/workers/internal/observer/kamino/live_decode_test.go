@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	klend "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -55,10 +56,10 @@ func TestLiveConfirmedKaminoAccountsDecode(t *testing.T) {
 		if account == nil {
 			t.Fatalf("reserve %s was missing", target.Reserve)
 		}
-		if account.Owner.String() != klendProgram {
+		if account.Owner != klend.ProgramID {
 			t.Fatalf("reserve %s owner = %s", target.Reserve, account.Owner)
 		}
-		if _, err := Decode(target, slot, time.Now().UTC(), account.Data, 400); err != nil {
+		if _, err := Decode(target, slot, time.Now().UTC(), account, 400); err != nil {
 			t.Fatalf("decode reserve %s: %v", target.Reserve, err)
 		}
 	}

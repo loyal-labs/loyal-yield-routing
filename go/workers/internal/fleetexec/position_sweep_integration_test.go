@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -56,7 +57,7 @@ func putKey(data []byte, offset int, address string) {
 // sweepReserve is a KLend reserve whose collateral redeems at 2 liquidity.
 func sweepReserve(address, market string) chain.Account {
 	data := make([]byte, 8624)
-	copy(data[:8], []byte{43, 242, 204, 202, 26, 247, 59, 127})
+	copy(data[:8], kamino.ReserveDiscriminator[:])
 	binary.LittleEndian.PutUint64(data[8:16], 1)
 	putKey(data, 32, market)
 	putKey(data, 128, fleet.USDCMint)
@@ -66,19 +67,19 @@ func sweepReserve(address, market string) chain.Account {
 	putKey(data, 2600, sweepKey(address+":collateral-supply"))
 	binary.LittleEndian.PutUint64(data[224:232], 1_000_000)
 	binary.LittleEndian.PutUint64(data[2592:2600], 500_000)
-	return fixtureAccount(address, fleet.KLendProgram, 1, data)
+	return fixtureAccount(address, kamino.ProgramID.String(), 1, data)
 }
 
 func sweepObligation(address, market, vault, reserve string, collateral uint64) chain.Account {
 	data := make([]byte, 3344)
-	copy(data[:8], positionSweepObligationDiscriminator)
+	copy(data[:8], kamino.ObligationDiscriminator[:])
 	putKey(data, 32, market)
 	putKey(data, 64, vault)
 	if reserve != "" {
 		putKey(data, 96, reserve)
 		binary.LittleEndian.PutUint64(data[128:136], collateral)
 	}
-	return fixtureAccount(address, fleet.KLendProgram, 1, data)
+	return fixtureAccount(address, kamino.ProgramID.String(), 1, data)
 }
 
 func sweepTokenAccount(address, mint, owner string, amount uint64) chain.Account {

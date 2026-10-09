@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func manifestAccounts(metas []accountMeta) KaminoPrimeUSDCAccounts {
@@ -23,13 +25,13 @@ func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCReq
 	var metas []accountMeta
 	switch leg {
 	case kaminoLegDeposit:
-		discriminator, metas = kaminoDepositCollateral, kaminoDepositMetas()
+		discriminator, metas = kamino.DepositV2Discriminator[:], kaminoLegMetasForRoute(kaminoLegDeposit, RouteID)
 	case kaminoLegBorrow:
-		discriminator, metas = kaminoBorrowUSDC, kaminoBorrowMetas()
+		discriminator, metas = kamino.BorrowV2Discriminator[:], kaminoLegMetasForRoute(kaminoLegBorrow, RouteID)
 	case kaminoLegRepay:
-		discriminator, metas = kaminoRepayUSDC, kaminoRepayMetas()
+		discriminator, metas = kamino.RepayV2Discriminator[:], kaminoLegMetasForRoute(kaminoLegRepay, RouteID)
 	case kaminoLegWithdraw:
-		discriminator, metas = kaminoWithdrawCollateral, kaminoWithdrawMetas()
+		discriminator, metas = kamino.WithdrawV2Discriminator[:], kaminoLegMetasForRoute(kaminoLegWithdraw, RouteID)
 	default:
 		panic("unknown test leg")
 	}
@@ -49,13 +51,9 @@ func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
-	if !exactKaminoMetas(deposit, kaminoDepositMetas()) || !exactKaminoMetas(borrow, kaminoBorrowMetas()) || !exactKaminoMetas(repay, kaminoRepayMetas()) || !exactKaminoMetas(withdraw, kaminoWithdrawMetas()) {
-		t.Fatal("shared layout changed the retained Prime account graph")
-	}
 	// Controlled layout variation, not an installed or executable new lane.
 	route.CollateralTokenProgram, route.DebtTokenProgram = token2022Program, token2022Program
-	deposit, borrow, repay, withdraw = kaminoMetasForRoute(route)
+	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 	for _, m := range [][]accountMeta{deposit, withdraw} {
 		if m[11].key != mustKey(classicTokenProgram) || m[12].key != mustKey(token2022Program) {
 			t.Fatal("receipt and underlying token programs were conflated")
@@ -68,7 +66,7 @@ func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := matchesKaminoStepForResolvedRoute(OpenPrimeUSDCStep, kaminoDepositCollateral, deposit, installed); ok {
+	if _, ok := matchesKaminoStepForResolvedRoute(OpenPrimeUSDCStep, kamino.DepositV2Discriminator[:], deposit, installed); ok {
 		t.Fatal("caller mutation changed an installed lane's token program")
 	}
 }
@@ -97,12 +95,12 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if leg != test.leg || inner.program != mustKey(kaminoPrimeUSDCProgram) || len(inner.accounts) != test.count {
+			if leg != test.leg || inner.program != publicKey(kamino.ProgramID) || len(inner.accounts) != test.count {
 				t.Fatal("did not build the pinned Kamino PRIME/USDC leg")
 			}
 			refresh := kaminoPrimeUSDCRefreshInstructionsForRoute(leg, RouteID)
-			if len(refresh) != 3 || !bytes.Equal(refresh[0].data, kaminoRefreshReserve) ||
-				!bytes.Equal(refresh[1].data, kaminoRefreshReserve) || !bytes.Equal(refresh[2].data, kaminoRefreshObligation) {
+			if len(refresh) != 3 || !bytes.Equal(refresh[0].data, kamino.RefreshReserveDiscriminator[:]) ||
+				!bytes.Equal(refresh[1].data, kamino.RefreshReserveDiscriminator[:]) || !bytes.Equal(refresh[2].data, kamino.RefreshObligationDiscriminator[:]) {
 				t.Fatal("canonical KLend refresh prefix drifted")
 			}
 			signed, err := buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, key, delegate)
@@ -336,7 +334,7 @@ func TestKaminoPrimeUSDCBuilderFailsClosedOnEveryAuthorityBoundary(t *testing.T)
 		t.Fatal("wrong lending market accepted")
 	}
 	request = kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
-	request.Accounts[16].Address = kaminoPrimeUSDCProgram
+	request.Accounts[16].Address = kamino.ProgramID.String()
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
 		t.Fatal("wrong farms program accepted")
 	}

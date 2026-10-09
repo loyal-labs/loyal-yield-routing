@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -15,7 +16,7 @@ func TestPersistedV0RetainsAllSignaturesAndResolvesPinnedLookup(t *testing.T) {
 	delegate := solana.PrivateKey(ed25519.NewKeyFromSeed(bytes.Repeat([]byte{2}, 32)))
 	lookupKey := mustKey(fixedKey("legacy-table"))
 	lookupAccount := mustKey(fixedKey("legacy-loaded-account"))
-	ix := solana.NewInstruction(mustKey(KLendProgramID), solana.AccountMetaSlice{solana.NewAccountMeta(delegate.PublicKey(), false, true), solana.NewAccountMeta(lookupAccount, true, false)}, []byte{1, 2, 3})
+	ix := solana.NewInstruction(kamino.ProgramID, solana.AccountMetaSlice{solana.NewAccountMeta(delegate.PublicKey(), false, true), solana.NewAccountMeta(lookupAccount, true, false)}, []byte{1, 2, 3})
 	tx, err := solana.NewTransaction([]solana.Instruction{ix}, solana.Hash(mustKey(fixedKey("legacy-blockhash"))), solana.TransactionPayer(payer.PublicKey()), solana.TransactionAddressTables(map[solana.PublicKey]solana.PublicKeySlice{lookupKey: {lookupAccount}}))
 	if err != nil {
 		t.Fatal(err)

@@ -6,6 +6,8 @@ import (
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // decodedHealthFixtures decodes the fixture bytes through the real decoders so
@@ -202,7 +204,7 @@ func TestKaminoRefreshGateRejectsStaleOrPausedReserve(t *testing.T) {
 	t.Run("an unexpected market layout fails closed", func(t *testing.T) {
 		_, _, _, accounts := decodedHealthFixtures(t, slot)
 		market := accountAt(accounts, config.Market)
-		market.Data = market.Data[:kaminoMarketLength-1]
+		market.Data = market.Data[:kamino.LendingMarketSize-1]
 		if emergency, err := decodeKaminoMarketEmergency(market, config); err == nil || emergency {
 			t.Fatalf("a truncated market decoded as emergency=%t err=%v", emergency, err)
 		}

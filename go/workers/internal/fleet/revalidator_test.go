@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 const (
@@ -76,12 +78,12 @@ func TestPlanFleetCapacityAwareWave(t *testing.T) {
 
 func testRoute() []RouteInstruction {
 	account := InstructionAccount{testSource, false, true}
-	refresh := []byte{33, 132, 147, 228, 151, 192, 72, 89}
+	refresh := kamino.RefreshObligationDiscriminator[:]
 	return []RouteInstruction{
-		{Step: "kamino_refresh_obligation", Program: KLendProgram, Accounts: []InstructionAccount{account}, Data: append([]byte(nil), refresh...)},
-		{Step: "withdraw", Program: KLendProgram, Accounts: []InstructionAccount{{testVault, true, true}, account}, Data: []byte{1, 2, 3}, Protected: true},
-		{Step: "kamino_refresh_obligation", Program: KLendProgram, Accounts: []InstructionAccount{{testTarget, false, true}}, Data: append([]byte(nil), refresh...)},
-		{Step: "deposit", Program: KLendProgram, Accounts: []InstructionAccount{{testVault, true, true}, {testTarget, false, true}}, Data: []byte{4, 5, 6}, Protected: true},
+		{Step: "kamino_refresh_obligation", Program: kamino.ProgramID.String(), Accounts: []InstructionAccount{account}, Data: append([]byte(nil), refresh...)},
+		{Step: "withdraw", Program: kamino.ProgramID.String(), Accounts: []InstructionAccount{{testVault, true, true}, account}, Data: []byte{1, 2, 3}, Protected: true},
+		{Step: "kamino_refresh_obligation", Program: kamino.ProgramID.String(), Accounts: []InstructionAccount{{testTarget, false, true}}, Data: append([]byte(nil), refresh...)},
+		{Step: "deposit", Program: kamino.ProgramID.String(), Accounts: []InstructionAccount{{testVault, true, true}, {testTarget, false, true}}, Data: []byte{4, 5, 6}, Protected: true},
 	}
 }
 

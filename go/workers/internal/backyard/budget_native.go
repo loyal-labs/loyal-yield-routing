@@ -7,6 +7,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // Read-only price reference discovered at confirmed slot 444381476 by exact
@@ -24,7 +25,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, minimum
 	if err != nil {
 		return BudgetPrice{}, err
 	}
-	config := KaminoObservationConfig{Program: kaminoProgram, Market: budgetSOLMarket}
+	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: budgetSOLMarket}
 	debit := ExecutableDebit{Mint: budgetWrappedSOLMint, TokenProgram: classicTokenProgram, Raw: 1}
 	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, bridgeUSDC, budgetClockAddress}
 	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
@@ -43,19 +44,14 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, minimum
 			if _, err = decodeKaminoReserve(account, row.mint, row.config); err != nil {
 				return BudgetPrice{}, err
 			}
-			// Preserve the four exact optional oracle account positions. A zero
-			// key is the Anchor program-id sentinel, not an omitted account.
-			metas := []accountMeta{kaminoMeta(row.address, false, true), kaminoMeta(row.config.Market, false, false)}
-			// Reserve storage is Scope, Switchboard price/twap, Pyth;
-			// refreshReserve ABI is Pyth, Switchboard price/twap, Scope.
-			for _, offset := range []int{5224, 5160, 5192, 5112} {
-				oracle := keyString(account.Data[offset : offset+32])
-				if oracle == "" {
-					oracle = kaminoProgram
-				}
-				metas = append(metas, kaminoMeta(oracle, false, false))
+			reserve, err := kamino.DecodeReserve(kaminoAccount(account, row.address))
+			if err != nil {
+				return BudgetPrice{}, err
 			}
-			instructions = append(instructions, compiledInstruction{program: mustKey(kaminoProgram), accounts: metas, data: append([]byte(nil), kaminoRefreshReserve...)})
+			instructions = append(instructions, kaminoCompiled(kamino.RefreshReserve(kamino.RefreshReserveAccounts{
+				Reserve: kaminoKey(row.address), LendingMarket: reserve.LendingMarket, Pyth: reserve.PythPrice,
+				SwitchboardPrice: reserve.SwitchboardPriceAggregator, SwitchboardTWAP: reserve.SwitchboardTWAPAggregator, Scope: reserve.ScopePriceFeed,
+			})))
 		}
 		slot, accounts, err = simulateBudgetRefreshInstructions(ctx, rpc, instructions, addresses, slot)
 		if err != nil {

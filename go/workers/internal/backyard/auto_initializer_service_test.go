@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -710,7 +711,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	}
 	const rentAddress = "SysvarRent111111111111111111111111111111111"
 	rent := prestate[rentAddress]
-	binary.LittleEndian.PutUint64(rent.Data, r.RentLamports/(kaminoObligationLength+128))
+	binary.LittleEndian.PutUint64(rent.Data, r.RentLamports/(kamino.ObligationSize+128))
 	prestate[rentAddress] = rent
 	// The build-cost native valuation read (ObserveNativeSOLBudgetPrice) adds
 	// the wSOL reserve price batch. Every account the confirmed batch already

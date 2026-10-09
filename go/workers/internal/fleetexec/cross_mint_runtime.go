@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -732,7 +732,11 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader fleet.Acco
 				return out, 0, e
 			}
 		}
-		minimum, e := backyard.KaminoMinimumDepositAmount(backyard.ConfirmedAccount{Address: reserve.Key.String(), Owner: reserve.Owner.String(), Lamports: reserve.Lamports, Data: reserve.Data, Executable: reserve.Executable}, market, mint)
+		decoded, e := kamino.DecodeReserve(reserve)
+		var minimum uint64
+		if e == nil {
+			minimum, e = decoded.MinimumDeposit()
+		}
 		if e != nil || minimum == 0 || minimum > math.MaxInt64 {
 			return out, 0, errors.New("finalized minimum-deposit conversion is unknown or out of range")
 		}

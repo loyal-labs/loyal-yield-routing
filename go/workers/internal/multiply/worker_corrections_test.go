@@ -13,6 +13,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func reviewSF(value uint64) *big.Int {
@@ -104,8 +105,8 @@ func reviewReserveAccount(config StrategyConfig, debt bool) *chain.Account {
 	if debt {
 		address, mint = config.DebtReserve, config.DebtMint
 	}
-	data := make([]byte, reserveLength)
-	copy(data[:8], reserveDiscriminator)
+	data := make([]byte, kamino.ReserveSize)
+	copy(data[:8], kamino.ReserveDiscriminator[:])
 	binary.LittleEndian.PutUint64(data[8:16], 1)
 	binary.LittleEndian.PutUint64(data[16:24], 500)
 	copy(data[32:64], config.Market[:])
@@ -115,12 +116,12 @@ func reviewReserveAccount(config StrategyConfig, debt bool) *chain.Account {
 	putReviewSF(data[248:264], reviewSF(1))
 	binary.LittleEndian.PutUint64(data[272:280], 6)
 	binary.LittleEndian.PutUint64(data[2592:2600], 1_000_000_000)
-	return &chain.Account{Key: address, Owner: mustKey(KlendProgram), Lamports: 1, Data: data}
+	return &chain.Account{Key: address, Owner: kamino.ProgramID, Lamports: 1, Data: data}
 }
 
 func reviewObligationAccount(config StrategyConfig, vault solana.PublicKey) *chain.Account {
-	data := make([]byte, obligationLength)
-	copy(data[:8], obligationDiscriminator)
+	data := make([]byte, kamino.ObligationSize)
+	copy(data[:8], kamino.ObligationDiscriminator[:])
 	copy(data[32:64], config.Market[:])
 	copy(data[64:96], vault[:])
 	copy(data[96:128], config.CollateralReserve[:])
@@ -132,7 +133,7 @@ func reviewObligationAccount(config StrategyConfig, vault solana.PublicKey) *cha
 	putReviewSF(data[2208:2224], reviewSF(100))
 	putReviewSF(data[2256:2272], reviewSF(400))
 	data[2288] = 99
-	return &chain.Account{Key: config.Obligation, Owner: mustKey(KlendProgram), Lamports: 1, Data: data}
+	return &chain.Account{Key: config.Obligation, Owner: kamino.ProgramID, Lamports: 1, Data: data}
 }
 
 func TestPinnedObligationLayoutAndReserveMintIdentity(t *testing.T) {
@@ -202,16 +203,16 @@ func TestObservationRejectsIncompleteRPCArray(t *testing.T) {
 func TestBorrowAPYIncludesHostFixedInterest(t *testing.T) {
 	config := testTopology(t).Strategies[SyrupUsdcUsdc]
 	account := reviewReserveAccount(config, true)
-	binary.LittleEndian.PutUint16(account.Data[reserveConfigOffset+2:reserveConfigOffset+4], 1_000)
+	binary.LittleEndian.PutUint16(account.Data[4856+2:4856+4], 1_000)
 	reserve, err := decodeReserve(account, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	borrow, err := reserveAPYBPS(account.Data, reserve, false)
+	borrow, err := reserveAPYBPS(reserve, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	supply, err := reserveAPYBPS(account.Data, reserve, true)
+	supply, err := reserveAPYBPS(reserve, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,10 +220,13 @@ func TestBorrowAPYIncludesHostFixedInterest(t *testing.T) {
 		t.Fatalf("host fixed interest: borrow=%d supply=%d", borrow, supply)
 	}
 	for index := 0; index < 11; index++ {
-		offset := reserveConfigOffset + 64 + index*8
+		offset := 4856 + 64 + index*8
 		binary.LittleEndian.PutUint32(account.Data[offset+4:offset+8], math.MaxUint32)
 	}
-	if _, err := reserveAPYBPS(account.Data, reserve, false); err == nil {
+	if reserve, err = decodeReserve(account, config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reserveAPYBPS(reserve, false); err == nil {
 		t.Fatal("compounded APY overflow accepted")
 	}
 }

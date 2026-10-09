@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -107,12 +108,12 @@ func validateSelectorFarms(route RuntimeRoute, accounts []ConfirmedAccount) erro
 			return budgetHold("selector_farm_binding_invalid")
 		}
 		farm, user := accountAt(accounts, pair[0]), accountAt(accounts, pair[1])
-		if farm.Owner != kaminoFarmsProgram || farm.Executable || farm.Lamports == 0 || len(farm.Data) != 8336 || !bytes.Equal(farm.Data[:8], []byte{198, 102, 216, 74, 63, 66, 163, 190}) ||
+		if farm.Owner != kamino.FarmsProgramID.String() || farm.Executable || farm.Lamports == 0 || len(farm.Data) != 8336 || !bytes.Equal(farm.Data[:8], []byte{198, 102, 216, 74, 63, 66, 163, 190}) ||
 			!sameKey(farm.Data[7328:7360], route.Kamino.MarketAuthority) || farm.Data[7361] != 0 || farm.Data[7362] != 1 {
 			return budgetHold("selector_farm_unavailable")
 		}
-		if user.Owner != kaminoFarmsProgram || user.Executable || user.Lamports == 0 || len(user.Data) != 920 || !bytes.Equal(user.Data[:8], []byte{72, 177, 85, 249, 76, 167, 186, 126}) ||
-			!sameKey(user.Data[16:48], pair[0]) || !sameKey(user.Data[48:80], bridgeVault) || user.Data[80] != 1 || !sameKey(user.Data[480:512], route.Kamino.Obligation) {
+		if state, err := kamino.DecodeFarmUserState(kaminoAccount(user, user.Address)); err != nil || !sameKey(state.FarmState[:], pair[0]) ||
+			!sameKey(state.Owner[:], bridgeVault) || !state.IsFarmDelegated || !sameKey(state.Delegatee[:], route.Kamino.Obligation) {
 			return budgetHold("selector_farm_registration_unavailable")
 		}
 	}
@@ -434,7 +435,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 	// rent refunds are not spendable, so the funding checks below still see
 	// the full recreation rent.
 	if !position.ObligationPresent || reentry != nil {
-		rent, err := rpc.RentExempt(ctx, kaminoObligationLength)
+		rent, err := rpc.RentExempt(ctx, kamino.ObligationSize)
 		if err != nil {
 			return out, unavailable(err)
 		}

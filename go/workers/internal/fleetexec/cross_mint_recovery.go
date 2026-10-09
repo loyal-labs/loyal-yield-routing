@@ -9,15 +9,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"time"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	sdk "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
-	"math"
-	"time"
 )
 
 type crossMintTokenAnchor struct {
@@ -243,11 +245,11 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 			return nil, e
 		}
 		// The anchor market and obligation must be the actual PDA for this vault.
-		if actual[0] == nil || len(actual[0].Data) != 8624 {
+		reserve, e := kamino.DecodeReserve(actual[0])
+		if e != nil {
 			return nil, errors.New("cross-mint reserve envelope missing")
 		}
-		mint := sdk.PublicKeyFromBytes(actual[0].Data[128:160]).String()
-		market, obligation, _, _, e := reservePostIdentity(actual[0], mint, owner)
+		market, obligation, _, _, e := reservePostIdentity(actual[0], reserve.LiquidityMint.String(), owner)
 		if e != nil || market != p.Market || obligation != p.Obligation {
 			return nil, errors.New("cross-mint position binding changed")
 		}

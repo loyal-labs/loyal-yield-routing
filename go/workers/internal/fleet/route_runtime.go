@@ -1,7 +1,6 @@
 package fleet
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -18,18 +17,12 @@ import (
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// FarmsProgram owns Kamino obligation farm user states.
-const FarmsProgram = farmsProgram
-
-const (
-	farmsProgram = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
-	altProgram   = "AddressLookupTab1e1111111111111111111111111"
-)
+const altProgram = "AddressLookupTab1e1111111111111111111111111"
 
 // revalidationStore is the narrow durable surface Cycle uses.
 type revalidationStore interface {
@@ -584,9 +577,13 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if !reflect.DeepEqual(freshSource.Position, source.Position) || !reflect.DeepEqual(freshTarget.Position, target.Position) {
 		return f, errors.New("reserve route identities changed during coherent observation")
 	}
-	sourceCollateral, err := decodeObligation(accounts[2], freshSource.Position.Market, lease.VaultPubkey, lease.SourceReserve, &freshSource.Position)
+	sourceObligation, err := decodeObligation(accounts[2], freshSource.Position.Market, lease.VaultPubkey, &freshSource.Position)
 	if err != nil {
 		return f, err
+	}
+	sourceCollateral := sourceObligation.Collateral(accounts[0].Key)
+	if sourceCollateral == 0 {
+		return f, errors.New("source obligation no longer contains the planned reserve")
 	}
 	if lease.SourceCollateralRaw > 0 && sourceCollateral != lease.SourceCollateralRaw {
 		return f, errors.New("fresh source collateral amount differs from opportunity")
@@ -594,15 +591,11 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	targetMissing := accounts[3] == nil
 	var targetCollateral uint64
 	if !targetMissing {
-		if targetCollateral, err = decodeObligation(accounts[3], freshTarget.Position.Market, lease.VaultPubkey, "", &freshTarget.Position); err != nil {
+		targetObligation, err := decodeObligation(accounts[3], freshTarget.Position.Market, lease.VaultPubkey, &freshTarget.Position)
+		if err != nil {
 			return f, err
 		}
-		for i := 0; i < 8; i++ {
-			offset := 96 + i*136
-			if encodeBase58(accounts[3].Data[offset:offset+32]) == lease.TargetReserve {
-				targetCollateral = binary.LittleEndian.Uint64(accounts[3].Data[offset+32 : offset+40])
-			}
-		}
+		targetCollateral = targetObligation.Collateral(accounts[1].Key)
 	}
 	if freshSource.Position.LiquidityTokenProgram != freshTarget.Position.LiquidityTokenProgram || accounts[4] == nil || accounts[4].Owner.String() != freshSource.Position.LiquidityTokenProgram {
 		return f, errors.New("same-mint reserve token programs differ from vault custody")
@@ -640,7 +633,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	// least this exact floor, and its in-transaction refresh only accrues, so
 	// the deposit never consumes pre-existing idle custody. The estimate must
 	// still be backed: a stale high one means the plan no longer holds.
-	redeemable, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: accounts[0].Key.String(), Owner: accounts[0].Owner.String(), Lamports: accounts[0].Lamports, Data: accounts[0].Data, Executable: accounts[0].Executable}, freshSource.Position.Market, lease.LiquidityMint, sourceCollateral)
+	redeemable, err := redeemableLiquidity(accounts[0], freshSource.Position.Market, lease.LiquidityMint, sourceCollateral)
 	if err != nil {
 		return f, fmt.Errorf("fresh collateral backing: %w", err)
 	}
@@ -649,7 +642,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	}
 	var topUp uint64
 	if targetMissing {
-		rent, err := r.rpc.RentExempt(ctx, obligationLength)
+		rent, err := r.rpc.RentExempt(ctx, kamino.ObligationSize)
 		if err != nil {
 			return f, err
 		}
@@ -668,9 +661,6 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	return f, nil
 }
 
-// obligationLength is the KLend Obligation account size, discriminator included.
-const obligationLength = 3344
-
 func decodeRouteReserve(account *chain.Account, vault string) (decodedRoutePosition, error) {
 	position, err := DecodeReserveIdentity(account)
 	if err != nil {
@@ -686,27 +676,26 @@ func decodeRouteReserve(account *chain.Account, vault string) (decodedRoutePosit
 // mints, supplies, token program, oracles and collateral farm (Rust
 // decode_kamino_reserve_summary). Vault-derived fields stay empty.
 func DecodeReserveIdentity(account *chain.Account) (KaminoPositionAccounts, error) {
-	if account == nil {
-		return KaminoPositionAccounts{}, errors.New("reserve is absent")
+	reserve, err := kamino.DecodeReserve(account)
+	if err != nil {
+		return KaminoPositionAccounts{}, err
 	}
-	if account.Owner.String() != KLendProgram || len(account.Data) != reserveLength || !bytes.Equal(account.Data[:8], reserveDiscriminator[:]) {
-		return KaminoPositionAccounts{}, fmt.Errorf("reserve %s has invalid owner or data", account.Key)
-	}
-	key := func(offset int) string { return encodeBase58(account.Data[offset : offset+32]) }
-	position := KaminoPositionAccounts{Reserve: account.Key.String(), Market: key(32), LiquidityMint: key(128), CollateralMint: key(2560), LiquiditySupply: key(160), CollateralSupply: key(2600), LiquidityTokenProgram: key(408), PythOracle: key(5224), SwitchboardPriceOracle: key(5160), SwitchboardTWAPOracle: key(5192), ScopePrices: key(5112), ReserveFarmState: key(64)}
-	for _, field := range []*string{&position.PythOracle, &position.SwitchboardPriceOracle, &position.SwitchboardTWAPOracle, &position.ScopePrices, &position.ReserveFarmState} {
-		if *field == "11111111111111111111111111111111" {
-			*field = ""
+	optional := func(key solana.PublicKey) string {
+		if key.IsZero() {
+			return ""
 		}
+		return key.String()
 	}
-	return position, nil
+	return KaminoPositionAccounts{Reserve: account.Key.String(), Market: reserve.LendingMarket.String(), LiquidityMint: reserve.LiquidityMint.String(),
+		CollateralMint: reserve.CollateralMint.String(), LiquiditySupply: reserve.LiquiditySupply.String(), CollateralSupply: reserve.CollateralSupply.String(),
+		LiquidityTokenProgram: reserve.LiquidityTokenProgram.String(), PythOracle: optional(reserve.PythPrice), SwitchboardPriceOracle: optional(reserve.SwitchboardPriceAggregator),
+		SwitchboardTWAPOracle: optional(reserve.SwitchboardTWAPAggregator), ScopePrices: optional(reserve.ScopePriceFeed), ReserveFarmState: optional(reserve.FarmCollateral)}, nil
 }
 
 // DeriveVaultReserveAccounts fills the vault's accounts in a decoded
 // reserve's market: market authority, vanilla obligation, liquidity ATA under
 // the reserve's own token program, and the obligation's collateral farm user.
 func DeriveVaultReserveAccounts(position KaminoPositionAccounts, vault string) (KaminoPositionAccounts, error) {
-	program, _ := solana.PublicKeyFromBase58(KLendProgram)
 	marketKey, err := solana.PublicKeyFromBase58(position.Market)
 	if err != nil {
 		return KaminoPositionAccounts{}, err
@@ -715,12 +704,11 @@ func DeriveVaultReserveAccounts(position KaminoPositionAccounts, vault string) (
 	if err != nil {
 		return KaminoPositionAccounts{}, err
 	}
-	marketAuthority, _, err := solana.FindProgramAddress([][]byte{[]byte("lma"), marketKey[:]}, program)
+	marketAuthority, err := kamino.LendingMarketAuthority(marketKey)
 	if err != nil {
 		return KaminoPositionAccounts{}, err
 	}
-	zero := solana.PublicKey{}
-	obligation, _, err := solana.FindProgramAddress([][]byte{{0}, {0}, vaultKey[:], marketKey[:], zero[:], zero[:]}, program)
+	obligation, err := kamino.VanillaObligation(vaultKey, marketKey)
 	if err != nil {
 		return KaminoPositionAccounts{}, err
 	}
@@ -737,8 +725,7 @@ func DeriveVaultReserveAccounts(position KaminoPositionAccounts, vault string) (
 		if err != nil {
 			return KaminoPositionAccounts{}, err
 		}
-		farmsKey, _ := solana.PublicKeyFromBase58(farmsProgram)
-		user, _, err := solana.FindProgramAddress([][]byte{[]byte("user"), farmKey[:], obligation[:]}, farmsKey)
+		user, err := kamino.ObligationFarmUserState(farmKey, obligation)
 		if err != nil {
 			return KaminoPositionAccounts{}, err
 		}
@@ -747,39 +734,36 @@ func DeriveVaultReserveAccounts(position KaminoPositionAccounts, vault string) (
 	return position, nil
 }
 
-func decodeObligation(account *chain.Account, expectedMarket, expectedOwner, expectedDeposit string, position *KaminoPositionAccounts) (uint64, error) {
-	obligationDiscriminator := [8]byte{168, 206, 141, 106, 88, 76, 172, 167}
-	if account == nil {
-		return 0, errors.New("obligation is absent")
+// decodeObligation decodes the owner's obligation in market and records its
+// reserve footprint, deposits then borrows, on position.
+func decodeObligation(account *chain.Account, expectedMarket, expectedOwner string, position *KaminoPositionAccounts) (kamino.Obligation, error) {
+	obligation, err := kamino.DecodeObligation(account)
+	if err != nil {
+		return obligation, err
 	}
-	if account.Owner.String() != KLendProgram || len(account.Data) != obligationLength || !bytes.Equal(account.Data[:8], obligationDiscriminator[:]) {
-		return 0, fmt.Errorf("obligation %s has invalid owner or data", account.Key)
+	if obligation.LendingMarket.String() != expectedMarket || obligation.Owner.String() != expectedOwner {
+		return obligation, fmt.Errorf("obligation %s market or owner mismatch", account.Key)
 	}
-	key := func(offset int) string { return encodeBase58(account.Data[offset : offset+32]) }
-	if key(32) != expectedMarket || key(64) != expectedOwner {
-		return 0, fmt.Errorf("obligation %s market or owner mismatch", account.Key)
+	for _, reserve := range obligation.DepositReserves() {
+		position.ObligationDepositReserves = append(position.ObligationDepositReserves, reserve.String())
 	}
-	var expectedAmount uint64
-	for i := 0; i < 8; i++ {
-		offset := 96 + i*136
-		value := key(offset)
-		if value != "11111111111111111111111111111111" {
-			position.ObligationDepositReserves = append(position.ObligationDepositReserves, value)
-			if value == expectedDeposit {
-				expectedAmount = binary.LittleEndian.Uint64(account.Data[offset+32 : offset+40])
-			}
-		}
+	for _, reserve := range obligation.BorrowReserves() {
+		position.ObligationBorrowReserves = append(position.ObligationBorrowReserves, reserve.String())
 	}
-	for i := 0; i < 5; i++ {
-		value := key(1208 + i*200)
-		if value != "11111111111111111111111111111111" {
-			position.ObligationBorrowReserves = append(position.ObligationBorrowReserves, value)
-		}
+	return obligation, nil
+}
+
+// redeemableLiquidity is what collateral redeems from reserve, which must
+// still be in market for mint.
+func redeemableLiquidity(account *chain.Account, market, mint string, collateral uint64) (uint64, error) {
+	reserve, err := kamino.DecodeReserve(account)
+	if err != nil {
+		return 0, err
 	}
-	if expectedDeposit != "" && expectedAmount == 0 {
-		return 0, errors.New("source obligation no longer contains the planned reserve")
+	if reserve.LendingMarket.String() != market || reserve.LiquidityMint.String() != mint {
+		return 0, errors.New("Kamino reserve identity drifted")
 	}
-	return expectedAmount, nil
+	return reserve.CollateralToLiquidity(collateral)
 }
 
 func validateVaultTokenAccount(account *chain.Account, expectedMint, expectedOwner string) (spl.TokenAccount, error) {

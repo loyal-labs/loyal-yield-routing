@@ -6,19 +6,15 @@ import (
 )
 
 const (
-	KaminoProgram                            = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 	USDCMint                                 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	CashMint                                 = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"
 	USDGMint                                 = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
 	PYUSDMint                                = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 	USDTMint                                 = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 	USDSMint                                 = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
-	reserveLength                            = 8624
 	amountSemanticsKaminoCollateralDeposited = "kamino_obligation_collateral_deposited_amount"
 	amountSemanticsRedeemableLiquidity       = "redeemable_liquidity_amount"
 )
-
-var reserveDiscriminator = [8]byte{43, 242, 204, 202, 26, 247, 59, 127}
 
 type ReserveIdentity struct {
 	Address string `json:"address"`

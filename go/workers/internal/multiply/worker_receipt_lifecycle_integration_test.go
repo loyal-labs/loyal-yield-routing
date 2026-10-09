@@ -15,6 +15,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // Publish an actual SDK-constrained, simulated wire using the same durable
@@ -331,14 +332,14 @@ func TestCurrentGoMultiplyInitialExposureAdmissionHolds(t *testing.T) {
 			f := newMultiplySVMFixtureWithInitialAccounts(t, func(topology *EarnMaxTopology, accounts map[string]*chain.Account) {
 				for _, key := range test.keys {
 					config := topology.Strategies[key]
-					data := make([]byte, obligationLength)
-					copy(data[:8], obligationDiscriminator)
+					data := make([]byte, kamino.ObligationSize)
+					copy(data[:8], kamino.ObligationDiscriminator[:])
 					binary.LittleEndian.PutUint64(data[16:24], 1000)
 					copy(data[32:64], config.Market[:])
 					copy(data[64:96], topology.Vault[:])
 					copy(data[96:128], config.CollateralReserve[:])
 					binary.LittleEndian.PutUint64(data[128:136], 1000)
-					accounts[config.Obligation.String()] = &chain.Account{Key: config.Obligation, Owner: mustKey(KlendProgram), Data: data, Lamports: 10_000_000}
+					accounts[config.Obligation.String()] = &chain.Account{Key: config.Obligation, Owner: kamino.ProgramID, Data: data, Lamports: 10_000_000}
 				}
 			})
 			result, err := f.worker(t, false).Tick(f.ctx)

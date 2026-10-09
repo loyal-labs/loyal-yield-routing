@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // The selector destination batch pins lifecycle addresses that may legitimately
@@ -108,7 +110,7 @@ func TestEncodeLegacyMessageCaptureAccountsStayReadOnly(t *testing.T) {
 	feePayer := mustKey(bridgeDelegate)
 	hash := mustKey(bridgeUSDC)
 	instruction := compiledInstruction{
-		program: mustKey(kaminoProgram),
+		program: publicKey(kamino.ProgramID),
 		accounts: []accountMeta{
 			{key: mustKey(bridgeUSDC), writable: true},
 			{key: mustKey(budgetClockAddress), writable: true},
@@ -158,7 +160,7 @@ func TestEncodeLegacyMessageCaptureAccountsStayReadOnly(t *testing.T) {
 	// Read the single instruction record and validate its account indexes.
 	// Layout: keys, blockhash, shortvec instruction count, then the record.
 	offset := 4 + 32*numAccounts + 32 + 1
-	if int(message[offset]) != indexOf(mustKey(kaminoProgram)) {
+	if int(message[offset]) != indexOf(publicKey(kamino.ProgramID)) {
 		t.Fatalf("program index invalid")
 	}
 	count := int(message[offset+1])

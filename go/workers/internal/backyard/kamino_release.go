@@ -7,6 +7,7 @@ import (
 	"math/big"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 type KaminoReleaseBound struct {
@@ -253,7 +254,7 @@ func pilotRepaymentLiquidityAllowanceChecked(accounts []ConfirmedAccount, route 
 	o := accountAt(accounts, route.Kamino.Obligation).Data
 	c := accountAt(accounts, route.Kamino.CollateralReserve).Data
 	d := accountAt(accounts, route.Kamino.DebtReserve).Data
-	if len(o) != kaminoObligationLength || len(c) != kaminoReserveLength || len(d) != kaminoReserveLength ||
+	if len(o) != kamino.ObligationSize || len(c) != kamino.ReserveSize || len(d) != kamino.ReserveSize ||
 		o[kaminoObligationElevationGroupOffset] != 0 || max(binary.LittleEndian.Uint64(d[kaminoBorrowFactorOffset:]), 100) != 100 {
 		return 0, budgetHold("pilot_release_risk_model_changed")
 	}

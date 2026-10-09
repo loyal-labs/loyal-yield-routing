@@ -11,18 +11,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// KLend v2 discriminators (klend_interface::discriminators, as evidenced by
-// the reviewed fleet/backyard builders: deposit/borrow/withdraw/repay below
-// and the shared refresh tags).
-var (
-	DiscriminatorDepositCollateral  = [8]byte{216, 224, 191, 27, 204, 151, 102, 175}
-	DiscriminatorBorrowDebt         = [8]byte{161, 128, 143, 245, 171, 199, 194, 6}
-	DiscriminatorWithdrawCollateral = [8]byte{235, 52, 119, 152, 149, 197, 20, 7}
-	DiscriminatorRepayDebt          = [8]byte{116, 174, 213, 76, 180, 53, 210, 144}
-	DiscriminatorRefreshReserve     = [8]byte{2, 218, 138, 235, 79, 201, 25, 102}
-	DiscriminatorRefreshObligation  = [8]byte{33, 132, 147, 228, 151, 192, 72, 89}
-)
-
 // PolicyFamily mirrors policy::PolicyFamily.
 type PolicyFamily string
 

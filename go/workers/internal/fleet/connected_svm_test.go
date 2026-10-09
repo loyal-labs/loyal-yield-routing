@@ -18,6 +18,7 @@ import (
 	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // fixtureAccount is address's account as a test chain holds it.
@@ -118,7 +119,7 @@ func seedConnectedExecutionAccounts(t *testing.T, accounts map[string]chain.Acco
 		accounts[address] = fixtureAccount(address, "11111111111111111111111111111111", 1_000_000_000, []byte{})
 	}
 	for _, p := range positions {
-		accounts[p.Market] = fixtureAccount(p.Market, KLendProgram, 100_000_000, make([]byte, 8))
+		accounts[p.Market] = fixtureAccount(p.Market, kamino.ProgramID.String(), 100_000_000, make([]byte, 8))
 		accounts[p.MarketAuthority] = fixtureAccount(p.MarketAuthority, "11111111111111111111111111111111", 100_000_000, []byte{})
 		mint := fixtureAccount(p.CollateralMint, tokenProgram, 100_000_000, make([]byte, 82))
 		binary.LittleEndian.PutUint32(mint.Data[:4], 1)

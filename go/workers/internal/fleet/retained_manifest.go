@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -258,11 +259,11 @@ func buildRouteALTManifest(input KaminoSameMintRouteRequest, settings string, po
 		if err != nil {
 			return ALTManifest{}, err
 		}
-		metadata, err := findProgramAddress(KLendProgram, []byte("user_meta"), vault[:])
+		metadata, err := kamino.UserMetadataAddress(solana.PublicKey(vault))
 		if err != nil {
 			return ALTManifest{}, err
 		}
-		if err := add(metadata, 2, 6); err != nil {
+		if err := add(metadata.String(), 2, 6); err != nil {
 			return ALTManifest{}, err
 		}
 	}
@@ -296,7 +297,7 @@ func buildRouteALTManifest(input KaminoSameMintRouteRequest, settings string, po
 		}
 	}
 
-	for _, key := range []string{solana.SystemProgramID.String(), tokenProgram, solana.SPLAssociatedTokenAccountProgramID.String(), "Sysvar1nstructions1111111111111111111111111", "SysvarRent111111111111111111111111111111111", KLendProgram, farmsProgram} {
+	for _, key := range []string{solana.SystemProgramID.String(), tokenProgram, solana.SPLAssociatedTokenAccountProgramID.String(), "Sysvar1nstructions1111111111111111111111111", "SysvarRent111111111111111111111111111111111", kamino.ProgramID.String(), kamino.FarmsProgramID.String()} {
 		if err := add(key, 1, 10); err != nil {
 			return ALTManifest{}, err
 		}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -72,7 +73,7 @@ func TestInitializationRPCBindsThePersistedWireAndRejectsUnexpectedMetadata(t *t
 						meta["preTokenBalances"] = []any{map[string]any{"accountIndex": 1}}
 					}
 					if drift == "return_data" {
-						meta["returnData"] = map[string]any{"programId": kaminoProgram, "data": []string{"AA==", "base64"}}
+						meta["returnData"] = map[string]any{"programId": kamino.ProgramID.String(), "data": []string{"AA==", "base64"}}
 					}
 					result = map[string]any{"slot": slot, "transaction": []string{base64.StdEncoding.EncodeToString(actual), "base64"}, "meta": meta}
 				case "getMultipleAccounts":

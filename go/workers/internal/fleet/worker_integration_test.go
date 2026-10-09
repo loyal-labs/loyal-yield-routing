@@ -234,7 +234,7 @@ func seedWorkerVault(t *testing.T, ctx context.Context, store *Store, suffix, ma
 }
 
 func setCurveScale(data []byte, scale uint32) {
-	config := data[reserveConfigOffset:]
+	config := data[4856:]
 	for index := 0; index < 11; index++ {
 		offset := 64 + index*8
 		binary.LittleEndian.PutUint32(config[offset+4:offset+8], uint32(index)*scale)

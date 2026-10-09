@@ -3,6 +3,8 @@ package backyard
 import (
 	"encoding/binary"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // All identities are fixed by the lane and a reviewed, installed policy. Rent
@@ -159,22 +161,15 @@ func kaminoMultiplyInitializer(lane string) (compiledInstruction, error) {
 // re-derived from the route identities and compared to the reviewed route
 // obligation, so a candidate lane can never drift to a synthetic authority.
 func kaminoRouteInitializer(route RuntimeRoute) (compiledInstruction, error) {
-	program, owner := mustKey(kaminoProgram), mustKey(bridgeVault)
-	market, collateral, debt := mustKey(route.Kamino.Market), mustKey(route.Kamino.CollateralMint), mustKey(route.Kamino.DebtMint)
-	obligation, err := findProgramDerivedAddress([]byte{1}, program[:], []byte{0}, owner[:], market[:], collateral[:], debt[:])
-	if err != nil || obligation != route.Kamino.Obligation {
+	owner, market := kaminoKey(bridgeVault), kaminoKey(route.Kamino.Market)
+	collateral, debt := kaminoKey(route.Kamino.CollateralMint), kaminoKey(route.Kamino.DebtMint)
+	obligation, err := kamino.ObligationAddress(1, 0, owner, market, collateral, debt)
+	if err != nil || obligation.String() != route.Kamino.Obligation {
 		return compiledInstruction{}, fmt.Errorf("Multiply obligation PDA drifted")
 	}
-	metadata, err := findProgramDerivedAddress([]byte("user_meta"), program[:], owner[:])
+	metadata, err := kamino.UserMetadataAddress(owner)
 	if err != nil {
 		return compiledInstruction{}, err
 	}
-	return compiledInstruction{program: program,
-		accounts: []accountMeta{
-			meta(bridgeVault, true, false), meta(bridgeVault, true, true),
-			meta(obligation, false, true), meta(route.Kamino.Market, false, false),
-			meta(route.Kamino.CollateralMint, false, false), meta(route.Kamino.DebtMint, false, false),
-			meta(metadata, false, false), meta("SysvarRent111111111111111111111111111111111", false, false),
-			meta("11111111111111111111111111111111", false, false),
-		}, data: []byte{251, 10, 231, 76, 27, 11, 159, 96, 1, 0}}, nil
+	return kaminoCompiled(kamino.InitObligation(owner, owner, obligation, market, collateral, debt, metadata, 1, 0)), nil
 }

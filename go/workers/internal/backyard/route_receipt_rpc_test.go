@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -222,7 +223,7 @@ func TestStrategyReceiptIntegrityThroughRawJSONRPC(t *testing.T) {
 	// A receipt owned by another program is foreign evidence.
 	client = rawJSONRouteBatch(t, func(confirmed, _ map[string]ConfirmedAccount) {
 		receipt := confirmed[bridgeStrategyReceipt]
-		receipt.Owner = kaminoProgram
+		receipt.Owner = kamino.ProgramID.String()
 		confirmed[bridgeStrategyReceipt] = receipt
 	})
 	observation, err = rawJSONProductionObserve(t, client)

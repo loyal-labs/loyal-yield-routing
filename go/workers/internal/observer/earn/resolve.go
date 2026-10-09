@@ -3,8 +3,6 @@ package earn
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +11,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -27,24 +26,16 @@ import (
 // second retry layer on top of that queue and are not carried over.
 var errProofPending = errors.New("transaction proof is not yet available at the requested commitment")
 
-var (
-	obligationDiscriminator = []byte{168, 206, 141, 106, 88, 76, 172, 167}
-	reserveDiscriminator    = func() []byte { d := anchorAccountDiscriminator("Reserve"); return d[:] }()
-	withdrawV2Discriminator = anchorInstructionDiscriminator("withdraw_obligation_collateral_and_redeem_reserve_collateral_v2")
-)
+const dustThreshold = 10_000
 
-const (
-	obligationLength = 3344
-	reserveLength    = 8624
-	dustThreshold    = 10_000
-)
-
-func anchorAccountDiscriminator(name string) [8]byte {
-	return [8]byte(sha256Sum("account:" + name)[:8])
-}
-
-func anchorInstructionDiscriminator(name string) []byte {
-	return sha256Sum("global:" + name)[:8]
+// obligationOpen reports deposited collateral or any borrow.
+func obligationOpen(obligation kamino.Obligation) bool {
+	for _, deposit := range obligation.Deposits {
+		if deposit.DepositedAmount > 0 {
+			return true
+		}
+	}
+	return len(obligation.BorrowReserves()) > 0
 }
 
 // earnTransaction is a confirmed transaction that succeeded.
@@ -186,7 +177,7 @@ func (t earnTransaction) hasEarnAnchor(vault watch.Vault) bool {
 func (t earnTransaction) kaminoWithdrawAccounts() [][]solana.PublicKey {
 	var out [][]solana.PublicKey
 	add := func(program uint16, indexes []uint16, data []byte) {
-		if int(program) >= len(t.Keys) || t.Keys[program] != klendProgram || !bytes.HasPrefix(data, withdrawV2Discriminator) {
+		if int(program) >= len(t.Keys) || t.Keys[program] != kamino.ProgramID || !bytes.HasPrefix(data, kamino.WithdrawV2Discriminator[:]) {
 			return
 		}
 		accounts := make([]solana.PublicKey, len(indexes))
@@ -265,91 +256,6 @@ func classifyCashFlow(t earnTransaction, update NormalizedUpdate, vault watch.Va
 	return result, nil
 }
 
-type obligationState struct {
-	market, owner solana.PublicKey
-	deposits      []struct {
-		reserve solana.PublicKey
-		amount  uint64
-	}
-	open bool
-}
-
-func decodeObligation(data []byte) (obligationState, error) {
-	var out obligationState
-	if len(data) < obligationLength || !bytes.Equal(data[:8], obligationDiscriminator) {
-		return out, errors.New("decode Kamino obligation")
-	}
-	out.market, out.owner = solana.PublicKeyFromBytes(data[32:64]), solana.PublicKeyFromBytes(data[64:96])
-	for i := 0; i < 8; i++ {
-		offset := 96 + i*136
-		reserve := solana.PublicKeyFromBytes(data[offset : offset+32])
-		amount := binary.LittleEndian.Uint64(data[offset+32 : offset+40])
-		out.deposits = append(out.deposits, struct {
-			reserve solana.PublicKey
-			amount  uint64
-		}{reserve, amount})
-		out.open = out.open || amount > 0
-	}
-	for i := 0; i < 5; i++ {
-		offset := 1208 + i*200
-		out.open = out.open || !solana.PublicKeyFromBytes(data[offset:offset+32]).IsZero()
-	}
-	return out, nil
-}
-
-type reserveState struct {
-	market, mint      solana.PublicKey
-	collateralSupply  uint64
-	totalLiquidityX60 *big.Int
-}
-
-func u128At(data []byte, offset int) *big.Int {
-	value := new(big.Int).SetUint64(binary.LittleEndian.Uint64(data[offset+8 : offset+16]))
-	value.Lsh(value, 64)
-	return value.Add(value, new(big.Int).SetUint64(binary.LittleEndian.Uint64(data[offset:offset+8])))
-}
-
-// decodeReserve keeps reserve_total_liquidity_scaled's exact 2^60 arithmetic.
-func decodeReserve(data []byte) (reserveState, error) {
-	var out reserveState
-	if len(data) < reserveLength || !bytes.Equal(data[:8], reserveDiscriminator) {
-		return out, errors.New("decode Earn reserve")
-	}
-	out.market, out.mint = solana.PublicKeyFromBytes(data[32:64]), solana.PublicKeyFromBytes(data[128:160])
-	out.collateralSupply = binary.LittleEndian.Uint64(data[2592:2600])
-	total := new(big.Int).Lsh(new(big.Int).SetUint64(binary.LittleEndian.Uint64(data[224:232])), 60)
-	total.Add(total, u128At(data, 232))
-	for _, fee := range []struct {
-		offset int
-		label  string
-	}{{344, "accumulated protocol fees"}, {360, "accumulated referrer fees"}, {376, "pending referrer fees"}} {
-		amount := u128At(data, fee.offset)
-		if total.Cmp(amount) < 0 {
-			return out, fmt.Errorf("reserve total liquidity underflow subtracting %s", fee.label)
-		}
-		total.Sub(total, amount)
-	}
-	out.totalLiquidityX60 = total
-	return out, nil
-}
-
-// redeemableLiquidity is collateral_to_redeemable_liquidity.
-func redeemableLiquidity(collateralSupply uint64, totalX60 *big.Int, collateral uint64) (uint64, error) {
-	if collateral == 0 {
-		return 0, nil
-	}
-	if collateralSupply == 0 || totalX60.Sign() == 0 {
-		return collateral, nil
-	}
-	numerator := new(big.Int).Mul(new(big.Int).SetUint64(collateral), totalX60)
-	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(collateralSupply), 60)
-	value := numerator.Quo(numerator, denominator)
-	if !value.IsUint64() {
-		return 0, errors.New("redeemable liquidity amount does not fit u64")
-	}
-	return value.Uint64(), nil
-}
-
 func bindingKeys(vault watch.Vault, role string) ([]solana.PublicKey, error) {
 	var out []solana.PublicKey
 	for _, binding := range vault.Accounts {
@@ -425,17 +331,17 @@ func readCleanupProof(ctx context.Context, rpc *chain.Client, vault watch.Vault,
 			if account == nil {
 				continue
 			}
-			if account.Owner != klendProgram {
+			if account.Owner != kamino.ProgramID {
 				return proof, fmt.Errorf("obligation %s has unexpected owner %s", binding.Pubkey, account.Owner)
 			}
-			obligation, err := decodeObligation(account.Data)
+			obligation, err := kamino.DecodeObligation(account)
 			if err != nil {
 				return proof, err
 			}
-			if obligation.owner != vaultKey {
-				return proof, fmt.Errorf("obligation %s belongs to %s, expected %s", binding.Pubkey, obligation.owner, vaultKey)
+			if obligation.Owner != vaultKey {
+				return proof, fmt.Errorf("obligation %s belongs to %s, expected %s", binding.Pubkey, obligation.Owner, vaultKey)
 			}
-			if obligation.open {
+			if obligationOpen(obligation) {
 				proof.balancesZero = false
 			}
 		}
@@ -618,19 +524,19 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 	}
 	reserveSet := map[solana.PublicKey]struct{}{}
 	for _, account := range discovered {
-		if account == nil || account.Owner != klendProgram {
+		if account == nil || account.Owner != kamino.ProgramID {
 			continue
 		}
-		obligation, err := decodeObligation(account.Data)
+		obligation, err := kamino.DecodeObligation(account)
 		if err != nil {
 			return vaultSnapshot{}, fmt.Errorf("decode discovered Earn obligation: %w", err)
 		}
-		if obligation.owner != vaultKey {
+		if obligation.Owner != vaultKey {
 			continue
 		}
-		for _, deposit := range obligation.deposits {
-			if !deposit.reserve.IsZero() {
-				reserveSet[deposit.reserve] = struct{}{}
+		for _, deposit := range obligation.Deposits {
+			if !deposit.Reserve.IsZero() {
+				reserveSet[deposit.Reserve] = struct{}{}
 			}
 		}
 	}
@@ -652,16 +558,16 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 	if err != nil {
 		return vaultSnapshot{}, err
 	}
-	reserveAccounts := map[solana.PublicKey]reserveState{}
+	reserveAccounts := map[solana.PublicKey]kamino.Reserve{}
 	for index, address := range reserves {
 		account := accounts[len(obligations)+index]
 		if account == nil {
 			continue
 		}
-		if account.Owner != klendProgram {
+		if account.Owner != kamino.ProgramID {
 			return vaultSnapshot{}, fmt.Errorf("Earn reserve %s has unexpected owner %s", address, account.Owner)
 		}
-		state, err := decodeReserve(account.Data)
+		state, err := kamino.DecodeReserve(account)
 		if err != nil {
 			return vaultSnapshot{}, err
 		}
@@ -677,31 +583,31 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 	}
 	snapshot := vaultSnapshot{observedSlot: slot}
 	for _, account := range accounts[:len(obligations)] {
-		if account == nil || account.Owner != klendProgram {
+		if account == nil || account.Owner != kamino.ProgramID {
 			continue
 		}
-		obligation, err := decodeObligation(account.Data)
+		obligation, err := kamino.DecodeObligation(account)
 		if err != nil {
 			return vaultSnapshot{}, fmt.Errorf("decode canonical Earn obligation: %w", err)
 		}
-		if _, allowed := markets[obligation.market]; obligation.owner != vaultKey || !allowed {
+		if _, allowed := markets[obligation.LendingMarket]; obligation.Owner != vaultKey || !allowed {
 			continue
 		}
-		for _, deposit := range obligation.deposits {
-			if deposit.reserve.IsZero() {
+		for _, deposit := range obligation.Deposits {
+			if deposit.Reserve.IsZero() {
 				continue
 			}
-			reserve, ok := reserveAccounts[deposit.reserve]
-			if _, allowedMint := mints[reserve.mint]; !ok || reserve.market != obligation.market || !allowedMint {
+			reserve, ok := reserveAccounts[deposit.Reserve]
+			if _, allowedMint := mints[reserve.LiquidityMint]; !ok || reserve.LendingMarket != obligation.LendingMarket || !allowedMint {
 				continue
 			}
-			amount, err := redeemableLiquidity(reserve.collateralSupply, reserve.totalLiquidityX60, deposit.amount)
+			amount, err := reserve.CollateralToLiquidity(deposit.DepositedAmount)
 			if err != nil {
 				return vaultSnapshot{}, err
 			}
-			market := obligation.market.String()
-			snapshot.reserves = append(snapshot.reserves, EarnReserveMutation{Reserve: deposit.reserve.String(), Market: &market,
-				LiquidityMint: reserve.mint.String(), AmountRaw: amount, HasValue: amount > 0,
+			market := obligation.LendingMarket.String()
+			snapshot.reserves = append(snapshot.reserves, EarnReserveMutation{Reserve: deposit.Reserve.String(), Market: &market,
+				LiquidityMint: reserve.LiquidityMint.String(), AmountRaw: amount, HasValue: amount > 0,
 				PlanningMetadata: metadata("earn_laserstream_complete_snapshot", slot)})
 		}
 	}
@@ -786,14 +692,14 @@ func drainedObligationTarget(ctx context.Context, rpc *chain.Client, update Norm
 	// The PDA may have been funded again since; a transaction that closed it
 	// already proves the drain.
 	if account := accounts[0]; account != nil && !transaction.closedAccount(target.obligation.String()) {
-		if account.Owner != klendProgram {
+		if account.Owner != kamino.ProgramID {
 			return nil, fmt.Errorf("full-withdraw obligation %s has unexpected owner %s", target.obligation, account.Owner)
 		}
-		obligation, err := decodeObligation(account.Data)
+		obligation, err := kamino.DecodeObligation(account)
 		if err != nil {
 			return nil, fmt.Errorf("decode full-withdraw Kamino obligation: %w", err)
 		}
-		if obligation.owner != vaultKey || obligation.open {
+		if obligation.Owner != vaultKey || obligationOpen(obligation) {
 			return nil, fmt.Errorf("full-withdraw obligation %s still has an open position", target.obligation)
 		}
 	}
@@ -801,14 +707,14 @@ func drainedObligationTarget(ctx context.Context, rpc *chain.Client, update Norm
 	if account == nil {
 		return nil, errors.New("full-withdraw reserve account is unavailable")
 	}
-	if account.Owner != klendProgram {
+	if account.Owner != kamino.ProgramID {
 		return nil, fmt.Errorf("full-withdraw reserve %s has unexpected owner %s", target.reserve, account.Owner)
 	}
-	reserve, err := decodeReserve(account.Data)
+	reserve, err := kamino.DecodeReserve(account)
 	if err != nil {
 		return nil, fmt.Errorf("decode full-withdraw Kamino reserve: %w", err)
 	}
-	if reserve.market != target.market || reserve.mint != target.mint {
+	if reserve.LendingMarket != target.market || reserve.LiquidityMint != target.mint {
 		return nil, errors.New("full-withdraw reserve state does not match its transaction accounts")
 	}
 	market := target.market.String()
@@ -873,9 +779,4 @@ func readCashFlowProof(ctx context.Context, rpc *chain.Client, update Normalized
 		ObservedSlot: snapshot.observedSlot, Wallet: vault.Wallet, VaultPubkey: vault.Vault, TargetReserve: target.Reserve, Market: target.Market,
 		LiquidityMint: flow.mint, WithdrawnAmountRaw: flow.amount, RemainingAmountRaw: remaining, ReserveState: snapshot.reserves,
 		IdleState: snapshot.idles}}, nil
-}
-
-func sha256Sum(value string) []byte {
-	digest := sha256.Sum256([]byte(value))
-	return digest[:]
 }

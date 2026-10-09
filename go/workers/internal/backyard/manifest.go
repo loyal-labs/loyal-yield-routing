@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -573,13 +574,13 @@ func (m RouteManifest) primeUSDCPacket(action Action, leg kaminoPrimeUSDCLeg, am
 	var expected []byte
 	switch leg {
 	case kaminoLegDeposit:
-		expected = kaminoDepositCollateral
+		expected = kamino.DepositV2Discriminator[:]
 	case kaminoLegBorrow:
-		expected = kaminoBorrowUSDC
+		expected = kamino.BorrowV2Discriminator[:]
 	case kaminoLegRepay:
-		expected = kaminoRepayUSDC
+		expected = kamino.RepayV2Discriminator[:]
 	case kaminoLegWithdraw:
-		expected = kaminoWithdrawCollateral
+		expected = kamino.WithdrawV2Discriminator[:]
 	default:
 		return KaminoPrimeUSDCRequest{}, fmt.Errorf("unknown PRIME/USDC leg")
 	}
@@ -668,7 +669,7 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	if index < 0 || index >= len(sets) {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
-	discriminators := map[kaminoPrimeUSDCLeg][]byte{kaminoLegDeposit: kaminoDepositCollateral, kaminoLegBorrow: kaminoBorrowUSDC, kaminoLegRepay: kaminoRepayUSDC, kaminoLegWithdraw: kaminoWithdrawCollateral}
+	discriminators := map[kaminoPrimeUSDCLeg][]byte{kaminoLegDeposit: kamino.DepositV2Discriminator[:], kaminoLegBorrow: kamino.BorrowV2Discriminator[:], kaminoLegRepay: kamino.RepayV2Discriminator[:], kaminoLegWithdraw: kamino.WithdrawV2Discriminator[:]}
 	data := make([]byte, 16)
 	copy(data, discriminators[leg])
 	for i := 0; i < 8; i++ {

@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func TestEmbeddedManifestIsExactCheckedInManifest(t *testing.T) {
@@ -34,18 +36,18 @@ func TestManifestPacketTemplatePatchesOnlyTheV2Amount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := append(append([]byte(nil), kaminoDepositCollateral...), make([]byte, 8)...)
+	data := append(append([]byte(nil), kamino.DepositV2Discriminator[:]...), make([]byte, 8)...)
 	overlay, err := json.Marshal(map[string]any{"packets": []any{map[string]any{
 		"action": OpenPrimeUSDCStep, "policy": bridgeAllocationPolicy,
 		"policyAccountDataSha256": "11" + string(bytes.Repeat([]byte{'1'}, 62)),
-		"policyConstraintIndex":   0, "accounts": manifestAccounts(kaminoDepositMetas()),
+		"policyConstraintIndex":   0, "accounts": manifestAccounts(kaminoLegMetasForRoute(kaminoLegDeposit, RouteID)),
 		"dataBase64": base64.StdEncoding.EncodeToString(data),
 	}}})
 	if err != nil || json.Unmarshal(overlay, &manifest.RuntimeBindings.PrimeUSDC) != nil {
 		t.Fatal("could not create packet fixture")
 	}
 	request, err := manifest.primeUSDCPacket(OpenPrimeUSDCStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9})
-	if err != nil || request.AmountRaw != 77 || readU64(request.Data[8:]) != 77 || !bytes.Equal(request.Data[:8], kaminoDepositCollateral) {
+	if err != nil || request.AmountRaw != 77 || readU64(request.Data[8:]) != 77 || !bytes.Equal(request.Data[:8], kamino.DepositV2Discriminator[:]) {
 		t.Fatalf("request=%+v err=%v", request, err)
 	}
 }

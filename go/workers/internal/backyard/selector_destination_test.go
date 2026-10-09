@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -64,7 +65,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		}
 		add(a)
 	}
-	add(ConfirmedAccount{Address: kaminoScopePrices, Owner: kaminoProgram, Lamports: 1, Data: []byte{1}})
+	add(ConfirmedAccount{Address: kaminoScopePrices, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}})
 	market := marketFixture(t, route.Kamino.Market)
 	binary.LittleEndian.PutUint64(market.Data[kaminoGlobalBorrowValueOffset:], 1_000_000)
 	add(market)
@@ -127,13 +128,13 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		p.MaskedByteRanges = nil
 		add(ConfirmedAccount{Address: p.Account, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 	}
-	farm := ConfirmedAccount{Address: route.DebtFarm, Owner: kaminoFarmsProgram, Lamports: 1, Data: make([]byte, 8336)}
+	farm := ConfirmedAccount{Address: route.DebtFarm, Owner: kamino.FarmsProgramID.String(), Lamports: 1, Data: make([]byte, 8336)}
 	copy(farm.Data, []byte{198, 102, 216, 74, 63, 66, 163, 190})
 	putKey(t, farm.Data[7328:7360], route.Kamino.MarketAuthority)
 	farm.Data[7362] = 1
 	add(farm)
-	u := ConfirmedAccount{Address: route.ObligationDebtFarm, Owner: kaminoFarmsProgram, Lamports: 1, Data: make([]byte, 920)}
-	copy(u.Data, []byte{72, 177, 85, 249, 76, 167, 186, 126})
+	u := ConfirmedAccount{Address: route.ObligationDebtFarm, Owner: kamino.FarmsProgramID.String(), Lamports: 1, Data: make([]byte, 920)}
+	copy(u.Data, kamino.FarmUserStateDiscriminator[:])
 	putKey(t, u.Data[16:48], route.DebtFarm)
 	putKey(t, u.Data[48:80], bridgeVault)
 	u.Data[80] = 1

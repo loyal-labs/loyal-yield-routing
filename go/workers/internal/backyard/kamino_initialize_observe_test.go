@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -44,8 +45,8 @@ func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, m
 	accounts[policyAddress] = ConfirmedAccount{Address: policyAddress, Owner: squads.ProgramID.String(), Lamports: 1, Data: []byte("controlled policy")}
 	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
 	accounts[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
-	m := ConfirmedAccount{Address: metadataAddress, Owner: kaminoProgram, Lamports: 1, Data: make([]byte, 1032)}
-	copy(m.Data, []byte{157, 214, 220, 235, 98, 135, 171, 28})
+	m := ConfirmedAccount{Address: metadataAddress, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, 1032)}
+	copy(m.Data, kamino.UserMetadataDiscriminator[:])
 	putKey(t, m.Data[80:112], bridgeVault)
 	accounts[metadataAddress] = m
 	accounts[route.Kamino.Market] = marketFixture(t, route.Kamino.Market)

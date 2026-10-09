@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
@@ -32,7 +33,6 @@ const (
 var (
 	tokenProgram     = solana.TokenProgramID
 	token2022Program = solana.Token2022ProgramID
-	kaminoProgram    = solana.MustPublicKeyFromBase58("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD")
 )
 
 type Stablecoin struct{ Mint, TokenProgram solana.PublicKey }
@@ -638,7 +638,7 @@ func buildVault(target earnTarget) (Vault, error) {
 		if err != nil {
 			return Vault{}, fmt.Errorf("invalid recorded Earn market %q: %w", value, err)
 		}
-		obligation, _, err := solana.FindProgramAddress([][]byte{{0}, {0}, vaultKey[:], market[:], make([]byte, 32), make([]byte, 32)}, kaminoProgram)
+		obligation, err := kamino.VanillaObligation(vaultKey, market)
 		if err != nil {
 			return Vault{}, err
 		}

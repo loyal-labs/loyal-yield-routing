@@ -28,6 +28,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
@@ -366,19 +367,19 @@ func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string
 	config := topology.Strategies[SyrupUsdcUsdc]
 	accounts[topology.ClaimCustody.String()] = observedToken(topology.ClaimCustody, USDCMint, topology.Vault, 0)
 	for _, key := range []solana.PublicKey{config.Market, config.MarketAuthority, config.Oracle} {
-		accounts[key.String()] = &chain.Account{Key: key, Owner: mustKey(KlendProgram), Lamports: 10_000_000, Data: []byte{0}}
+		accounts[key.String()] = &chain.Account{Key: key, Owner: kamino.ProgramID, Lamports: 10_000_000, Data: []byte{0}}
 	}
-	obligation := make([]byte, obligationLength)
-	copy(obligation[:8], obligationDiscriminator)
+	obligation := make([]byte, kamino.ObligationSize)
+	copy(obligation[:8], kamino.ObligationDiscriminator[:])
 	copy(obligation[32:64], config.Market[:])
 	copy(obligation[64:96], topology.Vault[:])
 	binary.LittleEndian.PutUint64(obligation[16:24], 1000)
-	accounts[config.Obligation.String()] = &chain.Account{Key: config.Obligation, Owner: mustKey(KlendProgram), Lamports: 10_000_000, Data: obligation}
+	accounts[config.Obligation.String()] = &chain.Account{Key: config.Obligation, Owner: kamino.ProgramID, Lamports: 10_000_000, Data: obligation}
 	reserve := accounts[config.CollateralReserve.String()]
 	copy(reserve.Data[160:192], config.CollateralLiquiditySupply[:])
 	copy(reserve.Data[2560:2592], config.CollateralReceiptMint[:])
 	copy(reserve.Data[2600:2632], config.CollateralMintSupply[:])
-	reserve.Data[reserveConfigOffset+16], reserve.Data[reserveConfigOffset+17] = 65, 80
+	reserve.Data[4856+16], reserve.Data[4856+17] = 65, 80
 	// The fixed-price mock and this source integer exchange ratio are 1:1.
 	binary.LittleEndian.PutUint64(reserve.Data[224:232], 1_000_000_000)
 	accounts[config.CollateralCustody.String()] = observedToken(config.CollateralCustody, config.CollateralMint, topology.Vault, 1_000_000)
@@ -393,10 +394,10 @@ func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string
 	accounts[config.DebtLiquiditySupply.String()] = observedToken(config.DebtLiquiditySupply, USDCMint, config.MarketAuthority, 1_000_000_000)
 	accounts[config.DebtFeeVault.String()] = observedToken(config.DebtFeeVault, USDCMint, config.MarketAuthority, 0)
 	if config.DebtFarmState != nil {
-		accounts[config.DebtFarmState.String()] = &chain.Account{Key: *config.DebtFarmState, Owner: mustKey(FarmsProgram), Data: []byte{0}, Lamports: 10_000_000}
+		accounts[config.DebtFarmState.String()] = &chain.Account{Key: *config.DebtFarmState, Owner: kamino.FarmsProgramID, Data: []byte{0}, Lamports: 10_000_000}
 	}
 	if config.DebtFarmUser != nil {
-		accounts[config.DebtFarmUser.String()] = &chain.Account{Key: *config.DebtFarmUser, Owner: mustKey(FarmsProgram), Data: []byte{0}, Lamports: 10_000_000}
+		accounts[config.DebtFarmUser.String()] = &chain.Account{Key: *config.DebtFarmUser, Owner: kamino.FarmsProgramID, Data: []byte{0}, Lamports: 10_000_000}
 	}
 	for _, mint := range []solana.PublicKey{mustKey(USDCMint), mustKey(config.CollateralMint)} {
 		pool, err := spl.AssociatedTokenAddress(multiplyBankSwapAuthority(), mint, solana.TokenProgramID)

@@ -12,12 +12,11 @@ import (
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	klend "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/mr-tron/base58"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
-
-const klendProgram = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 
 type snapshotRank struct {
 	slot, writeVersion uint64
@@ -90,7 +89,7 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 	}
 	observedAt := time.Now().UTC()
 	owner, ownerErr := bytesKey(account.GetOwner())
-	if ownerErr != nil || owner != klendProgram {
+	if ownerErr != nil || owner != klend.ProgramID.String() {
 		if err := h.store.RecordMalformed(ctx, reserve, accountUpdate.GetSlot(), observedAt); err != nil {
 			return HandleOutcome{}, err
 		}
@@ -99,7 +98,7 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
 	}
 	decodedAt := time.Now().UTC()
-	snapshot, err := Decode(target, accountUpdate.GetSlot(), observedAt, account.GetData(), slotDurationMS)
+	snapshot, err := Decode(target, accountUpdate.GetSlot(), observedAt, &chain.Account{Key: solana.PublicKeyFromBytes(account.GetPubkey()), Owner: solana.PublicKeyFromBytes(account.GetOwner()), Lamports: account.GetLamports(), Data: account.GetData(), Executable: account.GetExecutable()}, slotDurationMS)
 	if err != nil {
 		if floorErr := h.store.RecordMalformed(ctx, reserve, accountUpdate.GetSlot(), observedAt); floorErr != nil {
 			return HandleOutcome{}, fmt.Errorf("decode reserve: %v; record malformed floor: %w", err, floorErr)
@@ -263,8 +262,8 @@ func (h *Handler) persistConfirmed(ctx context.Context, source string, states []
 		if account != nil {
 			verification.AccountHash = accountHash(account.Data)
 		}
-		if account != nil && account.Owner.String() == klendProgram {
-			snapshot, decodeErr := Decode(target, state.slot, state.observedAt, account.Data, slotDurationMS)
+		if account != nil && account.Owner == klend.ProgramID {
+			snapshot, decodeErr := Decode(target, state.slot, state.observedAt, account, slotDurationMS)
 			if decodeErr == nil {
 				verification.StateValid = true
 				var raw *string

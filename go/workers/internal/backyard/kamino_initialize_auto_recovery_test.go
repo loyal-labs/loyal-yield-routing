@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // autoInitializerRecoveryFixture compiles the candidate AUTO initializer
@@ -59,8 +60,8 @@ func newAutoInitializerRecoveryFixture(t *testing.T) autoInitializerRecoveryFixt
 			pre[i], post[i] = 0, r.RentLamports
 		}
 	}
-	obligation := ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kaminoProgram, Lamports: r.RentLamports, Data: make([]byte, kaminoObligationLength)}
-	copy(obligation.Data, kaminoObligationDiscriminator[:])
+	obligation := ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: r.RentLamports, Data: make([]byte, kamino.ObligationSize)}
+	copy(obligation.Data, kamino.ObligationDiscriminator[:])
 	binary.LittleEndian.PutUint64(obligation.Data[8:16], 1)
 	putKey(t, obligation.Data[32:64], route.Kamino.Market)
 	putKey(t, obligation.Data[64:96], route.Kamino.Vault)

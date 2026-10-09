@@ -1,12 +1,12 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"math"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -145,9 +145,7 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client,
 		}
 	}
 	metadata := accountAt(accounts, encodeBase58(inner.accounts[6].key[:]))
-	if metadata.Owner != kaminoProgram || metadata.Lamports == 0 || metadata.Executable || len(metadata.Data) != 1032 ||
-		!bytes.Equal(metadata.Data[:8], []byte{157, 214, 220, 235, 98, 135, 171, 28}) ||
-		!allZero(metadata.Data[8:40]) || !sameKey(metadata.Data[80:112], bridgeVault) {
+	if decoded, err := kamino.DecodeUserMetadata(kaminoAccount(metadata, metadata.Address)); err != nil || !decoded.Referrer.IsZero() || decoded.Owner != kaminoKey(bridgeVault) {
 		return 0, budgetHold("initializer_metadata_unavailable")
 	}
 	if emergency, err := decodeKaminoMarketEmergency(accountAt(accounts, route.Kamino.Market), route.Kamino); err != nil || emergency {
@@ -174,10 +172,10 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client,
 	}
 	perByte := binary.LittleEndian.Uint64(rent.Data[:8])
 	threshold := math.Float64frombits(binary.LittleEndian.Uint64(rent.Data[8:16]))
-	if perByte == 0 || perByte > math.MaxUint64/(kaminoObligationLength+128) || !finite(threshold) || threshold <= 0 {
+	if perByte == 0 || perByte > math.MaxUint64/(kamino.ObligationSize+128) || !finite(threshold) || threshold <= 0 {
 		return 0, budgetHold("initializer_rent_invalid")
 	}
-	minimum := float64(perByte*(kaminoObligationLength+128)) * threshold
+	minimum := float64(perByte*(kamino.ObligationSize+128)) * threshold
 	if !finite(minimum) || minimum >= float64(math.MaxInt64) || uint64(minimum) != r.RentLamports {
 		return 0, budgetHold("initializer_rent_changed")
 	}

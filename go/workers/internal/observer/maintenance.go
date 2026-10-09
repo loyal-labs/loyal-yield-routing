@@ -1,10 +1,7 @@
 package observer
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	workersdb "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -463,8 +461,6 @@ ON CONFLICT(cluster) DO UPDATE SET payload=excluded.payload,source_watermark=exc
 
 const benchmarkMarket = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 
-var priceProgram = solana.MustPublicKeyFromBase58("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD")
-
 // ReservePriceRPC is the observer's read-only capability, not a sender.
 type ReservePriceRPC interface {
 	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
@@ -473,41 +469,24 @@ type ReservePriceRPC interface {
 
 func reservePrice(reserve string, account *chain.Account, contextSlot uint64) (SharePrice, error) {
 	var result SharePrice
-	disc := sha256.Sum256([]byte("account:Reserve"))
-	if account == nil || account.Owner != priceProgram || account.Executable || len(account.Data) != 8624 || !bytes.Equal(account.Data[:8], disc[:8]) {
+	decoded, err := kamino.DecodeReserve(account)
+	if err != nil {
 		return result, errors.New("reserve owner/layout invalid")
 	}
-	data := account.Data
-	update := binary.LittleEndian.Uint64(data[16:24])
-	if update == 0 || update > contextSlot || update > math.MaxInt64 || data[24] != 0 {
+	update := decoded.LastUpdateSlot
+	if update == 0 || update > contextSlot || update > math.MaxInt64 || decoded.LastUpdateStale {
 		return result, errors.New("reserve update slot/staleness invalid")
 	}
-	market := solana.PublicKeyFromBytes(data[32:64]).String()
-	mint := solana.PublicKeyFromBytes(data[128:160]).String()
+	market, mint := decoded.LendingMarket.String(), decoded.LiquidityMint.String()
 	if !supportedMint(mint) {
 		return result, errors.New("unsupported price mint")
 	}
-	little := func(raw []byte) *big.Int {
-		reversed := make([]byte, len(raw))
-		for i, b := range raw {
-			reversed[len(raw)-1-i] = b
-		}
-		return new(big.Int).SetBytes(reversed)
-	}
-	scale := new(big.Int).Lsh(big.NewInt(1), 60)
-	total := new(big.Int).Mul(new(big.Int).SetUint64(binary.LittleEndian.Uint64(data[224:232])), scale)
-	total.Add(total, little(data[232:248]))
-	for _, offset := range []int{344, 360, 376} {
-		total.Sub(total, little(data[offset:offset+16]))
-	}
-	collateral := binary.LittleEndian.Uint64(data[2592:2600])
-	if collateral == 0 || total.Sign() <= 0 {
+	const probe = 1_000_000_000_000
+	redeem, err := decoded.CollateralToLiquidity(probe)
+	if err != nil {
 		return result, errors.New("reserve has no proven exchange supply")
 	}
-	probe := big.NewInt(1_000_000_000_000)
-	redeem := new(big.Int).Mul(probe, total)
-	redeem.Quo(redeem, new(big.Int).Mul(new(big.Int).SetUint64(collateral), scale))
-	price, _ := new(big.Rat).SetFrac(redeem, probe).Float64()
+	price, _ := new(big.Rat).SetFrac(new(big.Int).SetUint64(redeem), big.NewInt(probe)).Float64()
 	if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
 		return result, errors.New("reserve exchange price invalid")
 	}

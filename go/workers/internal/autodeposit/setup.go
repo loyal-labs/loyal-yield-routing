@@ -1,17 +1,15 @@
 package autodeposit
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
@@ -63,19 +61,6 @@ func NewSweepWireBuilderWithSetup(key ed25519.PrivateKey, read AccountReader, re
 	b.rent = rent
 	return b, nil
 }
-func metadataKey(vault string) (string, error) {
-	key, err := solana.PublicKeyFromBase58(vault)
-	if err != nil {
-		return "", err
-	}
-	pda, err := findProgramAddress([][]byte{[]byte("user_meta"), key[:]}, KLendProgramID)
-	return base58Key(pda[:]), err
-}
-func accountDiscriminator(name string) []byte {
-	h := sha256.Sum256([]byte("account:" + name))
-	return h[:8]
-}
-
 func validateDestinationSetupPlan(plan DepositPlan, setup DestinationSetupPlan) error {
 	if err := validatePlanPublicKeys(plan); err != nil {
 		return err
@@ -84,11 +69,11 @@ func validateDestinationSetupPlan(plan DepositPlan, setup DestinationSetupPlan) 
 		return errors.New("setup observation/rent bound invalid")
 	}
 	vault := mustKey(plan.Target.VaultPubkey)
-	market := mustKey(plan.Market)
-	obligation, err := vanillaObligationKey(vault, market)
+	obligationKey, err := kamino.VanillaObligation(vault, mustKey(plan.Market))
 	if err != nil {
 		return err
 	}
+	obligation := obligationKey.String()
 	if setup.Route.Obligation != obligation || setup.Route.Position.Obligation != obligation || setup.Route.Position.Reserve != plan.Reserve || setup.Route.Position.Market != plan.Market || setup.Route.Position.LiquidityMint != plan.LiquidityMint || setup.Route.Position.LiquidityTokenProgram != splTokenID || setup.Route.Position.VaultLiquidityATA != plan.Target.VaultUsdcAta {
 		return errors.New("setup route differs from frozen deposit identity")
 	}
@@ -99,7 +84,9 @@ func validateDestinationSetupPlan(plan DepositPlan, setup DestinationSetupPlan) 
 		ata, err = spl.AssociatedTokenAddress(vault, mustKey(USDCMint), solana.TokenProgramID)
 		account = ata.String()
 	case SetupMetadata:
-		account, err = metadataKey(plan.Target.VaultPubkey)
+		var metadata solana.PublicKey
+		metadata, err = kamino.UserMetadataAddress(vault)
+		account = metadata.String()
 	case SetupObligation:
 		account = obligation
 	case SetupFarm:
@@ -107,12 +94,11 @@ func validateDestinationSetupPlan(plan DepositPlan, setup DestinationSetupPlan) 
 		if keyErr != nil {
 			return keyErr
 		}
-		obl := mustKey(obligation)
-		pda, keyErr := findProgramAddress([][]byte{[]byte("user"), farm[:], obl[:]}, farmsProgramID)
+		user, keyErr := kamino.ObligationFarmUserState(farm, obligationKey)
 		if keyErr != nil {
 			return keyErr
 		}
-		account = base58Key(pda[:])
+		account = user.String()
 		if setup.Route.Position.ObligationFarmUserState != account {
 			return errors.New("setup farm derivation differs")
 		}
@@ -139,15 +125,15 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 		return nil, err
 	}
 	vault := mustKey(plan.Target.VaultPubkey)
-	market := mustKey(plan.Market)
-	obligation, err := vanillaObligationKey(vault, market)
+	obligationKey, err := kamino.VanillaObligation(vault, mustKey(plan.Market))
 	if err != nil {
 		return nil, err
 	}
-	metadata, err := metadataKey(plan.Target.VaultPubkey)
+	metadataKey, err := kamino.UserMetadataAddress(vault)
 	if err != nil {
 		return nil, err
 	}
+	obligation, metadata := obligationKey.String(), metadataKey.String()
 	vaultATA, err := spl.AssociatedTokenAddress(vault, mustKey(USDCMint), solana.TokenProgramID)
 	ata := vaultATA.String()
 	if err != nil || ata != plan.Target.VaultUsdcAta {
@@ -165,25 +151,12 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	for i, a := range accounts {
 		by[addresses[i]] = a
 	}
-	reserve := by[plan.Reserve]
-	if reserve.Owner.String() != KLendProgramID || reserve.Executable || len(reserve.Data) != reserveDataLength || hex.EncodeToString(reserve.Data[:8]) != reserveDiscriminator {
+	route, err := reserveRoute(by[plan.Reserve], plan.Target.VaultPubkey)
+	if err != nil {
 		return nil, errors.New("setup reserve evidence invalid")
 	}
-	route := decodeReservePosition(plan.Reserve, reserve.Data)
-	if route.Position.Market != plan.Market || route.Position.LiquidityMint != USDCMint || route.Position.LiquidityTokenProgram != splTokenID || by[plan.Market].Owner.String() != KLendProgramID || by[plan.Market].Executable {
+	if route.Position.Market != plan.Market || route.Position.LiquidityMint != USDCMint || route.Position.LiquidityTokenProgram != splTokenID || by[plan.Market].Owner != kamino.ProgramID || by[plan.Market].Executable {
 		return nil, errors.New("setup reserve/market/token identity changed")
-	}
-	route.Obligation = obligation
-	route.Position.Obligation = obligation
-	route.Position.VaultLiquidityATA = ata
-	if farm := route.Position.ReserveFarmState; farm != "" {
-		farmKey := mustKey(farm)
-		obl := mustKey(obligation)
-		user, err := findProgramAddress([][]byte{[]byte("user"), farmKey[:], obl[:]}, farmsProgramID)
-		if err != nil {
-			return nil, err
-		}
-		route.Position.ObligationFarmUserState = base58Key(user[:])
 	}
 	stage := SetupStage("")
 	account := ""
@@ -232,9 +205,9 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 		if b.rent == nil {
 			return nil, errors.New("setup requires rent reader before signing")
 		}
-		size := obligationDataLength
+		size := kamino.ObligationSize
 		if stage == SetupMetadata {
-			size = 1032
+			size = kamino.UserMetadataSize
 		}
 		rent, err := b.rent(ctx, size)
 		if err != nil {
@@ -292,29 +265,25 @@ func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a *chain
 			return err
 		}
 	case SetupMetadata:
-		if a.Owner.String() != KLendProgramID || len(a.Data) != 1032 || !bytes.Equal(a.Data[:8], accountDiscriminator("UserMetadata")) || base58Key(a.Data[80:112]) != plan.Target.VaultPubkey {
+		if metadata, err := kamino.DecodeUserMetadata(a); err != nil || metadata.Owner.String() != plan.Target.VaultPubkey {
 			return errors.New("setup metadata identity invalid")
 		}
 	case SetupObligation:
-		if a.Owner.String() != KLendProgramID || len(a.Data) != obligationDataLength || !bytes.Equal(a.Data[:8], obligationDiscriminator[:]) || base58Key(a.Data[32:64]) != plan.Market || base58Key(a.Data[64:96]) != plan.Target.VaultPubkey {
+		obligation, err := kamino.DecodeObligation(a)
+		if err != nil || obligation.LendingMarket.String() != plan.Market || obligation.Owner.String() != plan.Target.VaultPubkey {
 			return errors.New("setup obligation identity invalid")
 		}
-		for i := 0; i < obligationDepositCount; i++ {
-			offset := obligationDepositsOffset + i*obligationDepositStride
-			reserve := base58Key(a.Data[offset : offset+32])
-			if reserve != systemProgramZero && reserve != plan.Reserve {
+		for _, reserve := range obligation.DepositReserves() {
+			if reserve.String() != plan.Reserve {
 				return errors.New("setup obligation contains foreign deposit")
 			}
 		}
-		for i := 0; i < obligationBorrowCount; i++ {
-			offset := obligationBorrowsOffset + i*obligationBorrowStride
-			if base58Key(a.Data[offset:offset+32]) != systemProgramZero {
-				return errors.New("setup obligation contains borrow")
-			}
+		if len(obligation.BorrowReserves()) != 0 {
+			return errors.New("setup obligation contains borrow")
 		}
 	case SetupFarm:
-		// Pinned Farms Codama UserState layout: farm16, owner48, delegatee480.
-		if a.Owner.String() != farmsProgramID || len(a.Data) != 920 || !bytes.Equal(a.Data[:8], []byte{72, 177, 85, 249, 76, 167, 186, 126}) || base58Key(a.Data[16:48]) != setup.Route.Position.ReserveFarmState || base58Key(a.Data[48:80]) != plan.Target.VaultPubkey || a.Data[80] != 1 || base58Key(a.Data[480:512]) != setup.Route.Obligation {
+		farm, err := kamino.DecodeFarmUserState(a)
+		if err != nil || farm.FarmState.String() != setup.Route.Position.ReserveFarmState || farm.Owner.String() != plan.Target.VaultPubkey || !farm.IsFarmDelegated || farm.Delegatee.String() != setup.Route.Obligation {
 			return errors.New("setup farm identity invalid")
 		}
 	default:
