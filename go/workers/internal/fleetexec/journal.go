@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -339,7 +340,11 @@ RETURNING confirmation_lease_expires_at`,
 			return err
 		}
 		lease.ExpiresAt = deadline
-		return renewConflictSet(ctx, tx, []SubmissionLease{lease})
+		_, dropped, err := renewConflictSet(ctx, tx, []SubmissionLease{lease})
+		if err == nil && len(dropped) != 0 {
+			err = fmt.Errorf("%w: retained conflict set differs from signed submission", ErrConflictLeaseHeld)
+		}
+		return err
 	})
 	return deadline, err
 }
@@ -381,6 +386,8 @@ type SubmissionRecord struct {
 	ExpectedEffect            json.RawMessage
 	ExpectedBalanceAnchors    json.RawMessage
 	ConflictAccountKeys       []string
+	// AttemptCount is confirmation_attempt_count after this claim.
+	AttemptCount int
 }
 
 // ClaimRecoveryWork claims up to limit same-mint submissions the family owns.
@@ -433,7 +440,7 @@ RETURNING submission.id, submission.cluster, submission.semantic_key,
     submission.submitted_slot, submission.confirmed_slot, submission.effect_check_slot,
     submission.expiry_observed_block_height, submission.expected_effect,
     submission.expected_balance_anchors, submission.conflict_account_keys, submission.confirmation_fencing_token,
-    submission.confirmation_lease_expires_at`, cluster, limit, owner, formatInterval(ttl))
+    submission.confirmation_lease_expires_at, submission.confirmation_attempt_count`, cluster, limit, owner, formatInterval(ttl))
 		if err != nil {
 			return err
 		}
@@ -449,7 +456,10 @@ RETURNING submission.id, submission.cluster, submission.semantic_key,
 			return err
 		}
 		rows.Close()
-		return renewConflictSet(ctx, tx, leases)
+		var dropped []SubmissionLease
+		leases, dropped, err = renewConflictSet(ctx, tx, leases)
+		logDroppedConflictSets(dropped)
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -468,7 +478,8 @@ func scanSubmissionLease(rows rowScanner, owner string) (SubmissionLease, error)
 		&record.LastValidBlockHeight, &record.FeePayer, &record.MovementLeg, &record.LegPurpose,
 		&record.LegGeneration, &record.SignedTransaction, &record.State, &record.BroadcastCount, &record.SubmittedSlot,
 		&record.ConfirmedSlot, &record.EffectCheckSlot, &record.ExpiryObservedBlockHeight,
-		&record.ExpectedEffect, &record.ExpectedBalanceAnchors, &record.ConflictAccountKeys, &lease.FencingToken, &lease.ExpiresAt)
+		&record.ExpectedEffect, &record.ExpectedBalanceAnchors, &record.ConflictAccountKeys, &lease.FencingToken, &lease.ExpiresAt,
+		&record.AttemptCount)
 	return lease, err
 }
 
@@ -515,6 +526,35 @@ WHERE id=$1
 		lease.Submission.ID, lease.Owner, string(advance.NextState),
 		advance.ConfirmedSlot, advance.ExpiryObservedBlockHeight,
 		advance.ErrorDetail, lease.FencingToken, string(lease.Submission.State))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrStaleOwner
+	}
+	return nil
+}
+
+// DeferSubmission is Rust's SignedRouteSubmissionAdvance::Deferred: the state
+// and its custody stay, the reason is recorded, the lease is released and the
+// next claim waits until delay has passed.
+func (s *Store) DeferSubmission(ctx context.Context, lease SubmissionLease, delay time.Duration, detail string) error {
+	if delay < 0 || strings.TrimSpace(detail) == "" || len(detail) > 512 {
+		return errors.New("submission deferral requires a nonnegative delay and bounded error")
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions
+SET confirmation_available_at=clock_timestamp()+$4::interval,
+    confirmation_lease_owner=NULL,
+    confirmation_lease_expires_at=NULL,
+    last_status_checked_at=clock_timestamp(),
+    error_detail=$5,
+    updated_at=clock_timestamp()
+WHERE id=$1
+  AND submission_state IN ('signed','submitted','reconciliation_pending','expiry_check_pending','effect_ambiguous')
+  AND confirmation_lease_owner=$2
+  AND confirmation_fencing_token=$3
+  AND confirmation_lease_expires_at>clock_timestamp()`,
+		lease.Submission.ID, lease.Owner, lease.FencingToken, formatInterval(delay), detail)
 	if err != nil {
 		return err
 	}
@@ -581,37 +621,75 @@ func formatInterval(d time.Duration) string {
 }
 
 // Confirmation ownership retains the same account-conflict rows as Rust.
-// A missing/replaced retained row aborts the entire claim, not just renewal.
-func renewConflictSet(ctx context.Context, tx pgx.Tx, leases []SubmissionLease) error {
+// Rust's claim only selected a submission whose retained set still matched,
+// so one submission with a missing or replaced row never blocked the others.
+// That submission is returned in dropped: it stays leased to this owner, is not
+// worked, and is claimed again once its lease lapses.
+func renewConflictSet(ctx context.Context, tx pgx.Tx, leases []SubmissionLease) (kept, dropped []SubmissionLease, err error) {
 	if len(leases) == 0 {
-		return nil
+		return leases, nil, nil
 	}
 	ids := make([]int64, 0, len(leases))
-	expected := int64(0)
 	deadline := leases[0].ExpiresAt
 	for _, lease := range leases {
 		ids = append(ids, lease.Submission.ID)
 		if lease.ExpiresAt.After(deadline) {
 			deadline = lease.ExpiresAt
 		}
-		for _, key := range lease.Submission.ConflictAccountKeys {
-			released := (lease.Submission.State == StateReconciliationPending || lease.Submission.State == StateEffectAmbiguous) && (strings.HasPrefix(key, "fleet-shared-write-lane:") || lease.Submission.State == StateReconciliationPending && strings.HasPrefix(key, "policy-setup-funding:"))
-			if !released {
-				expected++
-			}
-		}
 	}
-	command, err := tx.Exec(ctx, `WITH locked AS (
+	rows, err := tx.Query(ctx, `WITH locked AS (
  SELECT cluster,writable_account_key FROM loyal_yield.route_account_conflict_leases
  WHERE submission_id=ANY($1::bigint[]) ORDER BY cluster,writable_account_key FOR UPDATE
  ) UPDATE loyal_yield.route_account_conflict_leases c
  SET expires_at=GREATEST(c.expires_at,$2::timestamptz+interval '2 minutes'),updated_at=clock_timestamp()
- FROM locked WHERE c.cluster=locked.cluster AND c.writable_account_key=locked.writable_account_key`, ids, deadline)
+ FROM locked WHERE c.cluster=locked.cluster AND c.writable_account_key=locked.writable_account_key
+ RETURNING c.submission_id`, ids, deadline)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	if command.RowsAffected() != expected {
-		return fmt.Errorf("%w: retained conflict set differs from signed submission", ErrConflictLeaseHeld)
+	renewed := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		renewed[id]++
 	}
-	return nil
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, nil, err
+	}
+	kept = make([]SubmissionLease, 0, len(leases))
+	for _, lease := range leases {
+		if renewed[lease.Submission.ID] != retainedConflictCount(lease.Submission) {
+			dropped = append(dropped, lease)
+			continue
+		}
+		kept = append(kept, lease)
+	}
+	return kept, dropped, nil
+}
+
+// retainedConflictCount is the number of conflict rows a submission still
+// holds in its state: confirmation releases the shared write lane (and the
+// setup-funding lane once reconciliation is pending).
+func retainedConflictCount(record SubmissionRecord) int {
+	n := 0
+	for _, key := range record.ConflictAccountKeys {
+		released := (record.State == StateReconciliationPending || record.State == StateEffectAmbiguous) && (strings.HasPrefix(key, "fleet-shared-write-lane:") || record.State == StateReconciliationPending && strings.HasPrefix(key, "policy-setup-funding:"))
+		if !released {
+			n++
+		}
+	}
+	return n
+}
+
+// logDroppedConflictSets names each claimed submission whose retained
+// conflict set no longer matches its signed wire; it needs an operator.
+func logDroppedConflictSets(dropped []SubmissionLease) {
+	for _, lease := range dropped {
+		slog.Error("fleetexec retained conflict set differs from signed submission; left leased", "submissionId", lease.Submission.ID, "state", lease.Submission.State)
+	}
 }

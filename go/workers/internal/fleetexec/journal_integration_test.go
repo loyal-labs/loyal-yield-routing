@@ -635,8 +635,8 @@ func TestReceiptMismatchRetainsCustody(t *testing.T) {
 		t.Fatal(err)
 	}
 	lease := claimOne(t, ctx, store, baseline.Cluster, "owner-reconcile")
-	if err := worker.reconcileFinalized(ctx, lease); err != nil {
-		t.Fatal(err)
+	if err := worker.reconcileFinalized(ctx, lease); err == nil || !strings.HasPrefix(err.Error(), "receipt identity") {
+		t.Fatalf("receipt mismatch must fail reconciliation, got %v", err)
 	}
 	state, _, _, _, _ := durableRow(t, ctx, pool, id)
 	if state != string(StateReconciliationPending) {

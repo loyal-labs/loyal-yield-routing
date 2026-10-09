@@ -267,12 +267,15 @@ func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmi
 	return submissionID, err
 }
 
-// Lock the same parent identities as fresh admission, then compare the exact
-// normalized member vector used by compilation. Mutators serialize on these
-// rows; a binding identity cannot be adopted from an unlocked EXISTS result.
+// Lock the same parent identities as fresh admission, in the lookup writers'
+// family, binding, table order, then compare the exact normalized member
+// vector used by compilation. Mutators serialize on these rows; a binding
+// identity cannot be adopted from an unlocked EXISTS result.
 func lockAdmissionALTs(ctx context.Context, tx pgx.Tx, a fleet.ExecutionAdmission) error {
-	tables := append([]fleet.ExecutionALT(nil), a.SelectedALTs...)
-	sort.Slice(tables, func(i, j int) bool { return tables[i].TableID < tables[j].TableID })
+	tables, err := fleet.LockExecutionALTParents(ctx, tx, a.SelectedALTs)
+	if err != nil {
+		return err
+	}
 	for _, table := range tables {
 		var kind string
 		err := tx.QueryRow(ctx, `SELECT f.kind FROM loyal_yield.route_lookup_tables t JOIN loyal_yield.lookup_table_families f ON f.id=t.family_id
@@ -281,7 +284,7 @@ func lockAdmissionALTs(ctx context.Context, tx pgx.Tx, a fleet.ExecutionAdmissio
     AND f.cluster=t.cluster AND f.desired_state='active' AND f.active_generation=t.generation
     AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations op WHERE op.route_lookup_table_id=t.id AND op.operation_kind IN ('create','extend','rollover','deactivate','close')
      AND (op.operation_state IN ('signed','submitted','confirmed','finalized','reconciled','needs_reconcile') OR op.operation_state IN ('leased','retry_wait') AND op.transaction_signature IS NOT NULL))
-   FOR SHARE OF t,f`, table.TableID, table.Address, a.Lease.Cluster, table.MutationEpoch, table.FamilyID, table.Generation).Scan(&kind)
+   FOR SHARE OF t`, table.TableID, table.Address, a.Lease.Cluster, table.MutationEpoch, table.FamilyID, table.Generation).Scan(&kind)
 		if err != nil {
 			return fmt.Errorf("selected ALT changed before signed publication: %w", err)
 		}
@@ -290,8 +293,11 @@ func lockAdmissionALTs(ctx context.Context, tx pgx.Tx, a fleet.ExecutionAdmissio
 				return errors.New("vault ALT lacks binding identity")
 			}
 			var valid bool
-			err = tx.QueryRow(ctx, `SELECT route_lookup_table_id=$2 AND vault_id=$3 AND lifecycle_state='active' FROM loyal_yield.lookup_table_vault_bindings WHERE id=$1 FOR SHARE`, *table.BindingID, table.TableID, a.Lease.VaultID).Scan(&valid)
-			if err != nil || !valid {
+			err = tx.QueryRow(ctx, `SELECT route_lookup_table_id=$2 AND vault_id=$3 AND lifecycle_state='active' FROM loyal_yield.lookup_table_vault_bindings WHERE id=$1`, *table.BindingID, table.TableID, a.Lease.VaultID).Scan(&valid)
+			if err != nil {
+				return fmt.Errorf("vault ALT binding before publication: %w", err)
+			}
+			if !valid {
 				return errors.New("vault ALT binding changed before publication")
 			}
 		} else if kind != "shared_market" || table.BindingID != nil {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -54,12 +55,15 @@ type ExecutionBalanceAnchors struct {
 type executionAdmissionStore interface {
 	CommitExecutionAdmission(context.Context, RevalidationLease, RevalidationCommit, *ExecutionAdmission) error
 	RecoverUnsignedExecutionAdmissions(context.Context, string, int) (int64, error)
+	DeferRevalidation(context.Context, RevalidationLease, string) (bool, error)
 }
 
 // PrepareExecution shares the actual policy, official builder, fee, simulation
 // and ALT preparation with revalidation. A waiting ALT request is durable work,
 // but yields no signable admission. Cross-mint legs use their separate custody
-// protocol and cannot be passed through this same-mint API.
+// protocol and cannot be passed through this same-mint API. A claimed
+// opportunity that cannot be admitted is recorded on its own row, as Rust's
+// revalidate-lane Retry, and is not an error of the caller's tick.
 func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*ExecutionAdmission, bool, error) {
 	store, ok := r.store.(executionAdmissionStore)
 	if !ok || !r.fusedExecute {
@@ -72,19 +76,33 @@ func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*Ex
 	if err != nil || lease == nil {
 		return nil, false, err
 	}
+	admission, err := r.prepareExecution(ctx, store, cluster, *lease)
+	if err == nil {
+		return admission, true, nil
+	}
+	reason := LogErrorText(err)
+	deferred, deferErr := store.DeferRevalidation(ctx, *lease, reason)
+	if deferErr != nil {
+		return nil, true, fmt.Errorf("defer opportunity %d after %s: %w", lease.OpportunityID, reason, deferErr)
+	}
+	logEvent(map[string]any{"event": "fleet_opportunity_deferred", "opportunityId": lease.OpportunityID, "vaultId": lease.VaultID, "targetReserve": lease.TargetReserve, "deferred": deferred, "reason": reason})
+	return nil, true, nil
+}
+
+func (r *Revalidator) prepareExecution(ctx context.Context, store executionAdmissionStore, cluster string, lease RevalidationLease) (*ExecutionAdmission, error) {
 	ctx, cancel := context.WithDeadline(ctx, lease.ExpiresAt.Add(-5*time.Second))
 	defer cancel()
 	if lease.RouteKind != "same_mint" || !contains(lease.DelegatedSigners, r.signer) {
-		return nil, true, errors.New("same-mint execution policy identity changed")
+		return nil, errors.New("same-mint execution policy identity changed")
 	}
-	prepared, _, err := r.prepareSameMint(ctx, cluster, *lease, func(e FreshRouteEvidence) error {
+	prepared, _, err := r.prepareSameMint(ctx, cluster, lease, func(e FreshRouteEvidence) error {
 		if err := r.store.RefreshTargetCapacity(ctx, cluster, lease.TargetReserve, lease.LiquidityMint, e.TargetObservedSupplyUSDMicros, e.Slot); err != nil {
 			return err
 		}
-		return r.store.CheckRevalidationLease(ctx, *lease)
+		return r.store.CheckRevalidationLease(ctx, lease)
 	})
 	if err != nil {
-		return nil, true, err
+		return nil, err
 	}
 	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: &prepared.Preparation,
 		ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey,
@@ -93,12 +111,12 @@ func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*Ex
 		TargetObservedSupplyUSDMicros: prepared.Evidence.TargetObservedSupplyUSDMicros, TargetObservedSlot: prepared.Evidence.Slot}
 	if prepared.WaitingALT {
 		commit.Disposition, commit.MissingAddresses = "waiting_alt", prepared.Missing
-		return nil, true, r.store.CommitRevalidation(ctx, *lease, commit)
+		return nil, r.store.CommitRevalidation(ctx, lease, commit)
 	}
 	// These are the retained Rust semantic lanes, distinct from the physical
 	// writable vector (which includes the shared fee payer and reserve accounts).
 	commit.ConflictKeys = canonicalStrings([]string{"vault-write:" + lease.VaultPubkey, fmt.Sprintf("fleet-shared-write-lane:%02d", lease.VaultID%64)})
-	admission := &ExecutionAdmission{Lease: *lease, Preparation: prepared.Preparation,
+	admission := &ExecutionAdmission{Lease: lease, Preparation: prepared.Preparation,
 		LastValidBlockHeight: prepared.LastValidBlockHeight, ConflictKeys: append([]string(nil), commit.ConflictKeys...),
 		Evidence: prepared.Evidence, Anchors: prepared.Evidence.Anchors,
 		FeePayer: prepared.FeePayer}
@@ -112,13 +130,13 @@ func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*Ex
 			}
 		}
 		if !found {
-			return nil, true, errors.New("compiled ALT has no verified database identity")
+			return nil, errors.New("compiled ALT has no verified database identity")
 		}
 	}
-	if err := store.CommitExecutionAdmission(ctx, *lease, commit, admission); err != nil {
-		return nil, true, err
+	if err := store.CommitExecutionAdmission(ctx, lease, commit, admission); err != nil {
+		return nil, err
 	}
-	return admission, true, nil
+	return admission, nil
 }
 
 func (s *Store) CommitExecutionAdmission(ctx context.Context, lease RevalidationLease, commit RevalidationCommit, admission *ExecutionAdmission) error {
@@ -163,6 +181,12 @@ func lockExecutionALTs(ctx context.Context, tx pgx.Tx, lease RevalidationLease, 
 			return errors.New("invalid or duplicate selected ALT identity")
 		}
 		seen[expected.TableID] = true
+	}
+	tables, err := LockExecutionALTParents(ctx, tx, admission.SelectedALTs)
+	if err != nil {
+		return err
+	}
+	for _, expected := range tables {
 		var address, kind string
 		var familyID, generation, epoch int64
 		var active bool
@@ -174,7 +198,7 @@ func lockExecutionALTs(ctx context.Context, tx pgx.Tx, lease RevalidationLease, 
  AND (mutation.operation_state IN ('signed','submitted','confirmed','finalized','reconciled','needs_reconcile')
  OR (mutation.operation_state IN ('leased','retry_wait') AND mutation.transaction_signature IS NOT NULL)))
  FROM loyal_yield.route_lookup_tables t JOIN loyal_yield.lookup_table_families f ON f.id=t.family_id
- WHERE t.id=$1 FOR SHARE OF t,f`, expected.TableID, lease.Cluster).Scan(&address, &familyID, &generation, &epoch, &kind, &active)
+ WHERE t.id=$1 FOR SHARE OF t`, expected.TableID, lease.Cluster).Scan(&address, &familyID, &generation, &epoch, &kind, &active)
 		if err != nil {
 			return fmt.Errorf("lock selected ALT: %w", err)
 		}
@@ -187,7 +211,10 @@ func lockExecutionALTs(ctx context.Context, tx pgx.Tx, lease RevalidationLease, 
 			}
 			var bindingActive bool
 			if err := tx.QueryRow(ctx, `SELECT route_lookup_table_id=$2 AND vault_id=$3 AND lifecycle_state='active'
- FROM loyal_yield.lookup_table_vault_bindings WHERE id=$1 FOR SHARE`, *expected.BindingID, expected.TableID, lease.VaultID).Scan(&bindingActive); err != nil || !bindingActive {
+ FROM loyal_yield.lookup_table_vault_bindings WHERE id=$1`, *expected.BindingID, expected.TableID, lease.VaultID).Scan(&bindingActive); err != nil {
+				return fmt.Errorf("selected ALT vault binding: %w", err)
+			}
+			if !bindingActive {
 				return errors.New("selected ALT vault binding changed")
 			}
 		} else if kind != "shared_market" || expected.BindingID != nil {
@@ -212,4 +239,29 @@ func lockExecutionALTs(ctx context.Context, tx pgx.Tx, lease RevalidationLease, 
 	hash := sha256.Sum256(bytes.Clone(raw))
 	admission.AltSelectionFingerprint = hex.EncodeToString(hash[:])
 	return nil
+}
+
+// LockExecutionALTParents share-locks the selected tables' families, then
+// their vault bindings, each in id order, and returns the tables in id order
+// for the caller to lock next. Lookup writers lock family, binding, then table
+// (lookupLockSource, ActivateLookupCatalog, ActivateLookupBinding); taking a
+// table before its family let a catalog writer holding the family FOR UPDATE
+// deadlock against admission ("lock selected ALT: deadlock detected").
+func LockExecutionALTParents(ctx context.Context, tx pgx.Tx, selected []ExecutionALT) ([]ExecutionALT, error) {
+	tables := append([]ExecutionALT(nil), selected...)
+	sort.Slice(tables, func(i, j int) bool { return tables[i].TableID < tables[j].TableID })
+	families, bindings := []int64{}, []int64{}
+	for _, table := range tables {
+		families = append(families, table.FamilyID)
+		if table.BindingID != nil {
+			bindings = append(bindings, *table.BindingID)
+		}
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM loyal_yield.lookup_table_families WHERE id=ANY($1::bigint[]) ORDER BY id FOR SHARE`, families); err != nil {
+		return nil, fmt.Errorf("lock selected ALT families: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM loyal_yield.lookup_table_vault_bindings WHERE id=ANY($1::bigint[]) ORDER BY id FOR SHARE`, bindings); err != nil {
+		return nil, fmt.Errorf("lock selected ALT bindings: %w", err)
+	}
+	return tables, nil
 }

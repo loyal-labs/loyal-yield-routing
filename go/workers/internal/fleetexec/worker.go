@@ -34,6 +34,9 @@ type Config struct {
 	// TickInterval spaces recovery sweeps.
 	TickInterval time.Duration
 	Facts        *engine.Facts
+	// OnHealth receives every executor tick's result and must not block; nil
+	// is a tick that completed. Unset, failed ticks are only logged.
+	OnHealth func(error)
 }
 
 func (c Config) validate() error {
@@ -65,6 +68,7 @@ type Worker struct {
 	// BatchSize run at once. Run joins them before returning.
 	landing atomic.Int64
 	wg      sync.WaitGroup
+	stalls  stallLatch
 }
 
 // NewWorker composes the executor from its concrete dependencies.
@@ -111,7 +115,15 @@ func (w *Worker) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	for {
 		err := w.Tick(ctx)
-		if err != nil && !errors.Is(err, context.Canceled) {
+		switch {
+		case ctx.Err() != nil:
+		case w.config.OnHealth != nil && err == nil:
+			w.config.OnHealth(nil)
+		case w.config.OnHealth != nil:
+			// Only redacted text leaves the executor: RPC errors can carry
+			// the credential-bearing URL.
+			w.config.OnHealth(fmt.Errorf("fleetexec tick: %s", fleet.LogErrorText(err)))
+		case err != nil:
 			slog.Error("fleetexec tick failed", "error", fleet.LogErrorText(err))
 		}
 		select {
@@ -125,11 +137,18 @@ func (w *Worker) Run(ctx context.Context) error {
 // Tick claims rows up to the free landing capacity and lands or reconciles
 // each in its own goroutine, then publishes one fresh signed route. The next
 // tick's claim lands that route. A fresh route never waits behind a landing.
-// Inflight counts every fleet leg, cross-mint included.
-func (w *Worker) Tick(ctx context.Context) error {
+// Inflight counts every fleet leg, cross-mint included. One submission's or
+// one opportunity's outcome is recorded on its own row and never fails the
+// tick; a tick that completed is fleet progress.
+func (w *Worker) Tick(ctx context.Context) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	defer func() {
+		if err == nil {
+			w.config.Facts.Progress(engine.FamilyFleet)
+		}
+	}()
 	if free := w.config.BatchSize - int(w.landing.Load()); free > 0 {
 		leases, err := w.store.ClaimRecoveryWork(ctx, w.config.Cluster, w.config.Owner, w.config.LeaseTTL, free)
 		if err != nil {
@@ -154,7 +173,6 @@ func (w *Worker) Tick(ctx context.Context) error {
 		return err
 	}
 	w.config.Facts.Inflight(engine.FamilyFleet, inflight)
-	w.config.Facts.Progress(engine.FamilyFleet)
 	if err := w.executeVoltr(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("fleetexec voltr admission failed", "error", fleet.LogErrorText(err))
 	}
@@ -199,7 +217,11 @@ func (w *Worker) handleLease(ctx context.Context, lease SubmissionLease) error {
 		}
 		return w.store.ConfirmSameMint(leaseCtx, lease, *lease.Submission.ConfirmedSlot)
 	case StateReconciliationPending:
-		return w.reconcileFinalized(leaseCtx, lease)
+		err := w.reconcileFinalized(leaseCtx, lease)
+		if err == nil || errors.Is(err, ErrStaleOwner) || ctx.Err() != nil {
+			return err
+		}
+		return w.deferReconciliation(ctx, lease, err)
 	}
 	return fmt.Errorf("%w: %s", ErrNotClaimable, lease.Submission.State)
 }
@@ -271,12 +293,71 @@ func (w *Worker) reconcileFinalized(ctx context.Context, lease SubmissionLease) 
 		return nil // Finality not reached; the durable backoff continues.
 	}
 	if err := VerifyReceiptIdentity(receipt, record, *record.ConfirmedSlot); err != nil {
-		return w.store.AdvanceSubmission(ctx, lease, Advance{NextState: StateReconciliationPending, ErrorDetail: errPtr("receipt identity: " + err.Error())})
+		return fmt.Errorf("receipt identity: %w", err)
 	}
 	if w.recovery == nil {
 		return errors.New("same-mint chain observer is required; reservation retained")
 	}
 	return w.recovery.reconcile(ctx, lease, receipt)
+}
+
+// Rust's reconciliation schedule (fleet_orchestration/reconciliation.rs):
+// twelve attempts at one second, then doubling to a one-minute cap. Attempt
+// sixty is about ten minutes of failure at the cap.
+const (
+	reconciliationFastRetryAttempts = 12
+	reconciliationMinRetry          = time.Second
+	reconciliationMaxRetry          = time.Minute
+	reconciliationStallAttempts     = 60
+	maxLatchedReconciliationStalls  = 1024
+)
+
+// reconciliationRetryDelay is reconciliation_retry_delay_seconds. A confirmed
+// money movement is never abandoned, so the schedule, not a cap, keeps a
+// permanently failing reconciliation from polling chain state every second.
+func reconciliationRetryDelay(attempts int) time.Duration {
+	over := attempts - reconciliationFastRetryAttempts
+	if over <= 0 {
+		return reconciliationMinRetry
+	}
+	return min(reconciliationMinRetry<<min(over, 16), reconciliationMaxRetry)
+}
+
+// deferReconciliation is Rust's deferred_reconciliation_poll_at: the failed
+// attempt is durably rescheduled, and a submission still failing after
+// reconciliationStallAttempts claims is reported once per process.
+func (w *Worker) deferReconciliation(ctx context.Context, lease SubmissionLease, cause error) error {
+	attempts := lease.Submission.AttemptCount
+	detail := fleet.LogErrorText(cause)
+	if err := w.store.DeferSubmission(ctx, lease, reconciliationRetryDelay(attempts), detail); err != nil {
+		return fmt.Errorf("reconciliation defer failed after %s: %w", detail, err)
+	}
+	if attempts >= reconciliationStallAttempts && w.stalls.claim(lease.Submission.ID) {
+		w.config.Facts.Failed(engine.FamilyFleet, "fleet_reconciliation_stalled")
+		slog.Error("fleet_reconciliation_stalled", "submissionId", lease.Submission.ID, "attemptCount", attempts, "retryDelay", reconciliationRetryDelay(attempts).String(), "reason", detail)
+	}
+	return fmt.Errorf("reconciliation deferred: %w", cause)
+}
+
+// stallLatch is Rust's ReconciliationStallLatch: one report per submission
+// per process. A restart re-arms it; reaching the bound clears it rather than
+// silencing new stalls.
+type stallLatch struct {
+	mu       sync.Mutex
+	reported map[int64]bool
+}
+
+func (l *stallLatch) claim(id int64) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.reported[id] {
+		return false
+	}
+	if l.reported == nil || len(l.reported) >= maxLatchedReconciliationStalls {
+		l.reported = map[int64]bool{}
+	}
+	l.reported[id] = true
+	return true
 }
 
 func int64Ptr(v int64) *int64 { return &v }
