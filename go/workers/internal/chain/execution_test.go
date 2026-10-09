@@ -13,8 +13,9 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// A node refuses a transaction newer than the version a reader accepts; an
-// execution read takes every version and keeps the inner instructions.
+// A node refuses a transaction newer than the version a reader accepts;
+// execution and receipt reads take every version, and an execution keeps the
+// inner instructions.
 func TestExecutionReadsNewerVersionsWithInnerInstructions(t *testing.T) {
 	payer, loaded := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
 	tx, err := solana.NewTransaction([]solana.Instruction{solana.NewInstruction(solana.SystemProgramID, solana.AccountMetaSlice{solana.Meta(payer).SIGNER().WRITE()}, nil)}, solana.Hash{1}, solana.TransactionPayer(payer))
@@ -54,6 +55,9 @@ func TestExecutionReadsNewerVersionsWithInnerInstructions(t *testing.T) {
 	inner := read.Inner[0].Instructions[0]
 	if read.Inner[0].Index != 0 || read.Keys[inner.ProgramIDIndex] != solana.SystemProgramID || string(inner.Data) != string([]byte{7, 8}) {
 		t.Fatalf("inner instructions %+v", read.Inner)
+	}
+	if receipt, err := client.Receipt(context.Background(), solana.Signature{1}, rpc.CommitmentConfirmed); err != nil || receipt.Slot != 900 {
+		t.Fatalf("receipt of a newer version = %+v, %v", receipt, err)
 	}
 	found = nil
 	if _, err := client.Execution(context.Background(), solana.Signature{1}, rpc.CommitmentConfirmed); !errors.Is(err, ErrNotFound) {

@@ -9,8 +9,8 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// Execution is a landed transaction with the instructions it ran, for
-// readers that must prove what a transaction did rather than only land it.
+// Execution is a landed transaction with the instructions it ran. It is the
+// one getTransaction decoder; Receipt is the same read without them.
 type Execution struct {
 	Receipt
 	Transaction *solana.Transaction
