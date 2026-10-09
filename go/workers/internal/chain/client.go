@@ -6,6 +6,7 @@ package chain
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -133,16 +134,42 @@ func (c *Client) Slot(ctx context.Context, commitment rpc.CommitmentType) (uint6
 	return slot, nil
 }
 
-// Blockhash is a confirmed blockhash and the last block height it is valid at.
-func (c *Client) Blockhash(ctx context.Context) (solana.Hash, uint64, error) {
-	out, err := c.rpc.GetLatestBlockhash(ctx, rpc.CommitmentConfirmed)
+// Blockhash is a blockhash at commitment, the last block height it is valid
+// at and the slot it was read at.
+func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType) (hash solana.Hash, lastValid, slot uint64, err error) {
+	out, err := c.rpc.GetLatestBlockhash(ctx, commitment)
 	if err != nil {
-		return solana.Hash{}, 0, failed("getLatestBlockhash", err)
+		return solana.Hash{}, 0, 0, failed("getLatestBlockhash", err)
 	}
-	if out.Value == nil || out.Value.Blockhash.IsZero() || out.Value.LastValidBlockHeight == 0 {
-		return solana.Hash{}, 0, errors.New("getLatestBlockhash: empty blockhash")
+	if out.Value == nil || out.Value.Blockhash.IsZero() || out.Value.LastValidBlockHeight == 0 || out.Context.Slot == 0 {
+		return solana.Hash{}, 0, 0, errors.New("getLatestBlockhash: empty blockhash")
 	}
-	return out.Value.Blockhash, out.Value.LastValidBlockHeight, nil
+	return out.Value.Blockhash, out.Value.LastValidBlockHeight, out.Context.Slot, nil
+}
+
+// Fee is what the cluster charges for message (the compiled message bytes,
+// not the signed wire) at commitment.
+func (c *Client) Fee(ctx context.Context, message []byte, commitment rpc.CommitmentType) (uint64, error) {
+	out, err := c.rpc.GetFeeForMessage(ctx, base64.StdEncoding.EncodeToString(message), commitment)
+	if err != nil {
+		return 0, failed("getFeeForMessage", err)
+	}
+	if out == nil || out.Value == nil {
+		return 0, errors.New("getFeeForMessage: no fee for this blockhash")
+	}
+	return *out.Value, nil
+}
+
+// GenesisHash identifies the cluster.
+func (c *Client) GenesisHash(ctx context.Context) (solana.Hash, error) {
+	hash, err := c.rpc.GetGenesisHash(ctx)
+	if err != nil {
+		return solana.Hash{}, failed("getGenesisHash", err)
+	}
+	if hash.IsZero() {
+		return solana.Hash{}, errors.New("getGenesisHash: empty hash")
+	}
+	return hash, nil
 }
 
 // RentExempt is the minimum balance an account of size bytes needs.
@@ -172,23 +199,32 @@ func (e *SimulationError) Error() string {
 	return fmt.Sprintf("simulation failed at slot %d: %v %q", e.Slot, e.Err, tail)
 }
 
-// Simulate runs the exact signed bytes with signature checks and the wire's
-// own blockhash. A transaction failure is a *SimulationError.
-func (c *Client) Simulate(ctx context.Context, wire []byte) (units uint64, logs []string, err error) {
-	out, err := c.rpc.SimulateRawTransactionWithOpts(ctx, wire, &rpc.SimulateTransactionOpts{SigVerify: true, Commitment: rpc.CommitmentConfirmed})
+// Simulated is a simulation the cluster ran and the transaction succeeded.
+type Simulated struct {
+	Slot  uint64
+	Units uint64
+	Logs  []string
+}
+
+// Simulate runs wire with opts; signature checks, blockhash replacement and
+// the minimum slot are the caller's to choose. A transaction failure is a
+// *SimulationError.
+func (c *Client) Simulate(ctx context.Context, wire []byte, opts rpc.SimulateTransactionOpts) (Simulated, error) {
+	out, err := c.rpc.SimulateRawTransactionWithOpts(ctx, wire, &opts)
 	if err != nil {
-		return 0, nil, failed("simulateTransaction", err)
+		return Simulated{}, failed("simulateTransaction", err)
 	}
-	if out.Value == nil || out.Context.Slot == 0 {
-		return 0, nil, errors.New("simulateTransaction: empty result")
+	if out.Value == nil || out.Context.Slot == 0 || opts.MinContextSlot != nil && out.Context.Slot < *opts.MinContextSlot {
+		return Simulated{}, errors.New("simulateTransaction: empty or stale result")
 	}
 	if out.Value.Err != nil {
-		return 0, nil, &SimulationError{Slot: out.Context.Slot, Err: out.Value.Err, Logs: out.Value.Logs}
+		return Simulated{}, &SimulationError{Slot: out.Context.Slot, Err: out.Value.Err, Logs: out.Value.Logs}
 	}
+	simulated := Simulated{Slot: out.Context.Slot, Logs: out.Value.Logs}
 	if out.Value.UnitsConsumed != nil {
-		units = *out.Value.UnitsConsumed
+		simulated.Units = *out.Value.UnitsConsumed
 	}
-	return units, out.Value.Logs, nil
+	return simulated, nil
 }
 
 // TokenBalance is one token account's balance before or after a transaction.

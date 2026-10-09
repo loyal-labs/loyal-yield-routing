@@ -166,7 +166,7 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 }
 
 func (c *RPCChain) LatestBlockhash(ctx context.Context) (string, int64, error) {
-	hash, lastValid, err := c.Blockhash(ctx)
+	hash, lastValid, _, err := c.Blockhash(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return "", 0, err
 	}
@@ -239,7 +239,7 @@ func (c *RPCChain) SimulateExact(ctx context.Context, attempt DurableAttempt) er
 	if _, err := chain.OwnSignedWire(wire, attempt.SignedTransactionSHA256); err != nil {
 		return fmt.Errorf("persisted %s wire failed the shared packet contract: %w", attempt.OperationKind, err)
 	}
-	if _, _, err := c.Simulate(ctx, wire); err != nil {
+	if _, err := c.Simulate(ctx, wire, rpc.SimulateTransactionOpts{SigVerify: true, Commitment: rpc.CommitmentConfirmed}); err != nil {
 		return fmt.Errorf("simulate persisted %s wire %s: %w", attempt.OperationKind, attempt.Signature, err)
 	}
 	return nil
