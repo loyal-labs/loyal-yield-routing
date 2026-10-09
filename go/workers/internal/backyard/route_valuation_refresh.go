@@ -44,8 +44,8 @@ func (c *RPCClient) simulateRouteValuationRefresh(ctx context.Context, route Run
 }
 
 func validateRouteValuationCapture(slot int64, accounts []ConfirmedAccount, addresses []string, minimumSlot int64) error {
-	if slot < minimumSlot || slot-minimumSlot > observationLagSlots() || len(accounts) != len(addresses) {
-		return fmt.Errorf("valuation capture is incomplete or outside freshness window")
+	if slot < minimumSlot || len(accounts) != len(addresses) {
+		return fmt.Errorf("valuation capture is incomplete or slot regressed")
 	}
 	seen := make(map[string]bool, len(addresses))
 	for i, account := range accounts {
@@ -53,6 +53,10 @@ func validateRouteValuationCapture(slot int64, accounts []ConfirmedAccount, addr
 			return fmt.Errorf("valuation capture namespace or provenance drifted")
 		}
 		seen[account.Address] = true
+	}
+	// Check integrity before allowing a retry; late evidence stays rejected.
+	if slot-minimumSlot > observationLagSlots() {
+		return confirmedObservationUnavailable(fmt.Errorf("valuation capture is outside freshness window"))
 	}
 	return nil
 }

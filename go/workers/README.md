@@ -79,6 +79,16 @@ keeps its existing meaning. One-shot operator commands run as
 `loyal-engine backyard <command>` (for example `clear-hold --reason "<text>"`)
 with the same credentials.
 
+Backyard rejects unsigned reserve-refresh captures beyond the observation
+freshness window with a retryable observation-unavailable error. Repeated late
+captures do not increment the health-failure streaks or latch a manual stop;
+only a fresh, valid capture can be used. Integrity checks run before lateness:
+incomplete captures, slot regression, namespace/provenance drift, duplicates
+and simulated fee-payer captures still fail closed, even when also late.
+Kamino-rejected refreshes still latch after three consecutive failures. The
+13-second observation window (32–64 slots), Kamino freshness limits, debt and
+capital guards, and recovery behavior are unchanged.
+
 Observer retains its reviewed transport configuration in
 `internal/observer/config/config.go` and runs the Earn domain application
 (`internal/observer/earn`) in process: policy projection, the durable Earn

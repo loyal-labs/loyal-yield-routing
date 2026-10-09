@@ -261,9 +261,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 				}
 				_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: reserve valuation refresh failed lane=%s: %v%s\n", route.Lane, refreshErr, detail)
 				if transientValuationRefreshFailure(refreshErr) {
-					// A refresh that never reached the chain says nothing about
-					// reserve health. Retry next tick instead of latching a manual
-					// stop; a refresh Kamino itself rejects still holds below.
+					// Unavailable or late capture evidence cannot establish reserve
+					// health. Retry next tick without accepting it; a refresh Kamino
+					// itself rejects still holds below.
 					return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh unavailable: %w", refreshErr))
 				}
 				// Vlad-approved 09-25 after two one-off latches (16:13, 21:26) whose
@@ -1045,10 +1045,9 @@ func observedLTVBPS(position KaminoPosition) (int64, error) {
 	return debt.Int64(), nil
 }
 
-// transientValuationRefreshFailure reports refresh failures that happened
-// before the simulation reached the chain (transport or RPC availability). A
-// simulated refresh that Kamino rejected, or an incomplete capture, is not
-// transient: it may be a genuinely stale oracle and keeps the health hold.
+// transientValuationRefreshFailure includes transport/RPC availability and
+// intact captures that exceeded the observation window. Neither is usable
+// evidence. Kamino rejection and malformed captures keep the health hold.
 // kaminoHealthHold is KaminoHealthHoldObservation plus the verdict text (which
 // reserve or oracle, how old) on stderr and in the latch alert.
 func kaminoHealthHold(err error, slot int64, now time.Time, lane string) (Observation, bool) {
