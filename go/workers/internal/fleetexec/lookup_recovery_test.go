@@ -6,12 +6,13 @@ import (
 	"math"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // Unit receipt cases test rejection logic; actual executed packet coverage is
 // separately supplied by lookup_svm_test, never by these constructed metadata.
-func lookupUnitRecovery(t *testing.T) (LookupAttempt, SignatureStatus, *LookupReceipt, LookupSnapshot) {
+func lookupUnitRecovery(t *testing.T) (LookupAttempt, chain.SignatureState, *LookupReceipt, LookupSnapshot) {
 	t.Helper()
 	f := readLookupFixture(t)
 	intent := lookupFixtureIntent(f)
@@ -37,7 +38,7 @@ func lookupUnitRecovery(t *testing.T) (LookupAttempt, SignatureStatus, *LookupRe
 		receipt.PostLamports = append(receipt.PostLamports, post)
 	}
 	snapshot := LookupSnapshot{Address: f.Table, Owner: lookupProgram, Slot: 1001, Authority: f.Manager, Addresses: intent.Extension, DeactivationSlot: math.MaxUint64, LastExtendedSlot: 1000}
-	return LookupAttempt{Intent: intent, Wire: wire}, SignatureStatus{Found: true, Confirmed: true, Finalized: true, Slot: 1000}, receipt, snapshot
+	return LookupAttempt{Intent: intent, Wire: wire}, chain.SignatureState{Found: true, Commitment: chain.Finalized, Slot: 1000}, receipt, snapshot
 }
 func TestLookupRecoveryRequiresOwnedFinalizedWarmedEffects(t *testing.T) {
 	a, status, receipt, snapshot := lookupUnitRecovery(t)
@@ -45,11 +46,11 @@ func TestLookupRecoveryRequiresOwnedFinalizedWarmedEffects(t *testing.T) {
 	if err != nil || result.proof == nil || result.proof.state != LookupReconciled {
 		t.Fatalf("exact proof: %+v %v", result, err)
 	}
-	for name, change := range map[string]func(*SignatureStatus, **LookupReceipt, *LookupSnapshot){
-		"signature absent": func(s *SignatureStatus, r **LookupReceipt, b *LookupSnapshot) { s.Found = false },
-		"confirmed only":   func(s *SignatureStatus, r **LookupReceipt, b *LookupSnapshot) { s.Finalized = false },
-		"receipt missing":  func(s *SignatureStatus, r **LookupReceipt, b *LookupSnapshot) { *r = nil },
-		"not warmed":       func(s *SignatureStatus, r **LookupReceipt, b *LookupSnapshot) { b.Slot = 1000 },
+	for name, change := range map[string]func(*chain.SignatureState, **LookupReceipt, *LookupSnapshot){
+		"signature absent": func(s *chain.SignatureState, r **LookupReceipt, b *LookupSnapshot) { s.Found = false },
+		"confirmed only":   func(s *chain.SignatureState, r **LookupReceipt, b *LookupSnapshot) { s.Commitment = chain.Confirmed },
+		"receipt missing":  func(s *chain.SignatureState, r **LookupReceipt, b *LookupSnapshot) { *r = nil },
+		"not warmed":       func(s *chain.SignatureState, r **LookupReceipt, b *LookupSnapshot) { b.Slot = 1000 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, r, b := status, receipt, snapshot

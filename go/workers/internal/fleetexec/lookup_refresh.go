@@ -48,7 +48,7 @@ func (w *LookupWorker) refreshCreate(ctx context.Context, op LookupOperation, ol
 		if address == op.Intent.TableAddress {
 			continue
 		}
-		snapshot, err := w.chain.LookupSnapshot(ctx, address, old.Slot)
+		snapshot, err := lookupSnapshot(ctx, w.chain, address, old.Slot)
 		if err != nil {
 			return op, err
 		}

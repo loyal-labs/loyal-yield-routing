@@ -52,7 +52,7 @@ func (p *LookupPlanner) observeLookupCatalog(ctx context.Context, c lookupCatalo
 			minSlot = max(minSlot, *t.verified)
 		}
 	}
-	observations, err := p.chain.lookupCatalogObservations(ctx, addresses, minSlot)
+	observations, err := lookupCatalogObservations(ctx, p.chain, addresses, minSlot)
 	if err != nil {
 		return false, 0, err
 	}

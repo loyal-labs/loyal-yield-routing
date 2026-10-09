@@ -44,7 +44,7 @@ func TestLookupBindingPublicationUsesActualBankAndLogicalUsageFence(t *testing.T
 	if _, err = worker.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := svm.rpc.LookupSnapshot(ctx, f.Table, 1000)
+	snapshot, err := lookupSnapshot(ctx, svm.rpc, f.Table, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestLookupBindingPublicationUsesActualBankAndLogicalUsageFence(t *testing.T
 	if _, err = worker.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err = svm.rpc.LookupSnapshot(ctx, f.Table, 1001)
+	snapshot, err = lookupSnapshot(ctx, svm.rpc, f.Table, 1001)
 	if err != nil {
 		t.Fatal(err)
 	}

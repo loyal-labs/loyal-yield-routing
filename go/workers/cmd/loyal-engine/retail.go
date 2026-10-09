@@ -373,11 +373,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Autodeposit controller", err)
 	}
-	lookupRPC, err := fleetexec.NewLookupRPC(cfg.rpcURL, 10*time.Second)
-	if err != nil {
-		return retailError("lookup RPC", err)
-	}
-	lookupWorker, err := fleetexec.NewLookupWorker(dStore, lookupRPC, fleetexec.LookupWorkerConfig{
+	lookupWorker, err := fleetexec.NewLookupWorker(dStore, cluster, fleetexec.LookupWorkerConfig{
 		Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second,
 		TickDeadline: 20 * time.Second, PollInterval: time.Second,
 		Budget: cfg.lookup.budget, ReconcileOnly: !cfg.lookup.active, Facts: facts,
@@ -388,7 +384,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	// Retain the source provisioner's growth reservation (8) and vault cohort
 	// limit (16). This lane receives no manager key or broadcast capability.
-	lookupPlanner, err := fleetexec.NewLookupPlanner(dStore, lookupRPC, fleetexec.LookupPlannerConfig{
+	lookupPlanner, err := fleetexec.NewLookupPlanner(dStore, cluster, fleetexec.LookupPlannerConfig{
 		Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second,
 		TickDeadline: 20 * time.Second, PollInterval: time.Second,
 		CatalogInterval: time.Minute, GrowthReservation: 8, MaximumVaultCohort: 16,

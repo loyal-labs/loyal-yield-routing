@@ -22,7 +22,7 @@ func TestLookupUnsignedAgedReservationRefreshesOnlyToActualProducedBank(t *testi
 			t.Fatal(err)
 		}
 	}
-	old, err := svm.rpc.LookupSnapshot(ctx, f.Table, 1513)
+	old, err := lookupSnapshot(ctx, svm.rpc, f.Table, 1513)
 	if err != nil || lookupProducedSlot(old.SlotHashes, f.RecentSlot) {
 		t.Fatal("fixture retained original bank", err)
 	}
@@ -42,7 +42,7 @@ func TestLookupUnsignedAgedReservationRefreshesOnlyToActualProducedBank(t *testi
 	if err != nil || owned.Intent.TableAddress == f.Table || owned.Intent.RecentSlot == nil || !lookupProducedSlot(old.SlotHashes, *owned.Intent.RecentSlot) || owned.BroadcastCount < 1 {
 		t.Fatal("reservation invented slot or reused old address", owned, err)
 	}
-	receipt, err := svm.rpc.LookupFinalizedReceipt(ctx, owned.Wire.TransactionSignature)
+	receipt, err := lookupFinalizedReceipt(ctx, svm.rpc, owned.Wire.TransactionSignature)
 	if err != nil || receipt == nil || receipt.Err != "" {
 		t.Fatal("refreshed PDA did not execute actual ALT create", receipt, err)
 	}

@@ -102,7 +102,7 @@ func TestLookupPlannerCreatesExtendsAndRollsCatalogFromActualBank(t *testing.T) 
 	}
 	// A real ALT-program deactivation by the same authorized manager models
 	// external lifecycle drift. The planner must observe it, not trust flags.
-	blockhash, _, _, err := svm.rpc.LookupBlockhash(ctx)
+	blockhash, _, _, err := lookupBlockhash(ctx, svm.rpc)
 	if err != nil {
 		t.Fatal(err)
 	}

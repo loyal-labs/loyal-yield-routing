@@ -81,11 +81,11 @@ func TestLookupPlannerQueuesRealRetiringCleanupAndExactCloseRefund(t *testing.T)
 		}
 	}
 	runPlanner()
-	snapshot, err := svm.rpc.LookupSnapshot(ctx, f.Table, 1513)
+	snapshot, err := lookupSnapshot(ctx, svm.rpc, f.Table, 1513)
 	if err != nil || lookupProducedSlot(snapshot.SlotHashes, 1001) {
 		t.Fatal("actual deactivation bank retained", err)
 	}
-	before, err := svm.rpc.LookupBalance(ctx, f.Manager)
+	before, err := lookupBalance(ctx, svm.rpc, f.Manager, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestLookupPlannerQueuesRealRetiringCleanupAndExactCloseRefund(t *testing.T)
 	}
 	due()
 	runWriter(restart)
-	after, err := svm.rpc.LookupBalance(ctx, f.Manager)
+	after, err := lookupBalance(ctx, svm.rpc, f.Manager, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

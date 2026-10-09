@@ -73,7 +73,7 @@ func TestLookupSignedPacketLivesOnItsOperationAcrossPauseResendAndRestart(t *tes
 	svm := startLookupSVM(t, f)
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
-	hash, height, bank, err := svm.rpc.LookupBlockhash(ctx)
+	hash, height, bank, err := lookupBlockhash(ctx, svm.rpc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,15 +122,15 @@ func TestLookupSignedPacketLivesOnItsOperationAcrossPauseResendAndRestart(t *tes
 	if err != nil || durable.BroadcastCount != 2 || !bytes.Equal(durable.Wire.SignedTransaction, owned.Wire.SignedTransaction) {
 		t.Fatalf("restart packet: %+v %v", durable, err)
 	}
-	receipt, err := svm.rpc.LookupFinalizedReceipt(ctx, durable.Wire.TransactionSignature)
+	receipt, err := lookupFinalizedReceipt(ctx, svm.rpc, durable.Wire.TransactionSignature)
 	if err != nil || receipt == nil {
 		t.Fatal("actual receipt missing", err)
 	}
-	status, err := svm.rpc.SignatureStatus(ctx, durable.Wire.TransactionSignature)
+	status, err := svm.rpc.SignatureState(ctx, durable.Wire.TransactionSignature)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := svm.rpc.LookupSnapshot(ctx, f.Table, receipt.Slot)
+	snapshot, err := lookupSnapshot(ctx, svm.rpc, f.Table, receipt.Slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestLookupSignedPacketLivesOnItsOperationAcrossPauseResendAndRestart(t *tes
 	if err = svm.direct("advanceSlot", []any{1001}, nil); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err = svm.rpc.LookupSnapshot(ctx, f.Table, receipt.Slot)
+	snapshot, err = lookupSnapshot(ctx, svm.rpc, f.Table, receipt.Slot)
 	if err != nil {
 		t.Fatal(err)
 	}

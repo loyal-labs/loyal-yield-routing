@@ -47,7 +47,7 @@ func (p *LookupPlanner) readPlanningReadiness(ctx context.Context, vault int64, 
 	}
 	bank.snapshots = make(map[string]LookupSnapshot, len(addresses))
 	for _, address := range addresses {
-		snapshot, e := p.chain.LookupSnapshot(ctx, address, bank.slot)
+		snapshot, e := lookupSnapshot(ctx, p.chain, address, bank.slot)
 		if e != nil {
 			return e
 		}

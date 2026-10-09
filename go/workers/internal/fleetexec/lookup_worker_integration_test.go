@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/mr-tron/base58"
 )
 
@@ -159,12 +160,12 @@ func TestLookupWorkerTransportOutageReportsUnhealthyAndJoins(t *testing.T) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
-	rpc, err := NewLookupRPC(server.URL, time.Second)
+	client, err := chain.New(server.URL, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	reports := make(chan error, 1)
-	worker, err := NewLookupWorker(store, rpc, LookupWorkerConfig{Cluster: "localnet", Owner: "lookup-health", LeaseTTL: time.Minute, TickDeadline: time.Second, PollInterval: 10 * time.Millisecond, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}, ReconcileOnly: true, Facts: testFacts(), OnHealth: func(err error) { reports <- err }}, nil)
+	worker, err := NewLookupWorker(store, client, LookupWorkerConfig{Cluster: "localnet", Owner: "lookup-health", LeaseTTL: time.Minute, TickDeadline: time.Second, PollInterval: 10 * time.Millisecond, Budget: LookupBudget{MaximumLamports: 10000000, RollingWindow: time.Hour}, ReconcileOnly: true, Facts: testFacts(), OnHealth: func(err error) { reports <- err }}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +207,7 @@ func TestLookupRustSignedPacketWithoutBytesResolvesBySignature(t *testing.T) {
 	defer cancel()
 	store, op := seedLookupSource(t, ctx, pool, f)
 	wire := lookupOfficialWire(t, f, "create")
-	hash, _, _, err := svm.rpc.LookupBlockhash(ctx)
+	hash, _, _, err := lookupBlockhash(ctx, svm.rpc)
 	if err != nil || hash != wire.RecentBlockhash {
 		t.Fatal("official original bank hash drift", hash, err)
 	}

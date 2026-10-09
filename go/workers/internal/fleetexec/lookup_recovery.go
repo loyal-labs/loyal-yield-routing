@@ -10,6 +10,7 @@ import (
 	"math"
 	"reflect"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -127,20 +128,20 @@ func lookupReceiptProof(attempt LookupAttempt, receipt *LookupReceipt) (json.Raw
 	data, err := json.Marshal(map[string]any{"signature": receipt.Signature, "message_hash": attempt.Wire.MessageHash, "signed_transaction_sha256": attempt.Wire.SignedTransactionHash, "slot": receipt.Slot, "commitment": "finalized", "err": chainErr, "fee_lamports": receipt.FeeLamports, "table_pre_lamports": pre, "table_post_lamports": post, "payer_pre_lamports": payerPre, "payer_post_lamports": payerPost})
 	return data, err
 }
-func recoverLookup(attempt LookupAttempt, status SignatureStatus, receipt *LookupReceipt, snapshot LookupSnapshot) (lookupRecovery, error) {
+func recoverLookup(attempt LookupAttempt, status chain.SignatureState, receipt *LookupReceipt, snapshot LookupSnapshot) (lookupRecovery, error) {
 	if err := proveLookupWire(attempt.Intent, attempt.Wire); err != nil {
 		return lookupRecovery{}, err
 	}
 	if snapshot.Address != attempt.Intent.TableAddress || snapshot.Slot <= 0 {
 		return lookupRecovery{}, errors.New("lookup readback identity/frontier mismatch")
 	}
-	if !status.Found || !status.Finalized {
+	if !status.Found || status.Commitment != chain.Finalized {
 		return lookupRecovery{wait: "owned signature has no finalized receipt"}, nil
 	}
 	if receipt == nil {
 		return lookupRecovery{wait: "finalized packet history unavailable"}, nil
 	}
-	if status.Slot != receipt.Slot || !lookupEqualJSON(status.Err, receipt.Err) {
+	if int64(status.Slot) != receipt.Slot || !lookupEqualJSON(status.Err, receipt.Err) {
 		return lookupRecovery{}, errors.New("lookup signature and receipt disagree")
 	}
 	receiptProof, err := lookupReceiptProof(attempt, receipt)
