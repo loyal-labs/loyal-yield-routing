@@ -3,11 +3,13 @@ package backyard
 import (
 	"context"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Partial repayment has the same recovery budget as any other exit. Its
 // simulated poststate prices a complete remaining exit, never settled NAV.
-func observePhase3PartialRepaymentAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3PartialRepaymentAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := o.Snapshot, e.Request
@@ -45,7 +47,7 @@ func observePhase3PartialRepaymentAdmission(ctx context.Context, rpc *RPCClient,
 	}
 	addresses := depositProjectionAddresses(route)
 	addresses = append(addresses, route.Kamino.DebtReserve, route.DebtLiquiditySupply)
-	projection, err := rpc.simulatePhase3EntryProjection(ctx, message, addresses, before.ObservedSlot)
+	projection, err := simulatePhase3EntryProjection(ctx, rpc, message, addresses, before.ObservedSlot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}

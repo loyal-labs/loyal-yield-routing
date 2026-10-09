@@ -5,9 +5,11 @@ import (
 	"encoding/binary"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func observeRedepositPrestate(ctx context.Context, rpc *RPCClient, route RuntimeRoute, s Snapshot, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+func observeRedepositPrestate(ctx context.Context, rpc *chain.Client, route RuntimeRoute, s Snapshot, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	bound, accounts, err := observeKaminoPayoffWindow(ctx, rpc, route, slot, 3)
 	if err != nil {
 		return bound, nil, err
@@ -98,7 +100,7 @@ func validateRedepositProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, be
 	return nil
 }
 
-func observePhase3RedepositAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3RedepositAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := o.Snapshot, e.Request
@@ -118,7 +120,7 @@ func observePhase3RedepositAdmission(ctx context.Context, rpc *RPCClient, client
 	if e.ExpectedEffects.Accounts[0].BeforeRaw != uint64(s.CollateralIdleRaw) {
 		return phase3BridgeAdmission{}, budgetHold("redeposit_custody_snapshot_changed")
 	}
-	projection, err := rpc.simulateKaminoEntryProjection(ctx, r, bound.ObservedSlot)
+	projection, err := simulateKaminoEntryProjection(ctx, rpc, r, bound.ObservedSlot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -133,7 +135,7 @@ func observePhase3RedepositAdmission(ctx context.Context, rpc *RPCClient, client
 	return plan, nil
 }
 
-func validateRedepositAdmissionPrestate(ctx context.Context, rpc *RPCClient, r KaminoPrimeUSDCRequest, p *phase3BridgeAdmission, slot int64) (int64, error) {
+func validateRedepositAdmissionPrestate(ctx context.Context, rpc *chain.Client, r KaminoPrimeUSDCRequest, p *phase3BridgeAdmission, slot int64) (int64, error) {
 	if p == nil || p.DepositProjection == nil || p.Payoff == nil || p.Snapshot.RouteLane != r.RouteLane {
 		return 0, budgetHold("redeposit_projection_identity_mismatch")
 	}

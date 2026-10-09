@@ -6,13 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // AdvanceNonterminal resumes the one durable operation before any new
 // observation is permitted. Only Signed may create a new submission: it first
 // records broadcast_intent and then sends its exact persisted wire once.
 // BroadcastIntent and Submitted are recovery states and never resend.
-func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient, operation PersistedOperation) error {
+func AdvanceNonterminal(ctx context.Context, database *Database, rpc *chain.Client, operation PersistedOperation) error {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return err
@@ -24,7 +26,7 @@ func AdvanceNonterminal(ctx context.Context, database *Database, rpc *RPCClient,
 // the immutable reviewed manifest explicit: only the reconciliation decode,
 // initializer receipt observation, reconciliation and locked settlement resolve
 // through it. Every other state transition is unchanged.
-func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *RPCClient, operation PersistedOperation) error {
+func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *chain.Client, operation PersistedOperation) error {
 	if database == nil || rpc == nil || !IsNonterminal(operation.Status) {
 		return fmt.Errorf("invalid nonterminal recovery input")
 	}
@@ -73,12 +75,12 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 				// A failed fresh valuation must not trap an expired, absent wire
 				// in Signed forever. Release only after finalized expiry and a
 				// subsequent explicit signature-absence observation; never resend.
-				height, heightErr := rpc.FinalizedBlockHeight(ctx)
+				height, heightErr := finalizedHeight(ctx, rpc)
 				if heightErr != nil {
 					return errors.Join(err, heightErr)
 				}
 				if height > operation.LastValidBlockHeight {
-					status, statusErr := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+					status, statusErr := signatureStatus(ctx, rpc, operation.TransactionSignature)
 					if statusErr != nil {
 						return errors.Join(err, statusErr)
 					}
@@ -90,17 +92,18 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 			}
 			return err
 		}
-		if _, err := rpc.SendSignedTransactionOnce(ctx, operation.SignedWire, operation.TransactionSignature); err != nil {
+		// One send with preflight and maxRetries 0: the node never rebroadcasts.
+		if err := rpc.SendWire(ctx, operation.SignedWire, false); err != nil {
 			// The RPC response is ambiguous. Keep broadcast_intent durable and let
 			// the next iteration recover the signature from chain; never resend.
-			return fmt.Errorf("ambiguous send after durable broadcast intent: %w", err)
+			return unavailable(fmt.Errorf("ambiguous send after durable broadcast intent: %w", err))
 		}
 		return database.MarkSubmitted(ctx, operation.ID)
 	case BroadcastIntent, Submitted:
 		if operation.TransactionSignature == "" || operation.LastValidBlockHeight <= 0 {
 			return database.MarkManualRecovery(ctx, operation.ID, operation.Status, "incomplete_submission_identity")
 		}
-		status, err := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+		status, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
 		if err != nil {
 			return err
 		}
@@ -120,7 +123,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 			// when absent, and only a settled failure is classified.
 			return nil
 		}
-		height, err := rpc.FinalizedBlockHeight(ctx)
+		height, err := finalizedHeight(ctx, rpc)
 		if err != nil {
 			return err
 		}
@@ -128,7 +131,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 			// Recheck after finalized expiry. The earlier absence observation
 			// may predate a last-valid-block landing. A malformed response or
 			// any found signature retains the reservation and recovery fence.
-			afterExpiry, err := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+			afterExpiry, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
 			if err != nil {
 				return err
 			}
@@ -141,7 +144,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 	case Confirmed:
 		return database.MarkReconciling(ctx, operation.ID)
 	case Reconciling:
-		status, err := rpc.SignatureStatus(ctx, operation.TransactionSignature)
+		status, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
 		if err != nil {
 			return err
 		}
@@ -159,7 +162,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 		if expected.Initialization != nil {
 			receipt, err = manifest.observeFinalizedKaminoInitialization(ctx, rpc, *expected.Initialization, operation)
 		} else {
-			receipt, err = rpc.FinalizedTransaction(ctx, operation.TransactionSignature)
+			receipt, err = finalizedTransaction(ctx, rpc, operation.TransactionSignature)
 		}
 		if err != nil {
 			return err
@@ -177,7 +180,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 	}
 }
 
-func preBroadcastRecoveryReason(ctx context.Context, rpc *RPCClient, operation PersistedOperation) (string, error) {
+func preBroadcastRecoveryReason(ctx context.Context, rpc *chain.Client, operation PersistedOperation) (string, error) {
 	if operation.Status != Decided && operation.Status != Built && operation.Status != Simulated {
 		return "", fmt.Errorf("operation is not pre-broadcast")
 	}

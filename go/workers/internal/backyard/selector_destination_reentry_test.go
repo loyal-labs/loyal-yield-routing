@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // reentryObservation is tickObservation with a current wall clock, as the
@@ -68,7 +70,7 @@ func reentryPrestateTransport(t *testing.T, base http.RoundTripper, rent uint64,
 // position, prices its complete source exit with the production observer, then
 // overlays the initializer prestate graph and exact rent read. The source is
 // produced before the overlay so it stays an independent completed quote.
-func reentryFundedFixture(t *testing.T) (RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount, Observation, selectorSourceQuote, uint64) {
+func reentryFundedFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount, Observation, selectorSourceQuote, uint64) {
 	t.Helper()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)
@@ -102,7 +104,7 @@ func reentryFundedFixture(t *testing.T) (RouteManifest, *RPCClient, *jupiterClie
 		}
 	}
 	prestate[route.Kamino.Obligation] = accountAt(accounts, route.Kamino.Obligation)
-	rpc.client.Transport = reentryPrestateTransport(t, rpc.client.Transport, request.RentLamports, prestate)
+	rpcOf(rpc).Transport = reentryPrestateTransport(t, rpcOf(rpc).Transport, request.RentLamports, prestate)
 	return m, rpc, client, accounts, o, source, request.RentLamports
 }
 

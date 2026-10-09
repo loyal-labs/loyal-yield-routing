@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/binary"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Plan B3 leg 2 fixture: a funded debt-free position with 20,000 raw bridge
 // USDC in Squads (the top-up tranche).
-func topupSwapAdmissionFixture(t *testing.T) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func topupSwapAdmissionFixture(t *testing.T) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	o, _, _, m, rpc, client, accounts := fundingAdmissionFixtureForSource(t, 20_000, SwapUSDCToDebtStep)
 	clear(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[1208:1408])

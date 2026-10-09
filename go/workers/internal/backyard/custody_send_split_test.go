@@ -7,14 +7,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // custodyBalanceRPC answers getMultipleAccounts for one account at a fixed
 // slot, honoring minContextSlot like a real node.
-func custodyBalanceRPC(t *testing.T, slot int64, account ConfirmedAccount) *RPCClient {
+func custodyBalanceRPC(t *testing.T, slot int64, account ConfirmedAccount) *chain.Client {
 	t.Helper()
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var body struct {
 			Method string            `json:"method"`
 			Params []json.RawMessage `json:"params"`
@@ -33,7 +35,6 @@ func custodyBalanceRPC(t *testing.T, slot int64, account ConfirmedAccount) *RPCC
 			"value": []any{map[string]any{"owner": account.Owner, "lamports": account.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(account.Data), "base64"}}}}})
 		return response(string(encoded)), nil
 	})
-	rpc.retryBackoff, rpc.fixedRetryBackoff = 0, true
 	return rpc
 }
 

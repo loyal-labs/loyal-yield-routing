@@ -5,9 +5,11 @@ import (
 	"context"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func validateLeverageSwap(ctx context.Context, rpc *RPCClient, r JupiterSwapRequest, e ExpectedEffects, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+func validateLeverageSwap(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, e ExpectedEffects, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if !r.PositionReturnReserved || r.Action != SwapDebtToCollateralStep || r.EntryReturnReserved || r.FullPayoffFunding || len(e.Accounts) != 2 {
 		return KaminoPayoffBound{}, nil, budgetHold("leverage_swap_intent_mismatch")
 	}
@@ -78,7 +80,7 @@ func validateLeverageProjection(r JupiterSwapRequest, e ExpectedEffects, before 
 	return err
 }
 
-func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, d Decision, e JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, e JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := o.Snapshot, e.Request
@@ -109,7 +111,7 @@ func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *RPCClient, cli
 	for _, a := range before {
 		addresses = append(addresses, a.Address)
 	}
-	projection, err := rpc.simulatePhase3EntryProjection(ctx, message, addresses, bound.ObservedSlot)
+	projection, err := simulatePhase3EntryProjection(ctx, rpc, message, addresses, bound.ObservedSlot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -126,7 +128,7 @@ func observePhase3LeverageSwapAdmission(ctx context.Context, rpc *RPCClient, cli
 	return plan, nil
 }
 
-func (db *Database) admitPhase3LeverageSwap(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, id string, o Observation, d Decision, e JupiterExecutionEvidence) error {
+func (db *Database) admitPhase3LeverageSwap(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, id string, o Observation, d Decision, e JupiterExecutionEvidence) error {
 	plan, err := observePhase3LeverageSwapAdmission(ctx, rpc, client, m, o, d, e)
 	if err != nil {
 		return err
@@ -136,7 +138,7 @@ func (db *Database) admitPhase3LeverageSwap(ctx context.Context, rpc *RPCClient,
 	return db.persistPhase3ExitAdmission(ctx, rpc, id, o, d, plan)
 }
 
-func validateLeverageAdmissionPrestate(ctx context.Context, rpc *RPCClient, r JupiterSwapRequest, e ExpectedEffects, p *phase3BridgeAdmission, slot int64) (int64, error) {
+func validateLeverageAdmissionPrestate(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, e ExpectedEffects, p *phase3BridgeAdmission, slot int64) (int64, error) {
 	if p == nil || p.LeverageProjection == nil || p.Payoff == nil || p.Snapshot.RouteLane != r.RouteLane {
 		return 0, budgetHold("leverage_projection_identity_mismatch")
 	}

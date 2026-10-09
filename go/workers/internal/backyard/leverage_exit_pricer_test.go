@@ -13,13 +13,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // leverage175Accounts turns the controlled OnRe fixture into a 1.75x
 // position: collateral value C, debt D = (1.75-1)/1.75 * C (LTV 42.9%).
 // Fixture prices: ONyc (9 dp) $1, USDC debt (6 dp) $2 per raw-unit math, so
 // debt raw = collateral value in USDC-6 / 2.
-func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount, RuntimeRoute) {
+func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount, RuntimeRoute) {
 	t.Helper()
 	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, onreONycUSDC)
 	route, _ := runtimeRoute(onreONycUSDC)
@@ -53,7 +55,7 @@ func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *RPCClient, *
 // longer 7+3 window, and the repay never pays the whole debt.
 func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 	o, m, rpc, client, _, route := leverage175Fixture(t)
-	_, rows, err := rpc.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows, err := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +103,7 @@ func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 // for build/send revalidation.
 func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 	o, m, rpc, client, _, route := leverage175Fixture(t)
-	_, rows, err := rpc.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows, err := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +151,7 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 	o15, m15, rpc15, client15, accounts15, _ := leverage175Fixture(t)
 	putScaledFraction(accountAt(accounts15, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(33_333_333), 60))
 	o15.Snapshot.PositionDebtRaw, o15.Snapshot.PositionDebtValueRaw, o15.Snapshot.LTVBPS = 33_333_333, 33_333_333, 3333
-	_, rows15, _ := rpc15.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows15, _ := confirmedAccounts(context.Background(), rpc15, payoffWindowAddresses(route, route.Kamino.Market), 42)
 	if need, err := leverageExitNeedsCycles(context.Background(), rpc15, client15, m15, route, o15.Snapshot, rows15); err != nil || need {
 		t.Fatalf("1.5x needs cycles: %v %v", need, err)
 	}
@@ -199,7 +201,7 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 	o, m, rpc, _, accounts, route := leverage175Fixture(t)
 	putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(33_333_333), 60))
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.LTVBPS = 33_333_333, 33_333_333, 3333
-	_, rows, _ := rpc.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows, _ := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
 	d := Decision{Action: ReportNAV, StrategyKey: route.Lane, Reason: "nav_due"}
 	if _, err, ok := priceLeverageExitFromCurrent(context.Background(), rpc, broken, m, o, d, BridgeBuildRequest{}, ExpectedEffects{}, route, rows); ok || err != nil {
 		t.Fatalf("1.5x NAV left the installed path: ok=%t err=%v", ok, err)
@@ -216,7 +218,7 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 		t.Fatal("1.75x skipped the cycle check")
 	}
 	o175, _, rpc175, _, _, _ := leverage175Fixture(t)
-	_, rows175, _ := rpc175.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows175, _ := confirmedAccounts(context.Background(), rpc175, payoffWindowAddresses(route, route.Kamino.Market), 42)
 	if !leverageExitAccountsMayNeedCycles(rows175, route, o175.Snapshot) {
 		t.Fatal("1.75x accounts skipped the cycle check")
 	}
@@ -227,7 +229,7 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
 	o, m, rpc, client, _, route := leverage175Fixture(t)
 	o.Snapshot.LeverageTargetLevel = 1.5
-	_, rows, _ := rpc.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows, _ := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
 	bound, err := m.decodeKaminoRepaymentReleaseForMode(rows, route, 42, 5, true)
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +372,7 @@ func TestPartialWithdrawalSwapLegAdmission(t *testing.T) {
 	}
 }
 
-func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Observation, Decision, BridgeExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Observation, Decision, BridgeExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	o, m, rpc, client, accounts, route := leverage175Fixture(t)
 	if lane == autoAUTOPYUSD.Lane {
@@ -486,6 +488,9 @@ func TestPartialWithdrawalRestorePreservesPositionAndAdmission(t *testing.T) {
 			// All HTTP is controlled; a missing database stops before persistence.
 			oldTransport := http.DefaultTransport
 			http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Hostname() == "127.0.0.1" { // the fake chain node
+					return oldTransport.RoundTrip(r)
+				}
 				request := r.Clone(r.Context())
 				request.URL.Path = strings.TrimPrefix(request.URL.Path, "/swap/v1")
 				return client.http.Transport.RoundTrip(request)
@@ -595,6 +600,9 @@ func TestPartialWithdrawalRestoreProductionAdmissionDB(t *testing.T) {
 			insert(id, d.Action, d.Reason, "decided", 0, d.AmountRaw)
 			oldTransport := http.DefaultTransport
 			http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Hostname() == "127.0.0.1" { // the fake chain node
+					return oldTransport.RoundTrip(r)
+				}
 				request := r.Clone(r.Context())
 				request.URL.Path = strings.TrimPrefix(request.URL.Path, "/swap/v1")
 				return client.http.Transport.RoundTrip(request)

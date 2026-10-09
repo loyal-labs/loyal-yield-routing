@@ -11,9 +11,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, phase3BridgeAdmission) {
+func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, phase3BridgeAdmission) {
 	t.Helper()
 	o, m, rpc, client, accounts := usdcReturnFixture(t)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
@@ -224,22 +226,22 @@ func TestDebtClearOldSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 			operation := PersistedOperation{Operation: Operation{ID: id, RouteKey: key, Decision: decision}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
 			height := int64(99)
 			sends, absenceReads := 0, 0
-			rpc, _ := NewRPCClient("https://rpc.invalid")
-			rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rpc := newFakeChain(t, nil)
+			rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				body, _ := io.ReadAll(req.Body)
 				var call struct{ Method string }
 				if json.Unmarshal(body, &call) != nil {
 					t.Fatal("RPC request")
 				}
 				switch call.Method {
-				case "getBlockHeight":
-					return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d}`, height)), nil
+				case "getEpochInfo":
+					return response(finalizedEpochJSON(height)), nil
 				case "getSignatureStatuses":
 					absenceReads++
 					if found {
-						return response(`{"jsonrpc":"2.0","id":1,"result":{"value":[{"slot":42,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}`), nil
+						return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":[{"slot":42,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}`), nil
 					}
-					return response(`{"jsonrpc":"2.0","id":1,"result":{"value":[null]}}`), nil
+					return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":[null]}}`), nil
 				case "sendTransaction":
 					sends++
 				}

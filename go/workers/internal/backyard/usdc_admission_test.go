@@ -11,19 +11,21 @@ import (
 	"os"
 	"strconv"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Reuse the existing complete-return fixture, changing only the route's concrete
 // identities and token program. Real compilers/admission run against controlled
 // transport; no simulation, signer or live-program success is claimed here.
-func usdcReturnFixture(t *testing.T) (Observation, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func usdcReturnFixture(t *testing.T) (Observation, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	return usdcReturnFixtureForLane(t, SelectedRouteID)
 }
 
 // usdcReturnFixtureForLane maps the controlled Ethena fixture onto one basic
 // USDC-debt lane (Maple or OnRe) and its recorded Jupiter exports.
-func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	old := ethenaUSDePYUSD
 	route, _ := runtimeRoute(lane)
@@ -33,7 +35,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 	for _, p := range m.RuntimeBindings.BridgePolicies {
 		addresses = append(addresses, p.Account)
 	}
-	_, extra, err := oldRPC.GetMultipleAccounts(context.Background(), addresses, 42)
+	_, extra, err := confirmedAccounts(context.Background(), oldRPC, addresses, 42)
 	if err != nil {
 		t.Fatal(err)
 	}

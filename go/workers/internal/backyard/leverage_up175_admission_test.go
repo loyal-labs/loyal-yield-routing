@@ -73,13 +73,13 @@ func TestLeverageUp175BorrowAdmissionPricesTheCycleExit(t *testing.T) {
 	}
 	// The borrow simulation returns the post-borrow accounts.
 	addresses := append(depositProjectionAddresses(route), route.Kamino.DebtReserve, route.DebtLiquiditySupply, route.DebtFeeReceiver)
-	_, full, err := rpc.GetMultipleAccounts(context.Background(), addresses, 42)
+	_, full, err := confirmedAccounts(context.Background(), rpc, addresses, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
 	after := debt + borrow
-	underlying := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	underlying := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(req.Body)
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		var call struct {

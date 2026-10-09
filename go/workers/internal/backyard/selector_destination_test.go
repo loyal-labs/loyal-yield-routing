@@ -13,11 +13,13 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Controlled real-layout accounts and captured Jupiter instruction topology.
 // Neither fixture transport supports simulation/signing/submission.
-func selectorDestinationFixture(t *testing.T) (RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func selectorDestinationFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	return selectorDestinationFixtureForLane(t, SelectedRouteID, nil)
 }
@@ -25,7 +27,7 @@ func selectorDestinationFixture(t *testing.T) (RouteManifest, *RPCClient, *jupit
 // selectorDestinationFixtureForLane builds the same controlled destination
 // for any basic-policy lane; tweak may edit the accounts before the RPC
 // fixture captures them.
-func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]ConfirmedAccount)) (RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]ConfirmedAccount)) (RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	m := basicPolicyFixtureManifest(t)
 	route, _ := runtimeRoute(lane)
@@ -303,9 +305,9 @@ func TestSelectorDestinationIncludesPayoffLookupReadInFreshness(t *testing.T) {
 			tables[a.Address] = true
 		}
 	}
-	original := rpc.client.Transport
+	original := rpcOf(rpc).Transport
 	changed := false
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		raw, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatal(err)

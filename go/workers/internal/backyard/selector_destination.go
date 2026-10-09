@@ -11,6 +11,8 @@ import (
 	"math/big"
 	"sort"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // A destination forecast retains its hypothetical amounts separately from the
@@ -78,7 +80,7 @@ type selectorDestinationQuote struct {
 // lanes need no conversion and return nil, keeping exact raw==USDC parity.
 // borrowCeiling only justifies a nonzero debit request; every conversion
 // recomputes from raw quantities against the bound evidence.
-func selectorDestinationDebtPrice(ctx context.Context, rpc *RPCClient, route RuntimeRoute, borrowCeiling, minimumSlot int64) (*BudgetPrice, error) {
+func selectorDestinationDebtPrice(ctx context.Context, rpc *chain.Client, route RuntimeRoute, borrowCeiling, minimumSlot int64) (*BudgetPrice, error) {
 	if route.Kamino.DebtMint == bridgeUSDC {
 		return nil, nil
 	}
@@ -116,7 +118,7 @@ func validateSelectorFarms(route RuntimeRoute, accounts []ConfirmedAccount) erro
 	return nil
 }
 
-func selectorDestinationAccounts(ctx context.Context, rpc *RPCClient, m RouteManifest, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
+func selectorDestinationAccounts(ctx context.Context, rpc *chain.Client, m RouteManifest, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
 	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, m, route, minimumSlot)
 	if err != nil {
@@ -138,7 +140,7 @@ func selectorDestinationAccounts(ctx context.Context, rpc *RPCClient, m RouteMan
 // observeSelectorDestinationBatch fetches the full destination batch and the
 // lane position, tolerating an absent optional obligation/farm, and retries
 // once against the closed unsigned reserve-refresh simulation when stale.
-func observeSelectorDestinationBatch(ctx context.Context, rpc *RPCClient, m RouteManifest, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
+func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, m RouteManifest, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
 	addresses := []string{route.Kamino.Market, route.Kamino.Obligation, route.Kamino.CollateralReserve, route.Kamino.DebtReserve,
 		route.Kamino.CollateralMint, route.Kamino.DebtMint, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply,
@@ -177,11 +179,11 @@ func observeSelectorDestinationBatch(ctx context.Context, rpc *RPCClient, m Rout
 		addresses = append(addresses, p.Account)
 	}
 	optional := uniqueNonzero([]string{route.Kamino.Obligation, route.ObligationCollateralFarm, route.ObligationDebtFarm})
-	slot, accounts, err := rpc.GetMultipleAccountsWithOptional(ctx, uniqueNonzero(addresses), minimumSlot, optional...)
+	slot, accounts, err := confirmedAccounts(ctx, rpc, uniqueNonzero(addresses), minimumSlot, optional...)
 	if err != nil {
 		return 0, nil, empty, err
 	}
-	position, err := observeKaminoFromFixedAccounts(ctx, rpc.GetMultipleAccounts, slot, accounts, route.Kamino)
+	position, err := observeKaminoFromFixedAccounts(ctx, confirmedReader(rpc), slot, accounts, route.Kamino)
 	if errors.Is(err, errKaminoReserveStale) {
 		// Idle reserves only advance through the permissionless refresh the
 		// production prefix already carries, so re-observe against its closed
@@ -190,12 +192,12 @@ func observeSelectorDestinationBatch(ctx context.Context, rpc *RPCClient, m Rout
 		// fee; this snapshot is unsigned evidence, and every freshness,
 		// ownership, capacity and funding check below still runs fail-closed
 		// on it as-is.
-		simulatedSlot, simulatedAccounts, refreshErr := rpc.simulateBudgetReserveRefreshOptional(ctx, route.Lane, uniqueNonzero(addresses), optional, slot)
+		simulatedSlot, simulatedAccounts, refreshErr := simulateBudgetReserveRefreshOptional(ctx, rpc, route.Lane, uniqueNonzero(addresses), optional, slot)
 		if refreshErr != nil {
 			return 0, nil, empty, refreshErr
 		}
 		slot, accounts = simulatedSlot, simulatedAccounts
-		position, err = observeKaminoFromFixedAccounts(ctx, rpc.GetMultipleAccounts, slot, accounts, route.Kamino)
+		position, err = observeKaminoFromFixedAccounts(ctx, confirmedReader(rpc), slot, accounts, route.Kamino)
 	}
 	if err != nil {
 		return 0, nil, empty, err
@@ -307,7 +309,7 @@ func selectorDestinationLaneAuthorized(m RouteManifest, lane string) bool {
 // AUTO to the reviewed lane set remains a coordinator-owned admission decision.
 // An absent AUTO obligation still reaches the initializer request, whose
 // Multiply binding does not exist for the candidate lane, so it holds.
-func observeSelectorDestinationCandidate(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, equity uint64, sampleSlot int64) (selectorDestinationQuote, error) {
+func observeSelectorDestinationCandidate(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, equity uint64, sampleSlot int64) (selectorDestinationQuote, error) {
 	out := selectorDestinationQuote{Lane: autoAUTOPYUSD.Lane, EquityRaw: equity}
 	if _, err := m.autoPolicyBinding(); err != nil {
 		return out, err
@@ -323,7 +325,7 @@ func observeSelectorDestinationCandidate(ctx context.Context, rpc *RPCClient, cl
 // not a proved complete unwind. It exists solely for that forecast — the
 // public reentry wrapper keeps refusing AUTO, and the execution prestate
 // stays strictly absent-only.
-func observeSelectorDestinationCandidateReentry(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, equity uint64, sampleSlot int64, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
+func observeSelectorDestinationCandidateReentry(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, equity uint64, sampleSlot int64, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
 	out := selectorDestinationQuote{Lane: autoAUTOPYUSD.Lane, EquityRaw: equity}
 	if _, err := m.autoPolicyBinding(); err != nil {
 		return out, err
@@ -340,7 +342,7 @@ func observeSelectorDestinationCandidateReentry(ctx context.Context, rpc *RPCCli
 // stay explicit scalars; no invented account image reaches an RPC simulation
 // or execution admission. Its gate is unchanged: strictly the reviewed
 // selector lane set, exactly as before the candidate entry existed.
-func observeSelectorDestinationForecast(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
+func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
 	if !selectorLane(lane) {
 		return out, budgetHold("invalid_selector_destination")
@@ -353,7 +355,7 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *RPCClient, cli
 // reviewed selector lane or — solely through the explicit candidate entry —
 // through the manifest-bound AUTO authorization. No other path reaches it
 // with a non-selector lane.
-func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
+func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
@@ -407,7 +409,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 		return out, budgetHold("selector_destination_capacity_unavailable")
 	}
 	out.AccountSlot, out.AccountsSHA256 = slot, hashConfirmedAccounts(accounts)
-	blockhash, err := rpc.LatestBlockhash(ctx)
+	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
 		return out, err
 	}
@@ -431,9 +433,9 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 	// rent refunds are not spendable, so the funding checks below still see
 	// the full recreation rent.
 	if !position.ObligationPresent || reentry != nil {
-		var rent uint64
-		if err = rpc.call(ctx, "getMinimumBalanceForRentExemption", []any{kaminoObligationLength, map[string]string{"commitment": "confirmed"}}, &rent); err != nil {
-			return out, err
+		rent, err := rpc.RentExempt(ctx, kaminoObligationLength)
+		if err != nil {
+			return out, unavailable(err)
 		}
 		r, err := m.initializationRequest(lane, blockhash, rent, 1)
 		if err != nil {
@@ -448,7 +450,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *RPCC
 		if err != nil {
 			return out, err
 		}
-		fee, err := rpc.ObserveMessageFee(ctx, message, slot)
+		fee, err := observeMessageFee(ctx, rpc, message, slot)
 		if err != nil {
 			return out, err
 		}
@@ -917,7 +919,7 @@ func unleveredEntryCapacityDebtRaw(position KaminoPosition, accounts []Confirmed
 // receipt, swap the guaranteed redemption back to USDC and return it to
 // Voltr idle. Every wire shape here is an existing one (flat deposit,
 // collateral-only withdraw, collateral->USDC swap, stage/restore/NAV).
-func appendSelectorUnleveredTail(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount, slot, observationFloor int64, blockhash LatestBlockhash,
+func appendSelectorUnleveredTail(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount, slot, observationFloor int64, blockhash LatestBlockhash,
 	swap JupiterExecutionEvidence, minimum, liquidity uint64, deposit func(uint64, uint64, uint64, []string) error,
 	appendInput func(any, ExpectedEffects) error, appendBridge func(Action, uint64, uint64, uint64, uint64) error, out *selectorDestinationQuote) error {
 	entry := swap.Request.MinimumOutputRaw

@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // The initializer-enabled candidate request carries the binding identity
@@ -109,10 +111,10 @@ func token2022DebtMintImage(variant string) []byte {
 	return data
 }
 
-func autoInitializerTransport(t *testing.T, accounts map[string]ConfirmedAccount) *RPCClient {
+func autoInitializerTransport(t *testing.T, accounts map[string]ConfirmedAccount) *chain.Client {
 	t.Helper()
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body struct {
 			Method string
 			Params []json.RawMessage
@@ -321,8 +323,8 @@ func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
 			// The public prestate still refuses the candidate lane outright —
 			// no manifest, no admission — with the installed typed hold, so
 			// retry-vs-fatal handling never changes per lane.
-			public, _ := NewRPCClient("https://rpc.invalid")
-			public.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+			public := newFakeChain(t, nil)
+			rpcOf(public).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 				t.Fatal("public prestate reached RPC for the candidate lane")
 				return nil, nil
 			})
@@ -420,8 +422,8 @@ func TestAutoInitializerEmptyObligationValidatedThroughBinding(t *testing.T) {
 func TestAutoInitializerBuildRequiresReviewedBinding(t *testing.T) {
 	_, r := autoInitializerRequestFixture(t)
 	embedded := requireEmbeddedInstalledBinding(t)
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("unactivated candidate initializer reached RPC")
 		return nil, nil
 	})

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/binary"
 	"math/big"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type KaminoReleaseBound struct {
@@ -140,7 +142,7 @@ func decodeKaminoRepaymentReleaseWithAllowance(accounts []ConfirmedAccount, rout
 // Recheck the actual persisted release at build and final send. A smaller
 // already-admitted amount may remain safe, but stale effects cannot survive a
 // changed exchange rate/custody or an interest/price move beyond the safe size.
-func validateRepaymentReleaseRequest(ctx context.Context, rpc *RPCClient, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
+func validateRepaymentReleaseRequest(ctx context.Context, rpc *chain.Client, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return KaminoReleaseBound{}, nil, err
@@ -151,7 +153,7 @@ func validateRepaymentReleaseRequest(ctx context.Context, rpc *RPCClient, reques
 // The manifest-aware form keeps every release-size, custody and effects check
 // unchanged and only lets the candidate AUTO source path measure its request
 // through the SAME reviewed manifest that produced it.
-func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, rpc *RPCClient, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
+func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, rpc *chain.Client, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
 	var result KaminoReleaseBound
 	if !request.RepaymentRelease || request.FullPayoff {
 		return result, nil, budgetHold("invalid_repayment_release_intent")
@@ -343,7 +345,7 @@ func (b Phase3Budget) validatePilotReleaseAuthority(request any) error {
 // its risk inputs change. Compare the non-mutated inputs of the admitted
 // simulation with one fresh batch before signing and sending. Drift requires
 // a newly quoted complete plan, even when it might be economically favorable.
-func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan *phase3BridgeAdmission, slot int64) (int64, error) {
+func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *chain.Client, plan *phase3BridgeAdmission, slot int64) (int64, error) {
 	if plan == nil || !plan.Snapshot.PilotActive || (plan.FundingRelease == nil && plan.BorrowRelease == nil && plan.RepaymentProjection == nil) {
 		return slot, nil
 	}
@@ -392,7 +394,7 @@ func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan
 	// The original entry simulation refreshed reserves. Re-simulate the same
 	// unsigned message so prices have equivalent semantics; unrefreshed chain
 	// prices can differ indefinitely even when the oracle has not moved.
-	fresh, err := rpc.simulatePhase3EntryProjection(ctx, message, addresses, slot)
+	fresh, err := simulatePhase3EntryProjection(ctx, rpc, message, addresses, slot)
 	if err != nil {
 		return 0, err
 	}
@@ -575,7 +577,7 @@ func validateProjectedRiskSettings(projection, fresh phase3KaminoProjection, rou
 // release held with repayment_release_exceeds_safe_size). Sizing one window
 // longer than the five-step re-check leaves headroom for the slots between
 // build and send.
-func (m RouteManifest) observeRawRepaymentRelease(ctx context.Context, rpc *RPCClient, route RuntimeRoute, slot int64, pilot bool) (KaminoReleaseBound, []ConfirmedAccount, error) {
+func (m RouteManifest) observeRawRepaymentRelease(ctx context.Context, rpc *chain.Client, route RuntimeRoute, slot int64, pilot bool) (KaminoReleaseBound, []ConfirmedAccount, error) {
 	var additional []string
 	if pilot && route.Lane == autoAUTOPYUSD.Lane {
 		additional = append(additional, route.Kamino.Market)

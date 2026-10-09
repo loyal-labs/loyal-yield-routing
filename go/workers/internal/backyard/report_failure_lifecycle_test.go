@@ -68,7 +68,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		}
 		id := routeKey + "-op"
 		if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects,transaction_signature,broadcast_intent_at)
-			VALUES($1,$2,'submitted','{}','failure-signature',clock_timestamp())`, id, routeKey); err != nil {
+			VALUES($1,$2,'submitted','{}',$3,clock_timestamp())`, id, routeKey, testSignature); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.AcquireRouteLease(ctx, routeKey, "failure-lifecycle-writer", time.Minute); err != nil {
@@ -79,7 +79,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	submittedOperation := func(id, routeKey string) PersistedOperation {
 		return PersistedOperation{
 			Operation: Operation{ID: id, RouteKey: routeKey, Decision: Decision{Action: ReportNAV}}, Status: Submitted,
-			TransactionSignature: "failure-signature", LastValidBlockHeight: 10,
+			TransactionSignature: testSignature, LastValidBlockHeight: 10,
 		}
 	}
 	// statusValue is the getSignatureStatuses row; transactionValue is the
@@ -87,15 +87,12 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	advance := func(t *testing.T, op PersistedOperation, statusValue, transactionValue string) (string, string, int) {
 		t.Helper()
 		receiptReads := 0
-		rpc, err := NewRPCClient("https://rpc.invalid")
-		if err != nil {
-			t.Fatal(err)
-		}
-		rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		rpc := newFakeChain(t, nil)
+		rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			body, _ := io.ReadAll(request.Body)
 			switch {
 			case strings.Contains(string(body), `"method":"getSignatureStatuses"`):
-				return response(`{"jsonrpc":"2.0","id":1,"result":{"value":[` + statusValue + `]}}`), nil
+				return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":600},"value":[` + statusValue + `]}}`), nil
 			case strings.Contains(string(body), `"method":"getTransaction"`):
 				receiptReads++
 				if transactionValue == "RPC_ERROR" {
@@ -134,15 +131,12 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	// that first reached the ambiguous path.
 	advanceRechecked := func(t *testing.T, op PersistedOperation, statusValue *string, transactionValue string) (string, string) {
 		t.Helper()
-		rpc, err := NewRPCClient("https://rpc.invalid")
-		if err != nil {
-			t.Fatal(err)
-		}
-		rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		rpc := newFakeChain(t, nil)
+		rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			body, _ := io.ReadAll(request.Body)
 			switch {
 			case strings.Contains(string(body), `"method":"getSignatureStatuses"`):
-				return response(`{"jsonrpc":"2.0","id":1,"result":{"value":[` + *statusValue + `]}}`), nil
+				return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":600},"value":[` + *statusValue + `]}}`), nil
 			case strings.Contains(string(body), `"method":"getTransaction"`):
 				if transactionValue == "RPC_ERROR" {
 					return nil, fmt.Errorf("failure receipt pruned")
@@ -228,14 +222,14 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "unattributable")
 		op := submittedOperation(id, routeKey)
 		status, reason, _ := advance(t, op, finalizedFailure,
-			`{"slot":500,"meta":{"err":{"InstructionError":[0,{"Custom":9}]},"logMessages":[]}}`)
+			transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 9}}}, "logMessages": []string{}}))
 		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason {
 			t.Fatalf("truncated failure logs lost the capital stop: %s %q", status, reason)
 		}
 		otherRoute, otherID := newSubmittedOperation(t, "voltr")
 		other := submittedOperation(otherID, otherRoute)
-		otherReceipt := `{"slot":500,"meta":{"err":{"InstructionError":[0,{"Custom":6004}]},"logMessages":` +
-			mustJSONLogs(t, adaptorFailureLogs(bridgeVoltrProgram, 6004)) + `}}`
+		otherReceipt := transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 6004}}},
+			"logMessages": adaptorFailureLogs(bridgeVoltrProgram, 6004)})
 		status, reason, _ = advance(t, other, finalizedFailure, otherReceipt)
 		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason {
 			t.Fatalf("a non-adaptor error lost the capital stop: %s %q", status, reason)
@@ -323,13 +317,10 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10,
 		}
 		slotReads := 0
-		rpc, err := NewRPCClient("https://rpc.invalid")
-		if err != nil {
-			t.Fatal(err)
-		}
+		rpc := newFakeChain(t, nil)
 		// observed slot 42 + a confirmed slot of 71 is past observed+28, so the
 		// report can no longer land inside the adaptor's age window.
-		rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			body, _ := io.ReadAll(request.Body)
 			if strings.Contains(string(body), `"method":"getSlot"`) {
 				slotReads++

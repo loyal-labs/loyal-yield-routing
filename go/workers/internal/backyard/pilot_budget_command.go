@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type PilotBudgetActivationResult struct {
@@ -22,7 +24,7 @@ func RunPilotBudgetActivation(ctx context.Context, databaseURL, rpcURL, routeKey
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	rpc, err := NewRPCClient(rpcURL)
+	rpc, err := chain.New(rpcURL, 15*time.Second)
 	if err != nil {
 		return result, budgetHold("pilot_activation_rpc_unavailable")
 	}

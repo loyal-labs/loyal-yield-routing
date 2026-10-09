@@ -6,6 +6,8 @@ import (
 	"errors"
 	"math"
 	"strconv"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const budgetClockAddress = "SysvarC1ock11111111111111111111111111111111"
@@ -17,7 +19,7 @@ const budgetPriceMarginBPS uint16 = 100
 // This is valuation-only: it does not broaden execution routes or authority.
 // Native SOL fees need a separate reviewed price observation and cannot fall
 // back to an assumed dollar price when this token observer does not cover them.
-func ObserveBudgetTokenPrice(ctx context.Context, rpc *RPCClient, lane string, debit ExecutableDebit, minimumSlot int64) (BudgetPrice, error) {
+func ObserveBudgetTokenPrice(ctx context.Context, rpc *chain.Client, lane string, debit ExecutableDebit, minimumSlot int64) (BudgetPrice, error) {
 	if rpc == nil || minimumSlot <= 0 || debit.Raw == 0 {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_request")
 	}
@@ -46,7 +48,7 @@ func ObserveBudgetTokenPrice(ctx context.Context, rpc *RPCClient, lane string, d
 		return BudgetPrice{}, budgetHold("unbound_valuation_mint")
 	}
 	addresses := uniqueNonzero([]string{reserveAddress, reference.DebtReserve, debit.Mint, bridgeUSDC, budgetClockAddress})
-	slot, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, minimumSlot)
+	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
 	if err != nil {
 		return BudgetPrice{}, err
 	}
@@ -57,7 +59,7 @@ func ObserveBudgetTokenPrice(ctx context.Context, rpc *RPCClient, lane string, d
 	}
 	// Refresh only in simulation, without loading a signer. This captured
 	// state is neither a landed refresh nor signature-verified evidence.
-	slot, accounts, err = rpc.simulateBudgetReserveRefresh(ctx, lane, addresses, slot)
+	slot, accounts, err = simulateBudgetReserveRefresh(ctx, rpc, lane, addresses, slot)
 	if err != nil {
 		return BudgetPrice{}, err
 	}

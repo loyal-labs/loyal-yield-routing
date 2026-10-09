@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Source forecasts reuse the finite production exit graph. They do not commit
@@ -122,7 +124,7 @@ func (p *selectorSourcePools) repay(amount uint64) error {
 	return nil
 }
 
-func observeSelectorSource(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation) (selectorSourceQuote, error) {
+func observeSelectorSource(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation) (selectorSourceQuote, error) {
 	return observeReviewedSelectorSource(ctx, rpc, client, m, o, false)
 }
 
@@ -132,7 +134,7 @@ func observeSelectorSource(ctx context.Context, rpc *RPCClient, client *jupiterC
 // gates stay unchanged, the live selector routes every AUTO source quote —
 // idle and funded — through this entry over the durable planning observation
 // manifest, and no lane list or global selector state is touched.
-func observeAutoSelectorSource(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation) (selectorSourceQuote, error) {
+func observeAutoSelectorSource(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation) (selectorSourceQuote, error) {
 	return observeReviewedSelectorSource(ctx, rpc, client, m, o, true)
 }
 
@@ -154,7 +156,7 @@ func selectorSourceLaneAuthorized(m RouteManifest, lane string, candidate bool) 
 	return err == nil && active.Lane == lane
 }
 
-func observeReviewedSelectorSource(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, candidate bool) (selectorSourceQuote, error) {
+func observeReviewedSelectorSource(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, candidate bool) (selectorSourceQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s := o.Snapshot
@@ -179,7 +181,7 @@ func observeReviewedSelectorSource(ctx context.Context, rpc *RPCClient, client *
 	if err != nil {
 		return out, err
 	}
-	blockhash, err := rpc.LatestBlockhash(ctx)
+	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
 		return out, err
 	}
@@ -214,7 +216,7 @@ func observeReviewedSelectorSource(ctx context.Context, rpc *RPCClient, client *
 // priceSelectorSourcePlan stays the persisted-build compatibility form: it
 // prices embedded-manifest selector lanes exactly as every persisted plan
 // always has, and still refuses the candidate AUTO lane outright.
-func priceSelectorSourcePlan(ctx context.Context, rpc *RPCClient, plan phase3BridgeAdmission, observationFloor int64) (selectorSourceQuote, error) {
+func priceSelectorSourcePlan(ctx context.Context, rpc *chain.Client, plan phase3BridgeAdmission, observationFloor int64) (selectorSourceQuote, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return selectorSourceQuote{}, err
@@ -222,7 +224,7 @@ func priceSelectorSourcePlan(ctx context.Context, rpc *RPCClient, plan phase3Bri
 	return manifest.priceSelectorSourcePlan(ctx, rpc, plan, observationFloor)
 }
 
-func (m RouteManifest) priceSelectorSourcePlan(ctx context.Context, rpc *RPCClient, plan phase3BridgeAdmission, observationFloor int64) (selectorSourceQuote, error) {
+func (m RouteManifest) priceSelectorSourcePlan(ctx context.Context, rpc *chain.Client, plan phase3BridgeAdmission, observationFloor int64) (selectorSourceQuote, error) {
 	return priceReviewedSelectorSourcePlan(ctx, rpc, nil, m, plan, observationFloor, false)
 }
 
@@ -230,7 +232,7 @@ func (m RouteManifest) priceSelectorSourcePlan(ctx context.Context, rpc *RPCClie
 // public pricer. Retained legs decode, compile and measure against the SAME
 // reviewed manifest that produced them; every identity, bound-pair, cost-hash
 // and freshness check is shared with the public path unchanged.
-func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, plan phase3BridgeAdmission, observationFloor int64, candidate bool) (selectorSourceQuote, error) {
+func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, plan phase3BridgeAdmission, observationFloor int64, candidate bool) (selectorSourceQuote, error) {
 	s := plan.Snapshot
 	out := selectorSourceQuote{Lane: s.RouteLane, ObservationID: s.ObservationID}
 	if !selectorSourceLaneAuthorized(m, s.RouteLane, candidate) || !s.PilotActive || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.DebtIdleRaw != 0 || plan.Input == nil || len(plan.Exit) == 0 {
@@ -377,7 +379,7 @@ func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *RPCClient, client
 		}
 		observationFloor = max(observationFloor, cost.ObservationSlot)
 	}
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return out, err
 	}
@@ -408,7 +410,7 @@ func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *RPCClient, client
 //     and freshness are re-proven; nothing skips a check.
 //
 // Rewritten legs re-enter the identical consumer walk afterwards.
-func requoteAutoResidueContinuation(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, plan *phase3BridgeAdmission) error {
+func requoteAutoResidueContinuation(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, plan *phase3BridgeAdmission) error {
 	if client == nil {
 		return budgetHold("selector_source_residue_quote_unavailable")
 	}

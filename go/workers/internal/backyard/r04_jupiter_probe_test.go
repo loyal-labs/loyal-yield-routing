@@ -12,6 +12,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type jupiterProbeTransport struct {
@@ -47,7 +49,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	rpc, err := NewRPCClient(os.Getenv("SOLANA_RPC_URL"))
+	rpc, err := chain.New(os.Getenv("SOLANA_RPC_URL"), 15*time.Second)
 	if err != nil {
 		t.Fatal("probe RPC unavailable")
 	}
@@ -55,7 +57,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		t.Fatal("probe slot unavailable")
 	}

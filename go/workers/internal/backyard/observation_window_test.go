@@ -28,32 +28,29 @@ func TestObservationWindowScalesWithSlotTimeAndIsClamped(t *testing.T) {
 	if observationLagSlots() != budgetMaxObservationLagSlots {
 		t.Fatal("unmeasured window is not 32 slots")
 	}
-	client, err := NewRPCClient("https://rpc.invalid")
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newFakeChain(t, nil)
 	calls, body := 0, `{"jsonrpc":"2.0","id":1,"result":[{"numSlots":222,"samplePeriodSecs":60},{"numSlots":222,"samplePeriodSecs":60}]}`
-	client.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+	rpcOf(client).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		calls++
 		return response(body), nil
 	})
-	client.refreshObservationLagSlots(context.Background())
+	refreshObservationLagSlots(context.Background(), client)
 	if got := observationLagSlots(); got != 49 { // 60 s / 222 slots = 270 ms
 		t.Fatalf("measured 270 ms slots gave %d slots, want 49", got)
 	}
-	client.refreshObservationLagSlots(context.Background())
+	refreshObservationLagSlots(context.Background(), client)
 	if calls != 1 {
 		t.Fatalf("slot time re-measured within a minute: %d calls", calls)
 	}
 	// An unreadable measurement keeps the last value for 10 minutes, then 32.
 	body = `{"jsonrpc":"2.0","id":1,"result":[]}`
 	observationLagChecked = time.Now().Add(-2 * time.Minute)
-	client.refreshObservationLagSlots(context.Background())
+	refreshObservationLagSlots(context.Background(), client)
 	if observationLagSlots() != 49 {
 		t.Fatal("one failed read dropped the measured window")
 	}
 	observationLagChecked, observationLagMeasured = time.Now().Add(-2*time.Minute), time.Now().Add(-11*time.Minute)
-	client.refreshObservationLagSlots(context.Background())
+	refreshObservationLagSlots(context.Background(), client)
 	if observationLagSlots() != budgetMaxObservationLagSlots {
 		t.Fatal("a stale measurement did not fall back to 32 slots")
 	}
@@ -86,11 +83,11 @@ func TestWidenedWindowStillBoundsPriceAge(t *testing.T) {
 // typed error, and a report-bearing tick observation must stay within 32
 // slots even when the general window is wider.
 func TestReportSlotSimulationRefusalIsTypedAndReportWindowStaysAtAdaptorLimit(t *testing.T) {
-	client, _ := NewRPCClient("https://rpc.invalid")
-	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+	client := newFakeChain(t, nil)
+	rpcOf(client).Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":450928730},"value":{"err":{"InstructionError":[0,{"Custom":9}]},"logs":["Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]","Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]","Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW failed: custom program error: 0x9","Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x9"],"unitsConsumed":1}}}`), nil
 	})
-	_, err := client.SimulateSignedTransaction(context.Background(), []byte{1, 2})
+	_, err := simulateSigned(context.Background(), client, []byte{1, 2})
 	var slotErr *ReportSlotSimulationError
 	if !errors.As(err, &slotErr) || slotErr.Slot != 450928730 {
 		t.Fatalf("adaptor ReportSlot simulation refusal is not typed: %v", err)
@@ -99,10 +96,10 @@ func TestReportSlotSimulationRefusalIsTypedAndReportWindowStaysAtAdaptorLimit(t 
 		t.Fatal("expiry must hold at age 34 and not at age 32")
 	}
 	// Same Custom 9 from another program is not the adaptor's refusal.
-	client.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+	rpcOf(client).Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":5},"value":{"err":{"InstructionError":[0,{"Custom":9}]},"logs":["Program Other111 invoke [1]","Program Other111 failed: custom program error: 0x9"],"unitsConsumed":1}}}`), nil
 	})
-	if _, err := client.SimulateSignedTransaction(context.Background(), []byte{1, 2}); err == nil || errors.As(err, &slotErr) {
+	if _, err := simulateSigned(context.Background(), client, []byte{1, 2}); err == nil || errors.As(err, &slotErr) {
 		t.Fatalf("a foreign Custom 9 was typed as the adaptor refusal: %v", err)
 	}
 	observationLag.Store(49)

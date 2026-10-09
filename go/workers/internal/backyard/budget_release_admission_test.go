@@ -6,9 +6,11 @@ import (
 	"math/big"
 	"reflect"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func releaseAdmissionFixture(t *testing.T, output uint64) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func releaseAdmissionFixture(t *testing.T, output uint64) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	o, _, _, m, rpc, client, accounts := fundingAdmissionFixture(t, output)
 	route := ethenaUSDePYUSD

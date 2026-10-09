@@ -13,16 +13,18 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Exercise the actual RPC decoder, production compiler and valuation path.
 // The transport supplies controlled chain inputs; it rejects every signing,
 // simulation and send RPC. This is a local negative witness, not live proof.
-func budgetBuildRPC(t *testing.T, fee uint64, finalSlot int64) *RPCClient {
+func budgetBuildRPC(t *testing.T, fee uint64, finalSlot int64) *chain.Client {
 	return budgetBuildRPCWithAccounts(t, fee, finalSlot, nil)
 }
 
-func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra []ConfirmedAccount) *RPCClient {
+func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra []ConfirmedAccount) *chain.Client {
 	t.Helper()
 	config, err := pinnedKaminoObservationConfig()
 	if err != nil {
@@ -50,9 +52,9 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 	for _, a := range extra {
 		accounts[a.Address] = a
 	}
-	rpc, _ := NewRPCClient("https://rpc.invalid")
+	rpc := newFakeChain(t, nil)
 	var reads atomic.Int64 // pricers read the slot from concurrent cost reads
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var body struct {
 			Method string            `json:"method"`
 			Params []json.RawMessage `json:"params"`
@@ -79,8 +81,8 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 				t.Fatal("fee request must contain unsigned one-signer message")
 			}
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": fee}
-		case "getBlockHeight":
-			result = 10 // A signed HOLD at this height is not expired in the DB fixture.
+		case "getEpochInfo":
+			result = finalizedEpoch(10) // A signed HOLD at this height is not expired in the DB fixture.
 		case "getMinimumBalanceForRentExemption":
 			// Read-only fixture of the real RPC: (128+bytes) lamports per byte
 			// year across the two-year exemption threshold at 3480 lamports.
@@ -190,7 +192,7 @@ func TestProductionKaminoAndJupiterRequireDurableBudgetBeforeSigner(t *testing.T
 	})
 }
 
-func assertKnownCostExceedsLegacyBudget(t *testing.T, rpc *RPCClient, request any, effects ExpectedEffects) {
+func assertKnownCostExceedsLegacyBudget(t *testing.T, rpc *chain.Client, request any, effects ExpectedEffects) {
 	t.Helper()
 	cost, err := observePhase3KnownBuildCost(context.Background(), rpc, request, effects)
 	if err != nil {
@@ -205,10 +207,10 @@ func assertKnownCostExceedsLegacyBudget(t *testing.T, rpc *RPCClient, request an
 func TestKnownBuildCostReadsIndependentValuationsTogether(t *testing.T) {
 	_, _, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
 	rpc := budgetBuildRPC(t, 5_000, 42)
-	base := rpc.client.Transport
+	base := rpcOf(rpc).Transport
 	var started atomic.Int32
 	ready := make(chan struct{})
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			return nil, err
@@ -276,8 +278,8 @@ func TestKnownBuildCostConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
 			rpc := budgetBuildRPC(t, 5_000, tc.finalSlot)
-			base := rpc.client.Transport
-			rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			base := rpcOf(rpc).Transport
+			rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				body, err := io.ReadAll(request.Body)
 				if err != nil {
 					return nil, err

@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Controlled simulation and quotes around actual compilers/valuation. Real
 // deployed borrow fee behavior is separately compared in kamino_borrow_test.
-func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient, []ConfirmedAccount) {
+func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
 	t.Helper()
 	o, _, _, m, _, client, accounts := fundingAdmissionFixture(t, output)
 	route := ethenaUSDePYUSD
@@ -50,7 +52,7 @@ func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observ
 		t.Fatal(err)
 	}
 	addresses := append(depositProjectionAddresses(route), route.Kamino.DebtReserve, route.DebtLiquiditySupply, route.DebtFeeReceiver)
-	_, full, err := rpc.GetMultipleAccounts(context.Background(), addresses, 42)
+	_, full, err := confirmedAccounts(context.Background(), rpc, addresses, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,8 +60,8 @@ func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observ
 	if err != nil {
 		t.Fatal(err)
 	}
-	underlying := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	underlying := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -85,7 +87,7 @@ func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observ
 		for _, a := range addresses {
 			expectedAddresses = append(expectedAddresses, a)
 		}
-		want := map[string]any{"encoding": "base64", "commitment": "confirmed", "sigVerify": false, "replaceRecentBlockhash": false, "minContextSlot": float64(42), "accounts": map[string]any{"encoding": "base64", "addresses": expectedAddresses}}
+		want := map[string]any{"encoding": "base64", "commitment": "confirmed", "minContextSlot": float64(42), "accounts": map[string]any{"encoding": "base64", "addresses": expectedAddresses}}
 		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || !bytes.Equal(wire[65:], message) || !reflect.DeepEqual(options, want) {
 			t.Fatal("borrow simulation changed exact unsigned wire/options")
 		}

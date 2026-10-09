@@ -371,7 +371,7 @@ func pinnedIdentityHeaders(t *testing.T, slots map[string]int64) []programIdenti
 // so the route keeps holding instead of silently trusting the new binary.
 func TestProgramIdentityWatcherVerifiesFullImageOnSlotMove(t *testing.T) {
 	reader := &stubIdentityReader{images: pinnedIdentityHeaders(t, nil)}
-	watcher := newProgramIdentityWatcher(reader)
+	watcher := newProgramIdentityWatcher(reader.programIdentityAccounts)
 	observation, err := watcher.observe(context.Background())
 	if err != nil || observation.Verified || observation.VoltrProgramDeploySlot != voltrProgramDeploySlot {
 		t.Fatalf("pinned headers must force a full verification: observation=%+v err=%v", observation, err)
@@ -389,7 +389,7 @@ func TestProgramIdentityWatcherVerifiesFullImageOnSlotMove(t *testing.T) {
 	}
 
 	absent := &stubIdentityReader{images: pinnedIdentityHeaders(t, nil)[:2]}
-	if observation, err := newProgramIdentityWatcher(absent).observe(context.Background()); err != nil || observation.Verified {
+	if observation, err := newProgramIdentityWatcher(absent.programIdentityAccounts).observe(context.Background()); err != nil || observation.Verified {
 		t.Fatalf("an absent program identity must stay unverified: observation=%+v err=%v", observation, err)
 	}
 	if absent.fullReads != 0 {
@@ -397,7 +397,7 @@ func TestProgramIdentityWatcherVerifiesFullImageOnSlotMove(t *testing.T) {
 	}
 
 	moved := &stubIdentityReader{images: pinnedIdentityHeaders(t, map[string]int64{bridgeVoltrProgram: voltrProgramDeploySlot + 1})}
-	if observation, err := newProgramIdentityWatcher(moved).observe(context.Background()); err != nil || observation.Verified || observation.VoltrProgramDeploySlot != voltrProgramDeploySlot+1 {
+	if observation, err := newProgramIdentityWatcher(moved.programIdentityAccounts).observe(context.Background()); err != nil || observation.Verified || observation.VoltrProgramDeploySlot != voltrProgramDeploySlot+1 {
 		t.Fatalf("a moved deploy slot must stay unverified: observation=%+v err=%v", observation, err)
 	}
 }

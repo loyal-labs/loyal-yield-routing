@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"math/big"
-	"sort"
+
+	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const (
@@ -25,65 +27,6 @@ var (
 	voltrPDAFinalMarker                 = []byte("ProgramDerivedAddress")
 )
 
-// TokenCustodySpec pins a plain SPL/Token-2022 custody. No identity is learned
-// from RPC; each is supplied by the route configuration before it is read.
-type TokenCustodySpec struct {
-	Address, TokenProgram, Mint, Authority string
-}
-
-// VoltrObservationConfig contains the full immutable identity set used by the
-// read-only observation. IdleCustody is part of Custodies and is the one whose
-// amount is used to calculate an immediate withdrawal shortfall.
-type VoltrObservationConfig struct {
-	VoltrProgram, Vault string
-	IdleCustody         string
-	Custodies           []TokenCustodySpec
-	IdleFloorRaw        uint64
-	VaultCapRaw         uint64
-}
-
-func (c VoltrObservationConfig) validate() error {
-	if _, err := decodeBase58PublicKey(c.VoltrProgram); err != nil {
-		return fmt.Errorf("invalid Voltr program: %w", err)
-	}
-	if _, err := decodeBase58PublicKey(c.Vault); err != nil {
-		return fmt.Errorf("invalid Voltr vault: %w", err)
-	}
-	if c.IdleCustody == "" || len(c.Custodies) == 0 || c.IdleFloorRaw > c.VaultCapRaw {
-		return fmt.Errorf("incomplete Voltr observation configuration")
-	}
-	seen := make(map[string]struct{}, len(c.Custodies))
-	idlePresent := false
-	for _, custody := range c.Custodies {
-		if custody.Address == "" || custody.TokenProgram == "" || custody.Mint == "" || custody.Authority == "" {
-			return fmt.Errorf("incomplete custody identity")
-		}
-		if _, duplicate := seen[custody.Address]; duplicate {
-			return fmt.Errorf("duplicate custody address")
-		}
-		seen[custody.Address] = struct{}{}
-		if custody.Address == c.IdleCustody {
-			idlePresent = true
-		}
-		if _, err := decodeBase58PublicKey(custody.Address); err != nil {
-			return fmt.Errorf("invalid custody address: %w", err)
-		}
-		if _, err := decodeBase58PublicKey(custody.Mint); err != nil {
-			return fmt.Errorf("invalid custody mint: %w", err)
-		}
-		if _, err := decodeBase58PublicKey(custody.Authority); err != nil {
-			return fmt.Errorf("invalid custody authority: %w", err)
-		}
-		if custody.TokenProgram != classicTokenProgram && custody.TokenProgram != token2022Program {
-			return fmt.Errorf("unsupported custody token program")
-		}
-	}
-	if !idlePresent {
-		return fmt.Errorf("idle custody is not pinned")
-	}
-	return nil
-}
-
 type VoltrWithdrawalReceipt struct {
 	Address                          string
 	Vault, User                      string
@@ -94,177 +37,37 @@ type VoltrWithdrawalReceipt struct {
 	Bump, Version                    uint8
 }
 
-type VoltrWithdrawalDemand struct {
-	Slot                        int64
-	Receipts                    []VoltrWithdrawalReceipt
-	Custodies                   []ConfirmedAccount
-	ConfirmedIdleRaw            uint64
-	PendingWithdrawalUpperBound uint64
-	RequiredIdleRaw             uint64
-	IdleShortfallRaw            uint64
-}
-
 type programAccount struct {
 	Address string
 	Account ConfirmedAccount
 }
 
-// ScanVoltrWithdrawalDemand is intentionally signer-free. It retries only
-// read calls until the receipt namespace and every pinned custody account come
-// from one confirmed context slot; it never fabricates a mixed-slot snapshot.
-func (c *RPCClient) ScanVoltrWithdrawalDemand(ctx context.Context, config VoltrObservationConfig) (VoltrWithdrawalDemand, error) {
-	if err := config.validate(); err != nil {
-		return VoltrWithdrawalDemand{}, err
-	}
-	addresses := make([]string, len(config.Custodies))
-	byAddress := make(map[string]TokenCustodySpec, len(config.Custodies))
-	for index, spec := range config.Custodies {
-		addresses[index] = spec.Address
-		byAddress[spec.Address] = spec
-	}
-	minSlot, err := c.ConfirmedSlot(ctx)
-	if err != nil {
-		return VoltrWithdrawalDemand{}, err
-	}
-	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		receiptSlot, rawReceipts, err := c.getVoltrWithdrawalReceiptAccounts(ctx, config.VoltrProgram, config.Vault, minSlot)
-		if err != nil {
-			return VoltrWithdrawalDemand{}, err
-		}
-		custodySlot, custodies, err := c.GetMultipleAccounts(ctx, addresses, minSlot)
-		if err != nil {
-			return VoltrWithdrawalDemand{}, err
-		}
-		if receiptSlot != custodySlot {
-			if receiptSlot > custodySlot {
-				minSlot = receiptSlot
-			} else {
-				minSlot = custodySlot
-			}
-			continue
-		}
-		receipts := make([]VoltrWithdrawalReceipt, 0, len(rawReceipts))
-		for _, raw := range rawReceipts {
-			receipt, err := DecodeVoltrWithdrawalReceipt(raw.Account, raw.Address, config.VoltrProgram, config.Vault, config.VaultCapRaw)
-			if err != nil {
-				return VoltrWithdrawalDemand{}, err
-			}
-			receipts = append(receipts, receipt)
-		}
-		sort.Slice(receipts, func(i, j int) bool { return receipts[i].Address < receipts[j].Address })
-		idleRaw := uint64(0)
-		for _, account := range custodies {
-			spec, exists := byAddress[account.Address]
-			if !exists {
-				return VoltrWithdrawalDemand{}, fmt.Errorf("unexpected custody account %s", account.Address)
-			}
-			if account.Executable || account.Lamports == 0 {
-				return VoltrWithdrawalDemand{}, fmt.Errorf("custody account envelope mismatch: %s", account.Address)
-			}
-			mint, _ := decodeBase58PublicKey(spec.Mint)
-			authority, _ := decodeBase58PublicKey(spec.Authority)
-			decoded, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
-			if err != nil {
-				return VoltrWithdrawalDemand{}, fmt.Errorf("decode custody %s: %w", account.Address, err)
-			}
-			if account.Address == config.IdleCustody {
-				idleRaw = decoded.Raw
-			}
-		}
-		pending, err := sumReceiptUpperBounds(receipts)
-		if err != nil {
-			return VoltrWithdrawalDemand{}, err
-		}
-		if pending > config.VaultCapRaw-config.IdleFloorRaw {
-			return VoltrWithdrawalDemand{}, fmt.Errorf("withdrawal demand exceeds vault cap")
-		}
-		required := config.IdleFloorRaw + pending
-		shortfall := uint64(0)
-		if required > idleRaw {
-			shortfall = required - idleRaw
-		}
-		return VoltrWithdrawalDemand{
-			Slot: receiptSlot, Receipts: receipts, Custodies: custodies, ConfirmedIdleRaw: idleRaw,
-			PendingWithdrawalUpperBound: pending, RequiredIdleRaw: required, IdleShortfallRaw: shortfall,
-		}, nil
-	}
-	return VoltrWithdrawalDemand{}, fmt.Errorf("confirmed receipt and custody reads did not align after %d attempts", maxConfirmedObservationAttempts)
-}
-
-func sumReceiptUpperBounds(receipts []VoltrWithdrawalReceipt) (uint64, error) {
-	var total uint64
-	for _, receipt := range receipts {
-		if ^uint64(0)-total < receipt.UpperBoundAssetRaw {
-			return 0, fmt.Errorf("withdrawal demand overflow")
-		}
-		total += receipt.UpperBoundAssetRaw
-	}
-	return total, nil
-}
-
-func (c *RPCClient) getVoltrWithdrawalReceiptAccounts(ctx context.Context, voltrProgram, vault string, minContextSlot int64) (int64, []programAccount, error) {
+func getVoltrWithdrawalReceiptAccounts(ctx context.Context, c *chain.Client, voltrProgram, vault string, minContextSlot int64) (int64, []programAccount, error) {
 	if minContextSlot <= 0 {
 		return 0, nil, fmt.Errorf("positive minimum context slot is required")
 	}
-	var result struct {
-		Context struct {
-			Slot int64 `json:"slot"`
-		} `json:"context"`
-		Value []struct {
-			Pubkey  string `json:"pubkey"`
-			Account struct {
-				Owner      string          `json:"owner"`
-				Lamports   uint64          `json:"lamports"`
-				Data       json.RawMessage `json:"data"`
-				Executable bool            `json:"executable"`
-			} `json:"account"`
-		} `json:"value"`
+	keys, err := publicKeys([]string{voltrProgram, vault})
+	if err != nil {
+		return 0, nil, err
 	}
-	discriminator58 := encodeBase58(voltrWithdrawalReceiptDiscriminator[:])
-	err := c.call(ctx, "getProgramAccounts", []any{voltrProgram, map[string]any{
-		"commitment": "confirmed", "encoding": "base64", "withContext": true, "minContextSlot": minContextSlot,
-		"filters": []any{
-			map[string]any{"memcmp": map[string]any{"offset": 0, "bytes": discriminator58}},
-			map[string]any{"memcmp": map[string]any{"offset": 8, "bytes": vault}},
-		},
-	}}, &result)
+	slot, read, err := c.ProgramAccounts(ctx, keys[0], []rpc.RPCFilter{
+		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: voltrWithdrawalReceiptDiscriminator[:]}},
+		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 8, Bytes: keys[1][:]}},
+	}, rpc.CommitmentConfirmed, uint64(minContextSlot))
 	if err != nil {
 		return 0, nil, confirmedObservationUnavailable(err)
 	}
-	if result.Context.Slot < minContextSlot {
-		return 0, nil, confirmedObservationUnavailable(fmt.Errorf("incoherent confirmed receipt response"))
-	}
-	seen := make(map[string]struct{}, len(result.Value))
-	accounts := make([]programAccount, 0, len(result.Value))
-	for _, value := range result.Value {
-		if _, err := decodeBase58PublicKey(value.Pubkey); err != nil {
-			return 0, nil, fmt.Errorf("invalid receipt address: %w", err)
+	seen := make(map[solana.PublicKey]struct{}, len(read))
+	accounts := make([]programAccount, 0, len(read))
+	for _, account := range read {
+		if _, duplicate := seen[account.Key]; duplicate {
+			return 0, nil, fmt.Errorf("duplicate receipt account %s", account.Key)
 		}
-		if _, duplicate := seen[value.Pubkey]; duplicate {
-			return 0, nil, fmt.Errorf("duplicate receipt account %s", value.Pubkey)
-		}
-		seen[value.Pubkey] = struct{}{}
-		data, err := decodeRPCBase64(value.Account.Data, value.Pubkey)
-		if err != nil {
-			return 0, nil, err
-		}
-		accounts = append(accounts, programAccount{Address: value.Pubkey, Account: ConfirmedAccount{
-			Address: value.Pubkey, Owner: value.Account.Owner, Lamports: value.Account.Lamports, Data: data, Executable: value.Account.Executable,
-		}})
+		seen[account.Key] = struct{}{}
+		address := account.Key.String()
+		accounts = append(accounts, programAccount{Address: address, Account: confirmedAccount(address, &account)})
 	}
-	return result.Context.Slot, accounts, nil
-}
-
-func decodeRPCBase64(raw json.RawMessage, address string) ([]byte, error) {
-	var encoded []string
-	if err := json.Unmarshal(raw, &encoded); err != nil || len(encoded) != 2 || encoded[1] != "base64" {
-		return nil, fmt.Errorf("account %s has invalid base64 encoding", address)
-	}
-	data, err := base64.StdEncoding.DecodeString(encoded[0])
-	if err != nil {
-		return nil, fmt.Errorf("decode account %s: %w", address, err)
-	}
-	return data, nil
+	return int64(slot), accounts, nil
 }
 
 // DecodeVoltrWithdrawalReceipt decodes the deployed 112-byte account, not the

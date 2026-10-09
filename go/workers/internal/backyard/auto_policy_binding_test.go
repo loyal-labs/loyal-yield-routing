@@ -738,8 +738,8 @@ func TestAutoQuoteEvidenceThroughCandidateManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var body struct {
 			Method string
 		}
@@ -839,8 +839,8 @@ func TestAutoQuoteEvidencePreparesChainLookupTablesForOversizedEdges(t *testing.
 		t.Fatal(err)
 	}
 	reads := 0
-	rpc, _ := NewRPCClient("https://rpc.invalid")
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rpc := newFakeChain(t, nil)
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var body struct {
 			Method string
 			Params []json.RawMessage

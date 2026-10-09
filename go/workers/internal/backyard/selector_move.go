@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // A complete move includes the existing source exit and destination entry.
 // Its evidence authorizes no transaction; runtime still reserves and rebuilds
 // each leg against actual balances. A destination is reselected after unwind.
-func observeSelectorMove(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, o Observation, lane string, requestedEquity, idleBuffer uint64) (MoveQuote, error) {
+func observeSelectorMove(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, lane string, requestedEquity, idleBuffer uint64) (MoveQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var empty MoveQuote
@@ -51,7 +53,7 @@ func copyDebtPrice(p *BudgetPrice) *BudgetPrice {
 	return &copied
 }
 
-func composeSelectorMove(ctx context.Context, rpc *RPCClient, o Observation, source selectorSourceQuote, destination selectorDestinationQuote) (MoveQuote, error) {
+func composeSelectorMove(ctx context.Context, rpc *chain.Client, o Observation, source selectorSourceQuote, destination selectorDestinationQuote) (MoveQuote, error) {
 	return composeSelectorMoveWithLane(ctx, rpc, o, source, destination, selectorLane)
 }
 
@@ -61,7 +63,7 @@ func composeSelectorMove(ctx context.Context, rpc *RPCClient, o Observation, sou
 // validated autoPolicy binding that observed it. Every debt-price identity,
 // equity bound and recipe-evidence check is shared verbatim; the public form
 // above keeps the installed selector-lane gate.
-func composeSelectorMoveWithLane(ctx context.Context, rpc *RPCClient, o Observation, source selectorSourceQuote, destination selectorDestinationQuote, laneAllowed func(string) bool) (MoveQuote, error) {
+func composeSelectorMoveWithLane(ctx context.Context, rpc *chain.Client, o Observation, source selectorSourceQuote, destination selectorDestinationQuote, laneAllowed func(string) bool) (MoveQuote, error) {
 	s := o.Snapshot
 	validThrough := min(source.Recipe.ValidThroughSlot, destination.Recipe.ValidThroughSlot)
 	if destination.DebtPrice != nil {
@@ -142,7 +144,7 @@ func composeSelectorMoveWithLane(ctx context.Context, rpc *RPCClient, o Observat
 	if source.Recipe.NetworkLamports > math.MaxUint64-destination.Recipe.NetworkLamports || source.Recipe.SetupLamports > math.MaxUint64-destination.Recipe.SetupLamports {
 		return q, budgetHold("selector_move_native_overflow")
 	}
-	slot, accounts, err := rpc.GetMultipleAccounts(ctx, []string{bridgeDelegate, bridgeVault}, floor)
+	slot, accounts, err := confirmedAccounts(ctx, rpc, []string{bridgeDelegate, bridgeVault}, floor)
 	if err != nil {
 		return q, err
 	}
@@ -155,7 +157,7 @@ func composeSelectorMoveWithLane(ctx context.Context, rpc *RPCClient, o Observat
 			return q, budgetHold("selector_move_native_funding_unavailable")
 		}
 	}
-	current, err := rpc.ConfirmedSlot(ctx)
+	current, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return q, err
 	}

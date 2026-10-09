@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"math"
 	"math/big"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Debt-sensitive interval, enumerated from the retained destination recipe:
@@ -240,7 +242,7 @@ func selectorPayoffFundingSize(debtUpper, released, probeMinimumOutput uint64) (
 // rounding balance is manufactured. Receipts beyond the guarantee are
 // ResidualReceiptsRaw: an upper uncertainty bound, unproven now, left for a
 // refreshed continuation pass instead of being wired on today's evidence.
-func selectorDestinationExit(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount, position KaminoPosition, slot, observationFloor int64, entryDeposit, redepositDeposit, initial, redeposit, borrow, fee, rounding uint64) (selectorDestinationPayoff, error) {
+func selectorDestinationExit(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount, position KaminoPosition, slot, observationFloor int64, entryDeposit, redepositDeposit, initial, redeposit, borrow, fee, rounding uint64) (selectorDestinationPayoff, error) {
 	var empty selectorDestinationPayoff
 	if initial <= 1 || redeposit <= 1 || initial-1 > math.MaxUint64-(redeposit-1) || borrow > math.MaxUint64-fee {
 		return empty, budgetHold("selector_destination_exit_amount_invalid")

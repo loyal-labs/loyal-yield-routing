@@ -4,6 +4,8 @@ import (
 	"context"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func initializationSnapshotReady(s Snapshot) bool {
@@ -38,7 +40,7 @@ func snapshotInitializationReady(s Snapshot, laneAllowed func(string) bool) bool
 // This prepares only an empty account before allocating user principal. Actual
 // rent, installed policy, metadata, market and native funding are rechecked by
 // the existing prestate gate at admission and immediately before signing/send.
-func prepareKaminoInitialization(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, observe func(context.Context) (Observation, error)) (Observation, KaminoInitializationRequest, error) {
+func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observe func(context.Context) (Observation, error)) (Observation, KaminoInitializationRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	// The decision is validated through the same manifest authority that
@@ -58,11 +60,11 @@ func prepareKaminoInitialization(ctx context.Context, rpc *RPCClient, manifest R
 	if err = manifest.validateBindings(); err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
-	var rent uint64
-	if err = rpc.call(ctx, "getMinimumBalanceForRentExemption", []any{kaminoObligationLength, map[string]string{"commitment": "confirmed"}}, &rent); err != nil || rent == 0 {
+	rent, err := rpc.RentExempt(ctx, kaminoObligationLength)
+	if err != nil {
 		return o, KaminoInitializationRequest{}, budgetHold("initializer_rent_unavailable")
 	}
-	blockhash, err := rpc.LatestBlockhash(ctx)
+	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
@@ -76,7 +78,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *RPCClient, manifest R
 	if err != nil {
 		return o, r, err
 	}
-	fee, err := rpc.ObserveMessageFee(ctx, message, o.Snapshot.Slot)
+	fee, err := observeMessageFee(ctx, rpc, message, o.Snapshot.Slot)
 	if err != nil {
 		return o, r, err
 	}
@@ -87,7 +89,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *RPCClient, manifest R
 	return o, r, nil
 }
 
-func (d *Database) admitKaminoInitialization(ctx context.Context, rpc *RPCClient, manifest RouteManifest, id string, o Observation, decision Decision, r KaminoInitializationRequest) error {
+func (d *Database) admitKaminoInitialization(ctx context.Context, rpc *chain.Client, manifest RouteManifest, id string, o Observation, decision Decision, r KaminoInitializationRequest) error {
 	if !manifest.initializationSnapshotReady(o.Snapshot) || !decisionsEqual(manifest.DecideOnManifest(o.Snapshot), decision) || decision.StrategyKey != r.RouteLane {
 		return budgetHold("initializer_decision_changed")
 	}

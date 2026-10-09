@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context, rpc *RPCClient, manifest RouteManifest, decision Decision, client *jupiterClient, enrich func(context.Context, *Observation) error) (Observation, JupiterExecutionEvidence, error) {
+func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, client *jupiterClient, enrich func(context.Context, *Observation) error) (Observation, JupiterExecutionEvidence, error) {
 	if rpc == nil || client == nil || enrich == nil || decision.AmountRaw <= 0 {
 		return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter evidence request")
 	}
@@ -118,7 +120,7 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 // Current execution calls this after checking actual custody/policy accounts.
 // Exit costing may also quote prospective balances, but must never treat that
 // estimate as current-state simulation or promote its wire to execution.
-func prepareJupiterQuoteEvidence(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
+func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
 	binding, err := manifest.jupiterPolicyForRoute(decision.Action, decision.StrategyKey)
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
@@ -159,7 +161,7 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *RPCClient, client *ju
 		quote, instruction, err = client.freshSwapForRoute(ctx, decision.StrategyKey, decision.Action, amount)
 		return err
 	}, func(ctx context.Context) error {
-		blockhash, blockhashErr = rpc.LatestBlockhash(ctx)
+		blockhash, blockhashErr = latestBlockhash(ctx, rpc)
 		return nil
 	})
 	if err != nil {

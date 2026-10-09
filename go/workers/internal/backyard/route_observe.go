@@ -13,44 +13,42 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // ObserveConfirmedRouteSnapshot extends the bridge snapshot with the fixed
 // PRIME/USDC position, PRIME custody, and exact installed policy bytes. A
 // manifest entry alone never makes a route ready: every referenced policy is
 // read at the same confirmed slot and matched by owner and data hash.
-func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *RPCClient, manifest RouteManifest) (Observation, error) {
+func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, manifest RouteManifest) (Observation, error) {
 	observation, _, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
 	return observation, err
 }
 
-func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCClient, manifest RouteManifest) (Observation, []ConfirmedAccount, error) {
+func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *chain.Client, manifest RouteManifest) (Observation, []ConfirmedAccount, error) {
 	if rpc == nil {
 		return Observation{}, nil, fmt.Errorf("RPC client is required")
 	}
 	return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
-		confirmedSlot: rpc.ConfirmedSlot,
+		confirmedSlot: func(ctx context.Context) (int64, error) { return confirmedSlot(ctx, rpc) },
 		receipts: func(ctx context.Context, minSlot int64) (int64, []programAccount, error) {
-			return rpc.getVoltrWithdrawalReceiptAccounts(ctx, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
+			return getVoltrWithdrawalReceiptAccounts(ctx, rpc, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
 		},
 		accounts: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
-			optional := optionalLifecycleObligations(addresses)
-			for _, candidate := range addresses {
-				// A null strategy receipt must reach the integrity classifier
-				// instead of failing the batch as a required absent account.
-				if candidate == bridgeStrategyReceipt {
-					optional = append(optional, candidate)
-					break
-				}
-			}
-			if len(optional) > 0 {
-				return rpc.GetMultipleAccountsWithOptional(ctx, addresses, minSlot, optional...)
-			}
-			return rpc.GetMultipleAccounts(ctx, addresses, minSlot)
+			// A null strategy receipt must reach the integrity classifier
+			// instead of failing the batch as a required absent account.
+			return confirmedAccounts(ctx, rpc, addresses, minSlot, append(optionalLifecycleObligations(addresses), bridgeStrategyReceipt)...)
 		},
-		refreshValuation: rpc.simulateRouteValuationRefresh,
-		finalizedReceipt: rpc.strategyReceiptFinalized,
-		now:              func() time.Time { return time.Now().UTC() },
+		refreshValuation: func(ctx context.Context, route RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
+			return simulateRouteValuationRefresh(ctx, rpc, route, addresses, minSlot)
+		},
+		// A null strategy receipt at finalized is settled ledger state; the
+		// same null at confirmed may still be a replication artifact.
+		finalizedReceipt: func(ctx context.Context, minSlot int64) (int64, []ConfirmedAccount, error) {
+			return finalizedAccounts(ctx, rpc, []string{bridgeStrategyReceipt}, minSlot, bridgeStrategyReceipt)
+		},
+		now: func() time.Time { return time.Now().UTC() },
 	})
 }
 
@@ -59,7 +57,7 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *RPCC
 // outer production observation before any monitor sees this snapshot.
 func observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(
 	ctx context.Context,
-	rpc *RPCClient,
+	rpc *chain.Client,
 	manifest RouteManifest,
 	enrich func(context.Context, *Observation) error,
 ) (Observation, []ConfirmedAccount, error) {

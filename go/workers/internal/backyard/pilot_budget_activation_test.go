@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func pilotFlatFixture(t *testing.T) pilotFlatEvidence {
@@ -170,7 +172,7 @@ func TestPilotBudgetActivationDurableAndIdempotent(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
 	}))
 	defer server.Close()
-	rpc, err := NewRPCClient(server.URL)
+	rpc, err := chain.New(server.URL, 15*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

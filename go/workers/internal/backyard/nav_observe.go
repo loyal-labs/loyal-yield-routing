@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -28,14 +27,6 @@ var (
 	strategyReceiptDiscriminator = [8]byte{51, 8, 192, 253, 115, 78, 112, 214}
 	voltrVaultDiscriminator      = [8]byte{211, 8, 232, 43, 2, 152, 117, 119}
 )
-
-// ConfirmedAccountReader is the complete transport boundary for route NAV.
-// Production uses RPCClient; fixtures use an in-memory reader without changing
-// valuation or account validation.
-type ConfirmedAccountReader interface {
-	ConfirmedSlot(context.Context) (int64, error)
-	GetMultipleAccounts(context.Context, []string, int64) (int64, []ConfirmedAccount, error)
-}
 
 type StrategyReceipt struct {
 	PositionValueRaw uint64
@@ -173,10 +164,6 @@ type RouteNAVSnapshot struct {
 	LPSupplyRaw       uint64
 	SnapshotDigest    string
 	Report            BridgeReport
-}
-
-func pinnedRouteNAVAddresses() []string {
-	return pinnedRouteNAVAddressesForRoute(RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, Market: kaminoMarket, Program: kaminoProgram}, CollateralCustody: kaminoPrimeCustody})
 }
 
 func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
@@ -565,30 +552,4 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 		SnapshotDigest: nav.SnapshotDigest,
 		Report:         BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
 	}, nil
-}
-
-// ObserveConfirmedRouteNAV obtains every known custody, receipt, adaptor, and
-// PRIME/USDC account in one confirmed getMultipleAccounts context. It never
-// merges values from independently observed slots.
-func ObserveConfirmedRouteNAV(ctx context.Context, reader ConfirmedAccountReader, manifest RouteManifest) (RouteNAVSnapshot, error) {
-	if reader == nil {
-		return RouteNAVSnapshot{}, fmt.Errorf("confirmed account reader is required")
-	}
-	minimumSlot, err := reader.ConfirmedSlot(ctx)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
-	// This public Phase 1 helper remains pinned to the legacy PRIME fixture.
-	// The serialized worker uses ObserveConfirmedRouteSnapshot, which resolves
-	// its manifest-frozen lane through the route-aware path.
-	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint, Market: kaminoMarket, Program: kaminoProgram, Vault: bridgeVault}, CollateralCustody: kaminoPrimeCustody}
-	addresses := pinnedRouteNAVAddresses()
-	slot, accounts, err := reader.GetMultipleAccounts(ctx, addresses, minimumSlot)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
-	if slot < minimumSlot {
-		return RouteNAVSnapshot{}, fmt.Errorf("confirmed NAV response regressed below its minimum slot")
-	}
-	return ComputeRouteNAVForRoute(slot, accounts, manifest, nil, route)
 }

@@ -6,6 +6,11 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+
+	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // The upgradeable-loader identity this worker accepts. Any other owner, a
@@ -50,12 +55,52 @@ type programIdentityImage struct {
 	Data       []byte
 }
 
-// programIdentityReader is the confirmed-state seam behind M6.
-type programIdentityReader interface {
-	// programIdentityAccounts returns the pinned program header accounts and
-	// their ProgramData accounts: 12 bytes each, or the full image when full is
-	// set. An absent account is simply missing from the result.
-	programIdentityAccounts(ctx context.Context, full bool) ([]programIdentityImage, error)
+// programIdentityReader is the confirmed-state seam behind M6. It returns the
+// pinned program header accounts and their ProgramData accounts: headers
+// only, or the full ProgramData image when full is set. An absent account is
+// simply missing from the result.
+type programIdentityReader func(ctx context.Context, full bool) ([]programIdentityImage, error)
+
+// chainProgramIdentity reads the program identity accounts at confirmed. Full
+// ProgramData images are read one address at a time: the pinned Voltr image is
+// over a megabyte and batch responses are size-capped.
+func chainProgramIdentity(c *chain.Client) programIdentityReader {
+	return func(ctx context.Context, full bool) ([]programIdentityImage, error) {
+		addresses := []string{bridgeVoltrProgram, bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress}
+		keys, err := publicKeys(addresses)
+		if err != nil {
+			return nil, err
+		}
+		if !full {
+			accounts, err := c.AccountHeads(ctx, keys, programHeaderLength)
+			if err != nil {
+				return nil, confirmedObservationUnavailable(err)
+			}
+			return programIdentityImages(addresses, accounts), nil
+		}
+		accounts, err := c.AccountHeads(ctx, keys[:2], programHeaderLength)
+		if err != nil {
+			return nil, confirmedObservationUnavailable(err)
+		}
+		for _, key := range keys[2:] {
+			_, image, err := c.Accounts(ctx, []solana.PublicKey{key}, rpc.CommitmentConfirmed, 0)
+			if err != nil {
+				return nil, confirmedObservationUnavailable(err)
+			}
+			accounts = append(accounts, image...)
+		}
+		return programIdentityImages(addresses, accounts), nil
+	}
+}
+
+func programIdentityImages(addresses []string, accounts []*chain.Account) []programIdentityImage {
+	images := make([]programIdentityImage, 0, len(accounts))
+	for i, account := range accounts {
+		if account != nil {
+			images = append(images, programIdentityImage{Address: addresses[i], Owner: account.Owner.String(), Lamports: account.Lamports, Executable: account.Executable, Data: account.Data})
+		}
+	}
+	return images
 }
 
 // programIdentityObservation is what the monitors arm M6 from.
@@ -85,7 +130,7 @@ func newProgramIdentityWatcher(reader programIdentityReader) *programIdentityWat
 // hold instead of failing the tick; only a transport failure is an error.
 func (w *programIdentityWatcher) observe(ctx context.Context) (programIdentityObservation, error) {
 	observation := programIdentityObservation{}
-	images, err := w.reader.programIdentityAccounts(ctx, false)
+	images, err := w.reader(ctx, false)
 	if err != nil {
 		return observation, err
 	}
@@ -118,7 +163,7 @@ func (w *programIdentityWatcher) observe(ctx context.Context) (programIdentityOb
 		}
 	}
 	if rehash {
-		images, err = w.reader.programIdentityAccounts(ctx, true)
+		images, err = w.reader(ctx, true)
 		if err != nil {
 			return observation, err
 		}

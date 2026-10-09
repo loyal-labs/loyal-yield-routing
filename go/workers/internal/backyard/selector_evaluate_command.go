@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // ErrSelectorEvaluationCommittedReleaseUnconfirmed reports that the locked
@@ -69,7 +71,7 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 	if err != nil {
 		return err
 	}
-	rpc, err := NewRPCClient(config.RPCURL)
+	rpc, err := chain.New(config.RPCURL, 15*time.Second)
 	if err != nil {
 		return budgetHold("selector_evaluate_rpc_unavailable")
 	}
@@ -80,10 +82,10 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 			return NewEconomicFeedOnManifest(ctx, config.TimescaleURL, manifest)
 		},
 		observe: func(ctx context.Context, db *Database, manifest RouteManifest) (Observation, error) {
-			return observeSelectorShadow(ctx, db, rpc, manifest, newProgramIdentityWatcher(rpc).observe)
+			return observeSelectorShadow(ctx, db, rpc, manifest, newProgramIdentityWatcher(chainProgramIdentity(rpc)).observe)
 		},
 		evaluate: func(ctx context.Context, db *Database, markets []LaneEconomics) (SelectorResult, error) {
-			return db.evaluateSelector(ctx, rpc, manifest, markets, newProgramIdentityWatcher(rpc).observe, DefaultSelectorPolicy())
+			return db.evaluateSelector(ctx, rpc, manifest, markets, newProgramIdentityWatcher(chainProgramIdentity(rpc)).observe, DefaultSelectorPolicy())
 		},
 	})
 }

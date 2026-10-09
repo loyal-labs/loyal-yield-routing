@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // BridgeExecutionEvidence is the complete confirmed input to the exact bridge
@@ -22,7 +24,7 @@ type BridgeExecutionEvidence struct {
 func BuildSimulateAndPersistBridge(
 	ctx context.Context,
 	database *Database,
-	rpc *RPCClient,
+	rpc *chain.Client,
 	operationID string,
 	evidence BridgeExecutionEvidence,
 	credentials Credentials,
@@ -54,7 +56,7 @@ func BuildSimulateAndPersistBridge(
 	if err := database.MarkBuilt(ctx, operationID, signed.messageSHA256, encodedEffects); err != nil {
 		return err
 	}
-	simulation, err := rpc.SimulateSignedTransaction(ctx, signed.signedWire)
+	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
 	if err != nil {
 		var limitErr *SquadsSpendingLimitError
 		if errors.As(err, &limitErr) {

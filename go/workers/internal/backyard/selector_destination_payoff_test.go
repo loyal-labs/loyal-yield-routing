@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // sfRaw lifts a raw token amount to its 2^60-scaled fixed point, the unit
@@ -254,7 +256,7 @@ func autoCandidateJupiter(t *testing.T, route RuntimeRoute) *jupiterClient {
 // shared fee/valuation fixtures are re-stamped fresh at the batch's own
 // timestamp so no observer falls into the refresh-simulation fallback; the
 // production freshness checks themselves run unmodified.
-func autoPayoffRPC(t *testing.T, slot int64, batch []ConfirmedAccount) *RPCClient {
+func autoPayoffRPC(t *testing.T, slot int64, batch []ConfirmedAccount) *chain.Client {
 	t.Helper()
 	config, err := pinnedKaminoObservationConfig()
 	if err != nil {
@@ -267,8 +269,8 @@ func autoPayoffRPC(t *testing.T, slot int64, batch []ConfirmedAccount) *RPCClien
 	binary.LittleEndian.PutUint64(sol.Data[272:280], 9)
 	batch = append(append([]ConfirmedAccount(nil), batch...), usdc, sol)
 	rpc := budgetBuildRPCWithAccounts(t, 5000, slot, batch)
-	base := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	base := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			return nil, err
@@ -310,7 +312,7 @@ func autoPayoffRPC(t *testing.T, slot int64, batch []ConfirmedAccount) *RPCClien
 
 // autoPayoffProducer runs the real payoff producer on the reshaped batch and
 // returns its conserved ledger for consumer and negative tests.
-func autoPayoffProducer(t *testing.T, slot int64, mutate func([]ConfirmedAccount), client *jupiterClient) (RouteManifest, RuntimeRoute, *RPCClient, []ConfirmedAccount, selectorDestinationPayoff, uint64) {
+func autoPayoffProducer(t *testing.T, slot int64, mutate func([]ConfirmedAccount), client *jupiterClient) (RouteManifest, RuntimeRoute, *chain.Client, []ConfirmedAccount, selectorDestinationPayoff, uint64) {
 	t.Helper()
 	const (
 		entryDeposit     = uint64(10_000_000_000)
@@ -824,7 +826,7 @@ func autoCandidateFlatBatch(t *testing.T, slot int64, extra func([]ConfirmedAcco
 // policy and the four masked bridge policies with manifest-bound digests — and
 // deliberately serves NONE of the four basic families: they are the reviewed
 // Maple readiness surface and must never be fetched or required for this lane.
-func autoCandidateStack(t *testing.T, slot int64, extra func([]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *RPCClient, *jupiterClient) {
+func autoCandidateStack(t *testing.T, slot int64, extra func([]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *chain.Client, *jupiterClient) {
 	t.Helper()
 	m, route, accounts := autoCandidateFlatBatch(t, slot, extra)
 	batch := append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...)
@@ -1354,7 +1356,7 @@ func autoCandidateInitializerRent() uint64 {
 // initializer's account graph. The variant hook rewrites the served prestate
 // accounts for the refusal cases; the obligation is absent from the served
 // map unless a variant adds it back.
-func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64, funded bool, variant func(route RuntimeRoute, prestate map[string]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *RPCClient, *jupiterClient) {
+func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64, funded bool, variant func(route RuntimeRoute, prestate map[string]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *chain.Client, *jupiterClient) {
 	t.Helper()
 	binding := autoInitializerFixtureBinding(t)
 	route, err := runtimeRoute(testAutoLane)
@@ -1439,8 +1441,8 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 	if variant != nil {
 		variant(route, prestate)
 	}
-	base := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	base := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			return nil, err

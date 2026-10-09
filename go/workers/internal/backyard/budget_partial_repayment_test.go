@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func partialRepaymentFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
+func partialRepaymentFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
 	t.Helper()
 	return partialRepaymentFixtureForLane(t, SelectedRouteID, variant)
 }
@@ -22,7 +24,7 @@ func partialRepaymentFixture(t *testing.T, variant string) (Observation, Decisio
 // partialRepaymentFixtureForLane: on a B2 leverage lane the same position is
 // an exit cycle (unwinding at the release ceiling, below hard LTV), so the
 // decision is exit_partial_repay instead of hard_ltv_partial_repay.
-func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
+func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
 	t.Helper()
 	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, lane)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
@@ -64,12 +66,12 @@ func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observa
 		t.Fatal(err)
 	}
 	addresses := append(depositProjectionAddresses(route), route.Kamino.DebtReserve, route.DebtLiquiditySupply)
-	_, full, err := rpc.GetMultipleAccounts(context.Background(), addresses, 42)
+	_, full, err := confirmedAccounts(context.Background(), rpc, addresses, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
-	underlying := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	underlying := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -188,8 +190,8 @@ func TestPartialRepaymentFundedTailRevalidatesPriceAndBacking(t *testing.T) {
 			if p.BorrowRelease != nil || p.FundingRelease != nil {
 				t.Fatal("fixture must have funded remaining payoff")
 			}
-			original := rpc.client.Transport
-			rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			original := rpcOf(rpc).Transport
+			rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				res, err := original.RoundTrip(req)
 				if err != nil {
 					return res, err

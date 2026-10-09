@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // autoInitializerAuthorizationFixture recompiles the shared candidate fixture
@@ -48,7 +50,7 @@ func autoInitializerAuthorizationFixture(t *testing.T) autoInitializerRecoveryFi
 // The rent sysvar prices the fixture request's exact rent. sendTransaction is
 // counted and refused, simulateTransaction is refused outright: these tests
 // prove locked build/send authorization only, never a signer or a broadcast.
-func autoInitializerAuthorizationRPC(t *testing.T, f autoInitializerRecoveryFixture) (*RPCClient, *int) {
+func autoInitializerAuthorizationRPC(t *testing.T, f autoInitializerRecoveryFixture) (*chain.Client, *int) {
 	t.Helper()
 	accounts := autoInitializerPrestateAccounts(t, f.request)
 	const rentAddress = "SysvarRent111111111111111111111111111111111"
@@ -56,9 +58,9 @@ func autoInitializerAuthorizationRPC(t *testing.T, f autoInitializerRecoveryFixt
 	binary.LittleEndian.PutUint64(rent.Data, f.request.RentLamports/(kaminoObligationLength+128))
 	accounts[rentAddress] = rent
 	rpc := budgetBuildRPC(t, 5000, 42)
-	base := rpc.client.Transport
+	base := rpcOf(rpc).Transport
 	sends := 0
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		raw, err := io.ReadAll(req.Body)
 		if err != nil {
 			return nil, err

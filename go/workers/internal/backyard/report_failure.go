@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Adaptor error numbers are copied from
@@ -302,7 +304,7 @@ type TerminalTransition struct {
 // RefuseStaleReportSend is the pre-broadcast fence for a persisted signed
 // wire. It runs before broadcast intent is recorded, so a refused wire keeps
 // its reservation and terminates in `failed` without ever being submitted.
-func (d *Database) RefuseStaleReportSend(ctx context.Context, rpc *RPCClient, operationID string, from OperationStatus) (TerminalTransition, error) {
+func (d *Database) RefuseStaleReportSend(ctx context.Context, rpc *chain.Client, operationID string, from OperationStatus) (TerminalTransition, error) {
 	if rpc == nil {
 		return TerminalTransition{}, fmt.Errorf("RPC client is required")
 	}
@@ -310,7 +312,7 @@ func (d *Database) RefuseStaleReportSend(ctx context.Context, rpc *RPCClient, op
 	if err != nil || observed <= 0 {
 		return TerminalTransition{}, err
 	}
-	confirmed, err := rpc.ConfirmedSlot(ctx)
+	confirmed, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return TerminalTransition{}, err
 	}
@@ -357,8 +359,8 @@ func receiptRetryExpired(sentAt, now time.Time) bool {
 // signature. A readable receipt yields either a retryable adaptor proof or an
 // unclassified capital stop; an unreadable one yields the bounded
 // receipt-unavailable outcome instead of an immediate manual recovery.
-func (d *Database) classifyPersistedFailure(ctx context.Context, rpc *RPCClient, operation PersistedOperation) (ConfirmedFailureClassification, bool) {
-	evidence, err := rpc.FailedTransactionEvidence(ctx, operation.TransactionSignature)
+func (d *Database) classifyPersistedFailure(ctx context.Context, rpc *chain.Client, operation PersistedOperation) (ConfirmedFailureClassification, bool) {
+	evidence, err := failedTransactionEvidence(ctx, rpc, operation.TransactionSignature)
 	if err != nil {
 		return d.unreadableReceiptOutcome(ctx, operation)
 	}
@@ -389,7 +391,7 @@ func (d *Database) unreadableReceiptOutcome(ctx context.Context, operation Persi
 // the next tick can decide again; UnresolvedCapitalRecoverySQL never sees them.
 // Manual recovery is reserved for a readable receipt that proves a
 // non-retryable error, never for an RPC that simply could not answer.
-func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *RPCClient, operation PersistedOperation) error {
+func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *chain.Client, operation PersistedOperation) error {
 	classification, terminal := d.classifyPersistedFailure(ctx, rpc, operation)
 	if classification.ReceiptUnavailable {
 		if !terminal {
@@ -401,7 +403,7 @@ func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *RPCClient, 
 		// terminates on its own. A merely confirmed failure can still be
 		// forked away, and a confirmation that settles as a success must reach
 		// the confirmation path instead of a terminal `failed`.
-		status, err := rpc.FinalizedSignatureStatus(ctx, operation.TransactionSignature)
+		status, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
 		if err != nil {
 			return nil
 		}

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // observePhase3KnownBuildCost revalues the exact executable principal and
@@ -18,7 +20,7 @@ import (
 // manifest-aware form below serves only the internal candidate AUTO source
 // path, whose retained legs compile against the SAME reviewed manifest that
 // produced them (its validated autoPolicy binding).
-func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
+func observePhase3KnownBuildCost(ctx context.Context, rpc *chain.Client, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return ValuedTransactionCost{}, err
@@ -26,7 +28,7 @@ func observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request an
 	return manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
 }
 
-func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
+func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *chain.Client, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	debit, err := m.measureExecutableDebit(request, effects)
@@ -58,7 +60,7 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *RPC
 	if rpc == nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}
@@ -140,7 +142,7 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *RPC
 	var feeErr, tokenErr, solErr error
 	var reads sync.WaitGroup
 	reads.Add(2)
-	go func() { defer reads.Done(); fee, feeErr = rpc.ObserveMessageFee(ctx, message, slot) }()
+	go func() { defer reads.Done(); fee, feeErr = observeMessageFee(ctx, rpc, message, slot) }()
 	go func() { defer reads.Done(); sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, slot) }()
 	if debit.Raw > 0 {
 		reads.Add(1)
@@ -161,7 +163,7 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *RPC
 	if solErr != nil {
 		return ValuedTransactionCost{}, budgetHold("build_native_valuation_unavailable")
 	}
-	slot, err = rpc.ConfirmedSlot(ctx)
+	slot, err = confirmedSlot(ctx, rpc)
 	if err != nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}
@@ -221,7 +223,7 @@ func concurrentReads(ctx context.Context, steps ...func(context.Context) error) 
 }
 
 // exitLegCostReads reads each cost-only leg's cost from its own template.
-func exitLegCostReads(rpc *RPCClient, m RouteManifest, legs []phase3BridgeExitCost) []func(context.Context) error {
+func exitLegCostReads(rpc *chain.Client, m RouteManifest, legs []phase3BridgeExitCost) []func(context.Context) error {
 	reads := make([]func(context.Context) error, len(legs))
 	for i := range legs {
 		reads[i] = func(ctx context.Context) error {
@@ -237,7 +239,7 @@ func exitLegCostReads(rpc *RPCClient, m RouteManifest, legs []phase3BridgeExitCo
 
 // Every production builder uses this gate before signer access. Passing it
 // does not create a reservation or authorize a missing setup/exit plan.
-func authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc *RPCClient, operationID string, request any, effects ExpectedEffects, encodedEffects []byte) error {
+func authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc *chain.Client, operationID string, request any, effects ExpectedEffects, encodedEffects []byte) error {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return err
@@ -249,7 +251,7 @@ func authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc
 // production gate with the fresh cost/prestate observation and the locked
 // build authorization resolved through the explicit reviewed manifest. The
 // public form above loads the embedded manifest once and is unchanged.
-func (m RouteManifest) authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc *RPCClient, operationID string, request any, effects ExpectedEffects, encodedEffects []byte) error {
+func (m RouteManifest) authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc *chain.Client, operationID string, request any, effects ExpectedEffects, encodedEffects []byte) error {
 	cost, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
 	if err != nil {
 		return err

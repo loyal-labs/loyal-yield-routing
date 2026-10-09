@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
@@ -28,7 +29,7 @@ const (
 // RPC, and signing credentials are all Backyard-scoped.
 type EngineConfig struct {
 	Database *Database
-	RPC      *RPCClient
+	RPC      *chain.Client
 	// Credentials is the Backyard delegated executor capability. It stays
 	// inside the engine instance; observers and planners never receive it.
 	Credentials Credentials
@@ -53,7 +54,7 @@ type Engine struct {
 	worker   *Worker
 	leases   routeLeaser
 	database *Database
-	rpc      *RPCClient
+	rpc      *chain.Client
 	owner    string
 	config   Config
 	out      io.Writer
@@ -124,7 +125,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 	database, rpc, worker, out := e.database, e.rpc, e.worker, e.out
 	feedCtx, cancelFeed := context.WithCancel(ctx)
 	feedDone := make(chan struct{})
-	shadowIdentity := newProgramIdentityWatcher(rpc).observe
+	shadowIdentity := newProgramIdentityWatcher(chainProgramIdentity(rpc)).observe
 	// Sample diagnostics are change-only: each line prints when its fixed
 	// sanitized shape changes and stays silent while that shape persists,
 	// so neither a persistent outage nor a stable hold floods the log on

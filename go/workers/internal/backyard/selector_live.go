@@ -8,6 +8,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // collectSelectorQuotes prices a source once, then at most three independent
@@ -15,7 +17,7 @@ import (
 // exact-size quotes. Nothing here writes a journal row or signs a transaction.
 // entryCostRemainingRaw is advisory sizing headroom under the bounded
 // execution-cost stop; negative means unknown and skips that trigger.
-func collectSelectorQuotes(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	return collectSelectorQuotesForLane(ctx, rpc, client, manifest, o, markets, policy, entryCostRemainingRaw, "", canaryMaximum...)
 }
 
@@ -31,7 +33,7 @@ const selectorLadderBudget = 3 * time.Second
 // suppressed, so other lanes' destination quotes are never used and only
 // delay the canary's own quote. Those lanes keep their market economics and
 // are published as blocked without a quote.
-func collectSelectorQuotesForLane(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
 	if err := policy.validate(); err != nil {
@@ -275,7 +277,7 @@ var selectorQuoteCollectionHoldCodes = map[string]bool{
 
 // Capture the generation before observing accounts. Concurrent execution or
 // budget changes invalidate collection in RecordSelectorEvaluation's lock.
-func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, error) {
+func (d *Database) evaluateSelector(ctx context.Context, rpc *chain.Client, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, error) {
 	result, _, err := d.evaluateSelectorObserved(ctx, rpc, manifest, markets, identity, policy)
 	return result, err
 }
@@ -283,7 +285,7 @@ func (d *Database) evaluateSelector(ctx context.Context, rpc *RPCClient, manifes
 // evaluateSelectorObserved also returns the observation the result was
 // decided from, so the B2 leverage decision uses the same snapshot and
 // planning generation.
-func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *RPCClient, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, Observation, error) {
+func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Client, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, Observation, error) {
 	var version int64
 	lease, err := d.currentLease()
 	if err != nil {
@@ -340,7 +342,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *RPCClient,
 			enriched[i].EntryBlockedReason = reason
 		}
 	}
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Byte strings retain the exact canonical request/effects encoding through
@@ -149,7 +151,7 @@ type validatedSignedBudgetHold struct{ hold *BudgetHold }
 func (e *validatedSignedBudgetHold) Error() string { return e.hold.Error() }
 func (e *validatedSignedBudgetHold) Unwrap() error { return e.hold }
 
-func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3OperationAuthorization, operation PersistedOperation) (ValuedTransactionCost, error) {
+func revaluePhase3SignedInput(ctx context.Context, rpc *chain.Client, auth phase3OperationAuthorization, operation PersistedOperation) (ValuedTransactionCost, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return ValuedTransactionCost{}, err
@@ -163,7 +165,7 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 // manifest. The initializer journal identity keeps the same hold surface; the
 // candidate AUTO journal decision validates only through its reviewed binding
 // via validateInitializerDecision. The public form above is unchanged.
-func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3OperationAuthorization, operation PersistedOperation) (ValuedTransactionCost, error) {
+func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *chain.Client, auth phase3OperationAuthorization, operation PersistedOperation) (ValuedTransactionCost, error) {
 	request, effects, err := m.validateDebtClearSignedIdentity(auth, operation)
 	if err != nil {
 		return ValuedTransactionCost{}, err
@@ -250,7 +252,7 @@ func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *RPCCli
 // No signer and no wire replacement: price the exact persisted message, then
 // atomically recheck its reservation/lease and record broadcast intent. The
 // coordinator still submits only its already persisted bytes, once.
-func (d *Database) RevalueAndMarkBroadcastIntent(ctx context.Context, rpc *RPCClient, operation PersistedOperation) error {
+func (d *Database) RevalueAndMarkBroadcastIntent(ctx context.Context, rpc *chain.Client, operation PersistedOperation) error {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return err
@@ -263,7 +265,7 @@ func (d *Database) RevalueAndMarkBroadcastIntent(ctx context.Context, rpc *RPCCl
 // broadcast-intent reservation resolved through the explicit reviewed
 // manifest. The public form above loads the embedded manifest once and is
 // unchanged.
-func (d *Database) RevalueAndMarkBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, rpc *RPCClient, operation PersistedOperation) error {
+func (d *Database) RevalueAndMarkBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, rpc *chain.Client, operation PersistedOperation) error {
 	if d == nil || d.pool == nil || rpc == nil || operation.ID == "" || operation.Status != Signed {
 		return fmt.Errorf("invalid final-send valuation input")
 	}

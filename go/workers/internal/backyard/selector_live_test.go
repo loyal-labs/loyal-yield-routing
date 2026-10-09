@@ -99,8 +99,8 @@ func TestLiveSelectorCancelsSlowSiblingAndRetainsCompletedQuote(t *testing.T) {
 	slow := market
 	slow.Lane = "OnRe/ONyc/USDC"
 	route, _ := runtimeRoute(slow.Lane)
-	original := rpc.client.Transport
-	rpc.client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	original := rpcOf(rpc).Transport
+	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			return nil, err

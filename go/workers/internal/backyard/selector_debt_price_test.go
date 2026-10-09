@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const testAutoLane = "AUTO/AUTO/PYUSD"
@@ -15,7 +17,7 @@ const testAutoLane = "AUTO/AUTO/PYUSD"
 // autoDebtPriceFixture observes a real BudgetPrice for the AUTO lane's PYUSD
 // debt through the established budget valuation path, at tokenPriceScale
 // millionths times parity (1e6 == observed at exact 1 PYUSD/USDC).
-func autoDebtPriceFixture(t *testing.T, tokenPriceScale int64) (RuntimeRoute, BudgetPrice, *RPCClient) {
+func autoDebtPriceFixture(t *testing.T, tokenPriceScale int64) (RuntimeRoute, BudgetPrice, *chain.Client) {
 	t.Helper()
 	route, err := runtimeRoute(testAutoLane)
 	if err != nil {

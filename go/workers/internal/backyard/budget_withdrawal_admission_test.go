@@ -13,11 +13,13 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Controlled quote/RPC transport around actual compilers and installed Jupiter
 // bytes. Synthetic reserve prices/bridge-policy bytes do not prove live state.
-func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
+func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
 	t.Helper()
 	route := ethenaUSDePYUSD
 	manifest, err := loadEmbeddedRouteManifest()
@@ -325,7 +327,7 @@ func installedAutoPolicyAccount(t *testing.T) ConfirmedAccount {
 
 // Keep positive full-exit admissions on lanes the operator can actually authorize.
 // The legacy Ethena fixtures remain the independent pricing/wire tests above.
-func supportedFullExitAdmissionFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, JupiterExecutionEvidence, RouteManifest, *RPCClient, *jupiterClient) {
+func supportedFullExitAdmissionFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
 	t.Helper()
 	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, "OnRe/ONyc/USDC")
 	route, err := runtimeRoute(o.Snapshot.RouteLane)

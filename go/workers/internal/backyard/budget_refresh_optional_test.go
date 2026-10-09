@@ -12,14 +12,11 @@ import (
 // The selector destination batch pins lifecycle addresses that may legitimately
 // be absent (an unopened obligation or farm user state). A simulated reserve
 // refresh over that batch must keep absent optional accounts absent — the same
-// zero-value shape GetMultipleAccountsWithOptional returns — while every
+// zero-value shape confirmedAccounts returns — while every
 // required address still resolves.
 func TestSimulatedReserveRefreshOptionalCapturePreservesPinnedAbsence(t *testing.T) {
-	client, err := NewRPCClient("https://rpc.invalid")
-	if err != nil {
-		t.Fatalf("NewRPCClient: %v", err)
-	}
-	client.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	client := newFakeChain(t, nil)
+	rpcOf(client).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var payload struct {
 			Method string `json:"method"`
 		}
@@ -39,7 +36,7 @@ func TestSimulatedReserveRefreshOptionalCapturePreservesPinnedAbsence(t *testing
 		}
 	})
 	addresses := []string{budgetClockAddress, bridgeVault, bridgeStrategy}
-	slot, accounts, err := client.simulateBudgetReserveRefreshOptional(context.Background(), RouteID, addresses, []string{budgetClockAddress, bridgeStrategy}, 41)
+	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, addresses, []string{budgetClockAddress, bridgeStrategy}, 41)
 	if err != nil || slot != 43 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}
@@ -67,11 +64,8 @@ func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			client, err := NewRPCClient("https://rpc.invalid")
-			if err != nil {
-				t.Fatalf("NewRPCClient: %v", err)
-			}
-			client.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			client := newFakeChain(t, nil)
+			rpcOf(client).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				var payload struct {
 					Method string `json:"method"`
 				}
@@ -95,9 +89,9 @@ func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
 			addresses := []string{budgetClockAddress, bridgeVault}
 			var captureErr error
 			if testCase.optional {
-				_, _, captureErr = client.simulateBudgetReserveRefreshOptional(context.Background(), RouteID, addresses, []string{budgetClockAddress}, 41)
+				_, _, captureErr = simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, addresses, []string{budgetClockAddress}, 41)
 			} else {
-				_, _, captureErr = client.simulateBudgetReserveRefresh(context.Background(), RouteID, addresses, 41)
+				_, _, captureErr = simulateBudgetReserveRefresh(context.Background(), client, RouteID, addresses, 41)
 			}
 			var hold *BudgetHold
 			if !errors.As(captureErr, &hold) || hold.Reason != "price_refresh_capture_incomplete" {
@@ -182,11 +176,8 @@ func TestEncodeLegacyMessageCaptureAccountsStayReadOnly(t *testing.T) {
 // with -32602. The compiled refresh message must therefore carry every
 // requested capture address so one simulation returns the full batch.
 func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
-	client, err := NewRPCClient("https://rpc.invalid")
-	if err != nil {
-		t.Fatalf("NewRPCClient: %v", err)
-	}
-	client.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	client := newFakeChain(t, nil)
+	rpcOf(client).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var payload struct {
 			Method string            `json:"method"`
 			Params []json.RawMessage `json:"params"`
@@ -237,7 +228,7 @@ func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
 		body2 := `{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":{"err":null,"accounts":[` + populated + `,null]}}}`
 		return response(body2), nil
 	})
-	slot, accounts, err := client.simulateBudgetReserveRefreshOptional(context.Background(), RouteID, []string{bridgeVault, budgetClockAddress}, []string{budgetClockAddress}, 41)
+	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, []string{bridgeVault, budgetClockAddress}, []string{budgetClockAddress}, 41)
 	if err != nil || slot != 43 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}

@@ -6,7 +6,6 @@ package backyard
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -138,108 +137,6 @@ type KaminoPosition struct {
 	EntryCapacityRaw         uint64
 	BorrowUtilizationBlocked bool
 	Oracles                  []string
-}
-
-// ObserveKaminoPrimeUSDC reads the obligation, both reserves, and every
-// configured oracle at confirmed commitment. Two RPC batches are necessary
-// because oracle identities are encoded in the reserve. Their context slots
-// must therefore match exactly; retries advance minContextSlot rather than
-// mixing a newer oracle with older reserve bytes.
-func (c *RPCClient) ObserveKaminoPrimeUSDC(ctx context.Context) (KaminoPosition, error) {
-	if c == nil {
-		return KaminoPosition{}, fmt.Errorf("RPC client is required")
-	}
-	config, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return KaminoPosition{}, err
-	}
-	return c.observeKaminoPrimeUSDC(ctx, config)
-}
-
-func (c *RPCClient) observeKaminoPrimeUSDC(ctx context.Context, config KaminoObservationConfig) (KaminoPosition, error) {
-	minSlot, err := c.ConfirmedSlot(ctx)
-	if err != nil {
-		return KaminoPosition{}, err
-	}
-	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		baseSlot, accounts, err := c.GetMultipleAccounts(ctx, []string{config.Obligation, config.CollateralReserve, config.DebtReserve, config.Market}, minSlot)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		obligation, err := decodeKaminoObligation(accountAt(accounts, config.Obligation), config)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		collateral, err := decodeKaminoReserve(accountAt(accounts, config.CollateralReserve), config.CollateralMint, config)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		debt, err := decodeKaminoReserve(accountAt(accounts, config.DebtReserve), config.DebtMint, config)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		marketEmergency, err := decodeKaminoMarketEmergency(accountAt(accounts, config.Market), config)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		if err := validateKaminoReserveHealth(baseSlot, marketEmergency, obligation, collateral, debt); err != nil {
-			return KaminoPosition{}, err
-		}
-		oracles := uniqueNonzero(append(collateral.oracles, debt.oracles...))
-		if len(oracles) == 0 {
-			return KaminoPosition{}, fmt.Errorf("Kamino reserve has no configured oracle")
-		}
-		oracleSlot, oracleAccounts, err := c.GetMultipleAccounts(ctx, oracles, baseSlot)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		if oracleSlot != baseSlot {
-			minSlot = maxSlot(baseSlot, oracleSlot)
-			continue
-		}
-		for _, oracle := range oracleAccounts {
-			if oracle.Executable || oracle.Lamports == 0 || len(oracle.Data) == 0 {
-				return KaminoPosition{}, fmt.Errorf("invalid configured oracle %s", oracle.Address)
-			}
-		}
-		redeemable, err := collateral.redeemLiquidityRaw(obligation.collateralDepositedRaw)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		entryCapacityRaw, err := entryCapacityDebtRaw(collateral, debt)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		borrowUtilizationBlocked, err := borrowingBlockedByUtilization(debt)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		debtRaw, err := obligation.debtAtReserveRate(debt)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		blockTime, err := c.ConfirmedBlockTime(ctx, baseSlot)
-		if err != nil {
-			return KaminoPosition{}, err
-		}
-		if err := validateKaminoOracleAge(blockTime, collateral, debt); err != nil {
-			return KaminoPosition{}, err
-		}
-		return KaminoPosition{
-			Slot: baseSlot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition,
-			// decodeKaminoObligation refuses an absent obligation envelope, so a
-			// returned position always observed the account on chain.
-			ObligationPresent:      true,
-			CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw,
-			RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF,
-			DebtPriceSF: debt.marketPriceSF, Oracles: oracles,
-			CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals,
-			LiquidationThresholdBPS:  int64(collateral.liquidationThresholdPct) * 100,
-			EntryCapacityRaw:         entryCapacityRaw,
-			BorrowUtilizationBlocked: borrowUtilizationBlocked,
-		}, nil
-	}
-	return KaminoPosition{}, confirmedObservationUnavailable(fmt.Errorf("confirmed Kamino reserve and oracle reads did not align after %d attempts", maxConfirmedObservationAttempts))
 }
 
 type decodedKaminoObligation struct {

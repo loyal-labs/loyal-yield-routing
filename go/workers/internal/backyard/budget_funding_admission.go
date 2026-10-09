@@ -8,6 +8,8 @@ import (
 	"math"
 	"math/big"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Check the enforced quote minimum against debt through swap -> NAV -> payoff,
@@ -20,7 +22,7 @@ func isPayoffFundingAction(action Action) bool {
 // validatePayoffFunding keeps the explicit reviewed manifest so an AUTO
 // funding swap measures through the same binding that produced it; existing
 // lanes resolve identically through either manifest.
-func validatePayoffFunding(ctx context.Context, rpc *RPCClient, manifest RouteManifest, request JupiterSwapRequest, effects ExpectedEffects, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, error) {
+func validatePayoffFunding(ctx context.Context, rpc *chain.Client, manifest RouteManifest, request JupiterSwapRequest, effects ExpectedEffects, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if !request.FullPayoffFunding || !isPayoffFundingAction(request.Action) {
 		return KaminoPayoffBound{}, nil, budgetHold("invalid_full_payoff_funding_intent")
 	}
@@ -49,7 +51,7 @@ func validatePayoffFunding(ctx context.Context, rpc *RPCClient, manifest RouteMa
 // raw re-capture would conflate the reserves' accrued rate basis with a real
 // obligation mutation and refuse funding after ordinary accrual crossed one
 // whole-unit ceil boundary.
-func observePayoffWindowOnSnapshotBasis(ctx context.Context, rpc *RPCClient, route RuntimeRoute, minimumSlot, steps int64, refreshedBasis bool, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
+func observePayoffWindowOnSnapshotBasis(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot, steps int64, refreshedBasis bool, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if refreshedBasis {
 		return observeKaminoPayoffWindowOnSnapshotBasis(ctx, rpc, route, minimumSlot, steps, additional...)
 	}
@@ -135,7 +137,7 @@ func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRe
 // Covers the actual funding swap, its preceding NAV, and the NAV after funding.
 // Reserve payoff, remaining collateral withdrawal, all residue and bridge/NAV
 // steps together. All projected balances below are cost-only, never RPC writes.
-func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error) {
+func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, request any, effects ExpectedEffects) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s := observation.Snapshot
@@ -231,7 +233,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
-			blockhash, err := rpc.LatestBlockhash(ctx)
+			blockhash, err := latestBlockhash(ctx, rpc)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
@@ -333,7 +335,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 			binary.LittleEndian.PutUint64(projected[i].Data[64:72], upperCash)
 		}
 	}
-	blockhash, err := rpc.LatestBlockhash(ctx)
+	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -348,7 +350,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	_, policies, err := rpc.GetMultipleAccounts(ctx, []string{payoff.Policy}, bound.ObservedSlot)
+	_, policies, err := confirmedAccounts(ctx, rpc, []string{payoff.Policy}, bound.ObservedSlot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -450,14 +452,14 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *RPCClient, client *
 	}
 	plan.Snapshot, plan.Payoff = original, &bound
 	plan.ValidThroughSlot = min(plan.ValidThroughSlot, payoffCost.ValidThroughSlot, bound.ObservedSlot+observationLagSlots())
-	slot, err := rpc.ConfirmedSlot(ctx)
+	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil || slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_funding_exit_admission")
 	}
 	return plan, nil
 }
 
-func (d *Database) admitPhase3Funding(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
+func (d *Database) admitPhase3Funding(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
 	plan, err := observePhase3FundingAdmission(ctx, rpc, client, manifest, observation, decision, request, effects)
 	if err != nil {
 		return err

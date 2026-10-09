@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // KaminoPrimeUSDCAccounts is the exact account list produced by the checked
@@ -685,7 +687,7 @@ type KaminoExecutionEvidence struct {
 	ExpectedEffects ExpectedEffects
 }
 
-func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc *RPCClient, operationID string, evidence KaminoExecutionEvidence, credentials Credentials) error {
+func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc *chain.Client, operationID string, evidence KaminoExecutionEvidence, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("Kamino runtime dependencies are required")
 	}
@@ -713,7 +715,7 @@ func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc 
 	if err := database.MarkBuilt(ctx, operationID, signed.messageSHA256, effects); err != nil {
 		return err
 	}
-	simulation, err := rpc.SimulateSignedTransaction(ctx, signed.signedWire)
+	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
 	if err != nil {
 		return err
 	}

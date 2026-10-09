@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"encoding/binary"
 	"math"
 	"math/big"
@@ -378,34 +377,6 @@ func TestComputeRouteNAVRejectsOverflowNegativeNAVAndReceiptDrift(t *testing.T) 
 			t.Fatalf("drifted strategy receipt accepted: %v", err)
 		}
 	})
-}
-
-type fixtureNAVReader struct {
-	confirmedSlot int64
-	batchSlot     int64
-	accounts      []ConfirmedAccount
-	batchCalls    int
-}
-
-func (r *fixtureNAVReader) ConfirmedSlot(context.Context) (int64, error) { return r.confirmedSlot, nil }
-func (r *fixtureNAVReader) GetMultipleAccounts(_ context.Context, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
-	r.batchCalls++
-	if minimumSlot != r.confirmedSlot || strings.Join(addresses, ",") != strings.Join(pinnedRouteNAVAddresses(), ",") {
-		return 0, nil, context.Canceled
-	}
-	return r.batchSlot, append([]ConfirmedAccount(nil), r.accounts...), nil
-}
-
-func TestObserveConfirmedRouteNAVUsesExactlyOneCoherentBatch(t *testing.T) {
-	reader := &fixtureNAVReader{confirmedSlot: 76, batchSlot: 77, accounts: routeNAVFixture(t, 77)}
-	got, err := ObserveConfirmedRouteNAV(context.Background(), reader, readyWorkerManifest(t))
-	if err != nil || got.Slot != 77 || reader.batchCalls != 1 {
-		t.Fatalf("single-batch observer failed: nav=%+v calls=%d err=%v", got, reader.batchCalls, err)
-	}
-	reader = &fixtureNAVReader{confirmedSlot: 78, batchSlot: 77, accounts: routeNAVFixture(t, 77)}
-	if _, err := ObserveConfirmedRouteNAV(context.Background(), reader, readyWorkerManifest(t)); err == nil || !strings.Contains(err.Error(), "regressed") {
-		t.Fatalf("mixed/regressed slot accepted: %v", err)
-	}
 }
 
 func TestStrategyTwoReceiptVersionAndTrackedCustody(t *testing.T) {

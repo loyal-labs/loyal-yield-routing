@@ -3,6 +3,8 @@ package backyard
 import (
 	"context"
 	"errors"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Read-only price reference discovered at confirmed slot 444381476 by exact
@@ -11,7 +13,7 @@ const budgetSOLReserve = "d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q"
 const budgetSOLMarket = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 const budgetWrappedSOLMint = "So11111111111111111111111111111111111111112"
 
-func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *RPCClient, minimumSlot int64) (BudgetPrice, error) {
+func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, minimumSlot int64) (BudgetPrice, error) {
 	if rpc == nil || minimumSlot <= 0 {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_request")
 	}
@@ -22,7 +24,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *RPCClient, minimumSlo
 	config := KaminoObservationConfig{Program: kaminoProgram, Market: budgetSOLMarket}
 	debit := ExecutableDebit{Mint: budgetWrappedSOLMint, TokenProgram: classicTokenProgram, Raw: 1}
 	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, bridgeUSDC, budgetClockAddress}
-	slot, accounts, err := rpc.GetMultipleAccounts(ctx, addresses, minimumSlot)
+	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
 	if err != nil {
 		return BudgetPrice{}, err
 	}
@@ -52,7 +54,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *RPCClient, minimumSlo
 			}
 			instructions = append(instructions, compiledInstruction{program: mustKey(kaminoProgram), accounts: metas, data: append([]byte(nil), kaminoRefreshReserve...)})
 		}
-		slot, accounts, err = rpc.simulateBudgetRefreshInstructions(ctx, instructions, addresses, slot)
+		slot, accounts, err = simulateBudgetRefreshInstructions(ctx, rpc, instructions, addresses, slot)
 		if err != nil {
 			return BudgetPrice{}, err
 		}

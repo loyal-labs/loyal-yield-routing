@@ -5,13 +5,15 @@ import (
 	"encoding/binary"
 	"math"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // A funded full payoff uses a finite interest-window request. Reserve the
 // largest possible debt residue (source balance minus minimum repayment), then
 // full collateral withdrawal, both conversions, and the complete bridge return.
 // Partial repayment/release-for-funding and new borrowing are different graphs.
-func observePhase3PayoffAdmission(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3PayoffAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, request := observation.Snapshot, evidence.Request
@@ -43,11 +45,11 @@ func observePhase3PayoffAdmission(ctx context.Context, rpc *RPCClient, client *j
 // Used both immediately after the proposed payoff (cost-only poststate) and
 // for the actual NAV following a reconciled payoff. Templates never become the
 // next current instruction: withdrawal is prepared and admitted again later.
-func pricePhase3PositionReturn(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool) (phase3BridgeAdmission, error) {
+func pricePhase3PositionReturn(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool) (phase3BridgeAdmission, error) {
 	return pricePhase3PositionReturnAfterFunding(ctx, rpc, client, manifest, post, decision, request, effects, afterPayoff, nil, nil)
 }
 
-func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence, release *KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence, release *KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	s := post.Snapshot
 	if rpc == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" ||
 		s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
@@ -60,7 +62,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	slot, accounts, err := rpc.GetMultipleAccounts(ctx, []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply}, s.Slot)
+	slot, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply}, s.Slot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -103,7 +105,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 	if err != nil || amount == 0 || amount > math.MaxInt64 {
 		return phase3BridgeAdmission{}, budgetHold("payoff_return_withdrawal_amount_unavailable")
 	}
-	blockhash, err := rpc.LatestBlockhash(ctx)
+	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -112,7 +114,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 		return phase3BridgeAdmission{}, err
 	}
 	withdrawal.ObligationReserves = []string{route.Kamino.CollateralReserve}
-	_, policies, err := rpc.GetMultipleAccounts(ctx, []string{withdrawal.Policy}, slot)
+	_, policies, err := confirmedAccounts(ctx, rpc, []string{withdrawal.Policy}, slot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -222,7 +224,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *RPCClient, 
 	return plan, nil
 }
 
-func (d *Database) admitPhase3PositionReturnNAV(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
+func (d *Database) admitPhase3PositionReturnNAV(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
 	if decision.Action != ReportNAV || evidence.Request.Action != ReportNAV || decision.AmountRaw != 0 || evidence.Request.AmountRaw != 0 ||
 		evidence.Request.Report.ObservedSlot != uint64(observation.Snapshot.Slot) || evidence.Request.Report.Sequence != uint64(observation.Snapshot.Slot) {
 		return budgetHold("post_payoff_nav_intent_mismatch")

@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const (
@@ -644,7 +646,7 @@ func (s SignedJupiterTransaction) BuildResult(simulationSlot int64) (BuildResult
 	return BuildResult{MessageSHA256: s.messageSHA256, SignedWire: append([]byte(nil), s.signedWire...), SignedWireSHA256: s.signedWireSHA256, TransactionSignature: s.transactionSignature, RecentBlockhash: s.recentBlockhash, LastValidBlockHeight: s.lastValidBlockHeight, SimulationSlot: simulationSlot}, nil
 }
 
-func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc *RPCClient, operationID string, evidence JupiterExecutionEvidence, credentials Credentials) error {
+func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc *chain.Client, operationID string, evidence JupiterExecutionEvidence, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("Jupiter runtime dependencies are required")
 	}
@@ -677,7 +679,7 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 	if err := database.MarkBuilt(ctx, operationID, signed.messageSHA256, effects); err != nil {
 		return err
 	}
-	simulation, err := rpc.SimulateSignedTransaction(ctx, signed.signedWire)
+	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
 	if err != nil {
 		return err
 	}
