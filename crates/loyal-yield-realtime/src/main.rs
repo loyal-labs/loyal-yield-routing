@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     env,
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         Arc, Mutex,
@@ -40,7 +40,7 @@ use sqlx::{
 };
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, RwLock},
+    sync::{mpsc, watch, RwLock},
     time::{interval, sleep, sleep_until, timeout, Instant as TokioInstant},
 };
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -68,11 +68,13 @@ struct Config {
     catch_up_limit: i64,
     client_buffer: usize,
     max_token_lifetime_seconds: i64,
+    retention_cleanup_enabled: bool,
     retention_days: i64,
     retention_batch_size: i64,
     retention_interval_seconds: u64,
     ready_max_lag: i64,
     channel: String,
+    bind_address: IpAddr,
     port: u16,
 }
 
@@ -120,6 +122,7 @@ impl VercelPreviewOriginRule {
 
 #[derive(Clone)]
 struct AppState {
+    shutdown: watch::Receiver<bool>,
     pool: PgPool,
     config: Arc<Config>,
     clients: Arc<RwLock<HashMap<u64, ClientHandle>>>,
@@ -229,10 +232,20 @@ async fn run() -> Result<(), BoxError> {
 
     let pool = PgPoolOptions::new()
         .max_connections(8)
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                sqlx::query("SET statement_timeout = '10s'")
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(&config.database_url)
         .await?;
     let initial_cursor = latest_event_id(&pool).await?;
+    let (shutdown_sender, shutdown) = watch::channel(false);
     let state = AppState {
+        shutdown: shutdown.clone(),
         pool,
         config: config.clone(),
         clients: Arc::new(RwLock::new(HashMap::new())),
@@ -244,7 +257,9 @@ async fn run() -> Result<(), BoxError> {
     };
 
     tokio::spawn(run_listener_loop(state.clone()));
-    tokio::spawn(run_retention_loop(state.clone()));
+    if config.retention_cleanup_enabled {
+        tokio::spawn(run_retention_loop(state.clone()));
+    }
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -257,15 +272,28 @@ async fn run() -> Result<(), BoxError> {
             config.vercel_preview_origin.clone(),
         ));
 
-    let address = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let address = SocketAddr::new(config.bind_address, config.port);
     let listener = TcpListener::bind(address).await?;
     println!(
-        "loyal-yield-realtime listening on 0.0.0.0:{} channel={}",
-        config.port, config.channel
+        "loyal-yield-realtime listening on {} channel={}",
+        address, config.channel
     );
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    let mut server_shutdown = shutdown.clone();
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let _ = server_shutdown.changed().await;
+    });
+    use std::future::IntoFuture;
+    let mut server = Box::pin(server.into_future());
+    tokio::select! {
+        result = &mut server => result?,
+        _ = shutdown_signal() => {
+            shutdown_sender.send_replace(true);
+            // Close streams immediately; bound draining even for a stalled peer.
+            timeout(Duration::from_secs(45), &mut server)
+                .await
+                .map_err(|_| "realtime shutdown exceeded 45 seconds")??;
+        }
+    }
     Ok(())
 }
 
@@ -479,6 +507,9 @@ async fn events(
     Query(query): Query<EventsQuery>,
     headers: HeaderMap,
 ) -> Response {
+    if *state.shutdown.borrow() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "realtime shutting down").into_response();
+    }
     if query.token.is_some() {
         record_auth_failure(&state.metrics, "query_token");
         return (StatusCode::UNAUTHORIZED, "bearer token required").into_response();
@@ -538,7 +569,9 @@ async fn events(
         }
     }
 
-    let high_water = match latest_event_id(&state.pool).await {
+    let high_water = match admission_work(&state, async { Ok(latest_event_id(&state.pool).await?) })
+        .await
+    {
         Ok(value) => {
             state
                 .admission_database_failure_reported
@@ -546,6 +579,11 @@ async fn events(
             value
         }
         Err(error) => {
+            if *state.shutdown.borrow() {
+                state.clients.write().await.remove(&client_id);
+                decrement_active(&state.metrics, claims.client_kind);
+                return (StatusCode::SERVICE_UNAVAILABLE, "realtime shutting down").into_response();
+            }
             if !state
                 .admission_database_failure_reported
                 .swap(true, Ordering::Relaxed)
@@ -568,12 +606,23 @@ async fn events(
     minimum_live_event_id.store(high_water, Ordering::Release);
 
     if let Some(cursor) = cursor {
-        match enqueue_replay(&state, &claims, &sender, cursor, high_water).await {
+        match admission_work(
+            &state,
+            enqueue_replay(&state, &claims, &sender, cursor, high_water),
+        )
+        .await
+        {
             Ok(ReplayDisposition::Continue) => {}
             Ok(ReplayDisposition::Close) => {
                 state.clients.write().await.remove(&client_id);
             }
             Err(error) => {
+                if *state.shutdown.borrow() {
+                    state.clients.write().await.remove(&client_id);
+                    decrement_active(&state.metrics, claims.client_kind);
+                    return (StatusCode::SERVICE_UNAVAILABLE, "realtime shutting down")
+                        .into_response();
+                }
                 eprintln!("realtime client replay failed: {error}");
                 enqueue_resync(&state, &sender, "replay_failed");
                 state.clients.write().await.remove(&client_id);
@@ -592,11 +641,15 @@ async fn events(
         metrics: state.metrics.clone(),
     };
     let metrics = state.metrics.clone();
+    let mut shutdown = state.shutdown.clone();
     let stream = async_stream::stream! {
         let _guard = guard;
         let mut receiver = receiver;
         loop {
+            if *shutdown.borrow() { break; }
             tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
                 _ = sleep_until(expiration) => {
                     metrics.expiration_closures.fetch_add(1, Ordering::Relaxed);
                     eprintln!("realtime stream token expired client_kind={}", client_kind.as_str());
@@ -620,6 +673,26 @@ async fn events(
                 .text("heartbeat"),
         )
         .into_response()
+}
+
+// Covers pool acquisition and all pre-stream replay work, including stalled DB
+// requests. Dropping the future cancels admission; statement_timeout also bounds
+// server-side queries on every pooled connection.
+async fn admission_work<T>(
+    state: &AppState,
+    work: impl std::future::Future<Output = Result<T, BoxError>>,
+) -> Result<T, BoxError> {
+    let mut shutdown = state.shutdown.clone();
+    if *shutdown.borrow() {
+        return Err("realtime shutting down".into());
+    }
+    tokio::select! {
+        biased;
+        _ = shutdown.changed() => Err("realtime shutting down".into()),
+        result = timeout(Duration::from_secs(10), work) => {
+            result.map_err(|_| -> BoxError { "realtime admission timed out".into() })?
+        }
+    }
 }
 
 enum ReplayDisposition {
@@ -840,10 +913,18 @@ async fn broadcast_row(state: &AppState, row: &RealtimeEventRow) {
 }
 
 async fn run_retention_loop(state: AppState) {
+    let mut shutdown = state.shutdown.clone();
     let mut tick = interval(Duration::from_secs(state.config.retention_interval_seconds));
     loop {
-        tick.tick().await;
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => return,
+            _ = tick.tick() => {}
+        }
         loop {
+            if *shutdown.borrow() {
+                return;
+            }
             match cleanup_expired_events_batch(
                 &state.pool,
                 state.config.retention_days,
@@ -936,6 +1017,9 @@ impl Config {
                 DEFAULT_MAX_TOKEN_LIFETIME_SECONDS,
             )
             .clamp(1, DEFAULT_MAX_TOKEN_LIFETIME_SECONDS),
+            retention_cleanup_enabled: parse_retention_cleanup_enabled(env::var(
+                "REALTIME_RETENTION_CLEANUP_ENABLED",
+            ))?,
             retention_days: parse_env_i64("REALTIME_RETENTION_DAYS", DEFAULT_RETENTION_DAYS).max(1),
             retention_batch_size: parse_env_i64(
                 "REALTIME_RETENTION_BATCH_SIZE",
@@ -950,6 +1034,7 @@ impl Config {
             ready_max_lag: parse_env_i64("REALTIME_READY_MAX_LAG", DEFAULT_READY_MAX_LAG).max(0),
             channel: env::var("REALTIME_CHANNEL")
                 .unwrap_or_else(|_| DEFAULT_REALTIME_CHANNEL.to_owned()),
+            bind_address: parse_bind_address(env::var("REALTIME_BIND_ADDRESS"))?,
             port: parse_env_u16("PORT", 10000),
         })
     }
@@ -1045,6 +1130,30 @@ fn parse_env_u16(name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+// Unset keeps cleanup on; only the exact strings "true" and "false" are accepted.
+fn parse_retention_cleanup_enabled(value: Result<String, env::VarError>) -> Result<bool, BoxError> {
+    match value {
+        Err(env::VarError::NotPresent) => Ok(true),
+        Ok(value) if value == "true" => Ok(true),
+        Ok(value) if value == "false" => Ok(false),
+        _ => Err("REALTIME_RETENTION_CLEANUP_ENABLED must be true or false".into()),
+    }
+}
+
+// Unset binds every interface (the container image relies on it). An invalid
+// value is an error, never a silent fallback to 0.0.0.0.
+fn parse_bind_address(value: Result<String, env::VarError>) -> Result<IpAddr, BoxError> {
+    match value {
+        Err(env::VarError::NotPresent) => Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+        Ok(value) => value
+            .parse()
+            .map_err(|_| "REALTIME_BIND_ADDRESS must be an IP address such as 127.0.0.1".into()),
+        Err(env::VarError::NotUnicode(_)) => {
+            Err("REALTIME_BIND_ADDRESS must be an IP address such as 127.0.0.1".into())
+        }
+    }
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
@@ -1107,6 +1216,35 @@ mod tests {
             HeaderValue::from_static("Bearer opaque-token"),
         );
         assert_eq!(bearer_token(&headers), Some("opaque-token"));
+    }
+
+    #[test]
+    fn bind_address_defaults_to_all_interfaces_and_rejects_invalid_values() {
+        let unset = Err(env::VarError::NotPresent);
+        assert_eq!(
+            parse_bind_address(unset).unwrap(),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+        assert_eq!(
+            parse_bind_address(Ok("127.0.0.1".to_owned())).unwrap(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        );
+        assert!(parse_bind_address(Ok("::1".to_owned()))
+            .unwrap()
+            .is_loopback());
+        for rejected in ["", "localhost", "127.0.0.1:10000", " 127.0.0.1"] {
+            assert!(parse_bind_address(Ok(rejected.to_owned())).is_err());
+        }
+    }
+
+    #[test]
+    fn retention_cleanup_defaults_on_and_accepts_only_exact_booleans() {
+        assert!(parse_retention_cleanup_enabled(Err(env::VarError::NotPresent)).unwrap());
+        assert!(parse_retention_cleanup_enabled(Ok("true".to_owned())).unwrap());
+        assert!(!parse_retention_cleanup_enabled(Ok("false".to_owned())).unwrap());
+        for rejected in ["", "TRUE", "0", "no"] {
+            assert!(parse_retention_cleanup_enabled(Ok(rejected.to_owned())).is_err());
+        }
     }
 
     #[test]
