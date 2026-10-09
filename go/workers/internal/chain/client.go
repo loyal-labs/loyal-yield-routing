@@ -36,6 +36,10 @@ const (
 	behindCode      = -32016
 )
 
+// unavailableCodes are JSON-RPC errors about the node, not the chain: internal
+// error, block or status not available yet, node unhealthy.
+var unavailableCodes = map[int]bool{-32603: true, -32004: true, -32005: true, -32014: true}
+
 // maxAccountsPerCall is getMultipleAccounts' limit.
 const maxAccountsPerCall = 100
 
@@ -65,6 +69,8 @@ func failed(method string, err error) error {
 		return fmt.Errorf("%s: %w", method, ErrRateLimited)
 	case errors.As(err, &rpcErr) && rpcErr.Code == behindCode:
 		return fmt.Errorf("%s: %w", method, ErrBehind)
+	case errors.As(err, &rpcErr) && unavailableCodes[rpcErr.Code]:
+		return fmt.Errorf("%s: %w: rpc error %d: %s", method, ErrUnavailable, rpcErr.Code, rpcErr.Message)
 	case errors.As(err, &rpcErr):
 		return fmt.Errorf("%s: rpc error %d: %s", method, rpcErr.Code, rpcErr.Message)
 	case errors.As(err, &httpErr):

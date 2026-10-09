@@ -77,6 +77,13 @@ func TestTransportFailuresKeepTheKeyOut(t *testing.T) {
 	for name, call := range map[string]func() error{
 		"client timeout": func() error { _, err := timeout.Slot(context.Background(), rpc.CommitmentConfirmed); return err },
 		"cancelled":      func() error { _, err := timeout.Slot(cancelled, rpc.CommitmentConfirmed); return err },
+		"node unhealthy": func() error {
+			client := serve(t, func(request) (int, any) {
+				return http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32005, "message": "Node is unhealthy"}}
+			})
+			_, err := client.Slot(context.Background(), rpc.CommitmentConfirmed)
+			return err
+		},
 		"node behind": func() error {
 			client := serve(t, func(request) (int, any) {
 				return http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
