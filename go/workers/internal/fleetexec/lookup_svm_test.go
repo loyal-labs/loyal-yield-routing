@@ -31,9 +31,9 @@ type lookupSVM struct {
 
 func startLookupSVM(t *testing.T, f lookupFixture) *lookupSVM {
 	t.Helper()
-	path := os.Getenv("LOOKUP_TEST_SVM_PATH")
+	path := os.Getenv("SVM_HARNESS")
 	if path == "" {
-		t.Skip("requires compiled local ALT-program bank helper")
+		t.Fatal("lookup execution requires SVM_HARNESS")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	command := exec.CommandContext(ctx, path)

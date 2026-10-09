@@ -94,13 +94,10 @@ type bankAccount struct {
 
 func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*EarnMaxTopology, map[string]*chain.Account)) *multiplySVMFixture {
 	t.Helper()
-	paths := []string{os.Getenv("MULTIPLY_SVM_BIN"), os.Getenv("MULTIPLY_FIXTURE_BIN"), os.Getenv("MULTIPLY_MOCK_PROGRAM")}
-	if paths[0] == "" && paths[1] == "" && paths[2] == "" {
-		t.Skip("explicit Multiply real Squads/mock KLend fixture executables not configured")
-	}
+	paths := []string{os.Getenv("SVM_HARNESS"), os.Getenv("MULTIPLY_FIXTURE_BIN"), os.Getenv("MOCK_YIELD_PROTOCOLS_PROGRAM_SO")}
 	for _, path := range paths {
 		if !filepath.IsAbs(path) {
-			t.Fatal("all configured SVM fixture paths must be absolute")
+			t.Fatal("SVM_HARNESS, MULTIPLY_FIXTURE_BIN and MOCK_YIELD_PROTOCOLS_PROGRAM_SO must be absolute paths")
 		}
 		if _, err := os.Stat(path); err != nil {
 			t.Fatal(err)

@@ -129,7 +129,8 @@ jobs:
           path: |
             target/deploy/mock_yield_protocols_program.so
             target/debug/examples/fleet-local-svm
-          key: svm-fixtures-agave-3.1.12-sbf-1.52-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/squads-test-harness/**', 'crates/mock-yield-protocols-program/**', 'crates/loyal-actions/**', 'crates/loyal-solana-env/**', 'crates/loyal-hub-abi/**') }}
+            target/svm-fixtures
+          key: svm-fixtures-v2-agave-3.1.12-sbf-1.52-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/squads-test-harness/**', 'crates/mock-yield-protocols-program/**', 'crates/loyal-actions/**', 'crates/loyal-solana-env/**', 'crates/loyal-hub-abi/**') }}
       - name: Install pinned SBF build tools
         if: steps.fixtures.outputs.cache-hit != 'true'
         run: |
@@ -143,8 +144,13 @@ jobs:
         run: |
           cargo build-sbf --tools-version v1.52 --manifest-path crates/mock-yield-protocols-program/Cargo.toml -- --locked
           cargo build --locked -p squads-test-harness --example fleet-local-svm
+          mkdir -p target/svm-fixtures
+          cp "$(cargo test --locked --no-run -p squads-test-harness --test workers_v2_multiply --message-format=json | jq -r 'select(.executable != null) | .executable')" target/svm-fixtures/workers-v2-multiply
+          MOCK_YIELD_PROTOCOLS_PROGRAM_SO="$PWD/target/deploy/mock_yield_protocols_program.so" WORKERS_V2_AUTODEPOSIT_SVM_FIXTURE_OUTPUT="$PWD/target/svm-fixtures/autodeposit.json" cargo test --locked -p squads-test-harness --test workers_v2_autodeposit
           test -s target/deploy/mock_yield_protocols_program.so
           test -x target/debug/examples/fleet-local-svm
+          test -x target/svm-fixtures/workers-v2-multiply
+          test -s target/svm-fixtures/autodeposit.json
       - name: Apply actual schema to isolated family databases
         env:
           WORKERS_V2_DISPOSABLE: '1'
@@ -162,7 +168,9 @@ jobs:
       - name: Verify offline and enabled database behavior
         env:
           PHASE3_TEST_DATABASE_URL: postgresql://workers_v2@/phase3_budget_test?host=/private/tmp/backyard-phase3-pg.ci&port=5432
-          KAMINO_CONNECTED_SVM_PATH: ${{ github.workspace }}/target/debug/examples/fleet-local-svm
+          SVM_HARNESS: ${{ github.workspace }}/target/debug/examples/fleet-local-svm
+          MULTIPLY_FIXTURE_BIN: ${{ github.workspace }}/target/svm-fixtures/workers-v2-multiply
+          AUTODEPOSIT_TEST_SVM_FIXTURE_PATH: ${{ github.workspace }}/target/svm-fixtures/autodeposit.json
           MOCK_YIELD_PROTOCOLS_PROGRAM_SO: ${{ github.workspace }}/target/deploy/mock_yield_protocols_program.so
           SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ github.workspace }}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so
           WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go

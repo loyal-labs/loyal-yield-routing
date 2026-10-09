@@ -48,9 +48,9 @@ type connectedSVM struct {
 
 func startConnectedSVM(t *testing.T, ctx context.Context, accounts map[string]chain.Account) *connectedSVM {
 	t.Helper()
-	path := os.Getenv("KAMINO_CONNECTED_SVM_PATH")
+	path := os.Getenv("SVM_HARNESS")
 	if path == "" {
-		t.Fatal("connected execution requires KAMINO_CONNECTED_SVM_PATH")
+		t.Fatal("connected execution requires SVM_HARNESS")
 	}
 	processContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Minute)
 	t.Cleanup(cancel)
