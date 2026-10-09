@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 // forwardedAdaptorWire models the pinned Voltr CPI framing evidenced by its
@@ -63,7 +65,7 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy != mustKey(bridgeAllocationPolicy) || constraintIndex != 0 || inner.program != mustKey(bridgeVoltrProgram) || len(inner.accounts) != 17 {
+	if policy != mustKey(bridgeAllocationPolicy) || constraintIndex != 0 || inner.program != publicKey(voltr.ProgramID) || len(inner.accounts) != 17 {
 		t.Fatalf("unexpected allocation identity")
 	}
 	// This is the independently generated SDK wire for 1 USDC and ReportV1
@@ -106,7 +108,7 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 		t.Fatalf("withdraw adaptor CPI wire drifted: %s", hex.EncodeToString(forwardedWithdraw))
 	}
 	nav, navPolicy, navConstraint, err := bridgeInstruction(bridgeTestRequest(ReportNAV, 0))
-	if err != nil || navPolicy != mustKey(bridgeNAVPolicy) || navConstraint != 0 || !bytes.Equal(nav.data[:8], voltrDepositDiscriminator) {
+	if err != nil || navPolicy != mustKey(bridgeNAVPolicy) || navConstraint != 0 || !bytes.Equal(nav.data[:8], voltr.DepositStrategyDiscriminator[:]) {
 		t.Fatalf("NAV refresh must select its dedicated policy's only constraint: %v", err)
 	}
 	forwardedNAV := forwardedAdaptorWire(t, nav.data)

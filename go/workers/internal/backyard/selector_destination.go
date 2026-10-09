@@ -112,7 +112,7 @@ func validateSelectorFarms(route RuntimeRoute, accounts []ConfirmedAccount) erro
 			!sameKey(farm.Data[7328:7360], route.Kamino.MarketAuthority) || farm.Data[7361] != 0 || farm.Data[7362] != 1 {
 			return budgetHold("selector_farm_unavailable")
 		}
-		if state, err := kamino.DecodeFarmUserState(kaminoAccount(user, user.Address)); err != nil || !sameKey(state.FarmState[:], pair[0]) ||
+		if state, err := kamino.DecodeFarmUserState(chainAccount(user, user.Address)); err != nil || !sameKey(state.FarmState[:], pair[0]) ||
 			!sameKey(state.Owner[:], bridgeVault) || !state.IsFarmDelegated || !sameKey(state.Delegatee[:], route.Kamino.Obligation) {
 			return budgetHold("selector_farm_registration_unavailable")
 		}

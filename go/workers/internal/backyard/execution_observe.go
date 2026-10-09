@@ -12,6 +12,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 const adaptorConfigLength = 472
@@ -28,7 +29,7 @@ func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfi
 		return observedAdaptorConfig{}, fmt.Errorf("adaptor config envelope or version drifted")
 	}
 	bindings := []string{
-		bridgeVoltrProgram, bridgeVoltrVault, bridgeStrategy, bridgeStrategyAuth,
+		voltr.ProgramID.String(), bridgeVoltrVault, bridgeStrategy, bridgeStrategyAuth,
 		squads.ProgramID.String(), bridgeSettings, bridgeSettingsSigner, bridgeVault,
 		bridgeUSDC, bridgeTokenProgram, bridgeSquadsATA, "",
 	}

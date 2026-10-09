@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"slices"
 	"sort"
 	"strings"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 // The Backyard Voltr four-market manager route, ported from loyal-actions
@@ -47,7 +47,6 @@ const (
 	voltrLookupTableAuthority     = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
 	VoltrLookupTableAddressCount  = 185
 	VoltrLookupTableOrderedSHA256 = "901173cf1cc0bafa9152c66425eb5a4c05819cbdfa742bc9c489d4fa167157c5"
-	voltrVaultProgram             = "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
 	voltrKaminoAdaptorProgram     = "to6Eti9CsC5FGkAtqiPphvKD2hiQiLsS8zWiDBqBPKR"
 )
 
@@ -231,12 +230,6 @@ type voltrReceipt struct {
 	redeemTS uint64
 }
 
-var (
-	voltrReceiptDiscriminator  = []byte{0xcb, 0x51, 0xdf, 0x8d, 0xaf, 0x6c, 0x65, 0x72}
-	voltrStrategyDiscriminator = []byte{51, 8, 192, 253, 115, 78, 112, 214}
-	voltrVaultDiscriminator    = []byte{211, 8, 232, 43, 2, 152, 117, 119}
-)
-
 // ObserveVoltr brackets the account snapshot with two receipt scans; a
 // receipt-set change during the read fails closed.
 func ObserveVoltr(ctx context.Context, c *chain.Client, r VoltrRoute, minSlot int64) (VoltrObservation, error) {
@@ -259,25 +252,25 @@ func ObserveVoltr(ctx context.Context, c *chain.Client, r VoltrRoute, minSlot in
 	if slices.Contains(accounts, nil) {
 		return o, errors.New("voltr vault, idle account or strategy receipt is absent")
 	}
-	vault := accounts[0].Data
-	if accounts[0].Owner.String() != voltrVaultProgram || len(vault) != 928 || !bytes.Equal(vault[:8], voltrVaultDiscriminator) || encodeBase58(vault[104:136]) != USDCMint ||
-		encodeBase58(vault[368:400]) != r.Manager || binary.LittleEndian.Uint64(vault[456:464]) != voltrWithdrawalWaitSeconds || encodeBase58(vault[136:168]) != voltrIdleATA {
+	vault, err := voltr.DecodeVault(accounts[0])
+	if err != nil || vault.AssetMint.String() != USDCMint || vault.Manager.String() != r.Manager || vault.WithdrawalWaitingPeriodSeconds != voltrWithdrawalWaitSeconds || vault.IdleATA.String() != voltrIdleATA {
 		return o, errors.New("voltr vault owner, layout, manager, asset or withdrawal wait drifted")
 	}
 	idle, err := spl.DecodeTokenAccount(accounts[1])
 	if err != nil || idle.Program != solana.TokenProgramID || idle.Frozen || idle.Mint.String() != USDCMint || idle.Owner.String() != r.IdleAuthority {
 		return o, errors.New("voltr idle ATA mint, owner or token program drifted")
 	}
-	o.ContextSlot, o.TotalValueRaw, o.IdleRaw = slot, binary.LittleEndian.Uint64(vault[168:176]), idle.Amount
+	o.ContextSlot, o.TotalValueRaw, o.IdleRaw = slot, vault.TotalValueRaw, idle.Amount
 	positions := []string{}
 	sum := uint64(0)
 	for i, s := range r.Strategies {
 		a := accounts[i+2]
-		if a.Owner.String() != voltrVaultProgram || len(a.Data) != 192 || !bytes.Equal(a.Data[:8], voltrStrategyDiscriminator) || encodeBase58(a.Data[8:40]) != r.Vault ||
-			encodeBase58(a.Data[40:72]) != s.Reserve || encodeBase58(a.Data[72:104]) != voltrKaminoAdaptorProgram || a.Data[120] != 1 || !allZero(a.Data[123:]) {
+		receipt, err := voltr.DecodeStrategyReceipt(a)
+		if err != nil || receipt.Vault.String() != r.Vault || receipt.Strategy.String() != s.Reserve || receipt.AdaptorProgram.String() != voltrKaminoAdaptorProgram ||
+			receipt.Version != 1 || receipt.CustodyTrackedRaw != 0 {
 			return o, errors.New("voltr strategy receipt set drifted")
 		}
-		o.PositionsRaw[i] = binary.LittleEndian.Uint64(a.Data[104:112])
+		o.PositionsRaw[i] = receipt.PositionValueRaw
 		if sum+o.PositionsRaw[i] < sum {
 			return o, errors.New("voltr position total overflows")
 		}
@@ -330,28 +323,19 @@ func scanVoltrReceipts(ctx context.Context, c *chain.Client, r VoltrRoute, minSl
 	if err != nil {
 		return 0, nil, err
 	}
-	filters := []rpc.RPCFilter{{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: voltrReceiptDiscriminator}}, {Memcmp: &rpc.RPCFilterMemcmp{Offset: 8, Bytes: vault[:]}}}
-	slot, accounts, err := c.ProgramAccounts(ctx, solana.MustPublicKeyFromBase58(voltrVaultProgram), filters, rpc.CommitmentConfirmed, uint64(minSlot))
+	slot, accounts, err := c.ProgramAccounts(ctx, voltr.ProgramID, voltr.WithdrawalReceiptFilters(vault), rpc.CommitmentConfirmed, uint64(minSlot))
 	if err != nil {
 		return 0, nil, err
 	}
 	receipts := make([]voltrReceipt, 0, len(accounts))
 	for _, v := range accounts {
-		data := v.Data
-		if v.Owner.String() != voltrVaultProgram || len(data) != 112 || !bytes.Equal(data[:8], voltrReceiptDiscriminator) || !allZero(data[106:]) || encodeBase58(data[8:40]) != r.Vault {
-			return 0, nil, errors.New("invalid voltr withdrawal receipt")
+		receipt, err := voltr.DecodeWithdrawalReceipt(&v)
+		if err != nil || receipt.Vault != vault {
+			return 0, nil, fmt.Errorf("invalid voltr withdrawal receipt %s: %v", v.Key, err)
 		}
-		lp, ts := binary.LittleEndian.Uint64(data[72:80]), binary.LittleEndian.Uint64(data[96:104])
-		bits := new(big.Int).SetBytes(reverse(data[80:96]))
-		if lp == 0 || bits.Sign() == 0 || ts == 0 || data[105] != 0 {
-			return 0, nil, errors.New("invalid voltr withdrawal receipt amount, deadline or version")
-		}
-		upper := new(big.Int).Rsh(new(big.Int).Add(bits, new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 48), big.NewInt(1))), 48)
-		if !upper.IsUint64() {
-			return 0, nil, errors.New("voltr withdrawal receipt overflows")
-		}
-		gen := sha256Hex(fmt.Sprintf("%s:%s:%s:%d:%s:%d:%d:%d:%s", v.Key, r.Vault, encodeBase58(data[40:72]), lp, bits.String(), ts, data[104], data[105], sha256Hex(string(data))))
-		receipts = append(receipts, voltrReceipt{address: v.Key, gen: gen, upper: upper.Uint64(), redeemTS: ts})
+		gen := sha256Hex(fmt.Sprintf("%s:%s:%s:%d:%s:%d:%d:%d:%s", v.Key, r.Vault, receipt.User, receipt.LPEscrowedRaw, receipt.AssetToWithdrawBits.String(),
+			receipt.WithdrawableFromTS, receipt.Bump, receipt.Version, sha256Hex(string(v.Data))))
+		receipts = append(receipts, voltrReceipt{address: v.Key, gen: gen, upper: receipt.UpperBoundAssetRaw, redeemTS: receipt.WithdrawableFromTS})
 	}
 	// Rust sorts receipts by Pubkey, which orders by raw bytes.
 	sort.Slice(receipts, func(i, j int) bool { return bytes.Compare(receipts[i].address[:], receipts[j].address[:]) < 0 })
@@ -361,21 +345,4 @@ func scanVoltrReceipts(ctx context.Context, c *chain.Client, r VoltrRoute, minSl
 func sha256Hex(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
-}
-
-func allZero(b []byte) bool {
-	for _, v := range b {
-		if v != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-func reverse(b []byte) []byte {
-	out := make([]byte, len(b))
-	for i := range b {
-		out[len(b)-1-i] = b[i]
-	}
-	return out
 }

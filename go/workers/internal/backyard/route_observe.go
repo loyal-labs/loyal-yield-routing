@@ -35,7 +35,7 @@ func observeConfirmedRouteSnapshotWithRPCAccounts(ctx context.Context, rpc *chai
 	return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
 		confirmedSlot: func(ctx context.Context) (int64, error) { return confirmedSlot(ctx, rpc) },
 		receipts: func(ctx context.Context, minSlot int64) (int64, []programAccount, error) {
-			return getVoltrWithdrawalReceiptAccounts(ctx, rpc, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
+			return getVoltrWithdrawalReceiptAccounts(ctx, rpc, bridgeVoltrVault, minSlot)
 		},
 		accounts: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
 			// A null strategy receipt must reach the integrity classifier

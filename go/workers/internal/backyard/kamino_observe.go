@@ -16,7 +16,6 @@ import (
 
 	"github.com/solana-foundation/solana-go/v2"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -159,19 +158,8 @@ type decodedKaminoReserve struct {
 	cumulativeBorrowRate     [32]byte
 }
 
-// kaminoAccount is the confirmed account at address for the shared KLend
-// decoders; any other account is absent.
-func kaminoAccount(a ConfirmedAccount, address string) *chain.Account {
-	key, keyErr := solana.PublicKeyFromBase58(a.Address)
-	owner, ownerErr := solana.PublicKeyFromBase58(a.Owner)
-	if a.Address != address || keyErr != nil || ownerErr != nil {
-		return nil
-	}
-	return &chain.Account{Key: key, Owner: owner, Lamports: a.Lamports, Data: a.Data, Executable: a.Executable}
-}
-
 func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig) (decodedKaminoObligation, error) {
-	obligation, err := kamino.DecodeObligation(kaminoAccount(account, c.Obligation))
+	obligation, err := kamino.DecodeObligation(chainAccount(account, c.Obligation))
 	if err != nil {
 		return decodedKaminoObligation{}, fmt.Errorf("Kamino account envelope or layout drifted")
 	}
@@ -214,7 +202,7 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 }
 
 func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservationConfig) (decodedKaminoReserve, error) {
-	reserve, err := kamino.DecodeReserve(kaminoAccount(account, account.Address))
+	reserve, err := kamino.DecodeReserve(chainAccount(account, account.Address))
 	if err != nil {
 		return decodedKaminoReserve{}, fmt.Errorf("Kamino account envelope or layout drifted")
 	}
@@ -442,7 +430,7 @@ func targetBorrowForCollateralRaw(underlying uint64, collateralDecimals, debtDec
 // An unexpected length, owner, or discriminator is an observation failure,
 // never an assumed healthy market.
 func decodeKaminoMarketEmergency(account ConfirmedAccount, c KaminoObservationConfig) (bool, error) {
-	return kamino.DecodeLendingMarketEmergencyMode(kaminoAccount(account, c.Market))
+	return kamino.DecodeLendingMarketEmergencyMode(chainAccount(account, c.Market))
 }
 
 // validateKaminoReserveHealth is the fail-closed gate behind monitor M5. On

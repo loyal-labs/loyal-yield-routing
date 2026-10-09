@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 func TestCrossDecimalValuationUsesPricesAndConservativeRounding(t *testing.T) {
@@ -57,8 +58,8 @@ func strategyReceiptFixture(t *testing.T, positionRaw uint64) ConfirmedAccount {
 
 func strategyReceiptWithCustodyFixture(t *testing.T, positionRaw, custodyTrackedRaw uint64) ConfirmedAccount {
 	t.Helper()
-	data := make([]byte, strategyReceiptLength)
-	copy(data[:8], strategyReceiptDiscriminator[:])
+	data := make([]byte, voltr.StrategyReceiptSize)
+	copy(data[:8], voltr.StrategyReceiptDiscriminator[:])
 	putKey(t, data[8:40], bridgeVoltrVault)
 	putKey(t, data[40:72], bridgeStrategy)
 	putKey(t, data[72:104], bridgeAdaptorProgram)
@@ -66,7 +67,7 @@ func strategyReceiptWithCustodyFixture(t *testing.T, positionRaw, custodyTracked
 	binary.LittleEndian.PutUint64(data[112:120], 1_700_000_000)
 	data[120], data[121], data[122] = 2, 254, 253
 	binary.LittleEndian.PutUint64(data[128:136], custodyTrackedRaw)
-	return ConfirmedAccount{Address: bridgeStrategyReceipt, Owner: bridgeVoltrProgram, Lamports: 1, Data: data}
+	return ConfirmedAccount{Address: bridgeStrategyReceipt, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}
 }
 
 // kaminoFixtureUnix is the chain-time every fixture reserve publishes its
@@ -92,7 +93,7 @@ func clockFixture() ConfirmedAccount {
 func voltrVaultFixture(t *testing.T, totalValueRaw uint64) ConfirmedAccount {
 	t.Helper()
 	data := make([]byte, 928)
-	copy(data[:8], voltrVaultDiscriminator[:])
+	copy(data[:8], voltr.VaultDiscriminator[:])
 	putKey(t, data[104:136], bridgeUSDC)
 	putKey(t, data[136:168], bridgeIdleATA)
 	putKey(t, data[272:304], bridgeLPMint)
@@ -102,7 +103,7 @@ func voltrVaultFixture(t *testing.T, totalValueRaw uint64) ConfirmedAccount {
 	binary.LittleEndian.PutUint64(data[448:456], 0)
 	binary.LittleEndian.PutUint64(data[456:464], 600)
 	binary.LittleEndian.PutUint64(data[616:624], 1_000)
-	return ConfirmedAccount{Address: bridgeVoltrVault, Owner: bridgeVoltrProgram, Lamports: 1, Data: data}
+	return ConfirmedAccount{Address: bridgeVoltrVault, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}
 }
 
 func voltrLPMintFixture(t *testing.T, supplyRaw uint64) ConfirmedAccount {

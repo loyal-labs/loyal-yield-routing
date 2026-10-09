@@ -35,7 +35,7 @@ func ObserveConfirmedBridgeSnapshot(ctx context.Context, rpc *chain.Client) (Obs
 		return Observation{}, err
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		receiptSlot, rawReceipts, err := getVoltrWithdrawalReceiptAccounts(ctx, rpc, bridgeVoltrProgram, bridgeVoltrVault, minSlot)
+		receiptSlot, rawReceipts, err := getVoltrWithdrawalReceiptAccounts(ctx, rpc, bridgeVoltrVault, minSlot)
 		if err != nil {
 			return Observation{}, err
 		}
@@ -124,7 +124,7 @@ func decodePinnedUSDC(account ConfirmedAccount, authority string) (DecodedTokenC
 func decodeConfirmedWithdrawalDemand(receipts []programAccount) (int64, string, error) {
 	decoded := make([]VoltrWithdrawalReceipt, 0, len(receipts))
 	for _, receipt := range receipts {
-		value, err := DecodeVoltrWithdrawalReceipt(receipt.Account, receipt.Address, bridgeVoltrProgram, bridgeVoltrVault, bridgeCapRaw)
+		value, err := DecodeVoltrWithdrawalReceipt(receipt.Account, receipt.Address, bridgeVoltrVault, bridgeCapRaw)
 		if err != nil {
 			return 0, "", fmt.Errorf("decode withdrawal receipt: %w", err)
 		}

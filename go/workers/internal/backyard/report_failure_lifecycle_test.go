@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 // The classified-receipt recovery paths must run the production state machine
@@ -229,7 +231,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		otherRoute, otherID := newSubmittedOperation(t, "voltr")
 		other := submittedOperation(otherID, otherRoute)
 		otherReceipt := transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 6004}}},
-			"logMessages": adaptorFailureLogs(bridgeVoltrProgram, 6004)})
+			"logMessages": adaptorFailureLogs(voltr.ProgramID.String(), 6004)})
 		status, reason, _ = advance(t, other, finalizedFailure, otherReceipt)
 		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason {
 			t.Fatalf("a non-adaptor error lost the capital stop: %s %q", status, reason)

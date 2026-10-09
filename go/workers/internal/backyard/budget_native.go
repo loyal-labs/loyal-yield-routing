@@ -44,7 +44,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, minimum
 			if _, err = decodeKaminoReserve(account, row.mint, row.config); err != nil {
 				return BudgetPrice{}, err
 			}
-			reserve, err := kamino.DecodeReserve(kaminoAccount(account, row.address))
+			reserve, err := kamino.DecodeReserve(chainAccount(account, row.address))
 			if err != nil {
 				return BudgetPrice{}, err
 			}

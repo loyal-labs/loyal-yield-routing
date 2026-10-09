@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 func TestPilotUSDCObservationBoundsDepositRemainderWithoutLosingNAV(t *testing.T) {
@@ -49,7 +51,7 @@ func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVS
 	return RouteNAVSnapshot{
 		Slot: int64(slot), StrategyNAVRaw: current, TotalVaultNAVRaw: current, PriorReportedNAVRaw: reported,
 		PriorReportUpdatedTS: uint64(lastUpdated.Unix()), SnapshotDigest: digest,
-		Voltr:  VoltrVaultBook{AdminPerformanceFeeBPS: uint64(approvedAdminPerformanceFeeBPS)},
+		Voltr:  VoltrVaultBook{Vault: voltr.Vault{AdminPerformanceFeeBPS: uint16(approvedAdminPerformanceFeeBPS)}},
 		Report: BridgeReport{Sequence: slot, ObservedSlot: slot, NAVAfterRaw: current, SnapshotDigest: digest},
 	}
 }
