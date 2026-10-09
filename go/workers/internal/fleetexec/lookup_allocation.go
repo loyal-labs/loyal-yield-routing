@@ -78,6 +78,13 @@ func (s *Store) planLookupVaultRequest(ctx context.Context, request LookupPlanni
 		if err != nil {
 			return err
 		}
+		// Writers lock bindings before tables. The binding update below fires a
+		// trigger that updates its table rows, so every binding this transaction
+		// touches is locked first, in id order; fresh admission holds the active
+		// binding before it locks the table.
+		if _, err = tx.Exec(ctx, `SELECT id FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=0 AND lifecycle_state IN ('active','preparing','warming') ORDER BY id FOR UPDATE`, f.id, request.VaultID); err != nil {
+			return err
+		}
 		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_vault_bindings SET lifecycle_state='failed',deactivated_at=COALESCE(deactivated_at,clock_timestamp()),updated_at=clock_timestamp() WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=0 AND lifecycle_state IN ('preparing','warming') AND (manifest_id<>$3 OR desired_head_revision<>$4)`, f.id, request.VaultID, manifest.ID, revision); err != nil {
 			return err
 		}

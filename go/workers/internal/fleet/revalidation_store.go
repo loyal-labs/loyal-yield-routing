@@ -110,6 +110,11 @@ WITH candidate AS (
    -- terminal still owns the opportunity.
    AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions holding
      WHERE holding.opportunity_id=o.id AND holding.submission_state NOT IN `+submissionTerminalStates+`)
+   -- Rust's per-vault gate (lease_rebalance_opportunity_batch): a vault whose
+   -- decision is still moving money is not prepared again until it settles.
+   AND NOT EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions active_decision
+     WHERE active_decision.vault_id=o.vault_id
+       AND active_decision.status::text IN ('planned','simulating','ready','submitted','confirming'))
    AND (($6 AND o.execution_plan->>'route_kind'='cross_mint_jupiter'
          AND bound_withdraw_policy.id IS NOT NULL
          AND ($5='' OR o.execution_plan#>>'{policy_bindings,delegated_signer}'=$5))
@@ -309,6 +314,34 @@ WHERE opportunity.id=$1 AND opportunity.idempotency_key=$2 AND opportunity.optim
 		return errors.New("lost lease or changed opportunity/epoch before route build")
 	}
 	return nil
+}
+
+// DeferRevalidation is the revalidate lane's Retry outcome in Rust's
+// finish_fleet_worker_task: the claimed opportunity returns to revalidate two
+// seconds later with its reason and without a lease. It is false, and the row
+// keeps its lease until expiry, when the lease is no longer this one or the
+// opportunity lacks the publication lifetime the deferred commit trigger
+// requires (Rust's Expired outcome; the epoch sweeper retires it).
+func (s *Store) DeferRevalidation(ctx context.Context, lease RevalidationLease, reason string) (bool, error) {
+	if s == nil || s.pool == nil || lease.OpportunityID <= 0 || strings.TrimSpace(reason) == "" {
+		return false, errors.New("invalid revalidation deferral")
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities o
+SET opportunity_state='revalidate',available_at=clock_timestamp()+interval '2 seconds',
+    lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,terminal_reason=$4,updated_at=clock_timestamp()
+WHERE o.id=$1 AND o.opportunity_state='leased' AND o.lease_kind='revalidate'
+  AND o.lease_owner=$2 AND o.fencing_token=$3 AND o.lease_expires_at>clock_timestamp()
+  AND o.expires_at>=clock_timestamp()+interval '60 seconds'
+  AND EXISTS(SELECT 1 FROM loyal_yield.optimizer_epochs e WHERE e.id=o.optimizer_epoch_id AND e.cluster=o.cluster
+    AND e.expires_at>=clock_timestamp()+interval '60 seconds')`, lease.OpportunityID, lease.Owner, lease.FencingToken, reason)
+	var pgErr interface{ SQLState() string }
+	if errors.As(err, &pgErr) && pgErr.SQLState() == "LY001" {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (s *Store) LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error) {

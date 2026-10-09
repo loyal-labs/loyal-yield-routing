@@ -456,7 +456,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("fleet execution RPC", err)
 	}
-	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts}, dStore, landRPC, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
+	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts, OnHealth: laneHealth(facts, engine.FamilyFleet, "executor")}, dStore, landRPC, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
 	if err != nil {
 		return retailError("fleet executor", err)
 	}
@@ -497,6 +497,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		case engine.FamilyFleet:
 			facts.LaneSucceeded(family, "position_sweep")
 			facts.LaneSucceeded(family, "planner")
+			facts.LaneSucceeded(family, "executor")
 			lanes = append(lanes, planner, executor, crossMint, positionSweep)
 		case engine.FamilyLookup:
 			// Each lane's success clock starts when it starts.
