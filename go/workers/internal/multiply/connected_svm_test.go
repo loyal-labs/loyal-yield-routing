@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type multiplySVMBank struct {
@@ -65,8 +67,7 @@ type multiplySVMFixture struct {
 	state                                        *RouteState
 	topology                                     *EarnMaxTopology
 	bank                                         *multiplySVMBank
-	rpc                                          *LiveRPCSurface
-	reader                                       *LiveObservationReader
+	cluster                                      *chain.Client
 	executor                                     *Executor
 	swapPrefix                                   []byte
 	mu                                           sync.Mutex
@@ -80,7 +81,15 @@ func newMultiplySVMFixture(t *testing.T) *multiplySVMFixture {
 	return newMultiplySVMFixtureWithInitialAccounts(t, nil)
 }
 
-func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*EarnMaxTopology, map[string]*Account)) *multiplySVMFixture {
+// bankAccount is one account in the Rust fixture bank's exchange format.
+type bankAccount struct {
+	Address, Owner string
+	Lamports       uint64
+	Executable     bool
+	Data           []byte
+}
+
+func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*EarnMaxTopology, map[string]*chain.Account)) *multiplySVMFixture {
 	t.Helper()
 	paths := []string{os.Getenv("MULTIPLY_SVM_BIN"), os.Getenv("MULTIPLY_FIXTURE_BIN"), os.Getenv("MULTIPLY_MOCK_PROGRAM")}
 	if paths[0] == "" && paths[1] == "" && paths[2] == "" {
@@ -114,7 +123,11 @@ func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*Ear
 	}
 	dir := t.TempDir()
 	inputPath, outputPath := filepath.Join(dir, "bank-input.json"), filepath.Join(dir, "bank-output.json")
-	input, err := json.Marshal(map[string]any{"smartAccountSeed": seed, "settings": settings.String(), "catalog": topology.StrategyCatalog(), "accounts": accounts})
+	initial := make(map[string]bankAccount, len(accounts))
+	for address, account := range accounts {
+		initial[address] = bankAccount{Address: account.Key.String(), Owner: account.Owner.String(), Lamports: account.Lamports, Executable: account.Executable, Data: account.Data}
+	}
+	input, err := json.Marshal(map[string]any{"smartAccountSeed": seed, "settings": settings.String(), "catalog": topology.StrategyCatalog(), "accounts": initial})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +146,7 @@ func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*Ear
 	}
 	var exported struct {
 		Settings, Vault, Delegate, ProgramSHA256 string
-		Accounts                                 map[string]*Account
+		Accounts                                 map[string]*bankAccount
 		SwapPrefix                               []byte
 	}
 	if err := json.Unmarshal(raw, &exported); err != nil {
@@ -172,17 +185,15 @@ func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*Ear
 	f := &multiplySVMFixture{store: store, topology: topology, bank: bank, ctx: ctx, swapPrefix: exported.SwapPrefix}
 	server := httptest.NewServer(http.HandlerFunc(f.serveRPC))
 	t.Cleanup(server.Close)
-	f.rpc = NewLiveRPCSurface(server.URL)
-	f.reader, err = NewLiveObservationReader(f.rpc)
-	if err != nil {
+	if f.cluster, err = chain.New(server.URL, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	// The local bank truthfully reports its local genesis. This proves worker
 	// execution, not mainnet identity; the production constructor must refuse it.
-	if _, err := NewExecutorWithFeePayerContext(ctx, f.rpc, testDelegateSeed(), testDelegateSeed()); err == nil {
+	if _, err := NewExecutorWithFeePayerContext(ctx, f.cluster, testDelegateSeed(), testDelegateSeed()); err == nil {
 		t.Fatal("local SVM pretended to be mainnet")
 	}
-	f.executor = &Executor{RPC: f.rpc, Signer: testDelegateSeed(), feePayer: testDelegateSeed()}
+	f.executor = &Executor{Chain: f.cluster, Signer: testDelegateSeed(), feePayer: testDelegateSeed()}
 	for _, item := range []struct {
 		family PolicyFamily
 		policy PolicyConfig
@@ -201,7 +212,7 @@ func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*Ear
 			t.Fatal("incorrect actual policy discriminator accepted")
 		}
 	}
-	before, err := ObserveConfirmed(ctx, f.reader, topology, nil)
+	before, err := ObserveConfirmed(ctx, f.cluster, topology, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +267,7 @@ func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*Ear
 
 func (f *multiplySVMFixture) serveRPC(w http.ResponseWriter, r *http.Request) {
 	var q struct {
-		ID     uint64          `json:"id"`
+		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
@@ -310,9 +321,9 @@ func (f *multiplySVMFixture) worker(t *testing.T, keyless bool) *Worker {
 	t.Helper()
 	executor := f.executor
 	if keyless {
-		executor = &Executor{RPC: f.rpc}
+		executor = &Executor{Chain: f.cluster}
 	} // real absence of both private keys
-	deps := WorkerDeps{Store: f.store, Observer: f.reader, Executor: executor, WorkerID: "svm-go-owner", RouteKey: &f.state.RouteKey, Chain: surfaceChain{f.rpc}, Facts: testFacts()}
+	deps := WorkerDeps{Store: f.store, Observer: f.cluster, Executor: executor, WorkerID: "svm-go-owner", RouteKey: &f.state.RouteKey, Chain: f.cluster, Facts: testFacts()}
 	if !keyless {
 		deps.Quotes = multiplyBankQuoteClient{f}
 	}
@@ -329,7 +340,7 @@ func (f *multiplySVMFixture) worker(t *testing.T, keyless bool) *Worker {
 	return worker
 }
 
-func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string]*Account {
+func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string]*chain.Account {
 	t.Helper()
 	accounts := emptyBankReader(topology).accounts
 	// This source-layout initial bank intentionally has no accrued interest or
@@ -342,14 +353,14 @@ func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string
 	config := topology.Strategies[SyrupUsdcUsdc]
 	accounts[topology.ClaimCustody.String()] = observedToken(topology.ClaimCustody, USDCMint, topology.Vault, 0)
 	for _, key := range []solana.PublicKey{config.Market, config.MarketAuthority, config.Oracle} {
-		accounts[key.String()] = &Account{Address: key.String(), Owner: KlendProgram, Lamports: 10_000_000, Data: []byte{0}}
+		accounts[key.String()] = &chain.Account{Key: key, Owner: mustKey(KlendProgram), Lamports: 10_000_000, Data: []byte{0}}
 	}
 	obligation := make([]byte, obligationLength)
 	copy(obligation[:8], obligationDiscriminator)
 	copy(obligation[32:64], config.Market[:])
 	copy(obligation[64:96], topology.Vault[:])
 	binary.LittleEndian.PutUint64(obligation[16:24], 1000)
-	accounts[config.Obligation.String()] = &Account{Address: config.Obligation.String(), Owner: KlendProgram, Lamports: 10_000_000, Data: obligation}
+	accounts[config.Obligation.String()] = &chain.Account{Key: config.Obligation, Owner: mustKey(KlendProgram), Lamports: 10_000_000, Data: obligation}
 	reserve := accounts[config.CollateralReserve.String()]
 	copy(reserve.Data[160:192], config.CollateralLiquiditySupply[:])
 	copy(reserve.Data[2560:2592], config.CollateralReceiptMint[:])
@@ -369,10 +380,10 @@ func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string
 	accounts[config.DebtLiquiditySupply.String()] = observedToken(config.DebtLiquiditySupply, USDCMint, config.MarketAuthority, 1_000_000_000)
 	accounts[config.DebtFeeVault.String()] = observedToken(config.DebtFeeVault, USDCMint, config.MarketAuthority, 0)
 	if config.DebtFarmState != nil {
-		accounts[config.DebtFarmState.String()] = &Account{Address: config.DebtFarmState.String(), Owner: FarmsProgram, Data: []byte{0}, Lamports: 10_000_000}
+		accounts[config.DebtFarmState.String()] = &chain.Account{Key: *config.DebtFarmState, Owner: mustKey(FarmsProgram), Data: []byte{0}, Lamports: 10_000_000}
 	}
 	if config.DebtFarmUser != nil {
-		accounts[config.DebtFarmUser.String()] = &Account{Address: config.DebtFarmUser.String(), Owner: FarmsProgram, Data: []byte{0}, Lamports: 10_000_000}
+		accounts[config.DebtFarmUser.String()] = &chain.Account{Key: *config.DebtFarmUser, Owner: mustKey(FarmsProgram), Data: []byte{0}, Lamports: 10_000_000}
 	}
 	for _, mint := range []solana.PublicKey{mustKey(USDCMint), mustKey(config.CollateralMint)} {
 		pool, err := DeriveAssociatedTokenAccount(multiplyBankSwapAuthority(), mint, mustKey(TokenProgram))
@@ -388,7 +399,7 @@ func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string
 		copy(data[4:36], config.MarketAuthority[:])
 		binary.LittleEndian.PutUint64(data[36:44], 1_000_000_000)
 		data[44], data[45] = 6, 1
-		accounts[mint.String()] = &Account{Address: mint.String(), Owner: TokenProgram, Lamports: 10_000_000, Data: data}
+		accounts[mint.String()] = &chain.Account{Key: mint, Owner: mustKey(TokenProgram), Lamports: 10_000_000, Data: data}
 	}
 	return accounts
 }
@@ -543,7 +554,7 @@ func (f *multiplySVMFixture) assertReconciled(t *testing.T, sends int) {
 	if status != "reconciled" || slot != 1000 || reconciliation == "" {
 		t.Fatal("exact actual transaction reconciliation missing from atomic terminal")
 	}
-	after, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	after, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

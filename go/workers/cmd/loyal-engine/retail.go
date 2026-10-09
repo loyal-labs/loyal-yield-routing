@@ -359,8 +359,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Multiply schema", err)
 	}
-	gRPC := multiply.NewLiveRPCSurface(cfg.rpcURL)
-	gExecutor, err := multiply.NewExecutorWithFeePayerContext(startup, gRPC, cfg.feePayer, cfg.delegate)
+	gExecutor, err := multiply.NewExecutorWithFeePayerContext(startup, cluster, cfg.feePayer, cfg.delegate)
 	if err != nil {
 		return retailError("mainnet genesis", err)
 	}
@@ -451,11 +450,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("cross-mint runtime", err)
 	}
-	observation, err := multiply.NewLiveObservationReader(gRPC)
-	if err != nil {
-		return retailError("Multiply observation", err)
-	}
-	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: observation, Executor: gExecutor, Quotes: multiply.NewLiveQuoteClient(), WorkerID: owner, Chain: cluster, Facts: facts})
+	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: cluster, Executor: gExecutor, Quotes: multiply.NewLiveQuoteClient(), WorkerID: owner, Chain: cluster, Facts: facts})
 	if err != nil {
 		return retailError("Multiply worker", err)
 	}

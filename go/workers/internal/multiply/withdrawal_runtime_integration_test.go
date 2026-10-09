@@ -31,8 +31,8 @@ func TestWorkerWithdrawalShortfallPersistsAcrossRestartWithoutChangingPayout(t *
 	reader.accounts[destination.String()] = observedToken(destination, USDCMint, fixtureKey(214), 0)
 	newWorker := func(owner string) *Worker {
 		t.Helper()
-		executor, _, _ := testExecutor(t)
-		worker, err := NewWorker(WorkerDeps{Store: store, Observer: reader, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: owner, RouteKey: &state.RouteKey, Chain: surfaceChain{executor.RPC}, Facts: testFacts()})
+		executor, fake, _ := testExecutor(t)
+		worker, err := NewWorker(WorkerDeps{Store: store, Observer: reader, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: owner, RouteKey: &state.RouteKey, Chain: fake, Facts: testFacts()})
 		if err != nil {
 			t.Fatal(err)
 		}

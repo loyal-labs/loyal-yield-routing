@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"net/http"
 	"testing"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func runtimeFixtureRoute(t *testing.T, store *Store) (*RouteState, *EarnMaxTopology) {
@@ -74,7 +76,7 @@ func TestWorkerRecoversPreparedCrashBeforeDisabledAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	executor, _, _ := testExecutor(t)
-	worker, err := NewWorker(WorkerDeps{Store: store, Observer: forbiddenObservationReader{}, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: "go-recovery", Chain: surfaceChain{executor.RPC}, Facts: testFacts()})
+	worker, err := NewWorker(WorkerDeps{Store: store, Observer: forbiddenObservationReader{}, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: "go-recovery", Chain: executor.Chain.(*fakeChain), Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,15 +125,15 @@ func TestWorkerExpiresUnlandedWireLikeRustWithoutSending(t *testing.T) {
 	if ok, err := store.ReleaseLease(ctx, lease); err != nil || !ok {
 		t.Fatalf("release %v %v", ok, err)
 	}
-	executor, rpc, _ := testExecutor(t)
-	rpc.height = uint64(signed.LastValidBlockHeight) + 1
-	worker, err := NewRecoveryWorker(WorkerDeps{Store: store, Observer: forbiddenObservationReader{}, Executor: &Executor{RPC: rpc}, WorkerID: "go-landing", Chain: surfaceChain{executor.RPC}, Facts: testFacts()})
+	_, fake, _ := testExecutor(t)
+	fake.height = uint64(signed.LastValidBlockHeight) + 1
+	worker, err := NewRecoveryWorker(WorkerDeps{Store: store, Observer: forbiddenObservationReader{}, Executor: &Executor{Chain: fake}, WorkerID: "go-landing", Chain: fake, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := worker.Tick(ctx)
-	if err != nil || result.Condition != "operation_expired_without_effect" || len(rpc.sent) != 0 {
-		t.Fatalf("expiry %v %v sent=%d", result, err, len(rpc.sent))
+	if err != nil || result.Condition != "operation_expired_without_effect" || len(fake.sent) != 0 {
+		t.Fatalf("expiry %v %v sent=%d", result, err, len(fake.sent))
 	}
 	var status string
 	var wireCleared bool
@@ -146,25 +148,26 @@ func TestWorkerExpiresUnlandedWireLikeRustWithoutSending(t *testing.T) {
 
 type forbiddenObservationReader struct{}
 
-func (forbiddenObservationReader) GetMultipleAccounts(context.Context, []solana.PublicKey) (uint64, []*Account, error) {
+func (forbiddenObservationReader) Accounts(context.Context, []solana.PublicKey, rpc.CommitmentType, uint64) (uint64, []*chain.Account, error) {
 	return 0, nil, errors.New("fresh observation forbidden during prepared recovery")
 }
-func (forbiddenObservationReader) GetAccount(context.Context, solana.PublicKey) (*Account, error) {
-	return nil, errors.New("fresh observation forbidden during prepared recovery")
+
+// blockingReader holds its read until the caller cancels it.
+type blockingReader struct{ started, returned chan struct{} }
+
+func (r blockingReader) Accounts(ctx context.Context, _ []solana.PublicKey, _ rpc.CommitmentType, _ uint64) (uint64, []*chain.Account, error) {
+	close(r.started)
+	<-ctx.Done()
+	close(r.returned)
+	return 0, nil, ctx.Err()
 }
 
 func TestWorkerCancellationReleasesLeaseAfterOwnedReadJoins(t *testing.T) {
 	store := integrationStore(t)
 	state, topology := runtimeFixtureRoute(t, store)
 	started, returned := make(chan struct{}), make(chan struct{})
-	observer := testLiveReader(t, func(request *http.Request) (*http.Response, error) {
-		close(started)
-		<-request.Context().Done()
-		close(returned)
-		return nil, request.Context().Err()
-	})
-	executor, _, _ := testExecutor(t)
-	worker, err := NewWorker(WorkerDeps{Store: store, Observer: observer, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: "cancelled-owner", RouteKey: &state.RouteKey, Chain: surfaceChain{executor.RPC}, Facts: testFacts()})
+	executor, fake, _ := testExecutor(t)
+	worker, err := NewWorker(WorkerDeps{Store: store, Observer: blockingReader{started, returned}, Executor: executor, Quotes: fakeQuoteClient{topology}, WorkerID: "cancelled-owner", RouteKey: &state.RouteKey, Chain: fake, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}

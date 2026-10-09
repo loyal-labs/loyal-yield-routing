@@ -2,133 +2,60 @@ package multiply
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
-	"strings"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-type observationTransport func(*http.Request) (*http.Response, error)
-
-func (f observationTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-func testLiveReader(t *testing.T, transport observationTransport) *LiveObservationReader {
-	t.Helper()
-	rpc := NewLiveRPCSurface("http://disposable-rpc.invalid")
-	rpc.HTTP = &http.Client{Transport: transport, Timeout: time.Second}
-	reader, err := NewLiveObservationReader(rpc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return reader
-}
-
-func TestLiveObservationPreservesKnownAbsenceAndAccountIdentity(t *testing.T) {
-	key := fixtureKey(19)
-	reader := testLiveReader(t, func(request *http.Request) (*http.Response, error) {
-		var call struct {
-			ID     int64             `json:"id"`
-			Method string            `json:"method"`
-			Params []json.RawMessage `json:"params"`
-		}
-		if err := json.NewDecoder(request.Body).Decode(&call); err != nil {
-			return nil, err
-		}
-		var keys []string
-		var options map[string]string
-		if err := json.Unmarshal(call.Params[0], &keys); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(call.Params[1], &options); err != nil {
-			return nil, err
-		}
-		if call.Method != "getMultipleAccounts" || len(keys) != 2 || keys[0] != key.String() || options["commitment"] != "confirmed" || options["encoding"] != "base64" {
-			t.Error("observation transport changed confirmed account scope")
-		}
-		body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": call.ID, "result": map[string]any{
-			"context": map[string]any{"slot": uint64(700)}, "value": []any{map[string]any{"owner": TokenProgram, "lamports": 1, "executable": false, "data": []any{base64.StdEncoding.EncodeToString([]byte{7, 8}), "base64"}}, nil},
-		}})
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
-	})
-	slot, accounts, err := reader.GetMultipleAccounts(context.Background(), []solana.PublicKey{key, fixtureKey(20)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if slot != 700 || accounts[0].Address != key.String() || string(accounts[0].Data) != string([]byte{7, 8}) || accounts[1] != nil {
-		t.Fatal("bank observation lost identity or explicit absence")
-	}
-}
-
-func TestLiveObservationCancellationJoinsTransport(t *testing.T) {
-	started, returned := make(chan struct{}), make(chan struct{})
-	reader := testLiveReader(t, func(request *http.Request) (*http.Response, error) {
-		close(started)
-		<-request.Context().Done()
-		close(returned)
-		return nil, request.Context().Err()
-	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { _, _, err := reader.GetMultipleAccounts(ctx, []solana.PublicKey{fixtureKey(19)}); done <- err }()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("read did not start")
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancellation %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("read did not join cancelled transport")
-	}
-	select {
-	case <-returned:
-	default:
-		t.Fatal("IO remained owned after read returned")
-	}
-}
-
 type bankObservationReader struct {
-	accounts map[string]*Account
+	accounts map[string]*chain.Account
 	slot     uint64
 	batches  int
 }
 
-func (r *bankObservationReader) GetMultipleAccounts(_ context.Context, keys []solana.PublicKey) (uint64, []*Account, error) {
+func (r *bankObservationReader) Accounts(_ context.Context, keys []solana.PublicKey, _ rpc.CommitmentType, _ uint64) (uint64, []*chain.Account, error) {
 	r.batches++
-	accounts := make([]*Account, len(keys))
+	accounts := make([]*chain.Account, len(keys))
 	for i, key := range keys {
 		accounts[i] = r.accounts[key.String()]
 	}
 	return r.slot, accounts, nil
 }
-func (*bankObservationReader) GetAccount(context.Context, solana.PublicKey) (*Account, error) {
-	return nil, errors.New("slotless financial read forbidden")
+
+type unavailableReader struct{}
+
+func (unavailableReader) Accounts(context.Context, []solana.PublicKey, rpc.CommitmentType, uint64) (uint64, []*chain.Account, error) {
+	return 0, nil, fmt.Errorf("getMultipleAccounts: %w", chain.ErrRateLimited)
 }
 
-func observedToken(key solana.PublicKey, mint string, owner solana.PublicKey, amount uint64) *Account {
+func TestReconciliationEndpointFailureWaitsForTheBank(t *testing.T) {
+	// An endpoint that cannot answer says nothing about the confirmed bank, so
+	// reconciliation waits instead of moving the route to manual recovery.
+	_, err := ObserveConfirmed(context.Background(), reconciliationReader{unavailableReader{}, 1}, testTopology(t), nil)
+	if !errors.Is(err, errReconciliationBankUnavailable) {
+		t.Fatalf("endpoint failure became a reconciliation verdict: %v", err)
+	}
+}
+
+func observedToken(key solana.PublicKey, mint string, owner solana.PublicKey, amount uint64) *chain.Account {
 	data := make([]byte, 165)
 	mintKey := mustKey(mint)
 	copy(data[:32], mintKey[:])
 	copy(data[32:64], owner[:])
 	binary.LittleEndian.PutUint64(data[64:72], amount)
 	data[108] = 1
-	return &Account{Address: key.String(), Owner: TokenProgram, Lamports: 1, Data: data}
+	return &chain.Account{Key: key, Owner: mustKey(TokenProgram), Lamports: 1, Data: data}
 }
 
 func emptyBankReader(topology *EarnMaxTopology) *bankObservationReader {
-	reader := &bankObservationReader{accounts: map[string]*Account{}, slot: 500}
+	reader := &bankObservationReader{accounts: map[string]*chain.Account{}, slot: 500}
 	reader.accounts[topology.ClaimCustody.String()] = observedToken(topology.ClaimCustody, USDCMint, topology.Vault, 4_000_000)
 	for _, config := range topology.StrategyCatalog() {
 		reader.accounts[config.CollateralReserve.String()] = reviewReserveAccount(config, false)

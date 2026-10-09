@@ -6,7 +6,6 @@ package multiply
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -15,93 +14,16 @@ import (
 	"sort"
 
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// Account is a confirmed RPC account record.
-type Account struct {
-	Address    string
-	Owner      string
-	Lamports   uint64
-	Executable bool
-	Data       []byte
-}
-
-// ObservationReader is the consumer-defined chain read surface. Production
-// binds the confirmed-commitment RPC client; tests bind fixtures. Missing
-// accounts are returned as nil entries in the same order.
+// ObservationReader is the consumer-defined chain read surface; *chain.Client
+// is the production binding and tests bind fixtures. Missing accounts are nil
+// entries in the same order.
 type ObservationReader interface {
-	GetMultipleAccounts(ctx context.Context, keys []solana.PublicKey) (slot uint64, accounts []*Account, err error)
-	GetAccount(ctx context.Context, key solana.PublicKey) (*Account, error)
-}
-
-// LiveObservationReader exposes only confirmed account reads. Root owns the
-// bounded RPC transport; this adapter never receives a signing capability.
-type LiveObservationReader struct {
-	rpc *LiveRPCSurface
-}
-
-func NewLiveObservationReader(rpc *LiveRPCSurface) (*LiveObservationReader, error) {
-	if rpc == nil || rpc.HTTP == nil || rpc.URL == "" {
-		return nil, errors.New("multiply observation requires a configured RPC transport")
-	}
-	return &LiveObservationReader{rpc: rpc}, nil
-}
-
-func (r *LiveObservationReader) GetMultipleAccounts(ctx context.Context, keys []solana.PublicKey) (uint64, []*Account, error) {
-	if len(keys) == 0 || len(keys) > 100 {
-		return 0, nil, errors.New("confirmed account batch must contain 1 to 100 keys")
-	}
-	addresses := make([]string, len(keys))
-	for index, key := range keys {
-		addresses[index] = key.String()
-	}
-	var raw struct {
-		Context struct {
-			Slot uint64 `json:"slot"`
-		} `json:"context"`
-		Value []*struct {
-			Owner      string `json:"owner"`
-			Lamports   uint64 `json:"lamports"`
-			Executable bool   `json:"executable"`
-			Data       []any  `json:"data"`
-		} `json:"value"`
-	}
-	if err := r.rpc.call(ctx, "getMultipleAccounts", []any{addresses, map[string]any{"encoding": "base64", "commitment": "confirmed"}}, &raw); err != nil {
-		return 0, nil, err
-	}
-	if raw.Context.Slot == 0 || len(raw.Value) != len(keys) {
-		return 0, nil, errors.New("confirmed account response omitted context or entries")
-	}
-	accounts := make([]*Account, len(keys))
-	for index, value := range raw.Value {
-		if value == nil {
-			continue
-		}
-		if _, err := solana.PublicKeyFromBase58(value.Owner); err != nil {
-			return 0, nil, errors.New("confirmed account owner is invalid")
-		}
-		if len(value.Data) != 2 || value.Data[1] != "base64" {
-			return 0, nil, errors.New("confirmed account encoding is invalid")
-		}
-		encoded, ok := value.Data[0].(string)
-		if !ok {
-			return 0, nil, errors.New("confirmed account data is invalid")
-		}
-		data, err := base64.StdEncoding.Strict().DecodeString(encoded)
-		if err != nil {
-			return 0, nil, fmt.Errorf("confirmed account base64: %w", err)
-		}
-		accounts[index] = &Account{Address: addresses[index], Owner: value.Owner, Lamports: value.Lamports, Executable: value.Executable, Data: data}
-	}
-	return raw.Context.Slot, accounts, nil
-}
-
-func (r *LiveObservationReader) GetAccount(ctx context.Context, key solana.PublicKey) (*Account, error) {
-	_, accounts, err := r.GetMultipleAccounts(ctx, []solana.PublicKey{key})
-	if err != nil {
-		return nil, err
-	}
-	return accounts[0], nil
+	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
 }
 
 // StrategyObservation is one decoded obligation/reserve pair.
@@ -215,7 +137,7 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 		keys = append(keys, key)
 	}
 	unique := dedupKeys(keys)
-	slot, accounts, err := reader.GetMultipleAccounts(ctx, unique)
+	slot, accounts, err := reader.Accounts(ctx, unique, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -223,11 +145,11 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 		return nil, errors.New("confirmed account response omitted its slot or account entries")
 	}
 	for index, account := range accounts {
-		if account != nil && account.Address != unique[index].String() {
+		if account != nil && account.Key != unique[index] {
 			return nil, errors.New("confirmed account response identity drifted")
 		}
 	}
-	required := func(key solana.PublicKey) (*Account, error) {
+	required := func(key solana.PublicKey) (*chain.Account, error) {
 		for position, candidate := range unique {
 			if candidate == key {
 				if account := accounts[position]; account != nil {
@@ -237,7 +159,7 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 		}
 		return nil, fmt.Errorf("required mainnet account %s is absent", key)
 	}
-	optional := func(key solana.PublicKey) *Account {
+	optional := func(key solana.PublicKey) *chain.Account {
 		for position, candidate := range unique {
 			if candidate == key {
 				return accounts[position]
@@ -381,7 +303,7 @@ func lessKey(left, right solana.PublicKey) bool {
 	return false
 }
 
-func tokenBalanceAmount(account *Account, mint string, tokenProgram solana.PublicKey, owner solana.PublicKey) (uint64, error) {
+func tokenBalanceAmount(account *chain.Account, mint string, tokenProgram solana.PublicKey, owner solana.PublicKey) (uint64, error) {
 	if tokenProgram == mustKey(TokenProgram) {
 		return classicBalance(account, mint, owner)
 	}
@@ -391,18 +313,17 @@ func tokenBalanceAmount(account *Account, mint string, tokenProgram solana.Publi
 	return 0, errors.New("configured custody token program is unsupported")
 }
 
-func classicBalance(account *Account, mint string, owner solana.PublicKey) (uint64, error) {
+func classicBalance(account *chain.Account, mint string, owner solana.PublicKey) (uint64, error) {
 	return tokenBalanceForOwner(account, mint, mustKey(TokenProgram), &owner)
 }
 
 // tokenBalanceForOwner validates an SPL token account (classic base layout;
 // Token-2022 shares it before extensions) and returns its raw amount.
-func tokenBalanceForOwner(account *Account, mint string, tokenProgram solana.PublicKey, owner *solana.PublicKey) (uint64, error) {
+func tokenBalanceForOwner(account *chain.Account, mint string, tokenProgram solana.PublicKey, owner *solana.PublicKey) (uint64, error) {
 	if account == nil {
 		return 0, errors.New("token account is absent")
 	}
-	expectedOwner := tokenProgram.String()
-	if account.Owner != expectedOwner {
+	if account.Owner != tokenProgram {
 		return 0, errors.New("token account has the wrong owner")
 	}
 	if len(account.Data) < 165 {
@@ -462,7 +383,7 @@ const (
 	obligationElevationOffset = 2285
 )
 
-func obligationEnvelope(account *Account, address solana.PublicKey, market, vault solana.PublicKey) ([]byte, error) {
+func obligationEnvelope(account *chain.Account, address solana.PublicKey, market, vault solana.PublicKey) ([]byte, error) {
 	if err := klendEnvelope(account, address, obligationLength, obligationDiscriminator); err != nil {
 		return nil, err
 	}
@@ -472,15 +393,15 @@ func obligationEnvelope(account *Account, address solana.PublicKey, market, vaul
 	return account.Data, nil
 }
 
-func klendEnvelope(account *Account, address solana.PublicKey, length int, discriminator string) error {
-	if account == nil || account.Address != address.String() || account.Owner != KlendProgram || account.Executable ||
+func klendEnvelope(account *chain.Account, address solana.PublicKey, length int, discriminator string) error {
+	if account == nil || account.Key != address || account.Owner != mustKey(KlendProgram) || account.Executable ||
 		account.Lamports == 0 || len(account.Data) != length || string(account.Data[:8]) != discriminator {
 		return errors.New("KLend account envelope or layout drifted")
 	}
 	return nil
 }
 
-func decodeObligation(account *Account, config StrategyConfig, vault solana.PublicKey, collateralReserve, debtReserve *decodedReserve, collateralAPY, debtAPY uint64) (*StrategyObservation, error) {
+func decodeObligation(account *chain.Account, config StrategyConfig, vault solana.PublicKey, collateralReserve, debtReserve *decodedReserve, collateralAPY, debtAPY uint64) (*StrategyObservation, error) {
 	data, err := obligationEnvelope(account, config.Obligation, config.Market, vault)
 	if err != nil {
 		return nil, err
@@ -595,10 +516,10 @@ type decodedReserve struct {
 	TotalLiquiditySF     *big.Int
 }
 
-func decodeReserve(account *Account, config StrategyConfig) (*decodedReserve, error) {
+func decodeReserve(account *chain.Account, config StrategyConfig) (*decodedReserve, error) {
 	address := config.CollateralReserve
 	mint := config.CollateralMint
-	if account != nil && account.Address != address.String() && config.DebtReserve.String() == account.Address {
+	if account != nil && account.Key != address && config.DebtReserve == account.Key {
 		address = config.DebtReserve
 		mint = config.DebtMint
 	}

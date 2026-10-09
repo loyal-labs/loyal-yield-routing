@@ -10,6 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func reviewSF(value uint64) *big.Int {
@@ -96,7 +99,7 @@ func TestPlannerAndBorrowKeepFullScaledFractions(t *testing.T) {
 	}
 }
 
-func reviewReserveAccount(config StrategyConfig, debt bool) *Account {
+func reviewReserveAccount(config StrategyConfig, debt bool) *chain.Account {
 	address, mint := config.CollateralReserve, config.CollateralMint
 	if debt {
 		address, mint = config.DebtReserve, config.DebtMint
@@ -112,10 +115,10 @@ func reviewReserveAccount(config StrategyConfig, debt bool) *Account {
 	putReviewSF(data[248:264], reviewSF(1))
 	binary.LittleEndian.PutUint64(data[272:280], 6)
 	binary.LittleEndian.PutUint64(data[2592:2600], 1_000_000_000)
-	return &Account{Address: address.String(), Owner: KlendProgram, Lamports: 1, Data: data}
+	return &chain.Account{Key: address, Owner: mustKey(KlendProgram), Lamports: 1, Data: data}
 }
 
-func reviewObligationAccount(config StrategyConfig, vault solana.PublicKey) *Account {
+func reviewObligationAccount(config StrategyConfig, vault solana.PublicKey) *chain.Account {
 	data := make([]byte, obligationLength)
 	copy(data[:8], obligationDiscriminator)
 	copy(data[32:64], config.Market[:])
@@ -129,7 +132,7 @@ func reviewObligationAccount(config StrategyConfig, vault solana.PublicKey) *Acc
 	putReviewSF(data[2208:2224], reviewSF(100))
 	putReviewSF(data[2256:2272], reviewSF(400))
 	data[2288] = 99
-	return &Account{Address: config.Obligation.String(), Owner: KlendProgram, Lamports: 1, Data: data}
+	return &chain.Account{Key: config.Obligation, Owner: mustKey(KlendProgram), Lamports: 1, Data: data}
 }
 
 func TestPinnedObligationLayoutAndReserveMintIdentity(t *testing.T) {
@@ -186,11 +189,8 @@ func TestValuationUsesUnsignedRawAndWideIntermediates(t *testing.T) {
 
 type shortReviewReader struct{}
 
-func (shortReviewReader) GetMultipleAccounts(context.Context, []solana.PublicKey) (uint64, []*Account, error) {
+func (shortReviewReader) Accounts(context.Context, []solana.PublicKey, rpc.CommitmentType, uint64) (uint64, []*chain.Account, error) {
 	return 500, nil, nil
-}
-func (shortReviewReader) GetAccount(context.Context, solana.PublicKey) (*Account, error) {
-	return nil, nil
 }
 
 func TestObservationRejectsIncompleteRPCArray(t *testing.T) {
@@ -258,8 +258,8 @@ func TestSnapshotClaimUnitsIdleZerosAndUnknownEvidence(t *testing.T) {
 func TestWorkerAcceptsExecutorPrivateKeyAndDepositRejectsWrap(t *testing.T) {
 	topology := testTopology(t)
 	dependencies := WorkerDeps{Store: &Store{pool: &pgxpool.Pool{}}, Observer: shortReviewReader{},
-		Executor: &Executor{RPC: &fakeRPC{}, Signer: testDelegateSeed()}, Quotes: fakeQuoteClient{topology}, WorkerID: "review",
-		Chain: surfaceChain{&fakeRPC{}}, Facts: testFacts()}
+		Executor: &Executor{Chain: &fakeChain{}, Signer: testDelegateSeed()}, Quotes: fakeQuoteClient{topology}, WorkerID: "review",
+		Chain: &fakeChain{}, Facts: testFacts()}
 	if _, err := NewWorker(dependencies); err != nil {
 		t.Fatal(err)
 	}

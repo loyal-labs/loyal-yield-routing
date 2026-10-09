@@ -1,25 +1,18 @@
 package multiply
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
-	"github.com/solana-foundation/solana-go/v2"
-	"io"
 	"math"
-	"net/http"
 	"testing"
-)
 
-func (c *fakeRPC) FeeForMessage(context.Context, []byte) (uint64, error) { return 5000, nil }
-func (c *fakeRPC) LookupTables(context.Context, []solana.PublicKey) (map[solana.PublicKey]solana.PublicKeySlice, error) {
-	return map[solana.PublicKey]solana.PublicKeySlice{}, nil
-}
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+)
 
 func signedWireFixture(t *testing.T, dual bool) *SignedOperation {
 	t.Helper()
@@ -112,15 +105,15 @@ func TestPrepareContainsOnlyWrappedTerminalAndCanonicalBudget(t *testing.T) {
 	}
 }
 
-type pricedRPC struct {
-	fakeRPC
-	fee    uint64
-	tables map[solana.PublicKey]solana.PublicKeySlice
-}
-
-func (c *pricedRPC) FeeForMessage(context.Context, []byte) (uint64, error) { return c.fee, nil }
-func (c *pricedRPC) LookupTables(context.Context, []solana.PublicKey) (map[solana.PublicKey]solana.PublicKeySlice, error) {
-	return c.tables, nil
+// lookupTableAccount is an active lookup table holding addresses.
+func lookupTableAccount(key solana.PublicKey, addresses ...solana.PublicKey) *chain.Account {
+	data := make([]byte, 56, 56+32*len(addresses))
+	binary.LittleEndian.PutUint32(data[:4], 1)
+	binary.LittleEndian.PutUint64(data[4:12], math.MaxUint64)
+	for _, address := range addresses {
+		data = append(data, address[:]...)
+	}
+	return &chain.Account{Key: key, Owner: solana.AddressLookupTableProgramID, Lamports: 1, Data: data}
 }
 
 func TestVersionedDualSignerWireAndFeeCap(t *testing.T) {
@@ -129,8 +122,9 @@ func TestVersionedDualSignerWireAndFeeCap(t *testing.T) {
 	seed[0] = 99
 	payer := ed25519.NewKeyFromSeed(seed)
 	tableKey, loaded := fixtureKey(61), fixtureKey(62)
-	rpc := &pricedRPC{fakeRPC: fakeRPC{genesis: mainnetGenesisHash, hash: BlockhashAndHeight{RecentBlockhash: fixtureKey(9).String(), LastValidBlockHeight: 100, ContextSlot: 77}}, fee: 20000, tables: map[solana.PublicKey]solana.PublicKeySlice{tableKey: {loaded}}}
-	executor, err := NewExecutorWithFeePayer(rpc, payer, key)
+	fake := &fakeChain{genesis: solana.MustHashFromBase58(mainnetGenesisHash), blockhash: solana.Hash(fixtureKey(9)), lastValid: 100, slot: 77, fee: 20000,
+		accounts: map[solana.PublicKey]*chain.Account{tableKey: lookupTableAccount(tableKey, loaded)}}
+	executor, err := NewExecutorWithFeePayer(fake, payer, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +148,7 @@ func TestVersionedDualSignerWireAndFeeCap(t *testing.T) {
 	if _, err := PersistedTransaction(op); err != nil {
 		t.Fatal(err)
 	}
-	rpc.fee = 20001
+	fake.fee = 20001
 	if _, _, err := executor.PrepareAndSign(context.Background(), built, fixtureKey(45), 0, []byte{0}, 0); err == nil {
 		t.Fatal("fee above Rust cap accepted")
 	}
@@ -204,76 +198,32 @@ func TestEffectsRejectOverspendMissingAnchorsAndAcceptBoundedSwap(t *testing.T) 
 	}
 }
 
-type rpcTransport func(*http.Request) (*http.Response, error)
-
-func (f rpcTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-func responseRPC(t *testing.T, result any, check func(map[string]json.RawMessage)) *LiveRPCSurface {
-	t.Helper()
-	return &LiveRPCSurface{URL: "http://invalid.local/unused", HTTP: &http.Client{Transport: rpcTransport(func(r *http.Request) (*http.Response, error) {
-		var request map[string]json.RawMessage
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatal(err)
-		}
-		if check != nil {
-			check(request)
-		}
-		var id int64
-		if err := json.Unmarshal(request["id"], &id); err != nil {
-			t.Fatal(err)
-		}
-		body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
-	})}}
-}
-
-func TestRPCUsesHistoricalSignatureSearchAndRejectsWrongPolicyOwner(t *testing.T) {
-	rpc := responseRPC(t, map[string]any{"value": []any{nil}}, func(request map[string]json.RawMessage) {
-		var params []json.RawMessage
-		if err := json.Unmarshal(request["params"], &params); err != nil {
-			t.Fatal(err)
-		}
-		var options map[string]bool
-		if err := json.Unmarshal(params[1], &options); err != nil {
-			t.Fatal(err)
-		}
-		if !options["searchTransactionHistory"] {
-			t.Fatal("signature cache miss cannot prove history absence")
-		}
-	})
-	if status, err := rpc.SignatureStatus(context.Background(), signedWireFixture(t, false).TransactionSignature); err != nil || status != nil {
-		t.Fatalf("history absence %v %v", status, err)
-	}
-	rpc = responseRPC(t, map[string]any{"context": map[string]any{"slot": 80}, "value": map[string]any{"owner": TokenProgram, "executable": false, "data": []string{"AA==", "base64"}}}, nil)
-	if _, _, err := rpc.AccountAtConfirmed(context.Background(), fixtureKey(4)); err == nil {
+func TestPolicyUnderAnotherOwnerIsRefused(t *testing.T) {
+	executor, fake, _ := testExecutor(t)
+	policy := fixtureKey(4)
+	fake.accounts = map[solana.PublicKey]*chain.Account{policy: {Key: policy, Owner: mustKey(TokenProgram), Lamports: 1, Data: []byte{0}}}
+	if _, _, err := executor.policyAccount(context.Background(), policy); err == nil {
 		t.Fatal("policy under wrong owner accepted")
 	}
 }
 
-func TestRPCLookupTableRequiresActiveCompleteMetadata(t *testing.T) {
-	data := make([]byte, 56+32)
-	binary.LittleEndian.PutUint32(data[:4], 1)
-	binary.LittleEndian.PutUint64(data[4:12], math.MaxUint64)
-	key := fixtureKey(6)
-	copy(data[56:], key[:])
-	result := func(data []byte, owner string) any {
-		return map[string]any{"value": []any{map[string]any{"owner": owner, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(data), "base64"}}}}
-	}
-	tableKey := fixtureKey(5)
-	rpc := responseRPC(t, result(data, solana.AddressLookupTableProgramID.String()), nil)
-	tables, err := rpc.LookupTables(context.Background(), []solana.PublicKey{tableKey})
+func TestLookupTableRequiresActiveCompleteMetadata(t *testing.T) {
+	executor, fake, _ := testExecutor(t)
+	tableKey, key := fixtureKey(5), fixtureKey(6)
+	active := lookupTableAccount(tableKey, key)
+	fake.accounts = map[solana.PublicKey]*chain.Account{tableKey: active}
+	tables, err := executor.lookupTables(context.Background(), []solana.PublicKey{tableKey})
 	if err != nil || len(tables[tableKey]) != 1 || tables[tableKey][0] != key {
 		t.Fatalf("complete active table %v %v", tables, err)
 	}
-	for _, bad := range []struct {
-		data  []byte
-		owner string
-	}{{data, TokenProgram}, {data[:len(data)-1], solana.AddressLookupTableProgramID.String()}, {make([]byte, len(data)), solana.AddressLookupTableProgramID.String()}} {
-		rpc = responseRPC(t, result(bad.data, bad.owner), nil)
-		if _, err := rpc.LookupTables(context.Background(), []solana.PublicKey{tableKey}); err == nil {
+	for _, bad := range []*chain.Account{
+		nil,
+		{Key: tableKey, Owner: mustKey(TokenProgram), Data: active.Data},
+		{Key: tableKey, Owner: solana.AddressLookupTableProgramID, Data: active.Data[:len(active.Data)-1]},
+		{Key: tableKey, Owner: solana.AddressLookupTableProgramID, Data: make([]byte, len(active.Data))},
+	} {
+		fake.accounts[tableKey] = bad
+		if _, err := executor.lookupTables(context.Background(), []solana.PublicKey{tableKey}); err == nil {
 			t.Fatal("invalid lookup table accepted")
 		}
 	}

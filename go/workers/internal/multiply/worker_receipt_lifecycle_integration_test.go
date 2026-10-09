@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Publish an actual SDK-constrained, simulated wire using the same durable
@@ -17,7 +21,7 @@ import (
 // fabricated: the following keyless Tick must execute/reconcile it itself.
 func (f *multiplySVMFixture) persistUnsentDeposit(t *testing.T) *MultiplyOperation {
 	t.Helper()
-	before, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	before, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,8 +44,8 @@ func (f *multiplySVMFixture) persistUnsentDeposit(t *testing.T) *MultiplyOperati
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome, err := f.executor.Simulate(f.ctx, signed, slot); err != nil || outcome.Err != nil {
-		t.Fatalf("actual prepublication simulation: %v %v", outcome, err)
+	if _, err := f.executor.Simulate(f.ctx, signed, slot); err != nil {
+		t.Fatalf("actual prepublication simulation: %v", err)
 	}
 	lease, err := f.store.LeaseRoute(f.ctx, f.state.RouteKey, "actual-prepublication-owner", time.Now().Add(time.Minute))
 	if err != nil || lease == nil {
@@ -97,8 +101,9 @@ func TestCurrentGoMultiplyActualExpiredUnsentWireNoEffect(t *testing.T) {
 	if _, err := f.bank.call("expireBlockhash", []any{}); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := f.executor.Simulate(f.ctx, &SignedOperation{Wire: original.SignedWire}, *original.LastValidBlockHeight+1); err != nil || result.Err == nil {
-		t.Fatalf("obsolete actual bank wire still valid: %v %v", result, err)
+	var failed *chain.SimulationError
+	if _, err := f.executor.Simulate(f.ctx, &SignedOperation{Wire: original.SignedWire}, *original.LastValidBlockHeight+1); !errors.As(err, &failed) {
+		t.Fatalf("obsolete actual bank wire still valid: %v", err)
 	}
 	result, err := f.worker(t, true).Tick(f.ctx)
 	if err != nil || result.Condition != "operation_expired_without_effect" {
@@ -113,7 +118,7 @@ func TestCurrentGoMultiplyActualExpiredUnsentWireNoEffect(t *testing.T) {
 	if err := f.store.Pool().QueryRow(f.ctx, `SELECT status,signed_wire IS NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, original.OperationID).Scan(&status, &wireCleared); err != nil || status != "expired" || !wireCleared {
 		t.Fatalf("expiry must match Rust expire_multiply_operation: %s %v %v", status, wireCleared, err)
 	}
-	after, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	after, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil || after.CollateralCustody(SyrupUsdcUsdc).AmountRaw != 1_000_000 || after.Position(SyrupUsdcUsdc).CollateralDepositedRaw != 0 {
 		t.Fatal("expiry changed financial state")
 	}
@@ -150,7 +155,7 @@ func TestCurrentGoMultiplyActualDepositThenWithdrawal(t *testing.T) {
 	if err != nil || result.Condition != "operation_reconciled" {
 		t.Fatalf("actual unwind: %v %v", result, err)
 	}
-	after, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	after, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil || after.Position(SyrupUsdcUsdc).CollateralDepositedRaw != 0 || after.CollateralCustody(SyrupUsdcUsdc).AmountRaw != 1_000_000 {
 		t.Fatal("actual withdrawal financial state differs from receipt")
 	}
@@ -191,7 +196,7 @@ func TestCurrentGoMultiplyActualReceiptTerminalRollsBackOnStaleFence(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	after, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +246,7 @@ func TestCurrentGoMultiplyMockRejectsInvalidScopeRefresh(t *testing.T) {
 		}},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
-			before, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+			before, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -259,13 +264,12 @@ func TestCurrentGoMultiplyMockRejectsInvalidScopeRefresh(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			outcome, err := f.executor.Simulate(f.ctx, signed, slot)
-			if err == nil && outcome.Err == nil {
+			if _, err := f.executor.Simulate(f.ctx, signed, slot); err == nil {
 				t.Fatal("invalid oracle fixture vector simulated successfully")
 			}
 		})
 	}
-	after, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	after, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil || after.CollateralCustody(SyrupUsdcUsdc).AmountRaw != 1_000_000 || after.Position(SyrupUsdcUsdc).CollateralDepositedRaw != 0 {
 		t.Fatal("invalid simulation changed financial bank")
 	}
@@ -283,57 +287,40 @@ func TestCurrentGoMultiplyActualReceiptRejectsProviderDrift(t *testing.T) {
 	if err != nil || saved.Operation == nil {
 		t.Fatal("actual financial journal missing")
 	}
-	raw, err := f.rpc.ConfirmedTransaction(f.ctx, *saved.Operation.TransactionSignature)
+	signature := solana.MustSignatureFromBase58(*saved.Operation.TransactionSignature)
+	receipt, err := f.cluster.Receipt(f.ctx, signature, rpc.CommitmentConfirmed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := validateConfirmedReceipt(saved.Operation, f.topology, raw, nil); err != nil {
+	if _, err := validateConfirmedReceipt(saved.Operation, f.topology, receipt, nil); err != nil {
 		t.Fatalf("unmodified actual bank receipt: %v", err)
+	}
+	foreign := func(change func(*chain.TokenBalance)) func(*chain.Receipt) {
+		return func(r *chain.Receipt) {
+			post := map[solana.PublicKey]chain.TokenBalance{}
+			for key, balance := range r.Post {
+				change(&balance)
+				post[key] = balance
+			}
+			r.Post = post
+		}
 	}
 	for _, mutation := range []struct {
 		name   string
-		change func(map[string]any)
+		change func(*chain.Receipt)
 	}{
-		{"missing-success", func(r map[string]any) { delete(r["meta"].(map[string]any), "err") }},
-		{"failed-transaction", func(r map[string]any) { r["meta"].(map[string]any)["err"] = "failed" }},
-		{"unknown-slot", func(r map[string]any) { r["slot"] = 0 }},
-		{"different-wire", func(r map[string]any) { r["transaction"].([]any)[0] = "AA==" }},
-		{"incomplete-sol", func(r map[string]any) { r["meta"].(map[string]any)["postBalances"] = []any{} }},
-		{"different-loaded-order", func(r map[string]any) {
-			r["meta"].(map[string]any)["loadedAddresses"] = map[string]any{"writable": []any{fixtureKey(122).String()}, "readonly": []any{}}
-		}},
-		{"missing-token-index", func(r map[string]any) {
-			tokens := r["meta"].(map[string]any)["postTokenBalances"].([]any)
-			delete(tokens[0].(map[string]any), "accountIndex")
-		}},
-		{"duplicate-token-index", func(r map[string]any) {
-			meta := r["meta"].(map[string]any)
-			tokens := meta["postTokenBalances"].([]any)
-			meta["postTokenBalances"] = append(tokens, tokens[0])
-		}},
-		{"foreign-token-authority", func(r map[string]any) {
-			tokens := r["meta"].(map[string]any)["postTokenBalances"].([]any)
-			for _, tok := range tokens {
-				tok.(map[string]any)["owner"] = fixtureKey(123).String()
-			}
-		}},
-		{"foreign-token-program", func(r map[string]any) {
-			tokens := r["meta"].(map[string]any)["postTokenBalances"].([]any)
-			for _, tok := range tokens {
-				tok.(map[string]any)["programId"] = SquadsProgram
-			}
-		}},
+		{"failed-transaction", func(r *chain.Receipt) { r.Err = "failed" }},
+		{"unknown-slot", func(r *chain.Receipt) { r.Slot = 0 }},
+		{"different-wire", func(r *chain.Receipt) { r.Wire = []byte{0} }},
+		{"incomplete-sol", func(r *chain.Receipt) { r.PostLamports = nil }},
+		{"different-loaded-order", func(r *chain.Receipt) { r.LoadedWritable = []solana.PublicKey{fixtureKey(122)} }},
+		{"missing-token-balance", func(r *chain.Receipt) { r.Post = nil }},
+		{"foreign-token-authority", foreign(func(b *chain.TokenBalance) { b.Owner = fixtureKey(123) })},
+		{"foreign-token-program", foreign(func(b *chain.TokenBalance) { b.Program = mustKey(SquadsProgram) })},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
-			var r map[string]any
-			if err := json.Unmarshal(raw, &r); err != nil {
-				t.Fatal(err)
-			}
-			mutation.change(r)
-			changed, err := json.Marshal(r)
-			if err != nil {
-				t.Fatal(err)
-			}
+			changed := receipt
+			mutation.change(&changed)
 			if _, err := validateConfirmedReceipt(saved.Operation, f.topology, changed, nil); err == nil {
 				t.Fatal("provider drift accepted as actual financial receipt")
 			}
@@ -358,7 +345,7 @@ func TestCurrentGoMultiplyInitialExposureAdmissionHolds(t *testing.T) {
 		{"multiple-active-strategies", []StrategyKey{PrimeUsdc, SyrupUsdcUsdc}, "awaiting_coherent_confirmed_observation"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newMultiplySVMFixtureWithInitialAccounts(t, func(topology *EarnMaxTopology, accounts map[string]*Account) {
+			f := newMultiplySVMFixtureWithInitialAccounts(t, func(topology *EarnMaxTopology, accounts map[string]*chain.Account) {
 				for _, key := range test.keys {
 					config := topology.Strategies[key]
 					data := make([]byte, obligationLength)
@@ -368,7 +355,7 @@ func TestCurrentGoMultiplyInitialExposureAdmissionHolds(t *testing.T) {
 					copy(data[64:96], topology.Vault[:])
 					copy(data[96:128], config.CollateralReserve[:])
 					binary.LittleEndian.PutUint64(data[128:136], 1000)
-					accounts[config.Obligation.String()] = &Account{Address: config.Obligation.String(), Owner: KlendProgram, Data: data, Lamports: 10_000_000}
+					accounts[config.Obligation.String()] = &chain.Account{Key: config.Obligation, Owner: mustKey(KlendProgram), Data: data, Lamports: 10_000_000}
 				}
 			})
 			result, err := f.worker(t, false).Tick(f.ctx)
@@ -407,7 +394,7 @@ func TestCurrentGoMultiplyActualLeveredDeployAndFullUnwind(t *testing.T) {
 			t.Fatal("fixed-price deploy did not converge")
 		}
 	}
-	after, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	after, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +465,7 @@ func TestCurrentGoMultiplyActualLeveredDeployAndFullUnwind(t *testing.T) {
 	if !duplicateHeld {
 		t.Fatal("old-hash identical MaxSafe candidate refusal was not exercised")
 	}
-	after, err = ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	after, err = ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +507,7 @@ func TestCurrentGoMultiplyActualModelRejectsDebtAndSwapRecipeDrift(t *testing.T)
 			t.Fatalf("actual debt initial execution %v %v", result, err)
 		}
 	}
-	before, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	before, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +539,7 @@ func TestCurrentGoMultiplyActualModelRejectsDebtAndSwapRecipeDrift(t *testing.T)
 				if err != nil || result.Condition != "operation_reconciled" {
 					t.Fatalf("actual borrowing: %v %v", result, err)
 				}
-				before, err = ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+				before, err = ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -576,21 +563,20 @@ func TestCurrentGoMultiplyActualModelRejectsDebtAndSwapRecipeDrift(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if outcome, err := f.executor.Simulate(f.ctx, baseline, slot); err != nil || outcome.Err != nil {
-				t.Fatalf("unmodified source recipe simulation: %v %v", outcome, err)
+			if _, err := f.executor.Simulate(f.ctx, baseline, slot); err != nil {
+				t.Fatalf("unmodified source recipe simulation: %v", err)
 			}
 			test.change(&built.PolicyInstructions[0])
 			signed, slot, err := f.executor.PrepareAndSign(f.ctx, built, policy.Account, 0, policy.ConstraintIndexes, before.Slot)
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := f.executor.Simulate(f.ctx, signed, slot)
-			if err == nil && result.Err == nil {
+			if _, err := f.executor.Simulate(f.ctx, signed, slot); err == nil {
 				t.Fatal("invalid source recipe simulated successfully")
 			}
 		})
 	}
-	after, err := ObserveConfirmed(f.ctx, f.reader, f.topology, nil)
+	after, err := ObserveConfirmed(f.ctx, f.cluster, f.topology, nil)
 	if err != nil || after.Position(SyrupUsdcUsdc).DebtRaw != before.Position(SyrupUsdcUsdc).DebtRaw || after.Claim.AmountRaw != before.Claim.AmountRaw || after.CollateralCustody(SyrupUsdcUsdc).AmountRaw != before.CollateralCustody(SyrupUsdcUsdc).AmountRaw {
 		t.Fatal("invalid recipe simulation mutated actual financial bank")
 	}
