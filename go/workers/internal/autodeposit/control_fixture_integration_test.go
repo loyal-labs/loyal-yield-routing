@@ -3,6 +3,10 @@ package autodeposit
 import (
 	"context"
 	"testing"
+
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type countingControlReader struct {
@@ -13,22 +17,6 @@ type countingControlReader struct {
 func (r *countingControlReader) ObserveControl(ctx context.Context, t ControlTarget, slot int64) (ControlObservation, error) {
 	r.calls++
 	return r.reader.ObserveControl(ctx, t, slot)
-}
-
-type fixedCreatorHistory struct {
-	entries  map[string]ArtifactHistoryEntry
-	receipts map[string]ArtifactReceipt
-}
-
-func (h fixedCreatorHistory) ArtifactHistory(_ context.Context, address string, _ int) ([]ArtifactHistoryEntry, error) {
-	return []ArtifactHistoryEntry{h.entries[address]}, nil
-}
-func (h fixedCreatorHistory) ArtifactReceipt(_ context.Context, signature string) (ArtifactReceipt, error) {
-	receipt, ok := h.receipts[signature]
-	if !ok {
-		return receipt, ErrArtifactCreationProofPending
-	}
-	return receipt, nil
 }
 
 // seedControlRuntime seeds one mainnet target whose policy and delegation
@@ -55,6 +43,9 @@ func seedControlRuntime(t *testing.T, s *Store) (int64, *countingControlReader, 
 	f.WireBase64 = f.DelegationWireBase64
 	f.Policy = f.RecurringDelegation
 	delegation := goldenCreatorReceipt(t, f)
-	history := fixedCreatorHistory{entries: map[string]ArtifactHistoryEntry{target.Policy: {Signature: policy.Signature, Slot: policy.Slot}, target.RecurringDelegation: {Signature: delegation.Signature, Slot: delegation.Slot}}, receipts: map[string]ArtifactReceipt{policy.Signature: policy, delegation.Signature: delegation}}
+	history := &artifactHistoryFake{
+		pages:    map[solana.Signature][]chain.Signed{{}: {{Signature: policy.signature, Slot: policy.Slot}, {Signature: delegation.signature, Slot: delegation.Slot}}},
+		receipts: map[solana.Signature]chain.Receipt{policy.signature: policy.Receipt, delegation.signature: delegation.Receipt},
+	}
 	return target.TargetID, &countingControlReader{reader: b}, &ArtifactProofReader{Wires: b, History: history}
 }

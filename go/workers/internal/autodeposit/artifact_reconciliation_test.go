@@ -14,9 +14,12 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 type artifactGolden struct {
@@ -50,6 +53,14 @@ func artifactFixture(t *testing.T) (artifactGolden, ArtifactTarget, *SweepWireBu
 		t.Fatal(e)
 	}
 	return f, target, b
+}
+func mustKeys(t *testing.T, addresses []string) []solana.PublicKey {
+	t.Helper()
+	keys := make([]solana.PublicKey, len(addresses))
+	for i, address := range addresses {
+		keys[i] = mustKey(address)
+	}
+	return keys
 }
 func goldenHex(t *testing.T, s string) []byte {
 	t.Helper()
@@ -91,7 +102,19 @@ func TestCanonicalSubscriptionCreatorOfficialSolitaABI(t *testing.T) {
 		})
 	}
 }
-func goldenCreatorReceipt(t *testing.T, f artifactGolden) ArtifactReceipt {
+
+// creatorReceipt is a confirmed receipt and the signature it was read by.
+type creatorReceipt struct {
+	signature solana.Signature
+	chain.Receipt
+}
+
+func verifyCreator(t *testing.T, b *SweepWireBuilder, target ArtifactTarget, role ArtifactRole, r creatorReceipt) (VerifiedArtifactCreationProof, error) {
+	t.Helper()
+	return b.verifyArtifactCreator(t.Context(), target, role, r.signature, r.Receipt)
+}
+
+func goldenCreatorReceipt(t *testing.T, f artifactGolden) creatorReceipt {
 	t.Helper()
 	wire, e := base64.StdEncoding.DecodeString(f.WireBase64)
 	if e != nil {
@@ -101,7 +124,7 @@ func goldenCreatorReceipt(t *testing.T, f artifactGolden) ArtifactReceipt {
 	if e != nil {
 		t.Fatal(e)
 	}
-	r := ArtifactReceipt{Signature: tx.Signatures[0].String(), Slot: 125, Wire: wire, PreLamports: make([]uint64, len(tx.Message.AccountKeys)), PostLamports: make([]uint64, len(tx.Message.AccountKeys))}
+	r := creatorReceipt{tx.Signatures[0], chain.Receipt{Slot: 125, Wire: wire, PreLamports: make([]uint64, len(tx.Message.AccountKeys)), PostLamports: make([]uint64, len(tx.Message.AccountKeys))}}
 	for i, k := range tx.Message.AccountKeys {
 		r.PreLamports[i] = 1
 		r.PostLamports[i] = 1
@@ -112,7 +135,7 @@ func goldenCreatorReceipt(t *testing.T, f artifactGolden) ArtifactReceipt {
 	}
 	return r
 }
-func resignArtifactReceipt(t *testing.T, r ArtifactReceipt, mutate func(*solana.Transaction), signer ed25519.PrivateKey) ArtifactReceipt {
+func resignArtifactReceipt(t *testing.T, r creatorReceipt, mutate func(*solana.Transaction), signer ed25519.PrivateKey) creatorReceipt {
 	t.Helper()
 	tx, e := solana.TransactionFromBytes(r.Wire)
 	if e != nil {
@@ -129,48 +152,51 @@ func resignArtifactReceipt(t *testing.T, r ArtifactReceipt, mutate func(*solana.
 		t.Fatal(e)
 	}
 	r.Wire = mustMarshalTransaction(t, tx)
-	r.Signature = tx.Signatures[0].String()
+	r.signature = tx.Signatures[0]
 	return r
 }
 func TestArtifactCreatorRequiresExactCreationSignatureAndFullMatrix(t *testing.T) {
 	f, target, b := artifactFixture(t)
 	receipt := goldenCreatorReceipt(t, f)
-	p, e := b.verifyArtifactCreator(t.Context(), target, ArtifactPolicy, receipt)
-	if e != nil || p.account != target.Policy || p.signature != receipt.Signature || p.slot != 125 {
+	p, e := verifyCreator(t, b, target, ArtifactPolicy, receipt)
+	if e != nil || p.account != target.Policy || p.signature != receipt.signature.String() || p.slot != 125 {
 		t.Fatalf("official creator proof=%+v err=%v", p, e)
 	}
 	root := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, 32))
 	for _, tc := range []struct {
 		name   string
-		mutate func(ArtifactReceipt) ArtifactReceipt
+		mutate func(creatorReceipt) creatorReceipt
 	}{
-		{"existingAccountTouch", func(r ArtifactReceipt) ArtifactReceipt {
+		{"existingAccountTouch", func(r creatorReceipt) creatorReceipt {
 			r.PreLamports = append([]uint64(nil), r.PreLamports...)
 			for i := range r.PreLamports {
 				r.PreLamports[i] = 1
 			}
 			return r
 		}},
-		{"wrongReceiptSignature", func(r ArtifactReceipt) ArtifactReceipt { r.Signature = solana.Signature{}.String(); return r }},
-		{"unsignedBytes", func(r ArtifactReceipt) ArtifactReceipt {
+		{"wrongReceiptSignature", func(r creatorReceipt) creatorReceipt { r.signature = solana.Signature{}; return r }},
+		{"unsignedBytes", func(r creatorReceipt) creatorReceipt {
 			r.Wire = append([]byte(nil), r.Wire...)
 			r.Wire[3] ^= 1
 			return r
 		}},
-		{"weakenedCreation", func(r ArtifactReceipt) ArtifactReceipt {
+		{"weakenedCreation", func(r creatorReceipt) creatorReceipt {
 			return resignArtifactReceipt(t, r, func(tx *solana.Transaction) { tx.Message.Instructions[0].Data = goldenHex(t, f.WeakenedCreatorDataHex) }, root)
 		}},
-		{"updateInsteadOfCreate", func(r ArtifactReceipt) ArtifactReceipt {
+		{"updateInsteadOfCreate", func(r creatorReceipt) creatorReceipt {
 			return resignArtifactReceipt(t, r, func(tx *solana.Transaction) { tx.Message.Instructions[0].Data[13] = 8 }, root)
 		}},
-		{"impostorRoot", func(r ArtifactReceipt) ArtifactReceipt {
+		{"impostorRoot", func(r creatorReceipt) creatorReceipt {
 			impostor := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{19}, 32))
 			return resignArtifactReceipt(t, r, func(tx *solana.Transaction) { tx.Message.AccountKeys[0] = solana.PrivateKey(impostor).PublicKey() }, impostor)
 		}},
-		{"extraneousLoadedAddresses", func(r ArtifactReceipt) ArtifactReceipt { r.LoadedReadonly = []string{target.Vault}; return r }},
+		{"extraneousLoadedAddresses", func(r creatorReceipt) creatorReceipt {
+			r.LoadedReadonly = []solana.PublicKey{mustKey(target.Vault)}
+			return r
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, e := b.verifyArtifactCreator(t.Context(), target, ArtifactPolicy, tc.mutate(receipt)); e == nil {
+			if _, e := verifyCreator(t, b, target, ArtifactPolicy, tc.mutate(receipt)); e == nil {
 				t.Fatal("non-creator accepted")
 			}
 		})
@@ -223,36 +249,50 @@ func TestArtifactDelegationCreatorBindsNonceBudgetPeriodAndWallet(t *testing.T) 
 	f.WireBase64 = f.DelegationWireBase64
 	f.Policy = f.RecurringDelegation
 	r := goldenCreatorReceipt(t, f)
-	if p, e := b.verifyArtifactCreator(t.Context(), target, ArtifactDelegation, r); e != nil || p.account != target.RecurringDelegation {
+	if p, e := verifyCreator(t, b, target, ArtifactDelegation, r); e != nil || p.account != target.RecurringDelegation {
 		t.Fatalf("official delegation proof=%+v err=%v", p, e)
 	}
 	root := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, 32))
 	for _, offset := range []int{1, 9, 17, 25, 33} {
 		t.Run(strconv.Itoa(offset), func(t *testing.T) {
 			changed := resignArtifactReceipt(t, r, func(tx *solana.Transaction) { tx.Message.Instructions[0].Data[offset] ^= 1 }, root)
-			if _, e := b.verifyArtifactCreator(t.Context(), target, ArtifactDelegation, changed); e == nil {
+			if _, e := verifyCreator(t, b, target, ArtifactDelegation, changed); e == nil {
 				t.Fatalf("delegation parameter byte %d changed", offset)
 			}
 		})
 	}
 }
 
+// artifactHistoryFake serves history pages keyed by their before cursor.
 type artifactHistoryFake struct {
-	entries  []ArtifactHistoryEntry
-	receipts map[string]ArtifactReceipt
+	pages    map[solana.Signature][]chain.Signed
+	receipts map[solana.Signature]chain.Receipt
+	before   []solana.Signature
 	calls    int
-	address  string
+	address  solana.PublicKey
 	limit    int
 }
 
-func (h *artifactHistoryFake) ArtifactHistory(_ context.Context, address string, limit int) ([]ArtifactHistoryEntry, error) {
-	h.address = address
-	h.limit = limit
-	return h.entries, nil
+func (h *artifactHistoryFake) History(_ context.Context, address solana.PublicKey, limit int, before solana.Signature) ([]chain.Signed, error) {
+	h.address, h.limit = address, limit
+	h.before = append(h.before, before)
+	return h.pages[before], nil
 }
-func (h *artifactHistoryFake) ArtifactReceipt(_ context.Context, signature string) (ArtifactReceipt, error) {
+
+func (h *artifactHistoryFake) Receipt(_ context.Context, signature solana.Signature, _ rpc.CommitmentType) (chain.Receipt, error) {
 	h.calls++
-	return h.receipts[signature], nil
+	receipt, ok := h.receipts[signature]
+	if !ok {
+		return chain.Receipt{}, chain.ErrNotFound
+	}
+	return receipt, nil
+}
+
+// testSignature is a distinct signature for history entries no test reads.
+func testSignature(n int) solana.Signature {
+	var signature solana.Signature
+	binary.LittleEndian.PutUint64(signature[:], uint64(n)+1)
+	return signature
 }
 func installArtifactSnapshot(t *testing.T, f artifactGolden, b *SweepWireBuilder) {
 	t.Helper()
@@ -280,20 +320,20 @@ func TestArtifactHistoryIsBoundedAndRoleFiltered(t *testing.T) {
 	touch := receipt
 	touch.Slot = 126
 	touch.PreLamports = append([]uint64(nil), receipt.PostLamports...)
-	history := &artifactHistoryFake{entries: []ArtifactHistoryEntry{{Signature: "failed", Slot: 127, Failed: true}, {Signature: receipt.Signature, Slot: 125}}, receipts: map[string]ArtifactReceipt{receipt.Signature: receipt}}
+	history := &artifactHistoryFake{pages: map[solana.Signature][]chain.Signed{{}: {{Signature: testSignature(0), Slot: 127, Failed: true}, {Signature: receipt.signature, Slot: 125}}}, receipts: map[solana.Signature]chain.Receipt{receipt.signature: receipt.Receipt}}
 	reader := ArtifactProofReader{Wires: b, History: history}
 	if _, e := reader.FindCreationProof(t.Context(), target, ArtifactPolicy, 100); e != nil {
 		t.Fatal(e)
 	}
-	if history.limit != 32 || history.calls != 1 || history.address != target.Policy {
+	if history.limit != 32 || history.calls != 1 || history.address != mustKey(target.Policy) {
 		t.Fatalf("history bound/role mismatch: %+v", history)
 	}
-	history.entries = make([]ArtifactHistoryEntry, 33)
+	history.pages[solana.Signature{}] = make([]chain.Signed, 33)
 	if _, e := reader.FindCreationProof(t.Context(), target, ArtifactPolicy, 100); e == nil {
 		t.Fatal("overlong history accepted")
 	}
-	history.entries = []ArtifactHistoryEntry{{Signature: receipt.Signature, Slot: 126}}
-	history.receipts[receipt.Signature] = touch
+	history.pages[solana.Signature{}] = []chain.Signed{{Signature: receipt.signature, Slot: 126}}
+	history.receipts[receipt.signature] = touch.Receipt
 	if _, e := reader.FindCreationProof(t.Context(), target, ArtifactPolicy, 100); !errors.Is(e, ErrArtifactCreationProofPending) {
 		t.Fatalf("touch became creator: %v", e)
 	}
@@ -326,33 +366,29 @@ func TestArtifactV0CreatorBindsExternalPayerAndPinnedLookup(t *testing.T) {
 	if len(tx.Signatures) != 2 {
 		t.Fatal("external payer/root multisignature absent")
 	}
-	keys := make([]string, 0)
-	for _, key := range tx.Message.AccountKeys {
-		keys = append(keys, key.String())
-	}
-	keys = append(keys, f.LoadedWritable...)
-	keys = append(keys, f.LoadedReadonly...)
-	r := ArtifactReceipt{Signature: tx.Signatures[0].String(), Slot: 125, Wire: wire, PreLamports: make([]uint64, len(keys)), PostLamports: make([]uint64, len(keys)), LoadedWritable: f.LoadedWritable, LoadedReadonly: f.LoadedReadonly}
+	writable, readonly := mustKeys(t, f.LoadedWritable), mustKeys(t, f.LoadedReadonly)
+	keys := append(append(append([]solana.PublicKey(nil), tx.Message.AccountKeys...), writable...), readonly...)
+	r := creatorReceipt{tx.Signatures[0], chain.Receipt{Slot: 125, Wire: wire, PreLamports: make([]uint64, len(keys)), PostLamports: make([]uint64, len(keys)), LoadedWritable: writable, LoadedReadonly: readonly}}
 	for i, key := range keys {
 		r.PreLamports[i] = 1
 		r.PostLamports[i] = 1
-		if key == target.Policy {
+		if key == mustKey(target.Policy) {
 			r.PreLamports[i] = 0
 			r.PostLamports[i] = 100
 		}
 	}
-	if _, e = b.verifyArtifactCreator(t.Context(), target, ArtifactPolicy, r); e != nil {
+	if _, e = verifyCreator(t, b, target, ArtifactPolicy, r); e != nil {
 		t.Fatalf("official v0 creator rejected: %v", e)
 	}
 	changed := r
-	changed.Signature = tx.Signatures[1].String()
-	if _, e = b.verifyArtifactCreator(t.Context(), target, ArtifactPolicy, changed); e == nil {
+	changed.signature = tx.Signatures[1]
+	if _, e = verifyCreator(t, b, target, ArtifactPolicy, changed); e == nil {
 		t.Fatal("root signature substituted for receipt payer signature")
 	}
 	changed = r
-	changed.LoadedWritable = append([]string(nil), r.LoadedWritable...)
-	changed.LoadedWritable[0] = f.Wallet
-	if _, e = b.verifyArtifactCreator(t.Context(), target, ArtifactPolicy, changed); e == nil {
+	changed.LoadedWritable = append([]solana.PublicKey(nil), r.LoadedWritable...)
+	changed.LoadedWritable[0] = mustKey(f.Wallet)
+	if _, e = verifyCreator(t, b, target, ArtifactPolicy, changed); e == nil {
 		t.Fatal("provider substituted loaded address")
 	}
 }
@@ -373,14 +409,14 @@ func TestArtifactBackfillRequiresLiveLeaseGenerationAndExactStagePair(t *testing
 	}
 	target = *loaded
 	receipt := goldenCreatorReceipt(t, f)
-	policyProof, e := b.verifyArtifactCreator(ctx, target, ArtifactPolicy, receipt)
+	policyProof, e := verifyCreator(t, b, target, ArtifactPolicy, receipt)
 	if e != nil {
 		t.Fatal(e)
 	}
 	f.WireBase64 = f.DelegationWireBase64
 	f.Policy = f.RecurringDelegation
 	delegationReceipt := goldenCreatorReceipt(t, f)
-	delegationProof, e := b.verifyArtifactCreator(ctx, target, ArtifactDelegation, delegationReceipt)
+	delegationProof, e := verifyCreator(t, b, target, ArtifactDelegation, delegationReceipt)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -401,7 +437,7 @@ func TestArtifactBackfillRequiresLiveLeaseGenerationAndExactStagePair(t *testing
 	if e != nil {
 		t.Fatal(e)
 	}
-	if loaded.PolicySignature == nil || *loaded.PolicySignature != receipt.Signature || loaded.PolicyConfirmedSlot == nil || *loaded.PolicyConfirmedSlot != receipt.Slot || loaded.DelegationSignature == nil || *loaded.DelegationSignature != delegationReceipt.Signature {
+	if loaded.PolicySignature == nil || *loaded.PolicySignature != receipt.signature.String() || loaded.PolicyConfirmedSlot == nil || *loaded.PolicyConfirmedSlot != int64(receipt.Slot) || loaded.DelegationSignature == nil || *loaded.DelegationSignature != delegationReceipt.signature.String() {
 		t.Fatalf("exact role stage pairs missing: %+v", loaded)
 	}
 	var processed int64

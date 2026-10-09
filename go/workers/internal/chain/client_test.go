@@ -132,6 +132,31 @@ func TestSignatureStateReadsCommitmentAndChainError(t *testing.T) {
 	}
 }
 
+func TestHistoryIsBoundedConfirmedAndCursored(t *testing.T) {
+	address, before, landed, failed := solana.NewWallet().PublicKey(), solana.Signature{9}, solana.Signature{1}, solana.Signature{2}
+	var opts map[string]any
+	client := serve(t, func(req request) (int, any) {
+		_ = json.Unmarshal(req.Params[1], &opts)
+		return http.StatusOK, result([]any{
+			map[string]any{"signature": landed.String(), "slot": 12, "err": nil},
+			map[string]any{"signature": failed.String(), "slot": 11, "err": map[string]any{"InstructionError": []any{0, "Custom"}}},
+		})
+	})
+	history, err := client.History(context.Background(), address, 2, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts["limit"] != float64(2) || opts["commitment"] != "confirmed" || opts["before"] != before.String() {
+		t.Fatalf("history options %v", opts)
+	}
+	if len(history) != 2 || history[0] != (Signed{Signature: landed, Slot: 12}) || history[1] != (Signed{Signature: failed, Slot: 11, Failed: true}) {
+		t.Fatalf("history %+v", history)
+	}
+	if _, err := client.History(context.Background(), address, 1, solana.Signature{}); err == nil {
+		t.Fatal("a page longer than the limit was accepted")
+	}
+}
+
 func TestReceiptResolvesLoadedAddresses(t *testing.T) {
 	payer, loaded, mint, owner := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
 	tx, err := solana.NewTransaction([]solana.Instruction{solana.NewInstruction(solana.SystemProgramID, solana.AccountMetaSlice{solana.Meta(payer).SIGNER().WRITE()}, nil)}, solana.Hash{1}, solana.TransactionPayer(payer))

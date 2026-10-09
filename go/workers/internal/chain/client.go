@@ -191,10 +191,16 @@ type Receipt struct {
 	Slot uint64
 	Err  any
 	Fee  uint64
-	Keys []solana.PublicKey
-	Pre  map[solana.PublicKey]TokenBalance
-	Post map[solana.PublicKey]TokenBalance
-	Logs []string
+	// Wire is the transaction exactly as the cluster stored it.
+	Wire []byte
+	// Keys are the static keys, then the loaded writable, then the loaded
+	// readonly addresses; the lamport vectors follow the same order.
+	Keys                           []solana.PublicKey
+	LoadedWritable, LoadedReadonly []solana.PublicKey
+	PreLamports, PostLamports      []uint64
+	Pre                            map[solana.PublicKey]TokenBalance
+	Post                           map[solana.PublicKey]TokenBalance
+	Logs                           []string
 }
 
 // Receipt reads signature's transaction at commitment (confirmed or
@@ -215,8 +221,13 @@ func (c *Client) Receipt(ctx context.Context, signature solana.Signature, commit
 	if err != nil {
 		return Receipt{}, fmt.Errorf("getTransaction: decode: %w", err)
 	}
-	keys := append(append(append([]solana.PublicKey(nil), tx.Message.AccountKeys...), out.Meta.LoadedAddresses.Writable...), out.Meta.LoadedAddresses.ReadOnly...)
-	receipt := Receipt{Slot: out.Slot, Err: out.Meta.Err, Fee: out.Meta.Fee, Keys: keys, Logs: out.Meta.LogMessages}
+	loaded := out.Meta.LoadedAddresses
+	keys := append(append(append([]solana.PublicKey(nil), tx.Message.AccountKeys...), loaded.Writable...), loaded.ReadOnly...)
+	receipt := Receipt{
+		Slot: out.Slot, Err: out.Meta.Err, Fee: out.Meta.Fee, Wire: out.Transaction.GetBinary(), Logs: out.Meta.LogMessages,
+		Keys: keys, LoadedWritable: loaded.Writable, LoadedReadonly: loaded.ReadOnly,
+		PreLamports: out.Meta.PreBalances, PostLamports: out.Meta.PostBalances,
+	}
 	if receipt.Pre, err = tokenBalances(keys, out.Meta.PreTokenBalances); err != nil {
 		return Receipt{}, err
 	}
@@ -224,6 +235,33 @@ func (c *Client) Receipt(ctx context.Context, signature solana.Signature, commit
 		return Receipt{}, err
 	}
 	return receipt, nil
+}
+
+// Signed is one transaction in an address's confirmed history.
+type Signed struct {
+	Signature solana.Signature
+	Slot      uint64
+	Failed    bool
+}
+
+// History lists up to limit of address's confirmed transactions, newest
+// first, starting below before (the zero signature starts at the head).
+func (c *Client) History(ctx context.Context, address solana.PublicKey, limit int, before solana.Signature) ([]Signed, error) {
+	out, err := c.rpc.GetSignaturesForAddressWithOpts(ctx, address, &rpc.GetSignaturesForAddressOpts{Limit: &limit, Before: before, Commitment: rpc.CommitmentConfirmed})
+	if err != nil {
+		return nil, failed("getSignaturesForAddress", err)
+	}
+	if len(out) > limit {
+		return nil, errors.New("getSignaturesForAddress: more signatures than requested")
+	}
+	history := make([]Signed, 0, len(out))
+	for _, row := range out {
+		if row == nil || row.Signature.IsZero() || row.Slot == 0 {
+			return nil, errors.New("getSignaturesForAddress: incomplete signature")
+		}
+		history = append(history, Signed{Signature: row.Signature, Slot: row.Slot, Failed: row.Err != nil})
+	}
+	return history, nil
 }
 
 // ErrNotFound is a signature or account the cluster has no record of.
