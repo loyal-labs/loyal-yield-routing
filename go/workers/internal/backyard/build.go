@@ -12,6 +12,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -109,7 +110,6 @@ const (
 	bridgeNAVPolicy        = "5r4gVPentTwudZXQAtvjqx8iWfmBjLjnJGBypB7aPi8f" // seed 153, REPORT_NAV
 	bridgeStagePolicy      = "7EW76UaxsNTnLG931HTNSteRjhR3s9rcKVJ7UtqyN6e3" // seed 154, STAGE_SQUADS_TO_VOLTR
 	bridgeWithdrawPolicy   = "GSY3mcsWHPv7LvH38eZZR6WTj4YiMqdQ9Ai1WRKnR76K" // seed 155, VOLTR_RESTORE_IDLE
-	bridgeVoltrProgram     = "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
 	bridgeVoltrVault       = "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
 	// Strategy-two adaptor config: its key IS the Voltr strategy key, derived
 	// offline from the setup admin over domain loyal-rwa-multiply-mainnet-v3.
@@ -129,8 +129,6 @@ const (
 )
 
 var (
-	voltrDepositDiscriminator    = []byte{246, 82, 57, 226, 131, 222, 253, 249}
-	voltrWithdrawDiscriminator   = []byte{31, 45, 162, 5, 193, 217, 134, 188}
 	adaptorDepositDiscriminator  = []byte{242, 35, 198, 137, 82, 225, 242, 182}
 	adaptorWithdrawDiscriminator = []byte{183, 18, 70, 156, 148, 109, 161, 34}
 )
@@ -237,29 +235,20 @@ func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicK
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid allocation amount")
 		}
-		data, err := voltrStrategyData(voltrDepositDiscriminator, adaptorDepositDiscriminator, request.AmountRaw, request.Report)
-		if err != nil {
-			return compiledInstruction{}, publicKey{}, 0, err
-		}
-		return voltrDepositInstruction(data), mustKey(bridgeAllocationPolicy), 0, nil
+		ix, err := voltrStrategyInstruction(voltr.DepositStrategy, adaptorDepositDiscriminator, request.AmountRaw, request.Report)
+		return ix, mustKey(bridgeAllocationPolicy), 0, err
 	case ReportNAV:
 		if request.AmountRaw != 0 {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("NAV refresh cannot move capital")
 		}
-		data, err := voltrStrategyData(voltrDepositDiscriminator, adaptorDepositDiscriminator, 0, request.Report)
-		if err != nil {
-			return compiledInstruction{}, publicKey{}, 0, err
-		}
-		return voltrDepositInstruction(data), mustKey(bridgeNAVPolicy), 0, nil
+		ix, err := voltrStrategyInstruction(voltr.DepositStrategy, adaptorDepositDiscriminator, 0, request.Report)
+		return ix, mustKey(bridgeNAVPolicy), 0, err
 	case VoltrRestoreIdle:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid Voltr restore amount")
 		}
-		data, err := voltrStrategyData(voltrWithdrawDiscriminator, adaptorWithdrawDiscriminator, request.AmountRaw, request.Report)
-		if err != nil {
-			return compiledInstruction{}, publicKey{}, 0, err
-		}
-		return voltrWithdrawInstruction(data), mustKey(bridgeWithdrawPolicy), 0, nil
+		ix, err := voltrStrategyInstruction(voltr.WithdrawStrategy, adaptorWithdrawDiscriminator, request.AmountRaw, request.Report)
+		return ix, mustKey(bridgeWithdrawPolicy), 0, err
 	case StageSquadsToVoltr:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid staging amount")
@@ -270,23 +259,23 @@ func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicK
 	}
 }
 
-func voltrStrategyData(voltrDiscriminator, adaptorDiscriminator []byte, amount uint64, report BridgeReport) ([]byte, error) {
+// voltrStrategyInstruction is a bridge Voltr deposit_strategy or
+// withdraw_strategy: Voltr calls the pinned adaptor instruction with the
+// encoded report, and the adaptor's remaining accounts are the Squads
+// settings, the vault signer and its USDC custody.
+func voltrStrategyInstruction(build func(voltr.StrategyAccounts, uint64, []byte, []byte, ...*solana.AccountMeta) *solana.GenericInstruction,
+	adaptorDiscriminator []byte, amount uint64, report BridgeReport) (compiledInstruction, error) {
 	encodedReport, err := encodeBridgeReport(report)
 	if err != nil {
-		return nil, err
+		return compiledInstruction{}, err
 	}
-	// Anchor option<Vec<u8>>: Some (1), u32 len, bytes.  The adaptor
-	// discriminator is Voltr's instruction_discriminator option, not a caller
-	// selected program instruction.
-	data := append([]byte(nil), voltrDiscriminator...)
-	data = appendU64(data, amount)
-	data = append(data, 1)
-	data = appendU32(data, uint32(len(adaptorDiscriminator)))
-	data = append(data, adaptorDiscriminator...)
-	data = append(data, 1)
-	data = appendU32(data, uint32(len(encodedReport)))
-	data = append(data, encodedReport...)
-	return data, nil
+	accounts := voltr.StrategyAccounts{Manager: solanaKey(bridgeVault), Protocol: solanaKey(bridgeProtocol), Vault: solanaKey(bridgeVoltrVault),
+		Strategy: solanaKey(bridgeStrategy), AdaptorAddReceipt: solanaKey(bridgeAdaptorReceipt), StrategyInitReceipt: solanaKey(bridgeStrategyReceipt),
+		VaultAssetIdleAuth: solanaKey(bridgeIdleAuthority), VaultStrategyAuth: solanaKey(bridgeStrategyAuth), AssetMint: solanaKey(bridgeUSDC),
+		LPMint: solanaKey(bridgeLPMint), VaultAssetIdleATA: solanaKey(bridgeIdleATA), VaultStrategyAssetATA: solanaKey(bridgeStrategyATA),
+		AssetTokenProgram: solanaKey(bridgeTokenProgram), AdaptorProgram: solanaKey(bridgeAdaptorProgram)}
+	return sdkInstruction(build(accounts, amount, adaptorDiscriminator, encodedReport,
+		solana.Meta(solanaKey(bridgeSettings)), solana.Meta(solanaKey(bridgeVault)).SIGNER(), solana.Meta(solanaKey(bridgeSquadsATA)).WRITE())), nil
 }
 
 func encodeBridgeReport(report BridgeReport) ([]byte, error) {
@@ -304,28 +293,11 @@ func encodeBridgeReport(report BridgeReport) ([]byte, error) {
 	return append(data, digest...), nil
 }
 
-func voltrDepositInstruction(data []byte) compiledInstruction {
-	return compiledInstruction{program: mustKey(bridgeVoltrProgram), data: data, accounts: metas(
-		meta(bridgeVault, true, false), meta(bridgeProtocol, false, false), meta(bridgeVoltrVault, false, true), meta(bridgeStrategy, false, false),
-		meta(bridgeAdaptorReceipt, false, false), meta(bridgeStrategyReceipt, false, true), meta(bridgeIdleAuthority, false, true), meta(bridgeStrategyAuth, false, true),
-		meta(bridgeUSDC, false, true), meta(bridgeLPMint, false, false), meta(bridgeIdleATA, false, true), meta(bridgeStrategyATA, false, true),
-		meta(bridgeTokenProgram, false, false), meta(bridgeAdaptorProgram, false, false), meta(bridgeSettings, false, false), meta(bridgeVault, true, false), meta(bridgeSquadsATA, false, true),
-	)}
-}
-
-func voltrWithdrawInstruction(data []byte) compiledInstruction {
-	return compiledInstruction{program: mustKey(bridgeVoltrProgram), data: data, accounts: metas(
-		meta(bridgeVault, true, false), meta(bridgeProtocol, false, false), meta(bridgeVoltrVault, false, true), meta(bridgeAdaptorReceipt, false, false),
-		meta(bridgeStrategyReceipt, false, true), meta(bridgeStrategy, false, false), meta(bridgeAdaptorProgram, false, false), meta(bridgeIdleAuthority, false, true),
-		meta(bridgeStrategyAuth, false, true), meta(bridgeUSDC, false, true), meta(bridgeLPMint, false, false), meta(bridgeIdleATA, false, true), meta(bridgeStrategyATA, false, true),
-		meta(bridgeTokenProgram, false, false), meta(bridgeSettings, false, false), meta(bridgeVault, true, false), meta(bridgeSquadsATA, false, true),
-	)}
-}
-
 func stageInstruction(amount uint64) compiledInstruction {
-	key := func(value string) solana.PublicKey { return solana.PublicKey(mustKey(value)) }
-	return sdkInstruction(spl.TransferChecked(solana.TokenProgramID, key(bridgeSquadsATA), key(bridgeUSDC), key(bridgeStrategyATA), key(bridgeVault), amount, 6))
+	return sdkInstruction(spl.TransferChecked(solana.TokenProgramID, solanaKey(bridgeSquadsATA), solanaKey(bridgeUSDC), solanaKey(bridgeStrategyATA), solanaKey(bridgeVault), amount, 6))
 }
+
+func solanaKey(value string) solana.PublicKey { return solana.PublicKey(mustKey(value)) }
 
 // sdkInstruction is an instruction solana-go built.
 func sdkInstruction(ix *solana.GenericInstruction) compiledInstruction {
@@ -477,9 +449,6 @@ func mustKey(value string) publicKey {
 }
 func publicKeyFromBytes(value []byte) publicKey { var key publicKey; copy(key[:], value); return key }
 func appendU16(dst []byte, value uint16) []byte { return append(dst, byte(value), byte(value>>8)) }
-func appendU32(dst []byte, value uint32) []byte {
-	return append(dst, byte(value), byte(value>>8), byte(value>>16), byte(value>>24))
-}
 func appendU64(dst []byte, value uint64) []byte {
 	for i := 0; i < 8; i++ {
 		dst = append(dst, byte(value))

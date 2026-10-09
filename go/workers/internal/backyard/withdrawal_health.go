@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 // WithdrawalHealth is display-only. No decision, admission or signer reads it.
@@ -47,7 +49,7 @@ func assessWithdrawalHealth(o Observation, decision Decision, tickErr error) (Wi
 		return WithdrawalHealth{}, false
 	}
 	h := WithdrawalHealth{Version: 1, Cluster: "mainnet-beta", Vault: bridgeVoltrVault,
-		Program: bridgeVoltrProgram, RouteKey: productionRouteKey,
+		Program: voltr.ProgramID.String(), RouteKey: productionRouteKey,
 		ObservedAt: o.ObservedAt.UTC(), ObservedSlot: s.Slot}
 	switch {
 	case s.WithdrawalDemandRaw == 0:
@@ -105,7 +107,7 @@ func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHe
 		return err
 	}
 	if lease.RouteKey != productionRouteKey || next.RouteKey != productionRouteKey ||
-		next.Version != 1 || next.Cluster != "mainnet-beta" || next.Vault != bridgeVoltrVault || next.Program != bridgeVoltrProgram {
+		next.Version != 1 || next.Cluster != "mainnet-beta" || next.Vault != bridgeVoltrVault || next.Program != voltr.ProgramID.String() {
 		return ErrRouteLeaseLost
 	}
 	tx, err := d.pool.Begin(ctx)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 // The production observe path is what arms the fail-closed monitors, so the
@@ -248,7 +249,7 @@ func TestProductionStrategyReceiptIntegrityHoldsDurably(t *testing.T) {
 	}
 	truncated := func(accounts []ConfirmedAccount) {
 		replaceAccount(accounts, bridgeStrategyReceipt, ConfirmedAccount{
-			Address: bridgeStrategyReceipt, Owner: bridgeVoltrProgram, Lamports: 1, Data: make([]byte, 100)})
+			Address: bridgeStrategyReceipt, Owner: voltr.ProgramID.String(), Lamports: 1, Data: make([]byte, 100)})
 	}
 	if got := productionDecision(t, reconciledJournal(), false, truncated, pinnedIdentityObservation); got.Action != HoldManualRecovery || got.Reason != "strategy_receipt_integrity" {
 		t.Fatalf("a truncated strategy receipt did not hold durably: %+v", got)
@@ -398,7 +399,7 @@ func TestProgramIdentityWatcherVerifiesFullImageOnSlotMove(t *testing.T) {
 		t.Fatal("an unreadable program header must not spend a full image read")
 	}
 
-	moved := &stubIdentityReader{images: pinnedIdentityHeaders(t, map[string]int64{bridgeVoltrProgram: voltrProgramDeploySlot + 1})}
+	moved := &stubIdentityReader{images: pinnedIdentityHeaders(t, map[string]int64{voltr.ProgramID.String(): voltrProgramDeploySlot + 1})}
 	if observation, err := newProgramIdentityWatcher(moved.programIdentityAccounts).observe(context.Background()); err != nil || observation.Verified || observation.VoltrProgramDeploySlot != voltrProgramDeploySlot+1 {
 		t.Fatalf("a moved deploy slot must stay unverified: observation=%+v err=%v", observation, err)
 	}

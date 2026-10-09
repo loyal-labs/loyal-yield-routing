@@ -12,6 +12,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 // embeddedBackyardManifest is a generated, byte-for-byte runtime counterpart
@@ -423,7 +424,7 @@ func (m RouteManifest) validateBindings() error {
 		m.WithdrawalWaitSeconds != 600 || m.NAVMaxAgeSeconds != 60 || m.VaultCapRaw != "1000000000000" {
 		return fmt.Errorf("embedded Backyard manifest has an invalid fixed route")
 	}
-	if m.Identities.VoltrProgram != bridgeVoltrProgram || m.Identities.VoltrVault != bridgeVoltrVault ||
+	if m.Identities.VoltrProgram != voltr.ProgramID.String() || m.Identities.VoltrVault != bridgeVoltrVault ||
 		m.Identities.AdaptorProgram != bridgeAdaptorProgram || m.Identities.V2StrategyConfig != bridgeStrategy ||
 		m.Identities.ReportTicket != reportTicketPDA || m.Identities.ReportTicketBump != int64(reportTicketBump) ||
 		m.Identities.ReportTicketLen != reportTicketStateLength ||

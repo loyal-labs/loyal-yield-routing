@@ -11,6 +11,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 // The upgradeable-loader identity this worker accepts. Any other owner, a
@@ -40,7 +41,7 @@ type pinnedProgramIdentity struct {
 }
 
 var pinnedProgramIdentities = []pinnedProgramIdentity{
-	{program: bridgeVoltrProgram, programData: voltrProgramDataAddress,
+	{program: voltr.ProgramID.String(), programData: voltrProgramDataAddress,
 		deploySlot: voltrProgramDeploySlot, dataSHA256: voltrProgramDataSHA256},
 	{program: bridgeAdaptorProgram, programData: adaptorProgramDataAddress,
 		deploySlot: adaptorProgramDeploySlot, dataSHA256: adaptorProgramDataSHA256},
@@ -66,7 +67,7 @@ type programIdentityReader func(ctx context.Context, full bool) ([]programIdenti
 // over a megabyte and batch responses are size-capped.
 func chainProgramIdentity(c *chain.Client) programIdentityReader {
 	return func(ctx context.Context, full bool) ([]programIdentityImage, error) {
-		addresses := []string{bridgeVoltrProgram, bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress}
+		addresses := []string{voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress}
 		keys, err := publicKeys(addresses)
 		if err != nil {
 			return nil, err
@@ -153,7 +154,7 @@ func (w *programIdentityWatcher) observe(ctx context.Context) (programIdentityOb
 			return observation, nil
 		}
 		switch pin.program {
-		case bridgeVoltrProgram:
+		case voltr.ProgramID.String():
 			observation.VoltrProgramDeploySlot = slot
 		case bridgeAdaptorProgram:
 			observation.AdaptorProgramDeploySlot = slot

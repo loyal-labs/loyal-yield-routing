@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 // feePolicySnapshot keeps the real coherent decoder/merge and existing armed
@@ -142,8 +144,8 @@ func TestVoltrLPTotalsRejectWrapAndSignedOverflowAtBothBoundaries(t *testing.T) 
 				}
 			}
 			nav := cadenceNAV(77, 33, 42, time.Unix(kaminoFixtureUnix, 0))
-			nav.Voltr = VoltrVaultBook{FeeAccumulatorManagerRaw: tc.manager, FeeAccumulatorAdminRaw: tc.admin,
-				FeeAccumulatorProtocolRaw: tc.protocol, LPSupplyDeadWeightRaw: tc.dead}
+			nav.Voltr = VoltrVaultBook{Vault: voltr.Vault{FeeAccumulatorManagerRaw: tc.manager, FeeAccumulatorAdminRaw: tc.admin,
+				FeeAccumulatorProtocolRaw: tc.protocol, LPSupplyDeadWeightRaw: tc.dead}}
 			nav.LPSupplyRaw = tc.mint
 			s := Snapshot{Slot: 77}
 			if err := applyRouteNAVSnapshot(&s, nav, time.Unix(kaminoFixtureUnix, 0)); err == nil || s.MonitorsArmed {

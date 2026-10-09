@@ -145,7 +145,7 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client,
 		}
 	}
 	metadata := accountAt(accounts, encodeBase58(inner.accounts[6].key[:]))
-	if decoded, err := kamino.DecodeUserMetadata(kaminoAccount(metadata, metadata.Address)); err != nil || !decoded.Referrer.IsZero() || decoded.Owner != kaminoKey(bridgeVault) {
+	if decoded, err := kamino.DecodeUserMetadata(chainAccount(metadata, metadata.Address)); err != nil || !decoded.Referrer.IsZero() || decoded.Owner != kaminoKey(bridgeVault) {
 		return 0, budgetHold("initializer_metadata_unavailable")
 	}
 	if emergency, err := decodeKaminoMarketEmergency(accountAt(accounts, route.Kamino.Market), route.Kamino); err != nil || emergency {

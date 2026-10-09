@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -12,57 +11,17 @@ import (
 	"strings"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
-const (
-	strategyReceiptLength = 192
-	// voltrVaultMinimumLength is the prefix of Voltr's Vault account this worker
-	// decodes. Offsets below are verified against the deployed 928-byte account
-	// (scripts/decode_voltr_repair.py). Only the prefix is required so a
-	// same-identity upgrade that appends fields still reaches the M6
-	// program-identity monitor instead of dying inside account decoding.
-	voltrVaultMinimumLength = 696
-	voltrLPMintLength       = 82
-)
-
-var (
-	strategyReceiptDiscriminator = [8]byte{51, 8, 192, 253, 115, 78, 112, 214}
-	voltrVaultDiscriminator      = [8]byte{211, 8, 232, 43, 2, 152, 117, 119}
-)
-
-type StrategyReceipt struct {
-	PositionValueRaw uint64
-	LastUpdatedTS    uint64
-	// CustodyTrackedRaw is the strategy custody balance Voltr itself books in
-	// the receipt's reserved bytes at offset 128 on the post-upgrade binary.
-	// Voltr credits this balance into totalValue by itself, so an independent
-	// NAV must never add it again.
-	CustodyTrackedRaw uint64
-}
+const voltrLPMintLength = 82
 
 // VoltrVaultBook is the vault book decoded independently of the adaptor and of
 // this worker's own arithmetic. It is the only admissible comparison input for
 // the M1 identity `totalValue == idle + custody + receipt.positionValue`.
 type VoltrVaultBook struct {
-	TotalValueRaw                  uint64
-	LockedProfitDegradationSeconds uint64
-	LastUpdatedLockedProfitRaw     uint64
-	LastLockedProfitReportUnix     uint64
-	ManagerPerformanceFeeBPS       uint64
-	AdminPerformanceFeeBPS         uint64
-	ManagerManagementFeeBPS        uint64
-	AdminManagementFeeBPS          uint64
-	RedemptionFeeBPS               uint64
-	IssuanceFeeBPS                 uint64
-	ProtocolPerformanceFeeBPS      uint64
-	ProtocolManagementFeeBPS       uint64
-	WithdrawalWaitingPeriodSeconds uint64
-	FeeAccumulatorManagerRaw       uint64
-	FeeAccumulatorAdminRaw         uint64
-	FeeAccumulatorProtocolRaw      uint64
-	LPSupplyDeadWeightRaw          uint64
-	HighWaterMarkBits              [16]byte // same-batch U80F48, little endian
-	HighWaterMarkKnown             bool
+	voltr.Vault
+	HighWaterMarkKnown bool // the same-batch high-water mark was decoded
 }
 
 // LPTotalsRaw includes all unharvested fee LP and dead weight in the supply
@@ -92,37 +51,15 @@ func (b VoltrVaultBook) LPTotalsRaw(lpSupplyRaw uint64) (fees, supply uint64, er
 }
 
 func decodeVoltrVaultBook(account ConfirmedAccount) (VoltrVaultBook, error) {
-	if account.Address != bridgeVoltrVault || account.Owner != bridgeVoltrProgram || account.Executable ||
-		account.Lamports == 0 || len(account.Data) < voltrVaultMinimumLength ||
-		!bytes.Equal(account.Data[:8], voltrVaultDiscriminator[:]) {
+	vault, err := voltr.DecodeVault(chainAccount(account, bridgeVoltrVault))
+	if err != nil {
 		return VoltrVaultBook{}, fmt.Errorf("Voltr vault account envelope or layout drifted")
 	}
-	if !sameKey(account.Data[104:136], bridgeUSDC) || !sameKey(account.Data[136:168], bridgeIdleATA) ||
-		!sameKey(account.Data[272:304], bridgeLPMint) || !sameKey(account.Data[368:400], bridgeVault) ||
-		!sameKey(account.Data[400:432], bridgeSettingsSigner) {
+	if vault.AssetMint != solanaKey(bridgeUSDC) || vault.IdleATA != solanaKey(bridgeIdleATA) || vault.LPMint != solanaKey(bridgeLPMint) ||
+		vault.Manager != solanaKey(bridgeVault) || vault.Admin != solanaKey(bridgeSettingsSigner) {
 		return VoltrVaultBook{}, fmt.Errorf("Voltr vault asset, LP, manager, or admin identity drifted")
 	}
-	return VoltrVaultBook{
-		TotalValueRaw:                  binary.LittleEndian.Uint64(account.Data[168:176]),
-		LockedProfitDegradationSeconds: binary.LittleEndian.Uint64(account.Data[448:456]),
-		WithdrawalWaitingPeriodSeconds: binary.LittleEndian.Uint64(account.Data[456:464]),
-		ManagerPerformanceFeeBPS:       uint64(binary.LittleEndian.Uint16(account.Data[512:514])),
-		AdminPerformanceFeeBPS:         uint64(binary.LittleEndian.Uint16(account.Data[514:516])),
-		ManagerManagementFeeBPS:        uint64(binary.LittleEndian.Uint16(account.Data[516:518])),
-		AdminManagementFeeBPS:          uint64(binary.LittleEndian.Uint16(account.Data[518:520])),
-		RedemptionFeeBPS:               uint64(binary.LittleEndian.Uint16(account.Data[520:522])),
-		IssuanceFeeBPS:                 uint64(binary.LittleEndian.Uint16(account.Data[522:524])),
-		ProtocolPerformanceFeeBPS:      uint64(binary.LittleEndian.Uint16(account.Data[524:526])),
-		ProtocolManagementFeeBPS:       uint64(binary.LittleEndian.Uint16(account.Data[526:528])),
-		FeeAccumulatorManagerRaw:       binary.LittleEndian.Uint64(account.Data[576:584]),
-		FeeAccumulatorAdminRaw:         binary.LittleEndian.Uint64(account.Data[584:592]),
-		FeeAccumulatorProtocolRaw:      binary.LittleEndian.Uint64(account.Data[592:600]),
-		LPSupplyDeadWeightRaw:          binary.LittleEndian.Uint64(account.Data[616:624]),
-		HighWaterMarkBits:              [16]byte(account.Data[624:640]),
-		HighWaterMarkKnown:             true,
-		LastUpdatedLockedProfitRaw:     binary.LittleEndian.Uint64(account.Data[672:680]),
-		LastLockedProfitReportUnix:     binary.LittleEndian.Uint64(account.Data[680:688]),
-	}, nil
+	return VoltrVaultBook{Vault: vault, HighWaterMarkKnown: true}, nil
 }
 
 // decodeVoltrLPSupply reads only the mint supply of the vault LP asset. Fee
@@ -161,7 +98,7 @@ type RouteNAVSnapshot struct {
 	// confirmed batch. Zero position values from a missing account are an
 	// observed absence, never a silently decoded flat position.
 	ObligationPresent bool
-	Receipt           StrategyReceipt
+	Receipt           voltr.StrategyReceipt
 	Voltr             VoltrVaultBook
 	LPSupplyRaw       uint64
 	SnapshotDigest    string
@@ -206,29 +143,20 @@ func selectRouteNAVAccountsForRoute(accounts []ConfirmedAccount, route RuntimeRo
 	return selected, nil
 }
 
-func decodeStrategyReceipt(account ConfirmedAccount) (StrategyReceipt, error) {
-	if account.Address != bridgeStrategyReceipt || account.Owner != bridgeVoltrProgram || account.Executable ||
-		account.Lamports == 0 || len(account.Data) != strategyReceiptLength ||
-		!bytes.Equal(account.Data[:8], strategyReceiptDiscriminator[:]) {
-		return StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt envelope or layout drifted")
-	}
-	if !sameKey(account.Data[8:40], bridgeVoltrVault) ||
-		!sameKey(account.Data[40:72], bridgeStrategy) ||
-		!sameKey(account.Data[72:104], bridgeAdaptorProgram) ||
-		account.Data[120] != 2 || !allZero(account.Data[123:128]) || !allZero(account.Data[136:]) {
-		return StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt binding or reserved bytes drifted")
+func decodeStrategyReceipt(account ConfirmedAccount) (voltr.StrategyReceipt, error) {
+	receipt, err := voltr.DecodeStrategyReceipt(chainAccount(account, bridgeStrategyReceipt))
+	if err != nil {
+		return voltr.StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt envelope or layout drifted")
 	}
 	// Fresh strategy-two receipts are version 2 on the pinned Voltr binary,
-	// proven by the deployed-binary bootstrap in voltr_reset_sequence.
-	// Offset 128 is reserved on the pre-upgrade binary and holds the custody
-	// balance Voltr books for this strategy on the current one. It is decoded
-	// and reported rather than required zero: a nonzero value must surface as a
-	// custody monitor HOLD, not as an undecodable account.
-	return StrategyReceipt{
-		PositionValueRaw:  binary.LittleEndian.Uint64(account.Data[104:112]),
-		LastUpdatedTS:     binary.LittleEndian.Uint64(account.Data[112:120]),
-		CustodyTrackedRaw: binary.LittleEndian.Uint64(account.Data[128:136]),
-	}, nil
+	// proven by the deployed-binary bootstrap in voltr_reset_sequence. Their
+	// custody balance is reported rather than required zero: a nonzero value
+	// must surface as a custody monitor HOLD, not as an undecodable account.
+	if receipt.Vault != solanaKey(bridgeVoltrVault) || receipt.Strategy != solanaKey(bridgeStrategy) ||
+		receipt.AdaptorProgram != solanaKey(bridgeAdaptorProgram) || receipt.Version != 2 {
+		return voltr.StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt binding or reserved bytes drifted")
+	}
+	return receipt, nil
 }
 
 // strategyReceiptIntegrityFault classifies a confirmed strategy receipt that
@@ -238,7 +166,7 @@ func decodeStrategyReceipt(account ConfirmedAccount) (StrategyReceipt, error) {
 // fields inside a correctly enveloped receipt stay decode errors, and
 // transport failures never reach this classifier.
 func strategyReceiptIntegrityFault(account ConfirmedAccount) bool {
-	return account.Address == "" || account.Owner != bridgeVoltrProgram || len(account.Data) != strategyReceiptLength
+	return account.Address == "" || account.Owner != voltr.ProgramID.String() || len(account.Data) != voltr.StrategyReceiptSize
 }
 
 // strategyReceiptAbsent separates a null account in the batch — which may be a

@@ -46,6 +46,17 @@ type ConfirmedAccount struct {
 	Executable      bool
 }
 
+// chainAccount is the confirmed account at address for the shared program
+// decoders; any other account is absent.
+func chainAccount(a ConfirmedAccount, address string) *chain.Account {
+	key, keyErr := solana.PublicKeyFromBase58(a.Address)
+	owner, ownerErr := solana.PublicKeyFromBase58(a.Owner)
+	if a.Address != address || keyErr != nil || ownerErr != nil {
+		return nil
+	}
+	return &chain.Account{Key: key, Owner: owner, Lamports: a.Lamports, Data: a.Data, Executable: a.Executable}
+}
+
 func confirmedAccount(address string, account *chain.Account) ConfirmedAccount {
 	return ConfirmedAccount{Address: address, Owner: account.Owner.String(), Lamports: account.Lamports, Data: account.Data, Executable: account.Executable}
 }

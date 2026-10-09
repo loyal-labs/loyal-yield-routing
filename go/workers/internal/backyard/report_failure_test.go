@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 func adaptorFailureLogs(program string, code int) []string {
@@ -72,7 +74,7 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 			{
 				name:   "Voltr 6004 MathOverflow stays a capital stop",
 				err:    `{"InstructionError":[0,{"Custom":6004}]}`,
-				logs:   adaptorFailureLogs(bridgeVoltrProgram, 6004),
+				logs:   adaptorFailureLogs(voltr.ProgramID.String(), 6004),
 				reason: "confirmed_transaction_error",
 			},
 			{
@@ -121,7 +123,7 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 					"Program " + bridgeDelegate + " invoke [1]",
 					"Program " + bridgeAdaptorProgram + " invoke [2]",
 					"Program " + bridgeAdaptorProgram + " success",
-					"Program " + bridgeVoltrProgram + " invoke [2]",
+					"Program " + voltr.ProgramID.String() + " invoke [2]",
 					"Program log: AnchorError occurred. Error Code: ReportSlot. Error Number: 0x9",
 				},
 				reason: "confirmed_transaction_error",
@@ -133,7 +135,7 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 				name: "truncated logs on an open adaptor frame are not retryable",
 				err:  `{"InstructionError":[0,{"Custom":9}]}`,
 				logs: []string{
-					"Program " + bridgeVoltrProgram + " invoke [1]",
+					"Program " + voltr.ProgramID.String() + " invoke [1]",
 					"Program " + bridgeAdaptorProgram + " invoke [2]",
 					"Log truncated",
 				},
@@ -145,7 +147,7 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 				name: "an AnchorError inside the open adaptor frame is retryable",
 				err:  `{"InstructionError":[0,{"Custom":9}]}`,
 				logs: []string{
-					"Program " + bridgeVoltrProgram + " invoke [1]",
+					"Program " + voltr.ProgramID.String() + " invoke [1]",
 					"Program " + bridgeAdaptorProgram + " invoke [2]",
 					"Program log: AnchorError occurred. Error Code: ReportSlot. Error Number: 0x9",
 					"Log truncated",
@@ -159,7 +161,7 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 				name: "an explicit adaptor failed line is retryable",
 				err:  `{"InstructionError":[0,{"Custom":9}]}`,
 				logs: []string{
-					"Program " + bridgeVoltrProgram + " invoke [1]",
+					"Program " + voltr.ProgramID.String() + " invoke [1]",
 					"Program " + bridgeAdaptorProgram + " invoke [2]",
 					"Program " + bridgeAdaptorProgram + " failed: custom program error: 0x9",
 				},

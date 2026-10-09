@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
 func TestStageExpectedEffectsMatchDirectTransferReceipt(t *testing.T) {
@@ -29,7 +30,7 @@ func exactAdaptorConfigAccount(t *testing.T) ConfirmedAccount {
 	copy(data[:8], adaptorConfigDiscriminator)
 	data[8] = 2
 	bindings := []string{
-		bridgeVoltrProgram, bridgeVoltrVault, bridgeStrategy, bridgeStrategyAuth,
+		voltr.ProgramID.String(), bridgeVoltrVault, bridgeStrategy, bridgeStrategyAuth,
 		squads.ProgramID.String(), bridgeSettings, bridgeSettingsSigner, bridgeVault,
 		bridgeUSDC, bridgeTokenProgram, bridgeSquadsATA,
 	}
