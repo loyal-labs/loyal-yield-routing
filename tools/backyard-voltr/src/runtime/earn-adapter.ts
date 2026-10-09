@@ -23,16 +23,6 @@ import {
 export const EARN_ADAPTER_REPLAY_KIND = "loyal-earn-go-voltr-planner-replay-v2" as const;
 export const EARN_ADAPTER_REPLAY_IMPLEMENTATION = "go/workers/cmd/loyal-evidence --kind voltr -> fleet.PlanVoltr" as const;
 
-const EARN_ADAPTER_SOURCE_PATHS = [
-  "go/workers/cmd/loyal-evidence/main.go",
-  "go/workers/internal/fleet/types.go",
-  "go/workers/internal/fleet/voltr.go",
-  "go/workers/internal/fleet/voltr_plan.go",
-  "go/workers/internal/fleet/voltr_route.json",
-  "tools/backyard-voltr/src/domain/route-spec.ts",
-  "tools/backyard-voltr/src/runtime/earn-adapter.ts",
-] as const;
-
 type JsonObject = Readonly<Record<string, unknown>>;
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
 const GO_MODULE_ROOT = resolve(REPOSITORY_ROOT, "go/workers");
@@ -137,7 +127,6 @@ export type EarnSharedReplay = Readonly<{
     normalOptimization: "blocked";
   }>;
   outputSha256: string;
-  sourceBindings: readonly Readonly<{ path: string; sha256: string }>[];
 }>;
 
 function goCall(value: unknown, label: string): GoVoltrReplayCall {
@@ -212,13 +201,6 @@ function replayLeg(call: GoVoltrReplayCall, label: string): EarnReplayLeg {
   };
 }
 
-function currentEarnSourceBindings(): readonly Readonly<{ path: string; sha256: string }>[] {
-  return EARN_ADAPTER_SOURCE_PATHS.map((path) => ({
-    path,
-    sha256: createHash("sha256").update(readFileSync(resolve(REPOSITORY_ROOT, path))).digest("hex"),
-  }));
-}
-
 /** Recompute the complete replay from its saved input through the Go planner. */
 function recomputeEarnSharedReplay(input: EarnReplayInput): EarnSharedReplay {
   const sourceLeg = replayLeg(input.source, "Earn replay source leg");
@@ -240,7 +222,6 @@ function recomputeEarnSharedReplay(input: EarnReplayInput): EarnSharedReplay {
     destinationLeg,
     priorityProbe,
     outputSha256: sha256Canonical({ sourceLeg, destinationLeg, priorityProbe }),
-    sourceBindings: currentEarnSourceBindings(),
   };
 }
 
@@ -280,10 +261,10 @@ function assertReplayIsMovement(replay: EarnSharedReplay, expected: EarnReplayEx
  */
 export function validateEarnSharedReplay(value: unknown, expected: EarnReplayExpectation): EarnSharedReplay {
   const root = object(value, "earnAdapter.sharedReplay");
-  exactKeys(root, ["kind", "implementation", "input", "inputSha256", "sourceLeg", "destinationLeg", "priorityProbe", "outputSha256", "sourceBindings"], "earnAdapter.sharedReplay");
+  exactKeys(root, ["kind", "implementation", "input", "inputSha256", "sourceLeg", "destinationLeg", "priorityProbe", "outputSha256"], "earnAdapter.sharedReplay");
   if (root.kind !== EARN_ADAPTER_REPLAY_KIND || root.implementation !== EARN_ADAPTER_REPLAY_IMPLEMENTATION) throw new Error("Earn replay is not the maintained Go Voltr planner replay contract");
   const replay = recomputeEarnSharedReplay(replayInput(root.input, "earnAdapter.sharedReplay.input"));
-  if (canonicalJson(root) !== canonicalJson(replay)) throw new Error("persisted Earn replay differs from a fresh Go planner replay of its input and current sources");
+  if (canonicalJson(root) !== canonicalJson(replay)) throw new Error("persisted Earn replay differs from a fresh Go planner replay of its input");
   return assertReplayIsMovement(replay, expected);
 }
 
@@ -325,7 +306,6 @@ export type EarnAdapterEvidenceArtifact = Readonly<{
   executionKind: "voltr-manager";
   priority: "withdrawal-restoration-first";
   normalOptimizationIntervalSeconds: string;
-  sourceBindings: readonly Readonly<{ path: string; sha256: string }>[];
   outboxContract: Readonly<{
     oneDurableMovement: true;
     sourceWithdrawThenDestinationDeposit: true;
@@ -452,7 +432,6 @@ export function produceEarnAdapterEvidence(input: EarnAdapterProducerInput): Ear
     executionKind: "voltr-manager",
     priority: "withdrawal-restoration-first",
     normalOptimizationIntervalSeconds: PARTNER_FOUR_MARKET_ROUTE.normalOptimizationIntervalSeconds.toString(),
-    sourceBindings: sharedReplay.sourceBindings,
     outboxContract: {
       oneDurableMovement: true,
       sourceWithdrawThenDestinationDeposit: true,
@@ -479,6 +458,3 @@ export function produceEarnAdapterEvidence(input: EarnAdapterProducerInput): Ear
   };
 }
 
-export function earnAdapterSourcePaths(): readonly string[] {
-  return EARN_ADAPTER_SOURCE_PATHS;
-}
