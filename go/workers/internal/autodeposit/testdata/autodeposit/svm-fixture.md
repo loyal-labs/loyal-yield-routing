@@ -32,13 +32,12 @@ Run `go test -race ./internal/autodeposit -run '^TestSVM' -count=1 -v` from
 `go/workers` with:
 
 - `AUTODEPOSIT_TEST_SVM_FIXTURE_PATH`: generated JSON path.
-- `AUTODEPOSIT_TEST_SVM_PATH`: built `fleet-local-svm` executable.
+- `SVM_HARNESS`: built `fleet-local-svm` executable.
 - The same program artifact path environment variables used by the producer.
 - `AUTODEPOSIT_TEST_DATABASE_URL`: the existing allowlisted, disposable
   `workers_v2_autodeposit` fixture URL for the current-floor publication test.
 
-Explicit acceptance runs must check that both top-level tests ran without skips.
-Without SVM environment variables, ordinary offline tests skip this separate gate.
+CI builds both artifacts and runs the suite on every workers change.
 The suite uses no provider, wallet secret, or production connection.
 
 The Go-built pull executes real Squads, Subscriptions, and SPL programs. It

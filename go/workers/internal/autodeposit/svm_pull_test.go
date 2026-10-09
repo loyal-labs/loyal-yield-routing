@@ -57,12 +57,8 @@ type svmAutodepositFixture struct {
 func loadSVMAutodepositFixture(t *testing.T) svmAutodepositFixture {
 	t.Helper()
 	path := os.Getenv("AUTODEPOSIT_TEST_SVM_FIXTURE_PATH")
-	helper := os.Getenv("AUTODEPOSIT_TEST_SVM_PATH")
-	if path == "" && helper == "" {
-		t.Skip("requires actual source-produced authorization fixture and local SVM helper")
-	}
-	if path == "" || helper == "" {
-		t.Fatal("both AUTODEPOSIT_TEST_SVM_FIXTURE_PATH and AUTODEPOSIT_TEST_SVM_PATH are required")
+	if path == "" || os.Getenv("SVM_HARNESS") == "" {
+		t.Fatal("both AUTODEPOSIT_TEST_SVM_FIXTURE_PATH and SVM_HARNESS are required")
 	}
 	data, e := os.ReadFile(path)
 	if e != nil {
@@ -111,7 +107,7 @@ type autodepositSVM struct {
 func startAutodepositSVM(t *testing.T, f svmAutodepositFixture) *autodepositSVM {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	command := exec.CommandContext(ctx, os.Getenv("AUTODEPOSIT_TEST_SVM_PATH"))
+	command := exec.CommandContext(ctx, os.Getenv("SVM_HARNESS"))
 	command.Env = []string{"LC_ALL=C"}
 	for _, name := range []string{"SQUADS_SMART_ACCOUNT_PROGRAM_SO", "SUBSCRIPTIONS_PROGRAM_SO", "MOCK_YIELD_PROTOCOLS_PROGRAM_SO"} {
 		if v := os.Getenv(name); v != "" {
