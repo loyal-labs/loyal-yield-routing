@@ -85,7 +85,7 @@ func TestLookupPlannerQueuesRealRetiringCleanupAndExactCloseRefund(t *testing.T)
 	if err != nil || lookupProducedSlot(snapshot.SlotHashes, 1001) {
 		t.Fatal("actual deactivation bank retained", err)
 	}
-	before, err := lookupBalance(ctx, svm.rpc, f.Manager)
+	before, err := lookupBalance(ctx, svm.rpc, f.Manager, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestLookupPlannerQueuesRealRetiringCleanupAndExactCloseRefund(t *testing.T)
 	}
 	due()
 	runWriter(restart)
-	after, err := lookupBalance(ctx, svm.rpc, f.Manager)
+	after, err := lookupBalance(ctx, svm.rpc, f.Manager, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

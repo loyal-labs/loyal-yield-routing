@@ -185,7 +185,7 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 	if fee > math.MaxInt64 || rent > math.MaxInt64 || fee > math.MaxInt64-rent || reclaimed > math.MaxInt64 {
 		return errors.New("lookup simulation accounting exceeds durable range")
 	}
-	balance, err := lookupBalance(ctx, w.chain, op.Intent.Payer)
+	balance, err := lookupBalance(ctx, w.chain, op.Intent.Payer, snapshot.Slot)
 	if err != nil {
 		return err
 	}

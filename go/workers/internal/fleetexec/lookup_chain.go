@@ -173,13 +173,14 @@ func lookupBlockhash(ctx context.Context, c *chain.Client) (string, int64, int64
 	return hash.String(), int64(height), int64(slot), err
 }
 
-// lookupBalance is key's finalized lamports; an absent account holds none.
-func lookupBalance(ctx context.Context, c *chain.Client, key string) (uint64, error) {
+// lookupBalance is key's finalized lamports at or after minSlot; an absent
+// account holds none.
+func lookupBalance(ctx context.Context, c *chain.Client, key string, minSlot int64) (uint64, error) {
 	pub, err := sdk.PublicKeyFromBase58(key)
-	if err != nil {
-		return 0, errors.New("invalid lookup payer")
+	if err != nil || minSlot < 0 {
+		return 0, errors.New("invalid lookup balance request")
 	}
-	_, accounts, err := c.Accounts(ctx, []sdk.PublicKey{pub}, rpc.CommitmentFinalized, 0)
+	_, accounts, err := c.Accounts(ctx, []sdk.PublicKey{pub}, rpc.CommitmentFinalized, uint64(minSlot))
 	if err != nil || accounts[0] == nil {
 		return 0, err
 	}
