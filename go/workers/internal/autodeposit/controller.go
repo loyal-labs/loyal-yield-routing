@@ -638,7 +638,7 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 			if errors.Is(err, ErrOwnershipLost) {
 				return ResultRecoveryPending, err
 			}
-			return ResultYieldPersistenceFailed, err
+			return unanswered(ResultYieldPersistenceFailed, err)
 		}
 		blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
 		if err != nil {
@@ -709,10 +709,10 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		proofErr = c.wires.ProveTopUpWire(plan, pull.Attempt, route)
 	}
 	if err := proofErr; err != nil {
-		return ResultTransactionEffectAmbig, err
+		return unanswered(ResultTransactionEffectAmbig, err)
 	}
 	if err := c.verifyTopUpEffects(scope.ctx, plan, route, pull); err != nil {
-		return ResultTransactionEffectAmbig, err
+		return unanswered(ResultTransactionEffectAmbig, err)
 	}
 
 	// Finalization re-proves ownership and completes claim, slot, execution
@@ -733,6 +733,15 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		return ResultYieldPersistenceFailed, err
 	}
 	return ResultCompleted, nil
+}
+
+// unanswered keeps an RPC endpoint that could not answer from reading as a
+// verdict about the transaction; the next pass reads again.
+func unanswered(result ExecutorResult, err error) (ExecutorResult, error) {
+	if errors.Is(err, chain.ErrUnavailable) {
+		return ResultDependencyUnavailable, err
+	}
+	return result, err
 }
 
 // ensurePullExecution creates the execution row a confirmed pull owns, from

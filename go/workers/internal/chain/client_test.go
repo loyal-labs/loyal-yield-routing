@@ -63,6 +63,41 @@ func TestRateLimitIsTypedAndKeepsTheKeyOut(t *testing.T) {
 	}
 }
 
+func TestTransportFailuresKeepTheKeyOut(t *testing.T) {
+	hang := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-hang }))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(hang) })
+	timeout, err := New(server.URL+"/?api-key=secret", 50*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for name, call := range map[string]func() error{
+		"client timeout": func() error { _, err := timeout.Slot(context.Background(), rpc.CommitmentConfirmed); return err },
+		"cancelled":      func() error { _, err := timeout.Slot(cancelled, rpc.CommitmentConfirmed); return err },
+		"node behind": func() error {
+			client := serve(t, func(request) (int, any) {
+				return http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
+			})
+			_, err := client.Slot(context.Background(), rpc.CommitmentConfirmed)
+			if !errors.Is(err, ErrBehind) {
+				t.Fatalf("want ErrBehind, got %v", err)
+			}
+			return err
+		},
+	} {
+		err := call()
+		if name != "cancelled" && !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("%s: want ErrUnavailable, got %v", name, err)
+		}
+		if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "127.0.0.1") {
+			t.Fatalf("%s: error is missing or leaks the endpoint: %v", name, err)
+		}
+	}
+}
+
 func TestAccountsPinsEveryBatchToTheFirstSlot(t *testing.T) {
 	keys := make([]solana.PublicKey, 150)
 	for i := range keys {

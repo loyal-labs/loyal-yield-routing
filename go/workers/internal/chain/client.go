@@ -19,11 +19,21 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc/jsonrpc"
 )
 
+// ErrUnavailable is an endpoint that could not answer: transport failure,
+// timeout, 5xx, rate limit or a lagging node. It says nothing about the chain.
+var ErrUnavailable = errors.New("rpc unavailable")
+
 // ErrRateLimited is the endpoint refusing for rate: HTTP 429 with a plain
 // body, or the JSON-RPC error providers send with it.
-var ErrRateLimited = errors.New("rpc rate limited")
+var ErrRateLimited = fmt.Errorf("%w: rate limited", ErrUnavailable)
 
-const rateLimitedCode = -32429
+// ErrBehind is a node that has not reached the requested minContextSlot yet.
+var ErrBehind = fmt.Errorf("%w: node behind the requested slot", ErrUnavailable)
+
+const (
+	rateLimitedCode = -32429
+	behindCode      = -32016
+)
 
 // maxAccountsPerCall is getMultipleAccounts' limit.
 const maxAccountsPerCall = 100
@@ -42,8 +52,8 @@ func New(endpoint string, timeout time.Duration) (*Client, error) {
 }
 
 // failed names the method and keeps only what the endpoint said: the JSON-RPC
-// error, the HTTP status or the transport cause. solana-go's own messages for
-// the last two include the request URL.
+// code and message, the HTTP status or the transport cause. solana-go's own
+// messages for the last two carry the request URL, which can hold a key.
 func failed(method string, err error) error {
 	var rpcErr *jsonrpc.RPCError
 	var httpErr *jsonrpc.HTTPError
@@ -52,12 +62,18 @@ func failed(method string, err error) error {
 	case errors.As(err, &rpcErr) && rpcErr.Code == rateLimitedCode,
 		errors.As(err, &httpErr) && httpErr.Code == http.StatusTooManyRequests:
 		return fmt.Errorf("%s: %w", method, ErrRateLimited)
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.As(err, &rpcErr):
-		return fmt.Errorf("%s: %w", method, err)
+	case errors.As(err, &rpcErr) && rpcErr.Code == behindCode:
+		return fmt.Errorf("%s: %w", method, ErrBehind)
+	case errors.As(err, &rpcErr):
+		return fmt.Errorf("%s: rpc error %d: %s", method, rpcErr.Code, rpcErr.Message)
 	case errors.As(err, &httpErr):
-		return fmt.Errorf("%s: rpc status %d", method, httpErr.Code)
+		return fmt.Errorf("%s: %w: rpc status %d", method, ErrUnavailable, httpErr.Code)
 	case errors.As(err, &urlErr):
-		return fmt.Errorf("%s: %w", method, urlErr.Err)
+		return fmt.Errorf("%s: %w: %w", method, ErrUnavailable, urlErr.Err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%s: %w: %w", method, ErrUnavailable, context.DeadlineExceeded)
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("%s: %w", method, context.Canceled)
 	}
 	return fmt.Errorf("%s: invalid rpc response", method)
 }
