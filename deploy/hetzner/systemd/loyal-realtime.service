@@ -37,7 +37,9 @@ RestartSec=5s
 # The binary drains SSE streams for at most 45s after SIGTERM.
 TimeoutStopSec=60s
 
-# The binary listens on 0.0.0.0:$PORT; only Caddy on loopback should reach it.
+# Only Caddy on loopback should reach it. Binaries before #278 ignore
+# REALTIME_BIND_ADDRESS and listen on 0.0.0.0:$PORT.
+Environment=REALTIME_BIND_ADDRESS=127.0.0.1
 Environment=PORT=10000
 # This host is the only realtime instance, so it owns event retention.
 Environment=REALTIME_RETENTION_CLEANUP_ENABLED=true

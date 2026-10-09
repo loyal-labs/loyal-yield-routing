@@ -148,9 +148,10 @@ point that systemd creates for that bind. It holds no data.
 
 The unit sets `PORT=10000` and `REALTIME_RETENTION_CLEANUP_ENABLED=true`.
 Exactly one realtime instance may run with cleanup enabled. Never start a
-second copy against the production database to test it. The binary binds
-`0.0.0.0:$PORT` and has no setting for the bind address. The cloud firewall
-must keep port 10000 closed, so that only Caddy can reach it.
+second copy against the production database to test it. The unit also sets
+`REALTIME_BIND_ADDRESS=127.0.0.1`, so only Caddy can reach the binary.
+Binaries built before #278 ignore that setting and bind `0.0.0.0:$PORT`. On
+those binaries, the cloud firewall must keep port 10000 closed.
 
 ### Extract and install a binary
 
@@ -179,12 +180,14 @@ curl -fsS http://127.0.0.1:10000/readyz
 When you upgrade, set `LOYAL_IMAGE_VERSION` in the unit to the new tag. A
 restart drops open SSE streams, and clients reconnect with their cursor.
 
-Production now runs a binary from `680613e3`. That commit is on branch
-`codex/hetzner-realtime-20260929`, not on main. Its parent `d1866a93` adds
+The first host binary came from `680613e3` on branch
+`codex/hetzner-realtime-20260929`, not from main. Its parent `d1866a93` adds
 `REALTIME_RETENTION_CLEANUP_ENABLED`, a 10s statement timeout and a bounded
-45s drain on SIGTERM. The crate on main has none of these, so a tag built
-from main would always run retention and would not bound shutdown. Port
-`d1866a93` to main before you build a replacement binary.
+45s drain on SIGTERM. #278 ports that commit to main and adds
+`REALTIME_BIND_ADDRESS`. After #278 merges, re-extract the host binary from
+the `realtime-image` tag that main builds, using the steps above. Until then,
+the host still binds every interface. Never install a tag from main that
+predates #278: it always runs retention and does not bound shutdown.
 
 ### Seal the credential
 
