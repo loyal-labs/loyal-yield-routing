@@ -44,7 +44,7 @@ Environment=PORT=10000
 # This host is the only realtime instance, so it owns event retention.
 Environment=REALTIME_RETENTION_CLEANUP_ENABLED=true
 # The realtime-image tag the binary was extracted from (observability label).
-Environment=LOYAL_IMAGE_VERSION=sha-680613e3854f741a418a3b98099eb77f4f22916d
+Environment=LOYAL_IMAGE_VERSION=sha-610e8cdb100848b74673a351abe5fb1c4fcac392
 
 DynamicUser=yes
 User=loyal-realtime
