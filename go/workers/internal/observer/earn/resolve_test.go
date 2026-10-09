@@ -2,34 +2,27 @@ package earn
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
-	"github.com/mr-tron/base58"
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 // Behavior ported from earn_reconciliation.rs tests.
 
-func parseTransaction(t *testing.T, value string) jsonTransaction {
-	t.Helper()
-	decoder := json.NewDecoder(bytes.NewReader([]byte(value)))
-	decoder.UseNumber()
-	var out jsonTransaction
-	if err := decoder.Decode(&out); err != nil {
-		t.Fatal(err)
-	}
-	return out
-}
+var testWallet, testVaultKey = solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
 
 func testVault(role, account string) watch.Vault {
-	return watch.Vault{Environment: "mainnet-beta", Settings: "settings", Wallet: "wallet-owner", Vault: "vault-owner", VaultIndex: 1,
+	return watch.Vault{Environment: "mainnet-beta", Settings: "settings", Wallet: testWallet.String(), Vault: testVaultKey.String(), VaultIndex: 1,
 		Accounts: []watch.Account{{Pubkey: account, Role: role}}}
 }
 
@@ -38,35 +31,39 @@ func testUpdate(kind, account string) NormalizedUpdate {
 	return NormalizedUpdate{Filters: []string{"earn"}, EventKind: kind, AccountPubkey: &account, Slot: 10, Signature: &signature}
 }
 
-func cashFlowTransaction(pre, post string) string {
-	usdc := usdcMint.String()
-	return `{"slot":1,"meta":{"preTokenBalances":[{"accountIndex":0,"mint":"` + usdc + `","owner":"wallet-owner","uiTokenAmount":{"amount":"` + pre + `"}}],` +
-		`"postTokenBalances":[{"accountIndex":0,"mint":"` + usdc + `","owner":"wallet-owner","uiTokenAmount":{"amount":"` + post + `"}}],` +
-		`"preBalances":[1000000],"postBalances":[995000],"fee":5000},"transaction":{"message":{"accountKeys":["wallet-owner","vault-owner"]}}}`
+func cashFlowTransaction(pre, post uint64) earnTransaction {
+	walletATA := solana.NewWallet().PublicKey()
+	row := func(amount uint64) map[solana.PublicKey]chain.TokenBalance {
+		return map[solana.PublicKey]chain.TokenBalance{walletATA: {Mint: usdcMint, Owner: testWallet, Program: tokenProgram, Amount: amount}}
+	}
+	return earnTransaction{chain.Execution{Receipt: chain.Receipt{Slot: 1, Fee: 5000, Keys: []solana.PublicKey{testWallet, testVaultKey, walletATA},
+		PreLamports: []uint64{1_000_000, 0, 0}, PostLamports: []uint64{995_000, 0, 0}, Pre: row(pre), Post: row(post)}}}
 }
 
 func TestWalletCashFlowClassification(t *testing.T) {
 	vault := testVault("wallet_token", "wallet-ata")
 	for _, tc := range []struct {
-		name, pre, post string
-		kind            cashFlowKind
-		amount          uint64
-	}{{"deposit", "125", "25", cashDeposit, 100}, {"partial withdrawal", "10", "35", cashWithdrawal, 25}} {
-		flow, err := classifyCashFlow(parseTransaction(t, cashFlowTransaction(tc.pre, tc.post)), testUpdate("account_updated", "wallet-ata"), vault)
+		name      string
+		pre, post uint64
+		kind      cashFlowKind
+		amount    uint64
+	}{{"deposit", 125, 25, cashDeposit, 100}, {"partial withdrawal", 10, 35, cashWithdrawal, 25}} {
+		flow, err := classifyCashFlow(cashFlowTransaction(tc.pre, tc.post), testUpdate("account_updated", "wallet-ata"), vault)
 		if err != nil || flow == nil || flow.kind != tc.kind || flow.amount != tc.amount || flow.mint != usdcMint.String() {
 			t.Fatalf("%s = %+v, %v", tc.name, flow, err)
 		}
 	}
 	unanchored := testVault("wallet_token", "wallet-ata")
-	unanchored.Vault = "other-vault"
-	if flow, err := classifyCashFlow(parseTransaction(t, cashFlowTransaction("125", "25")), testUpdate("account_updated", "wallet-ata"), unanchored); err != nil || flow != nil {
+	unanchored.Vault = solana.NewWallet().PublicKey().String()
+	if flow, err := classifyCashFlow(cashFlowTransaction(125, 25), testUpdate("account_updated", "wallet-ata"), unanchored); err != nil || flow != nil {
 		t.Fatalf("a transaction that never touched the vault is not Earn cash flow: %+v %v", flow, err)
 	}
 }
 
 func TestPolicyRefundIsCreditedNetOfFee(t *testing.T) {
 	vault := testVault("policy", "policy-account")
-	transaction := parseTransaction(t, `{"slot":30,"meta":{"preTokenBalances":[],"postTokenBalances":[],"preBalances":[1000000],"postBalances":[1995000],"fee":5000},"transaction":{"message":{"accountKeys":["wallet-owner"]}}}`)
+	transaction := earnTransaction{chain.Execution{Receipt: chain.Receipt{Slot: 30, Fee: 5000, Keys: []solana.PublicKey{testWallet},
+		PreLamports: []uint64{1_000_000}, PostLamports: []uint64{1_995_000}}}}
 	flow, err := classifyCashFlow(transaction, testUpdate("account_deleted", "policy-account"), vault)
 	if err != nil || flow == nil || flow.kind != cashRefund || flow.refundKind != "policy" || flow.amount != 1_000_000 {
 		t.Fatalf("policy refund = %+v, %v", flow, err)
@@ -74,26 +71,32 @@ func TestPolicyRefundIsCreditedNetOfFee(t *testing.T) {
 }
 
 func TestIdleSweepWithoutKaminoWithdrawIsNotAReserveWithdrawal(t *testing.T) {
-	sweep := parseTransaction(t, `{"transaction":{"message":{"instructions":[{"programId":"SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG","data":"1111"}]}},
-		"meta":{"innerInstructions":[{"index":0,"instructions":[{"programId":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","data":"1111"}]}]}}`)
-	if len(sweep.kaminoWithdrawInstructions()) != 0 {
+	keys := []solana.PublicKey{sp.Program, tokenProgram, klendProgram}
+	ran := func(outer []solana.CompiledInstruction, inner ...rpc.CompiledInstruction) earnTransaction {
+		return earnTransaction{chain.Execution{Receipt: chain.Receipt{Keys: keys}, Transaction: &solana.Transaction{Message: solana.Message{Instructions: outer}},
+			Inner: []rpc.InnerInstruction{{Index: 0, Instructions: inner}}}}
+	}
+	sweep := ran([]solana.CompiledInstruction{{ProgramIDIndex: 0, Data: []byte{0}}}, rpc.CompiledInstruction{ProgramIDIndex: 1, Data: []byte{0}})
+	if len(sweep.kaminoWithdrawAccounts()) != 0 {
 		t.Fatal("an idle vault sweep was treated as a Kamino withdrawal")
 	}
-	withdrawal := parseTransaction(t, `{"transaction":{"message":{"instructions":[]}},"meta":{"innerInstructions":[{"index":0,"instructions":[
-		{"programId":"`+klendProgram.String()+`","data":"`+base58.Encode(withdrawV2Discriminator)+`"}]}]}}`)
-	if len(withdrawal.kaminoWithdrawInstructions()) != 1 {
+	withdrawal := ran(nil, rpc.CompiledInstruction{ProgramIDIndex: 2, Data: withdrawV2Discriminator})
+	if len(withdrawal.kaminoWithdrawAccounts()) != 1 {
 		t.Fatal("a Kamino withdraw v2 was not recognized")
 	}
 }
 
 func TestHistoricalAccountCloseRequiresExplicitPreAndPostEvidence(t *testing.T) {
-	transaction := parseTransaction(t, `{"transaction":{"message":{"accountKeys":[{"pubkey":"payer"},{"pubkey":"obligation"}]}},"meta":{"preBalances":[10,20],"postBalances":[10,0]}}`)
-	if !transaction.closedAccount("obligation") || transaction.closedAccount("payer") || transaction.closedAccount("unwatched") {
+	payer, obligation := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
+	balances := func(pre, post []uint64) earnTransaction {
+		return earnTransaction{chain.Execution{Receipt: chain.Receipt{Keys: []solana.PublicKey{payer, obligation}, PreLamports: pre, PostLamports: post}}}
+	}
+	transaction := balances([]uint64{10, 20}, []uint64{10, 0})
+	if !transaction.closedAccount(obligation.String()) || transaction.closedAccount(payer.String()) || transaction.closedAccount(solana.NewWallet().PublicKey().String()) {
 		t.Fatal("close evidence misclassified")
 	}
-	missing := parseTransaction(t, `{"transaction":{"message":{"accountKeys":[{"pubkey":"payer"},{"pubkey":"obligation"}]}},"meta":{"preBalances":[10,20],"postBalances":[10]}}`)
-	alreadyEmpty := parseTransaction(t, `{"transaction":{"message":{"accountKeys":[{"pubkey":"payer"},{"pubkey":"obligation"}]}},"meta":{"preBalances":[10,0],"postBalances":[10,0]}}`)
-	if missing.closedAccount("obligation") || alreadyEmpty.closedAccount("obligation") {
+	missing, alreadyEmpty := balances([]uint64{10, 20}, []uint64{10}), balances([]uint64{10, 0}, []uint64{10, 0})
+	if missing.closedAccount(obligation.String()) || alreadyEmpty.closedAccount(obligation.String()) {
 		t.Fatal("unknown balances were read as a close")
 	}
 }
@@ -121,7 +124,7 @@ func TestOnlyTerminalFailuresDeadLetter(t *testing.T) {
 	if deferralKind(errProofPending) != deferProofPending {
 		t.Fatal("a pending proof is not a failure")
 	}
-	if deferralKind(&solanarpc.RPCError{Method: "getMultipleAccounts", Code: solanarpc.MinContextSlotNotReached}) != deferRPCBehind {
+	if deferralKind(fmt.Errorf("getMultipleAccounts: %w", chain.ErrBehind)) != deferRPCBehind {
 		t.Fatal("an RPC behind its minimum context slot is not a failure")
 	}
 	if deferralKind(errors.New("route policy missing")) != deferFailure {
@@ -129,13 +132,17 @@ func TestOnlyTerminalFailuresDeadLetter(t *testing.T) {
 	}
 }
 
-func TestJSONPolicyTransactionDecodesSquadsInstructions(t *testing.T) {
-	raw, err := os.ReadFile("../../../testdata/earn/squads-policy-create-json.json")
+func TestRPCPolicyTransactionDecodesSquadsInstructions(t *testing.T) {
+	raw, err := os.ReadFile("../../../testdata/earn/squads-policy-create.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	signature := "5SyQHcNK5xFLgKFQUmibNDrDNarXz7FCoJpjgvwjmb2ogPDUiWxQyWXKnziBdp92Rbc69JmMNY9YZsPeWbs7MyG9"
-	transaction, err := decodeRPCPolicyTransaction(raw, signature, 448_495_297)
+	read, err := readExecution(context.Background(), confirmedTransactionServer(t, json.RawMessage(raw)), signature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction, err := decodeRPCPolicyTransaction(read, signature, 448_495_297)
 	if err != nil || transaction == nil {
 		t.Fatal(err)
 	}
@@ -160,7 +167,7 @@ func TestJSONPolicyTransactionDecodesSquadsInstructions(t *testing.T) {
 	if !foundSettings || !foundWallet {
 		t.Fatal("settings must be writable and the wallet must sign")
 	}
-	if _, err := decodeRPCPolicyTransaction(raw, signature, 448_495_298); err == nil {
+	if _, err := decodeRPCPolicyTransaction(read, signature, 448_495_298); err == nil {
 		t.Fatal("slot drift was accepted")
 	}
 }

@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
 // confirmedTransactionServer answers getTransaction with one fixed result.
-func confirmedTransactionServer(t *testing.T, result any) *solanarpc.Client {
+func confirmedTransactionServer(t *testing.T, result any) *chain.Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -27,13 +27,17 @@ func confirmedTransactionServer(t *testing.T, result any) *solanarpc.Client {
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
 	}))
 	t.Cleanup(server.Close)
-	return solanarpc.New(server.URL, 5*time.Second)
+	client, err := chain.New(server.URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
 }
 
 func tokenRows(rows ...[2]any) []map[string]any {
 	out := []map[string]any{}
 	for _, row := range rows {
-		out = append(out, map[string]any{"accountIndex": row[0], "mint": usdcMint.String(), "uiTokenAmount": map[string]any{"amount": row[1], "decimals": 6}})
+		out = append(out, map[string]any{"accountIndex": row[0], "mint": usdcMint.String(), "owner": solana.SystemProgramID.String(), "programId": tokenProgram.String(), "uiTokenAmount": map[string]any{"amount": row[1], "decimals": 6}})
 	}
 	return out
 }

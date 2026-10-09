@@ -10,12 +10,10 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
-	"strconv"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
-	"github.com/mr-tron/base58"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -48,250 +46,122 @@ func anchorInstructionDiscriminator(name string) []byte {
 	return sha256Sum("global:" + name)[:8]
 }
 
-// jsonTransaction is a confirmed jsonParsed transaction.
-type jsonTransaction map[string]any
+// earnTransaction is a confirmed transaction that succeeded.
+type earnTransaction struct{ chain.Execution }
 
-func (t jsonTransaction) pointer(path ...any) any {
-	var value any = map[string]any(t)
-	for _, step := range path {
-		switch key := step.(type) {
-		case string:
-			object, ok := value.(map[string]any)
-			if !ok {
-				return nil
-			}
-			value = object[key]
-		case int:
-			array, ok := value.([]any)
-			if !ok || key < 0 || key >= len(array) {
-				return nil
-			}
-			value = array[key]
-		}
+// readExecution reads a confirmed transaction. A node that cannot serve it
+// yet leaves the proof pending; that is not proof of absence.
+func readExecution(ctx context.Context, rpc *chain.Client, signature string) (chain.Execution, error) {
+	key, err := solana.SignatureFromBase58(signature)
+	if err != nil {
+		return chain.Execution{}, fmt.Errorf("invalid transaction signature: %w", err)
 	}
-	return value
+	read, err := rpc.Execution(ctx, key, confirmedCommitment)
+	if errors.Is(err, chain.ErrNotFound) {
+		return chain.Execution{}, errProofPending
+	}
+	return read, err
 }
 
-func asU64(value any) (uint64, bool) {
-	number, ok := value.(json.Number)
-	if !ok {
-		return 0, false
+// readEarnTransaction is read_transaction_json: a confirmed transaction that
+// must have succeeded.
+func readEarnTransaction(ctx context.Context, rpc *chain.Client, signature string) (earnTransaction, error) {
+	read, err := readExecution(ctx, rpc, signature)
+	if err != nil {
+		return earnTransaction{}, err
 	}
-	parsed, err := strconv.ParseUint(number.String(), 10, 64)
-	return parsed, err == nil
+	if read.Err != nil {
+		return earnTransaction{}, fmt.Errorf("transaction %s failed on chain", signature)
+	}
+	return earnTransaction{read}, nil
 }
 
-func (t jsonTransaction) slot() (uint64, bool) { return asU64(t.pointer("slot")) }
-
-func (t jsonTransaction) accountKeys() []string {
-	keys, _ := t.pointer("transaction", "message", "accountKeys").([]any)
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		switch value := key.(type) {
-		case string:
-			out = append(out, value)
-		case map[string]any:
-			if pubkey, ok := value["pubkey"].(string); ok {
-				out = append(out, pubkey)
-			}
-		}
-	}
-	return out
-}
-
-func (t jsonTransaction) accountSet() map[string]struct{} {
+func (t earnTransaction) accountSet() map[string]struct{} {
 	set := map[string]struct{}{}
-	for _, key := range t.accountKeys() {
-		set[key] = struct{}{}
+	for _, key := range t.Keys {
+		set[key.String()] = struct{}{}
 	}
 	return set
 }
 
-func (t jsonTransaction) keyIndex(address string) int {
-	keys, _ := t.pointer("transaction", "message", "accountKeys").([]any)
-	for index, key := range keys {
-		switch value := key.(type) {
-		case string:
-			if value == address {
-				return index
-			}
-		case map[string]any:
-			if value["pubkey"] == address {
-				return index
-			}
+func (t earnTransaction) keyIndex(address string) int {
+	for index, key := range t.Keys {
+		if key.String() == address {
+			return index
 		}
 	}
 	return -1
 }
 
-func (t jsonTransaction) instructions() []map[string]any {
-	var out []map[string]any
-	outer, _ := t.pointer("transaction", "message", "instructions").([]any)
-	for _, instruction := range outer {
-		if object, ok := instruction.(map[string]any); ok {
-			out = append(out, object)
-		}
+func lamportsAt(balances []uint64, index int) (uint64, bool) {
+	if index < 0 || index >= len(balances) {
+		return 0, false
 	}
-	groups, _ := t.pointer("meta", "innerInstructions").([]any)
-	for _, group := range groups {
-		object, _ := group.(map[string]any)
-		inner, _ := object["instructions"].([]any)
-		for _, instruction := range inner {
-			if object, ok := instruction.(map[string]any); ok {
-				out = append(out, object)
-			}
-		}
-	}
-	return out
+	return balances[index], true
 }
 
-// readEarnTransaction is read_transaction_json: a confirmed jsonParsed
-// transaction that must have succeeded.
-func readEarnTransaction(ctx context.Context, rpc *solanarpc.Client, signature string) (jsonTransaction, error) {
-	if _, err := solana.SignatureFromBase58(signature); err != nil {
-		return nil, fmt.Errorf("invalid transaction signature: %w", err)
+func (t earnTransaction) slotAt(signature string, expected uint64) (uint64, error) {
+	if t.Slot != expected {
+		return 0, fmt.Errorf("transaction %s landed at slot %d, expected account-update slot %d", signature, t.Slot, expected)
 	}
-	raw, found, err := rpc.Transaction(ctx, signature, "jsonParsed", confirmedCommitment)
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, errProofPending
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var transaction jsonTransaction
-	if err := decoder.Decode(&transaction); err != nil {
-		return nil, err
-	}
-	if failure := transaction.pointer("meta", "err"); failure != nil {
-		return nil, fmt.Errorf("transaction %s failed on chain", signature)
-	}
-	return transaction, nil
-}
-
-func (t jsonTransaction) slotAt(signature string, expected uint64, what string) (uint64, error) {
-	slot, ok := t.slot()
-	if !ok {
-		return 0, fmt.Errorf("confirmed %stransaction has no slot", what)
-	}
-	if slot != expected {
-		return 0, fmt.Errorf("transaction %s landed at slot %d, expected account-update slot %d", signature, slot, expected)
-	}
-	return slot, nil
+	return t.Slot, nil
 }
 
 // ownerLamportCredit is transaction_owner_lamport_credit (fee added back for
 // the fee payer).
-func (t jsonTransaction) ownerLamportCredit(owner string) (uint64, error) {
-	if _, ok := t.pointer("transaction", "message", "accountKeys").([]any); !ok {
-		return 0, errors.New("transaction has no account keys")
-	}
+func (t earnTransaction) ownerLamportCredit(owner string) uint64 {
 	index := t.keyIndex(owner)
 	if index < 0 {
-		return 0, nil
+		return 0
 	}
-	pre, _ := asU64(t.pointer("meta", "preBalances", index))
-	post, _ := asU64(t.pointer("meta", "postBalances", index))
+	pre, _ := lamportsAt(t.PreLamports, index)
+	post, _ := lamportsAt(t.PostLamports, index)
 	var fee uint64
 	if index == 0 {
-		fee, _ = asU64(t.pointer("meta", "fee"))
+		fee = t.Fee
 	}
 	credit := post + fee
 	if credit < post {
 		credit = ^uint64(0)
 	}
 	if credit < pre {
-		return 0, nil
+		return 0
 	}
-	return credit - pre, nil
+	return credit - pre
 }
 
-func (t jsonTransaction) closedAccount(address string) bool {
+func (t earnTransaction) closedAccount(address string) bool {
 	index := t.keyIndex(address)
-	if index < 0 {
-		return false
-	}
-	pre, okPre := asU64(t.pointer("meta", "preBalances", index))
-	post, okPost := asU64(t.pointer("meta", "postBalances", index))
+	pre, okPre := lamportsAt(t.PreLamports, index)
+	post, okPost := lamportsAt(t.PostLamports, index)
 	return okPre && pre > 0 && okPost && post == 0
 }
 
-type tokenRow struct {
-	owner  *string
-	amount uint64
-}
-
-func (t jsonTransaction) tokenRows(name, mint string) (map[uint64]tokenRow, error) {
-	rows := map[uint64]tokenRow{}
-	values, _ := t.pointer("meta", name).([]any)
-	for _, value := range values {
-		row, _ := value.(map[string]any)
-		if row["mint"] != mint {
-			continue
-		}
-		index, ok := asU64(row["accountIndex"])
-		if !ok {
-			return nil, errors.New("token balance has no account index")
-		}
-		ui, _ := row["uiTokenAmount"].(map[string]any)
-		text, ok := ui["amount"].(string)
-		if !ok {
-			return nil, errors.New("token balance has no raw amount")
-		}
-		amount, err := strconv.ParseUint(text, 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		var owner *string
-		if value, ok := row["owner"].(string); ok {
-			owner = &value
-		}
-		if _, exists := rows[index]; exists {
-			return nil, fmt.Errorf("duplicate token balance account index %d in %s", index, name)
-		}
-		rows[index] = tokenRow{owner, amount}
-	}
-	return rows, nil
-}
-
-// ownerTokenDelta is transaction_owner_token_delta.
-func (t jsonTransaction) ownerTokenDelta(mint, owner string) (*big.Int, error) {
-	pre, err := t.tokenRows("preTokenBalances", mint)
-	if err != nil {
-		return nil, err
-	}
-	post, err := t.tokenRows("postTokenBalances", mint)
-	if err != nil {
-		return nil, err
-	}
+// ownerTokenDelta is transaction_owner_token_delta: an account counts for
+// owner by its post-balance owner, or its pre-balance owner once closed.
+func (t earnTransaction) ownerTokenDelta(mint solana.PublicKey, owner string) *big.Int {
 	delta := new(big.Int)
-	indexes := map[uint64]struct{}{}
-	for index := range pre {
-		indexes[index] = struct{}{}
-	}
-	for index := range post {
-		indexes[index] = struct{}{}
-	}
-	for index := range indexes {
-		preRow, hasPre := pre[index]
-		postRow, hasPost := post[index]
-		var rowOwner *string
-		if hasPost && postRow.owner != nil {
-			rowOwner = postRow.owner
-		} else if hasPre {
-			rowOwner = preRow.owner
+	for _, post := range t.Post {
+		if post.Mint == mint && post.Owner.String() == owner {
+			delta.Add(delta, new(big.Int).SetUint64(post.Amount))
 		}
-		if rowOwner == nil || *rowOwner != owner {
+	}
+	for account, pre := range t.Pre {
+		if pre.Mint != mint {
 			continue
 		}
-		delta.Add(delta, new(big.Int).SetUint64(postRow.amount))
-		delta.Sub(delta, new(big.Int).SetUint64(preRow.amount))
+		rowOwner := pre.Owner
+		if post, ok := t.Post[account]; ok && post.Mint == mint {
+			rowOwner = post.Owner
+		}
+		if rowOwner.String() == owner {
+			delta.Sub(delta, new(big.Int).SetUint64(pre.Amount))
+		}
 	}
-	return delta, nil
+	return delta
 }
 
-func (t jsonTransaction) hasEarnAnchor(vault watch.Vault) bool {
+func (t earnTransaction) hasEarnAnchor(vault watch.Vault) bool {
 	accounts := t.accountSet()
 	if _, ok := accounts[vault.Settings]; ok {
 		return true
@@ -310,19 +180,28 @@ func (t jsonTransaction) hasEarnAnchor(vault watch.Vault) bool {
 	return false
 }
 
-func (t jsonTransaction) kaminoWithdrawInstructions() []map[string]any {
-	var out []map[string]any
-	for _, instruction := range t.instructions() {
-		if instruction["programId"] != klendProgram.String() {
-			continue
+// kaminoWithdrawAccounts lists the accounts of every Kamino withdraw v2 the
+// transaction ran, outer or inner.
+func (t earnTransaction) kaminoWithdrawAccounts() [][]solana.PublicKey {
+	var out [][]solana.PublicKey
+	add := func(program uint16, indexes []uint16, data []byte) {
+		if int(program) >= len(t.Keys) || t.Keys[program] != klendProgram || !bytes.HasPrefix(data, withdrawV2Discriminator) {
+			return
 		}
-		encoded, ok := instruction["data"].(string)
-		if !ok {
-			continue
+		accounts := make([]solana.PublicKey, len(indexes))
+		for i, index := range indexes {
+			if int(index) < len(t.Keys) {
+				accounts[i] = t.Keys[index]
+			}
 		}
-		data, err := base58.Decode(encoded)
-		if err == nil && bytes.HasPrefix(data, withdrawV2Discriminator) {
-			out = append(out, instruction)
+		out = append(out, accounts)
+	}
+	for _, compiled := range t.Transaction.Message.Instructions {
+		add(compiled.ProgramIDIndex, compiled.Accounts, compiled.Data)
+	}
+	for _, group := range t.Inner {
+		for _, compiled := range group.Instructions {
+			add(compiled.ProgramIDIndex, compiled.Accounts, compiled.Data)
 		}
 	}
 	return out
@@ -344,7 +223,7 @@ type cashFlow struct {
 }
 
 // classifyCashFlow is classify_transaction_cash_flow.
-func classifyCashFlow(t jsonTransaction, update NormalizedUpdate, vault watch.Vault) (*cashFlow, error) {
+func classifyCashFlow(t earnTransaction, update NormalizedUpdate, vault watch.Vault) (*cashFlow, error) {
 	if update.EventKind == "account_deleted" && update.AccountPubkey != nil {
 		role := ""
 		for _, binding := range vault.Accounts {
@@ -354,11 +233,7 @@ func classifyCashFlow(t jsonTransaction, update NormalizedUpdate, vault watch.Va
 			}
 		}
 		if role == "policy" || role == "idle_token" || role == "vault" {
-			credit, err := t.ownerLamportCredit(vault.Wallet)
-			if err != nil {
-				return nil, err
-			}
-			if credit > 0 {
+			if credit := t.ownerLamportCredit(vault.Wallet); credit > 0 {
 				kind := map[string]string{"policy": "policy", "idle_token": "vault_token_account", "vault": "vault_account"}[role]
 				return &cashFlow{kind: cashRefund, amount: credit, refundKind: kind}, nil
 			}
@@ -369,11 +244,7 @@ func classifyCashFlow(t jsonTransaction, update NormalizedUpdate, vault watch.Va
 	}
 	var result *cashFlow
 	for _, stable := range earnStables {
-		mint := stable.mint.String()
-		delta, err := t.ownerTokenDelta(mint, vault.Wallet)
-		if err != nil {
-			return nil, err
-		}
+		delta := t.ownerTokenDelta(stable.mint, vault.Wallet)
 		if delta.Sign() == 0 {
 			continue
 		}
@@ -388,20 +259,20 @@ func classifyCashFlow(t jsonTransaction, update NormalizedUpdate, vault watch.Va
 		if !delta.IsUint64() {
 			return nil, errors.New("wallet token delta overflow")
 		}
-		result = &cashFlow{kind: kind, mint: mint, amount: delta.Uint64()}
+		result = &cashFlow{kind: kind, mint: stable.mint.String(), amount: delta.Uint64()}
 	}
 	return result, nil
 }
 
 // decodeTokenAccount is decode_token_account for SPL Token and Token-2022.
-func decodeTokenAccount(account *solanarpc.Account) (mint, owner solana.PublicKey, amount uint64, err error) {
+func decodeTokenAccount(account *chain.Account) (mint, owner solana.PublicKey, amount uint64, err error) {
 	data := account.Data
 	switch account.Owner {
-	case tokenProgram.String():
+	case tokenProgram:
 		if len(data) != 165 {
 			return mint, owner, 0, errors.New("invalid SPL token account length")
 		}
-	case token2022Program.String():
+	case token2022Program:
 		if len(data) < 165 || len(data) > 165 && (len(data) < 166 || data[165] != 2) {
 			return mint, owner, 0, errors.New("invalid Token-2022 account layout")
 		}
@@ -514,24 +385,6 @@ func bindingKeys(vault watch.Vault, role string) ([]solana.PublicKey, error) {
 	return out, nil
 }
 
-func addressStrings(keys []solana.PublicKey) []string { return keyStrings(keys) }
-
-// readAccounts reads confirmed accounts at or after minimum and enforces
-// the context slot.
-func readAccounts(ctx context.Context, rpc *solanarpc.Client, addresses []string, minimum uint64, what string) (solanarpc.AccountsResponse, error) {
-	if len(addresses) == 0 {
-		return solanarpc.AccountsResponse{Slot: minimum}, nil
-	}
-	response, err := rpc.MultipleAccounts(ctx, addresses, confirmedCommitment, &minimum)
-	if err != nil {
-		return response, err
-	}
-	if response.Slot < minimum {
-		return response, fmt.Errorf("%s context slot %d is below minimum %d", what, response.Slot, minimum)
-	}
-	return response, nil
-}
-
 type cleanupProof struct{ balancesZero, policiesClosed bool }
 
 func knownStable(mint solana.PublicKey) bool {
@@ -544,20 +397,18 @@ func knownStable(mint solana.PublicKey) bool {
 }
 
 // readCleanupProof is read_cleanup_proof.
-func readCleanupProof(ctx context.Context, rpc *solanarpc.Client, vault watch.Vault, minimum uint64) (cleanupProof, error) {
-	addresses := make([]string, 0, len(vault.Accounts))
+func readCleanupProof(ctx context.Context, rpc *chain.Client, vault watch.Vault, minimum uint64) (cleanupProof, error) {
+	addresses := make([]solana.PublicKey, 0, len(vault.Accounts))
 	for _, binding := range vault.Accounts {
-		if _, err := solana.PublicKeyFromBase58(binding.Pubkey); err != nil {
+		key, err := solana.PublicKeyFromBase58(binding.Pubkey)
+		if err != nil {
 			return cleanupProof{}, err
 		}
-		addresses = append(addresses, binding.Pubkey)
+		addresses = append(addresses, key)
 	}
-	response, err := rpc.MultipleAccounts(ctx, addresses, confirmedCommitment, &minimum)
+	_, accounts, err := rpc.Accounts(ctx, addresses, confirmedCommitment, minimum)
 	if err != nil {
 		return cleanupProof{}, err
-	}
-	if response.Slot < minimum {
-		return cleanupProof{}, fmt.Errorf("cleanup proof context slot %d is below minimum %d", response.Slot, minimum)
 	}
 	vaultKey, err := solana.PublicKeyFromBase58(vault.Vault)
 	if err != nil {
@@ -566,12 +417,12 @@ func readCleanupProof(ctx context.Context, rpc *solanarpc.Client, vault watch.Va
 	proof := cleanupProof{balancesZero: true}
 	sawPolicy, policies := false, 0
 	for index, binding := range vault.Accounts {
-		account := response.Accounts[index]
+		account := accounts[index]
 		switch binding.Role {
 		case "policy":
 			policies++
 			if account != nil {
-				if account.Owner != sp.Program.String() {
+				if account.Owner != sp.Program {
 					return proof, fmt.Errorf("policy account %s has unexpected owner %s", binding.Pubkey, account.Owner)
 				}
 				sawPolicy = true
@@ -594,7 +445,7 @@ func readCleanupProof(ctx context.Context, rpc *solanarpc.Client, vault watch.Va
 			if account == nil {
 				continue
 			}
-			if account.Owner != klendProgram.String() {
+			if account.Owner != klendProgram {
 				return proof, fmt.Errorf("obligation %s has unexpected owner %s", binding.Pubkey, account.Owner)
 			}
 			obligation, err := decodeObligation(account.Data)
@@ -625,21 +476,15 @@ func readCleanupProof(ctx context.Context, rpc *solanarpc.Client, vault watch.Va
 
 // blockingTokenInventory is vault_has_blocking_token_inventory: any non-dust
 // or non-product token balance blocks cleanup.
-func blockingTokenInventory(ctx context.Context, rpc *solanarpc.Client, vault solana.PublicKey, minimum uint64) (bool, error) {
+func blockingTokenInventory(ctx context.Context, rpc *chain.Client, vault solana.PublicKey, minimum uint64) (bool, error) {
 	for _, program := range []solana.PublicKey{tokenProgram, token2022Program} {
-		slot, accounts, err := rpc.TokenAccountsByOwner(ctx, vault.String(), program.String(), confirmedCommitment, minimum)
+		_, accounts, err := rpc.TokenAccounts(ctx, vault, program, confirmedCommitment, minimum)
 		if err != nil {
 			return false, fmt.Errorf("get token accounts by owner: %w", err)
 		}
-		if slot < minimum {
-			return false, fmt.Errorf("token inventory context slot %d is below minimum %d", slot, minimum)
-		}
-		for _, keyed := range accounts {
-			address, err := solana.PublicKeyFromBase58(keyed.Pubkey)
-			if err != nil {
-				return false, err
-			}
-			mint, owner, amount, err := decodeTokenAccount(&keyed.Account)
+		for _, account := range accounts {
+			address := account.Key
+			mint, owner, amount, err := decodeTokenAccount(&account)
 			if err != nil {
 				return false, fmt.Errorf("decode owner token account %s: %w", address, err)
 			}
@@ -676,7 +521,7 @@ func isPolicyDeletion(update NormalizedUpdate, vault watch.Vault) bool {
 }
 
 // resolveMutation is resolve_rpc_mutation.
-func resolveMutation(ctx context.Context, rpc *solanarpc.Client, update NormalizedUpdate, vault watch.Vault, context ReconciliationContext) (EarnMutation, error) {
+func resolveMutation(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, context ReconciliationContext) (EarnMutation, error) {
 	if isPolicyDeletion(update, vault) {
 		if update.Signature == nil {
 			return EarnMutation{}, errors.New("closed policy update has no transaction signature")
@@ -686,7 +531,7 @@ func resolveMutation(ctx context.Context, rpc *solanarpc.Client, update Normaliz
 		if err != nil {
 			return EarnMutation{}, err
 		}
-		slot, err := transaction.slotAt(signature, update.Slot, "policy-close ")
+		slot, err := transaction.slotAt(signature, update.Slot)
 		if err != nil {
 			return EarnMutation{}, err
 		}
@@ -694,11 +539,7 @@ func resolveMutation(ctx context.Context, rpc *solanarpc.Client, update Normaliz
 		if err != nil {
 			return EarnMutation{}, err
 		}
-		credit, err := transaction.ownerLamportCredit(vault.Wallet)
-		if err != nil {
-			return EarnMutation{}, err
-		}
-		if credit > 0 {
+		if transaction.ownerLamportCredit(vault.Wallet) > 0 {
 			return EarnMutation{Refund: &EarnRefundMutation{Cluster: vault.Environment, FullCleanup: proof.balancesZero && proof.policiesClosed,
 				Settings: vault.Settings, VaultIndex: vault.VaultIndex, VaultPubkey: vault.Vault, Wallet: vault.Wallet,
 				RefundSignature: signature, ConfirmedSlot: slot, RefundKind: "policy"}}, nil
@@ -717,16 +558,13 @@ func resolveMutation(ctx context.Context, rpc *solanarpc.Client, update Normaliz
 	if err != nil {
 		return EarnMutation{}, err
 	}
-	slot, err := transaction.slotAt(signature, update.Slot, "")
+	slot, err := transaction.slotAt(signature, update.Slot)
 	if err != nil {
 		return EarnMutation{}, err
 	}
 	var flow *cashFlow
 	if update.EventKind == "refund_cleanup_repair" {
-		credit, err := transaction.ownerLamportCredit(vault.Wallet)
-		if err != nil {
-			return EarnMutation{}, err
-		}
+		credit := transaction.ownerLamportCredit(vault.Wallet)
 		if credit == 0 || !transaction.hasEarnAnchor(vault) {
 			return EarnMutation{}, errors.New("refund cleanup repair has no anchored wallet refund proof")
 		}
@@ -783,7 +621,7 @@ func metadata(kind string, slot uint64) json.RawMessage {
 }
 
 // readVaultSnapshot is read_complete_vault_snapshot.
-func readVaultSnapshot(ctx context.Context, rpc *solanarpc.Client, vault watch.Vault, policy PolicyMatchInput, minimum uint64) (vaultSnapshot, error) {
+func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault, policy PolicyMatchInput, minimum uint64) (vaultSnapshot, error) {
 	vaultKey, err := solana.PublicKeyFromBase58(vault.Vault)
 	if err != nil {
 		return vaultSnapshot{}, err
@@ -792,13 +630,15 @@ func readVaultSnapshot(ctx context.Context, rpc *solanarpc.Client, vault watch.V
 	if err != nil {
 		return vaultSnapshot{}, err
 	}
-	discovery, err := readAccounts(ctx, rpc, addressStrings(obligations), minimum, "Earn discovery")
-	if err != nil && len(obligations) > 0 {
-		return vaultSnapshot{}, err
+	discoverySlot, discovered := minimum, []*chain.Account(nil)
+	if len(obligations) > 0 {
+		if discoverySlot, discovered, err = rpc.Accounts(ctx, obligations, confirmedCommitment, minimum); err != nil {
+			return vaultSnapshot{}, err
+		}
 	}
 	reserveSet := map[solana.PublicKey]struct{}{}
-	for _, account := range discovery.Accounts {
-		if account == nil || account.Owner != klendProgram.String() {
+	for _, account := range discovered {
+		if account == nil || account.Owner != klendProgram {
 			continue
 		}
 		obligation, err := decodeObligation(account.Data)
@@ -824,20 +664,21 @@ func readVaultSnapshot(ctx context.Context, rpc *solanarpc.Client, vault watch.V
 		return vaultSnapshot{}, err
 	}
 	addresses := append(append(append([]solana.PublicKey(nil), obligations...), reserves...), idle...)
-	response, err := rpc.MultipleAccounts(ctx, addressStrings(addresses), confirmedCommitment, ptr(max(discovery.Slot, minimum)))
+	if len(addresses) == 0 {
+		// Nothing bound: no reserve or idle balance to snapshot.
+		return vaultSnapshot{observedSlot: minimum}, nil
+	}
+	slot, accounts, err := rpc.Accounts(ctx, addresses, confirmedCommitment, max(discoverySlot, minimum))
 	if err != nil {
 		return vaultSnapshot{}, err
 	}
-	if response.Slot < minimum {
-		return vaultSnapshot{}, fmt.Errorf("Earn snapshot context slot %d is below minimum %d", response.Slot, minimum)
-	}
 	reserveAccounts := map[solana.PublicKey]reserveState{}
 	for index, address := range reserves {
-		account := response.Accounts[len(obligations)+index]
+		account := accounts[len(obligations)+index]
 		if account == nil {
 			continue
 		}
-		if account.Owner != klendProgram.String() {
+		if account.Owner != klendProgram {
 			return vaultSnapshot{}, fmt.Errorf("Earn reserve %s has unexpected owner %s", address, account.Owner)
 		}
 		state, err := decodeReserve(account.Data)
@@ -854,9 +695,9 @@ func readVaultSnapshot(ctx context.Context, rpc *solanarpc.Client, vault watch.V
 	if err != nil {
 		return vaultSnapshot{}, err
 	}
-	snapshot := vaultSnapshot{observedSlot: response.Slot}
-	for _, account := range response.Accounts[:len(obligations)] {
-		if account == nil || account.Owner != klendProgram.String() {
+	snapshot := vaultSnapshot{observedSlot: slot}
+	for _, account := range accounts[:len(obligations)] {
+		if account == nil || account.Owner != klendProgram {
 			continue
 		}
 		obligation, err := decodeObligation(account.Data)
@@ -881,7 +722,7 @@ func readVaultSnapshot(ctx context.Context, rpc *solanarpc.Client, vault watch.V
 			market := obligation.market.String()
 			snapshot.reserves = append(snapshot.reserves, EarnReserveMutation{Reserve: deposit.reserve.String(), Market: &market,
 				LiquidityMint: reserve.mint.String(), AmountRaw: amount, HasValue: amount > 0,
-				PlanningMetadata: metadata("earn_laserstream_complete_snapshot", response.Slot)})
+				PlanningMetadata: metadata("earn_laserstream_complete_snapshot", slot)})
 		}
 	}
 	sort.SliceStable(snapshot.reserves, func(i, j int) bool { return snapshot.reserves[i].Reserve < snapshot.reserves[j].Reserve })
@@ -894,7 +735,7 @@ func readVaultSnapshot(ctx context.Context, rpc *solanarpc.Client, vault watch.V
 	}
 	snapshot.reserves = deduped
 	for index, address := range idle {
-		account := response.Accounts[len(obligations)+len(reserves)+index]
+		account := accounts[len(obligations)+len(reserves)+index]
 		if account == nil {
 			continue
 		}
@@ -906,17 +747,15 @@ func readVaultSnapshot(ctx context.Context, rpc *solanarpc.Client, vault watch.V
 			return vaultSnapshot{}, fmt.Errorf("Earn idle account %s belongs to %s, expected %s", address, owner, vaultKey)
 		}
 		snapshot.idles = append(snapshot.idles, EarnIdleTokenMutation{Mint: mint.String(), AmountRaw: amount, Owner: owner.String(),
-			TokenAccount: address.String(), ObservedSlot: response.Slot, SourceCommitment: confirmedCommitment})
+			TokenAccount: address.String(), ObservedSlot: slot, SourceCommitment: confirmedCommitment})
 	}
 	return snapshot, nil
 }
 
-func ptr[T any](value T) *T { return &value }
-
 // drainedObligationTarget is read_drained_obligation_withdraw_target: a
 // full withdrawal that closed or emptied the obligation still proves its
 // reserve from the transaction's own Kamino withdraw accounts.
-func drainedObligationTarget(ctx context.Context, rpc *solanarpc.Client, update NormalizedUpdate, vault watch.Vault, policy PolicyMatchInput, transaction jsonTransaction, mint string) (*EarnReserveMutation, error) {
+func drainedObligationTarget(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, policy PolicyMatchInput, transaction earnTransaction, mint string) (*EarnReserveMutation, error) {
 	vaultKey, err := solana.PublicKeyFromBase58(vault.Vault)
 	if err != nil {
 		return nil, err
@@ -930,47 +769,13 @@ func drainedObligationTarget(ctx context.Context, rpc *solanarpc.Client, update 
 	}
 	type candidate struct{ obligation, reserve, market, mint solana.PublicKey }
 	candidates := map[candidate]struct{}{}
-	for _, instruction := range transaction.kaminoWithdrawInstructions() {
-		accounts, ok := instruction["accounts"].([]any)
-		if !ok {
-			return nil, errors.New("Kamino withdrawal instruction has no accounts")
-		}
+	for _, accounts := range transaction.kaminoWithdrawAccounts() {
 		if len(accounts) < 6 {
 			return nil, errors.New("Kamino withdrawal instruction has too few accounts")
 		}
-		account := func(index int, label string) (solana.PublicKey, error) {
-			value, ok := accounts[index].(string)
-			if !ok {
-				return solana.PublicKey{}, fmt.Errorf("Kamino withdrawal %s is not a public key", label)
-			}
-			key, err := solana.PublicKeyFromBase58(value)
-			if err != nil {
-				return solana.PublicKey{}, fmt.Errorf("invalid Kamino withdrawal %s", label)
-			}
-			return key, nil
-		}
-		obligation, err := account(1, "obligation")
-		if err != nil {
-			return nil, err
-		}
-		instructionMint, err := account(5, "liquidity mint")
-		if err != nil {
-			return nil, err
-		}
-		owner, err := account(0, "owner")
-		if err != nil {
-			return nil, err
-		}
+		owner, obligation, market, reserve, instructionMint := accounts[0], accounts[1], accounts[2], accounts[4], accounts[5]
 		if owner != vaultKey || !containsKey(watched, obligation) || instructionMint.String() != mint {
 			continue
-		}
-		reserve, err := account(4, "reserve")
-		if err != nil {
-			return nil, err
-		}
-		market, err := account(2, "market")
-		if err != nil {
-			return nil, err
 		}
 		candidates[candidate{obligation, reserve, market, instructionMint}] = struct{}{}
 	}
@@ -994,17 +799,14 @@ func drainedObligationTarget(ctx context.Context, rpc *solanarpc.Client, update 
 	if !marketAllowed || !mintAllowed {
 		return nil, errors.New("closed Earn obligation withdrawal target is outside the route policy")
 	}
-	response, err := rpc.MultipleAccounts(ctx, []string{target.obligation.String(), target.reserve.String()}, confirmedCommitment, &update.Slot)
+	slot, accounts, err := rpc.Accounts(ctx, []solana.PublicKey{target.obligation, target.reserve}, confirmedCommitment, update.Slot)
 	if err != nil {
 		return nil, err
 	}
-	if response.Slot < update.Slot {
-		return nil, fmt.Errorf("full-withdraw reserve context slot %d is below minimum %d", response.Slot, update.Slot)
-	}
 	// The PDA may have been funded again since; a transaction that closed it
 	// already proves the drain.
-	if account := response.Accounts[0]; account != nil && !transaction.closedAccount(target.obligation.String()) {
-		if account.Owner != klendProgram.String() {
+	if account := accounts[0]; account != nil && !transaction.closedAccount(target.obligation.String()) {
+		if account.Owner != klendProgram {
 			return nil, fmt.Errorf("full-withdraw obligation %s has unexpected owner %s", target.obligation, account.Owner)
 		}
 		obligation, err := decodeObligation(account.Data)
@@ -1015,11 +817,11 @@ func drainedObligationTarget(ctx context.Context, rpc *solanarpc.Client, update 
 			return nil, fmt.Errorf("full-withdraw obligation %s still has an open position", target.obligation)
 		}
 	}
-	account := response.Accounts[1]
+	account := accounts[1]
 	if account == nil {
 		return nil, errors.New("full-withdraw reserve account is unavailable")
 	}
-	if account.Owner != klendProgram.String() {
+	if account.Owner != klendProgram {
 		return nil, fmt.Errorf("full-withdraw reserve %s has unexpected owner %s", target.reserve, account.Owner)
 	}
 	reserve, err := decodeReserve(account.Data)
@@ -1031,11 +833,11 @@ func drainedObligationTarget(ctx context.Context, rpc *solanarpc.Client, update 
 	}
 	market := target.market.String()
 	return &EarnReserveMutation{Reserve: target.reserve.String(), Market: &market, LiquidityMint: target.mint.String(),
-		PlanningMetadata: metadata("earn_laserstream_drained_obligation_withdrawal", response.Slot)}, nil
+		PlanningMetadata: metadata("earn_laserstream_drained_obligation_withdrawal", slot)}, nil
 }
 
 // readCashFlowProof is read_cash_flow_proof.
-func readCashFlowProof(ctx context.Context, rpc *solanarpc.Client, update NormalizedUpdate, vault watch.Vault, route PolicyMatchInput, setup *PolicyMatchInput, transaction jsonTransaction, flow cashFlow) (EarnMutation, error) {
+func readCashFlowProof(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, route PolicyMatchInput, setup *PolicyMatchInput, transaction earnTransaction, flow cashFlow) (EarnMutation, error) {
 	signature := *update.Signature
 	snapshot, err := readVaultSnapshot(ctx, rpc, vault, route, update.Slot)
 	if err != nil {
@@ -1056,7 +858,7 @@ func readCashFlowProof(ctx context.Context, rpc *solanarpc.Client, update Normal
 		}
 	}
 	if target == nil {
-		if flow.kind == cashWithdrawal && len(transaction.kaminoWithdrawInstructions()) > 0 {
+		if flow.kind == cashWithdrawal && len(transaction.kaminoWithdrawAccounts()) > 0 {
 			return EarnMutation{}, fmt.Errorf("withdrawal cash flow %s has no provable Kamino target", signature)
 		}
 		// A wallet credit without a Kamino withdraw is an idle-vault sweep

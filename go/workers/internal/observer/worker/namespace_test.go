@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 )
+
+const devnetGenesis = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
 
 func TestObserverRefusesForeignRPCBeforeOpeningWriters(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":"foreign-genesis"}`)
+		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":%q}`, devnetGenesis)
 	}))
 	defer server.Close()
 	_, err := New(context.Background(), config.Config{Cluster: "mainnet-beta", SolanaRPCURL: server.URL, NeonDatabaseURL: "unusable-yield"}, nil, nil)
@@ -31,11 +32,11 @@ func TestWatchRefreshRechecksActualNamespace(t *testing.T) {
 		fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":%q}`, genesis.Load())
 	}))
 	defer server.Close()
-	runtime := &Runtime{cfg: config.Config{Cluster: "mainnet-beta"}, rpc: solanarpc.New(server.URL, time.Second)}
+	runtime := &Runtime{cfg: config.Config{Cluster: "mainnet-beta"}, rpc: chainClient(t, server.URL, time.Second)}
 	if err := validateWatchNamespace(context.Background(), runtime.cfg.Cluster, runtime.rpc); err != nil {
 		t.Fatal(err)
 	}
-	genesis.Store("foreign-genesis")
+	genesis.Store(devnetGenesis)
 	// No loader/store is installed: reaching either would panic. Namespace
 	// failure must retain the old watch without reading or mutating projections.
 	if set, targets, err := runtime.load(context.Background()); err == nil || set != nil || targets != nil {

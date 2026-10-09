@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	solanago "github.com/solana-foundation/solana-go/v2"
 )
 
 // Production shape from the rehearsal: fresh durable cursors, while 1,985 of
@@ -86,13 +87,12 @@ func TestHandoffBindingAnchorIsClampedIntoProviderWindow(t *testing.T) {
 // the same so the job key deduplicates it. A changed state is a new event.
 func TestBindingRecoveryEventIsIdentifiedByStateNotReadSlot(t *testing.T) {
 	address := "11111111111111111111111111111111"
-	state := &solanarpc.Account{Lamports: 2_039_280, Owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", Data: []byte{1, 2, 3}}
-	first, kind := bindingRecoveryEvent(address, state)
-	again, _ := bindingRecoveryEvent(address, &solanarpc.Account{Lamports: 2_039_280, Owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", Data: []byte{1, 2, 3}, RentEpoch: 99})
+	first, kind := bindingRecoveryEvent(address, &chain.Account{Lamports: 2_039_280, Owner: solanago.TokenProgramID, Data: []byte{1, 2, 3}})
+	again, _ := bindingRecoveryEvent(address, &chain.Account{Lamports: 2_039_280, Owner: solanago.TokenProgramID, Data: []byte{1, 2, 3}})
 	if kind != "account" || first != again {
 		t.Fatalf("same confirmed state produced %q then %q", first, again)
 	}
-	changed, _ := bindingRecoveryEvent(address, &solanarpc.Account{Lamports: 2_039_280, Owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", Data: []byte{1, 2, 4}})
+	changed, _ := bindingRecoveryEvent(address, &chain.Account{Lamports: 2_039_280, Owner: solanago.TokenProgramID, Data: []byte{1, 2, 4}})
 	if changed == first {
 		t.Fatal("changed account data reused the recovered event")
 	}

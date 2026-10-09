@@ -2,7 +2,6 @@ package earn
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -11,9 +10,9 @@ import (
 	"unicode/utf8"
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
-	"github.com/mr-tron/base58"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -181,111 +180,47 @@ func memoFrom(source uint16, accounts []sp.AccountMeta, data []byte) Memo {
 	return Memo{SourceIndex: source, Accounts: keys, Data: data}
 }
 
-type rpcCompiled struct {
-	ProgramIDIndex int    `json:"programIdIndex"`
-	Accounts       []int  `json:"accounts"`
-	Data           string `json:"data"`
-}
-
-type rpcPolicyTransaction struct {
-	Slot        uint64 `json:"slot"`
-	Transaction struct {
-		Message *struct {
-			Header struct {
-				NumRequiredSignatures       int `json:"numRequiredSignatures"`
-				NumReadonlySignedAccounts   int `json:"numReadonlySignedAccounts"`
-				NumReadonlyUnsignedAccounts int `json:"numReadonlyUnsignedAccounts"`
-			} `json:"header"`
-			AccountKeys  []string      `json:"accountKeys"`
-			Instructions []rpcCompiled `json:"instructions"`
-		} `json:"message"`
-	} `json:"transaction"`
-	Meta *struct {
-		Err             json.RawMessage `json:"err"`
-		LoadedAddresses *struct {
-			Writable []string `json:"writable"`
-			Readonly []string `json:"readonly"`
-		} `json:"loadedAddresses"`
-		InnerInstructions []struct {
-			Index        uint32        `json:"index"`
-			Instructions []rpcCompiled `json:"instructions"`
-		} `json:"innerInstructions"`
-	} `json:"meta"`
-}
-
-func byteIndexes(values []int) []byte {
+func byteIndexes(values []uint16) []byte {
 	out := make([]byte, 0, len(values))
 	for _, value := range values {
-		if value >= 0 && value <= 0xff {
+		if value <= 0xff {
 			out = append(out, byte(value))
 		}
 	}
 	return out
 }
 
-// decodeRPCPolicyTransaction decodes a raw "json" encoded confirmed
-// transaction. Only inner Earn MAX memos are collected on this path.
-func decodeRPCPolicyTransaction(raw json.RawMessage, signature string, expectedSlot uint64) (*PolicyTransaction, error) {
-	var transaction rpcPolicyTransaction
-	if err := json.Unmarshal(raw, &transaction); err != nil {
-		return nil, err
+// decodeRPCPolicyTransaction decodes a confirmed transaction read from RPC.
+// Only inner Earn MAX memos are collected on this path.
+func decodeRPCPolicyTransaction(read chain.Execution, signature string, expectedSlot uint64) (*PolicyTransaction, error) {
+	if read.Slot != expectedSlot {
+		return nil, fmt.Errorf("transaction %s landed at slot %d, expected %d", signature, read.Slot, expectedSlot)
 	}
-	if transaction.Slot != expectedSlot {
-		return nil, fmt.Errorf("transaction %s landed at slot %d, expected %d", signature, transaction.Slot, expectedSlot)
-	}
-	meta := transaction.Meta
-	if meta == nil {
-		return nil, errors.New("policy transaction has no status metadata")
-	}
-	if len(meta.Err) > 0 && string(meta.Err) != "null" {
+	if read.Err != nil {
 		return nil, nil
 	}
-	message := transaction.Transaction.Message
-	if message == nil {
-		return nil, errors.New("policy transaction message was not returned raw")
-	}
-	table := accountTable{staticLen: len(message.AccountKeys), requiredSigners: message.Header.NumRequiredSignatures,
-		readonlySigners: message.Header.NumReadonlySignedAccounts, readonlyUnsigned: message.Header.NumReadonlyUnsignedAccounts}
-	keys := message.AccountKeys
-	if meta.LoadedAddresses != nil {
-		table.loadedWritable = len(meta.LoadedAddresses.Writable)
-		keys = append(append(append([]string(nil), keys...), meta.LoadedAddresses.Writable...), meta.LoadedAddresses.Readonly...)
-	}
-	for _, value := range keys {
-		key, err := solana.PublicKeyFromBase58(value)
-		if err != nil {
-			return nil, fmt.Errorf("policy transaction account key: %w", err)
-		}
-		table.keys = append(table.keys, key)
-	}
+	message := read.Transaction.Message
+	table := accountTable{keys: read.Keys, staticLen: len(message.AccountKeys), loadedWritable: len(read.LoadedWritable),
+		requiredSigners: int(message.Header.NumRequiredSignatures), readonlySigners: int(message.Header.NumReadonlySignedAccounts),
+		readonlyUnsigned: int(message.Header.NumReadonlyUnsignedAccounts)}
 	out := &PolicyTransaction{Signature: signature, Slot: expectedSlot, Signers: table.signers()}
 	for _, compiled := range message.Instructions {
-		if compiled.ProgramIDIndex < 0 || compiled.ProgramIDIndex >= len(table.keys) {
+		if int(compiled.ProgramIDIndex) >= len(table.keys) {
 			continue
 		}
-		program := table.keys[compiled.ProgramIDIndex]
-		if !isPolicyProgram(program) {
-			continue
+		if program := table.keys[compiled.ProgramIDIndex]; isPolicyProgram(program) {
+			out.Instructions = append(out.Instructions, sp.Instruction{ProgramID: program, Accounts: table.metas(byteIndexes(compiled.Accounts)), Data: compiled.Data})
 		}
-		data, err := base58.Decode(compiled.Data)
-		if err != nil {
-			return nil, err
-		}
-		out.Instructions = append(out.Instructions, sp.Instruction{ProgramID: program, Accounts: table.metas(byteIndexes(compiled.Accounts)), Data: data})
 	}
-	for _, group := range meta.InnerInstructions {
+	for _, group := range read.Inner {
 		for inner, compiled := range group.Instructions {
-			if compiled.ProgramIDIndex < 0 || compiled.ProgramIDIndex >= len(table.keys) {
+			if int(compiled.ProgramIDIndex) >= len(table.keys) {
 				continue
 			}
 			program := table.keys[compiled.ProgramIDIndex]
 			accounts := table.metas(byteIndexes(compiled.Accounts))
-			data, err := base58.Decode(compiled.Data)
-			if err != nil {
-				return nil, err
-			}
 			if isPolicyProgram(program) {
-				out.Instructions = append(out.Instructions, sp.Instruction{ProgramID: program, Accounts: accounts, Data: data})
+				out.Instructions = append(out.Instructions, sp.Instruction{ProgramID: program, Accounts: accounts, Data: compiled.Data})
 			}
 			if program != memoProgram {
 				continue
@@ -293,11 +228,11 @@ func decodeRPCPolicyTransaction(raw json.RawMessage, signature string, expectedS
 			if group.Index > 0xff {
 				return nil, errors.New("Earn MAX memo instruction index overflow")
 			}
-			source, err := innerMemoIndex(group.Index, inner)
+			source, err := innerMemoIndex(uint32(group.Index), inner)
 			if err != nil {
 				return nil, err
 			}
-			out.Memos = append(out.Memos, memoFrom(source, accounts, data))
+			out.Memos = append(out.Memos, memoFrom(source, accounts, compiled.Data))
 		}
 	}
 	return out, nil

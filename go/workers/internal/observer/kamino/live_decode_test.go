@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 func TestLiveConfirmedKaminoAccountsDecode(t *testing.T) {
@@ -36,28 +38,28 @@ func TestLiveConfirmedKaminoAccountsDecode(t *testing.T) {
 			t.Fatalf("enrich live Kamino catalog: %v", err)
 		}
 	}
-	rpc := solanarpc.New(rpcURL, time.Minute)
-	for start := 0; start < len(targets); start += 100 {
-		end := min(start+100, len(targets))
-		addresses := make([]string, end-start)
-		for index := start; index < end; index++ {
-			addresses[index-start] = targets[index].Reserve
+	client, err := chain.New(rpcURL, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses := make([]solana.PublicKey, len(targets))
+	for index, target := range targets {
+		addresses[index] = solana.MustPublicKeyFromBase58(target.Reserve)
+	}
+	slot, accounts, err := client.Accounts(ctx, addresses, rpc.CommitmentConfirmed, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, account := range accounts {
+		target := targets[index]
+		if account == nil {
+			t.Fatalf("reserve %s was missing", target.Reserve)
 		}
-		response, err := rpc.MultipleAccounts(ctx, addresses, "confirmed", nil)
-		if err != nil {
-			t.Fatal(err)
+		if account.Owner.String() != klendProgram {
+			t.Fatalf("reserve %s owner = %s", target.Reserve, account.Owner)
 		}
-		for index, account := range response.Accounts {
-			target := targets[start+index]
-			if account == nil {
-				t.Fatalf("reserve %s was missing", target.Reserve)
-			}
-			if account.Owner != klendProgram {
-				t.Fatalf("reserve %s owner = %s", target.Reserve, account.Owner)
-			}
-			if _, err := Decode(target, response.Slot, time.Now().UTC(), account.Data, 400); err != nil {
-				t.Fatalf("decode reserve %s: %v", target.Reserve, err)
-			}
+		if _, err := Decode(target, slot, time.Now().UTC(), account.Data, 400); err != nil {
+			t.Fatalf("decode reserve %s: %v", target.Reserve, err)
 		}
 	}
 }

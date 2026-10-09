@@ -11,8 +11,10 @@ import (
 	"time"
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/mr-tron/base58"
+	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 const klendProgram = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
@@ -23,7 +25,7 @@ type snapshotRank struct {
 }
 type Handler struct {
 	store          *Store
-	rpc            *solanarpc.Client
+	rpc            *chain.Client
 	logger         *slog.Logger
 	slotDurationMS float64
 	storeRaw       bool
@@ -38,7 +40,7 @@ type HandleOutcome struct {
 	Inserted, Malformed bool
 }
 
-func NewHandler(store *Store, rpc *solanarpc.Client, logger *slog.Logger, slotDurationMS float64, storeRaw bool) *Handler {
+func NewHandler(store *Store, rpc *chain.Client, logger *slog.Logger, slotDurationMS float64, storeRaw bool) *Handler {
 	return &Handler{store: store, rpc: rpc, logger: logger, slotDurationMS: slotDurationMS, storeRaw: storeRaw, targets: make(map[string]Target), snapshots: make(map[string]snapshotRank), schedule: newVerificationSchedule()}
 }
 func (h *Handler) SetSlotDuration(value float64) {
@@ -182,7 +184,7 @@ func (h *Handler) VerifyDirty(ctx context.Context) (bool, error) {
 
 type confirmedState struct {
 	target     Target
-	account    *solanarpc.Account
+	account    *chain.Account
 	slot       uint64
 	observedAt time.Time
 }
@@ -201,21 +203,26 @@ func (h *Handler) verify(ctx context.Context, source string, targets []Target, b
 	states := make([]confirmedState, 0, len(targets))
 	for start := 0; start < len(targets); start += 100 {
 		end := min(start+100, len(targets))
-		addresses := make([]string, end-start)
-		for index := start; index < end; index++ {
-			addresses[index-start] = targets[index].Reserve
+		var err error
+		addresses := make([]solana.PublicKey, end-start)
+		for index := start; index < end && err == nil; index++ {
+			addresses[index-start], err = solana.PublicKeyFromBase58(targets[index].Reserve)
 		}
-		response, err := h.rpc.MultipleAccounts(ctx, addresses, "confirmed", nil)
+		var slot uint64
+		var accounts []*chain.Account
+		if err == nil {
+			slot, accounts, err = h.rpc.Accounts(ctx, addresses, rpc.CommitmentConfirmed, 0)
+		}
 		if err != nil {
 			if batch != nil {
 				h.schedule.completeFailure(*batch)
 			}
 			return 0, fmt.Errorf("verify Kamino accounts: %w", err)
 		}
-		minimum = min(minimum, response.Slot)
+		minimum = min(minimum, slot)
 		observedAt := time.Now().UTC()
-		for index, account := range response.Accounts {
-			states = append(states, confirmedState{target: targets[start+index], account: account, slot: response.Slot, observedAt: observedAt})
+		for index, account := range accounts {
+			states = append(states, confirmedState{target: targets[start+index], account: account, slot: slot, observedAt: observedAt})
 		}
 	}
 	var accepted map[string]struct{}
@@ -256,7 +263,7 @@ func (h *Handler) persistConfirmed(ctx context.Context, source string, states []
 		if account != nil {
 			verification.AccountHash = accountHash(account.Data)
 		}
-		if account != nil && account.Owner == klendProgram {
+		if account != nil && account.Owner.String() == klendProgram {
 			snapshot, decodeErr := Decode(target, state.slot, state.observedAt, account.Data, slotDurationMS)
 			if decodeErr == nil {
 				verification.StateValid = true

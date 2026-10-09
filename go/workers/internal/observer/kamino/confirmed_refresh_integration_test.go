@@ -17,7 +17,7 @@ import (
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -118,7 +118,11 @@ func TestStreamUpdateIsConfirmedOnNextBatchAndQuietReserveStaysVerified(t *testi
 	rpcState := &confirmedAccountRPC{}
 	server := httptest.NewServer(rpcState)
 	defer server.Close()
-	handler := NewHandler(NewStore(pool, "kamino"), solanarpc.New(server.URL, 5*time.Second), slog.New(slog.NewTextHandler(io.Discard, nil)), 400, false)
+	client, err := chain.New(server.URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(NewStore(pool, "kamino"), client, slog.New(slog.NewTextHandler(io.Discard, nil)), 400, false)
 	handler.SetTargets([]Target{{Reserve: reserve, Market: &marketString, LiquidityMint: &mintString}})
 
 	const seedSlot = 1_000

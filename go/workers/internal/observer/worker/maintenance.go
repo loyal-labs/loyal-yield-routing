@@ -40,15 +40,11 @@ func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, er
 	if err != nil {
 		return nil, err
 	}
-	if hash != "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d" {
+	if hash != mainnetGenesis {
 		return nil, errors.New("product read model RPC is not Solana mainnet")
 	}
-	rpc, err := observer.NewMaintenancePriceRPC(r.cfg.SolanaRPCURL, 30*time.Second)
-	if err != nil {
-		return nil, err
-	}
 	onError := func() { r.facts.Failed(engine.FamilyObserver, "read_models") }
-	maintenance, err := observer.NewMaintenance(r.neon, r.timescale, observer.MaintenanceConfig{Cluster: r.cfg.Cluster, MediumMarkets: mediumMainnetMarkets, PriceRPC: rpc, Logger: r.logger, ValidateNamespace: r.validateMaintenanceNamespace, OnError: onError})
+	maintenance, err := observer.NewMaintenance(r.neon, r.timescale, observer.MaintenanceConfig{Cluster: r.cfg.Cluster, MediumMarkets: mediumMainnetMarkets, PriceRPC: r.rpc, Logger: r.logger, ValidateNamespace: r.validateMaintenanceNamespace, OnError: onError})
 	return maintenance, err
 }
 

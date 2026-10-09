@@ -15,11 +15,12 @@ import (
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	workersdb "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	"github.com/mr-tron/base58"
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 const (
@@ -34,10 +35,10 @@ type Handler struct {
 	schema  string
 	mu      sync.RWMutex
 	targets map[string]watch.ATATarget
-	rpc     *solanarpc.Client
+	rpc     *chain.Client
 }
 
-func NewHandler(pool *pgxpool.Pool, rpc *solanarpc.Client) *Handler {
+func NewHandler(pool *pgxpool.Pool, rpc *chain.Client) *Handler {
 	return &Handler{pool: pool, schema: "loyal_prod", targets: make(map[string]watch.ATATarget), rpc: rpc}
 }
 
@@ -110,36 +111,36 @@ func (h *Handler) Seed(ctx context.Context) (uint64, error) {
 		if end > len(targets) {
 			end = len(targets)
 		}
-		addresses := make([]string, end-start)
+		addresses := make([]solana.PublicKey, end-start)
 		for index := start; index < end; index++ {
-			addresses[index-start] = targets[index].WalletATA
+			key, err := solana.PublicKeyFromBase58(targets[index].WalletATA)
+			if err != nil {
+				return 0, fmt.Errorf("seed ATA accounts: %w", err)
+			}
+			addresses[index-start] = key
 		}
-		response, err := h.rpc.MultipleAccounts(ctx, addresses, commitment, nil)
+		slot, accounts, err := h.rpc.Accounts(ctx, addresses, rpc.CommitmentConfirmed, 0)
 		if err != nil {
 			return 0, fmt.Errorf("seed ATA accounts: %w", err)
 		}
-		if minimum == 0 || response.Slot < minimum {
-			minimum = response.Slot
+		if minimum == 0 || slot < minimum {
+			minimum = slot
 		}
-		for index, account := range response.Accounts {
+		for index, account := range accounts {
 			target := targets[start+index]
 			if account == nil {
 				empty := sha256.Sum256([]byte("missing:" + target.WalletATA))
-				observed := observation{target: target, pubkey: target.WalletATA, amount: 0, mint: target.Mint, slot: response.Slot, source: rpcSeedSource, data: empty[:], received: time.Now().UTC()}
+				observed := observation{target: target, pubkey: target.WalletATA, amount: 0, mint: target.Mint, slot: slot, source: rpcSeedSource, data: empty[:], received: time.Now().UTC()}
 				if _, err := h.persist(ctx, observed); err != nil {
 					return 0, err
 				}
 				continue
 			}
-			owner, err := solana.PublicKeyFromBase58(account.Owner)
-			if err != nil {
-				return 0, err
-			}
-			observed, err := decodeObservation(target, target.WalletATA, account.Lamports, owner[:], account.Data, response.Slot, rpcSeedSource, nil, time.Now().UTC())
+			observed, err := decodeObservation(target, target.WalletATA, account.Lamports, account.Owner[:], account.Data, slot, rpcSeedSource, nil, time.Now().UTC())
 			if err != nil {
 				// Existing-but-invalid token accounts have no routeable USDC; settle
 				// the prior balance to zero with the exact RPC evidence.
-				observed = observation{target: target, pubkey: target.WalletATA, lamports: account.Lamports, amount: 0, mint: target.Mint, slot: response.Slot, source: rpcSeedSource, data: account.Data, received: time.Now().UTC()}
+				observed = observation{target: target, pubkey: target.WalletATA, lamports: account.Lamports, amount: 0, mint: target.Mint, slot: slot, source: rpcSeedSource, data: account.Data, received: time.Now().UTC()}
 			}
 			if _, err := h.persist(ctx, observed); err != nil {
 				return 0, err
@@ -185,27 +186,25 @@ func decodeObservation(target watch.ATATarget, pubkey string, lamports uint64, o
 }
 
 func (h *Handler) recheck(ctx context.Context, target watch.ATATarget, minimumSlot uint64, streamError error) (Outcome, error) {
-	response, err := h.rpc.MultipleAccounts(ctx, []string{target.WalletATA}, commitment, &minimumSlot)
-	if err != nil {
-		return Outcome{}, fmt.Errorf("ATA stream evidence was invalid (%v) and confirmed recheck failed: %w", streamError, err)
-	}
-	if response.Slot < minimumSlot {
-		return Outcome{}, fmt.Errorf("ATA recheck context slot %d is below stream slot %d", response.Slot, minimumSlot)
-	}
-	account := response.Accounts[0]
-	if account == nil {
-		evidence := sha256.Sum256([]byte("missing:" + target.WalletATA))
-		return h.persist(ctx, observation{target: target, pubkey: target.WalletATA, amount: 0, mint: target.Mint, slot: response.Slot, source: "rpc_recheck", data: evidence[:], received: time.Now().UTC()})
-	}
-	owner, err := solana.PublicKeyFromBase58(account.Owner)
+	address, err := solana.PublicKeyFromBase58(target.WalletATA)
 	if err != nil {
 		return Outcome{}, err
 	}
-	observed, err := decodeObservation(target, target.WalletATA, account.Lamports, owner[:], account.Data, response.Slot, "rpc_recheck", nil, time.Now().UTC())
+	// minContextSlot makes the node refuse a view older than the stream slot.
+	slot, accounts, err := h.rpc.Accounts(ctx, []solana.PublicKey{address}, rpc.CommitmentConfirmed, minimumSlot)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("ATA stream evidence was invalid (%v) and confirmed recheck failed: %w", streamError, err)
+	}
+	account := accounts[0]
+	if account == nil {
+		evidence := sha256.Sum256([]byte("missing:" + target.WalletATA))
+		return h.persist(ctx, observation{target: target, pubkey: target.WalletATA, amount: 0, mint: target.Mint, slot: slot, source: "rpc_recheck", data: evidence[:], received: time.Now().UTC()})
+	}
+	observed, err := decodeObservation(target, target.WalletATA, account.Lamports, account.Owner[:], account.Data, slot, "rpc_recheck", nil, time.Now().UTC())
 	if err != nil {
 		// A confirmed wrong-owner or wrong-mint account proves there is no
 		// routeable USDC at this address, so settle the target to zero.
-		observed = observation{target: target, pubkey: target.WalletATA, lamports: account.Lamports, amount: 0, mint: target.Mint, slot: response.Slot, source: "rpc_recheck", data: account.Data, received: time.Now().UTC()}
+		observed = observation{target: target, pubkey: target.WalletATA, lamports: account.Lamports, amount: 0, mint: target.Mint, slot: slot, source: "rpc_recheck", data: account.Data, received: time.Now().UTC()}
 	}
 	return h.persist(ctx, observed)
 }

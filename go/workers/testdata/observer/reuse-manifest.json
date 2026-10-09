@@ -82,11 +82,6 @@
       "target": "go/workers/internal/observer/kamino/verification.go"
     },
     {
-      "source": "go/laserstream-worker/internal/solanarpc/client.go",
-      "source_sha256": "ef73da5f5a811606089eccd97263b99e38c59ef4d4d6195f0af03a60ae61b64c",
-      "target": "go/workers/internal/observer/solanarpc/client.go"
-    },
-    {
       "source": "go/laserstream-worker/internal/stream/connector.go",
       "source_sha256": "f52ed03f525e9bb336ca422681cc54f77b7a0b12eb7881e3c7df9108e67f6536",
       "target": "go/workers/internal/observer/stream/connector.go"

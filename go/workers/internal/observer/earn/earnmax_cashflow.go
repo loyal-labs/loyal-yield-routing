@@ -3,17 +3,15 @@ package earn
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -33,56 +31,13 @@ type custodyTransfer struct {
 	destinationPre, destinationPost uint64
 }
 
-type rpcTokenBalance struct {
-	AccountIndex  int    `json:"accountIndex"`
-	Mint          string `json:"mint"`
-	UITokenAmount struct {
-		Amount   string `json:"amount"`
-		Decimals int    `json:"decimals"`
-	} `json:"uiTokenAmount"`
-}
-
-type rpcBase64Transaction struct {
-	Slot        uint64   `json:"slot"`
-	Transaction []string `json:"transaction"`
-	Meta        *struct {
-		Err               json.RawMessage    `json:"err"`
-		PreTokenBalances  *[]rpcTokenBalance `json:"preTokenBalances"`
-		PostTokenBalances *[]rpcTokenBalance `json:"postTokenBalances"`
-		LoadedAddresses   *struct {
-			Writable []string `json:"writable"`
-			Readonly []string `json:"readonly"`
-		} `json:"loadedAddresses"`
-	} `json:"meta"`
-}
-
-// tokenAmount is token_amount_optional: nil when the account has no row.
-func tokenAmount(balances *[]rpcTokenBalance, index int, mint string) (*uint64, error) {
-	if balances == nil {
-		return nil, errors.New("Earn MAX cash-flow transaction omitted token balances")
+// tokenAmount is token_amount_optional: nil when the account has no USDC row.
+func tokenAmount(balances map[solana.PublicKey]chain.TokenBalance, account solana.PublicKey) *uint64 {
+	row, ok := balances[account]
+	if !ok || row.Mint != usdcMint {
+		return nil
 	}
-	var found *rpcTokenBalance
-	for i := range *balances {
-		row := &(*balances)[i]
-		if row.AccountIndex != index || row.Mint != mint {
-			continue
-		}
-		if found != nil {
-			return nil, errors.New("Earn MAX cash-flow token balance is ambiguous")
-		}
-		found = row
-	}
-	if found == nil {
-		return nil, nil
-	}
-	if found.UITokenAmount.Decimals != 6 {
-		return nil, errors.New("Earn MAX cash-flow token balance is ambiguous")
-	}
-	amount, err := strconv.ParseUint(found.UITokenAmount.Amount, 10, 64)
-	if err != nil {
-		return nil, errors.New("Earn MAX cash-flow token amount is invalid")
-	}
-	return &amount, nil
+	return &row.Amount
 }
 
 func orZero(value *uint64) uint64 {
@@ -93,82 +48,45 @@ func orZero(value *uint64) uint64 {
 }
 
 // readCustodyTransfer is read_confirmed_earn_max_account_transfer.
-func readCustodyTransfer(ctx context.Context, rpc *solanarpc.Client, signature string, expectedSlot uint64, custody solana.PublicKey) (*custodyTransfer, error) {
-	if _, err := solana.SignatureFromBase58(signature); err != nil {
-		return nil, err
-	}
-	raw, found, err := rpc.Transaction(ctx, signature, "base64", confirmedCommitment)
+func readCustodyTransfer(ctx context.Context, rpc *chain.Client, signature string, expectedSlot uint64, custody solana.PublicKey) (*custodyTransfer, error) {
+	read, err := readExecution(ctx, rpc, signature)
 	if err != nil {
 		return nil, err
 	}
-	if !found {
-		return nil, errProofPending
-	}
-	var response rpcBase64Transaction
-	if err := json.Unmarshal(raw, &response); err != nil {
-		return nil, err
-	}
-	if response.Slot != expectedSlot {
+	if read.Slot != expectedSlot {
 		return nil, errors.New("Earn MAX account cash-flow RPC slot drifted from LaserStream")
 	}
-	if len(response.Transaction) < 1 {
-		return nil, errors.New("Earn MAX account cash-flow transaction bytes did not decode")
-	}
-	wire, err := base64.StdEncoding.DecodeString(response.Transaction[0])
-	if err != nil {
-		return nil, errors.New("Earn MAX account cash-flow transaction bytes did not decode")
-	}
-	transaction, err := solana.TransactionFromBytes(wire)
-	if err != nil {
-		return nil, errors.New("Earn MAX account cash-flow transaction bytes did not decode")
-	}
-	meta := response.Meta
-	if meta == nil {
-		return nil, errors.New("Earn MAX account cash-flow metadata was missing")
-	}
-	if len(meta.Err) > 0 && string(meta.Err) != "null" {
+	if read.Err != nil {
 		return nil, errors.New("Earn MAX account cash-flow transaction failed")
 	}
-	keys := append([]solana.PublicKey(nil), transaction.Message.AccountKeys...)
+	transaction, keys := read.Transaction, read.Keys
+	loaded := keys[len(transaction.Message.AccountKeys):]
 	tables := map[solana.PublicKey]solana.PublicKeySlice{}
-	if meta.LoadedAddresses != nil {
-		var loaded []solana.PublicKey
-		for _, value := range append(append([]string(nil), meta.LoadedAddresses.Writable...), meta.LoadedAddresses.Readonly...) {
-			key, err := solana.PublicKeyFromBase58(value)
-			if err != nil {
-				return nil, err
+	// Rebuild each table's addressed slots from the ordered loaded keys:
+	// every table's writable indexes, then every table's readonly indexes.
+	next := 0
+	for _, readonly := range []bool{false, true} {
+		for _, lookup := range transaction.Message.AddressTableLookups {
+			indexes := lookup.WritableIndexes
+			if readonly {
+				indexes = lookup.ReadonlyIndexes
 			}
-			loaded = append(loaded, key)
-		}
-		keys = append(keys, loaded...)
-		// Rebuild each table's addressed slots from the ordered loaded keys:
-		// every table's writable indexes, then every table's readonly indexes.
-		next := 0
-		for _, readonly := range []bool{false, true} {
-			for _, lookup := range transaction.Message.AddressTableLookups {
-				indexes := lookup.WritableIndexes
-				if readonly {
-					indexes = lookup.ReadonlyIndexes
+			for _, index := range indexes {
+				if next >= len(loaded) {
+					return nil, errors.New("Earn MAX cash-flow loaded addresses do not cover the lookups")
 				}
-				for _, index := range indexes {
-					if next >= len(loaded) {
-						return nil, errors.New("Earn MAX cash-flow loaded addresses do not cover the lookups")
-					}
-					slice := tables[lookup.AccountKey]
-					for len(slice) <= int(index) {
-						slice = append(slice, solana.PublicKey{})
-					}
-					slice[index] = loaded[next]
-					tables[lookup.AccountKey] = slice
-					next++
+				slice := tables[lookup.AccountKey]
+				for len(slice) <= int(index) {
+					slice = append(slice, solana.PublicKey{})
 				}
+				slice[index] = loaded[next]
+				tables[lookup.AccountKey] = slice
+				next++
 			}
 		}
-		if next != len(loaded) {
-			return nil, errors.New("Earn MAX cash-flow loaded addresses do not match the lookups")
-		}
-	} else if transaction.Message.IsVersioned() {
-		return nil, errors.New("Earn MAX cash-flow transaction omitted loaded addresses")
+	}
+	if next != len(loaded) {
+		return nil, errors.New("Earn MAX cash-flow loaded addresses do not match the lookups")
 	}
 	claimIndex := -1
 	for index, key := range keys {
@@ -183,16 +101,7 @@ func readCustodyTransfer(ctx context.Context, rpc *solanarpc.Client, signature s
 	if claimIndex > math.MaxUint8 {
 		return nil, errors.New("Earn MAX cash-flow account index exceeds u8")
 	}
-	mint := usdcMint.String()
-	claimPreRaw, err := tokenAmount(meta.PreTokenBalances, claimIndex, mint)
-	if err != nil {
-		return nil, err
-	}
-	claimPostRaw, err := tokenAmount(meta.PostTokenBalances, claimIndex, mint)
-	if err != nil {
-		return nil, err
-	}
-	claimPre, claimPost := orZero(claimPreRaw), orZero(claimPostRaw)
+	claimPre, claimPost := orZero(tokenAmount(read.Pre, custody)), orZero(tokenAmount(read.Post, custody))
 	if claimPre == claimPost {
 		return nil, errors.New("Earn MAX claim-custody account update has no token delta")
 	}
@@ -202,7 +111,6 @@ func readCustodyTransfer(ctx context.Context, rpc *solanarpc.Client, signature s
 		amount = claimPre - claimPost
 	}
 	type peer struct {
-		index     int
 		key       solana.PublicKey
 		pre, post uint64
 	}
@@ -214,15 +122,7 @@ func readCustodyTransfer(ctx context.Context, rpc *solanarpc.Client, signature s
 		if index == claimIndex {
 			continue
 		}
-		preRaw, err := tokenAmount(meta.PreTokenBalances, index, mint)
-		if err != nil {
-			return nil, err
-		}
-		postRaw, err := tokenAmount(meta.PostTokenBalances, index, mint)
-		if err != nil {
-			return nil, err
-		}
-		pre, post := orZero(preRaw), orZero(postRaw)
+		pre, post := orZero(tokenAmount(read.Pre, key)), orZero(tokenAmount(read.Post, key))
 		var opposite uint64
 		if increased && pre > post {
 			opposite = pre - post
@@ -230,14 +130,14 @@ func readCustodyTransfer(ctx context.Context, rpc *solanarpc.Client, signature s
 			opposite = post - pre
 		}
 		if opposite == amount {
-			peers = append(peers, peer{index, key, pre, post})
+			peers = append(peers, peer{key, pre, post})
 		}
 	}
 	if len(peers) != 1 {
 		return nil, fmt.Errorf("Earn MAX claim-custody delta has %d exact counterparty token accounts", len(peers))
 	}
 	counterparty := peers[0]
-	transfer := &custodyTransfer{wire: wire, lookupTables: tables, transaction: transaction, signature: signature, slot: response.Slot}
+	transfer := &custodyTransfer{wire: read.Wire, lookupTables: tables, transaction: transaction, signature: signature, slot: read.Slot}
 	if increased {
 		transfer.source, transfer.destination = counterparty.key, custody
 		transfer.sourcePre, transfer.sourcePost = counterparty.pre, counterparty.post
@@ -246,16 +146,8 @@ func readCustodyTransfer(ctx context.Context, rpc *solanarpc.Client, signature s
 	}
 	// A root claim moves only between existing token accounts: missing rows
 	// are unknown, not zero, so a create or close cannot hide behind it.
-	for _, index := range []int{claimIndex, counterparty.index} {
-		pre, err := tokenAmount(meta.PreTokenBalances, index, mint)
-		if err != nil {
-			return nil, err
-		}
-		post, err := tokenAmount(meta.PostTokenBalances, index, mint)
-		if err != nil {
-			return nil, err
-		}
-		if pre == nil || post == nil {
+	for _, key := range []solana.PublicKey{custody, counterparty.key} {
+		if tokenAmount(read.Pre, key) == nil || tokenAmount(read.Post, key) == nil {
 			return nil, errors.New("Earn MAX root claim receipt omitted an actual account balance")
 		}
 	}
