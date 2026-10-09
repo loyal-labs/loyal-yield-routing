@@ -13,9 +13,9 @@ import (
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 	"github.com/solana-foundation/solana-go/v2"
@@ -27,7 +27,7 @@ import (
 type Application struct {
 	store    *Store
 	multiply *multiply.Store
-	rpc      *solanarpc.Client
+	rpc      *chain.Client
 	monitor  *PolicyMonitor
 	consumer string
 	facts    *engine.Facts
@@ -48,7 +48,7 @@ const (
 )
 
 // NewApplication binds the Earn application to the observer's Neon pool.
-func NewApplication(ctx context.Context, pool *pgxpool.Pool, rpc *solanarpc.Client, cluster string, delegate solana.PublicKey, facts *engine.Facts, logger *slog.Logger, streamAlive func() bool) (*Application, error) {
+func NewApplication(ctx context.Context, pool *pgxpool.Pool, rpc *chain.Client, cluster string, delegate solana.PublicKey, facts *engine.Facts, logger *slog.Logger, streamAlive func() bool) (*Application, error) {
 	store := NewStore(pool)
 	multiplyStore, err := multiply.NewStoreFromPool(ctx, pool)
 	if err != nil {
@@ -123,14 +123,11 @@ func (a *Application) reconcileTargetedPolicy(ctx context.Context, update Normal
 	if update.EventKind == "refund_cleanup_repair" || !touchesPolicyIdentity(update, vault) || update.Signature == nil {
 		return notReconciled, nil
 	}
-	raw, found, err := a.rpc.Transaction(ctx, *update.Signature, "json", confirmedCommitment)
+	read, err := readExecution(ctx, a.rpc, *update.Signature)
 	if err != nil {
 		return notReconciled, err
 	}
-	if !found {
-		return notReconciled, errProofPending
-	}
-	transaction, err := decodeRPCPolicyTransaction(raw, *update.Signature, update.Slot)
+	transaction, err := decodeRPCPolicyTransaction(read, *update.Signature, update.Slot)
 	if err != nil {
 		return notReconciled, err
 	}
@@ -226,7 +223,7 @@ func deferralKind(err error) deferral {
 	switch {
 	case errors.Is(err, errProofPending):
 		return deferProofPending
-	case solanarpc.IsBehind(err):
+	case errors.Is(err, chain.ErrBehind):
 		return deferRPCBehind
 	}
 	return deferFailure

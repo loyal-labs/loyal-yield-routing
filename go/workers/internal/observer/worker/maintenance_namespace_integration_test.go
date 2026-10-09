@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -43,7 +42,7 @@ func TestMaintenanceNamespaceAdmitsLegacyUnknownCustody(t *testing.T) {
 		fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"}`)
 	}))
 	defer server.Close()
-	runtime := &Runtime{cfg: config.Config{Cluster: "mainnet-beta"}, rpc: solanarpc.New(server.URL, time.Second), neon: pool}
+	runtime := &Runtime{cfg: config.Config{Cluster: "mainnet-beta"}, rpc: chainClient(t, server.URL, time.Second), neon: pool}
 	if err := runtime.validateMaintenanceNamespace(ctx); err != nil {
 		t.Fatalf("legacy custody blocked the maintenance pass: %v", err)
 	}

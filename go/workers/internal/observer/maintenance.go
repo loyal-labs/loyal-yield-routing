@@ -8,12 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"math/big"
-	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -21,9 +18,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	workersdb "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 const benchmarkReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
@@ -464,61 +462,16 @@ ON CONFLICT(cluster) DO UPDATE SET payload=excluded.payload,source_watermark=exc
 }
 
 const benchmarkMarket = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
-const priceProgram = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+
+var priceProgram = solana.MustPublicKeyFromBase58("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD")
 
 // ReservePriceRPC is the observer's read-only capability, not a sender.
 type ReservePriceRPC interface {
-	MultipleAccounts(context.Context, []string, string, *uint64) (solanarpc.AccountsResponse, error)
-	BlockTime(context.Context, uint64) (*int64, error)
-}
-type MaintenancePriceRPC struct {
-	*solanarpc.Client
-	endpoint string
-	http     *http.Client
+	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
+	BlockTime(ctx context.Context, slot uint64) (time.Time, error)
 }
 
-func NewMaintenancePriceRPC(endpoint string, timeout time.Duration) (*MaintenancePriceRPC, error) {
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || timeout <= 0 || timeout > time.Minute {
-		return nil, errors.New("invalid read-only price RPC endpoint/timeout")
-	}
-	return &MaintenancePriceRPC{Client: solanarpc.New(endpoint, timeout), endpoint: endpoint, http: &http.Client{Timeout: timeout}}, nil
-}
-func (r *MaintenancePriceRPC) BlockTime(ctx context.Context, slot uint64) (*int64, error) {
-	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "getBlockTime", "params": []uint64{slot}})
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := r.http.Do(req)
-	if err != nil {
-		return nil, errors.New("price block-time RPC transport failed")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("block-time RPC HTTP %d", resp.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if err != nil {
-		return nil, err
-	}
-	var result struct {
-		Result *int64          `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if err = json.Unmarshal(data, &result); err != nil {
-		return nil, err
-	}
-	if len(result.Error) > 0 && string(result.Error) != "null" {
-		return nil, errors.New("block-time RPC error")
-	}
-	return result.Result, nil
-}
-func reservePrice(reserve string, account *solanarpc.Account, contextSlot uint64) (SharePrice, error) {
+func reservePrice(reserve string, account *chain.Account, contextSlot uint64) (SharePrice, error) {
 	var result SharePrice
 	disc := sha256.Sum256([]byte("account:Reserve"))
 	if account == nil || account.Owner != priceProgram || account.Executable || len(account.Data) != 8624 || !bytes.Equal(account.Data[:8], disc[:8]) {
@@ -563,8 +516,8 @@ func reservePrice(reserve string, account *solanarpc.Account, contextSlot uint64
 
 // ProbeSharePrices batches at the source's 100-account bound and caches actual
 // block times. Missing/stale/unknown reserves are reported, never timestamped now.
-func ProbeSharePrices(ctx context.Context, rpc ReservePriceRPC, reserves []string, now time.Time) ([]SharePrice, []string, error) {
-	if rpc == nil || now.IsZero() || len(reserves) > 10_000 {
+func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []string, now time.Time) ([]SharePrice, []string, error) {
+	if source == nil || now.IsZero() || len(reserves) > 10_000 {
 		return nil, nil, errors.New("price probe capability/clock/bound invalid")
 	}
 	seen := map[string]bool{}
@@ -581,41 +534,35 @@ func ProbeSharePrices(ctx context.Context, rpc ReservePriceRPC, reserves []strin
 	sort.Strings(keys)
 	prices := []SharePrice{}
 	missing := []string{}
-	clocks := map[uint64]*int64{}
+	clocks := map[uint64]time.Time{}
+	// Each batch of 100 is its own read, so every reserve is judged against
+	// the slot it was read at.
 	for start := 0; start < len(keys); start += 100 {
-		end := start + 100
-		if end > len(keys) {
-			end = len(keys)
+		chunk := keys[start:min(start+100, len(keys))]
+		addresses := make([]solana.PublicKey, len(chunk))
+		for i, key := range chunk {
+			addresses[i] = solana.MustPublicKeyFromBase58(key)
 		}
-		chunk := keys[start:end]
-		response, err := rpc.MultipleAccounts(ctx, chunk, "confirmed", nil)
+		slot, accounts, err := source.Accounts(ctx, addresses, rpc.CommitmentConfirmed, 0)
 		if err != nil {
 			return nil, nil, err
 		}
-		if len(response.Accounts) != len(chunk) {
+		if len(accounts) != len(chunk) {
 			return nil, nil, errors.New("price account response cardinality mismatch")
 		}
 		for i, key := range chunk {
-			price, err := reservePrice(key, response.Accounts[i], response.Slot)
+			price, err := reservePrice(key, accounts[i], slot)
 			if err != nil {
 				missing = append(missing, key)
 				continue
 			}
-			slot := uint64(price.Slot)
-			clock, known := clocks[slot]
+			at, known := clocks[uint64(price.Slot)]
 			if !known {
-				clock, err = rpc.BlockTime(ctx, slot)
-				if err != nil {
-					clock = nil
-				}
-				clocks[slot] = clock
+				// An unknown block time leaves the reserve missing, never timestamped now.
+				at, _ = source.BlockTime(ctx, uint64(price.Slot))
+				clocks[uint64(price.Slot)] = at
 			}
-			if clock == nil || *clock <= 0 {
-				missing = append(missing, key)
-				continue
-			}
-			at := time.Unix(*clock, 0).UTC()
-			if at.After(now) || now.Sub(at) > 3*time.Hour {
+			if at.Unix() <= 0 || at.After(now) || now.Sub(at) > 3*time.Hour {
 				missing = append(missing, key)
 				continue
 			}

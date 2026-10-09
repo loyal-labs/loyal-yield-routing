@@ -14,17 +14,18 @@ import (
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/ata"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/earn"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/subscription"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	solanago "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 const (
@@ -39,7 +40,7 @@ type Runtime struct {
 	facts         *engine.Facts
 	neon          *pgxpool.Pool
 	timescale     *pgxpool.Pool
-	rpc           *solanarpc.Client
+	rpc           *chain.Client
 	connector     stream.Connector
 	watchLoader   *watch.Loader
 	kaminoStore   *kamino.Store
@@ -56,8 +57,11 @@ type Runtime struct {
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *engine.Facts) (*Runtime, error) {
 	startup, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelStartup()
-	rpc := solanarpc.New(cfg.SolanaRPCURL, 30*time.Second)
-	if err := validateWatchNamespace(startup, cfg.Cluster, rpc); err != nil {
+	client, err := chain.New(cfg.SolanaRPCURL, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateWatchNamespace(startup, cfg.Cluster, client); err != nil {
 		return nil, err
 	}
 	neon, err := db.Open(startup, cfg.NeonDatabaseURL, 8)
@@ -71,8 +75,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 	}
 	kaminoStore := kamino.NewStore(timescale, "kamino")
 	kaminoCatalog := kamino.NewCatalogClient(cfg.KaminoAPIBase, 30*time.Second)
-	kaminoHandler := kamino.NewHandler(kaminoStore, rpc, logger, 400, false)
-	ataHandler := ata.NewHandler(timescale, rpc)
+	kaminoHandler := kamino.NewHandler(kaminoStore, client, logger, 400, false)
+	ataHandler := ata.NewHandler(timescale, client)
 	earnStore := earn.NewStore(neon)
 	earnHandler := earn.NewHandler(earnStore, cfg.Cluster)
 	delegate, err := solanago.PublicKeyFromBase58(cfg.EarnMaxDelegate)
@@ -82,7 +86,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 		return nil, errors.New("EARN_MAX_DELEGATE must be a Solana public key")
 	}
 	handler := &DurableHandler{Kamino: kaminoHandler, ATA: ataHandler, Earn: earnHandler, Facts: facts}
-	earnApp, err := earn.NewApplication(startup, neon, rpc, cfg.Cluster, delegate, facts, logger, handler.streamAlive)
+	earnApp, err := earn.NewApplication(startup, neon, client, cfg.Cluster, delegate, facts, logger, handler.streamAlive)
 	if err != nil {
 		neon.Close()
 		timescale.Close()
@@ -103,7 +107,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 		}
 		apy = earn.NewAPYRefresher(timescale, neon, strategies)
 	}
-	runtime := &Runtime{cfg: cfg, logger: logger, facts: facts, neon: neon, timescale: timescale, rpc: rpc, connector: stream.GRPCConnector{Endpoint: cfg.LaserStreamEndpoint, APIKey: cfg.HeliusAPIKey}, watchLoader: watch.NewLoader(neon, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, earnApp: earnApp, apy: apy, handler: handler}
+	runtime := &Runtime{cfg: cfg, logger: logger, facts: facts, neon: neon, timescale: timescale, rpc: client, connector: stream.GRPCConnector{Endpoint: cfg.LaserStreamEndpoint, APIKey: cfg.HeliusAPIKey}, watchLoader: watch.NewLoader(neon, cfg.Cluster), kaminoStore: kaminoStore, kaminoCatalog: kaminoCatalog, kamino: kaminoHandler, ata: ataHandler, earnStore: earnStore, earn: earnHandler, earnApp: earnApp, apy: apy, handler: handler}
 	return runtime, nil
 }
 
@@ -243,7 +247,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 					// New bindings were just read from confirmed state above, so
 					// an anchor older than the provider window needs no replay;
 					// requesting it would fail every handoff with OutOfRange.
-					current, slotErr := r.rpc.Slot(passCtx, "confirmed")
+					current, slotErr := r.rpc.Slot(passCtx, rpc.CommitmentConfirmed)
 					if slotErr != nil {
 						r.facts.Failed(engine.FamilyObserver, "filter_handoff")
 						r.logger.Error("combined filter-set handoff could not read the current slot; old stream retained", "error", slotErr)
@@ -491,7 +495,7 @@ func (p streamPlan) gap() bool { return p.from > p.requested }
 func (r *Runtime) planSession(ctx context.Context, seed, frontier, watchCursor uint64) (streamPlan, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.passTimeout())
 	defer cancel()
-	current, err := r.rpc.Slot(ctx, "confirmed")
+	current, err := r.rpc.Slot(ctx, rpc.CommitmentConfirmed)
 	if err != nil {
 		return streamPlan{}, err
 	}
@@ -751,16 +755,17 @@ func (r *Runtime) recoverNewEarnBindings(ctx context.Context, previous, next *wa
 func (r *Runtime) recoverEarnBindingBatch(ctx context.Context, next *watch.Set, batch []earnBindingRecovery) (int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.passTimeout())
 	defer cancel()
-	addresses := make([]string, len(batch))
+	addresses := make([]solanago.PublicKey, len(batch))
 	for index, binding := range batch {
-		addresses[index] = binding.address
+		key, err := solanago.PublicKeyFromBase58(binding.address)
+		if err != nil {
+			return 0, fmt.Errorf("earn binding %s: %w", binding.address, err)
+		}
+		addresses[index] = key
 	}
-	response, err := r.rpc.MultipleAccounts(ctx, addresses, "confirmed", nil)
+	slot, accounts, err := r.rpc.Accounts(ctx, addresses, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return 0, fmt.Errorf("read Earn binding accounts: %w", err)
-	}
-	if response.Slot == 0 || len(response.Accounts) != len(addresses) {
-		return 0, fmt.Errorf("earn binding recovery returned slot %d and %d/%d accounts", response.Slot, len(response.Accounts), len(addresses))
 	}
 	events := make([]earn.QueuedEvent, 0, len(batch))
 	for index, binding := range batch {
@@ -768,7 +773,7 @@ func (r *Runtime) recoverEarnBindingBatch(ctx context.Context, next *watch.Set, 
 		if len(affected) == 0 {
 			return 0, fmt.Errorf("earn binding %s has no affected vault", binding.address)
 		}
-		eventKey, kind := bindingRecoveryEvent(binding.address, response.Accounts[index])
+		eventKey, kind := bindingRecoveryEvent(binding.address, accounts[index])
 		// Only vaults that can apply an unsigned state read receive one; the
 		// rest would fail until dead-lettered (earn.SnapshotApplicable).
 		vaults := make([]watch.Vault, 0, len(affected))
@@ -783,8 +788,8 @@ func (r *Runtime) recoverEarnBindingBatch(ctx context.Context, next *watch.Set, 
 			continue
 		}
 		address := binding.address
-		update := earn.NormalizedUpdate{EventKey: &eventKey, Filters: binding.filters, EventKind: kind, AccountPubkey: &address, Slot: response.Slot}
-		events = append(events, earn.QueuedEvent{EventKey: eventKey, Slot: response.Slot, Event: update, Vaults: vaults, Account: binding.address})
+		update := earn.NormalizedUpdate{EventKey: &eventKey, Filters: binding.filters, EventKind: kind, AccountPubkey: &address, Slot: slot}
+		events = append(events, earn.QueuedEvent{EventKey: eventKey, Slot: slot, Event: update, Vaults: vaults, Account: binding.address})
 	}
 	if len(events) == 0 {
 		return 0, nil
@@ -799,7 +804,7 @@ func (r *Runtime) recoverEarnBindingBatch(ctx context.Context, next *watch.Set, 
 // bindingRecoveryEvent keys a recovered binding by its address and the
 // confirmed state read, never by the read slot: reading the same state again
 // after a restart names the same job, which the job key then deduplicates.
-func bindingRecoveryEvent(address string, account *solanarpc.Account) (string, string) {
+func bindingRecoveryEvent(address string, account *chain.Account) (string, string) {
 	if account == nil || account.Lamports == 0 {
 		return "watch-discovery:" + address + ":deleted", "account_deleted"
 	}
@@ -807,7 +812,7 @@ func bindingRecoveryEvent(address string, account *solanarpc.Account) (string, s
 	var lamports [8]byte
 	binary.LittleEndian.PutUint64(lamports[:], account.Lamports)
 	digest.Write(lamports[:])
-	digest.Write([]byte(account.Owner))
+	digest.Write([]byte(account.Owner.String()))
 	if account.Executable {
 		digest.Write([]byte{0, 1})
 	} else {
@@ -832,10 +837,14 @@ func (r *Runtime) recoverEarnMaxGaps(ctx context.Context, set *watch.Set) (int64
 		if err != nil {
 			return 0, err
 		}
-		before := ""
+		custodyKey, err := solanago.PublicKeyFromBase58(custody)
+		if err != nil {
+			return 0, err
+		}
+		var before solanago.Signature
 		vaultCandidateStart := len(candidates)
 		for {
-			page, err := r.rpc.SignaturesForAddress(ctx, custody, "confirmed", before, 1_000)
+			page, err := r.rpc.History(ctx, custodyKey, 1_000, before)
 			if err != nil {
 				return 0, fmt.Errorf("read Earn MAX custody history for %s: %w", custody, err)
 			}
@@ -848,8 +857,8 @@ func (r *Runtime) recoverEarnMaxGaps(ctx context.Context, set *watch.Set) (int64
 					reachedAnchor = true
 					break
 				}
-				if string(status.Err) == "null" || len(status.Err) == 0 {
-					candidates = append(candidates, candidate{status.Slot, status.Signature, custody, vault})
+				if !status.Failed {
+					candidates = append(candidates, candidate{status.Slot, status.Signature.String(), custody, vault})
 				}
 			}
 			if reachedAnchor || len(page) < 1_000 {

@@ -23,7 +23,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/earn"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	"github.com/solana-foundation/solana-go/v2"
@@ -132,7 +131,7 @@ func TestWatchStateRecoveryIsBatchedUnboundedByOnePassAndIdempotent(t *testing.T
 		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1`, handler.ConsumerName())
 		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name IN ($1,$2)`, handler.ConsumerName(), watchConsumer)
 	})
-	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 2 * passTimeout}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), earnStore: store, earn: handler}
+	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 2 * passTimeout}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: chainClient(t, server.URL, 5*time.Second), earnStore: store, earn: handler}
 	if runtime.passTimeout() != passTimeout {
 		t.Fatalf("pass timeout = %s, want %s", runtime.passTimeout(), passTimeout)
 	}
@@ -256,7 +255,7 @@ func TestReconnectAfterProviderWindowClampsAndRecoversBindings(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name IN ($1,$2)`, handler.ConsumerName(), watchConsumer)
 	})
 	connector := &recordingConnector{}
-	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}, earnStore: store, earn: handler}
+	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: chainClient(t, server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}, earnStore: store, earn: handler}
 	ancientFrontier := uint64(current - 1_000_000)
 	manager, watchCursor, err := runtime.resumeSession(ctx, set, []kamino.Target{{Reserve: "11111111111111111111111111111111"}}, ancientFrontier, &reconnectBackoff{}, watchConsumer, ancientFrontier-5_000)
 	if err != nil {
@@ -323,7 +322,7 @@ func TestWatchStateRecoverySkipsSignatureOnlyFacts(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_reconciliation_jobs WHERE consumer_name=$1`, handler.ConsumerName())
 		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.laserstream_replay_cursors WHERE consumer_name IN ($1,$2)`, handler.ConsumerName(), watchConsumer)
 	})
-	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), earnStore: store, earn: handler}
+	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: chainClient(t, server.URL, 5*time.Second), earnStore: store, earn: handler}
 	if _, err := runtime.recoverWatchState(ctx, set, watchConsumer, 800); err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +414,7 @@ func TestContinuingRustEarnCursorReplaysWithoutStateRecovery(t *testing.T) {
 				}
 			}
 			connector := &recordingConnector{}
-			runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}, earnStore: store, earn: handler}
+			runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: chainClient(t, server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}, earnStore: store, earn: handler}
 			manager, plan, watchCursor, err := runtime.startSession(ctx, set, targets, current-50, 0, watchConsumer, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -450,7 +449,7 @@ func TestEveryReconnectBacksOffUntilAFrontierPassesTheFailure(t *testing.T) {
 	const current = 449_073_607
 	server := slotRPC(t, current)
 	connector := &recordingConnector{}
-	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: solanarpc.New(server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}}
+	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 10 * time.Second, ReplayOverlapSlots: 32}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), rpc: chainClient(t, server.URL, 5*time.Second), connector: connector, handler: &DurableHandler{}}
 	set := &watch.Set{}
 	targets := []kamino.Target{{Reserve: "11111111111111111111111111111111"}}
 	var backoff reconnectBackoff

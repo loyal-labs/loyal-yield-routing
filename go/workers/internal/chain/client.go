@@ -262,37 +262,11 @@ type Receipt struct {
 }
 
 // Receipt reads signature's transaction at commitment (confirmed or
-// finalized). ErrNotFound means the cluster has no record of it there.
+// finalized), of any version. ErrNotFound means the cluster has no record of
+// it there.
 func (c *Client) Receipt(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) (Receipt, error) {
-	version := uint64(0)
-	out, err := c.rpc.GetTransaction(ctx, signature, &rpc.GetTransactionOpts{Encoding: solana.EncodingBase64, Commitment: commitment, MaxSupportedTransactionVersion: &version})
-	if errors.Is(err, rpc.ErrNotFound) {
-		return Receipt{}, ErrNotFound
-	}
-	if err != nil {
-		return Receipt{}, failed("getTransaction", err)
-	}
-	if out.Slot == 0 || out.Meta == nil || out.Transaction == nil {
-		return Receipt{}, errors.New("getTransaction: incomplete receipt")
-	}
-	tx, err := out.Transaction.GetTransaction()
-	if err != nil {
-		return Receipt{}, fmt.Errorf("getTransaction: decode: %w", err)
-	}
-	loaded := out.Meta.LoadedAddresses
-	keys := append(append(append([]solana.PublicKey(nil), tx.Message.AccountKeys...), loaded.Writable...), loaded.ReadOnly...)
-	receipt := Receipt{
-		Slot: out.Slot, Err: out.Meta.Err, Fee: out.Meta.Fee, Wire: out.Transaction.GetBinary(), Logs: out.Meta.LogMessages,
-		Keys: keys, LoadedWritable: loaded.Writable, LoadedReadonly: loaded.ReadOnly,
-		PreLamports: out.Meta.PreBalances, PostLamports: out.Meta.PostBalances,
-	}
-	if receipt.Pre, err = tokenBalances(keys, out.Meta.PreTokenBalances); err != nil {
-		return Receipt{}, err
-	}
-	if receipt.Post, err = tokenBalances(keys, out.Meta.PostTokenBalances); err != nil {
-		return Receipt{}, err
-	}
-	return receipt, nil
+	read, err := c.Execution(ctx, signature, commitment)
+	return read.Receipt, err
 }
 
 // Signed is one transaction in an address's confirmed history.

@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 )
 
 // The real RPC client has a much longer transport timeout than the pass. No SQL
 // result is mocked: cancellation must stop the RPC before any store is reached.
-func stalledRuntimeRPC(t *testing.T, method string) (*solanarpc.Client, <-chan struct{}) {
+func stalledRuntimeRPC(t *testing.T, method string) (*chain.Client, <-chan struct{}) {
 	t.Helper()
 	stopped := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -38,7 +38,16 @@ func stalledRuntimeRPC(t *testing.T, method string) (*solanarpc.Client, <-chan s
 		}
 	}))
 	t.Cleanup(server.Close)
-	return solanarpc.New(server.URL, 5*time.Second), stopped
+	return chainClient(t, server.URL, 5*time.Second), stopped
+}
+
+func chainClient(t *testing.T, url string, timeout time.Duration) *chain.Client {
+	t.Helper()
+	client, err := chain.New(url, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
 }
 
 func requireStoppedRuntimeRPC(t *testing.T, stopped <-chan struct{}) {

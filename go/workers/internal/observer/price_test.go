@@ -5,16 +5,18 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
-	"github.com/solana-foundation/solana-go/v2"
 	"math"
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 type priceFixtureRPC struct {
-	accounts          map[string]*solanarpc.Account
+	accounts          map[string]*chain.Account
 	slot              uint64
 	clock             *int64
 	calls, blockCalls int
@@ -22,26 +24,29 @@ type priceFixtureRPC struct {
 	err               error
 }
 
-func (r *priceFixtureRPC) MultipleAccounts(ctx context.Context, keys []string, commitment string, minimum *uint64) (solanarpc.AccountsResponse, error) {
+func (r *priceFixtureRPC) Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error) {
 	if err := ctx.Err(); err != nil {
-		return solanarpc.AccountsResponse{}, err
+		return 0, nil, err
 	}
 	if r.err != nil {
-		return solanarpc.AccountsResponse{}, r.err
+		return 0, nil, r.err
 	}
 	r.calls++
 	r.batchSizes = append(r.batchSizes, len(keys))
-	out := solanarpc.AccountsResponse{Slot: r.slot}
+	var out []*chain.Account
 	for _, key := range keys {
-		out.Accounts = append(out.Accounts, r.accounts[key])
+		out = append(out, r.accounts[key.String()])
 	}
-	return out, nil
+	return r.slot, out, nil
 }
-func (r *priceFixtureRPC) BlockTime(ctx context.Context, slot uint64) (*int64, error) {
+func (r *priceFixtureRPC) BlockTime(ctx context.Context, slot uint64) (time.Time, error) {
 	r.blockCalls++
-	return r.clock, nil
+	if r.clock == nil {
+		return time.Time{}, chain.ErrNotFound
+	}
+	return time.Unix(*r.clock, 0).UTC(), nil
 }
-func reserveFixture() *solanarpc.Account {
+func reserveFixture() *chain.Account {
 	data := make([]byte, 8624)
 	disc := sha256.Sum256([]byte("account:Reserve"))
 	copy(data[:8], disc[:8])
@@ -61,14 +66,14 @@ func reserveFixture() *solanarpc.Account {
 	putSF(344, 5_000_000)
 	putSF(360, 3_000_000)
 	putSF(376, 2_000_000)
-	return &solanarpc.Account{Owner: priceProgram, Data: data}
+	return &chain.Account{Owner: priceProgram, Data: data}
 }
 func TestIndependentPriceUsesBorrowingFeesAndActualReserveClock(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 30, 0, 0, time.UTC)
 	clock := now.Add(-45 * time.Minute).Unix()
 	a := reserveFixture()
 	other := solana.PublicKey{1}.String()
-	rpc := &priceFixtureRPC{slot: 1000, clock: &clock, accounts: map[string]*solanarpc.Account{benchmarkReserve: a, other: reserveFixture()}}
+	rpc := &priceFixtureRPC{slot: 1000, clock: &clock, accounts: map[string]*chain.Account{benchmarkReserve: a, other: reserveFixture()}}
 	rows, missing, err := ProbeSharePrices(context.Background(), rpc, []string{benchmarkReserve, other, benchmarkReserve}, now)
 	if err != nil || len(missing) != 0 || len(rows) != 2 {
 		t.Fatalf("probe = %+v %v %v", rows, missing, err)
@@ -87,24 +92,24 @@ func TestIndependentPriceRefusesUnknownAndStaleEvidence(t *testing.T) {
 	clock := now.Unix()
 	cases := []struct {
 		name   string
-		mutate func(*solanarpc.Account, *priceFixtureRPC)
+		mutate func(*chain.Account, *priceFixtureRPC)
 	}{
-		{"missing", func(a *solanarpc.Account, r *priceFixtureRPC) { r.accounts[benchmarkReserve] = nil }},
-		{"owner", func(a *solanarpc.Account, r *priceFixtureRPC) { a.Owner = USDCMint }},
-		{"executable", func(a *solanarpc.Account, r *priceFixtureRPC) { a.Executable = true }},
-		{"layout", func(a *solanarpc.Account, r *priceFixtureRPC) { a.Data = a.Data[:2600] }},
-		{"discriminator", func(a *solanarpc.Account, r *priceFixtureRPC) { a.Data[0] ^= 1 }},
-		{"stale", func(a *solanarpc.Account, r *priceFixtureRPC) { a.Data[24] = 1 }},
-		{"future-slot", func(a *solanarpc.Account, r *priceFixtureRPC) { binary.LittleEndian.PutUint64(a.Data[16:24], 1001) }},
-		{"zero-collateral", func(a *solanarpc.Account, r *priceFixtureRPC) { binary.LittleEndian.PutUint64(a.Data[2592:2600], 0) }},
-		{"underwater-fees", func(a *solanarpc.Account, r *priceFixtureRPC) {
+		{"missing", func(a *chain.Account, r *priceFixtureRPC) { r.accounts[benchmarkReserve] = nil }},
+		{"owner", func(a *chain.Account, r *priceFixtureRPC) { a.Owner = solana.MustPublicKeyFromBase58(USDCMint) }},
+		{"executable", func(a *chain.Account, r *priceFixtureRPC) { a.Executable = true }},
+		{"layout", func(a *chain.Account, r *priceFixtureRPC) { a.Data = a.Data[:2600] }},
+		{"discriminator", func(a *chain.Account, r *priceFixtureRPC) { a.Data[0] ^= 1 }},
+		{"stale", func(a *chain.Account, r *priceFixtureRPC) { a.Data[24] = 1 }},
+		{"future-slot", func(a *chain.Account, r *priceFixtureRPC) { binary.LittleEndian.PutUint64(a.Data[16:24], 1001) }},
+		{"zero-collateral", func(a *chain.Account, r *priceFixtureRPC) { binary.LittleEndian.PutUint64(a.Data[2592:2600], 0) }},
+		{"underwater-fees", func(a *chain.Account, r *priceFixtureRPC) {
 			for i := 344; i < 360; i++ {
 				a.Data[i] = 255
 			}
 		}},
-		{"no-block-time", func(a *solanarpc.Account, r *priceFixtureRPC) { r.clock = nil }},
-		{"future-time", func(a *solanarpc.Account, r *priceFixtureRPC) { c := now.Add(time.Second).Unix(); r.clock = &c }},
-		{"old-time", func(a *solanarpc.Account, r *priceFixtureRPC) {
+		{"no-block-time", func(a *chain.Account, r *priceFixtureRPC) { r.clock = nil }},
+		{"future-time", func(a *chain.Account, r *priceFixtureRPC) { c := now.Add(time.Second).Unix(); r.clock = &c }},
+		{"old-time", func(a *chain.Account, r *priceFixtureRPC) {
 			c := now.Add(-3*time.Hour - time.Second).Unix()
 			r.clock = &c
 		}},
@@ -112,7 +117,7 @@ func TestIndependentPriceRefusesUnknownAndStaleEvidence(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := reserveFixture()
-			r := &priceFixtureRPC{slot: 1000, clock: &clock, accounts: map[string]*solanarpc.Account{benchmarkReserve: a}}
+			r := &priceFixtureRPC{slot: 1000, clock: &clock, accounts: map[string]*chain.Account{benchmarkReserve: a}}
 			tc.mutate(a, r)
 			rows, missing, err := ProbeSharePrices(context.Background(), r, []string{benchmarkReserve}, now)
 			if err != nil || len(rows) != 0 || len(missing) != 1 {
@@ -124,7 +129,7 @@ func TestIndependentPriceRefusesUnknownAndStaleEvidence(t *testing.T) {
 func TestIndependentPriceBoundedBatchAndTransportFailure(t *testing.T) {
 	now := time.Now().UTC()
 	clock := now.Unix()
-	r := &priceFixtureRPC{slot: 1000, clock: &clock, accounts: map[string]*solanarpc.Account{}}
+	r := &priceFixtureRPC{slot: 1000, clock: &clock, accounts: map[string]*chain.Account{}}
 	var keys []string
 	for i := 0; i < 201; i++ {
 		key := solana.PublicKey{byte(i), 1}.String()

@@ -2,16 +2,16 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -27,7 +27,7 @@ func TestDisabledReadModelsStartNoWriterAndReportNoFailure(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	facts := engine.NewFacts(registry)
 	facts.Own(engine.FamilyObserver)
-	runtime := &Runtime{cfg: config.Config{Cluster: "mainnet-beta", SolanaRPCURL: server.URL}, rpc: solanarpc.New(server.URL, time.Second), facts: facts}
+	runtime := &Runtime{cfg: config.Config{Cluster: "mainnet-beta", SolanaRPCURL: server.URL}, rpc: chainClient(t, server.URL, time.Second), facts: facts}
 	lane, err := runtime.NewMaintenance(context.Background())
 	if err != nil || lane != nil {
 		t.Fatalf("disabled read models produced lane %v, %v", lane, err)
@@ -47,7 +47,7 @@ func TestDisabledReadModelsStartNoWriterAndReportNoFailure(t *testing.T) {
 	// Enabled, the same runtime does build the lane (and here fails on the
 	// unavailable endpoint), proving the switch is the only difference.
 	runtime.cfg.ReadModelsEnabled = true
-	if _, err := runtime.NewMaintenance(context.Background()); err == nil || calls.Load() == 0 || !strings.Contains(err.Error(), "genesis") {
+	if _, err := runtime.NewMaintenance(context.Background()); !errors.Is(err, chain.ErrUnavailable) || calls.Load() == 0 {
 		t.Fatalf("enabled read models did not reach the endpoint: %v (calls %d)", err, calls.Load())
 	}
 }

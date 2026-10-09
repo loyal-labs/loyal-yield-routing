@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -29,7 +29,7 @@ import (
 // replay of an older setup must not run after the stream applied a removal.
 type PolicyMonitor struct {
 	store    *Store
-	rpc      *solanarpc.Client
+	rpc      *chain.Client
 	cluster  string
 	delegate solana.PublicKey
 	mu       sync.Mutex
@@ -38,7 +38,7 @@ type PolicyMonitor struct {
 
 // NewPolicyMonitor binds the confirmed-commitment projection to one cluster
 // spelling ("mainnet-beta" or "devnet") and the Earn MAX delegate.
-func NewPolicyMonitor(store *Store, rpc *solanarpc.Client, cluster string, delegate solana.PublicKey) (*PolicyMonitor, error) {
+func NewPolicyMonitor(store *Store, rpc *chain.Client, cluster string, delegate solana.PublicKey) (*PolicyMonitor, error) {
 	switch cluster {
 	case "mainnet", "mainnet-beta":
 		cluster = "mainnet-beta"
@@ -274,15 +274,15 @@ var policyReloadDelays = []time.Duration{250 * time.Millisecond, 500 * time.Mill
 // deliver a transaction before the separately configured RPC serves the same
 // write; minContextSlot makes the RPC itself refuse an older view, and only
 // that refusal waits (bounded) for the node to catch up.
-func readAtEventSlot(ctx context.Context, rpc *solanarpc.Client, addresses []string, slot uint64, waitBehind bool) (solanarpc.AccountsResponse, error) {
+func readAtEventSlot(ctx context.Context, rpc *chain.Client, addresses []solana.PublicKey, slot uint64, waitBehind bool) ([]*chain.Account, error) {
 	for attempt := 0; ; attempt++ {
-		response, err := rpc.MultipleAccounts(ctx, addresses, confirmedCommitment, &slot)
-		if !waitBehind || !solanarpc.IsBehind(err) || attempt == len(policyReloadDelays) {
-			return response, err
+		_, accounts, err := rpc.Accounts(ctx, addresses, confirmedCommitment, slot)
+		if !waitBehind || !errors.Is(err, chain.ErrBehind) || attempt == len(policyReloadDelays) {
+			return accounts, err
 		}
 		select {
 		case <-ctx.Done():
-			return response, ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(policyReloadDelays[attempt]):
 		}
 	}
@@ -304,7 +304,7 @@ func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings sol
 		semantic    string
 	}
 	var families []expected
-	addresses := make([]string, 0, len(earnMaxFamilies))
+	addresses := make([]solana.PublicKey, 0, len(earnMaxFamilies))
 	for _, family := range earnMaxFamilies {
 		constraints, err := multiply.CanonicalConstraints(topology, family)
 		if err != nil {
@@ -317,23 +317,23 @@ func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings sol
 		}
 		digest := sha256.Sum256(update)
 		families = append(families, expected{family, policy, constraints, hex.EncodeToString(digest[:])})
-		addresses = append(addresses, policy.Account.String())
+		addresses = append(addresses, policy.Account)
 	}
-	response, err := readAtEventSlot(ctx, m.rpc, addresses, slot, waitBehind)
+	read, err := readAtEventSlot(ctx, m.rpc, addresses, slot, waitBehind)
 	if err != nil {
 		return err
 	}
 	var accounts, basis []map[string]any
 	matched, present := 0, 0
 	for index, family := range families {
-		account := response.Accounts[index]
+		account := read[index]
 		entry := map[string]any{"family": string(family.family), "seed": family.policy.Seed, "account": family.policy.Account.String(), "semanticSha256": family.semantic}
 		basis = append(basis, entry)
 		state := map[string]any{"family": string(family.family), "seed": family.policy.Seed, "account": family.policy.Account.String(), "semanticSha256": family.semantic, "dataSha256": nil, "exists": false, "matches": false}
 		if account != nil {
 			present++
 			matches := false
-			if account.Owner == sp.Program.String() && !account.Executable {
+			if account.Owner == sp.Program && !account.Executable {
 				if matches, err = multiply.CurrentPolicyMatches(account.Data, family.policy, m.delegate, family.constraints, 0); err != nil {
 					return err
 				}
