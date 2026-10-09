@@ -45,7 +45,7 @@ func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *te
 	if err = budget.Admit(r); err != nil {
 		t.Fatal(err)
 	}
-	if err = budget.Settle(r.OperationID, intent, r.UpperMicros); err != nil {
+	if err = budget.Settle(r.OperationID, intent, r.UpperMicros, r.ExecutionCostUpperMicros); err != nil {
 		t.Fatal(err)
 	}
 	if Decide(plan.Snapshot).Action == ReportNAV || q.ExitBound == nil || q.ExitBound.GrossMicros != budget.Families["Maple"].ExitMicros {

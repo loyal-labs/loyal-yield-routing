@@ -38,9 +38,11 @@ func validateEntrySwap(ctx context.Context, rpc *chain.Client, request JupiterSw
 		return 0, budgetHold("entry_swap_state_unavailable")
 	}
 	obligation, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
-	// A top-up swap sits beside a funded debt-free position; every other
-	// entry swap requires a flat obligation.
-	if err != nil || obligation.debtRaw != 0 || (obligation.collateralDepositedRaw == 0) != !request.TopupReturnReserved {
+	// A top-up swap sits beside a funded position, debt-free or (AUTO) with
+	// debt; every other entry swap requires a flat obligation. Debt custody
+	// stays empty either way (checked below).
+	if err != nil || (obligation.debtRaw != 0 && !(request.TopupReturnReserved && debtTopupLane(request.RouteLane))) ||
+		(obligation.collateralDepositedRaw == 0) != !request.TopupReturnReserved {
 		return 0, budgetHold("entry_swap_position_changed")
 	}
 	for i, identity := range []struct{ address, mint string }{{source, sourceMint}, {destination, destinationMint}, {route.DebtCustody, route.Kamino.DebtMint}} {
@@ -84,10 +86,11 @@ func observePhase3EntrySwapAdmission(ctx context.Context, rpc *chain.Client, cli
 		r.TopupReturnReserved != (decision.Reason == topupSwapReason) {
 		return phase3BridgeAdmission{}, budgetHold("complete_entry_swap_return_unavailable")
 	}
-	// Plan B3: the top-up swap keeps a funded debt-free position; every other
-	// entry swap stays closed over a flat route.
+	// Plan B3: the top-up swap keeps a funded position (debt-free, or with
+	// debt on AUTO); every other entry swap stays closed over a flat route.
+	debt := s.PositionDebtRaw > 0 && s.PositionDebtValueRaw > 0 && debtTopupLane(s.RouteLane)
 	topup := r.TopupReturnReserved && s.HasPosition && s.PositionCollateralRaw > 0 && s.PositionCollateralValueRaw > 0 &&
-		s.PositionDebtRaw == 0 && s.PositionDebtValueRaw == 0 && s.WithdrawalDemandRaw == 0 && !s.Unwind && decision.AmountRaw == s.SquadsIdleRaw
+		(debt || (s.PositionDebtRaw == 0 && s.PositionDebtValueRaw == 0)) && s.WithdrawalDemandRaw == 0 && !s.Unwind && decision.AmountRaw == s.SquadsIdleRaw
 	flat := !r.TopupReturnReserved && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 &&
 		s.PositionCollateralValueRaw == 0 && s.PositionDebtValueRaw == 0
 	if !topup && !flat {
@@ -111,7 +114,9 @@ func observePhase3EntrySwapAdmission(ctx context.Context, rpc *chain.Client, cli
 	post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = int64(upper), int64(upper)
 	post.Snapshot.SquadsIdleRaw -= int64(r.AmountRaw)
 	var plan phase3BridgeAdmission
-	if topup {
+	if topup && debt {
+		plan, err = priceTopupSwapBesideDebt(ctx, rpc, client, manifest, observation, decision, evidence, slot)
+	} else if topup {
 		// NAV, then withdraw the whole position and return it together with
 		// the swapped collateral, exactly like the post-payoff return.
 		plan, err = pricePhase3PositionReturn(ctx, rpc, client, manifest, post, decision, r, evidence.ExpectedEffects, true)
@@ -126,6 +131,53 @@ func observePhase3EntrySwapAdmission(ctx context.Context, rpc *chain.Client, cli
 		return plan, budgetHold("stale_entry_swap_admission")
 	}
 	return plan, nil
+}
+
+// Beside debt the top-up swap is priced like the leverage swap: simulate the
+// compiled swap, require that it spends the Squads cash, raises collateral
+// custody by at least the minimum and leaves the obligation, reserves and
+// supplies unchanged, then price the complete return (payoff included) from
+// that poststate with the Squads cash it spent removed.
+func priceTopupSwapBesideDebt(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, observation Observation, decision Decision, evidence JupiterExecutionEvidence, slot int64) (phase3BridgeAdmission, error) {
+	s, r := observation.Snapshot, evidence.Request
+	current, err := manifest.observePhase3KnownBuildCost(ctx, rpc, r, evidence.ExpectedEffects)
+	if err != nil {
+		return phase3BridgeAdmission{}, err
+	}
+	route, err := runtimeRoute(s.RouteLane)
+	if err != nil {
+		return phase3BridgeAdmission{}, err
+	}
+	additional := []string{bridgeSquadsATA}
+	if route.Lane == autoAUTOPYUSD.Lane {
+		additional = append(additional, route.Kamino.Market)
+	}
+	bound, before, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, max(slot, current.ObservationSlot), 3, additional...)
+	if err != nil {
+		return phase3BridgeAdmission{}, err
+	}
+	position, err := decodeKaminoObligation(accountAt(before, route.Kamino.Obligation), route.Kamino)
+	if err != nil || position.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || position.debtRaw == 0 {
+		return phase3BridgeAdmission{}, budgetHold("entry_swap_position_changed")
+	}
+	message, err := CompileJupiterMessage(r)
+	if err != nil {
+		return phase3BridgeAdmission{}, err
+	}
+	var addresses []string
+	for _, a := range before {
+		addresses = append(addresses, a.Address)
+	}
+	projection, err := simulatePhase3EntryProjection(ctx, rpc, message, addresses, bound.ObservedSlot)
+	if err != nil {
+		return phase3BridgeAdmission{}, err
+	}
+	if err := validateLeverageProjection(r, evidence.ExpectedEffects, before, projection); err != nil {
+		return phase3BridgeAdmission{}, err
+	}
+	post := observation
+	post.Snapshot.SquadsIdleRaw -= int64(r.AmountRaw)
+	return pricePhase3ProjectedPositionReturn(ctx, rpc, client, manifest, post, decision, r, evidence.ExpectedEffects, current, projection)
 }
 
 func (d *Database) admitPhase3EntrySwap(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {

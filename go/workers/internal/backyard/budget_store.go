@@ -55,17 +55,18 @@ func (d *Database) RecordPhase3BudgetHold(ctx context.Context, operationID strin
 		"phase3_budget_hold:"+hold.Reason, string(encoded))
 }
 
-// Book the admitted upper bound only after finalized effect reconciliation.
-// This intentionally never refunds quote/fee slack without separate economic
-// proof. Principal returning to custody does not reduce this gross counter.
+// Book the admitted gross upper bound only after finalized effect
+// reconciliation; principal returning to custody does not reduce this gross
+// counter. A pilot's execution-cost counter books the realized cost proven by
+// the finalized effects, which Settle keeps within the admitted bound.
 func (d *Database) settlePhase3ReservationTx(ctx context.Context, tx pgx.Tx, operationID string) error {
 	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operationID)
 	if err != nil {
 		return err
 	}
 	var finalized bool
-	var wire []byte
-	if err = tx.QueryRow(ctx, `SELECT status='reconciled' AND confirmation_status='finalized' AND reconciled_effects IS NOT NULL,signed_wire FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&finalized, &wire); err != nil {
+	var wire, reconciled []byte
+	if err = tx.QueryRow(ctx, `SELECT status='reconciled' AND confirmation_status='finalized' AND reconciled_effects IS NOT NULL,signed_wire,reconciled_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&finalized, &wire, &reconciled); err != nil {
 		return err
 	}
 	if !finalized || auth.GoalID != Phase3GoalID || auth.ReservationReleased || auth.BookedSpentMicros != 0 || len(wire) == 0 || auth.SignedWireSHA256 != sha256Bytes(wire) {
@@ -75,11 +76,17 @@ func (d *Database) settlePhase3ReservationTx(ctx context.Context, tx pgx.Tx, ope
 	if !ok {
 		return budgetHold("unreserved_reconciliation")
 	}
-	if err = budget.Settle(operationID, auth.IntentSHA256, reservation.UpperMicros); err != nil {
+	var realized int64
+	if budget.Pilot != nil {
+		if realized, err = realizedPilotExecutionCost(auth, reconciled); err != nil {
+			return err
+		}
+	}
+	if err = budget.Settle(operationID, auth.IntentSHA256, reservation.UpperMicros, realized); err != nil {
 		return err
 	}
 	auth.BookedSpentMicros = reservation.UpperMicros
-	auth.BookedExecutionCostMicros = reservation.ExecutionCostUpperMicros
+	auth.BookedExecutionCostMicros = realized
 	return d.writePhase3BudgetTx(ctx, tx, operationID, budget, auth)
 }
 
@@ -172,11 +179,25 @@ func (d *Database) readPhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationI
 }
 
 func (d *Database) writePhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationID string, budget Phase3Budget, auth phase3OperationAuthorization) error {
-	budgetBytes, err := json.Marshal(budget)
+	authBytes, err := json.Marshal(auth)
 	if err != nil {
 		return err
 	}
-	authBytes, err := json.Marshal(auth)
+	if err = d.writePhase3RouteBudgetTx(ctx, tx, budget); err != nil {
+		return err
+	}
+	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=jsonb_set(expected_effects,'{phase3}',$2::jsonb,true),updated_at=clock_timestamp() WHERE operation_id=$1`, operationID, string(authBytes))
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("budget operation disappeared")
+	}
+	return nil
+}
+
+func (d *Database) writePhase3RouteBudgetTx(ctx context.Context, tx pgx.Tx, budget Phase3Budget) error {
+	budgetBytes, err := json.Marshal(budget)
 	if err != nil {
 		return err
 	}
@@ -191,13 +212,6 @@ func (d *Database) writePhase3BudgetTx(ctx context.Context, tx pgx.Tx, operation
 	}
 	if result.RowsAffected() != 1 {
 		return ErrRouteLeaseLost
-	}
-	result, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=jsonb_set(expected_effects,'{phase3}',$2::jsonb,true),updated_at=clock_timestamp() WHERE operation_id=$1`, operationID, string(authBytes))
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("budget operation disappeared")
 	}
 	return nil
 }

@@ -84,7 +84,13 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 			s.DebtIdleRaw, s.CollateralIdleRaw = 0, 35000000
 			check(OpenRouteStep, 35000000)
 			s.CollateralIdleRaw, s.PositionCollateralRaw = 0, 125000000
-			check(Hold, 0)
+			if debtTopupLane(lane) {
+				// Plan B3 beside debt: the USDC residue tops the position up
+				// as collateral; it never repays or joins the PYUSD debt cash.
+				check(SwapStableToCollateralStep, 3000000)
+			} else {
+				check(Hold, 0)
+			}
 			// Even ample Voltr USDC must not short-circuit a canary drain.
 			s.CutoverDrain, s.WithdrawalDemandRaw, s.VoltrIdleRaw = true, 1, 200000000
 			check(DeleverRouteStep, 1) // 3000000 USDC raw cannot fund 40000000 debt raw at $2

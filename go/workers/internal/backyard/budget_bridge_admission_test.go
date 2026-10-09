@@ -151,7 +151,7 @@ func TestBridgeAdmissionReturnGraphConsumesReservedBudget(t *testing.T) {
 		}
 		// This proves accounting, not on-chain settlement. The DB test covers
 		// durable admission; real finalized execution remains separate proof.
-		if err = budget.Settle(r.OperationID, intent, r.UpperMicros); err != nil {
+		if err = budget.Settle(r.OperationID, intent, r.UpperMicros, r.ExecutionCostUpperMicros); err != nil {
 			t.Fatal(err)
 		}
 		spent += r.UpperMicros

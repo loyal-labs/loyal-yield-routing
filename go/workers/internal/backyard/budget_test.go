@@ -96,7 +96,7 @@ func TestBudgetUnwindConsumesReservedHeadroom(t *testing.T) {
 	if err := b.Admit(r); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Settle(r.OperationID, r.IntentSHA256, 850_000); err != nil {
+	if err := b.Settle(r.OperationID, r.IntentSHA256, 850_000, r.ExecutionCostUpperMicros); err != nil {
 		t.Fatal(err)
 	}
 	row := b.Families["OnRe"]

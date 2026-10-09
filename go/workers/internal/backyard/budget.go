@@ -301,10 +301,12 @@ func (b *Phase3Budget) Admit(r BudgetReservation) error {
 	return nil
 }
 
-// Settle consumes a reservation only after the caller has verified finalized
-// effects. Ambiguous outcomes must not call this. Conservative booked spend
-// may be the upper bound; a lower actual charge needs independent valuation.
-func (b *Phase3Budget) Settle(operationID, intentSHA256 string, actualMicros int64) error {
+// Settle consumes a reservation only after the caller has verified
+// finalized effects. Ambiguous outcomes must not call this. The gross movement
+// ledger books the upper bound; a lower actual charge needs independent
+// valuation. A pilot books its realized execution cost, which can never exceed
+// the admitted worst-case bound.
+func (b *Phase3Budget) Settle(operationID, intentSHA256 string, actualMicros, executionCostMicros int64) error {
 	if b == nil {
 		return budgetHold("missing_goal_budget")
 	}
@@ -327,11 +329,16 @@ func (b *Phase3Budget) Settle(operationID, intentSHA256 string, actualMicros int
 		if actualMicros != r.UpperMicros {
 			return budgetHold("pilot_settlement_requires_full_admitted_bound")
 		}
-		expense, err := budgetSum(row.ExecutionCostSpentMicros, r.ExecutionCostUpperMicros)
+		if executionCostMicros < 0 || executionCostMicros > r.ExecutionCostUpperMicros {
+			return budgetHold("realized_execution_cost_exceeds_bound")
+		}
+		expense, err := budgetSum(row.ExecutionCostSpentMicros, executionCostMicros)
 		if err != nil {
 			return err
 		}
 		row.ExecutionCostSpentMicros = expense
+	} else if executionCostMicros != 0 {
+		return budgetHold("execution_cost_requires_pilot_authority")
 	}
 	row.SpentMicros = spent
 	b.Families[r.Family] = row

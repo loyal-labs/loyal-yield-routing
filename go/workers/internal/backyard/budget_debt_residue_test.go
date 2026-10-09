@@ -189,7 +189,7 @@ func TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap(t *testing.T) {
 	if err = b.Admit(reservation); err != nil {
 		t.Fatal(err)
 	}
-	if err = b.Settle(reservation.OperationID, intent, reservation.UpperMicros); err != nil {
+	if err = b.Settle(reservation.OperationID, intent, reservation.UpperMicros, reservation.ExecutionCostUpperMicros); err != nil {
 		t.Fatal(err)
 	}
 	if b.Families["Ethena"].ExitMicros != plan.ExitAfterMicros || b.Families["Ethena"].SpentMicros != plan.CurrentCost.TotalMicros {

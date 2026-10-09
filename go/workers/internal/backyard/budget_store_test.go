@@ -546,7 +546,7 @@ func TestMaintenanceNAVRetainsExitAcrossPriceDriftAndRepeatedFees(t *testing.T) 
 		if err = b.Admit(r); err != nil {
 			t.Fatal(err)
 		}
-		if err = b.Settle(id, r.IntentSHA256, r.UpperMicros); err != nil {
+		if err = b.Settle(id, r.IntentSHA256, r.UpperMicros, r.ExecutionCostUpperMicros); err != nil {
 			t.Fatal(err)
 		}
 		after := b.Families["Maple"]

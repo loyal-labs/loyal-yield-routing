@@ -231,10 +231,13 @@ func decodeRouteNAVCustodiesForRoute(accounts []ConfirmedAccount, route RuntimeR
 // matching decimals or a stablecoin peg. The two reserve prices use the same
 // scaled-fraction quote denomination, which cancels exactly in their ratio.
 func valueBetweenTokenRaw(raw uint64, tokenDecimals, debtDecimals uint8, tokenPriceSF, debtPriceSF [16]byte, liability bool) (uint64, error) {
+	return valueBetweenPrices(raw, tokenDecimals, debtDecimals, littleInt(tokenPriceSF[:]), littleInt(debtPriceSF[:]), liability)
+}
+
+func valueBetweenPrices(raw uint64, tokenDecimals, debtDecimals uint8, tokenPrice, debtPrice *big.Int, liability bool) (uint64, error) {
 	if tokenDecimals > 18 || debtDecimals > 18 {
 		return 0, fmt.Errorf("unsupported token decimal scale")
 	}
-	tokenPrice, debtPrice := littleInt(tokenPriceSF[:]), littleInt(debtPriceSF[:])
 	if tokenPrice.Sign() <= 0 || debtPrice.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino reserve market price is zero")
 	}
