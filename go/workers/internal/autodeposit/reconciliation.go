@@ -17,33 +17,6 @@ type ReconciliationRequest struct {
 	AttemptCount  int
 }
 
-// EnqueueAutodepositReconciliationRequest records one bounded high-water
-// reconciliation ask per target. A newer requested slot raises the high-water
-// mark and pulls the next attempt forward; an older one is coalesced into the
-// existing row, so a burst of wallet updates cannot multiply the work.
-func (s *Store) EnqueueAutodepositReconciliationRequest(ctx context.Context, targetID, requestedSlot int64) (bool, error) {
-	if requestedSlot < 0 {
-		return false, fmt.Errorf("autodeposit reconciliation requested slot %d is negative", requestedSlot)
-	}
-	tag, err := s.pool.Exec(ctx, `
-INSERT INTO loyal_yield.autodeposit_reconciliation_requests
-    (target_id, requested_slot)
-VALUES ($1, $2)
-ON CONFLICT (target_id) DO UPDATE SET
-    requested_slot = EXCLUDED.requested_slot,
-    next_attempt_at = LEAST(
-        loyal_yield.autodeposit_reconciliation_requests.next_attempt_at,
-        NOW()
-    ),
-    updated_at = NOW()
-WHERE EXCLUDED.requested_slot
-    >= loyal_yield.autodeposit_reconciliation_requests.requested_slot`, targetID, requestedSlot)
-	if err != nil {
-		return false, fmt.Errorf("enqueue autodeposit reconciliation request: %w", err)
-	}
-	return tag.RowsAffected() == 1, nil
-}
-
 // ClaimAutodepositReconciliationRequest takes exclusive, lease-bounded ownership
 // of the oldest ready request, bumping its attempt count. SKIP LOCKED keeps
 // concurrent consumers on different rows instead of deadlocking.

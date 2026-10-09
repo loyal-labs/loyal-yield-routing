@@ -2,18 +2,11 @@ package backyard
 
 import "testing"
 
-func TestTransitionsAndRecovery(t *testing.T) {
+func TestTransitions(t *testing.T) {
 	if !CanTransition(Signed, BroadcastIntent) || !CanTransition(Confirmed, Reconciling) ||
 		CanTransition(Confirmed, Reconciled) || CanTransition(Held, Decided) ||
 		CanTransition(Failed, Decided) || CanTransition(Submitted, Signed) {
 		t.Fatal("invalid transition rules")
-	}
-	wire, err := RecoveryWire(Submitted, []byte{1})
-	if err != nil || len(wire) != 1 {
-		t.Fatal(err)
-	}
-	if _, err := RecoveryWire(Submitted, nil); err == nil {
-		t.Fatal("expected missing wire rejection")
 	}
 }
 
@@ -36,11 +29,6 @@ func TestNonterminalSetExcludesPersistedHolds(t *testing.T) {
 		if IsNonterminal(status) {
 			t.Fatalf("expected %s to be terminal", status)
 		}
-	}
-}
-func TestPersistBeforeSend(t *testing.T) {
-	if !PersistedForSend(BroadcastIntent) || PersistedForSend(Signed) || PersistedForSend(Built) {
-		t.Fatal("incorrect persistence ordering")
 	}
 }
 

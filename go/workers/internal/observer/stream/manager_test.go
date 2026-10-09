@@ -10,6 +10,12 @@ import (
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 )
 
+type HandlerFunc func(context.Context, *pb.SubscribeUpdate) error
+
+func (f HandlerFunc) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
+	return f(ctx, update)
+}
+
 func TestHandoffReplayStartUsesNegativeOverlap(t *testing.T) {
 	requested := uint64(200)
 	if got := handoffReplayStart(150, 32, &requested); got != 118 {

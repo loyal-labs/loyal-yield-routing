@@ -49,11 +49,3 @@ func (s *Store) finishLookupVerification(ctx context.Context, op LookupOperation
 		return err
 	})
 }
-
-func (s *Store) deferLookupLegacy(ctx context.Context, op LookupOperation, reason string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state='needs_reconcile',next_attempt_at=clock_timestamp()+interval '5 seconds',lease_owner=NULL,lease_expires_at=NULL,error_detail=$4,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp() AND (transaction_signature IS NOT NULL OR message_hash IS NOT NULL OR recent_blockhash IS NOT NULL OR last_valid_block_height IS NOT NULL)`, op.Intent.OperationID, op.Lease.Owner, op.Lease.FencingToken, reason)
-	if err == nil && tag.RowsAffected() != 1 {
-		return ErrStaleOwner
-	}
-	return err
-}

@@ -172,9 +172,6 @@ func TestBuildPullProducesSignedSubscriptionsWire(t *testing.T) {
 	if len(raw) > solanaPacketBytes {
 		t.Fatalf("pull wire is %d bytes, exceeds %d", len(raw), solanaPacketBytes)
 	}
-	if _, err := decodeSignedWireMessage(raw); err != nil {
-		t.Fatalf("signed pull wire does not parse: %v", err)
-	}
 	// The digest is the sha256 of the exact bytes, per the shared contract.
 	if wire.SignedTransactionSHA256 != hexOrPanic(raw) {
 		t.Fatal("wire digest is not the sha256 of the decoded bytes")
@@ -191,7 +188,7 @@ func TestBuildPullProducesSignedSubscriptionsWire(t *testing.T) {
 		t.Fatal("persisted signature differs from exact wire")
 	}
 	// The only instruction is the policy-wrapped subscriptions transfer.
-	message, err := decodeSignedWireMessage(raw)
+	message, err := decodeSignedWireMessageTransaction(tx)
 	if err != nil {
 		t.Fatal(err)
 	}

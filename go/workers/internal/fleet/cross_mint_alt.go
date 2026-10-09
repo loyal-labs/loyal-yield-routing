@@ -65,16 +65,6 @@ func validateCrossMintExternalALTs(external []CrossMintExternalALT) error {
 	return nil
 }
 
-// CrossMintRequirementsFingerprint is a pure identity calculation, not an RPC
-// proof. Publication uses the private finalized binder and manifest accessor.
-// Rust sorts tables by raw Pubkey; each table's full members retain index order.
-func CrossMintRequirementsFingerprint(manifest *ALTManifest, external []CrossMintExternalALT) (string, error) {
-	if err := ValidateALTManifestIntegrity(manifest); err != nil {
-		return "", err
-	}
-	return crossMintExternalRequirementsFingerprint(manifest.Fingerprint, external)
-}
-
 func crossMintExternalRequirementsFingerprint(v1 string, external []CrossMintExternalALT) (string, error) {
 	if err := validateCrossMintExternalALTs(external); err != nil {
 		return "", err

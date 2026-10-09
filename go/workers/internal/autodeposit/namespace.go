@@ -11,13 +11,6 @@ import (
 // is not evidence that a retained signed transaction belongs to that chain.
 const mainnetCluster = "mainnet-beta"
 
-// A reported frontier comes from a real confirmed-bank probe, and must cover
-// the source clocks already consumed by this target's control and scheduling.
-const mainnetSourceAheadSQL = `GREATEST(target.chain_observation_slot,
-COALESCE((SELECT max(wallet.observed_slot) FROM loyal_yield.balance_sweep_wallet_balances_current wallet WHERE wallet.target_id=target.id AND wallet.mint=target.token_mint),0),
-COALESCE((SELECT max(rp.last_seen_slot) FROM loyal_yield.managed_vaults mv JOIN loyal_yield.route_policies rp ON rp.id=mv.active_policy_id WHERE mv.active AND mv.settings=target.settings AND mv.vault_index=target.vault_index AND mv.vault_pubkey=target.vault_pubkey AND rp.active AND rp.cluster='mainnet-beta'),0),
-COALESCE((SELECT max(yp.current_observed_slot) FROM loyal_yield.user_yield_positions yp WHERE yp.settings=target.settings AND yp.vault_index=target.vault_index AND yp.wallet_address=target.wallet AND yp.status='active' AND yp.current_liquidity_mint=target.token_mint),0))>$2`
-
 var ErrChainNamespace = errors.New("autodeposit chain namespace is unsupported or unknown")
 
 func (s *Store) requireMainnetTarget(ctx context.Context, id int64) error {

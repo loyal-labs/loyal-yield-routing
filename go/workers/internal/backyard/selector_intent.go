@@ -50,10 +50,6 @@ func (m RouteManifest) validateUnwindIntent(i UnwindIntent) error {
 	return validateUnwindIntent(i, m.selectorEntryLaneAllowed)
 }
 
-func applyUnwindIntent(s *Snapshot, intent *UnwindIntent) error {
-	return applyUnwindIntentWithLane(s, intent, selectorLane)
-}
-
 // applyUnwindIntentWithLane is the identical unwind merge with the source
 // lane authority parameterized, so the production journal merge under an
 // explicit reviewed manifest accepts a recorded candidate-source unwind.

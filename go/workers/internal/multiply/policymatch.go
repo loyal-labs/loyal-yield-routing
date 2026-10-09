@@ -24,8 +24,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 )
 
-const squadsFullPermissionsMask = uint8(7)
-
 type DataOperatorView = squadspolicy.DataOperatorView
 type DataValueView = squadspolicy.DataValueView
 type DataConstraintView = squadspolicy.DataConstraintView

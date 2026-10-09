@@ -35,17 +35,7 @@ const (
 
 // Store is the pool-injected durable multiply store.
 type Store struct {
-	pool     *pgxpool.Pool
-	ownsPool bool
-}
-
-// NewStore opens the pooled connection through the root-owned db package.
-func NewStore(ctx context.Context, dsn string) (*Store, error) {
-	pool, err := db.Open(ctx, dsn, 4)
-	if err != nil {
-		return nil, err
-	}
-	return &Store{pool: pool, ownsPool: true}, nil
+	pool *pgxpool.Pool
 }
 
 // NewStoreFromPool borrows the engine's pool. The caller owns its lifetime;
@@ -65,14 +55,6 @@ func NewStoreFromPool(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
-}
-
-// Close releases only a pool opened by NewStore. A borrowed engine pool remains
-// usable by other retail families until the engine owner closes it.
-func (s *Store) Close() {
-	if s != nil && s.ownsPool && s.pool != nil {
-		s.pool.Close()
-	}
 }
 
 // RequireSchema fails closed unless the currently registered multiply tables

@@ -133,11 +133,6 @@ type routeObservationRuntime struct {
 	now              func() time.Time
 }
 
-func observeConfirmedRouteSnapshot(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, error) {
-	observation, _, err := observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, runtime)
-	return observation, err
-}
-
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
 	if runtime.confirmedSlot == nil || runtime.receipts == nil || runtime.accounts == nil || runtime.finalizedReceipt == nil || runtime.now == nil {
 		return Observation{}, nil, fmt.Errorf("route observation runtime is incomplete")
@@ -618,14 +613,6 @@ func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, acco
 	}
 	complete := len(route.PolicyAccounts) == 4 && len(mapleKaminoPolicyHashes()) == 4
 	return complete, complete
-}
-
-func observePrimeUSDCFromFixedAccounts(ctx context.Context, accountsReader func(context.Context, []string, int64) (int64, []ConfirmedAccount, error), slot int64, accounts []ConfirmedAccount) (KaminoPosition, error) {
-	config, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return KaminoPosition{}, err
-	}
-	return observeKaminoFromFixedAccounts(ctx, accountsReader, slot, accounts, config)
 }
 
 // Market unavailability closes entry, but cannot invalidate independently

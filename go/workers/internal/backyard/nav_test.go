@@ -91,7 +91,7 @@ func TestExtendedCustodySpendabilityBoundary(t *testing.T) {
 	}
 }
 
-func TestConservativeValuationRoundingAndObligationBound(t *testing.T) {
+func TestConservativeValuationRounding(t *testing.T) {
 	asset, err := ValueRawUSDC(1, 1, 15, false)
 	if err != nil || asset != 1 {
 		t.Fatalf("asset=%d err=%v", asset, err)
@@ -99,12 +99,6 @@ func TestConservativeValuationRoundingAndObligationBound(t *testing.T) {
 	liability, err := ValueRawUSDC(1, 1, 15, true)
 	if err != nil || liability != 2 {
 		t.Fatalf("liability=%d err=%v", liability, err)
-	}
-	if err := ValidateSingleObligation([]ObligationNAV{{Address: "one", Recognized: true, Nonzero: true}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateSingleObligation([]ObligationNAV{{Address: "one", Recognized: true, Nonzero: true}, {Address: "two", Recognized: true, Nonzero: true}}); err == nil {
-		t.Fatal("multiple active obligations accepted")
 	}
 }
 

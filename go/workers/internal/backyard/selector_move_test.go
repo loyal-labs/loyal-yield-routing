@@ -22,7 +22,7 @@ func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	destination, err := observeSelectorDestination(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42)
+	destination, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

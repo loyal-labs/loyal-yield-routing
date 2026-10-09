@@ -158,11 +158,3 @@ func deriveKaminoObligationFarmUserState(reserveFarmState, obligation string) (s
 }
 
 const onreDebtFarmState = "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF"
-
-func onreDebtFarmPair() (reserveFarmState, obligationFarmUserState string, err error) {
-	reserveFarmState = onreDebtFarmState
-	obligationFarmUserState, err = deriveKaminoObligationFarmUserState(
-		reserveFarmState, "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
-	)
-	return
-}

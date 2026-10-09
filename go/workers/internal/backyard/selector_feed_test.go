@@ -93,7 +93,7 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	inflated := 0.25
 	d.BorrowAPR, d.BorrowAPY = &inflated, &inflated
 	rows := map[string]verifiedEconomicReserve{c.Reserve: c, d.Reserve: d}
-	got := combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())
+	got := combineEconomicsWithLane([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy(), selectorLane)
 	if len(got) != 1 || got[0].EntryCapacity.Known || got[0].DebtSupplyRaw != supply || got[0].DebtBorrowRaw != borrow {
 		t.Fatalf("feed: %+v", got)
 	}
@@ -110,7 +110,7 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 
 	d.Mint = "wrong"
 	rows[d.Reserve] = d
-	if len(combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())) != 0 {
+	if len(combineEconomicsWithLane([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy(), selectorLane)) != 0 {
 		t.Fatal("feed identity mismatch accepted")
 	}
 }
@@ -126,7 +126,7 @@ func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
 			accounts[i] = tokenAccountFixture(t, source.CollateralCustody, source.Kamino.CollateralMint, bridgeVault, 1)
 		}
 	}
-	got, err := observedSelectorRoute(accounts, SelectedRouteID)
+	got, err := observedSelectorRouteWithLane(accounts, SelectedRouteID, selectorLane)
 	if err != nil || got.Lane != source.Lane {
 		t.Fatalf("old custody hidden: %s %v", got.Lane, err)
 	}
@@ -136,7 +136,7 @@ func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
 			accounts[i] = tokenAccountFixture(t, other.CollateralCustody, other.Kamino.CollateralMint, bridgeVault, 1)
 		}
 	}
-	if _, err = observedSelectorRoute(accounts, SelectedRouteID); err == nil {
+	if _, err = observedSelectorRouteWithLane(accounts, SelectedRouteID, selectorLane); err == nil {
 		t.Fatal("two lanes silently reduced to one NAV")
 	}
 }
@@ -319,7 +319,7 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	}
 	// The public wrapper keeps installed scope: the same complete candidate
 	// evidence is NOT accepted through it.
-	if got := combineEconomics([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy()); len(got) != 0 {
+	if got := combineEconomicsWithLane([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy(), selectorLane); len(got) != 0 {
 		t.Fatalf("installed wrapper accepted the candidate lane: %+v", got)
 	}
 	// The debt identity is the route's OWN debt mint: a USDC-minted debt row

@@ -61,10 +61,6 @@ func TestBorrowedStorePreservesEnginePoolLifetime(t *testing.T) {
 	if borrowed.Pool() != owner.Pool() {
 		t.Fatal("family constructor replaced engine pool")
 	}
-	borrowed.Close()
-	if err := owner.Pool().Ping(context.Background()); err != nil {
-		t.Fatalf("closing family closed shared engine pool: %v", err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if store, err := NewStoreFromPool(ctx, owner.Pool()); store != nil || !errors.Is(err, context.Canceled) {

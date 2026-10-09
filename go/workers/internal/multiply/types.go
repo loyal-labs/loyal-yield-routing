@@ -43,10 +43,6 @@ const (
 
 var strategyKeys = []StrategyKey{OnycUsdc, OnycUsds, PrimeUsdc, PrimePyusd, PrimeUsds, SyrupUsdcUsdc, SyrupUsdcPyusd}
 
-// StrategyKeys returns the catalog in the Rust enum declaration order, which
-// fixes observation, planning, and reconciliation ordering.
-func StrategyKeys() []StrategyKey { return append([]StrategyKey(nil), strategyKeys...) }
-
 func (k StrategyKey) Valid() bool {
 	for _, value := range strategyKeys {
 		if value == k {
@@ -532,41 +528,4 @@ type TickResult struct {
 	Condition   string  `json:"condition"`
 	OperationID *string `json:"operationId"`
 	Signature   *string `json:"signature"`
-}
-
-// RouteView is the status command projection.
-type RouteView struct {
-	RouteKey           string  `json:"routeKey"`
-	Settings           string  `json:"settings"`
-	VaultIndex         uint8   `json:"vaultIndex"`
-	Vault              string  `json:"vault"`
-	Generation         uint64  `json:"generation"`
-	Cycle              uint64  `json:"cycle"`
-	Goal               string  `json:"goal"`
-	CurrentOperationID *string `json:"currentOperationId"`
-}
-
-// RouteViewOf mirrors multiply::view::route_view.
-func RouteViewOf(state *RouteState) RouteView {
-	current := (*string)(nil)
-	if state.CurrentOperationID != nil {
-		value := *state.CurrentOperationID
-		current = &value
-	}
-	goal := string(state.Goal)
-	switch state.Goal {
-	case GoalIdle, GoalDeploy, GoalWithdraw, GoalClaimed, GoalManualRecovery:
-	default:
-		goal = "invalid"
-	}
-	return RouteView{
-		RouteKey:           state.RouteKey,
-		Settings:           state.Settings,
-		VaultIndex:         state.VaultIndex,
-		Vault:              state.Vault,
-		Generation:         state.Generation,
-		Cycle:              state.Cycle,
-		Goal:               goal,
-		CurrentOperationID: current,
-	}
 }

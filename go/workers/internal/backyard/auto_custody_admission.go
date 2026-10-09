@@ -652,20 +652,6 @@ func observeConfirmedSharedCustodyRaw(ctx context.Context, rpc *RPCClient, cfg s
 	return custody.Raw, slot, nil
 }
 
-// observeSharedCustodySendProofForOperation is the shared final-send seam
-// (doc 26 §4): for a POSITIVE AUTO-PYUSD spend it takes a fresh confirmed
-// custody observation and the full send-phase walk for the EXACT signed
-// operation (persisted wire identity, built effects), returning the proof the
-// broadcast-intent lock re-validates. Zero-spend and other lanes return nil
-// and keep installed behavior.
-func (d *Database) observeSharedCustodySendProofForOperation(ctx context.Context, manifest RouteManifest, rpc *RPCClient, operationID string, decoded ExpectedEffects, minimumSlot int64, signed sharedCustodySignedSpend) (*sharedCustodyAdmissionProof, error) {
-	send, err := d.gatherSharedCustodySendProof(ctx, manifest, operationID, decoded, signed)
-	if err != nil {
-		return nil, err
-	}
-	return send.finish(ctx, rpc, decoded, minimumSlot)
-}
-
 // sharedCustodySendProof splits the final-send proof so its journal read can
 // run while the signed wire is revalued. The fresh custody balance is still
 // read only in finish, at a slot no older than the revalued cost, and the

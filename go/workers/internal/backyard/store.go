@@ -93,10 +93,6 @@ const RouteProjectionUpdate = `UPDATE loyal_yield.multiply_route_states SET stat
 
 const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapshots (route_key, generation, observed_slot, observed_at, strategy_key, claim_raw, collateral_raw, debt_raw, equity_usd_micros, collateral_value_usd_micros, debt_value_usd_micros, ltv_bps, forecast_apy_bps, valuation_source, valuation_slot, valuation_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $4) ON CONFLICT (route_key, observed_slot) DO NOTHING`
 
-func PersistedForSend(status OperationStatus) bool {
-	return status == BroadcastIntent
-}
-
 var (
 	ErrRouteLeaseUnavailable = errors.New("route lease is held by another worker")
 	ErrRouteLeaseLost        = errors.New("route lease was lost or expired")

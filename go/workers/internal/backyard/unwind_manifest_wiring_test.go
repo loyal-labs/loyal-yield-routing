@@ -85,7 +85,7 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	// Apply: the embedded merge refuses; the manifest merge arms the snapshot.
 	s := base()
 	s.RouteLane = autoAUTOPYUSD.Lane
-	if err = applyUnwindIntent(&s, got); err == nil {
+	if err = applyUnwindIntentWithLane(&s, got, selectorLane); err == nil {
 		t.Fatal("embedded apply accepted the candidate source")
 	}
 	if err = applyUnwindIntentWithLane(&s, got, manifest.selectorEntryLaneAllowed); err != nil || !s.Unwind {

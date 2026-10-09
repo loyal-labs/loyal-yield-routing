@@ -210,13 +210,7 @@ func fixturePersistInput(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		t.Fatal(err)
 	}
 	effect := []byte(`{"route":"same_mint"}`)
-	anchors, _ := jsonMarshal(BalanceAnchorEvidence{
-		AccountAddresses: []string{"payer", "source", "target"},
-		Anchors: []EffectAnchor{
-			{Account: "source", Mint: "usdc", ExpectedDelta: 1_000_000, Decimals: 6},
-			{Account: "target", Mint: "usdc", ExpectedDelta: -1_000_000, Decimals: 6},
-		},
-	})
+	anchors := []byte(`{"account_addresses":["payer","source","target"],"anchors":[{"account":"source","mint":"usdc","expected_delta":1000000,"decimals":6},{"account":"target","mint":"usdc","expected_delta":-1000000,"decimals":6}]}`)
 	return PersistRouteInput{
 		Cluster: baseline.Cluster, SemanticKey: baseline.SemanticKey,
 		OpportunityID: baseline.OpportunityID, DecisionID: &baseline.DecisionID,
@@ -233,10 +227,6 @@ func fixturePersistInput(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		ExpectedEffect:             effect, ExpectedBalanceAnchors: anchors,
 		ConflictLeaseExpiration: time.Now().Add(time.Hour),
 	}
-}
-
-func jsonMarshal(v any) ([]byte, error) {
-	return json.Marshal(v)
 }
 
 func claimOne(t *testing.T, ctx context.Context, store *Store, cluster, owner string) SubmissionLease {

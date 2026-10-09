@@ -329,10 +329,6 @@ func stageInstruction(amount uint64) compiledInstruction {
 	)}
 }
 
-func wrapSquadsPolicy(policy, executor publicKey, constraintIndexes []byte, inner []compiledInstruction) (compiledInstruction, error) {
-	return wrapSquadsPolicyForDelegate(policy, executor, mustKey(bridgeDelegate), constraintIndexes, inner)
-}
-
 func wrapSquadsPolicyForDelegate(policy, executor, expectedDelegate publicKey, constraintIndexes []byte, inner []compiledInstruction) (compiledInstruction, error) {
 	if !isBridgePolicy(policy) || executor != expectedDelegate || len(inner) == 0 || len(inner) != len(constraintIndexes) || len(inner) > math.MaxUint8 {
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads bridge policy or delegate")
@@ -968,10 +964,6 @@ func isExactKaminoTransactionForLanes(instructions []decodedLegacyInstruction, l
 	return false
 }
 
-func isExactKaminoSquadsInner(outer decodedLegacyInstruction, leg kaminoPrimeUSDCLeg) bool {
-	return isExactKaminoSquadsInnerForRoute(outer, leg, RouteID)
-}
-
 func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kaminoPrimeUSDCLeg, lane string) bool {
 	// Exact Borsh envelope emitted by wrapSquadsKaminoPolicy:
 	// discriminator | vault | signer count | policy kind | interaction kind |
@@ -1034,10 +1026,6 @@ func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kamino
 	return dataLength == len(data) && len(data) == 16 &&
 		bytes.Equal(data[:8], kaminoLegDiscriminator(leg)) &&
 		readU64(data[8:]) > 0 && readU64(data[8:]) <= bridgeCapRaw
-}
-
-func kaminoLegMetas(leg kaminoPrimeUSDCLeg) []accountMeta {
-	return kaminoLegMetasForRoute(leg, RouteID)
 }
 
 func kaminoLegMetasForRoute(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {

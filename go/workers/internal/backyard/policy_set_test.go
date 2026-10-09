@@ -46,7 +46,8 @@ func TestKaminoFarmUserStateDerivationMatchesRustPairs(t *testing.T) {
 	if maple != "CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr" {
 		t.Fatalf("Maple farm user state=%s", maple)
 	}
-	onreFarm, onreUser, err := onreDebtFarmPair()
+	onreFarm := onreDebtFarmState
+	onreUser, err := deriveKaminoObligationFarmUserState(onreFarm, "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei")
 	if err != nil {
 		t.Fatal(err)
 	}

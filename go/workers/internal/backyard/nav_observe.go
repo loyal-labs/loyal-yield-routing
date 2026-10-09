@@ -205,10 +205,6 @@ func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
 	return addresses
 }
 
-func selectRouteNAVAccounts(accounts []ConfirmedAccount) ([]ConfirmedAccount, error) {
-	return selectRouteNAVAccountsForRoute(accounts, RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, Market: kaminoMarket, Program: kaminoProgram}, CollateralCustody: kaminoPrimeCustody})
-}
-
 func selectRouteNAVAccountsForRoute(accounts []ConfirmedAccount, route RuntimeRoute) ([]ConfirmedAccount, error) {
 	selected := make([]ConfirmedAccount, 0, len(pinnedRouteNAVAddressesForRoute(route)))
 	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
@@ -264,14 +260,6 @@ func strategyReceiptAbsent(account ConfirmedAccount) bool {
 	return account.Owner == "" && len(account.Data) == 0
 }
 
-func decodeRouteNAVCustodies(accounts []ConfirmedAccount) (RouteNAVCustodies, error) {
-	route, err := runtimeRoute(RouteID)
-	if err != nil {
-		return RouteNAVCustodies{}, fmt.Errorf("load pinned PRIME route: %w", err)
-	}
-	return decodeRouteNAVCustodiesForRoute(accounts, route)
-}
-
 func decodeRouteNAVCustodiesForRoute(accounts []ConfirmedAccount, route RuntimeRoute) (RouteNAVCustodies, error) {
 	idle, err := decodePinnedUSDC(accountAt(accounts, bridgeIdleATA), bridgeIdleAuthority)
 	if err != nil {
@@ -322,13 +310,6 @@ func decodeRouteNAVCustodiesForRoute(accounts []ConfirmedAccount, route RuntimeR
 	return result, nil
 }
 
-// valueInDebtRaw conservatively converts equal-decimal token raw units into
-// debt-token raw units. Assets floor; liabilities ceil. big.Int keeps hostile
-// reserve prices and balances from wrapping intermediate arithmetic.
-func valueInDebtRaw(raw uint64, tokenPriceSF, debtPriceSF [16]byte, liability bool) (uint64, error) {
-	return valueBetweenTokenRaw(raw, 0, 0, tokenPriceSF, debtPriceSF, liability)
-}
-
 // valueBetweenTokenRaw converts raw units between assets without assuming
 // matching decimals or a stablecoin peg. The two reserve prices use the same
 // scaled-fraction quote denomination, which cancels exactly in their ratio.
@@ -352,11 +333,6 @@ func valueBetweenTokenRaw(raw uint64, tokenDecimals, debtDecimals uint8, tokenPr
 		return 0, fmt.Errorf("Kamino valuation exceeds u64")
 	}
 	return quotient.Uint64(), nil
-}
-
-func navInputFingerprint(slot int64, accounts []ConfirmedAccount, custodies RouteNAVCustodies) (string, error) {
-	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, Market: kaminoMarket, Program: kaminoProgram}, CollateralCustody: kaminoPrimeCustody}
-	return navInputFingerprintForRoute(slot, accounts, custodies, route)
 }
 
 func navInputFingerprintForRoute(slot int64, accounts []ConfirmedAccount, custodies RouteNAVCustodies, route RuntimeRoute) (string, error) {

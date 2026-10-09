@@ -104,9 +104,7 @@ func TestMainnetControlIgnoresForeignNamespacesAndClosedBaseline(t *testing.T) {
 	id, reader, artifacts := seedControlRuntime(t, s)
 	control := &ControlReconciler{Store: s, Reader: reader, Artifacts: &ArtifactReconciler{Store: s, Reader: artifacts}}
 	// Request real bootstrap proof.
-	if _, err := s.EnqueueAutodepositReconciliationRequest(t.Context(), id, 200); err != nil {
-		t.Fatal(err)
-	}
+	enqueueReconciliationRequest(t, s, id, 200)
 	if worked, err := control.Tick(t.Context()); err != nil || !worked {
 		t.Fatalf("control tick worked=%v err=%v", worked, err)
 	}
@@ -131,9 +129,7 @@ func TestMainnetControlIgnoresForeignNamespacesAndClosedBaseline(t *testing.T) {
 			if _, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_targets SET cluster=$2 WHERE id=$1`, other.TargetID, cluster); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := s.EnqueueAutodepositReconciliationRequest(t.Context(), other.TargetID, 999); err != nil {
-				t.Fatal(err)
-			}
+			enqueueReconciliationRequest(t, s, other.TargetID, 999)
 			s.insertIntegrationEvent(t, other.TargetID, 1000+other.TargetID, 9_000_000, nil, time.Now())
 		}
 	}
@@ -193,9 +189,7 @@ func TestControlConfirmedSameSlotConflictDoesNotOverwriteWallet(t *testing.T) {
 	if _, err = s.pool.Exec(t.Context(), `UPDATE loyal_yield.balance_sweep_wallet_balances_current SET observed_slot=$2,amount_raw=8000000,source_commitment='confirmed' WHERE target_id=$1`, id, o.ObservedSlot); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.EnqueueAutodepositReconciliationRequest(t.Context(), id, o.ObservedSlot); err != nil {
-		t.Fatal(err)
-	}
+	enqueueReconciliationRequest(t, s, id, o.ObservedSlot)
 	request, err := s.ClaimAutodepositReconciliationRequest(t.Context(), "same-bank-reader", 30)
 	if err != nil || request == nil {
 		t.Fatalf("claim=%v %v", request, err)

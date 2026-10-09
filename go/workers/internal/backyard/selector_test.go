@@ -217,7 +217,7 @@ func TestCommittedUnwindDoesNotRewriteWithdrawalOrTrustFlatIntent(t *testing.T) 
 	s.PositionCollateralRaw = 100
 	s.HasPosition = true
 	intent := UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: "admitted", MaxCollateralRaw: 100, MaxDebtRaw: 50, CostBoundRaw: 100, BudgetScope: Phase3GoalID, BudgetFamily: "Maple", EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: time.Now().UTC()}
-	if err := applyUnwindIntent(&s, &intent); err != nil {
+	if err := applyUnwindIntentWithLane(&s, &intent, selectorLane); err != nil {
 		t.Fatal(err)
 	}
 	if got := Decide(s); got.Action != DeleverRouteStep || s.WithdrawalDemandRaw != 0 || unwindComplete(s) {
@@ -244,7 +244,7 @@ func TestCommittedUnwindDoesNotRewriteWithdrawalOrTrustFlatIntent(t *testing.T) 
 		t.Fatal("flat reconciled state did not complete")
 	}
 	s.RouteLane = "OnRe/ONyc/USDC"
-	if applyUnwindIntent(&s, &intent) == nil {
+	if applyUnwindIntentWithLane(&s, &intent, selectorLane) == nil {
 		t.Fatal("source changed before reconciliation")
 	}
 }

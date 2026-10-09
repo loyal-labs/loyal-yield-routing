@@ -51,14 +51,6 @@ const (
 	PurposeFallbackTarget = "fallback_target"
 )
 
-func legalMovementLeg(leg string) bool {
-	switch leg {
-	case LegRoute, LegWithdraw, LegSwap, LegDeposit:
-		return true
-	}
-	return false
-}
-
 func legalLegPurpose(purpose string) bool {
 	switch purpose {
 	case PurposeOptimizeYield, PurposeRecoverSource, PurposeFallbackTarget:

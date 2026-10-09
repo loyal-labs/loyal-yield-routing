@@ -262,30 +262,6 @@ func deriveActionAccount(settings solana.PublicKey, seed uint64) (solana.PublicK
 	return key, nil
 }
 
-// deriveActionAccountWithBump also returns the PDA bump, which the policy
-// account decoder checks against the stored bump byte.
-func deriveActionAccountWithBump(settings solana.PublicKey, seed uint64) (solana.PublicKey, uint8) {
-	key, bump, err := deriveActionAccountWithBumpErr(settings, seed)
-	if err != nil {
-		panic(err)
-	}
-	return key, bump
-}
-
-func deriveActionAccountWithBumpErr(settings solana.PublicKey, seed uint64) (solana.PublicKey, uint8, error) {
-	var seedBytes [8]byte
-	for index := range seedBytes {
-		seedBytes[index] = byte(seed >> (8 * index))
-	}
-	key, bump, err := solana.FindProgramAddress([][]byte{
-		[]byte("smart_account"), []byte("policy"), settings[:], seedBytes[:],
-	}, mustKey(SquadsProgram))
-	if err != nil {
-		return solana.PublicKey{}, 0, fmt.Errorf("derive action account: %w", err)
-	}
-	return key, bump, nil
-}
-
 type strategyTemplate struct {
 	key                       StrategyKey
 	market                    string

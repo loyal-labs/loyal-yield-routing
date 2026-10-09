@@ -89,9 +89,6 @@ func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 func freshAt(now, at time.Time, age time.Duration) bool {
 	return !at.IsZero() && !at.After(now) && now.Sub(at) <= age
 }
-func (e LaneEconomics) validate(now time.Time, p SelectorPolicy) error {
-	return e.validateWithLane(now, p, selectorLane)
-}
 
 // validateWithLane is the identical economics validation with the lane
 // authority parameterized, so the reviewed manifest's funded-selection path

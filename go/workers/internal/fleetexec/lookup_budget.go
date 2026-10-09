@@ -15,8 +15,8 @@ type LookupBudget struct {
 	RollingWindow   time.Duration
 }
 
-// ReserveLookupBudget uses the existing source cluster advisory lock and both
-// the reusable and legacy-cleanup ledgers. Per-operation max(actual,reserved)
+// ReserveLookupBudget uses the existing source cluster advisory lock and the
+// reusable operation ledger. Per-operation max(actual,reserved)
 // prevents double charging while overlapping fencing reservations still add.
 func (s *Store) ReserveLookupBudget(ctx context.Context, operation LookupOperation, policy LookupBudget, fee, rent uint64) (bool, error) {
 	if policy.MaximumLamports <= 0 || policy.RollingWindow < time.Second || policy.RollingWindow > 365*24*time.Hour || policy.RollingWindow%time.Second != 0 || fee > math.MaxInt64 || rent > math.MaxInt64 || fee > math.MaxInt64-rent {
@@ -70,18 +70,14 @@ func (s *Store) ReserveLookupBudget(ctx context.Context, operation LookupOperati
 			return err
 		}
 		var charged, subjectReserved, subjectActual int64
-		err = tx.QueryRow(ctx, `WITH reusable AS (
- SELECT 'operation'::text kind,o.id subject,COALESCE(sum(r.reserved_lamports),0)::bigint reserved,
+		err = tx.QueryRow(ctx, `WITH subjects AS (
+ SELECT o.id subject,COALESCE(sum(r.reserved_lamports),0)::bigint reserved,
  (COALESCE(o.actual_fee_lamports,0)+COALESCE(o.actual_rent_lamports,0))::bigint actual
  FROM loyal_yield.lookup_table_cluster_budget_reservations r JOIN loyal_yield.lookup_table_operations o ON o.id=r.operation_id
  WHERE r.cluster=$1 AND r.reserved_until>clock_timestamp() AND o.operation_state<>'cancelled'
  GROUP BY o.id,o.actual_fee_lamports,o.actual_rent_lamports
- ),legacy AS (
- SELECT 'legacy_cleanup'::text kind,a.id subject,COALESCE(sum(r.reserved_lamports),0)::bigint reserved,0::bigint actual
- FROM loyal_yield.lookup_table_legacy_cleanup_budget_reservations r JOIN loyal_yield.lookup_table_legacy_cleanup_attempts a ON a.id=r.legacy_cleanup_attempt_id
- WHERE r.cluster=$1 AND r.reserved_until>clock_timestamp() GROUP BY a.id
- ),subjects AS (SELECT * FROM reusable UNION ALL SELECT * FROM legacy)
- SELECT COALESCE(sum(GREATEST(reserved,actual)),0)::bigint,COALESCE(max(reserved) FILTER(WHERE kind='operation' AND subject=$2),0)::bigint,COALESCE(max(actual) FILTER(WHERE kind='operation' AND subject=$2),0)::bigint FROM subjects`, operation.Intent.Cluster, operation.Intent.OperationID).Scan(&charged, &subjectReserved, &subjectActual)
+ )
+ SELECT COALESCE(sum(GREATEST(reserved,actual)),0)::bigint,COALESCE(max(reserved) FILTER(WHERE subject=$2),0)::bigint,COALESCE(max(actual) FILTER(WHERE subject=$2),0)::bigint FROM subjects`, operation.Intent.Cluster, operation.Intent.OperationID).Scan(&charged, &subjectReserved, &subjectActual)
 		if err != nil {
 			return err
 		}

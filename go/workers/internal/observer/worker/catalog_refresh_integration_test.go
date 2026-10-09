@@ -102,11 +102,10 @@ CREATE TABLE %[1]s.latest_verified_reserve_updates(
 	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.latest_verified_reserve_updates VALUES(1,$1,$2,999,$2,1000,'confirmed','http_confirmed_refresh',$3,$4,'Main Market',$5,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008)`, schema), strings.Repeat("a", 64), now, catalogTestReserve, catalogTestMainMarket, catalogTestUSDC); err != nil {
 		t.Fatal(err)
 	}
-	planner, err := fleet.OpenMarketEvidenceStore(ctx, databaseURL, schema)
+	planner, err := fleet.NewMarketEvidenceStoreFromPool(pool, schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer planner.Close()
 	if err := planner.SetEnabledMints([]string{catalogTestUSDC}); err != nil {
 		t.Fatal(err)
 	}

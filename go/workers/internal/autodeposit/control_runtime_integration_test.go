@@ -93,9 +93,7 @@ func TestControlPersistsRetryAndRecovers(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET desired_active=false WHERE id=$1`, target.TargetID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.EnqueueAutodepositReconciliationRequest(ctx, target.TargetID, 200); err != nil {
-		t.Fatal(err)
-	}
+	enqueueReconciliationRequest(t, s, target.TargetID, 200)
 	artifactCalls, readerCalls := 0, 0
 	r := &ControlReconciler{Store: s}
 	r.Artifacts = runtimeArtifacts(func(context.Context, ReconciliationRequest, string) error {
@@ -144,9 +142,7 @@ func TestRuntimeControlKnownClosedDoesNotDemandCreatorHistory(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET desired_active=false WHERE id=$1`, target.TargetID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.EnqueueAutodepositReconciliationRequest(ctx, target.TargetID, 200); err != nil {
-		t.Fatal(err)
-	}
+	enqueueReconciliationRequest(t, s, target.TargetID, 200)
 	r := &ControlReconciler{Store: s,
 		Reader: runtimeControlReader(func(_ context.Context, target ControlTarget, min int64) (ControlObservation, error) {
 			return ControlObservation{Target: target, ObservedSlot: min + 1}, nil

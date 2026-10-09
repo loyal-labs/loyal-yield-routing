@@ -29,18 +29,6 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-// OpenStore connects and pings a pool for callers that do not already hold one.
-func OpenStore(ctx context.Context, databaseURL string) (*Store, error) {
-	if databaseURL == "" {
-		return nil, errors.New("autodeposit store requires a database URL")
-	}
-	pool, err := WorkersDB.Open(ctx, databaseURL, 4)
-	if err != nil {
-		return nil, fmt.Errorf("open autodeposit database: %w", err)
-	}
-	return NewStore(pool)
-}
-
 // RequireSchema verifies the family's actual prerequisites without applying
 // migrations; schema changes stay with root.
 func (s *Store) RequireSchema(ctx context.Context) error {
