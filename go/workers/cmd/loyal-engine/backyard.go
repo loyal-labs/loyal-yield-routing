@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // runBackyard is LOYAL_WORKER_SCOPE=backyard: the separately credentialed
@@ -71,7 +74,7 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	defer database.Close()
 	lane, err := backyard.NewEngine(backyard.EngineConfig{
 		Database: database, RPC: cluster, Credentials: credentials, Config: backyard.DefaultConfig(), Owner: owner,
-		Out: os.Stdout, Logger: slog.Default(), Facts: facts, JupiterAPIKey: cfg.JupiterAPIKey,
+		Out: os.Stdout, Logger: slog.Default(), Facts: facts, Jupiter: cfg.Jupiter,
 		Selector: selector, TimescaleURL: cfg.TimescaleURL,
 	})
 	if err != nil {
@@ -99,8 +102,20 @@ func backyardRuntimeConfig() (backyard.RuntimeConfig, error) {
 	if cfg.RPCURL, err = engine.Credential("BACKYARD_SOLANA_RPC_URL"); err != nil {
 		return cfg, err
 	}
-	cfg.JupiterAPIKey = optionalCredential("JUPITER_API_KEY")
+	cfg.Jupiter = backyardJupiter(optionalCredential("JUPITER_API_KEY"))
 	return cfg, cfg.Validate()
+}
+
+// backyardJupiter uses the keyed API when a key is configured. The keyless
+// lite endpoint allows too few requests for one selector round (about 18
+// parallel quote calls; 2026-09-25). Both serve the same swap/v1 API.
+func backyardJupiter(key string) *jupiter.Client {
+	base, key := jupiter.LiteBase, strings.TrimSpace(key)
+	if key != "" {
+		base = jupiter.KeyedBase
+	}
+	client, _ := jupiter.NewClient(base, key, &http.Client{Timeout: 20 * time.Second})
+	return client
 }
 
 // optionalCredential is for keys whose absence has a defined meaning: without

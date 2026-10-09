@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // reentryObservation is tickObservation with a current wall clock, as the
@@ -70,7 +71,7 @@ func reentryPrestateTransport(t *testing.T, base http.RoundTripper, rent uint64,
 // position, prices its complete source exit with the production observer, then
 // overlays the initializer prestate graph and exact rent read. The source is
 // produced before the overlay so it stays an independent completed quote.
-func reentryFundedFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount, Observation, selectorSourceQuote, uint64) {
+func reentryFundedFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount, Observation, selectorSourceQuote, uint64) {
 	t.Helper()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -17,7 +18,6 @@ import (
 // and the loyal-squads-policy-monitor event builders.
 
 var (
-	jupiterProgram       = solana.MustPublicKeyFromBase58("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")
 	loyalHubProgram      = solana.MustPublicKeyFromBase58("LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH")
 	subscriptionsProgram = solana.MustPublicKeyFromBase58("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44")
 	tokenProgram         = solana.TokenProgramID
@@ -53,9 +53,6 @@ var (
 		{solana.MustPublicKeyFromBase58(fleet.USDTMint), tokenProgram},
 		{solana.MustPublicKeyFromBase58(fleet.USDSMint), tokenProgram},
 	}
-
-	jupiterRouteDiscriminator       = []byte{187, 100, 250, 204, 49, 196, 175, 20}
-	jupiterSharedRouteDiscriminator = []byte{209, 152, 83, 147, 124, 254, 216, 233}
 )
 
 const (
@@ -445,7 +442,7 @@ type swapLane struct {
 }
 
 func classifyJupiterSwap(constraint squads.InstructionConstraintView, vault solana.PublicKey) ([]solana.PublicKey, *swapLane, bool) {
-	if !hasSlice(constraint.DataConstraints, 0, jupiterRouteDiscriminator) {
+	if !hasSlice(constraint.DataConstraints, 0, jupiter.RouteV2Discriminator[:]) {
 		return nil, nil, false
 	}
 	if _, ok := u16LTE(constraint.DataConstraints, jupiterSwapSlippageOffset); !ok {
@@ -467,8 +464,8 @@ func classifyJupiterSwap(constraint squads.InstructionConstraintView, vault sola
 	if !ok {
 		return nil, nil, false
 	}
-	discriminator := make([]int, len(jupiterRouteDiscriminator))
-	for i, value := range jupiterRouteDiscriminator {
+	discriminator := make([]int, len(jupiter.RouteV2Discriminator))
+	for i, value := range jupiter.RouteV2Discriminator {
 		discriminator[i] = int(value)
 	}
 	return append(append([]solana.PublicKey(nil), input...), output...), &swapLane{Kind: "jupiter", ProgramID: constraint.ProgramID.String(), ExactInDiscriminator: discriminator}, true
@@ -715,12 +712,12 @@ func detectCrossMintPolicy(instruction squads.Instruction) (CrossMintSwapPolicyM
 		discriminator                     []byte
 		authority, output                 uint8
 		slippageOffset, platformFeeOffset uint64
-	}{{jupiterRouteDiscriminator, 0, 2, 24, 26}, {jupiterSharedRouteDiscriminator, 1, 5, 25, 27}}
+	}{{jupiter.RouteV2Discriminator[:], 0, 2, 24, 26}, {jupiter.SharedAccountsRouteV2Discriminator[:], 1, 5, 25, 27}}
 	var vault solana.PublicKey
 	var maxSlippage uint16
 	for index, constraint := range payload.Constraints {
 		dialect := dialects[index]
-		if constraint.ProgramID != jupiterProgram || len(constraint.AccountConstraints) != 2 || len(constraint.DataConstraints) != 3 {
+		if constraint.ProgramID != jupiter.ProgramID || len(constraint.AccountConstraints) != 2 || len(constraint.DataConstraints) != 3 {
 			return CrossMintSwapPolicyManifestInput{}, false
 		}
 		authority, output := constraint.AccountConstraints[0], constraint.AccountConstraints[1]

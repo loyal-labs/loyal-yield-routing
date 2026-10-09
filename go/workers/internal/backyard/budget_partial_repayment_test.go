@@ -14,9 +14,10 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-func partialRepaymentFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
+func partialRepaymentFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	return partialRepaymentFixtureForLane(t, SelectedRouteID, variant)
 }
@@ -24,7 +25,7 @@ func partialRepaymentFixture(t *testing.T, variant string) (Observation, Decisio
 // partialRepaymentFixtureForLane: on a B2 leverage lane the same position is
 // an exit cycle (unwinding at the release ceiling, below hard LTV), so the
 // decision is exit_partial_repay instead of hard_ltv_partial_repay.
-func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
+func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, lane)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)

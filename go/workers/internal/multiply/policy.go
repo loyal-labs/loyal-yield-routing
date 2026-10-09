@@ -5,9 +5,9 @@ package multiply
 // discriminators and per-family constraint indexes.
 
 import (
-	"encoding/binary"
 	"errors"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -66,11 +66,11 @@ func ConstraintIndexes(config StrategyConfig, action MultiplyAction, instruction
 }
 
 func routeConstraintIndex(instruction Instruction, index uint8) ([]byte, error) {
-	if len(instruction.Data) < 13 || !equalBytes(instruction.Data[:8], JupiterSharedAccountsRouteDiscriminator[:]) {
+	route, err := jupiter.DecodeSharedAccountsRoute(instruction.Data)
+	if err != nil {
 		return nil, errors.New("Jupiter action is not SharedAccountsRoute")
 	}
-	routeCount := binary.LittleEndian.Uint32(instruction.Data[9:13])
-	if routeCount < 1 || routeCount > 4 {
+	if route.Steps < 1 || route.Steps > 4 {
 		return nil, errors.New("Jupiter route must contain one to four legs")
 	}
 	return []byte{index}, nil

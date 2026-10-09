@@ -10,6 +10,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // FixedRouteKey identifies the only authorized route this runtime composes.
@@ -45,8 +46,8 @@ type EngineConfig struct {
 	// transaction loop. Neither collector sends transactions.
 	Selector     SelectorMode
 	TimescaleURL string
-	// JupiterAPIKey selects the keyed Jupiter API; empty uses the keyless one.
-	JupiterAPIKey string
+	// Jupiter is the swap/v1 client every quote goes through.
+	Jupiter *jupiter.Client
 }
 
 // Engine is the concrete runtime adapter for process composition.
@@ -81,6 +82,9 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	if config.Jupiter == nil {
+		return nil, fmt.Errorf("Backyard engine requires a Jupiter client")
+	}
 	if config.Out == nil {
 		config.Out = io.Discard
 	}
@@ -96,7 +100,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		return fmt.Errorf("Backyard engine is not constructed")
 	}
 	backyardEvents = newEvents(e.runtime.Logger, e.runtime.Facts)
-	jupiterAPIKey = e.runtime.JupiterAPIKey
+	productionJupiter = e.runtime.Jupiter
 	if e.runtime.Selector != SelectorOff {
 		// The feed's route inventory is scoped to the SAME reviewed manifest
 		// the selector evaluates (worker.manifest): installed lanes plus the

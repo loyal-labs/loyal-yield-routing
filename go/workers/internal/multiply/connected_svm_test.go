@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
@@ -416,7 +417,7 @@ func multiplyInitialAccounts(t *testing.T, topology *EarnMaxTopology) map[string
 }
 
 func multiplyBankSwapAuthority() solana.PublicKey {
-	key, _, err := solana.FindProgramAddress([][]byte{[]byte("jupiter-swap-authority")}, mustKey(JupiterProgram))
+	key, _, err := solana.FindProgramAddress([][]byte{[]byte("jupiter-swap-authority")}, jupiter.ProgramID)
 	if err != nil {
 		panic(err)
 	}
@@ -427,47 +428,47 @@ func multiplyBankSwapAuthority() solana.PublicKey {
 // two source-pinned mints are quoted. No live price/provider/DEX is involved.
 type multiplyBankQuoteClient struct{ f *multiplySVMFixture }
 
-func (c multiplyBankQuoteClient) FetchQuote(ctx contextT, request QuoteRequest) (*QuoteResponse, error) {
+func (c multiplyBankQuoteClient) Quote(ctx contextT, request jupiter.QuoteRequest) (jupiter.Quote, error) {
 	if !((request.InputMint == USDCMint && request.OutputMint == syrupMint) || (request.OutputMint == USDCMint && request.InputMint == syrupMint)) {
-		return nil, errors.New("local model has no supported mint pair")
+		return jupiter.Quote{}, errors.New("local model has no supported mint pair")
 	}
 	var slot uint64
 	raw, err := c.f.bank.call("getSlot", []any{})
 	if err != nil {
-		return nil, err
+		return jupiter.Quote{}, err
 	}
 	if err = json.Unmarshal(raw, &slot); err != nil {
-		return nil, err
+		return jupiter.Quote{}, err
 	}
 	minimum := (request.Amount*9950 + 9999) / 10000
-	return &QuoteResponse{InputMint: request.InputMint, OutputMint: request.OutputMint, SwapMode: "ExactIn", InAmount: strconv.FormatUint(request.Amount, 10), OutAmount: strconv.FormatUint(request.Amount, 10), OtherAmountThreshold: strconv.FormatUint(minimum, 10), SlippageBPS: 50, ContextSlot: slot, RoutePlan: []json.RawMessage{json.RawMessage(`{"swap":{"TokenSwap":{}}}`)}}, nil
+	return jupiter.Quote{InputMint: request.InputMint, OutputMint: request.OutputMint, SwapMode: "ExactIn", InAmount: strconv.FormatUint(request.Amount, 10), OutAmount: strconv.FormatUint(request.Amount, 10), OtherAmountThreshold: strconv.FormatUint(minimum, 10), SlippageBPS: 50, ContextSlot: slot, RoutePlan: []json.RawMessage{json.RawMessage(`{"swap":{"TokenSwap":{}}}`)}}, nil
 }
-func (c multiplyBankQuoteClient) FetchSwapInstructions(ctx contextT, quote *QuoteResponse, vault solana.PublicKey) (*SwapInstructionsResponse, error) {
+func (c multiplyBankQuoteClient) SwapInstructions(ctx contextT, quote jupiter.Quote, vault solana.PublicKey, useSharedAccounts bool) (jupiter.SwapInstructions, error) {
 	if len(c.f.swapPrefix) != 17 {
-		return nil, errors.New("independent Rust IDL prefix missing")
+		return jupiter.SwapInstructions{}, errors.New("independent Rust IDL prefix missing")
 	}
 	input, err := strconv.ParseUint(quote.InAmount, 10, 64)
 	if err != nil {
-		return nil, err
+		return jupiter.SwapInstructions{}, err
 	}
 	output, err := strconv.ParseUint(quote.OutAmount, 10, 64)
 	if err != nil {
-		return nil, err
+		return jupiter.SwapInstructions{}, err
 	}
 	inputMint, outputMint := mustKey(quote.InputMint), mustKey(quote.OutputMint)
 	source, err := spl.AssociatedTokenAddress(vault, inputMint, solana.TokenProgramID)
 	if err != nil {
-		return nil, err
+		return jupiter.SwapInstructions{}, err
 	}
 	destination, err := spl.AssociatedTokenAddress(vault, outputMint, solana.TokenProgramID)
 	if err != nil {
-		return nil, err
+		return jupiter.SwapInstructions{}, err
 	}
 	poolSource, _ := spl.AssociatedTokenAddress(multiplyBankSwapAuthority(), inputMint, solana.TokenProgramID)
 	poolDestination, _ := spl.AssociatedTokenAddress(multiplyBankSwapAuthority(), outputMint, solana.TokenProgramID)
-	event, _, err := solana.FindProgramAddress([][]byte{[]byte("__event_authority")}, mustKey(JupiterProgram))
+	event, _, err := solana.FindProgramAddress([][]byte{[]byte("__event_authority")}, jupiter.ProgramID)
 	if err != nil {
-		return nil, err
+		return jupiter.SwapInstructions{}, err
 	}
 	data := append([]byte(nil), c.f.swapPrefix...)
 	var tail [19]byte
@@ -475,12 +476,12 @@ func (c multiplyBankQuoteClient) FetchSwapInstructions(ctx contextT, quote *Quot
 	binary.LittleEndian.PutUint64(tail[8:16], output)
 	binary.LittleEndian.PutUint16(tail[16:18], 50)
 	data = append(data, tail[:]...)
-	keys := []solana.PublicKey{solana.TokenProgramID, multiplyBankSwapAuthority(), vault, source, poolSource, poolDestination, destination, inputMint, outputMint, mustKey(JupiterProgram), mustKey(JupiterProgram), event, mustKey(JupiterProgram)}
-	var metas []RawAccountMeta
+	keys := []solana.PublicKey{solana.TokenProgramID, multiplyBankSwapAuthority(), vault, source, poolSource, poolDestination, destination, inputMint, outputMint, jupiter.ProgramID, jupiter.ProgramID, event, jupiter.ProgramID}
+	var metas []jupiter.AccountMeta
 	for i, key := range keys {
-		metas = append(metas, RawAccountMeta{PubKey: key.String(), IsSigner: i == 2, IsWritable: i >= 3 && i <= 6})
+		metas = append(metas, jupiter.AccountMeta{Pubkey: key.String(), IsSigner: i == 2, IsWritable: i >= 3 && i <= 6})
 	}
-	return &SwapInstructionsResponse{SwapInstruction: &RawInstruction{ProgramID: JupiterProgram, Accounts: metas, Data: base64.StdEncoding.EncodeToString(data)}}, nil
+	return jupiter.SwapInstructions{SwapInstruction: jupiter.Instruction{ProgramID: jupiter.ProgramID.String(), Accounts: metas, Data: base64.StdEncoding.EncodeToString(data)}}, nil
 }
 
 func TestCurrentGoMultiplyFreshDepositAndActualReceipt(t *testing.T) {

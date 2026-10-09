@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // Replay public sizing quotes through the actual production validators. A
@@ -21,7 +23,7 @@ func TestPhase3ReturnQuoteCompatibility(t *testing.T) {
 		Broadcast, SignatureProof, ExecutionProof, InstalledPolicyReadback bool
 		Rows                                                               []struct {
 			Key, DataSHA256 string
-			Quote           JupiterQuote
+			Quote           jupiter.Quote
 			Response        struct{ SwapInstruction JupiterSwapInstruction }
 		}
 	}

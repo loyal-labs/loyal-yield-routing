@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 const (
@@ -80,9 +82,9 @@ func DefaultConfig() Config {
 // independent credentials; neither reads the other's URLs or keys.
 type RuntimeConfig struct {
 	DatabaseURL, RPCURL, TimescaleURL string
-	// JupiterAPIKey selects the keyed Jupiter API; empty uses the keyless
-	// endpoint, which is too rate-limited for one selector round.
-	JupiterAPIKey string
+	// Jupiter is the swap/v1 client the selector evaluate command quotes
+	// through.
+	Jupiter *jupiter.Client
 }
 
 func (c RuntimeConfig) Validate() error {

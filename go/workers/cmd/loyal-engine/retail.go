@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/mr-tron/base58"
 )
 
@@ -441,7 +443,9 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("cross-mint runtime", err)
 	}
-	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: cluster, Executor: gExecutor, Quotes: multiply.NewLiveQuoteClient(), WorkerID: owner, Chain: cluster, Facts: facts})
+	// Multiply quotes through the keyless lite API.
+	multiplyQuotes, _ := jupiter.NewClient(jupiter.LiteBase, "", &http.Client{Timeout: 15 * time.Second})
+	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: cluster, Executor: gExecutor, Quotes: multiplyQuotes, WorkerID: owner, Chain: cluster, Facts: facts})
 	if err != nil {
 		return retailError("Multiply worker", err)
 	}

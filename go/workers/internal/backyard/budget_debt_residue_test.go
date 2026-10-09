@@ -13,10 +13,11 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
+func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	route := ethenaUSDePYUSD
 	binding, err := catalogJupiterBindingForRoute(SwapDebtToUSDCStep, route.Lane)
@@ -50,7 +51,7 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 			Key         string
 			Instruction struct {
 				ProgramID, DataBase64 string
-				Accounts              []JupiterInstructionAccount
+				Accounts              []jupiter.AccountMeta
 			}
 		}
 	}
@@ -74,9 +75,9 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
 	o, d, e, m, rpc, client := withdrawalAdmissionFixture(t, 100_000, append(extra, extraAccounts...)...)
 	o.Snapshot.DebtIdleRaw = 10_000
-	previous := client.http.Transport
+	previous := fixtureHTTP(client).Transport
 	debtQuote := false
-	client.http.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	fixtureHTTP(client).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.Method == "GET" {
 			debtQuote = req.URL.Query().Get("inputMint") == route.Kamino.DebtMint
 		}
@@ -88,7 +89,7 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 			if req.URL.Query().Get("amount") != "10000" || req.URL.Query().Get("outputMint") != bridgeUSDC {
 				t.Fatal("debt residue quote changed amount or destination")
 			}
-			payload = JupiterQuote{InputMint: route.Kamino.DebtMint, OutputMint: bridgeUSDC, InAmount: "10000", OutAmount: fmt.Sprint(debtOutput), OtherAmountThreshold: fmt.Sprint(debtOutput), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			payload = jupiter.Quote{InputMint: route.Kamino.DebtMint, OutputMint: bridgeUSDC, InAmount: "10000", OutAmount: fmt.Sprint(debtOutput), OtherAmountThreshold: fmt.Sprint(debtOutput), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else {
 			payload = map[string]any{"swapInstruction": instruction}
 		}

@@ -40,7 +40,7 @@ func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client,
 	forecast.Snapshot.Unwind = false
 	forecast.Snapshot.UnwindRefreshRequired = false
 	forecast.Snapshot.WithdrawalDemandRaw = 0
-	source, err := observeSelectorSource(ctx, rpc, productionJupiterClient(), manifest, forecast)
+	source, err := observeSelectorSource(ctx, rpc, productionJupiter, manifest, forecast)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}

@@ -15,12 +15,13 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Controlled quote/RPC transport around actual compilers and installed Jupiter
 // bytes. Synthetic reserve prices/bridge-policy bytes do not prove live state.
-func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
+func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	route := ethenaUSDePYUSD
 	manifest, err := loadEmbeddedRouteManifest()
@@ -91,7 +92,7 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 			Key         string
 			Instruction struct {
 				ProgramID, DataBase64 string
-				Accounts              []JupiterInstructionAccount
+				Accounts              []jupiter.AccountMeta
 			}
 		}
 	}
@@ -110,13 +111,13 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 	binary.LittleEndian.PutUint64(data[binding.AmountOffset+8:], quoted)
 	binary.LittleEndian.PutUint16(data[binding.SlippageOffset:], 50)
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
-	client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client, err := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var payload any
 		if req.Method == "GET" && req.URL.Path == "/quote" {
 			if req.URL.Query().Get("amount") != "100000000" || req.URL.Query().Get("inputMint") != route.Kamino.CollateralMint || req.URL.Query().Get("outputMint") != bridgeUSDC {
 				t.Fatal("exit quote changed custody or amount")
 			}
-			payload = JupiterQuote{InputMint: route.Kamino.CollateralMint, OutputMint: bridgeUSDC, InAmount: "100000000", OutAmount: fmt.Sprint(quoted), OtherAmountThreshold: fmt.Sprint(quoted), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			payload = jupiter.Quote{InputMint: route.Kamino.CollateralMint, OutputMint: bridgeUSDC, InAmount: "100000000", OutAmount: fmt.Sprint(quoted), OtherAmountThreshold: fmt.Sprint(quoted), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else if req.Method == "POST" && req.URL.Path == "/swap-instructions" {
 			payload = map[string]any{"swapInstruction": instruction}
 		} else {
@@ -127,7 +128,7 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 			t.Fatal(err)
 		}
 		return response(string(encoded)), nil
-	})})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +197,7 @@ func TestWithdrawalAdmissionRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 	})
 	t.Run("unavailable quote", func(t *testing.T) {
 		o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
-		client.http.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) { return response(`{"error":"no route"}`), nil })
+		fixtureHTTP(client).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) { return response(`{"error":"no route"}`), nil })
 		_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence)
 		assertBudgetHold(t, err, "withdrawal_exit_quote_unavailable")
 	})
@@ -328,7 +329,7 @@ func installedAutoPolicyAccount(t *testing.T) ConfirmedAccount {
 
 // Keep positive full-exit admissions on lanes the operator can actually authorize.
 // The legacy Ethena fixtures remain the independent pricing/wire tests above.
-func supportedFullExitAdmissionFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
+func supportedFullExitAdmissionFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, "OnRe/ONyc/USDC")
 	route, err := runtimeRoute(o.Snapshot.RouteLane)

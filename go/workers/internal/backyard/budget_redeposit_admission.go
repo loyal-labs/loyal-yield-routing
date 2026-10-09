@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 func observeRedepositPrestate(ctx context.Context, rpc *chain.Client, route RuntimeRoute, s Snapshot, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
@@ -100,7 +101,7 @@ func validateRedepositProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, be
 	return nil
 }
 
-func observePhase3RedepositAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3RedepositAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := o.Snapshot, e.Request

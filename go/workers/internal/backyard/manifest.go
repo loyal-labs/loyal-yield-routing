@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -350,7 +351,7 @@ func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction
 		return bound.ConstraintIndex, nil
 	}
 	if b.BasicPolicy {
-		if len(data) < 28 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
+		if len(data) < 28 || !bytes.Equal(data[:8], jupiter.SharedAccountsRouteDiscriminator[:]) {
 			return 0, fmt.Errorf("fresh Jupiter header does not match the basic policy binding")
 		}
 		return b.PolicyConstraintIndex, nil
@@ -359,7 +360,7 @@ func (b JupiterPolicyBinding) constraintIndex(instruction JupiterSwapInstruction
 		// The combined AUTO policy authorizes only the legacy SharedAccountsRoute
 		// dialect; the exact edge (and therefore index) was already pinned by
 		// the action at resolution and by instruction validation.
-		if len(data) < 28 || !bytes.Equal(data[:8], jupiterSharedAccountsRoute) {
+		if len(data) < 28 || !bytes.Equal(data[:8], jupiter.SharedAccountsRouteDiscriminator[:]) {
 			return 0, fmt.Errorf("fresh Jupiter header does not match the reviewed AUTO binding")
 		}
 		return b.PolicyConstraintIndex, nil

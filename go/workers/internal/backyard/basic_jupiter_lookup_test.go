@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -182,9 +183,9 @@ func basicJupiterRequestFromExport(t *testing.T, lane, leg string) (JupiterSwapR
 	if err != nil || len(data) < 19 {
 		t.Fatalf("recorded inner instruction is malformed: %v", err)
 	}
-	accounts := make([]JupiterInstructionAccount, 0, len(inner.Accounts))
+	accounts := make([]jupiter.AccountMeta, 0, len(inner.Accounts))
 	for _, account := range inner.Accounts {
-		accounts = append(accounts, JupiterInstructionAccount{Pubkey: account.Pubkey, IsSigner: account.IsSigner, IsWritable: account.IsWritable})
+		accounts = append(accounts, jupiter.AccountMeta{Pubkey: account.Pubkey, IsSigner: account.IsSigner, IsWritable: account.IsWritable})
 	}
 	amount := readU64(data[len(data)-19:])
 	if amount != record.AmountRaw {

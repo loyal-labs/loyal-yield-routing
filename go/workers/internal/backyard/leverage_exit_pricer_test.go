@@ -8,20 +8,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
-	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // leverage175Accounts turns the controlled OnRe fixture into a 1.75x
 // position: collateral value C, debt D = (1.75-1)/1.75 * C (LTV 42.9%).
 // Fixture prices: ONyc (9 dp) $1, USDC debt (6 dp) $2 per raw-unit math, so
 // debt raw = collateral value in USDC-6 / 2.
-func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount, RuntimeRoute) {
+func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount, RuntimeRoute) {
 	t.Helper()
 	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, onreONycUSDC)
 	route, _ := runtimeRoute(onreONycUSDC)
@@ -187,7 +187,7 @@ func TestExitCycleKaminoWiresPassThePersistedWireGate(t *testing.T) {
 // PYUSD) and the OnRe fixture at 1.5x take the installed path even when the
 // Jupiter client fails.
 func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
-	broken, _ := newJupiterClient("https://jupiter.invalid", nil)
+	broken, _ := jupiter.NewClient("https://jupiter.invalid", "", nil)
 	live := base()
 	live.RouteLane, live.StrategyKey, live.PilotActive, live.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true, true
 	live.PositionCollateralRaw, live.PositionCollateralValueRaw = 2_463_480_000, 2_514_967_000
@@ -372,7 +372,7 @@ func TestPartialWithdrawalSwapLegAdmission(t *testing.T) {
 	}
 }
 
-func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Observation, Decision, BridgeExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Observation, Decision, BridgeExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	o, m, rpc, client, accounts, route := leverage175Fixture(t)
 	if lane == autoAUTOPYUSD.Lane {
@@ -486,16 +486,8 @@ func TestPartialWithdrawalRestorePreservesPositionAndAdmission(t *testing.T) {
 			}
 			// Run the production dispatcher, not a test copy of its branches.
 			// All HTTP is controlled; a missing database stops before persistence.
-			oldTransport := http.DefaultTransport
-			http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				if r.URL.Hostname() == "127.0.0.1" { // the fake chain node
-					return oldTransport.RoundTrip(r)
-				}
-				request := r.Clone(r.Context())
-				request.URL.Path = strings.TrimPrefix(request.URL.Path, "/swap/v1")
-				return client.http.Transport.RoundTrip(request)
-			})
-			t.Cleanup(func() { http.DefaultTransport = oldTransport })
+			productionJupiter = client
+			t.Cleanup(func() { productionJupiter = nil })
 			runtime := productionTickRuntime(&Database{}, rpc, m, Credentials{})
 			assertBudgetHold(t, runtime.admitBridge(context.Background(), "restore", o, d, BridgeExecutionEvidence{r, effects}), "bridge_admission_database_unavailable")
 			// The cash-only guard remains closed to retained exposure.
@@ -598,16 +590,8 @@ func TestPartialWithdrawalRestoreProductionAdmissionDB(t *testing.T) {
 			}
 			o.Snapshot.StagedAmountKnown, o.Snapshot.StagedAmountRaw, o.Snapshot.StageTransient = journal.StagedAmountKnown, journal.StagedAmountRaw, journal.StageAfterTicket
 			insert(id, d.Action, d.Reason, "decided", 0, d.AmountRaw)
-			oldTransport := http.DefaultTransport
-			http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				if r.URL.Hostname() == "127.0.0.1" { // the fake chain node
-					return oldTransport.RoundTrip(r)
-				}
-				request := r.Clone(r.Context())
-				request.URL.Path = strings.TrimPrefix(request.URL.Path, "/swap/v1")
-				return client.http.Transport.RoundTrip(request)
-			})
-			t.Cleanup(func() { http.DefaultTransport = oldTransport })
+			productionJupiter = client
+			t.Cleanup(func() { productionJupiter = nil })
 			runtime := productionTickRuntime(db, rpc, m, Credentials{})
 			readState := func() (string, string) {
 				t.Helper()

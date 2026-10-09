@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -182,7 +183,7 @@ func validateInitialDepositPrestate(ctx context.Context, rpc *chain.Client, rout
 	return slot, nil
 }
 
-func observePhase3DepositAdmission(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func observePhase3DepositAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	if observation.Snapshot.PositionDebtRaw > 0 {
 		return observePhase3RedepositAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
 	}
@@ -281,7 +282,7 @@ func observePhase3DepositAdmission(ctx context.Context, rpc *chain.Client, clien
 	return plan, nil
 }
 
-func (d *Database) admitPhase3Deposit(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, id string, o Observation, decision Decision, e KaminoExecutionEvidence) error {
+func (d *Database) admitPhase3Deposit(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, id string, o Observation, decision Decision, e KaminoExecutionEvidence) error {
 	plan, err := observePhase3DepositAdmission(ctx, rpc, client, manifest, o, decision, e)
 	if err != nil {
 		return err

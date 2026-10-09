@@ -154,7 +154,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	// spent two slots of the tick when admission starts.
 	clock := &slotClock{start: time.Now(), origin: s.Slot + 2, slotTime: slotTime}
 	rpcOf(rpc).Transport = clock.rpc(rpcOf(rpc).Transport, rpcLatency)
-	client.http.Transport = clock.jupiter(client.http.Transport, jupiterLatency)
+	fixtureHTTP(client).Transport = clock.jupiter(fixtureHTTP(client).Transport, jupiterLatency)
 	// productionTickRuntime's admitBridge sends this report (debt on a
 	// position-return lane) to admitPhase3Funding with the production Jupiter
 	// client; the fixture's Jupiter double stands in for it here.

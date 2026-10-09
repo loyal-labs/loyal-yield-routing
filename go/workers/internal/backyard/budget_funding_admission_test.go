@@ -17,13 +17,14 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-func fundingAdmissionFixture(t *testing.T, output uint64) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func fundingAdmissionFixture(t *testing.T, output uint64) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	return fundingAdmissionFixtureForSource(t, output, SwapCollateralToDebtStep)
 }
 
-func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction Action) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient, []ConfirmedAccount) {
+func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction Action) (Observation, Decision, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	var extra []ConfirmedAccount
 	if fundingAction == SwapUSDCToDebtStep {
@@ -55,7 +56,7 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 			Key         string
 			Instruction struct {
 				ProgramID, DataBase64 string
-				Accounts              []JupiterInstructionAccount
+				Accounts              []jupiter.AccountMeta
 			}
 		}
 	}
@@ -72,7 +73,7 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 		}
 	}
 	var instruction JupiterSwapInstruction
-	client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client, err := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var payload any
 		if req.Method == "GET" {
 			q := req.URL.Query()
@@ -109,13 +110,13 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 			binary.LittleEndian.PutUint64(wire[binding.AmountOffset+8:], out)
 			binary.LittleEndian.PutUint16(wire[binding.SlippageOffset:], 50)
 			instruction.Data = base64.StdEncoding.EncodeToString(wire)
-			payload = JupiterQuote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 9950 / 10000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			payload = jupiter.Quote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 9950 / 10000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else {
 			payload = map[string]any{"swapInstruction": instruction}
 		}
 		encoded, _ := json.Marshal(payload)
 		return response(string(encoded)), nil
-	})})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -32,8 +32,6 @@ const (
 
 	MainnetGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
-	JupiterProgram = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
-
 	USDCMint  = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	USDSMint  = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
 	PYUSDMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
@@ -66,10 +64,6 @@ const (
 	syrupCollateralReceiptMint     = "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu"
 	syrupCollateralMintSupply      = "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58"
 )
-
-// JupiterSharedAccountsRouteDiscriminator is EARN_MAX_SHARED_ACCOUNTS_ROUTE
-// from loyal-actions: [0xc1, 0x20, 0x9b, 0x33, 0x41, 0xd6, 0x9c, 0x81].
-var JupiterSharedAccountsRouteDiscriminator = [8]byte{0xc1, 0x20, 0x9b, 0x33, 0x41, 0xd6, 0x9c, 0x81}
 
 // PolicyConfig is one Squads smart-account policy PDA for a strategy family.
 type PolicyConfig struct {

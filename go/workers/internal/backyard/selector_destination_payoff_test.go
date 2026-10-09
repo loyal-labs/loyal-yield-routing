@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -150,9 +151,9 @@ func autoPayoffPosition() KaminoPosition {
 // instruction shape; `quote` maps each edge to its fixture's integer
 // economics, and `probe`, when set and returning true, overrides the quote
 // economics for that exact request.
-func autoJupiterTransport(t *testing.T, route RuntimeRoute, quote func(in, destination string, amount uint64) (quoted, minimum uint64), probe func(amount uint64) (out, minimum uint64, ok bool)) *jupiterClient {
+func autoJupiterTransport(t *testing.T, route RuntimeRoute, quote func(in, destination string, amount uint64) (quoted, minimum uint64), probe func(amount uint64) (out, minimum uint64, ok bool)) *jupiter.Client {
 	t.Helper()
-	client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client, err := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
 		case "/quote":
 			q := req.URL.Query()
@@ -164,12 +165,12 @@ func autoJupiterTransport(t *testing.T, route RuntimeRoute, quote func(in, desti
 					quoted, minimum = out, min
 				}
 			}
-			payload := JupiterQuote{InputMint: in, OutputMint: destination, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(quoted), OtherAmountThreshold: fmt.Sprint(minimum), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			payload := jupiter.Quote{InputMint: in, OutputMint: destination, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(quoted), OtherAmountThreshold: fmt.Sprint(minimum), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 			raw, _ := json.Marshal(payload)
 			return response(string(raw)), nil
 		case "/swap-instructions":
 			var body struct {
-				QuoteResponse JupiterQuote
+				QuoteResponse jupiter.Quote
 			}
 			if json.NewDecoder(req.Body).Decode(&body) != nil {
 				t.Fatal("quote body")
@@ -195,7 +196,7 @@ func autoJupiterTransport(t *testing.T, route RuntimeRoute, quote func(in, desti
 		}
 		t.Fatalf("unexpected Jupiter path %s", req.URL.Path)
 		return nil, nil
-	})})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +226,7 @@ func autoPayoffQuote(route RuntimeRoute) func(in, destination string, amount uin
 	}
 }
 
-func autoPayoffJupiter(t *testing.T, route RuntimeRoute, probe func(amount uint64) (out, minimum uint64, ok bool)) *jupiterClient {
+func autoPayoffJupiter(t *testing.T, route RuntimeRoute, probe func(amount uint64) (out, minimum uint64, ok bool)) *jupiter.Client {
 	t.Helper()
 	return autoJupiterTransport(t, route, autoPayoffQuote(route), probe)
 }
@@ -248,7 +249,7 @@ func autoCandidateQuote(route RuntimeRoute) func(in, destination string, amount 
 	}
 }
 
-func autoCandidateJupiter(t *testing.T, route RuntimeRoute) *jupiterClient {
+func autoCandidateJupiter(t *testing.T, route RuntimeRoute) *jupiter.Client {
 	t.Helper()
 	return autoJupiterTransport(t, route, autoCandidateQuote(route), nil)
 }
@@ -314,7 +315,7 @@ func autoPayoffRPC(t *testing.T, slot int64, batch []ConfirmedAccount) *chain.Cl
 
 // autoPayoffProducer runs the real payoff producer on the reshaped batch and
 // returns its conserved ledger for consumer and negative tests.
-func autoPayoffProducer(t *testing.T, slot int64, mutate func([]ConfirmedAccount), client *jupiterClient) (RouteManifest, RuntimeRoute, *chain.Client, []ConfirmedAccount, selectorDestinationPayoff, uint64) {
+func autoPayoffProducer(t *testing.T, slot int64, mutate func([]ConfirmedAccount), client *jupiter.Client) (RouteManifest, RuntimeRoute, *chain.Client, []ConfirmedAccount, selectorDestinationPayoff, uint64) {
 	t.Helper()
 	const (
 		entryDeposit     = uint64(10_000_000_000)
@@ -719,9 +720,9 @@ func TestSelectorDestinationPayoffQuoteOutageIsNotAHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	rpc := autoPayoffRPC(t, 77, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...))
-	client, err := newJupiterClient("https://jupiter.invalid", &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client, err := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("outage")), Header: make(http.Header)}, nil
-	})})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,7 +829,7 @@ func autoCandidateFlatBatch(t *testing.T, slot int64, extra func([]ConfirmedAcco
 // policy and the four masked bridge policies with manifest-bound digests — and
 // deliberately serves NONE of the four basic families: they are the reviewed
 // Maple readiness surface and must never be fetched or required for this lane.
-func autoCandidateStack(t *testing.T, slot int64, extra func([]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *chain.Client, *jupiterClient) {
+func autoCandidateStack(t *testing.T, slot int64, extra func([]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	m, route, accounts := autoCandidateFlatBatch(t, slot, extra)
 	batch := append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...)
@@ -953,7 +954,7 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 	// The floor helper never interprets a non-legacy payload's tail offsets.
 	v2 := evidence.Request
 	v2Data, _ := base64.StdEncoding.DecodeString(v2.Instruction.Data)
-	copy(v2Data[:8], jupiterSharedAccountsRouteV2)
+	copy(v2Data[:8], jupiter.SharedAccountsRouteV2Discriminator[:])
 	v2.Instruction.Data = base64.StdEncoding.EncodeToString(v2Data)
 	if _, err := jupiterInstructionWireFloor(v2.Instruction); err == nil {
 		t.Fatal("wire floor read a non-legacy payload")
@@ -1164,7 +1165,7 @@ func TestJupiterAutoTinyResidueConvertibilityFollowsQuotedFloor(t *testing.T) {
 	const slot = int64(77)
 	m, route, rpc, _ := autoCandidateStack(t, slot, nil)
 	base := autoCandidateQuote(route)
-	pegged := func(scale uint64) *jupiterClient {
+	pegged := func(scale uint64) *jupiter.Client {
 		return autoJupiterTransport(t, route, func(in, destination string, amount uint64) (uint64, uint64) {
 			quoted, _ := base(in, destination, amount)
 			if in == route.Kamino.DebtMint && destination == bridgeUSDC {
@@ -1358,7 +1359,7 @@ func autoCandidateInitializerRent() uint64 {
 // initializer's account graph. The variant hook rewrites the served prestate
 // accounts for the refusal cases; the obligation is absent from the served
 // map unless a variant adds it back.
-func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64, funded bool, variant func(route RuntimeRoute, prestate map[string]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *chain.Client, *jupiterClient) {
+func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64, funded bool, variant func(route RuntimeRoute, prestate map[string]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	binding := autoInitializerFixtureBinding(t)
 	route, err := runtimeRoute(testAutoLane)

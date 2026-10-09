@@ -393,8 +393,8 @@ func TestAutoSourceReleaseUnavailableResidueQuoteHolds(t *testing.T) {
 	rpc := autoPayoffRPC(t, 58, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...))
 	client := autoJupiterTransport(t, route, autoCollateralSellQuote(t, route, nil), nil)
 	debts := 0
-	inner := client.http.Transport
-	client.http.Transport = countingFailTransport{inner: inner, route: route, hits: &debts, failAt: 2}
+	inner := fixtureHTTP(client).Transport
+	fixtureHTTP(client).Transport = countingFailTransport{inner: inner, route: route, hits: &debts, failAt: 2}
 	_, err := observeAutoSelectorSource(context.Background(), rpc, client, manifest, observation)
 	if err == nil || !strings.Contains(err.Error(), "selector_source_residue_quote_unavailable") {
 		t.Fatal("an unavailable residue requote was not a fail-closed hold", err)

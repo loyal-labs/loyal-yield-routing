@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, client *jupiterClient, enrich func(context.Context, *Observation) error) (Observation, JupiterExecutionEvidence, error) {
+func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, client *jupiter.Client, enrich func(context.Context, *Observation) error) (Observation, JupiterExecutionEvidence, error) {
 	if rpc == nil || client == nil || enrich == nil || decision.AmountRaw <= 0 {
 		return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter evidence request")
 	}
@@ -121,7 +122,7 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 // Current execution calls this after checking actual custody/policy accounts.
 // Exit costing may also quote prospective balances, but must never treat that
 // estimate as current-state simulation or promote its wire to execution.
-func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
+func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
 	binding, err := manifest.jupiterPolicyForRoute(decision.Action, decision.StrategyKey)
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
@@ -154,12 +155,12 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client 
 	amount := uint64(decision.AmountRaw)
 	// The blockhash does not depend on the quote: read both at once, and keep
 	// the serial error order (the quote's checks first).
-	var quote JupiterQuote
+	var quote jupiter.Quote
 	var instruction JupiterSwapInstruction
 	var blockhash LatestBlockhash
 	var blockhashErr error
 	err = concurrentReads(ctx, func(ctx context.Context) (err error) {
-		quote, instruction, err = client.freshSwapForRoute(ctx, decision.StrategyKey, decision.Action, amount)
+		quote, instruction, err = freshSwapForRoute(ctx, client, decision.StrategyKey, decision.Action, amount)
 		return err
 	}, func(ctx context.Context) error {
 		blockhash, blockhashErr = latestBlockhash(ctx, rpc)

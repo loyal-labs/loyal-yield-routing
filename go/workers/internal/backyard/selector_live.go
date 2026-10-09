@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // collectSelectorQuotes prices a source once, then at most three independent
@@ -17,7 +18,7 @@ import (
 // exact-size quotes. Nothing here writes a journal row or signs a transaction.
 // entryCostRemainingRaw is advisory sizing headroom under the bounded
 // execution-cost stop; negative means unknown and skips that trigger.
-func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	return collectSelectorQuotesForLane(ctx, rpc, client, manifest, o, markets, policy, entryCostRemainingRaw, "", canaryMaximum...)
 }
 
@@ -33,7 +34,7 @@ const selectorLadderBudget = 3 * time.Second
 // suppressed, so other lanes' destination quotes are never used and only
 // delay the canary's own quote. Those lanes keep their market economics and
 // are published as blocked without a quote.
-func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client *jupiterClient, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
 	if err := policy.validate(); err != nil {
@@ -323,7 +324,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if o.planning != nil {
 		remaining = o.planning.remainingExecutionCost
 	}
-	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, productionJupiterClient(), manifest, o, markets, policy, remaining, onlyLane, maximum...)
+	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, productionJupiter, manifest, o, markets, policy, remaining, onlyLane, maximum...)
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
 		// can still maintain persistence, while pure selection cannot enter/switch.

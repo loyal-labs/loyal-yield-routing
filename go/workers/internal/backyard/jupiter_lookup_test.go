@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 func retainedEthenaExit(t *testing.T) (JupiterSwapRequest, ExpectedEffects) {
@@ -30,7 +31,7 @@ func retainedEthenaExit(t *testing.T) (JupiterSwapRequest, ExpectedEffects) {
 			LookupTables []string
 			Instruction  struct {
 				ProgramID, DataBase64 string
-				Accounts              []JupiterInstructionAccount
+				Accounts              []jupiter.AccountMeta
 			}
 		}
 	}
@@ -248,7 +249,7 @@ func TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping(t *testing.T) 
 		}
 	}
 	bad := restored
-	bad.Instruction.Accounts = append([]JupiterInstructionAccount(nil), restored.Instruction.Accounts...)
+	bad.Instruction.Accounts = append([]jupiter.AccountMeta(nil), restored.Instruction.Accounts...)
 	b, _ := catalogJupiterBindingForRoute(bad.Action, bad.RouteLane)
 	bad.Instruction.Accounts[b.DestinationIndex].Pubkey = bridgeVault
 	if _, err := CompileJupiterMessage(bad); err == nil {

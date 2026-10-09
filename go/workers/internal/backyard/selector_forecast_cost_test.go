@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 func sfIntervalPrice(mint, program string, decimals byte, slot int64) BudgetPrice {
@@ -195,7 +196,7 @@ func quoteLegsTransport(t *testing.T, base http.RoundTripper, legs *[]uint64, im
 			}
 			if req.URL.Query().Get("inputMint") == bridgeUSDC && amount >= impactThreshold {
 				out := amount / divisor
-				raw, err := json.Marshal(JupiterQuote{InputMint: bridgeUSDC, OutputMint: req.URL.Query().Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}})
+				raw, err := json.Marshal(jupiter.Quote{InputMint: bridgeUSDC, OutputMint: req.URL.Query().Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -206,7 +207,7 @@ func quoteLegsTransport(t *testing.T, base http.RoundTripper, legs *[]uint64, im
 	})
 }
 
-func ladderLiveObservation(t *testing.T, nativeAPY float64) (RouteManifest, *chain.Client, *jupiterClient, Observation, LaneEconomics, SelectorPolicy) {
+func ladderLiveObservation(t *testing.T, nativeAPY float64) (RouteManifest, *chain.Client, *jupiter.Client, Observation, LaneEconomics, SelectorPolicy) {
 	t.Helper()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	in := selectorFixture()
@@ -232,9 +233,9 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	// gain. The ladder here compares pure route depth only; zero the wedge in
 	// this one test and assert the surviving candidate is positively profitable.
 	policy.UncertaintyBPS = 0
-	base := client.http.Transport
+	base := fixtureHTTP(client).Transport
 	var legs []uint64
-	client.http.Transport = quoteLegsTransport(t, base, &legs, 5_000_000, 100_000)
+	fixtureHTTP(client).Transport = quoteLegsTransport(t, base, &legs, 5_000_000, 100_000)
 	// The largest size loses almost all of its quoted output to route depth
 	// (out=in/100000 on the equity leg), so its whole-move bound cost reaches
 	// its own equity: compose must refuse exactly that economic outcome for the
@@ -276,7 +277,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 func TestLiveSelectorBudgetExhaustedWinnerIsBlockedFromEntry(t *testing.T) {
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
 	var legs []uint64
-	client.http.Transport = quoteLegsTransport(t, client.http.Transport, &legs, math.MaxUint64, 1)
+	fixtureHTTP(client).Transport = quoteLegsTransport(t, fixtureHTTP(client).Transport, &legs, math.MaxUint64, 1)
 	// Every size clears the benefit math but none fits the 1_000 micros of
 	// remaining bounded entry-cost headroom.
 	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 1_000, 10_000_000)
@@ -302,7 +303,7 @@ func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) 
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
 	policy.MinimumBenefitRaw = 1_000_000_000_000
 	var legs []uint64
-	client.http.Transport = quoteLegsTransport(t, client.http.Transport, &legs, math.MaxUint64, 1)
+	fixtureHTTP(client).Transport = quoteLegsTransport(t, fixtureHTTP(client).Transport, &legs, math.MaxUint64, 1)
 	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, -1, 10_000_000)
 	if err != nil || len(quotes) != 1 {
 		t.Fatal("bound-valid diagnostic quote dropped", err, quotes, observed)
@@ -343,7 +344,7 @@ func TestLiveSelectorLadderStopsAfterQuoteWindowBudget(t *testing.T) {
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
 	policy.UncertaintyBPS = 0
 	var legs []uint64
-	client.http.Transport = quoteLegsTransport(t, client.http.Transport, &legs, 5_000_000, 100_000)
+	fixtureHTTP(client).Transport = quoteLegsTransport(t, fixtureHTTP(client).Transport, &legs, 5_000_000, 100_000)
 	// Same economics as the ladder test above, but the observation is already
 	// past the ladder budget: only the largest size is priced, so no smaller
 	// quote can arrive with too few slots left to allocate.
