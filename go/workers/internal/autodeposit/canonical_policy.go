@@ -3,9 +3,9 @@ package autodeposit
 import (
 	"errors"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // CanonicalSubscriptionPolicyRequest names the deployed Autodeposit policy:

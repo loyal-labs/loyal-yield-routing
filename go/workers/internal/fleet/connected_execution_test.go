@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/prometheus/client_golang/prometheus"
+	sdk "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"

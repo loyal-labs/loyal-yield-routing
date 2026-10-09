@@ -10,8 +10,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // ControlTarget follows the single-target projection introduced by migration

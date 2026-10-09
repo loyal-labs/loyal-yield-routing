@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func TestSwapQuoteFrontierBoundsSigningAndSimulation(t *testing.T) {

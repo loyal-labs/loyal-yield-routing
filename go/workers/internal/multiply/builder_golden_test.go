@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func TestKLendRecipesMatchOfficialSDKGolden(t *testing.T) {

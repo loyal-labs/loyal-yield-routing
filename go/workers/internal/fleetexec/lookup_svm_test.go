@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/programs/system"
+	sdk "github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/programs/system"
 )
 
 type lookupSVM struct {

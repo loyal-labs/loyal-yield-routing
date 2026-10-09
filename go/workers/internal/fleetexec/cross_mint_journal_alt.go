@@ -4,8 +4,8 @@ import (
 	"errors"
 	"reflect"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // Journal decoding binds immutable provider inputs and authentic managed

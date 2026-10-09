@@ -7,9 +7,9 @@ import (
 	"errors"
 	"math"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 func lookupProducedSlot(slots []uint64, wanted uint64) bool {

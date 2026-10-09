@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // confirmedAccountRPC serves getMultipleAccounts for one reserve from a

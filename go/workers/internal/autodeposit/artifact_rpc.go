@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // ArtifactRPC exposes only bounded confirmed history/receipt reads. It never

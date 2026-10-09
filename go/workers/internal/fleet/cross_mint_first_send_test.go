@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // These deterministic local keys and synthetic instruction fixtures test exact

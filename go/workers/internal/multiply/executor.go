@@ -15,14 +15,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
+	computebudget "github.com/solana-foundation/solana-go/v2/programs/compute-budget"
 	"io"
 	"math"
 	"net/http"
 	"sync/atomic"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 const (

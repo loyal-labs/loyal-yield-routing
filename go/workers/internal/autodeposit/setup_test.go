@@ -9,9 +9,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPlan, DestinationSetupPlan, map[string]backyard.ConfirmedAccount) {

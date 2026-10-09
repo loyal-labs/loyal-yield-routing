@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 const (

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 func TestLookupPlannerCreatesExtendsAndRollsCatalogFromActualBank(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func reviewSF(value uint64) *big.Int {

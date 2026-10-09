@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 func lookupRegisteredPool(t *testing.T) *pgxpool.Pool {

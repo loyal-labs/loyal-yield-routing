@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // CrossMintFirstSendRequest carries the immutable journal wire, not a new route

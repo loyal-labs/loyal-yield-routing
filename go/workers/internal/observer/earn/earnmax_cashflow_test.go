@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // confirmedTransactionServer answers getTransaction with one fixed result.

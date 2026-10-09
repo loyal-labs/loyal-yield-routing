@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // replayFixture is a recorded production planning input: one Rust-era

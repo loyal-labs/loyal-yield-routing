@@ -7,8 +7,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func TestPersistedV0RetainsAllSignaturesAndResolvesPinnedLookup(t *testing.T) {

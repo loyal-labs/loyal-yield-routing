@@ -9,8 +9,8 @@ import (
 	"errors"
 	"fmt"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 const lookupProgram = "AddressLookupTab1e1111111111111111111111111"

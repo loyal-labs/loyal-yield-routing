@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/mr-tron/base58"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // The integration suite runs only against the explicitly provisioned

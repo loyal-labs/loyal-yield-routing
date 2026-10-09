@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 func externalALTFixture(t *testing.T, key byte, members ...byte) CrossMintExternalALT {

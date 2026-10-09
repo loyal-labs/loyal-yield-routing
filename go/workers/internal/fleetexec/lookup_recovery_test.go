@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	sdk "github.com/gagliardetto/solana-go"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // Unit receipt cases test rejection logic; actual executed packet coverage is

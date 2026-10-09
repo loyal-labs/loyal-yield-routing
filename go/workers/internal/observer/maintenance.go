@@ -19,11 +19,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	workersdb "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 const benchmarkReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"

@@ -11,13 +11,13 @@ import (
 	"math"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // The root adapts C's concrete finalized policy verifier. This capability has

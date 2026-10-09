@@ -10,7 +10,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // A status-cache hit is not a transaction receipt. Missing/pruned receipts and

@@ -9,8 +9,8 @@ import (
 	"reflect"
 	"testing"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 func externalALTFixture(t *testing.T) (*sdk.Transaction, CrossMintPreparedLeg) {

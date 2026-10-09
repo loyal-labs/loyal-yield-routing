@@ -9,7 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 	"io"
 	"math"
 	"net/http"

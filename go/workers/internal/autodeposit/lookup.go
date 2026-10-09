@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func (b *SweepWireBuilder) resolvePersistedLookups(ctx context.Context, tx *solana.Transaction) error {

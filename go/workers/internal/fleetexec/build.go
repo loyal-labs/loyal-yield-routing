@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 
-	solanasdk "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/mr-tron/base58"
+	solanasdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // SolanaPacketLimit is the network MTU for a versioned transaction.

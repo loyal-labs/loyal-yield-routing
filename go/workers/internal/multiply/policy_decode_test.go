@@ -5,8 +5,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Synthetic ABI examples complement the independent policy-bank proof. They

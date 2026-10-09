@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func projectorFixturePool(t *testing.T, variable, database string) (*pgxpool.Pool, context.Context) {

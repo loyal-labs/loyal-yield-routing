@@ -13,7 +13,7 @@ import (
 	"reflect"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
+	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 )

@@ -14,9 +14,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 type artifactGolden struct {

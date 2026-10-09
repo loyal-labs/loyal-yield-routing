@@ -14,7 +14,7 @@ import (
 	"math/big"
 	"sort"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Account is a confirmed RPC account record.

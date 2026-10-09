@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // BuiltOperation mirrors builder::BuiltOperation.
