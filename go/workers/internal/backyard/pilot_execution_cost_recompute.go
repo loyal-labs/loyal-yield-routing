@@ -40,13 +40,15 @@ type PilotExecutionCostRecomputeFamily struct {
 }
 
 // RunPilotExecutionCostRecompute is explicit operator bookkeeping: no signer,
-// RPC or chain write. A dry run reads one consistent snapshot; execute takes a
-// short route lease so its write is fenced like every other budget write.
+// RPC or chain write. A dry run reads one consistent snapshot; execute takes
+// the route lease so its write is fenced like every other budget write. Both
+// scan the whole pilot history (about a minute in production), so the deadline
+// and lease cover it; execute runs only with the worker stopped.
 func RunPilotExecutionCostRecompute(ctx context.Context, databaseURL, routeKey string, execute bool) (result PilotExecutionCostRecompute, err error) {
 	if routeKey != productionRouteKey || databaseURL == "" {
 		return result, budgetHold("invalid_pilot_cost_recompute_config")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	db, err := OpenDatabase(ctx, databaseURL)
 	if err != nil {
@@ -58,7 +60,7 @@ func RunPilotExecutionCostRecompute(ctx context.Context, databaseURL, routeKey s
 		if _, err = rand.Read(nonce[:]); err != nil {
 			return result, budgetHold("pilot_cost_recompute_owner_unavailable")
 		}
-		if _, err = db.AcquireRouteLease(ctx, routeKey, "pilot-cost-recompute:"+hex.EncodeToString(nonce[:]), 45*time.Second); err != nil {
+		if _, err = db.AcquireRouteLease(ctx, routeKey, "pilot-cost-recompute:"+hex.EncodeToString(nonce[:]), 5*time.Minute); err != nil {
 			return result, budgetHold("pilot_cost_recompute_lease_unavailable")
 		}
 		defer func() {
@@ -82,7 +84,7 @@ func RunPilotExecutionCostRecompute(ctx context.Context, databaseURL, routeKey s
 	return result, nil
 }
 
-// recomputePilotExecutionCost works in one short transaction. With execute it
+// recomputePilotExecutionCost works in one transaction. With execute it
 // locks the route row under this process's lease, refuses any open reservation
 // or nonterminal operation, and writes the family totals and every changed
 // operation's booked cost atomically.
@@ -128,7 +130,13 @@ func (d *Database) recomputePilotExecutionCost(ctx context.Context, routeKey str
 			return report, budgetHold("recompute_requires_settled_route")
 		}
 	}
-	rows, err := tx.Query(ctx, `SELECT operation_id,COALESCE(strategy_key,''),expected_effects->'phase3',reconciled_effects FROM loyal_yield.multiply_operations
+	// Read only the authorization fields the realized cost uses: the full
+	// phase3 record carries each admission's exit plan, which makes the pilot
+	// history about a gigabyte.
+	rows, err := tx.Query(ctx, `SELECT operation_id,COALESCE(strategy_key,''),jsonb_strip_nulls(jsonb_build_object(
+			'goalId',p->'goalId','reservationReleased',p->'reservationReleased','bookedExecutionCostMicros',p->'bookedExecutionCostMicros','sendKnownCost',p->'sendKnownCost',
+			'buildInput',CASE WHEN jsonb_typeof(p->'buildInput')='object' THEN jsonb_build_object('kind',p->'buildInput'->'kind','effects',p->'buildInput'->'effects') END)),reconciled_effects
+		FROM loyal_yield.multiply_operations,LATERAL (SELECT expected_effects->'phase3' AS p) phase3
 		WHERE route_key=$1 AND status='reconciled' AND confirmation_status='finalized' AND reconciled_effects IS NOT NULL AND expected_effects->'phase3'->>'pilotAuthorityId'=$2
 		ORDER BY confirmed_slot,operation_id`, routeKey, budget.Pilot.AuthorityID)
 	if err != nil {
