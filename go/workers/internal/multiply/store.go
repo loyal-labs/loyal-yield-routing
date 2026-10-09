@@ -1,7 +1,7 @@
 package multiply
 
 // Durable store ported statement-for-statement from
-// crates/loyal-yield-store/src/multiply_state_store.rs. Every UPDATE is
+// 91694cd9^:crates/loyal-yield-store/src/multiply_state_store.rs. Every UPDATE is
 // fenced by state_version + lease_owner + fencing_token + lease expiry; the
 // signed wire is immutable once persisted (only expiry/manual recovery
 // null it, never a replacement).

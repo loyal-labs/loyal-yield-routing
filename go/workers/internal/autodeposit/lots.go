@@ -1,7 +1,7 @@
 // Package autodeposit implements the Autodeposit family: surplus-lot
 // projection, sweep decisions, durable claim custody, signed two-leg
 // (pull/top-up) execution and recovery. The typed rules here are the Go port of
-// crates/balance-sweep-autodeposit-trigger/src/lib.rs and the durable
+// 91694cd9^:crates/balance-sweep-autodeposit-trigger/src/lib.rs and the durable
 // confirmation protocol in scripts/durable-autodeposit-confirmation.ts.
 package autodeposit
 

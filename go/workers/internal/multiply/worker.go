@@ -1,6 +1,6 @@
 package multiply
 
-// Worker lifecycle ported from crates/loyal-fleet-worker/src/multiply/mod.rs:
+// Worker lifecycle ported from 91694cd9^:crates/loyal-fleet-worker/src/multiply/mod.rs:
 // synchronous Run(ctx) with cancel-and-join, one fenced lease per tick, and
 // recovery branches that own every ambiguous state. No goroutine per route.
 

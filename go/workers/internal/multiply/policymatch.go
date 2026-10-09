@@ -8,7 +8,7 @@ package multiply
 //     earn_max_policy_constraints,
 //   crates/loyal-actions/src/squads.rs
 //     semantic_program_interaction_constraints,
-//   crates/loyal-fleet-worker/src/multiply/policy.rs
+//   91694cd9^:crates/loyal-fleet-worker/src/multiply/policy.rs
 //     current_policy_matches.
 // The comparison is structural over the decoded payload view, exactly like
 // canonical_policy_payload_matches in the Rust worker.

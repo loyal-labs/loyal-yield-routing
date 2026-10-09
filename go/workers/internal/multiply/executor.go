@@ -1,7 +1,7 @@
 package multiply
 
 // Durable execution ported from
-// crates/loyal-fleet-worker/src/multiply/executor.rs. The ed25519 delegate
+// 91694cd9^:crates/loyal-fleet-worker/src/multiply/executor.rs. The ed25519 delegate
 // key material lives only inside Executor; every other component plans,
 // builds, or observes but can never sign.
 

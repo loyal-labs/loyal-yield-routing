@@ -1,7 +1,7 @@
 package multiply
 
 // Policy contracts ported from
-// crates/loyal-fleet-worker/src/multiply/policy.rs: canonical KLend v2
+// 91694cd9^:crates/loyal-fleet-worker/src/multiply/policy.rs: canonical KLend v2
 // discriminators, per-family constraint indexes, and the Squads sync
 // execution payload laid out by loyal-actions' Borsh serializers.
 

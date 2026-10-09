@@ -1,7 +1,7 @@
 package multiply
 
 // Confirmed route observation, ported from
-// crates/loyal-fleet-worker/src/multiply/observe.rs with the KLend layouts
+// 91694cd9^:crates/loyal-fleet-worker/src/multiply/observe.rs with the KLend layouts
 // shared by the reviewed backyard and fleet decoders in this module tree.
 
 import (
