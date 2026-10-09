@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
+	"math/big"
 	"time"
 )
 
@@ -102,8 +103,17 @@ func observePhase3RedepositAdmission(ctx context.Context, rpc *RPCClient, client
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	s, r := o.Snapshot, e.Request
+	topup := d.Reason == topupDepositReason
+	if topup {
+		if r.FullPayoff || r.RepaymentRelease || len(r.ObligationReserves) != 2 || r.ObligationReserves[0] != autoAUTOPYUSD.Kamino.CollateralReserve || r.ObligationReserves[1] != autoAUTOPYUSD.Kamino.DebtReserve {
+			return phase3BridgeAdmission{}, budgetHold("topup_deposit_reserves_changed")
+		}
+		if err := validateDebtTopupCapital(ctx, rpc, s, d, s.Slot+observationLagSlots()); err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+	}
 	if rpc == nil || client == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain || s.WithdrawalDemandRaw > 0 ||
-		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !positionReturnRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || s.DebtIdleRaw != 0 || s.CollateralIdleRaw <= 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != OpenRouteStep || d.Action != r.Action || d.Reason != "single_loop_redeposit" || d.AmountRaw != s.CollateralIdleRaw || r.AmountRaw != uint64(d.AmountRaw) || e.ExpectedEffects.Deposit == nil {
+		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !positionReturnRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || s.DebtIdleRaw != 0 || s.CollateralIdleRaw <= 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != OpenRouteStep || d.Action != r.Action || (!topup && d.Reason != "single_loop_redeposit") || d.AmountRaw != s.CollateralIdleRaw || r.AmountRaw != uint64(d.AmountRaw) || e.ExpectedEffects.Deposit == nil {
 		return phase3BridgeAdmission{}, budgetHold("complete_redeposit_return_unavailable")
 	}
 	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
@@ -115,6 +125,11 @@ func observePhase3RedepositAdmission(ctx context.Context, rpc *RPCClient, client
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
+	if topup {
+		if err := s.TopupTranche.Loan.validatePrincipal(before, route, bound.ObservedSlot); err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+	}
 	if e.ExpectedEffects.Accounts[0].BeforeRaw != uint64(s.CollateralIdleRaw) {
 		return phase3BridgeAdmission{}, budgetHold("redeposit_custody_snapshot_changed")
 	}
@@ -124,6 +139,11 @@ func observePhase3RedepositAdmission(ctx context.Context, rpc *RPCClient, client
 	}
 	if err := validateRedepositProjection(r, e.ExpectedEffects, before, projection); err != nil {
 		return phase3BridgeAdmission{}, err
+	}
+	if topup {
+		if err := validateTopupDepositPrincipal(before, projection.Accounts, route); err != nil {
+			return phase3BridgeAdmission{}, err
+		}
 	}
 	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, client, m, o, d, r, e.ExpectedEffects, current, projection)
 	if err != nil {
@@ -149,4 +169,39 @@ func validateRedepositAdmissionPrestate(ctx context.Context, rpc *RPCClient, r K
 		return 0, budgetHold("redeposit_return_interest_window_changed")
 	}
 	return bound.ObservedSlot, nil
+}
+
+// One compiled refresh/deposit must produce the exact SF floor, not merely the
+// same rounded raw debt. This simulation never establishes a new loan origin.
+func validateTopupDepositPrincipal(before, after []ConfirmedAccount, route RuntimeRoute) error {
+	old, err := decodeKaminoObligation(accountAt(before, route.Kamino.Obligation), route.Kamino)
+	if err != nil {
+		return err
+	}
+	next, err := decodeKaminoObligation(accountAt(after, route.Kamino.Obligation), route.Kamino)
+	if err != nil {
+		return err
+	}
+	reserve, err := decodeKaminoReserve(accountAt(after, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
+	if err != nil {
+		return err
+	}
+	oldRate, newRate := littleInt(old.cumulativeBorrowRate[:]), littleInt(reserve.cumulativeBorrowRate[:])
+	if oldRate.Sign() <= 0 || newRate.Cmp(oldRate) < 0 || next.cumulativeBorrowRate != reserve.cumulativeBorrowRate {
+		return budgetHold("topup_deposit_rate_changed")
+	}
+	want := new(big.Int).Mul(littleInt(old.debtAmountSF[:]), newRate)
+	if want.BitLen() > 256 {
+		return budgetHold("topup_deposit_rate_changed")
+	}
+	want.Quo(want, oldRate)
+	marker, err := topupBorrowMarker(accountAt(before, route.Kamino.Obligation), route.Kamino)
+	if err != nil {
+		return err
+	}
+	nextMarker, err := topupBorrowMarker(accountAt(after, route.Kamino.Obligation), route.Kamino)
+	if err != nil || marker != nextMarker || littleInt(next.debtAmountSF[:]).Cmp(want) != 0 {
+		return budgetHold("topup_deposit_principal_changed")
+	}
+	return nil
 }

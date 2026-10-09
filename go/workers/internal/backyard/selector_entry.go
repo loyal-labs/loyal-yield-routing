@@ -293,6 +293,7 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 		Budget        Phase3Budget                       `json:"phase3"`
 		Activation    json.RawMessage                    `json:"pilotBudgetActivation"`
 		Unwind        *UnwindIntent                      `json:"selectorUnwind"`
+		Topup         *topupTranche                      `json:"topupTranche"`
 		CanaryHistory map[string]pilotCanaryEntryReceipt `json:"pilotCanaryEntries"`
 		Entry         *SelectorEntry                     `json:"selectorEntry"`
 		Selector      struct {
@@ -301,6 +302,15 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 	}
 	if json.Unmarshal(raw, &state) != nil {
 		return result, budgetHold("invalid_selector_route_state")
+	}
+	if state.Topup != nil {
+		if err = state.Topup.validate(); err != nil {
+			return result, err
+		}
+		encoded, _ := json.Marshal(state.Topup)
+		if err = d.validateTopupTrancheOrigin(ctx, tx, routeKey, encoded); err != nil {
+			return result, err
+		}
 	}
 	if err = state.Budget.validate(); err != nil {
 		return result, err
@@ -311,7 +321,7 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 	if _, err = validatePersistedPilotActivation(state.Budget, state.Activation, version); err != nil {
 		return result, err
 	}
-	if state.Unwind != nil || len(state.Budget.Reservations) != 0 {
+	if state.Unwind != nil || len(state.Budget.Reservations) != 0 || topupWorkInFlight(state.Topup) {
 		return result, budgetHold("selector_finish_current_work_first")
 	}
 	// The two operation-table guard checks ride ONE SELECT whose columns wrap
@@ -481,6 +491,9 @@ func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, oper
 // the public behavior above. Pause, unwind, journal-lane, equity, borrow,
 // quote-currentness, allocation-binding and authority checks are byte-identical.
 func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manifest RouteManifest, tx pgx.Tx, operationID string, budget Phase3Budget, request any, effects ExpectedEffects, slot int64, admission bool) error {
+	if err := d.authorizeTopupStateTx(ctx, tx, operationID, admission); err != nil {
+		return err
+	}
 	if err := d.authorizePartialWithdrawalTx(ctx, tx, operationID); err != nil {
 		return err
 	}

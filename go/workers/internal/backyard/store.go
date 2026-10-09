@@ -761,12 +761,31 @@ func (d *Database) recordDecisionTx(
 		return DecisionRecord{}, budgetHold("partial_withdrawal_state_changed")
 	}
 
-	expected, err := json.Marshal(map[string]any{
+	topup, err := decodeTopupTranche(setupState["topupTranche"])
+	if err != nil {
+		return DecisionRecord{}, err
+	}
+	if decision.Action != Hold && decision.Action != HoldManualRecovery && !sameTopupTranche(topup, observation.Snapshot.TopupTranche) {
+		return DecisionRecord{}, budgetHold("topup_predecessor_changed")
+	}
+	if topup != nil {
+		if topup.Generation > stateVersion {
+			return DecisionRecord{}, budgetHold("topup_generation_changed")
+		}
+		if err = d.validateTopupTrancheOrigin(ctx, tx, routeKey, setupState["topupTranche"]); err != nil {
+			return DecisionRecord{}, err
+		}
+	}
+	envelope := map[string]any{
 		"schema":                "loyal-backyard-rwa-operation-evidence/v1",
 		"journalStrategyConfig": bridgeStrategy,
 		"decision":              newDecisionEvidence(observation, decision, manifestSHA256, policyCatalogSHA256),
 		"expectedEffects":       nil,
-	})
+	}
+	if topup != nil {
+		envelope["topupTranche"] = topup
+	}
+	expected, err := json.Marshal(envelope)
 	if err != nil {
 		return DecisionRecord{}, err
 	}
@@ -1516,6 +1535,9 @@ func (d *Database) markReconciledOnManifest(ctx context.Context, manifest RouteM
 		return fmt.Errorf("finalized reconciliation lost serialization")
 	}
 	if err = d.settlePhase3ReservationTx(ctx, tx, operationID); err != nil {
+		return err
+	}
+	if err = d.settleTopupTrancheTx(ctx, tx, operationID, expected, receipt); err != nil {
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {

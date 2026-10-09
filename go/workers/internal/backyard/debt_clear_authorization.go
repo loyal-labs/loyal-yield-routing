@@ -59,6 +59,7 @@ type debtClearRiskProof struct {
 }
 
 type debtClearRouteState struct {
+	Budget    Phase3Budget                  `json:"phase3"`
 	Authority *debtClearAuthority           `json:"debtClearAuthority"`
 	Receipts  map[string]debtClearAuthority `json:"debtClearReceipts"`
 	Unwind    *UnwindIntent                 `json:"selectorUnwind"`
@@ -175,6 +176,13 @@ func debtClearRequired(m RouteManifest, request any, effects ExpectedEffects, pl
 		// and staging still spend the same scoped approval until reconciled flat.
 		return state.Authority != nil || state.Unwind != nil && state.Unwind.MaxDebtRaw > 0, nil
 	}
+	if emergencyTopupEntryInventory(s, decision) {
+		r, ok := request.(JupiterSwapRequest)
+		if !ok || !r.EntryReturnReserved || !r.TopupReturnReserved || !topupFullyFundedReturn(*plan) {
+			return false, budgetHold("topup_risk_entry_requires_full_funding")
+		}
+		return true, nil
+	}
 	// Entry swaps cannot inherit exit authority while a flow is outstanding.
 	if decision.Action == SwapDebtToCollateralStep || decision.Action == SwapStableToCollateralStep || decision.Action == SwapUSDCToPrimeStep || decision.Action == VoltrAllocateToSquads && !s.CutoverDrain {
 		if state.Authority != nil {
@@ -221,7 +229,11 @@ func debtClearRequired(m RouteManifest, request any, effects ExpectedEffects, pl
 // neither a caller-supplied snapshot nor a hard_ltv reason grants authority.
 func verifyDebtClearEmergency(m RouteManifest, o Observation, decision Decision, operationID string, now time.Time) (*debtClearRiskProof, error) {
 	switch decision.Action {
-	case ReportNAV, VoltrRestoreIdle, InitializeKaminoObligation, OpenRouteStep, OpenPrimeUSDCStep, SwapStableToCollateralStep, SwapUSDCToPrimeStep, SwapDebtToCollateralStep:
+	case SwapStableToCollateralStep:
+		if !emergencyTopupEntryInventory(o.Snapshot, decision) {
+			return nil, nil
+		}
+	case ReportNAV, VoltrRestoreIdle, InitializeKaminoObligation, OpenRouteStep, OpenPrimeUSDCStep, SwapUSDCToPrimeStep, SwapDebtToCollateralStep:
 		return nil, nil
 	}
 	proof, err := verifyDebtClearRiskBatch(m, o, operationID, now)
@@ -232,7 +244,7 @@ func verifyDebtClearEmergency(m RouteManifest, o Observation, decision Decision,
 		return nil, budgetHold("debt_clear_emergency_action_invalid")
 	}
 	switch decision.Action {
-	case DeleverRouteStep, DeleverPrimeUSDCStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapCollateralToStableStep, SwapPrimeToUSDCStep:
+	case SwapStableToCollateralStep, DeleverRouteStep, DeleverPrimeUSDCStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapCollateralToStableStep, SwapPrimeToUSDCStep:
 		return proof, nil
 	default:
 		return nil, budgetHold("debt_clear_emergency_action_invalid")
@@ -320,6 +332,9 @@ func (d *Database) authorizeDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteM
 	if json.Unmarshal(raw, &state) != nil {
 		return budgetHold("debt_clear_state_invalid")
 	}
+	if handled, err := bindPartialRiskAuthorization(m, request, effects, plan, auth, state, risk, operationID, slot, admission); handled || err != nil {
+		return err
+	}
 	required, err := debtClearRequired(m, request, effects, plan, state)
 	required = required || auth.DebtClear != nil && !debtClearPassiveRequest(request)
 	if err != nil {
@@ -364,7 +379,19 @@ func (d *Database) authorizeDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteM
 		if plan.CurrentCost.TotalMicros > math.MaxInt64-plan.ExitAfterMicros {
 			return budgetHold("debt_clear_cost_overflow")
 		}
-		origin := UnwindIntent{SourceLane: s.RouteLane, Reason: "hard_ltv_reduction", ObservationID: s.ObservationID, MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: maxDebt, CostBoundRaw: plan.CurrentCost.TotalMicros + plan.ExitAfterMicros, BudgetScope: Phase3GoalID, BudgetFamily: phase3BudgetFamilyForLane(s.RouteLane), EvidenceID: risk.AccountsSHA256, CreatedAt: now}
+		costBound := plan.CurrentCost.TotalMicros + plan.ExitAfterMicros
+		if emergencyTopupEntryInventory(s, plan.Decision) || emergencyTopupFundingInventory(s, plan.Decision) {
+			if err := state.Budget.validate(); err != nil {
+				return err
+			}
+			reserved := state.Budget.Families[phase3BudgetFamilyForLane(s.RouteLane)].ExitMicros
+			if reserved < costBound {
+				return budgetHold("recovery_exceeds_reserved_exit")
+			}
+			// Carry the already-reserved whole-position return through recovered prices.
+			costBound = reserved
+		}
+		origin := UnwindIntent{SourceLane: s.RouteLane, Reason: "hard_ltv_reduction", ObservationID: s.ObservationID, MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: maxDebt, CostBoundRaw: costBound, BudgetScope: Phase3GoalID, BudgetFamily: phase3BudgetFamilyForLane(s.RouteLane), EvidenceID: risk.AccountsSHA256, CreatedAt: now}
 		authority, err := newDebtClearAuthority(m, routeKey, sha256Bytes([]byte("emergency:"+operationID)), origin)
 		if err != nil {
 			return err

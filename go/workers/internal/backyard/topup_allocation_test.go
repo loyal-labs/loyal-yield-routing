@@ -63,7 +63,7 @@ func TestTopupAllocationSizingAndPriority(t *testing.T) {
 		"no room":          func(s *Snapshot) { s.TopupDepositRoomRaw = 0 },
 		"legacy tranche":   func(s *Snapshot) { s.PilotTrancheCapLane = "" },
 		"dust":             func(s *Snapshot) { s.VoltrIdleRaw = topupMinimumRaw - 1 },
-		"debt":             func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw = 1, 1 },
+		"unvalued debt":    func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw = 1, 0 },
 		"flat":             func(s *Snapshot) { s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = false, 0, 0 },
 	} {
 		c := s

@@ -11,6 +11,10 @@ import (
 )
 
 type phase3OperationAuthorization struct {
+	PartialRisk               *debtClearRiskProof     `json:"partialRisk,omitempty"`
+	TopupRisk                 *debtClearRiskProof     `json:"topupRisk,omitempty"`
+	Topup                     *topupTrancheBinding    `json:"topup,omitempty"`
+	TopupResult               *topupTranche           `json:"topupResult,omitempty"`
 	DebtClear                 *debtClearAuthority     `json:"debtClear,omitempty"`
 	PilotAuthorityID          string                  `json:"pilotAuthorityId,omitempty"`
 	BookedExecutionCostMicros int64                   `json:"bookedExecutionCostMicros,omitempty"`
@@ -320,6 +324,23 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 			return err
 		}
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, plan.CurrentCost.ValidThroughSlot)
+		if decision.Reason == topupAllocationReason && observation.Snapshot.RouteLane == autoAUTOPYUSD.Lane && observation.Snapshot.PositionDebtRaw > 0 {
+			if len(plan.Exit) == 0 || plan.Exit[0].Action != SwapStableToCollateralStep || plan.Exit[0].Cost.ExecutionCost == nil {
+				return budgetHold("topup_entry_execution_cost_missing")
+			}
+			spent, e := budget.executionCostSpent()
+			if e != nil {
+				return e
+			}
+			next, e := budgetSum(spent, plan.CurrentCost.ExecutionCost.TotalMicros, plan.Exit[0].Cost.ExecutionCost.TotalMicros)
+			if e != nil {
+				return e
+			}
+			// Refuse before allocation when its already-priced next swap cannot fit.
+			if next > PilotEntryExecutionCostCapMicros {
+				return budgetHold("topup_entry_execution_cost_cap_exhausted")
+			}
+		}
 	}
 	var status, lane, routeKey, action, lastReconciledAction string
 	var durableUnwind bool
@@ -368,6 +389,9 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 	if err = d.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, budget, request, effects, slot, true); err != nil {
 		return err
 	}
+	if err = d.bindTopupAdmissionTx(ctx, tx, rpc, operationID, observation, decision, plan, &auth, intent, risk); err != nil {
+		return err
+	}
 	if auth.GoalID != "" {
 		// Retry preserves all prior authorization and wire identity.
 		if auth.GoalID != Phase3GoalID || auth.IntentSHA256 != intent || auth.BridgeAdmission == nil || auth.ReservationReleased {
@@ -403,9 +427,9 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 		}
 	}
 	recovery := decision.Action != VoltrAllocateToSquads
-	if partialRepaymentReason(decision.Reason) || plan.RepaymentProjection != nil {
+	if partialRepaymentDecision(observation.Snapshot, decision) || plan.RepaymentProjection != nil {
 		r, ok := request.(KaminoPrimeUSDCRequest)
-		if budget.Pilot == nil || !ok || decision.Action != DeleverRouteStep || !partialRepaymentReason(decision.Reason) || plan.RepaymentProjection == nil || plan.Payoff == nil || budget.Families[family].ExitMicros == 0 || !decisionsEqual(manifest.DecideOnManifest(observation.Snapshot), decision) {
+		if budget.Pilot == nil || !ok || decision.Action != DeleverRouteStep || !partialRepaymentDecision(observation.Snapshot, decision) || plan.RepaymentProjection == nil || plan.Payoff == nil || budget.Families[family].ExitMicros == 0 || !decisionsEqual(manifest.DecideOnManifest(observation.Snapshot), decision) {
 			return budgetHold("partial_repayment_requires_reserved_pilot_position")
 		}
 		if _, err = validatePartialRepaymentProjection(r, effects, observation.Snapshot, *plan.RepaymentProjection); err != nil {
@@ -431,10 +455,9 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 		if !ok || !entry.EntryReturnReserved || budget.Families[family].ExitMicros == 0 {
 			return budgetHold("entry_requires_reserved_bridge_custody")
 		}
-		// Entry extends a pre-existing bridge reserve within family/goal caps;
-		// it is not an unwind that must fit inside the cheaper cash-only exit.
-		// Budget.Admit still forbids consuming the prior reserve for headroom.
-		recovery = false
+		// Risk conversion must fit the ORIGINAL allocation's recovery reserve.
+		// Normal entry may extend its budget under the existing capital caps.
+		recovery = emergencyTopupEntryInventory(observation.Snapshot, decision)
 	}
 	if decision.Action == OpenRouteStep {
 		entry, ok := request.(KaminoPrimeUSDCRequest)
@@ -471,6 +494,10 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 		recovery = false
 	}
 	exitAfter := plan.ExitAfterMicros
+	if !recovery && observation.Snapshot.PositionDebtRaw > 0 && topupCapitalReason(decision) {
+		// Capital cannot spend the protected exit reserve, even when its new estimate is cheaper.
+		exitAfter = max(exitAfter, budget.Families[family].ExitMicros)
+	}
 	// A mid-unwind recovery step must not shrink the committed reserve to its
 	// own re-priced plan tail: quote drift between planning windows would
 	// strand the discarded slack and hold the next step on
@@ -498,7 +525,7 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 	if err = budget.Admit(r); err != nil {
 		return err
 	}
-	auth = phase3OperationAuthorization{DebtClear: auth.DebtClear, GoalID: Phase3GoalID, IntentSHA256: intent, BuildInput: plan.Input, BridgeAdmission: &plan}
+	auth = phase3OperationAuthorization{Topup: auth.Topup, TopupRisk: auth.TopupRisk, PartialRisk: auth.PartialRisk, DebtClear: auth.DebtClear, GoalID: Phase3GoalID, IntentSHA256: intent, BuildInput: plan.Input, BridgeAdmission: &plan}
 	if custody.SpendRaw > 0 {
 		// writePhase3BudgetTx performs this transaction's generation increment
 		// (any earlier in-transaction increment, e.g. a new selector entry, has
@@ -672,6 +699,12 @@ func (d *Database) authorizePhase3BuildOnManifest(ctx context.Context, manifest 
 		if entrySlot < knownCost.ObservationSlot || entrySlot > validThrough {
 			return budgetHold("stale_bridge_admission_snapshot")
 		}
+	}
+	if err = validateTopupCapitalAuthorization(ctx, rpc, auth, entrySlot); err != nil {
+		return err
+	}
+	if err = validateEmergencyTopupFundingAuthorization(ctx, rpc, manifest, auth, entrySlot); err != nil {
+		return err
 	}
 	debtEffects, err := decodeExpectedEffectsWithManifest(manifest, effects)
 	if err != nil {

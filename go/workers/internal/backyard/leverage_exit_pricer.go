@@ -12,17 +12,80 @@ import (
 // payoff, release to the ceiling -> swap everything idle to debt -> repay
 // the swap's slippage MINIMUM (never the whole debt). It returns the cycle
 // legs, the post-cycle accounts (obligation, reserves and custodies
-// patched), the debt cash left, and the payoff window (7 + 3N steps) the
-// final release must be sized over. Zero cycles returns the inputs as-is.
+// patched), debt cash left, the accepted payoff window and actual cycle count.
+// Every leg uses that window (at least 7 + 3N steps), including the final
+// release. Zero cycles returns the inputs as-is.
 // The legs' costs are left to the caller's concurrent cost reads.
-func priceLeverageExitCycles(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, *KaminoPayoffBound, error) {
+func priceLeverageExitCycles(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, int, *KaminoPayoffBound, error) {
+	return priceLeverageExitCyclesWithInitialRepay(ctx, rpc, client, m, route, s, accounts, slot, blockhash, cash, false)
+}
+
+func priceLeverageExitCyclesWithInitialRepay(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64, initialRepay bool) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, int, *KaminoPayoffBound, error) {
+	for steps := int64(7); steps <= kaminoPayoffMaxWindowSteps && steps <= int64(7+3*leverageExitMaxCycles); steps += 3 {
+		legs, post, remainingCash, cycles, first, err := priceLeverageExitCyclesAtWindowWithInitialRepay(ctx, rpc, client, m, route, s, accounts, slot, blockhash, cash, steps, initialRepay)
+		if err != nil {
+			return nil, nil, 0, 0, 0, nil, err
+		}
+		if steps >= 7+3*cycles {
+			return legs, post, remainingCash, steps, int(cycles), first, nil
+		}
+		// Discard the entire attempt. A longer horizon must reprice every
+		// release and quote from the original accounts and cash, not its poststate.
+	}
+	return nil, nil, 0, 0, 0, nil, budgetHold("leverage_exit_cycles_exceeded")
+}
+
+// Every leg in one attempt uses the same complete-exit horizon. A cycle
+// outside it returns only the required count; no partial plan can escape.
+func priceLeverageExitCyclesAtWindow(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64, steps int64) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, *KaminoPayoffBound, error) {
+	return priceLeverageExitCyclesAtWindowWithInitialRepay(ctx, rpc, client, m, route, s, accounts, slot, blockhash, cash, steps, false)
+}
+
+func priceLeverageExitCyclesAtWindowWithInitialRepay(ctx context.Context, rpc *RPCClient, client *jupiterClient, m RouteManifest, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64, steps int64, initialRepay bool) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, *KaminoPayoffBound, error) {
 	accounts = append([]ConfirmedAccount(nil), accounts...)
 	var legs []phase3BridgeExitCost
 	idle := uint64(max(s.CollateralIdleRaw, 0))
 	cycles := 0
 	var first *KaminoPayoffBound
+	if initialRepay {
+		// Hard risk may leave NO safe pre-repay release. Price owned cash
+		// repayment first, retaining the original debt bound independently.
+		if route.Lane != autoAUTOPYUSD.Lane || idle != 0 {
+			return nil, nil, 0, 0, nil, budgetHold("emergency_topup_funding_cycle_invalid")
+		}
+		if err := validateEmergencyFundingStrictRepay(accounts, cash); err != nil {
+			return nil, nil, 0, 0, nil, err
+		}
+		if steps < 10 {
+			return nil, nil, 0, 1, nil, nil
+		}
+		bound, err := decodeKaminoPayoffWindow(accounts, route, slot, steps)
+		if err != nil {
+			return nil, nil, 0, 0, nil, err
+		}
+		first = &bound
+		repay, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, cash, blockhash, route.Lane)
+		if err != nil {
+			return nil, nil, 0, 0, nil, err
+		}
+		repay.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+		source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
+		effects, err := boundedKaminoRepaymentEffects(accounts, source, destination, cash, cash)
+		if err != nil {
+			return nil, nil, 0, 0, nil, err
+		}
+		input, err := exitLegInput(repay, effects)
+		if err != nil {
+			return nil, nil, 0, 0, nil, err
+		}
+		legs = append(legs, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: cash, Template: input})
+		accounts, err = projectLeverageExitCycle(accounts, route, KaminoReleaseBound{}, nil, bound.ObservedDebtRaw, cash)
+		if err != nil {
+			return nil, nil, 0, 0, nil, err
+		}
+		cash, cycles = 0, 1
+	}
 	for {
-		steps := min(int64(7+3*(cycles+1)), kaminoPayoffMaxWindowSteps)
 		limit, err := m.decodeKaminoRepaymentReleaseForMode(accounts, route, slot, steps, s.PilotActive)
 		if err != nil {
 			return nil, nil, 0, 0, nil, err
@@ -38,10 +101,13 @@ func priceLeverageExitCycles(ctx context.Context, rpc *RPCClient, client *jupite
 			first = &payoff
 		}
 		if cash+probe.Request.MinimumOutputRaw >= limit.Payoff.UpperDebtRaw {
-			return legs, accounts, cash, int64(7 + 3*cycles), first, nil
+			return legs, accounts, cash, int64(cycles), first, nil
 		}
 		if cycles == leverageExitMaxCycles {
 			return nil, nil, 0, 0, nil, budgetHold("leverage_exit_cycles_exceeded")
+		}
+		if int64(7+3*(cycles+1)) > steps {
+			return nil, nil, 0, int64(cycles + 1), nil, nil
 		}
 		cycles++
 		// A cycle: [release ->] [swap idle ->] partial repay. Debt cash that

@@ -75,9 +75,10 @@ type JupiterSwapRequest struct {
 	RouteLane               string
 	LookupTables            []LookupTableSnapshot `json:",omitempty"`
 	FullPayoffFunding       bool                  `json:"fullPayoffFunding,omitempty"`
+	EmergencyTopupFunding   bool                  `json:"emergencyTopupFunding,omitempty"`
 	EntryReturnReserved     bool                  `json:"entryReturnReserved,omitempty"`
 	PositionReturnReserved  bool                  `json:"positionReturnReserved,omitempty"`
-	// TopupReturnReserved marks an entry swap beside a funded debt-free
+	// TopupReturnReserved marks an entry swap beside a funded
 	// position (plan B3). It is set only for the journaled top-up reason and
 	// always together with EntryReturnReserved.
 	TopupReturnReserved bool `json:"topupReturnReserved,omitempty"`
@@ -522,6 +523,9 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 }
 
 func (m RouteManifest) compileJupiterMessage(request JupiterSwapRequest, delegate publicKey) ([]byte, error) {
+	if request.EmergencyTopupFunding && (request.RouteLane != autoAUTOPYUSD.Lane || request.Action != SwapCollateralToDebtStep || request.FullPayoffFunding || request.EntryReturnReserved || request.PositionReturnReserved || request.TopupReturnReserved) {
+		return nil, budgetHold("emergency_topup_funding_flags_invalid")
+	}
 	if request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 || !validSHA256(request.PolicyAccountDataSHA256) {
 		return nil, fmt.Errorf("invalid Jupiter request")
 	}

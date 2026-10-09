@@ -177,7 +177,8 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	case BridgeBuildRequest:
 		// NAV and admitted partial bridge legs price the remaining position;
 		// this cost-only helper grants no permission to execute that exit.
-		if (r.Action != ReportNAV && r.Action != StageSquadsToVoltr && r.Action != VoltrRestoreIdle) || !leverageLane(s.RouteLane) {
+		allocation := r.Action == VoltrAllocateToSquads && d.Action == r.Action && d.Reason == topupAllocationReason && s.RouteLane == autoAUTOPYUSD.Lane
+		if (!allocation && r.Action != ReportNAV && r.Action != StageSquadsToVoltr && r.Action != VoltrRestoreIdle) || !leverageLane(s.RouteLane) {
 			return phase3BridgeAdmission{}, budgetHold("invalid_projected_return_request")
 		}
 		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
@@ -194,6 +195,61 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	var funding *JupiterExecutionEvidence
 	var releaseCost, fundingCost ValuedTransactionCost
 	upperCash := cash
+	initialRepay, surplus := false, uint64(0)
+	if r, ok := request.(JupiterSwapRequest); ok && r.EmergencyTopupFunding {
+		if !emergencyTopupFundingRequest(o.Snapshot, d, r) || cash != uint64(debtCashRaw(o.Snapshot))+r.MinimumOutputRaw || s.CollateralIdleRaw != 0 {
+			return phase3BridgeAdmission{}, budgetHold("emergency_topup_funding_projection_invalid")
+		}
+		upper, err := withdrawalUSDCExitEstimate(r.QuotedOutputRaw)
+		if err != nil || upper < r.MinimumOutputRaw {
+			return phase3BridgeAdmission{}, budgetHold("emergency_topup_funding_output_overflow")
+		}
+		initialRepay, surplus = true, upper-r.MinimumOutputRaw
+	}
+	// A topup can already own enough idle collateral to fund the payoff.
+	// Quote that inventory before requiring a risk-increasing position release.
+	if r, ok := request.(JupiterSwapRequest); ok && r.TopupReturnReserved && route.Lane == autoAUTOPYUSD.Lane && s.CollateralIdleRaw > 0 && cash < bound.UpperDebtRaw {
+		idleBound, err := decodeKaminoPayoffWindow(accounts, route, projection.Slot, 7)
+		if err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+		if r.Action != SwapStableToCollateralStep || len(effects.Accounts) != 2 || effects.Accounts[1].MinimumAfterRaw == nil {
+			return phase3BridgeAdmission{}, budgetHold("topup_funding_minimum_unavailable")
+		}
+		guaranteed := *effects.Accounts[1].MinimumAfterRaw
+		if guaranteed == 0 || guaranteed > uint64(s.CollateralIdleRaw) {
+			return phase3BridgeAdmission{}, budgetHold("topup_funding_minimum_unavailable")
+		}
+		// Guaranteed input proves funding; the upper estimate sizes return costs.
+		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(guaranteed)}, guaranteed, cash, projection.Slot)
+		if err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+		floor, err := jupiterInstructionWireFloor(quote.Request.Instruction)
+		if err != nil {
+			return phase3BridgeAdmission{}, err
+		}
+		minimum := min(floor, quote.Request.MinimumOutputRaw)
+		if minimum <= math.MaxInt64-cash && cash+minimum >= idleBound.UpperDebtRaw {
+			if guaranteed != uint64(s.CollateralIdleRaw) {
+				quote, err = prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: s.CollateralIdleRaw}, uint64(s.CollateralIdleRaw), cash, projection.Slot)
+				if err != nil {
+					return phase3BridgeAdmission{}, err
+				}
+			}
+			check := quote.Request
+			check.FullPayoffFunding = true
+			if _, _, err = validatePayoffFundingAccounts(m, check, quote.ExpectedEffects, idleBound, accounts, route); err != nil {
+				return phase3BridgeAdmission{}, err
+			}
+			upper, err := withdrawalUSDCExitEstimate(quote.Request.QuotedOutputRaw)
+			if err != nil || upper > math.MaxInt64-cash {
+				return phase3BridgeAdmission{}, budgetHold("borrow_funding_output_overflow")
+			}
+			funding, bound, upperCash = &quote, idleBound, cash+upper
+			accounts = patchConfirmedTokenRaw(accounts, route.CollateralCustody, 0)
+		}
+	}
 	// B2 1.75x: when one release cannot fund the payoff, price the exit
 	// cycles (release -> swap -> partial repay) on cost-only account copies
 	// first; the payoff branch below then prices the final release from the
@@ -201,9 +257,10 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 	var cycles []phase3BridgeExitCost
 	var firstPayoff *KaminoPayoffBound
 	windowSteps := int64(7)
-	if cash < bound.UpperDebtRaw && leverageLane(s.RouteLane) && s.PilotActive && leverageExitAccountsMayNeedCycles(accounts, route, s) {
+	exitCycles := 0
+	if funding == nil && cash < bound.UpperDebtRaw && leverageLane(s.RouteLane) && s.PilotActive && (initialRepay || leverageExitAccountsMayNeedCycles(accounts, route, s)) {
 		var cycleCash uint64
-		cycles, accounts, cycleCash, windowSteps, firstPayoff, err = priceLeverageExitCycles(ctx, rpc, client, m, route, s, accounts, projection.Slot, blockhash, cash)
+		cycles, accounts, cycleCash, windowSteps, exitCycles, firstPayoff, err = priceLeverageExitCyclesWithInitialRepay(ctx, rpc, client, m, route, s, accounts, projection.Slot, blockhash, cash, initialRepay)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -221,7 +278,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 			s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 0
 		}
 	}
-	if cash < bound.UpperDebtRaw {
+	if funding == nil && cash < bound.UpperDebtRaw {
 		// Borrow -> NAV -> release -> NAV -> swap -> NAV -> payoff. Combine
 		// existing residue with the safe release; never require a dust-only swap.
 		limit, err := m.decodeKaminoRepaymentReleaseForMode(projection.Accounts, route, projection.Slot, windowSteps, s.PilotActive)
@@ -284,6 +341,12 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 			}
 		}
 	}
+	// Optimistic output NEVER funds a repay/release. It only enlarges the
+	// final residual custody whose return costs must also fit the reservation.
+	if surplus > math.MaxInt64-upperCash {
+		return phase3BridgeAdmission{}, budgetHold("emergency_topup_funding_output_overflow")
+	}
+	upperCash += surplus
 	payoff, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, bound.UpperDebtRaw, blockhash, s.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
@@ -340,7 +403,10 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		reads = append(reads, func(ctx context.Context) (err error) {
 			releaseCost, err = observePhase3KnownBuildCost(ctx, rpc, release.Request, release.ExpectedEffects)
 			return err
-		}, func(ctx context.Context) (err error) {
+		})
+	}
+	if funding != nil {
+		reads = append(reads, func(ctx context.Context) (err error) {
 			fundingCost, err = m.observePhase3KnownBuildCost(ctx, rpc, funding.Request, funding.ExpectedEffects)
 			return err
 		})
@@ -377,7 +443,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 		return plan, err
 	}
 	plan.Payoff, plan.PayoffWithdrawal = &bound, tail.Input
-	plan.ExitCycles = int((windowSteps - 7) / 3)
+	plan.ExitCycles = exitCycles
 	if len(cycles) > 0 {
 		// Build/send revalidation compares the CURRENT position's payoff
 		// window and first release: bind the first cycle's, not the final
@@ -396,12 +462,8 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 			prefix = append(prefix, nav)
 		}
 	}
-	if funding != nil {
+	if release != nil {
 		releaseInput, err := exitLegInput(release.Request, release.ExpectedEffects)
-		if err != nil {
-			return plan, err
-		}
-		input, err := exitLegInput(funding.Request, funding.ExpectedEffects)
 		if err != nil {
 			return plan, err
 		}
@@ -423,8 +485,15 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *RPCClient, cli
 				}
 			}
 		}
-		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - cash, ProofLevel: "COST_ONLY_BORROW_RETURN_NOT_EXECUTED_FUNDING"}
-		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost, Template: releaseInput}, nav, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: fundingCost, Template: input}, nav)
+		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost, Template: releaseInput}, nav)
+	}
+	if funding != nil {
+		input, err := exitLegInput(funding.Request, funding.ExpectedEffects)
+		if err != nil {
+			return plan, err
+		}
+		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - cash - surplus, ProofLevel: "COST_ONLY_BORROW_RETURN_NOT_EXECUTED_FUNDING"}
+		prefix = append(prefix, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: fundingCost, Template: input}, nav)
 	}
 	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost, Template: plan.PayoffRepayment}, nav, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: withdrawal.AmountRaw, Cost: tail.CurrentCost, Template: tail.Input})
 	plan.Exit = append(prefix, tail.Exit...)

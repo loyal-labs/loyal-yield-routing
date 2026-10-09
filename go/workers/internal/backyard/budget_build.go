@@ -266,3 +266,77 @@ func sanitizedHoldCause(err error) string {
 	}
 	return "rpc_read_failed"
 }
+
+// Reuse the persisted origin at fresh build/send. A request flag alone never
+// authorizes debt-bearing capital, and an expired attempt cannot renew it.
+func validateTopupCapitalAuthorization(ctx context.Context, rpc *RPCClient, auth phase3OperationAuthorization, minimumSlot int64) error {
+	p := auth.BridgeAdmission
+	if p == nil || p.Snapshot.PositionDebtRaw <= 0 {
+		return nil
+	}
+	emergency := emergencyTopupEntryInventory(p.Snapshot, p.Decision)
+	if !emergency && !topupCapitalReason(p.Decision) {
+		return nil
+	}
+	b := auth.Topup
+	if emergency && (b == nil || !b.Handoff.valid() || auth.DebtClear == nil || auth.DebtClear.Emergency == nil || auth.DebtClear.Emergency.OperationID != b.Handoff.OriginOperationID || !topupFullyFundedReturn(*p)) {
+		return budgetHold("topup_risk_entry_authority_missing")
+	}
+	if b == nil || !b.Loan.valid() || !emergency && b.Handoff != (topupHandoffAuthority{}) || b.Lane != p.Snapshot.RouteLane {
+		return budgetHold("topup_binding_missing")
+	}
+	s := p.Snapshot
+	if p.Decision.Reason != topupAllocationReason {
+		if s.TopupTranche == nil || !b.matches(s.TopupTranche) || b.Loan != s.TopupTranche.Loan || b.OriginOperationID != s.TopupTranche.OriginOperationID || b.AllocatedUSDCRaw != s.TopupTranche.AllocatedUSDCRaw {
+			return budgetHold("topup_origin_changed")
+		}
+	}
+	s.Slot = max(s.Slot, minimumSlot)
+	if err := validateFreshTopupPrincipal(ctx, rpc, b.Loan, s, p.ValidThroughSlot); err != nil {
+		return err
+	}
+	if p.Payoff == nil {
+		return budgetHold("topup_return_window_missing")
+	}
+	bound, _, err := observeRedepositPrestate(ctx, rpc, autoAUTOPYUSD, s, s.Slot)
+	if err != nil {
+		return err
+	}
+	if bound.ObservedSlot > p.ValidThroughSlot || bound.MaximumRateBPS > p.Payoff.MaximumRateBPS || bound.InterestBasis != p.Payoff.InterestBasis || bound.ChainUnix < p.Payoff.ChainUnix || bound.ChainUnix > p.Payoff.ChainUnix+kaminoPayoffWindowSeconds || bound.UpperDebtRaw > p.Payoff.UpperDebtRaw {
+		return budgetHold("topup_return_interest_window_changed")
+	}
+	return nil
+}
+
+// The marker classifies only. This fresh gate requires both independently
+// verified partial-risk authority and the immutable journal-owned inventory.
+func validateEmergencyTopupFundingAuthorization(ctx context.Context, rpc *RPCClient, m RouteManifest, auth phase3OperationAuthorization, minimumSlot int64) error {
+	p := auth.BridgeAdmission
+	if p == nil {
+		return nil
+	}
+	request, _, _, err := p.Input.decodeWithManifest(m)
+	if err != nil {
+		return err
+	}
+	r, ok := request.(JupiterSwapRequest)
+	if !ok || !r.EmergencyTopupFunding {
+		if p.EmergencyTopupFunding != nil {
+			return budgetHold("emergency_topup_funding_proof_invalid")
+		}
+		return nil
+	}
+	if err = validateEmergencyTopupFundingProof(m, p); err != nil {
+		return err
+	}
+	b := auth.Topup
+	if b == nil || !b.matches(p.Snapshot.TopupTranche) || b.Loan != p.Snapshot.TopupTranche.Loan || b.OriginOperationID != p.Snapshot.TopupTranche.OriginOperationID || b.AllocatedUSDCRaw != p.Snapshot.TopupTranche.AllocatedUSDCRaw || b.Lane != autoAUTOPYUSD.Lane || !b.Handoff.valid() {
+		return budgetHold("emergency_topup_funding_binding_changed")
+	}
+	risk := auth.PartialRisk
+	if risk == nil || auth.DebtClear != nil || !topupRiskHandoff(p, risk, risk.OperationID) || !freshAt(time.Now().UTC(), risk.ObservedAt, 30*time.Second) {
+		return budgetHold("emergency_topup_funding_authority_missing")
+	}
+	_, err = validateEmergencyTopupFundingPlan(ctx, rpc, m, p, minimumSlot)
+	return err
+}

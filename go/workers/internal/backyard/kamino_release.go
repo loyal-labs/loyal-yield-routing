@@ -392,6 +392,17 @@ func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan
 	// The original entry simulation refreshed reserves. Re-simulate the same
 	// unsigned message so prices have equivalent semantics; unrefreshed chain
 	// prices can differ indefinitely even when the oracle has not moved.
+	var repaymentBefore []ConfirmedAccount
+	if plan.RepaymentProjection != nil && autoEmergencyPartialRepayment(plan.Snapshot, plan.Decision) {
+		manifest, err := loadEmbeddedRouteManifest()
+		if err != nil {
+			return 0, err
+		}
+		slot, repaymentBefore, err = observeAutoPartialRepaymentPrestate(ctx, rpc, manifest, plan.Snapshot, slot)
+		if err != nil {
+			return 0, err
+		}
+	}
 	fresh, err := rpc.simulatePhase3EntryProjection(ctx, message, addresses, slot)
 	if err != nil {
 		return 0, err
@@ -401,6 +412,19 @@ func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *RPCClient, plan
 		r, ok := request.(KaminoPrimeUSDCRequest)
 		if err != nil || !ok || fresh.Slot < projection.Slot || fresh.Slot > plan.ValidThroughSlot {
 			return 0, budgetHold("partial_repayment_projection_expired")
+		}
+		if repaymentBefore != nil {
+			if err := validateAutoPartialRepaymentPrincipal(repaymentBefore, fresh.Accounts, r); err != nil {
+				return 0, err
+			}
+			originalMarker, err := topupBorrowMarker(accountAt(projection.Accounts, route.Kamino.Obligation), route.Kamino)
+			if err != nil {
+				return 0, err
+			}
+			freshMarker, err := topupBorrowMarker(accountAt(fresh.Accounts, route.Kamino.Obligation), route.Kamino)
+			if err != nil || originalMarker != freshMarker {
+				return 0, budgetHold("auto_partial_repayment_borrow_marker_changed")
+			}
 		}
 		bound, err := validatePartialRepaymentProjection(r, effects, plan.Snapshot, fresh)
 		if err != nil {

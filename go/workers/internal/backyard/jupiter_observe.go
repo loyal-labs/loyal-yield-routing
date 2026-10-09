@@ -100,7 +100,7 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 		logStage("prepare_jupiter_quote", prepareStart)
 		if err == nil && decision.Action == SwapStableToCollateralStep && phase3BudgetFamilyForLane(decision.StrategyKey) != "" {
 			evidence.Request.EntryReturnReserved = true
-			evidence.Request.TopupReturnReserved = decision.Reason == topupSwapReason
+			evidence.Request.TopupReturnReserved = decision.Reason == topupSwapReason || emergencyTopupEntryInventory(observation.Snapshot, decision)
 		}
 		if err == nil && decision.Action == SwapDebtToCollateralStep && positionReturnRoute(decision.StrategyKey) {
 			evidence.Request.PositionReturnReserved = true
@@ -109,6 +109,11 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 			(decision.Action == SwapUSDCToDebtStep && decision.Reason == "withdrawal_usdc_repayment_buffer")
 		if err == nil && funding && observation.Snapshot.PositionDebtRaw > 0 && positionReturnRoute(decision.StrategyKey) {
 			evidence.Request.FullPayoffFunding = true
+			if emergencyTopupFundingInventory(observation.Snapshot, decision) &&
+				evidence.Request.MinimumOutputRaw < uint64(observation.Snapshot.PositionDebtRaw-debtCashRaw(observation.Snapshot)) {
+				evidence.Request.FullPayoffFunding = false
+				evidence.Request.EmergencyTopupFunding = true
+			}
 		}
 		return observation, evidence, err
 	}

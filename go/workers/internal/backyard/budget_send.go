@@ -186,6 +186,12 @@ func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *RPCCli
 	cost, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
 	logStage("revalue_build_cost", revalueStart)
 	if err == nil {
+		err = validateTopupCapitalAuthorization(ctx, rpc, auth, cost.ObservationSlot)
+	}
+	if err == nil {
+		err = validateEmergencyTopupFundingAuthorization(ctx, rpc, m, auth, cost.ObservationSlot)
+	}
+	if err == nil {
 		// This early signed-HOLD check is not authority. The locked send gate
 		// independently requires the exact persisted budget and reservation.
 		cap := legacyDeploymentLimits().TransactionMicros

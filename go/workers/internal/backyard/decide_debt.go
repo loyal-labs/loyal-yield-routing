@@ -22,35 +22,60 @@ const onreONycUSDC = "OnRe/ONyc/USDC"
 // measured leg costs if small deposits matter.
 const topupMinimumRaw int64 = 10_000_000
 
-// topupStep is the plan B3 sequence beside a funded debt-free position:
-// convert a payoff debt residue to USDC, swap Squads cash to collateral,
-// deposit that collateral, then move idle Voltr cash into Squads. It runs
-// before any borrow, so a later borrow levers the whole collateral. Every
-// withdrawal, hard-LTV, unwind and report rule has already run.
+// topupStep adds collateral without borrowing. Debt-bearing AUTO uses only
+// receipt-bound inventory; fresh loan and execution authority stay in admission.
+// Withdrawal, hard-LTV, unwind and report rules run before this planner.
 func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (Decision, bool) {
-	if !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw != 0 || !s.PolicyReady || !s.ExitBuildable || hard <= TargetLTVBPS ||
+	if !s.HasPosition || s.PositionCollateralRaw <= 0 || !s.PolicyReady || !s.ExitBuildable || hard <= TargetLTVBPS ||
 		s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.UnwindRefreshRequired || s.VoltrStrategyIdleRaw != 0 {
 		return Decision{}, false
 	}
-	if s.DebtIdleRaw > 0 {
-		return d(SwapDebtToUSDCStep, debtResidueSwapReason, s.DebtIdleRaw), true
-	}
-	if s.SquadsIdleRaw > 0 {
-		if s.CollateralIdleRaw != 0 {
-			return d(Hold, "topup_cash_beside_collateral_residue", 0), true
-		}
-		return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw), true
-	}
-	// Swapped collateral joins the existing obligation. No borrow comes with
-	// it: the loan-to-value can only go down.
-	if s.CollateralIdleRaw > 0 {
-		if s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw < s.MinimumCollateralDepositRaw {
+	if s.PositionDebtRaw > 0 {
+		if s.RouteLane != autoAUTOPYUSD.Lane || s.PositionDebtValueRaw <= 0 || !s.PilotActive || s.LTVBPS >= hard || s.DebtIdleRaw != 0 {
 			return Decision{}, false
 		}
-		return d(OpenRouteStep, topupDepositReason, s.CollateralIdleRaw), true
+		carry := int64(0)
+		if t := s.TopupTranche; t != nil {
+			if t.validate() != nil || t.LastSlot > s.Slot {
+				return d(Hold, "topup_inventory_binding_invalid", 0), true
+			}
+			if t.Stage == topupTrancheOrdinary || t.Stage == topupTrancheHandoff {
+				return Decision{}, false
+			}
+			carry = int64(t.CollateralRemainingRaw)
+			if s.SquadsIdleRaw != int64(t.USDCRemainingRaw) || s.CollateralIdleRaw != carry || s.PrimeIdleRaw != carry {
+				return d(Hold, "topup_inventory_custody_changed", 0), true
+			}
+			if t.Stage == topupTrancheAllocated {
+				return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw), true
+			}
+			if t.Stage == topupTrancheCollateral {
+				if s.MinimumCollateralDepositRaw <= 0 || carry < s.MinimumCollateralDepositRaw {
+					return d(Hold, "topup_collateral_below_deposit_window", 0), true
+				}
+				return d(OpenRouteStep, topupDepositReason, carry), true
+			}
+		}
+		if s.SquadsIdleRaw != 0 || s.CollateralIdleRaw != carry || s.PrimeIdleRaw != carry {
+			return Decision{}, false
+		}
+	} else {
+		if s.DebtIdleRaw > 0 {
+			return d(SwapDebtToUSDCStep, debtResidueSwapReason, s.DebtIdleRaw), true
+		}
+		if s.SquadsIdleRaw > 0 {
+			if s.CollateralIdleRaw != 0 {
+				return d(Hold, "topup_cash_beside_collateral_residue", 0), true
+			}
+			return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw), true
+		}
+		if s.CollateralIdleRaw > 0 {
+			if s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw < s.MinimumCollateralDepositRaw {
+				return Decision{}, false
+			}
+			return d(OpenRouteStep, topupDepositReason, s.CollateralIdleRaw), true
+		}
 	}
-	// Top up before any borrow, so idle cash never waits for a full close and
-	// reopen, and a later borrow levers the whole collateral at once.
 	if !s.PilotActive {
 		return Decision{}, false
 	}
@@ -132,6 +157,10 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	if s.HasPosition && s.LTVBPS >= hard {
 		if s.PositionDebtRaw > 0 && s.DebtIdleRaw > 0 {
 			return d(DeleverRouteStep, "hard_ltv_repay", min(s.PositionDebtRaw, s.DebtIdleRaw))
+		}
+		entry := d(SwapStableToCollateralStep, topupRiskEntryReason, s.SquadsIdleRaw)
+		if emergencyTopupEntryInventory(s, entry) {
+			return entry
 		}
 		if s.PositionDebtRaw > 0 && s.CollateralIdleRaw > 0 {
 			return d(SwapCollateralToDebtStep, "hard_ltv_buffer_swap", s.CollateralIdleRaw)

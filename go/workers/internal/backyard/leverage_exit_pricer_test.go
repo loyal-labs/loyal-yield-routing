@@ -61,11 +61,11 @@ func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 	if err != nil || !need {
 		t.Fatalf("1.75x needs cycles: %v %v", need, err)
 	}
-	legs, post, cash, steps, first, err := priceLeverageExitCycles(context.Background(), rpc, client, m, route, o.Snapshot, rows, 42, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 0)
+	legs, post, cash, steps, count, first, err := priceLeverageExitCycles(context.Background(), rpc, client, m, route, o.Snapshot, rows, 42, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(legs) != 3 || legs[0].Action != DeleverRouteStep || legs[1].Action != SwapCollateralToDebtStep || legs[2].Action != DeleverRouteStep || steps != 10 || cash != 0 || first == nil {
+	if len(legs) != 3 || legs[0].Action != DeleverRouteStep || legs[1].Action != SwapCollateralToDebtStep || legs[2].Action != DeleverRouteStep || steps != 10 || count != 1 || cash != 0 || first == nil {
 		t.Fatalf("cycle legs %d steps %d cash %d", len(legs), steps, cash)
 	}
 	repayRequest, repayEffects, _, err := legs[2].Template.decode()
@@ -665,6 +665,121 @@ func TestPartialWithdrawalRestoreProductionAdmissionDB(t *testing.T) {
 			}
 			if evidence.Request.Report.NAVAfterRaw == 0 || evidence.Request.Report.NAVAfterRaw != uint64(o.Snapshot.StrategyNAVRaw) {
 				t.Fatal("retained position NAV lost")
+			}
+		})
+	}
+}
+
+// Replaying the accepted fixed horizon must produce exactly the same legs and
+// poststate, not a mixture of quotes or projections from shorter attempts.
+func TestLeverageExitCompleteHorizon(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		debt uint64
+		want int
+	}{
+		{"zero", 33_333_333, 0}, {"one", 42_857_142, 1}, {"multiple", 50_000_000, 2}, {"exhausted", 54_000_000, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, m, rpc, client, accounts, route := leverage175Fixture(t)
+			putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(tc.debt), 60))
+			putScaledFraction(accountAt(accounts, route.Kamino.DebtReserve).Data[232:248], new(big.Int).Lsh(new(big.Int).SetUint64(tc.debt), 60))
+			_, rows, err := rpc.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), 42)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := json.Marshal(rows)
+			blockhash := LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}
+			legs, post, cash, steps, n, first, err := priceLeverageExitCycles(context.Background(), rpc, client, m, route, o.Snapshot, rows, 42, blockhash, 0)
+			after, _ := json.Marshal(rows)
+			if !bytes.Equal(before, after) {
+				t.Fatal("original accounts mutated")
+			}
+			if tc.want < 0 {
+				assertBudgetHold(t, err, "leverage_exit_cycles_exceeded")
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != tc.want || steps < int64(7+3*n) || steps > kaminoPayoffMaxWindowSteps || n > leverageExitMaxCycles {
+				t.Fatalf("cycles=%d steps=%d", n, steps)
+			}
+			full, err := decodeKaminoPayoffWindow(rows, route, 42, steps)
+			if err != nil || !reflect.DeepEqual(first, &full) {
+				t.Fatal("first bound not original debt at full horizon", err)
+			}
+			fresh, err := decodeKaminoPayoffWindow(rows, route, 42, int64(6+3*n))
+			if err != nil || fresh.UpperDebtRaw > first.UpperDebtRaw {
+				t.Fatal("fresh horizon uncovered", err)
+			}
+			again, againPost, againCash, againN, againFirst, err := priceLeverageExitCyclesAtWindow(context.Background(), rpc, client, m, route, o.Snapshot, rows, 42, blockhash, 0, steps)
+			if err != nil || !reflect.DeepEqual(legs, again) || !reflect.DeepEqual(post, againPost) || cash != againCash || int64(n) != againN || !reflect.DeepEqual(first, againFirst) {
+				t.Fatal("discarded attempt leaked", err)
+			}
+		})
+	}
+}
+
+func TestLeverageExitRequoteKeepsAcceptedHorizon(t *testing.T) {
+	o, _, _, m, rpc, _, accounts := autoEmergencyRepayFixture(t)
+	route := autoAUTOPYUSD
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 0)
+	putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(3_000_000), 60))
+	quotes := 0
+	client := autoJupiterTransport(t, route, func(_, _ string, amount uint64) (uint64, uint64) {
+		quotes++
+		out := amount / 6000
+		if quotes == 1 {
+			out /= 2
+		}
+		return out, out * 9950 / 10000
+	}, nil)
+	_, rows, err := rpc.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), o.Snapshot.Slot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legs, post, _, steps, n, first, err := priceLeverageExitCycles(context.Background(), rpc, client, m, route, o.Snapshot, rows, o.Snapshot.Slot, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 || steps != 10 || len(legs) != 0 || !reflect.DeepEqual(rows, post) || first.ThroughSlot <= o.Snapshot.Slot {
+		t.Fatalf("repriced result n=%d steps=%d legs=%d", n, steps, len(legs))
+	}
+}
+
+func TestLeverageExitRejectsInsufficientMinimumAndResidual(t *testing.T) {
+	for _, variant := range []string{"minimum", "residual", "cap"} {
+		t.Run(variant, func(t *testing.T) {
+			o, _, _, m, rpc, client, accounts := autoEmergencyRepayFixture(t)
+			route := autoAUTOPYUSD
+			binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 0)
+			putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(5_000_000), 60))
+			switch variant {
+			case "minimum":
+				client = autoJupiterTransport(t, route, func(_, _ string, amount uint64) (uint64, uint64) {
+					out := amount / 600000
+					return out, out * 9950 / 10000
+				}, nil)
+			case "residual":
+				putScaledFraction(accountAt(accounts, route.Kamino.Market).Data[kaminoMinRemainingValueOffset:kaminoMinRemainingValueOffset+16], new(big.Int).Lsh(big.NewInt(101), 60))
+			case "cap":
+				binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Market).Data[kaminoGlobalBorrowValueOffset:], 1)
+			}
+			_, rows, err := rpc.GetMultipleAccounts(context.Background(), payoffWindowAddresses(route, route.Kamino.Market), o.Snapshot.Slot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := json.Marshal(rows)
+			legs, post, _, _, _, first, err := priceLeverageExitCycles(context.Background(), rpc, client, m, route, o.Snapshot, rows, o.Snapshot.Slot, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 0)
+			after, _ := json.Marshal(rows)
+			if err == nil || legs != nil || post != nil || first != nil || !bytes.Equal(before, after) {
+				t.Fatal("failed attempt escaped or mutated original", err)
+			}
+			if variant == "minimum" {
+				assertBudgetHold(t, err, "leverage_exit_cycles_exceeded")
+			} else {
+				assertBudgetHold(t, err, "no_safe_repayment_collateral_release")
 			}
 		})
 	}

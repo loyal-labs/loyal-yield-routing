@@ -362,11 +362,14 @@ func (d *Database) admitPhase3CollateralReturn(ctx context.Context, rpc *RPCClie
 func (d *Database) admitPhase3Withdrawal(ctx context.Context, rpc *RPCClient, client *jupiterClient, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
 	var plan phase3BridgeAdmission
 	var err error
+	if autoEmergencyPartialRepayment(observation.Snapshot, decision) && (evidence.Request.FullPayoff || evidence.Request.RepaymentRelease) {
+		return budgetHold("auto_partial_repayment_full_close_forbidden")
+	}
 	if evidence.Request.RepaymentRelease {
 		plan, err = observePhase3FundingAdmission(ctx, rpc, client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
 	} else if evidence.Request.FullPayoff {
 		plan, err = observePhase3PayoffAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
-	} else if partialRepaymentReason(decision.Reason) {
+	} else if partialRepaymentDecision(observation.Snapshot, decision) {
 		plan, err = observePhase3PartialRepaymentAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
 	} else {
 		plan, err = observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, observation, decision, evidence)

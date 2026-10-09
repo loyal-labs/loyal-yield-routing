@@ -25,6 +25,7 @@ type routePlanningState struct {
 	// leverage is the durable B2 option-1 level target (nil = none stored).
 	leverage          *LeverageTarget
 	partialWithdrawal *partialWithdrawalState
+	topup             *topupTranche
 	// remainingExecutionCost is advisory quote-sizing headroom under the
 	// reviewed $500 bounded execution-cost stop: the cap less booked spend and
 	// every outstanding reservation's cost bound. The binding check stays at
@@ -61,14 +62,14 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 		out.lease = &lease
 		owner, fence = lease.Owner, lease.FencingToken
 	}
-	var budget, activation, entry, unwind, leverage, partial []byte
+	var budget, activation, entry, unwind, leverage, partial, topup []byte
 	err := d.pool.QueryRow(ctx, `SELECT state_version,
 		COALESCE(state->'phase3','null'::jsonb),COALESCE(state->'pilotBudgetActivation','null'::jsonb),
 		state->'selectorEntry',state->'selectorUnwind',COALESCE((state->>'selectorEntryPaused')::boolean,false),
-		COALESCE(state->'leverageTarget','null'::jsonb),state->'partialWithdrawal'
+		COALESCE(state->'leverageTarget','null'::jsonb),state->'partialWithdrawal',state->'topupTranche'
 		FROM loyal_yield.multiply_route_states WHERE route_key=$1
 		AND ($2='' OR (lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()))`,
-		routeKey, owner, fence).Scan(&out.generation, &budget, &activation, &entry, &unwind, &out.paused, &leverage, &partial)
+		routeKey, owner, fence).Scan(&out.generation, &budget, &activation, &entry, &unwind, &out.paused, &leverage, &partial, &topup)
 	if errors.Is(err, pgx.ErrNoRows) && execution {
 		d.setLease(nil)
 		return nil, ErrRouteLeaseLost
@@ -109,6 +110,18 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	out.partialWithdrawal, err = decodePartialWithdrawal(partial)
 	if err != nil || (out.partialWithdrawal != nil && out.partialWithdrawal.Generation > out.generation) {
 		return nil, budgetHold("invalid_partial_withdrawal_generation")
+	}
+	out.topup, err = decodeTopupTranche(topup)
+	if err != nil {
+		return nil, err
+	}
+	if out.topup != nil {
+		if out.topup.Generation > out.generation {
+			return nil, budgetHold("topup_generation_changed")
+		}
+		if err = d.validateTopupTrancheOrigin(ctx, d.pool, routeKey, topup); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }

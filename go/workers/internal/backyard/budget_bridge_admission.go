@@ -20,25 +20,30 @@ type phase3BridgeExitCost struct {
 }
 
 type phase3BridgeAdmission struct {
-	Snapshot              Snapshot                `json:"snapshot"`
-	Decision              Decision                `json:"decision"`
-	Input                 *phase3BuildInput       `json:"input"`
-	CurrentCost           ValuedTransactionCost   `json:"currentCost"`
-	Exit                  []phase3BridgeExitCost  `json:"exit"`
-	ExitAfterMicros       int64                   `json:"exitAfterMicros"`
-	ValidThroughSlot      int64                   `json:"validThroughSlot"`
-	QuotedExit            *phase3QuotedExit       `json:"quotedExit,omitempty"`
-	AdditionalQuotedExits []phase3QuotedExit      `json:"additionalQuotedExits,omitempty"`
-	Payoff                *KaminoPayoffBound      `json:"payoff,omitempty"`
-	PayoffWithdrawal      *phase3BuildInput       `json:"payoffWithdrawal,omitempty"`
-	PayoffRepayment       *phase3BuildInput       `json:"payoffRepayment,omitempty"`
-	FundingSwap           *phase3QuotedExit       `json:"fundingSwap,omitempty"`
-	FundingRelease        *phase3BuildInput       `json:"fundingRelease,omitempty"`
-	DepositProjection     *phase3KaminoProjection `json:"depositProjection,omitempty"`
-	BorrowProjection      *phase3KaminoProjection `json:"borrowProjection,omitempty"`
-	RepaymentProjection   *phase3KaminoProjection `json:"repaymentProjection,omitempty"`
-	LeverageProjection    *phase3KaminoProjection `json:"leverageProjection,omitempty"`
-	BorrowRelease         *phase3BuildInput       `json:"borrowRelease,omitempty"`
+	// Only the debt-preserving top-up producer may carry an actual finalized
+	// origin captured BEFORE pricing. Not serialized or restored from input.
+	// Retries use the authoritative operation binding instead of recapturing.
+	topupOrigin           *topupLoan
+	EmergencyTopupFunding *emergencyTopupFundingProof `json:"emergencyTopupFunding,omitempty"`
+	Snapshot              Snapshot                    `json:"snapshot"`
+	Decision              Decision                    `json:"decision"`
+	Input                 *phase3BuildInput           `json:"input"`
+	CurrentCost           ValuedTransactionCost       `json:"currentCost"`
+	Exit                  []phase3BridgeExitCost      `json:"exit"`
+	ExitAfterMicros       int64                       `json:"exitAfterMicros"`
+	ValidThroughSlot      int64                       `json:"validThroughSlot"`
+	QuotedExit            *phase3QuotedExit           `json:"quotedExit,omitempty"`
+	AdditionalQuotedExits []phase3QuotedExit          `json:"additionalQuotedExits,omitempty"`
+	Payoff                *KaminoPayoffBound          `json:"payoff,omitempty"`
+	PayoffWithdrawal      *phase3BuildInput           `json:"payoffWithdrawal,omitempty"`
+	PayoffRepayment       *phase3BuildInput           `json:"payoffRepayment,omitempty"`
+	FundingSwap           *phase3QuotedExit           `json:"fundingSwap,omitempty"`
+	FundingRelease        *phase3BuildInput           `json:"fundingRelease,omitempty"`
+	DepositProjection     *phase3KaminoProjection     `json:"depositProjection,omitempty"`
+	BorrowProjection      *phase3KaminoProjection     `json:"borrowProjection,omitempty"`
+	RepaymentProjection   *phase3KaminoProjection     `json:"repaymentProjection,omitempty"`
+	LeverageProjection    *phase3KaminoProjection     `json:"leverageProjection,omitempty"`
+	BorrowRelease         *phase3BuildInput           `json:"borrowRelease,omitempty"`
 	// ExitCycles is the number of B2 1.75x exit cycles priced before the
 	// final payoff; BorrowRelease is then the first cycle's release, sized
 	// over 7 + 3*ExitCycles steps.

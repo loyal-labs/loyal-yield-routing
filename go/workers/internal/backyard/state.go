@@ -52,8 +52,9 @@ const (
 )
 
 type Snapshot struct {
-	ValuationSource        string `json:",omitempty"`
-	ValuationSlot          int64  `json:",omitempty"`
+	TopupTranche           *topupTranche `json:"topupTranche,omitempty"`
+	ValuationSource        string        `json:",omitempty"`
+	ValuationSlot          int64         `json:",omitempty"`
 	ObservationID          string
 	Slot                   int64
 	RouteKind              string

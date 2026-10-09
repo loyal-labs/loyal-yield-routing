@@ -73,7 +73,11 @@ func (d *Database) validatePartialWithdrawalOrigin(ctx context.Context, q partia
 	err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o ON o.operation_id=s.state->'partialWithdrawal'->>'operationId'
  WHERE s.route_key=$1 AND s.state->'partialWithdrawal'=$2::jsonb
  AND o.route_key=s.route_key AND o.strategy_key=s.state->'partialWithdrawal'->>'lane'
- AND o.expected_effects->'decision'->>'reason'='withdrawal_partial_release'
+ AND (o.expected_effects->'decision'->>'reason'='withdrawal_partial_release' OR
+   (o.status='reconciled' AND o.confirmation_status='finalized'
+    AND o.expected_effects->'phase3'->'topup'->'handoff'->>'originOperationId'=o.operation_id
+    AND o.expected_effects->'phase3'->'topup'->'handoff'->>'authoritySha256'=o.expected_effects->'phase3'->>'intentSha256'
+    AND o.expected_effects->'phase3'->'topupResult'->'handoff'=o.expected_effects->'phase3'->'topup'->'handoff'))
  AND o.expected_effects->'partialWithdrawal'=s.state->'partialWithdrawal'
  AND (s.state->'partialWithdrawal'->>'generation')::bigint<=s.state_version)`, key, string(raw)).Scan(&valid)
 	if err != nil {

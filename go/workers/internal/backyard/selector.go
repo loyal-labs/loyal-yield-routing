@@ -457,6 +457,12 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 	if s.MonitorsArmed && !selectorFeeBaselineKnown(s) {
 		return hold("fee_hwm_baseline_unavailable")
 	}
+	if s.TopupTranche != nil && s.TopupTranche.validate() != nil {
+		return hold("invalid_topup_tranche")
+	}
+	if topupWorkInFlight(s.TopupTranche) {
+		return hold("selector_finish_current_work_first")
+	}
 	base := Decide(s)
 	if base.Action == RecoverTransaction || base.Action == HoldManualRecovery || base.Action == DeleverRouteStep || base.Action == DeleverPrimeUSDCStep || base.Reason == "hard_ltv_buffer_swap" || s.Nonterminal != "" {
 		return hold("execution_recovery_or_safety_first")

@@ -241,6 +241,7 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	observation.Snapshot.CapitalMutated = journal.MutationAfterReport
 	if observation.planning != nil {
 		planning := observation.planning
+		observation.Snapshot.TopupTranche = planning.topup
 		if err := applyUnwindIntentWithLane(&observation.Snapshot, planning.unwind, p.manifest.selectorEntryLaneAllowed); err != nil {
 			observation.Snapshot.ManualReason = err.Error()
 		}
@@ -250,6 +251,15 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 			return err
 		}
 		return p.manifest.applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
+	}
+	if reader, ok := p.journal.(interface {
+		LoadTopupTranche(context.Context, string) (*topupTranche, error)
+	}); ok {
+		topup, err := reader.LoadTopupTranche(ctx, p.routeKey)
+		if err != nil {
+			return err
+		}
+		observation.Snapshot.TopupTranche = topup
 	}
 	// The manifest-aware reader is preferred exactly as the entry read below:
 	// a recorded candidate-source unwind survives restart only while the
@@ -473,6 +483,13 @@ func productionTickRuntime(database *Database, rpc *RPCClient, manifest RouteMan
 					return err
 				}
 				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
+			}
+			if evidence.Request.EmergencyTopupFunding {
+				plan, err := observePhase3EmergencyTopupFundingAdmission(ctx, rpc, productionJupiterClient(), manifest, observation, decision, evidence)
+				if err != nil {
+					return err
+				}
+				return database.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, operationID, observation, decision, plan)
 			}
 			if evidence.Request.Action == SwapDebtToCollateralStep {
 				return database.admitPhase3LeverageSwap(ctx, rpc, productionJupiterClient(), manifest, operationID, observation, decision, evidence)
