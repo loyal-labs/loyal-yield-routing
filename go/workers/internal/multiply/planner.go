@@ -1,7 +1,7 @@
 package multiply
 
 // The only route planner, ported from
-// crates/loyal-fleet-worker/src/multiply/planner.rs. It selects one literal
+// 91694cd9^:crates/loyal-fleet-worker/src/multiply/planner.rs. It selects one literal
 // transaction from confirmed custody and obligation state; it never predicts a
 // multi-transaction graph.
 

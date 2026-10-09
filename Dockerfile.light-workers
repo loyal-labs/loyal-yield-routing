@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
 # The light-workers image now carries only loyal-yield-realtime, the one Rust
-# service still on Render. The workers run on the Go engine (go/workers).
+# service left, running on the Hetzner workers host. The workers run on the Go
+# engine (go/workers).
 FROM rust:1.89-bookworm AS build
 
 WORKDIR /source

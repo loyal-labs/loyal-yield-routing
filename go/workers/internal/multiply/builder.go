@@ -1,7 +1,7 @@
 package multiply
 
 // Operation builder ported from
-// crates/loyal-fleet-worker/src/multiply/builder.rs. KLend account vectors
+// 91694cd9^:crates/loyal-fleet-worker/src/multiply/builder.rs. KLend account vectors
 // follow the reviewed in-repo KLend v2 templates (internal/fleet and
 // internal/backyard): optional farm/referrer/placeholder slots carry the KLend
 // program id, and the trailing reserve farm slot carries the Farms program id.

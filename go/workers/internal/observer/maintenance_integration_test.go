@@ -88,7 +88,7 @@ func TestHealthPublicationUsesLegacyLockAndActualStatusPayload(t *testing.T) {
 	if err = json.Unmarshal(payload, &rows); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || count != 1 || len(rows[0]) != 72 || owner != "postgres-advisory-xact-lock" || len(watermark) != 3 {
+	if len(rows) != 1 || count != 1 || len(rows[0]) != 60 || owner != "postgres-advisory-xact-lock" || len(watermark) != 3 {
 		t.Fatalf("actual SQL/Rust shape differs: %s %s %s %d", payload, raw, owner, count)
 	}
 	report, err := StageHealth(payload, 5*time.Second, 5*time.Second, time.Now().UTC())

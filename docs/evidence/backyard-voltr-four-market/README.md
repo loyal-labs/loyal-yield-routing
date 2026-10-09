@@ -55,18 +55,20 @@ confirmed-provider observations; ordinary RPC cannot replay all historical
 account bytes independently.
 
 The current source freeze is
-`policy-catalog-authorization-v26.json`: file SHA-256
-`fc148c9fe88bf9a096db8264ce43cb7cacb868175f8409e19aa050f8e56bfdfb`,
+`policy-catalog-authorization-v27.json`: file SHA-256
+`22ff365ff8d4b43c98110ffeac4d4a89030813dd36a05b0b2f8d4999b65a2826`,
 authorization SHA-256
-`b94a02aa15d10eab17fb230521178cfde101ade1799451608a1351190bb007b0`,
+`72b4e6b36f2ca7edccf700ce0528296d80b5c0b69152b4a4209bd8351c4f60f7`,
 and effective route authorization SHA-256
-`638172c4750782e0c5d1e5443980ee149f55656f40a65e2521f81927923d529c`.
+`db075ce9d73c491bb711933393f604b2fa91f2cef6bfcb8d55c7bfd6bdd31929`.
 It authorizes the same `runtime-policy-catalog-v2.json` entries, seeds,
-policy PDAs, and create/execution data hashes as v24 and v25. v25 moved the
+policy PDAs, and create/execution data hashes as v24 to v26. v25 moved the
 source binding from the retired Rust worker crates to the Go engine files that
 now own Voltr planning, replay, and restoration-first execution; v26 rebinds
-the compiler runner after it started passing `--locked` to cargo. v23 to v25
-are historical only.
+the compiler runner after it started passing `--locked` to cargo; v27 rebinds
+`Cargo.lock` after the autonomous-vaults crate left the workspace and
+`fleetexec/voltr.go` after its reconcile step stopped writing the retired Rust
+planner's dirty-vault hint. v23 to v26 are historical only.
 
 Any earlier wait-0 or alternate-timeout simulation is retained only as
 historical diagnostic evidence. It is non-authorizing and cannot satisfy the

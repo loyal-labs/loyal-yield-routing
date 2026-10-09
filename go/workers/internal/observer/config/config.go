@@ -102,8 +102,8 @@ func FromEnv() (Config, error) {
 	if _, err := solanago.PublicKeyFromBase58(cfg.EarnMaxDelegate); err != nil {
 		return Config{}, errors.New("EARN_MAX_DELEGATE must be a Solana public key")
 	}
-	if cfg.ATAStream != "production" && cfg.ATAStream != "staging" {
-		return Config{}, fmt.Errorf("BALANCE_SWEEP_ATA_STREAM must be production or staging, got %q", cfg.ATAStream)
+	if cfg.ATAStream != "production" {
+		return Config{}, fmt.Errorf("BALANCE_SWEEP_ATA_STREAM must be production, got %q", cfg.ATAStream)
 	}
 	if cfg.ReplayOverlapSlots == 0 || cfg.WatchRefresh <= 0 || cfg.VerifyRefresh <= 0 || cfg.ProgressTimeout <= 0 {
 		return Config{}, errors.New("LaserStream intervals and replay overlap must be positive")

@@ -37,12 +37,8 @@ type Handler struct {
 	rpc     *solanarpc.Client
 }
 
-func NewHandler(pool *pgxpool.Pool, streamName string, rpc *solanarpc.Client) *Handler {
-	schema := "loyal_prod"
-	if streamName == "staging" {
-		schema = "loyal_staging"
-	}
-	return &Handler{pool: pool, schema: schema, targets: make(map[string]watch.ATATarget), rpc: rpc}
+func NewHandler(pool *pgxpool.Pool, rpc *solanarpc.Client) *Handler {
+	return &Handler{pool: pool, schema: "loyal_prod", targets: make(map[string]watch.ATATarget), rpc: rpc}
 }
 
 func (h *Handler) SetTargets(targets map[string]watch.ATATarget) {

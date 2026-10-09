@@ -2,7 +2,7 @@ name: Workers v2 branch verification
 
 on:
   push:
-    branches: [main, codex/workers-v2, codex/workers-v2-simplify, codex/workers-v2-golive, ask-2316-confirm-debt-clear]
+    branches: [main]
     paths:
       - go/workers/**
       - scripts/verify-workers-v2.sh
@@ -15,12 +15,18 @@ on:
       - rust-toolchain.toml
       - package.json
       - bun.lock
-      - crates/**
+      # The crates the jobs below build: the connected SVM fixtures and the
+      # Voltr policy compiler with their workspace dependencies.
+      - crates/squads-test-harness/**
+      - crates/mock-yield-protocols-program/**
+      - crates/loyal-actions/**
+      - crates/loyal-solana-env/**
+      - crates/loyal-hub-abi/**
       - tools/backyard-voltr/**
       - docs/evidence/backyard-voltr-four-market/**
 
   pull_request:
-    branches: [main, codex/workers-v2, codex/workers-v2-simplify, codex/workers-v2-golive]
+    branches: [main]
     paths:
       - go/workers/**
       - scripts/verify-workers-v2.sh
@@ -33,7 +39,13 @@ on:
       - rust-toolchain.toml
       - package.json
       - bun.lock
-      - crates/**
+      # The crates the jobs below build: the connected SVM fixtures and the
+      # Voltr policy compiler with their workspace dependencies.
+      - crates/squads-test-harness/**
+      - crates/mock-yield-protocols-program/**
+      - crates/loyal-actions/**
+      - crates/loyal-solana-env/**
+      - crates/loyal-hub-abi/**
       - tools/backyard-voltr/**
       - docs/evidence/backyard-voltr-four-market/**
 

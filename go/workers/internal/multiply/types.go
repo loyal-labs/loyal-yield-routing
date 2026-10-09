@@ -1,6 +1,6 @@
 // Package multiply ports the Earn MAX (Kamino Multiply) route controller from
-// crates/loyal-fleet-worker/src/multiply and the durable state contract from
-// crates/loyal-yield-store/src/{fleet_orchestration/multiply.rs,multiply_state_store.rs}.
+// 91694cd9^:crates/loyal-fleet-worker/src/multiply and the durable state contract from
+// 91694cd9^:crates/loyal-yield-store/src/{fleet_orchestration/multiply.rs,multiply_state_store.rs}.
 //
 // The persisted JSON must stay byte-compatible with the Rust writer: the same
 // field names, enum spellings, and tagged position encoding. A Go worker and

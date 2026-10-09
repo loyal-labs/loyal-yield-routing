@@ -132,9 +132,6 @@ func seedConnectedExecutionAccounts(t *testing.T, accounts map[string]Account, p
 
 func seedConnectedLookupTable(t *testing.T, ctx context.Context, store *Store, cluster, signer string, vaultID int64, table string, addresses []string, kind, allocation string) {
 	t.Helper()
-	if _, err := store.pool.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_rollout_controls(cluster,vault_id,rollout_mode,updated_by) VALUES($1,$2,'reusable_only','connected-local-verifier') ON CONFLICT DO NOTHING`, cluster, vaultID); err != nil {
-		t.Fatal(err)
-	}
 	var familyID, tableID int64
 	if err := store.pool.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_families(cluster,logical_name,kind,planner_version,catalog_version,active_generation,provisioning_authority,payer,hard_capacity,largest_atomic_expansion,safety_margin,allocation_high_water) VALUES($1,$3,$3,'test','test',0,$2,$2,256,1,1,254) RETURNING id`, cluster, signer, kind).Scan(&familyID); err != nil {
 		t.Fatal(err)

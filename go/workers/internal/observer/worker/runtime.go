@@ -72,7 +72,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 	kaminoStore := kamino.NewStore(timescale, "kamino")
 	kaminoCatalog := kamino.NewCatalogClient(cfg.KaminoAPIBase, 30*time.Second)
 	kaminoHandler := kamino.NewHandler(kaminoStore, rpc, logger, 400, false)
-	ataHandler := ata.NewHandler(timescale, cfg.ATAStream, rpc)
+	ataHandler := ata.NewHandler(timescale, rpc)
 	earnStore := earn.NewStore(neon)
 	earnHandler := earn.NewHandler(earnStore, cfg.Cluster)
 	delegate, err := solanago.PublicKeyFromBase58(cfg.EarnMaxDelegate)
