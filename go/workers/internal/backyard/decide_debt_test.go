@@ -32,6 +32,16 @@ func TestNonUSDCDrainFundsInterestShortfallBeforePayoff(t *testing.T) {
 	if got := Decide(s); got.Action != SwapUSDCToDebtStep {
 		t.Fatal("available USDC funding ignored", got)
 	}
+	// AUTO top-up cash beside debt (live Oct 9: 10k allocated) cannot fund the
+	// payoff: the policy has no USDC->PYUSD edge, so collateral is released.
+	auto := s
+	auto.RouteLane, auto.SquadsIdleRaw = autoAUTOPYUSD.Lane, 10_000
+	if got := Decide(auto); got.Action != DeleverRouteStep || got.Reason != "withdrawal_release_repayment_collateral" {
+		t.Fatal("AUTO payoff funded through a missing USDC->PYUSD edge", got)
+	}
+	if action, _ := payoffFundingSource(auto, uint64(auto.PayoffDebtRaw)); action != "" {
+		t.Fatal("NAV exit pricing chose a missing AUTO edge", action)
+	}
 	s.CollateralIdleRaw = 10
 	s.CollateralIdleValueRaw = 10
 	if got := Decide(s); got.Action != SwapCollateralToDebtStep {
@@ -133,11 +143,16 @@ func TestNonUSDCLifecycleSafetyPrecedence(t *testing.T) {
 	if got := Decide(s); got.Action != DeleverRouteStep || got.AmountRaw != 5 {
 		t.Fatal(got)
 	}
+	// AUTO's policy has no USDC->PYUSD edge: Squads cash is no repayment buffer.
 	s.DebtIdleRaw = 0
+	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "hard_ltv_without_repayment_buffer" {
+		t.Fatal(got)
+	}
+	s.RouteLane = ethenaUSDePYUSD.Lane
 	if got := Decide(s); got.Action != SwapUSDCToDebtStep || got.AmountRaw != 100 {
 		t.Fatal(got)
 	}
-	s.LTVBPS = 4000
+	s.RouteLane, s.LTVBPS = "AUTO/AUTO/PYUSD", 4000
 	if got := Decide(s); got.Action != ReportNAV {
 		t.Fatal(got)
 	}

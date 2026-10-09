@@ -330,6 +330,7 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 				s.CollateralIdleRaw = 5
 				s.PositionDebtValueRaw, s.CollateralIdleValueRaw = 5, 6
 			case SwapUSDCToDebtStep:
+				s.RouteLane = ethenaUSDePYUSD.Lane // AUTO has no USDC->PYUSD edge
 				s.CutoverDrain = true
 				s.HasPosition = true
 				s.PositionCollateralRaw = 10
