@@ -29,8 +29,6 @@ const (
 	VoltrRestoreIdle           Action = "VOLTR_RESTORE_IDLE"
 	ReportNAV                  Action = "REPORT_NAV"
 	HoldManualRecovery         Action = "HOLD_MANUAL_RECOVERY"
-	PolicySetupPrefund         Action = "POLICY_SETUP_PREFUND"
-	PolicySetupCreate          Action = "POLICY_SETUP_CREATE"
 	InitializeKaminoObligation Action = "INITIALIZE_KAMINO_OBLIGATION"
 )
 
@@ -269,12 +267,6 @@ func (m RouteManifest) validateDecision(d Decision) error {
 func validateDecisionWithLane(d Decision, initializerLaneAllowed func(string) bool) error {
 	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
 		return fmt.Errorf("incomplete decision")
-	}
-	if isPolicySetupAction(d.Action) {
-		if d.StrategyKey != "OnRe/ONyc/USDC" || d.Reason != "phase3_policy_setup" || d.AmountRaw <= 0 {
-			return fmt.Errorf("invalid policy setup decision")
-		}
-		return nil // Journal identity only; not a runtime lane registration.
 	}
 	if d.Action == InitializeKaminoObligation {
 		return validateSelectorInitializerDecisionWithLane(d, initializerLaneAllowed)

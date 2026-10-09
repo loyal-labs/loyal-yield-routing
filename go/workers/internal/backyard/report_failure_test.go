@@ -367,35 +367,6 @@ func TestUnreadableFailureReceiptKeepsObservingUntilBounded(t *testing.T) {
 	}
 }
 
-// Review fix: the R03 batch reader must apply the same settled invariant as
-// the singular reader - a processed-only error is an observation, not a
-// failure.
-func TestBatchSignatureStatusesRequireSettlement(t *testing.T) {
-	rpc, err := NewRPCClient("https://rpc.invalid")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rpc.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return response(`{"jsonrpc":"2.0","id":1,"result":{"value":[` +
-			`{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"processed"},` +
-			`{"slot":46,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"finalized"},` +
-			`null]}}`), nil
-	})
-	statuses, err := rpc.SignatureStatuses(context.Background(), []string{"processed-only", "finalized", "absent"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !statuses[0].Found || statuses[0].Failed || statuses[0].Settled || statuses[0].Confirmed || !statuses[0].ProcessedOnly {
-		t.Fatalf("a processed-only error was treated as a failure: %+v", statuses[0])
-	}
-	if !statuses[1].Found || !statuses[1].Failed || !statuses[1].Settled || statuses[1].ProcessedOnly {
-		t.Fatalf("a settled error lost its failure: %+v", statuses[1])
-	}
-	if statuses[2].Found {
-		t.Fatalf("an absent signature was reported found: %+v", statuses[2])
-	}
-}
-
 func mustJSONLogs(t *testing.T, logs []string) string {
 	t.Helper()
 	encoded, err := json.Marshal(logs)

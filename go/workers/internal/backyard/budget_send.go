@@ -164,20 +164,6 @@ func revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3Op
 // candidate AUTO journal decision validates only through its reviewed binding
 // via validateInitializerDecision. The public form above is unchanged.
 func (m RouteManifest) revaluePhase3SignedInput(ctx context.Context, rpc *RPCClient, auth phase3OperationAuthorization, operation PersistedOperation) (ValuedTransactionCost, error) {
-	if auth.PolicySetup != nil {
-		if err := validatePolicySetupSignedPayment(auth, operation); err != nil {
-			return ValuedTransactionCost{}, err
-		}
-		payment, err := observePolicySetupPayment(ctx, rpc, auth, operation.Decision.Action)
-		if err != nil {
-			return ValuedTransactionCost{}, err
-		}
-		cost := payment.Cost
-		if payment.CompletionCost != nil {
-			cost.ValidThroughSlot = min(cost.ValidThroughSlot, payment.CompletionCost.ValidThroughSlot)
-		}
-		return cost, nil
-	}
 	request, effects, err := m.validateDebtClearSignedIdentity(auth, operation)
 	if err != nil {
 		return ValuedTransactionCost{}, err
@@ -289,27 +275,24 @@ func (d *Database) RevalueAndMarkBroadcastIntentOnManifest(ctx context.Context, 
 	if json.Unmarshal(encoded, &auth) != nil {
 		return budgetHold("invalid_durable_budget")
 	}
-	var originRisk *debtClearRiskProof
-	if auth.PolicySetup == nil {
-		request, effects, err := manifest.validateDebtClearSignedIdentity(auth, operation)
-		if err != nil {
-			return err
+	request, effects, err := manifest.validateDebtClearSignedIdentity(auth, operation)
+	if err != nil {
+		return err
+	}
+	if err = d.checkSignedDebtClearConsent(ctx, manifest, operation, auth, request, effects); err != nil {
+		var hold *BudgetHold
+		if errors.As(err, &hold) {
+			return &validatedSignedBudgetHold{hold}
 		}
-		if err = d.checkSignedDebtClearConsent(ctx, manifest, operation, auth, request, effects); err != nil {
-			var hold *BudgetHold
-			if errors.As(err, &hold) {
-				return &validatedSignedBudgetHold{hold}
-			}
-			return err
+		return err
+	}
+	originRisk, err := d.observeDebtClearOriginRisk(ctx, rpc, manifest, operation.ID)
+	if err != nil {
+		var hold *BudgetHold
+		if errors.As(err, &hold) {
+			return &validatedSignedBudgetHold{hold}
 		}
-		originRisk, err = d.observeDebtClearOriginRisk(ctx, rpc, manifest, operation.ID)
-		if err != nil {
-			var hold *BudgetHold
-			if errors.As(err, &hold) {
-				return &validatedSignedBudgetHold{hold}
-			}
-			return err
-		}
+		return err
 	}
 	checkStart := time.Now()
 	// Shared final-send custody seam (doc 26 §4): for a positive AUTO-PYUSD

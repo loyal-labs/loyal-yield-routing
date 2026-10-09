@@ -3,7 +3,9 @@ package backyard
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +41,25 @@ type ConfirmedAccount struct {
 	Lamports        uint64
 	Data            []byte
 	Executable      bool
+}
+
+func hashConfirmedAccounts(accounts []ConfirmedAccount) string {
+	hash := sha256.New()
+	for _, account := range accounts {
+		hash.Write([]byte(account.Address))
+		hash.Write([]byte{0})
+		hash.Write([]byte(account.Owner))
+		hash.Write([]byte{0})
+		var lamports [8]byte
+		for index := range lamports {
+			lamports[index] = byte(account.Lamports >> (8 * index))
+		}
+		hash.Write(lamports[:])
+		hash.Write([]byte{0})
+		hash.Write(account.Data)
+		hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 type LatestBlockhash struct {

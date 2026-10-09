@@ -475,9 +475,6 @@ func validateDecisionPersistenceOnManifest(
 	manifestSHA256 string,
 	policyCatalogSHA256 string,
 ) error {
-	if isPolicySetupAction(decision.Action) {
-		return budgetHold("policy_setup_requires_atomic_intent")
-	}
 	if err := manifest.validateDecision(decision); err != nil {
 		return fmt.Errorf("validate decision before persistence: %w", err)
 	}
@@ -683,9 +680,6 @@ func (d *Database) recordDecisionTx(
 	var setupState map[string]json.RawMessage
 	if json.Unmarshal(routeState, &setupState) != nil {
 		return DecisionRecord{}, budgetHold("invalid_setup_route_state")
-	}
-	if _, pending := setupState["phase3SetupIntent"]; pending && decision.Action != Hold && decision.Action != HoldManualRecovery {
-		return DecisionRecord{}, budgetHold("policy_setup_in_progress")
 	}
 	operationEpoch := ""
 	if decision.Action != Hold && decision.Action != HoldManualRecovery {

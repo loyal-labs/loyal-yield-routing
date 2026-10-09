@@ -3,6 +3,7 @@ package backyard
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"math"
 )
@@ -189,4 +190,71 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *RPCClient, r 
 		return 0, budgetHold("initializer_rent_changed")
 	}
 	return slot, nil
+}
+
+// Decode only the deployed Settings envelope required by the pinned admin's
+// synchronous PolicyCreate. This is not a membership-management decoder. The
+// variable options and signer vector follow the installed generated SDK layout.
+func policySetupNextSeed(account ConfirmedAccount) (uint64, error) {
+	bad := budgetHold("policy_setup_settings_envelope_mismatch")
+	d := account.Data
+	if account.Address != bridgeSettings || account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || len(d) < 79 || !bytes.Equal(d[:8], []byte{223, 179, 163, 190, 177, 224, 67, 173}) {
+		return 0, bad
+	}
+	// Zero Settings authority means the installed signer/threshold flow, not a
+	// different authority able to bypass it. Never silently adapt membership.
+	if !allZero(d[24:56]) || binary.LittleEndian.Uint16(d[56:58]) != 1 || binary.LittleEndian.Uint32(d[58:62]) != 0 {
+		return 0, bad
+	}
+	offset := 79
+	switch d[78] { // archivalAuthority Option<Pubkey>
+	case 0:
+	case 1:
+		offset += 32
+	default:
+		return 0, bad
+	}
+	offset += 8 + 1 // archivableAfter, bump
+	if len(d) < offset+4 || binary.LittleEndian.Uint32(d[offset:offset+4]) != 1 {
+		return 0, bad
+	}
+	offset += 4
+	admin := mustKey(bridgeSettingsSigner)
+	if len(d) < offset+33+1+1+8+1 || !bytes.Equal(d[offset:offset+32], admin[:]) || d[offset+32] != 7 {
+		return 0, bad
+	}
+	offset += 33 + 1    // signer and accountUtilization
+	if d[offset] != 1 { // policySeed must already exist for forward repair
+		return 0, bad
+	}
+	seed := binary.LittleEndian.Uint64(d[offset+1 : offset+9])
+	if seed < 139 || seed == math.MaxUint64 || !allZero(d[offset+9:]) {
+		return 0, bad
+	}
+	return seed + 1, nil
+}
+
+func policySetupAddress(seed uint64) (publicKey, error) {
+	key, _, err := policySetupAddressAndBump(seed)
+	return key, err
+}
+
+func policySetupAddressAndBump(seed uint64) (publicKey, byte, error) {
+	if seed == 0 {
+		return publicKey{}, 0, budgetHold("invalid_policy_setup_seed")
+	}
+	settings, program := mustKey(bridgeSettings), mustKey(bridgeSquadsProgram)
+	var seedBytes [8]byte
+	binary.LittleEndian.PutUint64(seedBytes[:], seed)
+	for bump := 255; bump >= 0; bump-- {
+		h := sha256.New()
+		for _, part := range [][]byte{[]byte("smart_account"), []byte("policy"), settings[:], seedBytes[:], {byte(bump)}, program[:], []byte("ProgramDerivedAddress")} {
+			_, _ = h.Write(part)
+		}
+		candidate := h.Sum(nil)
+		if !ed25519CompressedPointOnCurve(candidate) {
+			return publicKeyFromBytes(candidate), byte(bump), nil
+		}
+	}
+	return publicKey{}, 0, budgetHold("invalid_policy_setup_seed")
 }
