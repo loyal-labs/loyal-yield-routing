@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	solanago "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	solanago "github.com/solana-foundation/solana-go/v2"
 )
 
 type Config struct {

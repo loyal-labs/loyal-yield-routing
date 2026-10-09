@@ -22,7 +22,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type svmAccount struct {
@@ -246,18 +248,26 @@ func svmPullPlan(f svmAutodepositFixture) DepositPlan {
 func svmDurablePull(b BuiltWire, amount int64) DurableAttempt {
 	return DurableAttempt{OperationKind: OperationPull, State: AttemptPrepared, AmountRaw: amount, Signature: b.Signature, SignedTransactionBase64: b.SignedTransactionBase64, SignedTransactionSHA256: b.SignedTransactionSHA256, RecentBlockhash: b.RecentBlockhash, LastValidBlockHeight: b.LastValidBlockHeight}
 }
+
+// svmChain is the production chain adapter over the local SVM's RPC.
+func svmChain(t *testing.T, url string) *RPCChain {
+	t.Helper()
+	client, err := chain.New(url, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewRPCChain(client)
+}
+
 func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	f := loadSVMAutodepositFixture(t)
 	svm := startAutodepositSVM(t, f)
-	chain, e := NewRPCChain(svm.server.URL)
-	if e != nil {
-		t.Fatal(e)
-	}
+	rpcChain := svmChain(t, svm.server.URL)
 	seed, e := base64.StdEncoding.DecodeString(f.ExecutorSeedBase64)
 	if e != nil || len(seed) != 32 {
 		t.Fatal("invalid public test executor seed")
 	}
-	builder, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(seed), chain.ReadAccountsWithOptional)
+	builder, e := NewSweepWireBuilder(ed25519.NewKeyFromSeed(seed), rpcChain.ReadAccountsWithOptional)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -276,16 +286,16 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e = builder.proveArtifactAccounts(t.Context(), target, 1000); e != nil {
 		t.Fatalf("actual canonical source authorization accounts: %v", e)
 	}
-	if _, e = builder.verifyArtifactCreator(t.Context(), target, ArtifactPolicy, ArtifactReceipt{Signature: f.PolicyCreator.Signature, Slot: f.PolicyCreator.Slot, Wire: creatorWire, PreLamports: f.PolicyCreator.PreLamports, PostLamports: f.PolicyCreator.PostLamports}); e != nil {
+	if _, e = builder.verifyArtifactCreator(t.Context(), target, ArtifactPolicy, solana.MustSignatureFromBase58(f.PolicyCreator.Signature), chain.Receipt{Slot: uint64(f.PolicyCreator.Slot), Wire: creatorWire, PreLamports: f.PolicyCreator.PreLamports, PostLamports: f.PolicyCreator.PostLamports}); e != nil {
 		t.Fatalf("actual canonical creator receipt: %v", e)
 	}
 	nonce := uint64(f.Nonce)
 	identity := DelegationIdentity{Account: f.RecurringDelegation, Delegator: f.Wallet, Delegatee: f.Vault, Mint: USDCMint, Nonce: &nonce, WalletTokenAccount: f.WalletATA}
-	if allowance, err := chain.RemainingDelegationAllowanceRaw(t.Context(), f.RecurringDelegation, identity); err != nil || allowance != f.BudgetRaw {
+	if allowance, err := rpcChain.RemainingDelegationAllowanceRaw(t.Context(), f.RecurringDelegation, identity); err != nil || allowance != f.BudgetRaw {
 		t.Fatalf("actual allowance=%d err=%v", allowance, err)
 	}
 	nonce++
-	if _, e = chain.RemainingDelegationAllowanceRaw(t.Context(), f.RecurringDelegation, identity); e == nil {
+	if _, e = rpcChain.RemainingDelegationAllowanceRaw(t.Context(), f.RecurringDelegation, identity); e == nil {
 		t.Fatal("frozen nonce mismatch admitted")
 	}
 	for _, tc := range []struct {
@@ -294,7 +304,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 		amount int64
 	}{{"unauthorized", ed25519.NewKeyFromSeed(bytes.Repeat([]byte{20}, 32)), f.AmountRaw}, {"over-budget", ed25519.NewKeyFromSeed(seed), f.BudgetRaw + 1}} {
 		t.Run(tc.name, func(t *testing.T) {
-			b, e := NewSweepWireBuilder(tc.key, chain.ReadAccountsWithOptional)
+			b, e := NewSweepWireBuilder(tc.key, rpcChain.ReadAccountsWithOptional)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -305,7 +315,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 				t.Fatalf("budget test must reach the real Subscriptions program: %v", e)
 			}
 			if e == nil {
-				e = chain.SimulateExact(t.Context(), svmDurablePull(wire, tc.amount))
+				e = rpcChain.SimulateExact(t.Context(), svmDurablePull(wire, tc.amount))
 			}
 			if e == nil {
 				t.Fatal("unauthorized or over-budget pull passed actual program preflight")
@@ -324,7 +334,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 					t.Fatalf("budget rejection must come from real Subscriptions CPI: err=%s logs=%v", actual.Value.Err, actual.Value.Logs)
 				}
 			}
-			balance, e := chain.ConfirmedTokenBalanceRaw(t.Context(), f.WalletATA, f.Wallet)
+			balance, e := rpcChain.ConfirmedTokenBalanceRaw(t.Context(), f.WalletATA, f.Wallet)
 			if e != nil || balance != f.WalletBeforeRaw {
 				t.Fatalf("failed preflight changed wallet: %d %v", balance, e)
 			}
@@ -374,24 +384,24 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 		if len(simulation.Value.Err) == 0 || string(simulation.Value.Err) == "null" || !strings.Contains(logs, "Program "+squadsProgramID+" invoke") || strings.Contains(logs, "Program "+SubscriptionsProgramID+" invoke") {
 			t.Fatalf("unauthorized signer must be rejected by real Squads before asset CPI: err=%s logs=%s", simulation.Value.Err, logs)
 		}
-		if balance, err := chain.ConfirmedTokenBalanceRaw(t.Context(), f.WalletATA, f.Wallet); err != nil || balance != f.WalletBeforeRaw {
+		if balance, err := rpcChain.ConfirmedTokenBalanceRaw(t.Context(), f.WalletATA, f.Wallet); err != nil || balance != f.WalletBeforeRaw {
 			t.Fatalf("adversarial simulation changed wallet: %d %v", balance, err)
 		}
 	})
 	attempt := svmDurablePull(wire, f.AmountRaw)
-	if e = chain.SimulateExact(t.Context(), attempt); e != nil {
+	if e = rpcChain.SimulateExact(t.Context(), attempt); e != nil {
 		t.Fatalf("actual Go pull simulation: %v", e)
 	}
-	if e = chain.SendWire(t.Context(), svmWire(t, attempt), true); e != nil {
+	if e = rpcChain.SendWire(t.Context(), svmWire(t, attempt), true); e != nil {
 		t.Fatal(e)
 	}
-	observation, e := svmObserve(t.Context(), chain, attempt)
+	observation, e := svmObserve(t.Context(), rpcChain, attempt)
 	if e != nil || observation.State != AttemptConfirmed || observation.ConfirmedSlot == nil {
 		t.Fatalf("actual confirmation=%+v %v", observation, e)
 	}
 	attempt.State = AttemptConfirmed
 	attempt.ConfirmedSlot = observation.ConfirmedSlot
-	receipt, e := chain.ConfirmedReceipt(t.Context(), attempt.Signature)
+	receipt, e := rpcChain.ConfirmedReceipt(t.Context(), attempt.Signature)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -402,15 +412,15 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 		account, owner string
 		amount         int64
 	}{{f.WalletATA, f.Wallet, f.WalletBeforeRaw - f.AmountRaw}, {f.VaultATA, f.Vault, f.AmountRaw}} {
-		balance, e := chain.ConfirmedTokenBalanceRaw(t.Context(), expected.account, expected.owner)
+		balance, e := rpcChain.ConfirmedTokenBalanceRaw(t.Context(), expected.account, expected.owner)
 		if e != nil || balance != expected.amount {
 			t.Fatalf("actual balance %s=%d want%d err=%v", expected.account, balance, expected.amount, e)
 		}
 	}
-	if e = chain.SendWire(t.Context(), svmWire(t, attempt), true); e != nil {
+	if e = rpcChain.SendWire(t.Context(), svmWire(t, attempt), true); e != nil {
 		t.Fatal(e)
 	}
-	balance, e := chain.ConfirmedTokenBalanceRaw(t.Context(), f.VaultATA, f.Vault)
+	balance, e := rpcChain.ConfirmedTokenBalanceRaw(t.Context(), f.VaultATA, f.Vault)
 	if e != nil || balance != f.AmountRaw {
 		t.Fatalf("exact retry executed twice: %d %v", balance, e)
 	}
@@ -419,7 +429,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 		t.Fatal("actual signed wire identity lost")
 	}
 	nonce = uint64(f.Nonce)
-	if allowance, err := chain.RemainingDelegationAllowanceRaw(t.Context(), f.RecurringDelegation, identity); err != nil || allowance != f.BudgetRaw-f.AmountRaw {
+	if allowance, err := rpcChain.RemainingDelegationAllowanceRaw(t.Context(), f.RecurringDelegation, identity); err != nil || allowance != f.BudgetRaw-f.AmountRaw {
 		t.Fatalf("actual post-pull allowance=%d err=%v", allowance, err)
 	}
 	topWire, e := builder.BuildTopUp(t.Context(), TopUpWireRequest{Plan: plan, RecentBlockhash: svm.blockhash, LastValidBlockHeight: 1150})
@@ -431,44 +441,44 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e = builder.ProveTopUpWireContext(t.Context(), plan, top, route); e != nil {
 		t.Fatalf("immutable official top-up wire: %v", e)
 	}
-	if e = chain.SimulateExact(t.Context(), top); e != nil {
+	if e = rpcChain.SimulateExact(t.Context(), top); e != nil {
 		t.Fatalf("actual official top-up simulation: %v", e)
 	}
-	if e = chain.SendWire(t.Context(), svmWire(t, top), true); e != nil {
+	if e = rpcChain.SendWire(t.Context(), svmWire(t, top), true); e != nil {
 		t.Fatal(e)
 	}
-	topObservation, e := svmObserve(t.Context(), chain, top)
+	topObservation, e := svmObserve(t.Context(), rpcChain, top)
 	if e != nil || topObservation.State != AttemptConfirmed || topObservation.ConfirmedSlot == nil {
 		t.Fatalf("actual top-up confirmation=%+v %v", topObservation, e)
 	}
 	top.State, top.ConfirmedSlot = AttemptConfirmed, topObservation.ConfirmedSlot
-	if e = (&Controller{chain: chain}).verifyTopUpEffects(t.Context(), plan, route, Settlement{Attempt: top}); e != nil {
+	if e = (&Controller{chain: rpcChain}).verifyTopUpEffects(t.Context(), plan, route, Settlement{Attempt: top}); e != nil {
 		t.Fatalf("actual exact top-up receipt: %v", e)
 	}
-	if position, slot, err := chain.ConfirmedVaultPositionRaw(t.Context(), plan, route); err != nil || position != f.AmountRaw || slot != 1000 {
+	if position, slot, err := rpcChain.ConfirmedVaultPositionRaw(t.Context(), plan, route); err != nil || position != f.AmountRaw || slot != 1000 {
 		t.Fatalf("actual mock obligation/collateral conversion=%d slot%d err=%v", position, slot, err)
 	}
-	if e = chain.SendWire(t.Context(), svmWire(t, top), true); e != nil {
+	if e = rpcChain.SendWire(t.Context(), svmWire(t, top), true); e != nil {
 		t.Fatal(e)
 	}
 	for _, expected := range []struct {
 		account, owner string
 		amount         int64
 	}{{f.WalletATA, f.Wallet, f.WalletBeforeRaw - f.AmountRaw}, {f.VaultATA, f.Vault, 0}, {f.MockTopUp.LiquiditySupply, route.Position.MarketAuthority, 1_000_000 + f.AmountRaw}} {
-		balance, err := chain.ConfirmedTokenBalanceRaw(t.Context(), expected.account, expected.owner)
+		balance, err := rpcChain.ConfirmedTokenBalanceRaw(t.Context(), expected.account, expected.owner)
 		if err != nil || balance != expected.amount {
 			t.Fatalf("actual post-top-up/retry balance %s=%d want%d err=%v", expected.account, balance, expected.amount, err)
 		}
 	}
-	_, collateral, e := chain.ReadAccounts(t.Context(), []string{f.MockTopUp.CollateralMint, f.MockTopUp.CollateralSupply, USDCMint})
+	_, collateral, e := rpcChain.ReadAccounts(t.Context(), []string{f.MockTopUp.CollateralMint, f.MockTopUp.CollateralSupply, USDCMint})
 	if e != nil || len(collateral) != 3 {
 		t.Fatalf("actual collateral readback: %v", e)
 	}
 	for _, account := range collateral {
-		if account.Owner != splTokenID {
-			t.Fatalf("actual SPL owner changed: %s", account.Address)
+		if account.Owner.String() != splTokenID {
+			t.Fatalf("actual SPL owner changed: %s", account.Key)
 		}
-		switch account.Address {
+		switch account.Key.String() {
 		case f.MockTopUp.CollateralMint:
 			if len(account.Data) != 82 || binary.LittleEndian.Uint64(account.Data[36:44]) != uint64(1_000_000+f.AmountRaw) {
 				t.Fatal("actual collateral mint supply did not increase exactly once")

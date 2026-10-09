@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
-	solanaland "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -31,17 +31,17 @@ func (c surfaceChain) FinalizedBlockHeight(ctx context.Context) (uint64, uint64,
 	return height, 1, err
 }
 
-func (c surfaceChain) SignatureState(ctx context.Context, signature string) (solanaland.SignatureState, error) {
+func (c surfaceChain) SignatureState(ctx context.Context, signature string) (chain.SignatureState, error) {
 	observation, err := c.rpc.SignatureStatus(ctx, signature)
 	if err != nil || observation == nil {
-		return solanaland.SignatureState{ContextSlot: 1}, err
+		return chain.SignatureState{ContextSlot: 1}, err
 	}
-	state := solanaland.SignatureState{Found: true, Slot: uint64(observation.Slot), ContextSlot: 1, Commitment: solanaland.Processed}
+	state := chain.SignatureState{Found: true, Slot: uint64(observation.Slot), ContextSlot: 1, Commitment: chain.Processed}
 	switch observation.ConfirmationState {
 	case "confirmed":
-		state.Commitment = solanaland.Confirmed
+		state.Commitment = chain.Confirmed
 	case "finalized":
-		state.Commitment = solanaland.Finalized
+		state.Commitment = chain.Finalized
 	}
 	if observation.Err != nil {
 		state.Err = *observation.Err

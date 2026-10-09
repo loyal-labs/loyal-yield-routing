@@ -7,17 +7,53 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
+	"fmt"
+	"slices"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	solwire "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // fixedKey renders a deterministic, genuinely valid 32-byte public key for a
 // test label. The system program's all-zero rendering cannot round-trip here,
 // so every fixture key is a real base58 key derived from a digest.
+// testAccount is a fixture account by base58 address; one with no owner does
+// not exist.
+type testAccount struct {
+	Address, Owner string
+	Lamports       uint64
+	Data           []byte
+	Executable     bool
+}
+
+func (a testAccount) chainAccount() *chain.Account {
+	if a.Owner == "" {
+		return nil
+	}
+	return &chain.Account{Key: mustKey(a.Address), Owner: mustKey(a.Owner), Lamports: a.Lamports, Data: a.Data, Executable: a.Executable}
+}
+
+// fixtureReader serves fixtures the way the production reader does: a
+// required address must exist, an absent optional one is nil.
+func fixtureReader(slot int64, fixtures map[string]testAccount) AccountReader {
+	return func(_ context.Context, addresses []string, optional ...string) (int64, []*chain.Account, error) {
+		out := make([]*chain.Account, len(addresses))
+		for i, address := range addresses {
+			fixture := fixtures[address]
+			fixture.Address = address
+			out[i] = fixture.chainAccount()
+			if out[i] == nil && !slices.Contains(optional, address) {
+				return 0, nil, fmt.Errorf("required test account %s missing", address)
+			}
+		}
+		return slot, out, nil
+	}
+}
+
 func fixedKey(label string) string {
 	sum := sha256.Sum256([]byte("autodeposit-lane-a:" + label))
 	return base58Key(sum[:])
@@ -91,7 +127,7 @@ func testWireBuilder(t *testing.T) *SweepWireBuilder {
 	if err != nil {
 		t.Fatalf("generate executor key: %v", err)
 	}
-	builder, err := NewSweepWireBuilder(private, func(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error) {
+	builder, err := NewSweepWireBuilder(private, func(ctx context.Context, addresses []string, optional ...string) (int64, []*chain.Account, error) {
 		plan, delegation := testPullPlan()
 		wallet, mint := mustKey(plan.Target.Wallet), mustKey(USDCMint)
 		authority, err := subscriptionAuthorityKey(wallet[:], mint[:])
@@ -114,7 +150,7 @@ func testWireBuilder(t *testing.T) *SweepWireBuilder {
 		if err != nil {
 			return 0, nil, err
 		}
-		return 500, []backyard.ConfirmedAccount{{Address: addresses[0], Owner: squadsProgramID, Data: policy}}, nil
+		return 500, []*chain.Account{testAccount{Address: addresses[0], Owner: squadsProgramID, Data: policy}.chainAccount()}, nil
 	})
 	if err != nil {
 		t.Fatalf("build wire builder: %v", err)
@@ -177,7 +213,7 @@ func TestBuildPullProducesSignedSubscriptionsWire(t *testing.T) {
 		t.Fatal("wire digest is not the sha256 of the decoded bytes")
 	}
 	// The persisted digest reproduces through OwnSignedWire.
-	if _, err := solwire.OwnSignedWire(raw, wire.SignedTransactionSHA256); err != nil {
+	if _, err := chain.OwnSignedWire(raw, wire.SignedTransactionSHA256); err != nil {
 		t.Fatalf("wire fails the shared packet contract: %v", err)
 	}
 	tx, err := solana.TransactionFromBytes(raw)
@@ -237,7 +273,7 @@ func TestBuildPullProducesSignedSubscriptionsWire(t *testing.T) {
 }
 
 func hexOrPanic(raw []byte) string {
-	return hexPrefix(mustSHA256(raw))
+	return hex.EncodeToString(mustSHA256(raw))
 }
 
 func TestBuildPullRejectsNonUSDCAndMissingDelegation(t *testing.T) {

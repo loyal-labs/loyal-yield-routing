@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // A route that opens its target obligation runs init under the vault's setup

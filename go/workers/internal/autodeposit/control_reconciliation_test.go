@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
@@ -19,8 +20,8 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	walletATA, _ := deriveVaultATA(wallet, mint, mustKey(splTokenID))
-	vaultATA, _ := deriveVaultATA(vault, mint, mustKey(splTokenID))
+	walletATA, _ := usdcATA(wallet)
+	vaultATA, _ := usdcATA(vault)
 	authority, _ := subscriptionAuthorityKey(wallet[:], mint[:])
 	nonce := int64(7)
 	budget := int64(5_000_000)
@@ -50,9 +51,13 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	binary.LittleEndian.PutUint32(tokenData[72:76], 1)
 	copy(tokenData[76:108], authority[:])
 	tokenData[108] = 1
-	accounts := []backyard.ConfirmedAccount{{Address: target.Policy, Owner: squadsProgramID, Data: policyData}, {Address: target.SubscriptionAuthority, Owner: SubscriptionsProgramID}, {Address: target.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(target.Wallet, target.Vault, USDCMint, uint64(budget), 0)}, {Address: walletATA, Owner: splTokenID, Data: tokenData}}
-	builder, err := NewSweepWireBuilder(key, func(context.Context, []string, ...string) (int64, []backyard.ConfirmedAccount, error) {
-		return 100, accounts, nil
+	accounts := []testAccount{{Address: target.Policy, Owner: squadsProgramID, Data: policyData}, {Address: target.SubscriptionAuthority, Owner: SubscriptionsProgramID}, {Address: target.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(target.Wallet, target.Vault, USDCMint, uint64(budget), 0)}, {Address: walletATA, Owner: splTokenID, Data: tokenData}}
+	builder, err := NewSweepWireBuilder(key, func(context.Context, []string, ...string) (int64, []*chain.Account, error) {
+		out := make([]*chain.Account, len(accounts))
+		for i, account := range accounts {
+			out[i] = account.chainAccount()
+		}
+		return 100, out, nil
 	})
 	if err != nil {
 		t.Fatal(err)

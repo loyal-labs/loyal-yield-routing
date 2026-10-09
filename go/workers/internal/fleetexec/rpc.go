@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	solanasdk "github.com/gagliardetto/solana-go"
+	solanasdk "github.com/solana-foundation/solana-go/v2"
 	"io"
 	"net/http"
 	"strconv"

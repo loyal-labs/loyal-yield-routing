@@ -2,14 +2,13 @@ package autodeposit
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/hex"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/solana-foundation/solana-go/v2"
+
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
@@ -17,7 +16,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 	var err error
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, 32))
 	plan, _ := testPullPlan()
-	plan.Target.VaultUsdcAta, err = deriveVaultATA(mustKey(plan.Target.VaultPubkey), mustKey(USDCMint), mustKey(splTokenID))
+	plan.Target.VaultUsdcAta, err = usdcATA(mustKey(plan.Target.VaultPubkey))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,20 +59,14 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byAddress := map[string]backyard.ConfirmedAccount{
+	byAddress := map[string]testAccount{
 		plan.Reserve:                   {Address: plan.Reserve, Owner: KLendProgramID, Lamports: 1, Data: reserve},
 		plan.Market:                    {Address: plan.Market, Owner: KLendProgramID, Data: make([]byte, 8)},
 		obligation:                     {Address: obligation, Owner: KLendProgramID, Data: obligationData},
 		plan.Target.VaultUsdcAta:       {Address: plan.Target.VaultUsdcAta, Owner: splTokenID, Data: custody},
 		plan.Target.RoutePolicyAccount: {Address: plan.Target.RoutePolicyAccount, Owner: squadsProgramID, Data: policy},
 	}
-	builder, err := NewSweepWireBuilder(key, func(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error) {
-		out := make([]backyard.ConfirmedAccount, 0, len(addresses))
-		for _, address := range addresses {
-			out = append(out, byAddress[address])
-		}
-		return 100, out, nil
-	})
+	builder, err := NewSweepWireBuilder(key, fixtureReader(100, byAddress))
 	if err != nil {
 		t.Fatal(err)
 	}

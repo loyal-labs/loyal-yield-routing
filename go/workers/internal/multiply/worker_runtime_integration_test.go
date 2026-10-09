@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func runtimeFixtureRoute(t *testing.T, store *Store) (*RouteState, *EarnMaxTopology) {

@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 // The Rust trigger emitted one operational error per pass however many rows

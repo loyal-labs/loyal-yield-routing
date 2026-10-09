@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	solanago "github.com/gagliardetto/solana-go"
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
@@ -25,6 +24,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/subscription"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	solanago "github.com/solana-foundation/solana-go/v2"
 )
 
 const (

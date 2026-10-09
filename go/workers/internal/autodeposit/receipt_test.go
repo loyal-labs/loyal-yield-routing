@@ -4,7 +4,9 @@ import (
 	"math"
 	"testing"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func TestPullReceiptUsesActualTransactionBalances(t *testing.T) {
@@ -35,31 +37,25 @@ func TestPullReceiptUsesActualTransactionBalances(t *testing.T) {
 }
 
 func TestReceiptConversionPreservesUnknownAndRejectsOverflow(t *testing.T) {
-	pre := backyard.TransactionTokenBalance{Address: "wallet", Mint: USDCMint, Raw: 10}
-	post := backyard.TransactionTokenBalance{Address: "wallet", Mint: USDCMint, Raw: 7}
-	base := backyard.ConfirmedTransactionEvidence{Signature: "exact", Slot: 100, PreTokenBalances: []backyard.TransactionTokenBalance{pre}, PostTokenBalances: []backyard.TransactionTokenBalance{post}}
-	got, err := receiptFromEvidence(base)
-	if err != nil || len(got.Effects) != 1 || got.Effects[0].PreRaw != 10 || got.Effects[0].PostRaw != 7 {
+	wallet, usdc := solana.PublicKey{1}, mustKey(USDCMint)
+	balance := func(raw uint64) map[solana.PublicKey]chain.TokenBalance {
+		return map[solana.PublicKey]chain.TokenBalance{wallet: {Mint: usdc, Amount: raw}}
+	}
+	got, err := receiptEvidence("exact", chain.Receipt{Slot: 100, Pre: balance(10), Post: balance(7)})
+	if err != nil || got.Slot != 100 || len(got.Effects) != 1 || got.Effects[0].PreRaw != 10 || got.Effects[0].PostRaw != 7 || got.Effects[0].Mint != USDCMint {
 		t.Fatalf("exact receipt conversion: %+v %v", got, err)
 	}
-	missing := base
-	missing.PostTokenBalances = nil
-	got, err = receiptFromEvidence(missing)
+	got, err = receiptEvidence("exact", chain.Receipt{Slot: 100, Pre: balance(10)})
 	if err != nil || len(got.Effects) != 0 {
 		t.Fatal("missing evidence became a zero balance")
 	}
-	for _, mutate := range []func(*backyard.ConfirmedTransactionEvidence){
-		func(e *backyard.ConfirmedTransactionEvidence) { e.Slot = 0 },
-		func(e *backyard.ConfirmedTransactionEvidence) { e.PostTokenBalances[0].Raw = math.MaxUint64 },
-		func(e *backyard.ConfirmedTransactionEvidence) { e.PostTokenBalances[0].Mint = "different" },
-		func(e *backyard.ConfirmedTransactionEvidence) { e.PreTokenBalances = append(e.PreTokenBalances, pre) },
+	for name, bad := range map[string]chain.Receipt{
+		"overflow":    {Slot: 100, Pre: balance(10), Post: balance(math.MaxUint64)},
+		"mint change": {Slot: 100, Pre: balance(10), Post: map[solana.PublicKey]chain.TokenBalance{wallet: {Mint: solana.PublicKey{2}, Amount: 7}}},
+		"chain error": {Slot: 100, Err: map[string]any{"InstructionError": []any{0, "Custom"}}, Pre: balance(10), Post: balance(7)},
 	} {
-		bad := base
-		bad.PreTokenBalances = append([]backyard.TransactionTokenBalance(nil), base.PreTokenBalances...)
-		bad.PostTokenBalances = append([]backyard.TransactionTokenBalance(nil), base.PostTokenBalances...)
-		mutate(&bad)
-		if _, err := receiptFromEvidence(bad); err == nil {
-			t.Fatal("invalid receipt evidence accepted")
+		if _, err := receiptEvidence("exact", bad); err == nil {
+			t.Fatalf("%s: invalid receipt evidence accepted", name)
 		}
 	}
 }

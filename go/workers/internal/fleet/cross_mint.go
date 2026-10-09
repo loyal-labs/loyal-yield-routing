@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 const (

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgconn"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // Actual registered journal/lease scenarios. Snapshot and simulation DTOs are

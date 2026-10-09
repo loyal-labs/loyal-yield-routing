@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 // TestDepositPlanJSONMatchesLegacyExecutor pins the frozen plan's wire shape:

@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 // freshScenario is one fresh, fully executable slot whose vault custody already

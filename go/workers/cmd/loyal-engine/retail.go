@@ -18,13 +18,12 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleetexec"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 	"github.com/mr-tron/base58"
 )
 
@@ -327,9 +326,9 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	facts.Own(families...)
 	// Every family lands its signed rows through the same send path.
-	landRPC, err := solana.NewLandRPC(cfg.rpcURL, 15*time.Second)
+	cluster, err := chain.New(cfg.rpcURL, 15*time.Second)
 	if err != nil {
-		return retailError("landing RPC", err)
+		return retailError("chain RPC", err)
 	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -365,19 +364,12 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("mainnet genesis", err)
 	}
-	chain, err := autodeposit.NewRPCChain(cfg.rpcURL)
-	if err != nil {
-		return retailError("Autodeposit chain", err)
-	}
-	rentRPC, err := backyard.NewRPCClient(cfg.rpcURL)
-	if err != nil {
-		return retailError("rent RPC", err)
-	}
-	wires, err := autodeposit.NewSweepWireBuilderWithSetup(cfg.delegate, chain.ReadAccountsWithOptional, rentRPC.MinimumBalanceForRentExemption)
+	deposits := autodeposit.NewRPCChain(cluster)
+	wires, err := autodeposit.NewSweepWireBuilderWithSetup(cfg.delegate, deposits.ReadAccountsWithOptional, deposits.MinimumBalanceForRentExemption)
 	if err != nil {
 		return retailError("Autodeposit wires", err)
 	}
-	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: chain, Wires: wires, Facts: facts, IdleToleranceRaw: cfg.idleToleranceRaw})
+	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: deposits, Wires: wires, Facts: facts, IdleToleranceRaw: cfg.idleToleranceRaw})
 	if err != nil {
 		return retailError("Autodeposit controller", err)
 	}
@@ -410,11 +402,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Autodeposit worker", err)
 	}
-	artifactRPC, err := autodeposit.NewArtifactRPC(cfg.rpcURL)
-	if err != nil {
-		return retailError("Autodeposit artifact RPC", err)
-	}
-	artifactReader := &autodeposit.ArtifactProofReader{Wires: wires, History: artifactRPC}
+	artifactReader := &autodeposit.ArtifactProofReader{Wires: wires, History: cluster}
 	artifacts := &autodeposit.ArtifactReconciler{Store: aStore, Reader: artifactReader}
 	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, OnError: func(err error) {
 		slog.Error("retail lane tick failed", "family", engine.FamilyAutodeposit, "lane", "autodeposit_control", "error", engine.ErrorText(err))
@@ -441,7 +429,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("fleet execution RPC", err)
 	}
-	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts, OnHealth: laneHealth(facts, engine.FamilyFleet, "executor")}, dStore, landRPC, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
+	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts, OnHealth: laneHealth(facts, engine.FamilyFleet, "executor")}, dStore, cluster, executionRPC, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
 	if err != nil {
 		return retailError("fleet executor", err)
 	}
@@ -467,7 +455,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Multiply observation", err)
 	}
-	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: observation, Executor: gExecutor, Quotes: multiply.NewLiveQuoteClient(), WorkerID: owner, Chain: landRPC, Facts: facts})
+	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: observation, Executor: gExecutor, Quotes: multiply.NewLiveQuoteClient(), WorkerID: owner, Chain: cluster, Facts: facts})
 	if err != nil {
 		return retailError("Multiply worker", err)
 	}

@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Policy-family detection, ported from loyal-actions detection.rs

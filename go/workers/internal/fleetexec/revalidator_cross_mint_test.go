@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 func TestRevalidatorCrossMintRequestPreservesAuthorityAndCustody(t *testing.T) {

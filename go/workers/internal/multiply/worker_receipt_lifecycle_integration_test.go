@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Publish an actual SDK-constrained, simulated wire using the same durable

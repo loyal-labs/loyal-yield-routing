@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Production holds 34 active route_policies with cluster='unknown' and 23

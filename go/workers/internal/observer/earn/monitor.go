@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // PolicyMonitor projects confirmed Squads settings instructions, ported from

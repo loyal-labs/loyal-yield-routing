@@ -2,13 +2,12 @@ package autodeposit
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
 	"encoding/binary"
+	"encoding/hex"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func TestPersistedV0RetainsAllSignaturesAndResolvesPinnedLookup(t *testing.T) {
@@ -37,7 +36,7 @@ func TestPersistedV0RetainsAllSignaturesAndResolvesPinnedLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt := DurableAttempt{Signature: tx.Signatures[0].String(), SignedTransactionBase64: base64Std.EncodeToString(raw), SignedTransactionSHA256: hexPrefix(mustSHA256(raw)), RecentBlockhash: tx.Message.RecentBlockhash.String()}
+	attempt := DurableAttempt{Signature: tx.Signatures[0].String(), SignedTransactionBase64: base64Std.EncodeToString(raw), SignedTransactionSHA256: hex.EncodeToString(mustSHA256(raw)), RecentBlockhash: tx.Message.RecentBlockhash.String()}
 	parsed, err := persistedWireTransaction(attempt)
 	if err != nil {
 		t.Fatal(err)
@@ -53,9 +52,7 @@ func TestPersistedV0RetainsAllSignaturesAndResolvesPinnedLookup(t *testing.T) {
 	binary.LittleEndian.PutUint64(data[4:12], ^uint64(0))
 	binary.LittleEndian.PutUint64(data[12:20], 100)
 	copy(data[56:], lookupAccount[:])
-	builder := &SweepWireBuilder{read: func(context.Context, []string, ...string) (int64, []backyard.ConfirmedAccount, error) {
-		return 500, []backyard.ConfirmedAccount{{Address: lookupKey.String(), Owner: "AddressLookupTab1e1111111111111111111111111", Data: data}}, nil
-	}}
+	builder := &SweepWireBuilder{read: fixtureReader(500, map[string]testAccount{lookupKey.String(): {Owner: solana.AddressLookupTableProgramID.String(), Data: data}})}
 	if err = builder.resolvePersistedLookups(t.Context(), parsed); err != nil {
 		t.Fatal(err)
 	}

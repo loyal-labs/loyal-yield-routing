@@ -9,8 +9,8 @@ import (
 	"math"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // lookupResendEvery matches the fleet landing cadence.
@@ -219,17 +219,17 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 // Rust provisioner) and reconcile-only mode resolve by signature status alone,
 // with the same height-first classifier.
 func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt LookupAttempt) error {
-	target := solana.Attempt{
+	target := chain.Attempt{
 		Wire: attempt.Wire.SignedTransaction, Signature: attempt.Wire.TransactionSignature,
 		LastValidBlockHeight: uint64(attempt.Wire.LastValidBlockHeight), Sends: attempt.BroadcastCount,
-		Required: solana.Finalized,
+		Required: chain.Finalized,
 	}
-	var out solana.Outcome
+	var out chain.Outcome
 	var err error
 	if len(target.Wire) > 0 && !w.config.ReconcileOnly {
 		// Leave the tick time to record the outcome inside its own deadline.
 		landCtx, cancel := context.WithTimeout(ctx, w.config.TickDeadline/2)
-		out, err = solana.Land(landCtx, w.chain, target, lookupResendEvery, func(sendCtx context.Context) error {
+		out, err = chain.Land(landCtx, w.chain, target, lookupResendEvery, func(sendCtx context.Context) error {
 			return w.store.RecordLookupSend(sendCtx, op, attempt)
 		})
 		cancel()
@@ -240,7 +240,7 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 			return w.store.deferLookupRecovery(ctx, op, "landing continues", false)
 		}
 	} else {
-		out, err = solana.Observe(ctx, w.chain, target)
+		out, err = chain.Observe(ctx, w.chain, target)
 	}
 	if err != nil {
 		return err
@@ -248,7 +248,7 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 	switch out.Kind {
 	case 0:
 		return w.store.deferLookupRecovery(ctx, op, "signature not finalized", false)
-	case solana.Expired:
+	case chain.Expired:
 		// Rust re-signs only when the mutation is also absent on chain; a
 		// landed packet the history has not indexed yet must not be archived.
 		snapshot, err := w.chain.LookupSnapshot(ctx, attempt.Intent.TableAddress, int64(out.ContextSlot))
@@ -259,8 +259,8 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 			return w.store.markLookupDrift(ctx, op, attempt, "signature absent after blockhash expiry but the table changed on chain")
 		}
 		return w.expire(ctx, op, attempt)
-	case solana.Failed:
-		if out.Commitment != solana.Finalized {
+	case chain.Failed:
+		if out.Commitment != chain.Finalized {
 			return w.store.deferLookupRecovery(ctx, op, "failed packet not finalized", false)
 		}
 	}

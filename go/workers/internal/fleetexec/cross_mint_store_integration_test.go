@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // SQL scenarios use the existing integrationStore URL guard and registered

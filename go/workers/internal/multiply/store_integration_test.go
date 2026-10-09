@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func integrationStore(t *testing.T) *Store {

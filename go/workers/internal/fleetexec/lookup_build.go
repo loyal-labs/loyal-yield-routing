@@ -9,8 +9,8 @@ import (
 	"errors"
 	"fmt"
 
-	sdk "github.com/gagliardetto/solana-go"
-	owned "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 const lookupProgram = "AddressLookupTab1e1111111111111111111111111"
@@ -167,7 +167,7 @@ func signLookupMutation(intent LookupIntent, blockhash string, height int64, key
 }
 
 func proveLookupWire(intent LookupIntent, wire WireIdentity) error {
-	if _, err := owned.OwnSignedWire(wire.SignedTransaction, wire.SignedTransactionHash); err != nil {
+	if _, err := chain.OwnSignedWire(wire.SignedTransaction, wire.SignedTransactionHash); err != nil {
 		return err
 	}
 	tx, err := sdk.TransactionFromBytes(wire.SignedTransaction)

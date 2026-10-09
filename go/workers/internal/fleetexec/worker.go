@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 	"github.com/mr-tron/base58"
 )
 
@@ -49,7 +49,7 @@ func (c Config) validate() error {
 type Worker struct {
 	config   Config
 	store    *Store
-	chain    solana.LandChain
+	chain    chain.LandChain
 	status   StatusClient
 	signer   DelegateSigner
 	recovery *sameMintRecovery
@@ -69,7 +69,7 @@ type Worker struct {
 }
 
 // NewWorker composes the executor from its concrete dependencies.
-func NewWorker(config Config, store *Store, chain solana.LandChain, status StatusClient, signer DelegateSigner) (*Worker, error) {
+func NewWorker(config Config, store *Store, chain chain.LandChain, status StatusClient, signer DelegateSigner) (*Worker, error) {
 	if err := config.validate(); err != nil {
 		return nil, err
 	}
@@ -231,10 +231,10 @@ func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) erro
 	if err := verifyDurableWire(record); err != nil {
 		return err
 	}
-	out, err := solana.Land(leaseCtx, w.chain, solana.Attempt{
+	out, err := chain.Land(leaseCtx, w.chain, chain.Attempt{
 		Wire: record.SignedTransaction, Signature: record.Signature,
 		LastValidBlockHeight: uint64(record.LastValidBlockHeight), Sends: record.BroadcastCount,
-		Required: solana.Confirmed,
+		Required: chain.Confirmed,
 	}, resendEvery, func(sendCtx context.Context) error {
 		if err := w.store.RecordBroadcastIntent(sendCtx, lease); err != nil {
 			return err
@@ -250,11 +250,11 @@ func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) erro
 	}
 	// Facts count an outcome only once its row is written.
 	switch out.Kind {
-	case solana.Landed:
+	case chain.Landed:
 		if err = w.store.ConfirmSameMint(leaseCtx, lease, int64(out.Slot)); err == nil {
 			w.config.Facts.Landed(engine.FamilyFleet)
 		}
-	case solana.Failed:
+	case chain.Failed:
 		if err = w.store.AdvanceSubmission(leaseCtx, lease, Advance{
 			NextState: StateFailed, ConfirmedSlot: int64Ptr(int64(out.Slot)), ErrorDetail: errPtr("chain failure: " + out.Err),
 		}); err == nil {

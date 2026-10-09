@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // Recovery validates the immutable signed bytes again before the first send;

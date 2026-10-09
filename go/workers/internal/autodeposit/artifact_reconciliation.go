@@ -11,8 +11,11 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/gagliardetto/solana-go"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/solana-foundation/solana-go/v2/rpc"
+
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
@@ -32,34 +35,18 @@ type ArtifactTarget struct {
 	PolicySignature, DelegationSignature         *string
 	PolicyConfirmedSlot, DelegationConfirmedSlot *int64
 }
-type ArtifactHistoryEntry struct {
-	Signature string
-	Slot      int64
-	Failed    bool
-}
-type ArtifactReceipt struct {
-	Signature                 string
-	Slot                      int64
-	Wire                      []byte
-	PreLamports, PostLamports []uint64
-	// These are the confirmed transaction metadata's loaded-address lists.
-	// The reader also resolves the signed lookup keys independently from RPC.
-	LoadedWritable, LoadedReadonly []string
-	InnerInstructions              []solana.CompiledInstruction
-}
-type ArtifactHistory interface {
-	ArtifactHistory(context.Context, string, int) ([]ArtifactHistoryEntry, error)
-	ArtifactReceipt(context.Context, string) (ArtifactReceipt, error)
-}
 
-type pagedArtifactHistory interface {
-	ArtifactHistoryPage(context.Context, string, int, string) ([]ArtifactHistoryEntry, error)
+// ArtifactHistory is the chain reads a creator proof needs; *chain.Client is
+// the production one.
+type ArtifactHistory interface {
+	History(ctx context.Context, address solana.PublicKey, limit int, before solana.Signature) ([]chain.Signed, error)
+	Receipt(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) (chain.Receipt, error)
 }
 
 type artifactHistoryCursor struct {
 	account    string
 	generation int64
-	before     string
+	before     solana.Signature
 }
 
 // Creation proof fields are deliberately private. Only the verifier below can
@@ -97,28 +84,25 @@ func (r *ArtifactProofReader) FindCreationProof(ctx context.Context, target Arti
 	r.mu.Lock()
 	cursor := r.cursors[key]
 	r.mu.Unlock()
-	before := ""
+	var before solana.Signature
 	if cursor.account == account && cursor.generation == target.SetupGeneration {
 		before = cursor.before
-	}
-	paged, canPage := r.History.(pagedArtifactHistory)
-	if !canPage {
-		before = ""
 	}
 	known := target.PolicySignature
 	if role == ArtifactDelegation {
 		known = target.DelegationSignature
 	}
 	if known != nil && *known != "" {
-		receipt, err := r.History.ArtifactReceipt(ctx, *known)
+		signature, err := solana.SignatureFromBase58(*known)
+		if err != nil {
+			return VerifiedArtifactCreationProof{}, fmt.Errorf("known artifact signature: %w", err)
+		}
+		receipt, err := r.receipt(ctx, signature)
 		if err != nil && !errors.Is(err, ErrArtifactCreationProofPending) {
 			return VerifiedArtifactCreationProof{}, err
 		}
 		if err == nil {
-			if receipt.Signature != *known {
-				return VerifiedArtifactCreationProof{}, errors.New("known artifact receipt signature disagrees")
-			}
-			proof, err := r.Wires.verifyArtifactCreator(ctx, target, role, receipt)
+			proof, err := r.Wires.verifyArtifactCreator(ctx, target, role, signature, receipt)
 			if err == nil {
 				r.clearHistoryCursor(key)
 				return proof, nil
@@ -128,42 +112,40 @@ func (r *ArtifactProofReader) FindCreationProof(ctx context.Context, target Arti
 			}
 		}
 	}
+	address, err := solana.PublicKeyFromBase58(account)
+	if err != nil {
+		return VerifiedArtifactCreationProof{}, fmt.Errorf("artifact account: %w", err)
+	}
 	for page := 0; page < maximumPages; page++ {
-		var entries []ArtifactHistoryEntry
-		var err error
-		if canPage {
-			entries, err = paged.ArtifactHistoryPage(ctx, account, maximumHistory, before)
-		} else {
-			entries, err = r.History.ArtifactHistory(ctx, account, maximumHistory)
-		}
+		entries, err := r.History.History(ctx, address, maximumHistory, before)
 		if err != nil {
 			return VerifiedArtifactCreationProof{}, err
 		}
 		if len(entries) > maximumHistory {
 			return VerifiedArtifactCreationProof{}, errors.New("artifact history exceeds bound")
 		}
-		seen := map[string]bool{}
-		var previousSlot int64
+		seen := map[solana.Signature]bool{}
+		var previousSlot uint64
 		for _, entry := range entries {
-			if entry.Signature == "" || entry.Signature == before || seen[entry.Signature] || entry.Slot <= 0 || previousSlot > 0 && entry.Slot > previousSlot {
+			if entry.Signature.IsZero() || entry.Signature == before || seen[entry.Signature] || entry.Slot == 0 || previousSlot > 0 && entry.Slot > previousSlot {
 				return VerifiedArtifactCreationProof{}, errors.New("artifact history page identity or ordering invalid")
 			}
 			seen[entry.Signature] = true
 			previousSlot = entry.Slot
-			if entry.Failed || entry.Signature == "" || entry.Slot <= 0 {
+			if entry.Failed {
 				continue
 			}
-			receipt, err := r.History.ArtifactReceipt(ctx, entry.Signature)
+			receipt, err := r.receipt(ctx, entry.Signature)
 			if err != nil {
 				if errors.Is(err, ErrArtifactCreationProofPending) {
 					continue
 				}
 				return VerifiedArtifactCreationProof{}, err
 			}
-			if receipt.Signature != entry.Signature || receipt.Slot != entry.Slot {
+			if receipt.Slot != entry.Slot {
 				return VerifiedArtifactCreationProof{}, errors.New("artifact history and receipt identities disagree")
 			}
-			proof, err := r.Wires.verifyArtifactCreator(ctx, target, role, receipt)
+			proof, err := r.Wires.verifyArtifactCreator(ctx, target, role, entry.Signature, receipt)
 			if err == nil {
 				r.clearHistoryCursor(key)
 				return proof, nil
@@ -172,7 +154,7 @@ func (r *ArtifactProofReader) FindCreationProof(ctx context.Context, target Arti
 				return VerifiedArtifactCreationProof{}, err
 			}
 		}
-		if !canPage || len(entries) < maximumHistory {
+		if len(entries) < maximumHistory {
 			r.clearHistoryCursor(key)
 			return VerifiedArtifactCreationProof{}, ErrArtifactCreationProofPending
 		}
@@ -194,6 +176,16 @@ func (r *ArtifactProofReader) FindCreationProof(ctx context.Context, target Arti
 	r.cursors[key] = artifactHistoryCursor{account: account, generation: target.SetupGeneration, before: before}
 	r.mu.Unlock()
 	return VerifiedArtifactCreationProof{}, ErrArtifactCreationProofPending
+}
+
+// receipt reads a confirmed receipt; a transaction the cluster does not have
+// or that failed on chain cannot have created the artifact.
+func (r *ArtifactProofReader) receipt(ctx context.Context, signature solana.Signature) (chain.Receipt, error) {
+	receipt, err := r.History.Receipt(ctx, signature, rpc.CommitmentConfirmed)
+	if errors.Is(err, chain.ErrNotFound) || err == nil && receipt.Err != nil {
+		return chain.Receipt{}, ErrArtifactCreationProofPending
+	}
+	return receipt, err
 }
 
 func (r *ArtifactProofReader) clearHistoryCursor(key string) {
@@ -226,16 +218,16 @@ func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target Art
 	if err = verifyArtifactRoot(accounts[0], target); err != nil {
 		return err
 	}
-	for i := range accounts {
-		if accounts[i].Address != addresses[i] || accounts[i].Executable {
-			return errors.New("artifact account snapshot identity invalid")
+	for _, a := range accounts {
+		if a.Executable {
+			return errors.New("artifact account is executable")
 		}
 	}
-	if accounts[1].Owner != squadsProgramID {
+	if accounts[1].Owner.String() != squadsProgramID {
 		return errors.New("artifact policy has foreign owner")
 	}
 	nonce := uint64(*target.Nonce)
-	if _, err = RemainingDelegationAllowance(accounts[2].Owner, accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: &nonce}); err != nil {
+	if _, err = RemainingDelegationAllowance(accounts[2].Owner.String(), accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: &nonce}); err != nil {
 		return err
 	}
 	if binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:delegationPerPeriodOffset+8]) != uint64(*target.MaxAmountPerPeriod) {
@@ -248,9 +240,9 @@ func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target Art
 // the existing SDK/SVM SettingsWire fixture. It accepts the supported personal
 // root shape only: threshold1, one root signer with mask7, no external settings
 // authority. Multi-owner or handed-off roots require separate evidence.
-func verifyArtifactRoot(a backyard.ConfirmedAccount, target ArtifactTarget) error {
+func verifyArtifactRoot(a *chain.Account, target ArtifactTarget) error {
 	d := a.Data
-	if a.Address != target.Settings || a.Owner != squadsProgramID || a.Executable || len(d) < 94 || !bytes.Equal(d[:8], []byte{223, 179, 163, 190, 177, 224, 67, 173}) {
+	if a.Key.String() != target.Settings || a.Owner.String() != squadsProgramID || a.Executable || len(d) < 94 || !bytes.Equal(d[:8], []byte{223, 179, 163, 190, 177, 224, 67, 173}) {
 		return errors.New("artifact root settings owner or layout invalid")
 	}
 	if base58Key(d[24:56]) != systemProgramZero || binary.LittleEndian.Uint16(d[56:58]) != 1 || binary.LittleEndian.Uint32(d[58:62]) != 0 || binary.LittleEndian.Uint64(d[70:78]) > binary.LittleEndian.Uint64(d[62:70]) {
@@ -304,12 +296,12 @@ func verifyArtifactRoot(a backyard.ConfirmedAccount, target ArtifactTarget) erro
 	return nil
 }
 
-func (b *SweepWireBuilder) verifyArtifactCreator(ctx context.Context, target ArtifactTarget, role ArtifactRole, receipt ArtifactReceipt) (VerifiedArtifactCreationProof, error) {
+func (b *SweepWireBuilder) verifyArtifactCreator(ctx context.Context, target ArtifactTarget, role ArtifactRole, signature solana.Signature, receipt chain.Receipt) (VerifiedArtifactCreationProof, error) {
 	var proof VerifiedArtifactCreationProof
 	if target.Nonce == nil || target.MaxAmountPerPeriod == nil || target.PeriodLength == nil || target.StartTimestamp == nil || target.ExpiryTimestamp == nil {
 		return proof, ErrArtifactCreationProofPending
 	}
-	if receipt.Slot <= 0 || len(receipt.Wire) == 0 || len(receipt.Wire) > solanaPacketBytes {
+	if receipt.Slot == 0 || len(receipt.Wire) == 0 || len(receipt.Wire) > solanaPacketBytes {
 		return proof, ErrArtifactCreationProofPending
 	}
 	tx, err := solana.TransactionFromBytes(receipt.Wire)
@@ -323,7 +315,7 @@ func (b *SweepWireBuilder) verifyArtifactCreator(ctx context.Context, target Art
 	if err != nil || !bytes.Equal(canonical, receipt.Wire) {
 		return proof, errors.New("artifact creator packet is not canonical")
 	}
-	if len(tx.Signatures) == 0 || tx.Signatures[0].String() != receipt.Signature {
+	if len(tx.Signatures) == 0 || tx.Signatures[0] != signature {
 		return proof, errors.New("artifact creator signature differs from exact packet")
 	}
 	if err = tx.VerifySignatures(); err != nil {
@@ -362,9 +354,9 @@ func (b *SweepWireBuilder) verifyArtifactCreator(ctx context.Context, target Art
 		if len(receipt.LoadedWritable) != writable || len(receipt.LoadedReadonly) != readonly {
 			return proof, errors.New("artifact creator loaded-address vector invalid")
 		}
-		loaded := append(append([]string(nil), receipt.LoadedWritable...), receipt.LoadedReadonly...)
+		loaded := append(append([]solana.PublicKey(nil), receipt.LoadedWritable...), receipt.LoadedReadonly...)
 		for i, value := range loaded {
-			if keys[len(keys)-len(loaded)+i].String() != value {
+			if keys[len(keys)-len(loaded)+i] != value {
 				return proof, errors.New("artifact creator loaded addresses differ from signed lookups")
 			}
 		}
@@ -438,7 +430,7 @@ func (b *SweepWireBuilder) verifyArtifactCreator(ctx context.Context, target Art
 			continue
 		}
 		digest := sha256.Sum256(compiled.Data)
-		return VerifiedArtifactCreationProof{target: target, role: role, account: account, signature: receipt.Signature, slot: receipt.Slot, instructionSHA256: hex.EncodeToString(digest[:])}, nil
+		return VerifiedArtifactCreationProof{target: target, role: role, account: account, signature: signature.String(), slot: int64(receipt.Slot), instructionSHA256: hex.EncodeToString(digest[:])}, nil
 	}
 	return proof, ErrArtifactCreationProofPending
 }

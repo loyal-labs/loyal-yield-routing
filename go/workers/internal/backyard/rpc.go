@@ -432,23 +432,6 @@ func (c *RPCClient) FinalizedSlot(ctx context.Context) (int64, error) {
 	return slot, nil
 }
 
-// MinimumBalanceForRentExemption reads the exact cluster rent quote used by
-// retail destination setup. A failed or missing quote never becomes a zero
-// funding requirement.
-func (c *RPCClient) MinimumBalanceForRentExemption(ctx context.Context, dataLength int) (uint64, error) {
-	if dataLength <= 0 || dataLength > 1<<20 {
-		return 0, fmt.Errorf("invalid rent-exempt account length")
-	}
-	var lamports *uint64
-	if err := c.call(ctx, "getMinimumBalanceForRentExemption", []any{dataLength, map[string]any{"commitment": "confirmed"}}, &lamports); err != nil {
-		return 0, err
-	}
-	if lamports == nil || *lamports == 0 {
-		return 0, fmt.Errorf("rent-exempt balance unavailable")
-	}
-	return *lamports, nil
-}
-
 func (c *RPCClient) GenesisHash(ctx context.Context) (string, error) {
 	var genesis string
 	if err := c.call(ctx, "getGenesisHash", []any{}, &genesis); err != nil {
@@ -939,10 +922,6 @@ func (c *RPCClient) FailedTransactionEvidence(ctx context.Context, signature str
 		Slot: result.Slot, Err: append([]byte(nil), result.Meta.Err...),
 		Logs: append([]string(nil), result.Meta.LogMessages...),
 	}, nil
-}
-
-func (c *RPCClient) ConfirmedBlockHeight(ctx context.Context) (int64, error) {
-	return c.blockHeight(ctx, "confirmed")
 }
 
 func (c *RPCClient) FinalizedBlockHeight(ctx context.Context) (int64, error) {

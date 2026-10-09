@@ -10,8 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // DepositPlanTarget is the frozen destination identity of an autodeposit top-up.
@@ -280,7 +280,7 @@ func (s *Store) PersistPreparedAttempt(ctx context.Context, prepared PreparedAtt
 	if err != nil {
 		return DurableAttempt{}, errors.New("prepared autodeposit wire is not base64")
 	}
-	if _, err := solana.OwnSignedWire(wire, prepared.SignedTransactionSHA256); err != nil {
+	if _, err := chain.OwnSignedWire(wire, prepared.SignedTransactionSHA256); err != nil {
 		return DurableAttempt{}, fmt.Errorf("prepared autodeposit wire identity: %w", err)
 	}
 	if prepared.SourcePreBalanceRaw < prepared.AmountRaw {

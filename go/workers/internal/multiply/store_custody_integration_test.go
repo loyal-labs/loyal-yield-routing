@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func seedManagedCustody(t *testing.T, store *Store, state *RouteState, policy string, vault solana.PublicKey, index uint8) (int64, int64) {

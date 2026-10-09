@@ -11,8 +11,8 @@ import (
 	"net/url"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // LookupRPC uses one endpoint with bounded calls and no hidden retries. Query
@@ -21,7 +21,7 @@ import (
 // The embedded LandRPC is the shared send path.
 type LookupRPC struct {
 	adapter *RPCAdapter
-	*solana.LandRPC
+	*chain.Client
 }
 
 func NewLookupRPC(endpoint string, deadline time.Duration) (*LookupRPC, error) {
@@ -34,11 +34,11 @@ func NewLookupRPC(endpoint string, deadline time.Duration) (*LookupRPC, error) {
 		return nil, err
 	}
 	a.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	land, err := solana.NewLandRPC(endpoint, deadline)
+	land, err := chain.New(endpoint, deadline)
 	if err != nil {
 		return nil, err
 	}
-	return &LookupRPC{adapter: a, LandRPC: land}, nil
+	return &LookupRPC{adapter: a, Client: land}, nil
 }
 func (r *LookupRPC) call(ctx context.Context, out any, method string, params ...any) error {
 	if err := r.adapter.call(ctx, out, method, params...); err != nil {

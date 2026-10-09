@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 type DataOperatorView = squadspolicy.DataOperatorView

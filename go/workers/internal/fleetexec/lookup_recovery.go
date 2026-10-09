@@ -10,7 +10,7 @@ import (
 	"math"
 	"reflect"
 
-	sdk "github.com/gagliardetto/solana-go"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // lookupProof can only be produced by verifying the actual packet, receipt and

@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Earn MAX claim-custody cash flow, ported from earn_reconciliation.rs

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 type fixtureAccounts struct {

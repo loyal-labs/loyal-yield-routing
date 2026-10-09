@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5/pgxpool"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 func fixtureKey(t *testing.T, data []byte, offset int, address string) {

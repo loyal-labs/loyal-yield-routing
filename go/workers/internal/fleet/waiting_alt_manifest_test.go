@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func waitingManifestFixture(t *testing.T, settings, vault, policy string) ALTManifest {

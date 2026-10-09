@@ -7,12 +7,12 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gagliardetto/solana-go"
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 	"github.com/mr-tron/base58"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Behavior ported from earn_reconciliation.rs tests.

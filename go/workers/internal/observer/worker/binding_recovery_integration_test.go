@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,6 +26,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // countCommits counts actual COMMIT statements sent to the fixture.

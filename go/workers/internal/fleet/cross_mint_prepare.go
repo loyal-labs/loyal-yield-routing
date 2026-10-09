@@ -15,9 +15,9 @@ import (
 	"strconv"
 	"time"
 
-	solana "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	solana "github.com/solana-foundation/solana-go/v2"
 )
 
 // These preparation DTOs have no signer or submission capability. The command

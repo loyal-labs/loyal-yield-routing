@@ -5,15 +5,16 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	solwire "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
 )
 
 // Official program constants for the two family wires. Every offset below is
@@ -23,7 +24,6 @@ const (
 	KLendProgramID  = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 	splTokenID      = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 	squadsProgramID = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
-	associatedID    = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 	farmsProgramID  = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
 	instructionsID  = "Sysvar1nstructions1111111111111111111111111"
 
@@ -47,8 +47,6 @@ var (
 )
 
 const (
-	splTokenAccountMintOffset     = 0
-	splTokenAccountOwnerOffset    = 32
 	splTokenAccountLength         = 165
 	systemProgramZero             = "11111111111111111111111111111111"
 	reserveMarketOffset           = 32
@@ -72,11 +70,11 @@ const (
 	obligationBorrowCount         = 5
 )
 
-// AccountReader reads one coherent confirmed account set: the required
-// addresses must all exist with a program owner, the optional ones may be
-// absent. The production adapter binds it to the family RPC client; tests
-// bind it to fixtures.
-type AccountReader func(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error)
+// AccountReader reads one coherent confirmed account set in address order:
+// the required addresses must all exist, an optional one is nil when absent.
+// The production adapter binds it to the chain client; tests bind it to
+// fixtures.
+type AccountReader func(ctx context.Context, addresses []string, optional ...string) (int64, []*chain.Account, error)
 
 // ErrRouteNotExecutable reports a destination that cannot take the deposit
 // today. No funds have moved when it is returned, and the controller refuses
@@ -151,7 +149,7 @@ func (b *SweepWireBuilder) BuildPull(ctx context.Context, request PullWireReques
 	if request.RecurringDelegation == "" {
 		return BuiltWire{}, errors.New("autodeposit pull has no recurring delegation authority")
 	}
-	blockhash, err := blockhash32(request.RecentBlockhash)
+	blockhash, err := solana.HashFromBase58(request.RecentBlockhash)
 	if err != nil {
 		return BuiltWire{}, err
 	}
@@ -159,48 +157,16 @@ func (b *SweepWireBuilder) BuildPull(ctx context.Context, request PullWireReques
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	wallet := mustKey(request.Plan.Target.Wallet)
-	vault := mustKey(request.Plan.Target.VaultPubkey)
-	mint := mustKey(USDCMint)
-	subscriptionAuthority, err := subscriptionAuthorityKey(wallet[:], mint[:])
+	target := request.Plan.Target
+	inner, err := transferRecurring(amount, mustKey(target.Wallet), mustKey(target.VaultPubkey), mustKey(USDCMint), request.RecurringDelegation, target.WalletUsdcAta, target.VaultUsdcAta)
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	eventAuthority, err := subscriptionEventAuthorityKey()
+	wrapped, err := b.wrapWithPolicy(ctx, request.Plan, target.SweepPolicyAccount, inner)
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	// subscription_transfer_recurring_data: tag, u64 amount, delegator, mint
-	// (crates/loyal-actions/src/protocols.rs).
-	data := []byte{subscriptionsTransferRecurring}
-	var amountBytes [8]byte
-	binary.LittleEndian.PutUint64(amountBytes[:], amount)
-	data = append(data, amountBytes[:]...)
-	data = append(data, wallet[:]...)
-	data = append(data, mint[:]...)
-	if len(data) != 73 {
-		return BuiltWire{}, fmt.Errorf("autodeposit pull data is %d bytes, want the 73-byte transfer_recurring layout", len(data))
-	}
-	inner := compiledInstruction{
-		program: mustKey(SubscriptionsProgramID),
-		accounts: []accountMeta{
-			{key: mustKey(request.RecurringDelegation), writable: true},
-			{key: solana.PublicKeyFromBytes(subscriptionAuthority[:])},
-			{key: mustKey(request.Plan.Target.WalletUsdcAta), writable: true},
-			{key: mustKey(request.Plan.Target.VaultUsdcAta), writable: true},
-			{key: mint},
-			{key: mustKey(splTokenID)},
-			{key: vault, signer: true},
-			{key: solana.PublicKeyFromBytes(eventAuthority[:])},
-			{key: mustKey(SubscriptionsProgramID)},
-		},
-		data: data,
-	}
-	wrapped, err := b.wrapWithPolicy(ctx, request.Plan, request.Plan.Target.SweepPolicyAccount, inner)
-	if err != nil {
-		return BuiltWire{}, err
-	}
-	return b.sign(request.Plan, blockhash, request.LastValidBlockHeight, []compiledInstruction{wrapped})
+	return b.sign(request.Plan, blockhash, request.LastValidBlockHeight, []fleet.RouteInstruction{wrapped})
 }
 
 // BuildTopUp compiles and signs the frozen Kamino deposit of the pulled
@@ -217,7 +183,7 @@ func (b *SweepWireBuilder) BuildTopUp(ctx context.Context, request TopUpWireRequ
 
 // buildTopUpWithRoute signs the top-up against an already-confirmed route.
 func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan DepositPlan, route TopUpRoute, blockhashValue string, lastValidBlockHeight int64) (BuiltWire, error) {
-	blockhash, err := blockhash32(blockhashValue)
+	blockhash, err := solana.HashFromBase58(blockhashValue)
 	if err != nil {
 		return BuiltWire{}, err
 	}
@@ -230,7 +196,7 @@ func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan Deposit
 
 // topUpInstructions validates the official builder output and actual policy
 // permissions without signing. The pre-pull check and top-up use this same path.
-func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPlan, route TopUpRoute) ([]compiledInstruction, error) {
+func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPlan, route TopUpRoute) ([]fleet.RouteInstruction, error) {
 	amount, err := wireAmount(plan)
 	if err != nil {
 		return nil, err
@@ -241,28 +207,11 @@ func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPl
 	if err != nil {
 		return nil, fmt.Errorf("%w: KLend builder refused the frozen deposit: %v", ErrRouteNotExecutable, err)
 	}
-	instructions := make([]compiledInstruction, 0, len(built.Public)+len(built.Protected))
-	for i, instruction := range append(append([]fleet.RouteInstruction{}, built.Public...), built.Protected...) {
-		program, err := solana.PublicKeyFromBase58(instruction.Program)
-		if err != nil {
-			return nil, fmt.Errorf("%w: builder program is invalid: %v", ErrRouteNotExecutable, err)
+	instructions := append(append([]fleet.RouteInstruction{}, built.Public...), built.Protected...)
+	for i := len(built.Public); i < len(instructions); i++ {
+		if instructions[i], err = b.wrapWithPolicy(ctx, plan, plan.Target.RoutePolicyAccount, instructions[i]); err != nil {
+			return nil, err
 		}
-		accounts := make([]accountMeta, 0, len(instruction.Accounts))
-		for _, account := range instruction.Accounts {
-			key, err := solana.PublicKeyFromBase58(account.Address)
-			if err != nil {
-				return nil, fmt.Errorf("%w: builder account is invalid: %v", ErrRouteNotExecutable, err)
-			}
-			accounts = append(accounts, accountMeta{key: key, signer: account.Signer, writable: account.Writable})
-		}
-		compiled := compiledInstruction{program: program, accounts: accounts, data: append([]byte(nil), instruction.Data...)}
-		if i >= len(built.Public) {
-			compiled, err = b.wrapWithPolicy(ctx, plan, plan.Target.RoutePolicyAccount, compiled)
-			if err != nil {
-				return nil, err
-			}
-		}
-		instructions = append(instructions, compiled)
 	}
 	return instructions, nil
 }
@@ -282,7 +231,7 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	}
 	vault := mustKey(plan.Target.VaultPubkey)
 	market := mustKey(plan.Market)
-	vaultATA, err := deriveVaultATA(vault, mustKey(USDCMint), mustKey(splTokenID))
+	vaultATA, err := usdcATA(vault)
 	if err != nil {
 		return TopUpRoute{}, err
 	}
@@ -300,15 +249,8 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if slot <= 0 || len(accounts) != 4 {
 		return TopUpRoute{}, errors.New("top-up account snapshot is incomplete")
 	}
-	byAddress := make(map[string]backyard.ConfirmedAccount, len(accounts))
-	for _, account := range accounts {
-		if _, duplicate := byAddress[account.Address]; duplicate {
-			return TopUpRoute{}, errors.New("top-up snapshot repeats an account")
-		}
-		byAddress[account.Address] = account
-	}
-	reserve, ok := byAddress[plan.Reserve]
-	if !ok || reserve.Owner != KLendProgramID || len(reserve.Data) != reserveDataLength || reserveDiscriminator != hexPrefix(reserve.Data[:8]) {
+	reserve, marketAccount, obligation, custody := accounts[0], accounts[1], accounts[2], accounts[3]
+	if reserve.Owner.String() != KLendProgramID || len(reserve.Data) != reserveDataLength || reserveDiscriminator != hex.EncodeToString(reserve.Data[:8]) {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s is not a confirmed KLend reserve", ErrRouteNotExecutable, plan.Reserve)
 	}
 	route := decodeReservePosition(plan.Reserve, reserve.Data)
@@ -321,14 +263,13 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if route.Position.LiquiditySupply == "" || route.Position.CollateralMint == "" || route.Position.CollateralSupply == "" || route.Position.LiquidityTokenProgram != splTokenID {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s token accounts are not a routable USDC reserve", ErrRouteNotExecutable, plan.Reserve)
 	}
-	if account, ok := byAddress[plan.Market]; !ok || account.Owner != KLendProgramID || account.Executable {
+	if marketAccount.Owner.String() != KLendProgramID || marketAccount.Executable {
 		return TopUpRoute{}, fmt.Errorf("%w: market %s is not a confirmed KLend market", ErrRouteNotExecutable, plan.Market)
 	}
-	if route.MinimumDepositRaw, err = backyard.KaminoMinimumDepositAmount(reserve, plan.Market, plan.LiquidityMint); err != nil {
+	if route.MinimumDepositRaw, err = backyard.KaminoMinimumDepositAmount(backyard.ConfirmedAccount{Address: plan.Reserve, Owner: reserve.Owner.String(), Lamports: reserve.Lamports, Executable: reserve.Executable, Data: reserve.Data}, plan.Market, plan.LiquidityMint); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s exchange value: %v", ErrRouteNotExecutable, plan.Reserve, err)
 	}
-	obligation, ok := byAddress[obligationKey]
-	if !ok || obligation.Owner != KLendProgramID || len(obligation.Data) != obligationDataLength || hexPrefix(obligation.Data[:8]) != hexPrefix(obligationDiscriminator[:]) {
+	if obligation.Owner.String() != KLendProgramID || len(obligation.Data) != obligationDataLength || hex.EncodeToString(obligation.Data[:8]) != hex.EncodeToString(obligationDiscriminator[:]) {
 		return TopUpRoute{}, fmt.Errorf("%w: obligation %s does not exist; run the missing-obligation setup before a pull", ErrRouteNotExecutable, obligationKey)
 	}
 	if key := base58Key(obligation.Data[obligationMarketOffset : obligationMarketOffset+32]); key != plan.Market {
@@ -373,11 +314,7 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 			return TopUpRoute{}, fmt.Errorf("%w: obligation %s already deposits reserve %s", ErrRouteNotExecutable, obligationKey, deposit)
 		}
 	}
-	custody, ok := byAddress[plan.Target.VaultUsdcAta]
-	if !ok {
-		return TopUpRoute{}, fmt.Errorf("%w: custody %s does not exist yet", ErrRouteNotExecutable, plan.Target.VaultUsdcAta)
-	}
-	if err := validateVaultUSDCATA(custody, plan.Target.VaultUsdcAta, plan.Target.VaultPubkey); err != nil {
+	if _, err := usdcTokenAccount(custody, plan.Target.VaultPubkey); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: %v", ErrRouteNotExecutable, err)
 	}
 	route.Obligation = obligationKey
@@ -387,7 +324,7 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if err != nil {
 		return TopUpRoute{}, err
 	}
-	if _, err := b.transaction([32]byte{}, instructions); err != nil {
+	if _, err := b.transaction(solana.Hash{}, instructions); err != nil {
 		return TopUpRoute{}, err
 	}
 	return route, nil
@@ -423,13 +360,10 @@ func decodeReservePosition(reserve string, data []byte) TopUpRoute {
 	return route
 }
 
-// deriveVaultATA derives the vault's associated token account.
-func deriveVaultATA(vault, mint, tokenProgram solana.PublicKey) (string, error) {
-	derived, err := findProgramAddress([][]byte{vault[:], tokenProgram[:], mint[:]}, associatedID)
-	if err != nil {
-		return "", err
-	}
-	return base58Key(derived[:]), nil
+// usdcATA is owner's associated USDC token account.
+func usdcATA(owner solana.PublicKey) (string, error) {
+	ata, _, err := solana.FindAssociatedTokenAddress(owner, mustKey(USDCMint))
+	return ata.String(), err
 }
 
 // vanillaObligationKey derives the vanilla obligation PDA: seeds
@@ -444,65 +378,44 @@ func vanillaObligationKey(vault, market solana.PublicKey) (string, error) {
 	return base58Key(derived[:]), nil
 }
 
-// validateVaultUSDCATA proves a confirmed token account is the vault's USDC
-// ATA: the fleet validateVaultTokenAccount semantics pinned to spl-token.
-func validateVaultUSDCATA(account backyard.ConfirmedAccount, expectedAddress, expectedOwner string) error {
-	if account.Address != expectedAddress {
-		return fmt.Errorf("read account %s, want the custody %s", account.Address, expectedAddress)
+// usdcTokenAccount decodes an initialized SPL Token USDC account held by
+// owner and returns its raw balance in the family's int64 range.
+func usdcTokenAccount(account *chain.Account, owner string) (int64, error) {
+	d := account.Data
+	if account.Owner != solana.TokenProgramID || account.Executable || len(d) != splTokenAccountLength || d[108] != 1 {
+		return 0, fmt.Errorf("%s is not an initialized SPL Token account", account.Key)
 	}
-	if account.Owner != splTokenID {
-		return fmt.Errorf("custody %s is owned by %s, want spl-token", expectedAddress, account.Owner)
+	if base58Key(d[:32]) != USDCMint || base58Key(d[32:64]) != owner {
+		return 0, fmt.Errorf("%s is not %s's USDC token account", account.Key, owner)
 	}
-	if len(account.Data) < splTokenAccountLength ||
-		base58Key(account.Data[splTokenAccountMintOffset:splTokenAccountMintOffset+32]) != USDCMint ||
-		base58Key(account.Data[splTokenAccountOwnerOffset:splTokenAccountOwnerOffset+32]) != expectedOwner {
-		return fmt.Errorf("custody %s is not the vault's USDC token account", expectedAddress)
+	amount := binary.LittleEndian.Uint64(d[64:72])
+	if amount > 1<<63-1 {
+		return 0, fmt.Errorf("%s balance exceeds the family's int64 range", account.Key)
 	}
-	return nil
-}
-
-func blockhash32(value string) ([32]byte, error) {
-	var out [32]byte
-	key, err := solana.PublicKeyFromBase58(value)
-	if err != nil {
-		return out, fmt.Errorf("invalid confirmed blockhash %q: %w", value, err)
-	}
-	copy(out[:], key[:])
-	return out, nil
+	return int64(amount), nil
 }
 
 // wrapWithPolicy wraps one inner instruction in the Squads
 // execute_transaction_sync_v2 envelope the balance-sweep policy authorizes:
 // [policy(w), squadsProgram, executor(signer), inner accounts...], with the
 // inner signer flags cleared because the executor is the only signer.
-func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan, policyAccount string, inner compiledInstruction) (compiledInstruction, error) {
+func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan, policyAccount string, inner fleet.RouteInstruction) (fleet.RouteInstruction, error) {
 	if policyAccount == "" {
-		return compiledInstruction{}, errors.New("autodeposit wire has no frozen policy account")
+		return fleet.RouteInstruction{}, errors.New("autodeposit wire has no frozen policy account")
 	}
 	slot, accounts, err := b.read(ctx, []string{policyAccount})
 	if err != nil {
-		return compiledInstruction{}, err
+		return fleet.RouteInstruction{}, err
 	}
-	if slot <= 0 || len(accounts) != 1 || accounts[0].Address != policyAccount || accounts[0].Owner != squadsProgramID || accounts[0].Executable {
-		return compiledInstruction{}, errors.New("policy account evidence is unavailable or has a foreign owner")
-	}
-	protected := fleet.RouteInstruction{Step: "autodeposit", Program: inner.program.String(), Data: inner.data}
-	for _, a := range inner.accounts {
-		protected.Accounts = append(protected.Accounts, fleet.InstructionAccount{Address: a.key.String(), Signer: a.signer, Writable: a.writable})
-	}
-	wrapped, err := fleet.BuildPolicyEnvelope(policyAccount, plan.Target.Settings, b.delegate.String(), accounts[0].Data, []fleet.RouteInstruction{protected})
-	if err != nil {
-		return compiledInstruction{}, err
+	if slot <= 0 || len(accounts) != 1 || accounts[0].Owner.String() != squadsProgramID || accounts[0].Executable {
+		return fleet.RouteInstruction{}, errors.New("policy account evidence is unavailable or has a foreign owner")
 	}
 	decoded, err := fleet.DecodeSquadsPolicy(accounts[0].Data)
 	if err != nil || int(decoded.AccountIndex) != plan.Target.VaultIndex {
-		return compiledInstruction{}, errors.New("policy account index does not match the frozen vault")
+		return fleet.RouteInstruction{}, errors.New("policy account index does not match the frozen vault")
 	}
-	out := compiledInstruction{program: mustKey(wrapped.Program), data: wrapped.Data}
-	for _, a := range wrapped.Accounts {
-		out.accounts = append(out.accounts, accountMeta{key: mustKey(a.Address), signer: a.Signer, writable: a.Writable})
-	}
-	return out, nil
+	inner.Step = "autodeposit"
+	return fleet.BuildPolicyEnvelope(policyAccount, plan.Target.Settings, b.delegate.String(), accounts[0].Data, []fleet.RouteInstruction{inner})
 }
 
 // ProveTopUpWire verifies the persisted immutable top-up wire byte-for-byte:
@@ -562,7 +475,7 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 	kLend := mustKey(KLendProgramID)
 	for i, disc := range []string{kaminoRefreshReserveDisc, kaminoRefreshObligationDisc} {
 		instruction := message.instructions[i]
-		if instruction.program != kLend || len(instruction.data) != 8 || hexPrefix(instruction.data) != disc {
+		if instruction.program != kLend || len(instruction.data) != 8 || hex.EncodeToString(instruction.data) != disc {
 			return fmt.Errorf("persisted top-up wire instruction %d is not the %s refresh", i, disc)
 		}
 	}
@@ -599,7 +512,7 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 		wrapper.accounts[1] != mustKey(squadsProgramID) || wrapper.accounts[2] != b.delegate {
 		return fmt.Errorf("persisted top-up wire wrapper accounts do not match the frozen policy and executor")
 	}
-	if !bytesPrefix(wrapper.data, squadsExecuteSyncV2Discriminator[:]) {
+	if !bytes.HasPrefix(wrapper.data, squadsExecuteSyncV2Discriminator[:]) {
 		return fmt.Errorf("persisted top-up wire wrapper is not execute_transaction_sync_v2")
 	}
 	if len(wrapper.data) < 24 || int(wrapper.data[8]) != plan.Target.VaultIndex || !bytes.Equal(wrapper.data[9:13], []byte{1, 1, 1, 1}) || wrapper.data[18] != 1 || int(wrapper.data[19]) != plan.Target.VaultIndex {
@@ -614,7 +527,7 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 	if err != nil {
 		return err
 	}
-	if inner.program != kLend || len(inner.data) != kaminoDepositDataLength || hexPrefix(inner.data[:8]) != kaminoDepositV2Disc {
+	if inner.program != kLend || len(inner.data) != kaminoDepositDataLength || hex.EncodeToString(inner.data[:8]) != kaminoDepositV2Disc {
 		return fmt.Errorf("persisted top-up wrapped instruction is not the KLend deposit v2")
 	}
 	amount := binary.LittleEndian.Uint64(inner.data[8:16])
@@ -714,32 +627,10 @@ func parseWrappedCompiledInstruction(wrapper decodedInstruction) (decodedInstruc
 	return inner, nil
 }
 
-func bytesPrefix(data []byte, prefix []byte) bool {
-	if len(data) < len(prefix) {
-		return false
-	}
-	for i, value := range prefix {
-		if data[i] != value {
-			return false
-		}
-	}
-	return true
-}
-
-func hexPrefix(raw []byte) string {
-	out := make([]byte, 0, len(raw)*2)
-	for _, value := range raw {
-		out = append(out, hexDigestChars[value>>4], hexDigestChars[value&0x0f])
-	}
-	return string(out)
-}
-
-const hexDigestChars = "0123456789abcdef"
-
 // sign compiles, signs and size-bounds one family wire. The digest is the
 // sha256 of the exact wire bytes, validated through the shared OwnSignedWire
 // contract before anything is persisted.
-func (b *SweepWireBuilder) sign(plan DepositPlan, blockhash [32]byte, lastValidBlockHeight int64, instructions []compiledInstruction) (BuiltWire, error) {
+func (b *SweepWireBuilder) sign(plan DepositPlan, blockhash solana.Hash, lastValidBlockHeight int64, instructions []fleet.RouteInstruction) (BuiltWire, error) {
 	if lastValidBlockHeight <= 0 {
 		return BuiltWire{}, errors.New("autodeposit wire needs a positive validity window")
 	}
@@ -763,7 +654,7 @@ func (b *SweepWireBuilder) sign(plan DepositPlan, blockhash [32]byte, lastValidB
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	owned, err := solwire.OwnSignedWire(wire, hexPrefix(mustSHA256(wire)))
+	owned, err := chain.OwnSignedWire(wire, hex.EncodeToString(mustSHA256(wire)))
 	if err != nil {
 		return BuiltWire{}, err
 	}
@@ -778,16 +669,16 @@ func (b *SweepWireBuilder) sign(plan DepositPlan, blockhash [32]byte, lastValidB
 
 // transaction checks packet size and signer ownership before any pull can be
 // authorized, as well as when the top-up is eventually signed.
-func (b *SweepWireBuilder) transaction(blockhash [32]byte, instructions []compiledInstruction) (*solana.Transaction, error) {
-	sdkInstructions := make([]solana.Instruction, 0, len(instructions))
-	for _, ix := range instructions {
-		metas := make(solana.AccountMetaSlice, 0, len(ix.accounts))
-		for _, a := range ix.accounts {
-			metas = append(metas, &solana.AccountMeta{PublicKey: a.key, IsSigner: a.signer, IsWritable: a.writable})
+func (b *SweepWireBuilder) transaction(blockhash solana.Hash, instructions []fleet.RouteInstruction) (*solana.Transaction, error) {
+	sdkInstructions := make([]solana.Instruction, len(instructions))
+	for i, ix := range instructions {
+		converted, err := sdkInstruction(ix)
+		if err != nil {
+			return nil, err
 		}
-		sdkInstructions = append(sdkInstructions, solana.NewInstruction(ix.program, metas, ix.data))
+		sdkInstructions[i] = converted
 	}
-	tx, err := solana.NewTransaction(sdkInstructions, solana.Hash(blockhash), solana.TransactionPayer(b.delegate))
+	tx, err := solana.NewTransaction(sdkInstructions, blockhash, solana.TransactionPayer(b.delegate))
 	if err != nil {
 		return nil, err
 	}

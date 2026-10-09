@@ -12,11 +12,11 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/gagliardetto/solana-go"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/solanarpc"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
 	"github.com/mr-tron/base58"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Confirmed RPC proofs for direct Earn projection, ported from

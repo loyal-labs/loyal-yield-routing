@@ -15,9 +15,9 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
-	solanaland "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // landResendEvery matches the fleet landing cadence.
@@ -36,7 +36,7 @@ type Worker struct {
 	// routeKey pins one route when the root composes a single-route worker.
 	routeKey     *string
 	recoveryOnly bool
-	chain        solanaland.LandChain
+	chain        chain.LandChain
 	facts        *engine.Facts
 }
 
@@ -50,7 +50,7 @@ type WorkerDeps struct {
 	WorkerID string
 	RouteKey *string
 	// Chain lands persisted wires; Facts receives the family outcomes.
-	Chain solanaland.LandChain
+	Chain chain.LandChain
 	Facts *engine.Facts
 }
 
@@ -470,9 +470,9 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 		}
 		return err
 	}
-	out, err := solanaland.Land(ctx, w.chain, solanaland.Attempt{
+	out, err := chain.Land(ctx, w.chain, chain.Attempt{
 		Wire: operation.SignedWire, Signature: *operation.TransactionSignature,
-		LastValidBlockHeight: *operation.LastValidBlockHeight, Sends: sends, Required: solanaland.Confirmed,
+		LastValidBlockHeight: *operation.LastValidBlockHeight, Sends: sends, Required: chain.Confirmed,
 	}, landResendEvery, func(sendCtx context.Context) error {
 		if unsent {
 			return intent(sendCtx)
@@ -492,7 +492,7 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 	}
 	// Facts count an outcome only once its row is written.
 	switch out.Kind {
-	case solanaland.Landed:
+	case chain.Landed:
 		if unsent {
 			// Landed without a send of ours: a lost acknowledgement.
 			if err := intent(ctx); err != nil {
@@ -504,7 +504,7 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 			w.facts.Landed(engine.FamilyMultiply)
 		}
 		return result, err
-	case solanaland.Failed:
+	case chain.Failed:
 		result, err := w.enterManualRecovery(ctx, lease, route, operation, "stored signed transaction failed at confirmed commitment: "+out.Err)
 		if err == nil {
 			w.facts.Failed(engine.FamilyMultiply, "transaction_failed")

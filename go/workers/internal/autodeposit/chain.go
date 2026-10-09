@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
+	"slices"
 
-	"github.com/gagliardetto/solana-go"
+	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
-	solwire "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 var base64Std = base64.StdEncoding
@@ -36,13 +37,13 @@ type Chain interface {
 	// window, required before any wire is built.
 	LatestBlockhash(ctx context.Context) (string, int64, error)
 	// LandChain is the shared send path persisted wires land through.
-	solwire.LandChain
+	chain.LandChain
 	// ConfirmedReceipt reads the immutable transaction receipt for the exact
 	// signature, for integer effect verification.
 	ConfirmedReceipt(ctx context.Context, signature string) (ReceiptEvidence, error)
 	// ReadAccounts reads one coherent confirmed account set. Every requested
 	// address must exist with a program owner, or the read fails.
-	ReadAccounts(ctx context.Context, addresses []string) (int64, []backyard.ConfirmedAccount, error)
+	ReadAccounts(ctx context.Context, addresses []string) (int64, []*chain.Account, error)
 	// SimulateExact simulates the persisted wire's exact bytes with signature
 	// verification, before the family records anything as settled. It never
 	// replaces the blockhash.
@@ -86,60 +87,33 @@ func (e ReceiptEvidence) EffectFor(tokenAccount string) (ReceiptEffect, bool) {
 	return ReceiptEffect{}, false
 }
 
-// RPCChain is the production Chain over the real HTTP JSON-RPC adapter the
-// Backyard family already runs. It adds no family behavior: reads, broadcast,
-// receipts, simulation.
+// RPCChain is the production Chain: the shared chain client plus the
+// family's decoders. It adds no family behavior: reads, broadcast, receipts,
+// simulation.
 type RPCChain struct {
-	rpc *backyard.RPCClient
-	*solwire.LandRPC
+	*chain.Client
 }
 
-// NewRPCChain builds the production chain adapter over an RPC endpoint URL.
+// NewRPCChain builds the production chain adapter over the shared client.
 // The recurring-delegation allowance is decoded with the official
 // loyal-actions byte layout (delegation.go); no decoder is injected.
-func NewRPCChain(rpcURL string) (*RPCChain, error) {
-	if strings.TrimSpace(rpcURL) == "" {
-		return nil, errors.New("autodeposit chain requires an RPC endpoint URL")
-	}
-	client, err := backyard.NewRPCClient(rpcURL)
-	if err != nil {
-		return nil, fmt.Errorf("build autodeposit chain RPC: %w", err)
-	}
-	land, err := solwire.NewLandRPC(rpcURL, 15*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	return &RPCChain{rpc: client, LandRPC: land}, nil
+func NewRPCChain(client *chain.Client) *RPCChain {
+	return &RPCChain{Client: client}
 }
 
 func (c *RPCChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, authority string) (int64, error) {
 	if tokenAccount == "" {
 		return 0, errors.New("token account address is required")
 	}
-	_, accounts, err := c.rpc.GetMultipleAccountsWithOptional(ctx, []string{tokenAccount}, 1, tokenAccount)
+	_, accounts, err := c.ReadAccountsWithOptional(ctx, []string{tokenAccount}, tokenAccount)
 	if err != nil {
 		return 0, fmt.Errorf("read autodeposit token account %s: %w", tokenAccount, err)
 	}
 	account := accounts[0]
-	if account.Owner == "" {
+	if account == nil {
 		return 0, ErrTokenAccountAbsent
 	}
-
-	if account.Owner != splTokenID || account.Executable || len(account.Data) != splTokenAccountLength || base58Key(account.Data[:32]) != USDCMint || base58Key(account.Data[32:64]) != authority || authority == "" || account.Data[108] != 1 {
-		return 0, errors.New("autodeposit balance requires an initialized USDC account owned by SPL Token")
-	}
-	if len(account.Data) < 72 {
-		return 0, fmt.Errorf("token account %s data is too short for a spl-token v2 account", tokenAccount)
-	}
-	// SPL token account layout: mint(32) owner(32) amount(u64 LE) at offset 64.
-	var amount uint64
-	for i := 0; i < 8; i++ {
-		amount |= uint64(account.Data[64+i]) << (8 * i)
-	}
-	if amount > 1<<63-1 {
-		return 0, fmt.Errorf("token account %s balance exceeds the family's int64 range", tokenAccount)
-	}
-	return int64(amount), nil
+	return usdcTokenAccount(account, authority)
 }
 
 // RemainingDelegationAllowanceRaw reads the delegation account and decodes its
@@ -164,7 +138,7 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 		return 0, ErrAllowanceUnknown
 	}
 	account := accounts[0]
-	allowance, decodeErr := RemainingDelegationAllowance(account.Owner, account.Data, identity)
+	allowance, decodeErr := RemainingDelegationAllowance(account.Owner.String(), account.Data, identity)
 	if decodeErr != nil {
 		return 0, fmt.Errorf("%w: %v", ErrAllowanceUnknown, decodeErr)
 	}
@@ -181,7 +155,7 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 	if err != nil {
 		return 0, err
 	}
-	if wallet.Address != identity.WalletTokenAccount || wallet.Owner != splTokenID || wallet.Executable || len(wallet.Data) != splTokenAccountLength || base58Key(wallet.Data[:32]) != identity.Mint || base58Key(wallet.Data[32:64]) != identity.Delegator || wallet.Data[108] != 1 || binary.LittleEndian.Uint32(wallet.Data[72:76]) != 1 || base58Key(wallet.Data[76:108]) != base58Key(authority[:]) {
+	if _, err := usdcTokenAccount(wallet, identity.Delegator); err != nil || binary.LittleEndian.Uint32(wallet.Data[72:76]) != 1 || base58Key(wallet.Data[76:108]) != base58Key(authority[:]) {
 		return 0, fmt.Errorf("%w: wallet token approval does not authorize the subscription authority", ErrAllowanceUnknown)
 	}
 	tokenAllowance := binary.LittleEndian.Uint64(wallet.Data[121:129])
@@ -192,53 +166,61 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 }
 
 func (c *RPCChain) LatestBlockhash(ctx context.Context) (string, int64, error) {
-	blockhash, err := c.rpc.LatestBlockhash(ctx)
+	hash, lastValid, err := c.Blockhash(ctx)
 	if err != nil {
 		return "", 0, err
 	}
-	return blockhash.Blockhash, blockhash.LastValidBlockHeight, nil
+	return hash.String(), int64(lastValid), nil
 }
 
 func (c *RPCChain) MinimumBalanceForRentExemption(ctx context.Context, size int) (uint64, error) {
-	return c.rpc.MinimumBalanceForRentExemption(ctx, size)
+	return c.RentExempt(ctx, uint64(size))
 }
 
 func (c *RPCChain) ConfirmedReceipt(ctx context.Context, signature string) (ReceiptEvidence, error) {
-	evidence, err := c.rpc.ConfirmedTransaction(ctx, signature)
+	sig, err := solana.SignatureFromBase58(signature)
+	if err != nil {
+		return ReceiptEvidence{}, fmt.Errorf("autodeposit receipt signature: %w", err)
+	}
+	receipt, err := c.Receipt(ctx, sig, rpc.CommitmentConfirmed)
 	if err != nil {
 		return ReceiptEvidence{}, fmt.Errorf("read autodeposit receipt %s: %w", signature, err)
 	}
-	return receiptFromEvidence(evidence)
+	return receiptEvidence(signature, receipt)
 }
 
-// ReadAccounts reads one coherent confirmed account set: every address must
-// exist with a program owner, and the response must be coherent at one
-// confirmed slot.
-func (c *RPCChain) ReadAccounts(ctx context.Context, addresses []string) (int64, []backyard.ConfirmedAccount, error) {
-	if len(addresses) == 0 {
-		return 0, nil, errors.New("autodeposit account read needs at least one address")
+// ReadAccounts reads one coherent confirmed account set; every address must
+// exist.
+func (c *RPCChain) ReadAccounts(ctx context.Context, addresses []string) (int64, []*chain.Account, error) {
+	return c.ReadAccountsWithOptional(ctx, addresses)
+}
+
+// ReadAccountsWithOptional reads addresses at one confirmed slot. Only the
+// optional addresses may be absent; they come back nil.
+func (c *RPCChain) ReadAccountsWithOptional(ctx context.Context, addresses []string, optional ...string) (int64, []*chain.Account, error) {
+	keys := make([]solana.PublicKey, len(addresses))
+	for i, address := range addresses {
+		key, err := solana.PublicKeyFromBase58(address)
+		if err != nil {
+			return 0, nil, fmt.Errorf("account address %q: %w", address, err)
+		}
+		keys[i] = key
 	}
-	slot, err := c.rpc.ConfirmedSlot(ctx)
+	slot, accounts, err := c.Accounts(ctx, keys, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return 0, nil, err
 	}
-	return c.rpc.GetMultipleAccounts(ctx, addresses, slot)
-}
-
-func (c *RPCChain) ReadAccountsWithOptional(ctx context.Context, addresses []string, optional ...string) (int64, []backyard.ConfirmedAccount, error) {
-	if len(optional) == 0 {
-		return c.ReadAccounts(ctx, addresses)
+	for i, account := range accounts {
+		if account == nil && !slices.Contains(optional, addresses[i]) {
+			return 0, nil, fmt.Errorf("required account %s is absent", addresses[i])
+		}
 	}
-	slot, err := c.rpc.ConfirmedSlot(ctx)
-	if err != nil {
-		return 0, nil, err
-	}
-	return c.rpc.GetMultipleAccountsWithOptional(ctx, addresses, slot, optional...)
+	return int64(slot), accounts, nil
 }
 
 func (c *RPCChain) ConfirmedLamports(ctx context.Context, address string) (uint64, error) {
 	_, accounts, err := c.ReadAccountsWithOptional(ctx, []string{address}, address)
-	if err != nil {
+	if err != nil || accounts[0] == nil {
 		return 0, err
 	}
 	return accounts[0].Lamports, nil
@@ -254,10 +236,10 @@ func (c *RPCChain) SimulateExact(ctx context.Context, attempt DurableAttempt) er
 	if err != nil {
 		return fmt.Errorf("decode persisted %s wire: %w", attempt.OperationKind, err)
 	}
-	if _, err := solwire.OwnSignedWire(wire, attempt.SignedTransactionSHA256); err != nil {
+	if _, err := chain.OwnSignedWire(wire, attempt.SignedTransactionSHA256); err != nil {
 		return fmt.Errorf("persisted %s wire failed the shared packet contract: %w", attempt.OperationKind, err)
 	}
-	if _, err := c.rpc.SimulateSignedTransaction(ctx, wire); err != nil {
+	if _, _, err := c.Simulate(ctx, wire); err != nil {
 		return fmt.Errorf("simulate persisted %s wire %s: %w", attempt.OperationKind, attempt.Signature, err)
 	}
 	return nil
@@ -273,21 +255,13 @@ func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPl
 	if err != nil {
 		return 0, 0, err
 	}
-	var obligationAccount, reserveAccount backyard.ConfirmedAccount
-	for _, account := range accounts {
-		switch account.Address {
-		case route.Obligation:
-			obligationAccount = account
-		case plan.Reserve:
-			reserveAccount = account
-		}
-	}
-	if obligationAccount.Owner != KLendProgramID || len(obligationAccount.Data) != obligationDataLength ||
-		hexPrefix(obligationAccount.Data[:8]) != hexPrefix(obligationDiscriminator[:]) {
+	obligationAccount, reserveAccount := accounts[0], accounts[1]
+	if obligationAccount.Owner.String() != KLendProgramID || len(obligationAccount.Data) != obligationDataLength ||
+		hex.EncodeToString(obligationAccount.Data[:8]) != hex.EncodeToString(obligationDiscriminator[:]) {
 		return 0, 0, fmt.Errorf("obligation %s is not a confirmed KLend obligation", route.Obligation)
 	}
-	if reserveAccount.Owner != KLendProgramID || len(reserveAccount.Data) != reserveDataLength ||
-		reserveDiscriminator != hexPrefix(reserveAccount.Data[:8]) {
+	if reserveAccount.Owner.String() != KLendProgramID || len(reserveAccount.Data) != reserveDataLength ||
+		reserveDiscriminator != hex.EncodeToString(reserveAccount.Data[:8]) {
 		return 0, 0, fmt.Errorf("reserve %s is not a confirmed KLend reserve", plan.Reserve)
 	}
 	var collateralRaw uint64
@@ -314,7 +288,7 @@ func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPl
 	if observedSlot <= 0 || obligationSlot == 0 || reserveSlot < obligationSlot || reserveSlot > uint64(observedSlot) || obligationSlot > uint64(observedSlot) {
 		return 0, 0, errors.New("confirmed collateral conversion snapshot is stale or incoherent")
 	}
-	liquidity, err := backyard.KaminoRedeemableLiquidity(reserveAccount, plan.Market, plan.LiquidityMint, collateralRaw)
+	liquidity, err := backyard.KaminoRedeemableLiquidity(backyard.ConfirmedAccount{Address: plan.Reserve, Owner: reserveAccount.Owner.String(), Lamports: reserveAccount.Lamports, Executable: reserveAccount.Executable, Data: reserveAccount.Data}, plan.Market, plan.LiquidityMint, collateralRaw)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -329,36 +303,25 @@ func base64StdDecode(encoded string) ([]byte, error) {
 	return base64Std.DecodeString(encoded)
 }
 
-func receiptFromEvidence(evidence backyard.ConfirmedTransactionEvidence) (ReceiptEvidence, error) {
-	receipt := ReceiptEvidence{Signature: evidence.Signature, Slot: evidence.Slot}
-	if evidence.Slot <= 0 {
-		return receipt, errors.New("receipt slot unavailable")
+// receiptEvidence keeps the token accounts the receipt reports on both sides.
+// An account absent from one side is unknown there; it cannot prove a delta.
+func receiptEvidence(signature string, receipt chain.Receipt) (ReceiptEvidence, error) {
+	evidence := ReceiptEvidence{Signature: signature, Slot: int64(receipt.Slot)}
+	if receipt.Err != nil {
+		return evidence, fmt.Errorf("transaction %s failed on chain: %v", signature, receipt.Err)
 	}
-	pre := map[string]backyard.TransactionTokenBalance{}
-	post := map[string]backyard.TransactionTokenBalance{}
-	for _, set := range []struct {
-		balances []backyard.TransactionTokenBalance
-		into     map[string]backyard.TransactionTokenBalance
-	}{{evidence.PreTokenBalances, pre}, {evidence.PostTokenBalances, post}} {
-		for _, balance := range set.balances {
-			if balance.Address == "" || balance.Mint == "" || balance.Raw > 1<<63-1 {
-				return receipt, errors.New("receipt token identity or BIGINT amount invalid")
-			}
-			if _, exists := set.into[balance.Address]; exists {
-				return receipt, errors.New("duplicate token account receipt evidence")
-			}
-			set.into[balance.Address] = balance
-		}
-	}
-	for address, before := range pre {
-		after, known := post[address]
+	for account, before := range receipt.Pre {
+		after, known := receipt.Post[account]
 		if !known {
 			continue
-		} // An absent side is unknown; it cannot prove a delta.
-		if before.Mint != after.Mint {
-			return receipt, errors.New("receipt changed token-account mint")
 		}
-		receipt.Effects = append(receipt.Effects, ReceiptEffect{TokenAccount: address, Mint: before.Mint, PreRaw: int64(before.Raw), PostRaw: int64(after.Raw)})
+		if before.Mint != after.Mint {
+			return evidence, errors.New("receipt changed token-account mint")
+		}
+		if before.Amount > 1<<63-1 || after.Amount > 1<<63-1 {
+			return evidence, errors.New("receipt token amount exceeds BIGINT")
+		}
+		evidence.Effects = append(evidence.Effects, ReceiptEffect{TokenAccount: account.String(), Mint: before.Mint.String(), PreRaw: int64(before.Amount), PostRaw: int64(after.Amount)})
 	}
-	return receipt, nil
+	return evidence, nil
 }

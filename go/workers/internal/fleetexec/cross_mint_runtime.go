@@ -11,13 +11,13 @@ import (
 	"math"
 	"time"
 
-	sdk "github.com/gagliardetto/solana-go"
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // The root adapts C's concrete finalized policy verifier. This capability has
@@ -57,7 +57,7 @@ type CrossMintRuntime struct {
 	accounts   finalizedAccountReader
 	history    finalizedHistoryReader
 	status     StatusClient
-	chain      solana.LandChain
+	chain      chain.LandChain
 	verifier   CrossMintFirstSendVerifier
 	admission  CrossMintActivationSource
 }
@@ -83,11 +83,11 @@ func NewCrossMintRecoveryRuntime(ctx context.Context, config Config, store *Stor
 	if ctx == nil || store == nil || adapter == nil || verifier == nil || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 300*time.Second || config.LeaseTTL%time.Second != 0 || config.BatchSize > 100 {
 		return nil, errors.New("cross-mint recovery requires concrete owners, verifier and bounded whole-second lease")
 	}
-	chain, err := solana.NewLandRPC(adapter.url, adapter.deadline)
+	land, err := chain.New(adapter.url, adapter.deadline)
 	if err != nil {
 		return nil, err
 	}
-	return &CrossMintRuntime{config: config, store: store, adapter: adapter, accounts: fleet.NewRPCClient(adapter.url), history: adapter, status: adapter, chain: chain, verifier: verifier}, nil
+	return &CrossMintRuntime{config: config, store: store, adapter: adapter, accounts: fleet.NewRPCClient(adapter.url), history: adapter, status: adapter, chain: land, verifier: verifier}, nil
 }
 
 // Configure before Run. The root retains dependency and pool lifecycles.
@@ -182,18 +182,18 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 	}
 	// One height-first classification, shared with land(); expiry still
 	// needs the custody proof before the leg may go terminal.
-	out, err := solana.Observe(workCtx, r.chain, r.attempt(l))
+	out, err := chain.Observe(workCtx, r.chain, r.attempt(l))
 	if err != nil {
 		return err
 	}
 	switch {
-	case out.Kind == solana.Landed:
+	case out.Kind == chain.Landed:
 		return r.store.markCrossMintFinalized(workCtx, l, int64(out.Slot))
-	case out.Kind == solana.Failed && out.Commitment == solana.Finalized:
+	case out.Kind == chain.Failed && out.Commitment == chain.Finalized:
 		return r.hold(workCtx, l, "finalized_failure_requires_manual_custody_proof", errors.New(out.Err))
-	case out.Kind == solana.Failed:
+	case out.Kind == chain.Failed:
 		return r.store.deferCrossMintStatus(workCtx, l, nil, nil, "signature_seen_below_finalized", false)
-	case out.Kind == solana.Expired:
+	case out.Kind == chain.Expired:
 		if l.Submission.EffectCheckSlot == nil || l.Submission.ExpiryObservedBlockHeight == nil {
 			slot, height := int64(out.ContextSlot), int64(out.BlockHeight)
 			return r.store.deferCrossMintStatus(workCtx, l, &slot, &height, "expiry_requires_finalized_custody_and_history", true)
@@ -248,16 +248,16 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 	return r.land(workCtx, ctx, l, &m)
 }
 
-func (r *CrossMintRuntime) attempt(l SubmissionLease) solana.Attempt {
-	return solana.Attempt{Wire: l.Submission.SignedTransaction, Signature: l.Submission.Signature,
-		LastValidBlockHeight: uint64(l.Submission.LastValidBlockHeight), Sends: l.Submission.BroadcastCount, Required: solana.Finalized}
+func (r *CrossMintRuntime) attempt(l SubmissionLease) chain.Attempt {
+	return chain.Attempt{Wire: l.Submission.SignedTransaction, Signature: l.Submission.Signature,
+		LastValidBlockHeight: uint64(l.Submission.LastValidBlockHeight), Sends: l.Submission.BroadcastCount, Required: chain.Finalized}
 }
 
 // land resends the leg's exact bytes until they finalize or expire. The first
 // send of an unsent leg is recorded with its full custody recheck; later sends
 // only count. If the lease window ends first, the next claim lands again.
 func (r *CrossMintRuntime) land(workCtx, ctx context.Context, l SubmissionLease, first *CrossMintMovement) error {
-	out, err := solana.Land(workCtx, r.chain, r.attempt(l), resendEvery, func(sendCtx context.Context) error {
+	out, err := chain.Land(workCtx, r.chain, r.attempt(l), resendEvery, func(sendCtx context.Context) error {
 		if first != nil {
 			m := *first
 			first = nil
@@ -276,12 +276,12 @@ func (r *CrossMintRuntime) land(workCtx, ctx context.Context, l SubmissionLease,
 		return err
 	}
 	switch out.Kind {
-	case solana.Landed:
+	case chain.Landed:
 		if err = r.store.markCrossMintFinalized(workCtx, l, int64(out.Slot)); err == nil {
 			r.config.Facts.Landed(engine.FamilyFleet)
 		}
 		return err
-	case solana.Failed:
+	case chain.Failed:
 		const reason = "finalized_failure_requires_manual_custody_proof"
 		if err = r.store.deferCrossMintStatus(workCtx, l, nil, nil, reason, true); err != nil {
 			return err

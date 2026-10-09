@@ -4,7 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/gagliardetto/solana-go"
+
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Official Subscriptions-program layout, imported byte-for-byte from

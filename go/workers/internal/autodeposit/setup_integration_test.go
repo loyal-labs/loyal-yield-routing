@@ -4,8 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // setupReplayChain drops forwards until send number landOn.
@@ -18,11 +17,11 @@ type setupReplayChain struct {
 func (s *setupReplayChain) LatestBlockhash(context.Context) (string, int64, error) {
 	return fixedKey("setup-controller-blockhash"), 900, nil
 }
-func (s *setupReplayChain) SignatureState(context.Context, string) (solana.SignatureState, error) {
+func (s *setupReplayChain) SignatureState(context.Context, string) (chain.SignatureState, error) {
 	if s.broadcasts >= s.landOn {
-		return solana.SignatureState{Found: true, Slot: 500, Commitment: solana.Confirmed, ContextSlot: 500}, nil
+		return chain.SignatureState{Found: true, Slot: 500, Commitment: chain.Confirmed, ContextSlot: 500}, nil
 	}
-	return solana.SignatureState{ContextSlot: 1}, nil
+	return chain.SignatureState{ContextSlot: 1}, nil
 }
 func (s *setupReplayChain) SendWire(context.Context, []byte, bool) error {
 	s.broadcasts++
@@ -61,7 +60,7 @@ func TestControllerSetupLandsStageAndReadsItBackBeforePull(t *testing.T) {
 	copy(data[:32], mint[:])
 	copy(data[32:64], vault[:])
 	data[108] = 1
-	accounts[setup.Account] = backyard.ConfirmedAccount{Address: setup.Account, Owner: splTokenID, Data: data}
+	accounts[setup.Account] = testAccount{Owner: splTokenID, Data: data}
 	ready, err = controller.ensureDestinationSetup(scope, claim, plan)
 	if err != nil || !ready || chain.broadcasts != 2 {
 		t.Fatalf("created account ready=%v broadcasts=%d err=%v", ready, chain.broadcasts, err)

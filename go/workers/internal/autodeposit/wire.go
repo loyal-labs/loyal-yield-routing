@@ -3,22 +3,59 @@ package autodeposit
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/gagliardetto/solana-go"
-	solwire "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/solana"
+
+	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 const solanaPacketBytes = 1232
 
-type accountMeta struct {
-	key              solana.PublicKey
-	signer, writable bool
+// sdkInstruction is the one conversion from a route instruction to the
+// solana-go instruction the transaction compiles.
+func sdkInstruction(ix fleet.RouteInstruction) (solana.Instruction, error) {
+	program, err := solana.PublicKeyFromBase58(ix.Program)
+	if err != nil {
+		return nil, fmt.Errorf("instruction program %q: %w", ix.Program, err)
+	}
+	metas := make(solana.AccountMetaSlice, len(ix.Accounts))
+	for i, a := range ix.Accounts {
+		key, err := solana.PublicKeyFromBase58(a.Address)
+		if err != nil {
+			return nil, fmt.Errorf("instruction account %q: %w", a.Address, err)
+		}
+		metas[i] = &solana.AccountMeta{PublicKey: key, IsSigner: a.Signer, IsWritable: a.Writable}
+	}
+	return solana.NewInstruction(program, metas, ix.Data), nil
 }
-type compiledInstruction struct {
-	program  solana.PublicKey
-	accounts []accountMeta
-	data     []byte
+
+// transferRecurring is the Subscriptions pull of amount from the wallet's
+// token account to the vault's: tag, u64 amount, delegator, mint
+// (crates/loyal-actions/src/protocols.rs).
+func transferRecurring(amount uint64, wallet, vault, mint solana.PublicKey, delegation, walletATA, vaultATA string) (fleet.RouteInstruction, error) {
+	authority, err := subscriptionAuthorityKey(wallet[:], mint[:])
+	if err != nil {
+		return fleet.RouteInstruction{}, err
+	}
+	event, err := subscriptionEventAuthorityKey()
+	if err != nil {
+		return fleet.RouteInstruction{}, err
+	}
+	data := make([]byte, 73)
+	data[0] = subscriptionsTransferRecurring
+	binary.LittleEndian.PutUint64(data[1:9], amount)
+	copy(data[9:41], wallet[:])
+	copy(data[41:], mint[:])
+	return fleet.RouteInstruction{Step: "autodeposit", Program: SubscriptionsProgramID, Data: data, Accounts: []fleet.InstructionAccount{
+		{Address: delegation, Writable: true}, {Address: base58Key(authority[:])},
+		{Address: walletATA, Writable: true}, {Address: vaultATA, Writable: true},
+		{Address: mint.String()}, {Address: splTokenID}, {Address: vault.String(), Signer: true},
+		{Address: base58Key(event[:])}, {Address: SubscriptionsProgramID},
+	}}, nil
 }
 
 // mustKey is reserved for pinned constants or caller-validated keys.
@@ -57,7 +94,7 @@ func persistedWireTransaction(attempt DurableAttempt) (*solana.Transaction, erro
 	if err != nil {
 		return nil, err
 	}
-	if _, err = solwire.OwnSignedWire(wire, attempt.SignedTransactionSHA256); err != nil {
+	if _, err = chain.OwnSignedWire(wire, attempt.SignedTransactionSHA256); err != nil {
 		return nil, err
 	}
 	tx, err := solana.TransactionFromBytes(wire)

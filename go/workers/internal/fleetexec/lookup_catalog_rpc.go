@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	sdk "github.com/gagliardetto/solana-go"
+	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
 // Catalog drift may observe an absent or differently owned account. Financial
