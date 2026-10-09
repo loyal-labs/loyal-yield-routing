@@ -321,9 +321,8 @@ func (w *Worker) reconcileVoltr(ctx context.Context, lease SubmissionLease) erro
 		return errors.New("voltr reconciliation lacks its route, confirmed slot or decision")
 	}
 	var raw json.RawMessage
-	var vaultID int64
 	var decisionID *int64
-	if err := w.store.pool.QueryRow(ctx, `SELECT execution_plan,vault_id,decision_id FROM loyal_yield.rebalance_opportunities WHERE id=$1`, record.OpportunityID).Scan(&raw, &vaultID, &decisionID); err != nil {
+	if err := w.store.pool.QueryRow(ctx, `SELECT execution_plan,decision_id FROM loyal_yield.rebalance_opportunities WHERE id=$1`, record.OpportunityID).Scan(&raw, &decisionID); err != nil {
 		return err
 	}
 	p, err := decodeVoltrPlan(raw)
@@ -343,9 +342,6 @@ func (w *Worker) reconcileVoltr(ctx context.Context, lease SubmissionLease) erro
 	}
 	return db.WithTx(ctx, w.store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `UPDATE loyal_yield.rebalance_decisions SET status='confirmed',confirmed_slot=COALESCE(confirmed_slot,$2),updated_at=now() WHERE id=$1`, *record.DecisionID, *record.ConfirmedSlot); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `SELECT loyal_yield.enqueue_fleet_planning_dirty_vault($1,'voltr_confirmed_manager_effect',$2,now(),$3)`, vaultID, o.ContextSlot, record.Cluster); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET submission_state='reconciled',reconciled_slot=$4,reconciled_at=now(),confirmation_lease_owner=NULL,confirmation_lease_expires_at=NULL,error_detail=NULL,updated_at=now()
