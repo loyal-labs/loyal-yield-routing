@@ -61,7 +61,7 @@ bun src/cli.ts policies verify --artifact /tmp/backyard-runtime-policies.json
 
 Every authorization-gated command (policy install, manager, negative
 mutations, four-market verify) loads
-`docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v26.json`,
+`docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v27.json`,
 which binds the runtime policy catalog to the SHA-256 of every source that
 builds, plans, or executes it (`SOURCE_PATHS` in
 `src/policies/authorization.ts`). A change to any bound file makes those
@@ -159,7 +159,7 @@ bun src/cli.ts runtime simulate-instant-withdraw-rejection --amount-lp <LP_RAW>
 bun src/cli.ts runtime simulate-manager --operation deposit \
   --strategy-id main --amount-raw 500000 \
   --artifact ../../docs/evidence/backyard-voltr-four-market/runtime-policy-catalog-v2.json \
-  --authorization ../../docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v26.json
+  --authorization ../../docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v27.json
 
 # Execute only with an explicit, new intent path. The exact pre-send packet,
 # authorization/artifact hashes, expiry, and expected signature are persisted
@@ -168,7 +168,7 @@ bun src/cli.ts runtime simulate-manager --operation deposit \
 bun src/cli.ts runtime execute-manager --operation deposit \
   --strategy-id main --amount-raw 500000 \
   --artifact ../../docs/evidence/backyard-voltr-four-market/runtime-policy-catalog-v2.json \
-  --authorization ../../docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v26.json \
+  --authorization ../../docs/evidence/backyard-voltr-four-market/policy-catalog-authorization-v27.json \
   --confirm-authorization-sha256 <AUTHORIZATION_FILE_SHA256> \
   --confirm-route-authorization-sha256 <EFFECTIVE_ROUTE_AUTH_SHA256> \
   --lifecycle-id <LIFECYCLE_SHA256> \
