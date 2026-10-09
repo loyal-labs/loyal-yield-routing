@@ -11,8 +11,11 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, map[string]ConfirmedAccount) {
@@ -296,5 +299,73 @@ func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 				t.Fatalf("rent or prestate bound lost: %+v", cost)
 			}
 		})
+	}
+}
+
+// Public Settings from the retained finalized slot-444491195 program snapshot.
+// SDK decoding below is independent of the Go envelope parser.
+const setupSettingsFixture = "37OjvrHgQ606sAcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/AQAAAJcaJGJKF/Wed7NyrW3KxJvGybD8BjcCj1JwIF/Ul3wIBwABiwAAAAAAAAAA"
+
+func setupSettingsAccount(t *testing.T) ConfirmedAccount {
+	t.Helper()
+	data, err := base64.StdEncoding.DecodeString(setupSettingsFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ConfirmedAccount{Address: bridgeSettings, Owner: bridgeSquadsProgram, Lamports: 2_060_160, Data: data}
+}
+
+func TestPolicySetupSettingsMatchesSDKAndRejectsAuthorityDrift(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bun", "testdata/policy-settings-oracle.mjs")
+	cmd.Stdin = strings.NewReader(setupSettingsFixture)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("Settings SDK oracle: %v %s", err, stderr.String())
+	}
+	var cases []struct{ Name, Data, Next string }
+	if json.Unmarshal(out, &cases) != nil || len(cases) != 16 {
+		t.Fatal("invalid Settings oracle output")
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			a := setupSettingsAccount(t)
+			a.Data, err = base64.StdEncoding.DecodeString(c.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, decodeErr := policySetupNextSeed(a)
+			if c.Next == "" {
+				assertBudgetHold(t, decodeErr, "policy_setup_settings_envelope_mismatch")
+			} else if decodeErr != nil || strconv.FormatUint(next, 10) != c.Next {
+				t.Fatalf("Settings disagrees with SDK: seed=%d error=%v", next, decodeErr)
+			}
+		})
+	}
+	for name, mutate := range map[string]func(*ConfirmedAccount){
+		"address":       func(a *ConfirmedAccount) { a.Address = bridgeVault },
+		"owner":         func(a *ConfirmedAccount) { a.Owner = classicTokenProgram },
+		"executable":    func(a *ConfirmedAccount) { a.Executable = true },
+		"empty":         func(a *ConfirmedAccount) { a.Lamports = 0 },
+		"discriminator": func(a *ConfirmedAccount) { a.Data[0] ^= 1 },
+		"bad-option":    func(a *ConfirmedAccount) { a.Data[78] = 2 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := setupSettingsAccount(t)
+			mutate(&a)
+			_, err := policySetupNextSeed(a)
+			assertBudgetHold(t, err, "policy_setup_settings_envelope_mismatch")
+		})
+	}
+	a := setupSettingsAccount(t)
+	for n := 0; n < len(a.Data); n++ {
+		truncated := a
+		truncated.Data = a.Data[:n]
+		if _, err := policySetupNextSeed(truncated); err == nil {
+			t.Fatalf("truncated Settings accepted at %d bytes", n)
+		}
 	}
 }

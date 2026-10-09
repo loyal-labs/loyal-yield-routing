@@ -5,11 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 )
-
-const setupKeypairEnvironment = "SOLANA_TESTING_PK"
 
 // Credentials is the explicit Backyard signing capability: the delegated
 // executor keypair for the fixed manifest lane. A loyal-engine instance owns
@@ -48,27 +45,6 @@ func ParseCredentials(material string) (Credentials, error) {
 		return Credentials{}, err
 	}
 	return Credentials{PolicyKey: key}, nil
-}
-
-// Setup uses the already-established Backyard Settings admin, never the
-// lifecycle delegate and never a fallback key. Loading it does not enable send.
-func loadPinnedPolicySetupSigner() (ed25519.PrivateKey, error) {
-	return loadPinnedSigner(setupKeypairEnvironment, mustKey(bridgeSettingsSigner), "Settings admin")
-}
-
-func loadPinnedSigner(environment string, expected publicKey, role string) (ed25519.PrivateKey, error) {
-	value, ok := os.LookupEnv(environment)
-	if !ok || strings.TrimSpace(value) == "" {
-		return nil, fmt.Errorf("%s is not configured", environment)
-	}
-	key, err := decodeSolanaKeypairMaterial(value)
-	if err != nil {
-		return nil, fmt.Errorf("%s is not a valid Solana keypair", environment)
-	}
-	if publicKeyFromBytes(key.Public().(ed25519.PublicKey)) != expected {
-		return nil, fmt.Errorf("%s does not match the pinned %s", environment, role)
-	}
-	return key, nil
 }
 
 func decodeSolanaKeypairMaterial(value string) (ed25519.PrivateKey, error) {

@@ -11,21 +11,17 @@ import (
 )
 
 type phase3OperationAuthorization struct {
-	DebtClear                 *debtClearAuthority     `json:"debtClear,omitempty"`
-	PilotAuthorityID          string                  `json:"pilotAuthorityId,omitempty"`
-	BookedExecutionCostMicros int64                   `json:"bookedExecutionCostMicros,omitempty"`
-	GoalID                    string                  `json:"goalId"`
-	IntentSHA256              string                  `json:"intentSha256"`
-	SignedWireSHA256          string                  `json:"signedWireSha256,omitempty"`
-	ReservationReleased       bool                    `json:"reservationReleased,omitempty"`
-	BookedSpentMicros         int64                   `json:"bookedSpentMicros,omitempty"`
-	BuildInput                *phase3BuildInput       `json:"buildInput,omitempty"`
-	SendKnownCost             *ValuedTransactionCost  `json:"sendKnownCost,omitempty"`
-	BridgeAdmission           *phase3BridgeAdmission  `json:"bridgeAdmission,omitempty"`
-	PolicySetup               *policySetupObservation `json:"policySetup,omitempty"`
-	PolicySetupCompletion     *policySetupCompletion  `json:"policySetupCompletion,omitempty"`
-	SetupBuildCost            *ValuedTransactionCost  `json:"setupBuildCost,omitempty"`
-	SetupCompletionCost       *ValuedTransactionCost  `json:"setupCompletionCost,omitempty"`
+	DebtClear                 *debtClearAuthority    `json:"debtClear,omitempty"`
+	PilotAuthorityID          string                 `json:"pilotAuthorityId,omitempty"`
+	BookedExecutionCostMicros int64                  `json:"bookedExecutionCostMicros,omitempty"`
+	GoalID                    string                 `json:"goalId"`
+	IntentSHA256              string                 `json:"intentSha256"`
+	SignedWireSHA256          string                 `json:"signedWireSha256,omitempty"`
+	ReservationReleased       bool                   `json:"reservationReleased,omitempty"`
+	BookedSpentMicros         int64                  `json:"bookedSpentMicros,omitempty"`
+	BuildInput                *phase3BuildInput      `json:"buildInput,omitempty"`
+	SendKnownCost             *ValuedTransactionCost `json:"sendKnownCost,omitempty"`
+	BridgeAdmission           *phase3BridgeAdmission `json:"bridgeAdmission,omitempty"`
 	// CustodyProof is the durable pre-decision shared-custody ownership
 	// binding (doc 26): persisted by the shared locked admission for a
 	// positive AUTO-PYUSD spend and re-required by the build and
@@ -756,14 +752,6 @@ func (d *Database) authorizePhase3SendTxOnManifest(ctx context.Context, manifest
 		}
 		if err = budget.validatePilotReleaseAuthority(request); err != nil {
 			return err
-		}
-	}
-	if auth.PolicySetup != nil {
-		if _, err := d.validatePolicySetupReservationTx(ctx, tx, operationID, budget, auth, Signed); err != nil {
-			return err
-		}
-		if auth.SetupBuildCost == nil {
-			return budgetHold("setup_payment_not_build_authorized")
 		}
 	}
 	var wire []byte

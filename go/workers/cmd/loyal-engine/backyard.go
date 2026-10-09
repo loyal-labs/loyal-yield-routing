@@ -132,7 +132,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return backyard.SelectorOff, nil
 }
 
-const backyardUsage = `usage: loyal-engine backyard [prepare-pilot-cleanup | inspect-pilot-flat-state | activate-pilot-budget | selector-shadow | selector-evaluate [--execute] | inspect-phase3 lane ... | inspect-phase3-setup-rent | initialize-phase3-budget | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [inspect-pilot-flat-state | activate-pilot-budget | selector-shadow | selector-evaluate [--execute] | inspect-phase3 lane ... | initialize-phase3-budget | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
@@ -164,8 +164,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 	switch command, rest := args[0], args[1:]; {
 	case command == "inspect-pilot-flat-state" && len(rest) == 0:
 		return backyard.InspectPilotBudgetFlatState(bounded(30*time.Second), cfg.RPCURL, out)
-	case command == "prepare-pilot-cleanup" && len(rest) == 0:
-		return backyard.CompilePilotCleanupWire(bounded(45*time.Second), cfg.RPCURL, out)
 	case command == "selector-shadow" && len(rest) == 0:
 		cfg.TimescaleURL = optionalCredential("BACKYARD_TIMESCALE_DATABASE_URL")
 		return backyard.RunSelectorShadow(bounded(45*time.Second), out, cfg)
@@ -178,14 +176,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		return encode(backyard.RunPilotBudgetActivation(ctx, cfg.DatabaseURL, cfg.RPCURL, backyard.FixedRouteKey))
 	case command == "initialize-phase3-budget" && len(rest) == 0:
 		return encode(backyard.RunPhase3BudgetInitialization(ctx, cfg.DatabaseURL, backyard.FixedRouteKey))
-	case command == "inspect-phase3-setup-rent" && len(rest) == 0:
-		// Fixed stage errors only, never RPC URLs or provider bodies.
-		result, err := backyard.InspectPhase3SetupRent(bounded(60*time.Second), cfg.RPCURL)
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(out, string(result))
-		return err
 	case command == "inspect-phase3" && len(rest) > 0:
 		result, err := backyard.InspectPhase3Runtime(rest)
 		if err != nil {

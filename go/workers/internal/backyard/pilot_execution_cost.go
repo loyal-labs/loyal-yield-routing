@@ -157,18 +157,10 @@ func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedE
 	return out, nil
 }
 
-func observePilotExecutionCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects, cost ValuedTransactionCost) (ValuedTransactionCost, error) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return cost, err
-	}
-	return manifest.observePilotExecutionCost(ctx, rpc, request, effects, cost)
-}
-
 // observePilotExecutionCost is the manifest-aware form: the exact execution
 // cost bound observation with the classification resolved through the explicit
 // reviewed manifest, so a candidate AUTO bound is classified against the same
-// binding that compiled its request. The public form above is unchanged.
+// binding that compiled its request.
 func (m RouteManifest) observePilotExecutionCost(ctx context.Context, rpc *RPCClient, request any, effects ExpectedEffects, cost ValuedTransactionCost) (ValuedTransactionCost, error) {
 	var credit *BudgetPrice
 	if r, ok := request.(JupiterSwapRequest); ok {
