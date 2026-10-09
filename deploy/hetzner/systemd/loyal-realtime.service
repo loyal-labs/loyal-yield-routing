@@ -1,0 +1,84 @@
+# Realtime SSE (Rust). Host binary extracted from a pinned realtime-image
+# tag; no container, no controller. Caddy proxies realtime.askloyal.com
+# (/events, /readyz, /healthz) to 127.0.0.1:10000.
+# Secrets: one systemd-creds envelope encrypted with the host key; names only here.
+[Unit]
+Description=Loyal realtime SSE (Rust)
+Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting; restart loops are an alert, not a stop.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+# The pinned env launcher reads one JSON envelope
+# {"service_id","deployment_identity","values":{KEY:value}} from the fixed
+# path /run/loyal-credential.json, and only if the file is mode 0400, owned by
+# the process's uid/gid and on a read-only tmpfs mount. systemd hands a
+# DynamicUser its credentials as root:root 0440 plus an ACL, so a privileged
+# pre-step copies the envelope into the runtime directory (tmpfs, removed on
+# stop) with the launcher's ownership, and a read-only bind puts it at the
+# fixed path. The launcher sets exactly --keys from the envelope and execs.
+LoadCredentialEncrypted=realtime-envelope:/etc/credstore.encrypted/loyal-realtime/realtime-envelope.cred
+RuntimeDirectory=loyal-realtime
+RuntimeDirectoryMode=0700
+ExecStartPre=+/usr/bin/install -m 0400 -o loyal-realtime -g loyal-realtime %d/realtime-envelope /run/loyal-realtime/envelope.json
+BindReadOnlyPaths=/run/loyal-realtime/envelope.json:/run/loyal-credential.json
+ExecStart=/opt/loyal/bin/loyal-env-launcher \
+  --service loyal-realtime --deployment loyal-realtime \
+  --keys NEON_DATABASE_URL,REALTIME_ALLOWED_ORIGINS,REALTIME_ALLOWED_VERCEL_PREVIEW_PROJECT,REALTIME_ALLOWED_VERCEL_PREVIEW_TEAM,REALTIME_AUTH_SECRET,REALTIME_CATCH_UP_LIMIT,REALTIME_CHANNEL,REALTIME_CLIENT_BUFFER,REALTIME_HEARTBEAT_SECONDS,REALTIME_MAX_TOKEN_LIFETIME_SECONDS,REALTIME_READY_MAX_LAG,REALTIME_RETENTION_BATCH_SIZE,REALTIME_RETENTION_DAYS,REALTIME_RETENTION_INTERVAL_SECONDS,RUST_LOG \
+  -- /opt/loyal/bin/loyal-yield-realtime
+Restart=on-failure
+RestartSec=5s
+# The binary drains SSE streams for at most 45s after SIGTERM.
+TimeoutStopSec=60s
+
+# The binary listens on 0.0.0.0:$PORT; only Caddy on loopback should reach it.
+Environment=PORT=10000
+# This host is the only realtime instance, so it owns event retention.
+Environment=REALTIME_RETENTION_CLEANUP_ENABLED=true
+# The realtime-image tag the binary was extracted from (observability label).
+Environment=LOYAL_IMAGE_VERSION=sha-680613e3854f741a418a3b98099eb77f4f22916d
+
+DynamicUser=yes
+User=loyal-realtime
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loyal-realtime
+
+MemoryMax=512M
+CPUQuota=50%
+TasksMax=512
+LimitCORE=0
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

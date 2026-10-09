@@ -113,6 +113,124 @@ family until phase 2 retires Rust:
   labels: {severity: page, family: autodeposit}
 ```
 
+## Realtime (Rust)
+
+`loyal-realtime.service` runs `loyal-yield-realtime`, the SSE service behind
+`realtime.askloyal.com`. Caddy on the host proxies `/events`, `/readyz` and
+`/healthz` to `127.0.0.1:10000`. The binary is the one inside a pinned
+`realtime-image` tag (`ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>`),
+copied out of the image and run directly by systemd. The host does not run
+docker or python for it, and it does not pull from GHCR.
+
+The binary reads its configuration from the environment.
+`/opt/loyal/bin/loyal-env-launcher`, a pinned static Go binary, sets that
+environment from one credential, `realtime-envelope`. The credential is a
+JSON envelope:
+
+```json
+{"service_id": "loyal-realtime", "deployment_identity": "loyal-realtime",
+ "values": {"NEON_DATABASE_URL": "...", "REALTIME_AUTH_SECRET": "...", "...": "..."}}
+```
+
+`values` must hold exactly the `--keys` in the unit: `NEON_DATABASE_URL`,
+`REALTIME_ALLOWED_ORIGINS`, `REALTIME_ALLOWED_VERCEL_PREVIEW_PROJECT`,
+`REALTIME_ALLOWED_VERCEL_PREVIEW_TEAM`, `REALTIME_AUTH_SECRET`,
+`REALTIME_CATCH_UP_LIMIT`, `REALTIME_CHANNEL`, `REALTIME_CLIENT_BUFFER`,
+`REALTIME_HEARTBEAT_SECONDS`, `REALTIME_MAX_TOKEN_LIFETIME_SECONDS`,
+`REALTIME_READY_MAX_LAG`, `REALTIME_RETENTION_BATCH_SIZE`,
+`REALTIME_RETENTION_DAYS`, `REALTIME_RETENTION_INTERVAL_SECONDS` and
+`RUST_LOG`. A missing or extra key stops the launcher before the binary
+starts. The launcher accepts only `/run/loyal-credential.json` as the input
+path, with mode 0400, owned by the process's own uid and gid, on a read-only
+tmpfs. The unit's comment explains how it delivers the envelope there.
+
+The unit sets `PORT=10000` and `REALTIME_RETENTION_CLEANUP_ENABLED=true`.
+Exactly one realtime instance may run with cleanup enabled. Never start a
+second copy against the production database to test it. The binary binds
+`0.0.0.0:$PORT` and has no setting for the bind address. The cloud firewall
+must keep port 10000 closed, so that only Caddy can reach it.
+
+### Extract and install a binary
+
+```sh
+IMG=ghcr.io/loyal-labs/loyal-yield-routing/light-workers:sha-<commit>
+docker pull --platform linux/amd64 "$IMG"
+docker image inspect --format '{{index .RepoDigests 0}}' "$IMG"   # record the digest
+c=$(docker create --platform linux/amd64 "$IMG")
+docker cp "$c":/usr/local/bin/loyal-yield-realtime ./loyal-yield-realtime
+docker rm "$c"
+sha256sum loyal-yield-realtime                                     # record the sha
+```
+
+The image is built on Debian bookworm. The binary links only glibc and uses
+rustls with built-in roots. Before you install it, check that
+`ldd loyal-yield-realtime` resolves every library on the host. Copy the
+binary to the host, compare its sha256 with the recorded one, then:
+
+```sh
+install -m 0555 loyal-yield-realtime /opt/loyal/bin/loyal-yield-realtime
+install -m 0644 deploy/hetzner/systemd/loyal-realtime.service /etc/systemd/system/
+systemctl daemon-reload && systemctl restart loyal-realtime
+curl -fsS http://127.0.0.1:10000/readyz
+```
+
+When you upgrade, set `LOYAL_IMAGE_VERSION` in the unit to the new tag. A
+restart drops open SSE streams, and clients reconnect with their cursor.
+
+Production now runs a binary from `680613e3`. That commit is on branch
+`codex/hetzner-realtime-20260929`, not on main. Its parent `d1866a93` adds
+`REALTIME_RETENTION_CLEANUP_ENABLED`, a 10s statement timeout and a bounded
+45s drain on SIGTERM. The crate on main has none of these, so a tag built
+from main would always run retention and would not bound shutdown. Port
+`d1866a93` to main before you build a replacement binary.
+
+### Seal the credential
+
+```sh
+install -d -m 0700 /etc/credstore.encrypted/loyal-realtime
+<envelope JSON on stdout> | systemd-creds encrypt --with-key=host --name=realtime-envelope - \
+  /etc/credstore.encrypted/loyal-realtime/realtime-envelope.cred.next
+mv /etc/credstore.encrypted/loyal-realtime/realtime-envelope.cred.next \
+   /etc/credstore.encrypted/loyal-realtime/realtime-envelope.cred
+```
+
+`--name` must equal the credential ID `realtime-envelope`. To change one
+value, run `systemd-creds decrypt --name=realtime-envelope <cred> -`, edit
+the JSON and run `systemd-creds encrypt` again, all in one pipe. The
+plaintext must never reach a file, argv or shell history. Then restart the
+unit.
+
+### Cutover from the container runtime (once)
+
+The old runtime is `loyal-realtime-reader.service`. It runs a python
+controller that starts the same binary in a docker compose container, and
+its credential is sealed under `/etc/credstore.encrypted/loyal/`. To move to
+the new unit:
+
+1. Stage the binary and launcher on the host and check their sha256s.
+2. Re-seal the old credential as the envelope above, decrypting and
+   encrypting in one pipe. Check that the key set has not changed.
+3. Install both binaries into `/opt/loyal/bin` and install the unit. Run
+   `systemd-analyze verify`.
+4. Preflight while the old unit still serves. Start a copy of the unit whose
+   `ExecStart` ends in `/usr/bin/true`. It must exit 0. This proves the
+   credential delivery and the launcher's checks without opening a second
+   database client.
+5. Run `systemctl disable --now loyal-realtime-reader`, then
+   `systemctl enable --now loyal-realtime`. Wait until
+   `http://127.0.0.1:10000/readyz` returns 200, then check
+   `https://realtime.askloyal.com/readyz`.
+
+To roll back, run `systemctl disable --now loyal-realtime`, then
+`systemctl enable --now loyal-realtime-reader`. The old unit re-validates its
+own pins and credential at start. Keep its files until the new unit has run
+cleanly for a while.
+
+`LoyalUnitDown` and `LoyalUnitRestartLoop` cover the unit through the
+`loyal-.+\.service` filter. Prometheus does not scrape the realtime
+`/metrics`, and the collector does not ship its logs, which are plain text
+in the journal under `loyal-realtime`.
+
 ## Monitoring
 
 All files are in `monitoring/`. Everything listens on loopback.
