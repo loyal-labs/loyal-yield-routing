@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
-	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -27,15 +27,15 @@ type goldenInstruction struct {
 	Data string `json:"data"`
 }
 
-func (g goldenInstruction) decode(t *testing.T) sp.Instruction {
+func (g goldenInstruction) decode(t *testing.T) squads.Instruction {
 	t.Helper()
 	data, err := hex.DecodeString(g.Data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := sp.Instruction{ProgramID: solana.MustPublicKeyFromBase58(g.ProgramID), Data: data}
+	out := squads.Instruction{ProgramID: solana.MustPublicKeyFromBase58(g.ProgramID), Data: data}
 	for _, account := range g.Accounts {
-		out.Accounts = append(out.Accounts, sp.AccountMeta{PublicKey: solana.MustPublicKeyFromBase58(account.Pubkey), IsSigner: account.IsSigner, IsWritable: account.IsWritable})
+		out.Accounts = append(out.Accounts, solana.AccountMeta{PublicKey: solana.MustPublicKeyFromBase58(account.Pubkey), IsSigner: account.IsSigner, IsWritable: account.IsWritable})
 	}
 	return out
 }
@@ -133,14 +133,14 @@ func TestPolicyDetectionMatchesRustMonitor(t *testing.T) {
 				t.Fatal(err)
 			}
 			policy := familyPolicy(strategy, earnMaxFamilies[index])
-			update, err := sp.EncodeCompactPolicyUpdate(policy.Account, delegate, 0, constraints)
+			update, err := squads.EncodeCompactPolicyUpdate(policy.Account, delegate, 0, constraints)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(update, family.Update.decode(t).Data) {
 				t.Fatalf("%s %s canonical update bytes differ from Rust", set.Settings, family.Family)
 			}
-			actions, err := sp.DecodeSettingsActions(family.Create.decode(t))
+			actions, err := squads.DecodeSettingsActions(family.Create.decode(t))
 			if err != nil || len(actions) != 1 {
 				t.Fatalf("decode canonical create: %v %d", err, len(actions))
 			}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
@@ -336,7 +337,7 @@ func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPrepar
 		for _, p := range []CrossMintCertificatePolicy{certificate.FinalizedPolicyReadbacks.Withdraw, certificate.FinalizedPolicyReadbacks.Deposit, certificate.FinalizedPolicyReadbacks.Swap.CrossMintCertificatePolicy} {
 			a := bank.accounts[p.PolicyAccount]
 			hash := sha256.Sum256(a.Data)
-			if a.Owner.String() != SquadsProgram || a.Executable || a.Lamports == 0 || hex.EncodeToString(hash[:]) != p.DataSHA256 {
+			if a.Owner != squads.ProgramID || a.Executable || a.Lamports == 0 || hex.EncodeToString(hash[:]) != p.DataSHA256 {
 				return out, errors.New("finalized policy data differs from prewithdraw certificate")
 			}
 		}
@@ -712,12 +713,12 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 	}
 	anchors.Position = &crossMintPreparationPosition{position.Position.Reserve, position.Position.Market, position.Obligation, true, int64(collateral)}
 	policyAccount := bank.accounts[binding.PolicyAccount]
-	policy, err := DecodeSquadsPolicy(policyAccount.Data)
+	policy, err := DecodeSquadsPolicy(&policyAccount)
 	if err != nil {
 		return nil, effect, anchors, "", err
 	}
 	derived, bump, err := derivePolicyAccount(b.Settings, policy.PolicySeed)
-	if err != nil || derived != binding.PolicyAccount || bump != policy.Bump || policyAccount.Owner.String() != SquadsProgram || policyAccount.Executable || policyAccount.Lamports == 0 || policy.Settings != b.Settings || policy.AccountIndex != b.VaultIndex || int(index) >= len(policy.Constraints) || !policyConstraintMatches(policy.Constraints[index], route.Protected[0]) {
+	if err != nil || derived != binding.PolicyAccount || bump != policy.Bump || policyAccount.Owner != squads.ProgramID || policyAccount.Executable || policyAccount.Lamports == 0 || policy.Settings != b.Settings || policy.AccountIndex != b.VaultIndex || int(index) >= len(policy.Constraints) || !policyConstraintMatches(policy.Constraints[index], route.Protected[0]) {
 		return nil, effect, anchors, "", errors.New("finalized Earn policy does not authorize exact cross-mint leg and index")
 	}
 	if _, err := validateDelegatedInstructions(policy, r.signer, route.Protected); err != nil {
@@ -815,10 +816,10 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 		}
 	}
 	account := bank.accounts[b.Swap.PolicyAccount]
-	if account.Owner.String() != SquadsProgram || account.Executable || account.Lamports == 0 {
+	if account.Owner != squads.ProgramID || account.Executable || account.Lamports == 0 {
 		return nil, effect, anchors, errors.New("cross-mint swap policy is not a funded finalized Squads account")
 	}
-	policy, table, limits, err := decodeStrictSwapPolicy(account.Data)
+	policy, table, limits, err := decodeStrictSwapPolicy(&account)
 	if err != nil {
 		return nil, effect, anchors, err
 	}

@@ -709,8 +709,8 @@ func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *Ro
 	if err != nil {
 		return nil, err
 	}
-	if policySlot < confirmedSlot || operation.PolicyDataSHA256 == nil ||
-		PolicyDataHash(policyData) != *operation.PolicyDataSHA256 {
+	if policySlot < confirmedSlot || operation.PolicyDataSHA256 == nil || policyData == nil ||
+		PolicyDataHash(policyData.Data) != *operation.PolicyDataSHA256 {
 		return nil, errors.New("confirmed policy account drifted from the persisted binding")
 	}
 	// The verifier owns the persisted pre-effect anchors. A fresh chain read

@@ -12,7 +12,7 @@ import (
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
-	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
@@ -71,7 +71,7 @@ func TestPolicyRefundIsCreditedNetOfFee(t *testing.T) {
 }
 
 func TestIdleSweepWithoutKaminoWithdrawIsNotAReserveWithdrawal(t *testing.T) {
-	keys := []solana.PublicKey{sp.Program, tokenProgram, klendProgram}
+	keys := []solana.PublicKey{squads.ProgramID, tokenProgram, klendProgram}
 	ran := func(outer []solana.CompiledInstruction, inner ...rpc.CompiledInstruction) earnTransaction {
 		return earnTransaction{chain.Execution{Receipt: chain.Receipt{Keys: keys}, Transaction: &solana.Transaction{Message: solana.Message{Instructions: outer}},
 			Inner: []rpc.InnerInstruction{{Index: 0, Instructions: inner}}}}
@@ -150,17 +150,17 @@ func TestRPCPolicyTransactionDecodesSquadsInstructions(t *testing.T) {
 	if len(transaction.Signers) != 1 || transaction.Signers[0] != wallet {
 		t.Fatalf("signers = %v", transaction.Signers)
 	}
-	var squads []sp.Instruction
+	var policyInstructions []squads.Instruction
 	for _, instruction := range transaction.Instructions {
-		if instruction.ProgramID == sp.Program {
-			squads = append(squads, instruction)
+		if instruction.ProgramID == squads.ProgramID {
+			policyInstructions = append(policyInstructions, instruction)
 		}
 	}
-	if len(squads) == 0 {
+	if len(policyInstructions) == 0 {
 		t.Fatal("outer Squads instruction was dropped")
 	}
 	foundSettings, foundWallet := false, false
-	for _, account := range squads[0].Accounts {
+	for _, account := range policyInstructions[0].Accounts {
 		foundSettings = foundSettings || account.PublicKey == settings && account.IsWritable && !account.IsSigner
 		foundWallet = foundWallet || account.PublicKey == wallet && account.IsSigner
 	}
@@ -173,7 +173,7 @@ func TestRPCPolicyTransactionDecodesSquadsInstructions(t *testing.T) {
 }
 
 func TestStreamPolicyTransactionMemoLocations(t *testing.T) {
-	keys := [][]byte{make([]byte, 32), memoProgram.Bytes(), sp.Program.Bytes()}
+	keys := [][]byte{make([]byte, 32), memoProgram.Bytes(), squads.ProgramID.Bytes()}
 	keys[0][0] = 1
 	info := &pb.SubscribeUpdateTransactionInfo{
 		Signature: make([]byte, 64),

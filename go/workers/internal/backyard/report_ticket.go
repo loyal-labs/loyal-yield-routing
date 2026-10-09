@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Report-ticket v1 is the narrow fallback for Voltr not forwarding the Squads
@@ -101,7 +103,7 @@ func armReportInstruction(action Action, voltrData []byte) (compiledInstruction,
 			meta(reportTicketPDA, false, true),
 			meta(bridgeSettings, false, false),
 			meta(bridgeVault, true, false),
-			meta(bridgeSquadsProgram, false, false),
+			meta(squads.ProgramID.String(), false, false),
 		),
 		data: data,
 	}, nil

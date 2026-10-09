@@ -133,6 +133,6 @@ func goldenSameMintBody(r sameMintGoldenRequest) ([]RouteInstruction, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, _, err := wrapSameMintRoute(route, signer, r.VaultIndex, r.RoutePolicy, r.RoutePolicyData, r.SetupPolicy, r.SetupPolicyData)
+	body, _, err := wrapSameMintRoute(route, signer, r.VaultIndex, r.RoutePolicy, squadsPolicyAccount(r.RoutePolicyData), r.SetupPolicy, squadsPolicyAccount(r.SetupPolicyData))
 	return body, err
 }

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
@@ -82,10 +83,10 @@ func TestCanonicalSubscriptionCreatorOfficialSolitaABI(t *testing.T) {
 	if !bytes.Equal(ix.Data, goldenHex(t, f.DataHex)) || !reflect.DeepEqual(ix.Accounts, f.Accounts) {
 		t.Fatalf("creator differs from independent Solita SDK golden: accounts=%+v", ix.Accounts)
 	}
-	if e = VerifyCanonicalSubscriptionPolicyAccount(request, goldenHex(t, f.PolicyDataHex)); e != nil {
+	if e = VerifyCanonicalSubscriptionPolicyAccount(request, &chain.Account{Owner: squads.ProgramID, Data: goldenHex(t, f.PolicyDataHex)}); e != nil {
 		t.Fatalf("canonical advanced policy rejected: %v", e)
 	}
-	if e = VerifyCanonicalSubscriptionPolicyAccount(request, goldenHex(t, f.WeakenedPolicyDataHex)); e == nil {
+	if e = VerifyCanonicalSubscriptionPolicyAccount(request, &chain.Account{Owner: squads.ProgramID, Data: goldenHex(t, f.WeakenedPolicyDataHex)}); e == nil {
 		t.Fatal("dropping token-account owner constraint accepted")
 	}
 	for _, mutation := range []struct {
@@ -95,7 +96,7 @@ func TestCanonicalSubscriptionCreatorOfficialSolitaABI(t *testing.T) {
 		t.Run(mutation.name, func(t *testing.T) {
 			d := goldenHex(t, f.PolicyDataHex)
 			mutation.change(d)
-			if e := VerifyCanonicalSubscriptionPolicyAccount(request, d); e == nil {
+			if e := VerifyCanonicalSubscriptionPolicyAccount(request, &chain.Account{Owner: squads.ProgramID, Data: d}); e == nil {
 				t.Fatal("mutated policy accepted")
 			}
 		})
@@ -203,7 +204,7 @@ func TestArtifactCreatorRequiresExactCreationSignatureAndFullMatrix(t *testing.T
 }
 func TestArtifactPersonalRootSeedAndAuthorityProof(t *testing.T) {
 	f, target, _ := artifactFixture(t)
-	a := testAccount{Address: f.Settings, Owner: squadsProgramID, Data: goldenHex(t, f.SettingsDataHex)}
+	a := testAccount{Address: f.Settings, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.SettingsDataHex)}
 	if e := verifyArtifactRoot(a.chainAccount(), target); e != nil {
 		t.Fatal(e)
 	}
@@ -303,7 +304,7 @@ func installArtifactSnapshot(t *testing.T, f artifactGolden, b *SweepWireBuilder
 	binary.LittleEndian.PutUint64(token[64:72], 9_000_000)
 	binary.LittleEndian.PutUint32(token[72:76], 1)
 	copy(token[76:108], authority[:])
-	accounts := map[string]testAccount{f.Settings: {Address: f.Settings, Owner: squadsProgramID, Data: goldenHex(t, f.SettingsDataHex)}, f.Policy: {Address: f.Policy, Owner: squadsProgramID, Data: goldenHex(t, f.PolicyDataHex)}, f.SubscriptionAuthority: {Address: f.SubscriptionAuthority, Owner: SubscriptionsProgramID}, f.RecurringDelegation: {Address: f.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(f.Wallet, f.Vault, USDCMint, uint64(f.MaxAmountPerPeriod), 0)}, f.WalletATA: {Address: f.WalletATA, Owner: splTokenID, Data: token}}
+	accounts := map[string]testAccount{f.Settings: {Address: f.Settings, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.SettingsDataHex)}, f.Policy: {Address: f.Policy, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.PolicyDataHex)}, f.SubscriptionAuthority: {Address: f.SubscriptionAuthority, Owner: SubscriptionsProgramID}, f.RecurringDelegation: {Address: f.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(f.Wallet, f.Vault, USDCMint, uint64(f.MaxAmountPerPeriod), 0)}, f.WalletATA: {Address: f.WalletATA, Owner: splTokenID, Data: token}}
 	b.read = fixtureReader(200, accounts)
 }
 func TestArtifactHistoryIsBoundedAndRoleFiltered(t *testing.T) {

@@ -1,7 +1,6 @@
 package autodeposit
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
@@ -11,6 +10,7 @@ import (
 	"math"
 	"sort"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
@@ -23,11 +23,10 @@ import (
 // the same constant the fleet executor reads (fleet/route_runtime.go), so the
 // wire this family signs and the receipt it verifies share one identity.
 const (
-	KLendProgramID  = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
-	splTokenID      = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	squadsProgramID = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
-	farmsProgramID  = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
-	instructionsID  = "Sysvar1nstructions1111111111111111111111111"
+	KLendProgramID = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+	splTokenID     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+	farmsProgramID = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+	instructionsID = "Sysvar1nstructions1111111111111111111111111"
 
 	kaminoDepositV2Step           = "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2"
 	kaminoDepositDataLength       = 16
@@ -44,8 +43,6 @@ const (
 // The obligation and wrapper discriminators are checked byte-for-byte.
 var (
 	obligationDiscriminator = [8]byte{168, 206, 141, 106, 88, 76, 172, 167}
-
-	squadsExecuteSyncV2Discriminator = [8]byte{90, 81, 187, 81, 39, 70, 128, 78}
 )
 
 const (
@@ -398,15 +395,15 @@ func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan,
 	if err != nil {
 		return fleet.RouteInstruction{}, err
 	}
-	if slot <= 0 || len(accounts) != 1 || accounts[0].Owner.String() != squadsProgramID || accounts[0].Executable {
+	if slot <= 0 || len(accounts) != 1 || accounts[0].Owner != squads.ProgramID || accounts[0].Executable {
 		return fleet.RouteInstruction{}, errors.New("policy account evidence is unavailable or has a foreign owner")
 	}
-	decoded, err := fleet.DecodeSquadsPolicy(accounts[0].Data)
+	decoded, err := fleet.DecodeSquadsPolicy(accounts[0])
 	if err != nil || int(decoded.AccountIndex) != plan.Target.VaultIndex {
 		return fleet.RouteInstruction{}, errors.New("policy account index does not match the frozen vault")
 	}
 	inner.Step = "autodeposit"
-	return fleet.BuildPolicyEnvelope(policyAccount, plan.Target.Settings, b.delegate.String(), accounts[0].Data, []fleet.RouteInstruction{inner})
+	return fleet.BuildPolicyEnvelope(policyAccount, plan.Target.Settings, b.delegate.String(), accounts[0], []fleet.RouteInstruction{inner})
 }
 
 // ProveTopUpWire verifies the persisted immutable top-up wire byte-for-byte:
@@ -495,28 +492,23 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 	if key := message.instructions[1].accounts[1]; !keyEqual(key, route.Obligation) {
 		return fmt.Errorf("persisted top-up wire refreshes obligation %s, want the derived %s", message.instructions[1].accounts[1], route.Obligation)
 	}
-	wrapper := message.instructions[2]
-	if wrapper.program != mustKey(squadsProgramID) {
-		return fmt.Errorf("persisted top-up deposit is not policy-wrapped: program %s", wrapper.program)
+	wrapper := squads.Instruction{ProgramID: message.instructions[2].program, Data: message.instructions[2].data}
+	for _, key := range message.instructions[2].accounts {
+		wrapper.Accounts = append(wrapper.Accounts, solana.AccountMeta{PublicKey: key})
 	}
-	if len(wrapper.accounts) < 3 || wrapper.accounts[0] != mustKey(plan.Target.RoutePolicyAccount) ||
-		wrapper.accounts[1] != mustKey(squadsProgramID) || wrapper.accounts[2] != b.delegate {
+	execute, err := squads.DecodeExecuteTransactionSyncV2(wrapper)
+	if err != nil {
+		return fmt.Errorf("persisted top-up deposit is not a policy-wrapped execute_transaction_sync_v2: %w", err)
+	}
+	if execute.Policy != mustKey(plan.Target.RoutePolicyAccount) || execute.Signer != b.delegate {
 		return fmt.Errorf("persisted top-up wire wrapper accounts do not match the frozen policy and executor")
 	}
-	if !bytes.HasPrefix(wrapper.data, squadsExecuteSyncV2Discriminator[:]) {
-		return fmt.Errorf("persisted top-up wire wrapper is not execute_transaction_sync_v2")
-	}
-	if len(wrapper.data) < 24 || int(wrapper.data[8]) != plan.Target.VaultIndex || !bytes.Equal(wrapper.data[9:13], []byte{1, 1, 1, 1}) || wrapper.data[18] != 1 || int(wrapper.data[19]) != plan.Target.VaultIndex {
+	if int(execute.AccountIndex) != plan.Target.VaultIndex || len(execute.Inner) != 1 {
 		return errors.New("persisted policy wrapper options differ from the frozen vault")
 	}
-	// Parse the wrapped compiled transaction out of the wrapper data: the
-	// header is disc(8) + flags(5) + u32 transaction count + constraint
-	// (index, hasRules, ruleCount) + u32 compiled length. The wrapper's
-	// accounts after [policy, program, executor] are the wrapped transaction's
-	// account list, and the compiled indexes resolve against it.
-	inner, err := parseWrappedCompiledInstruction(wrapper)
-	if err != nil {
-		return err
+	inner := decodedInstruction{program: execute.Inner[0].ProgramID, data: execute.Inner[0].Data}
+	for _, account := range execute.Inner[0].Accounts {
+		inner.accounts = append(inner.accounts, account.PublicKey)
 	}
 	if inner.program != kLend || len(inner.data) != kaminoDepositDataLength || hex.EncodeToString(inner.data[:8]) != kaminoDepositV2Disc {
 		return fmt.Errorf("persisted top-up wrapped instruction is not the KLend deposit v2")
@@ -562,60 +554,6 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 		return fmt.Errorf("persisted top-up deposit account 16 is %s, want the Farms program", inner.accounts[16])
 	}
 	return nil
-}
-
-// parseWrappedCompiledInstruction extracts the single compiled instruction the
-// Squads wrapper carries, resolving its account indexes against the wrapper's
-// account list.
-func parseWrappedCompiledInstruction(wrapper decodedInstruction) (decodedInstruction, error) {
-	var inner decodedInstruction
-	if len(wrapper.accounts) < 3 {
-		return inner, errors.New("policy wrapper account list is too short")
-	}
-	transactionAccounts := wrapper.accounts[3:]
-	data := wrapper.data
-	header := 8 + 5 + 4 + 3 + 4
-	if len(data) < header {
-		return inner, fmt.Errorf("policy wrapper data is %d bytes, too short for its header", len(data))
-	}
-	if binary.LittleEndian.Uint32(data[13:17]) != 1 {
-		return inner, errors.New("policy wrapper does not carry exactly one transaction instruction")
-	}
-	compiledLength := int(binary.LittleEndian.Uint32(data[20:24]))
-	compiled := data[header:]
-	if len(compiled) != compiledLength {
-		return inner, errors.New("policy wrapper compiled transaction length is inconsistent")
-	}
-	if len(compiled) < 3 {
-		return inner, errors.New("policy wrapper compiled instruction is truncated")
-	}
-	if compiled[0] != 1 {
-		return inner, errors.New("policy wrapper compiled instruction has an unexpected version byte")
-	}
-	programIndex := compiled[1]
-	accountCount := int(compiled[2])
-	offset := 3
-	if len(compiled) < offset+accountCount+2 {
-		return inner, errors.New("policy wrapper compiled accounts are truncated")
-	}
-	indexes := append([]byte{programIndex}, compiled[offset:offset+accountCount]...)
-	offset += accountCount
-	dataLength := int(binary.LittleEndian.Uint16(compiled[offset : offset+2]))
-	offset += 2
-	if len(compiled) != offset+dataLength {
-		return inner, errors.New("policy wrapper compiled data length is inconsistent")
-	}
-	for _, index := range indexes {
-		if int(index) >= len(transactionAccounts) {
-			return inner, errors.New("policy wrapper account index is out of range")
-		}
-	}
-	inner.program = transactionAccounts[programIndex]
-	for _, index := range indexes[1:] {
-		inner.accounts = append(inner.accounts, transactionAccounts[index])
-	}
-	inner.data = append([]byte(nil), compiled[offset:]...)
-	return inner, nil
 }
 
 // sign compiles, signs and size-bounds one family wire. The digest is the
@@ -696,9 +634,8 @@ func validatePlanPublicKeys(plan DepositPlan, extra ...string) error {
 	if plan.Target.VaultIndex < 0 || plan.Target.VaultIndex > 255 {
 		return errors.New("autodeposit vault index outside policy ABI")
 	}
-	settings := mustKey(plan.Target.Settings)
-	vault, err := findProgramAddress([][]byte{[]byte("smart_account"), settings[:], []byte("smart_account"), {byte(plan.Target.VaultIndex)}}, squadsProgramID)
-	if err != nil || base58Key(vault[:]) != plan.Target.VaultPubkey {
+	vault, _, err := squads.SmartAccountAddress(mustKey(plan.Target.Settings), uint8(plan.Target.VaultIndex))
+	if err != nil || vault.String() != plan.Target.VaultPubkey {
 		return errors.New("autodeposit vault is not derived from the frozen settings and index")
 	}
 	return nil

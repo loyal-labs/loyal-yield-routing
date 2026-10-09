@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Quote outputs are estimates, not enforceable maxima. Reserve the existing
@@ -54,7 +55,7 @@ func observeWithdrawalExitPolicies(ctx context.Context, rpc *chain.Client, manif
 	}
 	for address, pin := range pins {
 		a := accountAt(accounts, address)
-		if a.Owner != bridgeSquadsProgram || a.Executable || a.Lamports == 0 || !maskedPolicyDigestMatches(a.Data, pin.mask, pin.digest) {
+		if a.Owner != squads.ProgramID.String() || a.Executable || a.Lamports == 0 || !maskedPolicyDigestMatches(a.Data, pin.mask, pin.digest) {
 			return 0, budgetHold("withdrawal_exit_policy_drift")
 		}
 	}

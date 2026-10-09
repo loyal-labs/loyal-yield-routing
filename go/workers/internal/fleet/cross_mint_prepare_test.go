@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 type crossMintPrepareTransport func(*http.Request) (*http.Response, error)
@@ -225,7 +226,7 @@ func TestCrossMintSourceRecoveryDoesNotReadMissingTargetSetup(t *testing.T) {
 	q.Movement.Phase, q.Movement.CustodyVersion = "source_idle", 1
 	amount, slot := int64(1200), int64(999)
 	q.Movement.CustodyObservedBalanceRaw, q.Movement.CustodyReconciledSlot = &amount, &slot
-	bank.accounts[plan.Bindings.Withdraw.PolicyAccount] = fixtureAccount(plan.Bindings.Withdraw.PolicyAccount, SquadsProgram, 1, []byte{1})
+	bank.accounts[plan.Bindings.Withdraw.PolicyAccount] = fixtureAccount(plan.Bindings.Withdraw.PolicyAccount, squads.ProgramID.String(), 1, []byte{1})
 	r := &Revalidator{slotDuration: 400 * time.Millisecond, rpc: crossMintPrepareRPC(t, func(method string, params []json.RawMessage) any {
 		if method != "getMultipleAccounts" {
 			t.Fatalf("unexpected method %s", method)
@@ -277,7 +278,7 @@ func TestRealKLendIndependentCrossMintPolicyArms(t *testing.T) {
 		}
 		binary.LittleEndian.PutUint64(data[40:48], seed)
 		data[48] = bump
-		return fixtureAccount(name, SquadsProgram, 1_000_000, data)
+		return fixtureAccount(name, squads.ProgramID.String(), 1_000_000, data)
 	}
 	bank.accounts[plan.Bindings.Withdraw.PolicyAccount] = makePolicy(1, []RouteInstruction{route.Protected[0], recovery.Protected[0]})
 	bank.accounts[plan.Bindings.Deposit.PolicyAccount] = makePolicy(2, []RouteInstruction{route.Protected[1]})

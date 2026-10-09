@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func TestReportTicketV1ABIIsPinned(t *testing.T) {
@@ -85,7 +87,7 @@ func TestCapitalAndNAVBuildAtomicArmThenVoltrPayload(t *testing.T) {
 			}{
 				{bridgeStrategy, false, false}, {reportTicketPDA, false, true},
 				{bridgeSettings, false, false}, {bridgeVault, true, false},
-				{bridgeSquadsProgram, false, false},
+				{squads.ProgramID.String(), false, false},
 			}
 			if len(arm.accounts) != len(wantArmAccounts) {
 				t.Fatalf("ArmReport account count=%d", len(arm.accounts))

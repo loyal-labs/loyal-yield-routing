@@ -3,7 +3,6 @@ package fleetexec
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -66,10 +66,7 @@ func seedCrossMintActivationWithControlGeneration(t *testing.T, ctx context.Cont
 	l.TargetAPYBPS = 900
 	l.FeeCapLamports = 50000
 	derive := func(seed uint64) string {
-		var raw [8]byte
-		binary.LittleEndian.PutUint64(raw[:], seed)
-		key := sdk.MustPublicKeyFromBase58(settings)
-		account, _, err := sdk.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), key[:], raw[:]}, sdk.MustPublicKeyFromBase58(fleet.SquadsProgram))
+		account, _, err := squads.PolicyAddress(sdk.MustPublicKeyFromBase58(settings), seed)
 		if err != nil {
 			t.Fatal(err)
 		}

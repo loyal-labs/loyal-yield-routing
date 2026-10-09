@@ -10,6 +10,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func activationLeaseFixture(t *testing.T) (RevalidationLease, crossMintPlan, crossMintPreparationBank) {
@@ -23,7 +25,7 @@ func activationLeaseFixture(t *testing.T) (RevalidationLease, crossMintPlan, cro
 func TestCrossMintSourceCertificateBindsObservedBankAndExactVerifier(t *testing.T) {
 	l, plan, bank := activationLeaseFixture(t)
 	for _, address := range []string{plan.Bindings.Withdraw.PolicyAccount, plan.Bindings.Swap.PolicyAccount, plan.Bindings.Deposit.PolicyAccount} {
-		bank.accounts[address] = fixtureAccount(address, SquadsProgram, 1, []byte(address))
+		bank.accounts[address] = fixtureAccount(address, squads.ProgramID.String(), 1, []byte(address))
 	}
 	tx := PreparedTransaction{MessageSHA256: hex.EncodeToString(bytes.Repeat([]byte{2}, 32)), WireSHA256: hex.EncodeToString(bytes.Repeat([]byte{3}, 32)), PacketBytes: 512, ComputeLimit: 200_000, LookupTables: []string{testPubkey(111)}}
 	build := validatedJupiterBuild{ResponseSHA256: hex.EncodeToString(bytes.Repeat([]byte{4}, 32)), RouteSteps: 1, QuotedOutput: 999, MinimumOutput: 998, Slippage: 1, Dialect: "route_v2", LastValidBlockHeight: 2000, ObservedBlockHeight: 1900}

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -154,7 +155,7 @@ func testWireBuilder(t *testing.T) *SweepWireBuilder {
 		if err != nil {
 			return 0, nil, err
 		}
-		return 500, []*chain.Account{testAccount{Address: addresses[0], Owner: squadsProgramID, Data: policy}.chainAccount()}, nil
+		return 500, []*chain.Account{testAccount{Address: addresses[0], Owner: squads.ProgramID.String(), Data: policy}.chainAccount()}, nil
 	})
 	if err != nil {
 		t.Fatalf("build wire builder: %v", err)
@@ -165,11 +166,11 @@ func testWireBuilder(t *testing.T) *SweepWireBuilder {
 func testPullPlan() (DepositPlan, string) {
 	wallet, policy := fixedKey("wallet"), fixedKey("policy")
 	settings := mustKey(fixedKey("settings"))
-	vaultKey, err := findProgramAddress([][]byte{[]byte("smart_account"), settings[:], []byte("smart_account"), {1}}, squadsProgramID)
+	vaultKey, _, err := squads.SmartAccountAddress(settings, 1)
 	if err != nil {
 		panic(err)
 	}
-	vault := base58Key(vaultKey[:])
+	vault := vaultKey.String()
 	walletAta, custodyAta := fixedKey("wallet-ata"), fixedKey("custody-ata")
 	plan := DepositPlan{
 		Version:       DepositPlanVersion,
@@ -235,13 +236,17 @@ func TestBuildPullProducesSignedSubscriptionsWire(t *testing.T) {
 	if len(message.instructions) != 1 {
 		t.Fatalf("pull wire has %d instructions, want exactly one wrapped transfer", len(message.instructions))
 	}
-	wrapper := message.instructions[0]
-	if !bytes.Equal(wrapper.data[:8], squadsExecuteSyncV2Discriminator[:]) {
-		t.Fatal("pull instruction is not wrapped in the squads policy envelope")
+	wrapper := squads.Instruction{ProgramID: message.instructions[0].program, Data: message.instructions[0].data}
+	for _, key := range message.instructions[0].accounts {
+		wrapper.Accounts = append(wrapper.Accounts, solana.AccountMeta{PublicKey: key})
 	}
-	inner, err := parseWrappedCompiledInstruction(wrapper)
-	if err != nil {
-		t.Fatalf("unwrap pull instruction: %v", err)
+	execute, err := squads.DecodeExecuteTransactionSyncV2(wrapper)
+	if err != nil || len(execute.Inner) != 1 {
+		t.Fatalf("pull instruction is not one squads policy execution: %v", err)
+	}
+	inner := decodedInstruction{program: execute.Inner[0].ProgramID, data: execute.Inner[0].Data}
+	for _, account := range execute.Inner[0].Accounts {
+		inner.accounts = append(inner.accounts, account.PublicKey)
 	}
 	if !keyEqual(inner.program, SubscriptionsProgramID) {
 		t.Fatalf("wrapped program is %s, want the subscriptions program", inner.program)
@@ -268,11 +273,11 @@ func TestBuildPullProducesSignedSubscriptionsWire(t *testing.T) {
 	if inner.accounts[6] != mustKey(plan.Target.VaultPubkey) {
 		t.Fatalf("pull account 6 is %s, want the vault as the sole inner signer", inner.accounts[6])
 	}
-	if wrapper.accounts[0] != mustKey(plan.Target.SweepPolicyAccount) || wrapper.data[8] != 1 {
+	if execute.Policy != mustKey(plan.Target.SweepPolicyAccount) || execute.AccountIndex != 1 {
 		t.Fatal("pull used the wrong policy or vault index")
 	}
-	if wrapper.accounts[2] != builder.delegate {
-		t.Fatalf("wrapper signer is %s, want the injected executor", wrapper.accounts[2])
+	if execute.Signer != builder.delegate {
+		t.Fatalf("wrapper signer is %s, want the injected executor", execute.Signer)
 	}
 }
 

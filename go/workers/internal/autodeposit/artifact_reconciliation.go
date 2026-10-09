@@ -13,6 +13,7 @@ import (
 
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -220,7 +221,7 @@ func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target Art
 			return errors.New("artifact account is executable")
 		}
 	}
-	if accounts[1].Owner.String() != squadsProgramID {
+	if accounts[1].Owner != squads.ProgramID {
 		return errors.New("artifact policy has foreign owner")
 	}
 	nonce := uint64(*target.Nonce)
@@ -230,7 +231,7 @@ func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target Art
 	if binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:delegationPerPeriodOffset+8]) != uint64(*target.MaxAmountPerPeriod) {
 		return errors.New("artifact delegation budget changed between snapshots")
 	}
-	return VerifyCanonicalSubscriptionPolicyAccount(CanonicalSubscriptionPolicyRequest{Settings: target.Settings, RootAuthority: target.RootAuthority, Payer: target.RootAuthority, DelegatedSigner: b.delegate.String(), PolicySeed: uint64(target.PolicySeed), Wallet: target.Wallet, Vault: target.Vault, MaxAmountPerPeriod: uint64(*target.MaxAmountPerPeriod)}, accounts[1].Data)
+	return VerifyCanonicalSubscriptionPolicyAccount(CanonicalSubscriptionPolicyRequest{Settings: target.Settings, RootAuthority: target.RootAuthority, Payer: target.RootAuthority, DelegatedSigner: b.delegate.String(), PolicySeed: uint64(target.PolicySeed), Wallet: target.Wallet, Vault: target.Vault, MaxAmountPerPeriod: uint64(*target.MaxAmountPerPeriod)}, accounts[1])
 }
 
 // The layout is pinned to Loyal smart-accounts core generated Settings.ts and
@@ -238,56 +239,21 @@ func (b *SweepWireBuilder) proveArtifactAccounts(ctx context.Context, target Art
 // root shape only: threshold1, one root signer with mask7, no external settings
 // authority. Multi-owner or handed-off roots require separate evidence.
 func verifyArtifactRoot(a *chain.Account, target ArtifactTarget) error {
-	d := a.Data
-	if a.Key.String() != target.Settings || a.Owner.String() != squadsProgramID || a.Executable || len(d) < 94 || !bytes.Equal(d[:8], []byte{223, 179, 163, 190, 177, 224, 67, 173}) {
+	if a.Key.String() != target.Settings {
 		return errors.New("artifact root settings owner or layout invalid")
 	}
-	if base58Key(d[24:56]) != systemProgramZero || binary.LittleEndian.Uint16(d[56:58]) != 1 || binary.LittleEndian.Uint32(d[58:62]) != 0 || binary.LittleEndian.Uint64(d[70:78]) > binary.LittleEndian.Uint64(d[62:70]) {
+	settings, err := squads.DecodeSettings(a)
+	if err != nil {
+		return fmt.Errorf("artifact root settings owner or layout invalid: %w", err)
+	}
+	if !settings.SettingsAuthority.IsZero() || settings.Threshold != 1 || settings.TimeLock != 0 || settings.StaleTransactionIndex > settings.TransactionIndex {
 		return errors.New("artifact root settings is not a supported personal root")
 	}
-	offset := 79
-	switch d[78] {
-	case 0:
-	case 1:
-		offset += 32
-	default:
-		return errors.New("artifact settings archival option invalid")
-	}
-	offset += 8
-	if offset+5 > len(d) {
-		return errors.New("artifact settings truncated before signers")
-	}
-	bump := d[offset]
-	offset++
-	count := binary.LittleEndian.Uint32(d[offset : offset+4])
-	offset += 4
-	if count != 1 || offset+33 > len(d) || base58Key(d[offset:offset+32]) != target.RootAuthority || d[offset+32] != 7 {
+	if len(settings.Signers) != 1 || settings.Signers[0].Key.String() != target.RootAuthority || settings.Signers[0].Permissions != squads.FullPermissions {
 		return errors.New("artifact settings root signer differs from verified target authority")
 	}
-	offset += 33
-	if offset+2 > len(d) {
-		return errors.New("artifact settings truncated after signers")
-	}
-	offset++
-	switch d[offset] {
-	case 0:
-		offset++
-	case 1:
-		offset += 9
-	default:
-		return errors.New("artifact settings policy-seed option invalid")
-	}
-	if offset >= len(d) {
-		return errors.New("artifact settings missing reserved field")
-	}
-	offset++
-	for _, v := range d[offset:] {
-		if v != 0 {
-			return errors.New("artifact settings unsupported trailing state")
-		}
-	}
-	settings, expectedBump, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("settings"), d[8:24]}, mustKey(squadsProgramID))
-	if err != nil || settings.String() != target.Settings || bump != expectedBump {
+	derived, bump, err := squads.SettingsAddress(settings.Seed)
+	if err != nil || derived.String() != target.Settings || settings.Bump != bump {
 		return errors.New("artifact settings seed and bump differ from canonical root")
 	}
 	return nil
@@ -380,7 +346,7 @@ func (b *SweepWireBuilder) verifyArtifactCreator(ctx context.Context, target Art
 			return proof, errors.New("artifact creator program index out of range")
 		}
 		program := keys[compiled.ProgramIDIndex].String()
-		if role == ArtifactPolicy && program != squadsProgramID || role == ArtifactDelegation && program != SubscriptionsProgramID {
+		if role == ArtifactPolicy && program != squads.ProgramID.String() || role == ArtifactDelegation && program != SubscriptionsProgramID {
 			continue
 		}
 		var expected fleet.RouteInstruction

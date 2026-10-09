@@ -6,14 +6,15 @@ import (
 	"sort"
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 const (
-	KaminoReserves              = "kamino_reserves"
-	BalanceSweepWalletATAs      = "balance_sweep_wallet_atas"
-	EarnMaxPolicyTransactions   = "earn_max_policy_transactions"
-	StreamProgress              = "stream_progress"
-	SquadsSmartAccountProgramID = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+	KaminoReserves            = "kamino_reserves"
+	BalanceSweepWalletATAs    = "balance_sweep_wallet_atas"
+	EarnMaxPolicyTransactions = "earn_max_policy_transactions"
+	StreamProgress            = "stream_progress"
 )
 
 type AccountFilter struct {
@@ -64,7 +65,7 @@ func Build(spec Spec) (*pb.SubscribeRequest, error) {
 
 	policyProgram := spec.PolicyProgram
 	if policyProgram == "" {
-		policyProgram = SquadsSmartAccountProgramID
+		policyProgram = squads.ProgramID.String()
 	}
 	vote := false
 	failed := false

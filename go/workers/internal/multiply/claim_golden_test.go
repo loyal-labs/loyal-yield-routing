@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -117,13 +118,13 @@ func TestRootWalletClaimAcceptanceRejectsForgedWires(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var squads solana.CompiledInstruction
+	var execute solana.CompiledInstruction
 	for _, ix := range original.Message.Instructions {
-		if original.Message.AccountKeys[ix.ProgramIDIndex] == mustKey(SquadsProgram) {
-			squads = ix
+		if original.Message.AccountKeys[ix.ProgramIDIndex] == squads.ProgramID {
+			execute = ix
 		}
 	}
-	canonical, err := squads.ResolveInstructionAccounts(&original.Message)
+	canonical, err := execute.ResolveInstructionAccounts(&original.Message)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestRootWalletClaimAcceptanceRejectsForgedWires(t *testing.T) {
 			}
 			instructions = append(instructions, solana.NewInstruction(solana.ComputeBudget, budget, []byte{2, 0, 0, 0, 0}))
 		}
-		instructions = append(instructions, solana.NewInstruction(mustKey(SquadsProgram), accounts(metas), data(append([]byte(nil), squads.Data...))))
+		instructions = append(instructions, solana.NewInstruction(squads.ProgramID, accounts(metas), data(append([]byte(nil), execute.Data...))))
 		tx, err := solana.NewTransaction(instructions, original.Message.RecentBlockhash, solana.TransactionPayer(solana.PublicKeyFromBytes(authority[32:])))
 		if err != nil {
 			t.Fatal(err)

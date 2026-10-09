@@ -20,32 +20,16 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
-)
-
-type DataOperatorView = squadspolicy.DataOperatorView
-type DataValueView = squadspolicy.DataValueView
-type DataConstraintView = squadspolicy.DataConstraintView
-type AccountConstraintView = squadspolicy.AccountConstraintView
-type InstructionConstraintView = squadspolicy.InstructionConstraintView
-type SpendingLimitView = squadspolicy.SpendingLimitView
-type PolicyPayloadView = squadspolicy.PolicyPayloadView
-
-const (
-	OpEquals               = squadspolicy.OpEquals
-	OpNotEquals            = squadspolicy.OpNotEquals
-	OpGreaterThan          = squadspolicy.OpGreaterThan
-	OpGreaterThanOrEqualTo = squadspolicy.OpGreaterThanOrEqualTo
-	OpLessThan             = squadspolicy.OpLessThan
-	OpLessThanOrEqualTo    = squadspolicy.OpLessThanOrEqualTo
 )
 
 // CanonicalConstraints is the Go port of earn_max_policy_constraints over the
 // semantic contract: literal KLend lane pinning for collateral/debt families
 // and Jupiter SharedAccountsRoute lane pinning for swaps. Constraint indexes
 // line up with ConstraintIndexes in policy.go.
-func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (constraints []InstructionConstraintView, err error) {
+func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (constraints []squads.InstructionConstraintView, err error) {
 	// Official semantic_program_interaction_constraints sorts each instruction's
 	// account clauses before serialization; compare that actual account view.
 	defer func() {
@@ -102,35 +86,35 @@ func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (const
 	}
 	switch family {
 	case FamilyCollateral:
-		return []InstructionConstraintView{
+		return []squads.InstructionConstraintView{
 			collateralConstraint(boundary, DiscriminatorDepositCollateral),
 			collateralConstraint(boundary, DiscriminatorWithdrawCollateral),
 		}, nil
 	case FamilyDebt:
-		return []InstructionConstraintView{
+		return []squads.InstructionConstraintView{
 			{
 				ProgramID: boundary.klendProgram,
-				AccountConstraints: []AccountConstraintView{
+				AccountConstraints: []squads.AccountConstraintView{
 					pinned(0, boundary.vault),
 					pinned(2, uniqueKeys(laneKeys(boundary.lanes, func(lane policyLane) solana.PublicKey { return lane.market }))...),
 					pinned(8, uniqueKeys(laneKeys(boundary.lanes, func(lane policyLane) solana.PublicKey { return lane.debtCustody }))...),
 					obligationOwnedByVault(boundary),
 				},
-				DataConstraints: []DataConstraintView{sliceEquals(DiscriminatorBorrowDebt)},
+				DataConstraints: []squads.DataConstraintView{sliceEquals(DiscriminatorBorrowDebt)},
 			},
 			{
 				ProgramID: boundary.klendProgram,
-				AccountConstraints: []AccountConstraintView{
+				AccountConstraints: []squads.AccountConstraintView{
 					pinned(0, boundary.vault),
 					pinned(2, uniqueKeys(laneKeys(boundary.lanes, func(lane policyLane) solana.PublicKey { return lane.market }))...),
 					pinned(6, uniqueKeys(laneKeys(boundary.lanes, func(lane policyLane) solana.PublicKey { return lane.debtCustody }))...),
 					obligationOwnedByVault(boundary),
 				},
-				DataConstraints: []DataConstraintView{sliceEquals(DiscriminatorRepayDebt)},
+				DataConstraints: []squads.DataConstraintView{sliceEquals(DiscriminatorRepayDebt)},
 			},
 		}, nil
 	case FamilySwap:
-		return []InstructionConstraintView{
+		return []squads.InstructionConstraintView{
 			swapConstraint(boundary,
 				[]solana.PublicKey{boundary.usdcCustody, boundary.usdsCustody},
 				[]solana.PublicKey{boundary.onycCustody, boundary.primeCustody}),
@@ -160,58 +144,58 @@ type policyBoundary struct {
 	lanes []policyLane
 }
 
-func collateralConstraint(boundary policyBoundary, discriminator [8]byte) InstructionConstraintView {
-	return InstructionConstraintView{
+func collateralConstraint(boundary policyBoundary, discriminator [8]byte) squads.InstructionConstraintView {
+	return squads.InstructionConstraintView{
 		ProgramID: boundary.klendProgram,
-		AccountConstraints: []AccountConstraintView{
+		AccountConstraints: []squads.AccountConstraintView{
 			pinned(0, boundary.vault),
 			pinned(4, uniqueKeys(laneKeys(boundary.lanes, func(lane policyLane) solana.PublicKey { return lane.collateralReserve }))...),
 			pinned(9, uniqueKeys(laneKeys(boundary.lanes, func(lane policyLane) solana.PublicKey { return lane.collateralCustody }))...),
 			obligationOwnedByVault(boundary),
 		},
-		DataConstraints: []DataConstraintView{sliceEquals(discriminator)},
+		DataConstraints: []squads.DataConstraintView{sliceEquals(discriminator)},
 	}
 }
 
-func swapConstraint(boundary policyBoundary, sources, destinations []solana.PublicKey) InstructionConstraintView {
-	return InstructionConstraintView{
+func swapConstraint(boundary policyBoundary, sources, destinations []solana.PublicKey) squads.InstructionConstraintView {
+	return squads.InstructionConstraintView{
 		ProgramID: boundary.jupiterProgram,
-		AccountConstraints: []AccountConstraintView{
+		AccountConstraints: []squads.AccountConstraintView{
 			pinned(2, boundary.vault),
 			pinned(3, sources...),
 			pinned(6, destinations...),
 		},
-		DataConstraints: []DataConstraintView{{
+		DataConstraints: []squads.DataConstraintView{{
 			DataOffset: 0,
-			DataValue: DataValueView{Kind: 1, U16: binary.LittleEndian.Uint16(
+			DataValue: squads.DataValueView{Kind: 1, U16: binary.LittleEndian.Uint16(
 				JupiterSharedAccountsRouteDiscriminator[:2])},
-			Operator: OpEquals,
+			Operator: squads.OpEquals,
 		}},
 	}
 }
 
-func obligationOwnedByVault(boundary policyBoundary) AccountConstraintView {
+func obligationOwnedByVault(boundary policyBoundary) squads.AccountConstraintView {
 	vault := boundary.vault
-	return AccountConstraintView{
+	return squads.AccountConstraintView{
 		AccountIndex: 1,
 		Owner:        &boundary.klendProgram,
-		AccountData: []DataConstraintView{{
+		AccountData: []squads.DataConstraintView{{
 			DataOffset: 64,
-			DataValue:  DataValueView{Kind: 5, Bytes: append([]byte(nil), vault[:]...)},
-			Operator:   OpEquals,
+			DataValue:  squads.DataValueView{Kind: 5, Bytes: append([]byte(nil), vault[:]...)},
+			Operator:   squads.OpEquals,
 		}},
 	}
 }
 
-func pinned(accountIndex uint8, keys ...solana.PublicKey) AccountConstraintView {
-	return AccountConstraintView{AccountIndex: accountIndex, Pubkeys: keys}
+func pinned(accountIndex uint8, keys ...solana.PublicKey) squads.AccountConstraintView {
+	return squads.AccountConstraintView{AccountIndex: accountIndex, Pubkeys: keys}
 }
 
-func sliceEquals(discriminator [8]byte) DataConstraintView {
-	return DataConstraintView{
+func sliceEquals(discriminator [8]byte) squads.DataConstraintView {
+	return squads.DataConstraintView{
 		DataOffset: 0,
-		DataValue:  DataValueView{Kind: 5, Bytes: append([]byte(nil), discriminator[:]...)},
-		Operator:   OpEquals,
+		DataValue:  squads.DataValueView{Kind: 5, Bytes: append([]byte(nil), discriminator[:]...)},
+		Operator:   squads.OpEquals,
 	}
 }
 
@@ -244,8 +228,8 @@ func uniqueKeys(keys []solana.PublicKey) []solana.PublicKey {
 // policy account must be a canonical hookless ProgramInteraction policy under
 // the expected PDA, delegating to exactly this signer with threshold 1, and
 // its payload must equal the canonical constraint set.
-func CurrentPolicyMatches(data []byte, policy PolicyConfig, delegate solana.PublicKey, expected []InstructionConstraintView, expectedVaultIndex uint8) (bool, error) {
-	current, err := squadspolicy.DecodeProgramInteractionPolicyAccount(data)
+func CurrentPolicyMatches(account *chain.Account, policy PolicyConfig, delegate solana.PublicKey, expected []squads.InstructionConstraintView, expectedVaultIndex uint8) (bool, error) {
+	current, err := squads.DecodeCanonicalPolicy(account)
 	if err != nil {
 		return false, err
 	}
@@ -258,7 +242,7 @@ func CurrentPolicyMatches(data []byte, policy PolicyConfig, delegate solana.Publ
 		current.Threshold == 1 &&
 		current.Payload.VaultIndex == expectedVaultIndex &&
 		len(current.Payload.SpendingLimits) == 0 &&
-		squadspolicy.ConstraintsEqual(current.Payload.Constraints, expected), nil
+		squads.ConstraintsEqual(current.Payload.Constraints, expected), nil
 }
 
 // PolicyDataHash hashes the policy account bytes for the persisted binding.

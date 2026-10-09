@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"reflect"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Doc-13 candidate readiness: with a validated explicit manifest binding, AUTO
@@ -97,7 +99,7 @@ func (f *autoReadinessFixture) accounts(t *testing.T, route RuntimeRoute, extra 
 		if !ok {
 			t.Fatalf("no fixture bytes for pinned account %s", address)
 		}
-		accounts = append(accounts, ConfirmedAccount{Address: address, Owner: bridgeSquadsProgram, Lamports: 1, Data: append([]byte(nil), data...)})
+		accounts = append(accounts, ConfirmedAccount{Address: address, Owner: squads.ProgramID.String(), Lamports: 1, Data: append([]byte(nil), data...)})
 	}
 	return append(accounts, extra...)
 }
@@ -261,16 +263,16 @@ func TestAutoReadinessNeverFallsBackToHistoricalShards(t *testing.T) {
 	// establishes readiness.
 	accounts := []ConfirmedAccount{}
 	for _, b := range route.KaminoPolicies {
-		accounts = append(accounts, ConfirmedAccount{Address: b.Policy, Owner: bridgeSquadsProgram, Lamports: 1, Data: bytes.Repeat([]byte{5}, 2849)})
+		accounts = append(accounts, ConfirmedAccount{Address: b.Policy, Owner: squads.ProgramID.String(), Lamports: 1, Data: bytes.Repeat([]byte{5}, 2849)})
 	}
 	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
 		b, err := catalogJupiterBindingForRoute(action, route.Lane)
 		if err != nil {
 			t.Fatal(err)
 		}
-		accounts = append(accounts, ConfirmedAccount{Address: b.Policy, Owner: bridgeSquadsProgram, Lamports: 1, Data: bytes.Repeat([]byte{5}, 96)})
+		accounts = append(accounts, ConfirmedAccount{Address: b.Policy, Owner: squads.ProgramID.String(), Lamports: 1, Data: bytes.Repeat([]byte{5}, 96)})
 	}
-	accounts = append(accounts, ConfirmedAccount{Address: autoFixturePolicy, Owner: bridgeSquadsProgram, Lamports: 1, Data: bytes.Repeat([]byte{5}, 2849)})
+	accounts = append(accounts, ConfirmedAccount{Address: autoFixturePolicy, Owner: squads.ProgramID.String(), Lamports: 1, Data: bytes.Repeat([]byte{5}, 2849)})
 	pins, err := catalogRoutePolicyPins(route, absent)
 	if err == nil {
 		t.Fatalf("absent AUTO binding resolved a readiness pin set: %v", pins)

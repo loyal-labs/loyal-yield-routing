@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -33,7 +34,6 @@ const (
 	KlendProgram   = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 	JupiterProgram = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
 	FarmsProgram   = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
-	SquadsProgram  = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
 
 	USDCMint  = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	USDSMint  = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
@@ -156,9 +156,7 @@ func optionalFarm(value string) *solana.PublicKey {
 // seedBase > 0 selects the dynamic policy seeds base, base+1 for debt and
 // base+2 for swap; zero selects the reviewed static seeds 32/33/34.
 func DeriveEarnMaxTopology(settings solana.PublicKey, policySeedBase uint64) (*EarnMaxTopology, error) {
-	vault, _, err := solana.FindProgramAddress([][]byte{
-		[]byte("smart_account"), settings[:], []byte("smart_account"), {EarnMaxVaultIndex},
-	}, mustKey(SquadsProgram))
+	vault, _, err := squads.SmartAccountAddress(settings, EarnMaxVaultIndex)
 	if err != nil {
 		return nil, fmt.Errorf("derive squads vault: %w", err)
 	}
@@ -239,21 +237,6 @@ func deriveKaminoFarmUserState(farmState, obligation solana.PublicKey) (solana.P
 	key, _, err := solana.FindProgramAddress([][]byte{[]byte("user"), farmState[:], obligation[:]}, mustKey(FarmsProgram))
 	if err != nil {
 		return solana.PublicKey{}, fmt.Errorf("derive farm user state: %w", err)
-	}
-	return key, nil
-}
-
-// deriveActionAccount mirrors derive_action_account.
-func deriveActionAccount(settings solana.PublicKey, seed uint64) (solana.PublicKey, error) {
-	var seedBytes [8]byte
-	for index := range seedBytes {
-		seedBytes[index] = byte(seed >> (8 * index))
-	}
-	key, _, err := solana.FindProgramAddress([][]byte{
-		[]byte("smart_account"), []byte("policy"), settings[:], seedBytes[:],
-	}, mustKey(SquadsProgram))
-	if err != nil {
-		return solana.PublicKey{}, fmt.Errorf("derive action account: %w", err)
 	}
 	return key, nil
 }
@@ -422,9 +405,9 @@ func policySeeds(base, staticCollateral uint64) (seeds, error) {
 }
 
 func policyConfig(settings solana.PublicKey, seed uint64) (PolicyConfig, error) {
-	account, err := deriveActionAccount(settings, seed)
+	account, _, err := squads.PolicyAddress(settings, seed)
 	if err != nil {
-		return PolicyConfig{}, err
+		return PolicyConfig{}, fmt.Errorf("derive action account: %w", err)
 	}
 	return PolicyConfig{Seed: seed, Account: account}, nil
 }

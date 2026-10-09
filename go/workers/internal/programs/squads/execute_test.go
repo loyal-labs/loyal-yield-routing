@@ -1,13 +1,15 @@
-package multiply
+package squads
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"github.com/solana-foundation/solana-go/v2"
 	"os"
 	"testing"
+
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 type goldenInstruction struct {
@@ -36,7 +38,7 @@ func (g goldenInstruction) instruction(t *testing.T) Instruction {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out.Accounts = append(out.Accounts, AccountMeta{PubKey: key, IsSigner: a.Signer, IsWritable: a.Writable})
+		out.Accounts = append(out.Accounts, solana.AccountMeta{PublicKey: key, IsSigner: a.Signer, IsWritable: a.Writable})
 	}
 	return out
 }
@@ -88,12 +90,14 @@ func TestSquadsEnvelopeMatchesIndependentRustGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var table []AccountMeta
-	var compiled []CompiledInstruction
-	for _, inner := range request.Inner {
-		compiled = append(compiled, CompileSquadsInnerInstruction(&table, inner.instruction(t)))
+	var inner []Instruction
+	for _, ix := range request.Inner {
+		inner = append(inner, ix.instruction(t))
 	}
-	actual := ExecuteProgramInteractionInstruction(policy, delegate, request.Index, compiled, constraints, table)
+	actual, err := ExecuteTransactionSyncV2(ExecuteSync{Policy: policy, Signer: delegate, AccountIndex: request.Index, ConstraintIndexes: constraints, Inner: inner})
+	if err != nil {
+		t.Fatal(err)
+	}
 	expected := fixture.Expected.Instruction.instruction(t)
 	actualJSON, err := json.Marshal(actual)
 	if err != nil {
@@ -105,5 +109,14 @@ func TestSquadsEnvelopeMatchesIndependentRustGolden(t *testing.T) {
 	}
 	if string(actualJSON) != string(expectedJSON) {
 		t.Fatalf("Squads envelope differs from Rust golden:\nactual %s\nRust %s", actualJSON, expectedJSON)
+	}
+	decoded, err := DecodeExecuteTransactionSyncV2(actual)
+	if err != nil || decoded.Policy != policy || decoded.Signer != delegate || decoded.AccountIndex != request.Index || !bytes.Equal(decoded.ConstraintIndexes, constraints) || len(decoded.Inner) != len(inner) {
+		t.Fatalf("envelope does not decode to its inputs: %v", err)
+	}
+	for i := range inner {
+		if decoded.Inner[i].ProgramID != inner[i].ProgramID || !bytes.Equal(decoded.Inner[i].Data, inner[i].Data) || len(decoded.Inner[i].Accounts) != len(inner[i].Accounts) {
+			t.Fatalf("inner %d does not decode to its input", i)
+		}
 	}
 }

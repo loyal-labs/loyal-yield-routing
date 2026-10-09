@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/solana-foundation/solana-go/v2"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // A route that opens its target obligation runs init under the vault's setup
@@ -20,7 +20,7 @@ func TestWaitingALTBindsTheVaultSetupPolicy(t *testing.T) {
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	l, _ := waitingIdentity(t, ctx, s, suffix)
 	settingsHash := sha256.Sum256([]byte("waiting-settings:" + suffix))
-	setupKey, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settingsHash[:], {2, 0, 0, 0, 0, 0, 0, 0}}, solana.MustPublicKeyFromBase58(SquadsProgram))
+	setupKey, _, err := squads.PolicyAddress(settingsHash, 2)
 	if err != nil {
 		t.Fatal(err)
 	}

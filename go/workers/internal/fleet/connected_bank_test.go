@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -244,7 +245,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	settings := unique("settings")
 	settingsKey := solana.MustPublicKeyFromBase58(settings)
 	const vaultIndex = uint8(1) // Classic Earn; Multiply keeps its independent vault0.
-	vaultKey, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), settingsKey[:], []byte("smart_account"), {vaultIndex}}, solana.MustPublicKeyFromBase58(SquadsProgram))
+	vaultKey, _, err := squads.SmartAccountAddress(settingsKey, vaultIndex)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +324,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 		_, bump, _ := derivePolicyAccount(settings, seed)
 		putPolicySeed(policyData, seed, bump)
 		// Executable policy accounts include the full tail beyond constraints.
-		accounts[address] = fixtureAccount(address, SquadsProgram, 1_000_000, append(policyData, make([]byte, 2+4+8+1+32)...))
+		accounts[address] = fixtureAccount(address, squads.ProgramID.String(), 1_000_000, append(policyData, make([]byte, 2+4+8+1+32)...))
 		return address
 	}
 	// Deposit amounts are finalized custody, not the planned amount: policies
@@ -354,7 +355,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if routeBody, _, err = wrapSameMintRoute(route, signer, vaultIndex, earnPolicy, accounts[earnPolicy].Data, bank.SetupPolicy, accounts[bank.SetupPolicy].Data); err != nil {
+		if routeBody, _, err = wrapSameMintRoute(route, signer, vaultIndex, earnPolicy, squadsPolicyAccount(accounts[earnPolicy].Data), bank.SetupPolicy, squadsPolicyAccount(accounts[bank.SetupPolicy].Data)); err != nil {
 			t.Fatal(err)
 		}
 	case ConnectedCrossMint:
@@ -381,7 +382,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	_, swapPolicy := connectedPolicyHeader(t, settings, signer, 11)
 	binding := CrossMintPolicyBindings{Settings: settings, VaultIndex: vaultIndex, VaultPubkey: vault, DelegatedSigner: signer, Withdraw: CrossMintEarnPolicyBinding{earnPolicy, 999, "local-withdraw", "finalized", 0}, Deposit: CrossMintEarnPolicyBinding{targetPolicy, 999, "local-deposit", "finalized", 1}, Swap: CrossMintSwapPolicyBinding{PolicyAccount: swapPolicy, SourceShard: "classic", EnrollmentGeneration: 1, ObservedSlot: 999, ObservedSignature: "local-swap", SourceCommitment: "finalized", MaxSlippageBPS: 50, DailySourceMintSpendingCap: 10_000_000_000}}
 	binding.Swap.ManifestFingerprint = fingerprintCrossMintManifest(binding, []string{USDCMint, USDTMint, USDSMint}, tokenProgram)
-	accounts[swapPolicy] = fixtureAccount(swapPolicy, SquadsProgram, 1_000_000, connectedSwapPolicy(t, binding, 11))
+	accounts[swapPolicy] = fixtureAccount(swapPolicy, squads.ProgramID.String(), 1_000_000, connectedSwapPolicy(t, binding, 11))
 	// Managed ALT coverage: every address the route body needs, split into
 	// the shared market catalog and the vault's own shard.
 	coverage := map[string]bool{}

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // liveSquadsPolicy152Hex is the exact finalized mainnet account data of the
@@ -146,9 +148,9 @@ func TestAllocationDailyLimitGuardHolds(t *testing.T) {
 
 func TestSquadsSpendingLimitExceededClassification(t *testing.T) {
 	logs := []string{
-		"Program " + bridgeSquadsProgram + " invoke [1]",
+		"Program " + squads.ProgramID.String() + " invoke [1]",
 		"Program log: Instruction: ExecuteTransactionSyncV2",
-		"Program " + bridgeSquadsProgram + " failed: custom program error: 0x17b9",
+		"Program " + squads.ProgramID.String() + " failed: custom program error: 0x17b9",
 	}
 	rawErr := json.RawMessage(`{"InstructionError":[0,{"Custom":6073}]}`)
 	if !squadsSpendingLimitExceeded(rawErr, logs) {
@@ -159,7 +161,7 @@ func TestSquadsSpendingLimitExceededClassification(t *testing.T) {
 		t.Fatalf("6073 must terminate in failed with its own reason, got %+v", classification)
 	}
 	otherFailed := []string{
-		"Program " + bridgeSquadsProgram + " invoke [1]",
+		"Program " + squads.ProgramID.String() + " invoke [1]",
 		"Program 11111111111111111111111111111111111111111 invoke [2]",
 		"Program 11111111111111111111111111111111111111111 failed: custom program error: 0x17b9",
 	}

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiterClient) {
@@ -41,7 +42,7 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 			if err != nil {
 				t.Fatal(err)
 			}
-			extra = append(extra, ConfirmedAccount{Address: p.PolicyAddress, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
+			extra = append(extra, ConfirmedAccount{Address: p.PolicyAddress, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 		}
 	}
 	var headers struct {

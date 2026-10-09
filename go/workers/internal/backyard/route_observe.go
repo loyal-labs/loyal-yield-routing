@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // ObserveConfirmedRouteSnapshot extends the bridge snapshot with the fixed
@@ -572,7 +573,7 @@ func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, acco
 		}
 		for address, pin := range pins {
 			account := accountAt(accounts, address)
-			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 ||
+			if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 ||
 				!maskedPolicyDigestMatches(account.Data, pin.mask, pin.digest) {
 				return false, false
 			}
@@ -591,7 +592,7 @@ func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, acco
 				return false, false
 			}
 			account := accountAt(accounts, binding.Policy)
-			if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+			if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
 				ready = false
 			}
 		}
@@ -599,13 +600,13 @@ func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, acco
 	}
 	for action, address := range route.PolicyAccounts {
 		account := accountAt(accounts, address)
-		if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != route.PolicyHashes[action] {
+		if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != route.PolicyHashes[action] {
 			return false, false
 		}
 	}
 	for address, hash := range mapleKaminoPolicyHashes() {
 		account := accountAt(accounts, address)
-		if account.Owner != bridgeSquadsProgram || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
+		if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
 			return false, false
 		}
 	}
@@ -930,7 +931,7 @@ func (m RouteManifest) livePrimeUSDCPolicyReadiness(accounts []ConfirmedAccount)
 	installed := map[string]bool{}
 	for address, hash := range wanted {
 		account := accountAt(accounts, address)
-		installed[address] = hash != "" && account.Address == address && account.Owner == bridgeSquadsProgram && !account.Executable && account.Lamports > 0 && maskedPolicyDigestMatches(account.Data, masks[address], hash)
+		installed[address] = hash != "" && account.Address == address && account.Owner == squads.ProgramID.String() && !account.Executable && account.Lamports > 0 && maskedPolicyDigestMatches(account.Data, masks[address], hash)
 	}
 	kaminoReady := len(m.RuntimeBindings.PrimeUSDC.Packets) == 4
 	bridgeReady := len(m.RuntimeBindings.BridgePolicies) == 4

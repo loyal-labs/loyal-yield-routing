@@ -1,10 +1,12 @@
-package squadspolicy
+package squads
 
 import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -73,7 +75,8 @@ type PolicyPayloadView struct {
 	SpendingLimits []SpendingLimitView
 }
 
-type Candidate struct {
+// FullPayload is a ProgramInteraction payload decoded through its tail.
+type FullPayload struct {
 	Payload             PolicyPayloadView
 	PreHook, PostHook   bool
 	ExactSpendingLimits bool
@@ -219,7 +222,7 @@ func indexedKey(table []solana.PublicKey, index uint8) (solana.PublicKey, error)
 	return table[index], nil
 }
 
-type Header struct {
+type header struct {
 	Settings                                solana.PublicKey
 	PolicySeed                              uint64
 	Bump                                    uint8
@@ -231,92 +234,135 @@ type Header struct {
 	Kind, VaultIndex                        uint8
 }
 
-func DecodeHeader(data []byte) (Header, int, error) {
+func decodeHeader(data []byte) (header, int, error) {
 	cursor := &borshCursor{data: data}
 	discriminator, err := cursor.take(8)
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
-	if !bytes.Equal(discriminator, []byte{222, 135, 7, 163, 235, 177, 33, 68}) {
-		return Header{}, 0, errors.New("account discriminator is not a Squads Policy account")
+	if !bytes.Equal(discriminator, PolicyDiscriminator[:]) {
+		return header{}, 0, errors.New("account discriminator is not a Squads Policy account")
 	}
 	settings, err := cursor.pubkey()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
 	policySeed, err := cursor.u64()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
 	policyBump, err := cursor.u8()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
 	transactionIndex, err := cursor.u64()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
 	staleTransactionIndex, err := cursor.u64()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
 	signerCount, err := cursor.u32()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
 	if signerCount > 32 {
-		return Header{}, 0, errors.New("too many policy signers")
+		return header{}, 0, errors.New("too many policy signers")
 	}
 	signers := make([]solana.PublicKey, 0, signerCount)
 	permissions := make([]uint8, 0, signerCount)
 	for i := uint32(0); i < signerCount; i++ {
 		key, err := cursor.pubkey()
 		if err != nil {
-			return Header{}, 0, err
+			return header{}, 0, err
 		}
 		mask, err := cursor.u8()
 		if err != nil {
-			return Header{}, 0, err
+			return header{}, 0, err
 		}
 		signers = append(signers, key)
 		permissions = append(permissions, mask)
 	}
 	threshold, err := cursor.u16()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
 	timeLock, err := cursor.u32()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
 	kind, err := cursor.u8()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
 	// Non-ProgramInteraction kinds have no ProgramInteraction vault-index byte.
 	if kind != 3 {
-		return Header{Settings: settings, PolicySeed: policySeed, Bump: policyBump, TransactionIndex: transactionIndex, StaleTransactionIndex: staleTransactionIndex, Signers: signers, Permissions: permissions, Threshold: threshold, TimeLock: timeLock, Kind: kind}, cursor.offset, nil
+		return header{Settings: settings, PolicySeed: policySeed, Bump: policyBump, TransactionIndex: transactionIndex, StaleTransactionIndex: staleTransactionIndex, Signers: signers, Permissions: permissions, Threshold: threshold, TimeLock: timeLock, Kind: kind}, cursor.offset, nil
 	}
 	accountIndex, err := cursor.u8()
 	if err != nil {
-		return Header{}, 0, err
+		return header{}, 0, err
 	}
-	return Header{settings, policySeed, policyBump, transactionIndex, staleTransactionIndex, signers, permissions, threshold, timeLock, kind, accountIndex}, cursor.offset, nil
+	return header{settings, policySeed, policyBump, transactionIndex, staleTransactionIndex, signers, permissions, threshold, timeLock, kind, accountIndex}, cursor.offset, nil
 }
 
-// DecodeConstraints preserves the prefix-only contract and the caller's stricter
-// vector/byte limits. compact selects a layout; callers own fallback/ambiguity.
-func DecodeConstraints(data []byte, offset int, vaultIndex uint8, compact bool, maxVector, maxBytes int) (PolicyPayloadView, int, error) {
-	if offset < 0 || offset > len(data) || maxVector < 1 || maxVector > 4096 || maxBytes < 0 || maxBytes > 4096 {
-		return PolicyPayloadView{}, offset, errors.New("invalid decoding bounds")
-	}
-	cursor := &borshCursor{data: data, offset: offset, maxVector: maxVector, maxBytes: maxBytes}
-	payload, err := readConstraints(cursor, vaultIndex, compact)
-	return payload, cursor.offset, err
+// Policy is a ProgramInteraction Policy account: its header and instruction
+// constraints. Full is the payload decoded through hooks, spending limits and
+// the account tail in the same layout; nil when that tail does not decode.
+type Policy struct {
+	Settings                                solana.PublicKey
+	Seed                                    uint64
+	Bump                                    uint8
+	TransactionIndex, StaleTransactionIndex uint64
+	Signers                                 []solana.PublicKey
+	Permissions                             []uint8
+	Threshold                               uint16
+	TimeLock                                uint32
+	VaultIndex                              uint8
+	Constraints                             []InstructionConstraintView
+	PubkeyTable                             []solana.PublicKey
+	Full                                    *FullPayload
 }
-func DecodePayload(data []byte, offset int, vaultIndex uint8, compact bool) (Candidate, error) {
+
+// DecodeProgramInteractionPolicy decodes the constraint prefix in the legacy
+// Borsh layout, or in the compact pubkey-table layout when the legacy read
+// fails or is empty; it never grants authority on its own.
+func DecodeProgramInteractionPolicy(account *chain.Account) (Policy, error) {
+	if account == nil || account.Owner != ProgramID || account.Executable {
+		return Policy{}, errors.New("policy account is absent or not owned by Squads")
+	}
+	data := account.Data
+	h, offset, err := decodeHeader(data)
+	if err != nil {
+		return Policy{}, err
+	}
+	if h.Kind != 3 {
+		return Policy{}, errors.New("policy is not ProgramInteraction")
+	}
+	p := Policy{Settings: h.Settings, Seed: h.PolicySeed, Bump: h.Bump, TransactionIndex: h.TransactionIndex, StaleTransactionIndex: h.StaleTransactionIndex, Signers: h.Signers, Permissions: h.Permissions, Threshold: h.Threshold, TimeLock: h.TimeLock, VaultIndex: h.VaultIndex}
+	var payload PolicyPayloadView
+	compact := false
+	for _, layout := range []bool{false, true} {
+		compact = layout
+		cursor := &borshCursor{data: data, offset: offset, maxVector: 128, maxBytes: 256}
+		if payload, err = readConstraints(cursor, h.VaultIndex, compact); err == nil && len(payload.Constraints) > 0 {
+			break
+		}
+	}
+	if err != nil || len(payload.Constraints) == 0 {
+		return p, fmt.Errorf("decode ProgramInteraction constraints: %w", err)
+	}
+	p.Constraints, p.PubkeyTable = payload.Constraints, payload.PubkeyTable
+	if full, err := decodePayload(data, offset, h.VaultIndex, compact); err == nil {
+		p.Full = &full
+	}
+	return p, nil
+}
+
+func decodePayload(data []byte, offset int, vaultIndex uint8, compact bool) (FullPayload, error) {
 	if len(data) > 64<<10 || offset < 0 || offset > len(data) {
-		return Candidate{}, errors.New("policy account exceeds payload bounds")
+		return FullPayload{}, errors.New("policy account exceeds payload bounds")
 	}
 	cursor := &borshCursor{data: data, offset: offset, maxVector: 4096, maxBytes: 4096}
 	if compact {
@@ -370,38 +416,38 @@ func readConstraints(cursor *borshCursor, accountIndex uint8, compact bool) (Pol
 	}
 	return PolicyPayloadView{VaultIndex: accountIndex, PubkeyTable: table, Constraints: constraints}, nil
 }
-func readLegacyPayload(cursor *borshCursor, accountIndex uint8) (Candidate, error) {
+func readLegacyPayload(cursor *borshCursor, accountIndex uint8) (FullPayload, error) {
 	payload, err := readConstraints(cursor, accountIndex, false)
 	if err != nil {
-		return Candidate{}, err
+		return FullPayload{}, err
 	}
 	preHook, err := skipHook(cursor, false, nil)
 	if err != nil {
-		return Candidate{}, err
+		return FullPayload{}, err
 	}
 	postHook, err := skipHook(cursor, false, nil)
 	if err != nil {
-		return Candidate{}, err
+		return FullPayload{}, err
 	}
 	limitCount, err := cursor.u32Len()
 	if err != nil || limitCount > 128 {
-		return Candidate{}, errors.New("too many ProgramInteraction spending limits")
+		return FullPayload{}, errors.New("too many ProgramInteraction spending limits")
 	}
 	limits := make([]SpendingLimitView, 0, limitCount)
 	exact := true
 	for i := 0; i < limitCount; i++ {
 		limit, limitExact, err := readLegacySpendingLimit(cursor)
 		if err != nil {
-			return Candidate{}, err
+			return FullPayload{}, err
 		}
 		limits = append(limits, limit)
 		exact = exact && limitExact
 	}
 	start, hasExpiration, err := readPolicyAccountTail(cursor)
 	if err != nil {
-		return Candidate{}, err
+		return FullPayload{}, err
 	}
-	return Candidate{
+	return FullPayload{
 		Payload: PolicyPayloadView{
 			VaultIndex: accountIndex, Constraints: payload.Constraints, SpendingLimits: limits,
 		},
@@ -410,36 +456,36 @@ func readLegacyPayload(cursor *borshCursor, accountIndex uint8) (Candidate, erro
 	}, nil
 }
 
-func readCompactPayload(cursor *borshCursor, accountIndex uint8) (Candidate, error) {
+func readCompactPayload(cursor *borshCursor, accountIndex uint8) (FullPayload, error) {
 	payload, err := readConstraints(cursor, accountIndex, true)
 	if err != nil {
-		return Candidate{}, err
+		return FullPayload{}, err
 	}
 	preHook, err := skipHook(cursor, true, payload.PubkeyTable)
 	if err != nil {
-		return Candidate{}, err
+		return FullPayload{}, err
 	}
 	postHook, err := skipHook(cursor, true, payload.PubkeyTable)
 	if err != nil {
-		return Candidate{}, err
+		return FullPayload{}, err
 	}
 	limitCount, err := cursor.u8Len()
 	if err != nil {
-		return Candidate{}, err
+		return FullPayload{}, err
 	}
 	limits := make([]SpendingLimitView, 0, limitCount)
 	for i := 0; i < limitCount; i++ {
 		limit, err := readCompactSpendingLimit(cursor, payload.PubkeyTable)
 		if err != nil {
-			return Candidate{}, err
+			return FullPayload{}, err
 		}
 		limits = append(limits, limit)
 	}
 	start, hasExpiration, err := readPolicyAccountTail(cursor)
 	if err != nil {
-		return Candidate{}, err
+		return FullPayload{}, err
 	}
-	return Candidate{
+	return FullPayload{
 		Payload: PolicyPayloadView{
 			VaultIndex: accountIndex, PubkeyTable: payload.PubkeyTable, Constraints: payload.Constraints,
 			SpendingLimits: limits,

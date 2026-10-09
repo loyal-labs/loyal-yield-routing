@@ -12,6 +12,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 var ErrTransactionConstructionUnavailable = fmt.Errorf("transaction construction blocked: deployed adaptor v2 and complete policy catalog are required")
@@ -97,7 +98,6 @@ func (s SignedBridgeTransaction) BuildResult(simulationSlot int64) (BuildResult,
 // They are not configurable: a different key is a different reviewed manifest,
 // not an environment override.
 const (
-	bridgeSquadsProgram  = "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
 	bridgeSettings       = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
 	bridgeSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
 	bridgeVault          = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
@@ -129,11 +129,10 @@ const (
 )
 
 var (
-	voltrDepositDiscriminator      = []byte{246, 82, 57, 226, 131, 222, 253, 249}
-	voltrWithdrawDiscriminator     = []byte{31, 45, 162, 5, 193, 217, 134, 188}
-	adaptorDepositDiscriminator    = []byte{242, 35, 198, 137, 82, 225, 242, 182}
-	adaptorWithdrawDiscriminator   = []byte{183, 18, 70, 156, 148, 109, 161, 34}
-	squadsExecuteSyncDiscriminator = []byte{90, 81, 187, 81, 39, 70, 128, 78}
+	voltrDepositDiscriminator    = []byte{246, 82, 57, 226, 131, 222, 253, 249}
+	voltrWithdrawDiscriminator   = []byte{31, 45, 162, 5, 193, 217, 134, 188}
+	adaptorDepositDiscriminator  = []byte{242, 35, 198, 137, 82, 225, 242, 182}
+	adaptorWithdrawDiscriminator = []byte{183, 18, 70, 156, 148, 109, 161, 34}
 )
 
 // bridgeCapRaw stays the whole-vault bound used by the Kamino basic policies
@@ -338,46 +337,32 @@ func sdkInstruction(ix *solana.GenericInstruction) compiledInstruction {
 }
 
 func wrapSquadsPolicyForDelegate(policy, executor, expectedDelegate publicKey, constraintIndexes []byte, inner []compiledInstruction) (compiledInstruction, error) {
-	if !isBridgePolicy(policy) || executor != expectedDelegate || len(inner) == 0 || len(inner) != len(constraintIndexes) || len(inner) > math.MaxUint8 {
+	if !isBridgePolicy(policy) || executor != expectedDelegate {
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads bridge policy or delegate")
 	}
-	transactionAccounts := make([]accountMeta, 0, 24)
-	accountIndexes := make([][]byte, len(inner))
-	for instructionIndex, instruction := range inner {
-		indexes := make([]byte, 0, len(instruction.accounts))
-		for _, account := range instruction.accounts {
-			indexes = append(indexes, pushOrMergeMeta(&transactionAccounts, account))
+	return wrapSquadsPolicy(policy, executor, constraintIndexes, inner...)
+}
+
+// wrapSquadsPolicy runs inner as the bridge vault (smart account index 0)
+// through policy, signed by executor.
+func wrapSquadsPolicy(policy, executor publicKey, constraintIndexes []byte, inner ...compiledInstruction) (compiledInstruction, error) {
+	execute := squads.ExecuteSync{Policy: solana.PublicKey(policy), Signer: solana.PublicKey(executor), ConstraintIndexes: constraintIndexes}
+	for _, ix := range inner {
+		instruction := squads.Instruction{ProgramID: solana.PublicKey(ix.program), Data: ix.data}
+		for _, account := range ix.accounts {
+			instruction.Accounts = append(instruction.Accounts, solana.AccountMeta{PublicKey: solana.PublicKey(account.key), IsSigner: account.signer, IsWritable: account.writable})
 		}
-		accountIndexes[instructionIndex] = indexes
-		pushOrMergeMeta(&transactionAccounts, accountMeta{key: instruction.program})
+		execute.Inner = append(execute.Inner, instruction)
 	}
-	for index := range transactionAccounts {
-		transactionAccounts[index].signer = false
+	wrapped, err := squads.ExecuteTransactionSyncV2(execute)
+	if err != nil {
+		return compiledInstruction{}, err
 	}
-	compiled := []byte{byte(len(inner))}
-	for instructionIndex, instruction := range inner {
-		programIndex := pushOrMergeMeta(&transactionAccounts, accountMeta{key: instruction.program})
-		indexes := accountIndexes[instructionIndex]
-		compiled = append(compiled, programIndex, byte(len(indexes)))
-		compiled = append(compiled, indexes...)
-		if len(instruction.data) > math.MaxUint16 {
-			return compiledInstruction{}, fmt.Errorf("bridge instruction data overflows Squads compact payload")
-		}
-		compiled = appendU16(compiled, uint16(len(instruction.data)))
-		compiled = append(compiled, instruction.data...)
+	out := compiledInstruction{program: publicKey(wrapped.ProgramID), data: wrapped.Data}
+	for _, account := range wrapped.Accounts {
+		out.accounts = append(out.accounts, accountMeta{key: publicKey(account.PublicKey), signer: account.IsSigner, writable: account.IsWritable})
 	}
-	// Exact borsh layout of Squads execute_transaction_sync_v2,
-	// SyncPayload::Policy::ProgramInteraction::SyncTransaction.
-	data := append([]byte(nil), squadsExecuteSyncDiscriminator...)
-	data = append(data, 0, 1, 1, 1, 1) // vault, signer count, policy, program-interaction, Some(indexes)
-	data = appendU32(data, uint32(len(constraintIndexes)))
-	data = append(data, constraintIndexes...)
-	data = append(data, 1, 0) // SyncTransaction, inner vault index
-	data = appendU32(data, uint32(len(compiled)))
-	data = append(data, compiled...)
-	accounts := []accountMeta{{key: policy, writable: true}, {key: mustKey(bridgeSquadsProgram)}, {key: executor, signer: true}}
-	accounts = append(accounts, transactionAccounts...)
-	return compiledInstruction{program: mustKey(bridgeSquadsProgram), accounts: accounts, data: data}, nil
+	return out, nil
 }
 
 func compileLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
@@ -700,10 +685,10 @@ func decodeExactLegacyWire(wire []byte) ([]byte, []byte, publicKey, publicKey, e
 		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("trailing legacy transaction bytes")
 	}
 	outer := instructions[len(instructions)-1]
-	if outer.program != mustKey(bridgeSquadsProgram) || len(outer.accountIndexes) < 3 ||
+	if outer.program != publicKey(squads.ProgramID) || len(outer.accountIndexes) < 3 ||
 		keys[outer.accountIndexes[0]] == (publicKey{}) ||
-		keys[outer.accountIndexes[1]] != mustKey(bridgeSquadsProgram) || keys[outer.accountIndexes[2]] != signer ||
-		len(outer.data) < len(squadsExecuteSyncDiscriminator) || !bytes.Equal(outer.data[:len(squadsExecuteSyncDiscriminator)], squadsExecuteSyncDiscriminator) {
+		keys[outer.accountIndexes[1]] != publicKey(squads.ProgramID) || keys[outer.accountIndexes[2]] != signer ||
+		!bytes.HasPrefix(outer.data, squads.ExecuteTransactionSyncV2Discriminator[:]) {
 		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy transaction is not an exact Squads policy envelope")
 	}
 	if instructionCount == 4 && !isExactKaminoTransaction(instructions) {
@@ -821,12 +806,12 @@ func decodeExactV0Wire(wire []byte) ([]byte, []byte, publicKey, publicKey, error
 	}
 	indexSpace := staticCount + loaded
 	outer := instructions[len(instructions)-1]
-	squadsKey := mustKey(bridgeSquadsProgram)
+	squadsKey := publicKey(squads.ProgramID)
 	if outer.program != squadsKey || len(outer.accountIndexes) < 3 ||
 		int(outer.accountIndexes[0]) >= staticCount || keys[outer.accountIndexes[0]] == (publicKey{}) ||
 		int(outer.accountIndexes[1]) >= staticCount || keys[outer.accountIndexes[1]] != squadsKey ||
 		int(outer.accountIndexes[2]) >= staticCount || keys[outer.accountIndexes[2]] != signer ||
-		len(outer.data) < len(squadsExecuteSyncDiscriminator) || !bytes.Equal(outer.data[:len(squadsExecuteSyncDiscriminator)], squadsExecuteSyncDiscriminator) {
+		!bytes.HasPrefix(outer.data, squads.ExecuteTransactionSyncV2Discriminator[:]) {
 		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned transaction is not an exact Squads policy envelope")
 	}
 	for _, instruction := range instructions {
@@ -985,7 +970,7 @@ func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kamino
 		return false
 	}
 	if len(outer.accounts) < 4 || len(outer.data) < 27 ||
-		!bytes.Equal(outer.data[:8], squadsExecuteSyncDiscriminator) ||
+		!bytes.Equal(outer.data[:8], squads.ExecuteTransactionSyncV2Discriminator[:]) ||
 		!bytes.Equal(outer.data[8:13], []byte{0, 1, 1, 1, 1}) ||
 		readU32LE(outer.data[13:17]) != 1 || outer.data[17] != kaminoConstraintIndexForRoute(route, leg) ||
 		!bytes.Equal(outer.data[18:20], []byte{1, 0}) {

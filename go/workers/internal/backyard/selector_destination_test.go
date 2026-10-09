@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Controlled real-layout accounts and captured Jupiter instruction topology.
@@ -115,7 +116,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		case BasicSwapRoutesB:
 			m.RuntimeBindings.SwapRoutesB.DataSHA256 = &hash
 		}
-		add(ConfirmedAccount{Address: binding.Policy, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
+		add(ConfirmedAccount{Address: binding.Policy, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 	}
 	for i := range m.RuntimeBindings.BridgePolicies {
 		p := &m.RuntimeBindings.BridgePolicies[i]
@@ -124,7 +125,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		p.NormalizedDigest = hash
 		p.DataSHA256Raw = hash
 		p.MaskedByteRanges = nil
-		add(ConfirmedAccount{Address: p.Account, Owner: bridgeSquadsProgram, Lamports: 1, Data: data})
+		add(ConfirmedAccount{Address: p.Account, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 	}
 	farm := ConfirmedAccount{Address: route.DebtFarm, Owner: kaminoFarmsProgram, Lamports: 1, Data: make([]byte, 8336)}
 	copy(farm.Data, []byte{198, 102, 216, 74, 63, 66, 163, 190})

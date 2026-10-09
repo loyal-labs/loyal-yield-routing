@@ -1,11 +1,11 @@
-package multiply
+package squads
 
 import (
 	"bytes"
 	"encoding/binary"
 	"testing"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -14,7 +14,7 @@ import (
 func syntheticPolicy(t *testing.T, compact bool) []byte {
 	t.Helper()
 	settings, signer, program := solana.PublicKey{1}, solana.PublicKey{2}, solana.PublicKey{3}
-	_, bump, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settings[:], {7, 0, 0, 0, 0, 0, 0, 0}}, mustKey(SquadsProgram))
+	_, bump, err := PolicyAddress(settings, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func syntheticPolicy(t *testing.T, compact bool) []byte {
 			t.Fatal(err)
 		}
 	}
-	b.Write([]byte{222, 135, 7, 163, 235, 177, 33, 68})
+	b.Write(PolicyDiscriminator[:])
 	b.Write(settings[:])
 	write(uint64(7))
 	write(bump)
@@ -71,7 +71,7 @@ func syntheticPolicy(t *testing.T, compact bool) []byte {
 func TestPolicyDecoderSyntheticLayoutsAndAuthority(t *testing.T) {
 	for _, compact := range []bool{false, true} {
 		data := syntheticPolicy(t, compact)
-		decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(data)
+		decoded, err := DecodeCanonicalPolicy(&chain.Account{Owner: ProgramID, Data: data})
 		if err != nil || decoded == nil || len(decoded.Payload.Constraints) != 1 || !bytes.Equal(decoded.Payload.Constraints[0].DataConstraints[0].DataValue.Bytes, []byte{9, 8}) {
 			t.Fatalf("compact=%v valid policy: %v %v", compact, decoded, err)
 		}
@@ -90,7 +90,7 @@ func TestPolicyDecoderSyntheticLayoutsAndAuthority(t *testing.T) {
 			loose = append(loose, make([]byte, 32)...)
 			loose = append(loose, data[143:]...)
 			loose[110] = 2
-			if decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(loose); err == nil && decoded != nil {
+			if decoded, err := DecodeCanonicalPolicy(&chain.Account{Owner: ProgramID, Data: loose}); err == nil && decoded != nil {
 				t.Fatal("unused compact key granted authority")
 			}
 		}
@@ -99,11 +99,11 @@ func TestPolicyDecoderSyntheticLayoutsAndAuthority(t *testing.T) {
 		expiration = append(expiration, 1, 0)
 		expiration = append(expiration, make([]byte, 8)...)
 		expiration = append(expiration, data[tail+9:]...)
-		if decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(expiration); err == nil && decoded != nil {
+		if decoded, err := DecodeCanonicalPolicy(&chain.Account{Owner: ProgramID, Data: expiration}); err == nil && decoded != nil {
 			t.Fatal("expiring policy granted authority")
 		}
 		for cut := 0; cut < len(data)-32; cut++ {
-			decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(data[:cut])
+			decoded, err := DecodeCanonicalPolicy(&chain.Account{Owner: ProgramID, Data: data[:cut]})
 			if err == nil && decoded != nil {
 				t.Fatalf("compact=%v accepted truncated policy at %d", compact, cut)
 			}
@@ -114,7 +114,7 @@ func policyMutationTest(compact bool, data []byte, mutate func([]byte)) func(*te
 	return func(t *testing.T) {
 		bad := append([]byte(nil), data...)
 		mutate(bad)
-		decoded, err := squadspolicy.DecodeProgramInteractionPolicyAccount(bad)
+		decoded, err := DecodeCanonicalPolicy(&chain.Account{Owner: ProgramID, Data: bad})
 		if err == nil && decoded != nil {
 			t.Fatalf("compact=%v unauthorized policy accepted", compact)
 		}

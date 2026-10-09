@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -381,7 +382,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 			t.Fatal(err)
 		}
 		logs := strings.Join(simulation.Value.Logs, "\n")
-		if len(simulation.Value.Err) == 0 || string(simulation.Value.Err) == "null" || !strings.Contains(logs, "Program "+squadsProgramID+" invoke") || strings.Contains(logs, "Program "+SubscriptionsProgramID+" invoke") {
+		if len(simulation.Value.Err) == 0 || string(simulation.Value.Err) == "null" || !strings.Contains(logs, "Program "+squads.ProgramID.String()+" invoke") || strings.Contains(logs, "Program "+SubscriptionsProgramID+" invoke") {
 			t.Fatalf("unauthorized signer must be rejected by real Squads before asset CPI: err=%s logs=%s", simulation.Value.Err, logs)
 		}
 		if balance, err := rpcChain.ConfirmedTokenBalanceRaw(t.Context(), f.WalletATA, f.Wallet); err != nil || balance != f.WalletBeforeRaw {

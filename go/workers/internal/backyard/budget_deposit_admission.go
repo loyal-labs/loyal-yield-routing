@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
@@ -235,7 +236,7 @@ func observePhase3DepositAdmission(ctx context.Context, rpc *chain.Client, clien
 		return phase3BridgeAdmission{}, err
 	}
 	policy := accountAt(policies, withdrawal.Policy)
-	if policy.Owner != bridgeSquadsProgram || policy.Executable || policy.Lamports == 0 || sha256Bytes(policy.Data) != withdrawal.PolicyAccountDataSHA256 {
+	if policy.Owner != squads.ProgramID.String() || policy.Executable || policy.Lamports == 0 || sha256Bytes(policy.Data) != withdrawal.PolicyAccountDataSHA256 {
 		return phase3BridgeAdmission{}, budgetHold("deposit_withdrawal_policy_drift")
 	}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)

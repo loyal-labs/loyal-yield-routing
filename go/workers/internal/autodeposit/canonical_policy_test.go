@@ -7,7 +7,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // The Rust proxy recorded these creator and current-account verdicts in
@@ -45,7 +47,7 @@ func TestCanonicalSubscriptionPolicyGoldenParityWithRustProxy(t *testing.T) {
 				if decodeErr != nil {
 					t.Fatal(decodeErr)
 				}
-				err = VerifyCanonicalSubscriptionPolicyAccount(r, data)
+				err = VerifyCanonicalSubscriptionPolicyAccount(r, &chain.Account{Owner: squads.ProgramID, Data: data})
 			}
 			if c.Error != "" {
 				if err == nil {

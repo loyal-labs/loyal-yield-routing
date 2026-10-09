@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, client *jupiterClient, enrich func(context.Context, *Observation) error) (Observation, JupiterExecutionEvidence, error) {
@@ -58,7 +59,7 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 			sourceProgram, destinationProgram = edge.SourceTokenProgram, edge.DestinationTokenProgram
 		}
 		policy := accountAt(accounts, binding.Policy)
-		if policy.Owner != bridgeSquadsProgram || policy.Executable || policy.Lamports == 0 || sha256Bytes(policy.Data) != binding.PolicyAccountDataSHA256 {
+		if policy.Owner != squads.ProgramID.String() || policy.Executable || policy.Lamports == 0 || sha256Bytes(policy.Data) != binding.PolicyAccountDataSHA256 {
 			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter policy bytes or owner drifted")
 		}
 		decode := func(address, mint, program string) (uint64, error) {

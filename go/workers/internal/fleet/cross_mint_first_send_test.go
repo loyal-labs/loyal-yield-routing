@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -155,9 +156,9 @@ func TestRealKLendCrossMintFirstSendRechecksExactOldWithdrawal(t *testing.T) {
 		address, bump, _ := derivePolicyAccount(plan.Bindings.Settings, seed)
 		binary.LittleEndian.PutUint64(data[40:48], seed)
 		data[48] = bump
-		bank.accounts[address] = fixtureAccount(address, SquadsProgram, 1_000_000, data)
+		bank.accounts[address] = fixtureAccount(address, squads.ProgramID.String(), 1_000_000, data)
 	}
-	bank.accounts[plan.Bindings.Swap.PolicyAccount] = fixtureAccount(plan.Bindings.Swap.PolicyAccount, SquadsProgram, 1_000_000, connectedSwapPolicy(t, plan.Bindings, 3))
+	bank.accounts[plan.Bindings.Swap.PolicyAccount] = fixtureAccount(plan.Bindings.Swap.PolicyAccount, squads.ProgramID.String(), 1_000_000, connectedSwapPolicy(t, plan.Bindings, 3))
 	var cert CrossMintPreflightCertificate
 	if err := json.Unmarshal(q.Movement.PreflightCertification, &cert); err != nil {
 		t.Fatal(err)

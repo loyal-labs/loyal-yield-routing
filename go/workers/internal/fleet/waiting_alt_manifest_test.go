@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/solana-foundation/solana-go/v2"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func waitingManifestFixture(t *testing.T, settings, vault, policy string) ALTManifest {
@@ -186,11 +186,11 @@ func bindWaitingFixtureVault(t *testing.T, ctx context.Context, s *Store, vaultI
 	t.Helper()
 	settingsHash := sha256.Sum256([]byte("waiting-settings:" + suffix))
 	settings := encodeBase58(settingsHash[:])
-	vault, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), settingsHash[:], []byte("smart_account"), {0}}, solana.MustPublicKeyFromBase58(SquadsProgram))
+	vault, _, err := squads.SmartAccountAddress(settingsHash, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	policyKey, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settingsHash[:], {1, 0, 0, 0, 0, 0, 0, 0}}, solana.MustPublicKeyFromBase58(SquadsProgram))
+	policyKey, _, err := squads.PolicyAddress(settingsHash, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

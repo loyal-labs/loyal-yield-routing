@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // sfRaw lifts a raw token amount to its 2^60-scaled fixed point, the unit
@@ -1419,7 +1420,7 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 	settings := setupSettingsAccount(t)
 	binary.LittleEndian.PutUint64(settings.Data[159:167], binding.PolicySeed)
 	prestate[bridgeSettings] = settings
-	prestate[autoInitializerFixturePolicy] = ConfirmedAccount{Address: autoInitializerFixturePolicy, Owner: bridgeSquadsProgram, Lamports: 1, Data: []byte(autoInitializerFixtureSyntheticAccountData)}
+	prestate[autoInitializerFixturePolicy] = ConfirmedAccount{Address: autoInitializerFixturePolicy, Owner: squads.ProgramID.String(), Lamports: 1, Data: []byte(autoInitializerFixtureSyntheticAccountData)}
 	prestate[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000}
 	prestate[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000}
 	rent := ConfirmedAccount{Address: "SysvarRent111111111111111111111111111111111", Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 17)}
@@ -1522,7 +1523,7 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 	if err != nil || !bytes.Equal(manifestMessage, message) {
 		t.Fatalf("retained initializer message is not the manifest compile: %v", err)
 	}
-	if wrapped := bytes.Index(message, squadsExecuteSyncDiscriminator); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitializerConstraintIndex {
+	if wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:]); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitializerConstraintIndex {
 		t.Fatalf("initializer not wrapped at the appended index %d", autoInitializerConstraintIndex)
 	}
 	// Rent is priced FIRST, ahead of every entry step.
@@ -1761,7 +1762,7 @@ func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T
 	if err != nil || !bytes.Equal(manifestMessage, message) {
 		t.Fatalf("retained initializer message is not the manifest compile: %v", err)
 	}
-	if wrapped := bytes.Index(message, squadsExecuteSyncDiscriminator); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitializerConstraintIndex {
+	if wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:]); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitializerConstraintIndex {
 		t.Fatalf("initializer not wrapped at the appended index %d", autoInitializerConstraintIndex)
 	}
 	if second, _, _, err := q.Recipe.Inputs[1].decodeWithManifest(m); err != nil {

@@ -1,24 +1,13 @@
-package squadspolicy
+package squads
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/solana-foundation/solana-go/v2"
 )
-
-// Program is the Squads smart-account program.
-var Program = solana.MustPublicKeyFromBase58("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG")
-
-// FullPermissionsMask is SQUADS_FULL_PERMISSIONS_MASK (initiate|vote|execute).
-const FullPermissionsMask = uint8(7)
-
-// ActionAccount derives the policy PDA ["smart_account","policy",settings,seed].
-func ActionAccount(settings solana.PublicKey, seed uint64) (solana.PublicKey, uint8, error) {
-	return solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("policy"), settings[:], binary.LittleEndian.AppendUint64(nil, seed)}, Program)
-}
 
 // PolicyAccountView mirrors SquadsProgramInteractionPolicyAccountView.
 type PolicyAccountView struct {
@@ -30,32 +19,36 @@ type PolicyAccountView struct {
 	Payload         PolicyPayloadView
 }
 
-// DecodeProgramInteractionPolicyAccount is the Go port of loyal-actions
-// detection.rs decode_program_interaction_policy_account: nil means "not a
-// canonical hookless ProgramInteraction policy", which callers treat as a
-// mismatch, never as authority to proceed.
-func DecodeProgramInteractionPolicyAccount(data []byte) (*PolicyAccountView, error) {
+// DecodeCanonicalPolicy is the Go port of loyal-actions detection.rs
+// decode_program_interaction_policy_account: nil means "not a canonical
+// hookless ProgramInteraction policy", which callers treat as a mismatch,
+// never as authority to proceed.
+func DecodeCanonicalPolicy(account *chain.Account) (*PolicyAccountView, error) {
+	if account == nil || account.Owner != ProgramID || account.Executable {
+		return nil, errors.New("policy account is absent or not owned by Squads")
+	}
+	data := account.Data
 	if len(data) > 64<<10 {
 		return nil, errors.New("policy account exceeds payload limit")
 	}
-	h, offset, err := DecodeHeader(data)
+	h, offset, err := decodeHeader(data)
 	if err != nil {
 		return nil, err
 	}
 	if h.Kind != 3 {
 		return nil, nil
 	}
-	var candidates []Candidate
+	var candidates []FullPayload
 	for _, compact := range []bool{false, true} {
-		if candidate, err := DecodePayload(data, offset, h.VaultIndex, compact); err == nil {
+		if candidate, err := decodePayload(data, offset, h.VaultIndex, compact); err == nil {
 			candidates = append(candidates, candidate)
 		}
 	}
-	policyAccount, expectedBump, err := ActionAccount(h.Settings, h.PolicySeed)
+	policyAccount, expectedBump, err := PolicyAddress(h.Settings, h.PolicySeed)
 	if err != nil {
 		return nil, err
 	}
-	if len(h.Signers) != 1 || h.Permissions[0] != FullPermissionsMask || h.Threshold != 1 || h.TimeLock != 0 || h.StaleTransactionIndex > h.TransactionIndex || h.Bump != expectedBump {
+	if len(h.Signers) != 1 || h.Permissions[0] != FullPermissions || h.Threshold != 1 || h.TimeLock != 0 || h.StaleTransactionIndex > h.TransactionIndex || h.Bump != expectedBump {
 		return nil, nil
 	}
 	var valid []PolicyPayloadView
@@ -179,8 +172,7 @@ func dataConstraintsEqual(left, right []DataConstraintView) bool {
 // start or expiration. It is loyal-actions squads.rs serialize_settings_actions
 // for that action.
 func EncodeLegacyPolicyCreate(seed uint64, accountIndex uint8, constraints []InstructionConstraintView, delegate solana.PublicKey) ([]byte, error) {
-	digest := sha256.Sum256([]byte("global:execute_settings_transaction_sync"))
-	out := append([]byte(nil), digest[:8]...)
+	out := append([]byte(nil), ExecuteSettingsTransactionSyncDiscriminator[:]...)
 	out = append(out, 1)                              // num_signers
 	out = binary.LittleEndian.AppendUint32(out, 1)    // actions
 	out = append(out, 7)                              // SettingsAction::PolicyCreate
@@ -219,7 +211,7 @@ func EncodeLegacyPolicyCreate(seed uint64, accountIndex uint8, constraints []Ins
 	out = append(out, 0, 0)                        // pre_hook, post_hook
 	out = binary.LittleEndian.AppendUint32(out, 0) // spending_limits
 	out = binary.LittleEndian.AppendUint32(out, 1) // signers
-	out = append(append(out, delegate[:]...), FullPermissionsMask)
+	out = append(append(out, delegate[:]...), FullPermissions)
 	out = binary.LittleEndian.AppendUint16(out, 1) // threshold
 	out = binary.LittleEndian.AppendUint32(out, 0) // time_lock
 	out = append(out, 0, 0)                        // start_timestamp, expiration_args

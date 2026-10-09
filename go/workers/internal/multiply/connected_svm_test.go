@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -110,7 +111,7 @@ func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*Ear
 	seed := uint64(time.Now().UnixNano())
 	var seedBytes [16]byte
 	binary.LittleEndian.PutUint64(seedBytes[:8], seed)
-	settings, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), []byte("settings"), seedBytes[:]}, mustKey(SquadsProgram))
+	settings, _, err := squads.SettingsAddress(seedBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,12 +205,12 @@ func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*Ear
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ok, err := CurrentPolicyMatches(data, item.policy, solana.PublicKey(testDelegateSeed()[32:]), expected, 0); err != nil || !ok {
+		if ok, err := CurrentPolicyMatches(&chain.Account{Owner: squads.ProgramID, Data: data}, item.policy, solana.PublicKey(testDelegateSeed()[32:]), expected, 0); err != nil || !ok {
 			t.Fatalf("actual independent Squads %s policy refused: %v %v", item.family, ok, err)
 		}
 		wrong := append([]byte(nil), data...)
 		wrong[0] ^= 1
-		if ok, err := CurrentPolicyMatches(wrong, item.policy, solana.PublicKey(testDelegateSeed()[32:]), expected, 0); err == nil && ok {
+		if ok, err := CurrentPolicyMatches(&chain.Account{Owner: squads.ProgramID, Data: wrong}, item.policy, solana.PublicKey(testDelegateSeed()[32:]), expected, 0); err == nil && ok {
 			t.Fatal("incorrect actual policy discriminator accepted")
 		}
 	}

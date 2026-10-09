@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // applyInitializerScopeMigrationFile executes one actual store migration file,
@@ -549,7 +550,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// policy plus the four bridge policies — added outside the batch builder
 	// so the append is visible to the caller.
 	for address, data := range initializerPinBytes {
-		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: address, Owner: bridgeSquadsProgram, Lamports: 1, Data: append([]byte(nil), data...)})
+		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: address, Owner: squads.ProgramID.String(), Lamports: 1, Data: append([]byte(nil), data...)})
 	}
 	// The rest of the production fetch inventory: the inactive lanes' protocol
 	// internals and every runtime policy account. Only the active lane's pins

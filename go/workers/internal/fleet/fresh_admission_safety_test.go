@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -48,7 +49,7 @@ func TestFreshVaultTokenCustodyChecksProgramAndState(t *testing.T) {
 			}
 		}
 		a.Data[108] = 1
-		a.Owner = solana.MustPublicKeyFromBase58(SquadsProgram)
+		a.Owner = squads.ProgramID
 		if _, err := validateVaultTokenAccount(a, mint, owner); err == nil {
 			t.Fatal("foreign token program accepted")
 		}

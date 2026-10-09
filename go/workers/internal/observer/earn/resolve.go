@@ -14,7 +14,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
-	sp "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/squadspolicy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -402,7 +402,7 @@ func readCleanupProof(ctx context.Context, rpc *chain.Client, vault watch.Vault,
 		case "policy":
 			policies++
 			if account != nil {
-				if account.Owner != sp.Program {
+				if account.Owner != squads.ProgramID {
 					return proof, fmt.Errorf("policy account %s has unexpected owner %s", binding.Pubkey, account.Owner)
 				}
 				sawPolicy = true

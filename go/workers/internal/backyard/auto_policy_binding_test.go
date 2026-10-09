@@ -13,6 +13,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // The candidate seed/address/hash below are the local fixture values proven by
@@ -687,10 +689,10 @@ func TestAutoOversizedSwapEdgeIsMeasuredAndUsesTheV0EscapeHatch(t *testing.T) {
 	}
 	t.Logf("AUTO USDC->AUTO v0 packet with one quoted lookup table = %d bytes (+65 signature = %d of %d)", len(message), len(message)+65, solanaPacketBytes)
 	staticKeys, _, outerData := decodeV0OuterInstruction(t, message)
-	if !bytes.Equal(outerData[:8], squadsExecuteSyncDiscriminator) {
+	if !bytes.Equal(outerData[:8], squads.ExecuteTransactionSyncV2Discriminator[:]) {
 		t.Fatal("v0 outer instruction left the Squads execute")
 	}
-	for _, authority := range []string{request.Policy, bridgeSquadsProgram, bridgeDelegate} {
+	for _, authority := range []string{request.Policy, squads.ProgramID.String(), bridgeDelegate} {
 		found := false
 		for _, key := range staticKeys {
 			found = found || key == authority

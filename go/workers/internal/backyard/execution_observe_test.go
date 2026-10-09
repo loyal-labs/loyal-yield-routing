@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func TestStageExpectedEffectsMatchDirectTransferReceipt(t *testing.T) {
@@ -28,7 +30,7 @@ func exactAdaptorConfigAccount(t *testing.T) ConfirmedAccount {
 	data[8] = 2
 	bindings := []string{
 		bridgeVoltrProgram, bridgeVoltrVault, bridgeStrategy, bridgeStrategyAuth,
-		bridgeSquadsProgram, bridgeSettings, bridgeSettingsSigner, bridgeVault,
+		squads.ProgramID.String(), bridgeSettings, bridgeSettingsSigner, bridgeVault,
 		bridgeUSDC, bridgeTokenProgram, bridgeSquadsATA,
 	}
 	for index, binding := range bindings {

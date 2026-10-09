@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -29,7 +30,6 @@ const (
 )
 
 var (
-	squadsProgram    = solana.MustPublicKeyFromBase58("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG")
 	tokenProgram     = solana.TokenProgramID
 	token2022Program = solana.Token2022ProgramID
 	kaminoProgram    = solana.MustPublicKeyFromBase58("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD")
@@ -602,7 +602,7 @@ func buildVault(target earnTarget) (Vault, error) {
 		return Vault{}, fmt.Errorf("invalid settings %q: %w", target.Settings, err)
 	}
 	index := uint8(target.VaultIndex)
-	derived, _, err := solana.FindProgramAddress([][]byte{[]byte("smart_account"), settings[:], []byte("smart_account"), {index}}, squadsProgram)
+	derived, _, err := squads.SmartAccountAddress(settings, index)
 	if err != nil {
 		return Vault{}, err
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Adaptor error numbers are copied from
@@ -37,18 +38,11 @@ const (
 	reportExpiredInSimulationReason = "report_expired_in_simulation"
 )
 
-const (
-	// squadsErrorSpendingLimitExceeded is the pinned Squads smart-account
-	// program's custom error for a policy spending limit refused at
-	// execution time.
-	squadsErrorSpendingLimitExceeded uint32 = 6073
-
-	// squadsSpendingLimitReason marks that refusal: a specific,
-	// non-retryable HOLD reason - never a generic simulation failure and
-	// never manual recovery, because nothing moved and the limit self-heals
-	// at its next period boundary.
-	squadsSpendingLimitReason = "squads_spending_limit_exceeded"
-)
+// squadsSpendingLimitReason marks a Squads spending-limit refusal: a
+// specific, non-retryable HOLD reason - never a generic simulation failure and
+// never manual recovery, because nothing moved and the limit self-heals at its
+// next period boundary.
+const squadsSpendingLimitReason = "squads_spending_limit_exceeded"
 
 // adaptorMaxReportAgeSlots is the deployed adaptor config's max report age.
 // reportFreshnessMarginSlots keeps the send fence inside that window: a wire
@@ -235,7 +229,7 @@ func ClassifyConfirmedReportFailure(rawErr json.RawMessage, logs []string) Confi
 // capital stop.
 func squadsSpendingLimitExceeded(rawErr json.RawMessage, logs []string) bool {
 	code, ok := decodeInstructionErrorCustom(rawErr)
-	return ok && code == squadsErrorSpendingLimitExceeded && failingProgramFromLogs(logs) == bridgeSquadsProgram
+	return ok && code == squads.ErrSpendingLimitExceeded && failingProgramFromLogs(logs) == squads.ProgramID.String()
 }
 
 // ReportExpiredAtLanding reports whether the landing slot is already past the

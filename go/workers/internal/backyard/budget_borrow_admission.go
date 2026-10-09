@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func validateInitialBorrowPrestate(ctx context.Context, rpc *chain.Client, route RuntimeRoute, s Snapshot, slot int64) (int64, error) {
@@ -357,7 +358,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		}
 		for address, hash := range policies {
 			a := accountAt(rows, address)
-			if a.Owner != bridgeSquadsProgram || a.Executable || a.Lamports == 0 || sha256Bytes(a.Data) != hash {
+			if a.Owner != squads.ProgramID.String() || a.Executable || a.Lamports == 0 || sha256Bytes(a.Data) != hash {
 				return budgetHold("borrow_exit_policy_drift")
 			}
 		}
