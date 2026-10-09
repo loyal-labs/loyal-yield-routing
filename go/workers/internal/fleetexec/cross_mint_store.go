@@ -19,34 +19,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-// RequireCrossMintSchema is a startup prerequisite for the composition root,
-// in addition to RequireSchema. It checks retained tables and custody columns;
-// this feature does not install migrations or create replacement contracts.
-func (s *Store) RequireCrossMintSchema(ctx context.Context) error {
-	if s == nil || s.pool == nil {
-		return errors.New("cross-mint store requires caller-owned pool")
-	}
-	if err := s.RequireSchema(ctx); err != nil {
-		return err
-	}
-	if err := db.RequireTables(ctx, s.pool,
-		"loyal_yield.rebalance_decisions", "loyal_yield.rebalance_opportunities",
-		"loyal_yield.managed_vaults", "loyal_yield.route_policies",
-		"loyal_yield.cross_mint_movement_controls", "loyal_yield.cross_mint_swap_policies",
-		"loyal_yield.cross_mint_vault_opt_ins", "loyal_yield.cross_mint_no_effect_receipts",
-		"loyal_yield.lookup_table_families", "loyal_yield.route_lookup_tables", "loyal_yield.lookup_table_addresses",
-		"loyal_yield.lookup_table_manifests", "loyal_yield.lookup_table_manifest_addresses",
-		"loyal_yield.lookup_table_shared_market_catalog_heads", "loyal_yield.lookup_table_shared_market_catalog_revisions",
-		"loyal_yield.lookup_table_provisioning_requests", "loyal_yield.lookup_table_provisioning_request_addresses"); err != nil {
-		return err
-	}
-	_, err := s.pool.Exec(ctx, `SELECT d.movement_route,d.custody_mint,d.custody_amount_raw,d.custody_account,d.custody_observed_balance_raw,d.custody_reconciled_slot,d.custody_version,d.cross_mint_activation_control_generation,d.cross_mint_preflight_certification,d.continuation_available_at,d.continuation_lease_owner,d.continuation_lease_expires_at,d.continuation_fencing_token,d.continuation_control_generation,d.active_target_reserve,d.terminal_outcome,d.terminal_evidence,d.terminal_observed_slot,s.expected_effect,s.expected_balance_anchors,s.reconciled_effect,s.reconciled_balance_anchors,s.required_commitment,s.finalized_slot,s.finalized_at,s.policy_account,r.sealed_at,a.semantic_class,a.account_role,a.is_writable,n.transaction_signature,n.movement_leg,n.leg_generation FROM loyal_yield.rebalance_decisions d CROSS JOIN loyal_yield.signed_route_submissions s CROSS JOIN loyal_yield.lookup_table_provisioning_requests r CROSS JOIN loyal_yield.lookup_table_provisioning_request_addresses a CROSS JOIN loyal_yield.cross_mint_no_effect_receipts n WHERE false`)
-	if err != nil {
-		return fmt.Errorf("retained cross-mint schema contract: %w", err)
-	}
-	return nil
-}
-
 func validateCrossMintWire(w WireIdentity, p CrossMintPreparedLeg) (string, error) {
 	if len(w.SignedTransaction) == 0 || len(w.SignedTransaction) > SolanaPacketLimit {
 		return "", errors.New("signed leg exceeds packet bound")

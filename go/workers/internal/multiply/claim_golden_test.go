@@ -89,7 +89,7 @@ func TestRootWalletClaimMatchesIndependentSVMReceipt(t *testing.T) {
 // accepts any signer count, and rejects an extra outer account, a custody
 // table that is not exactly the five custody keys, a policy payload, another
 // settings account, another vault index and a second inner transfer.
-func TestRootWalletClaimAcceptanceIsRustExact(t *testing.T) {
+func TestRootWalletClaimAcceptanceRejectsForgedWires(t *testing.T) {
 	raw, err := os.ReadFile("testdata/svm-root-wallet-claim.json")
 	if err != nil {
 		t.Fatal(err)

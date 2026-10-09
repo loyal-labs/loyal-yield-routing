@@ -33,7 +33,7 @@ func TestWaveFrozenFrontierConcurrentPurityAndOwnedOutputBindings(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseline, err := PlanFleetWithLimitsAt(snapshot, vaults, limits, snapshot.ObservedAt)
+	baseline, err := PlanFleetWithLimits(snapshot, vaults, limits)
 	if err != nil || len(baseline.Opportunities) != 3 {
 		t.Fatalf("owned cross-mint fixture selected=%d error=%v", len(baseline.Opportunities), err)
 	}
@@ -45,7 +45,7 @@ func TestWaveFrozenFrontierConcurrentPurityAndOwnedOutputBindings(t *testing.T) 
 	results := make(chan result, readers)
 	for range readers {
 		go func() {
-			plan, err := PlanFleetWithLimitsAt(snapshot, vaults, limits, snapshot.ObservedAt)
+			plan, err := PlanFleetWithLimits(snapshot, vaults, limits)
 			results <- result{plan, err}
 		}()
 	}
@@ -83,7 +83,7 @@ func TestWaveFrozenFrontierConcurrentPurityAndOwnedOutputBindings(t *testing.T) 
 
 func TestWaveFrozenFrontierFullPublicationPermissionPermutationInvariant(t *testing.T) {
 	snapshot, vaults, limits := frozenWaveFixture()
-	baseline, err := PlanFleetWithLimitsAt(snapshot, vaults, limits, snapshot.ObservedAt)
+	baseline, err := PlanFleetWithLimits(snapshot, vaults, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestWaveFrozenFrontierFullPublicationPermissionPermutationInvariant(t *test
 		vaults[i].AllowedTargets = []string{"missing", "same", "same", "cross"}
 	}
 	vaults[0], vaults[2] = vaults[2], vaults[0]
-	permuted, err := PlanFleetWithLimitsAt(snapshot, vaults, limits, snapshot.ObservedAt)
+	permuted, err := PlanFleetWithLimits(snapshot, vaults, limits)
 	if err != nil || !reflect.DeepEqual(baseline, permuted) {
 		t.Fatalf("permission/loader permutation changed decisions, canonical JSON, identity or rejections: %v", err)
 	}

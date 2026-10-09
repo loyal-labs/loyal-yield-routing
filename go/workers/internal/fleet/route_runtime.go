@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"sync"
 	"time"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -27,11 +26,9 @@ const (
 	altProgram   = "AddressLookupTab1e1111111111111111111111111"
 )
 
-// revalidationStore is the narrow durable surface Cycle/ShadowCycle use. The
-// shadow path must only ever call the read methods (Peek, LoadReusableLookupTables).
+// revalidationStore is the narrow durable surface Cycle uses.
 type revalidationStore interface {
 	ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady, crossMintEnabled bool, delegatedSigner ...string) (*RevalidationLease, error)
-	PeekRevalidation(ctx context.Context, cluster, signer string, crossMintEnabled bool, seenIDs, seenTokens []int64) (*RevalidationLease, error)
 	CheckRevalidationLease(ctx context.Context, lease RevalidationLease) error
 	RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error
 	LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error)
@@ -145,8 +142,7 @@ func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
 	return true, r.store.CommitRevalidation(ctx, *lease, RevalidationCommit{Disposition: disposition, Preparation: &prepared.Preparation, ConflictKeys: prepared.Preparation.Transaction.WritableAccounts, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: evidence.ObservedSourceAPYBPS, ObservedTargetAPYBPS: evidence.ObservedTargetAPYBPS, TargetObservedSupplyUSDMicros: evidence.TargetObservedSupplyUSDMicros, TargetObservedSlot: evidence.Slot})
 }
 
-// sameMintPreparation is everything Cycle needs to commit and ShadowCycle
-// needs to log. Both paths run prepareSameMint so they cannot drift.
+// sameMintPreparation is everything Cycle needs to commit.
 type sameMintPreparation struct {
 	LastValidBlockHeight int64
 	Evidence             FreshRouteEvidence
@@ -415,84 +411,6 @@ func sameMintRouteALTManifest(input KaminoSameMintRouteRequest, settings, routeP
 		policies = append(policies, setupPolicy)
 	}
 	return buildRouteALTManifest(input, settings, policies, feePayer, body, nil, true)
-}
-
-// shadowSeen remembers (opportunity, fencing_token) pairs the shadow already
-// observed so each row is prepared once per durable revision.
-type shadowSeen struct {
-	mu   sync.Mutex
-	seen map[int64]int64
-}
-
-const shadowSeenLimit = 10_000
-
-func (s *shadowSeen) mark(id, token int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.seen == nil {
-		s.seen = map[int64]int64{}
-	}
-	if len(s.seen) >= shadowSeenLimit {
-		// ponytail: drop everything at the cap; an LRU is overkill for a log-only shadow.
-		s.seen = map[int64]int64{}
-	}
-	s.seen[id] = token
-}
-
-func (s *shadowSeen) pairs() (ids, tokens []int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ids, tokens = make([]int64, 0, len(s.seen)), make([]int64, 0, len(s.seen))
-	for id, token := range s.seen {
-		ids, tokens = append(ids, id), append(tokens, token)
-	}
-	return ids, tokens
-}
-
-// ShadowCycle peeks one unseen revalidate row and runs the same read-only
-// preparation as Cycle, logging the outcome instead of committing. It never
-// claims, checks, refreshes, or commits anything and never returns an error
-// for a single bad row.
-func (r *Revalidator) ShadowCycle(ctx context.Context, cluster string, seen *shadowSeen) (bool, error) {
-	seenIDs, seenTokens := seen.pairs()
-	lease, err := r.store.PeekRevalidation(ctx, cluster, r.signer, r.crossMintEnabled, seenIDs, seenTokens)
-	if err != nil || lease == nil {
-		return false, err
-	}
-	seen.mark(lease.OpportunityID, lease.FencingToken)
-	event := map[string]any{"event": "kamino_fleet_revalidation_shadow", "mode": "shadow", "opportunityId": lease.OpportunityID, "fencingToken": lease.FencingToken, "vaultId": lease.VaultID, "sourceReserve": lease.SourceReserve, "targetReserve": lease.TargetReserve, "optimizerEpochId": lease.OptimizerEpochID}
-	if lease.RouteKind == "cross_mint_jupiter" {
-		event["disposition"] = "skipped_cross_mint"
-		logEvent(event)
-		return true, nil
-	}
-	prepared, stage, err := r.prepareSameMint(ctx, cluster, *lease, nil)
-	switch {
-	case err != nil:
-		event["disposition"], event["stage"], event["error"] = "error", stage, err.Error()
-	case prepared.WaitingALT:
-		event["disposition"], event["missingAddressCount"] = "waiting_alt", len(prepared.Missing)
-	default:
-		programs := make([]string, len(prepared.Instructions))
-		for i, instruction := range prepared.Instructions {
-			programs[i] = instruction.Program
-		}
-		event["disposition"] = "ready"
-		event["simulationSucceeded"] = prepared.Preparation.Simulation.Succeeded
-		event["computeUnits"] = prepared.Compute
-		event["feeLamports"] = prepared.Fee
-		event["feeCapLamports"] = lease.FeeCapLamports
-		event["priorityFeeMicroLamports"] = prepared.PriorityFee
-		event["lookupTableCount"] = len(prepared.Preparation.Transaction.LookupTables)
-		event["instructionPrograms"] = programs
-		event["routeFingerprint"] = prepared.Preparation.RouteFingerprint
-		event["requirementsFingerprint"] = prepared.Preparation.RequirementsFingerprint
-		event["observedSourceApyBps"] = prepared.Evidence.ObservedSourceAPYBPS
-		event["observedTargetApyBps"] = prepared.Evidence.ObservedTargetAPYBPS
-		event["targetObservedSlot"] = prepared.Evidence.Slot
-	}
-	logEvent(event)
-	return true, nil
 }
 
 func preserveCanonicalPlan(original json.RawMessage, preparation *RoutePreparation, evidenceField string) error {

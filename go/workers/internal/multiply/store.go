@@ -20,8 +20,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
 const (
@@ -38,8 +36,7 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
-// NewStoreFromPool borrows the engine's pool. The caller owns its lifetime;
-// this constructor only checks the family's registered schema under the caller context.
+// NewStoreFromPool borrows the engine's pool. The caller owns its lifetime.
 func NewStoreFromPool(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	if ctx == nil || pool == nil {
 		return nil, errors.New("multiply store requires caller context and pool")
@@ -47,32 +44,7 @@ func NewStoreFromPool(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	store := &Store{pool: pool}
-	if err := store.RequireSchema(ctx); err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return store, nil
-}
-
-// RequireSchema fails closed unless the currently registered multiply tables
-// exist (the migrations are owned by the root schema, never created here).
-func (s *Store) RequireSchema(ctx context.Context) error {
-	return db.RequireTables(ctx, s.pool,
-		"loyal_yield.multiply_route_states",
-		"loyal_yield.multiply_operations",
-		"loyal_yield.multiply_position_snapshots",
-		"loyal_yield.earn_max_policy_sets",
-		"loyal_yield.managed_vaults",
-		"loyal_yield.route_policies",
-		"loyal_yield.rebalance_opportunities",
-		"loyal_yield.rebalance_decisions",
-		"loyal_yield.balance_sweep_targets",
-		"loyal_yield.balance_sweep_lot_claims",
-		"loyal_yield.balance_sweep_transaction_attempts",
-	)
+	return &Store{pool: pool}, nil
 }
 
 // Pool exposes the injected pool for root composition (metrics, health).

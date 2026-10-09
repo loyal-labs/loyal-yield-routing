@@ -123,6 +123,5 @@
     "MaxNotionalUSDMicros": 1000000000000,
     "MaxPerTenant": 10,
     "MaxPerWritableConflictKey": 10
-  },
-  "EvaluatedAt": "2026-10-02T00:00:00Z"
+  }
 }

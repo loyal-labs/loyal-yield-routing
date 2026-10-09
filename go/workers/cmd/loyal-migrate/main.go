@@ -28,10 +28,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// applyLock is the session advisory lock the Rust Yield runner held while
-// applying, so a concurrent old and new runner still serialize.
-const applyLock int64 = 5_497_570_743_993_490_033
-
 type database struct{ env, ledger string }
 
 var databases = map[string]database{
@@ -206,10 +202,6 @@ func apply(ctx context.Context, conn *pgx.Conn, db database, m migration) error 
 }
 
 func up(ctx context.Context, conn *pgx.Conn, db database, files []migration, out io.Writer) error {
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", applyLock); err != nil {
-		return err
-	}
-	defer conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", applyLock)
 	schema, _, _ := strings.Cut(db.ledger, ".")
 	if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+schema+"; CREATE TABLE IF NOT EXISTS "+db.ledger+
 		" (version BIGINT PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"); err != nil {

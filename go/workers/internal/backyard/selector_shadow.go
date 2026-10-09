@@ -2,91 +2,9 @@ package backyard
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-// Shadow uses the production readers and pure planner, but has no signer,
-// submission path, lease acquisition, or database writes. Gross forecasts remain
-// visibly unexecutable until pair capacity, cost, and recreation are admitted.
-func RunSelectorShadow(ctx context.Context, out io.Writer, config RuntimeConfig) error {
-	jupiterAPIKey = config.JupiterAPIKey
-	if config.RPCURL == "" || config.DatabaseURL == "" {
-		return fmt.Errorf("BACKYARD_SOLANA_RPC_URL and BACKYARD_DATABASE_URL are required for shadow observation")
-	}
-	cfg, err := pgxpool.ParseConfig(config.DatabaseURL)
-	if err != nil {
-		return fmt.Errorf("shadow database configuration invalid")
-	}
-	cfg.MaxConns = 2
-	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
-	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "5000"
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	database := &Database{pool: pool}
-	if err != nil {
-		return fmt.Errorf("shadow journal unavailable")
-	}
-	defer database.Close()
-	rpc, err := NewRPCClient(config.RPCURL)
-	if err != nil {
-		return err
-	}
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
-	manifest.selectorObservation = true
-	// The feed inventory is scoped to the SAME reviewed manifest the selection
-	// below resolves its lane authorities through: installed lanes plus the
-	// candidate AUTO route only when the manifest binding resolves — identical
-	// to the live sample loop and the evaluate command. The embedded
-	// installed-only constructor would silently drop the funded candidate from
-	// every shadow report.
-	feed, err := NewEconomicFeedOnManifest(ctx, config.TimescaleURL, manifest)
-	if err != nil {
-		return err
-	}
-	defer feed.Close()
-	feedErr := feed.Refresh(ctx)
-	observation, err := observeSelectorShadow(ctx, database, rpc, manifest, newProgramIdentityWatcher(rpc).observe)
-	if err != nil {
-		return err
-	}
-	markets, failure := feed.Snapshot()
-	// The same manifest lane authorities as the dry-run diagnostic and the
-	// live quote collector: candidate evidence and candidate-source economics
-	// stay visible, deferred lanes stay keep-only baselines. Every freshness,
-	// identity and content check inside the pure selector is unchanged.
-	laneAllowed := func(lane string) bool { return selectorDestinationLaneAuthorized(manifest, lane) }
-	fundingAllowed := func(lane string) bool { return manifest.selectorEntryFundingLane(lane, false) }
-	result := selectOpportunityWithLanes(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{}, laneAllowed, fundingAllowed)
-	next := manifest.DecideOnManifest(observation.Snapshot)
-	if next.Action == HoldManualRecovery && observation.Snapshot.ManualReason != "" {
-		next.Reason = observation.Snapshot.ManualReason
-	}
-	report := struct {
-		Mode                string          `json:"mode"`
-		Snapshot            Snapshot        `json:"snapshot"`
-		ObservedAt          time.Time       `json:"observedAt"`
-		Slot                int64           `json:"slot"`
-		ObservationID       string          `json:"observationId"`
-		FeedFailure         string          `json:"feedFailure,omitempty"`
-		Markets             []LaneEconomics `json:"markets"`
-		NextLifecycleAction Decision        `json:"nextLifecycleAction"`
-		Selection           SelectorResult  `json:"selection"`
-		ActivationBlockers  []string        `json:"activationBlockers"`
-	}{"read_only_shadow", observation.Snapshot, observation.ObservedAt, observation.Snapshot.Slot, observation.Snapshot.ObservationID, failure, markets, next, result, []string{"no_quote_diagnostic_requires_live_admission"}}
-	// Fixed sanitized code only: the raw refresh error text never reaches the
-	// report, and the snapshot-level state string above is itself a fixed code.
-	if feedErr != nil {
-		report.FeedFailure = "selector_economic_feed_refresh_unavailable"
-	}
-	return json.NewEncoder(out).Encode(report)
-}
 
 // There is no write-capable observe method on this reader. The SQL connection
 // itself also rejects writes; this deliberately does not fake an execution lease.

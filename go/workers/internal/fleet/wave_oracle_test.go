@@ -29,13 +29,12 @@ type oracleWave struct {
 	snapshot MarketSnapshot
 	vaults   []FleetVault
 	limits   WaveLimits
-	now      time.Time
 	baseIn   map[string]int64
 	baseOut  map[string]int64
 }
 
-func newOracleWave(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits, now time.Time) oracleWave {
-	w := oracleWave{snapshot: snapshot, vaults: vaults, limits: limits, now: now, baseIn: map[string]int64{}, baseOut: map[string]int64{}}
+func newOracleWave(snapshot MarketSnapshot, vaults []FleetVault, limits WaveLimits) oracleWave {
+	w := oracleWave{snapshot: snapshot, vaults: vaults, limits: limits, baseIn: map[string]int64{}, baseOut: map[string]int64{}}
 	for _, v := range vaults {
 		for reserve, value := range v.CommittedInflows {
 			if old, ok := w.baseIn[reserve]; ok && old != value {
@@ -70,7 +69,7 @@ func (w oracleWave) frontier(prefix []oracleMove, reserve string, inflow bool) i
 		parts[0] = w.baseIn[reserve]
 	}
 	for _, move := range prefix {
-		if inflow && move.d.TargetReserve == reserve || !inflow && move.d.SourceReserve == reserve && move.source.IdleTokenAccount == "" {
+		if inflow && move.d.TargetReserve == reserve || !inflow && move.d.SourceReserve == reserve {
 			parts = append(parts, move.d.PrincipalUSDMicros)
 		}
 	}
@@ -79,11 +78,7 @@ func (w oracleWave) frontier(prefix []oracleMove, reserve string, inflow bool) i
 
 func oracleConflictSet(move oracleMove) map[string]bool {
 	p := move.source.Position
-	source := move.d.SourceReserve
-	if move.source.IdleTokenAccount != "" {
-		source = "idle"
-	}
-	keys := map[string]bool{"vault:" + p.VaultPubkey: true, fmt.Sprintf("policy:%d", p.PolicyID): true, "source-reserve:" + source: true, "target-reserve:" + move.d.TargetReserve: true}
+	keys := map[string]bool{"vault:" + p.VaultPubkey: true, fmt.Sprintf("policy:%d", p.PolicyID): true, "source-reserve:" + move.d.SourceReserve: true, "target-reserve:" + move.d.TargetReserve: true}
 	if policy := move.d.PolicyBindings; policy != nil && move.d.RouteKind == "cross_mint_jupiter" {
 		keys["swap-policy:"+policy.Swap.PolicyAccount] = true
 		keys["earn-policy:"+policy.Withdraw.PolicyAccount] = true
@@ -101,11 +96,7 @@ func oracleRank(move oracleMove) ([]*big.Int, []string) {
 		numbers = append(numbers, new(big.Int).Neg(big.NewInt(value)))
 	}
 	numbers = append(numbers, big.NewInt(d.VaultID))
-	kind := "reserve"
-	if move.source.IdleTokenAccount != "" {
-		kind = "idle"
-	}
-	return numbers, []string{kind, p.Mint, d.SourceReserve, d.TargetReserve}
+	return numbers, []string{p.Mint, d.SourceReserve, d.TargetReserve}
 }
 
 func oracleRanksBefore(a, b oracleMove) bool {
@@ -161,15 +152,7 @@ func (w oracleWave) choices(prefix []oracleMove) []oracleMove {
 			p.SourceCommittedOutflowUSDMicros = w.frontier(prefix, p.SourceReserve, false)
 			p.TargetCommittedInflowUSDMicros = w.frontier(prefix, target, true)
 			p.TargetCommittedOutflowUSDMicros = w.frontier(prefix, target, false)
-			var d Decision
-			if source.IdleTokenAccount == "" {
-				d = Plan(w.snapshot, p, p.SourceReserve, target)
-			} else {
-				if p.SourceReserve != "" || p.SourceCollateralAmountRaw != 0 || len(source.CrossMintTargets) != 0 {
-					continue
-				}
-				d = planSourceAt(w.snapshot, p, "", target, true, w.now)
-			}
+			d := Plan(w.snapshot, p, p.SourceReserve, target)
 			if !d.Eligible {
 				continue
 			}
@@ -264,16 +247,10 @@ func oracleVault(snapshot MarketSnapshot, id int64, source string, amount int64,
 	return FleetVault{Position: VaultPosition{VaultID: id, PolicyID: id, Settings: fmt.Sprintf("settings:%d", id), VaultPubkey: fmt.Sprintf("vault:%d", id), PolicyAuthority: fmt.Sprintf("tenant:%d", id%2), SourceReserve: source, Market: r.Market, Mint: r.Mint, AmountRaw: amount, SourceCollateralAmountRaw: amount, SourceAmountSemantics: amountSemanticsKaminoCollateralDeposited, SnapshotID: 7, ObservedSlot: 499, ObservedAt: snapshot.ObservedAt}, AllowedTargets: targets}
 }
 
-func checkWaveOracle(t *testing.T, w oracleWave, shadow bool) []oracleMove {
+func checkWaveOracle(t *testing.T, w oracleWave) []oracleMove {
 	t.Helper()
 	want := w.greedy()
-	var got FleetPlan
-	var err error
-	if shadow {
-		got, err = PlanFleetShadowAt(w.snapshot, w.vaults, w.now)
-	} else {
-		got, err = PlanFleetWithLimitsAt(w.snapshot, w.vaults, w.limits, w.now)
-	}
+	got, err := PlanFleetWithLimits(w.snapshot, w.vaults, w.limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,10 +301,10 @@ func TestWaveOracleGreedyEnumeratesFreshBestStep(t *testing.T) {
 			vaults = append(vaults, v)
 		}
 		limits := WaveLimits{1 + rng.Intn(5), int64(3+rng.Intn(20)) * 1_000_000_000, 1 + rng.Intn(3), 1 + rng.Intn(3)}
-		w := newOracleWave(snapshot, vaults, limits, snapshot.ObservedAt)
-		first := checkWaveOracle(t, w, false)
+		w := newOracleWave(snapshot, vaults, limits)
+		first := checkWaveOracle(t, w)
 		rng.Shuffle(len(vaults), func(i, j int) { vaults[i], vaults[j] = vaults[j], vaults[i] })
-		second := checkWaveOracle(t, newOracleWave(snapshot, vaults, limits, snapshot.ObservedAt), false)
+		second := checkWaveOracle(t, newOracleWave(snapshot, vaults, limits))
 		if !reflect.DeepEqual(oraclePublished(first), oraclePublished(second)) {
 			t.Fatalf("fixture %d selection depends on loader order", fixture)
 		}
@@ -340,12 +317,12 @@ func TestWaveOracleSourceDilutionChangesTheNextWinner(t *testing.T) {
 		oracleReserve(&snapshot, address, USDCMint, apy, 1_000_000_000_000)
 	}
 	vaults := []FleetVault{oracleVault(snapshot, 1, "a", 20_000_000_000, "b"), oracleVault(snapshot, 2, "b", 10_000_000_000, "c"), oracleVault(snapshot, 3, "d", 10_000_000_000, "e")}
-	w := newOracleWave(snapshot, vaults, WaveLimits{2, 40_000_000_000, 3, 3}, snapshot.ObservedAt)
+	w := newOracleWave(snapshot, vaults, WaveLimits{2, 40_000_000_000, 3, 3})
 	initial := w.choices(nil)
 	if len(initial) != 3 || initial[0].d.VaultID != 1 || initial[1].d.VaultID != 3 || initial[2].d.VaultID != 2 {
 		t.Fatal("source-dilution fixture did not begin with a different next winner")
 	}
-	chosen := checkWaveOracle(t, w, false)
+	chosen := checkWaveOracle(t, w)
 	if len(chosen) != 2 || chosen[1].d.VaultID != 2 {
 		t.Fatal("selected target inflow did not reprice the remaining source")
 	}
@@ -354,11 +331,11 @@ func TestWaveOracleSourceDilutionChangesTheNextWinner(t *testing.T) {
 	c := snapshot.Reserves["c"]
 	c.SupplyAPYBPS = 2000
 	snapshot.Reserves["c"] = c
-	w = newOracleWave(snapshot, vaults[:2], WaveLimits{2, 40_000_000_000, 3, 3}, snapshot.ObservedAt)
+	w = newOracleWave(snapshot, vaults[:2], WaveLimits{2, 40_000_000_000, 3, 3})
 	if len(w.choices(nil)) != 1 {
 		t.Fatal("reactivated permitted edge did not start ineligible")
 	}
-	if chosen := checkWaveOracle(t, w, false); len(chosen) != 2 || chosen[1].d.VaultID != 2 {
+	if chosen := checkWaveOracle(t, w); len(chosen) != 2 || chosen[1].d.VaultID != 2 {
 		t.Fatal("initially ineligible edge was lost before its source repriced")
 	}
 }
@@ -384,8 +361,8 @@ func TestWaveOracleMixedMintsOwnedCapacityAndHiddenFeeAdmission(t *testing.T) {
 		vaults[i].CommittedInflows = map[string]int64{"target-usdt": 5_000_000_000}
 		vaults[i].CommittedOutflows = map[string]int64{"source-usdt": 2_000_000_000}
 	}
-	w := newOracleWave(snapshot, vaults, WaveLimits{3, 30_000_000_000, 3, 3}, snapshot.ObservedAt)
-	chosen := checkWaveOracle(t, w, false)
+	w := newOracleWave(snapshot, vaults, WaveLimits{3, 30_000_000_000, 3, 3})
+	chosen := checkWaveOracle(t, w)
 	if len(chosen) != 2 {
 		t.Fatalf("incumbent or mint frontier changed allocation: %s", oracleSequenceDecisions(oraclePublished(chosen)))
 	}
@@ -404,8 +381,8 @@ func TestWaveOracleMixedMintsOwnedCapacityAndHiddenFeeAdmission(t *testing.T) {
 		feeVault.Position.AmountRaw, feeVault.Position.SourceCollateralAmountRaw = amount, amount
 		d := Plan(snapshot, feeVault.Position, "source-usdc", "target-usdt")
 		if d.Eligible && d.EstimatedCostLamports < 15_000 {
-			feeWave := newOracleWave(snapshot, []FleetVault{feeVault}, WaveLimits{1, 100_000_000, 1, 1}, snapshot.ObservedAt)
-			selected := checkWaveOracle(t, feeWave, false)
+			feeWave := newOracleWave(snapshot, []FleetVault{feeVault}, WaveLimits{1, 100_000_000, 1, 1})
+			selected := checkWaveOracle(t, feeWave)
 			if len(selected) != 1 || len(oraclePublished(selected)) != 0 {
 				t.Fatal("cross-mint publication fee fence did not preserve selected ownership")
 			}
@@ -413,41 +390,6 @@ func TestWaveOracleMixedMintsOwnedCapacityAndHiddenFeeAdmission(t *testing.T) {
 		}
 	}
 	t.Fatal("no bounded three-leg fee fence fixture was found")
-}
-
-func TestWaveOracleIdleReserveCompetitionAndClock(t *testing.T) {
-	snapshot := oracleSnapshot()
-	oracleReserve(&snapshot, "source", USDCMint, 100, 1_000_000_000_000)
-	oracleReserve(&snapshot, "target", USDCMint, 1700, 500_000_000_000)
-	reserve := oracleVault(snapshot, 1, "source", 4_000_000_000, "target")
-	idle := reserve
-	idle.IdleTokenAccount = "idle:vault:1"
-	idle.Position.SourceReserve, idle.Position.Market, idle.Position.SourceAmountSemantics = "", "", "idle_vault_liquidity"
-	idle.Position.SourceCollateralAmountRaw, idle.Position.SnapshotID = 0, 0
-	other := oracleVault(snapshot, 2, "source", 5_000_000_000, "target")
-	for _, idleWins := range []bool{true, false} {
-		idle.Position.AmountRaw = 6_000_000_000
-		if !idleWins {
-			idle.Position.AmountRaw = 1_000_000_000
-		}
-		vaults := []FleetVault{reserve, idle, other}
-		for _, clock := range []time.Time{snapshot.ObservedAt, snapshot.MintExpiresAt[USDCMint].Add(-minimumPublicationLifetime), snapshot.MintExpiresAt[USDCMint]} {
-			selected := checkWaveOracle(t, newOracleWave(snapshot, vaults, DefaultWaveLimits(), clock), true)
-			used := map[int64]bool{}
-			for _, move := range selected {
-				if used[move.d.VaultID] {
-					t.Fatal("idle and collateral spent from the same vault in one wave")
-				}
-				used[move.d.VaultID] = true
-				if move.d.RouteKind == "idle_vault_deposit" && !clock.Before(snapshot.MintExpiresAt[USDCMint].Add(-minimumPublicationLifetime)) {
-					t.Fatal("clock-expired idle evidence remained eligible")
-				}
-				if move.d.VaultID == 1 && clock == snapshot.ObservedAt && (move.source.IdleTokenAccount != "") != idleWins {
-					t.Fatal("source competition did not choose freshly enumerated economics")
-				}
-			}
-		}
-	}
 }
 
 func TestWaveOracleTiesLimitsAndClosedReservePath(t *testing.T) {
@@ -458,7 +400,7 @@ func TestWaveOracleTiesLimitsAndClosedReservePath(t *testing.T) {
 	vaults := []FleetVault{oracleVault(snapshot, 3, "a", 3_000_000_000, "b", "c"), oracleVault(snapshot, 2, "a", 3_000_000_000, "b", "c"), oracleVault(snapshot, 1, "a", 3_000_000_000, "b", "c")}
 	for _, maxMoves := range []int{1, 2, 5} {
 		limits := WaveLimits{maxMoves, 30_000_000_000, 5, 5}
-		chosen := checkWaveOracle(t, newOracleWave(snapshot, vaults, limits, snapshot.ObservedAt), false)
+		chosen := checkWaveOracle(t, newOracleWave(snapshot, vaults, limits))
 		if len(chosen) != min(maxMoves, 3) || chosen[0].d.VaultID != 1 {
 			t.Fatal("tie-break or maximum selected moves changed")
 		}
@@ -467,7 +409,7 @@ func TestWaveOracleTiesLimitsAndClosedReservePath(t *testing.T) {
 	// economically forbidden. This verifies this input, not a general DAG claim:
 	// production additionally prevents any vault from moving twice in a wave.
 	cycle := []FleetVault{oracleVault(snapshot, 1, "a", 3_000_000_000, "b"), oracleVault(snapshot, 2, "b", 3_000_000_000, "c"), oracleVault(snapshot, 3, "c", 3_000_000_000, "a")}
-	chosen := checkWaveOracle(t, newOracleWave(snapshot, cycle, WaveLimits{5, 30_000_000_000, 5, 5}, snapshot.ObservedAt), false)
+	chosen := checkWaveOracle(t, newOracleWave(snapshot, cycle, WaveLimits{5, 30_000_000_000, 5, 5}))
 	if len(chosen) != 2 {
 		t.Fatal("profitable open path was not admitted")
 	}
@@ -499,8 +441,8 @@ func TestWaveOracleSmallExhaustiveObjectiveBoundsGreedy(t *testing.T) {
 			}
 			vaults = append(vaults, oracleVault(snapshot, int64(vault+1), source, int64(2+rng.Intn(7))*1_000_000_000, targets...))
 		}
-		w := newOracleWave(snapshot, vaults, WaveLimits{3, 20_000_000_000, 3, 3}, snapshot.ObservedAt)
-		greedy := checkWaveOracle(t, w, false)
+		w := newOracleWave(snapshot, vaults, WaveLimits{3, 20_000_000_000, 3, 3})
+		greedy := checkWaveOracle(t, w)
 		_, optimum, nodes := w.globalBest()
 		totalNodes += nodes
 		regret := new(big.Int).Sub(optimum, oracleGain(greedy))
@@ -525,8 +467,8 @@ func TestWaveOracleQuantifiesGreedyAssignmentRegret(t *testing.T) {
 	oracleReserve(&snapshot, "target-a", USDCMint, 2000, 500_000_000_000)
 	oracleReserve(&snapshot, "target-b", USDCMint, 1900, 500_000_000_000)
 	vaults := []FleetVault{oracleVault(snapshot, 1, "source-a", 10_000_000_000, "target-a", "target-b"), oracleVault(snapshot, 2, "source-b", 10_000_000_000, "target-a")}
-	w := newOracleWave(snapshot, vaults, WaveLimits{2, 20_000_000_000, 2, 2}, snapshot.ObservedAt)
-	greedy := checkWaveOracle(t, w, false)
+	w := newOracleWave(snapshot, vaults, WaveLimits{2, 20_000_000_000, 2, 2})
+	greedy := checkWaveOracle(t, w)
 	best, bestGain, nodes := w.globalBest()
 	greedyGain := oracleGain(greedy)
 	regret := new(big.Int).Sub(bestGain, greedyGain)

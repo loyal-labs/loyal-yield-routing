@@ -62,39 +62,34 @@ func observationAccounts() []Account {
 }
 
 func TestReserveObservationReplacesWholeInconsistentBatch(t *testing.T) {
-	for _, mode := range []Mode{ModeShadow, ModePublish} {
-		t.Run(string(mode), func(t *testing.T) {
-			w, addresses, identities, floors := observationTestWorker(t, func(attempt int) (int64, []Account) {
-				accounts := observationAccounts()
-				if attempt == 1 {
-					binary.LittleEndian.PutUint64(accounts[1].Data[16:24], 1002)
-					return 1000, accounts
-				}
-				// Change even the previously valid account: its old bytes must not survive.
-				binary.LittleEndian.PutUint64(accounts[0].Data[224:232], 40_000_000_000_000)
-				binary.LittleEndian.PutUint64(accounts[1].Data[16:24], 1002)
-				return 1003, accounts
-			})
-			w.config.Mode = mode
-			snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities, 999)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(*floors, []int64{999, 1002}) {
-				t.Fatalf("slot floors: %v", *floors)
-			}
-			if len(snapshot.Reserves) != 2 || snapshot.Slot != 1003 {
-				t.Fatalf("incomplete snapshot: %+v", snapshot)
-			}
-			for _, state := range snapshot.Reserves {
-				if state.Slot != 1003 {
-					t.Fatal("mixed observation slots")
-				}
-			}
-			if snapshot.Reserves[addresses[0]].TotalSupplyUSDMicros != 90_000_000_000_000 {
-				t.Fatal("reused account economics from rejected batch")
-			}
-		})
+	w, addresses, identities, floors := observationTestWorker(t, func(attempt int) (int64, []Account) {
+		accounts := observationAccounts()
+		if attempt == 1 {
+			binary.LittleEndian.PutUint64(accounts[1].Data[16:24], 1002)
+			return 1000, accounts
+		}
+		// Change even the previously valid account: its old bytes must not survive.
+		binary.LittleEndian.PutUint64(accounts[0].Data[224:232], 40_000_000_000_000)
+		binary.LittleEndian.PutUint64(accounts[1].Data[16:24], 1002)
+		return 1003, accounts
+	})
+	snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities, 999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(*floors, []int64{999, 1002}) {
+		t.Fatalf("slot floors: %v", *floors)
+	}
+	if len(snapshot.Reserves) != 2 || snapshot.Slot != 1003 {
+		t.Fatalf("incomplete snapshot: %+v", snapshot)
+	}
+	for _, state := range snapshot.Reserves {
+		if state.Slot != 1003 {
+			t.Fatal("mixed observation slots")
+		}
+	}
+	if snapshot.Reserves[addresses[0]].TotalSupplyUSDMicros != 90_000_000_000_000 {
+		t.Fatal("reused account economics from rejected batch")
 	}
 }
 

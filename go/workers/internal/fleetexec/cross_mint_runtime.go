@@ -83,9 +83,6 @@ func NewCrossMintRecoveryRuntime(ctx context.Context, config Config, store *Stor
 	if ctx == nil || store == nil || adapter == nil || verifier == nil || config.LeaseTTL < 10*time.Second || config.LeaseTTL > 300*time.Second || config.LeaseTTL%time.Second != 0 || config.BatchSize > 100 {
 		return nil, errors.New("cross-mint recovery requires concrete owners, verifier and bounded whole-second lease")
 	}
-	if err := store.RequireCrossMintSchema(ctx); err != nil {
-		return nil, err
-	}
 	chain, err := solana.NewLandRPC(adapter.url, adapter.deadline)
 	if err != nil {
 		return nil, err

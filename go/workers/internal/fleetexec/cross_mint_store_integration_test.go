@@ -143,9 +143,6 @@ func signerPublic(s DelegateSigner) string { return sdk.PublicKeyFromBytes(s.Fee
 func TestCrossMintActivationAndSignedPublicationRetainExistingFences(t *testing.T) {
 	store, pool := integrationStore(t)
 	ctx := context.Background()
-	if err := store.RequireCrossMintSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
 	a, signer, input := seedCrossMintActivation(t, ctx, pool)
 	// The synthetic message protects exact-wire/database publication contracts.
 	// It is not a KLend/Jupiter chain execution or a preflight simulation proof.

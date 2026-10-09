@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -99,9 +98,10 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", Mode: ModePublish, VaultID: vaultID, Source: source, Target: target, PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
+	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
 	config.DelegatedSigner = delegatedSigner
-	worker, err := NewWorker(config, store, NewRPCClient(server.URL), engine.NewFacts(prometheus.NewRegistry()))
+	registry := prometheus.NewRegistry()
+	worker, err := NewWorker(config, store, NewRPCClient(server.URL), engine.NewFacts(registry))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,43 +146,9 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	if err != nil || len(expectedPlan.Opportunities) != 1 {
 		t.Fatalf("expected fleet plan: %#v %v", expectedPlan, err)
 	}
-	// PostgreSQL enforces the shadow contract, not just table-count assertions.
-	// Neither existing nor absent epochs/registrations may cause a write.
-	readOnlyURL, err := url.Parse(databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	query := readOnlyURL.Query()
-	query.Set("options", "-c default_transaction_read_only=on")
-	readOnlyURL.RawQuery = query.Encode()
-	shadowStore, err := OpenStore(ctx, readOnlyURL.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer shadowStore.Close()
-	shadowConfig := config
-	shadowConfig.Mode = ModeShadow
-	shadowRegistry := prometheus.NewRegistry()
-	shadow, err := NewWorker(shadowConfig, shadowStore, NewRPCClient(server.URL), engine.NewFacts(shadowRegistry))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := shadow.SetMarketEvidence(staticMarketEpochSource{epoch: epoch}); err != nil {
-		t.Fatal(err)
-	}
-	if err := shadow.planningCycle(ctx); err != nil {
-		t.Fatalf("read-only shadow existing epoch: %v", err)
-	}
-	shadow.config.Cluster = "shadow-" + suffix
-	if err := shadow.planningCycle(ctx); err != nil {
-		t.Fatalf("read-only shadow absent epoch: %v", err)
-	}
-	shadow.runtimeCycle(ctx)
-	if plannerLaneSucceededAt(t, shadowRegistry) == 0 {
+	worker.runtimeCycle(ctx)
+	if plannerLaneSucceededAt(t, registry) == 0 {
 		t.Fatal("a successful planning cycle did not record planner lane success")
-	}
-	if err := shadow.SetRevalidator(&Revalidator{}); err == nil {
-		t.Fatal("shadow accepted a durable revalidator")
 	}
 	if err := worker.cycle(ctx); err != nil {
 		t.Fatal(err)

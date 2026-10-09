@@ -40,9 +40,6 @@ func integrationStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
-	if err := store.RequireSchema(context.Background()); err != nil {
-		t.Fatalf("integration schema is not migrated: %v", err)
-	}
 	var databaseName, role string
 	if err := store.pool.QueryRow(context.Background(), `SELECT current_database(),current_user`).Scan(&databaseName, &role); err != nil || databaseName != "workers_v2_autodeposit" || role != "workers_v2" {
 		t.Fatalf("fixture database identity mismatch: database=%s role=%s error=%v", databaseName, role, err)

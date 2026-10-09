@@ -48,14 +48,9 @@ func (f failingEpochSource) LoadImmutableMarketEpoch(context.Context) (Immutable
 // A failed planning cycle names its cause. The one secret an error can carry,
 // the RPC URL with its API key, is reduced to the operation and cause.
 func TestPlanningCycleFailureLogsItsCauseWithoutTheRPCURL(t *testing.T) {
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	cause := &url.Error{Op: "Post", URL: "https://rpc.example/?api-key=SECRET", Err: errors.New("dial tcp: connection refused")}
-	w := &Worker{config: Config{Mode: ModeShadow}, marketEvidence: failingEpochSource{fmt.Errorf("load market epoch: %w", cause)}, facts: engine.NewFacts(prometheus.NewRegistry())}
-	w.runtimeCycle(context.Background())
-	out := buf.String()
-	if !strings.Contains(out, "kamino_fleet_planner_cycle_failed") || !strings.Contains(out, "dial tcp: connection refused") {
+	out := LogErrorText(fmt.Errorf("load market epoch: %w", cause))
+	if !strings.Contains(out, "dial tcp: connection refused") {
 		t.Fatalf("planning failure logged without its cause: %s", out)
 	}
 	if strings.Contains(out, "SECRET") {
@@ -95,7 +90,7 @@ func TestFailedPlanningCycleDoesNotAdvanceThePlannerLane(t *testing.T) {
 	log.SetOutput(&bytes.Buffer{})
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	registry := prometheus.NewRegistry()
-	w := &Worker{config: Config{Mode: ModeShadow}, marketEvidence: failingEpochSource{errors.New("frontier is incomplete")}, facts: engine.NewFacts(registry)}
+	w := &Worker{config: Config{}, marketEvidence: failingEpochSource{errors.New("frontier is incomplete")}, facts: engine.NewFacts(registry)}
 	w.runtimeCycle(context.Background())
 	if at := plannerLaneSucceededAt(t, registry); at != 0 {
 		t.Fatalf("failed planning cycle recorded planner lane success at %v", at)

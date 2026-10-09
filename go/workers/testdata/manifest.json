@@ -48,12 +48,12 @@
     },
     {
       "file": "testdata/fleet/dilution-wave.json",
-      "sha256": "90da54b947b462903110f30e489fa2bc279326eae8f77fdf788e6d2422232d4c",
+      "sha256": "cc83adaf8d52a872e56279f55bbaa6d6335f8ccdbb1ac33872da1f3f84ec9bc3",
       "classification": "reviewed_economic_counterexample",
       "scope": "Saved shared-reserve priority counterexample; source provenance is in dilution-wave.provenance.json."
     },
     {
-      "file": "testdata/fleet/rust-burst-2026-10-07.json",
+      "file": "testdata/fleet/burst-2026-10-07.json",
       "sha256": "f7312c2b97f4bcc6ba6b4997a2b2b7ee664da3d691db605f831aa3bc5bb643bc",
       "classification": "production_replay",
       "scope": "Rust optimizer epoch 2113968 (2026-10-07T23:47:58Z) trimmed to USDC with its fingerprint recomputed, and the 128 vaults Rust published AYL4LM->D6q6wu from it in two cycles; vault identities are synthesized. Offline wave selection parity only; not an executable route."

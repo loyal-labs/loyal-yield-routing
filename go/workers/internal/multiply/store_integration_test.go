@@ -44,9 +44,6 @@ func integrationStore(t *testing.T) *Store {
 	if database != "workers_v2_multiply" || role != "workers_v2" {
 		t.Fatalf("configured fixture identity refused: database=%q role=%q", database, role)
 	}
-	if err := store.RequireSchema(context.Background()); err != nil {
-		t.Fatalf("registered multiply schema missing: %v", err)
-	}
 	t.Cleanup(store.Pool().Close)
 	return store
 }

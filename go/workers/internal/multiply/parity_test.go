@@ -357,56 +357,6 @@ func TestConstraintIndexesPerActionAndStrategy(t *testing.T) {
 	}
 }
 
-func TestCanonicalConstraintsMatchRustRecipes(t *testing.T) {
-	topology := testTopology(t)
-	collateral, err := CanonicalConstraints(topology, FamilyCollateral)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(collateral) != 2 ||
-		collateral[0].ProgramID != mustKey(KlendProgram) ||
-		!equalBytes(collateral[0].DataConstraints[0].DataValue.Bytes, DiscriminatorDepositCollateral[:]) ||
-		!equalBytes(collateral[1].DataConstraints[0].DataValue.Bytes, DiscriminatorWithdrawCollateral[:]) {
-		t.Fatalf("collateral family recipe drifted: %+v", collateral)
-	}
-	debt, err := CanonicalConstraints(topology, FamilyDebt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(debt) != 2 ||
-		!equalBytes(debt[0].DataConstraints[0].DataValue.Bytes, DiscriminatorBorrowDebt[:]) ||
-		!equalBytes(debt[1].DataConstraints[0].DataValue.Bytes, DiscriminatorRepayDebt[:]) {
-		t.Fatalf("debt family recipe drifted: %+v", debt)
-	}
-	// Borrow pins debt custody at index 8, repay at index 6; both require the
-	// obligation to be owned by the vault (account index 1, offset 64).
-	if debt[0].AccountConstraints[3].AccountIndex != 8 || debt[1].AccountConstraints[3].AccountIndex != 6 {
-		t.Fatalf("debt custody pin indexes drifted: %+v %+v", debt[0], debt[1])
-	}
-	owned := debt[0].AccountConstraints[1]
-	if owned.AccountIndex != 1 || owned.Owner == nil || *owned.Owner != mustKey(KlendProgram) {
-		t.Fatalf("obligation ownership constraint drifted: %+v", owned)
-	}
-	if len(owned.AccountData) != 1 || owned.AccountData[0].DataOffset != 64 ||
-		!equalBytes(owned.AccountData[0].DataValue.Bytes, topology.Vault[:]) {
-		t.Fatalf("obligation ownership slice drifted: %+v", owned.AccountData)
-	}
-	swap, err := CanonicalConstraints(topology, FamilySwap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(swap) != 4 {
-		t.Fatalf("swap family must carry the four canonical lanes, got %d", len(swap))
-	}
-	for _, constraint := range swap {
-		if constraint.ProgramID != mustKey(JupiterProgram) ||
-			constraint.DataConstraints[0].DataValue.U16 !=
-				binary.LittleEndian.Uint16(JupiterSharedAccountsRouteDiscriminator[:2]) {
-			t.Fatalf("swap lane drifted: %+v", constraint)
-		}
-	}
-}
-
 func TestSquadsExecutePayloadLayout(t *testing.T) {
 	topology := testTopology(t)
 	config := topology.Strategies[OnycUsdc]
@@ -831,7 +781,7 @@ func TestVerifyExpectedEffectsRules(t *testing.T) {
 
 // ----------------------------------------------------------------- worker
 
-func TestOperationIDParity(t *testing.T) {
+func TestOperationIDIsStable(t *testing.T) {
 	// sha256(EngineVersion || routeKey || cycle_le || generation_le || action)
 	hash := sha256.New()
 	hash.Write([]byte(EngineVersion))

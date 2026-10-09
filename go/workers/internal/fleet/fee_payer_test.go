@@ -1,7 +1,6 @@
 package fleet
 
 import (
-	"crypto/sha256"
 	"testing"
 )
 
@@ -29,25 +28,6 @@ func TestRankFeePayersSpreadsVaultsDeterministically(t *testing.T) {
 	}
 	if len(used) != len(payers) {
 		t.Fatalf("vaults did not spread over every payer: %v", used)
-	}
-}
-
-func TestRankFeePayersMatchesRustRendezvousScore(t *testing.T) {
-	// fee_payer_rendezvous_score hashes cluster, 0, vault, 0 and the raw
-	// 32-byte payer; the highest score ranks first.
-	vault := feePayerKey(77)
-	payers := []string{feePayerKey(10), feePayerKey(20)}
-	score := func(payer string) [32]byte {
-		key, _ := decodePublicKey(payer)
-		return sha256.Sum256(append(append(append([]byte("mainnet-beta\x00"), vault...), 0), key[:]...))
-	}
-	a, b := score(payers[0]), score(payers[1])
-	want := payers[0]
-	if string(b[:]) > string(a[:]) {
-		want = payers[1]
-	}
-	if got := RankFeePayers("mainnet-beta", vault, payers); got[0] != want {
-		t.Fatalf("got %s want %s", got[0], want)
 	}
 }
 

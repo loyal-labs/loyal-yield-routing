@@ -71,31 +71,6 @@ type ProjectionOutcome struct {
 	FetchedEvents   int
 }
 
-// RequireSchema only checks the retained columns. Fixture creation and
-// production migrations are owned by the runtime operator, never this lane.
-func (p *Projector) RequireSchema(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, p.ioTimeout)
-	defer cancel()
-	if _, err := p.capture.Exec(ctx, fmt.Sprintf(`SELECT event_id,target_id,cluster,wallet,wallet_usdc_ata,vault_pubkey,vault_usdc_ata,
-amount_raw,owner,mint,slot,observed_at,source,source_commitment,txn_signature,account_data_hash,
-raw_account_data_base64,raw_evidence,received_at FROM %s.balance_sweep_wallet_ata_observations WHERE false`, p.schema)); err != nil {
-		return fmt.Errorf("ATA capture schema unavailable: %w", err)
-	}
-	for _, query := range []string{
-		`SELECT id,cluster,wallet,wallet_token_ata,vault_pubkey,vault_token_ata,token_mint FROM loyal_yield.balance_sweep_targets WHERE false`,
-		`SELECT consumer_name,last_event_id,updated_at FROM loyal_yield.projection_offsets WHERE false`,
-		`SELECT event_id,target_id,wallet,wallet_usdc_ata,wallet_token_ata,mint,previous_amount_raw,amount_raw,delta_amount_raw,
-observed_slot,observed_at,source,source_commitment,txn_signature,account_data_hash,raw_evidence FROM loyal_yield.balance_sweep_wallet_balance_events WHERE false`,
-		`SELECT target_id,wallet,wallet_usdc_ata,wallet_token_ata,mint,amount_raw,owner,observed_slot,observed_at,source,
-source_commitment,txn_signature,account_data_hash,raw_evidence,updated_at FROM loyal_yield.balance_sweep_wallet_balances_current WHERE false`,
-	} {
-		if _, err := p.yield.Exec(ctx, query); err != nil {
-			return fmt.Errorf("ATA destination schema unavailable: %w", err)
-		}
-	}
-	return nil
-}
-
 // Tick reads capture before opening the destination transaction. A competing
 // retained/Go projector may advance the shared offset meanwhile; only events
 // beyond the locked destination offset are then applied. Events, current
@@ -121,7 +96,7 @@ func (p *Projector) Tick(ctx context.Context) (ProjectionOutcome, error) {
 // capture lane. Failed batches retain their checkpoint and retry with bounded
 // backoff; persistent evidence conflicts remain unhealthy and are never skipped.
 // Callbacks run synchronously outside transactions and must return promptly.
-// Constructor and RequireSchema errors remain runtime startup failures.
+// Constructor errors remain runtime startup failures.
 func (p *Projector) Run(ctx context.Context) error {
 	backoff := 250 * time.Millisecond
 	for {

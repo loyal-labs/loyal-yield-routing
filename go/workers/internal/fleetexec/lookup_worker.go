@@ -44,12 +44,6 @@ func NewLookupWorker(store *Store, chain *LookupRPC, config LookupWorkerConfig, 
 }
 
 func (w *LookupWorker) Run(ctx context.Context) error {
-	startup, cancelStartup := context.WithTimeout(ctx, w.config.TickDeadline)
-	err := w.store.RequireLookupSchema(startup)
-	cancelStartup()
-	if err != nil {
-		return err
-	}
 	delay := w.config.PollInterval
 	for {
 		_, err := w.Tick(ctx)

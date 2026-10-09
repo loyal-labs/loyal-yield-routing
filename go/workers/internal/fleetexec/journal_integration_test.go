@@ -77,11 +77,7 @@ func integrationStore(t *testing.T) (*Store, *pgxpool.Pool) {
 		t.Fatalf("configured fixture database unavailable: %v", err)
 	}
 	requireDisposableDatabase(t, pool)
-	store, err := NewStore(ctx, pool)
-	if err != nil {
-		pool.Close()
-		t.Fatal(err)
-	}
+	store := NewStore(pool)
 	t.Cleanup(pool.Close)
 	return store, pool
 }

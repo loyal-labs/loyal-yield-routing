@@ -29,29 +29,6 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-// RequireSchema verifies the family's actual prerequisites without applying
-// migrations; schema changes stay with root.
-func (s *Store) RequireSchema(ctx context.Context) error {
-	return WorkersDB.RequireTables(ctx, s.pool,
-		"loyal_yield.balance_sweep_targets",
-		"loyal_yield.balance_sweep_wallet_balance_events",
-		"loyal_yield.balance_sweep_wallet_balances_current",
-		"loyal_yield.balance_sweep_surplus_lots",
-		"loyal_yield.balance_sweep_scheduled_slots",
-		"loyal_yield.balance_sweep_lot_claims",
-		"loyal_yield.balance_sweep_lot_claim_items",
-		"loyal_yield.balance_sweep_transaction_attempts",
-		"loyal_yield.projection_offsets",
-		"loyal_yield.managed_vaults",
-		"loyal_yield.route_policies",
-		"loyal_yield.balance_sweep_executions",
-		"loyal_yield.user_yield_positions",
-		"loyal_yield.user_yield_position_deposits",
-		"loyal_yield.user_yield_position_holding_events",
-		"loyal_yield.user_yield_position_withdrawals",
-	)
-}
-
 func (s *Store) Close() {
 	if s != nil && s.pool != nil {
 		s.pool.Close()

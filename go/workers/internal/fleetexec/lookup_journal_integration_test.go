@@ -200,14 +200,9 @@ func seedLookupJournal(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f 
 
 func seedLookupSource(t *testing.T, ctx context.Context, pool *pgxpool.Pool, f lookupFixture, kinds ...string) (*Store, LookupOperation) {
 	t.Helper()
-	store, err := NewStore(ctx, pool)
+	store := NewStore(pool)
+	_, err := pool.Exec(ctx, `TRUNCATE loyal_yield.lookup_table_families CASCADE`)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err = store.RequireLookupSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = pool.Exec(ctx, `TRUNCATE loyal_yield.lookup_table_families CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_provisioner_controls SET paused=false,control_epoch=control_epoch+1 WHERE cluster='localnet'`); err != nil {

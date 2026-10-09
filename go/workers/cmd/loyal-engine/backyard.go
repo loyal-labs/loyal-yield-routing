@@ -112,27 +112,18 @@ func optionalCredential(name string) string {
 	return value
 }
 
-// backyardSelectorMode reads BACKYARD_RWA_SELECTOR_SHADOW and _LIVE, each 0/1.
+// backyardSelectorMode reads BACKYARD_RWA_SELECTOR_LIVE, 0 or 1.
 func backyardSelectorMode() (backyard.SelectorMode, error) {
-	shadow, live := os.Getenv("BACKYARD_RWA_SELECTOR_SHADOW"), os.Getenv("BACKYARD_RWA_SELECTOR_LIVE")
-	if shadow != "" && shadow != "0" && shadow != "1" {
-		return "", errors.New("BACKYARD_RWA_SELECTOR_SHADOW must be 0 or 1")
-	}
-	if live != "" && live != "0" && live != "1" {
-		return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
-	}
-	switch {
-	case shadow == "1" && live == "1":
-		return "", errors.New("choose one selector mode")
-	case live == "1":
+	switch os.Getenv("BACKYARD_RWA_SELECTOR_LIVE") {
+	case "", "0":
+		return backyard.SelectorOff, nil
+	case "1":
 		return backyard.SelectorLive, nil
-	case shadow == "1":
-		return backyard.SelectorShadow, nil
 	}
-	return backyard.SelectorOff, nil
+	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [inspect-pilot-flat-state | activate-pilot-budget | selector-shadow | selector-evaluate [--execute] | inspect-phase3 lane ... | initialize-phase3-budget | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [inspect-pilot-flat-state | activate-pilot-budget | selector-evaluate [--execute] | inspect-phase3 lane ... | initialize-phase3-budget | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
@@ -164,9 +155,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 	switch command, rest := args[0], args[1:]; {
 	case command == "inspect-pilot-flat-state" && len(rest) == 0:
 		return backyard.InspectPilotBudgetFlatState(bounded(30*time.Second), cfg.RPCURL, out)
-	case command == "selector-shadow" && len(rest) == 0:
-		cfg.TimescaleURL = optionalCredential("BACKYARD_TIMESCALE_DATABASE_URL")
-		return backyard.RunSelectorShadow(bounded(45*time.Second), out, cfg)
 	case command == "selector-evaluate" && (len(rest) == 0 || len(rest) == 1 && rest[0] == "--execute"):
 		// --execute performs exactly one locked evaluation under its own
 		// short route lease; the committed entry is durable route state.
