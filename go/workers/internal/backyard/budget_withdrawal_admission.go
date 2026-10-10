@@ -294,7 +294,10 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 	if reportBeforeSwap {
 		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.CurrentCost, Template: tail.Input})
 	}
+	// Each input that bounds the window also raises the newest slot the chain
+	// is known to be at.
 	plan.ValidThroughSlot = min(tail.ValidThroughSlot, current.ValidThroughSlot)
+	observed := max(tail.CurrentCost.ObservationSlot, current.ObservationSlot)
 	for i, swap := range swaps {
 		swapCost := swapCosts[i]
 		swapEffects, err := jsonMarshalExpectedEffects(swap.ExpectedEffects)
@@ -310,6 +313,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 		}
 		plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: ReportNAV, Cost: tail.CurrentCost, Template: tail.Input})
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, swapCost.ValidThroughSlot)
+		observed = max(observed, swapCost.ObservationSlot)
 	}
 	plan.Exit = append(plan.Exit, tail.Exit...)
 	slot, err := view.slot(ctx)
@@ -317,7 +321,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 		return plan, budgetHold("stale_withdrawal_exit_admission")
 	}
 	// The chain is at least at the newest slot any input was read at.
-	slot = max(slot, current.ObservationSlot)
+	slot = max(slot, observed)
 	for _, step := range plan.Exit {
 		plan.ExitAfterMicros, err = budgetSum(plan.ExitAfterMicros, step.Cost.TotalMicros)
 		if err != nil {

@@ -77,9 +77,9 @@ func BuildSimulateAndPersistBridge(
 		}
 		var slotErr *ReportSlotSimulationError
 		if errors.As(err, &slotErr) {
-			// The adaptor refused the report as past its age limit. Slots only
-			// grow, so this wire can never succeed anywhere: nothing moved,
-			// and a fresh report is built next tick.
+			// The adaptor refused the report's slot: past its age limit, or
+			// ahead of a lagging simulation node's clock. Nothing moved, and a
+			// fresh report is built next tick.
 			if markErr := database.MarkPreBroadcastFailed(ctx, operationID, Built, reportExpiredInSimulationReason); markErr != nil {
 				return errors.Join(err, markErr)
 			}

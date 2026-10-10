@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -93,7 +94,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	}
 	// statusValue is the getSignatureStatuses row; transactionValue is the
 	// getTransaction result, or "RPC_ERROR" for a pruned/lagging receipt.
-	advance := func(t *testing.T, landCtx context.Context, op PersistedOperation, statusValue, transactionValue string) (string, string, int) {
+	advance := func(t *testing.T, landCtx context.Context, op PersistedOperation, statusValue, transactionValue string) (string, string, int, error) {
 		t.Helper()
 		receiptReads := 0
 		rpc := newFakeChain(t, nil)
@@ -114,14 +115,12 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			t.Fatalf("unexpected RPC during failure recovery: %s", body)
 			return nil, fmt.Errorf("unexpected RPC")
 		})
-		// An unreadable receipt ends the tick with an unavailable error; the
-		// row is the outcome.
-		_ = AdvanceNonterminal(landCtx, db, rpc, nil, op)
+		tickErr := AdvanceNonterminal(landCtx, db, rpc, nil, op)
 		var status, reason string
 		if err := db.pool.QueryRow(ctx, `SELECT status,COALESCE(recovery_reason,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, op.ID).Scan(&status, &reason); err != nil {
 			t.Fatal(err)
 		}
-		return status, reason, receiptReads
+		return status, reason, receiptReads, tickErr
 	}
 	finalizedFailure := `{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"finalized"}`
 
@@ -130,7 +129,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		op := submittedOperation(id, routeKey)
 		waiting, stop := context.WithTimeout(ctx, 1500*time.Millisecond)
 		defer stop()
-		status, reason, receiptReads := advance(t, waiting, op,
+		status, reason, receiptReads, _ := advance(t, waiting, op,
 			`{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"processed"}`,
 			`{"slot":45,"meta":{"err":null,"logMessages":[]}}`)
 		if status != "submitted" || reason != "" || receiptReads != 0 {
@@ -141,9 +140,10 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	t.Run("an unreadable or contradictory receipt keeps the submission state", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "unreadable")
 		op := submittedOperation(id, routeKey)
-		for _, receipt := range []string{`{"slot":45,"meta":{"err":null,"logMessages":[]}}`, "RPC_ERROR"} {
-			if status, reason, _ := advance(t, ctx, op, finalizedFailure, receipt); status != "submitted" || reason != "" {
-				t.Fatalf("receipt %s left the submission state: %s %q", receipt, status, reason)
+		for _, receipt := range []string{transactionResult(t, 45, nil, map[string]any{"err": nil, "logMessages": []string{}}), "RPC_ERROR"} {
+			status, reason, _, err := advance(t, ctx, op, finalizedFailure, receipt)
+			if status != "submitted" || reason != "" || !errors.Is(err, errConfirmedObservationUnavailable) {
+				t.Fatalf("receipt %s left the submission state or stopped the worker: %s %q %v", receipt, status, reason, err)
 			}
 		}
 	})
@@ -153,8 +153,8 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		op := submittedOperation(id, routeKey)
 		receipt := `{"slot":500,"meta":{"err":{"InstructionError":[0,{"Custom":9}]},"logMessages":` +
 			mustJSONLogs(t, adaptorFailureLogs(bridgeAdaptorProgram, 9)) + `}}`
-		status, reason, _ := advance(t, ctx, op, finalizedFailure, receipt)
-		if status != "submitted" || reason != "" {
+		status, reason, _, err := advance(t, ctx, op, finalizedFailure, receipt)
+		if status != "submitted" || reason != "" || err == nil {
 			t.Fatalf("logs-only refusal settled without fee and wire proof: %s %q", status, reason)
 		}
 	})
@@ -162,26 +162,26 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	t.Run("unattributable and non-adaptor errors stay capital stops", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "unattributable")
 		op := submittedOperation(id, routeKey)
-		status, reason, _ := advance(t, ctx, op, finalizedFailure,
+		status, reason, _, err := advance(t, ctx, op, finalizedFailure,
 			transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 9}}}, "logMessages": []string{}}))
-		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason {
-			t.Fatalf("truncated failure logs lost the capital stop: %s %q", status, reason)
+		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason || err != nil {
+			t.Fatalf("truncated failure logs lost the capital stop: %s %q %v", status, reason, err)
 		}
 		otherRoute, otherID := newSubmittedOperation(t, "voltr")
 		other := submittedOperation(otherID, otherRoute)
 		otherReceipt := transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 6004}}},
 			"logMessages": adaptorFailureLogs(voltr.ProgramID.String(), 6004)})
-		status, reason, _ = advance(t, ctx, other, finalizedFailure, otherReceipt)
-		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason {
-			t.Fatalf("a non-adaptor error lost the capital stop: %s %q", status, reason)
+		status, reason, _, err = advance(t, ctx, other, finalizedFailure, otherReceipt)
+		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason || err != nil {
+			t.Fatalf("a non-adaptor error lost the capital stop: %s %q %v", status, reason, err)
 		}
 	})
 
 	t.Run("a settled success is never classified", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "success")
 		op := submittedOperation(id, routeKey)
-		status, reason, receiptReads := advance(t, ctx, op, `{"slot":45,"err":null,"confirmationStatus":"confirmed"}`, "RPC_ERROR")
-		if status != "confirmed" || reason != "" || receiptReads != 0 {
+		status, reason, receiptReads, err := advance(t, ctx, op, `{"slot":45,"err":null,"confirmationStatus":"confirmed"}`, "RPC_ERROR")
+		if status != "confirmed" || reason != "" || receiptReads != 0 || err != nil {
 			t.Fatalf("a successful receipt was classified as a failure: status=%s reason=%q receiptReads=%d", status, reason, receiptReads)
 		}
 	})
