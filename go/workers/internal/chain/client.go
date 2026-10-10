@@ -53,7 +53,35 @@ func New(endpoint string, timeout time.Duration) (*Client, error) {
 	}
 	// The URL can carry a provider key; never forward it to a redirect target.
 	httpClient := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &Client{rpc: rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: httpClient}))}, nil
+	return &Client{rpc: rpc.NewWithCustomRPCClient(caughtUp{jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: httpClient})})}, nil
+}
+
+// A pooled endpoint routes each call to any node, often a slot or two behind
+// the one that answered the previous call. -32016 is that node saying it has
+// not reached the requested minContextSlot yet, so the same read is
+// answerable a slot later: ask again then, within the caller's deadline, for
+// at most behindPatience. A broadcast is never sent twice.
+const (
+	slotDuration   = 400 * time.Millisecond
+	behindPatience = 4 * time.Second
+)
+
+type caughtUp struct{ rpc.JSONRPCClient }
+
+func (c caughtUp) CallForInto(ctx context.Context, out any, method string, params []any) error {
+	deadline := time.Now().Add(behindPatience)
+	for {
+		err := c.JSONRPCClient.CallForInto(ctx, out, method, params)
+		var rpcErr *jsonrpc.RPCError
+		if method == "sendTransaction" || !errors.As(err, &rpcErr) || rpcErr.Code != behindCode || time.Now().Add(slotDuration).After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(slotDuration):
+		}
+	}
 }
 
 // failed names the method and keeps only what the endpoint said: the JSON-RPC
