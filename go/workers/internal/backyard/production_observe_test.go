@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
@@ -53,12 +52,9 @@ func productionRouteBatchAccounts(t *testing.T, slot int64, mutate func([]Confir
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], 0)
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeVoltrVault).Data[168:176], 53)
 	binary.LittleEndian.PutUint16(accountAt(accounts, bridgeVoltrVault).Data[514:516], uint16(approvedAdminPerformanceFeeBPS))
-	// The full observation path validates the Kamino reserve oracles that the
-	// NAV-only path ignores, so the batch carries one configured oracle for
-	// both reserves plus the oracle account itself.
+	// The full observation path requires a configured oracle on the reserves.
 	putKey(t, accountAt(accounts, kaminoCollateralReserve).Data[5112:5144], kaminoPrimeMint)
 	putKey(t, accountAt(accounts, kaminoDebtReserve).Data[5112:5144], kaminoPrimeMint)
-	accounts = append(accounts, ConfirmedAccount{Address: kaminoPrimeMint, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}})
 	// The production observer validates oracle age against chain time from the
 	// same confirmed batch, so keep the Clock image beside the reserve images.
 	accounts = append(accounts, clockFixture())
@@ -71,11 +67,10 @@ func productionRouteBatchAccounts(t *testing.T, slot int64, mutate func([]Confir
 	return accounts
 }
 
-// fixtureBatchRuntime supplies confirmed and finalized readers over one account
-// list. A removed account is absent from both commitments, which is exactly
-// what the finalized gate needs to see before absence arms the hold.
-func fixtureBatchRuntime(slot int64, accounts []ConfirmedAccount) (func(context.Context, []string, int64) (int64, []ConfirmedAccount, error), func(context.Context, int64) (int64, []ConfirmedAccount, error)) {
-	lookup := func(addresses []string) []ConfirmedAccount {
+// fixtureBatchRuntime reads one account list at slot, with no open
+// withdrawal receipts; a removed account is absent.
+func fixtureBatchRuntime(slot int64, accounts []ConfirmedAccount) func(context.Context, []string, int64) (int64, []ConfirmedAccount, []programAccount, error) {
+	return func(_ context.Context, addresses []string, _ int64) (int64, []ConfirmedAccount, []programAccount, error) {
 		observed := make([]ConfirmedAccount, 0, len(addresses))
 		for _, address := range addresses {
 			for _, account := range accounts {
@@ -85,29 +80,16 @@ func fixtureBatchRuntime(slot int64, accounts []ConfirmedAccount) (func(context.
 				}
 			}
 		}
-		return observed
+		return slot, observed, nil, nil
 	}
-	return func(_ context.Context, addresses []string, _ int64) (int64, []ConfirmedAccount, error) {
-			return slot, lookup(addresses), nil
-		}, func(_ context.Context, _ int64) (int64, []ConfirmedAccount, error) {
-			return slot, lookup([]string{bridgeStrategyReceipt}), nil
-		}
 }
 
 func productionConfirmedBatchForManifest(t *testing.T, manifest RouteManifest, slot int64, mutate func([]ConfirmedAccount)) func(context.Context) (Observation, error) {
 	t.Helper()
 	return func(ctx context.Context) (Observation, error) {
-		accounts := productionRouteBatchAccounts(t, slot, mutate)
-		accountsReader, finalizedReceipt := fixtureBatchRuntime(slot, accounts)
 		observation, _, err := observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
-			confirmedSlot: func(context.Context) (int64, error) { return slot, nil },
-			receipts: func(_ context.Context, _ int64) (int64, []programAccount, error) {
-				// No open withdrawal receipts, so the queue demand is zero.
-				return slot, nil, nil
-			},
-			accounts:         accountsReader,
-			finalizedReceipt: finalizedReceipt,
-			now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+			read: fixtureBatchRuntime(slot, productionRouteBatchAccounts(t, slot, mutate)),
+			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 		})
 		if err != nil {
 			return Observation{}, err
@@ -324,21 +306,13 @@ func TestProductionPerformanceFeeTermsHold(t *testing.T) {
 	}
 }
 
-type stubIdentityReader struct {
-	images    []programIdentityImage
-	fullReads int
+func identityReader(images []ConfirmedAccount) programIdentityReader {
+	return func(context.Context) ([]ConfirmedAccount, error) { return images, nil }
 }
 
-func (s *stubIdentityReader) programIdentityAccounts(_ context.Context, full bool) ([]programIdentityImage, error) {
-	if full {
-		s.fullReads++
-	}
-	return s.images, nil
-}
-
-func pinnedIdentityHeaders(t *testing.T, slots map[string]int64) []programIdentityImage {
+func pinnedIdentityHeaders(t *testing.T, slots map[string]int64) []ConfirmedAccount {
 	t.Helper()
-	images := make([]programIdentityImage, 0, 2*len(pinnedProgramIdentities))
+	images := make([]ConfirmedAccount, 0, 2*len(pinnedProgramIdentities))
 	for _, pin := range pinnedProgramIdentities {
 		programData, err := decodeBase58PublicKey(pin.programData)
 		if err != nil {
@@ -362,45 +336,27 @@ func pinnedIdentityHeaders(t *testing.T, slots map[string]int64) []programIdenti
 			data[i] = byte(i)
 		}
 		images = append(images,
-			programIdentityImage{Address: pin.program, Owner: bpfLoaderProgramOwner, Lamports: 1, Executable: true, Data: program},
-			programIdentityImage{Address: pin.programData, Owner: bpfLoaderProgramOwner, Lamports: 1, Data: data})
+			ConfirmedAccount{Address: pin.program, Owner: bpfLoaderProgramOwner, Lamports: 1, Executable: true, Data: program},
+			ConfirmedAccount{Address: pin.programData, Owner: bpfLoaderProgramOwner, Lamports: 1, Data: data})
 	}
 	return images
 }
 
-// TestProgramIdentityWatcherVerifiesFullImageOnSlotMove covers the major 5
-// watcher: headers alone never verify, an observed slot forces exactly one full
-// image read per attempt, and a hash mismatch never advances the verified slot,
-// so the route keeps holding instead of silently trusting the new binary.
-func TestProgramIdentityWatcherVerifiesFullImageOnSlotMove(t *testing.T) {
-	reader := &stubIdentityReader{images: pinnedIdentityHeaders(t, nil)}
-	watcher := newProgramIdentityWatcher(reader.programIdentityAccounts)
-	observation, err := watcher.observe(context.Background())
-	if err != nil || observation.Verified || observation.VoltrProgramDeploySlot != voltrProgramDeploySlot {
-		t.Fatalf("pinned headers must force a full verification: observation=%+v err=%v", observation, err)
+// TestProgramIdentityWatcherHoldsOnUnverifiedImage: an image that does not
+// hash to its pin never counts as verified, so every tick re-verifies it, and
+// an absent or moved identity stays unverified with its observed slot.
+func TestProgramIdentityWatcherHoldsOnUnverifiedImage(t *testing.T) {
+	watcher := newProgramIdentityWatcher(identityReader(pinnedIdentityHeaders(t, nil)))
+	for range 2 {
+		if observation, err := watcher.observe(context.Background()); err != nil || observation.Verified || observation.VoltrProgramDeploySlot != voltrProgramDeploySlot {
+			t.Fatalf("an image off its pin must stay unverified: observation=%+v err=%v", observation, err)
+		}
 	}
-	if reader.fullReads != 1 {
-		t.Fatalf("the watcher read %d full images, want 1", reader.fullReads)
-	}
-	// A full image that does not hash to its pin never counts as verified, so
-	// the next tick pays for the verification again instead of trusting it.
-	if _, err := watcher.observe(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if reader.fullReads != 2 {
-		t.Fatalf("an unverified slot must be re-verified: full reads=%d", reader.fullReads)
-	}
-
-	absent := &stubIdentityReader{images: pinnedIdentityHeaders(t, nil)[:2]}
-	if observation, err := newProgramIdentityWatcher(absent.programIdentityAccounts).observe(context.Background()); err != nil || observation.Verified {
+	if observation, err := newProgramIdentityWatcher(identityReader(pinnedIdentityHeaders(t, nil)[:2])).observe(context.Background()); err != nil || observation.Verified {
 		t.Fatalf("an absent program identity must stay unverified: observation=%+v err=%v", observation, err)
 	}
-	if absent.fullReads != 0 {
-		t.Fatal("an unreadable program header must not spend a full image read")
-	}
-
-	moved := &stubIdentityReader{images: pinnedIdentityHeaders(t, map[string]int64{voltr.ProgramID.String(): voltrProgramDeploySlot + 1})}
-	if observation, err := newProgramIdentityWatcher(moved.programIdentityAccounts).observe(context.Background()); err != nil || observation.Verified || observation.VoltrProgramDeploySlot != voltrProgramDeploySlot+1 {
+	moved := pinnedIdentityHeaders(t, map[string]int64{voltr.ProgramID.String(): voltrProgramDeploySlot + 1})
+	if observation, err := newProgramIdentityWatcher(identityReader(moved)).observe(context.Background()); err != nil || observation.Verified || observation.VoltrProgramDeploySlot != voltrProgramDeploySlot+1 {
 		t.Fatalf("a moved deploy slot must stay unverified: observation=%+v err=%v", observation, err)
 	}
 }
@@ -421,7 +377,7 @@ func TestProgramDataImageVerificationChecksOwnerDiscriminatorSlotAndHash(t *test
 	digest := sha256.Sum256(data[programDataExecutableOffset:])
 	pin := pinnedProgramIdentity{program: "program", programData: "data",
 		deploySlot: 445223838, dataSHA256: hex.EncodeToString(digest[:])}
-	image := programIdentityImage{Address: "data", Owner: bpfLoaderProgramOwner, Lamports: 1, Data: data}
+	image := ConfirmedAccount{Address: "data", Owner: bpfLoaderProgramOwner, Lamports: 1, Data: data}
 	if slot, err := verifyProgramDataImage(image, pin); err != nil || slot != pin.deploySlot {
 		t.Fatalf("the pinned image was rejected: slot=%d err=%v", slot, err)
 	}

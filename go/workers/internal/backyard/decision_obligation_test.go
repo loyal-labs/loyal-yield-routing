@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"testing"
 )
 
@@ -120,10 +119,7 @@ func TestObligationPresenceIsObservedNotAssumed(t *testing.T) {
 	}
 	observe := func(accounts []ConfirmedAccount) KaminoPosition {
 		t.Helper()
-		position, err := observeKaminoFromFixedAccounts(context.Background(),
-			func(_ context.Context, _ []string, slot int64) (int64, []ConfirmedAccount, error) {
-				return slot, []ConfirmedAccount{{Address: kaminoScopePrices, Lamports: 1, Data: []byte{1}}}, nil
-			}, 77, accounts, config)
+		position, err := observeKaminoFromFixedAccounts(77, accounts, config)
 		if err != nil {
 			t.Fatal(err)
 		}

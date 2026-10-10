@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -190,12 +189,7 @@ func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing
 	// decimal assets. At 1.5/2 prices, 20,000 collateral raw units support
 	// floor(20,000/1e9 * 1.5/2 * .5 * 1e6) = 7 debt raw units.
 	putKey(t, accountAt(accounts, route.Kamino.CollateralReserve).Data[5112:5144], kaminoScopePrices)
-	position, err := observeKaminoFromFixedAccounts(context.Background(), func(_ context.Context, addresses []string, slot int64) (int64, []ConfirmedAccount, error) {
-		if len(addresses) != 1 || addresses[0] != kaminoScopePrices {
-			t.Fatal("unexpected oracle graph")
-		}
-		return slot, []ConfirmedAccount{{Address: kaminoScopePrices, Lamports: 1, Data: []byte{1}}}, nil
-	}, 77, append(append([]ConfirmedAccount{}, accounts...), clockFixture()), route.Kamino)
+	position, err := observeKaminoFromFixedAccounts(77, append(append([]ConfirmedAccount{}, accounts...), clockFixture()), route.Kamino)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -519,6 +519,10 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	for _, account := range accounts {
 		batchImage[account.Address] = account
 	}
+	view, err := OpenView(ctx, rpc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Production observation, with one explicitly reported narrower seam: the
 	// M6 program-identity watcher verifies the pinned mainnet ProgramData image
@@ -535,7 +539,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 			if err != nil {
 				return Observation{}, err
 			}
-			observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, planning.observationManifest(manifest))
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, planning.observationManifest(manifest), planning.landedSlot)
 			if err != nil {
 				return Observation{}, err
 			}
@@ -547,7 +551,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// productionTickRuntime wiring for every closure the tick uses; only the
 	// observe-bound wrappers and the build gate bind to the seams reported
 	// above — build stops at the pinned-signer boundary, never a broadcast.
-	rt := productionTickRuntime(db, rpc, manifest, Credentials{})
+	rt := productionTickRuntime(db, rpc, view, manifest, Credentials{})
 	rt.observe = state.observe
 	rt.prepareInitialization = func(ctx context.Context, m RouteManifest, dec Decision) (Observation, KaminoInitializationRequest, error) {
 		return prepareKaminoInitialization(ctx, rpc, m, dec, state.observe)

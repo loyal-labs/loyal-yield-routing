@@ -148,13 +148,6 @@ func finalizedAccounts(ctx context.Context, c *chain.Client, addresses []string,
 	return readAccounts(ctx, c, rpc.CommitmentFinalized, addresses, minSlot, optional...)
 }
 
-// confirmedReader is confirmedAccounts for c, for observers that take a reader.
-func confirmedReader(c *chain.Client) func(context.Context, []string, int64) (int64, []ConfirmedAccount, error) {
-	return func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
-		return confirmedAccounts(ctx, c, addresses, minSlot)
-	}
-}
-
 type LatestBlockhash struct {
 	Blockhash            string
 	LastValidBlockHeight int64

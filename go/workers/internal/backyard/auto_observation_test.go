@@ -58,7 +58,7 @@ func autoObservationClock(slot int64) ConfirmedAccount {
 	data := make([]byte, 40)
 	binary.LittleEndian.PutUint64(data[0:8], uint64(slot))
 	binary.LittleEndian.PutUint64(data[32:40], uint64(kaminoFixtureUnix))
-	return ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Data: data}
+	return ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: data}
 }
 
 // putKaminoBorrowCurve writes a valid 11-point utilisation/rate curve so the
@@ -185,28 +185,12 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 // one fixed batch through the injectable runtime boundary: no transport, no
 // open withdrawal receipts, chain time equal to the fixture's Clock instant.
 func autoObservationForAccounts(manifest RouteManifest, slot int64, accounts []ConfirmedAccount) func(context.Context) (Observation, []ConfirmedAccount, error) {
-	accountsReader, finalizedReceipt := fixtureBatchRuntime(slot, accounts)
 	return func(ctx context.Context) (Observation, []ConfirmedAccount, error) {
 		return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
-			confirmedSlot: func(context.Context) (int64, error) { return slot, nil },
-			receipts: func(_ context.Context, _ int64) (int64, []programAccount, error) {
-				// No open withdrawal receipts, so the queue demand is zero.
-				return slot, nil, nil
-			},
-			accounts:         accountsReader,
-			finalizedReceipt: finalizedReceipt,
-			now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+			read: fixtureBatchRuntime(slot, accounts),
+			now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 		})
 	}
-}
-
-func removeConfirmedAccount(accounts []ConfirmedAccount, address string) []ConfirmedAccount {
-	for index := range accounts {
-		if accounts[index].Address == address {
-			return append(accounts[:index:index], accounts[index+1:]...)
-		}
-	}
-	return accounts
 }
 
 func flattenAutoPosition(accounts []ConfirmedAccount) {
@@ -381,8 +365,7 @@ func TestAutoCandidateStaleValuationHoldsAndNeverDropsToCash(t *testing.T) {
 	}
 	// The same batch cannot fall back to cash-only accounting either: a
 	// non-USDC debt lane with any reserve-health fault keeps its original error.
-	reader, _ := fixtureBatchRuntime(77, accounts)
-	position, fallbackErr := observeKaminoWithCashFallback(context.Background(), reader, 77, accounts, route)
+	position, fallbackErr := observeKaminoWithCashFallback(77, accounts, route)
 	if !errors.Is(fallbackErr, errKaminoReserveStale) {
 		t.Fatalf("the AUTO cash fallback accepted a stale reserve: %+v, %v", position, fallbackErr)
 	}
@@ -438,13 +421,12 @@ func TestAutoEmptyLaneStaleReserveFallsBackToCash(t *testing.T) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
 	}
 	_, route, accounts := autoObservationBatch(t, 77, stale)
-	reader, _ := fixtureBatchRuntime(77, accounts)
-	position, err := observeKaminoWithCashFallback(context.Background(), reader, 77, accounts, route)
+	position, err := observeKaminoWithCashFallback(77, accounts, route)
 	if err != nil || position.HasPosition || position.DebtRaw != 0 || position.CollateralDepositedRaw != 0 || !position.BorrowUtilizationBlocked {
 		t.Fatalf("empty stale AUTO lane did not fall back to cash: %+v, %v", position, err)
 	}
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 1)
-	if _, err := observeKaminoWithCashFallback(context.Background(), reader, 77, accounts, route); !errors.Is(err, errKaminoReserveStale) {
+	if _, err := observeKaminoWithCashFallback(77, accounts, route); !errors.Is(err, errKaminoReserveStale) {
 		t.Fatalf("PYUSD custody was valued as cash on a stale reserve: %v", err)
 	}
 }
@@ -502,14 +484,10 @@ func TestStaleUSDCReferenceTriesRefreshBeforeHealthHold(t *testing.T) {
 	manifest, _, accounts := autoObservationBatch(t, 77, func(accounts []ConfirmedAccount) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, kaminoDebtReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
 	})
-	read, finalized := fixtureBatchRuntime(77, accounts)
 	refreshCalls := 0
 	_, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{
-		confirmedSlot:    func(context.Context) (int64, error) { return 77, nil },
-		receipts:         func(context.Context, int64) (int64, []programAccount, error) { return 77, nil, nil },
-		accounts:         read,
-		finalizedReceipt: finalized,
-		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		read: fixtureBatchRuntime(77, accounts),
+		now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 		refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 			refreshCalls++
 			return 0, nil, budgetHold("price_refresh_simulation_unavailable")

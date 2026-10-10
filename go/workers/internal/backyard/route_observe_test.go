@@ -216,21 +216,23 @@ func TestRouteFixedAddressesIncludeEveryMutableConstructionInput(t *testing.T) {
 	}
 }
 
-func TestReceiptFenceRequiresOrderedIdenticalDemand(t *testing.T) {
-	if !stableReceiptFence(10, 11, 12, 7, 7, "fingerprint", "fingerprint") {
-		t.Fatal("ordered identical receipt fence was rejected")
+// The view holds every account the route observer reads, on every lane.
+func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
+	held := map[string]bool{}
+	for _, address := range viewAddresses() {
+		held[address] = true
 	}
-	for _, test := range []struct {
-		before, fixed, after, left, right int64
-		leftFP, rightFP                   string
-	}{
-		{11, 10, 12, 7, 7, "f", "f"},
-		{10, 12, 11, 7, 7, "f", "f"},
-		{10, 11, 12, 7, 8, "f", "f"},
-		{10, 11, 12, 7, 7, "f", "changed"},
-	} {
-		if stableReceiptFence(test.before, test.fixed, test.after, test.left, test.right, test.leftFP, test.rightFP) {
-			t.Fatalf("unstable receipt fence accepted: %+v", test)
+	manifests := []RouteManifest{readyWorkerManifest(t)}
+	for _, lane := range append(selectorObservationLanes(manifests[0]), autoAUTOPYUSD.Lane) {
+		manifest := manifests[0]
+		manifest.selectorObservation, manifest.observationLane = true, lane
+		manifests = append(manifests, manifest)
+	}
+	for _, manifest := range manifests {
+		for _, address := range routeFixedAddresses(manifest) {
+			if !held[address] {
+				t.Fatalf("lane %q reads %s outside the view", manifest.observationLane, address)
+			}
 		}
 	}
 }

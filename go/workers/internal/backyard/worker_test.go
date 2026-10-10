@@ -149,7 +149,7 @@ func TestTickJournalsUtilizationHoldWithoutPreparingBorrow(t *testing.T) {
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return observation, nil },
-		prepareKamino: func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error) {
+		prepareKamino: func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error) {
 			t.Fatal("utilization-blocked reserve attempted to prepare another borrow")
 			return Observation{}, KaminoExecutionEvidence{}, nil
 		},
@@ -180,7 +180,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return openObservation, nil },
-		prepareKamino: func(_ context.Context, _ RouteManifest, decision Decision) (Observation, KaminoExecutionEvidence, error) {
+		prepareKamino: func(_ context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, KaminoExecutionEvidence, error) {
 			order = append(order, "prepare-kamino")
 			if decision.Action != OpenPrimeUSDCStep {
 				t.Fatalf("wrong Kamino action: %s", decision.Action)
@@ -240,7 +240,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 }
 
 func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {
-	if _, err := NewWorker(&Database{pool: &pgxpool.Pool{}}, &chain.Client{}, DefaultConfig(), Credentials{}); err == nil {
+	if _, err := NewWorker(&Database{pool: &pgxpool.Pool{}}, &chain.Client{}, &View{}, DefaultConfig(), Credentials{}); err == nil {
 		t.Fatal("worker accepted a missing signing capability")
 	}
 }

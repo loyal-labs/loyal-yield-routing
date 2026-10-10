@@ -248,7 +248,7 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 			order := []string{}
 			worker := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
 				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil }, observe: func(context.Context) (Observation, error) { return o, nil },
-				prepareJupiter: func(_ context.Context, _ RouteManifest, d Decision) (Observation, JupiterExecutionEvidence, error) {
+				prepareJupiter: func(_ context.Context, _ RouteManifest, d Decision, _ Observation) (Observation, JupiterExecutionEvidence, error) {
 					if d != want {
 						t.Fatal("conversion identity changed")
 					}

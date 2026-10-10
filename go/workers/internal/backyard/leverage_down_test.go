@@ -38,12 +38,6 @@ func TestLeverageDownTo1xRunsTheReleaseSwapPayoffChain(t *testing.T) {
 			wantRepay = "idle_debt_repay"
 		}
 		check(DeleverRouteStep, wantRepay, s.PositionDebtRaw)
-		// Refreshed accrual keeps the prepared full payoff.
-		prepared := Decide(s)
-		s.PositionDebtRaw += 3
-		if !fullDebtRepaymentRefreshed(prepared, Decide(s), s) {
-			t.Fatalf("%s: accrued debt changed the down-move payoff", lane)
-		}
 		// Withdrawals and hard LTV keep their priority.
 		w := s
 		w.WithdrawalDemandRaw = 1

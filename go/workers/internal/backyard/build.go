@@ -467,7 +467,6 @@ func mustKey(value string) publicKey {
 	return key
 }
 func publicKeyFromBytes(value []byte) publicKey { var key publicKey; copy(key[:], value); return key }
-func appendU16(dst []byte, value uint16) []byte { return append(dst, byte(value), byte(value>>8)) }
 func appendU64(dst []byte, value uint64) []byte {
 	for i := 0; i < 8; i++ {
 		dst = append(dst, byte(value))

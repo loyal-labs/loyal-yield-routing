@@ -17,6 +17,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
@@ -38,6 +39,14 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	}
 	selector, err := backyardSelectorMode()
 	if err != nil {
+		return err
+	}
+	// Backyard plans from a LaserStream view of its own accounts.
+	laserstream := stream.GRPCConnector{Endpoint: strings.TrimSpace(os.Getenv("BACKYARD_LASERSTREAM_ENDPOINT"))}
+	if laserstream.Endpoint == "" {
+		return errors.New("BACKYARD_LASERSTREAM_ENDPOINT is required")
+	}
+	if laserstream.APIKey, err = engine.Credential("BACKYARD_HELIUS_API_KEY"); err != nil {
 		return err
 	}
 	if selector != backyard.SelectorOff {
@@ -67,13 +76,17 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if _, err := backyard.AssertLegacyPoliciesRetired(ctx, cluster); err != nil {
 		return err
 	}
+	view, err := backyard.OpenView(ctx, cluster, laserstream)
+	if err != nil {
+		return err
+	}
 	database, err := backyard.OpenDatabase(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer database.Close()
 	lane, err := backyard.NewEngine(backyard.EngineConfig{
-		Database: database, RPC: cluster, Credentials: credentials, Config: backyard.DefaultConfig(), Owner: owner,
+		Database: database, RPC: cluster, View: view, Credentials: credentials, Config: backyard.DefaultConfig(), Owner: owner,
 		Out: os.Stdout, Logger: slog.Default(), Facts: facts, Jupiter: cfg.Jupiter,
 		Selector: selector, TimescaleURL: cfg.TimescaleURL,
 	})

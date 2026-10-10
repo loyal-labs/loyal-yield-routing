@@ -19,32 +19,32 @@ var landResendEvery = time.Second
 // broadcast_intent before its first send. Signed, BroadcastIntent and Submitted
 // all land the exact persisted wire, resending the same bytes until it lands,
 // fails on chain or expires.
-func AdvanceNonterminal(ctx context.Context, database *Database, rpc *chain.Client, operation PersistedOperation) error {
+func AdvanceNonterminal(ctx context.Context, database *Database, rpc *chain.Client, view *View, operation PersistedOperation) error {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return err
 	}
-	return advanceNonterminalWithManifest(ctx, manifest, database, rpc, operation)
+	return advanceNonterminalWithManifest(ctx, manifest, database, rpc, view, operation)
 }
 
 // advanceNonterminalWithManifest is the identical recovery state machine with
 // the immutable reviewed manifest explicit: only the reconciliation decode,
 // initializer receipt observation, reconciliation and locked settlement resolve
 // through it. Every other state transition is unchanged.
-func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *chain.Client, operation PersistedOperation) error {
+func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *chain.Client, view *View, operation PersistedOperation) error {
 	if database == nil || rpc == nil || !IsNonterminal(operation.Status) {
 		return fmt.Errorf("invalid nonterminal recovery input")
 	}
 	switch operation.Status {
 	case Decided, Built, Simulated:
-		reason, err := preBroadcastRecoveryReason(ctx, rpc, operation)
+		reason, err := preBroadcastRecoveryReason(ctx, view, operation)
 		if err != nil {
 			return err
 		}
 		return database.MarkPreBroadcastFailed(ctx, operation.ID, operation.Status, reason)
 	case Signed:
 		if WithdrawalPreemptsOpenLoop(operation.Decision.Action, Signed, 1) {
-			observation, err := ObserveConfirmedBridgeSnapshot(ctx, rpc)
+			observation, err := ObserveConfirmedBridgeSnapshot(ctx, view, operation)
 			if err != nil {
 				return err
 			}
@@ -164,14 +164,14 @@ func (d *Database) journalSignedHold(ctx context.Context, operationID string, er
 	return err
 }
 
-func preBroadcastRecoveryReason(ctx context.Context, rpc *chain.Client, operation PersistedOperation) (string, error) {
+func preBroadcastRecoveryReason(ctx context.Context, view *View, operation PersistedOperation) (string, error) {
 	if operation.Status != Decided && operation.Status != Built && operation.Status != Simulated {
 		return "", fmt.Errorf("operation is not pre-broadcast")
 	}
 	if !WithdrawalPreemptsOpenLoop(operation.Decision.Action, operation.Status, 1) {
 		return "prebroadcast_restart_reobserve_required", nil
 	}
-	observation, err := ObserveConfirmedBridgeSnapshot(ctx, rpc)
+	observation, err := ObserveConfirmedBridgeSnapshot(ctx, view, operation)
 	if err != nil {
 		return "", err
 	}

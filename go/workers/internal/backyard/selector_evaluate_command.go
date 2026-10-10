@@ -75,6 +75,11 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 	if err != nil {
 		return budgetHold("selector_evaluate_rpc_unavailable")
 	}
+	// A one-shot command plans from the view's start-up read alone.
+	view, err := OpenView(ctx, rpc, nil)
+	if err != nil {
+		return budgetHold("selector_evaluate_rpc_unavailable")
+	}
 	return runSelectorEvaluate(ctx, out, execute, selectorEvaluateDeps{
 		manifest:    manifest,
 		databaseURL: config.DatabaseURL,
@@ -82,10 +87,10 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 			return NewEconomicFeedOnManifest(ctx, config.TimescaleURL, manifest)
 		},
 		observe: func(ctx context.Context, db *Database, manifest RouteManifest) (Observation, error) {
-			return observeSelectorShadow(ctx, db, rpc, manifest, newProgramIdentityWatcher(chainProgramIdentity(rpc)).observe)
+			return observeSelectorShadow(ctx, db, rpc, view, manifest, newProgramIdentityWatcher(viewProgramIdentity(view)).observe)
 		},
 		evaluate: func(ctx context.Context, db *Database, markets []LaneEconomics) (SelectorResult, error) {
-			return db.evaluateSelector(ctx, rpc, manifest, markets, newProgramIdentityWatcher(chainProgramIdentity(rpc)).observe, DefaultSelectorPolicy())
+			return db.evaluateSelector(ctx, rpc, view, manifest, markets, newProgramIdentityWatcher(viewProgramIdentity(view)).observe, DefaultSelectorPolicy())
 		},
 	})
 }

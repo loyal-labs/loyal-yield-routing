@@ -240,7 +240,7 @@ func TestAutoInitializerSignedTransitionThroughReviewedManifest(t *testing.T) {
 
 	// The wired internal lifecycle path: identity proof, locked final-send
 	// fence, durable broadcast intent, then the wire lands at its slot.
-	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err != nil {
+	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, nil, op); err != nil {
 		t.Fatal(err)
 	}
 	var confirmedSlot int64

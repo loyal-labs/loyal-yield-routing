@@ -409,7 +409,7 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 	// 'reconciling' for the next tick.
 	slotID, slotOp, slotFixture := newFixture()
 	rpc := autoInitializerRecoveryRPC(t, slotFixture, 78, nil)
-	if err := advanceNonterminalWithManifest(ctx, slotFixture.manifest, db, rpc, slotOp); err == nil {
+	if err := advanceNonterminalWithManifest(ctx, slotFixture.manifest, db, rpc, nil, slotOp); err == nil {
 		t.Fatal("slot-drifted initializer receipt was observed")
 	}
 	assertRecoveryStop(t, slotID, "reconciling", "")
@@ -430,7 +430,7 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 		req.Body = io.NopCloser(bytes.NewReader(raw))
 		return inner.RoundTrip(req)
 	})
-	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err != nil {
+	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, nil, op); err != nil {
 		t.Fatal(err)
 	}
 	if status := operationStatus(t, ctx, db, id); status != "reconciled" {
@@ -442,7 +442,7 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 
 	// No replay after completion: the durable row is terminal, so the shared
 	// entrypoint refuses to advance it again and nothing re-settles.
-	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err == nil {
+	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, nil, op); err == nil {
 		t.Fatal("terminal initializer advanced twice")
 	}
 	if status := operationStatus(t, ctx, db, id); status != "reconciled" {

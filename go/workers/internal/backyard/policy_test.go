@@ -82,27 +82,6 @@ func TestUninstalledLiteralHoldsByName(t *testing.T) {
 // The AUTO policy's installed account.
 const installedAutoPolicyKey = "H6X87EqwDcM2qigQ4SadS3uWFozkkGSwvUxDuYYcD92q"
 
-// installedAutoPolicyAccount is the AUTO policy's account in the capture;
-// tests never fetch RPC.
-func installedAutoPolicyAccount(t testing.TB) ConfirmedAccount {
-	t.Helper()
-	capture, err := readPolicyCapture()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range capture.Result.Value {
-		if a.Pubkey == installedAutoPolicyKey {
-			data, err := base64.StdEncoding.Strict().DecodeString(a.Account.Data[0])
-			if err != nil {
-				t.Fatal(err)
-			}
-			return ConfirmedAccount{Address: a.Pubkey, Owner: a.Account.Owner, Lamports: a.Account.Lamports, Data: data}
-		}
-	}
-	t.Fatal("the capture does not hold the AUTO policy")
-	return ConfirmedAccount{}
-}
-
 // policyCapture is testdata/installed-policies.json: one finalized
 // getProgramAccounts of every policy on Backyard's Settings (the policy
 // discriminator at 0, the Settings at 8), as public mainnet RPC answered it.

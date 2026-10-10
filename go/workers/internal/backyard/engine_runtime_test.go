@@ -183,6 +183,7 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 	base := EngineConfig{
 		Database:    &Database{pool: &pgxpool.Pool{}},
 		RPC:         &chain.Client{},
+		View:        &View{},
 		Credentials: Credentials{PolicyKey: unpinned},
 		Config:      DefaultConfig(),
 		Owner:       validOwner,
@@ -201,6 +202,7 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 	}{
 		"missing database":      {func(c *EngineConfig) { c.Database = nil }, ""},
 		"missing rpc":           {func(c *EngineConfig) { c.RPC = nil }, ""},
+		"missing view":          {func(c *EngineConfig) { c.View = nil }, ""},
 		"missing credentials":   {func(c *EngineConfig) { c.Credentials = Credentials{} }, ""},
 		"truncated capability":  {func(c *EngineConfig) { c.Credentials = Credentials{PolicyKey: unpinned[:ed25519.SeedSize]} }, ""},
 		"selector without feed": {func(c *EngineConfig) { c.Selector = SelectorLive }, "Timescale economic feed"},

@@ -1,17 +1,10 @@
 package backyard
 
 import (
-	"context"
 	"fmt"
 
-	"github.com/solana-foundation/solana-go/v2"
-	"github.com/solana-foundation/solana-go/v2/rpc"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
-
-const maxConfirmedObservationAttempts = 3
 
 type VoltrWithdrawalReceipt struct {
 	Address string
@@ -21,31 +14,6 @@ type VoltrWithdrawalReceipt struct {
 type programAccount struct {
 	Address string
 	Account ConfirmedAccount
-}
-
-func getVoltrWithdrawalReceiptAccounts(ctx context.Context, c *chain.Client, vault string, minContextSlot int64) (int64, []programAccount, error) {
-	if minContextSlot <= 0 {
-		return 0, nil, fmt.Errorf("positive minimum context slot is required")
-	}
-	vaultKey, err := solana.PublicKeyFromBase58(vault)
-	if err != nil {
-		return 0, nil, err
-	}
-	slot, read, err := c.ProgramAccounts(ctx, voltr.ProgramID, voltr.WithdrawalReceiptFilters(vaultKey), rpc.CommitmentConfirmed, uint64(minContextSlot))
-	if err != nil {
-		return 0, nil, confirmedObservationUnavailable(err)
-	}
-	seen := make(map[solana.PublicKey]struct{}, len(read))
-	accounts := make([]programAccount, 0, len(read))
-	for _, account := range read {
-		if _, duplicate := seen[account.Key]; duplicate {
-			return 0, nil, fmt.Errorf("duplicate receipt account %s", account.Key)
-		}
-		seen[account.Key] = struct{}{}
-		address := account.Key.String()
-		accounts = append(accounts, programAccount{Address: address, Account: confirmedAccount(address, &account)})
-	}
-	return int64(slot), accounts, nil
 }
 
 // DecodeVoltrWithdrawalReceipt admits a deployed withdrawal receipt of vault

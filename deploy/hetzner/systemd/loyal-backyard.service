@@ -21,8 +21,10 @@ LoadCredentialEncrypted=BACKYARD_SOLANA_RPC_URL:/etc/credstore.encrypted/loyal-b
 LoadCredentialEncrypted=BACKYARD_POLICY_KEYPAIR:/etc/credstore.encrypted/loyal-backyard/BACKYARD_POLICY_KEYPAIR
 LoadCredentialEncrypted=BACKYARD_TIMESCALE_DATABASE_URL:/etc/credstore.encrypted/loyal-backyard/BACKYARD_TIMESCALE_DATABASE_URL
 LoadCredentialEncrypted=JUPITER_API_KEY:/etc/credstore.encrypted/loyal-backyard/JUPITER_API_KEY
+LoadCredentialEncrypted=BACKYARD_HELIUS_API_KEY:/etc/credstore.encrypted/loyal-backyard/BACKYARD_HELIUS_API_KEY
 
-# Non-secret: BACKYARD_RWA_SELECTOR_LIVE, BACKYARD_RWA_PILOT_CANARY_ENTRY.
+# Non-secret: BACKYARD_RWA_SELECTOR_LIVE, BACKYARD_RWA_PILOT_CANARY_ENTRY,
+# BACKYARD_LASERSTREAM_ENDPOINT.
 EnvironmentFile=/etc/loyal/loyal-backyard.env
 Environment=LOYAL_WORKER_SCOPE=backyard
 Environment=LOYAL_WORKER_INSTANCE=primary

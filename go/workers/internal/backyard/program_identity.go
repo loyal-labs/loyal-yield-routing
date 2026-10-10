@@ -7,10 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/solana-foundation/solana-go/v2"
-	"github.com/solana-foundation/solana-go/v2/rpc"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
@@ -47,61 +43,17 @@ var pinnedProgramIdentities = []pinnedProgramIdentity{
 		deploySlot: adaptorProgramDeploySlot, dataSHA256: adaptorProgramDataSHA256},
 }
 
-// programIdentityImage is one raw loader account read.
-type programIdentityImage struct {
-	Address    string
-	Owner      string
-	Lamports   uint64
-	Executable bool
-	Data       []byte
-}
+// programIdentityReader returns the pinned program and ProgramData accounts;
+// an absent one carries its address alone.
+type programIdentityReader func(ctx context.Context) ([]ConfirmedAccount, error)
 
-// programIdentityReader is the confirmed-state seam behind M6. It returns the
-// pinned program header accounts and their ProgramData accounts: headers
-// only, or the full ProgramData image when full is set. An absent account is
-// simply missing from the result.
-type programIdentityReader func(ctx context.Context, full bool) ([]programIdentityImage, error)
-
-// chainProgramIdentity reads the program identity accounts at confirmed. Full
-// ProgramData images are read one address at a time: the pinned Voltr image is
-// over a megabyte and batch responses are size-capped.
-func chainProgramIdentity(c *chain.Client) programIdentityReader {
-	return func(ctx context.Context, full bool) ([]programIdentityImage, error) {
+// viewProgramIdentity reads the pinned identity accounts from the view.
+func viewProgramIdentity(view *View) programIdentityReader {
+	return func(ctx context.Context) ([]ConfirmedAccount, error) {
 		addresses := []string{voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress}
-		keys, err := publicKeys(addresses)
-		if err != nil {
-			return nil, err
-		}
-		if !full {
-			accounts, err := c.AccountHeads(ctx, keys, programHeaderLength)
-			if err != nil {
-				return nil, confirmedObservationUnavailable(err)
-			}
-			return programIdentityImages(addresses, accounts), nil
-		}
-		accounts, err := c.AccountHeads(ctx, keys[:2], programHeaderLength)
-		if err != nil {
-			return nil, confirmedObservationUnavailable(err)
-		}
-		for _, key := range keys[2:] {
-			_, image, err := c.Accounts(ctx, []solana.PublicKey{key}, rpc.CommitmentConfirmed, 0)
-			if err != nil {
-				return nil, confirmedObservationUnavailable(err)
-			}
-			accounts = append(accounts, image...)
-		}
-		return programIdentityImages(addresses, accounts), nil
+		_, accounts, _, err := view.read(ctx, addresses, 0, addresses...)
+		return accounts, err
 	}
-}
-
-func programIdentityImages(addresses []string, accounts []*chain.Account) []programIdentityImage {
-	images := make([]programIdentityImage, 0, len(accounts))
-	for i, account := range accounts {
-		if account != nil {
-			images = append(images, programIdentityImage{Address: addresses[i], Owner: account.Owner.String(), Lamports: account.Lamports, Executable: account.Executable, Data: account.Data})
-		}
-	}
-	return images
 }
 
 // programIdentityObservation is what the monitors arm M6 from.
@@ -112,8 +64,8 @@ type programIdentityObservation struct {
 }
 
 // programIdentityWatcher remembers which deploy slots were already verified
-// against the full ProgramData hash, so a tick pays for a full image read only
-// at worker start and after an observed slot move.
+// against the ProgramData hash, so a tick hashes only at worker start and
+// after an observed slot move.
 type programIdentityWatcher struct {
 	reader       programIdentityReader
 	lastVerified map[string]int64
@@ -123,19 +75,18 @@ func newProgramIdentityWatcher(reader programIdentityReader) *programIdentityWat
 	return &programIdentityWatcher{reader: reader, lastVerified: map[string]int64{}}
 }
 
-// observe verifies the pinned program identity. Per tick it reads only the
-// program and ProgramData headers; the full ProgramData is fetched and hashed
-// whenever the observed slot was not already verified. Absence, a wrong owner,
-// a wrong discriminant, a moved slot, or a hash mismatch returns Verified=false
-// and no error, so the caller records a durable program_identity_unverified
-// hold instead of failing the tick; only a transport failure is an error.
+// observe verifies the pinned program identity. A ProgramData image is hashed
+// whenever its deploy slot was not already verified. Absence, a wrong owner,
+// a wrong discriminant, a moved slot, or a hash mismatch returns
+// Verified=false and no error, so the caller records a durable
+// program_identity_unverified hold instead of failing the tick; only an
+// unavailable view is an error.
 func (w *programIdentityWatcher) observe(ctx context.Context) (programIdentityObservation, error) {
 	observation := programIdentityObservation{}
-	images, err := w.reader(ctx, false)
+	images, err := w.reader(ctx)
 	if err != nil {
 		return observation, err
 	}
-	rehash := false
 	for _, pin := range pinnedProgramIdentities {
 		program, err := identityImage(images, pin.program)
 		if err != nil {
@@ -160,21 +111,7 @@ func (w *programIdentityWatcher) observe(ctx context.Context) (programIdentityOb
 			observation.AdaptorProgramDeploySlot = slot
 		}
 		if w.lastVerified[pin.program] != slot {
-			rehash = true
-		}
-	}
-	if rehash {
-		images, err = w.reader(ctx, true)
-		if err != nil {
-			return observation, err
-		}
-		for _, pin := range pinnedProgramIdentities {
-			data, err := identityImage(images, pin.programData)
-			if err != nil {
-				return observation, nil
-			}
-			slot, err := verifyProgramDataImage(data, pin)
-			if err != nil {
+			if _, err := verifyProgramDataImage(data, pin); err != nil {
 				return observation, nil
 			}
 			w.lastVerified[pin.program] = slot
@@ -184,18 +121,18 @@ func (w *programIdentityWatcher) observe(ctx context.Context) (programIdentityOb
 	return observation, nil
 }
 
-func identityImage(images []programIdentityImage, address string) (programIdentityImage, error) {
+func identityImage(images []ConfirmedAccount, address string) (ConfirmedAccount, error) {
 	for _, image := range images {
 		if image.Address == address {
 			return image, nil
 		}
 	}
-	return programIdentityImage{}, fmt.Errorf("program identity account %s is absent", address)
+	return ConfirmedAccount{}, fmt.Errorf("program identity account %s is absent", address)
 }
 
 // decodeProgramIdentityHeader validates a 36-byte upgradeable program account:
 // a u32 variant of 2 followed by the 32-byte ProgramData address.
-func decodeProgramIdentityHeader(image programIdentityImage) (string, error) {
+func decodeProgramIdentityHeader(image ConfirmedAccount) (string, error) {
 	if image.Owner != bpfLoaderProgramOwner || !image.Executable || image.Lamports == 0 ||
 		len(image.Data) != programHeaderLength {
 		return "", fmt.Errorf("account %s is not a live upgradeable program", image.Address)
@@ -208,7 +145,7 @@ func decodeProgramIdentityHeader(image programIdentityImage) (string, error) {
 
 // decodeProgramDataSlot validates a 12-byte ProgramData header: a u32 variant
 // of 3 followed by the u64 last-deploy slot.
-func decodeProgramDataSlot(image programIdentityImage) (int64, error) {
+func decodeProgramDataSlot(image ConfirmedAccount) (int64, error) {
 	if err := validateProgramDataAccount(image, programDataHeaderLength); err != nil {
 		return 0, err
 	}
@@ -222,7 +159,7 @@ func decodeProgramDataSlot(image programIdentityImage) (int64, error) {
 // verifyProgramDataImage hashes the executable ProgramData bytes (data[45:])
 // against its pin. The 45-byte loader header is excluded: it carries the
 // upgrade authority, which can rotate without the binary changing.
-func verifyProgramDataImage(image programIdentityImage, pin pinnedProgramIdentity) (int64, error) {
+func verifyProgramDataImage(image ConfirmedAccount, pin pinnedProgramIdentity) (int64, error) {
 	if err := validateProgramDataAccount(image, programDataExecutableOffset); err != nil {
 		return 0, err
 	}
@@ -237,7 +174,7 @@ func verifyProgramDataImage(image programIdentityImage, pin pinnedProgramIdentit
 	return slot, nil
 }
 
-func validateProgramDataAccount(image programIdentityImage, minLength int) error {
+func validateProgramDataAccount(image ConfirmedAccount, minLength int) error {
 	if image.Owner != bpfLoaderProgramOwner || image.Lamports == 0 || len(image.Data) < minLength {
 		return fmt.Errorf("account %s is not an upgradeable program data account", image.Address)
 	}

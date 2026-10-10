@@ -35,25 +35,11 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 				binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[kaminoMarketPriceLastUpdatedTSOffset:], 1)
 			}
 		})
-		read, finalized := fixtureBatchRuntime(77, initial)
-		calls := 0
-		refreshCalls := 0
+		refreshCalls, read, readSlots := 0, fixtureBatchRuntime(77, initial), []int64{}
 		o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
-			confirmedSlot: func(context.Context) (int64, error) { return 77, nil },
-			accounts: func(ctx context.Context, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
-				if min >= 78 {
-					r, _ := fixtureBatchRuntime(78, captured)
-					return r(ctx, addresses, min)
-				}
-				return read(ctx, addresses, min)
-			},
-			finalizedReceipt: finalized,
-			receipts: func(context.Context, int64) (int64, []programAccount, error) {
-				calls++
-				if calls == 1 {
-					return 77, nil, nil
-				}
-				return 78, nil, nil
+			read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
+				readSlots = append(readSlots, minSlot)
+				return read(ctx, addresses, minSlot)
 			},
 			now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(_ context.Context, _ RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
@@ -71,8 +57,8 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if refreshCalls != 1 {
-			t.Fatal("refresh was not used for noncash exposure", refreshCalls)
+		if refreshCalls != 1 || len(readSlots) != 2 || readSlots[1] != 78 {
+			t.Fatal("refresh was not used for noncash exposure, or the receipts predate it", refreshCalls, readSlots)
 		}
 		if staleOracle {
 			if o.Snapshot.ManualReason != "kamino_stale" || o.Snapshot.Fresh {
@@ -221,13 +207,9 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 			binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
 			binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
 		})
-		read, finalized := fixtureBatchRuntime(77, initial)
 		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
-			confirmedSlot:    func(context.Context) (int64, error) { return 77, nil },
-			accounts:         read,
-			finalizedReceipt: finalized,
-			receipts:         func(context.Context, int64) (int64, []programAccount, error) { return 77, nil, nil },
-			now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+			read: fixtureBatchRuntime(77, initial),
+			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 				return 0, nil, budgetHold(tc.reason)
 			},
@@ -259,18 +241,14 @@ func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
 		binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
 		binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
 	})
-	read, finalized := fixtureBatchRuntime(77, initial)
 	// Even near both latch thresholds, aged evidence must not count as bad health.
 	refreshSimulationFailures.Store(refreshSimulationLatchAfter - 1)
 	kaminoStaleHolds.Store(refreshSimulationLatchAfter - 1)
 	for _, malformed := range []bool{false, true} {
 		for i := 0; i <= refreshSimulationLatchAfter; i++ {
 			o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
-				confirmedSlot:    func(context.Context) (int64, error) { return 77, nil },
-				accounts:         read,
-				finalizedReceipt: finalized,
-				receipts:         func(context.Context, int64) (int64, []programAccount, error) { return 77, nil, nil },
-				now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+				read: fixtureBatchRuntime(77, initial),
+				now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 				refreshValuation: func(_ context.Context, _ RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
 					slot := min + observationLagSlots() + 1
 					capture := make([]ConfirmedAccount, len(addresses))
@@ -312,15 +290,11 @@ func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 		binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
 		binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
 	})
-	read, finalized := fixtureBatchRuntime(77, initial)
 	rejected := true
 	observe := func() (Observation, error) {
 		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
-			confirmedSlot:    func(context.Context) (int64, error) { return 77, nil },
-			accounts:         read,
-			finalizedReceipt: finalized,
-			receipts:         func(context.Context, int64) (int64, []programAccount, error) { return 77, nil, nil },
-			now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+			read: fixtureBatchRuntime(77, initial),
+			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 				if rejected {
 					return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
