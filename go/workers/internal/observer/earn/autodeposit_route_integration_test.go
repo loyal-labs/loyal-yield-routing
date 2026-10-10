@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -236,7 +237,12 @@ func streamTransaction(slot uint64, keys [][]byte, instructions ...*pb.CompiledI
 // Subscriptions recurring delegation to vault, outside Squads.
 func createRecurringUpdate(t *testing.T, slot uint64, wallet, vault, delegation string, nonce, amount, period uint64) *pb.SubscribeUpdate {
 	t.Helper()
-	authority, err := subscriptionAuthority(wallet, itestUSDCMint)
+	return createRecurringForMint(t, itestUSDCMint, slot, wallet, vault, delegation, nonce, amount, period)
+}
+
+func createRecurringForMint(t *testing.T, mint string, slot uint64, wallet, vault, delegation string, nonce, amount, period uint64) *pb.SubscribeUpdate {
+	t.Helper()
+	authority, err := subscriptionAuthority(wallet, mint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,6 +253,43 @@ func createRecurringUpdate(t *testing.T, slot uint64, wallet, vault, delegation 
 		data = binary.LittleEndian.AppendUint64(data, value)
 	}
 	return streamTransaction(slot, keys, &pb.CompiledInstruction{ProgramIdIndex: 5, Accounts: []byte{0, 1, 2, 3, 4}, Data: data})
+}
+
+// revokeUpdate is a transaction in which wallet closes its delegation.
+func revokeUpdate(slot uint64, wallet, delegation string) *pb.SubscribeUpdate {
+	keys := [][]byte{solana.MustPublicKeyFromBase58(wallet).Bytes(), solana.MustPublicKeyFromBase58(delegation).Bytes(), subscriptionsProgram.Bytes()}
+	return streamTransaction(slot, keys, &pb.CompiledInstruction{ProgramIdIndex: 2, Accounts: []byte{0, 1}, Data: []byte{subscriptionsRevokeDelegation}})
+}
+
+// sweepPolicy projects wallet's USDC Autodeposit policy on f's vault and
+// returns its target.
+func sweepPolicy(t *testing.T, pool *pgxpool.Pool, f routedAutodeposit, wallet string, slot uint64) int64 {
+	t.Helper()
+	ctx := context.Background()
+	policy := solana.NewWallet().PublicKey().String()
+	if err := NewStore(pool).RecordBalanceSweepPolicyMatch(ctx, BalanceSweepPolicyMatchInput{Signature: solana.NewWallet().PublicKey().String(), Slot: slot,
+		Cluster: "mainnet-beta", Settings: f.settings, Authority: f.authority, PolicySeed: 11, PolicyAccount: policy, VaultIndex: 1, VaultPubkey: f.vault,
+		Wallet: wallet, WalletUSDCATA: wallet, VaultUSDCATA: f.vault, TokenMint: itestUSDCMint, WalletTokenATA: wallet, VaultTokenATA: f.vault,
+		DelegatedSigners: []string{f.authority}, Threshold: 1, MaxAmountPerPeriod: 9_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	var targetID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE policy_account = $1`, policy).Scan(&targetID); err != nil {
+		t.Fatal(err)
+	}
+	return targetID
+}
+
+func heldDelegation(t *testing.T, pool *pgxpool.Pool, targetID int64) string {
+	t.Helper()
+	var delegation *string
+	if err := pool.QueryRow(context.Background(), `SELECT recurring_delegation FROM loyal_yield.balance_sweep_targets WHERE id = $1`, targetID).Scan(&delegation); err != nil {
+		t.Fatal(err)
+	}
+	if delegation == nil {
+		return ""
+	}
+	return *delegation
 }
 
 func streamApplication(t *testing.T, pool *pgxpool.Pool) *Application {
@@ -319,19 +362,65 @@ func TestDelegationBeforeItsPolicyReachesTheTarget(t *testing.T) {
 	if err := streamApplication(t, pool).HandlePolicyTransaction(ctx, createRecurringUpdate(t, streamSlot, wallet, f.vault, delegation, 3, 9_000_000, 3_600)); err != nil {
 		t.Fatal(err)
 	}
-	policy := solana.NewWallet().PublicKey().String()
-	if err := NewStore(pool).RecordBalanceSweepPolicyMatch(ctx, BalanceSweepPolicyMatchInput{Signature: solana.NewWallet().PublicKey().String(), Slot: streamSlot + 1,
-		Cluster: "mainnet-beta", Settings: f.settings, Authority: f.authority, PolicySeed: 11, PolicyAccount: policy, VaultIndex: 1, VaultPubkey: f.vault,
-		Wallet: wallet, WalletUSDCATA: wallet, VaultUSDCATA: f.vault, TokenMint: itestUSDCMint, WalletTokenATA: wallet, VaultTokenATA: f.vault,
-		DelegatedSigners: []string{f.authority}, Threshold: 1, MaxAmountPerPeriod: 9_000_000}); err != nil {
-		t.Fatal(err)
-	}
-	var targetID int64
-	if err := pool.QueryRow(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE policy_account = $1`, policy).Scan(&targetID); err != nil {
-		t.Fatal(err)
-	}
+	targetID := sweepPolicy(t, pool, f, wallet, streamSlot+1)
 	if got := targetDelegation(t, pool, targetID); got != (delegationRow{delegation, "pending", 3, 9_000_000, 3_600, streamSlot, streamSlot}) {
 		t.Fatalf("target delegation = %+v", got)
+	}
+}
+
+// Disabling Autodeposit revokes D1; re-enabling lands the new policy before
+// D2. The new target waits for D2 instead of taking the dead D1, and a
+// replayed create of D1 does not revive it.
+func TestRevokedDelegationNeverReachesTheNextTarget(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	f := seedRoutedAutodeposit(t, pool)
+	app := streamApplication(t, pool)
+	wallet, first, second := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
+	if err := app.HandlePolicyTransaction(ctx, createRecurringUpdate(t, streamSlot, wallet, f.vault, first, 1, 1_000_000, 86_400)); err != nil {
+		t.Fatal(err)
+	}
+	if old := sweepPolicy(t, pool, f, wallet, streamSlot+1); heldDelegation(t, pool, old) != first {
+		t.Fatal("the first target did not take its delegation")
+	}
+	for _, update := range []*pb.SubscribeUpdate{revokeUpdate(streamSlot+2, wallet, first), createRecurringUpdate(t, streamSlot, wallet, f.vault, first, 1, 1_000_000, 86_400)} {
+		if err := app.HandlePolicyTransaction(ctx, update); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next := sweepPolicy(t, pool, f, wallet, streamSlot+3)
+	if held := heldDelegation(t, pool, next); held != "" {
+		t.Fatalf("the re-enabled target took delegation %s before its own landed", held)
+	}
+	if err := app.HandlePolicyTransaction(ctx, createRecurringUpdate(t, streamSlot+4, wallet, f.vault, second, 2, 2_000_000, 86_400)); err != nil {
+		t.Fatal(err)
+	}
+	if held := heldDelegation(t, pool, next); held != second {
+		t.Fatalf("the re-enabled target holds %q, want its new delegation", held)
+	}
+}
+
+// A replayed older delegation does not replace a newer one, and a delegation
+// whose authority is for another mint does not attach to a USDC target.
+func TestOnlyTheNewestDelegationOfTheTargetMintAttaches(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	f := seedRoutedAutodeposit(t, pool)
+	app := streamApplication(t, pool)
+	wallet, older, newer, otherMint := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String(),
+		solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
+	targetID := sweepPolicy(t, pool, f, wallet, streamSlot)
+	for _, update := range []*pb.SubscribeUpdate{
+		createRecurringUpdate(t, streamSlot+2, wallet, f.vault, newer, 2, 2_000_000, 86_400),
+		createRecurringUpdate(t, streamSlot+1, wallet, f.vault, older, 1, 1_000_000, 86_400),
+		createRecurringForMint(t, fleet.USDTMint, streamSlot+3, wallet, f.vault, otherMint, 3, 3_000_000, 86_400),
+	} {
+		if err := app.HandlePolicyTransaction(ctx, update); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if held := heldDelegation(t, pool, targetID); held != newer {
+		t.Fatalf("target holds %q, want the newest USDC delegation", held)
 	}
 }
 

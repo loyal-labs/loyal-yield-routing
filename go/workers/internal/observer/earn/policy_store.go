@@ -763,8 +763,8 @@ func (s *Store) RecordRecurringDelegation(ctx context.Context, input RecurringDe
                 subscription_authority = EXCLUDED.subscription_authority, nonce = EXCLUDED.nonce,
                 amount_per_period = EXCLUDED.amount_per_period, period_length_seconds = EXCLUDED.period_length_seconds,
                 start_timestamp = EXCLUDED.start_timestamp, expiry_timestamp = EXCLUDED.expiry_timestamp,
-                signature = EXCLUDED.signature, slot = EXCLUDED.slot, observed_at = now()
-            WHERE EXCLUDED.slot >= fact.slot`, input.RecurringDelegation, input.Wallet, input.VaultPubkey, input.SubscriptionAuthority,
+                signature = EXCLUDED.signature, slot = EXCLUDED.slot, revoked_slot = NULL, observed_at = now()
+            WHERE EXCLUDED.slot >= fact.slot AND EXCLUDED.slot > COALESCE(fact.revoked_slot, 0)`, input.RecurringDelegation, input.Wallet, input.VaultPubkey, input.SubscriptionAuthority,
 			int64(input.Nonce), int64(input.AmountPerPeriod), int64(input.PeriodLengthSeconds), input.StartTimestamp, input.ExpiryTimestamp,
 			input.Signature, int64(input.Slot)); err != nil {
 			return err
@@ -806,8 +806,19 @@ func (s *Store) RecordRecurringDelegation(ctx context.Context, input RecurringDe
 	return skipped, err
 }
 
-// attachRecurringDelegation sets a target's delegation to the latest recorded
-// one of its wallet, vault and subscription authority, unless the target
+// RecordDelegationRevoked marks a recorded delegation closed at slot, so no
+// target attaches it again and a replayed create cannot revive it. A target
+// that already holds it keeps it, as before: Autodeposit reads the chain.
+func (s *Store) RecordDelegationRevoked(ctx context.Context, delegation string, slot uint64) error {
+	_, err := s.pool.Exec(ctx, `
+        UPDATE loyal_yield.recurring_delegation_observations
+        SET revoked_slot = $2
+        WHERE recurring_delegation = $1 AND slot <= $2`, delegation, int64(slot))
+	return err
+}
+
+// attachRecurringDelegation sets a target's delegation to the latest live
+// recorded one of its wallet, vault and subscription authority, unless the target
 // already holds a later one, and requests reconciliation.
 func attachRecurringDelegation(ctx context.Context, tx pgx.Tx, targetID int64, wallet, vault, authority string) error {
 	var status string
@@ -840,7 +851,7 @@ func attachRecurringDelegation(ctx context.Context, tx pgx.Tx, targetID int64, w
             last_seen_signature = CASE WHEN fact.slot > target.last_seen_slot THEN fact.signature ELSE target.last_seen_signature END
         FROM (
             SELECT * FROM loyal_yield.recurring_delegation_observations
-            WHERE wallet = $2 AND vault_pubkey = $3 AND subscription_authority = $4
+            WHERE wallet = $2 AND vault_pubkey = $3 AND subscription_authority = $4 AND revoked_slot IS NULL
             ORDER BY slot DESC, recurring_delegation DESC
             LIMIT 1
         ) AS fact

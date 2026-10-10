@@ -1,8 +1,9 @@
 -- Confirmed Subscriptions recurring delegations whose delegatee is a managed
 -- vault, recorded by the observer stream whether or not the vault's
--- Autodeposit target exists yet. A target attaches the latest delegation of
--- its wallet, vault and subscription authority, so a delegation that lands
--- before its Autodeposit policy is kept.
+-- Autodeposit target exists yet. A target attaches the latest live delegation
+-- of its wallet, vault and subscription authority, so a delegation that lands
+-- before its Autodeposit policy is kept. revoked_slot is the slot that closed
+-- the delegation; a replayed older create cannot revive it.
 CREATE TABLE loyal_yield.recurring_delegation_observations (
     recurring_delegation TEXT PRIMARY KEY,
     wallet TEXT NOT NULL,
@@ -15,6 +16,7 @@ CREATE TABLE loyal_yield.recurring_delegation_observations (
     expiry_timestamp BIGINT NOT NULL,
     signature TEXT NOT NULL,
     slot BIGINT NOT NULL CHECK (slot > 0),
+    revoked_slot BIGINT CHECK (revoked_slot >= slot),
     observed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

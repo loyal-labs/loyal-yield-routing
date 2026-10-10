@@ -92,12 +92,23 @@ func (a *Application) HandlePolicyTransaction(ctx context.Context, update *pb.Su
 	return a.store.AdvanceProjectionCursor(ctx, PolicyProjectionConsumer, slot)
 }
 
-// recordRecurringDelegations records each Subscriptions create_recurring.
-// The program is public: bytes that are not ours are logged and skipped.
+// recordRecurringDelegations records each Subscriptions create_recurring and
+// revoke_delegation. The program is public: bytes that are not ours are
+// logged and skipped.
 func (a *Application) recordRecurringDelegations(ctx context.Context, transaction *PolicyTransaction) error {
 	for _, instruction := range transaction.Instructions {
 		accounts, data := instruction.Accounts, instruction.Data
-		if instruction.ProgramID != subscriptionsProgram || len(data) == 0 || data[0] != subscriptionsCreateRecurring {
+		if instruction.ProgramID != subscriptionsProgram || len(data) == 0 {
+			continue
+		}
+		// The program closes a delegation only for its delegator.
+		if data[0] == subscriptionsRevokeDelegation && len(accounts) >= 2 {
+			if err := a.store.RecordDelegationRevoked(ctx, accounts[1].PublicKey.String(), transaction.Slot); err != nil {
+				return err
+			}
+			continue
+		}
+		if data[0] != subscriptionsCreateRecurring {
 			continue
 		}
 		skipped := "the instruction is shorter than create_recurring"
