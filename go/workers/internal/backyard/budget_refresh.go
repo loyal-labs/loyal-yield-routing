@@ -77,14 +77,9 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 			return 0, nil, budgetHold("invalid_price_refresh_instruction")
 		}
 	}
-	blockhash, err := latestBlockhash(ctx, c)
-	if err != nil {
-		return 0, nil, budgetHold("price_refresh_blockhash_unavailable")
-	}
-	hash, err := decodeKey(blockhash.Blockhash)
-	if err != nil {
-		return 0, nil, err
-	}
+	// The simulating node replaces the zero blockhash with its own recent one,
+	// so the message never names a blockhash that node has not seen yet.
+	var hash publicKey
 	// The RPC only returns accounts named in the message, so every requested
 	// capture address rides along as a read-only static key. The fee payer is
 	// already a message key; capture adds no signer, no write permission, and
@@ -132,7 +127,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		return 0, nil, err
 	}
 	minimum := uint64(minimumSlot)
-	simulated, err := c.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum, Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: keys}})
+	simulated, err := c.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum, ReplaceRecentBlockhash: true, Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: keys}})
 	var failure *chain.SimulationError
 	if errors.As(err, &failure) {
 		transactionError, _ := json.Marshal(failure.Err)
