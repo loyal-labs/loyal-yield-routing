@@ -46,7 +46,6 @@ func nonParReviewFixture(t *testing.T, debt, collateral *BudgetPrice, equity int
 	t.Helper()
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	in.Snapshot.PilotActive = true
 	in.Snapshot.Slot = 42
 	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000
 	market := in.Markets[0]

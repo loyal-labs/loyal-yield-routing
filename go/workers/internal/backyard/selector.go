@@ -313,7 +313,7 @@ type SelectorResult struct {
 // means the first borrow loop is pending. Idle Squads/debt/collateral cash
 // always means the tranche is in progress.
 func selectorTrancheInProgress(s Snapshot) bool {
-	if !s.PilotActive || !hasWorkingCapital(s) {
+	if !hasWorkingCapital(s) {
 		return false
 	}
 	unborrowed := s.PositionDebtRaw <= 0 && !(s.HasPosition && s.PositionCollateralRaw > 0 && (s.LeverageTargetLevel == 1 || s.BorrowUtilizationBlocked || (leverageLane(s.RouteLane) && s.BorrowCapacityKnown && leverageBorrowReceive(s, leverageUpLevel(s)) < leverageMinimumBorrowRaw)))
@@ -348,7 +348,7 @@ func sameLaneReinvestmentEligible(s Snapshot, p SelectorPolicy) bool {
 // admission below are unchanged, and a same-lane move still commits the full
 // debt unwind before its fresh entry.
 func sameLaneReinvestmentEligibleWithLane(s Snapshot, p SelectorPolicy, laneAllowed func(string) bool) bool {
-	if !s.PilotActive || !laneAllowed(s.RouteLane) || s.VoltrIdleRaw <= p.IdleBufferRaw {
+	if !laneAllowed(s.RouteLane) || s.VoltrIdleRaw <= p.IdleBufferRaw {
 		return false
 	}
 	if !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 0 || s.StrategyNAVRaw <= 0 {
@@ -376,7 +376,7 @@ type pilotEconomics struct {
 // the redeposited proceeds on the lower side of the same independently
 // observed interval. One price never serves both directions, and raw debt
 // units never pass for USDC. A non-empty second return blocks the candidate.
-func pilotQuoteEconomics(pilot bool, quote MoveQuote, m LaneEconomics, invested, years float64) (pilotEconomics, string) {
+func pilotQuoteEconomics(quote MoveQuote, m LaneEconomics, invested, years float64) (pilotEconomics, string) {
 	if quote.Unlevered {
 		// B2 1x entry: all invested equity is supplied collateral, no debt.
 		if !quote.validBorrow() {
@@ -384,19 +384,13 @@ func pilotQuoteEconomics(pilot bool, quote MoveQuote, m LaneEconomics, invested,
 		}
 		return pilotForecastEconomics(pilotEconomics{}, invested, m, years, quote.selectorEconomicCostRaw()), ""
 	}
-	e := pilotEconomics{DebtRaw: invested * (singlePassLeverage - 1)}
-	e.Debt, e.Proceeds = e.DebtRaw, e.DebtRaw
-	if pilot {
-		raw, rawOK := quote.borrowRawWithFee()
-		borrowed, borrowedOK := quote.borrowDebtUSDCRaw()
-		redeployed, proceedsOK := quote.borrowProceedsUSDCRaw()
-		if !rawOK || !borrowedOK || !proceedsOK {
-			return pilotEconomics{}, "bounded_borrow_unavailable"
-		}
-		e.DebtRaw = float64(raw)
-		e.Debt = float64(borrowed)
-		e.Proceeds = float64(redeployed)
+	raw, rawOK := quote.borrowRawWithFee()
+	borrowed, borrowedOK := quote.borrowDebtUSDCRaw()
+	redeployed, proceedsOK := quote.borrowProceedsUSDCRaw()
+	if !rawOK || !borrowedOK || !proceedsOK {
+		return pilotEconomics{}, "bounded_borrow_unavailable"
 	}
+	e := pilotEconomics{DebtRaw: float64(raw), Debt: float64(borrowed), Proceeds: float64(redeployed)}
 	apr, err := projectedBorrowAPR(m, e.DebtRaw)
 	if err != nil {
 		return pilotEconomics{}, err.Error()
@@ -472,17 +466,14 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 	out.EquityRaw = equity
 	// Pilot execution deploys one bounded tranche. Forecast the same amount;
 	// idle vault principal must not earn the destination's modeled yield.
-	allocation := equity
-	if s.PilotActive {
-		// The source route lane is entry authority too: installed selector
-		// lanes under the public wrapper, and on the manifest path also the
-		// candidate lane as the funded production source. An unauthorized
-		// source keeps the installed hold.
-		if !laneAllowed(s.RouteLane) {
-			return hold("pilot_lane_unavailable")
-		}
-		allocation = min(allocation, workingTrancheCap(s))
+	// The source route lane is entry authority too: installed selector lanes
+	// under the public wrapper, and on the manifest path also the candidate
+	// lane as the funded production source. An unauthorized source keeps the
+	// installed hold.
+	if !laneAllowed(s.RouteLane) {
+		return hold("pilot_lane_unavailable")
 	}
+	allocation := min(equity, int64(strategyTwoBridgeLegCapRaw))
 	markets := map[string]LaneEconomics{}
 	for _, m := range in.Markets {
 		if _, ok := markets[m.Lane]; ok {
@@ -598,13 +589,10 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		var quote *MoveQuote
 		for i := range in.Quotes {
 			q := &in.Quotes[i]
-			quoteAmount := amount
-			if s.PilotActive {
-				if q.MinimumIdleRaw == 0 || q.MinimumIdleRaw > math.MaxInt64 {
-					continue
-				}
-				quoteAmount = min(amount, max(int64(0), int64(q.MinimumIdleRaw)-p.IdleBufferRaw))
+			if q.MinimumIdleRaw == 0 || q.MinimumIdleRaw > math.MaxInt64 {
+				continue
 			}
+			quoteAmount := min(amount, max(int64(0), int64(q.MinimumIdleRaw)-p.IdleBufferRaw))
 			if q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == quoteAmount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" {
 				if quote != nil {
 					return hold("duplicate_move_quote")
@@ -625,7 +613,7 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
-		if s.PilotActive && !quote.validBorrow() {
+		if !quote.validBorrow() {
 			c.BlockedReason = "bounded_borrow_unavailable"
 			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
@@ -646,7 +634,7 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		// Every pilot move fully unwinds the existing debt before the new entry,
 		// even when reentering the same reserve; it does not lever existing debt
 		// twice.
-		economics, blocked := pilotQuoteEconomics(s.PilotActive, *quote, m, float64(c.InvestedRaw), years)
+		economics, blocked := pilotQuoteEconomics(*quote, m, float64(c.InvestedRaw), years)
 		if blocked != "" {
 			c.BlockedReason = blocked
 			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
@@ -674,9 +662,9 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		// exactly as the feed-level path does.
 		// A 1x quote persists in its own window, sampled from its own priced
 		// benefit: a leveraged feed-level advantage never counts toward it.
-		if quote.Unlevered && s.PilotActive && c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
+		if quote.Unlevered && c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
 			sampleAdvantageWindow(&out, previous, unleveredAdvantageKey(lane), in.Now, p)
-		} else if unpricedDebt && s.PilotActive && c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
+		} else if unpricedDebt && c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
 			sampleAdvantageWindow(&out, previous, lane, in.Now, p)
 		}
 		out.Candidates = append(out.Candidates, c)

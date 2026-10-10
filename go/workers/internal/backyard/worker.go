@@ -146,19 +146,16 @@ func (p productionObserveState) enrich(ctx context.Context, observation *Observa
 		return identityErr
 	}
 	applyProgramIdentityObservation(observation, identity)
-	observation.Snapshot.InitializationPolicyReady = false
-	if observation.Snapshot.PilotActive {
-		// Resolve the binding the same way initializationRequest does: the
-		// candidate AUTO lane is governed by the auto-initializer constraint
-		// set, the installed lanes by the multiply-initializer bindings.
-		var bindingErr error
-		if observation.Snapshot.RouteLane == autoAUTOPYUSD.Lane {
-			_, _, bindingErr = p.manifest.autoInitializerBinding()
-		} else {
-			_, bindingErr = p.manifest.initializerBinding(observation.Snapshot.RouteLane)
-		}
-		observation.Snapshot.InitializationPolicyReady = bindingErr == nil
+	// Resolve the binding the same way initializationRequest does: the
+	// candidate AUTO lane is governed by the auto-initializer constraint set,
+	// the installed lanes by the multiply-initializer bindings.
+	var bindingErr error
+	if observation.Snapshot.RouteLane == autoAUTOPYUSD.Lane {
+		_, _, bindingErr = p.manifest.autoInitializerBinding()
+	} else {
+		_, bindingErr = p.manifest.initializerBinding(observation.Snapshot.RouteLane)
 	}
+	observation.Snapshot.InitializationPolicyReady = bindingErr == nil
 	return nil
 }
 
@@ -183,51 +180,6 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	}
 	if journalErr != nil {
 		return journalErr
-	}
-	// The extended read is preferred so production and shadow each make one
-	// database read and still carry the activation baseline into the snapshot;
-	// the bool-only reader stays for journals that predate the baseline. The
-	// baseline fields are cleared first: mergeJournal runs on reused
-	// observations, so a stale baseline from a previous merge must never
-	// survive into this snapshot.
-	observation.Snapshot.PilotBaselineKnown = false
-	observation.Snapshot.PilotBaselineTicketSequenceRaw = 0
-	if observation.planning != nil {
-		planning := observation.planning
-		observation.Snapshot.PilotActive = planning.pilot
-		if planning.pilot && planning.baseline != nil {
-			observation.Snapshot.PilotBaselineKnown = true
-			observation.Snapshot.PilotBaselineTicketSequenceRaw = planning.baseline.TicketLastConsumedSequenceRaw
-		}
-	} else if reader, ok := p.journal.(interface {
-		PilotRuntimeState(context.Context, string) (bool, *pilotActivationBaseline, error)
-	}); ok {
-		active, baseline, err := reader.PilotRuntimeState(ctx, p.routeKey)
-		if err != nil {
-			return err
-		}
-		observation.Snapshot.PilotActive = active
-		if active && baseline != nil {
-			observation.Snapshot.PilotBaselineKnown = true
-			observation.Snapshot.PilotBaselineTicketSequenceRaw = baseline.TicketLastConsumedSequenceRaw
-		}
-	} else if reader, ok := p.journal.(interface {
-		PilotRuntimeEnabled(context.Context, string) (bool, error)
-	}); ok {
-		active, err := reader.PilotRuntimeEnabled(ctx, p.routeKey)
-		if err != nil {
-			return err
-		}
-		observation.Snapshot.PilotActive = active
-	}
-	// The reviewed manifest's funded candidate lane is the only non-installed
-	// route lane this snapshot may size at the pilot tranche. The stamp is
-	// cleared unconditionally: a reused observation must never keep a lane the
-	// current reviewed manifest no longer authorizes. No amount travels with
-	// it — the tranche value stays the reviewed pilot cap.
-	observation.Snapshot.PilotTrancheCapLane = ""
-	if observation.Snapshot.PilotActive && p.manifest.selectorEntryFundingLane(autoAUTOPYUSD.Lane, false) {
-		observation.Snapshot.PilotTrancheCapLane = autoAUTOPYUSD.Lane
 	}
 	observation.Snapshot.PostMutationNAVRequired = required
 	observation.Snapshot.JournalSequenceKnown = journal.TicketSequenceKnown

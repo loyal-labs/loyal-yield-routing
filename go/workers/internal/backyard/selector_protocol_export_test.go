@@ -274,7 +274,7 @@ func TestExportSelectorProtocolPartialRepayment(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision := Decision{Action: DeleverRouteStep, Reason: "hard_ltv_repay", StrategyKey: SelectedRouteID, AmountRaw: 1_000_000}
-	leg, amount, effect, err := selectKaminoLeg(true, decision, KaminoPosition{DebtRaw: 5_000_000})
+	leg, amount, effect, err := selectKaminoLeg(decision, KaminoPosition{DebtRaw: 5_000_000})
 	if err != nil || leg != kaminoLegRepay || amount != 1_000_000 || effect != amount {
 		t.Fatal("partial repayment selection", err)
 	}

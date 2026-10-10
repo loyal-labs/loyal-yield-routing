@@ -260,7 +260,7 @@ func pilotProjectedReleaseFixture(t *testing.T) (RuntimeRoute, *phase3BridgeAdmi
 		t.Fatal(err)
 	}
 	projection := phase3KaminoProjection{Slot: 42, MessageSHA256: sha256Bytes(message), UnitsConsumed: 100, Accounts: accounts}
-	plan := &phase3BridgeAdmission{Snapshot: Snapshot{PilotActive: true, RouteLane: route.Lane}, ValidThroughSlot: 74, Input: input, FundingRelease: exit, Payoff: &bound.Payoff, DepositProjection: &projection}
+	plan := &phase3BridgeAdmission{Snapshot: Snapshot{RouteLane: route.Lane}, ValidThroughSlot: 74, Input: input, FundingRelease: exit, Payoff: &bound.Payoff, DepositProjection: &projection}
 	return route, plan, projection
 }
 

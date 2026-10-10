@@ -13,7 +13,7 @@ func onreTopupSnapshot() Snapshot {
 	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
 	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 300_000_000_000, 345_000_000
 	s.LTVBPS, s.LiquidationThresholdBPS = 0, 8000
-	s.VoltrIdleRaw, s.TopupDepositRoomRaw, s.PilotActive = 1_295_000_000, 5_000_000_000, true
+	s.VoltrIdleRaw, s.TopupDepositRoomRaw = 1_295_000_000, 5_000_000_000
 	s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw = 0, 0, 0 // borrow capacity is irrelevant to a top-up
 	return s
 }

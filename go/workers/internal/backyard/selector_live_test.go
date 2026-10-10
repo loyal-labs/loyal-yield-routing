@@ -18,7 +18,6 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	binary.LittleEndian.PutUint64(debt[kaminoOutsideBorrowLimitOffset:], used+1_000_000)
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	in.Snapshot.PilotActive = true
 	in.Snapshot.Slot = 42
 	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 100_000_000, 100_000_000
 	o := tickObservation(in.Snapshot)
@@ -72,7 +71,6 @@ func TestLiveSelectorRejectsDuplicateMarketFanoutAndStaleSource(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	in.Snapshot.PilotActive = true
 	in.Snapshot.Slot = 42
 	o := tickObservation(in.Snapshot)
 	o.ObservedAt = time.Now().UTC()
@@ -88,7 +86,7 @@ func TestLiveSelectorCancelsSlowSiblingAndRetainsCompletedQuote(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	in.Snapshot.PilotActive, in.Snapshot.Slot = true, 42
+	in.Snapshot.Slot = 42
 	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 10_000_000, 10_000_000
 	o := tickObservation(in.Snapshot)
 	// Leave a bounded one-second collection window without sleeping through the
@@ -124,7 +122,6 @@ func TestLiveSelectorCancelsSlowSiblingAndRetainsCompletedQuote(t *testing.T) {
 
 func TestPilotSelectorCannotSwitchDuringFundedTranche(t *testing.T) {
 	in := selectorFixture()
-	in.Snapshot.PilotActive = true
 	s := &in.Snapshot
 	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 90_000_000, 100_000_000
 	s.HasPosition = true
@@ -192,7 +189,7 @@ func TestCanaryQuoteCollectionSkipsOtherLanes(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	in.Snapshot.PilotActive, in.Snapshot.Slot = true, 42
+	in.Snapshot.Slot = 42
 	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 10_000_000, 10_000_000
 	o := tickObservation(in.Snapshot)
 	o.ObservedAt = time.Now().UTC()

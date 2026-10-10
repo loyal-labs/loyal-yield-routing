@@ -55,7 +55,7 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 		seen[market.Lane] = true
 	}
 	s := o.Snapshot
-	if !s.PilotActive || s.TotalVaultNAVRaw <= policy.IdleBufferRaw || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) {
+	if s.TotalVaultNAVRaw <= policy.IdleBufferRaw || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) {
 		return out, nil, budgetHold("selector_live_snapshot_unavailable")
 	}
 	if selectorTrancheInProgress(s) {
@@ -85,7 +85,7 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 	if source.MinimumIdleRaw <= uint64(policy.IdleBufferRaw) {
 		return out, nil, budgetHold("selector_move_has_no_entry_cash")
 	}
-	maximum := min(uint64(PilotWorkingTrancheCapRaw), uint64(s.TotalVaultNAVRaw-policy.IdleBufferRaw), source.MinimumIdleRaw-uint64(policy.IdleBufferRaw))
+	maximum := min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-policy.IdleBufferRaw), source.MinimumIdleRaw-uint64(policy.IdleBufferRaw))
 	if len(canaryMaximum) > 0 {
 		maximum = min(maximum, canaryMaximum[0])
 	}
@@ -304,9 +304,6 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	}
 	if o.planning == nil || o.planning.generation != version {
 		return SelectorResult{}, Observation{}, budgetHold("selector_state_changed_during_quote")
-	}
-	if !o.Snapshot.PilotActive {
-		return SelectorResult{}, Observation{}, budgetHold("selector_requires_active_pilot")
 	}
 	request, err := readPilotCanaryEntryRequestOnManifest(time.Now().UTC(), manifest)
 	if err != nil {

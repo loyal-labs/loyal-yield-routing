@@ -16,7 +16,6 @@ func fundedAutoFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) Sel
 	t.Helper()
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	in.Snapshot.PilotActive = true
 	in.Snapshot.Slot = 42
 	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000
 	market := in.Markets[0]
@@ -37,15 +36,12 @@ func fundedAutoFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) Sel
 
 // fundedAutoSourceFixture builds the funded follow-up state: an AUTO position
 // is the production route, so the selector must keep its economics, hold the
-// same-lane baseline, and stay able to unwind. The snapshot carries the
-// worker's reviewed approved-cap stamp (Snapshot.PilotTrancheCapLane), so the
-// source lane sizes at the pilot tranche exactly as the live stamp does.
+// same-lane baseline, and stay able to unwind.
 func fundedAutoSourceFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) SelectorInput {
 	t.Helper()
 	in := fundedAutoFixture(t, debtPrice, collateralPrice)
 	s := in.Snapshot
 	s.RouteLane, s.StrategyKey = testAutoLane, testAutoLane
-	s.PilotTrancheCapLane = testAutoLane
 	s.HasPosition = true
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 4_000_000, 4_000_000
 	s.PositionDebtRaw, s.PositionDebtValueRaw = 1_000_000, 1_000_000
@@ -302,11 +298,7 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 			key := fmt.Sprintf("auto-entry-%s-%d", tc.name, time.Now().UnixNano())
 			prior := emptyTestBudget()
 			prior.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000}
-			previous, _ := json.Marshal(prior)
-			flat := pilotFlatFixture(t)
-			flatJSON, _ := json.Marshal(flat)
 			a := pilotTestAuthority(prior)
-			a.Generation, a.FinalizedSlot, a.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(flatJSON)
 			budget, err := activatePilotBudget(prior, a)
 			if err != nil {
 				t.Fatal(err)
@@ -319,7 +311,7 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 			in.Markets[0].NativeAPY = 2 // synthetic fee-reserved winner; rate is not live evidence
 			armFeeAuthorityFixture(t, &in.Snapshot)
 			history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{testAutoLane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
-			state := map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
+			state := map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
 			raw, _ := json.Marshal(state)
 			if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 				t.Fatal(err)
@@ -429,11 +421,7 @@ func TestLockedManifestSelectorRecordsCandidateSourceUnwind(t *testing.T) {
 	manifest := autoInitializerFixtureManifest(t)
 	key := fmt.Sprintf("auto-unwind-%d", time.Now().UnixNano())
 	prior := emptyTestBudget()
-	previous, _ := json.Marshal(prior)
-	flat := pilotFlatFixture(t)
-	flatJSON, _ := json.Marshal(flat)
 	a := pilotTestAuthority(prior)
-	a.Generation, a.FinalizedSlot, a.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(flatJSON)
 	budget, err := activatePilotBudget(prior, a)
 	if err != nil {
 		t.Fatal(err)
@@ -447,7 +435,7 @@ func TestLockedManifestSelectorRecordsCandidateSourceUnwind(t *testing.T) {
 	in.Markets[1].NativeAPY = 2 // synthetic fee-reserved winner for persistence ownership
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{"OnRe/ONyc/USDC": {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
-	state := map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": false}
+	state := map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": false}
 	raw, _ := json.Marshal(state)
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)

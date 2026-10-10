@@ -29,21 +29,13 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	// activation — a pilot transition cannot clear an exit reserve it never
 	// carried, so the activated budget is the one that books it.
 	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
-	flatJSON, err := json.Marshal(flat)
-	if err != nil {
-		t.Fatal(err)
-	}
 	authority := pilotTestAuthority(prior)
-	authority.Generation = 2
-	authority.FinalizedSlot = flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	activated, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	activated.Families["AUTO"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated, "pilotBudgetActivation": pilotBudgetActivation{authority, mustJSON(t, prior), flat}})
+	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,8 +99,7 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 		t.Fatalf("embedded planning read lost the installed candidate unwind: %+v %v", embeddedPlanning, err)
 	}
 	// mergeJournal planning path: the unwind merges through the manifest
-	// authority and the reviewed manifest stamps its funded candidate lane.
-	// The route observer has already established the observed source lane on
+	// authority. The route observer has already established the observed source lane on
 	// the snapshot, exactly as production observations carry it.
 	merged := &Observation{planning: planning}
 	merged.Snapshot.RouteLane = autoAUTOPYUSD.Lane
@@ -116,26 +107,8 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	if err = observe.mergeJournal(ctx, merged); err != nil {
 		t.Fatal(err)
 	}
-	if !merged.Snapshot.Unwind || !merged.Snapshot.PilotActive {
+	if !merged.Snapshot.Unwind {
 		t.Fatalf("merge lost the pilot unwind facts: %+v", merged.Snapshot)
-	}
-	if merged.Snapshot.PilotTrancheCapLane != autoAUTOPYUSD.Lane {
-		t.Fatalf("reviewed manifest did not stamp the candidate tranche lane: %q", merged.Snapshot.PilotTrancheCapLane)
-	}
-	// The audited cap gap and its narrow manifest-authorized resolution.
-	if workingTrancheCap(Snapshot{PilotActive: true, RouteLane: autoAUTOPYUSD.Lane}) != Phase3WorkingTrancheCapRaw {
-		t.Fatal("unauthorized candidate snapshot must stay at the ordinary cap")
-	}
-	authorized := Snapshot{PilotActive: true, RouteLane: autoAUTOPYUSD.Lane, PilotTrancheCapLane: autoAUTOPYUSD.Lane}
-	if workingTrancheCap(authorized) != PilotWorkingTrancheCapRaw {
-		t.Fatal("manifest-authorized candidate snapshot did not size the pilot tranche")
-	}
-	if workingTrancheCap(Snapshot{RouteLane: autoAUTOPYUSD.Lane, PilotTrancheCapLane: autoAUTOPYUSD.Lane}) != Phase3WorkingTrancheCapRaw {
-		t.Fatal("inactive pilot sized the pilot tranche")
-	}
-	installed := Snapshot{PilotActive: true, RouteLane: SelectedRouteID}
-	if workingTrancheCap(installed) != PilotWorkingTrancheCapRaw {
-		t.Fatal("installed lane cap changed")
 	}
 	// Completion: the embedded completion keeps refusing, a pending
 	// transaction blocks, and the manifest completion clears the intent.
@@ -163,13 +136,12 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 		t.Fatal("completed exit allowed a stale entry")
 	}
 	// mergeJournal fallback path: the manifest-aware reader is preferred (the
-	// legacy reader would refuse this row), applies nothing once cleared, and
-	// the embedded manifest leaves the tranche lane unstamped.
+	// legacy reader would refuse this row) and applies nothing once cleared.
 	fallback := &Observation{}
 	if err = observe.mergeJournal(ctx, fallback); err != nil {
 		t.Fatal(err)
 	}
-	if fallback.Snapshot.Unwind || fallback.Snapshot.PilotTrancheCapLane != autoAUTOPYUSD.Lane {
+	if fallback.Snapshot.Unwind {
 		t.Fatalf("fallback merge lost the manifest facts: %+v", fallback.Snapshot)
 	}
 	embeddedObserve := productionObserveState{manifest: embedded, routeKey: key, journal: restarted}
@@ -183,7 +155,7 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	}
 	// Both readers now resolve the same installed binding: the embedded merge
 	// must land exactly where the manifest-aware merge landed.
-	if embeddedMerge.Snapshot.Unwind != fallback.Snapshot.Unwind || embeddedMerge.Snapshot.PilotTrancheCapLane != fallback.Snapshot.PilotTrancheCapLane {
+	if embeddedMerge.Snapshot.Unwind != fallback.Snapshot.Unwind {
 		t.Fatalf("embedded merge drifted from the manifest merge: %+v vs %+v", embeddedMerge.Snapshot, fallback.Snapshot)
 	}
 }

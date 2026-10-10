@@ -17,8 +17,6 @@ type routePlanningState struct {
 	routeKey   string
 	generation int64
 	lease      *RouteLease
-	pilot      bool
-	baseline   *pilotActivationBaseline
 	entry      *SelectorEntry
 	unwind     *UnwindIntent
 	paused     bool
@@ -29,7 +27,7 @@ type routePlanningState struct {
 	// reviewed $500 bounded execution-cost stop: the cap less booked spend and
 	// every outstanding reservation's cost bound. The binding check stays at
 	// reservation time under the record lock; this only shapes the sized quote
-	// ladder. Non-pilot states carry the full ceiling.
+	// ladder. A route without a budget carries the full ceiling.
 	remainingExecutionCost int64
 }
 
@@ -61,14 +59,14 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 		out.lease = &lease
 		owner, fence = lease.Owner, lease.FencingToken
 	}
-	var budget, activation, entry, unwind, leverage, partial []byte
+	var budget, entry, unwind, leverage, partial []byte
 	err := d.pool.QueryRow(ctx, `SELECT state_version,
-		COALESCE(state->'phase3','null'::jsonb),COALESCE(state->'pilotBudgetActivation','null'::jsonb),
+		COALESCE(state->'phase3','null'::jsonb),
 		state->'selectorEntry',state->'selectorUnwind',COALESCE((state->>'selectorEntryPaused')::boolean,false),
 		COALESCE(state->'leverageTarget','null'::jsonb),state->'partialWithdrawal'
 		FROM loyal_yield.multiply_route_states WHERE route_key=$1
 		AND ($2='' OR (lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()))`,
-		routeKey, owner, fence).Scan(&out.generation, &budget, &activation, &entry, &unwind, &out.paused, &leverage, &partial)
+		routeKey, owner, fence).Scan(&out.generation, &budget, &entry, &unwind, &out.paused, &leverage, &partial)
 	if errors.Is(err, pgx.ErrNoRows) && execution {
 		d.setLease(nil)
 		return nil, ErrRouteLeaseLost
@@ -79,12 +77,8 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	if out.generation <= 0 {
 		return nil, fmt.Errorf("invalid planning generation")
 	}
-	out.pilot, out.baseline, err = decodePilotRuntimeState(budget, activation, out.generation)
-	if err != nil {
-		return nil, err
-	}
 	out.remainingExecutionCost = int64(PilotEntryExecutionCostCapMicros)
-	if out.pilot {
+	if string(budget) != "null" {
 		if out.remainingExecutionCost, err = pilotRemainingExecutionCost(budget); err != nil {
 			return nil, err
 		}
@@ -119,7 +113,7 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 // reservation's cost bound. The budget is only read here, never mutated.
 func pilotRemainingExecutionCost(raw []byte) (int64, error) {
 	var pilot Phase3Budget
-	if json.Unmarshal(raw, &pilot) != nil || pilot.validate() != nil || pilot.Pilot == nil {
+	if json.Unmarshal(raw, &pilot) != nil || pilot.validate() != nil {
 		return 0, budgetHold("invalid_durable_budget")
 	}
 	spent, err := pilot.executionCostSpent()
@@ -142,11 +136,9 @@ func pilotRemainingExecutionCost(raw []byte) (int64, error) {
 }
 
 func (p *routePlanningState) observationManifest(manifest RouteManifest) RouteManifest {
-	if p.pilot {
-		manifest.selectorObservation = true
-		if p.entry != nil {
-			manifest.observationLane = p.entry.Lane
-		}
+	manifest.selectorObservation = true
+	if p.entry != nil {
+		manifest.observationLane = p.entry.Lane
 	}
 	if p.unwind != nil {
 		manifest.selectorObservation = true

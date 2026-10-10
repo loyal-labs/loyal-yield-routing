@@ -21,7 +21,7 @@ func TestPilotCeilingIncreaseKeepsPersistedLimitsBinding(t *testing.T) {
 	if err := persisted.validate(); err != nil {
 		t.Fatal("pre-increase persisted budget invalidated by ceiling increase:", err)
 	}
-	workingSize := BudgetReservation{OperationID: "working-size", Family: "Maple", IntentSHA256: sha256Bytes([]byte("working-size")), UpperMicros: PilotWorkingTrancheCapRaw, ExecutionCostUpperMicros: 500_000, ExitAfterMicros: PilotWorkingTrancheCapRaw}
+	workingSize := BudgetReservation{OperationID: "working-size", Family: "Maple", IntentSHA256: sha256Bytes([]byte("working-size")), UpperMicros: int64(strategyTwoBridgeLegCapRaw), ExecutionCostUpperMicros: 500_000, ExitAfterMicros: int64(strategyTwoBridgeLegCapRaw)}
 	persisted.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000, ExecutionCostSpentMicros: 1_000}
 	before, _ := json.Marshal(persisted)
 	assertBudgetHold(t, persisted.Admit(workingSize), "transaction_cap_exceeded")
@@ -50,7 +50,7 @@ func TestPilotCeilingIncreaseKeepsPersistedLimitsBinding(t *testing.T) {
 	if err := persisted.Settle(workingSize.OperationID, workingSize.IntentSHA256, workingSize.UpperMicros, workingSize.ExecutionCostUpperMicros); err != nil {
 		t.Fatal(err)
 	}
-	if got := persisted.Families["Maple"]; got.SpentMicros != 1_000_000+PilotWorkingTrancheCapRaw || got.ExecutionCostSpentMicros != 1_000+500_000 || got.ExitMicros != PilotWorkingTrancheCapRaw {
+	if got := persisted.Families["Maple"]; got.SpentMicros != 1_000_000+int64(strategyTwoBridgeLegCapRaw) || got.ExecutionCostSpentMicros != 1_000+500_000 || got.ExitMicros != int64(strategyTwoBridgeLegCapRaw) {
 		t.Fatal("limit record reset counters:", got)
 	}
 	if persisted.GoalID != Phase3GoalID || persisted.Pilot == nil || persisted.Pilot.AuthorityID != pilotBudgetAuthorityID {
@@ -62,11 +62,11 @@ func TestPilotCeilingIncreaseKeepsPersistedLimitsBinding(t *testing.T) {
 
 	// Working-size boundary: exactly the reviewed allocation is valid, one
 	// raw unit more is not, independent of the budget record.
-	atCap := selectorEntryFixture(time.Now().UTC(), SelectedRouteID, PilotWorkingTrancheCapRaw)
+	atCap := selectorEntryFixture(time.Now().UTC(), SelectedRouteID, int64(strategyTwoBridgeLegCapRaw))
 	if err := atCap.validate(); err != nil {
 		t.Fatal("reviewed working-size entry rejected:", err)
 	}
-	overCap := selectorEntryFixture(time.Now().UTC(), SelectedRouteID, PilotWorkingTrancheCapRaw+1)
+	overCap := selectorEntryFixture(time.Now().UTC(), SelectedRouteID, int64(strategyTwoBridgeLegCapRaw)+1)
 	if err := overCap.validate(); err == nil {
 		t.Fatal("over-cap working-size entry accepted")
 	}

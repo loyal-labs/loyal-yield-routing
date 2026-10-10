@@ -8,7 +8,7 @@ import (
 func TestExpiredUnwindDebtRequiresReadmissionWithoutBlockingRisk(t *testing.T) {
 	s := base()
 	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
-	s.PilotActive, s.HasPosition = true, true
+	s.HasPosition = true
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 150, 150
 	s.PositionDebtRaw, s.PositionDebtValueRaw = 51, 51
 	s.PayoffDebtRaw, s.LTVBPS = 52, 3400

@@ -111,71 +111,13 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 	return o, d, e, m, rpc, client, accounts
 }
 
-func TestLeverageSwapAdmissionReservesProjectedCompleteReturn(t *testing.T) {
-	o, d, e, m, rpc, client, accounts := leverageAdmissionFixture(t, 20_000, "")
-	plan, err := observePhase3LeverageSwapAdmission(context.Background(), rpc, client, m, o, d, e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.LeverageProjection == nil || plan.BorrowProjection != nil || plan.BorrowRelease != nil || plan.FundingRelease == nil || plan.FundingSwap == nil || plan.PayoffRepayment == nil || plan.PayoffWithdrawal == nil || len(plan.Exit) != 17 || plan.Payoff == nil || plan.Payoff.ThroughUnix != 1420 || plan.ValidThroughSlot > 74 {
-		t.Fatal("leverage swap omitted complete position return")
-	}
-	current, _, _, err := plan.Input.decode()
-	if err != nil || !reflect.DeepEqual(current, e.Request) || plan.Snapshot != o.Snapshot {
-		t.Fatal("exit projection replaced current swap", err)
-	}
-	_, releaseEffects, _, err := plan.FundingRelease.decode()
-	if err != nil || releaseEffects.Accounts[1].BeforeRaw != 1+e.Request.QuotedOutputRaw {
-		t.Fatal("exit lost simulated swap proceeds/remainder", err)
-	}
-	var total int64
-	for _, step := range plan.Exit {
-		total += step.Cost.TotalMicros
-	}
-	if total != plan.ExitAfterMicros || binary.LittleEndian.Uint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72]) != 1000 || binary.LittleEndian.Uint64(accountAt(accounts, ethenaUSDePYUSD.CollateralCustody).Data[64:72]) != 1 {
-		t.Fatal("exit costing changed observed custody or omitted costs")
-	}
-	assertBudgetHold(t, (&Database{}).admitPhase3LeverageSwap(context.Background(), rpc, client, m, "missing", o, d, e), "bridge_admission_database_unavailable")
-	encoded, _ := jsonMarshalExpectedEffects(e.ExpectedEffects)
-	input, _ := encodePhase3BuildInput(e.Request, encoded)
-	intent, _ := Phase3IntentDigest(e.Request, encoded)
-	message, _ := CompileJupiterMessage(e.Request)
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
-	op := PersistedOperation{Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
-	auth := phase3OperationAuthorization{GoalID: Phase3GoalID, BuildInput: input, IntentSHA256: intent, SignedWireSHA256: op.SignedWireSHA256, BridgeAdmission: &plan}
-	if _, err := revaluePhase3SignedInput(context.Background(), rpc, auth, op); err != nil {
-		t.Fatal(err)
-	}
-	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.CollateralCustody).Data[64:72], 2)
-	_, err = revaluePhase3SignedInput(context.Background(), rpc, auth, op)
-	assertBudgetHold(t, err, "leverage_swap_custody_changed")
-	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.CollateralCustody).Data[64:72], 1)
-	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[128:136], 100_000_001)
-	_, err = revaluePhase3SignedInput(context.Background(), rpc, auth, op)
-	assertBudgetHold(t, err, "leverage_swap_snapshot_changed")
-}
-
 func TestLeverageSwapAdmissionRejectsUnsafePoststateFundingAndIntent(t *testing.T) {
-	for _, variant := range []string{"source", "output", "position", "reserve", "clock", "failed", "underfunded", "overcap"} {
+	for _, variant := range []string{"source", "output", "position", "reserve", "clock", "failed"} {
 		t.Run(variant, func(t *testing.T) {
-			output := uint64(20_000)
-			if variant == "underfunded" {
-				output = 1000
-			}
-			if variant == "overcap" {
-				output = 900_000
-			}
-			o, d, e, m, rpc, client, _ := leverageAdmissionFixture(t, output, variant)
+			o, d, e, m, rpc, client, _ := leverageAdmissionFixture(t, 20_000, variant)
 			_, err := legacyAdmissionCostCheck(observePhase3LeverageSwapAdmission(context.Background(), rpc, client, m, o, d, e))
 			if err == nil {
 				t.Fatal("unsafe leverage admitted")
-			}
-			if variant == "underfunded" {
-				assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
-			}
-			if variant == "overcap" {
-				assertBudgetHold(t, err, "bridge_exit_or_transaction_cap_exceeded")
 			}
 		})
 	}

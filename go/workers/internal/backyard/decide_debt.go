@@ -68,10 +68,7 @@ func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (
 	}
 	// Top up before any borrow, so idle cash never waits for a full close and
 	// reopen, and a later borrow levers the whole collateral at once.
-	if !s.PilotActive {
-		return Decision{}, false
-	}
-	amount := min(s.VoltrIdleRaw-DefaultSelectorPolicy().IdleBufferRaw, workingTrancheCap(s), s.TopupDepositRoomRaw, int64(strategyTwoBridgeLegCapRaw))
+	amount := min(s.VoltrIdleRaw-DefaultSelectorPolicy().IdleBufferRaw, s.TopupDepositRoomRaw, int64(strategyTwoBridgeLegCapRaw))
 	if amount < topupMinimumRaw {
 		return Decision{}, false
 	}
@@ -361,19 +358,14 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		return d(SwapStableToCollateralStep, "usdc_requires_collateral", min(s.SquadsIdleRaw, limit))
 	}
 	if s.VoltrIdleRaw > 0 {
-		amount := min(s.VoltrIdleRaw, limit)
-		if s.PilotActive {
-			// A pilot allocation is sized only by the admitted selector entry
-			// equity, and that authority must still fit the working tranche cap
-			// and the reviewed capacity above. A missing or oversized admission
-			// holds for a fresh quote instead of spending unadmitted idle.
-			amount = min(amount, workingTrancheCap(s))
-			if s.SelectorEntryEquityRaw <= 0 || s.SelectorEntryEquityRaw > amount {
-				return d(Hold, "selector_entry_amount_requires_fresh_quote", 0)
-			}
-			amount = s.SelectorEntryEquityRaw
+		// The allocation is sized only by the admitted selector entry equity,
+		// which must still fit the reviewed capacity above. A missing or
+		// oversized admission holds for a fresh quote instead of spending
+		// unadmitted idle.
+		if s.SelectorEntryEquityRaw <= 0 || s.SelectorEntryEquityRaw > min(s.VoltrIdleRaw, limit) {
+			return d(Hold, "selector_entry_amount_requires_fresh_quote", 0)
 		}
-		return d(VoltrAllocateToSquads, "eligible_voltr_idle", amount)
+		return d(VoltrAllocateToSquads, "eligible_voltr_idle", s.SelectorEntryEquityRaw)
 	}
 	return d(Hold, "no_eligible_action", 0)
 }

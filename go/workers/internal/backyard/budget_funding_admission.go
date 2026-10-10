@@ -172,7 +172,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 		}
 		// B2 1.75x: a release that cannot fund the payoff is a cycle's first
 		// leg; price the multi-cycle exit from its projected poststate.
-		if leverageLane(s.RouteLane) && s.PilotActive {
+		if leverageLane(s.RouteLane) {
 			if plan, err, ok := priceLeverageExitAfterRelease(ctx, rpc, client, manifest, observation, decision, r, effects, releaseBound, releaseAccounts); ok {
 				return plan, err
 			}
@@ -222,7 +222,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 		action, amount := payoffFundingSource(s, future.UpperDebtRaw)
 		// B2 1.75x: a NAV before an exit that needs cycles prices the whole
 		// multi-cycle exit from the current (unchanged) accounts.
-		if uint64(debtCashRaw(s)) < future.UpperDebtRaw && amount == 0 && leverageLane(s.RouteLane) && s.PilotActive {
+		if uint64(debtCashRaw(s)) < future.UpperDebtRaw && amount == 0 && leverageLane(s.RouteLane) {
 			if plan, err, ok := priceLeverageExitFromCurrent(ctx, rpc, client, manifest, observation, decision, request, effects, route, rows); ok {
 				return plan, err
 			}
@@ -231,7 +231,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 			// NAV -> release -> NAV -> funding -> NAV -> payoff. This is a
 			// future cost template; the release will be rebuilt and admitted
 			// from actual custody after NAV, never signed from this projection.
-			releaseBound, rows, err = manifest.observeRawRepaymentRelease(ctx, rpc, route, s.Slot, s.PilotActive)
+			releaseBound, rows, err = manifest.observeRawRepaymentRelease(ctx, rpc, route, s.Slot)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
@@ -245,7 +245,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 			}
 			req.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 			req.RepaymentRelease, req.ReleaseDebtIdleRaw = true, uint64(debtCashRaw(s))
-			req.PilotRepaymentRelease = s.PilotActive
+			req.PilotRepaymentRelease = true
 			source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
 			e, err := exactKaminoTokenEffects(rows, source, destination, releaseBound.LiquidityRaw)
 			if err != nil {

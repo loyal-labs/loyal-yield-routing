@@ -32,7 +32,6 @@ func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observa
 	accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset] = 80
 	accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset+1] = 90
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Market).Data[kaminoGlobalBorrowValueOffset:], 45_000_000)
-	o.Snapshot.PilotActive = true
 	cash, amount := uint64(500), uint64(500)
 	if variant == "funded" {
 		cash, amount = 1001, 999
@@ -172,12 +171,6 @@ func TestPartialRepaymentDecisionPrincipalCashAndDust(t *testing.T) {
 	if d.Reason != "hard_ltv_repay" || d.AmountRaw != s.PositionDebtRaw {
 		t.Fatal(d)
 	}
-	s.PilotActive = false
-	s.SquadsIdleRaw = 500
-	d = Decide(s)
-	if d.Reason == "hard_ltv_partial_repay" {
-		t.Fatal("pilot authority bypass")
-	}
 }
 
 func TestPartialRepaymentFundedTailRevalidatesPriceAndBacking(t *testing.T) {
@@ -247,17 +240,13 @@ func TestPartialRepaymentUnverifiedRiskCannotCommitUnwind(t *testing.T) {
 	id := key + "-operation"
 	prior := emptyTestBudget()
 	prior.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000}
-	previous, _ := json.Marshal(prior)
-	flat := pilotFlatFixture(t)
-	flatJSON, _ := json.Marshal(flat)
 	authority := pilotTestAuthority(prior)
-	authority.Generation, authority.FinalizedSlot, authority.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(flatJSON)
 	budget, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	budget.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000, ExitMicros: 90_000_000}
-	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{authority, previous, flat}})
+	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}

@@ -212,7 +212,6 @@ func ladderLiveObservation(t *testing.T, nativeAPY float64) (RouteManifest, *cha
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	in.Snapshot.PilotActive = true
 	in.Snapshot.Slot = 42
 	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 100_000_000, 100_000_000
 	o := tickObservation(in.Snapshot)

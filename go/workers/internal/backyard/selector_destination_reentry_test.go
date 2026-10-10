@@ -80,7 +80,7 @@ func reentryFundedFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiter.
 	putKey(t, obligation.Data[96:128], route.Kamino.CollateralReserve)
 	putKey(t, obligation.Data[1208:1240], route.Kamino.DebtReserve)
 	copy(accountAt(accounts, route.Kamino.Obligation).Data, obligation.Data)
-	s := Snapshot{PilotActive: true, Fresh: true, Slot: 42, ObservationID: "reentry", RouteKind: RouteKind, RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 90_000_000,
+	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "reentry", RouteKind: RouteKind, RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 90_000_000,
 		HasPosition: true, ObligationPresent: true, ObligationPresenceKnown: true, PositionCollateralRaw: 15_000_000, PositionCollateralValueRaw: 15_000_000, PositionDebtRaw: 5_000_000, PositionDebtValueRaw: 5_000_000, StrategyNAVRaw: 10_000_000, TotalVaultNAVRaw: 100_000_000, ReportSnapshotDigest: sha256Bytes([]byte("reentry-nav"))}
 	o := reentryObservation(s)
 	source, err := observeSelectorSource(context.Background(), rpc, client, m, o)
@@ -145,7 +145,7 @@ func TestSelectorReentryForecastIncludesObligationRecreation(t *testing.T) {
 func TestSelectorReentryRejectsMissingSourceBoundAndUnrelatedQuote(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)
-	idle := Snapshot{PilotActive: true, Fresh: true, Slot: 42, ObservationID: "idle", RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 10_000_000}
+	idle := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle", RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 10_000_000}
 	o := reentryObservation(idle)
 	source, err := observeSelectorSource(context.Background(), rpc, client, m, o)
 	if err != nil || source.ExitBound != nil {
@@ -207,7 +207,7 @@ func TestSelectorReentryRejectsFlatDestinationAndDriftedBound(t *testing.T) {
 	// not open the reentry forecast: the ordinary quote owns that case.
 	source := selectorSourceQuote{Lane: route.Lane, ObservationID: "flat", MinimumIdleRaw: 2_000_000,
 		Recipe: selectorRecipe{ValidThroughSlot: 74, EvidenceID: sha256Bytes([]byte("flat"))}, ExitBound: &selectorExitBound{}}
-	s := Snapshot{PilotActive: true, Fresh: true, Slot: 42, ObservationID: "flat", RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 2_000_000}
+	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "flat", RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 2_000_000}
 	_, err := observeSelectorReentryDestinationSize(context.Background(), rpc, client, m, reentryObservation(s), source, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_destination_unavailable")
 

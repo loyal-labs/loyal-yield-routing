@@ -105,21 +105,13 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 	}
 	key := fmt.Sprintf("selector-auto-unwind-cmd-%d", time.Now().UnixNano())
 	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
-	flatJSON, err := json.Marshal(flat)
-	if err != nil {
-		t.Fatal(err)
-	}
 	authority := pilotTestAuthority(prior)
-	authority.Generation = 2
-	authority.FinalizedSlot = flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	activated, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	activated.Families["AUTO"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated, "pilotBudgetActivation": pilotBudgetActivation{authority, mustJSON(t, prior), flat}})
+	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,21 +180,13 @@ func TestUnwindIntentCommitExecuteCommitsUnderOwnLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
-	flatJSON, err := json.Marshal(flat)
-	if err != nil {
-		t.Fatal(err)
-	}
 	authority := pilotTestAuthority(prior)
-	authority.Generation = 2
-	authority.FinalizedSlot = flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	activated, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	activated.Families["Maple"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated, "pilotBudgetActivation": pilotBudgetActivation{authority, mustJSON(t, prior), flat}})
+	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -501,7 +501,6 @@ func TestPhase3DatabaseAdmissionAndSendFence(t *testing.T) {
 		}
 	})
 	t.Run("production bridge admission", func(t *testing.T) { testProductionBridgeAdmission(t, url) })
-	t.Run("one-time budget initialization", func(t *testing.T) { testPhase3BudgetInitialization(t, url) })
 	t.Run("production withdrawal admission", func(t *testing.T) { testProductionWithdrawalAdmission(t, url) })
 }
 
@@ -510,7 +509,7 @@ func maintenanceNAVFixture(t *testing.T) (Phase3Budget, Snapshot, Decision, phas
 	b := pilotTestBudget(t)
 	b.Families["Maple"] = FamilyBudget{ExitMicros: 4_085_553}
 	s := base()
-	s.RouteLane, s.PilotActive, s.HasPosition = "Maple/syrupUSDC/USDC", true, true
+	s.RouteLane, s.HasPosition = "Maple/syrupUSDC/USDC", true
 	s.PositionCollateralRaw, s.PostMutationNAVRequired = 844926, true
 	d := Decide(s)
 	if d.Action != ReportNAV || d.Reason != "post_mutation_nav_due" {

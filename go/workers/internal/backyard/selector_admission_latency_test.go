@@ -50,21 +50,13 @@ func seedAdmissionRouteState(t *testing.T, ctx context.Context, db *Database, ke
 		t.Fatal(err)
 	}
 	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
-	flatJSON, err := json.Marshal(flat)
-	if err != nil {
-		t.Fatal(err)
-	}
 	authority := pilotTestAuthority(prior)
-	authority.Generation = 2
-	authority.FinalizedSlot = flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	activated, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	activated.Families["AUTO"] = FamilyBudget{SpentMicros: 7_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated, "pilotBudgetActivation": pilotBudgetActivation{authority, mustJSON(t, prior), flat}})
+	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
 	if err != nil {
 		t.Fatal(err)
 	}

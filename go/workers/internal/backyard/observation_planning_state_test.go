@@ -14,23 +14,12 @@ import (
 func planningPilotState(t *testing.T) map[string]any {
 	t.Helper()
 	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
-	previous, err := json.Marshal(prior)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(flat)
-	if err != nil {
-		t.Fatal(err)
-	}
 	authority := pilotTestAuthority(prior)
-	authority.Generation, authority.FinalizedSlot = 2, flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(encoded)
 	budget, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{authority, previous, flat}}
+	return map[string]any{"generation": 2, "phase3": budget}
 }
 
 func TestRoutePlanningStateSharesValidatedAuthorityAndSelectors(t *testing.T) {
@@ -53,10 +42,6 @@ func TestRoutePlanningStateSharesValidatedAuthorityAndSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	active, baseline, err := db.PilotRuntimeState(ctx, key)
-	if err != nil {
-		t.Fatal(err)
-	}
 	originalEntry, err := db.LoadSelectorEntry(ctx, key)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +50,7 @@ func TestRoutePlanningStateSharesValidatedAuthorityAndSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !active || planning.pilot != active || !reflect.DeepEqual(planning.baseline, baseline) || !reflect.DeepEqual(planning.entry, originalEntry) || !reflect.DeepEqual(planning.unwind, originalUnwind) || !planning.paused {
+	if !reflect.DeepEqual(planning.entry, originalEntry) || !reflect.DeepEqual(planning.unwind, originalUnwind) || !planning.paused {
 		t.Fatalf("planning disagreed with original validators: %+v", planning)
 	}
 	// No execution lease is granted by the shadow read, even on the same DB.
@@ -81,7 +66,7 @@ func TestRoutePlanningStateSharesValidatedAuthorityAndSelectors(t *testing.T) {
 	if !manifest.selectorObservation || manifest.observationLane != unwind.SourceLane {
 		t.Fatal("unwind did not select the observation lane")
 	}
-	for _, field := range []string{"pilotBudgetActivation", "selectorEntry", "selectorUnwind"} {
+	for _, field := range []string{"selectorEntry", "selectorUnwind"} {
 		t.Run(field+" malformed", func(t *testing.T) {
 			if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set($2::jsonb,ARRAY[$3]::text[],'{}'::jsonb) WHERE route_key=$1`, key, raw, field); err != nil {
 				t.Fatal(err)

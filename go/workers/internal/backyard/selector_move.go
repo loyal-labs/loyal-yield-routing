@@ -17,7 +17,7 @@ func observeSelectorMove(ctx context.Context, rpc *chain.Client, client *jupiter
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var empty MoveQuote
-	if o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) || requestedEquity == 0 || requestedEquity > uint64(PilotWorkingTrancheCapRaw) {
+	if o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) || requestedEquity == 0 || requestedEquity > strategyTwoBridgeLegCapRaw {
 		return empty, budgetHold("invalid_selector_move")
 	}
 	source, err := observeSelectorSource(ctx, rpc, client, m, o)
@@ -104,7 +104,7 @@ func composeSelectorMoveWithLane(ctx context.Context, rpc *chain.Client, o Obser
 		q.CollateralAssetPrice = copyDebtPrice(destination.CollateralAssetPrice)
 		q.RedepositCollateralRaw = destination.RedepositCollateralRaw
 	}
-	if rpc == nil || !s.PilotActive || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || !laneAllowed(destination.Lane) || destination.EquityRaw == 0 || destination.EquityRaw > uint64(PilotWorkingTrancheCapRaw) || destination.EquityRaw > source.MinimumIdleRaw || source.MinimumIdleRaw > math.MaxInt64 || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || !sha256Pattern.MatchString(destination.Recipe.EvidenceID) || !q.currentAtSlot(s.Slot) || o.ObservedAt.IsZero() {
+	if rpc == nil || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || !laneAllowed(destination.Lane) || destination.EquityRaw == 0 || destination.EquityRaw > strategyTwoBridgeLegCapRaw || destination.EquityRaw > source.MinimumIdleRaw || source.MinimumIdleRaw > math.MaxInt64 || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || !sha256Pattern.MatchString(destination.Recipe.EvidenceID) || !q.currentAtSlot(s.Slot) || o.ObservedAt.IsZero() {
 		return q, budgetHold("invalid_selector_move")
 	}
 	q.EquityRaw = int64(destination.EquityRaw)

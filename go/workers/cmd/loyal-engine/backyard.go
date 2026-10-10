@@ -139,7 +139,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [inspect-pilot-flat-state | activate-pilot-budget | selector-evaluate [--execute] | inspect-phase3 lane ... | initialize-phase3-budget | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [selector-evaluate [--execute] | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
@@ -147,17 +147,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 	cfg, err := backyardRuntimeConfig()
 	if err != nil {
 		return err
-	}
-	var cancels []context.CancelFunc
-	defer func() {
-		for _, cancel := range cancels {
-			cancel()
-		}
-	}()
-	bounded := func(limit time.Duration) context.Context {
-		bounded, cancel := context.WithTimeout(ctx, limit)
-		cancels = append(cancels, cancel)
-		return bounded
 	}
 	encode := func(value any, err error) error {
 		if err != nil {
@@ -169,24 +158,11 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		return errors.New(backyardUsage)
 	}
 	switch command, rest := args[0], args[1:]; {
-	case command == "inspect-pilot-flat-state" && len(rest) == 0:
-		return backyard.InspectPilotBudgetFlatState(bounded(30*time.Second), cfg.RPCURL, out)
 	case command == "selector-evaluate" && (len(rest) == 0 || len(rest) == 1 && rest[0] == "--execute"):
 		// --execute performs exactly one locked evaluation under its own
 		// short route lease; the committed entry is durable route state.
 		cfg.TimescaleURL = optionalCredential("BACKYARD_TIMESCALE_DATABASE_URL")
 		return backyard.RunSelectorEvaluate(ctx, out, cfg, len(rest) == 1)
-	case command == "activate-pilot-budget" && len(rest) == 0:
-		return encode(backyard.RunPilotBudgetActivation(ctx, cfg.DatabaseURL, cfg.RPCURL, backyard.FixedRouteKey))
-	case command == "initialize-phase3-budget" && len(rest) == 0:
-		return encode(backyard.RunPhase3BudgetInitialization(ctx, cfg.DatabaseURL, backyard.FixedRouteKey))
-	case command == "inspect-phase3" && len(rest) > 0:
-		result, err := backyard.InspectPhase3Runtime(rest)
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintln(out, string(result))
-		return err
 	case command == "clear-hold":
 		// The only operator path that lifts a durable manual recovery stop.
 		if len(rest) != 2 || rest[0] != "--reason" || rest[1] == "" {

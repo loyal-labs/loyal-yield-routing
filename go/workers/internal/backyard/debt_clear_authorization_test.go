@@ -360,7 +360,6 @@ func debtClearRiskFixture(t *testing.T) (Observation, Decision, KaminoExecutionE
 	if err != nil {
 		t.Fatal(err)
 	}
-	o.Snapshot.PilotActive = true
 	o.Snapshot.LTVBPS, o.Snapshot.LiquidationThresholdBPS = ltv, 9000
 	o.Snapshot.PositionCollateralValueRaw = 1500
 	o.Snapshot.Unwind, o.Snapshot.UnwindRefreshRequired = true, true

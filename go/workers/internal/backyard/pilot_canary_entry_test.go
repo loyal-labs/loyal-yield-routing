@@ -16,7 +16,6 @@ func pilotCanaryFixture() SelectorInput {
 	in.Quotes[0].DestinationLane = SelectedRouteID
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
 	in.Policy = DefaultSelectorPolicy()
-	in.Snapshot.PilotActive = true
 	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 1_000_000, 1_000_000
 	in.Quotes[0].EquityRaw = 1_000_000
 	in.Quotes[0].MinimumIdleRaw = 1_000_000
@@ -85,16 +84,12 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 	key := fmt.Sprintf("pilot-canary-%d", time.Now().UnixNano())
 	prior := emptyTestBudget()
 	prior.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000}
-	previous, _ := json.Marshal(prior)
-	flat := pilotFlatFixture(t)
-	flatJSON, _ := json.Marshal(flat)
 	authority := pilotTestAuthority(prior)
-	authority.Generation, authority.FinalizedSlot, authority.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(flatJSON)
 	budget, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{authority, previous, flat}, "selectorEntryPaused": true}
+	state := map[string]any{"generation": 2, "phase3": budget, "selectorEntryPaused": true}
 	raw, _ := json.Marshal(state)
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)

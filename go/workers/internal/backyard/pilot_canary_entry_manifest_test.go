@@ -74,7 +74,7 @@ func TestPilotCanaryRequestValidateOnManifest(t *testing.T) {
 	for name, change := range map[string]func(*pilotCanaryEntryRequest){
 		"short id":        func(r *pilotCanaryEntryRequest) { r.ID = "deadbeef" },
 		"zero equity":     func(r *pilotCanaryEntryRequest) { r.EquityRaw = 0 },
-		"over cap":        func(r *pilotCanaryEntryRequest) { r.EquityRaw = PilotWorkingTrancheCapRaw + 1 },
+		"over cap":        func(r *pilotCanaryEntryRequest) { r.EquityRaw = int64(strategyTwoBridgeLegCapRaw) + 1 },
 		"expired":         func(r *pilotCanaryEntryRequest) { r.ExpiresAt = now },
 		"overlong window": func(r *pilotCanaryEntryRequest) { r.ExpiresAt = now.Add(16 * time.Minute) },
 	} {

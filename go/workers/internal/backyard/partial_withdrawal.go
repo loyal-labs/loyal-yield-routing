@@ -74,7 +74,7 @@ func partialWithdrawalTargetLTVBPS(s Snapshot) (int64, bool) {
 // when a partial path is not established. Callers hold withdrawal-only flows,
 // after hard LTV, recovery and the covered/staged checks.
 func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
-	if !leverageLane(s.RouteLane) || !s.PilotActive || s.Unwind || s.CutoverDrain || (s.WithdrawalDemandRaw <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
+	if !leverageLane(s.RouteLane) || s.Unwind || s.CutoverDrain || (s.WithdrawalDemandRaw <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
 		s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw < 0 || s.PositionDebtRaw < 0 {
 		return "", "", 0, false
 	}

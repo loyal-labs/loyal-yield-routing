@@ -162,7 +162,7 @@ func observeReviewedSelectorSource(ctx context.Context, rpc *chain.Client, clien
 	defer cancel()
 	s := o.Snapshot
 	out := selectorSourceQuote{Lane: s.RouteLane, ObservationID: s.ObservationID}
-	if rpc == nil || client == nil || !s.PilotActive || !selectorSourceLaneAuthorized(m, s.RouteLane, candidate) || s.RouteLane != s.StrategyKey || !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || s.Unwind || s.CutoverDrain || s.WithdrawalDemandRaw != 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.CollateralIdleRaw < 0 || s.PositionDebtRaw < 0 || s.PositionCollateralRaw < 0 || s.DebtIdleRaw != 0 {
+	if rpc == nil || client == nil || !selectorSourceLaneAuthorized(m, s.RouteLane, candidate) || s.RouteLane != s.StrategyKey || !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || s.Unwind || s.CutoverDrain || s.WithdrawalDemandRaw != 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.CollateralIdleRaw < 0 || s.PositionDebtRaw < 0 || s.PositionCollateralRaw < 0 || s.DebtIdleRaw != 0 {
 		return out, budgetHold("selector_source_unavailable")
 	}
 	if !hasWorkingCapital(s) {
@@ -236,7 +236,7 @@ func (m RouteManifest) priceSelectorSourcePlan(ctx context.Context, rpc *chain.C
 func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, plan phase3BridgeAdmission, observationFloor int64, candidate bool) (selectorSourceQuote, error) {
 	s := plan.Snapshot
 	out := selectorSourceQuote{Lane: s.RouteLane, ObservationID: s.ObservationID}
-	if !selectorSourceLaneAuthorized(m, s.RouteLane, candidate) || !s.PilotActive || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.DebtIdleRaw != 0 || plan.Input == nil || len(plan.Exit) == 0 {
+	if !selectorSourceLaneAuthorized(m, s.RouteLane, candidate) || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.DebtIdleRaw != 0 || plan.Input == nil || len(plan.Exit) == 0 {
 		return out, budgetHold("selector_source_recipe_unavailable")
 	}
 	if candidate {

@@ -43,7 +43,7 @@ func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *chain.Client
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 0)
 	// The debt reserve has lent at least our debt.
 	putScaledFraction(accountAt(accounts, route.Kamino.DebtReserve).Data[232:248], new(big.Int).Lsh(new(big.Int).SetUint64(debt), 60))
-	o.Snapshot.PilotActive, o.Snapshot.HasPosition = true, true
+	o.Snapshot.HasPosition = true
 	o.Snapshot.PositionCollateralRaw, o.Snapshot.PositionCollateralValueRaw = 100_000_000_000, 100_000_000
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw = int64(debt), int64(debt)
 	o.Snapshot.SquadsIdleRaw, o.Snapshot.LTVBPS, o.Snapshot.LiquidationThresholdBPS = 0, 4285, 7500
@@ -189,7 +189,7 @@ func TestExitCycleKaminoWiresPassThePersistedWireGate(t *testing.T) {
 func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 	broken, _ := jupiter.NewClient("https://jupiter.invalid", "", nil)
 	live := base()
-	live.RouteLane, live.StrategyKey, live.PilotActive, live.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true, true
+	live.RouteLane, live.StrategyKey, live.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true
 	live.PositionCollateralRaw, live.PositionCollateralValueRaw = 2_463_480_000, 2_514_967_000
 	live.PositionDebtRaw, live.PositionDebtValueRaw = 837_770_000, 837_770_000
 	if leverageExitMayNeedCycles(live) {
@@ -404,7 +404,6 @@ func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Obs
 		if err != nil {
 			t.Fatal(err)
 		}
-		o.Snapshot.PilotActive = true
 		// Controlled counterparts of journal/identity enrichment; keep all
 		// production monitors armed rather than disabling their checks.
 		o.Snapshot.JournalSequenceKnown, o.Snapshot.JournalReconciledSequenceRaw = true, 40

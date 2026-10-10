@@ -24,7 +24,6 @@ func TestAUTOSelectorNonUSDCLifecycle(t *testing.T) {
 
 	t.Run("pilot allocation spends the admitted equity, not full idle", func(t *testing.T) {
 		s := ready(base())
-		s.PilotActive = true
 		s.VoltrIdleRaw = 370_333
 		s.SelectorEntryEquityRaw = 250_000
 		check(t, s, VoltrAllocateToSquads, 250_000, "eligible_voltr_idle")
@@ -43,15 +42,8 @@ func TestAUTOSelectorNonUSDCLifecycle(t *testing.T) {
 		check(t, s, Hold, 0, "selector_entry_amount_requires_fresh_quote")
 	})
 
-	t.Run("non-pilot allocation keeps full idle sizing", func(t *testing.T) {
-		s := ready(base())
-		s.VoltrIdleRaw = 370_333
-		check(t, s, VoltrAllocateToSquads, 370_333, "eligible_voltr_idle")
-	})
-
 	t.Run("paused entry authority holds before any allocation", func(t *testing.T) {
 		s := ready(base())
-		s.PilotActive = true
 		s.VoltrIdleRaw = 370_333
 		s.SelectorEntryEquityRaw = 250_000
 		s.SelectorEntryPaused = true
@@ -60,7 +52,6 @@ func TestAUTOSelectorNonUSDCLifecycle(t *testing.T) {
 
 	t.Run("already funded tranche completes without reallocation", func(t *testing.T) {
 		s := ready(base())
-		s.PilotActive = true
 		s.SelectorEntryEquityRaw = 250_000
 		s.SquadsIdleRaw = 250_000
 		check(t, s, SwapStableToCollateralStep, 250_000, "usdc_requires_collateral")
@@ -110,7 +101,7 @@ func TestAUTOSelectorNonUSDCLifecycle(t *testing.T) {
 		check(t, s, Hold, 0, "unwind_complete")
 
 		// Even an admitted pilot equity cannot allocate during an unwind.
-		s.VoltrIdleRaw, s.PilotActive, s.SelectorEntryEquityRaw = 370_333, true, 250_000
+		s.VoltrIdleRaw, s.SelectorEntryEquityRaw = 370_333, 250_000
 		check(t, s, Hold, 0, "unwind_complete")
 	})
 

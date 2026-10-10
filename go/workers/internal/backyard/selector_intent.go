@@ -168,20 +168,14 @@ func (d *Database) commitUnwindIntent(ctx context.Context, routeKey string, comm
 		return err
 	}
 	var state struct {
-		Budget     Phase3Budget    `json:"phase3"`
-		Activation json.RawMessage `json:"pilotBudgetActivation"`
-		Unwind     *UnwindIntent   `json:"selectorUnwind"`
+		Budget Phase3Budget  `json:"phase3"`
+		Unwind *UnwindIntent `json:"selectorUnwind"`
 	}
 	if err = json.Unmarshal(raw, &state); err != nil {
 		return err
 	}
 	if err = state.Budget.validate(); err != nil {
 		return err
-	}
-	if state.Budget.Pilot != nil {
-		if _, err = validatePersistedPilotActivation(state.Budget, state.Activation, version); err != nil {
-			return err
-		}
 	}
 	if state.Unwind != nil && confirmation == nil {
 		if !sameUnwindIntent(*state.Unwind, intent) {

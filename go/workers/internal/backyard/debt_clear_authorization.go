@@ -266,11 +266,9 @@ func verifyDebtClearRiskBatch(m RouteManifest, o Observation, operationID string
 	if err != nil {
 		return nil, err
 	}
-	if m.selectorObservation || s.PilotActive {
-		selected, err := observedSelectorRouteForManifest(b.Accounts, s.RouteLane, m)
-		if err != nil || selected.Lane != s.RouteLane {
-			return nil, budgetHold("debt_clear_emergency_scope_changed")
-		}
+	selected, err := observedSelectorRouteForManifest(b.Accounts, s.RouteLane, m)
+	if err != nil || selected.Lane != s.RouteLane {
+		return nil, budgetHold("debt_clear_emergency_scope_changed")
 	}
 	obligation, err := decodeKaminoObligation(accountAt(b.Accounts, route.Kamino.Obligation), route.Kamino)
 	if err != nil {
@@ -468,7 +466,6 @@ func (d *Database) observeDebtClearOriginRisk(ctx context.Context, rpc *chain.Cl
 	if err != nil {
 		return nil, budgetHold("debt_clear_emergency_evidence_unavailable")
 	}
-	o.Snapshot.PilotActive = auth.BridgeAdmission != nil && auth.BridgeAdmission.Snapshot.PilotActive
 	if o.Snapshot.RouteLane != a.Origin.SourceLane {
 		return nil, budgetHold("debt_clear_emergency_scope_changed")
 	}

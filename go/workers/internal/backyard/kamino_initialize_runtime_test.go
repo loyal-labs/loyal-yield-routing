@@ -24,7 +24,6 @@ func initializationPlanningFixture(lane string) Observation {
 	s.Slot = 42
 	s.RouteLane = lane
 	s.StrategyKey = lane
-	s.PilotActive = true
 	s.InitializationPolicyReady = true
 	s.ObligationPresenceKnown = true
 	s.VoltrIdleRaw = 1_000_000
@@ -42,7 +41,7 @@ func TestInitializationDecisionPreservesRecoveryWithdrawalAndEntryGuards(t *test
 			t.Fatalf("initializer not selected for %s: %+v", lane, d)
 		}
 		for _, mutate := range []func(*Snapshot){
-			func(s *Snapshot) { s.PilotActive = false }, func(s *Snapshot) { s.InitializationPolicyReady = false }, func(s *Snapshot) { s.ObligationPresenceKnown = false }, func(s *Snapshot) { s.ObligationPresent = true },
+			func(s *Snapshot) { s.InitializationPolicyReady = false }, func(s *Snapshot) { s.ObligationPresenceKnown = false }, func(s *Snapshot) { s.ObligationPresent = true },
 			func(s *Snapshot) { s.Nonterminal = Signed }, func(s *Snapshot) { s.WithdrawalDemandRaw = 1 }, func(s *Snapshot) { s.Unwind = true }, func(s *Snapshot) { s.SelectorEntryPaused = true },
 			func(s *Snapshot) { s.SquadsIdleRaw = 1 }, func(s *Snapshot) { s.CollateralIdleRaw = 1 }, func(s *Snapshot) { s.PositionDebtRaw = 1 }, func(s *Snapshot) { s.CapacityRaw = 0 }, func(s *Snapshot) { s.PolicyReady = false }, func(s *Snapshot) { s.LiquidationThresholdBPS = TargetLTVBPS + 1500 },
 		} {
@@ -141,18 +140,12 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 		t.Fatal(err)
 	}
 	prior := emptyTestBudget()
-	previous, _ := json.Marshal(prior)
-	flat := pilotFlatFixture(t)
-	flatJSON, _ := json.Marshal(flat)
 	a := pilotTestAuthority(prior)
-	a.Generation = 2
-	a.FinalizedSlot = flat.Slot
-	a.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	b, err := activatePilotBudget(prior, a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, _ := json.Marshal(map[string]any{"generation": 2, "selectorEntry": selectorEntryFixture(time.Now().UTC(), template.RouteLane, o.Snapshot.SelectorEntryEquityRaw), "phase3": b, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}})
+	state, _ := json.Marshal(map[string]any{"generation": 2, "selectorEntry": selectorEntryFixture(time.Now().UTC(), template.RouteLane, o.Snapshot.SelectorEntryEquityRaw), "phase3": b})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
 		t.Fatal(err)
 	}

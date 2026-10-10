@@ -8,7 +8,7 @@ import (
 
 func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
-	s := Snapshot{PilotActive: true, Fresh: true, Slot: 42, ObservationID: "idle-move", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 100_000_000}
+	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle-move", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 100_000_000}
 	o := tickObservation(s)
 	o.ObservedAt = time.Now().UTC()
 	q, err := observeSelectorMove(context.Background(), rpc, client, m, o, SelectedRouteID, 10_000_000, 0)
@@ -42,7 +42,6 @@ func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *test
 
 func TestPilotSelectorSizesFromMinimumReturnedCash(t *testing.T) {
 	in := selectorFixture()
-	in.Snapshot.PilotActive = true
 	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 10_000_000, 10_000_000
 	q := &in.Quotes[0]
 	q.EquityRaw = 9_900_000
@@ -60,7 +59,6 @@ func TestPilotSelectorSizesFromMinimumReturnedCash(t *testing.T) {
 
 func TestPilotSelectorRetainsBufferAfterSourceExitLoss(t *testing.T) {
 	in := selectorFixture()
-	in.Snapshot.PilotActive = true
 	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 10_000_000, 10_000_000
 	in.Policy.IdleBufferRaw = 2_000_000
 	q := &in.Quotes[0]
@@ -76,7 +74,7 @@ func TestPilotSelectorRetainsBufferAfterSourceExitLoss(t *testing.T) {
 		t.Fatal("exit loss consumed buffer", c)
 	}
 	m, rpc, client, _ := selectorDestinationFixture(t)
-	s := Snapshot{PilotActive: true, Fresh: true, Slot: 42, ObservationID: "buffer", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 7_900_000}
+	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "buffer", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 7_900_000}
 	o := tickObservation(s)
 	o.ObservedAt = time.Now().UTC()
 	got, err := observeSelectorMove(context.Background(), rpc, client, m, o, SelectedRouteID, 8_000_000, 2_000_000)

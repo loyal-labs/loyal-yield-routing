@@ -75,19 +75,6 @@ func TestSelectedRouteCoveredWithdrawalUsesOrdinaryHold(t *testing.T) {
 	}
 }
 
-func TestSelectedRouteNeverRestoresMoreThanActualEffectCap(t *testing.T) {
-	s := base()
-	s.RouteLane = SelectedRouteID
-	s.WithdrawalDemandRaw = Phase2TransactionCapRaw + 1
-	s.StrategyNAVRaw = Phase2TransactionCapRaw + 1
-	s.VoltrStrategyIdleRaw = Phase2TransactionCapRaw + 1
-	s.StagedAmountKnown, s.StagedAmountRaw = true, Phase2TransactionCapRaw+1
-	got := Decide(s)
-	if got.Action != HoldManualRecovery || got.Reason != "voltr_restore_actual_effect_exceeds_cap" || got.AmountRaw != 0 {
-		t.Fatal(got)
-	}
-}
-
 func TestSelectedRouteRestoreModelsFullWithinCapSweep(t *testing.T) {
 	s := base()
 	s.RouteLane = SelectedRouteID

@@ -31,7 +31,7 @@ func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client,
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}
 	s := o.Snapshot
-	if !s.PilotActive || !s.Unwind || !s.UnwindRefreshRequired || s.RouteLane != previous.SourceLane || s.PositionCollateralRaw > previous.MaxCollateralRaw || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission {
+	if !s.Unwind || !s.UnwindRefreshRequired || s.RouteLane != previous.SourceLane || s.PositionCollateralRaw > previous.MaxCollateralRaw || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission {
 		return budgetHold("unwind_refresh_source_changed")
 	}
 	// These flags select the exit forecast only. Original observation remains
@@ -79,7 +79,7 @@ func (d *Database) renewSelectorUnwindOnManifest(ctx context.Context, manifest R
 	current := func() bool {
 		return freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) && s.Slot > 0 && confirmedSlot >= floor && confirmedSlot <= source.Recipe.ValidThroughSlot && source.Recipe.ValidThroughSlot-s.Slot <= observationLagSlots()
 	}
-	if manifest.validateUnwindIntent(previous) != nil || !current() || !s.Fresh || !s.PilotActive || !s.Unwind || !s.UnwindRefreshRequired || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain || s.RouteLane != previous.SourceLane || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || s.ObservationID == "" || source.ExitBound == nil || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || s.PositionCollateralRaw < 0 || s.PositionCollateralRaw > previous.MaxCollateralRaw || source.ExitBound.MaxCollateralRaw != s.PositionCollateralRaw || s.PositionDebtRaw <= previous.MaxDebtRaw || source.ExitBound.MaxDebtRaw < s.PositionDebtRaw {
+	if manifest.validateUnwindIntent(previous) != nil || !current() || !s.Fresh || !s.Unwind || !s.UnwindRefreshRequired || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain || s.RouteLane != previous.SourceLane || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || s.ObservationID == "" || source.ExitBound == nil || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || s.PositionCollateralRaw < 0 || s.PositionCollateralRaw > previous.MaxCollateralRaw || source.ExitBound.MaxCollateralRaw != s.PositionCollateralRaw || s.PositionDebtRaw <= previous.MaxDebtRaw || source.ExitBound.MaxDebtRaw < s.PositionDebtRaw {
 		return budgetHold("unwind_refresh_evidence_unavailable")
 	}
 	next := previous
@@ -119,9 +119,8 @@ func (d *Database) renewSelectorUnwindOnManifest(ctx context.Context, manifest R
 		return budgetHold("unwind_refresh_state_changed")
 	}
 	var state struct {
-		Budget     Phase3Budget    `json:"phase3"`
-		Activation json.RawMessage `json:"pilotBudgetActivation"`
-		Unwind     *UnwindIntent   `json:"selectorUnwind"`
+		Budget Phase3Budget  `json:"phase3"`
+		Unwind *UnwindIntent `json:"selectorUnwind"`
 	}
 	if json.Unmarshal(raw, &state) != nil || state.Unwind == nil || !sameUnwindIntent(*state.Unwind, previous) {
 		return budgetHold("unwind_refresh_intent_changed")
@@ -131,9 +130,6 @@ func (d *Database) renewSelectorUnwindOnManifest(ctx context.Context, manifest R
 	}
 	if state.Budget.Pilot == nil {
 		return budgetHold("unwind_refresh_requires_pilot")
-	}
-	if _, err = validatePersistedPilotActivation(state.Budget, state.Activation, version); err != nil {
-		return err
 	}
 	if state.Budget.Closed || state.Budget.GoalID != next.BudgetScope || len(state.Budget.Reservations) != 0 || state.Budget.Families[next.BudgetFamily].ExitMicros < next.CostBoundRaw {
 		return budgetHold("unwind_requires_existing_exit_reservation")

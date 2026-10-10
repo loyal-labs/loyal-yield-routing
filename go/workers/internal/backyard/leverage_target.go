@@ -125,7 +125,7 @@ type leverageDecision struct {
 // Cost = moved notional x 2 x UncertaintyBPS + 3 fees of 10,000 raw.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane}
-	if !leverageLane(s.RouteLane) || !s.PilotActive || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
+	if !leverageLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
 		selector.Action != "KEEP" || s.PartialWithdrawalOperationID != "" || s.Unwind || s.UnwindRefreshRequired || s.CutoverDrain || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
 		s.SquadsIdleRaw != 0 || s.DebtIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 ||
 		(s.CollateralIdleRaw > 0 && s.MinimumCollateralDepositRaw > 0 && s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw) {

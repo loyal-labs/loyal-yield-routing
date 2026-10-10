@@ -101,11 +101,10 @@ func unleveredSwitchFixture(cost int64) SelectorInput { return unleveredSwitchFi
 func unleveredSwitchFixtureAt(cost int64, onreAPY float64) SelectorInput {
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	s := base()
-	s.RouteLane, s.StrategyKey, s.PilotActive = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true
+	s.RouteLane, s.StrategyKey = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane
 	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 1_677_000_000, 1_677_000_000
 	s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.TotalVaultNAVRaw = 1_677_000_000, 1_677_000_000, 1_677_000_000
 	s.BorrowUtilizationBlocked, s.LeverageTargetLevel = true, 1.5
-	s.PilotTrancheCapLane = autoAUTOPYUSD.Lane // stamped live by the reviewed manifest
 	p := DefaultSelectorPolicy()
 	curve := []BorrowCurvePoint{{0, 400}, {9000, 1200}, {10000, 10000}}
 	auto := LaneEconomics{Lane: autoAUTOPYUSD.Lane, EvidenceID: "auto", ObservedAt: now, NativeObservedAt: now, NativeAPY: .0948, CurrentBorrowAPY: .12, BorrowCurve: curve, DebtSupplyRaw: 1e12, DebtBorrowRaw: .926e12, EntryCapacity: Capacity{Known: true}}
@@ -209,7 +208,7 @@ func TestUnleveredQuoteShape(t *testing.T) {
 // reinvestment stays closed. When the pool reopens, B2 owns leverage.
 func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	s := base()
-	s.RouteLane, s.StrategyKey, s.PilotActive = onreONycUSDC, onreONycUSDC, true
+	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
 	s.BorrowUtilizationBlocked = true
 	s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = 2_000_000_000, 2_000_000_000, int64(strategyTwoBridgeLegCapRaw)
 	s.VoltrIdleRaw, s.TotalVaultNAVRaw, s.SelectorEntryEquityRaw = 1_677_000_000, 1_677_000_000, 1_677_000_000

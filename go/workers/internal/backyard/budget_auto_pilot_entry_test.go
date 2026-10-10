@@ -34,24 +34,12 @@ func seedAutoInitializerPilotOperation(t *testing.T, ctx context.Context, db *Da
 	t.Helper()
 	id := key + "-op"
 	prior := emptyTestBudget()
-	previous, err := json.Marshal(prior)
-	if err != nil {
-		t.Fatal(err)
-	}
-	flat := pilotFlatFixture(t)
-	flatJSON, err := json.Marshal(flat)
-	if err != nil {
-		t.Fatal(err)
-	}
 	authority := pilotTestAuthority(prior)
-	authority.Generation = 2
-	authority.FinalizedSlot = flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	activated, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated, "pilotBudgetActivation": pilotBudgetActivation{authority, previous, flat}})
+	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,15 +396,7 @@ func TestSelectorEntryManifestLaneAuthorityKeepsInstalledClosure(t *testing.T) {
 // budget still refuses an execution-cost bound outright.
 func TestPilotAdmissionRecognizesAutoFamilyWithoutActivation(t *testing.T) {
 	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
-	flatJSON, err := json.Marshal(flat)
-	if err != nil {
-		t.Fatal(err)
-	}
 	authority := pilotTestAuthority(prior)
-	authority.Generation = 2
-	authority.FinalizedSlot = flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	activated, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)

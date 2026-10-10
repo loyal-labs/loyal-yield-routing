@@ -39,7 +39,7 @@ func TestLeverageLevelsAndOneStepRule(t *testing.T) {
 func TestOneXByChoiceIsAFinishedPosition(t *testing.T) {
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		s := base()
-		s.RouteLane, s.StrategyKey, s.PilotActive = lane, lane, true
+		s.RouteLane, s.StrategyKey = lane, lane
 		s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 300_000_000, 300_000_000
 		s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw = 1_000_000_000, 1_000_000_000, 1_000_000_000
 		if got := Decide(s); got.Action != Hold || got.Reason != "leverage_target_required" {

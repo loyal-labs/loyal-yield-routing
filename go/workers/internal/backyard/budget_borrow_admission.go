@@ -207,7 +207,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	var cycles []phase3BridgeExitCost
 	var firstPayoff *KaminoPayoffBound
 	windowSteps := int64(7)
-	if cash < bound.UpperDebtRaw && leverageLane(s.RouteLane) && s.PilotActive && leverageExitAccountsMayNeedCycles(accounts, route, s) {
+	if cash < bound.UpperDebtRaw && leverageLane(s.RouteLane) && leverageExitAccountsMayNeedCycles(accounts, route, s) {
 		var cycleCash uint64
 		cycles, accounts, cycleCash, windowSteps, firstPayoff, err = priceLeverageExitCycles(ctx, rpc, client, m, route, s, accounts, projection.Slot, blockhash, cash)
 		if err != nil {
@@ -230,7 +230,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	if cash < bound.UpperDebtRaw {
 		// Borrow -> NAV -> release -> NAV -> swap -> NAV -> payoff. Combine
 		// existing residue with the safe release; never require a dust-only swap.
-		limit, err := m.decodeKaminoRepaymentReleaseForMode(projection.Accounts, route, projection.Slot, windowSteps, s.PilotActive)
+		limit, err := m.decodeKaminoRepaymentReleaseForMode(projection.Accounts, route, projection.Slot, windowSteps, true)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}

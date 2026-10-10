@@ -271,24 +271,12 @@ func openInitializerAutoScopeServiceDatabase(t *testing.T, name string, timeout 
 func seedAutoInitializerPilotRoute(t *testing.T, ctx context.Context, db *Database, key string, price *BudgetPrice, equity int64) {
 	t.Helper()
 	prior := emptyTestBudget()
-	previous, err := json.Marshal(prior)
-	if err != nil {
-		t.Fatal(err)
-	}
-	flat := pilotFlatFixture(t)
-	flatJSON, err := json.Marshal(flat)
-	if err != nil {
-		t.Fatal(err)
-	}
 	authority := pilotTestAuthority(prior)
-	authority.Generation = 2
-	authority.FinalizedSlot = flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	activated, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated, "pilotBudgetActivation": pilotBudgetActivation{authority, previous, flat}})
+	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +630,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	if err != nil {
 		t.Fatal("candidate observation through the production merge", err)
 	}
-	if !o.Snapshot.Fresh || o.Snapshot.RouteLane != autoAUTOPYUSD.Lane || !o.Snapshot.PilotActive ||
+	if !o.Snapshot.Fresh || o.Snapshot.RouteLane != autoAUTOPYUSD.Lane ||
 		!o.Snapshot.ObligationPresenceKnown || o.Snapshot.ObligationPresent || o.Snapshot.HasPosition ||
 		!o.Snapshot.InitializationPolicyReady || !o.Snapshot.PolicyReady || !o.Snapshot.ExitBuildable ||
 		o.Snapshot.SelectorEntryEquityRaw != candidateEquity || o.Snapshot.StrategyNAVRaw != 0 ||

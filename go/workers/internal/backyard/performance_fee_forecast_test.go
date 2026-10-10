@@ -140,7 +140,6 @@ func TestPerformanceFeeMoneyBoundCoversPinnedDilutionAndRounding(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
-			in.Snapshot.PilotActive = true
 			in.Quotes[0].Unlevered, in.Quotes[0].BorrowReceiveRaw = true, 0
 			in.Policy.Horizon = 365 * 24 * time.Hour
 			in.Markets[0].NativeAPY = math.Expm1(math.Log1p(tc.gross/1_000_000) * (365.25 / 365))
@@ -242,7 +241,7 @@ func TestPerformanceFeeLeverageHWMKEEPDoesNotRaiseTarget(t *testing.T) {
 	in := coherentFeeSelectorFixture(t, 1_000_000_000, 1_000_000_000, new(big.Int).Lsh(big.NewInt(1), 47))
 	s := in.Snapshot
 	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
-	s.PilotActive, s.HasPosition, s.LeverageTargetLevel = true, true, 1
+	s.HasPosition, s.LeverageTargetLevel = true, 1
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 1_000_000_000, 1_000_000_000
 	s.VoltrIdleRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw = 0, 1_000_000_000, 1_000_000_000
 	s.JournalArmedNAVRaw = 1_000_000_000
@@ -271,7 +270,7 @@ func TestPerformanceFeeLeverageUPNeedsFeeReservedWholePositionEdge(t *testing.T)
 	in := coherentFeeSelectorFixture(t, 1_000_000_000, 1_000_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
 	s := in.Snapshot
 	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
-	s.PilotActive, s.HasPosition, s.LeverageTargetLevel = true, true, 1
+	s.HasPosition, s.LeverageTargetLevel = true, 1
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 1_000_000_000, 1_000_000_000
 	s.VoltrIdleRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.JournalArmedNAVRaw = 0, 1_000_000_000, 1_000_000_000, 1_000_000_000
 	p := DefaultSelectorPolicy()
@@ -294,7 +293,6 @@ func TestPerformanceFeeLeverageUPNeedsFeeReservedWholePositionEdge(t *testing.T)
 func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	in.Snapshot.PilotActive = true
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
 	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 10_000_000, 5_000_000
 	in.Quotes[0].EvidenceID = sha256Bytes([]byte("unarmed-quoted-projection"))

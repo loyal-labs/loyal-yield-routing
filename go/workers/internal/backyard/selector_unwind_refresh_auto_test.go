@@ -30,21 +30,13 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	// The same activated pilot budget the wiring test seeds, with the funded
 	// AUTO exit reservation the renewal must keep respecting.
 	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
-	flatJSON, err := json.Marshal(flat)
-	if err != nil {
-		t.Fatal(err)
-	}
 	authority := pilotTestAuthority(prior)
-	authority.Generation = 2
-	authority.FinalizedSlot = flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	activated, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	activated.Families["AUTO"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated, "pilotBudgetActivation": pilotBudgetActivation{authority, mustJSON(t, prior), flat}})
+	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +61,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 
 	fresh := base()
 	fresh.RouteLane, fresh.StrategyKey = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane
-	fresh.PilotActive, fresh.HasPosition = true, true
+	fresh.HasPosition = true
 	fresh.PositionCollateralRaw, fresh.PositionCollateralValueRaw = 150, 150
 	fresh.PositionDebtRaw, fresh.PositionDebtValueRaw = previous.MaxDebtRaw+10, previous.MaxDebtRaw+10
 	fresh.PayoffDebtRaw, fresh.LTVBPS = fresh.PositionDebtRaw+1, 3400

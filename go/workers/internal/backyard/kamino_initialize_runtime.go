@@ -26,7 +26,7 @@ func snapshotInitializationReady(s Snapshot, laneAllowed func(string) bool) bool
 	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
 	}
-	if !s.PilotActive || !s.InitializationPolicyReady || !laneAllowed(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
+	if !s.InitializationPolicyReady || !laneAllowed(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
 		return false
 	}
 	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || s.StrategyNAVRaw != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
@@ -35,7 +35,7 @@ func snapshotInitializationReady(s Snapshot, laneAllowed func(string) bool) bool
 	if s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || s.Unwind || s.CutoverDrain || s.SelectorEntryPaused || s.WithdrawalDemandRaw != 0 {
 		return false
 	}
-	return s.SelectorEntryEquityRaw > 0 && s.SelectorEntryEquityRaw <= min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw, workingTrancheCap(s)) && s.PolicyReady && s.ExitBuildable && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && min(s.LiquidationThresholdBPS-1500, 6000) > TargetLTVBPS
+	return s.SelectorEntryEquityRaw > 0 && s.SelectorEntryEquityRaw <= min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.PolicyReady && s.ExitBuildable && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && min(s.LiquidationThresholdBPS-1500, 6000) > TargetLTVBPS
 }
 
 // This prepares only an empty account before allocating user principal. Actual
