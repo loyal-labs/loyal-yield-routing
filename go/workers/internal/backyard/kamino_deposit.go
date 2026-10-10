@@ -1,11 +1,8 @@
 package backyard
 
 import (
-	"context"
 	"encoding/binary"
 	"math"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // KLend mints floor(request / receipt exchange rate), then transfers the ceil
@@ -72,31 +69,4 @@ func boundedKaminoDepositEffects(accounts []ConfirmedAccount, route RuntimeRoute
 	}
 	effects.Kind, effects.Deposit = "kamino-deposit", &ExpectedDeposit{minimum, maximum}
 	return effects, validateRepaymentEffects(effects)
-}
-
-func validateDepositRequest(ctx context.Context, rpc *chain.Client, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (int64, error) {
-	if _, err := MeasureExecutableDebit(request, effects); err != nil {
-		return 0, err
-	}
-	route, err := runtimeRoute(request.RouteLane)
-	if err != nil {
-		return 0, err
-	}
-	observed, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, budgetClockAddress}, slot)
-	if err != nil {
-		return 0, err
-	}
-	fresh, err := boundedKaminoDepositEffects(accounts, route, observed, request.AmountRaw)
-	if err != nil {
-		return 0, err
-	}
-	if effects.Deposit == nil || fresh.Deposit.MinimumDebitRaw < effects.Deposit.MinimumDebitRaw {
-		return 0, budgetHold("deposit_rounding_window_changed")
-	}
-	for i, account := range fresh.Accounts {
-		if account != effects.Accounts[i] {
-			return 0, budgetHold("deposit_custody_changed")
-		}
-	}
-	return observed, nil
 }

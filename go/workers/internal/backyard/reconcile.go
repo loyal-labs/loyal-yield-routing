@@ -200,7 +200,9 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 	canonical := make([]string, 0, len(expected.Accounts))
 	bounds := expected.Repayment
 	if expected.Deposit != nil {
-		bounds = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
+		// KLend debits at most the signed amount; whatever it leaves stays in
+		// our custody, and the receipt says what moved.
+		bounds = &ExpectedRepayment{1, expected.Deposit.MaximumDebitRaw}
 	}
 	beforeByMint := make(map[string]uint64, len(expected.Accounts))
 	afterByMint := make(map[string]uint64, len(expected.Accounts))
@@ -212,34 +214,23 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 			pre.Authority != effect.Authority || post.Authority != effect.Authority {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
-		// Voltr idle is also written by permissionless user deposits and claims,
-		// which can land between our observation and this transaction. For that
-		// one account only, reconcile this transaction's own delta; every other
-		// account keeps the exact pre/post contract.
-		// The debt reserve's fee receiver is shared by every borrower: like
-		// Voltr idle, reconcile this transaction's own fee delta only.
-		sharedFeeReceiver := expected.Kind == "kamino-borrow" && i == 2 && bounds == nil && effect.MinimumAfterRaw == nil
-		if (effect.Address == bridgeIdleATA || sharedFeeReceiver) && bounds == nil && effect.MinimumAfterRaw == nil {
-			if int64(post.Raw)-int64(pre.Raw) != int64(effect.AfterRaw)-int64(effect.BeforeRaw) {
-				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped shared-account delta mismatch: %s", effect.Address)
+		// The receipt's pre and post bracket this transaction only, so its
+		// delta is what this transaction moved. Any account (Voltr idle, the
+		// Kamino reserves, even our own custody) may have been written between
+		// our observation and this transaction; that is no mismatch.
+		moved, planned := int64(post.Raw)-int64(pre.Raw), int64(effect.AfterRaw)-int64(effect.BeforeRaw)
+		if bounds != nil {
+			if i == 0 {
+				moved = -moved
 			}
-		} else if pre.Raw != effect.BeforeRaw {
-			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
-		} else if bounds != nil {
-			var moved uint64
-			if i == 0 && post.Raw <= pre.Raw {
-				moved = pre.Raw - post.Raw
-			} else if i == 1 && post.Raw >= pre.Raw {
-				moved = post.Raw - pre.Raw
-			}
-			if moved < bounds.MinimumDebitRaw || moved > bounds.MaximumDebitRaw {
+			if moved < int64(bounds.MinimumDebitRaw) || moved > int64(bounds.MaximumDebitRaw) {
 				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped Kamino transfer outside finite bounds: %s", effect.Address)
 			}
 		} else if effect.MinimumAfterRaw != nil {
-			if post.Raw < *effect.MinimumAfterRaw {
+			if moved < int64(*effect.MinimumAfterRaw)-int64(effect.BeforeRaw) {
 				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody minimum postcondition mismatch: %s", effect.Address)
 			}
-		} else if post.Raw != effect.AfterRaw {
+		} else if moved != planned {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody postcondition mismatch: %s", effect.Address)
 		}
 		if ^uint64(0)-beforeByMint[effect.Mint] < pre.Raw || ^uint64(0)-afterByMint[effect.Mint] < post.Raw {

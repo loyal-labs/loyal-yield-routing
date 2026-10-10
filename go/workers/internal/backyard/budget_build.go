@@ -86,13 +86,6 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 		}
 		slot = max(slot, bound.ObservedSlot)
 	}
-	if r, ok := request.(KaminoPrimeUSDCRequest); ok && effects.Deposit != nil {
-		observed, err := validateDepositRequest(ctx, rpc, r, effects, slot)
-		if err != nil {
-			return ValuedTransactionCost{}, err
-		}
-		slot = max(slot, observed)
-	}
 	if r, ok := request.(KaminoPrimeUSDCRequest); ok && effects.Kind == "kamino-borrow" {
 		observed, err := validateBorrowRequest(ctx, rpc, r, effects, slot)
 		if err != nil {

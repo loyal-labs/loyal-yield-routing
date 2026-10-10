@@ -111,10 +111,10 @@ func TestDecodeExpectedEffectsFromOperationEnvelope(t *testing.T) {
 }
 
 // A user deposit (or claim) that lands between the worker's observation and a
-// REPORT_NAV must not fail reconciliation: Voltr idle is reconciled by this
-// transaction's own delta. Every other account, and a nonzero delta on idle,
-// stays exact. Regression for the 2026-09-24 out_of_band_crank halt (ASK-2304).
-func TestReconciliationToleratesConcurrentUserChangeOnVoltrIdleOnly(t *testing.T) {
+// REPORT_NAV must not fail reconciliation: every account is reconciled by this
+// transaction's own delta, which stays exact. Regression for the 2026-09-24
+// out_of_band_crank halt (ASK-2304).
+func TestReconciliationChecksEachAccountsTransactionDelta(t *testing.T) {
 	strategyAuth, strategyATA := bridgeStrategyAuth, bridgeStrategyATA
 	effects := func(idleBefore, idleAfter uint64) ExpectedEffects {
 		return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{
@@ -145,8 +145,8 @@ func TestReconciliationToleratesConcurrentUserChangeOnVoltrIdleOnly(t *testing.T
 	if _, _, err := ReconcileConfirmedTransaction(effects(10, 7), receipt(15, 12, 0, 0)); err == nil {
 		t.Fatal("non-conserved allocation delta was accepted") // strategy did not receive the 3
 	}
-	// Non-idle accounts keep the exact precondition.
-	if _, _, err := ReconcileConfirmedTransaction(effects(95_387_976, 95_387_976), receipt(95_387_976, 95_387_976, 1, 1)); err == nil {
-		t.Fatal("strategy custody precondition drift was accepted")
+	// Our own custody is reconciled the same way: its delta, not its base.
+	if _, _, err := ReconcileConfirmedTransaction(effects(95_387_976, 95_387_976), receipt(95_387_976, 95_387_976, 1, 1)); err != nil {
+		t.Fatalf("strategy custody drift with the planned zero delta was rejected: %v", err)
 	}
 }

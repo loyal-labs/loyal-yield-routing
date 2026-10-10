@@ -167,28 +167,50 @@ func TestLeverageExitPreCheckSizesTheReleaseOnTheFullDebt(t *testing.T) {
 	}
 }
 
-// A borrow reconciles its own fee delta on the shared fee receiver even
-// when other borrowers paid fees into it between observation and landing.
-func TestBorrowReconcilesTheSharedFeeReceiverByDelta(t *testing.T) {
+// The receipt brackets only this transaction, so moves on any account between
+// observation and landing never fail reconciliation; this transaction's own
+// delta on every account, the fee included, still must match.
+func TestBorrowReceiptReconcilesDespiteSharedReserveMoves(t *testing.T) {
 	route := ethenaUSDePYUSD
 	e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-borrow", Conserved: true, Accounts: []ExpectedAccountEffect{
 		{Address: route.DebtLiquiditySupply, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: route.Kamino.MarketAuthority, BeforeRaw: 1_000, AfterRaw: 896},
 		{Address: route.DebtCustody, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: bridgeVault, BeforeRaw: 0, AfterRaw: 100},
 		{Address: route.DebtFeeReceiver, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: route.Kamino.MarketAuthority, BeforeRaw: 50, AfterRaw: 54},
 	}}
-	fresh := e
-	fresh.Accounts = append([]ExpectedAccountEffect(nil), e.Accounts...)
-	fresh.Accounts[2].BeforeRaw, fresh.Accounts[2].AfterRaw = 70, 74
-	if !borrowEffectsMatch(fresh, e) {
-		t.Fatal("shared receiver balance move refused")
+	// Other borrowers and depositors moved both shared accounts first.
+	receipt := receiptFor(e, map[string][2]uint64{route.DebtLiquiditySupply: {5_000, 4_896}, route.DebtFeeReceiver: {70, 74}})
+	if _, _, err := ReconcileConfirmedTransaction(e, receipt); err != nil {
+		t.Fatal("shared reserve moves before landing failed reconciliation", err)
 	}
-	fresh.Accounts[2].AfterRaw = 75
-	if borrowEffectsMatch(fresh, e) {
-		t.Fatal("a changed fee accepted")
+	receipt.PostTokenBalances[2].Raw++
+	if _, _, err := ReconcileConfirmedTransaction(e, receipt); err == nil {
+		t.Fatal("an unconserved fee reconciled")
 	}
-	fresh.Accounts[2].AfterRaw = 74
-	fresh.Accounts[1].BeforeRaw = 1
-	if borrowEffectsMatch(fresh, e) {
-		t.Fatal("our custody drift accepted")
+	receipt = receiptFor(e, map[string][2]uint64{route.DebtCustody: {1, 101}})
+	if _, _, err := ReconcileConfirmedTransaction(e, receipt); err != nil {
+		t.Fatal("a transfer into our debt custody before landing failed reconciliation", err)
 	}
+	// Kamino raised the fee after we prepared: conserved, but not what we signed for.
+	receipt = receiptFor(e, map[string][2]uint64{route.DebtLiquiditySupply: {1_000, 890}, route.DebtFeeReceiver: {50, 60}})
+	if _, _, err := ReconcileConfirmedTransaction(e, receipt); err == nil {
+		t.Fatal("a borrow charged above the prepared fee reconciled")
+	}
+}
+
+// receiptFor renders the expected effects as a transaction receipt, with
+// optional per-address pre/post overrides.
+func receiptFor(e ExpectedEffects, override map[string][2]uint64) ConfirmedTransactionEvidence {
+	receipt := ConfirmedTransactionEvidence{Signature: "receipt-fixture", Slot: 42}
+	for _, a := range e.Accounts {
+		pre, post := a.BeforeRaw, a.AfterRaw
+		if o, ok := override[a.Address]; ok {
+			pre, post = o[0], o[1]
+		}
+		balance := TransactionTokenBalance{Address: a.Address, OwnerProgram: a.Owner, Mint: a.Mint, Authority: a.Authority}
+		balance.Raw = pre
+		receipt.PreTokenBalances = append(receipt.PreTokenBalances, balance)
+		balance.Raw = post
+		receipt.PostTokenBalances = append(receipt.PostTokenBalances, balance)
+	}
+	return receipt
 }
