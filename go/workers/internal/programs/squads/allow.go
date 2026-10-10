@@ -36,14 +36,15 @@ func Unpinned(solana.PublicKey) Slot { return Any }
 func Pinned(key solana.PublicKey) Slot { return Pin(key) }
 
 // Allow is the constraint that admits one instruction: its program, its
-// leading data bytes, and what each account slot admits. Program packages call
+// leading data bytes, what each account slot admits, then any further bounds
+// on its data (an amount at most a cap, say), in order. Program packages call
 // it with their instruction's own account order, so a builder and the
 // constraint that admits it cannot disagree. A slot that is neither Any nor
 // constrained is a literal that forgot a field, and Allow panics on it.
-func Allow(program solana.PublicKey, data []byte, slots []Slot) InstructionConstraintView {
-	out := InstructionConstraintView{ProgramID: program, DataConstraints: []DataConstraintView{{
+func Allow(program solana.PublicKey, data []byte, slots []Slot, bounds ...DataConstraintView) InstructionConstraintView {
+	out := InstructionConstraintView{ProgramID: program, DataConstraints: append([]DataConstraintView{{
 		DataValue: DataValueView{Kind: 5, Bytes: append([]byte(nil), data...)}, Operator: OpEquals,
-	}}}
+	}}, bounds...)}
 	for index, slot := range slots {
 		switch {
 		case slot.Any:
@@ -56,6 +57,11 @@ func Allow(program solana.PublicKey, data []byte, slots []Slot) InstructionConst
 		}
 	}
 	return out
+}
+
+// AtMost bounds the little-endian u64 at offset by max.
+func AtMost(offset, max uint64) DataConstraintView {
+	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 3, U64: max}, Operator: OpLessThanOrEqualTo}
 }
 
 // PolicyApply installs one policy and removes the policies it replaces in a

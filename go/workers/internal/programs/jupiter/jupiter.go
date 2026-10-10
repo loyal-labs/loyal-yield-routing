@@ -18,6 +18,7 @@ var ProgramID = solana.MustPublicKeyFromBase58("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZ
 // Anchor discriminators, sha256("global:<instruction>")[:8], of the route
 // instructions we sign or authorize.
 var (
+	RouteDiscriminator                 = [8]byte{229, 23, 203, 151, 122, 227, 173, 42}
 	SharedAccountsRouteDiscriminator   = [8]byte{193, 32, 155, 51, 65, 214, 156, 129}
 	RouteV2Discriminator               = [8]byte{187, 100, 250, 204, 49, 196, 175, 20}
 	SharedAccountsRouteV2Discriminator = [8]byte{209, 152, 83, 147, 124, 254, 216, 233}
@@ -68,7 +69,53 @@ func sharedRouteSlots[T any](a SharedRoute[T], fixed func(solana.PublicKey) T) [
 }
 
 // SharedAccountsRouteAllowed admits shared_accounts_route over the allowed
-// accounts, any route plan and amounts.
-func SharedAccountsRouteAllowed(a SharedRoute[squads.Slot], fixed func(solana.PublicKey) squads.Slot) squads.InstructionConstraintView {
-	return squads.Allow(ProgramID, SharedAccountsRouteDiscriminator[:], sharedRouteSlots(a, fixed))
+// accounts, any route plan and amounts within bounds (Bounds, ArgsPrefix).
+func SharedAccountsRouteAllowed(a SharedRoute[squads.Slot], fixed func(solana.PublicKey) squads.Slot, bounds ...squads.DataConstraintView) squads.InstructionConstraintView {
+	return squads.Allow(ProgramID, SharedAccountsRouteDiscriminator[:], sharedRouteSlots(a, fixed), bounds...)
+}
+
+// Route is the legacy route account set a policy constrains, in its order;
+// the route's remaining accounts, among them the source mint and its token
+// program, follow it. TokenProgram is the destination's. DestinationAccount
+// and PlatformFee are optional: ProgramID when absent. The instruction itself
+// comes from the swap API, so only its policy constraint reads this list.
+type Route struct {
+	TokenProgram, User, Source, Destination, DestinationAccount, DestinationMint squads.Slot
+	PlatformFee, EventAuthority                                                  squads.Slot
+}
+
+// RouteAllowed admits route over the allowed accounts and the remaining
+// accounts it pins, by instruction position; every other remaining account,
+// and the program, is free. Any route plan and amounts within bounds.
+func RouteAllowed(a Route, remaining map[int]squads.Slot, bounds ...squads.DataConstraintView) squads.InstructionConstraintView {
+	slots := []squads.Slot{a.TokenProgram, a.User, a.Source, a.Destination, a.DestinationAccount, a.DestinationMint,
+		a.PlatformFee, a.EventAuthority, squads.Any}
+	named := len(slots)
+	for position, slot := range remaining {
+		if position < named {
+			panic("a remaining account follows the route's own accounts")
+		}
+		for len(slots) <= position {
+			slots = append(slots, squads.Any)
+		}
+		slots[position] = slot
+	}
+	return squads.Allow(ProgramID, RouteDiscriminator[:], slots, bounds...)
+}
+
+// ArgsPrefix admits only instruction data whose arguments, after the
+// discriminator, start with prefix: a fixed id and route plan.
+func ArgsPrefix(prefix []byte) squads.DataConstraintView {
+	return squads.DataConstraintView{DataOffset: 8, DataValue: squads.DataValueView{Kind: 5, Bytes: append([]byte(nil), prefix...)}, Operator: squads.OpEquals}
+}
+
+// Bounds are the route tail's limits: in_amount, at inAmountAt (after the
+// route plan), at most maxIn; slippage_bps at most maxSlippageBPS; and no
+// platform fee.
+func Bounds(inAmountAt, maxIn uint64, maxSlippageBPS uint16) []squads.DataConstraintView {
+	return []squads.DataConstraintView{
+		squads.AtMost(inAmountAt, maxIn),
+		{DataOffset: inAmountAt + 16, DataValue: squads.DataValueView{Kind: 1, U16: maxSlippageBPS}, Operator: squads.OpLessThanOrEqualTo},
+		{DataOffset: inAmountAt + 18, DataValue: squads.DataValueView{Kind: 0}, Operator: squads.OpEquals},
+	}
 }
