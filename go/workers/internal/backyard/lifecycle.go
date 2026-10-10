@@ -6,14 +6,19 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
+// landResendEvery matches the fleet landing cadence.
+var landResendEvery = time.Second
+
 // AdvanceNonterminal resumes the one durable operation before any new
-// observation is permitted. Only Signed may create a new submission: it first
-// records broadcast_intent and then sends its exact persisted wire once.
-// BroadcastIntent and Submitted are recovery states and never resend.
+// observation is permitted. Only Signed may start a submission: it records
+// broadcast_intent before its first send. Signed, BroadcastIntent and Submitted
+// all land the exact persisted wire, resending the same bytes until it lands,
+// fails on chain or expires.
 func AdvanceNonterminal(ctx context.Context, database *Database, rpc *chain.Client, operation PersistedOperation) error {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
@@ -47,100 +52,21 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 				return database.MarkManualRecovery(ctx, operation.ID, Signed, "fresh_onchain_withdrawal_fence_required")
 			}
 		}
-		wireHash := sha256Bytes(operation.SignedWire)
-		if len(operation.SignedWire) == 0 || wireHash != operation.SignedWireSHA256 ||
-			operation.TransactionSignature == "" || operation.RecentBlockhash == "" || operation.LastValidBlockHeight <= 0 {
+		if !persistedWireIntact(operation) {
 			return database.MarkManualRecovery(ctx, operation.ID, Signed, "incomplete_persisted_signed_wire")
 		}
-		// U4 send fence: refuse to broadcast a report that can no longer land
-		// inside the adaptor's report age window. Nothing was submitted, so the
-		// wire terminates in `failed` and the next tick observes afresh.
-		if stopped, err := database.RefuseStaleReportSend(ctx, rpc, operation.ID, operation.Status); err != nil {
-			return err
-		} else if stopped.OperationID != "" {
-			// The durable row is already terminal. Advancing the stale
-			// in-memory status would revalue and send again on this tick.
-			return nil
+		markIntent, err := database.finalSend(ctx, manifest, operation)
+		if err != nil {
+			return database.journalSignedHold(ctx, operation.ID, err)
 		}
-		if err := database.CheckAndMarkBroadcastIntentOnManifest(ctx, manifest, rpc, operation); err != nil {
-			var hold *BudgetHold
-			if errors.As(err, &hold) {
-				if journalErr := database.RecordPhase3SignedBudgetHold(ctx, operation.ID, hold); journalErr != nil {
-					return errors.Join(err, journalErr)
-				}
-				var validated *validatedSignedBudgetHold
-				if !errors.As(err, &validated) {
-					return err
-				}
-				// A held final check must not trap an expired, absent wire
-				// in Signed forever. Release only after finalized expiry and a
-				// subsequent explicit signature-absence observation; never resend.
-				height, heightErr := finalizedHeight(ctx, rpc)
-				if heightErr != nil {
-					return errors.Join(err, heightErr)
-				}
-				if height > operation.LastValidBlockHeight {
-					status, statusErr := signatureStatus(ctx, rpc, operation.TransactionSignature)
-					if statusErr != nil {
-						return errors.Join(err, statusErr)
-					}
-					if status.Found {
-						return database.MarkManualRecovery(ctx, operation.ID, Signed, "signed_budget_hold_signature_found")
-					}
-					return database.MarkExpiredAbsentFailed(ctx, operation.ID, Signed)
-				}
-			}
-			return err
-		}
-		// One send with preflight and maxRetries 0: the node never rebroadcasts.
-		if err := rpc.SendWire(ctx, operation.SignedWire, false); err != nil {
-			// The RPC response is ambiguous. Keep broadcast_intent durable and let
-			// the next iteration recover the signature from chain; never resend.
-			return unavailable(fmt.Errorf("ambiguous send after durable broadcast intent: %w", err))
-		}
-		return database.MarkSubmitted(ctx, operation.ID)
+		return database.land(ctx, rpc, operation, markIntent)
 	case BroadcastIntent, Submitted:
-		if operation.TransactionSignature == "" || operation.LastValidBlockHeight <= 0 {
+		// Submitted is no longer written; rows left in it by an older binary
+		// resume exactly like broadcast_intent.
+		if !persistedWireIntact(operation) {
 			return database.MarkManualRecovery(ctx, operation.ID, operation.Status, "incomplete_submission_identity")
 		}
-		status, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
-		if err != nil {
-			return err
-		}
-		if status.Failed {
-			// A failed Solana transaction moves no funds. Decode the failure
-			// before stopping capital: an adaptor report refusal is a liveness
-			// termination, everything else stays a capital stop.
-			return database.recoverConfirmedFailure(ctx, rpc, operation)
-		}
-		if status.Confirmed {
-			return database.MarkConfirmed(ctx, operation.ID, operation.Status, status.ConfirmationSlot)
-		}
-		if status.Found {
-			// A processed signature — including a processed-only failure, which
-			// may still be forked away — may yet reach confirmed after its
-			// blockhash expires. Keep observing it; expiry is only decisive
-			// when absent, and only a settled failure is classified.
-			return nil
-		}
-		height, err := finalizedHeight(ctx, rpc)
-		if err != nil {
-			return err
-		}
-		if height > operation.LastValidBlockHeight {
-			// Recheck after finalized expiry. The earlier absence observation
-			// may predate a last-valid-block landing. A malformed response or
-			// any found signature retains the recovery fence.
-			afterExpiry, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
-			if err != nil {
-				return err
-			}
-			if afterExpiry.Found {
-				return nil
-			}
-			return database.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status)
-		}
-		return nil
+		return database.land(ctx, rpc, operation, nil)
 	case Confirmed:
 		return database.MarkReconciling(ctx, operation.ID)
 	case Reconciling:
@@ -178,6 +104,68 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 	default:
 		return fmt.Errorf("unsupported nonterminal status: %s", operation.Status)
 	}
+}
+
+// persistedWireIntact checks the row's wire is the bytes it hashed and signs
+// the signature it names, so landing and expiry are decided for these bytes.
+func persistedWireIntact(operation PersistedOperation) bool {
+	wire := operation.SignedWire
+	return len(wire) > 65 && sha256Bytes(wire) == operation.SignedWireSHA256 &&
+		operation.TransactionSignature == encodeBase58(wire[1:65]) &&
+		operation.RecentBlockhash != "" && operation.LastValidBlockHeight > 0
+}
+
+// land resends the persisted wire through chain.Land until it lands, fails on
+// chain or its blockhash expires. A signed row records broadcast intent behind
+// markIntent's database fences before its first send; a row that already
+// recorded it resends the same bytes, which cannot spend twice. A signed row
+// stays signed while a fence holds, until its expiry proves the wire absent.
+func (d *Database) land(ctx context.Context, rpc *chain.Client, operation PersistedOperation, markIntent func(context.Context) error) error {
+	sends := 1
+	if operation.Status == Signed {
+		sends = 0
+	}
+	out, err := chain.Land(ctx, rpc, chain.Attempt{
+		Wire: operation.SignedWire, Signature: operation.TransactionSignature,
+		LastValidBlockHeight: uint64(operation.LastValidBlockHeight), Sends: sends, Required: chain.Confirmed,
+	}, landResendEvery, func(ctx context.Context) error {
+		if operation.Status != Signed {
+			return nil
+		}
+		if err := markIntent(ctx); err != nil {
+			return d.journalSignedHold(ctx, operation.ID, err)
+		}
+		operation.Status = BroadcastIntent
+		return nil
+	})
+	if err != nil {
+		return unavailable(err)
+	}
+	switch {
+	case out.Kind == chain.Expired:
+		return d.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status)
+	case operation.Status == Signed:
+		// On chain although this worker never recorded a send of it.
+		return d.MarkManualRecovery(ctx, operation.ID, Signed, "signed_signature_found_before_broadcast_intent")
+	case out.Kind == chain.Failed:
+		// A failed Solana transaction moves no funds. Decode the failure
+		// before stopping capital: an adaptor report refusal is a liveness
+		// termination, everything else stays a capital stop.
+		return d.recoverConfirmedFailure(ctx, rpc, operation)
+	}
+	return d.MarkConfirmed(ctx, operation.ID, operation.Status, int64(out.Slot))
+}
+
+// journalSignedHold keeps a signed row's hold reason on the row; the wire
+// stays signed and is never sent behind a hold.
+func (d *Database) journalSignedHold(ctx context.Context, operationID string, err error) error {
+	var hold *BudgetHold
+	if errors.As(err, &hold) {
+		if journalErr := d.RecordPhase3SignedBudgetHold(ctx, operationID, hold); journalErr != nil {
+			return errors.Join(err, journalErr)
+		}
+	}
+	return err
 }
 
 func preBroadcastRecoveryReason(ctx context.Context, rpc *chain.Client, operation PersistedOperation) (string, error) {

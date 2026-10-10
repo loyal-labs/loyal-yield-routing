@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 )
@@ -123,7 +122,7 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 
 	// The actual Signed transition: the locked final-send fence proves the
 	// persisted wire through the same reviewed manifest, records broadcast
-	// intent durably, and the transport refuses the single broadcast attempt.
+	// intent durably, and the wire lands after the single broadcast attempt.
 	hash := sha256Bytes(f.wire)
 	bindTestWire(t, ctx, db, id, hash)
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2,signed_wire_sha256=$3 WHERE operation_id=$1`, id, f.wire, hash); err != nil {
@@ -136,16 +135,16 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 	op := PersistedOperation{Operation: Operation{ID: id, RouteKey: opKey, StrategyKey: f.request.RouteLane, Decision: decision},
 		Status: Signed, ExpectedEffects: persisted, SignedWire: f.wire, SignedWireSHA256: hash,
 		TransactionSignature: encodeBase58(f.wire[1:65]), RecentBlockhash: f.request.RecentBlockhash, LastValidBlockHeight: f.request.LastValidBlockHeight}
-	if err = advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err == nil || !strings.Contains(err.Error(), "ambiguous send after durable broadcast intent") {
-		t.Fatalf("expected the ambiguous-send fence, got %v", err)
+	if err = advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err != nil {
+		t.Fatal(err)
 	}
-	if got := operationStatus(t, ctx, db, id); got != "broadcast_intent" {
-		t.Fatalf("durable broadcast intent missing: %s", got)
+	if got := operationStatus(t, ctx, db, id); got != "confirmed" {
+		t.Fatalf("landed wire not confirmed: %s", got)
 	}
 	if *sends != 1 {
-		t.Fatalf("broadcast attempted %d times, exactly-once fence lost", *sends)
+		t.Fatalf("broadcast attempted %d times before landing", *sends)
 	}
-	if err = db.CheckAndMarkBroadcastIntentOnManifest(ctx, f.manifest, rpc, op); err == nil {
+	if err = markBroadcastIntent(ctx, db, f.manifest, op); err == nil {
 		t.Fatal("completed send replayed")
 	}
 	if *sends != 1 {

@@ -269,16 +269,6 @@ func signatureStatus(ctx context.Context, c *chain.Client, signature string) (Si
 	}, nil
 }
 
-// finalizedHeight is the finalized block height; an endpoint that could not
-// answer is an unavailable observation.
-func finalizedHeight(ctx context.Context, c *chain.Client) (int64, error) {
-	height, _, err := c.FinalizedBlockHeight(ctx)
-	if err != nil {
-		return 0, unavailable(err)
-	}
-	return int64(height), nil
-}
-
 // finalizedReceipt reads the exact signature's transaction at commitment. A
 // receipt the cluster does not have yet, or an endpoint that could not answer,
 // is an unavailable observation: the next tick reads again.

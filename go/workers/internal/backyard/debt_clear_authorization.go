@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // DebtClearConfirmation is an explicit privileged-operator attestation, not
@@ -377,7 +375,7 @@ func (d *Database) authorizeDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteM
 			return budgetHold("debt_clear_scope_changed")
 		}
 	}
-	if err = debtClearAuthorityLiveTx(ctx, tx, m, routeKey, operationID, *a, state, risk, slot, now); err != nil {
+	if err = debtClearAuthorityLiveTx(ctx, tx, m, routeKey, operationID, *a, state, now); err != nil {
 		return err
 	}
 	if a.FirstOperationID == "" {
@@ -394,9 +392,9 @@ func (d *Database) authorizeDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteM
 
 // debtClearAuthorityLiveTx checks a still holds consent: a valid scope and
 // either its unexpired operator confirmation with the matching receipt, or its
-// emergency origin (fresh risk for the origin operation itself, a finalized
-// reconciled origin for every later one).
-func debtClearAuthorityLiveTx(ctx context.Context, tx pgx.Tx, m RouteManifest, routeKey, operationID string, a debtClearAuthority, state debtClearRouteState, risk *debtClearRiskProof, slot int64, now time.Time) error {
+// emergency origin (the origin operation itself, whose fresh risk its bind
+// proved, or a finalized reconciled origin for every later one).
+func debtClearAuthorityLiveTx(ctx context.Context, tx pgx.Tx, m RouteManifest, routeKey, operationID string, a debtClearAuthority, state debtClearRouteState, now time.Time) error {
 	if err := a.validate(m, routeKey, now); err != nil {
 		return err
 	}
@@ -408,9 +406,6 @@ func debtClearAuthorityLiveTx(ctx context.Context, tx pgx.Tx, m RouteManifest, r
 		return nil
 	}
 	if operationID == a.Emergency.OperationID {
-		if risk == nil || risk.OperationID != operationID || !freshAt(now, risk.ObservedAt, 30*time.Second) || slot < risk.Slot || slot-risk.Slot > observationLagSlots() || risk.LTVBPS < risk.HardLTVBPS {
-			return budgetHold("debt_clear_emergency_evidence_expired")
-		}
 		return nil
 	}
 	var originRaw []byte
@@ -428,7 +423,7 @@ func debtClearAuthorityLiveTx(ctx context.Context, tx pgx.Tx, m RouteManifest, r
 // leg bound to a debt-clear authority sends only while that same authority is
 // still live. Send never adopts authority; the unwind commit refuses while any
 // operation is in flight, so no authority appears between bind and send.
-func (d *Database) checkSignedDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteManifest, operationID string, request any, auth phase3OperationAuthorization, risk *debtClearRiskProof, slot int64) error {
+func (d *Database) checkSignedDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteManifest, operationID string, request any, auth phase3OperationAuthorization) error {
 	if auth.DebtClear == nil || debtClearPassiveRequest(request) {
 		return nil
 	}
@@ -445,38 +440,7 @@ func (d *Database) checkSignedDebtClearTx(ctx context.Context, tx pgx.Tx, m Rout
 	if a == nil || auth.DebtClear.ID != a.ID || auth.DebtClear.FirstOperationID != a.FirstOperationID || !sameUnwindIntent(auth.DebtClear.Origin, a.Origin) || state.Unwind == nil || !sameUnwindIntent(*state.Unwind, a.Origin) {
 		return budgetHold("debt_clear_operation_not_authorized")
 	}
-	return debtClearAuthorityLiveTx(ctx, tx, m, routeKey, operationID, *a, state, risk, slot, time.Now().UTC())
-}
-
-func (d *Database) observeDebtClearOriginRisk(ctx context.Context, rpc *chain.Client, m RouteManifest, operationID string) (*debtClearRiskProof, error) {
-	var raw []byte
-	if err := d.pool.QueryRow(ctx, `SELECT COALESCE(expected_effects->'phase3','null'::jsonb) FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&raw); err != nil {
-		return nil, err
-	}
-	var auth phase3OperationAuthorization
-	if json.Unmarshal(raw, &auth) != nil {
-		return nil, budgetHold("debt_clear_state_invalid")
-	}
-	a := auth.DebtClear
-	if a == nil || a.Emergency == nil || a.Emergency.OperationID != operationID {
-		return nil, nil
-	}
-	m.selectorObservation, m.observationLane = true, a.Origin.SourceLane
-	o, err := ObserveConfirmedRouteSnapshot(ctx, rpc, m)
-	if err != nil {
-		return nil, budgetHold("debt_clear_emergency_evidence_unavailable")
-	}
-	if o.Snapshot.RouteLane != a.Origin.SourceLane {
-		return nil, budgetHold("debt_clear_emergency_scope_changed")
-	}
-	proof, err := verifyDebtClearRiskBatch(m, o, operationID, time.Now().UTC())
-	if err != nil {
-		return nil, err
-	}
-	if proof == nil {
-		return nil, budgetHold("debt_clear_emergency_risk_no_longer_present")
-	}
-	return proof, nil
+	return debtClearAuthorityLiveTx(ctx, tx, m, routeKey, operationID, *a, state, time.Now().UTC())
 }
 
 func debtClearPassiveRequest(request any) bool {

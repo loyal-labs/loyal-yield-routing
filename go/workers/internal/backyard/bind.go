@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -348,94 +347,43 @@ func (m RouteManifest) validateSignedIdentity(auth phase3OperationAuthorization,
 	return request, effects, nil
 }
 
-// CheckAndMarkBroadcastIntent is the final check before the one send: the
-// persisted wire is still the bound intent, the chain state it was built
-// against still holds, a positive AUTO-PYUSD spend re-proves custody
-// ownership, and the debt-clear and selector-entry fences pass under the
-// route lock that records broadcast intent. No signer, no wire replacement;
-// the coordinator submits only the persisted bytes, once.
-func (d *Database) CheckAndMarkBroadcastIntent(ctx context.Context, rpc *chain.Client, operation PersistedOperation) error {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
-	return d.CheckAndMarkBroadcastIntentOnManifest(ctx, manifest, rpc, operation)
-}
-
-func (d *Database) CheckAndMarkBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, rpc *chain.Client, operation PersistedOperation) error {
-	if d == nil || d.pool == nil || rpc == nil || operation.ID == "" || operation.Status != Signed {
-		return fmt.Errorf("invalid final-send input")
+// finalSend proves the persisted signed wire is still the bound intent and
+// returns the locked fence that records broadcast intent before its first
+// send. Nothing here reads the chain: the transaction itself enforces the
+// swap minimum, klend limits, the Squads policy and the adaptor's report age,
+// and simulation already ran it. The database fences run at the decision's
+// observation slot.
+func (d *Database) finalSend(ctx context.Context, manifest RouteManifest, operation PersistedOperation) (func(context.Context) error, error) {
+	if d == nil || d.pool == nil || operation.ID == "" || operation.Status != Signed {
+		return nil, fmt.Errorf("invalid final-send input")
 	}
 	var encoded []byte
 	if err := d.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='signed'`, operation.ID).Scan(&encoded); err != nil {
-		return err
+		return nil, err
 	}
 	var auth phase3OperationAuthorization
 	if json.Unmarshal(encoded, &auth) != nil {
-		return budgetHold("operation_not_bound")
+		return nil, budgetHold("operation_not_bound")
 	}
-	request, effects, err := manifest.validateSignedIdentity(auth, operation)
+	request, _, err := manifest.validateSignedIdentity(auth, operation)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var envelope struct {
 		Decision decisionEvidence `json:"decision"`
 	}
 	if json.Unmarshal(operation.ExpectedEffects, &envelope) != nil || envelope.Decision.ObservationSlot <= 0 {
-		return budgetHold("operation_decision_slot_unavailable")
+		return nil, budgetHold("operation_decision_slot_unavailable")
 	}
-	checkStart := time.Now()
-	// Holds raised here prove nothing about the wire, so they may release an
-	// expired, absent wire (validatedSignedBudgetHold).
-	validated := func(err error) error {
-		var hold *BudgetHold
-		if errors.As(err, &hold) {
-			return &validatedSignedBudgetHold{hold}
-		}
-		return err
-	}
-	originRisk, err := d.observeDebtClearOriginRisk(ctx, rpc, manifest, operation.ID)
-	if err != nil {
-		return validated(err)
-	}
-	// The custody journal walk does not depend on the chain prestate, so it is
-	// read while the prestate is re-read; the custody balance is read after,
-	// at a slot no older than the decision.
-	var send sharedCustodySendProof
-	var sendErr error
-	journalRead := make(chan struct{})
-	go func() {
-		defer close(journalRead)
-		send, sendErr = d.gatherSharedCustodySendProof(ctx, manifest, operation.ID, effects,
-			sharedCustodySignedSpend{OperationID: operation.ID, SignedWireSHA256: operation.SignedWireSHA256, TransactionSignature: operation.TransactionSignature})
-	}()
-	prestateSlot, err := manifest.validateRequestPrestate(ctx, rpc, request, effects)
-	logStage("final_check_prestate", checkStart)
-	<-journalRead
-	if err != nil {
-		return validated(err)
-	}
-	if sendErr != nil {
-		return sendErr
-	}
-	custody, err := send.finish(ctx, rpc, effects, max(prestateSlot, envelope.Decision.ObservationSlot))
-	if err != nil {
-		return err
-	}
-	logStage("final_check_custody", checkStart)
-	err = d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, rpc, request, auth, custody, originRisk)
-	logStage("final_check_intent", checkStart)
-	var hold *BudgetHold
-	if errors.As(err, &hold) && (hold.Reason == "send_slot_unavailable" || hold.Reason == "selector_entry_quote_expired" || strings.HasPrefix(hold.Reason, "debt_clear_")) {
-		return &validatedSignedBudgetHold{hold}
-	}
-	return err
+	return func(ctx context.Context) error {
+		return d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, request, auth, envelope.Decision.ObservationSlot)
+	}, nil
 }
 
 // authorizeSendTx is the locked final-send fence: the signed row is the bound
 // wire, the debt-clear authority it was bound under is still live, and a
 // selector entry still authorizes its allocation.
-func (d *Database) authorizeSendTx(ctx context.Context, m RouteManifest, tx pgx.Tx, operationID string, request any, bound phase3OperationAuthorization, slot int64, originRisk *debtClearRiskProof) error {
+func (d *Database) authorizeSendTx(ctx context.Context, m RouteManifest, tx pgx.Tx, operationID string, request any, bound phase3OperationAuthorization, slot int64) error {
 	auth, err := readPhase3AuthorizationTx(ctx, tx, operationID)
 	if err != nil {
 		return err
@@ -451,7 +399,7 @@ func (d *Database) authorizeSendTx(ctx context.Context, m RouteManifest, tx pgx.
 	if err != nil {
 		return err
 	}
-	if err = d.checkSignedDebtClearTx(ctx, tx, m, operationID, request, auth, originRisk, slot); err != nil {
+	if err = d.checkSignedDebtClearTx(ctx, tx, m, operationID, request, auth); err != nil {
 		return err
 	}
 	return d.authorizeSelectorEntryTxOnManifest(ctx, m, tx, operationID, request, effects, slot, false)

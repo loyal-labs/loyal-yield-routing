@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
@@ -1350,9 +1349,9 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 }
 
 // markBroadcastIntentOnManifest records broadcast intent under the operation
-// lock, after the custody, debt-clear and selector-entry fences pass against
-// a confirmed slot read under that lock.
-func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, rpc *chain.Client, request any, bound phase3OperationAuthorization, custody *sharedCustodyAdmissionProof, originRisk *debtClearRiskProof) error {
+// lock, after the custody, debt-clear and selector-entry fences pass at the
+// decision's observation slot.
+func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, request any, bound phase3OperationAuthorization, slot int64) error {
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -1361,17 +1360,13 @@ func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest R
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
 		return err
 	}
-	slot, err := confirmedSlot(ctx, rpc)
-	if err != nil {
-		return budgetHold("send_slot_unavailable")
-	}
-	// Shared broadcast-intent custody seam (doc 26 §4): the fresh send proof
-	// is re-validated under THIS transaction's route lock against the
+	// Shared broadcast-intent custody seam (doc 26 §4): the bound custody
+	// proof is re-validated under THIS transaction's route lock against the
 	// PERSISTED built effects before broadcast intent can be recorded.
-	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, custody); err != nil {
+	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, bound.CustodyProof); err != nil {
 		return err
 	}
-	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound, slot, originRisk); err != nil {
+	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound, slot); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)
@@ -1384,17 +1379,13 @@ func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest R
 	return tx.Commit(ctx)
 }
 
-func (d *Database) MarkSubmitted(ctx context.Context, operationID string) error {
-	return d.transition(ctx, operationID, BroadcastIntent, Submitted, `, submitted_at = now()`)
-}
-
 func (d *Database) MarkConfirmed(ctx context.Context, operationID string, from OperationStatus, slot int64) error {
 	if slot <= 0 || (from != BroadcastIntent && from != Submitted) {
 		return fmt.Errorf("invalid confirmation")
 	}
 	if from == BroadcastIntent {
-		// A crash may occur after send but before submitted is recorded. Observing
-		// the persisted signature confirmed is the only allowed shortcut.
+		// Landing confirms the broadcast_intent row directly; submitted is only
+		// left on rows an older binary wrote.
 		tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			return err

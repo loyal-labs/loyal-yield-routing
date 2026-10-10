@@ -24,31 +24,26 @@ package backyard
 //     and the binding is recorded with the operation's intent. The build
 //     uses that same in-memory evidence in the same tick; a crash before the
 //     wire is signed fails the operation, it is never rebuilt.
-//  3. PRE-BROADCAST SEND (Signed branch, CheckAndMarkBroadcastIntentOnManifest):
-//     by now MarkBuilt has persisted the built expected effects and
-//     PersistSignedUpdate the wire, digest AND signature.
-//     ObserveSharedCustodySendProof re-runs the FULL custody walk and excludes
-//     exactly the current signed operation, whose persisted row must carry the
-//     claimed wire identity, the pinned delegate signature, persisted effects
-//     equal to the caller's decoded built effects, and a positive
-//     shared-custody debit. Decided/built/simulated rows are NEVER excludable
-//     — a fresh proof for them happened in phase 1 before the row existed.
+//  3. PRE-BROADCAST SEND (Signed branch, markBroadcastIntentOnManifest): by
+//     now MarkBuilt has persisted the built expected effects. Under the
+//     broadcast-intent lock validateSharedCustodySendProofOnBroadcastTx
+//     re-checks the bound proof against those persisted effects and the live
+//     lease; the single-writer lease means no other spend ran since phase 1.
 //
 // MANIFEST: pass the SAME explicit reviewed manifest the calling lifecycle
-// already threads. Both proofs run the planning read through
+// already threads. The proof runs the planning read through
 // readRoutePlanningStateOnManifest so a persisted candidate AUTO selector
 // entry decodes under the same manifest that admits the candidate lane —
 // never through the embedded manifest, and never by skipping entry
 // validation.
 //
 // BINDING HONESTY: the planning read and the journal snapshot are two reads;
-// neither proof claims one atomic unit across the RPC observation, the
-// planning state and the journal. What they guarantee: the route lease was
+// the proof claims no one atomic unit across the RPC observation, the
+// planning state and the journal. What it guarantees: the route lease was
 // current for THIS database at proof time; the proof is deterministic over
 // persisted rows (restart-identical); and Generation + lease fence are
 // CARRIED so the locked bind validates BindsGeneration against the lock it
-// actually holds. The phase-1 → phase-3 window is bounded by the send
-// re-proof.
+// actually holds.
 
 import (
 	"context"
@@ -123,7 +118,7 @@ func autoSharedCustodySpend(lane, routeKey string, effects ExpectedEffects) (sha
 }
 
 // sharedCustodyAdmissionProof is the durable result carried to the locked
-// bind and taken again at the send fence. SpendRaw == 0
+// bind and persisted there for the send fence. SpendRaw == 0
 // means the operation spends no shared custody and NO proof was taken (all
 // other fields are zero).
 type sharedCustodyAdmissionProof struct {
@@ -141,16 +136,12 @@ type sharedCustodyAdmissionProof struct {
 	Generation   int64
 	LeaseOwner   string
 	LeaseFencing int64
-	// ExcludedOperation is the one in-flight operation the reader validated
-	// against its persisted row and excluded from the unresolved gate. Empty
-	// for the pre-decision ownership proof (nothing exists to exclude).
-	ExcludedOperation string
 	// EffectsSHA256 binds this proof to the EXACT expected effects it was
 	// taken over (deterministic store encoding), so the locked bind and the
 	// send fence can refuse a proof taken over different effects.
 	EffectsSHA256 string
-	// Digest binds this proof (chain, observation bound, spend, fence, and
-	// exclusion) for audit at the locked persistence.
+	// Digest binds this proof (chain, observation bound, spend and fence) for
+	// audit at the locked persistence.
 	Digest string
 }
 
@@ -160,16 +151,6 @@ type sharedCustodyAdmissionProof struct {
 // decision made under a different lock.
 func (p sharedCustodyAdmissionProof) BindsGeneration(generation int64, fencingToken int64) bool {
 	return p.SpendRaw > 0 && p.Generation == generation && p.LeaseFencing == fencingToken && p.LeaseFencing != 0
-}
-
-// sharedCustodySignedSpend is the caller's send-phase claim that exactly one
-// signed operation is the custody spend about to be broadcast: its exact
-// persisted wire digest and signature. NEVER trusted — the reader validates
-// the persisted row inside its own snapshot.
-type sharedCustodySignedSpend struct {
-	OperationID          string
-	SignedWireSHA256     string
-	TransactionSignature string
 }
 
 // ObserveSharedCustodyOwnershipProof proves — BEFORE the decision is
@@ -192,30 +173,7 @@ func (d *Database) ObserveSharedCustodyOwnershipProof(ctx context.Context, manif
 // environment or global config inside the database helper. nil keeps every
 // non-RPC classification and fails closed on the expiry path.
 func (d *Database) ObserveSharedCustodyOwnershipProofWithRPC(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, rpc *chain.Client) (sharedCustodyAdmissionProof, error) {
-	return d.observeSharedCustodySpendProof(ctx, manifest, cfg, expected, observedRaw, observedSlot, nil, sharedCustodyOriginHeightResolver(rpc))
-}
-
-// ObserveSharedCustodySendProof re-proves ownership at the pre-broadcast
-// send fence. expected must be the operation's PERSISTED DECODED built
-// effects (MarkBuilt wrote them); signed must be the exact persisted wire
-// identity (PersistSignedUpdate wrote the signature together with the wire,
-// before broadcast). The signed row is the one validated exclusion from the
-// unresolved gate; every other state is refused, never exempted.
-func (d *Database) ObserveSharedCustodySendProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, signed sharedCustodySignedSpend) (sharedCustodyAdmissionProof, error) {
-	return d.ObserveSharedCustodySendProofWithRPC(ctx, manifest, cfg, expected, observedRaw, observedSlot, signed, nil)
-}
-
-// ObserveSharedCustodySendProofWithRPC is the send proof with the caller's
-// explicit RPC client for the origin block-height resolution, same contract
-// as ObserveSharedCustodyOwnershipProofWithRPC.
-func (d *Database) ObserveSharedCustodySendProofWithRPC(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, signed sharedCustodySignedSpend, rpc *chain.Client) (sharedCustodyAdmissionProof, error) {
-	if signed.OperationID == "" || signed.SignedWireSHA256 == "" || signed.TransactionSignature == "" {
-		return sharedCustodyAdmissionProof{}, budgetHold("custody_attribution_current_operation_invalid")
-	}
-	return d.observeSharedCustodySpendProof(ctx, manifest, cfg, expected, observedRaw, observedSlot, &sharedCustodyCurrentOperation{
-		OperationID: signed.OperationID, SignedWireSHA256: signed.SignedWireSHA256,
-		TransactionSignature: signed.TransactionSignature, ExpectedEffects: expected,
-	}, sharedCustodyOriginHeightResolver(rpc))
+	return d.observeSharedCustodySpendProof(ctx, manifest, cfg, expected, observedRaw, observedSlot, sharedCustodyOriginHeightResolver(rpc))
 }
 
 // sharedCustodyOriginHeightResolver adapts the explicit RPC client into the
@@ -247,45 +205,32 @@ func sharedCustodyOriginHeightResolver(rpc *chain.Client) func(context.Context, 
 type sharedCustodyProofInputs struct {
 	spend    uint64
 	planning *routePlanningState
-	probe    *sharedCustodyCurrentOperation
 	evidence sharedCustodyAttributionEvidence
 }
 
 // observeSharedCustodySpendProof is the shared proof core: planning read
-// under the caller's manifest, validated optional exclusion, journal walk,
-// observation binding, intent-prestate binding, and the carried
-// generation/fence.
-func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, current *sharedCustodyCurrentOperation, originBlockHeight func(context.Context, int64) (int64, error)) (sharedCustodyAdmissionProof, error) {
-	inputs, err := d.gatherSharedCustodyProofInputs(ctx, manifest, cfg, expected, current)
-	if err != nil || inputs.spend == 0 {
-		return sharedCustodyAdmissionProof{}, err
-	}
-	return finishSharedCustodySpendProof(ctx, cfg, expected, inputs, observedRaw, observedSlot, originBlockHeight)
-}
-
-func (d *Database) gatherSharedCustodyProofInputs(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, current *sharedCustodyCurrentOperation) (sharedCustodyProofInputs, error) {
+// under the caller's manifest, journal walk, observation binding,
+// intent-prestate binding, and the carried generation/fence.
+func (d *Database) observeSharedCustodySpendProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64, originBlockHeight func(context.Context, int64) (int64, error)) (sharedCustodyAdmissionProof, error) {
 	spend := sharedCustodySpendRaw(expected, cfg)
 	if spend == 0 {
 		// The operation spends no shared custody: the attribution gate does
 		// not apply, and unrelated recovery must not be blocked by a positive
 		// balance alone.
-		return sharedCustodyProofInputs{}, nil
+		return sharedCustodyAdmissionProof{}, nil
 	}
-	var probe *sharedCustodyCurrentOperation
-	if current != nil {
-		claimed := *current
-		claimed.ExpectedEffects = expected
-		probe = &claimed
+	inputs, err := d.readSharedCustodyJournal(ctx, manifest, cfg)
+	if err != nil {
+		return sharedCustodyAdmissionProof{}, err
 	}
-	inputs, err := d.readSharedCustodyJournal(ctx, manifest, cfg, probe)
 	inputs.spend = spend
-	return inputs, err
+	return finishSharedCustodySpendProof(ctx, cfg, expected, inputs, observedRaw, observedSlot, originBlockHeight)
 }
 
 // readSharedCustodyJournal is the journal side of a proof. It needs only the
 // lease and the custody identity, so the pre-decision proof may read it while
 // the spend is still being prepared.
-func (d *Database) readSharedCustodyJournal(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, probe *sharedCustodyCurrentOperation) (sharedCustodyProofInputs, error) {
+func (d *Database) readSharedCustodyJournal(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig) (sharedCustodyProofInputs, error) {
 	var inputs sharedCustodyProofInputs
 	if cfg.RouteKey == "" || cfg.Lane == "" {
 		return inputs, fmt.Errorf("shared custody attribution config is incomplete")
@@ -305,8 +250,8 @@ func (d *Database) readSharedCustodyJournal(ctx context.Context, manifest RouteM
 	if planning.lease == nil {
 		return inputs, budgetHold("custody_attribution_lease_unavailable")
 	}
-	inputs.planning, inputs.probe = planning, probe
-	inputs.evidence, err = d.observeSharedCustodyAttributionEvidence(ctx, *planning.lease, cfg, 0, probe)
+	inputs.planning = planning
+	inputs.evidence, err = d.observeSharedCustodyAttributionEvidence(ctx, *planning.lease, cfg, 0)
 	logStage("custody_proof_evidence", proofStart)
 	return inputs, err
 }
@@ -322,7 +267,7 @@ func (d *Database) prefetchSharedCustodyOwnershipProof(ctx context.Context, mani
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		inputs, readErr = d.readSharedCustodyJournal(ctx, manifest, cfg, nil)
+		inputs, readErr = d.readSharedCustodyJournal(ctx, manifest, cfg)
 	}()
 	resolver := sharedCustodyOriginHeightResolver(rpc)
 	return func(ctx context.Context, got sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64) (sharedCustodyAdmissionProof, error) {
@@ -388,9 +333,6 @@ func finishSharedCustodySpendProof(ctx context.Context, cfg sharedCustodyAttribu
 		ObservedSlot: observedSlot, SpendRaw: inputs.spend, EffectsSHA256: effectsSHA256,
 		Generation: planning.generation, LeaseOwner: planning.lease.Owner, LeaseFencing: planning.lease.FencingToken,
 	}
-	if inputs.probe != nil {
-		out.ExcludedOperation = inputs.probe.OperationID
-	}
 	out.Digest = sharedCustodyAdmissionDigest(out)
 	return out, nil
 }
@@ -417,7 +359,7 @@ func validateSharedCustodySpendIntent(expected ExpectedEffects, observedRaw uint
 }
 
 // sharedCustodyAdmissionDigest binds the proof's complete content — chain
-// steps, origin, observation bound, spend, fence, and exclusion — into one
+// steps, origin, observation bound, spend and fence — into one
 // digest for the locked persistence to record.
 func sharedCustodyAdmissionDigest(p sharedCustodyAdmissionProof) string {
 	var b strings.Builder
@@ -442,8 +384,8 @@ func sharedCustodyAdmissionDigest(p sharedCustodyAdmissionProof) string {
 	b.WriteString(p.LeaseOwner)
 	b.WriteByte('|')
 	b.WriteString(strconv.FormatInt(p.LeaseFencing, 10))
+	// The empty field that named an excluded operation keeps digests stable.
 	b.WriteByte('|')
-	b.WriteString(p.ExcludedOperation)
 	for _, step := range p.Proof.Steps {
 		b.WriteByte('|')
 		b.WriteString(step.OperationID)
@@ -500,7 +442,7 @@ func bindSharedCustodyAdmissionProofOnManifest(ctx context.Context, tx pgx.Tx, r
 		return sharedCustodyProofBinding{}, budgetHold("custody_attribution_proof_drift")
 	}
 	// The carried proof must commit to its own content: the digest is
-	// recomputed from the full proof exactly as the locked send boundary does.
+	// recomputed from the full proof.
 	if sharedCustodyAdmissionDigest(*proof) != proof.Digest {
 		return sharedCustodyProofBinding{}, budgetHold("custody_attribution_proof_drift")
 	}
@@ -521,101 +463,16 @@ func bindSharedCustodyAdmissionProofOnManifest(ctx context.Context, tx pgx.Tx, r
 	return binding, nil
 }
 
-// observeConfirmedSharedCustodyRaw is the fresh confirmed custody observation
-// for the final-send seam: one confirmed account read at the
-// caller's minimum slot, decoded through the shared DecodeTokenCustody with
-// the pinned owner program, mint and authority bytes.
-func observeConfirmedSharedCustodyRaw(ctx context.Context, rpc *chain.Client, cfg sharedCustodyAttributionConfig, minimumSlot int64) (uint64, int64, error) {
-	if rpc == nil || minimumSlot <= 0 {
-		return 0, 0, budgetHold("custody_attribution_observation_invalid")
-	}
-	slot, accounts, err := confirmedAccounts(ctx, rpc, []string{cfg.Custody}, minimumSlot)
-	if err != nil {
-		return 0, 0, err
-	}
-	if slot < minimumSlot {
-		return 0, 0, budgetHold("custody_attribution_observation_stale")
-	}
-	account := accountAt(accounts, cfg.Custody)
-	// DecodeTokenCustody alone accepts EITHER token program; the attribution
-	// config pins the route's exact debt token program, so the live account's
-	// owner program must equal it (a missing account decodes to the zero
-	// ConfirmedAccount and refuses here), and the account must be a real
-	// non-executable data account.
-	if cfg.Owner == "" || account.Owner != cfg.Owner {
-		return 0, 0, budgetHold("custody_attribution_custody_invalid")
-	}
-	mint, err := decodeBase58PublicKey(cfg.Mint)
-	if err != nil {
-		return 0, 0, err
-	}
-	authority, err := decodeBase58PublicKey(cfg.Authority)
-	if err != nil {
-		return 0, 0, err
-	}
-	custody, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
-	if err != nil || account.Executable {
-		return 0, 0, budgetHold("custody_attribution_custody_invalid")
-	}
-	return custody.Raw, slot, nil
-}
-
-// sharedCustodySendProof splits the final-send proof so its journal read can
-// run while the signed wire is revalued. The fresh custody balance is still
-// read only in finish, at a slot no older than the revalued cost, and the
-// same full walk then binds that balance to the journal snapshot.
-type sharedCustodySendProof struct {
-	applies bool
-	cfg     sharedCustodyAttributionConfig
-	inputs  sharedCustodyProofInputs
-}
-
-func (d *Database) gatherSharedCustodySendProof(ctx context.Context, manifest RouteManifest, operationID string, decoded ExpectedEffects, signed sharedCustodySignedSpend) (sharedCustodySendProof, error) {
-	var routeKey, lane string
-	if err := d.pool.QueryRow(ctx, `SELECT route_key, COALESCE(strategy_key,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&routeKey, &lane); err != nil {
-		return sharedCustodySendProof{}, err
-	}
-	cfg, _, applies := autoSharedCustodySpend(lane, routeKey, decoded)
-	if !applies {
-		return sharedCustodySendProof{}, nil
-	}
-	if signed.OperationID == "" || signed.SignedWireSHA256 == "" || signed.TransactionSignature == "" {
-		return sharedCustodySendProof{}, budgetHold("custody_attribution_current_operation_invalid")
-	}
-	inputs, err := d.gatherSharedCustodyProofInputs(ctx, manifest, cfg, decoded, &sharedCustodyCurrentOperation{
-		OperationID: signed.OperationID, SignedWireSHA256: signed.SignedWireSHA256,
-		TransactionSignature: signed.TransactionSignature, ExpectedEffects: decoded,
-	})
-	return sharedCustodySendProof{applies: true, cfg: cfg, inputs: inputs}, err
-}
-
-func (p sharedCustodySendProof) finish(ctx context.Context, rpc *chain.Client, decoded ExpectedEffects, minimumSlot int64) (*sharedCustodyAdmissionProof, error) {
-	if !p.applies {
-		return nil, nil
-	}
-	balanceStart := time.Now()
-	raw, slot, err := observeConfirmedSharedCustodyRaw(ctx, rpc, p.cfg, minimumSlot)
-	logStage("final_check_custody_balance", balanceStart)
-	if err != nil {
-		return nil, err
-	}
-	proof, err := finishSharedCustodySpendProof(ctx, p.cfg, decoded, p.inputs, raw, slot, sharedCustodyOriginHeightResolver(rpc))
-	if err != nil {
-		return nil, err
-	}
-	return &proof, nil
-}
-
-// validateSharedCustodySendProofOnBroadcastTx re-validates the fresh send
-// proof INSIDE the locked broadcast-intent transaction, against the same
-// route row lock (FOR UPDATE) and the PERSISTED built effects — not the
-// caller's decode. The persisted effects decode under the SAME reviewed
+// validateSharedCustodySendProofOnBroadcastTx re-validates the custody proof
+// the bind persisted INSIDE the locked broadcast-intent transaction, against
+// the same route row lock (FOR UPDATE) and the PERSISTED built effects — not
+// the caller's decode. The persisted effects decode under the SAME reviewed
 // manifest the caller threads, so a candidate AUTO initializer (zero PYUSD
 // spend) decodes exactly as it did at bind and keeps installed behavior.
-// A proof naming another operation, missing, digest-inconsistent, observed
-// before the decision's slot, or taken under a stale generation/fence/lease holds before broadcast intent
+// A proof missing, over other effects, observed before the decision's slot,
+// or taken under a stale generation/fence/lease holds before broadcast intent
 // is recorded.
-func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx, manifest RouteManifest, operationID string, custody *sharedCustodyAdmissionProof) error {
+func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx, manifest RouteManifest, operationID string, custody *sharedCustodyProofBinding) error {
 	var lane, routeKey string
 	var effectsBytes []byte
 	var generation, decisionSlot int64
@@ -659,15 +516,9 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 	if custody == nil {
 		return budgetHold("custody_attribution_proof_missing")
 	}
-	binding := sharedCustodyProofBindingFrom(*custody)
 	effectsSHA256, err := expectedEffectsSHA256(decoded)
 	if err != nil {
 		return err
-	}
-	// Self-consistency: the digest is recomputed from the carried content, so
-	// a proof cannot pass the field checks below without committing to them.
-	if binding.valid() && sharedCustodyAdmissionDigest(*custody) != custody.Digest {
-		return budgetHold("custody_attribution_proof_drift")
 	}
 	// The proof must have been observed under the lease that is CURRENT under
 	// this lock — same fencing token and owner, lease unexpired. A proof taken
@@ -678,13 +529,12 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 	if custody.LeaseOwner != leaseOwner || custody.LeaseFencing != fencing {
 		return budgetHold("custody_attribution_generation_drift")
 	}
-	if !binding.valid() || !binding.bindsGeneration(generation) ||
-		// The fresh custody observation is confirmed no earlier than the
-		// decision it spends for.
+	if !custody.valid() || !custody.bindsGeneration(generation) ||
+		// The custody observation is confirmed no earlier than the decision
+		// it spends for.
 		decisionSlot <= 0 || custody.ObservedSlot < decisionSlot ||
-		binding.SpendRaw != spend || binding.EffectsSHA256 != effectsSHA256 ||
-		binding.RouteKey != routeKey || binding.Lane != lane || binding.Custody != cfg.Custody ||
-		custody.ExcludedOperation != operationID {
+		custody.SpendRaw != spend || custody.EffectsSHA256 != effectsSHA256 ||
+		custody.RouteKey != routeKey || custody.Lane != lane || custody.Custody != cfg.Custody {
 		return budgetHold("custody_attribution_proof_drift")
 	}
 	return nil

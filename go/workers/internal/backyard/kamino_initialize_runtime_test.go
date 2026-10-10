@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -191,21 +190,16 @@ func TestInitializerBindSendFenceAndExpiryRetirement(t *testing.T) {
 	slotExpired := selectorEntryFixture(time.Now().UTC(), r.RouteLane, o.Snapshot.SelectorEntryEquityRaw)
 	slotExpired.Quote.SampleSlot, slotExpired.Quote.ValidThroughSlot = 9, 41
 	storeTestSelectorEntry(t, ctx, db, key, slotExpired)
-	if err = db.CheckAndMarkBroadcastIntentOnManifest(ctx, m, rpc, op); err != nil && strings.Contains(err.Error(), "selector_entry_quote_expired") {
+	if err = markBroadcastIntent(ctx, db, m, op); err != nil && strings.Contains(err.Error(), "selector_entry_quote_expired") {
 		t.Fatal("slot-late initializer refused before entry expiry", err)
 	}
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',broadcast_intent_at=NULL WHERE operation_id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	storeTestSelectorEntry(t, ctx, db, key, selectorEntryFixture(time.Now().UTC().Add(-time.Minute), r.RouteLane, o.Snapshot.SelectorEntryEquityRaw))
-	err = db.CheckAndMarkBroadcastIntentOnManifest(ctx, m, rpc, op)
-	var validated *validatedSignedBudgetHold
-	if !errors.As(err, &validated) {
-		t.Fatal("quote expiry lost validated signed recovery", err)
-	}
-	assertBudgetHold(t, err, "selector_entry_quote_expired")
+	assertBudgetHold(t, markBroadcastIntent(ctx, db, m, op), "selector_entry_quote_expired")
 	baseTransport := rpcOf(rpc).Transport
-	finalizedExpired, expiryRead, absenceRead := false, false, false
+	finalizedExpired, absenceRead := false, false
 	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		raw, err := io.ReadAll(req.Body)
 		if err != nil {
@@ -230,17 +224,13 @@ func TestInitializerBindSendFenceAndExpiryRetirement(t *testing.T) {
 			if config["commitment"] != "finalized" {
 				return baseTransport.RoundTrip(req)
 			}
-			expiryRead = finalizedExpired
 			result = finalizedEpoch(r.LastValidBlockHeight)
 			if finalizedExpired {
 				result = finalizedEpoch(r.LastValidBlockHeight + 1)
 			}
 		case "getSignatureStatuses":
-			if !expiryRead {
-				t.Fatal("checked absence before finalized expiry")
-			}
-			absenceRead = true
-			result = map[string]any{"context": map[string]int{"slot": 42}, "value": []any{nil}}
+			absenceRead = finalizedExpired
+			result = map[string]any{"context": map[string]int{"slot": 5000}, "value": []any{nil}}
 		default:
 			return baseTransport.RoundTrip(req)
 		}

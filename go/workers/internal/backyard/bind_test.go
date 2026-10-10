@@ -92,9 +92,8 @@ func TestSignedIdentityProvesTheBoundWireBeforeAnyRPC(t *testing.T) {
 			mutate(&auth, &operation)
 			_, _, err := manifest.validateSignedIdentity(auth, operation)
 			var hold *BudgetHold
-			var validated *validatedSignedBudgetHold
-			if !errors.As(err, &hold) || errors.As(err, &validated) {
-				t.Fatalf("untrusted persisted identity passed or reached the expiry path: %v", err)
+			if !errors.As(err, &hold) {
+				t.Fatalf("untrusted persisted identity passed: %v", err)
 			}
 		})
 	}
@@ -129,6 +128,16 @@ func seedBoundOperation(t *testing.T, ctx context.Context, db *Database, key, ow
 		t.Fatal(err)
 	}
 	return id
+}
+
+// markBroadcastIntent runs the final-send identity check and its locked
+// fence, which records broadcast intent.
+func markBroadcastIntent(ctx context.Context, db *Database, m RouteManifest, operation PersistedOperation) error {
+	mark, err := db.finalSend(ctx, m, operation)
+	if err != nil {
+		return err
+	}
+	return mark(ctx)
 }
 
 // bindTestWire binds a signed wire hash exactly as PersistSigned does.
@@ -289,7 +298,7 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2,signed_wire_sha256=$3,transaction_signature=$4,recent_blockhash=$5,last_valid_block_height=10 WHERE operation_id=$1`, op, wire, signed.SignedWireSHA256, signed.TransactionSignature, signed.RecentBlockhash); err != nil {
 		t.Fatal(err)
 	}
-	assertBudgetHold(t, db.CheckAndMarkBroadcastIntent(ctx, slotRPC, signed), "signed_wire_binding_mismatch")
+	assertBudgetHold(t, markBroadcastIntent(ctx, db, manifest, signed), "signed_wire_binding_mismatch")
 	bindWire := func(hash string) error {
 		tx, err := db.pool.Begin(ctx)
 		if err != nil {
@@ -324,10 +333,10 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 	if _, err = restarted.AcquireRouteLease(ctx, key, "writer-b", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.CheckAndMarkBroadcastIntent(ctx, slotRPC, signed); err == nil {
+	if err = markBroadcastIntent(ctx, db, manifest, signed); err == nil {
 		t.Fatal("stale writer retained send authority")
 	}
-	if err = restarted.CheckAndMarkBroadcastIntent(ctx, slotRPC, signed); err != nil {
+	if err = markBroadcastIntent(ctx, restarted, manifest, signed); err != nil {
 		t.Fatal(err)
 	}
 	var status string
