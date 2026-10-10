@@ -69,8 +69,15 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "policy" {
+		if err := runPolicy(ctx, os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "policy command failed:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: loyal-engine [--role-probe | backyard <operator command>]")
+		fmt.Fprintln(os.Stderr, "usage: loyal-engine [--role-probe | backyard <operator command> | policy apply|check ...]")
 		os.Exit(2)
 	}
 	if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {

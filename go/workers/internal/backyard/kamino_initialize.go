@@ -171,5 +171,6 @@ func kaminoRouteInitializer(route RuntimeRoute) (compiledInstruction, error) {
 	if err != nil {
 		return compiledInstruction{}, err
 	}
-	return kaminoCompiled(kamino.InitObligation(owner, owner, obligation, market, collateral, debt, metadata, 1, 0)), nil
+	return kaminoCompiled(kamino.InitObligation(kamino.ObligationInitAccounts{Owner: owner, FeePayer: owner, Obligation: obligation,
+		LendingMarket: market, Seed1: collateral, Seed2: debt, OwnerUserMetadata: metadata}, 1, 0)), nil
 }

@@ -164,6 +164,28 @@ func CollateralToLiquidity(totalLiquiditySF *big.Int, collateralSupply, collater
 	return liquidity.Uint64(), nil
 }
 
+// LiquidityToCollateral floors liquidity over the exchange value: the
+// collateral a deposit of liquidity mints at the reserve's current rate. The
+// rate only grows, so against a later read it never exceeds what was minted.
+func (r Reserve) LiquidityToCollateral(liquidity uint64) (uint64, error) {
+	if liquidity == 0 {
+		return 0, nil
+	}
+	total, err := r.TotalLiquiditySF()
+	if err != nil {
+		return 0, err
+	}
+	if total.Sign() <= 0 || r.CollateralMintTotalSupply == 0 {
+		return 0, errors.New("Kamino collateral exchange rate is unavailable")
+	}
+	collateral := new(big.Int).Mul(new(big.Int).SetUint64(liquidity), new(big.Int).Lsh(new(big.Int).SetUint64(r.CollateralMintTotalSupply), 60))
+	collateral.Quo(collateral, total)
+	if !collateral.IsUint64() {
+		return 0, errors.New("Kamino minted collateral exceeds u64")
+	}
+	return collateral.Uint64(), nil
+}
+
 // MinimumDeposit is the smallest liquidity amount that mints one collateral
 // unit: the ceiling of one unit's exchange value, or 1 at the initial rate.
 func (r Reserve) MinimumDeposit() (uint64, error) {
@@ -206,6 +228,9 @@ type Obligation struct {
 	ElevationGroup         uint8
 }
 
+// obligationOwnerOffset is where an obligation account holds its owner.
+const obligationOwnerOffset = 64
+
 // DecodeObligation decodes a funded, non-executable KLend obligation.
 func DecodeObligation(a *chain.Account) (Obligation, error) {
 	if err := envelope(a, ProgramID, ObligationSize, ObligationDiscriminator, "obligation"); err != nil {
@@ -213,7 +238,7 @@ func DecodeObligation(a *chain.Account) (Obligation, error) {
 	}
 	d := a.Data
 	o := Obligation{
-		LastUpdateSlot: u64(d, 16), LendingMarket: key(d, 32), Owner: key(d, 64),
+		LastUpdateSlot: u64(d, 16), LendingMarket: key(d, 32), Owner: key(d, obligationOwnerOffset),
 		UnhealthyBorrowValueSF: [16]byte(d[2256:2272]), ElevationGroup: d[2285],
 	}
 	for i := range o.Deposits {

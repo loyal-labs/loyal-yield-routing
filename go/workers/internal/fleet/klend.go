@@ -256,7 +256,7 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 		}
 		ix = RouteInstructionOf("", spl.CreateIdempotentATA(payer, vault, t.LiquidityMint, t.LiquidityTokenProgram))
 	case "metadata":
-		ix = RouteInstructionOf("", kamino.InitUserMetadata(vault, vault, metadata, solana.PublicKey{}))
+		ix = RouteInstructionOf("", kamino.InitUserMetadata(kamino.UserMetadataInitAccounts{Owner: vault, FeePayer: vault, UserMetadata: metadata}, solana.PublicKey{}))
 	case "obligation":
 		ix = initObligation(vault, t, metadata)
 	case "farm":
@@ -277,7 +277,8 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 // initObligation creates the vault's vanilla (tag 0, id 0) obligation. The
 // vault is owner and rent payer: inside a Squads policy only the vault signs.
 func initObligation(owner solana.PublicKey, t klendPosition, metadata solana.PublicKey) RouteInstruction {
-	return RouteInstructionOf("kamino_init_obligation", kamino.InitObligation(owner, owner, t.Obligation, t.LendingMarket, solana.PublicKey{}, solana.PublicKey{}, metadata, 0, 0))
+	return RouteInstructionOf("kamino_init_obligation", kamino.InitObligation(kamino.ObligationInitAccounts{Owner: owner, FeePayer: owner, Obligation: t.Obligation,
+		LendingMarket: t.LendingMarket, OwnerUserMetadata: metadata}, 0, 0))
 }
 
 // initObligationFarm creates the obligation's collateral farm user; the payer
@@ -288,7 +289,7 @@ func initObligationFarm(payer string, t klendPosition) (RouteInstruction, error)
 	if err != nil || t.ReserveFarmState.IsZero() {
 		return RouteInstruction{}, fmt.Errorf("invalid KLend farm setup payer %q or reserve farm", payer)
 	}
-	return RouteInstructionOf("kamino_init_obligation_farms_for_reserve", kamino.InitObligationFarmsForReserve(kamino.InitObligationFarmsAccounts{
+	return RouteInstructionOf("kamino_init_obligation_farms_for_reserve", kamino.InitObligationFarmsForReserve(kamino.ObligationFarmsInitAccounts{
 		Payer: key, Owner: t.Owner, Obligation: t.Obligation, LendingMarketAuthority: t.LendingMarketAuthority, Reserve: t.Reserve,
 		ReserveFarmState: t.ReserveFarmState, ObligationFarmUserState: t.ObligationFarmUserState, LendingMarket: t.LendingMarket,
 	}, 0)), nil
