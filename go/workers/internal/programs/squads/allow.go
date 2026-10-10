@@ -41,9 +41,13 @@ func Pinned(key solana.PublicKey) Slot { return Pin(key) }
 // constraint that admits it cannot disagree. A slot that is neither Any nor
 // constrained is a literal that forgot a field, and Allow panics on it.
 func Allow(program solana.PublicKey, data []byte, slots []Slot) InstructionConstraintView {
-	out := InstructionConstraintView{ProgramID: program, DataConstraints: []DataConstraintView{{
-		DataValue: DataValueView{Kind: 5, Bytes: append([]byte(nil), data...)}, Operator: OpEquals,
-	}}}
+	return AllowData(program, []DataConstraintView{DataBytes(0, data)}, slots)
+}
+
+// AllowData is Allow over data predicates, in the order the policy states
+// them, for an instruction whose policy also bounds its arguments.
+func AllowData(program solana.PublicKey, data []DataConstraintView, slots []Slot) InstructionConstraintView {
+	out := InstructionConstraintView{ProgramID: program, DataConstraints: data}
 	for index, slot := range slots {
 		switch {
 		case slot.Any:
@@ -56,6 +60,22 @@ func Allow(program solana.PublicKey, data []byte, slots []Slot) InstructionConst
 		}
 	}
 	return out
+}
+
+// DataBytes is the predicate that instruction data at offset equals value.
+func DataBytes(offset uint64, value []byte) DataConstraintView {
+	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 5, Bytes: append([]byte(nil), value...)}, Operator: OpEquals}
+}
+
+// DataU8 is the predicate that the byte at offset compares to value by op.
+func DataU8(offset uint64, op DataOperatorView, value uint8) DataConstraintView {
+	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 0, U8: value}, Operator: op}
+}
+
+// DataU64 is the predicate that the little-endian u64 at offset compares to
+// value by op.
+func DataU64(offset uint64, op DataOperatorView, value uint64) DataConstraintView {
+	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 3, U64: value}, Operator: op}
 }
 
 // PolicyApply installs one policy and removes the policies it replaces in a

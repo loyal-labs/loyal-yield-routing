@@ -24,6 +24,20 @@ type PolicyAccountView struct {
 // hookless ProgramInteraction policy", which callers treat as a mismatch,
 // never as authority to proceed.
 func DecodeCanonicalPolicy(account *chain.Account) (*PolicyAccountView, error) {
+	return decodePolicy(account, false)
+}
+
+// DecodeLimitedPolicy is DecodeCanonicalPolicy for a policy that may also
+// carry spending limits: the same authority checks (one full-permission
+// signer, threshold 1, no time lock, hooks or expiration), with each limit
+// returned in Payload.SpendingLimits. A limit must be plain: no accumulation,
+// per-use cap or exact quantity, and its usage counters within its window;
+// anything else is not a canonical policy.
+func DecodeLimitedPolicy(account *chain.Account) (*PolicyAccountView, error) {
+	return decodePolicy(account, true)
+}
+
+func decodePolicy(account *chain.Account, limits bool) (*PolicyAccountView, error) {
 	if account == nil || account.Owner != ProgramID || account.Executable {
 		return nil, errors.New("policy account is absent or not owned by Squads")
 	}
@@ -53,7 +67,7 @@ func DecodeCanonicalPolicy(account *chain.Account) (*PolicyAccountView, error) {
 	}
 	var valid []PolicyPayloadView
 	for _, candidate := range candidates {
-		if !candidate.PreHook && !candidate.PostHook && candidate.ExactSpendingLimits && len(candidate.Payload.SpendingLimits) == 0 && candidate.Start >= 0 && !candidate.HasExpiration && compactPubkeyTableIsTight(candidate.Payload) {
+		if !candidate.PreHook && !candidate.PostHook && candidate.ExactSpendingLimits && (limits || len(candidate.Payload.SpendingLimits) == 0) && candidate.Start >= 0 && !candidate.HasExpiration && compactPubkeyTableIsTight(candidate.Payload) {
 			valid = append(valid, candidate.Payload)
 		}
 	}
@@ -61,7 +75,7 @@ func DecodeCanonicalPolicy(account *chain.Account) (*PolicyAccountView, error) {
 		return nil, nil
 	}
 	for _, candidate := range valid[1:] {
-		if candidate.VaultIndex != valid[0].VaultIndex || !ConstraintsEqual(candidate.Constraints, valid[0].Constraints) {
+		if candidate.VaultIndex != valid[0].VaultIndex || !ConstraintsEqual(candidate.Constraints, valid[0].Constraints) || !SpendingLimitsEqual(candidate.SpendingLimits, valid[0].SpendingLimits) {
 			return nil, errors.New("ambiguous ProgramInteraction account encoding")
 		}
 	}
@@ -88,6 +102,9 @@ func compactPubkeyTableIsTight(payload PolicyPayloadView) bool {
 			}
 		}
 	}
+	for _, limit := range payload.SpendingLimits {
+		referenced[limit.Mint] = struct{}{}
+	}
 	return len(referenced) == len(seen)
 }
 
@@ -100,6 +117,23 @@ func ConstraintsEqual(left, right []InstructionConstraintView) bool {
 	}
 	for index := range left {
 		if left[index].ProgramID != right[index].ProgramID || !accountConstraintsEqual(left[index].AccountConstraints, right[index].AccountConstraints) || !dataConstraintsEqual(left[index].DataConstraints, right[index].DataConstraints) {
+			return false
+		}
+	}
+	return true
+}
+
+// SpendingLimitsEqual compares spending limits by what they allow: mint,
+// period, amount per period and expiration. Start is set when the policy is
+// created and Squads re-windows it, so a literal cannot state it.
+func SpendingLimitsEqual(left, right []SpendingLimitView) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		l, r := left[index], right[index]
+		if l.Mint != r.Mint || l.Period != r.Period || l.CustomPeriod != r.CustomPeriod || l.MaxPerPeriod != r.MaxPerPeriod ||
+			(l.Expiration == nil) != (r.Expiration == nil) || l.Expiration != nil && *l.Expiration != *r.Expiration {
 			return false
 		}
 	}

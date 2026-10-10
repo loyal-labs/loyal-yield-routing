@@ -16,9 +16,9 @@ import (
 	associatedtokenaccount "github.com/solana-foundation/solana-go/v2/programs/associated-token-account"
 	computebudget "github.com/solana-foundation/solana-go/v2/programs/compute-budget"
 	"github.com/solana-foundation/solana-go/v2/programs/system"
-	"github.com/solana-foundation/solana-go/v2/programs/token"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // TokenAccount is an initialized or frozen SPL Token or Token-2022 account.
@@ -172,10 +172,56 @@ func CreateIdempotentATA(payer, owner, mint, tokenProgram solana.PublicKey) *sol
 		SetPayer(payer).SetWallet(owner).SetMint(mint).SetTokenProgram(tokenProgram).Build())
 }
 
+// Transfer is TransferChecked's account set with a single authority, in its
+// order. The builder and TransferCheckedAllowed read the same slot list.
+type Transfer[T any] struct {
+	Source, Mint, Destination, Authority T
+}
+
+type TransferAllowed = Transfer[squads.Slot]
+
+// Offsets in TransferChecked data: the instruction tag, the amount and the
+// mint's decimals.
+const (
+	transferCheckedTag           = 12
+	TransferCheckedAmountOffset  = 1
+	transferCheckedDecimalOffset = 9
+)
+
+// transferSlot is one account position of TransferChecked: a key (or what
+// the policy admits there) and the position's flags.
+type transferSlot[T any] struct {
+	key              T
+	writable, signer bool
+}
+
+func transferCheckedSlots[T any](a Transfer[T]) []transferSlot[T] {
+	return []transferSlot[T]{{key: a.Source, writable: true}, {key: a.Mint}, {key: a.Destination, writable: true}, {key: a.Authority, signer: true}}
+}
+
 // TransferChecked moves amount raw units of mint from source to destination
 // under authority.
 func TransferChecked(tokenProgram, source, mint, destination, authority solana.PublicKey, amount uint64, decimals uint8) *solana.GenericInstruction {
-	return flatten(token.NewTransferCheckedInstruction(amount, decimals, source, mint, destination, authority, nil).Build().SetProgramID(tokenProgram))
+	slots := transferCheckedSlots(Transfer[solana.PublicKey]{Source: source, Mint: mint, Destination: destination, Authority: authority})
+	accounts := make([]*solana.AccountMeta, len(slots))
+	for i, s := range slots {
+		accounts[i] = &solana.AccountMeta{PublicKey: s.key, IsWritable: s.writable, IsSigner: s.signer}
+	}
+	data := append(binary.LittleEndian.AppendUint64([]byte{transferCheckedTag}, amount), decimals)
+	return solana.NewInstruction(tokenProgram, accounts, data)
+}
+
+// TransferCheckedAllowed admits TransferChecked under tokenProgram over the
+// allowed accounts, of a mint with decimals, its amount bounded by the
+// amount predicates (at TransferCheckedAmountOffset).
+func TransferCheckedAllowed(tokenProgram solana.PublicKey, a TransferAllowed, decimals uint8, amount ...squads.DataConstraintView) squads.InstructionConstraintView {
+	data := append([]squads.DataConstraintView{squads.DataU8(0, squads.OpEquals, transferCheckedTag)}, amount...)
+	data = append(data, squads.DataU8(transferCheckedDecimalOffset, squads.OpEquals, decimals))
+	var slots []squads.Slot
+	for _, s := range transferCheckedSlots(a) {
+		slots = append(slots, s.key)
+	}
+	return squads.AllowData(tokenProgram, data, slots)
 }
 
 // SystemTransfer moves lamports out of a signing account.

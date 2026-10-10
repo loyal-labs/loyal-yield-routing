@@ -96,17 +96,48 @@ func armReportInstruction(action Action, voltrData []byte) (compiledInstruction,
 	if len(data) != reportTicketArmWireLen {
 		return compiledInstruction{}, fmt.Errorf("ArmReport wire length drifted")
 	}
-	return compiledInstruction{
-		program: mustKey(bridgeAdaptorProgram),
-		accounts: metas(
-			meta(bridgeStrategy, false, false),
-			meta(reportTicketPDA, false, true),
-			meta(bridgeSettings, false, false),
-			meta(bridgeVault, true, false),
-			meta(squads.ProgramID.String(), false, false),
-		),
-		data: data,
-	}, nil
+	var accounts []accountMeta
+	for _, s := range armReportSlots(armReport[string]{Strategy: bridgeStrategy, Ticket: reportTicketPDA, Settings: bridgeSettings, Vault: bridgeVault},
+		squads.ProgramID.String()) {
+		accounts = append(accounts, meta(s.key, s.signer, s.writable))
+	}
+	return compiledInstruction{program: mustKey(bridgeAdaptorProgram), accounts: accounts, data: data}, nil
+}
+
+// armReport is the adaptor's ArmReport account set: the strategy-two adaptor
+// config, the report ticket, the Squads settings and the vault that signs;
+// the Squads program follows them. The builder and armReportAllowed read the
+// same slot list.
+type armReport[T any] struct {
+	Strategy, Ticket, Settings, Vault T
+}
+
+type armSlot[T any] struct {
+	key              T
+	signer, writable bool
+}
+
+func armReportSlots[T any](a armReport[T], squadsProgram T) []armSlot[T] {
+	return []armSlot[T]{{key: a.Strategy}, {key: a.Ticket, writable: true}, {key: a.Settings}, {key: a.Vault, signer: true}, {key: squadsProgram}}
+}
+
+// ArmReport data: discriminator, operation, then the 70-byte Voltr capital
+// tail, its amount and the additional_args option carrying the report.
+const (
+	armAmountOffset     = 9
+	armReportArgsOffset = 17
+)
+
+// armReportAllowed admits ArmReport of operation over the allowed accounts,
+// with data predicates after its discriminator and operation. The Squads
+// program slot is free: the adaptor checks it.
+func armReportAllowed(a armReport[squads.Slot], operation byte, data ...squads.DataConstraintView) squads.InstructionConstraintView {
+	var slots []squads.Slot
+	for _, s := range armReportSlots(a, squads.Unpinned(squads.ProgramID)) {
+		slots = append(slots, s.key)
+	}
+	leading := append(append([]byte(nil), armReportDiscriminator...), operation)
+	return squads.AllowData(solanaKey(bridgeAdaptorProgram), append([]squads.DataConstraintView{squads.DataBytes(0, leading)}, data...), slots)
 }
 
 // Voltr outer data is:
