@@ -1,17 +1,13 @@
 package backyard
 
 import (
-	"bytes"
-	"context"
 	"encoding/base64"
-	"encoding/json"
-	"os"
-	"os/exec"
+	"reflect"
 	"testing"
-	"time"
 )
 
 func TestMultiplyInitializerPinnedTopology(t *testing.T) {
+	t.Parallel()
 	for _, lane := range selectorLanes {
 		ix, err := kaminoMultiplyInitializer(lane)
 		if err != nil {
@@ -39,38 +35,41 @@ func TestMultiplyInitializerPinnedTopology(t *testing.T) {
 	}
 }
 
-// Run explicitly after tools/backyard-voltr dependencies are installed. Ordinary
-// worker tests do not acquire that operator tool's separate SDK dependency tree.
+// The initializer and capacity offsets match what the Kamino klend SDK built
+// and laid out (testdata/sdk-vectors.json).
 func TestMultiplyInitializerAndCapacitySDKParity(t *testing.T) {
-	if os.Getenv("KLEND_SDK_ORACLE") != "1" {
-		t.Skip("set KLEND_SDK_ORACLE=1 with operator SDK installed")
+	t.Parallel()
+	vectors := sdkVectors(t).KaminoInitializer
+	if len(vectors.Instructions) != len(selectorLanes) {
+		t.Fatal("SDK initializer vectors do not cover every selector lane")
 	}
-	var instructions []map[string]any
-	for _, lane := range selectorLanes {
+	for i, lane := range selectorLanes {
 		ix, err := kaminoMultiplyInitializer(lane)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var accounts []map[string]any
-		for _, a := range ix.accounts {
-			accounts = append(accounts, map[string]any{"address": encodeBase58(a.key[:]), "signer": a.signer, "writable": a.writable})
+		want := vectors.Instructions[i]
+		if want.Lane != lane || encodeBase58(ix.program[:]) != want.Program || base64.StdEncoding.EncodeToString(ix.data) != want.Data || len(ix.accounts) != len(want.Accounts) {
+			t.Fatal("initializer differs from SDK", lane)
 		}
-		instructions = append(instructions, map[string]any{"lane": lane, "program": encodeBase58(ix.program[:]), "accounts": accounts, "data": base64.StdEncoding.EncodeToString(ix.data)})
+		for j, a := range ix.accounts {
+			if w := want.Accounts[j]; encodeBase58(a.key[:]) != w.Address || a.signer != w.Signer || a.writable != w.Writable {
+				t.Fatal("initializer account differs from SDK", lane, j)
+			}
+		}
+		if encodeBase58(ix.accounts[2].key[:]) != want.Obligation {
+			t.Fatal("obligation differs from SDK PDA", lane)
+		}
 	}
-	input, _ := json.Marshal(map[string]any{"instructions": instructions, "offsets": map[string]int{
+	offsets := map[string]int{
 		"elevationGroup": kaminoObligationElevationGroupOffset, "outsideUsed": kaminoOutsideBorrowCounterOffset,
 		"outsideLimit": kaminoOutsideBorrowLimitOffset, "disableCross": kaminoDisableCrossCollateralOffset,
 		"debtWithdrawalCap": kaminoDebtWithdrawalCapOffset, "borrowFactor": kaminoBorrowFactorOffset,
 		"loanToValue": kaminoLoanToValueOffset, "queuedCollateral": kaminoQueuedCollateralOffset,
 		"globalBorrowValue":     kaminoGlobalBorrowValueOffset,
 		"minimumRemainingValue": kaminoMinRemainingValueOffset,
-	}})
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bun", "testdata/kamino-selector-oracle.mjs")
-	cmd.Stdin = bytes.NewReader(input)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("SDK parity: %v %s", err, output)
+	}
+	if !reflect.DeepEqual(offsets, vectors.Offsets) {
+		t.Fatal("capacity offsets differ from SDK layouts", offsets, vectors.Offsets)
 	}
 }

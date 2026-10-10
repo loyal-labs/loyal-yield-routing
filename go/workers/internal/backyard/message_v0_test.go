@@ -2,14 +2,11 @@ package backyard
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
@@ -54,45 +51,18 @@ func readRetainedJupiterLookups(t *testing.T, name string, count int) []LookupTa
 	return tables
 }
 
-func assertV0SDKParity(t *testing.T, payer, blockhash publicKey, instructions []compiledInstruction, tables []LookupTableSnapshot, message []byte, capture ...publicKey) {
+// assertV0SDKVector compares message with the bytes the installed Solana SDK
+// compiled from the same instructions, lookup tables and capture keys.
+func assertV0SDKVector(t *testing.T, name string, message []byte) {
 	t.Helper()
-	ixs := []any{}
-	for _, ix := range instructions {
-		accounts := []any{}
-		for _, a := range ix.accounts {
-			accounts = append(accounts, map[string]any{"key": encodeBase58(a.key[:]), "signer": a.signer, "writable": a.writable})
-		}
-		ixs = append(ixs, map[string]any{"program": encodeBase58(ix.program[:]), "accounts": accounts, "data": base64.StdEncoding.EncodeToString(ix.data)})
-	}
-	luts := []any{}
-	for _, s := range tables {
-		luts = append(luts, map[string]any{"address": s.Address, "data": base64.StdEncoding.EncodeToString(s.Data)})
-	}
-	captureKeys := []string{}
-	for _, key := range capture {
-		captureKeys = append(captureKeys, encodeBase58(key[:]))
-	}
-	input, err := json.Marshal(map[string]any{"capture": captureKeys, "payer": encodeBase58(payer[:]), "blockhash": encodeBase58(blockhash[:]), "instructions": ixs, "tables": luts})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bun", "testdata/message-v0-oracle.mjs")
-	cmd.Stdin = bytes.NewReader(input)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("SDK oracle: %v: %s", err, stderr.String())
-	}
-	want, err := base64.StdEncoding.Strict().DecodeString(string(output))
-	if err != nil || !bytes.Equal(message, want) {
+	want, err := base64.StdEncoding.Strict().DecodeString(sdkVectors(t).MessageV0.Messages[name])
+	if err != nil || len(want) == 0 || !bytes.Equal(message, want) {
 		t.Fatalf("Go v0 message differs from installed SDK: Go %d bytes SDK %d", len(message), len(want))
 	}
 }
 
 func TestVersionedMessageMatchesSDKAndRejectsInvalidLookupAccounts(t *testing.T) {
+	t.Parallel()
 	tables := retainedJupiterLookups(t)
 	for name, mutate := range map[string]func(*LookupTableSnapshot){
 		"owner":       func(s *LookupTableSnapshot) { s.Owner = bridgeTokenProgram },
@@ -129,7 +99,7 @@ func TestVersionedMessageMatchesSDKAndRejectsInvalidLookupAccounts(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertV0SDKParity(t, payer, mustKey(bridgeVault), []compiledInstruction{ix}, tables, message)
+	assertV0SDKVector(t, "twoTablesSharedEntries", message)
 	if _, err := checkedUnsignedMessage(message); err == nil {
 		t.Fatal("two-signer message accepted by one-signer worker")
 	}
@@ -144,6 +114,7 @@ func TestVersionedMessageMatchesSDKAndRejectsInvalidLookupAccounts(t *testing.T)
 }
 
 func TestVersionedCaptureMatchesSDKWithoutExtraInstructionsOrPrivileges(t *testing.T) {
+	t.Parallel()
 	tables := retainedJupiterLookups(t)
 	table, _ := decodeMessageLookupTable(tables[0])
 	payer, program := mustKey(bridgeDelegate), publicKey(kamino.ProgramID)
@@ -156,5 +127,5 @@ func TestVersionedCaptureMatchesSDKWithoutExtraInstructionsOrPrivileges(t *testi
 	if _, err = checkedUnsignedMessage(message); err != nil {
 		t.Fatal(err)
 	}
-	assertV0SDKParity(t, payer, mustKey(bridgeUSDC), []compiledInstruction{ix}, tables, message, capture...)
+	assertV0SDKVector(t, "captureOnlyKeys", message)
 }
