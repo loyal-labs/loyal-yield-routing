@@ -72,8 +72,10 @@ fi
 
 # The gate is the new release's own read of the in-flight rows, under the
 # unit's own database credential (its path read from the unit, not here).
-dbcred=$(systemctl show -p LoadCredentialEncrypted "$unit" |
-	sed -n 's/^LoadCredentialEncrypted=\(BACKYARD_DATABASE_URL:[^ ]*\)$/\1/p')
+# `systemctl show` prints encrypted credentials as "[unprintable]", so read
+# the unit's own lines.
+dbcred=$(systemctl cat "$unit" |
+	sed -n 's/^LoadCredentialEncrypted=\(BACKYARD_DATABASE_URL:[^ ]*\)$/\1/p' | tail -n 1)
 [ -n "$dbcred" ] || fail "no BACKYARD_DATABASE_URL in $unit's LoadCredentialEncrypted"
 in_flight() {
 	systemd-run --quiet --wait --pipe --collect -p DynamicUser=yes \
