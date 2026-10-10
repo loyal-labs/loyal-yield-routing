@@ -13,7 +13,7 @@ import (
 // A complete move includes the existing source exit and destination entry.
 // Its evidence authorizes no transaction; runtime still reserves and rebuilds
 // each leg against actual balances. A destination is reselected after unwind.
-func observeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, lane string, requestedEquity, idleBuffer uint64) (MoveQuote, error) {
+func observeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, market LaneEconomics, requestedEquity, idleBuffer uint64) (MoveQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var empty MoveQuote
@@ -31,7 +31,7 @@ func observeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, cli
 	if equity == 0 {
 		return empty, budgetHold("selector_move_has_no_entry_cash")
 	}
-	destination, err := observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, lane, equity, o.Snapshot.Slot, false, nil)
+	destination, err := observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, market, equity, o.Snapshot.Slot, false, nil)
 	if err != nil {
 		return empty, err
 	}
@@ -86,7 +86,7 @@ func composeSelectorMove(ctx context.Context, view *View, o Observation, source 
 		validThrough = min(validThrough, destination.CollateralAssetPrice.ValidThroughSlot)
 	}
 	q := MoveQuote{SourceExit: source.ExitBound, SourceLane: source.Lane, DestinationLane: destination.Lane, ObservationID: s.ObservationID, ObservedAt: o.ObservedAt, SampleSlot: s.Slot,
-		BorrowReceiveRaw: destination.BorrowReceiveRaw, BorrowFeeRaw: destination.BorrowFeeRaw, Unlevered: destination.Unlevered, MinimumIdleRaw: source.MinimumIdleRaw,
+		BorrowReceiveRaw: destination.BorrowReceiveRaw, BorrowFeeRaw: destination.BorrowFeeRaw, Unlevered: destination.Unlevered, SpreadUnlevered: destination.SpreadUnlevered, MinimumIdleRaw: source.MinimumIdleRaw,
 		DebtPrice: copyDebtPrice(destination.DebtPrice), ValidThroughSlot: validThrough}
 	if destination.DebtRoomUSDCRaw != nil {
 		room := *destination.DebtRoomUSDCRaw

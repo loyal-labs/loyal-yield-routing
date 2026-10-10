@@ -116,9 +116,9 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 				var destination selectorDestinationQuote
 				var err error
 				if sameLane {
-					destination, err = observeSelectorReentryDestinationSize(ctx, rpc, view, client, manifest, o, source, size, true)
+					destination, err = observeSelectorReentryDestinationSize(ctx, rpc, view, client, manifest, o, out[i], source, size, true)
 				} else {
-					destination, err = observeSelectorDestinationForecast(ctx, rpc, view, client, manifest, o.policies, out[i].Lane, size, s.Slot, true, nil)
+					destination, err = observeSelectorDestinationForecast(ctx, rpc, view, client, manifest, o.policies, out[i], size, s.Slot, true, nil)
 				}
 				if err != nil {
 					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)

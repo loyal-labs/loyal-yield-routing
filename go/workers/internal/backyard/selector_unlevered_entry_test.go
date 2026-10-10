@@ -52,7 +52,7 @@ func selectorRecipeActions(t *testing.T, q selectorDestinationQuote) []Action {
 func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 1_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 func TestUnblockedLaneKeepsTheLeveragedEntryAndBlockedMapleTakes1x(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, nil)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 100_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 100_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestUnblockedLaneKeepsTheLeveragedEntryAndBlockedMapleTakes1x(t *testing.T)
 		t.Fatalf("unblocked OnRe lost its leveraged entry: %+v", q)
 	}
 	m, rpc, client, _ = selectorDestinationFixtureForLane(t, SelectedRouteID, blockDebtUtilization(t, SelectedRouteID))
-	q, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, true, nil)
+	q, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 1_000_000, 42, true, nil)
 	if err != nil || !q.Unlevered || q.BorrowReceiveRaw != 0 {
 		t.Fatalf("blocked Maple did not price the 1x entry: %+v %v", q, err)
 	}
@@ -247,7 +247,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 func TestUnleveredEntryRecipeWiresPassThePersistedWireGate(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 1_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -993,7 +993,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 		equity = uint64(200_000_000)
 	)
 	m, route, rpc, client := autoCandidateStack(t, slot, nil)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), autoAUTOPYUSD.Lane, equity, slot, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1115,7 +1115,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 		out, _ := base(in, destination, a)
 		return out, out * 9950 / 10000
 	}, nil)
-	honestQuote, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), honest, m, capturedTestPolicies(), autoAUTOPYUSD.Lane, equity, slot, false, nil)
+	honestQuote, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), honest, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1164,7 +1164,7 @@ func TestSelectorDestinationCandidateHoldsUnconvertibleDustResidue(t *testing.T)
 	t.Parallel()
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
-	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), autoAUTOPYUSD.Lane, 200_037_035, slot, false, nil)
+	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), 200_037_035, slot, false, nil)
 	assertBudgetHold(t, err, "jupiter_auto_wire_floor_zero")
 }
 
@@ -1216,7 +1216,7 @@ func TestSelectorDestinationCandidateConvertsTinyAbovePegResidue(t *testing.T) {
 		}
 		return quoted, quoted
 	}, nil)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), abovePeg, m, capturedTestPolicies(), autoAUTOPYUSD.Lane, 200_037_035, slot, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), abovePeg, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), 200_037_035, slot, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1283,11 +1283,11 @@ func TestSelectorDestinationGateIsTheActiveRegistry(t *testing.T) {
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
 	// The AUTO lane passes the lane gate (this stack's Jupiter stub may still
 	// refuse the swap itself; full AUTO pricing is covered above).
-	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), testAutoLane, 200_037_035, slot, false, nil); err != nil && strings.Contains(err.Error(), "invalid_selector_destination") {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(testAutoLane), 200_037_035, slot, false, nil); err != nil && strings.Contains(err.Error(), "invalid_selector_destination") {
 		t.Fatal("destination gate refused the AUTO lane:", err)
 	}
 	for _, lane := range []string{ethenaUSDePYUSD.Lane, RouteID} {
-		_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), lane, 1_000_000, slot, false, nil)
+		_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(lane), 1_000_000, slot, false, nil)
 		assertBudgetHold(t, err, "invalid_selector_destination")
 	}
 }
@@ -1440,7 +1440,7 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 		equity = uint64(200_000_000) // coherent parity economics: zero guaranteed residue
 	)
 	m, route, rpc, client := autoCandidateInitializerStack(t, slot, false, nil)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), autoAUTOPYUSD.Lane, equity, slot, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1492,7 +1492,7 @@ func TestSelectorDestinationCandidateInitializerPrestateRefusals(t *testing.T) {
 	m, _, rpc, client := autoCandidateInitializerStack(t, 77, false, func(_ RuntimeRoute, prestate map[string]ConfirmedAccount) {
 		prestate[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: "11111111111111111111111111111111", Lamports: 1}
 	})
-	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), autoAUTOPYUSD.Lane, 2_000_000, 77, false, nil)
+	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), 2_000_000, 77, false, nil)
 	assertBudgetHold(t, err, "initializer_native_funding_unavailable")
 }
 
@@ -1544,12 +1544,12 @@ func TestSelectorDestinationReentryStaysBoundToTheSourceExit(t *testing.T) {
 	source := selectorSourceQuote{Lane: testAutoLane, ObservationID: funded.Snapshot.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: 10_000_000_000, MaxDebtRaw: 5_000_000}, Recipe: selectorRecipe{EvidenceID: sha256Bytes([]byte("candidate-exit")), ValidThroughSlot: slot + 1}}
 	unbound := source
 	unbound.ExitBound = nil
-	if _, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, funded, unbound, 2_000_000, false); err == nil {
+	if _, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, funded, leveredTestMarket(funded.Snapshot.RouteLane), unbound, 2_000_000, false); err == nil {
 		t.Fatal("reentry priced without the source exit bound")
 	}
 	exitOnly := funded
 	exitOnly.Snapshot.RouteLane, exitOnly.Snapshot.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
-	_, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, exitOnly, source, 2_000_000, false)
+	_, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, exitOnly, leveredTestMarket(exitOnly.Snapshot.RouteLane), source, 2_000_000, false)
 	assertBudgetHold(t, err, "selector_reentry_destination_unavailable")
 }
 
@@ -1571,7 +1571,7 @@ func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T
 	)
 	m, route, rpc, client := autoCandidateInitializerStack(t, slot, true, nil)
 	bound := selectorExitBound{MaxCollateralRaw: collateral, MaxDebtRaw: debt}
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), autoAUTOPYUSD.Lane, equity, slot, false, &selectorReentryForecast{bound: bound})
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false, &selectorReentryForecast{bound: bound})
 	if err != nil {
 		t.Fatal(err)
 	}

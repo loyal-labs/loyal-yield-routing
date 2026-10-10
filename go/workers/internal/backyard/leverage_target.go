@@ -164,8 +164,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		if err != nil {
 			return 0, false
 		}
-		apr, err := projectedBorrowAPR(*market, float64(raw+fee))
-		return market.NativeAPY + market.SupplyAPY - math.Expm1(apr), err == nil && finite(apr)
+		return leverageBorrowSpread(*market, float64(raw+fee))
 	}
 	out.Next = min(nextLiveLeverageLevel(out.Current, spreadAt), leverageMaxLiveLevel)
 	out.SpreadBPS = int64(currentSpread * 10_000)
@@ -194,12 +193,8 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	proceeds, priceErr := capacityBorrowValue(s, raw, false)
 	liability, debtErr := capacityBorrowValue(s, raw+fee, true)
 	apr, rateErr := projectedBorrowAPR(*market, float64(raw+fee))
-	spread := market.NativeAPY + market.SupplyAPY - math.Expm1(apr)
-	minimumSpread := .01
-	if level == 1.75 {
-		minimumSpread = .02
-	}
-	if err != nil || priceErr != nil || debtErr != nil || rateErr != nil || !finite(spread) || spread < minimumSpread {
+	spread, allowed := leverageUpAllowed(*market, level, float64(raw+fee))
+	if err != nil || priceErr != nil || debtErr != nil || rateErr != nil || !allowed {
 		out.Next = out.Current
 		return out, true
 	}
@@ -217,7 +212,11 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	years := p.Horizon.Hours() / (365.25 * 24)
 	collateral, debt := float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw)
 	keepGross := forecastGain(collateral, collateral, debt, *market, math.Log1p(market.CurrentBorrowAPY), years)
-	candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + float64(liability), Proceeds: moved, APR: apr}, collateral, *market, years, int64(math.Ceil(out.CostRaw)))
+	// The held collateral is not reduced by the move; its cost is. Pass the
+	// collateral the move leaves earning, net of that cost, so the forecast's
+	// post-move NAV charges the cost once.
+	cost := int64(math.Ceil(out.CostRaw))
+	candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + float64(liability), Proceeds: moved, APR: apr}, collateral-float64(cost), *market, years, cost)
 	net, known := selectorFeeReservedGain(s, p.Horizon, candidate, float64(s.TotalVaultNAVRaw)-float64(equity))
 	if !known || !finite(keepGross) {
 		out.Next, out.Reason = out.Current, "fee_forecast_unavailable"

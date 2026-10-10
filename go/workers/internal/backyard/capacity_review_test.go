@@ -1,19 +1,17 @@
 package backyard
 
 import (
-	"encoding/binary"
 	"math"
 	"testing"
 )
 
 func TestCapacityReviewNonParBenchmarkDebtUnits(t *testing.T) {
 	t.Parallel()
-	m := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .12, BorrowCurve: []BorrowCurvePoint{{0, 0}, {10000, 1000}}, DebtSupplyRaw: 1_000_000_000, DebtBorrowRaw: 100_000_000}
-	s := Snapshot{RouteLane: autoAUTOPYUSD.Lane, PositionDebtRaw: 50_000_000, BorrowCapacityKnown: true, BorrowDebtDecimals: 6}
-	binary.LittleEndian.PutUint64(s.BorrowDebtPriceSF[:8], (uint64(1)<<60)/5*4)
-	binary.LittleEndian.PutUint64(s.BorrowUSDCPriceSF[:8], uint64(1)<<60)
+	// Debt priced at $0.80 against USDC at $1: 1.25 raw debt units per USDC.
+	m := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .12, BorrowCurve: []BorrowCurvePoint{{0, 0}, {10000, 1000}}, DebtSupplyRaw: 1_000_000_000, DebtBorrowRaw: 100_000_000, DebtRawPerUSDCRaw: 1.25}
+	s := Snapshot{RouteLane: autoAUTOPYUSD.Lane, PositionDebtRaw: 50_000_000}
 	got, ok := leverageSpread(m, 1.5, 100_000_000, true, s)
-	apr, err := projectedBorrowAPR(m, 12_500_001)
+	apr, err := projectedBorrowAPR(m, 12_500_000)
 	want := m.NativeAPY - math.Expm1(apr)
 	if err != nil || !ok || math.Abs(got-want) > 1e-10 {
 		t.Fatalf("mixed benchmark debt units: got %v want %v known=%v", got, want, ok)

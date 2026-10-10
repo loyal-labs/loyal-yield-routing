@@ -25,7 +25,7 @@ type selectorReentryForecast struct {
 // recipe always includes obligation-recreation rent and the exact initializer
 // fee. Every flat execution admission/build/send prerequisite stays enforced
 // where it already lives; nothing here relaxes one.
-func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, source selectorSourceQuote, maximum uint64, clampCapacity bool) (selectorDestinationQuote, error) {
+func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, market LaneEconomics, source selectorSourceQuote, maximum uint64, clampCapacity bool) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s := o.Snapshot
@@ -33,7 +33,7 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 	// Reentry prices a NEW funded allocation for the route lane, so the lane
 	// must be an active registry lane, not merely an exit-only held one.
 	if rpc == nil || client == nil || o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) ||
-		!s.Fresh || !earnActiveLane(s.RouteLane) || s.RouteLane != s.StrategyKey ||
+		!s.Fresh || !earnActiveLane(s.RouteLane) || s.RouteLane != s.StrategyKey || market.Lane != s.RouteLane ||
 		s.ObservationID == "" || s.DebtIdleRaw != 0 || s.CollateralIdleRaw < 0 || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return out, budgetHold("selector_reentry_destination_unavailable")
 	}
@@ -57,7 +57,7 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 		return out, budgetHold("selector_reentry_equity_unavailable")
 	}
 	reentry := selectorReentryForecast{bound: *source.ExitBound, collateralIdle: uint64(s.CollateralIdleRaw)}
-	return observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
+	return observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, market, maximum, s.Slot, clampCapacity, &reentry)
 }
 
 // The reentry destination observes the actual funded lane batch and binds it
