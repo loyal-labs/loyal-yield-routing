@@ -239,18 +239,6 @@ and must come from the same confirmed request artifact. The CLI does not
 default the event index or infer a receipt from a multi-receipt scan. Omit all
 three flags only for an unbound inventory scan.
 
-Withdrawal restoration is owned by the Go engine. When
-`BACKYARD_VOLTR_ORCHESTRATION_ENABLED` is set, the fleet family observes the
-vault (`go/workers/internal/fleet/voltr.go`), plans a `withdrawal_restoration`
-leg before any idle allocation or yield optimization
-(`go/workers/internal/fleet/voltr_plan.go`), and the executor claims
-restoration legs first and persists the signed wire before landing it
-(`go/workers/internal/fleetexec/voltr.go`). This tool no longer enqueues
-restoration work, drives a restoration leg through `execute-manager`, or reads
-restoration rows back from the database; those paths called the retired Rust
-`fleet-opportunity-planner`, `backyard-voltr-restoration-bridge`, and
-`backyard-voltr-restoration-readback` binaries.
-
 `runtime plan-withdrawal-restoration` remains a read-only diagnostic. It turns
 the confirmed scan into the deterministic restoration plan with exact
 four-market position evidence; it loads no signer and writes nothing:
@@ -273,29 +261,6 @@ missing request-origin bindings, and a plan that does not restore the exact
 shortfall. The default position reader loads all four exact route positions
 from confirmed RPC; `--positions <POSITION_EVIDENCE_JSON>` is allowed only for
 a separately produced route-bound position artifact.
-
-The shared Earn adapter is a replay artifact, not another planner. Its
-`replayInput` holds three saved `loyal-evidence --kind voltr` inputs (confirmed
-Voltr observation, market epoch, optimizer epoch row, vault id, clock): the
-source observation at the source withdrawal's protected-before context, the
-destination observation at the idle readback context, and the same vault with
-the scanner's positive withdrawal demand. The tool replays each through the Go
-planner (`go run ./cmd/loyal-evidence -kind voltr` -> `fleet.PlanVoltr`; Go
-must be installed) and binds the result to the same lifecycle and
-request-protected context:
-
-```sh
-bun src/cli.ts verify earn-adapter \
-  --input ../../docs/evidence/backyard-voltr-four-market/earn-adapter-producer-input-v1.json \
-  --artifact-out ../../docs/evidence/backyard-voltr-four-market/earn-adapter-confirmed-v1.json
-```
-
-The planner must choose a zero-demand `yield_optimization` withdrawal of the
-exact amount out of the source strategy, then an `idle_allocation` of the same
-amount into the destination, and positive demand must displace optimization.
-The verifier replays the persisted input again and rejects any byte of drift,
-including a changed Go planner source. Hand-editing a replay or claiming that
-normal Earn optimization restored a withdrawal is rejected.
 
 ## Lifecycle evidence
 

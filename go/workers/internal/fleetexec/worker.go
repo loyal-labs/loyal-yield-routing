@@ -13,7 +13,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/mr-tron/base58"
 )
 
 // resendEvery matches the Rust confirmer's one-second durable poll.
@@ -55,12 +54,7 @@ type Worker struct {
 	recovery *sameMintRecovery
 	// balances reads a fee-only shard's balance right before admission.
 	balances fleet.AccountReader
-	// voltr is the Backyard Voltr route; the delegate signs it only when it
-	// is the route's guardian (Rust leaves the route dark otherwise).
-	voltr         *fleet.VoltrRoute
-	voltrChain    *chain.Client
-	voltrGuardian bool
-	fresh         *fleet.Revalidator
+	fresh    *fleet.Revalidator
 	// landing counts claimed rows still being landed or reconciled; at most
 	// BatchSize run at once. Run joins them before returning.
 	landing atomic.Int64
@@ -83,12 +77,6 @@ func NewWorker(config Config, store *Store, land chain.LandChain, receipts recei
 		}
 		worker.recovery = &sameMintRecovery{store: store, accounts: client, slotDuration: config.SlotDuration}
 		worker.balances = client
-		route, err := fleet.LoadVoltrRoute()
-		if err != nil {
-			return nil, err
-		}
-		worker.voltr, worker.voltrChain = &route, client
-		worker.voltrGuardian = len(signer.FeePayer) == ed25519.PrivateKeySize && base58.Encode(signer.FeePayer[32:]) == route.Guardian
 	}
 	return worker, nil
 }
@@ -169,9 +157,6 @@ func (w *Worker) Tick(ctx context.Context) (err error) {
 		return err
 	}
 	w.config.Facts.Inflight(engine.FamilyFleet, inflight)
-	if err := w.executeVoltr(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Error("fleetexec voltr admission failed", "error", fleet.LogErrorText(err))
-	}
 	if w.fresh == nil {
 		return nil
 	}
@@ -275,9 +260,6 @@ func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) erro
 // reconciled. Capacity stays reserved until this proof and newer telemetry.
 func (w *Worker) reconcileFinalized(ctx context.Context, lease SubmissionLease) error {
 	record := lease.Submission
-	if isVoltrSubmission(record) {
-		return w.reconcileVoltr(ctx, lease)
-	}
 	if record.ConfirmedSlot == nil {
 		return fmt.Errorf("reconciliation submission %d has no confirmed slot", record.ID)
 	}

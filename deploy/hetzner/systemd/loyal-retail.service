@@ -35,10 +35,7 @@ Environment=RETAIL_TIMESCALE_SCHEMA=kamino
 # RETAIL_DATABASE_URL, which must be the direct Neon DSN, not the pooler.
 # Optional fee-only route payers come from a YIELD_ROUTE_FEE_PAYER_KEYPAIRS
 # credential drop-in (Rust's format); only keys enabled in
-# route_fee_payer_shards are used, else the delegate pays. Fleet plans the
-# Backyard Voltr vault when BACKYARD_VOLTR_ORCHESTRATION_ENABLED and
-# BACKYARD_VOLTR_FLEET_VAULT_ID are set, and signs it only when the delegate
-# is the route guardian. Active lookup mode also
+# route_fee_payer_shards are used, else the delegate pays. Active lookup mode also
 # needs LoadCredentialEncrypted=RETAIL_LOOKUP_MANAGER_KEYPAIR in a drop-in.
 # AUTODEPOSIT_IDLE_TOLERANCE_RAW (raw USDC, default 25000000) is the vault
 # idle residue a direct autodeposit leaves beside it, as in the TS executor.

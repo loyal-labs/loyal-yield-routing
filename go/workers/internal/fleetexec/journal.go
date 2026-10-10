@@ -250,25 +250,22 @@ func (s *Store) RecordBroadcastIntent(ctx context.Context, lease SubmissionLease
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var decision int64
 		var epochs json.RawMessage
-		var semantic, cluster, requirements, kind string
-		err := tx.QueryRow(ctx, `SELECT s.decision_id,s.alt_mutation_epochs,s.semantic_key,s.cluster,s.alt_requirements_fingerprint,COALESCE(d.execution_plan->>'kind','')
+		var semantic, cluster, requirements string
+		err := tx.QueryRow(ctx, `SELECT s.decision_id,s.alt_mutation_epochs,s.semantic_key,s.cluster,s.alt_requirements_fingerprint
    FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id
    WHERE s.id=$1 AND s.transaction_signature=$4 AND s.submission_state IN ('signed','submitted')
     AND s.confirmation_lease_owner=$2 AND s.confirmation_fencing_token=$3
     AND s.confirmation_lease_expires_at>clock_timestamp() AND d.movement_route <> 'cross_mint_jupiter'
     AND d.status::text IN ('planned','simulating','ready','submitted','confirming','confirmed')
-    AND (d.signature IS NULL OR d.signature=s.transaction_signature) FOR UPDATE OF s,d`, lease.Submission.ID, lease.Owner, lease.FencingToken, lease.Submission.Signature).Scan(&decision, &epochs, &semantic, &cluster, &requirements, &kind)
+    AND (d.signature IS NULL OR d.signature=s.transaction_signature) FOR UPDATE OF s,d`, lease.Submission.ID, lease.Owner, lease.FencingToken, lease.Submission.Signature).Scan(&decision, &epochs, &semantic, &cluster, &requirements)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrStaleOwner
 		}
 		if err != nil {
 			return err
 		}
-		// Voltr's pinned ALT is no registry table; signVoltr verified it on chain.
-		if kind != "voltr_kamino" {
-			if err := checkPreparedALTUsage(ctx, tx, epochs, semantic, cluster, requirements); err != nil {
-				return err
-			}
+		if err := checkPreparedALTUsage(ctx, tx, epochs, semantic, cluster, requirements); err != nil {
+			return err
 		}
 		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.rebalance_decisions SET status=CASE WHEN status::text='confirmed' THEN status ELSE 'confirming'::loyal_yield.decision_status END,signature=COALESCE(signature,$2),updated_at=clock_timestamp() WHERE id=$1`, decision, lease.Submission.Signature)
 		if err != nil || tag.RowsAffected() != 1 {
@@ -384,8 +381,7 @@ WITH candidates AS (
     AND movement_leg='route'
     AND EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.id=signed_route_submissions.opportunity_id
       WHERE d.id=signed_route_submissions.decision_id AND d.movement_route='same_mint'
-       AND (o.execution_plan->>'route_kind'='same_mint' AND o.execution_plan->>'source_kind' IN ('reserve_position','idle_vault_usdc')
-        OR o.execution_plan->>'kind'='voltr_kamino'))
+       AND o.execution_plan->>'route_kind'='same_mint' AND o.execution_plan->>'source_kind' IN ('reserve_position','idle_vault_usdc'))
     AND submission_state IN ('signed','submitted','confirmed',
         'reconciliation_pending','expiry_check_pending')
     AND (confirmation_lease_owner IS NULL OR confirmation_lease_expires_at < clock_timestamp())
