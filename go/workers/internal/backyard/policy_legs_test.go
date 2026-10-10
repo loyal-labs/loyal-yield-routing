@@ -121,7 +121,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 						admitting = append(admitting, leg)
 					}
 				}
-				if want := []int{int(execution.ConstraintIndexes[i])}; fmt.Sprint(admitting) != fmt.Sprint(want) && !sharedSwapLeg(key, admitting, want[0]) {
+				if want := []int{int(execution.ConstraintIndexes[i])}; fmt.Sprint(admitting) != fmt.Sprint(want) {
 					t.Errorf("%s: instruction %d executes at constraint %d, but constraints %v admit it", key, i, want[0], admitting)
 				}
 				if ix.ProgramID != jupiter.ProgramID {
@@ -147,13 +147,6 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 	}
 }
 
-// sharedSwapLeg is the one documented overlap: a basic swap family admits
-// PRIME under both of its legs, and PRIME swaps under the first.
-func sharedSwapLeg(key policyKey, admitting []int, leg int) bool {
-	return (key.family == BasicSwapRoutesA || key.family == BasicSwapRoutesB) &&
-		fmt.Sprint(admitting) == fmt.Sprint([]int{basicSwapONycPrime, basicSwapPrimeSyrup}) && leg == basicSwapONycPrime
-}
-
 // vaultObligation is the state a KLend leg's obligation predicate reads: an
 // obligation owned by KLend whose owner (at byte 64) is the vault.
 func vaultObligation(solana.PublicKey) *chain.Account {
@@ -163,44 +156,22 @@ func vaultObligation(solana.PublicKey) *chain.Account {
 	return &chain.Account{Owner: kamino.ProgramID, Data: data}
 }
 
-// compileTestSwap is the swap's production message and, when it does not fit
-// a legacy packet, the lookup tables it then needs: the swap API's tables,
-// standing in here for chain reads by holding the swap's own accounts. A lane
-// that takes no lookup tables (the PRIME/USDC route) holds such a swap in
-// production; its v0 message is compiled here directly, so its constraint is
-// still proven.
+// compileTestSwap is the swap's message as production sends it: a legacy
+// packet, or, when that does not fit and the lane takes the swap API's lookup
+// tables, a v0 packet through them, standing in here for the chain's tables by
+// holding the swap's own accounts. A swap that fits neither fails the test.
 func compileTestSwap(t *testing.T, request JupiterSwapRequest) ([]byte, []LookupTableSnapshot) {
 	t.Helper()
 	message, err := CompileJupiterMessage(request)
 	if err == nil {
 		return message, request.LookupTables
 	}
-	if !strings.Contains(err.Error(), "does not fit") {
-		t.Fatal(err)
+	if !strings.Contains(err.Error(), "does not fit") || len(request.Instruction.LookupTableAddresses) == 0 {
+		t.Fatalf("%s %s does not compile as production sends it: %v", request.RouteLane, request.Action, err)
 	}
 	var accounts []string
 	for _, account := range request.Instruction.Accounts {
 		accounts = append(accounts, account.Pubkey)
-	}
-	if len(request.Instruction.LookupTableAddresses) == 0 {
-		inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, index, err := jupiterPolicyLeg(request.RouteLane, request.Action)
-		if err != nil {
-			t.Fatal(err)
-		}
-		outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tables := []LookupTableSnapshot{autoFixtureLookupTable(t, accounts)}
-		message, err := compileV0Message(mustKey(bridgeDelegate), mustKey(request.RecentBlockhash), []compiledInstruction{outer}, tables)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return message, tables
 	}
 	for _, address := range request.Instruction.LookupTableAddresses {
 		table := autoFixtureLookupTable(t, accounts)
@@ -233,6 +204,7 @@ type jupiterV2Row struct {
 		RoutePlanLength         int    `json:"routePlanLength"`
 	} `json:"quote"`
 	QuoteResponse json.RawMessage            `json:"quoteResponse"`
+	MaxAccounts   int                        `json:"maxAccounts"`
 	Instruction   recordedJupiterInstruction `json:"instruction"`
 	LookupTables  []string                   `json:"lookupTables"`
 }
@@ -277,6 +249,10 @@ func fixtureSwapRequest(t *testing.T, lane string, action Action) JupiterSwapReq
 		if r.URL.Path == "/quote" {
 			if r.URL.Query().Get("instructionVersion") != "V2" {
 				t.Error("quote asks for another instruction version")
+			}
+			// A route quoted at a larger maxAccounts is no answer to this quote.
+			if asked, err := strconv.Atoi(r.URL.Query().Get("maxAccounts")); err != nil || asked < row.MaxAccounts {
+				t.Errorf("quote asks for at most %s accounts; the fixture route was quoted at %d", r.URL.Query().Get("maxAccounts"), row.MaxAccounts)
 			}
 			return response(string(row.QuoteResponse)), nil
 		}

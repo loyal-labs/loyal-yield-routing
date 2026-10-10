@@ -250,7 +250,7 @@ func TestUnsupportedExitsRefuseBeforeAnyWrite(t *testing.T) {
 		}
 		decision := Decision{Action: SwapUSDCToDebtStep, StrategyKey: autoAUTOPYUSD.Lane, AmountRaw: 20_000}
 		_, err := prepareJupiterQuoteEvidence(ctx, nil, nil, manifest, testPolicies(t), decision, 20_000, 0, 42)
-		if err == nil || err.Error() != "action SWAP_USDC_TO_DEBT_STEP is not an approved AUTO Jupiter edge" {
+		if err == nil || err.Error() != "action SWAP_USDC_TO_DEBT_STEP is no catalog conversion on AUTO/AUTO/PYUSD" {
 			t.Fatalf("unsupported AUTO edge did not fail before quote/RPC access: %v", err)
 		}
 		var operations int

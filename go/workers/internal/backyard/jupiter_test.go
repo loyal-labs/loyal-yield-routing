@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -43,8 +42,7 @@ func jupiterTestInstruction(action Action, amount, out uint64) JupiterSwapInstru
 
 // v2TestInstruction is lane's shared_accounts_route_v2 of action as the swap
 // API shapes it: the twelve fixed accounts through program authority 0, then
-// filler venue accounts, and one Manifest step (primeForwardPlan) at the
-// worker's slippage bound.
+// filler venue accounts, and one Manifest step at the worker's slippage bound.
 func v2TestInstruction(lane string, action Action, amount, out uint64, filler int) JupiterSwapInstruction {
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
@@ -75,7 +73,7 @@ func v2TestInstruction(lane string, action Action, amount, out uint64, filler in
 	}
 	data := append([]byte(nil), jupiter.SharedAccountsRouteV2Discriminator[:]...)
 	data = append(binary.LittleEndian.AppendUint64(binary.LittleEndian.AppendUint64(append(data, 0), amount), out), 50, 0, 0, 0, 0, 0)
-	data = append(data, primeForwardPlan...)
+	data = append(data, 1, 0, 0, 0, 116, 0, 0x10, 0x27, 0, 1) // one step: Manifest, all 10,000 bps, token 0 into 1
 	return JupiterSwapInstruction{ProgramID: jupiter.ProgramID.String(), Accounts: accounts, Data: base64.StdEncoding.EncodeToString(data)}
 }
 
@@ -113,25 +111,6 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 	}
 }
 
-// The forward PRIME/USDC policy admits its one pinned route plan and no other.
-func TestForwardJupiterPolicyAdmitsOnlyItsRoutePlan(t *testing.T) {
-	forward, err := primeUSDCForwardPolicy()
-	if err != nil {
-		t.Fatal(err)
-	}
-	instruction, err := validateJupiterInstructionForRoute(jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99), SwapUSDCToPrimeStep, 100, 99, 98, RouteID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !squads.Admits(forward.Constraints[splitLeg], instruction.squads(), nil) {
-		t.Fatal("the forward policy refuses its own route plan")
-	}
-	instruction.data[jupiter.V2RoutePlanOffset+4] = 117 // another venue
-	if squads.Admits(forward.Constraints[splitLeg], instruction.squads(), nil) {
-		t.Fatal("the forward policy admits another route plan")
-	}
-}
-
 func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T) {
 	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99)
 	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err != nil {
@@ -157,7 +136,7 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 		var response string
 		switch r.URL.Path {
 		case "/quote":
-			if r.URL.Query().Get("maxAccounts") != "32" || r.URL.Query().Get("slippageBps") != "50" || r.URL.Query().Get("instructionVersion") != "V2" {
+			if r.URL.Query().Get("maxAccounts") != "16" || r.URL.Query().Get("slippageBps") != "50" || r.URL.Query().Get("instructionVersion") != "V2" {
 				t.Error("quote bounds drifted")
 			}
 			response = `{"inputMint":"` + bridgeUSDC + `","outputMint":"` + kaminoPrimeMint + `","inAmount":"100","outAmount":"99","otherAmountThreshold":"98","swapMode":"ExactIn","slippageBps":50,"platformFee":null,"routePlan":[{}]}`

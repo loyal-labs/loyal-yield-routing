@@ -226,7 +226,7 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 			}
 			wantLeg := byte(basicSwapONycPrime)
 			if lane == SelectedRouteID {
-				wantLeg = basicSwapPrimeSyrup
+				wantLeg = basicSwapSyrup
 			}
 			if key != (policyKey{family: test.family}) || leg != wantLeg {
 				t.Fatalf("%s %s resolved to policy=%s leg=%d", lane, test.action, key, leg)
@@ -264,8 +264,8 @@ func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry != (policyKey{family: BasicSwapRoutesA}) || entryLeg != basicSwapPrimeSyrup ||
-		exit != (policyKey{family: BasicSwapRoutesB}) || exitLeg != basicSwapPrimeSyrup {
+	if entry != (policyKey{family: BasicSwapRoutesA}) || entryLeg != basicSwapSyrup ||
+		exit != (policyKey{family: BasicSwapRoutesB}) || exitLeg != basicSwapSyrup {
 		t.Fatalf("unexpected Phase 2 basic swap policies: entry=%s/%d exit=%s/%d", entry, entryLeg, exit, exitLeg)
 	}
 }

@@ -82,10 +82,6 @@ func backyardPolicies() (map[policyKey]squads.Policy, error) {
 			add(policyKey{lane: route.Lane, leg: leg}, policy, err)
 		}
 	}
-	forward, err := primeUSDCForwardPolicy()
-	add(policyKey{lane: RouteID, action: SwapUSDCToPrimeStep}, forward, err)
-	swaps, err := primeUSDCSwapPolicy()
-	add(policyKey{lane: RouteID, action: SwapPrimeToUSDCStep}, swaps, err)
 	catalog, err := catalogSwapEdges()
 	if err != nil {
 		return nil, err
@@ -236,10 +232,14 @@ func jupiterPolicyLeg(lane string, action Action) (policyKey, byte, error) {
 			family = BasicSwapRoutesA
 		}
 		return policyKey{family: family}, basicSwapLeg[lane], nil
-	case lane == RouteID && action == SwapUSDCToPrimeStep:
-		return policyKey{lane: lane, action: action}, splitLeg, nil
-	case lane == RouteID && action == SwapPrimeToUSDCStep:
-		return policyKey{lane: lane, action: action}, primeSwapOut, nil
+	case lane == RouteID && (action == SwapUSDCToPrimeStep || action == SwapPrimeToUSDCStep):
+		// The PRIME/USDC route swaps along the catalog's USDC/PRIME edges.
+		from, to := "USDC", "PRIME"
+		if action == SwapPrimeToUSDCStep {
+			from, to = to, from
+		}
+		edges, leg, err := catalogSwap(from, to)
+		return policyKey{swaps: swapsName(edges)}, leg, err
 	default:
 		return policyKey{}, 0, fmt.Errorf("lane %q has no Jupiter policy for %s", lane, action)
 	}
@@ -289,14 +289,13 @@ const (
 )
 
 const (
-	basicSwapONycPrime  = iota // USDC or USDS with ONyc or PRIME
-	basicSwapPrimeSyrup        // USDC or PYUSD with PRIME or syrupUSDC
+	basicSwapONycPrime = iota // USDC with ONyc or PRIME
+	basicSwapSyrup            // USDC with syrupUSDC
 	basicSwapLegs
 )
 
-// basicSwapLeg is the swap leg each basic lane executes under; PRIME, which
-// both legs admit, swaps under the first.
-var basicSwapLeg = map[string]byte{"OnRe/ONyc/USDC": basicSwapONycPrime, PhaseOneLaneID: basicSwapONycPrime, SelectedRouteID: basicSwapPrimeSyrup}
+// basicSwapLeg is the swap leg each basic lane executes under.
+var basicSwapLeg = map[string]byte{"OnRe/ONyc/USDC": basicSwapONycPrime, PhaseOneLaneID: basicSwapONycPrime, SelectedRouteID: basicSwapSyrup}
 
 // basicPolicy is one basic family's policy, shared by the three runtime lanes
 // (OnRe, Prime, Maple, in that order in every pin). Its KLend legs pin the
@@ -329,14 +328,14 @@ func basicPolicy(family BasicPolicyFamily) (squads.Policy, error) {
 		out[basicRepay] = kamino.RepayV2Allowed(leg, squads.Unpinned)
 		return vaultPolicy(out[:]...), nil
 	case BasicSwapRoutesA, BasicSwapRoutesB:
-		stables := [basicSwapLegs][]swapAsset{{usdcAsset(), debtAsset(primePRIMEUSDS)}, {usdcAsset(), debtAsset(autoAUTOPYUSD)}}
-		collaterals := [basicSwapLegs][]swapAsset{{collateralAsset(onre), collateralAsset(prime)}, {collateralAsset(prime), collateralAsset(maple)}}
+		usdc := []swapAsset{usdcAsset()}
+		collaterals := [basicSwapLegs][]swapAsset{{collateralAsset(onre), collateralAsset(prime)}, {collateralAsset(maple)}}
 		var out [basicSwapLegs]squads.InstructionConstraintView
 		for leg := range out {
 			if family == BasicSwapRoutesA {
-				out[leg] = vaultSwap(stables[leg], collaterals[leg])
+				out[leg] = vaultSwap(usdc, collaterals[leg])
 			} else {
-				out[leg] = vaultSwap(collaterals[leg], stables[leg])
+				out[leg] = vaultSwap(collaterals[leg], usdc)
 			}
 		}
 		return vaultPolicy(out[:]...), nil
@@ -373,39 +372,6 @@ func kaminoLegPolicy(route RuntimeRoute, leg kaminoPrimeUSDCLeg) (squads.Policy,
 func initializerPolicy(route RuntimeRoute) (squads.Policy, error) {
 	constraint, err := obligationInitAllowed(route)
 	return vaultPolicy(constraint), err
-}
-
-// The PRIME/USDC route's two swap policies. The forward one admits USDC into
-// PRIME along one fixed route plan as its one constraint; the other admits
-// USDC into PRIME and PRIME back into USDC.
-const (
-	primeSwapIn  = iota // USDC into PRIME
-	primeSwapOut        // PRIME into USDC
-	primeSwapLegs
-)
-
-// primeForwardPlan is the forward policy's route plan, the whole
-// Vec<RoutePlanStepV2> at jupiter.V2RoutePlanOffset: one step, Manifest (swap
-// variant 116) on side 0, all 10,000 bps, token 0 into token 1.
-var primeForwardPlan = []byte{1, 0, 0, 0, 116, 0, 0x10, 0x27, 0, 1}
-
-func primeUSDCForwardPolicy() (squads.Policy, error) {
-	a, err := routeSwapAssets()
-	if err != nil {
-		return squads.Policy{}, err
-	}
-	return vaultPolicy(swapEdge{a.usdc, a.prime}.allowed(squads.DataBytes(jupiter.V2RoutePlanOffset, primeForwardPlan))), nil
-}
-
-func primeUSDCSwapPolicy() (squads.Policy, error) {
-	a, err := routeSwapAssets()
-	if err != nil {
-		return squads.Policy{}, err
-	}
-	var swaps [primeSwapLegs]swapEdge
-	swaps[primeSwapIn] = swapEdge{a.usdc, a.prime}
-	swaps[primeSwapOut] = swapEdge{a.prime, a.usdc}
-	return swapPolicy(swaps[:]...), nil
 }
 
 // catalogSwapEdges are the Jupiter policies the catalog lanes, AUTO among
@@ -468,19 +434,16 @@ type swapAsset struct {
 	custody, mint, program solana.PublicKey
 }
 
-// pyusdMint is PayPal USD. The swap API routes it through no program
-// authority's token account: every V2 shared-accounts answer with PYUSD in or
-// out (8 edges, testdata/jupiter-v2-swap-instructions.json) puts the vault's
-// own PYUSD account in that slot, while USDG, with the same Token-2022
-// extensions, goes through the authority's. Jupiter still keeps the output in
-// the destination (policy's TestSharedRouteV2PYUSDTamperOnMainnet).
-const pyusdMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
-
 // programAccounts are the accounts a shared route may move a through on
 // Jupiter's side: each program authority's token account of it, or the
-// vault's own account for a mint the API routes directly.
+// vault's own account for PYUSD. The swap API routes PYUSD through no
+// program authority's token account: every V2 shared-accounts answer with
+// PYUSD in or out (8 edges, testdata/jupiter-v2-swap-instructions.json) puts
+// the vault's own PYUSD account in that slot, while USDG, with the same
+// Token-2022 extensions, goes through the authority's. Jupiter still keeps the
+// output in the destination (policy's TestSharedRouteV2PYUSDTamperOnMainnet).
 func (a swapAsset) programAccounts() []solana.PublicKey {
-	if a.mint == kaminoKey(pyusdMint) {
+	if a.mint == kaminoKey(autoAUTOPYUSD.Kamino.DebtMint) {
 		return []solana.PublicKey{a.custody}
 	}
 	return jupiter.AuthorityTokenAccounts(jupiter.APIAuthorities, a.mint, a.program)

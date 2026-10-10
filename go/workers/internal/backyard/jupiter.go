@@ -22,6 +22,18 @@ const (
 	jupiterMaxRoutePlanLeg = 4
 )
 
+// jupiterMaxAccounts is the route size a swap is quoted at: 32 where its packet
+// can take the swap API's lookup tables, and 16 where it must fit a legacy
+// packet (about 40 accounts in all). Jupiter treats maxAccounts as a hint: at
+// 24 a 5,000 USDC USDC->PRIME quote came back as a 43-account two-step route;
+// at 16 every sampled route on those lanes was one step of at most 28.
+func jupiterMaxAccounts(lane string, action Action) int {
+	if acceptsJupiterLookupHints(lane, action) {
+		return 32
+	}
+	return 16
+}
+
 // JupiterSwapInstruction is the swap instruction as journaled in the request.
 type JupiterSwapInstruction struct {
 	ProgramID string                `json:"programId"`
@@ -66,18 +78,10 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 	if lane == "" {
 		lane = RouteID
 	}
-	if lane == autoAUTOPYUSD.Lane {
-		// AUTO edges resolve from the route's own reviewed identities, never
-		// from a catalog swap policy.
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			return "", "", "", "", err
-		}
-		return autoSwapEdge(route, action)
-	}
 	if catalogJupiterRoute(lane) {
-		edges, leg, err := catalogEdge(action, lane)
-		edge := edges[leg]
+		// A catalog lane, AUTO among them, swaps along its catalog edge, the
+		// one its policy admits.
+		edge, err := catalogConversion(action, lane)
 		return edge.from.mint.String(), edge.to.mint.String(), edge.from.custody.String(), edge.to.custody.String(), err
 	}
 	if lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID && lane != "OnRe/ONyc/USDC" {
@@ -118,7 +122,7 @@ func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string,
 	// Every swap policy admits shared_accounts_route_v2 only, which the API
 	// returns for a V2 quote with shared accounts.
 	request := jupiter.QuoteRequest{InputMint: sourceMint, OutputMint: destinationMint, Amount: amount, SlippageBPS: jupiterMaxSlippageBPS,
-		MaxAccounts: 32, InstructionVersion: "V2"}
+		MaxAccounts: jupiterMaxAccounts(lane, action), InstructionVersion: "V2"}
 	if lane == SelectedRouteID {
 		// The selected RWA representative was reviewed against Manifest. Keep
 		// Jupiter's optimizer inside that one venue family instead of accepting

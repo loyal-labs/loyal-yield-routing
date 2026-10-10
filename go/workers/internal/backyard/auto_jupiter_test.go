@@ -239,7 +239,7 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 	foreign := decision
 	foreign.Action = SwapUSDCToDebtStep
 	if _, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, testPolicies(t), foreign, 2_000_000, 0, 42); err == nil ||
-		!strings.Contains(err.Error(), "not an approved AUTO") {
+		!strings.Contains(err.Error(), "no catalog conversion on "+autoAUTOPYUSD.Lane) {
 		t.Fatalf("foreign AUTO pair quoted: %v", err)
 	}
 }
