@@ -214,33 +214,23 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 			pre.Authority != effect.Authority || post.Authority != effect.Authority {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
-		// Only the Squads vault's and the Voltr strategy's custody is ours
-		// alone. Voltr idle and the Kamino reserve accounts are also written by
-		// third parties between our observation and this transaction, so their
-		// observed balance is no precondition: the receipt's pre and post
-		// bracket this transaction only, and per-mint conservation over our
-		// exact custody fixes their move.
-		if effect.Authority != bridgeVault && effect.Authority != bridgeStrategyAuth {
-			if !expected.Conserved && int64(post.Raw)-int64(pre.Raw) != int64(effect.AfterRaw)-int64(effect.BeforeRaw) {
-				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped shared-account delta mismatch: %s", effect.Address)
+		// The receipt's pre and post bracket this transaction only, so its
+		// delta is what this transaction moved. Any account (Voltr idle, the
+		// Kamino reserves, even our own custody) may have been written between
+		// our observation and this transaction; that is no mismatch.
+		moved, planned := int64(post.Raw)-int64(pre.Raw), int64(effect.AfterRaw)-int64(effect.BeforeRaw)
+		if bounds != nil {
+			if i == 0 {
+				moved = -moved
 			}
-		} else if pre.Raw != effect.BeforeRaw {
-			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
-		} else if bounds != nil {
-			var moved uint64
-			if i == 0 && post.Raw <= pre.Raw {
-				moved = pre.Raw - post.Raw
-			} else if i == 1 && post.Raw >= pre.Raw {
-				moved = post.Raw - pre.Raw
-			}
-			if moved < bounds.MinimumDebitRaw || moved > bounds.MaximumDebitRaw {
+			if moved < int64(bounds.MinimumDebitRaw) || moved > int64(bounds.MaximumDebitRaw) {
 				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped Kamino transfer outside finite bounds: %s", effect.Address)
 			}
 		} else if effect.MinimumAfterRaw != nil {
-			if post.Raw < *effect.MinimumAfterRaw {
+			if moved < int64(*effect.MinimumAfterRaw)-int64(effect.BeforeRaw) {
 				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody minimum postcondition mismatch: %s", effect.Address)
 			}
-		} else if post.Raw != effect.AfterRaw {
+		} else if moved != planned {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody postcondition mismatch: %s", effect.Address)
 		}
 		if ^uint64(0)-beforeByMint[effect.Mint] < pre.Raw || ^uint64(0)-afterByMint[effect.Mint] < post.Raw {

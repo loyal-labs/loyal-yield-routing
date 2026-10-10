@@ -167,9 +167,9 @@ func TestLeverageExitPreCheckSizesTheReleaseOnTheFullDebt(t *testing.T) {
 	}
 }
 
-// The receipt brackets only this transaction, so third-party moves on the
-// shared reserve supply and fee receiver between observation and landing never
-// fail reconciliation; our own custody and per-mint conservation still must hold.
+// The receipt brackets only this transaction, so moves on any account between
+// observation and landing never fail reconciliation; this transaction's own
+// delta on every account, the fee included, still must match.
 func TestBorrowReceiptReconcilesDespiteSharedReserveMoves(t *testing.T) {
 	route := ethenaUSDePYUSD
 	e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-borrow", Conserved: true, Accounts: []ExpectedAccountEffect{
@@ -187,8 +187,13 @@ func TestBorrowReceiptReconcilesDespiteSharedReserveMoves(t *testing.T) {
 		t.Fatal("an unconserved fee reconciled")
 	}
 	receipt = receiptFor(e, map[string][2]uint64{route.DebtCustody: {1, 101}})
+	if _, _, err := ReconcileConfirmedTransaction(e, receipt); err != nil {
+		t.Fatal("a transfer into our debt custody before landing failed reconciliation", err)
+	}
+	// Kamino raised the fee after we prepared: conserved, but not what we signed for.
+	receipt = receiptFor(e, map[string][2]uint64{route.DebtLiquiditySupply: {1_000, 890}, route.DebtFeeReceiver: {50, 60}})
 	if _, _, err := ReconcileConfirmedTransaction(e, receipt); err == nil {
-		t.Fatal("our custody drift reconciled")
+		t.Fatal("a borrow charged above the prepared fee reconciled")
 	}
 }
 

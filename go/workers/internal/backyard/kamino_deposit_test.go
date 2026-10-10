@@ -183,8 +183,8 @@ func TestDepositReconcilesFromTheReceiptAndRejectsMalformedEffects(t *testing.T)
 		t.Fatal("a landed deposit beside third-party reserve moves failed reconciliation", err)
 	}
 	receipt = receiptFor(effects, map[string][2]uint64{effects.Accounts[0].Address: {effects.Accounts[0].BeforeRaw + 1, effects.Accounts[0].AfterRaw + 1}})
-	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err == nil {
-		t.Fatal("our collateral custody drift reconciled")
+	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err != nil {
+		t.Fatal("a transfer into our collateral custody before landing failed reconciliation", err)
 	}
 	receipt = receiptFor(effects, map[string][2]uint64{
 		effects.Accounts[0].Address: {effects.Accounts[0].BeforeRaw, effects.Accounts[0].BeforeRaw},
