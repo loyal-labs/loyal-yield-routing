@@ -275,7 +275,7 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	return nil
 }
 
-func productionTickRuntime(database *Database, rpc *chain.Client, manifest RouteManifest, credentials Credentials) tickRuntime {
+func productionTickRuntime(database *Database, rpc *chain.Client, view *View, manifest RouteManifest, credentials Credentials) tickRuntime {
 	state := productionObserveState{
 		manifest: manifest, routeKey: productionRouteKey,
 		journal: database,
@@ -285,14 +285,19 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 			if err != nil {
 				return Observation{}, err
 			}
-			observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, planning.observationManifest(manifest))
+			// After this route's own transaction landed at slot R, plan only
+			// from a view complete through R.
+			if _, _, _, err = view.read(ctx, nil, planning.landedSlot); err != nil {
+				return Observation{}, err
+			}
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, planning.observationManifest(manifest))
 			if err != nil {
 				return Observation{}, err
 			}
 			observation.planning = planning
 			return observation, nil
 		},
-		identity: newProgramIdentityWatcher(chainProgramIdentity(rpc)).observe,
+		identity: newProgramIdentityWatcher(viewProgramIdentity(view)).observe,
 	}
 	return tickRuntime{
 		withdrawalHealth: database.RecordWithdrawalHealth,
@@ -331,7 +336,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 			return database.LoadNonterminalOnManifest(ctx, routeKey, manifest)
 		},
 		advance: func(ctx context.Context, operation PersistedOperation) error {
-			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, operation)
+			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, view, operation)
 		},
 		observe:                          state.observe,
 		loadLatch:                        database.ManualRecoveryLatch,
@@ -345,14 +350,14 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
-			return observeConfirmedKaminoExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, state.enrich)
+			return observeConfirmedKaminoExecutionEvidenceWithEnrichment(ctx, rpc, view, manifest, decision, state.enrich)
 		},
 		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, JupiterExecutionEvidence, error) {
 			manifest, err := manifestForUnwind(ctx, database, manifest)
 			if err != nil {
 				return Observation{}, JupiterExecutionEvidence{}, err
 			}
-			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, productionJupiter, state.enrich)
+			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, view, manifest, decision, productionJupiter, state.enrich)
 		},
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
@@ -389,8 +394,8 @@ func confirmedObservationUnavailable(err error) error {
 // NewWorker constructs the single serialized lifecycle worker. The signing
 // capability is injected, validated here, and never derivable from a
 // decision, observation, or recovery input.
-func NewWorker(database *Database, rpc *chain.Client, config Config, credentials Credentials) (*Worker, error) {
-	if database == nil || database.pool == nil || rpc == nil || config.validateLease() != nil {
+func NewWorker(database *Database, rpc *chain.Client, view *View, config Config, credentials Credentials) (*Worker, error) {
+	if database == nil || database.pool == nil || rpc == nil || view == nil || config.validateLease() != nil {
 		return nil, fmt.Errorf("invalid concrete worker configuration")
 	}
 	key, err := credentials.signer()
@@ -401,7 +406,7 @@ func NewWorker(database *Database, rpc *chain.Client, config Config, credentials
 	if err != nil {
 		return nil, err
 	}
-	return &Worker{wake: make(chan struct{}, 1), routeKey: productionRouteKey, interval: config.PollInterval, manifest: manifest, runtime: productionTickRuntime(database, rpc, manifest, Credentials{PolicyKey: key})}, nil
+	return &Worker{wake: make(chan struct{}, 1), routeKey: productionRouteKey, interval: config.PollInterval, manifest: manifest, runtime: productionTickRuntime(database, rpc, view, manifest, Credentials{PolicyKey: key})}, nil
 }
 
 func (w *Worker) Tick(ctx context.Context) (tickErr error) {

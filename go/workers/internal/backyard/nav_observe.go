@@ -169,14 +169,6 @@ func strategyReceiptIntegrityFault(account ConfirmedAccount) bool {
 	return account.Address == "" || account.Owner != voltr.ProgramID.String() || len(account.Data) != voltr.StrategyReceiptSize
 }
 
-// strategyReceiptAbsent separates a null account in the batch — which may be a
-// replication artifact until the ledger finalizes past it — from a present
-// account with a broken envelope. Only the finalized re-read may promote
-// absence to an integrity fault.
-func strategyReceiptAbsent(account ConfirmedAccount) bool {
-	return account.Owner == "" && len(account.Data) == 0
-}
-
 func decodeRouteNAVCustodiesForRoute(accounts []ConfirmedAccount, route RuntimeRoute) (RouteNAVCustodies, error) {
 	idle, err := decodePinnedUSDC(accountAt(accounts, bridgeIdleATA), bridgeIdleAuthority)
 	if err != nil {

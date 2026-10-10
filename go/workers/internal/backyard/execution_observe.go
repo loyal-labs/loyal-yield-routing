@@ -218,6 +218,7 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 	ctx context.Context,
 	rpc *chain.Client,
+	view *View,
 	manifest RouteManifest,
 	decision Decision,
 	enrich func(context.Context, *Observation) error,
@@ -226,150 +227,147 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		decision.Action != OpenRouteStep && decision.Action != DeleverRouteStep) {
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
 	}
-	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		prepareStart := time.Now()
-		observation, accounts, err := observeConfirmedRouteSnapshotWithRPCAccountsAndEnrichment(ctx, rpc, manifest, enrich)
-		logStage("prepare_kamino_observe", prepareStart)
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		refreshedDecision := Decide(observation.Snapshot)
-		if refreshedDecision.Action == HoldManualRecovery {
-			// Do not attempt reserve decoding or packet construction after the
-			// refresh has already found a durable safety stop. Worker.Tick receives
-			// this coherent observation and persists it before returning.
-			return observation, KaminoExecutionEvidence{}, nil
-		}
-		// The policies this build executes through: one read, at its slot.
-		if observation.policies, err = observeInstalledPolicies(ctx, rpc, observation.Snapshot.Slot); err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		// Size a whole-debt repayment on this refreshed debt, so it is built
-		// as the full payoff the worker will record.
-		if fullDebtRepaymentRefreshed(decision, refreshedDecision, observation.Snapshot) {
-			decision.AmountRaw = refreshedDecision.AmountRaw
-		}
-		route, err := runtimeRoute(decision.StrategyKey)
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		position, err := observeKaminoFromFixedAccounts(ctx, confirmedReader(rpc), observation.Snapshot.Slot, accounts, route.Kamino)
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && (repaymentReleaseReason(decision.Reason) || decision.Reason == partialReleaseReason) && positionReturnRoute(route.Lane)
-		var leg kaminoPrimeUSDCLeg
-		var wireAmount, effectAmount uint64
-		// Release and full-payoff sizing read raw reserves (see the helpers).
-		releaseAccounts := accounts
-		if repaymentRelease {
-			bound, raw, err := manifest.observeRawRepaymentRelease(ctx, rpc, route, observation.Snapshot.Slot)
-			if err != nil {
-				return Observation{}, KaminoExecutionEvidence{}, err
-			}
-			leg, wireAmount, effectAmount, releaseAccounts = kaminoLegWithdraw, bound.ReceiptRaw, bound.LiquidityRaw, raw
-			// B2 1.75x -> 1.5x: the release is sized to land at 1.5x, never
-			// above the safe size.
-			// A partial withdrawal releases its collateral share, capped at
-			// the safe size (the chain repeats until the shortfall is met).
-			if wire, sized := partialWithdrawalWireAmount(observation.Snapshot, decision); sized && (decision.Reason == leverageDownPartialReleaseReason || decision.Reason == partialReleaseReason) {
-				if wire <= 0 {
-					return Observation{}, KaminoExecutionEvidence{}, budgetHold("leverage_down_partial_release_unavailable")
-				}
-				decision.AmountRaw = min(wire, int64(wireAmount))
-			}
-			if (decision.Reason == leverageDownPartialReleaseReason || decision.Reason == partialReleaseReason) && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < wireAmount {
-				reserve, err := decodeKaminoReserve(accountAt(raw, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
-				if err != nil {
-					return Observation{}, KaminoExecutionEvidence{}, err
-				}
-				wireAmount = uint64(decision.AmountRaw)
-				if effectAmount, err = reserve.redeemLiquidityRaw(wireAmount); err != nil || effectAmount == 0 {
-					return Observation{}, KaminoExecutionEvidence{}, budgetHold("leverage_down_partial_release_unavailable")
-				}
-			}
-		} else {
-			// Stable partial decisions (E in USDC, debt cash) become exact
-			// wire amounts from this prepared snapshot.
-			legDecision := decision
-			if wire, sized := partialWithdrawalWireAmount(observation.Snapshot, decision); sized {
-				if wire <= 0 {
-					return Observation{}, KaminoExecutionEvidence{}, budgetHold("partial_withdrawal_leg_unavailable")
-				}
-				legDecision.AmountRaw = wire
-			}
-			leg, wireAmount, effectAmount, err = selectKaminoLeg(legDecision, position)
-			if err != nil {
-				return Observation{}, KaminoExecutionEvidence{}, err
-			}
-		}
-		if leg == kaminoLegBorrow && decision.Reason == leverageUpReason {
-			capped, capErr := capacitySizedBorrow(position, accounts, route, int64(leverageUpLevel(observation.Snapshot)*100))
-			if capErr != nil || wireAmount > capped || wireAmount < leverageMinimumBorrowRaw {
-				return Observation{}, KaminoExecutionEvidence{}, budgetHold("borrow_capacity_shrank")
-			}
-			effectAmount = wireAmount
-		} else if leg == kaminoLegBorrow {
-			wireAmount, err = selectorBorrowAmount(observation.Snapshot, wireAmount)
-			if err != nil {
-				return Observation{}, KaminoExecutionEvidence{}, err
-			}
-			effectAmount = wireAmount
-		}
-		fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
-		if fullPayoff {
-			bound, raw, err := observeRawFullPayoff(ctx, rpc, route, observation.Snapshot.Slot)
-			if err != nil {
-				return Observation{}, KaminoExecutionEvidence{}, err
-			}
-			wireAmount, effectAmount, releaseAccounts = bound.UpperDebtRaw, bound.ObservedDebtRaw, raw
-			if debtCashRaw(observation.Snapshot) < 0 || uint64(debtCashRaw(observation.Snapshot)) < wireAmount {
-				return Observation{}, KaminoExecutionEvidence{}, budgetHold("full_payoff_cash_insufficient")
-			}
-		}
-		blockhash, err := latestBlockhash(ctx, rpc)
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		request, err := manifest.kaminoPacketForRoute(observation.policies, decision.Action, leg, wireAmount, blockhash, decision.StrategyKey)
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		request.ObligationReserves = []string{}
-		request.FullPayoff = fullPayoff
-		request.RepaymentRelease = repaymentRelease
-		request.PilotRepaymentRelease = repaymentRelease
-		if repaymentRelease {
-			request.ReleaseDebtIdleRaw = uint64(debtCashRaw(observation.Snapshot))
-		}
-		if position.CollateralDepositedRaw > 0 {
-			request.ObligationReserves = append(request.ObligationReserves, route.Kamino.CollateralReserve)
-		}
-		if position.DebtRaw > 0 {
-			if position.CollateralDepositedRaw == 0 {
-				return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("Kamino obligation has debt without the pinned collateral reserve")
-			}
-			request.ObligationReserves = append(request.ObligationReserves, route.Kamino.DebtReserve)
-		}
-		source, destination := kaminoLegCustodiesForRoute(leg, route)
-		var effects ExpectedEffects
-		if leg == kaminoLegDeposit {
-			effects, err = boundedKaminoDepositEffects(accounts, route, observation.Snapshot.Slot, wireAmount)
-		} else if leg == kaminoLegBorrow {
-			effects, err = kaminoBorrowEffects(accounts, route, wireAmount)
-		} else if leg == kaminoLegRepay {
-			effects, err = boundedKaminoRepaymentEffects(releaseAccounts, source, destination, effectAmount, wireAmount)
-		} else {
-			effects, err = exactKaminoTokenEffects(releaseAccounts, source, destination, effectAmount)
-		}
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
-		observation.Snapshot.HasPosition = position.HasPosition
-		logStage("prepare_kamino_evidence", prepareStart)
-		return observation, KaminoExecutionEvidence{Request: request, ExpectedEffects: effects}, nil
+	prepareStart := time.Now()
+	observation, accounts, err := observeRouteFromViewWithEnrichment(ctx, rpc, view, manifest, enrich)
+	logStage("prepare_kamino_observe", prepareStart)
+	if err != nil {
+		return Observation{}, KaminoExecutionEvidence{}, err
 	}
-	return Observation{}, KaminoExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed bridge and Kamino construction reads did not align"))
+	refreshedDecision := Decide(observation.Snapshot)
+	if refreshedDecision.Action == HoldManualRecovery {
+		// Do not attempt reserve decoding or packet construction after the
+		// refresh has already found a durable safety stop. Worker.Tick receives
+		// this coherent observation and persists it before returning.
+		return observation, KaminoExecutionEvidence{}, nil
+	}
+	// The policies this build executes through: one read, at its slot.
+	if observation.policies, err = observeInstalledPolicies(ctx, rpc, observation.Snapshot.Slot); err != nil {
+		return Observation{}, KaminoExecutionEvidence{}, err
+	}
+	// Size a whole-debt repayment on this refreshed debt, so it is built
+	// as the full payoff the worker will record.
+	if fullDebtRepaymentRefreshed(decision, refreshedDecision, observation.Snapshot) {
+		decision.AmountRaw = refreshedDecision.AmountRaw
+	}
+	route, err := runtimeRoute(decision.StrategyKey)
+	if err != nil {
+		return Observation{}, KaminoExecutionEvidence{}, err
+	}
+	position, err := observeKaminoFromFixedAccounts(observation.Snapshot.Slot, accounts, route.Kamino)
+	if err != nil {
+		return Observation{}, KaminoExecutionEvidence{}, err
+	}
+	repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && (repaymentReleaseReason(decision.Reason) || decision.Reason == partialReleaseReason) && positionReturnRoute(route.Lane)
+	var leg kaminoPrimeUSDCLeg
+	var wireAmount, effectAmount uint64
+	// Release and full-payoff sizing read raw reserves (see the helpers).
+	releaseAccounts := accounts
+	if repaymentRelease {
+		bound, raw, err := manifest.observeRawRepaymentRelease(ctx, rpc, route, observation.Snapshot.Slot)
+		if err != nil {
+			return Observation{}, KaminoExecutionEvidence{}, err
+		}
+		leg, wireAmount, effectAmount, releaseAccounts = kaminoLegWithdraw, bound.ReceiptRaw, bound.LiquidityRaw, raw
+		// B2 1.75x -> 1.5x: the release is sized to land at 1.5x, never
+		// above the safe size.
+		// A partial withdrawal releases its collateral share, capped at
+		// the safe size (the chain repeats until the shortfall is met).
+		if wire, sized := partialWithdrawalWireAmount(observation.Snapshot, decision); sized && (decision.Reason == leverageDownPartialReleaseReason || decision.Reason == partialReleaseReason) {
+			if wire <= 0 {
+				return Observation{}, KaminoExecutionEvidence{}, budgetHold("leverage_down_partial_release_unavailable")
+			}
+			decision.AmountRaw = min(wire, int64(wireAmount))
+		}
+		if (decision.Reason == leverageDownPartialReleaseReason || decision.Reason == partialReleaseReason) && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < wireAmount {
+			reserve, err := decodeKaminoReserve(accountAt(raw, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+			if err != nil {
+				return Observation{}, KaminoExecutionEvidence{}, err
+			}
+			wireAmount = uint64(decision.AmountRaw)
+			if effectAmount, err = reserve.redeemLiquidityRaw(wireAmount); err != nil || effectAmount == 0 {
+				return Observation{}, KaminoExecutionEvidence{}, budgetHold("leverage_down_partial_release_unavailable")
+			}
+		}
+	} else {
+		// Stable partial decisions (E in USDC, debt cash) become exact
+		// wire amounts from this prepared snapshot.
+		legDecision := decision
+		if wire, sized := partialWithdrawalWireAmount(observation.Snapshot, decision); sized {
+			if wire <= 0 {
+				return Observation{}, KaminoExecutionEvidence{}, budgetHold("partial_withdrawal_leg_unavailable")
+			}
+			legDecision.AmountRaw = wire
+		}
+		leg, wireAmount, effectAmount, err = selectKaminoLeg(legDecision, position)
+		if err != nil {
+			return Observation{}, KaminoExecutionEvidence{}, err
+		}
+	}
+	if leg == kaminoLegBorrow && decision.Reason == leverageUpReason {
+		capped, capErr := capacitySizedBorrow(position, accounts, route, int64(leverageUpLevel(observation.Snapshot)*100))
+		if capErr != nil || wireAmount > capped || wireAmount < leverageMinimumBorrowRaw {
+			return Observation{}, KaminoExecutionEvidence{}, budgetHold("borrow_capacity_shrank")
+		}
+		effectAmount = wireAmount
+	} else if leg == kaminoLegBorrow {
+		wireAmount, err = selectorBorrowAmount(observation.Snapshot, wireAmount)
+		if err != nil {
+			return Observation{}, KaminoExecutionEvidence{}, err
+		}
+		effectAmount = wireAmount
+	}
+	fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
+	if fullPayoff {
+		bound, raw, err := observeRawFullPayoff(ctx, rpc, route, observation.Snapshot.Slot)
+		if err != nil {
+			return Observation{}, KaminoExecutionEvidence{}, err
+		}
+		wireAmount, effectAmount, releaseAccounts = bound.UpperDebtRaw, bound.ObservedDebtRaw, raw
+		if debtCashRaw(observation.Snapshot) < 0 || uint64(debtCashRaw(observation.Snapshot)) < wireAmount {
+			return Observation{}, KaminoExecutionEvidence{}, budgetHold("full_payoff_cash_insufficient")
+		}
+	}
+	blockhash, err := latestBlockhash(ctx, rpc)
+	if err != nil {
+		return Observation{}, KaminoExecutionEvidence{}, err
+	}
+	request, err := manifest.kaminoPacketForRoute(observation.policies, decision.Action, leg, wireAmount, blockhash, decision.StrategyKey)
+	if err != nil {
+		return Observation{}, KaminoExecutionEvidence{}, err
+	}
+	request.ObligationReserves = []string{}
+	request.FullPayoff = fullPayoff
+	request.RepaymentRelease = repaymentRelease
+	request.PilotRepaymentRelease = repaymentRelease
+	if repaymentRelease {
+		request.ReleaseDebtIdleRaw = uint64(debtCashRaw(observation.Snapshot))
+	}
+	if position.CollateralDepositedRaw > 0 {
+		request.ObligationReserves = append(request.ObligationReserves, route.Kamino.CollateralReserve)
+	}
+	if position.DebtRaw > 0 {
+		if position.CollateralDepositedRaw == 0 {
+			return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("Kamino obligation has debt without the pinned collateral reserve")
+		}
+		request.ObligationReserves = append(request.ObligationReserves, route.Kamino.DebtReserve)
+	}
+	source, destination := kaminoLegCustodiesForRoute(leg, route)
+	var effects ExpectedEffects
+	if leg == kaminoLegDeposit {
+		effects, err = boundedKaminoDepositEffects(accounts, route, observation.Snapshot.Slot, wireAmount)
+	} else if leg == kaminoLegBorrow {
+		effects, err = kaminoBorrowEffects(accounts, route, wireAmount)
+	} else if leg == kaminoLegRepay {
+		effects, err = boundedKaminoRepaymentEffects(releaseAccounts, source, destination, effectAmount, wireAmount)
+	} else {
+		effects, err = exactKaminoTokenEffects(releaseAccounts, source, destination, effectAmount)
+	}
+	if err != nil {
+		return Observation{}, KaminoExecutionEvidence{}, err
+	}
+	observation.Snapshot.HasPosition = position.HasPosition
+	logStage("prepare_kamino_evidence", prepareStart)
+	return observation, KaminoExecutionEvidence{Request: request, ExpectedEffects: effects}, nil
 }
 
 func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSDCLeg, uint64, uint64, error) {

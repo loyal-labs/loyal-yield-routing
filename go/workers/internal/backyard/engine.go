@@ -31,6 +31,8 @@ const (
 type EngineConfig struct {
 	Database *Database
 	RPC      *chain.Client
+	// View is the LaserStream view of Backyard's accounts planning reads.
+	View *View
 	// Credentials is the Backyard delegated executor capability. It stays
 	// inside the engine instance; observers and planners never receive it.
 	Credentials Credentials
@@ -56,6 +58,7 @@ type Engine struct {
 	leases   routeLeaser
 	database *Database
 	rpc      *chain.Client
+	view     *View
 	owner    string
 	config   Config
 	out      io.Writer
@@ -78,7 +81,7 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	default:
 		return nil, fmt.Errorf("unknown Backyard selector mode")
 	}
-	worker, err := NewWorker(config.Database, config.RPC, config.Config, config.Credentials)
+	worker, err := NewWorker(config.Database, config.RPC, config.View, config.Config, config.Credentials)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +91,7 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	if config.Out == nil {
 		config.Out = io.Discard
 	}
-	return &Engine{worker: worker, leases: config.Database, database: config.Database, rpc: config.RPC, owner: config.Owner, config: config.Config, out: config.Out, runtime: config}, nil
+	return &Engine{worker: worker, leases: config.Database, database: config.Database, rpc: config.RPC, view: config.View, owner: config.Owner, config: config.Config, out: config.Out, runtime: config}, nil
 }
 
 // Run starts the selector collector, acquires the route fence, serializes
@@ -126,10 +129,10 @@ func (e *Engine) Run(ctx context.Context) error {
 // fenced against its pre-observation version and existing pilot. The returned
 // stop joins the collector.
 func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
-	database, rpc, worker, out := e.database, e.rpc, e.worker, e.out
+	database, rpc, view, worker, out := e.database, e.rpc, e.view, e.worker, e.out
 	feedCtx, cancelFeed := context.WithCancel(ctx)
 	feedDone := make(chan struct{})
-	shadowIdentity := newProgramIdentityWatcher(chainProgramIdentity(rpc)).observe
+	shadowIdentity := newProgramIdentityWatcher(viewProgramIdentity(view)).observe
 	// Sample diagnostics are change-only: each line prints when its fixed
 	// sanitized shape changes and stays silent while that shape persists,
 	// so neither a persistent outage nor a stable hold floods the log on
@@ -147,7 +150,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 		runSelectorSamples(feedCtx, selectorLiveSampleInterval, func(ctx context.Context) {
 			_ = feed.Refresh(ctx)
 			markets, _ := feed.Snapshot()
-			result, observed, err := database.evaluateSelectorObserved(ctx, rpc, worker.manifest, markets, shadowIdentity, DefaultSelectorPolicy())
+			result, observed, err := database.evaluateSelectorObserved(ctx, rpc, view, worker.manifest, markets, shadowIdentity, DefaultSelectorPolicy())
 			if err != nil {
 				// Closed-set sanitized code only: raw RPC/DB errors may
 				// carry service URLs. Change-only keeps a persistent

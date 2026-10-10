@@ -468,26 +468,6 @@ func atLeast(slot uint64) *uint64 {
 	return &slot
 }
 
-// AccountHeads reads the first length bytes of each key's data at confirmed:
-// the header of an account too large to read whole. An absent account is nil.
-func (c *Client) AccountHeads(ctx context.Context, keys []solana.PublicKey, length uint64) ([]*Account, error) {
-	offset := uint64(0)
-	out, err := c.rpc.GetMultipleAccountsWithOpts(ctx, keys, &rpc.GetMultipleAccountsOpts{Encoding: solana.EncodingBase64, Commitment: rpc.CommitmentConfirmed, DataSlice: &rpc.DataSlice{Offset: &offset, Length: &length}})
-	if err != nil {
-		return nil, failed("getMultipleAccounts", err)
-	}
-	if len(out.Value) != len(keys) {
-		return nil, errors.New("getMultipleAccounts: response does not match the request")
-	}
-	accounts := make([]*Account, len(keys))
-	for i, value := range out.Value {
-		if value != nil {
-			accounts[i] = &Account{Key: keys[i], Owner: value.Owner, Lamports: value.Lamports, Data: value.Data.GetBinary(), Executable: value.Executable}
-		}
-	}
-	return accounts, nil
-}
-
 // FinalizedBlockHeightAt is the block height of the finalized block at slot.
 // ErrNotFound means the cluster has no finalized block there.
 func (c *Client) FinalizedBlockHeightAt(ctx context.Context, slot uint64) (uint64, error) {

@@ -22,6 +22,8 @@ type routePlanningState struct {
 	// leverage is the durable B2 option-1 level target (nil = none stored).
 	leverage          *LeverageTarget
 	partialWithdrawal *partialWithdrawalState
+	// landedSlot is the highest slot any of the route's operations landed at.
+	landedSlot int64
 }
 
 func (d *Database) readRoutePlanningState(ctx context.Context, routeKey string, execution bool) (*routePlanningState, error) {
@@ -55,10 +57,11 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	var entry, unwind, leverage, partial []byte
 	err := d.pool.QueryRow(ctx, `SELECT state_version,
 		state->'selectorEntry',state->'selectorUnwind',COALESCE((state->>'selectorEntryPaused')::boolean,false),
-		COALESCE(state->'leverageTarget','null'::jsonb),state->'partialWithdrawal'
+		COALESCE(state->'leverageTarget','null'::jsonb),state->'partialWithdrawal',
+		(SELECT COALESCE(MAX(confirmed_slot),0) FROM loyal_yield.multiply_operations WHERE route_key=$1)
 		FROM loyal_yield.multiply_route_states WHERE route_key=$1
 		AND ($2='' OR (lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()))`,
-		routeKey, owner, fence).Scan(&out.generation, &entry, &unwind, &out.paused, &leverage, &partial)
+		routeKey, owner, fence).Scan(&out.generation, &entry, &unwind, &out.paused, &leverage, &partial, &out.landedSlot)
 	if errors.Is(err, pgx.ErrNoRows) && execution {
 		d.setLease(nil)
 		return nil, ErrRouteLeaseLost

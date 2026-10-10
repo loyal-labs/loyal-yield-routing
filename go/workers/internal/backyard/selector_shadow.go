@@ -33,14 +33,14 @@ func (r shadowJournal) SelectorEntryPaused(ctx context.Context, key string) (boo
 
 // This observer enriches a separate snapshot without projecting NAV or taking
 // an execution lease. Broader ownership failures stay confined to shadow output.
-func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.Client, manifest RouteManifest, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {
+func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.Client, view *View, manifest RouteManifest, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {
 	planning, err := database.readRoutePlanningStateOnManifest(ctx, manifest, productionRouteKey, false)
 	if err != nil {
 		return Observation{}, err
 	}
 	manifest = planning.observationManifest(manifest)
 	manifest.selectorObservation = true
-	observation, err := ObserveConfirmedRouteSnapshot(ctx, rpc, manifest)
+	observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest)
 	if err != nil {
 		return Observation{}, fmt.Errorf("shadow confirmed observation unavailable: %w", err)
 	}

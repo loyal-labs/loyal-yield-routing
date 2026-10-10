@@ -87,7 +87,7 @@ func marketFixture(t *testing.T, address string) ConfirmedAccount {
 func clockFixture() ConfirmedAccount {
 	data := make([]byte, 40)
 	binary.LittleEndian.PutUint64(data[32:40], uint64(kaminoFixtureUnix))
-	return ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Data: data}
+	return ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: data}
 }
 
 func voltrVaultFixture(t *testing.T, totalValueRaw uint64) ConfirmedAccount {

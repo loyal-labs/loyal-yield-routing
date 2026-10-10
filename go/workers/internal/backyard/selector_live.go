@@ -268,15 +268,15 @@ var selectorQuoteCollectionHoldCodes = map[string]bool{
 
 // Capture the generation before observing accounts. Concurrent execution or
 // budget changes invalidate collection in RecordSelectorEvaluation's lock.
-func (d *Database) evaluateSelector(ctx context.Context, rpc *chain.Client, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, error) {
-	result, _, err := d.evaluateSelectorObserved(ctx, rpc, manifest, markets, identity, policy)
+func (d *Database) evaluateSelector(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, error) {
+	result, _, err := d.evaluateSelectorObserved(ctx, rpc, view, manifest, markets, identity, policy)
 	return result, err
 }
 
 // evaluateSelectorObserved also returns the observation the result was
 // decided from, so the B2 leverage decision uses the same snapshot and
 // planning generation.
-func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Client, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, Observation, error) {
+func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, Observation, error) {
 	var version int64
 	lease, err := d.currentLease()
 	if err != nil {
@@ -288,7 +288,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if err = d.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, productionRouteKey, lease.Owner, lease.FencingToken).Scan(&version); err != nil {
 		return SelectorResult{}, Observation{}, err
 	}
-	o, err := observeSelectorShadow(ctx, d, rpc, manifest, identity)
+	o, err := observeSelectorShadow(ctx, d, rpc, view, manifest, identity)
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}

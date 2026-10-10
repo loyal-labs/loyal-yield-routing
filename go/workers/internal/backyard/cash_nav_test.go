@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"encoding/binary"
 	"testing"
 )
@@ -32,11 +31,7 @@ func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
 			if err != nil || nav.StrategyNAVRaw != 6 || nav.TotalVaultNAVRaw != 17 {
 				t.Fatalf("cash accounting: %+v %v", nav, err)
 			}
-			reader := func(context.Context, []string, int64) (int64, []ConfirmedAccount, error) {
-				t.Fatal("unavailable market must not fetch oracles for cash accounting")
-				return 0, nil, nil
-			}
-			p, err := observeKaminoWithCashFallback(context.Background(), reader, slot, accounts, route)
+			p, err := observeKaminoWithCashFallback(slot, accounts, route)
 			if err != nil || p.HasPosition || p.EntryCapacityRaw != 0 || !p.BorrowUtilizationBlocked {
 				t.Fatalf("cash observation opened entry: %+v %v", p, err)
 			}
@@ -80,11 +75,7 @@ func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
 				t.Fatal("unsafe NAV accepted")
 			}
 			if override == nil {
-				reader := func(context.Context, []string, int64) (int64, []ConfirmedAccount, error) {
-					t.Fatal("unexpected oracle fetch")
-					return 0, nil, nil
-				}
-				if _, err := observeKaminoWithCashFallback(context.Background(), reader, slot, accounts, route); err == nil {
+				if _, err := observeKaminoWithCashFallback(slot, accounts, route); err == nil {
 					t.Fatal("unsafe cash fallback accepted")
 				}
 			}

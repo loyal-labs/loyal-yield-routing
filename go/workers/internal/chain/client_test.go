@@ -278,21 +278,6 @@ func TestSimulateReturnsTheAskedAccountsAsSimulated(t *testing.T) {
 	}
 }
 
-func TestAccountHeadsReadOnlyTheHeader(t *testing.T) {
-	key := solana.NewWallet().PublicKey()
-	var opts map[string]any
-	client := serve(t, func(req request) (int, any) {
-		_ = json.Unmarshal(req.Params[1], &opts)
-		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 7}, "value": []any{
-			map[string]any{"lamports": 1, "owner": solana.BPFLoaderUpgradeableProgramID.String(), "data": []string{base64.StdEncoding.EncodeToString([]byte{3, 0, 0, 0}), "base64"}, "executable": false}, nil}})
-	})
-	accounts, err := client.AccountHeads(context.Background(), []solana.PublicKey{key, solana.NewWallet().PublicKey()}, 4)
-	slice, _ := opts["dataSlice"].(map[string]any)
-	if err != nil || accounts[0].Key != key || len(accounts[0].Data) != 4 || accounts[1] != nil || slice["length"] != float64(4) || slice["offset"] != float64(0) {
-		t.Fatalf("heads %+v %v, options %v", accounts, err, opts)
-	}
-}
-
 func TestProgramAccountsAreFilteredAndReadNoOlderThanTheAskedSlot(t *testing.T) {
 	program, owned := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
 	var opts map[string]any

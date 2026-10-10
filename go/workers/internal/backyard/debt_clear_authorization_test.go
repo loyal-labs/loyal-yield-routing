@@ -277,16 +277,16 @@ func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 			}
 			if found {
 				// On chain without a recorded send: a capital stop, never a send.
-				if err = advanceNonterminalWithManifest(ctx, m, db, rpc, operation); err != nil {
+				if err = advanceNonterminalWithManifest(ctx, m, db, rpc, nil, operation); err != nil {
 					t.Fatal(err)
 				}
 				journal("manual_recovery")
 				return
 			}
-			assertBudgetHold(t, advanceNonterminalWithManifest(ctx, m, db, rpc, operation), "debt_clear_operation_not_authorized")
+			assertBudgetHold(t, advanceNonterminalWithManifest(ctx, m, db, rpc, nil, operation), "debt_clear_operation_not_authorized")
 			journal("signed")
 			height = 100
-			if err = advanceNonterminalWithManifest(ctx, m, db, rpc, operation); err != nil {
+			if err = advanceNonterminalWithManifest(ctx, m, db, rpc, nil, operation); err != nil {
 				t.Fatal(err)
 			}
 			journal("failed")

@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func (o Observation) Validate() error {
@@ -22,77 +20,56 @@ func (o Observation) Validate() error {
 }
 
 // ObserveConfirmedBridgeSnapshot obtains the only observation that can be
-// made from the currently pinned, locally evidenced bridge identities. Receipt
-// accounts and all three USDC custodies must share one confirmed slot. Kamino
-// state is intentionally not inferred here; without an exact current account
-// graph the decision engine can only HOLD or select a bridge/withdrawal action.
-func ObserveConfirmedBridgeSnapshot(ctx context.Context, rpc *chain.Client) (Observation, error) {
-	if rpc == nil {
-		return Observation{}, fmt.Errorf("RPC client is required")
-	}
-	minSlot, err := confirmedSlot(ctx, rpc)
+// made from the currently pinned, locally evidenced bridge identities: the
+// withdrawal receipts and all three USDC custodies at one view slot no older
+// than minSlot. Kamino state is intentionally not inferred here; without an
+// exact current account graph the decision engine can only HOLD or select a
+// bridge/withdrawal action.
+func ObserveConfirmedBridgeSnapshot(ctx context.Context, view *View, minSlot int64) (Observation, error) {
+	slot, accounts, receipts, err := view.read(ctx, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, minSlot)
 	if err != nil {
 		return Observation{}, err
 	}
-	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
-		receiptSlot, rawReceipts, err := getVoltrWithdrawalReceiptAccounts(ctx, rpc, bridgeVoltrVault, minSlot)
-		if err != nil {
-			return Observation{}, err
-		}
-		custodySlot, accounts, err := confirmedAccounts(ctx, rpc, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, minSlot)
-		if err != nil {
-			return Observation{}, err
-		}
-		if receiptSlot != custodySlot {
-			if receiptSlot > custodySlot {
-				minSlot = receiptSlot
-			} else {
-				minSlot = custodySlot
-			}
-			continue
-		}
-		idle, err := decodePinnedUSDC(accountAt(accounts, bridgeIdleATA), bridgeIdleAuthority)
-		if err != nil {
-			return Observation{}, fmt.Errorf("decode Voltr idle custody: %w", err)
-		}
-		strategy, err := decodePinnedUSDC(accountAt(accounts, bridgeStrategyATA), bridgeStrategyAuth)
-		if err != nil {
-			return Observation{}, fmt.Errorf("decode Voltr strategy custody: %w", err)
-		}
-		squads, err := decodePinnedUSDC(accountAt(accounts, bridgeSquadsATA), bridgeVault)
-		if err != nil {
-			return Observation{}, fmt.Errorf("decode Squads USDC custody: %w", err)
-		}
-		if idle.Raw > uint64(^uint64(0)>>1) || strategy.Raw > uint64(^uint64(0)>>1) || squads.Raw > uint64(^uint64(0)>>1) {
-			return Observation{}, fmt.Errorf("bridge custody exceeds signed decision range")
-		}
-		demand, receiptFingerprint, err := decodeConfirmedWithdrawalDemand(rawReceipts)
-		if err != nil {
-			return Observation{}, err
-		}
-		stateHash := sha256.Sum256([]byte(fmt.Sprintf(
-			"%s|voltr-idle:%d|strategy-idle:%d|squads-idle:%d",
-			receiptFingerprint, idle.Raw, strategy.Raw, squads.Raw,
-		)))
-		return Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{
-			ObservationID:        fmt.Sprintf("%x", stateHash[:]),
-			Slot:                 receiptSlot,
-			RouteKind:            RouteKind,
-			Fresh:                true,
-			WithdrawalDemandRaw:  demand,
-			VoltrIdleRaw:         int64(idle.Raw),
-			VoltrStrategyIdleRaw: int64(strategy.Raw),
-			SquadsIdleRaw:        int64(squads.Raw),
-			// No complete, current Kamino graph is checked into this repository.
-			// Leaving these gates false prevents an unsupported OPEN decision.
-			CapacityRaw:             0,
-			PolicyLimitRaw:          0,
-			MaxTargetLTVEntryRaw:    0,
-			LastReportAgeSeconds:    0,
-			LiquidationThresholdBPS: 0,
-		}}, nil
+	idle, err := decodePinnedUSDC(accountAt(accounts, bridgeIdleATA), bridgeIdleAuthority)
+	if err != nil {
+		return Observation{}, fmt.Errorf("decode Voltr idle custody: %w", err)
 	}
-	return Observation{}, confirmedObservationUnavailable(fmt.Errorf("confirmed receipt and custody reads did not align after %d attempts", maxConfirmedObservationAttempts))
+	strategy, err := decodePinnedUSDC(accountAt(accounts, bridgeStrategyATA), bridgeStrategyAuth)
+	if err != nil {
+		return Observation{}, fmt.Errorf("decode Voltr strategy custody: %w", err)
+	}
+	squads, err := decodePinnedUSDC(accountAt(accounts, bridgeSquadsATA), bridgeVault)
+	if err != nil {
+		return Observation{}, fmt.Errorf("decode Squads USDC custody: %w", err)
+	}
+	if idle.Raw > uint64(^uint64(0)>>1) || strategy.Raw > uint64(^uint64(0)>>1) || squads.Raw > uint64(^uint64(0)>>1) {
+		return Observation{}, fmt.Errorf("bridge custody exceeds signed decision range")
+	}
+	demand, receiptFingerprint, err := decodeConfirmedWithdrawalDemand(receipts)
+	if err != nil {
+		return Observation{}, err
+	}
+	stateHash := sha256.Sum256([]byte(fmt.Sprintf(
+		"%s|voltr-idle:%d|strategy-idle:%d|squads-idle:%d",
+		receiptFingerprint, idle.Raw, strategy.Raw, squads.Raw,
+	)))
+	return Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{
+		ObservationID:        fmt.Sprintf("%x", stateHash[:]),
+		Slot:                 slot,
+		RouteKind:            RouteKind,
+		Fresh:                true,
+		WithdrawalDemandRaw:  demand,
+		VoltrIdleRaw:         int64(idle.Raw),
+		VoltrStrategyIdleRaw: int64(strategy.Raw),
+		SquadsIdleRaw:        int64(squads.Raw),
+		// No complete, current Kamino graph is checked into this repository.
+		// Leaving these gates false prevents an unsupported OPEN decision.
+		CapacityRaw:             0,
+		PolicyLimitRaw:          0,
+		MaxTargetLTVEntryRaw:    0,
+		LastReportAgeSeconds:    0,
+		LiquidationThresholdBPS: 0,
+	}}, nil
 }
 
 func accountAt(accounts []ConfirmedAccount, address string) ConfirmedAccount {

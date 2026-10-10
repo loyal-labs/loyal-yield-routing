@@ -154,7 +154,7 @@ func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, rou
 	if err != nil {
 		return 0, nil, empty, err
 	}
-	position, err := observeKaminoFromFixedAccounts(ctx, confirmedReader(rpc), slot, accounts, route.Kamino)
+	position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	if errors.Is(err, errKaminoReserveStale) {
 		// Idle reserves only advance through the permissionless refresh the
 		// production prefix already carries, so re-observe against its closed
@@ -168,7 +168,7 @@ func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, rou
 			return 0, nil, empty, refreshErr
 		}
 		slot, accounts = simulatedSlot, simulatedAccounts
-		position, err = observeKaminoFromFixedAccounts(ctx, confirmedReader(rpc), slot, accounts, route.Kamino)
+		position, err = observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	}
 	if err != nil {
 		return 0, nil, empty, err

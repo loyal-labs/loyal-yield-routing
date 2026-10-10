@@ -114,7 +114,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			t.Fatalf("unexpected RPC during failure recovery: %s", body)
 			return nil, fmt.Errorf("unexpected RPC")
 		})
-		if err := AdvanceNonterminal(landCtx, db, rpc, op); err != nil && landCtx.Err() == nil {
+		if err := AdvanceNonterminal(landCtx, db, rpc, nil, op); err != nil && landCtx.Err() == nil {
 			t.Fatal(err)
 		}
 		var status, reason string
@@ -307,7 +307,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 				t.Errorf("unexpected RPC while landing: %s", body)
 				return nil, fmt.Errorf("unexpected RPC")
 			}))
-			if err := AdvanceNonterminal(ctx, db, rpc, operation); err != nil {
+			if err := AdvanceNonterminal(ctx, db, rpc, nil, operation); err != nil {
 				t.Fatal(err)
 			}
 			var status, reason string

@@ -237,13 +237,13 @@ func TestInitializerBindSendFenceAndExpiryRetirement(t *testing.T) {
 		out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": result})
 		return response(string(out)), nil
 	})
-	assertBudgetHold(t, AdvanceNonterminal(ctx, db, rpc, op), "selector_entry_quote_expired")
+	assertBudgetHold(t, AdvanceNonterminal(ctx, db, rpc, nil, op), "selector_entry_quote_expired")
 	var status string
 	if err = db.pool.QueryRow(ctx, `SELECT status FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status); err != nil || status != "signed" || absenceRead {
 		t.Fatal("unexpired wire retired", err, status)
 	}
 	finalizedExpired = true
-	if err = AdvanceNonterminal(ctx, db, rpc, op); err != nil {
+	if err = AdvanceNonterminal(ctx, db, rpc, nil, op); err != nil {
 		t.Fatal("expired absent wire not retired", err)
 	}
 	var storedWire []byte

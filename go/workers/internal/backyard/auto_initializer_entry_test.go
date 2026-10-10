@@ -135,7 +135,7 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 	op := PersistedOperation{Operation: Operation{ID: id, RouteKey: opKey, StrategyKey: f.request.RouteLane, Decision: decision},
 		Status: Signed, ExpectedEffects: persisted, SignedWire: f.wire, SignedWireSHA256: hash,
 		TransactionSignature: encodeBase58(f.wire[1:65]), RecentBlockhash: f.request.RecentBlockhash, LastValidBlockHeight: f.request.LastValidBlockHeight}
-	if err = advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err != nil {
+	if err = advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, nil, op); err != nil {
 		t.Fatal(err)
 	}
 	if got := operationStatus(t, ctx, db, id); got != "confirmed" {

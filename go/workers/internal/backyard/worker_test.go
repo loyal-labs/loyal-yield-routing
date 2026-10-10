@@ -240,7 +240,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 }
 
 func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {
-	if _, err := NewWorker(&Database{pool: &pgxpool.Pool{}}, &chain.Client{}, DefaultConfig(), Credentials{}); err == nil {
+	if _, err := NewWorker(&Database{pool: &pgxpool.Pool{}}, &chain.Client{}, &View{}, DefaultConfig(), Credentials{}); err == nil {
 		t.Fatal("worker accepted a missing signing capability")
 	}
 }

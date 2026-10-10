@@ -54,7 +54,7 @@ hands the session to next. Credentials by unit:
 
 - `loyal-observer`: `HELIUS_API_KEY`, `SOLANA_RPC_URL`, `NEON_DATABASE_URL`, `TIMESCALEDB_URL`
 - `loyal-retail`: `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`, `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR`, `RETAIL_FEE_PAYER_KEYPAIR`. Add `RETAIL_LOOKUP_MANAGER_KEYPAIR` only for active lookup mode. When the unit writes Autodeposit, add `RETAIL_SWEEP_NOTIFY_ENDPOINT` and `RETAIL_SWEEP_NOTIFY_SECRET` (the app's failed-sweep push; the TS `SOLANA_WEEK_NOTIFY_ENDPOINT` and `SOLANA_WEEK_NOTIFY_SECRET`) in a drop-in, both or neither, as the unit's comment shows. A missing `LoadCredentialEncrypted=` file fails the unit (243/CREDENTIALS), so these optional credentials never go in the unit itself.
-- `loyal-backyard`: `BACKYARD_DATABASE_URL`, `BACKYARD_SOLANA_RPC_URL`, `BACKYARD_POLICY_KEYPAIR`, `BACKYARD_TIMESCALE_DATABASE_URL`, `JUPITER_API_KEY`. Its selector mode and canary entry go in `/etc/loyal/loyal-backyard.env`.
+- `loyal-backyard`: `BACKYARD_DATABASE_URL`, `BACKYARD_SOLANA_RPC_URL`, `BACKYARD_POLICY_KEYPAIR`, `BACKYARD_TIMESCALE_DATABASE_URL`, `JUPITER_API_KEY`, `BACKYARD_HELIUS_API_KEY`. Its selector mode, canary entry and `BACKYARD_LASERSTREAM_ENDPOINT` go in `/etc/loyal/loyal-backyard.env`.
 - Alertmanager: `telegram_bot_token`
 - Alertmanager: `heartbeat_url`, the external dead man's switch that the Watchdog alert pings. Not wired yet: until it exists the heartbeat receiver is empty, and nothing pages if the whole host or monitoring stack is down.
 - Collector: `CLICKSTACK_OTLP_ENDPOINT`, `CLICKSTACK_INGESTION_KEY`
