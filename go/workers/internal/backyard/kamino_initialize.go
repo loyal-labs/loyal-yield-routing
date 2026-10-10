@@ -51,10 +51,10 @@ func CompileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, 
 // lane, which initializes under its KLend policy's initializer leg. Installed
 // selector lanes keep the exact public path above. Any other lane holds.
 func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, error) {
-	if selectorLane(r.RouteLane) {
+	if basicLane(r.RouteLane) {
 		return CompileKaminoInitializationMessage(r)
 	}
-	if r.RouteLane != autoAUTOPYUSD.Lane {
+	if !earnInitializerLane(r.RouteLane) {
 		return nil, budgetHold("initializer_lane_unreviewed")
 	}
 	if r.LastValidBlockHeight <= 0 || r.RentLamports == 0 || r.MaximumFeeLamports == 0 {
@@ -94,7 +94,7 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 
 func validateInitializedKaminoObligation(r KaminoInitializationRequest, a ConfirmedAccount) error {
 	route, err := runtimeRoute(r.RouteLane)
-	if err != nil || !selectorLane(route.Lane) {
+	if err != nil || !basicLane(route.Lane) {
 		return fmt.Errorf("unreviewed initialized obligation")
 	}
 	return validateInitializedObligationOnRoute(route, r, a)
@@ -103,10 +103,10 @@ func validateInitializedKaminoObligation(r KaminoInitializationRequest, a Confir
 // validateInitializedKaminoObligation is the form that also admits the AUTO
 // lane; the empty-state checks below are the exact installed checks.
 func (m RouteManifest) validateInitializedKaminoObligation(r KaminoInitializationRequest, a ConfirmedAccount) error {
-	if selectorLane(r.RouteLane) {
+	if basicLane(r.RouteLane) {
 		return validateInitializedKaminoObligation(r, a)
 	}
-	if r.RouteLane != autoAUTOPYUSD.Lane {
+	if !earnInitializerLane(r.RouteLane) {
 		return budgetHold("initializer_lane_unreviewed")
 	}
 	route, err := runtimeRoute(r.RouteLane)
@@ -133,7 +133,7 @@ func validateInitializedObligationOnRoute(route RuntimeRoute, r KaminoInitializa
 // admission and journal execution are separate; this function grants no authority.
 func kaminoMultiplyInitializer(lane string) (compiledInstruction, error) {
 	route, err := runtimeRoute(lane)
-	if err != nil || !selectorLane(route.Lane) || route.Kamino.DebtMint != bridgeUSDC {
+	if err != nil || !basicLane(route.Lane) || route.Kamino.DebtMint != bridgeUSDC {
 		return compiledInstruction{}, fmt.Errorf("unreviewed Multiply initializer lane")
 	}
 	return kaminoRouteInitializer(route)

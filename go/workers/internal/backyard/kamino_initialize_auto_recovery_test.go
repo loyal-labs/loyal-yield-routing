@@ -154,20 +154,25 @@ func TestAutoInitializerReconcilesFinalizedReceiptThroughManifest(t *testing.T) 
 	}
 }
 
-// The narrow manifest-aware decision validator admits the candidate journal
-// decision; the public Decision.Validate
-// keeps refusing every AUTO initializer decision outright, and the exact
-// installed shape requirements hold in both forms.
-func TestAutoInitializerDecisionValidatesOnlyThroughManifestBinding(t *testing.T) {
+// The AUTO initializer decision validates (its lane has an installed
+// initializer policy); a lane without one never does, and the exact shape
+// requirements hold.
+func TestAutoInitializerDecisionValidatesThroughTheRegistry(t *testing.T) {
 	t.Parallel()
 	manifest, r := autoInitializerRequestFixture(t)
 	decision := Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: r.RouteLane, IdempotencyKey: "controlled-init"}
 	if err := manifest.validateInitializerDecision(decision, r); err != nil {
 		t.Fatalf("bound AUTO initializer decision refused: %v", err)
 	}
-	// The public decision gate keeps the candidate lane closed.
-	if err := decision.Validate(); err == nil {
-		t.Fatal("public Decision.Validate admitted an AUTO initializer decision")
+	if err := decision.Validate(); err != nil {
+		t.Fatalf("Decision.Validate refused the AUTO initializer decision: %v", err)
+	}
+	for _, lane := range []string{primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, ethenaUSDePYUSD.Lane} {
+		sibling := decision
+		sibling.StrategyKey = lane
+		if sibling.Validate() == nil {
+			t.Fatal("initializer decision admitted for a lane without an initializer policy", lane)
+		}
 	}
 	for name, mutate := range map[string]func(*Decision){
 		"reason":        func(d *Decision) { d.Reason = "other" },

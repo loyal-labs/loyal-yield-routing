@@ -158,10 +158,8 @@ func autoMoveQuote(t *testing.T, price *BudgetPrice) MoveQuote {
 // pricedQuoteRun evaluates the production pilotQuoteEconomics candidate path
 // on a priced quote: raw receive+fee for reserve utilization,
 // valueUpper(receive+fee) for the liability, valueLower(receive) for the
-// redeposited proceeds. The SelectOpportunity loop itself cannot reach a
-// non-USDC lane while it is gated out of selectorLanes (see
-// TestGatedAutoLaneNeverReachesFeedEconomics), so the shared production
-// function is called directly — any unit regression in it fails here.
+// redeposited proceeds. The shared production function is called directly —
+// any unit regression in it fails here.
 type pricedRun struct {
 	receive, raw, debt, proceeds uint64
 	apr, gain, invested, years   float64
@@ -403,20 +401,16 @@ func TestNonUSDCDebtQuoteRequiresBoundPriceEvidence(t *testing.T) {
 	}
 }
 
-func TestGatedAutoLaneNeverReachesFeedEconomics(t *testing.T) {
+// The exit-only Ethena lane never reaches economics: its market is refused
+// before any forecast, window or borrow projection.
+func TestExitOnlyLaneNeverReachesFeedEconomics(t *testing.T) {
 	t.Parallel()
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
-	route, _ := runtimeRoute(testAutoLane)
+	route, _ := runtimeRoute(ethenaUSDePYUSD.Lane)
 	in := selectorFixture()
 	in.Snapshot.Slot = 42
 	in.Markets = []LaneEconomics{{Lane: route.Lane, EvidenceID: "rates", ObservedAt: in.Now, NativeObservedAt: in.Now, NativeAPY: .15, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}}
 	in.Quotes = []MoveQuote{autoMoveQuote(t, &price)}
-	// While the lane is not in selectorLanes, market validation rejects it
-	// before any economics: no advantage window, no display forecast, no
-	// borrow projection. That is the staging that keeps mixed-unit feed math
-	// unreachable; the priced per-quote composition is covered directly in
-	// TestOffPegDebtKeepsReserveAPRAndMovesUSDCEconomics until entry
-	// enablement lands.
 	first := SelectOpportunity(in, SelectorState{})
 	if len(first.Candidates) != 1 {
 		t.Fatalf("candidates: %+v", first.Candidates)
@@ -432,25 +426,23 @@ func TestGatedAutoLaneNeverReachesFeedEconomics(t *testing.T) {
 	if len(second.State.Advantages) != 0 {
 		t.Fatalf("gated lane accumulated persistence: %+v", second.State.Advantages)
 	}
-	// USDC lanes keep sampling windows from the same feed math.
+	// An active lane with an executable quote keeps sampling its window.
 	usdcSample := SelectOpportunity(selectorFixture(), SelectorState{})
 	if _, sampled := usdcSample.State.Advantages["OnRe/ONyc/USDC"]; !sampled {
-		t.Fatalf("USDC persistence regressed: %+v", usdcSample.State)
+		t.Fatalf("active lane persistence regressed: %+v", usdcSample.State)
 	}
 }
 
-func TestAutoPairCapacityFailsClosedUntilLaneAdmission(t *testing.T) {
+// Pair capacity is registry authority: a route outside the registry (the
+// legacy PRIME/USDC alias) fails closed instead of being read as capacity.
+func TestPairCapacityFailsClosedOutsideTheRegistry(t *testing.T) {
 	t.Parallel()
-	route, err := runtimeRoute(testAutoLane)
+	route, err := runtimeRoute(RouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// kaminoPairEntryCapacity returns DEBT-denominated equity for admitted
-	// lanes (twice the borrow headroom in raw debt-mint units). AUTO is not a
-	// selector lane yet, so its capacity must fail closed rather than be read
-	// as USDC; admission is the explicit enablement step.
 	if got, err := kaminoPairEntryCapacity(KaminoPosition{EntryCapacityRaw: 6600}, nil, route); err == nil || got != 0 || !strings.Contains(err.Error(), "pair_capacity_lane_unreviewed") {
-		t.Fatalf("unadmitted lane capacity: %d %v", got, err)
+		t.Fatalf("lane outside the registry produced capacity: %d %v", got, err)
 	}
 }
 

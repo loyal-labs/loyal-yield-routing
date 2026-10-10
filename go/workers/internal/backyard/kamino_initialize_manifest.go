@@ -35,7 +35,7 @@ func (m RouteManifest) validateInitializerDecision(d Decision, r KaminoInitializ
 	if d.Action != InitializeKaminoObligation || d.StrategyKey != r.RouteLane {
 		return fmt.Errorf("initializer journal decision differs")
 	}
-	if selectorLane(d.StrategyKey) {
+	if basicLane(d.StrategyKey) {
 		return validateSelectorInitializerDecision(d)
 	}
 	if d.Reason != "multiply_obligation_missing" || d.AmountRaw != 0 || d.IdempotencyKey == "" {

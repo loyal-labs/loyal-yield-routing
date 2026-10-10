@@ -96,7 +96,7 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	inflated := 0.25
 	d.BorrowAPR, d.BorrowAPY = &inflated, &inflated
 	rows := map[string]verifiedEconomicReserve{c.Reserve: c, d.Reserve: d}
-	got := combineEconomicsWithLane([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy(), selectorLane)
+	got := combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())
 	if len(got) != 1 || got[0].EntryCapacity.Known || got[0].DebtSupplyRaw != supply || got[0].DebtBorrowRaw != borrow {
 		t.Fatalf("feed: %+v", got)
 	}
@@ -113,14 +113,14 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 
 	d.Mint = "wrong"
 	rows[d.Reserve] = d
-	if len(combineEconomicsWithLane([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy(), selectorLane)) != 0 {
+	if len(combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())) != 0 {
 		t.Fatal("feed identity mismatch accepted")
 	}
 }
 func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
 	t.Parallel()
 	accounts := []ConfirmedAccount{}
-	for _, lane := range selectorLanes {
+	for _, lane := range earnLaneIDs(true) {
 		r, _ := runtimeRoute(lane)
 		accounts = append(accounts, ConfirmedAccount{Address: r.Kamino.Obligation}, tokenAccountFixture(t, r.CollateralCustody, r.Kamino.CollateralMint, bridgeVault, 0))
 	}
@@ -130,7 +130,7 @@ func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
 			accounts[i] = tokenAccountFixture(t, source.CollateralCustody, source.Kamino.CollateralMint, bridgeVault, 1)
 		}
 	}
-	got, err := observedSelectorRouteWithLane(accounts, SelectedRouteID, selectorLane)
+	got, err := observedSelectorRoute(accounts, SelectedRouteID)
 	if err != nil || got.Lane != source.Lane {
 		t.Fatalf("old custody hidden: %s %v", got.Lane, err)
 	}
@@ -140,79 +140,36 @@ func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
 			accounts[i] = tokenAccountFixture(t, other.CollateralCustody, other.Kamino.CollateralMint, bridgeVault, 1)
 		}
 	}
-	if _, err = observedSelectorRouteWithLane(accounts, SelectedRouteID, selectorLane); err == nil {
+	if _, err = observedSelectorRoute(accounts, SelectedRouteID); err == nil {
 		t.Fatal("two lanes silently reduced to one NAV")
 	}
 }
 
-// TestEconomicFeedInventoryIsManifestScoped pins the inventory closure: the
-// embedded constructor stays exactly the installed selector lanes regardless
-// of the manifest, and the manifest-scoped constructor appends the AUTO route.
-// pgxpool connects lazily, so no database is needed to pin inventory shape.
-func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
+// TestEconomicFeedInventoryIsTheActiveRegistry pins the feed inventory: every
+// active registry lane in registry order — Prime/PRIME/USDC included again
+// (owner 2026-10-10, reversing B4) and both Prime siblings — and never the
+// exit-only Ethena lane. pgxpool connects lazily, so no database is needed.
+func TestEconomicFeedInventoryIsTheActiveRegistry(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	const url = "postgresql://backyard_feed@/economic_feed_shape_test"
-	embedded := embeddedTestManifest(t)
-	plain, err := NewEconomicFeed(ctx, url)
+	feed, err := NewEconomicFeed(context.Background(), "postgresql://backyard_feed@/economic_feed_shape_test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer plain.Close()
-	// The embedded constructor's inventory closure is manifest-independent:
-	// exactly the scored installed selector lanes (Prime dropped, B4), never
-	// the candidate route.
-	scoredLanes := []string{}
-	for _, lane := range selectorLanes {
-		if selectorScoredLane(lane) {
-			scoredLanes = append(scoredLanes, lane)
-		}
+	defer feed.Close()
+	want := []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PhaseOneLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane}
+	if len(feed.routes) != len(want) {
+		t.Fatalf("feed inventory size %d, want %d", len(feed.routes), len(want))
 	}
-	if len(scoredLanes) != len(selectorLanes)-1 || selectorScoredLane(PhaseOneLaneID) || !selectorLane(PhaseOneLaneID) {
-		t.Fatal("Prime must stay observable but unscored")
-	}
-	if len(plain.routes) != len(scoredLanes) {
-		t.Fatalf("embedded inventory changed size: %d", len(plain.routes))
-	}
-	for i, lane := range scoredLanes {
-		want, err := runtimeRoute(lane)
+	for i, lane := range want {
+		route, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if plain.routes[i].Lane != want.Lane || plain.routes[i].Kamino.CollateralReserve != want.Kamino.CollateralReserve {
-			t.Fatalf("embedded installed route %d drifted: %+v", i, plain.routes[i])
+		if feed.routes[i].Lane != lane || feed.routes[i].Kamino.CollateralReserve != route.Kamino.CollateralReserve || feed.routes[i].Kamino.DebtReserve != route.Kamino.DebtReserve {
+			t.Fatalf("feed route %d drifted: %+v", i, feed.routes[i])
 		}
-		if plain.routes[i].Lane == autoAUTOPYUSD.Lane {
-			t.Fatal("embedded inventory contains the candidate route")
-		}
-	}
-	// The manifest-scoped inventory appends exactly one AUTO route, last.
-	installedScoped, err := NewEconomicFeedOnManifest(ctx, url, embedded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer installedScoped.Close()
-	if len(installedScoped.routes) != len(scoredLanes)+1 {
-		t.Fatalf("installed binding did not add exactly one route: %d", len(installedScoped.routes))
-	}
-	if last := installedScoped.routes[len(installedScoped.routes)-1]; last.Lane != autoAUTOPYUSD.Lane {
-		t.Fatalf("installed binding did not append the candidate route last: %+v", last)
-	}
-	autoWant, err := runtimeRoute(autoAUTOPYUSD.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	appended := installedScoped.routes[len(installedScoped.routes)-1]
-	if appended.Kamino.CollateralReserve != autoWant.Kamino.CollateralReserve {
-		t.Fatalf("installed binding appended a drifted candidate route: %+v", appended)
-	}
-	for i, lane := range scoredLanes {
-		want, err := runtimeRoute(lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if installedScoped.routes[i].Lane != want.Lane || installedScoped.routes[i].Kamino.CollateralReserve != want.Kamino.CollateralReserve {
-			t.Fatalf("installed binding drifted installed route %d: %+v", i, installedScoped.routes[i])
+		if feed.routes[i].Lane == ethenaUSDePYUSD.Lane {
+			t.Fatal("exit-only Ethena is scored")
 		}
 	}
 }
@@ -251,26 +208,22 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	}
 	rows[collateral.Reserve] = collateral
 	rows[debt.Reserve] = debt
-	// The lane authority is the feed's manifest-scoped set; the public
-	// combineEconomics wrapper keeps the installed selectorLane scope.
-	candidateAllowed := func(lane string) bool {
-		return selectorLane(lane) || lane == autoAUTOPYUSD.Lane
-	}
-	got := combineEconomicsWithLane([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy(), candidateAllowed)
+	got := combineEconomics([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy())
 	if len(got) != 1 || got[0].Lane != autoAUTOPYUSD.Lane || got[0].DebtBorrowRaw != borrow || got[0].DebtSupplyRaw != supply || got[0].HostBorrowBPS != host {
 		t.Fatalf("candidate route economics not produced from complete evidence: %+v", got)
 	}
-	// The public wrapper keeps installed scope: the same complete candidate
-	// evidence is NOT accepted through it.
-	if got := combineEconomicsWithLane([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy(), selectorLane); len(got) != 0 {
-		t.Fatalf("installed wrapper accepted the candidate lane: %+v", got)
+	// The exit-only Ethena lane is never scored, even from complete evidence.
+	ethena := auto
+	ethena.Lane = ethenaUSDePYUSD.Lane
+	if got := combineEconomics([]RuntimeRoute{ethena}, rows, map[string]nativeYield{ethena.Lane: native[auto.Lane]}, now, DefaultSelectorPolicy()); len(got) != 0 {
+		t.Fatalf("exit-only lane scored: %+v", got)
 	}
 	// The debt identity is the route's OWN debt mint: a USDC-minted debt row
 	// for the AUTO debt reserve is an identity mismatch and is refused.
 	wrong := debt
 	wrong.Mint = bridgeUSDC
 	rows[debt.Reserve] = wrong
-	if len(combineEconomicsWithLane([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy(), candidateAllowed)) != 0 {
+	if len(combineEconomics([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy())) != 0 {
 		t.Fatal("candidate debt identity mismatch accepted")
 	}
 	rows[debt.Reserve] = debt
@@ -279,7 +232,7 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	broken := debt
 	broken.Curve = nil
 	rows[debt.Reserve] = broken
-	if len(combineEconomicsWithLane([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy(), candidateAllowed)) != 0 {
+	if len(combineEconomics([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy())) != 0 {
 		t.Fatal("candidate content validation bypassed")
 	}
 }

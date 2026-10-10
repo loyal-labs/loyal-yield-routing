@@ -37,12 +37,12 @@ func observeKaminoPayoffWindow(ctx context.Context, view *View, route RuntimeRou
 }
 
 // payoffWindowAddresses pins the payoff window capture set: obligation, both
-// reserves, both custodies, both liquidity supplies, the Clock, and the
-// selector market where the lane reads one.
+// reserves, both custodies, both liquidity supplies, the Clock, and every
+// registry lane's lending market (its release risk model reads it).
 func payoffWindowAddresses(route RuntimeRoute, additional ...string) []string {
 	addresses := []string{route.Kamino.Obligation, route.Kamino.DebtReserve, route.DebtCustody, route.DebtLiquiditySupply,
 		route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, budgetClockAddress}
-	if selectorLane(route.Lane) {
+	if earnHeldLane(route.Lane) {
 		addresses = append(addresses, route.Kamino.Market)
 	}
 	return append(addresses, additional...)

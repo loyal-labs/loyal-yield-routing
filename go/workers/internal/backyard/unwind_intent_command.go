@@ -66,7 +66,7 @@ func RunUnwindIntentCommit(ctx context.Context, databaseURL string, req UnwindIn
 // The public wrapper keeps the embedded authority.
 func runUnwindIntentCommitOnManifest(ctx context.Context, manifest RouteManifest, databaseURL, routeKey string, req UnwindIntentCommitRequest, execute bool) (result UnwindIntentCommitResult, err error) {
 	intent := unwindIntentFromRequest(req, time.Now().UTC())
-	if err = manifest.validateUnwindIntent(intent); err != nil {
+	if err = intent.validate(); err != nil {
 		return UnwindIntentCommitResult{}, err
 	}
 	if !execute {

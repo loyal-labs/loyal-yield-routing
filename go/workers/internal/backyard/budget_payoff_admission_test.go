@@ -38,7 +38,8 @@ func payoffAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...Co
 	clock := ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 40)}
 	binary.LittleEndian.PutUint64(clock.Data[:8], 42)
 	binary.LittleEndian.PutUint64(clock.Data[32:40], 1000)
-	accounts := []ConfirmedAccount{reserve, obligation, clock}
+	// Every registry lane's payoff window also captures its lending market.
+	accounts := []ConfirmedAccount{reserve, obligation, clock, marketFixture(t, route.Kamino.Market)}
 	for _, row := range []struct {
 		boundary kaminoCustodyBoundary
 		program  string

@@ -84,7 +84,7 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 		manifest:    manifest,
 		databaseURL: config.DatabaseURL,
 		newFeed: func(ctx context.Context, manifest RouteManifest) (selectorEvaluateFeed, error) {
-			return NewEconomicFeedOnManifest(ctx, config.TimescaleURL, manifest)
+			return NewEconomicFeed(ctx, config.TimescaleURL)
 		},
 		observe: func(ctx context.Context, db *Database, manifest RouteManifest) (Observation, error) {
 			return observeSelectorShadow(ctx, db, rpc, view, manifest, newProgramIdentityWatcher(viewProgramIdentity(view)).observe)
@@ -103,7 +103,7 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 func runSelectorEvaluate(ctx context.Context, out io.Writer, execute bool, deps selectorEvaluateDeps) error {
 	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
-	request, requestErr := readPilotCanaryEntryRequestOnManifest(time.Now().UTC(), deps.manifest)
+	request, requestErr := readPilotCanaryEntryRequest(time.Now().UTC())
 	if execute && requestErr != nil {
 		return requestErr
 	}
@@ -146,10 +146,8 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 		return budgetHold("selector_evaluate_observation_unavailable")
 	}
 	markets, _ := feed.Snapshot()
-	laneAllowed := selectorOrAutoLane
-	fundingAllowed := selectorEntryFundingLane
-	selection := selectOpportunityWithLanes(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{}, laneAllowed, fundingAllowed)
-	request, requestErr := readPilotCanaryEntryRequestOnManifest(time.Now().UTC(), deps.manifest)
+	selection := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{})
+	request, requestErr := readPilotCanaryEntryRequest(time.Now().UTC())
 	report := struct {
 		Mode                string         `json:"mode"`
 		Note                string         `json:"note"`
@@ -158,7 +156,7 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 		FeedFailure         string         `json:"feedFailure,omitempty"`
 		NextLifecycleAction Decision       `json:"nextLifecycleAction"`
 		Selection           SelectorResult `json:"selection"`
-	}{"no_quote_diagnostic", "ranking diagnostic only: no quotes are collected, nothing is executable, not an executable canary preflight", nil, "", "", deps.manifest.DecideOnManifest(observation.Snapshot), selection}
+	}{"no_quote_diagnostic", "ranking diagnostic only: no quotes are collected, nothing is executable, not an executable canary preflight", nil, "", "", Decide(observation.Snapshot), selection}
 	if requestErr != nil {
 		report.CanaryRequestError = "invalid_pilot_canary_request"
 	} else if request != nil {

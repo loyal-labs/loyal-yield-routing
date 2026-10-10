@@ -132,7 +132,7 @@ func viewAddresses() []string {
 		voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress,
 		bridgeVault, bridgeDelegate, metadata.String(), solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(),
 		bridgeUSDC, budgetSOLReserve, budgetWrappedSOLMint}
-	for _, lane := range []string{RouteID, PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC", autoAUTOPYUSD.Lane, ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane} {
+	for _, lane := range append([]string{RouteID}, earnLaneIDs(true)...) {
 		route, _ := runtimeRoute(lane)
 		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(route)...),
 			route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,

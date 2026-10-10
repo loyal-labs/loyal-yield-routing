@@ -39,13 +39,11 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 		return nil, nil, err
 	}
 	out := append([]LaneEconomics(nil), markets...)
-	// The market-set lane authority is the reviewed manifest's: installed
-	// selector lanes and the candidate AUTO lane. Any other market fails
-	// closed with the set error of an unknown lane.
-	laneAllowed := selectorOrAutoLane
+	// Markets are the active registry lanes; any other market fails closed
+	// with the set error of an unknown lane.
 	seen := map[string]bool{}
 	for _, market := range out {
-		if !laneAllowed(market.Lane) || seen[market.Lane] {
+		if !earnActiveLane(market.Lane) || seen[market.Lane] {
 			return nil, nil, budgetHold("invalid_selector_market_set")
 		}
 		seen[market.Lane] = true
@@ -64,16 +62,14 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 		return out, nil, err
 	}
 	o.policies = policies
-	// An AUTO route's source quote always comes from the candidate producer
-	// through the durable planning observation manifest: idle cash prices the
-	// OBSERVED_IDLE_NO_EXIT source there, and funded capital prices the same
-	// reviewed finite exit the installed lanes get — the candidate producer is
-	// the only one whose lane authority admits the AUTO route lane. The reviewed
-	// gates bound to this manifest's active lane are unchanged, and installed
-	// lanes keep the reviewed producer.
+	// A catalog lane's source quote (non-USDC debt) comes from the candidate
+	// producer through the durable planning observation manifest: idle cash
+	// prices the OBSERVED_IDLE_NO_EXIT source there, and funded capital prices
+	// the same finite exit the basic lanes get, with its debt residue requoted
+	// at the guaranteed funding remainder.
 	observeSource := observeSelectorSource
 	sourceManifest := manifest
-	if s.RouteLane == autoAUTOPYUSD.Lane {
+	if catalogJupiterRoute(s.RouteLane) {
 		if o.planning == nil {
 			return out, nil, budgetHold("selector_source_unavailable")
 		}
@@ -95,18 +91,6 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 	var wg sync.WaitGroup
 	for i := range out {
 		market := out[i]
-		// Deferred rollout lanes keep their economics observable for KEEP
-		// baselines and valuation, but receive no executable destination quote,
-		// so no ENTER, SWITCH, or canary can select them. The candidate AUTO
-		// lane is quoted exactly when this manifest admits its funded
-		// allocation — the same authority the funding fence below enforces.
-		if !selectorEntryFundingLane(market.Lane) {
-			if market.EntryBlockedReason == "" {
-				out[i].EntryCapacity = Capacity{Known: true}
-				out[i].EntryBlockedReason = "lane_entry_deferred"
-			}
-			continue
-		}
 		if onlyLane != "" && market.Lane != onlyLane {
 			if market.EntryBlockedReason == "" {
 				out[i].EntryCapacity = Capacity{Known: true}
@@ -118,8 +102,7 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 		// to quote the same destination — unless a strictly larger same-lane
 		// reinvestment is eligible. Idle ownership can enter that lane normally.
 		sameLane := hasWorkingCapital(s) && market.Lane == s.RouteLane
-		fundingAllowed := selectorEntryFundingLane
-		if (sameLane && !sameLaneReinvestmentEligibleWithLane(s, policy, fundingAllowed)) || market.validateWithLane(time.Now().UTC(), policy, laneAllowed) != nil || market.EntryBlockedReason != "" {
+		if (sameLane && !sameLaneReinvestmentEligible(s, policy)) || market.validate(time.Now().UTC(), policy) != nil || market.EntryBlockedReason != "" {
 			continue
 		}
 		wg.Add(1)
@@ -135,17 +118,13 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 				if sameLane {
 					destination, err = observeSelectorReentryDestinationSize(ctx, rpc, view, client, manifest, o, source, size, true)
 				} else {
-					// The lane authority was resolved above; the authorized form
-					// prices the identical entry graph while the candidate lane
-					// goes through the same checks the public gate applies to
-					// installed lanes.
-					destination, err = observeSelectorDestinationForecastAuthorized(ctx, rpc, view, client, manifest, o.policies, out[i].Lane, size, s.Slot, true, nil)
+					destination, err = observeSelectorDestinationForecast(ctx, rpc, view, client, manifest, o.policies, out[i].Lane, size, s.Slot, true, nil)
 				}
 				if err != nil {
 					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
 					return MoveQuote{}, "complete_entry_quote_unavailable", false, err
 				}
-				q, err := composeSelectorMoveWithLane(ctx, view, o, source, destination, laneAllowed)
+				q, err := composeSelectorMove(ctx, view, o, source, destination)
 				if err != nil {
 					// Cost beyond equity is an economic outcome smaller sizes can
 					// repair; every other refusal is terminal for this lane.
@@ -229,10 +208,7 @@ func selectorQuoteSizeSufficient(manifest RouteManifest, o Observation, markets 
 
 // selectorMoveQuoteBenefit reuses the pure SelectOpportunity evaluator on one
 // exact quote rather than duplicating any financial formula. It reports the
-// candidate's BenefitRaw and whether the quote is admissible at all. The lane
-// authority is the caller manifest's — the same manifest that priced the
-// quote — so a candidate lane's exact quote is evaluated, never silently
-// dropped, while installed behavior is unchanged.
+// candidate's BenefitRaw and whether the quote is admissible at all.
 func selectorMoveQuoteBenefit(manifest RouteManifest, o Observation, markets []LaneEconomics, lane string, policy SelectorPolicy, q MoveQuote) (float64, bool) {
 	eval := append([]LaneEconomics(nil), markets...)
 	for i := range eval {
@@ -241,9 +217,7 @@ func selectorMoveQuoteBenefit(manifest RouteManifest, o Observation, markets []L
 			eval[i].EntryBlockedReason = ""
 		}
 	}
-	laneAllowed := selectorOrAutoLane
-	fundingAllowed := selectorEntryFundingLane
-	result := selectOpportunityWithLanes(SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: eval, Quotes: []MoveQuote{q}, Policy: policy}, SelectorState{}, laneAllowed, fundingAllowed)
+	result := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: eval, Quotes: []MoveQuote{q}, Policy: policy}, SelectorState{})
 	for _, c := range result.Candidates {
 		if c.Lane == lane && c.CostsKnown {
 			return c.BenefitRaw, c.BlockedReason == ""
@@ -295,7 +269,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if o.planning == nil || o.planning.generation != version {
 		return SelectorResult{}, Observation{}, budgetHold("selector_state_changed_during_quote")
 	}
-	request, err := readPilotCanaryEntryRequestOnManifest(time.Now().UTC(), manifest)
+	request, err := readPilotCanaryEntryRequest(time.Now().UTC())
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}
@@ -328,10 +302,6 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}
-	// The locked persistence resolves its market lane authority through the
-	// same reviewed manifest that priced these quotes, so a candidate lane's
-	// profitable quote can be recorded as an entry rather than silently
-	// dropped at the installed embedded-lane gate.
-	result, err := d.recordSelectorEvaluationWithLanes(ctx, productionRouteKey, &manifest, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot, version)
+	result, err := d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot, version)
 	return result, o, err
 }

@@ -22,7 +22,7 @@ func decodePartialWithdrawal(raw []byte) (*partialWithdrawalState, error) {
 		return nil, nil
 	}
 	var p partialWithdrawalState
-	if json.Unmarshal(raw, &p) != nil || !leverageLane(p.Lane) || !sha256Pattern.MatchString(p.OperationID) || p.Generation <= 0 || p.LTVBPS < 0 || p.LTVBPS > leverageMaxLTVBPS {
+	if json.Unmarshal(raw, &p) != nil || !earnActiveLane(p.Lane) || !sha256Pattern.MatchString(p.OperationID) || p.Generation <= 0 || p.LTVBPS < 0 || p.LTVBPS > leverageMaxLTVBPS {
 		return nil, budgetHold("invalid_partial_withdrawal_state")
 	}
 	return &p, nil

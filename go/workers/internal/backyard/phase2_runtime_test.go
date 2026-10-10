@@ -121,17 +121,22 @@ func TestPhase2UnsupportedLaneFailsClosed(t *testing.T) {
 	}
 }
 
-func TestPhase2RuntimeActivationIncludesBasicRoutes(t *testing.T) {
+// The manifest names only the flat route's starting lane; the lanes
+// themselves are the earnLanes registry, never a manifest list.
+func TestPhase2RuntimeActivationSelectsMaple(t *testing.T) {
 	t.Parallel()
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.RuntimeActivation.SelectedLane != SelectedRouteID || len(manifest.RuntimeActivation.RuntimeRoutes) != RuntimeRouteCount ||
-		manifest.RuntimeActivation.RuntimeRoutes[0].Lane != PhaseOneLaneID || manifest.RuntimeActivation.RuntimeRoutes[1].Lane != SelectedRouteID ||
-		manifest.RuntimeActivation.RuntimeRoutes[2].Lane != "OnRe/ONyc/USDC" {
+	if manifest.RuntimeActivation.SelectedLane != SelectedRouteID {
 		t.Fatalf("unexpected runtime activation: %+v", manifest.RuntimeActivation)
 	}
+	manifest.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	if manifest.validateBindings() == nil {
+		t.Fatal("a drifted selected lane validated")
+	}
+	manifest.RuntimeActivation.SelectedLane = SelectedRouteID
 	route, err := manifest.activeRuntimeRoute()
 	if err != nil || route.Lane != SelectedRouteID || route.Kamino.CollateralMint != "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj" {
 		t.Fatalf("selected route binding is not Maple/syrupUSDC/USDC: %+v, %v", route, err)

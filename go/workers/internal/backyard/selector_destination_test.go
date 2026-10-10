@@ -173,11 +173,11 @@ func TestSelectorDestinationPricesCompleteEntryWithoutMutatingAccounts(t *testin
 	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	before := hashConfirmedAccounts(accounts)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 100_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before != hashConfirmedAccounts(accounts) || q.AccountSlot != 42 || q.Recipe.ValidThroughSlot != 74 || q.Recipe.SetupLamports != 0 || q.Recipe.CostRaw <= 0 || q.Recipe.CostRaw >= 1_000_000 {
+	if before != hashConfirmedAccounts(accounts) || q.AccountSlot != 42 || q.Recipe.ValidThroughSlot != 74 || q.Recipe.SetupLamports != 0 || q.Recipe.CostRaw <= 0 || q.Recipe.CostRaw >= 100_000_000 {
 		t.Fatal("invalid entry economics", q)
 	}
 	if q.PayoffUpperRaw < q.BorrowReceiveRaw+q.BorrowFeeRaw || q.PayoffSwap.Request.MinimumOutputRaw < q.PayoffUpperRaw {
@@ -199,7 +199,10 @@ func TestSelectorDestinationPricesCompleteEntryWithoutMutatingAccounts(t *testin
 		}
 	}
 	want := []Action{VoltrAllocateToSquads, ReportNAV, SwapStableToCollateralStep, ReportNAV, OpenRouteStep, ReportNAV, OpenRouteStep, ReportNAV, SwapDebtToCollateralStep, ReportNAV, OpenRouteStep, ReportNAV}
-	if !reflect.DeepEqual(actions, want) || q.Recipe.NetworkLamports != 60_000 || q.InitialCollateralMinimumRaw != 995_000 || q.BorrowReceiveRaw != 497_498 {
+	// Maple is a B2 lane (registry): the borrow is capacity-sized at 1.5x, and
+	// a tranche whose borrow is below the B2 minimum would price 1x, so the
+	// leveraged entry is priced at $100.
+	if !reflect.DeepEqual(actions, want) || q.Recipe.NetworkLamports != 60_000 || q.InitialCollateralMinimumRaw != 99_500_000 || q.BorrowReceiveRaw != 49_700_249 || q.Unlevered {
 		t.Fatal("incomplete entry", actions, q.BorrowReceiveRaw)
 	}
 }
@@ -228,7 +231,16 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 			case "capacity":
 				binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoOutsideBorrowLimitOffset:], 0)
 			}
-			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil); err == nil {
+			q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 100_000_000, 42, false, nil)
+			if kind == "capacity" {
+				// Maple is a B2 lane (registry): a closed borrow limit prices
+				// the debt-free 1x entry instead of refusing the lane.
+				if err != nil || !q.Unlevered || q.BorrowReceiveRaw != 0 {
+					t.Fatalf("closed borrowing did not price the 1x entry: %+v %v", q, err)
+				}
+				return
+			}
+			if err == nil {
 				t.Fatal("unready lane priced")
 			}
 		})
@@ -248,7 +260,7 @@ func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
 				accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset] = 55
 				accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoReserveConfigOffset+17] = 75
 			case "minimum_collateral":
-				minimum := new(big.Int).Lsh(big.NewInt(20), 60)
+				minimum := new(big.Int).Lsh(big.NewInt(2000), 60)
 				raw := minimum.Bytes()
 				dst := accountAt(accounts, route.Kamino.Market).Data[kaminoMinRemainingValueOffset : kaminoMinRemainingValueOffset+16]
 				for i, b := range raw {
@@ -265,7 +277,7 @@ func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
 					return original.RoundTrip(req)
 				})
 			}
-			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 10_000_000, 42, false, nil); err == nil {
+			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 100_000_000, 42, false, nil); err == nil {
 				t.Fatal("unfundable destination quoted")
 			}
 		})

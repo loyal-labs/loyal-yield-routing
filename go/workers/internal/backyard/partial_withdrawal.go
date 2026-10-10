@@ -4,7 +4,7 @@ import (
 	"math/big"
 )
 
-// Partial withdrawals (AUTO and OnRe). A withdrawal shortfall S = demand -
+// Partial withdrawals (active registry lanes). A withdrawal shortfall S = demand -
 // Voltr idle - withdrawal cash already in flight frees only E = S + buffer
 // of equity and keeps the position at its level: release the collateral
 // share C*E/Eq, swap the debt share to debt and repay it (LTV back to the
@@ -67,7 +67,7 @@ func partialWithdrawalTargetLTVBPS(s Snapshot) (int64, bool) {
 // when a partial path is not established. Callers hold withdrawal-only flows,
 // after hard LTV, recovery and the covered/staged checks.
 func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
-	if !leverageLane(s.RouteLane) || s.Unwind || s.CutoverDrain || (s.WithdrawalDemandRaw <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
+	if !earnActiveLane(s.RouteLane) || s.Unwind || s.CutoverDrain || (s.WithdrawalDemandRaw <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
 		s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw < 0 || s.PositionDebtRaw < 0 {
 		return "", "", 0, false
 	}

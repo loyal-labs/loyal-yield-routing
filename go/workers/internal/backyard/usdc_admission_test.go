@@ -47,8 +47,8 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 		{old.DebtLiquiditySupply, route.DebtLiquiditySupply}, {old.DebtFeeReceiver, route.DebtFeeReceiver},
 		{old.CollateralReceiptMint, route.CollateralReceiptMint}, {old.CollateralReceiptSupply, route.CollateralReceiptSupply},
 	}
+	// The payoff fixture already carries its lane's market, renamed below.
 	var accounts []ConfirmedAccount
-	accounts = append(accounts, marketFixture(t, route.Kamino.Market))
 	for _, a := range existing {
 		a.Data = append([]byte(nil), a.Data...)
 		for _, p := range pairs {
@@ -155,10 +155,10 @@ func TestUSDCEntryConsumesWorkingCashAndValidatesSharedSourceOnce(t *testing.T) 
 
 func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 	t.Parallel()
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		s := base()
 		scale := int64(1)
-		if leverageLane(lane) {
+		if earnActiveLane(lane) {
 			scale = 10_000
 		}
 		s.SelectorEntryEquityRaw = 20_000 * scale
@@ -171,7 +171,7 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 		o, _, evidence := bridgeAdmissionFixture(t, d.Action, d.AmountRaw, s.VoltrIdleRaw, 0, 0)
 		o.Snapshot.RouteLane, o.Snapshot.StrategyKey = lane, lane
 		d.StrategyKey = lane
-		if _, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence); !fundedLane(lane) {
+		if _, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence); !earnHeldLane(lane) {
 			assertBudgetHold(t, err, "bridge_admission_snapshot_unavailable")
 		} else if err != nil {
 			t.Fatal("bounded allocation return", err)
@@ -191,7 +191,7 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 			}
 			o, _, evidence = bridgeAdmissionFixture(t, d.Action, d.AmountRaw, changed.VoltrIdleRaw, 0, changed.SquadsIdleRaw)
 			o.Snapshot.RouteLane, o.Snapshot.StrategyKey = lane, lane
-			if _, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence); !fundedLane(lane) {
+			if _, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence); !earnHeldLane(lane) {
 				assertBudgetHold(t, err, "bridge_admission_snapshot_unavailable")
 			} else if err != nil {
 				t.Fatal("capacity return", err)
@@ -203,7 +203,7 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 		}
 		s.CollateralIdleRaw, s.PrimeIdleRaw, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.HasPosition = 0, 0, (20_000 * scale), (20_000 * scale), true
 		wantBorrow := "prime_collateral_requires_borrow"
-		if leverageLane(lane) {
+		if earnActiveLane(lane) {
 			s.LeverageTargetLevel, wantBorrow = 1.5, leverageUpReason
 			armLeverageCapacityFixture(&s)
 		}
@@ -251,7 +251,7 @@ func TestUSDCHardLTVRequiresExecutablePayoff(t *testing.T) {
 			t.Fatalf("funded full payoff: %+v", d)
 		}
 	}
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		s.RouteLane, s.StrategyKey = lane, lane
 		s.SquadsIdleRaw = 0
 		s.PositionDebtValueRaw = 100

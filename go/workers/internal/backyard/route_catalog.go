@@ -4,6 +4,96 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
+// earnLane is one Earn Max loop Backyard holds installed on-chain policies for.
+type earnLane struct {
+	lane string
+	// exitOnly: a held position on the lane is still observed, valued and
+	// exited (withdrawals, unwinds, payoff), but the lane is never scored,
+	// entered, funded anew or levered.
+	exitOnly bool
+	// initializer: the lane's obligation is created through an installed
+	// initializer policy. Otherwise the obligation already exists on chain
+	// (owner KLend, verified 2026-10-10) and no initializer policy is
+	// installed: a missing obligation holds.
+	initializer bool
+}
+
+// earnLanes is the one registry of Earn Max lanes. Every lane predicate —
+// scored, entered, funded, levered, observed, exited — reads it. Earn Max
+// holds one Kamino multiply position at a time and moves to whichever lane
+// gives the best achievable net APY; economics decide, not a hand list (owner
+// decision 2026-10-10: every policy-covered loop is checked, which reverses
+// the 2026-09-28 B4 drop of Prime/PRIME/USDC).
+var earnLanes = []earnLane{
+	{lane: SelectedRouteID, initializer: true},
+	{lane: onreONycUSDC, initializer: true},
+	{lane: "AUTO/AUTO/PYUSD", initializer: true},
+	{lane: PhaseOneLaneID, initializer: true},
+	{lane: "Prime/PRIME/PYUSD"},
+	{lane: "Prime/PRIME/USDS"},
+	// Ethena is exit-only. Kamino's yield feed reports ~4.75% underlyingApy for
+	// USDe, but USDe's price does not grow, so a holder never earns it; and
+	// both its debt reserves sit at borrowLimit 0. Its installed policies stay
+	// installed so a held position stays observable and exitable.
+	{lane: "Ethena/USDe/PYUSD", exitOnly: true},
+}
+
+func findEarnLane(lane string) (earnLane, bool) {
+	for _, l := range earnLanes {
+		if l.lane == lane {
+			return l, true
+		}
+	}
+	return earnLane{}, false
+}
+
+// earnActiveLane reports a lane the selector scores and may enter, fund and
+// lever.
+func earnActiveLane(lane string) bool {
+	l, ok := findEarnLane(lane)
+	return ok && !l.exitOnly
+}
+
+// earnHeldLane reports a lane whose position is observed, valued and exited:
+// every registry lane, exit-only ones included.
+func earnHeldLane(lane string) bool {
+	_, ok := findEarnLane(lane)
+	return ok
+}
+
+// earnInitializerLane reports a registry lane whose obligation is created
+// through an installed initializer policy.
+func earnInitializerLane(lane string) bool {
+	l, ok := findEarnLane(lane)
+	return ok && l.initializer
+}
+
+// earnLaneIDs lists the registry lanes in registry order; exit-only lanes
+// only when held is set.
+func earnLaneIDs(held bool) []string {
+	out := make([]string, 0, len(earnLanes))
+	for _, l := range earnLanes {
+		if held || !l.exitOnly {
+			out = append(out, l.lane)
+		}
+	}
+	return out
+}
+
+// basicLane reports a registry lane served by the shared basic policy
+// families (USDC debt, Squads USDC custody); every other registry lane swaps
+// through the catalog edges.
+func basicLane(lane string) bool {
+	route, err := runtimeRoute(lane)
+	return err == nil && route.BasicPolicy && earnHeldLane(lane)
+}
+
+// catalogJupiterRoute reports a registry lane that swaps through the catalog
+// Jupiter policies: every registry lane outside the basic families.
+func catalogJupiterRoute(lane string) bool {
+	return earnHeldLane(lane) && !basicLane(lane)
+}
+
 var autoAUTOPYUSD = RuntimeRoute{
 	Lane: "AUTO/AUTO/PYUSD", Protocol: "AUTO", CollateralSymbol: "AUTO", DebtSymbol: "PYUSD",
 	Kamino: KaminoObservationConfig{

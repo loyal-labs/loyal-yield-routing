@@ -63,7 +63,7 @@ func pilotReleaseFixture(t *testing.T, lane string) (RuntimeRoute, []ConfirmedAc
 
 func TestPilotReleaseCanFundFullyRedepositedSinglePass(t *testing.T) {
 	t.Parallel()
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		t.Run(lane, func(t *testing.T) {
 			route, accounts := pilotReleaseFixture(t, lane)
 			legacy, err := decodeKaminoRepaymentReleaseForMode(accounts, route, 42, 7, false)

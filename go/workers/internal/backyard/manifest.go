@@ -63,8 +63,9 @@ type RouteManifest struct {
 			} `json:"packets"`
 		} `json:"primeUsdc"`
 	} `json:"runtimeBindings"`
-	// RuntimeActivation is deliberately a two-entry allowlist. The worker
-	// reads this as a deployment assertion, never as caller-selected routing.
+	// RuntimeActivation names the lane a flat route observes before any
+	// selector entry or exposure orients it. The lanes themselves are the
+	// earnLanes registry, never a manifest list.
 	RuntimeActivation RuntimeActivation `json:"runtimeActivation"`
 	Deployment        struct {
 		SourceCommit        *string `json:"sourceCommit"`
@@ -79,38 +80,7 @@ type RouteManifest struct {
 }
 
 type RuntimeActivation struct {
-	SelectedLane  string               `json:"selectedLane"`
-	RuntimeRoutes []RuntimeLaneBinding `json:"runtimeRoutes"`
-}
-
-type RuntimeLaneBinding struct {
-	Lane             string `json:"lane"`
-	Protocol         string `json:"protocol"`
-	CollateralSymbol string `json:"collateralSymbol"`
-	DebtSymbol       string `json:"debtSymbol"`
-	Graph            struct {
-		KLendProgram              string `json:"klendProgram"`
-		Vault                     string `json:"vault"`
-		Market                    string `json:"market"`
-		MarketAuthority           string `json:"marketAuthority"`
-		CollateralReserve         string `json:"collateralReserve"`
-		CollateralMint            string `json:"collateralMint"`
-		CollateralLiquiditySupply string `json:"collateralLiquiditySupply"`
-		CollateralReceiptMint     string `json:"collateralReceiptMint"`
-		CollateralReceiptSupply   string `json:"collateralReceiptSupply"`
-		CollateralCustody         string `json:"collateralCustody"`
-		DebtReserve               string `json:"debtReserve"`
-		DebtMint                  string `json:"debtMint"`
-		DebtTokenProgram          string `json:"debtTokenProgram"`
-		DebtLiquiditySupply       string `json:"debtLiquiditySupply"`
-		DebtFeeReceiver           string `json:"debtFeeReceiver"`
-		DebtCustody               string `json:"debtCustody"`
-		Obligation                string `json:"obligation"`
-		CollateralFarmState       string `json:"collateralFarmState"`
-		CollateralFarmUserState   string `json:"collateralFarmUserState"`
-		DebtFarmState             string `json:"debtFarmState"`
-		DebtFarmUserState         string `json:"debtFarmUserState"`
-	} `json:"graph"`
+	SelectedLane string `json:"selectedLane"`
 }
 
 func loadEmbeddedRouteManifest() (RouteManifest, error) {
@@ -144,39 +114,10 @@ func (m RouteManifest) validateBindings() error {
 		m.Identities.Token2022 != token2022Program {
 		return fmt.Errorf("embedded Backyard manifest does not match pinned bridge identities")
 	}
-	if m.RuntimeActivation.SelectedLane != SelectedRouteID || len(m.RuntimeActivation.RuntimeRoutes) != RuntimeRouteCount {
-		return fmt.Errorf("embedded Backyard manifest has an invalid basic runtime allowlist")
-	}
-	for i, expected := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
-		if m.RuntimeActivation.RuntimeRoutes[i].Lane != expected || !validRuntimeLaneBinding(m.RuntimeActivation.RuntimeRoutes[i]) {
-			return fmt.Errorf("embedded Backyard manifest has an invalid runtime graph for %q", expected)
-		}
+	if m.RuntimeActivation.SelectedLane != SelectedRouteID {
+		return fmt.Errorf("embedded Backyard manifest has an invalid selected lane")
 	}
 	return nil
-}
-
-func validRuntimeLaneBinding(route RuntimeLaneBinding) bool {
-	if route.Lane == "" || route.Protocol == "" || route.CollateralSymbol == "" || route.DebtSymbol == "" {
-		return false
-	}
-	graph := route.Graph
-	values := []string{
-		graph.KLendProgram, graph.Vault, graph.Market, graph.MarketAuthority,
-		graph.CollateralReserve, graph.CollateralMint, graph.CollateralLiquiditySupply,
-		graph.CollateralReceiptMint, graph.CollateralReceiptSupply, graph.CollateralCustody,
-		graph.DebtReserve, graph.DebtMint, graph.DebtTokenProgram, graph.DebtLiquiditySupply,
-		graph.DebtFeeReceiver, graph.DebtCustody, graph.Obligation,
-	}
-	for _, value := range values {
-		if value == "" {
-			return false
-		}
-	}
-	if (graph.CollateralFarmState == "") != (graph.CollateralFarmUserState == "") ||
-		(graph.DebtFarmState == "") != (graph.DebtFarmUserState == "") {
-		return false
-	}
-	return true
 }
 
 // primeUSDCPacket is the legacy PRIME/USDC route's packet for leg, for amount,
@@ -280,10 +221,8 @@ func (m RouteManifest) hasPhaseOneUnresolved() bool {
 
 func (m RouteManifest) activeRuntimeRoute() (RuntimeRoute, error) {
 	if m.observationLane != "" {
-		// The observation lane authority is the same reviewed manifest lane
-		// set that admits entries and initializer decisions: installed lanes
-		// and the candidate AUTO lane.
-		if !m.selectorObservation || !selectorOrAutoLane(m.observationLane) {
+		// The observation lane is any registry lane, exit-only ones included.
+		if !m.selectorObservation || !earnHeldLane(m.observationLane) {
 			return RuntimeRoute{}, fmt.Errorf("unadmitted observation lane")
 		}
 		return runtimeRoute(m.observationLane)

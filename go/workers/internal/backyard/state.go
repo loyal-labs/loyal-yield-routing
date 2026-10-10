@@ -211,40 +211,22 @@ type Decision struct {
 	StrategyKey    string
 }
 
-// validateSelectorInitializerDecision is the exact installed initializer
-// decision shape, extracted unchanged from Decision.Validate: selector lanes
-// only, zero amount, exact reason, nonempty idempotency key.
+// validateSelectorInitializerDecision is the initializer decision shape: a
+// registry lane with an installed initializer policy, zero amount, exact
+// reason, nonempty idempotency key.
 func validateSelectorInitializerDecision(d Decision) error {
-	return validateSelectorInitializerDecisionWithLane(d, selectorLane)
-}
-
-// validateSelectorInitializerDecisionWithLane is the identical initializer
-// decision shape with the lane authority explicit; the manifest form admits
-// the candidate AUTO lane.
-func validateSelectorInitializerDecisionWithLane(d Decision, laneAllowed func(string) bool) error {
-	if !laneAllowed(d.StrategyKey) || d.AmountRaw != 0 || d.Reason != "multiply_obligation_missing" || d.IdempotencyKey == "" {
+	if !earnInitializerLane(d.StrategyKey) || d.AmountRaw != 0 || d.Reason != "multiply_obligation_missing" || d.IdempotencyKey == "" {
 		return fmt.Errorf("invalid Multiply initialization decision")
 	}
 	return nil
 }
 
 func (d Decision) Validate() error {
-	return validateDecisionWithLane(d, selectorLane)
-}
-
-// validateDecision is the identical shared decision validation with the
-// initializer lane authority resolved through the manifest, which admits the
-// candidate AUTO lane.
-func (m RouteManifest) validateDecision(d Decision) error {
-	return validateDecisionWithLane(d, selectorOrAutoLane)
-}
-
-func validateDecisionWithLane(d Decision, initializerLaneAllowed func(string) bool) error {
 	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
 		return fmt.Errorf("incomplete decision")
 	}
 	if d.Action == InitializeKaminoObligation {
-		return validateSelectorInitializerDecisionWithLane(d, initializerLaneAllowed)
+		return validateSelectorInitializerDecision(d)
 	}
 	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
 	catalog := false
@@ -260,7 +242,7 @@ func validateDecisionWithLane(d Decision, initializerLaneAllowed func(string) bo
 		return fmt.Errorf("decision strategy is not installed")
 	}
 	if d.Action == SwapDebtToCollateralStep || d.Action == SwapCollateralToDebtStep {
-		if !catalog && !(basic && selectorLane(d.StrategyKey)) {
+		if !catalog && !basic {
 			return fmt.Errorf("collateral/debt conversion requires an exact runtime binding")
 		}
 		return nil

@@ -95,7 +95,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
 	ticketRequired := decision.Action != StageSquadsToVoltr
-	if fundedLane(route.Lane) {
+	if earnHeldLane(route.Lane) {
 		// Reserve the entire bridge exit, including a report after staging:
 		// the existing ticket must be present in this same observation;
 		// admission cannot authorize setup.
@@ -236,7 +236,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
 	}
-	repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && (repaymentReleaseReason(decision.Reason) || decision.Reason == partialReleaseReason) && positionReturnRoute(route.Lane)
+	repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && (repaymentReleaseReason(decision.Reason) || decision.Reason == partialReleaseReason) && earnHeldLane(route.Lane)
 	var leg kaminoPrimeUSDCLeg
 	var wireAmount, effectAmount uint64
 	// Release and full-payoff sizing read raw reserves (see the helpers).

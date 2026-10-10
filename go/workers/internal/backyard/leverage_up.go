@@ -24,7 +24,7 @@ const (
 // leverageUpLevel is the next level above the position (at most one step),
 // when the stored target allows it; 0 means no up move.
 func leverageUpLevel(s Snapshot) float64 {
-	if !leverageLane(s.RouteLane) || s.LeverageTargetLevel <= 1 {
+	if !earnActiveLane(s.RouteLane) || s.LeverageTargetLevel <= 1 {
 		return 0
 	}
 	ltv := int64(0)
@@ -45,12 +45,12 @@ func leverageUpLevel(s Snapshot) float64 {
 	return 0
 }
 
-// leverageBorrowStep is the B2 borrow step for a settled funded AUTO/OnRe position
+// leverageBorrowStep is the B2 borrow step for a settled funded active registry position
 // with no working cash beside it. It runs before the selector-entry pause
 // (an up move adds to the current lane; it is not a new entry) and replaces
 // both the installed first-loop borrow and the single-loop ready hold.
 func leverageBorrowStep(s Snapshot, hard int64) (Action, string, int64, bool) {
-	if !leverageLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 ||
+	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 ||
 		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw)) ||
 		hard <= TargetLTVBPS {
 		return "", "", 0, false
@@ -180,20 +180,20 @@ func leverageUpBypassesEntryFence(request any, journaledReason string, unwinding
 	}
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
 	target, targetErr := decodeLeverageTarget(rawTarget)
-	if err != nil || leg != kaminoLegBorrow || unwinding || r.RouteLane != operationLane || !leverageLane(operationLane) ||
+	if err != nil || leg != kaminoLegBorrow || unwinding || r.RouteLane != operationLane || !earnActiveLane(operationLane) ||
 		targetErr != nil || target == nil || target.Lane != operationLane || target.Level <= 1 || target.BorrowRaw < leverageMinimumBorrowRaw || r.AmountRaw != target.BorrowRaw || len(operationID) != 1 || target.OperationID != operationID[0] || target.OperationID == "" {
 		return false, budgetHold("leverage_up_authority_mismatch")
 	}
 	return true, nil
 }
 
-// leverageLoopInProgress: an AUTO/OnRe position with debt whose borrowed or
+// leverageLoopInProgress: an active registry position with debt whose borrowed or
 // collateral cash still has to finish the loop.
 func leverageLoopInProgress(s Snapshot) bool {
-	return leverageLane(s.RouteLane) && s.HasPosition && s.PositionDebtRaw > 0 && (debtCashRaw(s) > 0 || s.CollateralIdleRaw > 0)
+	return earnActiveLane(s.RouteLane) && s.HasPosition && s.PositionDebtRaw > 0 && (debtCashRaw(s) > 0 || s.CollateralIdleRaw > 0)
 }
 
-// B2 down move to 1x: a stored 1x target below a leveraged AUTO/OnRe
+// B2 down move to 1x: a stored 1x target below a leveraged active registry
 // position repays it in full through the existing release -> funding swap ->
 // full payoff legs (the withdrawal-shaped chain), under its own reasons. Leftover debt/USDC cash then returns to the
 // position through the plan B3 residue and top-up legs.
@@ -204,7 +204,7 @@ const (
 )
 
 func leverageDownPending(s Snapshot) bool {
-	return leverageLane(s.RouteLane) && s.LeverageTargetLevel == 1 && s.HasPosition && s.PositionDebtRaw > 0
+	return earnActiveLane(s.RouteLane) && s.LeverageTargetLevel == 1 && s.HasPosition && s.PositionDebtRaw > 0
 }
 
 func leverageDownStep(s Snapshot) (Action, string, int64, bool) {
@@ -242,7 +242,7 @@ func repaymentReleaseReason(reason string) bool {
 // instead of releasing again. ok=false keeps the installed next leg.
 // The caller has already run hard-LTV safety, which preempts every cycle.
 func exitCycleStep(s Snapshot) (Action, string, int64, bool) {
-	if !leverageLane(s.RouteLane) || s.PositionDebtRaw <= 1 || s.LTVBPS < leverageExitCycleLTVBPS {
+	if !earnActiveLane(s.RouteLane) || s.PositionDebtRaw <= 1 || s.LTVBPS < leverageExitCycleLTVBPS {
 		return "", "", 0, false
 	}
 	payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
@@ -304,7 +304,7 @@ func leverageDownPartialStep(s Snapshot) (Action, string, int64, bool) {
 }
 
 func leverageDownPartialStepAt(s Snapshot, enabled bool) (Action, string, int64, bool) {
-	if !enabled || !leverageLane(s.RouteLane) || s.LeverageTargetLevel != 1.5 || !s.HasPosition || s.PositionDebtRaw <= 1 ||
+	if !enabled || !earnActiveLane(s.RouteLane) || s.LeverageTargetLevel != 1.5 || !s.HasPosition || s.PositionDebtRaw <= 1 ||
 		s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw <= 0 {
 		return "", "", 0, false
 	}

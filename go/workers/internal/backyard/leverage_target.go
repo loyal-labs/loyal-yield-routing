@@ -26,16 +26,11 @@ func (t LeverageTarget) validate() error {
 	for _, level := range leverageLevels {
 		valid = valid || t.Level == level
 	}
-	if !valid || !leverageLane(t.Lane) || t.DecidedAt.IsZero() || t.SourceDebtRaw > math.MaxInt64 || t.BorrowRaw > math.MaxInt64 ||
+	if !valid || !earnActiveLane(t.Lane) || t.DecidedAt.IsZero() || t.SourceDebtRaw > math.MaxInt64 || t.BorrowRaw > math.MaxInt64 ||
 		(t.BorrowRaw != 0 && (t.Level <= 1 || t.BorrowRaw < leverageMinimumBorrowRaw)) {
 		return fmt.Errorf("invalid_leverage_target")
 	}
 	return nil
-}
-
-// leverageLane: B2 runs on AUTO and OnRe only; Maple stays as is.
-func leverageLane(lane string) bool {
-	return lane == autoAUTOPYUSD.Lane || lane == onreONycUSDC
 }
 
 func decodeLeverageTarget(raw []byte) (*LeverageTarget, error) {
@@ -55,7 +50,7 @@ func applyLeverageTarget(s *Snapshot, target *LeverageTarget) {
 	s.LeverageTargetLevel = 0
 	s.LeverageApprovedBorrowRaw, s.LeverageSourceDebtRaw = 0, 0
 	s.LeverageBorrowOperationID = ""
-	if target != nil && target.Lane == s.RouteLane && leverageLane(s.RouteLane) {
+	if target != nil && target.Lane == s.RouteLane && earnActiveLane(s.RouteLane) {
 		s.LeverageTargetLevel = target.Level
 		s.LeverageApprovedBorrowRaw, s.LeverageSourceDebtRaw = target.BorrowRaw, target.SourceDebtRaw
 		s.LeverageBorrowOperationID = target.OperationID
@@ -128,7 +123,7 @@ type leverageDecision struct {
 // Cost = moved notional x 2 x UncertaintyBPS + 3 fees of 10,000 raw.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane}
-	if !leverageLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
+	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
 		selector.Action != "KEEP" || s.PartialWithdrawalOperationID != "" || s.Unwind || s.UnwindRefreshRequired || s.CutoverDrain || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
 		s.SquadsIdleRaw != 0 || s.DebtIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 ||
 		(s.CollateralIdleRaw > 0 && s.MinimumCollateralDepositRaw > 0 && s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw) {

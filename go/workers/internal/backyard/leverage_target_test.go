@@ -125,7 +125,7 @@ func TestLeverageTargetStateRoundTrip(t *testing.T) {
 	if err != nil || got == nil || *got != target {
 		t.Fatalf("decode: %+v %v", got, err)
 	}
-	for _, bad := range []string{`{"lane":"OnRe/ONyc/USDC","level":2,"decidedAt":"2033-05-18T03:33:20Z"}`, `{"lane":"Maple/syrupUSDC/USDC","level":1.5,"decidedAt":"2033-05-18T03:33:20Z"}`, `{"lane":"OnRe/ONyc/USDC","level":1.5}`, `{`} {
+	for _, bad := range []string{`{"lane":"OnRe/ONyc/USDC","level":2,"decidedAt":"2033-05-18T03:33:20Z"}`, `{"lane":"Ethena/USDe/PYUSD","level":1.5,"decidedAt":"2033-05-18T03:33:20Z"}`, `{"lane":"OnRe/ONyc/USDC","level":1.5}`, `{`} {
 		if _, err := decodeLeverageTarget([]byte(bad)); err == nil {
 			t.Fatalf("invalid target accepted: %s", bad)
 		}

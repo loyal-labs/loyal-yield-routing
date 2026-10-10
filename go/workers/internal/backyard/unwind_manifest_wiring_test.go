@@ -33,11 +33,13 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	intent := UnwindIntent{SourceLane: autoAUTOPYUSD.Lane, Reason: "hard_ltv_reduction", ObservationID: "source", MaxCollateralRaw: 100, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("auto-exit")), CreatedAt: time.Now().UTC()}
-	// Installed closure: the embedded commit refuses the candidate source.
-	if err = db.CommitUnwindIntent(ctx, key, intent); err == nil {
-		t.Fatal("embedded commit accepted the candidate source")
+	// A source outside the registry is refused; the AUTO source commits.
+	foreign := intent
+	foreign.SourceLane = RouteID
+	if err = db.CommitUnwindIntent(ctx, key, foreign); err == nil {
+		t.Fatal("commit accepted a source outside the registry")
 	}
-	if err = db.CommitUnwindIntentOnManifest(ctx, manifest, key, intent); err != nil {
+	if err = db.CommitUnwindIntent(ctx, key, intent); err != nil {
 		t.Fatal("manifest commit refused a candidate unwind:", err)
 	}
 	if _, err = db.ReleaseRouteLease(ctx); err != nil {
@@ -51,22 +53,15 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	if _, err = restarted.AcquireRouteLease(ctx, key, "unwind-b", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	// Installed closure: the embedded reload refuses; the manifest reload
-	// returns the exact persisted intent.
-	if _, err = restarted.LoadUnwindIntent(ctx, key); err == nil {
-		t.Fatal("embedded reload accepted the candidate source")
-	}
-	got, err := restarted.LoadUnwindIntentOnManifest(ctx, manifest, key)
+	// The reload returns the exact persisted intent.
+	got, err := restarted.LoadUnwindIntent(ctx, key)
 	if err != nil || got == nil || *got != intent {
 		t.Fatalf("restart lost the candidate intent: %+v %v", got, err)
 	}
-	// Apply: the embedded merge refuses; the manifest merge arms the snapshot.
+	// Apply arms the snapshot.
 	s := base()
 	s.RouteLane = autoAUTOPYUSD.Lane
-	if err = applyUnwindIntentWithLane(&s, got, selectorLane); err == nil {
-		t.Fatal("embedded apply accepted the candidate source")
-	}
-	if err = applyUnwindIntentWithLane(&s, got, selectorOrAutoLane); err != nil || !s.Unwind {
+	if err = applyUnwindIntent(&s, got); err != nil || !s.Unwind {
 		t.Fatalf("manifest apply did not arm the unwind: %v", err)
 	}
 	// Planning read: the reviewed manifest decodes the candidate unwind
@@ -91,26 +86,23 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	if !merged.Snapshot.Unwind {
 		t.Fatalf("merge lost the unwind facts: %+v", merged.Snapshot)
 	}
-	// Completion: the embedded completion keeps refusing, a pending
-	// transaction blocks, and the manifest completion clears the intent.
+	// Completion: a pending transaction blocks, and the reconciled flat
+	// completion clears the intent.
 	flatSnapshot := base()
 	flatSnapshot.RouteLane = autoAUTOPYUSD.Lane
-	if err = restarted.CompleteUnwindIntent(ctx, key, intent, flatSnapshot); err == nil {
-		t.Fatal("embedded completion accepted the candidate source")
-	}
 	if _, err = restarted.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES($1,$2,'signed','OPEN_ROUTE_STEP','{}')`, key+"-signed", key); err != nil {
 		t.Fatal(err)
 	}
-	if err = restarted.CompleteUnwindIntentOnManifest(ctx, manifest, key, intent, flatSnapshot); err == nil {
+	if err = restarted.CompleteUnwindIntent(ctx, key, intent, flatSnapshot); err == nil {
 		t.Fatal("completion ran during an unresolved transaction")
 	}
 	if _, err = restarted.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled' WHERE operation_id=$1`, key+"-signed"); err != nil {
 		t.Fatal(err)
 	}
-	if err = restarted.CompleteUnwindIntentOnManifest(ctx, manifest, key, intent, flatSnapshot); err != nil {
+	if err = restarted.CompleteUnwindIntent(ctx, key, intent, flatSnapshot); err != nil {
 		t.Fatal("manifest completion refused the reconciled flat unwind:", err)
 	}
-	if cleared, err := restarted.LoadUnwindIntentOnManifest(ctx, manifest, key); err != nil || cleared != nil {
+	if cleared, err := restarted.LoadUnwindIntent(ctx, key); err != nil || cleared != nil {
 		t.Fatalf("completed intent survived: %+v %v", cleared, err)
 	}
 	if paused, err := restarted.SelectorEntryPaused(ctx, key); err != nil || !paused {

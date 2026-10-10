@@ -37,7 +37,7 @@ func feePolicySnapshot(t *testing.T, offset int, bps uint16) Snapshot {
 func TestVoltrApprovedFeeTupleAndEveryTermDrift(t *testing.T) {
 	manifest := readyWorkerManifest(t)
 	approved := feePolicySnapshot(t, 0, 0)
-	for _, decide := range []func(Snapshot) Decision{Decide, manifest.DecideOnManifest} {
+	for _, decide := range []func(Snapshot) Decision{Decide} {
 		if got := decide(approved); got.Action != ReportNAV {
 			t.Fatalf("approved exact tuple blocked normal NAV: %+v", got)
 		}
@@ -50,7 +50,7 @@ func TestVoltrApprovedFeeTupleAndEveryTermDrift(t *testing.T) {
 			s := feePolicySnapshot(t, tc.offset, tc.bps)
 			for _, lane := range []string{RouteID, primePRIMEPYUSD.Lane} {
 				s.RouteLane = lane
-				for _, decide := range []func(Snapshot) Decision{Decide, manifest.DecideOnManifest} {
+				for _, decide := range []func(Snapshot) Decision{Decide} {
 					if got := decide(s); got.Action != HoldManualRecovery || got.Reason != "voltr_fee_terms_unapproved" {
 						t.Fatalf("fee drift did not hold on %s: %+v", lane, got)
 					}

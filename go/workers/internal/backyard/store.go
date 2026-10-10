@@ -313,13 +313,6 @@ type decisionEvidence struct {
 }
 
 func restorePersistedDecision(expectedEffects []byte, action Action, idempotencyKey, strategyKey string) (Decision, error) {
-	return restorePersistedDecisionWith(expectedEffects, action, idempotencyKey, strategyKey, Decision.Validate)
-}
-
-// restorePersistedDecisionWith validates the restored decision through the
-// caller's authority, so a worker reloads its own manifest-admitted AUTO
-// initializer (live 2026-09-24: the embedded check refused it after signing).
-func restorePersistedDecisionWith(expectedEffects []byte, action Action, idempotencyKey, strategyKey string, validate func(Decision) error) (Decision, error) {
 	var envelope struct {
 		Decision decisionEvidence `json:"decision"`
 	}
@@ -333,7 +326,7 @@ func restorePersistedDecisionWith(expectedEffects []byte, action Action, idempot
 		Action: action, IdempotencyKey: idempotencyKey, StrategyKey: strategyKey,
 		AmountRaw: envelope.Decision.AmountRaw, Reason: envelope.Decision.Reason,
 	}
-	if err := validate(decision); err != nil {
+	if err := decision.Validate(); err != nil {
 		return Decision{}, err
 	}
 	return decision, nil
@@ -465,7 +458,7 @@ func validateDecisionPersistenceOnManifest(
 	decision Decision,
 	manifestSHA256 string,
 ) error {
-	if err := manifest.validateDecision(decision); err != nil {
+	if err := decision.Validate(); err != nil {
 		return fmt.Errorf("validate decision before persistence: %w", err)
 	}
 	if d == nil || d.pool == nil || routeKey == "" {
@@ -823,16 +816,6 @@ func CountNonterminal(ctx context.Context, databaseURL, routeKey string) (int, e
 }
 
 func (d *Database) LoadNonterminal(ctx context.Context, routeKey string) (*PersistedOperation, error) {
-	return d.loadNonterminalWith(ctx, routeKey, Decision.Validate)
-}
-
-// LoadNonterminalOnManifest restores the pending decision through the
-// manifest that admitted it (see restorePersistedDecisionWith).
-func (d *Database) LoadNonterminalOnManifest(ctx context.Context, routeKey string, m RouteManifest) (*PersistedOperation, error) {
-	return d.loadNonterminalWith(ctx, routeKey, m.validateDecision)
-}
-
-func (d *Database) loadNonterminalWith(ctx context.Context, routeKey string, validate func(Decision) error) (*PersistedOperation, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return nil, fmt.Errorf("database is not configured")
 	}
@@ -863,7 +846,7 @@ func (d *Database) loadNonterminalWith(ctx context.Context, routeKey string, val
 		return nil, fmt.Errorf("load nonterminal operation: %w", err)
 	}
 	operation.StrategyKey = strategyKey
-	decision, restoreErr := restorePersistedDecisionWith(operation.ExpectedEffects, Action(action), idempotencyKey, strategyKey, validate)
+	decision, restoreErr := restorePersistedDecision(operation.ExpectedEffects, Action(action), idempotencyKey, strategyKey)
 	if restoreErr != nil {
 		return nil, fmt.Errorf("loaded nonterminal decision is invalid: %w", restoreErr)
 	}

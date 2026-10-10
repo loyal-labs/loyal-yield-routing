@@ -50,15 +50,15 @@ func (m RouteManifest) validateKaminoReentryForecastPrestate(ctx context.Context
 	return observeKaminoInitializationPrestate(ctx, view, r, minimumSlot, bound, true, inner)
 }
 
-// initializerRouteForRequest resolves the lane topology: installed selector
-// lanes through the unchanged public gate, the candidate AUTO lane through the
-// checked route-aware core (its request already compiled by the caller).
+// initializerRouteForRequest resolves the lane topology: basic lanes through
+// the Multiply initializer, other initializer lanes (AUTO) through the checked
+// route-aware core (its request already compiled by the caller).
 func initializerRouteForRequest(r KaminoInitializationRequest) (RuntimeRoute, compiledInstruction, error) {
 	route, err := runtimeRoute(r.RouteLane)
 	if err != nil {
 		return RuntimeRoute{}, compiledInstruction{}, err
 	}
-	if selectorLane(route.Lane) {
+	if basicLane(route.Lane) {
 		inner, err := kaminoMultiplyInitializer(route.Lane)
 		return route, inner, err
 	}

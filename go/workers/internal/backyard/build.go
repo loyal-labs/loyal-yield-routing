@@ -869,9 +869,17 @@ func decodeLegacyInstruction(message []byte, offset int, keys []publicKey) (deco
 	return decodedLegacyInstruction{program: keys[programIndex], accountIndexes: accountIndexes, accounts: accounts, data: data}, offset, nil
 }
 
+// isExactKaminoTransaction admits the legacy PRIME/USDC route and every
+// registry lane whose Kamino legs carry no resource frame (all but AUTO, whose
+// eight-constraint policy needs the heap frame: isExactAutoKaminoTransaction).
 func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
-	return isExactKaminoTransactionForLanes(instructions,
-		[]string{RouteID, PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"})
+	lanes := []string{RouteID}
+	for _, lane := range earnLaneIDs(true) {
+		if lane != autoAUTOPYUSD.Lane {
+			lanes = append(lanes, lane)
+		}
+	}
+	return isExactKaminoTransactionForLanes(instructions, lanes)
 }
 
 // isExactAutoKaminoTransaction is the AUTO variant of the exact Kamino gate:
@@ -897,17 +905,17 @@ func isExactKaminoTransactionForLanes(instructions []decodedLegacyInstruction, l
 			switch leg {
 			case kaminoLegDeposit:
 				// Initial deposit (flat obligation) and leveraged redeposit
-				// (both reserves); AUTO and OnRe also admit the plan B3 top-up
-				// deposit into a debt-free obligation (collateral only).
+				// (both reserves); active registry lanes also admit the plan B3
+				// top-up deposit into a debt-free obligation (collateral only).
 				topologies = [][]string{{}, {route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
-				if lane == autoAUTOPYUSD.Lane || lane == "OnRe/ONyc/USDC" {
+				if earnActiveLane(lane) {
 					topologies = append(topologies, []string{route.Kamino.CollateralReserve})
 				}
 			case kaminoLegBorrow:
 				topologies = [][]string{{route.Kamino.CollateralReserve}}
 				// B2 leverage_up 1.5x -> 1.75x borrows beside existing debt
-				// (AUTO and OnRe only).
-				if lane == autoAUTOPYUSD.Lane || lane == "OnRe/ONyc/USDC" {
+				// (active registry lanes).
+				if earnActiveLane(lane) {
 					topologies = append(topologies, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve})
 				}
 			case kaminoLegWithdraw:
@@ -1006,11 +1014,11 @@ func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kamino
 }
 
 func kaminoLegMetasForRoute(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
-	// The basic lanes and the AUTO candidate lane (explicitly not BasicPolicy)
-	// use their own route-resolved metas, as the compiler emits them through
-	// kaminoPacketForRoute; every other lane keeps the installed PRIME graph.
+	// Registry lanes use their own route-resolved metas, as the compiler emits
+	// them through kaminoPacketForRoute; the legacy route keeps the installed
+	// PRIME graph.
 	route, err := runtimeRoute(lane)
-	if lane == RouteID || err != nil || !route.BasicPolicy && route.Lane != autoAUTOPYUSD.Lane {
+	if lane == RouteID || err != nil || !earnHeldLane(lane) {
 		route, _ = runtimeRoute(RouteID)
 	}
 	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)

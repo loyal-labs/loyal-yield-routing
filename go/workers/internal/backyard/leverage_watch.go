@@ -136,7 +136,7 @@ type leverageWatchLane struct {
 
 // observe returns one line per virtual move and, when summary is set, one
 // line with each lane's spread and APY by level.
-func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equityRaw int64, summary bool, enterable func(string) bool, observed ...Snapshot) []string {
+func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equityRaw int64, summary bool, observed ...Snapshot) []string {
 	if w.levels == nil {
 		w.levels = map[string]float64{}
 	}
@@ -164,7 +164,7 @@ func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equi
 			}
 		}
 		if summary {
-			lane := leverageWatchLane{Lane: m.Lane, APYBPS: map[string]int64{}, Enterable: enterable(m.Lane),
+			lane := leverageWatchLane{Lane: m.Lane, APYBPS: map[string]int64{}, Enterable: earnActiveLane(m.Lane),
 				Levels: []float64{w.levels["1|"+m.Lane], w.levels["2|"+m.Lane], w.levels["3|"+m.Lane]}}
 			parts := []string{}
 			for _, level := range leverageWatchLevels {

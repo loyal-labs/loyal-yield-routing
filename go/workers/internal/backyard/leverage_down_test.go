@@ -55,9 +55,9 @@ func TestLeverageDownTo1xRunsTheReleaseSwapPayoffChain(t *testing.T) {
 	if !repaymentReleaseReason(leverageDownReleaseReason) || !repaymentReleaseReason("withdrawal_release_repayment_collateral") || repaymentReleaseReason("leverage_up") {
 		t.Fatal("release reason group")
 	}
-	maple := leverageSnapshot(1.5)
-	maple.RouteLane, maple.StrategyKey, maple.LeverageTargetLevel = SelectedRouteID, SelectedRouteID, 1
-	if _, _, _, ok := leverageDownStep(maple); ok {
-		t.Fatal("Maple ran a B2 down move")
+	exitOnly := leverageSnapshot(1.5)
+	exitOnly.RouteLane, exitOnly.StrategyKey, exitOnly.LeverageTargetLevel = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane, 1
+	if _, _, _, ok := leverageDownStep(exitOnly); ok {
+		t.Fatal("exit-only Ethena ran a B2 down move")
 	}
 }

@@ -27,94 +27,38 @@ func pairCapacityFixture(t *testing.T) (RuntimeRoute, []ConfirmedAccount, Kamino
 	return route, []ConfirmedAccount{c, d, o, clockFixture()}, KaminoPosition{EntryCapacityRaw: 6600}
 }
 
-func TestPairCapacityConstrainsWholeLoopAllocation(t *testing.T) {
+// A B2 lane's entry equity is its collateral deposit room, independent of
+// debt room; unknown borrowing evidence fails closed and a full deposit limit
+// closes entry. (The deleted one-pass pair arithmetic's protocol caps now bound
+// the borrow: TestCapacitySizedDebtRoomBoundaries.)
+func TestPairCapacityIsDepositRoomAndFailsClosedOnUnknownEvidence(t *testing.T) {
 	t.Parallel()
-	for _, row := range []struct {
-		name   string
-		mutate func(c, d, o []byte)
-		want   uint64
-		fail   bool
-	}{
-		{name: "actual_available_liquidity", want: 2000},
-		{name: "queued_liquidity_requires_new_admission", mutate: func(c, d, o []byte) {
-			binary.LittleEndian.PutUint64(d[kaminoQueuedCollateralOffset:], 1)
-		}},
-		{name: "minimum_fee_exceeds_tiny_tranche_ltv", mutate: func(c, d, o []byte) {
-			c[kaminoLoanToValueOffset] = 60
-			binary.LittleEndian.PutUint64(c[kaminoReserveConfigOffset+160:], 106)
-			binary.LittleEndian.PutUint64(d[kaminoReserveConfigOffset+40:], 1)
-		}},
-		{name: "outside_group_headroom", mutate: func(c, d, o []byte) {
-			binary.LittleEndian.PutUint64(d[kaminoOutsideBorrowLimitOffset:], 900)
-			binary.LittleEndian.PutUint64(d[kaminoOutsideBorrowCounterOffset:], 800)
-		}, want: 200},
-		{name: "outside_group_closed", mutate: func(c, d, o []byte) {
-			binary.LittleEndian.PutUint64(d[kaminoOutsideBorrowLimitOffset:], 0)
-		}},
-		{name: "deposit_and_redeposit_share_cap", mutate: func(c, d, o []byte) {
-			binary.LittleEndian.PutUint64(c[kaminoReserveConfigOffset+160:], 250)
-		}, want: 100},
-		{name: "global_borrow_headroom", mutate: func(c, d, o []byte) {
-			binary.LittleEndian.PutUint64(d[kaminoReserveConfigOffset+168:], 50)
-		}, want: 100},
-		{name: "utilization_boundary_is_strict", mutate: func(c, d, o []byte) {
-			d[kaminoReserveConfigOffset+645] = 10
-		}, want: 198},
-		{name: "cross_collateral_disabled", mutate: func(c, d, o []byte) {
-			c[kaminoDisableCrossCollateralOffset] = 1
-		}},
-		{name: "borrow_factor_interim_ltv", mutate: func(c, d, o []byte) {
-			binary.LittleEndian.PutUint64(d[kaminoBorrowFactorOffset:], 200)
-		}},
-		{name: "fee_interim_ltv", mutate: func(c, d, o []byte) {
-			c[kaminoLoanToValueOffset] = 50
-			binary.LittleEndian.PutUint64(d[kaminoReserveConfigOffset+40:], 1)
-		}},
-		{name: "fee_rounding_headroom", mutate: func(c, d, o []byte) {
-			binary.LittleEndian.PutUint64(d[kaminoReserveConfigOffset+40:], (uint64(1)<<60)/100)
-		}, want: 1978},
-		{name: "group_requires_separate_admission", mutate: func(c, d, o []byte) {
-			o[kaminoObligationElevationGroupOffset] = 1
-		}},
-		{name: "referrer_requires_separate_admission", mutate: func(c, d, o []byte) {
-			o[2288] = 1
-		}},
-		{name: "factor_is_clamped_by_protocol", mutate: func(c, d, o []byte) {
-			binary.LittleEndian.PutUint64(d[kaminoBorrowFactorOffset:], 99)
-		}, want: 2000},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			route, accounts, position := pairCapacityFixture(t)
-			if row.mutate != nil {
-				row.mutate(accounts[0].Data, accounts[1].Data, accounts[2].Data)
-			}
-			got, err := kaminoPairEntryCapacity(position, accounts, route)
-			if (err != nil) != row.fail || got != row.want {
-				t.Fatalf("capacity=%d want=%d err=%v", got, row.want, err)
-			}
-		})
+	route, accounts, _ := pairCapacityFixture(t)
+	position := leverageTestPosition(0, 0)
+	binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], 77)
+	if got, err := kaminoPairEntryCapacity(position, nil, route); err == nil || got != 0 {
+		t.Fatal("unknown borrowing evidence became capacity", got, err)
 	}
-}
-
-func TestPairCapacityPreservesUnknownAndClosedBoundaries(t *testing.T) {
-	t.Parallel()
-	route, accounts, position := pairCapacityFixture(t)
-	position.EntryCapacityRaw = 0
-	if got, err := kaminoPairEntryCapacity(position, nil, route); err != nil || got != 0 {
-		t.Fatal("cash fallback gained capacity", got, err)
+	collateral, err := decodeKaminoReserve(accounts[0], route.Kamino.CollateralMint, route.Kamino)
+	if err != nil {
+		t.Fatal(err)
 	}
-	position.EntryCapacityRaw = 6600
-	accounts[2] = ConfirmedAccount{Address: route.Kamino.Obligation}
-	if got, err := kaminoPairEntryCapacity(position, accounts, route); err != nil || got != 2000 {
-		t.Fatal("closed account cannot advertise protocol capacity", got, err)
+	deposited, err := ceilScaledBigFraction(collateral.totalLiquiditySF)
+	if err != nil {
+		t.Fatal(err)
 	}
-	accounts[2] = ConfirmedAccount{}
-	if _, err := kaminoPairEntryCapacity(position, accounts, route); err == nil {
-		t.Fatal("missing account masquerades as closed")
+	binary.LittleEndian.PutUint64(accounts[0].Data[kaminoReserveConfigOffset+160:], deposited+10_000)
+	got, err := kaminoPairEntryCapacity(position, accounts, route)
+	if err != nil || got != 9_900 {
+		t.Fatal("deposit room is not the entry ceiling", got, err)
 	}
-	accounts[0].Data = accounts[0].Data[:10]
-	if _, err := kaminoPairEntryCapacity(position, accounts, route); err == nil {
-		t.Fatal("truncated reserve admitted")
+	binary.LittleEndian.PutUint64(accounts[1].Data[kaminoOutsideBorrowLimitOffset:], 0)
+	if closedDebt, err := kaminoPairEntryCapacity(position, accounts, route); err != nil || closedDebt != got {
+		t.Fatal("closed debt room changed entry equity", closedDebt, err)
+	}
+	binary.LittleEndian.PutUint64(accounts[0].Data[kaminoReserveConfigOffset+160:], deposited)
+	if full, err := kaminoPairEntryCapacity(position, accounts, route); err != nil || full != 0 {
+		t.Fatal("full deposit limit still advertised capacity", full, err)
 	}
 }
 

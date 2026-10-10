@@ -1,6 +1,7 @@
 package backyard
 
-// Durable shared-PYUSD custody attribution for the candidate AUTO lane.
+// Durable shared-PYUSD custody attribution for the registry lanes that share
+// one PYUSD debt custody (sharedDebtCustodyLane).
 //
 // AUTO, Ethena and primePRIMEPYUSD share one PYUSD debt custody account, so
 // observed balances plus a caller-filled strategy key are custody identity,
@@ -325,8 +326,28 @@ type sharedCustodyAttributionConfig struct {
 	Delegate publicKey
 }
 
-// autoSharedPYUSDAttributionConfig pins the shared PYUSD debt custody for the
-// candidate AUTO lane from route identities only.
+// sharedDebtCustodyLane reports a registry lane whose non-USDC debt custody
+// another registry lane also uses. Its balance is custody identity, never
+// lane ownership, so spending it needs the attribution proof. USDC debt is
+// bridge cash and has its own accounting.
+func sharedDebtCustodyLane(lane string) bool {
+	route, err := runtimeRoute(lane)
+	if err != nil || !earnHeldLane(lane) || route.Kamino.DebtMint == bridgeUSDC {
+		return false
+	}
+	for _, other := range earnLaneIDs(true) {
+		if other == lane {
+			continue
+		}
+		if r, err := runtimeRoute(other); err == nil && r.DebtCustody == route.DebtCustody {
+			return true
+		}
+	}
+	return false
+}
+
+// autoSharedPYUSDAttributionConfig pins a shared debt custody for a lane from
+// route identities only.
 func autoSharedPYUSDAttributionConfig(route RuntimeRoute, routeKey string) sharedCustodyAttributionConfig {
 	return sharedCustodyAttributionConfig{
 		Lane:              route.Lane,

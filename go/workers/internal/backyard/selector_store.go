@@ -7,18 +7,15 @@ import (
 func manifestForUnwind(ctx context.Context, database *Database, manifest RouteManifest) (RouteManifest, error) {
 	// Observe all pilot ownership accounts, including during ordinary entry.
 	// Actual exposure always wins over the preferred next destination.
-	// Both durable reads resolve their lane authority through the same
-	// reviewed manifest, so a persisted candidate entry or candidate-source
-	// unwind orients the observation exactly while that binding resolves.
 	manifest.selectorObservation = true
-	entry, err := database.LoadSelectorEntryOnManifest(ctx, manifest, productionRouteKey)
+	entry, err := database.LoadSelectorEntry(ctx, productionRouteKey)
 	if err != nil {
 		return manifest, err
 	}
 	if entry != nil {
 		manifest.observationLane = entry.Lane
 	}
-	intent, err := database.LoadUnwindIntentOnManifest(ctx, manifest, productionRouteKey)
+	intent, err := database.LoadUnwindIntent(ctx, productionRouteKey)
 	if err != nil {
 		return manifest, err
 	}

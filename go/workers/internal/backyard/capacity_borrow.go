@@ -148,7 +148,7 @@ func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route Ru
 }
 
 func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) {
-	if !leverageLane(route.Lane) {
+	if !earnActiveLane(route.Lane) {
 		return
 	}
 	room, err := kaminoAdditionalDebtRoom(accounts, route)

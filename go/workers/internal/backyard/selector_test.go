@@ -57,7 +57,11 @@ func TestSelectorDoesNotRefreshOldRecipeWithFreshTimestamp(t *testing.T) {
 		})
 	}
 }
-func TestSelectorPersistenceSurvivesCapacityClosureAndJSONRestart(t *testing.T) {
+
+// Persistence comes only from executable quotes: a capacity closure is no
+// executable sample, so it ends the window, and a reopened lane must persist
+// afresh. The window itself survives a JSON restart.
+func TestSelectorPersistenceRestartsAfterCapacityClosureAndSurvivesJSONRestart(t *testing.T) {
 	t.Parallel()
 	in := selectorFixture()
 	first := SelectOpportunity(in, SelectorState{})
@@ -70,13 +74,21 @@ func TestSelectorPersistenceSurvivesCapacityClosureAndJSONRestart(t *testing.T) 
 	if closed.Action != "KEEP" || closed.Candidates[0].BlockedReason != "entry_closed" {
 		t.Fatal(closed)
 	}
-	raw, _ := json.Marshal(closed.State)
+	if _, kept := closed.State.Advantages["OnRe/ONyc/USDC"]; kept {
+		t.Fatal("a closed lane kept its persistence window", closed.State)
+	}
+	in.Markets[0].EntryCapacity = Capacity{Known: true, Unlimited: true}
+	advanceSelectorFixture(&in, 31*time.Second)
+	reopened := SelectOpportunity(in, closed.State)
+	if reopened.Action != "KEEP" || reopened.Reason != "advantage_not_yet_persistent" {
+		t.Fatal("reopened lane entered on pre-closure persistence", reopened)
+	}
+	raw, _ := json.Marshal(reopened.State)
 	var restarted SelectorState
 	if err := json.Unmarshal(raw, &restarted); err != nil {
 		t.Fatal(err)
 	}
-	in.Markets[0].EntryCapacity = Capacity{Known: true, Unlimited: true}
-	advanceSelectorFixture(&in, 31*time.Second)
+	advanceSelectorFixture(&in, in.Policy.Persistence+time.Second)
 	opened := SelectOpportunity(in, restarted)
 	if opened.Action != "ENTER" {
 		t.Fatal(opened)
@@ -158,7 +170,7 @@ func TestSelectorPricesOneBorrowPassAtProjectedUtilization(t *testing.T) {
 }
 func TestWithdrawalDemandRemainsTruthfulAcrossTypedLanes(t *testing.T) {
 	t.Parallel()
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		s := base()
 		s.RouteLane = lane
 		s.WithdrawalDemandRaw = 10
@@ -225,7 +237,7 @@ func TestCommittedUnwindDoesNotRewriteWithdrawalOrTrustFlatIntent(t *testing.T) 
 	s.PositionCollateralRaw = 100
 	s.HasPosition = true
 	intent := UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: "admitted", MaxCollateralRaw: 100, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: time.Now().UTC()}
-	if err := applyUnwindIntentWithLane(&s, &intent, selectorLane); err != nil {
+	if err := applyUnwindIntent(&s, &intent); err != nil {
 		t.Fatal(err)
 	}
 	if got := Decide(s); got.Action != DeleverRouteStep || s.WithdrawalDemandRaw != 0 || unwindComplete(s) {
@@ -252,7 +264,7 @@ func TestCommittedUnwindDoesNotRewriteWithdrawalOrTrustFlatIntent(t *testing.T) 
 		t.Fatal("flat reconciled state did not complete")
 	}
 	s.RouteLane = "OnRe/ONyc/USDC"
-	if applyUnwindIntentWithLane(&s, &intent, selectorLane) == nil {
+	if applyUnwindIntent(&s, &intent) == nil {
 		t.Fatal("source changed before reconciliation")
 	}
 }
@@ -480,8 +492,8 @@ func TestSameLaneReinvestmentEligibilityBindings(t *testing.T) {
 		name   string
 		mutate func(*SelectorInput)
 	}{
-		{"non_entry_lane", func(i *SelectorInput) {
-			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
+		{"exit_only_lane", func(i *SelectorInput) {
+			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
 		}},
 		{"zero_position", func(i *SelectorInput) { i.Snapshot.HasPosition = false }},
 		{"zero_collateral", func(i *SelectorInput) { i.Snapshot.PositionCollateralRaw, i.Snapshot.PositionCollateralValueRaw = 0, 0 }},
@@ -530,11 +542,11 @@ func TestPilotSameLaneSwitchStaysBlockedWithoutStrictReinvestmentCase(t *testing
 		{"stale_quote", func(i *SelectorInput) { i.Quotes[0].ObservedAt = i.Now.Add(-31 * time.Second) }, "bounded_move_cost_unavailable"},
 		{"incomplete_tranche", func(i *SelectorInput) { i.Snapshot.SquadsIdleRaw = 5_000_000 }, "complete_current_tranche_first"},
 		{"withdrawal", func(i *SelectorInput) { i.Snapshot.WithdrawalDemandRaw = 1 }, "withdrawal_unwind_or_accounting_first"},
-		{"non_entry_lane", func(i *SelectorInput) {
-			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
+		{"exit_only_lane", func(i *SelectorInput) {
+			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
 			i.Markets[0].Lane = i.Snapshot.RouteLane
 			i.Quotes[0].SourceLane, i.Quotes[0].DestinationLane = i.Snapshot.RouteLane, i.Snapshot.RouteLane
-		}, "current_position_is_keep_baseline"},
+		}, "current_lane_economics_unavailable"},
 		{"working_ceiling", func(i *SelectorInput) {
 			s := &i.Snapshot
 			s.PositionCollateralRaw, s.PositionCollateralValueRaw = 300_000_000_000, 300_000_000_000

@@ -406,7 +406,10 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	_, _, accounts := autoObservationBatch(t, 77, nil)
 	// The installed lanes join the batch exactly as the production inventory
 	// requests them: a present obligation envelope and a valid zero custody.
-	for _, lane := range selectorLanes {
+	for _, lane := range earnLaneIDs(true) {
+		if lane == autoAUTOPYUSD.Lane {
+			continue
+		}
 		laneRoute, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)
@@ -416,7 +419,7 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	}
 	// Candidate-only ownership selects the candidate lane even with a Maple
 	// preference.
-	selected, err := observedSelectorRouteForManifest(accounts, SelectedRouteID, candidate)
+	selected, err := observedSelectorRoute(accounts, SelectedRouteID)
 	if err != nil || selected.Lane != autoAUTOPYUSD.Lane {
 		t.Fatalf("candidate ownership was not selected: %q %v", selected.Lane, err)
 	}
@@ -426,7 +429,7 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	upsertConfirmedAccount(&accounts, kaminoObligationImage(t, mapleRoute, 77, autoFixtureDepositReceiptRaw, autoFixtureDebtRaw))
-	if _, err = observedSelectorRouteForManifest(accounts, SelectedRouteID, candidate); err == nil || !strings.Contains(err.Error(), "multiple_selector_lanes_have_exposure") {
+	if _, err = observedSelectorRoute(accounts, SelectedRouteID); err == nil || !strings.Contains(err.Error(), "multiple_selector_lanes_have_exposure") {
 		t.Fatalf("combined candidate and Maple exposure did not hold: %v", err)
 	}
 }
@@ -475,7 +478,10 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// inventory requests them — present obligation envelopes, valid zero
 	// custody — so the manifest-scoped scan sees the same batch the transport
 	// serves.
-	for _, lane := range selectorLanes {
+	for _, lane := range earnLaneIDs(true) {
+		if lane == autoAUTOPYUSD.Lane {
+			continue
+		}
 		laneRoute, laneErr := runtimeRoute(lane)
 		if laneErr != nil {
 			t.Fatal(laneErr)
@@ -487,7 +493,10 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// internals. The inactive lanes stay flat, so their accounts ride the
 	// batch as present, flat identities exactly as the scan expects.
 	peg := new(big.Int).Lsh(big.NewInt(1), 60)
-	for _, lane := range selectorLanes {
+	for _, lane := range earnLaneIDs(true) {
+		if lane == autoAUTOPYUSD.Lane {
+			continue
+		}
 		laneRoute, laneErr := runtimeRoute(lane)
 		if laneErr != nil {
 			t.Fatal(laneErr)
@@ -498,6 +507,11 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.CollateralLiquiditySupply, laneRoute.Kamino.CollateralMint, laneRoute.Kamino.MarketAuthority, 1_000_000))
 		upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.DebtLiquiditySupply, laneRoute.Kamino.DebtMint, laneRoute.Kamino.MarketAuthority, 1_000_000))
 		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: laneRoute.DebtFeeReceiver, Owner: "11111111111111111111111111111111", Lamports: 1})
+		// A debt custody no other lane in the batch shares (USDS) rides it
+		// flat; a shared one (PYUSD) keeps the AUTO fixture's balance.
+		if accountAt(accounts, laneRoute.DebtCustody).Address == "" {
+			upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.DebtCustody, laneRoute.Kamino.DebtMint, bridgeVault, 0))
+		}
 	}
 	rpc, prestate, _, _ := autoInitializerServiceRPC(t)
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_doc23_service_test", 120*time.Second)
@@ -577,17 +591,14 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 
 	// The candidate observation resolves to the exact initializer decision
 	// through the manifest.
-	d := manifest.DecideOnManifest(o.Snapshot)
+	d := Decide(o.Snapshot)
 	if d.Action != InitializeKaminoObligation || d.Reason != "multiply_obligation_missing" || d.AmountRaw != 0 || d.StrategyKey != autoAUTOPYUSD.Lane {
 		t.Fatalf("candidate decision producer drifted: %+v snapshot: %+v", d, o.Snapshot)
 	}
-	if installedDecision := embeddedTestManifest(t).DecideOnManifest(o.Snapshot); installedDecision != d {
+	if installedDecision := Decide(o.Snapshot); installedDecision != d {
 		t.Fatalf("installed decision producer drifted from the reviewed one: %+v vs %+v", installedDecision, d)
 	}
-	if err = d.Validate(); err == nil {
-		t.Fatal("embedded decision validation admitted the candidate lane")
-	}
-	if err = manifest.validateDecision(d); err != nil {
+	if err = d.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	// Persistence is manifest-scoped: the public RecordDecision wrapper only
@@ -733,7 +744,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	} {
 		s := o.Snapshot
 		closure.mut(&s)
-		if held := manifest.DecideOnManifest(s); held.Action == InitializeKaminoObligation {
+		if held := Decide(s); held.Action == InitializeKaminoObligation {
 			t.Fatalf("%s still produced the initializer: %+v", closure.name, held)
 		}
 	}

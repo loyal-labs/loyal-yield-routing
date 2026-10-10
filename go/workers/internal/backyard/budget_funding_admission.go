@@ -123,7 +123,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 	refreshedBasis := observation.ValuationSource == routeRefreshValuationSource
 	if !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission ||
 		!s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 ||
-		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || !positionReturnRoute(s.RouteLane) ||
+		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || !earnHeldLane(s.RouteLane) ||
 		s.CollateralIdleRaw < 0 || s.CollateralIdleValueRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || debtCashRaw(s) < 0 || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
 		return phase3BridgeAdmission{}, budgetHold("complete_funding_return_unavailable")
 	}
@@ -146,7 +146,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 		}
 		// B2 1.75x: a release that cannot fund the payoff is a cycle's first
 		// leg; price the multi-cycle exit from its projected poststate.
-		if leverageLane(s.RouteLane) {
+		if earnActiveLane(s.RouteLane) {
 			if plan, err, ok := priceLeverageExitAfterRelease(ctx, rpc, view, client, manifest, observation, decision, r, effects, releaseBound, releaseAccounts); ok {
 				return plan, err
 			}
@@ -181,22 +181,14 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 			return phase3BridgeAdmission{}, budgetHold("funding_nav_intent_mismatch")
 		}
 		route, _ := runtimeRoute(s.RouteLane)
-		// The candidate AUTO pilot release risk model reads the lending
-		// market, which the payoff window captures only for installed
-		// selector lanes; the reviewed candidate lane rides the same window
-		// request so every decode keeps one coherent slot.
-		payoffAdditional := []string(nil)
-		if route.Lane == autoAUTOPYUSD.Lane {
-			payoffAdditional = append(payoffAdditional, route.Kamino.Market)
-		}
-		future, rows, err := observePayoffWindowOnSnapshotBasis(ctx, rpc, view, route, s.Slot, 6, refreshedBasis, payoffAdditional...)
+		future, rows, err := observePayoffWindowOnSnapshotBasis(ctx, rpc, view, route, s.Slot, 6, refreshedBasis)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
 		action, amount := payoffFundingSource(s, future.UpperDebtRaw)
 		// B2 1.75x: a NAV before an exit that needs cycles prices the whole
 		// multi-cycle exit from the current (unchanged) accounts.
-		if uint64(debtCashRaw(s)) < future.UpperDebtRaw && amount == 0 && leverageLane(s.RouteLane) {
+		if uint64(debtCashRaw(s)) < future.UpperDebtRaw && amount == 0 && earnActiveLane(s.RouteLane) {
 			if plan, err, ok := priceLeverageExitFromCurrent(ctx, rpc, view, client, manifest, observation, decision, request, effects, route, rows); ok {
 				return plan, err
 			}

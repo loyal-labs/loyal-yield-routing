@@ -52,7 +52,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *chain.Client, vi
 	plan := phase3BridgeAdmission{Snapshot: s, Decision: decision}
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey ||
-		s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane || !fundedLane(s.RouteLane) ||
+		s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane || !earnHeldLane(s.RouteLane) ||
 		decision.Action != DeleverRouteStep || r.Action != decision.Action || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
 		s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.DebtIdleRaw < 0 ||
 		s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || r.AmountRaw != uint64(s.PositionCollateralRaw) {
@@ -101,7 +101,7 @@ func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *chain.Clie
 		s.WithdrawalDemandRaw == 0 && !s.Unwind && !s.CutoverDrain
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
-		!fundedLane(s.RouteLane) || (!residue && (s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
+		!earnHeldLane(s.RouteLane) || (!residue && (s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
 		s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0)) || s.DebtIdleRaw < 0 || s.CollateralIdleRaw < 0 ||
 		(s.CollateralIdleRaw == 0 && s.DebtIdleRaw == 0) ||
 		s.PrimeIdleRaw != s.CollateralIdleRaw || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {

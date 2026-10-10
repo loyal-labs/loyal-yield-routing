@@ -13,9 +13,17 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)
-	debt := accountAt(accounts, route.Kamino.DebtReserve).Data
-	used := binary.LittleEndian.Uint64(debt[kaminoOutsideBorrowCounterOffset:])
-	binary.LittleEndian.PutUint64(debt[kaminoOutsideBorrowLimitOffset:], used+1_000_000)
+	// Maple is a B2 lane (registry): its entry equity is bounded by the
+	// collateral reserve's deposit room, independent of debt room.
+	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deposited, err := ceilScaledBigFraction(collateral.totalLiquiditySF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoReserveConfigOffset+160:], deposited+3_000_000)
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
 	in.Snapshot.Slot = 42
@@ -29,7 +37,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	unavailable.Lane = "OnRe/ONyc/USDC"
 	unavailable.EntryBlockedReason = "reserve_inactive_or_emergency"
 	markets := []LaneEconomics{market, unavailable}
-	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 10_000_000, 42, true, nil); err != nil {
+	if _, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 10_000_000, 42, true, nil); err != nil {
 		t.Fatal("partial producer", err)
 	}
 	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, markets, in.Policy)
@@ -60,7 +68,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	if !found {
 		t.Fatal("collected partial quote not usable by selector", result)
 	}
-	binary.LittleEndian.PutUint64(debt[kaminoOutsideBorrowLimitOffset:], used)
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoReserveConfigOffset+160:], deposited)
 	observed, quotes, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, markets, in.Policy)
 	if err != nil || len(quotes) != 0 || observed[0].EntryCapacity.Raw != 0 || observed[0].EntryBlockedReason == "" {
 		t.Fatal("capacity closure retained stale quote", err, quotes, observed)

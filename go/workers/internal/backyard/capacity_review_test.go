@@ -27,7 +27,7 @@ func TestCapacityReviewBenchmarkMissingPriceAndUSDC(t *testing.T) {
 		t.Fatal("non-par benchmark silently assumed parity")
 	}
 	var watch leverageWatch
-	watch.observe([]LaneEconomics{m}, m.Lane, 100_000_000, true, func(string) bool { return true })
+	watch.observe([]LaneEconomics{m}, m.Lane, 100_000_000, true)
 	if len(watch.summary) != 1 || watch.summary[0].SpreadBPS != nil {
 		t.Fatal("missing price persisted a numeric hypothetical spread")
 	}

@@ -68,16 +68,16 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 	}
 	evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, quoteDecision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
 	logStage("prepare_jupiter_quote", prepareStart)
-	if err == nil && decision.Action == SwapStableToCollateralStep && fundedLane(decision.StrategyKey) {
+	if err == nil && decision.Action == SwapStableToCollateralStep && earnHeldLane(decision.StrategyKey) {
 		evidence.Request.EntryReturnReserved = true
 		evidence.Request.TopupReturnReserved = decision.Reason == topupSwapReason
 	}
-	if err == nil && decision.Action == SwapDebtToCollateralStep && positionReturnRoute(decision.StrategyKey) {
+	if err == nil && decision.Action == SwapDebtToCollateralStep && earnHeldLane(decision.StrategyKey) {
 		evidence.Request.PositionReturnReserved = true
 	}
 	funding := (decision.Action == SwapCollateralToDebtStep && (decision.Reason == "withdrawal_swap_repayment_buffer" || decision.Reason == "hard_ltv_buffer_swap" || decision.Reason == leverageDownSwapReason)) ||
 		(decision.Action == SwapUSDCToDebtStep && decision.Reason == "withdrawal_usdc_repayment_buffer")
-	if err == nil && funding && observation.Snapshot.PositionDebtRaw > 0 && positionReturnRoute(decision.StrategyKey) {
+	if err == nil && funding && observation.Snapshot.PositionDebtRaw > 0 && earnHeldLane(decision.StrategyKey) {
 		evidence.Request.FullPayoffFunding = true
 	}
 	return observation, evidence, err
