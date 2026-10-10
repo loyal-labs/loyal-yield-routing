@@ -128,24 +128,6 @@ func TestMaskedDigestFailsClosedOnBadMasks(t *testing.T) {
 	}
 }
 
-func TestAllocationDailyLimitGuardHolds(t *testing.T) {
-	if err := evaluateAllocationDailyLimit(0, strategyTwoDailyAllocationCapRaw); err != nil {
-		t.Fatalf("exact daily capacity was rejected: %v", err)
-	}
-	if err := evaluateAllocationDailyLimit(200_000_000, 100_000_000); err != nil {
-		t.Fatalf("split daily capacity was rejected: %v", err)
-	}
-	for _, sent := range []uint64{0, 200_000_000, strategyTwoDailyAllocationCapRaw, strategyTwoDailyAllocationCapRaw + 1} {
-		var hold *BudgetHold
-		if err := evaluateAllocationDailyLimit(sent, strategyTwoDailyAllocationCapRaw+1); !errors.As(err, &hold) || hold.Reason != allocationDailyLimitReason {
-			t.Fatalf("sent=%d accepted an amount above the daily cap: %v", sent, err)
-		}
-	}
-	if err := evaluateAllocationDailyLimit(strategyTwoDailyAllocationCapRaw, 1); err == nil {
-		t.Fatal("exhausted daily window accepted another allocation")
-	}
-}
-
 func TestSquadsSpendingLimitExceededClassification(t *testing.T) {
 	logs := []string{
 		"Program " + squads.ProgramID.String() + " invoke [1]",
@@ -183,7 +165,6 @@ func TestSpendingLimitRefusalIsANamedHoldThatKeepsTheLoopRunning(t *testing.T) {
 	}
 	for name, other := range map[string]error{
 		"otherHold":   budgetHold("bridge_admission_unavailable"),
-		"allocation":  budgetHold(allocationDailyLimitReason),
 		"observation": errConfirmedObservationUnavailable,
 		"plain":       errors.New("incoherent observation"),
 	} {

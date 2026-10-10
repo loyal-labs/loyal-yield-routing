@@ -138,15 +138,14 @@ var (
 // adaptor config's max reported NAV (the vault maxCap) decoded from confirmed
 // config state. strategyTwoBridgeLegCapRaw is the per-execution operational
 // bound installed on bridge policies 152-155 (200k USDC): every bridge capital
-// leg is built against it. strategyTwoDailyAllocationCapRaw mirrors the daily
-// USDC spending limit embedded in the strategy-two policies (200k USDC), which
-// Squads enforces on chain across outflow legs.
+// leg is built against it. The daily USDC spending limit embedded in those
+// policies is Squads' alone: simulation refuses an over-limit wire before
+// broadcast (squadsSpendingLimitReason).
 const (
 	bridgeCapRaw uint64 = 1_000_000_000_000
 	bridgeMaxNAV uint64 = 1_000_000_000_000
 
-	strategyTwoBridgeLegCapRaw       uint64 = 200_000_000_000
-	strategyTwoDailyAllocationCapRaw uint64 = 200_000_000_000
+	strategyTwoBridgeLegCapRaw uint64 = 200_000_000_000
 )
 
 // BuildAndSignBridgeTransaction builds exactly one policy-wrapped bridge

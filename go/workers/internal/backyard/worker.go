@@ -50,7 +50,6 @@ type tickRuntime struct {
 	buildInitialization              func(context.Context, string, KaminoInitializationRequest) error
 	refreshUnwind                    func(context.Context) error
 	completeUnwind                   func(context.Context, Observation) (bool, error)
-	allocationSentWindow             func(context.Context, string) (uint64, error)
 	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
 	advance                          func(context.Context, PersistedOperation) error
 	observe                          func(context.Context) (Observation, error)
@@ -418,7 +417,6 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 			}
 			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, productionJupiter, state.enrich)
 		},
-		allocationSentWindow: database.AllocationSentRawTrailingWindow,
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256, policyCatalogSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
 		},
@@ -627,29 +625,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return ErrBridgePrerequisitesUnavailable
 	}
 	policyHash := *w.manifest.PolicyCatalog.SHA256
-	if executionDecision, err := fixedRouteAction(decision.Action, decision.StrategyKey); err == nil &&
-		executionDecision == VoltrAllocateToSquads && w.runtime.allocationSentWindow != nil {
-		// The strategy-two allocation policy's daily window is enforced on
-		// chain, but a wire that only fails at landing still burned the
-		// attempt. Guard the journal too: what this worker already sent in
-		// the trailing 24h plus the next amount must stay inside the bound.
-		sentRaw, err := w.runtime.allocationSentWindow(ctx, w.routeKey)
-		if err != nil {
-			return err
-		}
-		if err := evaluateAllocationDailyLimit(sentRaw, uint64(decision.AmountRaw)); err != nil {
-			var hold *BudgetHold
-			if !errors.As(err, &hold) {
-				return err
-			}
-			decision.Action = Hold
-			decision.Reason = hold.Reason
-			decision.AmountRaw = 0
-			if err := decision.Validate(); err != nil {
-				return err
-			}
-		}
-	}
 	if decision.Action == Hold || decision.Action == HoldManualRecovery {
 		healthDecision = decision
 		if decision.Action == HoldManualRecovery {
