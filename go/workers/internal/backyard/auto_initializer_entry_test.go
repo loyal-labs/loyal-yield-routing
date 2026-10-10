@@ -37,7 +37,7 @@ func seedAutoInitializerEntryOperation(t *testing.T, ctx context.Context, db *Da
 	observation := tickObservation(Snapshot{ObservationID: key + "-obs", Slot: 42, Fresh: true, RouteKind: RouteKind,
 		RouteLane: f.request.RouteLane, StrategyKey: f.request.RouteLane})
 	decision := Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: f.request.RouteLane, IdempotencyKey: "controlled-init"}
-	evidence, err := json.Marshal(newDecisionEvidence(observation, decision, sha256Bytes([]byte("manifest")), sha256Bytes([]byte("catalog"))))
+	evidence, err := json.Marshal(newDecisionEvidence(observation, decision, sha256Bytes([]byte("manifest"))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,9 +120,6 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 	if allocationID != "" {
 		t.Fatalf("initializer bind bound the entry allocation: %q", allocationID)
 	}
-	// The embedded public prestate gate keeps the candidate closed: the
-	// installed executable-debit identity check refuses the AUTO request.
-	assertBudgetHold(t, validateBuildPrestate(ctx, rpc, f.request, f.effects), "initializer_effects_request_mismatch")
 
 	// The actual Signed transition: the locked final-send fence proves the
 	// persisted wire through the same reviewed manifest, records broadcast
@@ -139,12 +136,6 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 	op := PersistedOperation{Operation: Operation{ID: id, RouteKey: opKey, StrategyKey: f.request.RouteLane, Decision: decision},
 		Status: Signed, ExpectedEffects: persisted, SignedWire: f.wire, SignedWireSHA256: hash,
 		TransactionSignature: encodeBase58(f.wire[1:65]), RecentBlockhash: f.request.RecentBlockhash, LastValidBlockHeight: f.request.LastValidBlockHeight}
-	if err = db.CheckAndMarkBroadcastIntent(ctx, rpc, op); err == nil {
-		t.Fatal("embedded public final-send entrypoint admitted the AUTO candidate")
-	}
-	if got := operationStatus(t, ctx, db, id); got != "signed" {
-		t.Fatalf("public send refusal transitioned the journal: %s", got)
-	}
 	if err = advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err == nil || !strings.Contains(err.Error(), "ambiguous send after durable broadcast intent") {
 		t.Fatalf("expected the ambiguous-send fence, got %v", err)
 	}
@@ -222,36 +213,17 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 	allocated.AllocationOperationID = "prior-op"
 	allocatedID, _, allocatedObservation, allocatedDecision := newOp("allocated", &allocated, true)
 	expectBindHold(allocatedID, allocatedObservation, allocatedDecision, "selector_entry_already_allocated")
-	// A drifted request identity is refused by the executable-debit identity
-	// check before the binding comparison, with the first journal row untouched.
-	drifted := f.request
-	drifted.PolicySeed = autoFixtureSeed
-	assertBudgetHold(t, BuildSimulateAndPersistKaminoInitialization(ctx, db, rpc, id, f.manifest, drifted, Credentials{}), "initializer_request_manifest_mismatch")
-	if auth := loadAutoInitializerAuth(t, ctx, db, id); auth.BuildInput == nil {
-		t.Fatal("drifted request erased the bound build input")
-	}
 }
 
-// The lane authority itself, named for both binding states: the explicit
-// absent-binding fixture (the shipped pre-install state) keeps AUTO closed at
-// the same seam, the embedded manifest carries the installed binding and
-// admits the candidate AUTO entry through it, and every installed lane keeps
-// its prior behavior — Maple still funded, deferred installed lanes still
-// deferred. Doc30's rollout scope funds the candidate AUTO lane for ordinary
-// allocation through a manifest's complete reviewed binding (initializer=true
-// additionally requires the reviewed initialize constraint); an absent
-// binding keeps both paths closed, and the public embedded decode stays a
-// compile-time closure that no manifest widens.
+// The lane authority itself: the embedded manifest admits the candidate AUTO
+// entry, every installed lane keeps its prior behavior — Maple still funded,
+// deferred installed lanes still deferred — and the public embedded decode
+// stays a compile-time closure that no manifest widens.
 func TestSelectorEntryManifestLaneAuthorityKeepsInstalledClosure(t *testing.T) {
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 	entry := autoSelectorEntryFixture(time.Now().UTC(), 3_000_000, &price)
-	absent := autoAbsentBindingManifest(t)
-	requireEmbeddedInstalledBinding(t)
 	if err := entry.validate(); err == nil {
 		t.Fatal("embedded entry validation admitted the candidate AUTO lane")
-	}
-	if err := absent.validateSelectorEntry(entry); err == nil {
-		t.Fatal("absent binding admitted the candidate AUTO entry")
 	}
 	encoded, err := json.Marshal(entry)
 	if err != nil {
@@ -262,19 +234,11 @@ func TestSelectorEntryManifestLaneAuthorityKeepsInstalledClosure(t *testing.T) {
 	if decoded, err := decodeSelectorEntry(encoded); err != nil || decoded != nil {
 		t.Fatal("embedded public decode admitted the candidate AUTO entry")
 	}
-	if absent.selectorEntryLaneAllowed(autoAUTOPYUSD.Lane) {
-		t.Fatal("absent binding resolved the AUTO lane authority")
-	}
-	// The installed state: the embedded manifest's binding admits the same
-	// entry the reviewed initializer manifest admits, at the identical seam.
-	if err = requireEmbeddedInstalledBinding(t).validateSelectorEntry(entry); err != nil {
+	if err = embeddedTestManifest(t).validateSelectorEntry(entry); err != nil {
 		t.Fatalf("installed manifest lane authority refused the candidate AUTO entry: %v", err)
 	}
-	if !requireEmbeddedInstalledBinding(t).selectorEntryLaneAllowed(autoAUTOPYUSD.Lane) {
+	if !selectorOrAutoLane(autoAUTOPYUSD.Lane) {
 		t.Fatal("installed manifest did not resolve the AUTO lane authority")
-	}
-	if err = absent.validateSelectorEntry(selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 3_000_000)); err != nil {
-		t.Fatalf("installed Maple entry refused by the absent authority: %v", err)
 	}
 
 	candidate := autoInitializerAuthorizationFixture(t).manifest
@@ -286,25 +250,16 @@ func TestSelectorEntryManifestLaneAuthorityKeepsInstalledClosure(t *testing.T) {
 	if err = maple.validate(); err != nil || candidate.validateSelectorEntry(maple) != nil {
 		t.Fatalf("installed Maple entry drifted: %v / %v", maple.validate(), candidate.validateSelectorEntry(maple))
 	}
-	if !selectorEntryLane(SelectedRouteID) || !candidate.selectorEntryFundingLane(SelectedRouteID, true) {
+	if !selectorEntryLane(SelectedRouteID) || !selectorEntryFundingLane(SelectedRouteID) {
 		t.Fatal("installed Maple rollout scope drifted")
 	}
-	if candidate.selectorEntryFundingLane(PhaseOneLaneID, true) {
-		t.Fatal("deferred installed lane became funded through the candidate manifest")
+	if selectorEntryFundingLane(PhaseOneLaneID) {
+		t.Fatal("deferred installed lane became funded")
 	}
-	if !candidate.selectorEntryFundingLane(autoAUTOPYUSD.Lane, false) {
-		t.Fatal("reviewed binding did not admit funded AUTO allocation")
+	if !selectorEntryFundingLane(autoAUTOPYUSD.Lane) {
+		t.Fatal("the AUTO lane is not funded")
 	}
-	if absent.selectorEntryFundingLane(autoAUTOPYUSD.Lane, false) || absent.selectorEntryFundingLane(autoAUTOPYUSD.Lane, true) {
-		t.Fatal("bindingless manifest admitted AUTO funding")
-	}
-	// The installed state funds the AUTO lane through the embedded manifest's
-	// complete binding — the funding gate the absent fixture keeps closed.
-	installed := requireEmbeddedInstalledBinding(t)
-	if !installed.selectorEntryFundingLane(autoAUTOPYUSD.Lane, false) || !installed.selectorEntryFundingLane(autoAUTOPYUSD.Lane, true) {
-		t.Fatal("installed manifest did not admit funded AUTO allocation")
-	}
-	if candidate.selectorEntryFundingLane("Ethena/USDe/PYUSD", true) {
+	if selectorEntryFundingLane("Ethena/USDe/PYUSD") {
 		t.Fatal("unbound foreign lane admitted")
 	}
 }

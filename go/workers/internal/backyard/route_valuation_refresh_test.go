@@ -160,13 +160,13 @@ func TestRouteValuationCaptureFreshnessRequiresIntegrity(t *testing.T) {
 	}
 }
 
-func TestSelectorValuationCaptureRetainsNAVPoliciesAndOwnership(t *testing.T) {
+func TestSelectorValuationCaptureRetainsNAVAndOwnership(t *testing.T) {
 	m := readyWorkerManifest(t)
 	m.selectorObservation = true
 	all := routeFixedAddresses(m)
 	for _, lane := range selectorLanes {
 		route, _ := runtimeRoute(lane)
-		selected := selectorValuationPolicyAddresses(m, route, selectorValuationAddresses(route, all))
+		selected := selectorValuationAddresses(route, all)
 		kept := map[string]bool{}
 		for _, address := range selected {
 			kept[address] = true
@@ -174,17 +174,6 @@ func TestSelectorValuationCaptureRetainsNAVPoliciesAndOwnership(t *testing.T) {
 		for _, address := range pinnedRouteNAVAddressesForRoute(route) {
 			if !kept[address] {
 				t.Fatal("lost active NAV", lane, address)
-			}
-		}
-		for _, binding := range m.RuntimeBindings.BridgePolicies {
-			if !kept[binding.Account] {
-				t.Fatal("lost bridge policy", lane, binding.Account)
-			}
-		}
-		for _, family := range []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB} {
-			binding, _, err := m.basicPolicyBinding(family)
-			if err == nil && !kept[binding.Policy] {
-				t.Fatal("lost active basic policy", lane, binding.Policy)
 			}
 		}
 		for _, otherLane := range selectorLanes {

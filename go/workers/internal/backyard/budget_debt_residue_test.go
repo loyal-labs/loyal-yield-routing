@@ -14,38 +14,22 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	route := ethenaUSDePYUSD
-	binding, err := catalogJupiterBindingForRoute(SwapDebtToUSDCStep, route.Lane)
+	bindingEdges, bindingLeg, err := catalogEdge(SwapDebtToUSDCStep, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
+	binding := bindingEdges[bindingLeg]
 	reserve := reserveFixture(t, route.Kamino.DebtReserve, route.Kamino.DebtMint, 42, new(big.Int).Lsh(big.NewInt(2), 60), 1_000_000, 1_000_000)
 	putKey(t, reserve.Data[32:64], route.Kamino.Market)
 	binary.LittleEndian.PutUint64(reserve.Data[264:272], 1000)
 	mint := ConfirmedAccount{Address: route.Kamino.DebtMint, Owner: token2022Program, Lamports: 1, Data: make([]byte, 82)}
 	mint.Data[44], mint.Data[45] = 6, 1
-	var installed struct {
-		Operations []struct{ PolicyAddress, DataBase64 string }
-	}
-	data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/policy-install-readback-v1.json")
-	if err != nil || json.Unmarshal(data, &installed) != nil {
-		t.Fatal("policy evidence missing", err)
-	}
 	extra := []ConfirmedAccount{reserve, mint}
-	for _, p := range installed.Operations {
-		if p.PolicyAddress == binding.Policy {
-			data, err := base64.StdEncoding.Strict().DecodeString(p.DataBase64)
-			if err != nil {
-				t.Fatal(err)
-			}
-			extra = append(extra, ConfirmedAccount{Address: p.PolicyAddress, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
-		}
-	}
 	var headers struct {
 		Rows []struct {
 			Key         string
@@ -55,7 +39,7 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 			}
 		}
 	}
-	data, err = os.ReadFile("../../../../docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json")
+	data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json")
 	if err != nil || json.Unmarshal(data, &headers) != nil {
 		t.Fatal("header evidence missing", err)
 	}
@@ -66,12 +50,12 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 		}
 	}
 	data, err = base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) <= binding.FeeOffset {
+	if err != nil || len(data) <= binding.feeAt() {
 		t.Fatal("missing debt exit bytes")
 	}
-	binary.LittleEndian.PutUint64(data[binding.AmountOffset:], 10_000)
-	binary.LittleEndian.PutUint64(data[binding.AmountOffset+8:], debtOutput)
-	binary.LittleEndian.PutUint16(data[binding.SlippageOffset:], 50)
+	binary.LittleEndian.PutUint64(data[binding.amountAt():], 10_000)
+	binary.LittleEndian.PutUint64(data[binding.amountAt()+8:], debtOutput)
+	binary.LittleEndian.PutUint16(data[binding.slippageAt():], 50)
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
 	o, d, e, m, rpc, client := withdrawalAdmissionFixture(t, 100_000, append(extra, extraAccounts...)...)
 	o.Snapshot.DebtIdleRaw = 10_000

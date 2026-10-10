@@ -60,19 +60,20 @@ func TestPhase3ReturnQuoteCompatibility(t *testing.T) {
 		if accepted != (row.Key == "PYUSD->USDC") {
 			t.Fatalf("%s installed-layout result changed: %v", row.Key, validationErr)
 		}
-		binding, err := catalogJupiterBindingForRoute(action, "Ethena/USDe/PYUSD")
+		bindingEdges, bindingLeg, err := catalogEdge(action, "Ethena/USDe/PYUSD")
 		if err != nil {
 			t.Fatal(err)
 		}
+		binding := bindingEdges[bindingLeg]
 		reason := ""
 		if validationErr != nil {
 			reason = validationErr.Error()
 		}
 		measurement, err := json.Marshal(map[string]any{
 			"edge": row.Key, "accepted": accepted, "reason": reason, "artifactSha256": sha256Bytes(bytes),
-			"policy": binding.Policy, "policyDataSha256": binding.PolicySHA256, "constraintIndex": binding.ConstraintIndex,
-			"installedAmountOffset": binding.AmountOffset, "observedAmountOffset": len(data) - 19,
-			"installedSlippageOffset": binding.SlippageOffset, "observedSlippageOffset": len(data) - 3,
+			"constraintIndex":       bindingLeg,
+			"installedAmountOffset": binding.amountAt(), "observedAmountOffset": len(data) - 19,
+			"installedSlippageOffset": binding.slippageAt(), "observedSlippageOffset": len(data) - 3,
 		})
 		if err != nil {
 			t.Fatal(err)

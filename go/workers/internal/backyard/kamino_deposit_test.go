@@ -164,7 +164,7 @@ func TestDepositReconcilesFromTheReceiptAndRejectsMalformedEffects(t *testing.T)
 		binary.LittleEndian.PutUint32(reserve.Data[o+4:], 7500)
 	}
 	accounts = append(accounts, reserve)
-	r, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}

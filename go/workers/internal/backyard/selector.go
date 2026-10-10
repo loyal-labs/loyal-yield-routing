@@ -13,6 +13,8 @@ import (
 // The current executor deposits equity, borrows 50% once, then redeposits it.
 const singlePassLeverage = 1 + float64(TargetLTVBPS)/10_000
 
+// selectorLanes are the lanes the selector values and exits; they are the
+// lanes the basic policy families serve.
 var selectorLanes = []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"}
 
 func selectorLane(lane string) bool {
@@ -92,8 +94,8 @@ func freshAt(now, at time.Time, age time.Duration) bool {
 
 // validateWithLane is the identical economics validation with the lane
 // authority parameterized, so the reviewed manifest's funded-selection path
-// admits its candidate lane's evidence through the same validated autoPolicy
-// binding that prices and admits it. Every rate, freshness and debt check is
+// admits its candidate lane's evidence through the same manifest that prices
+// and admits it. Every rate, freshness and debt check is
 // shared verbatim.
 func (e LaneEconomics) validateWithLane(now time.Time, p SelectorPolicy, laneAllowed func(string) bool) error {
 	if !laneAllowed(e.Lane) || e.EvidenceID == "" || !freshAt(now, e.ObservedAt, p.MarketMaxAge) || !freshAt(now, e.NativeObservedAt, p.NativeMaxAge) {

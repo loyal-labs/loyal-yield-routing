@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -58,12 +57,6 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 	if err := json.Unmarshal(data, &retained); err != nil {
 		t.Fatal(err)
 	}
-	policies := map[string]string{}
-	for _, p := range retained.Preflight.Bindings.Data.Policies {
-		if p.RetainedBytesMatch {
-			policies[p.Address] = p.Hash
-		}
-	}
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -108,21 +101,18 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 					if !op.ProgramMatches || !op.RetainedPolicyBytesMatch || !op.AccountVectorMatches {
 						t.Fatal("retained operation is not exact")
 					}
-					if lane.Lane == autoAUTOPYUSD.Lane {
-						// The historical shard policies stay observation pins:
-						// AUTO packet resolution is bound to the reviewed
-						// binding — absent fixture closed, installed manifest
-						// resolved (see auto_policy_binding_test.go).
-						testAutoKaminoCatalogLegFailClosed(t, action, leg, op.Accounts)
-						return
-					}
-					request, err := manifest.kaminoPacketForRoute(action, leg, 77,
+					request, err := manifest.kaminoPacketForRoute(testPolicies(t), action, leg, 77,
 						LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, lane.Lane)
 					if err != nil {
 						t.Fatal(err)
 					}
-					if request.Policy != op.Policy || !validSHA256(policies[op.Policy]) ||
-						request.PolicyAccountDataSHA256 != policies[op.Policy] || !reflect.DeepEqual(request.Accounts, op.Accounts) {
+					// AUTO executes every leg through its one policy, not the
+					// retained per-leg shard.
+					policy := op.Policy
+					if lane.Lane == autoAUTOPYUSD.Lane {
+						policy = testPolicyAccount(policyKey{lane: lane.Lane})
+					}
+					if request.Policy != policy || !reflect.DeepEqual(request.Accounts, op.Accounts) {
 						t.Fatal("Go packet diverges from independent installed-policy account vector")
 					}
 					message, err := CompileKaminoMessage(request)
@@ -149,17 +139,14 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 						}
 					}
 					for _, mutation := range []func(*KaminoPrimeUSDCRequest){
-						func(r *KaminoPrimeUSDCRequest) { r.Policy = bridgeAllocationPolicy },
-						func(r *KaminoPrimeUSDCRequest) { r.PolicyAccountDataSHA256 = strings.Repeat("0", 64) },
 						func(r *KaminoPrimeUSDCRequest) { r.RouteLane = SelectedRouteID },
 						func(r *KaminoPrimeUSDCRequest) { r.RouteLane = "unknown/asset/debt" },
-						func(r *KaminoPrimeUSDCRequest) { r.PolicyConstraintIndex = 1 },
 						func(r *KaminoPrimeUSDCRequest) { r.AmountRaw++ },
 					} {
 						mutant := request
 						mutation(&mutant)
 						if _, err := CompileKaminoMessage(mutant); err == nil {
-							t.Fatal("accepted policy/lane/constraint/amount mutation")
+							t.Fatal("accepted lane/amount mutation")
 						}
 					}
 				})
@@ -172,7 +159,7 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 	if len(seen) != 2 {
 		t.Fatal("missing retained exact lane evidence")
 	}
-	if _, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 77,
+	if _, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 77,
 		LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, "unknown/asset/debt"); err == nil {
 		t.Fatal("unknown lane fell back to Prime packet construction")
 	}

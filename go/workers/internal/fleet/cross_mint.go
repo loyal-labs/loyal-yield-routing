@@ -779,7 +779,8 @@ func decodeStrictSwapPolicy(account *chain.Account) (DecodedSquadsPolicy, []stri
 		if limit.Expiration != nil {
 			return policy, nil, nil, errors.New("swap spending limit must not expire")
 		}
-		limits = append(limits, swapSpendingLimit{limit.Mint.String(), limit.Start, limit.Period == 1, limit.MaxPerPeriod, full.ExactSpendingLimits})
+		plain := !limit.Accumulate && limit.MaxPerUse == 0 && !limit.ExactQuantity
+		limits = append(limits, swapSpendingLimit{limit.Mint.String(), limit.Start, limit.Period == 1, limit.MaxPerPeriod, plain})
 	}
 	if full.HasExpiration {
 		return policy, nil, nil, errors.New("swap policy expiration is not allowed")

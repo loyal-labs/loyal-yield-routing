@@ -23,7 +23,7 @@ func topupSwapAdmissionFixture(t *testing.T) (Observation, Decision, JupiterExec
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 0)
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.DebtIdleRaw, o.Snapshot.PayoffDebtRaw = 0, 0, 0, 0
 	d := Decision{Action: SwapStableToCollateralStep, AmountRaw: 20_000, StrategyKey: o.Snapshot.RouteLane, Reason: topupSwapReason, IdempotencyKey: "topup-swap"}
-	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, d, 20_000, 0, 42)
+	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, testPolicies(t), d, 20_000, 0, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func autoDebtTopupSwapFixture(t *testing.T, variant string) (Observation, Decisi
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 40_000_000)
 	o.Snapshot.SquadsIdleRaw = 40_000_000
 	d := Decision{Action: SwapStableToCollateralStep, AmountRaw: 40_000_000, StrategyKey: o.Snapshot.RouteLane, Reason: topupSwapReason, IdempotencyKey: "topup-swap-debt"}
-	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, d, 40_000_000, 0, o.Snapshot.Slot)
+	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, testPolicies(t), d, 40_000_000, 0, o.Snapshot.Slot)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -109,13 +109,13 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 		message, err = CompileBridgeMessage(*r)
 	case *KaminoPrimeUSDCRequest:
 		request = *r
-		message, err = m.compileKaminoMessage(*r, mustKey(bridgeDelegate))
+		message, err = compileKaminoMessageForDelegate(*r, mustKey(bridgeDelegate))
 	case *KaminoInitializationRequest:
 		request = *r
 		message, err = m.compileKaminoInitializationMessage(*r)
 	case *JupiterSwapRequest:
 		request = *r
-		message, err = m.compileJupiterMessage(*r, mustKey(bridgeDelegate))
+		message, err = compileJupiterMessageForDelegate(*r, mustKey(bridgeDelegate))
 	}
 	if err != nil {
 		return nil, ExpectedEffects{}, nil, budgetHold("persisted_build_no_longer_compiles")
@@ -129,8 +129,7 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 
 // decodeExpectedEffectsWithManifest delegates every non-initializer shape to
 // the public decoder unchanged; initializer effects revalidate through the
-// SAME explicit manifest that compiled the request, so a candidate AUTO effect
-// only validates when it carries its reviewed binding.
+// SAME explicit manifest that compiled the request.
 func decodeExpectedEffectsWithManifest(m RouteManifest, data []byte) (ExpectedEffects, error) {
 	var envelope struct {
 		Schema          string          `json:"schema"`

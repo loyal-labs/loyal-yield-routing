@@ -29,9 +29,6 @@ type RuntimeRoute struct {
 	DebtFarm                  string
 	ObligationDebtFarm        string
 	BasicPolicy               bool
-	KaminoPolicies            map[kaminoPrimeUSDCLeg]kaminoPolicyBinding
-	PolicyHashes              map[Action]string
-	PolicyAccounts            map[Action]string
 }
 
 func basicRuntimeRoute(lane string) (RuntimeRoute, error) {
@@ -108,42 +105,6 @@ var mapleSyrupUSDCUSDC = RuntimeRoute{
 	DebtTokenProgram:          classicTokenProgram,
 	DebtFarm:                  mapleDebtFarm,
 	ObligationDebtFarm:        mapleObligationDebtFarm,
-	KaminoPolicies: map[kaminoPrimeUSDCLeg]kaminoPolicyBinding{
-		kaminoLegDeposit:  {"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c", "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f"},
-		kaminoLegBorrow:   {"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV", "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94"},
-		kaminoLegRepay:    {"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo", "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11"},
-		kaminoLegWithdraw: {"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY", "e994455d6351a4f615ae57dd0b0b65287e8c6af10457e70383307bb43c762a7e"},
-	},
-	PolicyHashes: map[Action]string{
-		OpenRouteStep:              "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f",
-		DeleverRouteStep:           "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
-		SwapStableToCollateralStep: "04b40a67014385131f562116473e41026aa7108fea9081b14e13c1204528ced2",
-		SwapCollateralToStableStep: "1f2392e28fb96d92fb1b98a46609b8b7f4f0d38e6ddf943cd2d473a6e799589d",
-	},
-	PolicyAccounts: map[Action]string{
-		OpenRouteStep:              "5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c",
-		DeleverRouteStep:           "AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo",
-		SwapStableToCollateralStep: "DYDidUg6uEX5YK7d5UBXL7v6P5BXkkMZQneATe3mpS3t",
-		SwapCollateralToStableStep: "FhvEZNhKwF3dPZL36rrcbo5TCvTZTRBadE4YFNWxxwVR",
-	},
-}
-
-func mapleKaminoPolicyAccounts() []string {
-	return []string{
-		"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c",
-		"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV",
-		"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo",
-		"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY",
-	}
-}
-
-func mapleKaminoPolicyHashes() map[string]string {
-	return map[string]string{
-		"5NyDUfvT3a5gKgh6KMn7qYi5Tp9YfCDUjiJYV1TsnX5c": "501365503468a54060e602ab7fcbe9671c25b817dd5693c1e17c9a6ad90e679f",
-		"2m7DpWN1d7UC8iMZyipGzo5SRaBz9Buqhw1VJUTMpLSV": "6f97d7928d7927d65b588644d2e0506bc86b2173f2f525edf087474e28631a94",
-		"AjjV5p7BPCxqaf92EsUjx2bavkTuhjHwiBJMvk8Gh8Uo": "4bb7136fdeaa094aaf7e39cd0595434e1e9e09586c496303236f5d4ecc169f11",
-		"4ZRoNsVZCNJXUdNjFL6MvjMhbLFG512hjStfipMftzcY": "e994455d6351a4f615ae57dd0b0b65287e8c6af10457e70383307bb43c762a7e",
-	}
 }
 
 // fundedLane reports the lanes the funded program runs. Their bridge legs

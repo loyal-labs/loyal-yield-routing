@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -16,59 +17,28 @@ import (
 
 func readyWorkerManifest(t *testing.T) RouteManifest {
 	t.Helper()
-	stringPtr := func(value string) *string { return &value }
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifest.Status = "ready"
 	manifest.Unresolved = nil
-	manifest.PolicyCatalog.AddressesResolved = true
-	packing := int64(8)
-	manifest.PolicyCatalog.PackingRung = &packing
-	manifest.PolicyCatalog.SHA256 = stringPtr(strings.Repeat("c", 64))
-	manifest.PolicyCatalog.PolicyAccounts = []string{
-		"2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
-		"BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
-		"9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
-		"Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
-	}
-	for index := range manifest.PolicyCatalog.Policies {
-		hash := strings.Repeat(string("def0"[index]), 64)
-		manifest.PolicyCatalog.Policies[index].DataSHA256 = &hash
-	}
 	commit := strings.Repeat("1", 40)
 	digest := "sha256:" + strings.Repeat("2", 64)
 	service := "loyal-backyard-rwa-worker"
 	manifest.Deployment.SourceCommit = &commit
 	manifest.Deployment.ImageDigest = &digest
 	manifest.Deployment.SingleWriterService = &service
-	for index := range manifest.RuntimeBindings.BridgePolicies {
-		hash := strings.Repeat(string(rune('a'+index)), 64)
-		manifest.RuntimeBindings.BridgePolicies[index].NormalizedDigest = hash
-		manifest.RuntimeBindings.BridgePolicies[index].DataSHA256Raw = hash
-	}
-	manifest.RuntimeBindings.CollateralLifecycle.DataSHA256 = stringPtr(strings.Repeat("e", 64))
-	manifest.RuntimeBindings.DebtLifecycle.DataSHA256 = stringPtr(strings.Repeat("f", 64))
-	manifest.RuntimeBindings.SwapRoutesA.DataSHA256 = stringPtr(strings.Repeat("0", 64))
-	manifest.RuntimeBindings.SwapRoutesB.DataSHA256 = stringPtr(strings.Repeat("1", 64))
-	manifest.RuntimeBindings.PrimeUSDC.Packets = make([]struct {
-		Action                  Action                  `json:"action"`
-		Policy                  string                  `json:"policy"`
-		PolicyAccountDataSHA256 string                  `json:"policyAccountDataSha256"`
-		PolicyConstraintIndex   byte                    `json:"policyConstraintIndex"`
-		Accounts                KaminoPrimeUSDCAccounts `json:"accounts"`
-		DataBase64              string                  `json:"dataBase64"`
-	}, 4)
-	manifest.RuntimeBindings.PrimeUSDC.SwapPolicies = make([]JupiterPolicyBinding, 2)
 	if blocker := manifest.executionBlocker(); blocker != nil {
 		t.Fatalf("ready test manifest remained blocked: %v", blocker)
 	}
 	return manifest
 }
 
+// tickObservation is an observation of snapshot that found every literal
+// installed where today's Settings holds it.
 func tickObservation(snapshot Snapshot) Observation {
-	return Observation{Snapshot: snapshot, ObservedAt: time.Unix(1, 0).UTC()}
+	return Observation{Snapshot: snapshot, ObservedAt: time.Unix(1, 0).UTC(), policies: capturedTestPolicies()}
 }
 
 func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
@@ -92,7 +62,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			}
 			return observation, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: got.Action}}, nil
 		},
-		recordDecision: func(_ context.Context, route string, _ Observation, got Decision, _, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, route string, _ Observation, got Decision, _ string) (DecisionRecord, error) {
 			order = append(order, "record")
 			if route != productionRouteKey || got != decision {
 				t.Fatalf("recorded route or decision drifted")
@@ -108,7 +78,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 		},
 		bind: func(_ context.Context, id string, got Observation, d Decision, _ any, _ ExpectedEffects) error {
 			order = append(order, "admit")
-			if id != "operation" || got != observation || d != decision {
+			if id != "operation" || !reflect.DeepEqual(got, observation) || d != decision {
 				t.Fatal("admission lost the recorded decision")
 			}
 			return nil
@@ -146,14 +116,13 @@ func TestTickPreservesHoldJournalWhileManifestIsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policyCatalogHash := strings.Repeat("c", 64)
-	manifest.PolicyCatalog.SHA256 = &policyCatalogHash
+	manifest.Status = "blocked"
 	observation := tickObservation(Snapshot{ObservationID: "hold", Slot: 10, RouteKind: RouteKind, Fresh: true})
 	recorded := false
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return observation, nil },
-		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _ string) (DecisionRecord, error) {
 			recorded = true
 			if decision.Action != Hold {
 				t.Fatalf("expected terminal HOLD, got %s", decision.Action)
@@ -174,7 +143,7 @@ func TestTickJournalsUtilizationHoldWithoutPreparingBorrow(t *testing.T) {
 	observation := tickObservation(Snapshot{
 		ObservationID: "utilization-blocked", Slot: 10, RouteKind: RouteKind, Fresh: true,
 		HasPosition: true, PositionCollateralRaw: 99, BorrowUtilizationBlocked: true,
-		PolicyReady: true, ExitBuildable: true, LiquidationThresholdBPS: 8000,
+		LiquidationThresholdBPS: 8000,
 	})
 	recorded := false
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
@@ -184,7 +153,7 @@ func TestTickJournalsUtilizationHoldWithoutPreparingBorrow(t *testing.T) {
 			t.Fatal("utilization-blocked reserve attempted to prepare another borrow")
 			return Observation{}, KaminoExecutionEvidence{}, nil
 		},
-		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _ string) (DecisionRecord, error) {
 			recorded = true
 			if decision.Action != Hold || decision.Reason != "debt_reserve_utilization_blocks_borrow" {
 				t.Fatalf("wrong utilization decision: %+v", decision)
@@ -205,8 +174,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 	openObservation := tickObservation(Snapshot{
 		ObservationID: "open", Slot: 10, RouteKind: RouteKind, Fresh: true,
 		PrimeIdleRaw: 5, CapacityRaw: 5, PolicyLimitRaw: 5,
-		MaxTargetLTVEntryRaw: 5, PolicyReady: true, ExitBuildable: true,
-		LiquidationThresholdBPS: 8000,
+		MaxTargetLTVEntryRaw: 5, LiquidationThresholdBPS: 8000,
 	})
 	order := []string{}
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
@@ -219,7 +187,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 			}
 			return openObservation, KaminoExecutionEvidence{Request: KaminoPrimeUSDCRequest{Action: decision.Action}}, nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			order = append(order, "record")
 			return DecisionRecord{OperationID: "kamino", Status: Decided}, nil
 		},
@@ -279,9 +247,6 @@ func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {
 
 func TestExecutionGateKeepsPhaseTwoCatalogOutOfFirstRelease(t *testing.T) {
 	manifest := readyWorkerManifest(t)
-	manifest.PolicyCatalog.AddressesResolved = false
-	manifest.PolicyCatalog.PackingRung = nil
-	manifest.PolicyCatalog.PolicyAccounts = nil
 	manifest.Deployment.SourceCommit = nil
 	manifest.Deployment.ImageDigest = nil
 	manifest.Deployment.SingleWriterService = nil
@@ -376,7 +341,7 @@ func TestLeasedWorkerAcquiresBeforeTickAndReleasesOnCleanShutdown(t *testing.T) 
 		observe: func(context.Context) (Observation, error) {
 			return tickObservation(Snapshot{ObservationID: "lease-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			return DecisionRecord{Status: Held}, nil
 		},
 	}}
@@ -405,7 +370,7 @@ func TestLeasedWorkerRetriesObservationWithoutDroppingTheFence(t *testing.T) {
 			}
 			return tickObservation(Snapshot{ObservationID: "retry-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			cancel()
 			return DecisionRecord{Status: Held}, nil
 		},
@@ -445,7 +410,7 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			}
 			return tickObservation(actionable), BridgeExecutionEvidence{}, nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			records++
 			return DecisionRecord{Status: Decided, OperationID: "operation"}, nil
 		},
@@ -521,7 +486,7 @@ func TestLeasedWorkerPrefersRefreshFailureOverIdleTimerCancellation(t *testing.T
 		observe: func(context.Context) (Observation, error) {
 			return tickObservation(Snapshot{ObservationID: "idle-refresh", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			return DecisionRecord{Status: Held}, nil
 		},
 	}}
@@ -579,7 +544,7 @@ func TestLeasedWorkerWaitsForRollingDeployLeaseHandoffBeforeFirstTick(t *testing
 			observe: func(context.Context) (Observation, error) {
 				return tickObservation(Snapshot{ObservationID: "handoff", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
 			},
-			recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+			recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 				return DecisionRecord{Status: Held}, nil
 			},
 		},
@@ -676,7 +641,7 @@ func TestLeasedWorkerSurfacesReleaseFailureOnCleanShutdown(t *testing.T) {
 		observe: func(context.Context) (Observation, error) {
 			return tickObservation(Snapshot{ObservationID: "release-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			return DecisionRecord{Status: Held}, nil
 		},
 	}}
@@ -704,7 +669,7 @@ func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 				prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
 					return o, BridgeExecutionEvidence{}, nil
 				},
-				recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+				recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 					return DecisionRecord{OperationID: "report-op", Status: Decided}, nil
 				},
 				bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },

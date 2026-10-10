@@ -192,8 +192,8 @@ func basicJupiterRequestFromExport(t *testing.T, lane, leg string) (JupiterSwapR
 		t.Fatalf("recorded amount %d does not match instruction economics %d", record.AmountRaw, amount)
 	}
 	request := JupiterSwapRequest{Action: action, AmountRaw: amount, QuotedOutputRaw: readU64(data[len(data)-11:]),
-		MinimumOutputRaw: readU64(data[len(data)-11:]), Policy: record.PolicyAccount, PolicyAccountDataSHA256: record.PolicyDataSHA256,
-		PolicyConstraintIndex: record.ConstraintIndex, Instruction: JupiterSwapInstruction{ProgramID: inner.ProgramID, Accounts: accounts, Data: inner.DataBase64},
+		MinimumOutputRaw: readU64(data[len(data)-11:]), Policy: record.PolicyAccount,
+		Instruction:     JupiterSwapInstruction{ProgramID: inner.ProgramID, Accounts: accounts, Data: inner.DataBase64},
 		RecentBlockhash: record.RecentBlockhash, LastValidBlockHeight: record.LastValidBlockHeight, RouteLane: lane}
 	if !acceptsJupiterLookupHints(lane, action) {
 		t.Fatalf("basic lane %s does not admit its quoted lookup hints", lane)

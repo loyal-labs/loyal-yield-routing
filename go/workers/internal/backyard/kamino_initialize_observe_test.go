@@ -10,11 +10,8 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -23,14 +20,11 @@ import (
 func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, map[string]ConfirmedAccount) {
 	e, _ := initializationReconcileFixture(t)
 	r := *e.Initialization
-	r.PolicySeed = 139 // Captured Settings last-used seed is 139.
 	inner, err := kaminoMultiplyInitializer(r.RouteLane)
 	if err != nil {
 		t.Fatal(err)
 	}
 	route, _ := runtimeRoute(r.RouteLane)
-	policy, _ := policySetupAddress(r.PolicySeed)
-	policyAddress := encodeBase58(policy[:])
 	metadataAddress := encodeBase58(inner.accounts[6].key[:])
 	rentAddress := "SysvarRent111111111111111111111111111111111"
 	system := "11111111111111111111111111111111"
@@ -40,8 +34,6 @@ func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, m
 		accounts[address] = ConfirmedAccount{Address: address, Owner: system, Lamports: 1}
 	}
 	delete(accounts, route.Kamino.Obligation)
-	accounts[bridgeSettings] = setupSettingsAccount(t)
-	accounts[policyAddress] = ConfirmedAccount{Address: policyAddress, Owner: squads.ProgramID.String(), Lamports: 1, Data: []byte("controlled policy")}
 	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
 	accounts[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
 	m := ConfirmedAccount{Address: metadataAddress, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, 1032)}
@@ -64,13 +56,11 @@ func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, m
 // Exercise the actual RPC null-account contract and the native funding gate.
 // Only the exact target obligation may be absent; all prerequisites must exist.
 func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testing.T) {
-	for _, drift := range []string{"", "target_exists", "missing_policy", "policy_hash", "policy_owner", "settings_authority", "settings_seed", "vault_funding", "delegate_funding", "metadata_owner", "metadata_referrer", "metadata_vault", "market_emergency", "mint_program", "mint_uninitialized", "rent_changed", "rent_nan", "old_slot"} {
+	for _, drift := range []string{"", "target_exists", "vault_funding", "delegate_funding", "metadata_owner", "metadata_referrer", "metadata_vault", "market_emergency", "mint_program", "mint_uninitialized", "rent_changed", "rent_nan", "old_slot"} {
 		t.Run(drift, func(t *testing.T) {
 			r, accounts := initializationPrestateFixture(t)
 			inner, _ := kaminoMultiplyInitializer(r.RouteLane)
 			route, _ := runtimeRoute(r.RouteLane)
-			policy, _ := policySetupAddress(r.PolicySeed)
-			policyAddress := encodeBase58(policy[:])
 			metadataAddress := encodeBase58(inner.accounts[6].key[:])
 			rentAddress := "SysvarRent111111111111111111111111111111111"
 			change := func(address string, fn func(*ConfirmedAccount)) {
@@ -81,16 +71,6 @@ func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testin
 			switch drift {
 			case "target_exists":
 				accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Lamports: 1}
-			case "missing_policy":
-				delete(accounts, policyAddress)
-			case "policy_hash":
-				change(policyAddress, func(a *ConfirmedAccount) { a.Data[0] ^= 1 })
-			case "policy_owner":
-				change(policyAddress, func(a *ConfirmedAccount) { a.Owner = classicTokenProgram })
-			case "settings_authority":
-				change(bridgeSettings, func(a *ConfirmedAccount) { a.Data[24] = 1 })
-			case "settings_seed":
-				r.PolicySeed = 140
 			case "vault_funding":
 				change(bridgeVault, func(a *ConfirmedAccount) { a.Lamports-- })
 			case "delegate_funding":
@@ -186,14 +166,7 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 		case "getMultipleAccounts":
 			var addresses []string
 			_ = json.Unmarshal(body.Params[0], &addresses)
-			values := make([]any, len(addresses))
-			for i, a := range addresses {
-				values[i] = map[string]any{"owner": squads.ProgramID.String(), "lamports": 1, "data": []string{"", "base64"}}
-				if a != bridgeSettings {
-					values[i] = nil
-				}
-			}
-			result = map[string]any{"context": map[string]any{"slot": 78}, "value": values}
+			result = map[string]any{"context": map[string]any{"slot": 78}, "value": make([]any, len(addresses))}
 		default:
 			t.Fatal("unexpected RPC", body.Method)
 		}
@@ -202,7 +175,7 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 	})
 	// The final send proves the persisted wire first; only then is a missing
 	// policy a prestate hold of that proven wire.
-	m := requireEmbeddedInstalledBinding(t)
+	m := embeddedTestManifest(t)
 	request, effects, err := m.validateSignedIdentity(auth, op)
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +225,7 @@ func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 				case "getMultipleAccounts":
 					var addresses []string
 					_ = json.Unmarshal(body.Params[0], &addresses)
-					if len(addresses) > 0 && addresses[0] == bridgeSettings {
+					if len(addresses) > 0 && addresses[0] == bridgeDelegate {
 						values := make([]any, len(addresses))
 						for i, address := range addresses {
 							if a, ok := accounts[address]; ok {
@@ -303,73 +276,5 @@ func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 				t.Fatalf("rent or prestate bound lost: %+v", cost)
 			}
 		})
-	}
-}
-
-// Public Settings from the retained finalized slot-444491195 program snapshot.
-// SDK decoding below is independent of the Go envelope parser.
-const setupSettingsFixture = "37OjvrHgQ606sAcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/AQAAAJcaJGJKF/Wed7NyrW3KxJvGybD8BjcCj1JwIF/Ul3wIBwABiwAAAAAAAAAA"
-
-func setupSettingsAccount(t *testing.T) ConfirmedAccount {
-	t.Helper()
-	data, err := base64.StdEncoding.DecodeString(setupSettingsFixture)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return ConfirmedAccount{Address: bridgeSettings, Owner: squads.ProgramID.String(), Lamports: 2_060_160, Data: data}
-}
-
-func TestPolicySetupSettingsMatchesSDKAndRejectsAuthorityDrift(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bun", "testdata/policy-settings-oracle.mjs")
-	cmd.Stdin = strings.NewReader(setupSettingsFixture)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("Settings SDK oracle: %v %s", err, stderr.String())
-	}
-	var cases []struct{ Name, Data, Next string }
-	if json.Unmarshal(out, &cases) != nil || len(cases) != 16 {
-		t.Fatal("invalid Settings oracle output")
-	}
-	for _, c := range cases {
-		t.Run(c.Name, func(t *testing.T) {
-			a := setupSettingsAccount(t)
-			a.Data, err = base64.StdEncoding.DecodeString(c.Data)
-			if err != nil {
-				t.Fatal(err)
-			}
-			next, decodeErr := policySetupNextSeed(a)
-			if c.Next == "" {
-				assertBudgetHold(t, decodeErr, "policy_setup_settings_envelope_mismatch")
-			} else if decodeErr != nil || strconv.FormatUint(next, 10) != c.Next {
-				t.Fatalf("Settings disagrees with SDK: seed=%d error=%v", next, decodeErr)
-			}
-		})
-	}
-	for name, mutate := range map[string]func(*ConfirmedAccount){
-		"address":       func(a *ConfirmedAccount) { a.Address = bridgeVault },
-		"owner":         func(a *ConfirmedAccount) { a.Owner = classicTokenProgram },
-		"executable":    func(a *ConfirmedAccount) { a.Executable = true },
-		"empty":         func(a *ConfirmedAccount) { a.Lamports = 0 },
-		"discriminator": func(a *ConfirmedAccount) { a.Data[0] ^= 1 },
-		"bad-option":    func(a *ConfirmedAccount) { a.Data[78] = 2 },
-	} {
-		t.Run(name, func(t *testing.T) {
-			a := setupSettingsAccount(t)
-			mutate(&a)
-			_, err := policySetupNextSeed(a)
-			assertBudgetHold(t, err, "policy_setup_settings_envelope_mismatch")
-		})
-	}
-	a := setupSettingsAccount(t)
-	for n := 0; n < len(a.Data); n++ {
-		truncated := a
-		truncated.Data = a.Data[:n]
-		if _, err := policySetupNextSeed(truncated); err == nil {
-			t.Fatalf("truncated Settings accepted at %d bytes", n)
-		}
 	}
 }

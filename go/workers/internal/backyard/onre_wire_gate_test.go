@@ -13,7 +13,7 @@ const onreLane = "OnRe/ONyc/USDC"
 // gate PersistSigned uses. A refusal here is a signed wire the worker cannot
 // persist (live 2026-09-28: the AUTO top-up deposit).
 func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{51}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	route, err := runtimeRoute(onreLane)
@@ -35,12 +35,12 @@ func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
 		{"withdraw with debt (repayment release)", DeleverRouteStep, kaminoLegWithdraw, []string{collateral, debt}},
 		{"withdraw debt-free", DeleverRouteStep, kaminoLegWithdraw, []string{collateral}},
 	} {
-		request, err := manifest.kaminoPacketForRoute(c.action, c.leg, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreLane)
+		request, err := manifest.kaminoPacketForRoute(testPolicies(t), c.action, c.leg, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreLane)
 		if err != nil {
 			t.Fatalf("%s: packet: %v", c.name, err)
 		}
 		request.ObligationReserves = c.reserves
-		message, err := manifest.compileKaminoMessage(request, delegate)
+		message, err := compileKaminoMessageForDelegate(request, delegate)
 		if err != nil {
 			t.Errorf("%s: compile: %v", c.name, err)
 			continue
@@ -61,7 +61,7 @@ func TestOnReInitializerWirePassesTheDecodeGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := manifest.initializationRequest(onreLane, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, 24_165_120, 5_000)
+	request, err := manifest.initializationRequest(testPolicies(t), onreLane, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, 24_165_120, 5_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,17 +77,17 @@ func TestOnReInitializerWirePassesTheDecodeGate(t *testing.T) {
 
 // The top-up topology stays closed for the other installed lanes.
 func TestTopupDepositTopologyOnlyForAUTOAndOnRe(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{53}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID} {
 		route, _ := runtimeRoute(lane)
-		request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, lane)
+		request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, lane)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.ObligationReserves = []string{route.Kamino.CollateralReserve}
-		message, err := manifest.compileKaminoMessage(request, delegate)
+		message, err := compileKaminoMessageForDelegate(request, delegate)
 		if err != nil {
 			t.Fatal(err)
 		}

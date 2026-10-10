@@ -42,7 +42,7 @@ func kaminoPairEntryCapacity(position KaminoPosition, accounts []ConfirmedAccoun
 // kaminoPairEntryCapacityAuthorized is the arithmetic core behind the reviewed
 // public gate above, which is unchanged and still rejects every unreviewed
 // lane. The candidate AUTO destination path calls it only after
-// selectorDestinationLaneAuthorized admitted the exact manifest-bound lane.
+// selectorOrAutoLane admitted the lane.
 func kaminoPairEntryCapacityAuthorized(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	if leverageLane(route.Lane) {
 		// Validate borrowing evidence even for a known-zero recipe. Unknown is

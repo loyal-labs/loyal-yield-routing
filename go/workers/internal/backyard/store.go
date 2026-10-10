@@ -293,26 +293,24 @@ func durableDecisionIdempotencyKey(routeKey, operationEpoch string, decision Dec
 }
 
 // holdBoundIdempotencyKey namespaces a terminal hold's audit-only identity by
-// the manifest and catalog binding it was decided under: holds carry no epoch,
-// so an unchanged observation after a rollover reused the historical row's
-// identity and failed the evidence comparison every tick. The suffix is
-// collision-free (validated 64-hex hashes, fixed segment absent from
-// executable epochs); historical keys stay byte-identical and executable
-// epoch identities untouched.
-func holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256, policyCatalogSHA256 string) string {
-	return persistedIdempotencyKey + ":hold-binding:" + manifestSHA256 + ":" + policyCatalogSHA256
+// the manifest it was decided under: holds carry no epoch, so an unchanged
+// observation after a rollover reused the historical row's identity and failed
+// the evidence comparison every tick. The suffix is collision-free (a
+// validated 64-hex hash, fixed segment absent from executable epochs);
+// executable epoch identities stay untouched.
+func holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256 string) string {
+	return persistedIdempotencyKey + ":hold-binding:" + manifestSHA256
 }
 
 type decisionEvidence struct {
-	ValuationSource     string `json:"valuationSource,omitempty"`
-	ValuationSlot       int64  `json:"valuationSlot,omitempty"`
-	AmountRaw           int64  `json:"amountRaw"`
-	Reason              string `json:"reason"`
-	ObservationID       string `json:"observationId"`
-	ObservationSlot     int64  `json:"observationSlot"`
-	ManifestSHA256      string `json:"manifestSha256"`
-	PolicyCatalogSHA256 string `json:"policyCatalogSha256"`
-	StrategyKey         string `json:"strategyKey"`
+	ValuationSource string `json:"valuationSource,omitempty"`
+	ValuationSlot   int64  `json:"valuationSlot,omitempty"`
+	AmountRaw       int64  `json:"amountRaw"`
+	Reason          string `json:"reason"`
+	ObservationID   string `json:"observationId"`
+	ObservationSlot int64  `json:"observationSlot"`
+	ManifestSHA256  string `json:"manifestSha256"`
+	StrategyKey     string `json:"strategyKey"`
 }
 
 func restorePersistedDecision(expectedEffects []byte, action Action, idempotencyKey, strategyKey string) (Decision, error) {
@@ -342,14 +340,14 @@ func restorePersistedDecisionWith(expectedEffects []byte, action Action, idempot
 	return decision, nil
 }
 
-func newDecisionEvidence(observation Observation, decision Decision, manifestSHA256, policyCatalogSHA256 string) decisionEvidence {
+func newDecisionEvidence(observation Observation, decision Decision, manifestSHA256 string) decisionEvidence {
 	source, slot, _ := persistedValuationMetadata(observation)
 	return decisionEvidence{
 		ValuationSource: source, ValuationSlot: slot,
 		AmountRaw: decision.AmountRaw, Reason: decision.Reason,
 		ObservationID: observation.Snapshot.ObservationID, ObservationSlot: observation.Snapshot.Slot,
-		ManifestSHA256: manifestSHA256, PolicyCatalogSHA256: policyCatalogSHA256,
-		StrategyKey: decision.StrategyKey,
+		ManifestSHA256: manifestSHA256,
+		StrategyKey:    decision.StrategyKey,
 	}
 }
 
@@ -373,19 +371,17 @@ func (d *Database) RecordDecision(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
-	policyCatalogSHA256 string,
 ) (DecisionRecord, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return DecisionRecord{}, err
 	}
-	return d.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+	return d.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
 }
 
 // RecordDecisionOnManifest is the identical locked decision persistence with
 // the decision validation resolved through the same manifest: the candidate
-// AUTO initializer decision is admitted only while its reviewed binding
-// resolves, and the embedded manifest keeps the installed closure.
+// AUTO initializer decision is admitted through it.
 func (d *Database) RecordDecisionOnManifest(
 	ctx context.Context,
 	manifest RouteManifest,
@@ -393,12 +389,11 @@ func (d *Database) RecordDecisionOnManifest(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
-	policyCatalogSHA256 string,
 ) (DecisionRecord, error) {
 	if decision.Action == HoldManualRecovery {
-		return d.RecordManualRecovery(ctx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+		return d.RecordManualRecovery(ctx, routeKey, observation, decision, manifestSHA256)
 	}
-	if err := validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256); err != nil {
+	if err := validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256); err != nil {
 		return DecisionRecord{}, err
 	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -406,7 +401,7 @@ func (d *Database) RecordDecisionOnManifest(
 		return DecisionRecord{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	record, err := d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+	record, err := d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256)
 	if err != nil {
 		return DecisionRecord{}, err
 	}
@@ -455,13 +450,12 @@ func validateDecisionPersistence(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
-	policyCatalogSHA256 string,
 ) error {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return err
 	}
-	return validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+	return validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256)
 }
 
 func validateDecisionPersistenceOnManifest(
@@ -471,7 +465,6 @@ func validateDecisionPersistenceOnManifest(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
-	policyCatalogSHA256 string,
 ) error {
 	if err := manifest.validateDecision(decision); err != nil {
 		return fmt.Errorf("validate decision before persistence: %w", err)
@@ -489,8 +482,8 @@ func validateDecisionPersistenceOnManifest(
 		(!observation.Snapshot.Fresh || observation.Snapshot.RouteKind != RouteKind) {
 		return fmt.Errorf("transactional decision requires a fresh Backyard observation")
 	}
-	if !sha256Pattern.MatchString(manifestSHA256) || !sha256Pattern.MatchString(policyCatalogSHA256) {
-		return fmt.Errorf("manifest or policy catalog hash is invalid")
+	if !sha256Pattern.MatchString(manifestSHA256) {
+		return fmt.Errorf("manifest hash is invalid")
 	}
 	return nil
 }
@@ -504,9 +497,8 @@ func (d *Database) RecordManualRecovery(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
-	policyCatalogSHA256 string,
 ) (DecisionRecord, error) {
-	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256, nil, nil)
+	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, nil, nil)
 }
 
 // RecordManualRecoveryAtGeneration re-records a latched hold only if the
@@ -519,10 +511,9 @@ func (d *Database) RecordManualRecoveryAtGeneration(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
-	policyCatalogSHA256 string,
 	generation int64,
 ) (DecisionRecord, error) {
-	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256, &generation, nil)
+	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, &generation, nil)
 }
 
 // recordManualRecovery keeps the failure hook package-private so the database
@@ -534,10 +525,9 @@ func (d *Database) recordManualRecovery(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
-	policyCatalogSHA256 string,
 	afterInsert func() error,
 ) (DecisionRecord, error) {
-	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256, nil, afterInsert)
+	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, nil, afterInsert)
 }
 
 func (d *Database) recordManualRecoveryWithGeneration(
@@ -546,14 +536,13 @@ func (d *Database) recordManualRecoveryWithGeneration(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
-	policyCatalogSHA256 string,
 	expectedGeneration *int64,
 	afterInsert func() error,
 ) (DecisionRecord, error) {
 	if decision.Action != HoldManualRecovery {
 		return DecisionRecord{}, fmt.Errorf("manual recovery persistence requires HOLD_MANUAL_RECOVERY")
 	}
-	if err := validateDecisionPersistence(d, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256); err != nil {
+	if err := validateDecisionPersistence(d, routeKey, observation, decision, manifestSHA256); err != nil {
 		return DecisionRecord{}, err
 	}
 	latch := ManualRecoveryLatch{
@@ -569,7 +558,7 @@ func (d *Database) recordManualRecoveryWithGeneration(
 		return DecisionRecord{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	record, err := d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+	record, err := d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256)
 	if err != nil {
 		return DecisionRecord{}, err
 	}
@@ -657,7 +646,6 @@ func (d *Database) recordDecisionTx(
 	observation Observation,
 	decision Decision,
 	manifestSHA256 string,
-	policyCatalogSHA256 string,
 ) (DecisionRecord, error) {
 	lease, err := d.currentLease()
 	if err != nil || lease.RouteKey != routeKey {
@@ -702,7 +690,7 @@ func (d *Database) recordDecisionTx(
 		return DecisionRecord{}, err
 	}
 	if decision.Action == Hold || decision.Action == HoldManualRecovery {
-		persistedIdempotencyKey = holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256, policyCatalogSHA256)
+		persistedIdempotencyKey = holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256)
 	}
 	var existing DecisionRecord
 	var existingAction string
@@ -719,7 +707,7 @@ func (d *Database) recordDecisionTx(
 		if json.Unmarshal(existingEffects, &existingEnvelope) != nil {
 			return DecisionRecord{}, fmt.Errorf("idempotency identity has invalid decision evidence")
 		}
-		candidate := newDecisionEvidence(observation, decision, manifestSHA256, policyCatalogSHA256)
+		candidate := newDecisionEvidence(observation, decision, manifestSHA256)
 		// An identical economic state may be confirmed again at a later slot.
 		// Preserve the first durable observation slot while treating the later
 		// read as the same decision identity.
@@ -756,7 +744,7 @@ func (d *Database) recordDecisionTx(
 	expected, err := json.Marshal(map[string]any{
 		"schema":                "loyal-backyard-rwa-operation-evidence/v1",
 		"journalStrategyConfig": bridgeStrategy,
-		"decision":              newDecisionEvidence(observation, decision, manifestSHA256, policyCatalogSHA256),
+		"decision":              newDecisionEvidence(observation, decision, manifestSHA256),
 		"expectedEffects":       nil,
 	})
 	if err != nil {

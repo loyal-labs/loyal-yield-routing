@@ -89,7 +89,6 @@ func TestSelectorEntryExpiryAndCapacityPreserveLifecycle(t *testing.T) {
 		}
 		s = original
 		s.ObligationPresenceKnown = true
-		s.InitializationPolicyReady = true
 		if d := Decide(s); d.Action == InitializeKaminoObligation {
 			t.Fatal("no quote spent initializer rent", d)
 		}
@@ -104,7 +103,6 @@ func TestSelectorEntryExpiryAndCapacityPreserveLifecycle(t *testing.T) {
 		// run until the entry's own expiry; the allocation may not.
 		s = original
 		s.ObligationPresenceKnown = true
-		s.InitializationPolicyReady = true
 		s.Slot = entry.Quote.ValidThroughSlot + 5
 		if err := applySelectorEntry(&s, &entry, now); err != nil || Decide(s).Action != InitializeKaminoObligation {
 			t.Fatal("slot-late initializer refused before entry expiry", err, Decide(s))
@@ -287,7 +285,7 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.ReleaseRouteLease(ctx)
-	manifest := requireEmbeddedInstalledBinding(t)
+	manifest := embeddedTestManifest(t)
 	request := BridgeBuildRequest{Action: VoltrAllocateToSquads, AmountRaw: 1_000_000}
 	for _, tc := range []struct {
 		id                string
@@ -391,7 +389,7 @@ func TestSelectorBorrowAuthorizationPersistsAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.ReleaseRouteLease(ctx)
-	manifest := requireEmbeddedInstalledBinding(t)
+	manifest := embeddedTestManifest(t)
 	for _, tc := range []struct {
 		amount uint64
 		fee    uint64
@@ -405,7 +403,7 @@ func TestSelectorBorrowAuthorizationPersistsAcrossRestart(t *testing.T) {
 			stored.AllocationOperationID = ""
 		}
 		storeTestSelectorEntry(t, ctx, restarted, key, stored)
-		r, err := basicPolicyFixtureManifest(t).kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, tc.amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
+		r, err := embeddedTestManifest(t).kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, tc.amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
 		if err != nil {
 			t.Fatal(err)
 		}

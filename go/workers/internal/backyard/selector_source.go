@@ -141,16 +141,12 @@ func observeAutoSelectorSource(ctx context.Context, rpc *chain.Client, client *j
 
 // selectorSourceLaneAuthorized keeps the public selector-lane gate untouched
 // and admits exactly one candidate lane: the AUTO lane through an explicit
-// manifest whose reviewed autoPolicy binding resolves and whose activation
-// selects that lane.
+// manifest whose activation selects that lane.
 func selectorSourceLaneAuthorized(m RouteManifest, lane string, candidate bool) bool {
 	if selectorLane(lane) {
 		return true
 	}
 	if !candidate || lane != autoAUTOPYUSD.Lane {
-		return false
-	}
-	if _, err := m.autoPolicyBinding(); err != nil {
 		return false
 	}
 	active, err := m.activeRuntimeRoute()
@@ -178,7 +174,7 @@ func observeReviewedSelectorSource(ctx context.Context, rpc *chain.Client, clien
 		out.Recipe.EvidenceID = sha256Bytes(raw)
 		return out, nil
 	}
-	floor, err := observeWithdrawalExitPolicies(ctx, rpc, m, s.RouteLane, s.Slot, nil)
+	floor, err := observeDisarmedReportTicket(ctx, rpc, s.Slot)
 	if err != nil {
 		return out, err
 	}
@@ -195,7 +191,11 @@ func observeReviewedSelectorSource(ctx context.Context, rpc *chain.Client, clien
 		return out, budgetHold("selector_source_nav_unavailable")
 	}
 	e.Kind, e.ReturnData = "bridge", expectedAdaptorReturnData(uint64(s.StrategyNAVRaw))
-	r := BridgeBuildRequest{Action: ReportNAV, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
+	navPolicy, err := o.policies.account(policyKey{action: ReportNAV})
+	if err != nil {
+		return out, err
+	}
+	r := BridgeBuildRequest{Action: ReportNAV, Policy: navPolicy, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
 		Report: BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(s.StrategyNAVRaw), SnapshotDigest: s.ReportSnapshotDigest}}
 	var plan phase3BridgeAdmission
 	switch {
@@ -211,7 +211,7 @@ func observeReviewedSelectorSource(ctx context.Context, rpc *chain.Client, clien
 	if err != nil {
 		return out, err
 	}
-	return priceReviewedSelectorSourcePlan(ctx, rpc, client, m, plan, floor, candidate)
+	return priceReviewedSelectorSourcePlan(ctx, rpc, client, m, o.policies, plan, floor, candidate)
 }
 
 // priceSelectorSourcePlan stays the persisted-build compatibility form: it
@@ -226,14 +226,14 @@ func priceSelectorSourcePlan(ctx context.Context, rpc *chain.Client, plan phase3
 }
 
 func (m RouteManifest) priceSelectorSourcePlan(ctx context.Context, rpc *chain.Client, plan phase3BridgeAdmission, observationFloor int64) (selectorSourceQuote, error) {
-	return priceReviewedSelectorSourcePlan(ctx, rpc, nil, m, plan, observationFloor, false)
+	return priceReviewedSelectorSourcePlan(ctx, rpc, nil, m, nil, plan, observationFloor, false)
 }
 
 // priceReviewedSelectorSourcePlan is the manifest-aware consumer behind the
 // public pricer. Retained legs decode, compile and measure against the SAME
 // reviewed manifest that produced them; every identity, bound-pair, cost-hash
 // and freshness check is shared with the public path unchanged.
-func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, plan phase3BridgeAdmission, observationFloor int64, candidate bool) (selectorSourceQuote, error) {
+func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, policies installedPolicies, plan phase3BridgeAdmission, observationFloor int64, candidate bool) (selectorSourceQuote, error) {
 	s := plan.Snapshot
 	out := selectorSourceQuote{Lane: s.RouteLane, ObservationID: s.ObservationID}
 	if !selectorSourceLaneAuthorized(m, s.RouteLane, candidate) || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.DebtIdleRaw != 0 || plan.Input == nil || len(plan.Exit) == 0 {
@@ -243,7 +243,7 @@ func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, cli
 		// The producer's funding tail sells the margin-inflated upper residue.
 		// Rewrite that conversion at the guaranteed funding remainder before
 		// any pool credits it as cash.
-		if err := requoteAutoResidueContinuation(ctx, rpc, client, m, &plan); err != nil {
+		if err := requoteAutoResidueContinuation(ctx, rpc, client, m, policies, &plan); err != nil {
 			return out, err
 		}
 	}
@@ -393,7 +393,7 @@ func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, cli
 //     and freshness are re-proven; nothing skips a check.
 //
 // Rewritten legs re-enter the identical consumer walk afterwards.
-func requoteAutoResidueContinuation(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, plan *phase3BridgeAdmission) error {
+func requoteAutoResidueContinuation(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, policies installedPolicies, plan *phase3BridgeAdmission) error {
 	if client == nil {
 		return budgetHold("selector_source_residue_quote_unavailable")
 	}
@@ -472,7 +472,7 @@ func requoteAutoResidueContinuation(ctx context.Context, rpc *chain.Client, clie
 		return nil
 	}
 	rewrite := func(index int, remainder uint64) (uint64, error) {
-		swap, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(remainder), StrategyKey: s.RouteLane}, remainder, pools.cash, plan.Exit[index].Cost.ObservationSlot)
+		swap, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(remainder), StrategyKey: s.RouteLane}, remainder, pools.cash, plan.Exit[index].Cost.ObservationSlot)
 		if err != nil {
 			return 0, budgetHold("selector_source_residue_quote_unavailable")
 		}

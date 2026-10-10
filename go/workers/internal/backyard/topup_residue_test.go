@@ -43,11 +43,11 @@ func TestDebtResidueSwapAdmissionKeepsPositionAndReservesItsReturn(t *testing.T)
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.DebtIdleRaw = 0, 0, 10_000
 	swap := Decision{Action: SwapDebtToUSDCStep, AmountRaw: 10_000, StrategyKey: o.Snapshot.RouteLane, Reason: debtResidueSwapReason}
 	decided := o.Snapshot
-	decided.LiquidationThresholdBPS, decided.PolicyReady, decided.ExitBuildable = 8000, true, true
+	decided.LiquidationThresholdBPS = 8000
 	if got := Decide(decided); got.Action != swap.Action || got.Reason != swap.Reason || got.AmountRaw != swap.AmountRaw {
 		t.Fatalf("fixture state is not the residue decision: %+v", got)
 	}
-	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, swap, 10_000, uint64(o.Snapshot.SquadsIdleRaw), o.Snapshot.Slot)
+	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, testPolicies(t), swap, 10_000, uint64(o.Snapshot.SquadsIdleRaw), o.Snapshot.Slot)
 	if err != nil {
 		t.Fatal(err)
 	}

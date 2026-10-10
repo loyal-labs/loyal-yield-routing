@@ -53,7 +53,7 @@ func reentryPrestateTransport(t *testing.T, base http.RoundTripper, rent uint64,
 		case "getMultipleAccounts":
 			var addresses []string
 			_ = json.Unmarshal(body.Params[0], &addresses)
-			if len(addresses) > 0 && addresses[0] == bridgeSettings {
+			if len(addresses) > 2 && addresses[0] == bridgeDelegate { // the initializer prestate, not the native funding read
 				values := make([]any, len(addresses))
 				for i, address := range addresses {
 					if a, ok := prestate[address]; ok {
@@ -94,16 +94,6 @@ func reentryFundedFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiter.
 	if request.RouteLane != route.Lane {
 		t.Fatalf("initializer fixture lane %s does not match destination lane", request.RouteLane)
 	}
-	policy, _ := policySetupAddress(request.PolicySeed)
-	// Replace any installed release pins with the controlled three-lane set.
-	m.RuntimeBindings.MultiplyInitializers = nil
-	for _, b := range initializerManifestFixture(t).RuntimeBindings.MultiplyInitializers {
-		if b.Lane == route.Lane {
-			m.RuntimeBindings.MultiplyInitializers = append(m.RuntimeBindings.MultiplyInitializers, KaminoInitializerBinding{route.Lane, request.PolicySeed, encodeBase58(policy[:]), request.PolicyAccountDataSHA256})
-		} else {
-			m.RuntimeBindings.MultiplyInitializers = append(m.RuntimeBindings.MultiplyInitializers, b)
-		}
-	}
 	prestate[route.Kamino.Obligation] = accountAt(accounts, route.Kamino.Obligation)
 	rpcOf(rpc).Transport = reentryPrestateTransport(t, rpcOf(rpc).Transport, request.RentLamports, prestate)
 	return m, rpc, client, accounts, o, source, request.RentLamports
@@ -138,7 +128,7 @@ func TestSelectorReentryForecastIncludesObligationRecreation(t *testing.T) {
 		t.Fatal("reentry payoff unquoted", q.PayoffUpperRaw, q.PayoffSwap.Request.MinimumOutputRaw)
 	}
 	// The ordinary flat destination wrapper keeps refusing the funded lane.
-	_, err = observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42, false, nil)
+	_, err = observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
 	assertBudgetHold(t, err, "selector_destination_not_flat")
 }
 

@@ -74,7 +74,7 @@ func payoffAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...Co
 	o, d, _, manifest, rpc, client := debtResidueAdmissionFixture(t, debtOutput, accounts...)
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.DebtIdleRaw = 1_000, 2_000, 11_000
 	d.AmountRaw, d.Reason = 1_000, "withdrawal_repay_debt"
-	request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, 1_001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegRepay, 1_001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}

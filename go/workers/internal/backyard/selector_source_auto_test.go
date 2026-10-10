@@ -36,6 +36,7 @@ func TestAutoSourceFullCandidateTrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	observation.policies = testPolicies(t) // the policies the admission builds through
 	observation.Snapshot.ReportSnapshotDigest = sha256Bytes([]byte("auto-source-full-trace"))
 	if err := observation.Validate(); err != nil {
 		t.Fatal(err)
@@ -212,6 +213,7 @@ func autoSourceReleaseFixture(t *testing.T, extra func([]ConfirmedAccount)) (Rou
 	if err != nil {
 		t.Fatal(err)
 	}
+	observation.policies = testPolicies(t) // the policies the admission builds through
 	observation.Snapshot.ReportSnapshotDigest = sha256Bytes([]byte("auto-source-release-trace"))
 	if err := observation.Validate(); err != nil {
 		t.Fatal(err)
@@ -486,6 +488,7 @@ func TestAutoSourcePreexistingIdleDebtIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	observation.policies = testPolicies(t) // the policies the admission builds through
 	observation.Snapshot.ReportSnapshotDigest = sha256Bytes([]byte("auto-source-shared-debt"))
 	rpc := autoPayoffRPC(t, slot, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...))
 	client := autoJupiterTransport(t, route, autoCollateralSellQuote(t, route, nil), nil)

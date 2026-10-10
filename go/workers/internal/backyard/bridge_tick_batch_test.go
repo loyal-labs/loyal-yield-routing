@@ -10,21 +10,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *testing.T) {
 	m := readyWorkerManifest(t)
 	accounts := append(routeNAVFixture(t, 77), exactReportTicketAccount(t, 4))
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], 0)
-	for i := range m.RuntimeBindings.BridgePolicies {
-		p := &m.RuntimeBindings.BridgePolicies[i]
-		data := []byte("controlled-bridge-policy-" + string(p.Action))
-		p.NormalizedDigest = sha256Bytes(data)
-		p.MaskedByteRanges = nil
-		accounts = append(accounts, ConfirmedAccount{Address: p.Account, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
-	}
 	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{ObservationID: "tick-batch", Slot: 77, RouteKind: RouteKind, RouteLane: RouteID, StrategyKey: RouteID, Fresh: true, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: 0, SquadsIdleRaw: 6, LastReportAgeSeconds: 3600}}
 	o.routeBatch = &routeObservationBatch{Slot: 77, ObservationID: o.Snapshot.ObservationID, ManifestSHA256: m.SHA256, Accounts: accounts}
 	decision := Decide(o.Snapshot)
@@ -34,6 +25,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	client := newFakeChain(t, nil)
 	slot := int64(78)
 	requests := map[string]int{}
+	uninstalled := false
 	rpcOf(client).Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var request struct {
 			Method string `json:"method"`
@@ -45,6 +37,13 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 		switch request.Method {
 		case "getSlot":
 			return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d}`, slot)), nil
+		case "getProgramAccounts":
+			result := capturedPolicyProgramAccounts(slot)
+			if uninstalled {
+				result["value"] = []any{}
+			}
+			raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
+			return response(string(raw)), nil
 		case "getLatestBlockhash":
 			return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":78},"value":{"blockhash":%q,"lastValidBlockHeight":999}}}`, bridgeVault)), nil
 		default:
@@ -56,7 +55,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.routeBatch != o.routeBatch || evidence.Request.Action != ReportNAV || len(evidence.ExpectedEffects.Accounts) == 0 || requests["getSlot"] != 1 || requests["getLatestBlockhash"] != 1 {
+	if prepared.routeBatch != o.routeBatch || evidence.Request.Action != ReportNAV || len(evidence.ExpectedEffects.Accounts) == 0 || requests["getSlot"] != 1 || requests["getProgramAccounts"] != 1 || requests["getLatestBlockhash"] != 1 {
 		t.Fatal("lost shared batch or unexpected preparation reads", requests)
 	}
 	withBatch, _ := json.Marshal(o)
@@ -83,20 +82,9 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, m, changed, o); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatal("ordinary decision drift is not retryable", err)
 	}
-	badAccounts := append([]ConfirmedAccount(nil), accounts...)
-	pin, _ := m.bridgePolicy(ReportNAV)
-	for i := range badAccounts {
-		if badAccounts[i].Address == pin.Account {
-			badAccounts[i].Owner = bridgeTokenProgram
-		}
-	}
-	tampered := o
-	copyBatch := *o.routeBatch
-	copyBatch.Accounts = badAccounts
-	tampered.routeBatch = &copyBatch
-	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, m, decision, tampered); err == nil {
-		t.Fatal("tampered policy bypassed shared constructor")
-	}
+	uninstalled = true
+	_, _, err = prepareBridgeFromTickObservation(context.Background(), client, m, decision, o)
+	assertBudgetHold(t, err, "REPORT_NAV policy not installed")
 }
 
 func TestSelectorWakeWaitsForActiveTickAndCoalesces(t *testing.T) {

@@ -37,7 +37,7 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 		// Installed lanes keep the exact public absent-only prestate path —
 		// including validated expiry recovery — with no manifest identity
 		// re-checks. Only the candidate AUTO lane revalidates through the
-		// reviewed binding's manifest-aware prestate.
+		// manifest-aware prestate.
 		if r.RouteLane == autoAUTOPYUSD.Lane {
 			return m.validateKaminoInitializationPrestate(ctx, rpc, r, slot)
 		}

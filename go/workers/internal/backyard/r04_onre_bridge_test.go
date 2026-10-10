@@ -32,13 +32,10 @@ func TestExportOnReBridgeProbe(t *testing.T) {
 	if err := json.Unmarshal([]byte(input), &in); err != nil {
 		t.Fatal(err)
 	}
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manifest := embeddedTestManifest(t)
 	policies := map[string]string{}
-	for _, p := range manifest.RuntimeBindings.BridgePolicies {
-		policies[p.Account] = p.NormalizedDigest
+	for _, key := range bridgePolicyKeys {
+		policies[testPolicyAccount(key)] = key.String()
 	}
 	actions := []Action{in.Action}
 	if in.Discover {
@@ -80,7 +77,8 @@ func TestExportOnReBridgeProbe(t *testing.T) {
 					t.Fatal("missing or duplicate custody")
 				}
 			}
-			nav, err = ComputeNAV(NAVSnapshotContext{Slot: in.Slot, ReceiptFingerprint: sha256Bytes([]byte(input)), ManifestSHA256: manifest.SHA256, PolicyCatalogSHA256: *manifest.PolicyCatalog.SHA256}, components)
+			var err error
+			nav, err = ComputeNAV(NAVSnapshotContext{Slot: in.Slot, ReceiptFingerprint: sha256Bytes([]byte(input)), ManifestSHA256: manifest.SHA256}, components)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -107,16 +105,16 @@ func TestExportOnReBridgeProbe(t *testing.T) {
 				t.Fatal("unsupported bridge action")
 			}
 		}
-		request := BridgeBuildRequest{Action: action, AmountRaw: amountRaw, Report: BridgeReport{Sequence: uint64(in.Slot), ObservedSlot: uint64(in.Slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest}, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
+		request := BridgeBuildRequest{Action: action, AmountRaw: amountRaw, Policy: testPolicyAccount(policyKey{action: action}), Report: BridgeReport{Sequence: uint64(in.Slot), ObservedSlot: uint64(in.Slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest}, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
 		message, e := CompileBridgeMessage(request)
 		if e != nil {
 			t.Fatal(e)
 		}
-		inner, policy, _, e := ticketedBridgeInstructions(request)
+		inner, _, e := ticketedBridgeInstructions(request)
 		if e != nil {
 			t.Fatal(e)
 		}
-		addresses[encodeBase58(policy[:])] = true
+		addresses[request.Policy] = true
 		addresses[bridgeDelegate] = true
 		for _, ix := range inner {
 			addresses[encodeBase58(ix.program[:])] = true

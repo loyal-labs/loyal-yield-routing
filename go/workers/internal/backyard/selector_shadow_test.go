@@ -23,7 +23,7 @@ func TestSlowShadowDoesNotBlockLifecycleTick(t *testing.T) {
 	worker := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return observation, nil },
-		recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _ string) (DecisionRecord, error) {
 			recorded = true
 			if d.Action != Hold {
 				t.Fatal(d)

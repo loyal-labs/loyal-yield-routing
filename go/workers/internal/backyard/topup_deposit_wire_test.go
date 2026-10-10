@@ -13,7 +13,7 @@ import (
 // obligation's one collateral reserve, so the wire refreshes that reserve;
 // the persisted-wire gate must accept exactly that deposit topology.
 func TestTopupDepositWirePassesThePersistedWireGate(t *testing.T) {
-	manifest := autoFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	delegateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(delegateKey.Public().(ed25519.PublicKey))
 	route := autoAUTOPYUSD
@@ -22,12 +22,12 @@ func TestTopupDepositWirePassesThePersistedWireGate(t *testing.T) {
 		"top-up deposit (collateral, no debt)": {route.Kamino.CollateralReserve},
 		"redeposit (collateral and debt)":      {route.Kamino.CollateralReserve, route.Kamino.DebtReserve},
 	} {
-		request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 36_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, route.Lane)
+		request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 36_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, route.Lane)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.ObligationReserves = reserves
-		message, err := manifest.compileKaminoMessage(request, delegate)
+		message, err := compileKaminoMessageForDelegate(request, delegate)
 		if err != nil {
 			t.Fatalf("%s: compile: %v", name, err)
 		}

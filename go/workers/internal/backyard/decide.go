@@ -63,9 +63,8 @@ func Decide(s Snapshot) Decision {
 
 // DecideOnManifest is the identical shared decision logic with one seam made
 // explicit: the initializer readiness check resolves the candidate AUTO lane
-// through the manifest's reviewed binding instead of the installed lane list.
-// Every other rule, ordering and hold is byte-identical, and the embedded
-// manifest keeps the installed closure.
+// through the manifest's lane authority instead of the installed lane list.
+// Every other rule, ordering and hold is byte-identical.
 func (m RouteManifest) DecideOnManifest(s Snapshot) Decision {
 	return decideSnapshot(s, m.initializationSnapshotReady)
 }
@@ -77,7 +76,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if hold, blocked := bridgeMonitorHold(s); blocked {
 		return hold
 	}
-	if route, err := runtimeRoute(s.RouteLane); err == nil && route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4 {
+	if route, err := runtimeRoute(s.RouteLane); err == nil && route.Kamino.DebtMint != bridgeUSDC && catalogJupiterRoute(route.Lane) {
 		return decideNonUSDC(s, initializationReady)
 	}
 
@@ -357,7 +356,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	// Keep undeployed capital in Voltr. Squads cash is working cash for one
 	// complete tranche, so a later deposit cannot be mistaken for borrowed cash.
 	if selectorLane(s.RouteLane) && s.VoltrIdleRaw > 0 && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.SquadsIdleRaw == 0 && s.CollateralIdleRaw == 0 {
-		if !s.PolicyReady || !s.ExitBuildable || s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
+		if s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
 			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
 		}
 		amount := min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw)
@@ -366,7 +365,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		}
 		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", s.SelectorEntryEquityRaw)
 	}
-	if (s.SquadsIdleRaw > 0 || s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) && s.PolicyReady && s.ExitBuildable &&
+	if (s.SquadsIdleRaw > 0 || s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) &&
 		(s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
 		return decision(HoldManualRecovery, "invalid_entry_ltv", 0)
 	}
@@ -381,7 +380,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		depositReady = s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw
 	}
 	if s.PositionDebtRaw > 0 {
-		if s.SquadsIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
+		if s.SquadsIdleRaw > 0 {
 			return decision(SwapDebtToCollateralStep, "borrowed_usdc_requires_prime_buffer", s.SquadsIdleRaw)
 		}
 		if depositReady {
@@ -394,7 +393,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	}
 	// PRIME is the collateral asset. Fresh USDC is converted before the only
 	// collateral deposit.
-	if s.SquadsIdleRaw > 0 && s.PolicyReady && s.ExitBuildable {
+	if s.SquadsIdleRaw > 0 {
 		if s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
 			if selectorLane(s.RouteLane) {
 				return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
@@ -410,7 +409,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		}
 		return decision(SwapStableToCollateralStep, "usdc_requires_prime_collateral", amount)
 	}
-	if depositReady && s.PolicyReady && s.ExitBuildable {
+	if depositReady {
 		return decision(OpenRouteStep, "prime_collateral_ready", s.CollateralIdleRaw)
 	}
 	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.BorrowUtilizationBlocked {
@@ -424,7 +423,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	// idle token amount drives that instruction. The builder computes its exact
 	// amount from the refreshed reserve prices; AmountRaw=1 is only the durable
 	// state-transition marker and is never used as the borrow wire amount.
-	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.PolicyReady && s.ExitBuildable {
+	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 {
 		return decision(OpenRouteStep, "prime_collateral_requires_borrow", 1)
 	}
 	return decision(Hold, "no_eligible_action", 0)

@@ -42,6 +42,9 @@ func jupiterTestInstruction(action Action, amount, out uint64, v2 bool) JupiterS
 	dataLength := 37
 	data := make([]byte, dataLength)
 	copy(data, jupiter.SharedAccountsRouteDiscriminator[:])
+	if action == SwapUSDCToPrimeStep {
+		copy(data[8:18], []byte{primeForwardPlanIDs[primeForwardPlanID1], 1, 0, 0, 0, 0x74, 0, 100, 0, 1}) // the first installed forward plan
+	}
 	accounts[0] = jupiter.AccountMeta{Pubkey: bridgeTokenProgram}
 	accounts[2] = jupiter.AccountMeta{Pubkey: bridgeVault, IsSigner: true}
 	accounts[3] = jupiter.AccountMeta{Pubkey: sourceATA, IsWritable: true}
@@ -74,16 +77,14 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	for _, test := range []struct {
-		action     Action
-		constraint byte
-		policy     string
-		hash       string
+		action Action
+		policy string
 	}{
-		{SwapUSDCToPrimeStep, 0, "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG", "fdc11ac8e9226feef4db8d30065035fde00d6f2eb9a7f940f6ebffa869962d72"},
-		{SwapPrimeToUSDCStep, 1, "Fks3YBQWBYA1d6ZZKEAEunjhVMXZA9gY7vfWUWWbQtDx", "6cdf12f0cd4623d60b32dc6d58b655e1fcbddf82ae7f75cd7b12783087b9ecc7"},
+		{SwapUSDCToPrimeStep, "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG"},
+		{SwapPrimeToUSDCStep, "Fks3YBQWBYA1d6ZZKEAEunjhVMXZA9gY7vfWUWWbQtDx"},
 	} {
 		request := JupiterSwapRequest{Action: test.action, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
-			Policy: test.policy, PolicyAccountDataSHA256: test.hash, PolicyConstraintIndex: test.constraint,
+			Policy:      test.policy,
 			Instruction: jupiterTestInstruction(test.action, 1_000_000, 990_000, false), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 2}
 		signed, err := buildAndSignJupiterTransactionForDelegate(request, key, delegate)
 		if err != nil {
@@ -106,29 +107,22 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 	}
 }
 
-func TestForwardJupiterBindingSelectsOnlyTheTwoInstalledRoutePrefixes(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	binding, err := manifest.jupiterPolicy(SwapUSDCToPrimeStep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for index, prefix := range []string{"01010000007400640001", "02010000007400640001"} {
+func TestForwardJupiterPolicySelectsOnlyTheTwoInstalledRoutePlans(t *testing.T) {
+	for leg, prefix := range []string{"01010000007400640001", "02010000007400640001"} {
 		instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, false)
 		data, _ := base64.StdEncoding.DecodeString(instruction.Data)
 		decoded, _ := hex.DecodeString(prefix)
 		copy(data[8:18], decoded)
-		instruction.Data = base64.StdEncoding.EncodeToString(data)
-		selected, err := binding.constraintIndex(instruction)
-		if err != nil || selected != byte(index) {
-			t.Fatalf("prefix %s selected %d: %v", prefix, selected, err)
+		key, selected, err := jupiterPolicyLeg(RouteID, SwapUSDCToPrimeStep, data)
+		if err != nil || key != (policyKey{lane: RouteID, action: SwapUSDCToPrimeStep}) || selected != byte(leg) {
+			t.Fatalf("prefix %s selected %s/%d: %v", prefix, key, selected, err)
 		}
 	}
 	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, false)
-	if _, err := binding.constraintIndex(instruction); err == nil {
-		t.Fatal("accepted an uninstalled forward route-plan prefix")
+	data, _ := base64.StdEncoding.DecodeString(instruction.Data)
+	data[8] = 3
+	if _, _, err := jupiterPolicyLeg(RouteID, SwapUSDCToPrimeStep, data); err == nil {
+		t.Fatal("accepted an uninstalled forward route plan")
 	}
 }
 

@@ -14,7 +14,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Reuse the existing complete-return fixture, changing only the route's concrete
@@ -34,9 +33,6 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 	symbol := route.CollateralSymbol
 	o, _, _, m, oldRPC, _, existing := payoffAdmissionFixture(t, 20_000)
 	addresses := []string{old.Kamino.CollateralReserve, old.Kamino.CollateralMint, old.Kamino.DebtMint, reportTicketPDA}
-	for _, p := range m.RuntimeBindings.BridgePolicies {
-		addresses = append(addresses, p.Account)
-	}
 	_, extra, err := confirmedAccounts(context.Background(), oldRPC, addresses, 42)
 	if err != nil {
 		t.Fatal(err)
@@ -69,23 +65,6 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 			a.Owner = classicTokenProgram
 		}
 		accounts = append(accounts, a)
-	}
-	// Basic-policy hash validation remains active with controlled policy bytes.
-	for _, family := range []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB} {
-		b, _ := basicPolicyBinding(family)
-		data := []byte("controlled-basic-policy:" + string(family))
-		hash := sha256Bytes(data)
-		switch family {
-		case BasicCollateralLifecycle:
-			m.RuntimeBindings.CollateralLifecycle.DataSHA256 = &hash
-		case BasicDebtLifecycle:
-			m.RuntimeBindings.DebtLifecycle.DataSHA256 = &hash
-		case BasicSwapRoutesA:
-			m.RuntimeBindings.SwapRoutesA.DataSHA256 = &hash
-		case BasicSwapRoutesB:
-			m.RuntimeBindings.SwapRoutesB.DataSHA256 = &hash
-		}
-		accounts = append(accounts, ConfirmedAccount{Address: b.Policy, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 	}
 	tables := retainedJupiterLookups(t)
 	for _, leg := range []string{symbol + "->USDC"} {
@@ -158,7 +137,7 @@ func TestUSDCEntryConsumesWorkingCashAndValidatesSharedSourceOnce(t *testing.T) 
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
 	clear(accountAt(accounts, route.Kamino.Obligation).Data[96:1408])
 	d := Decision{Action: SwapStableToCollateralStep, StrategyKey: route.Lane, AmountRaw: 11_000}
-	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, d, 11_000, 0, 42)
+	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, testPolicies(t), d, 11_000, 0, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +173,7 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 		o, _, evidence := bridgeAdmissionFixture(t, d.Action, d.AmountRaw, s.VoltrIdleRaw, 0, 0)
 		o.Snapshot.RouteLane, o.Snapshot.StrategyKey = lane, lane
 		d.StrategyKey = lane
-		if _, err := phase3BridgeTemplates(o.Snapshot, d, evidence); !fundedLane(lane) {
+		if _, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence); !fundedLane(lane) {
 			assertBudgetHold(t, err, "bridge_admission_snapshot_unavailable")
 		} else if err != nil {
 			t.Fatal("bounded allocation return", err)
@@ -214,7 +193,7 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 			}
 			o, _, evidence = bridgeAdmissionFixture(t, d.Action, d.AmountRaw, changed.VoltrIdleRaw, 0, changed.SquadsIdleRaw)
 			o.Snapshot.RouteLane, o.Snapshot.StrategyKey = lane, lane
-			if _, err := phase3BridgeTemplates(o.Snapshot, d, evidence); !fundedLane(lane) {
+			if _, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence); !fundedLane(lane) {
 				assertBudgetHold(t, err, "bridge_admission_snapshot_unavailable")
 			} else if err != nil {
 				t.Fatal("capacity return", err)

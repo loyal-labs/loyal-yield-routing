@@ -15,6 +15,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // ProgramID is the Voltr vault program.
@@ -154,36 +155,82 @@ func WithdrawalReceiptFilters(vault solana.PublicKey) []rpc.RPCFilter {
 	}
 }
 
-// StrategyAccounts are the fixed accounts of deposit_strategy and
-// withdraw_strategy; the adaptor's own accounts follow them as remaining
-// accounts.
-type StrategyAccounts struct {
-	Manager, Protocol, Vault, Strategy, AdaptorAddReceipt, StrategyInitReceipt  solana.PublicKey
-	VaultAssetIdleAuth, VaultStrategyAuth, AssetMint, LPMint                    solana.PublicKey
-	VaultAssetIdleATA, VaultStrategyAssetATA, AssetTokenProgram, AdaptorProgram solana.PublicKey
+// Strategy is the fixed account set of deposit_strategy and
+// withdraw_strategy; the adaptor's own accounts follow it as remaining
+// accounts. Each instruction's account order is written once, as a
+// squads.AccountSlot list over the key type: the builder reads keys from it,
+// *Allowed reads the squads.Slot each position admits. The adaptor's
+// remaining accounts are the caller's slot list, read the same way.
+type Strategy[T any] struct {
+	Manager, Protocol, Vault, Strategy, AdaptorAddReceipt, StrategyInitReceipt  T
+	VaultAssetIdleAuth, VaultStrategyAuth, AssetMint, LPMint                    T
+	VaultAssetIdleATA, VaultStrategyAssetATA, AssetTokenProgram, AdaptorProgram T
+}
+
+type (
+	StrategyAccounts = Strategy[solana.PublicKey]
+	StrategyAllowed  = Strategy[squads.Slot]
+)
+
+// Offsets in deposit_strategy and withdraw_strategy data: the amount, then
+// the adaptor call, Some(adaptor instruction) and Some(adaptor args), which
+// Voltr forwards to the adaptor.
+const (
+	StrategyAmountOffset      = 8
+	StrategyAdaptorCallOffset = 16
+)
+
+func depositStrategySlots[T any](a Strategy[T]) []squads.AccountSlot[T] {
+	return []squads.AccountSlot[T]{
+		squads.Signing(a.Manager), squads.ReadOnly(a.Protocol), squads.Writable(a.Vault), squads.ReadOnly(a.Strategy),
+		squads.ReadOnly(a.AdaptorAddReceipt), squads.Writable(a.StrategyInitReceipt), squads.Writable(a.VaultAssetIdleAuth),
+		squads.Writable(a.VaultStrategyAuth), squads.Writable(a.AssetMint), squads.ReadOnly(a.LPMint), squads.Writable(a.VaultAssetIdleATA),
+		squads.Writable(a.VaultStrategyAssetATA), squads.ReadOnly(a.AssetTokenProgram), squads.ReadOnly(a.AdaptorProgram),
+	}
+}
+
+func withdrawStrategySlots[T any](a Strategy[T]) []squads.AccountSlot[T] {
+	return []squads.AccountSlot[T]{
+		squads.Signing(a.Manager), squads.ReadOnly(a.Protocol), squads.Writable(a.Vault), squads.ReadOnly(a.AdaptorAddReceipt),
+		squads.Writable(a.StrategyInitReceipt), squads.ReadOnly(a.Strategy), squads.ReadOnly(a.AdaptorProgram), squads.Writable(a.VaultAssetIdleAuth),
+		squads.Writable(a.VaultStrategyAuth), squads.Writable(a.AssetMint), squads.ReadOnly(a.LPMint), squads.Writable(a.VaultAssetIdleATA),
+		squads.Writable(a.VaultStrategyAssetATA), squads.ReadOnly(a.AssetTokenProgram),
+	}
 }
 
 // DepositStrategy moves amount of the vault's idle asset into a strategy
 // through its adaptor. adaptorInstruction is the adaptor discriminator Voltr
 // calls; adaptorArgs, when not nil, are the bytes it forwards to it.
-func DepositStrategy(a StrategyAccounts, amount uint64, adaptorInstruction, adaptorArgs []byte, remaining ...*solana.AccountMeta) *solana.GenericInstruction {
-	return strategyInstruction(DepositStrategyDiscriminator, amount, adaptorInstruction, adaptorArgs, append([]*solana.AccountMeta{
-		solana.Meta(a.Manager).SIGNER(), solana.Meta(a.Protocol), solana.Meta(a.Vault).WRITE(), solana.Meta(a.Strategy),
-		solana.Meta(a.AdaptorAddReceipt), solana.Meta(a.StrategyInitReceipt).WRITE(), solana.Meta(a.VaultAssetIdleAuth).WRITE(),
-		solana.Meta(a.VaultStrategyAuth).WRITE(), solana.Meta(a.AssetMint).WRITE(), solana.Meta(a.LPMint), solana.Meta(a.VaultAssetIdleATA).WRITE(),
-		solana.Meta(a.VaultStrategyAssetATA).WRITE(), solana.Meta(a.AssetTokenProgram), solana.Meta(a.AdaptorProgram),
-	}, remaining...))
+func DepositStrategy(a StrategyAccounts, amount uint64, adaptorInstruction, adaptorArgs []byte, remaining ...squads.AccountSlot[solana.PublicKey]) *solana.GenericInstruction {
+	return strategyInstruction(DepositStrategyDiscriminator, amount, adaptorInstruction, adaptorArgs, metas(append(depositStrategySlots(a), remaining...)))
+}
+
+// DepositStrategyAllowed admits DepositStrategy over the allowed accounts,
+// then the adaptor's remaining accounts, with data predicates after its
+// discriminator.
+func DepositStrategyAllowed(a StrategyAllowed, remaining []squads.AccountSlot[squads.Slot], data ...squads.DataConstraintView) squads.InstructionConstraintView {
+	return allow(DepositStrategyDiscriminator, depositStrategySlots(a), remaining, data)
 }
 
 // WithdrawStrategy moves amount of the vault's asset out of a strategy back
 // to idle through its adaptor, with DepositStrategy's arguments.
-func WithdrawStrategy(a StrategyAccounts, amount uint64, adaptorInstruction, adaptorArgs []byte, remaining ...*solana.AccountMeta) *solana.GenericInstruction {
-	return strategyInstruction(WithdrawStrategyDiscriminator, amount, adaptorInstruction, adaptorArgs, append([]*solana.AccountMeta{
-		solana.Meta(a.Manager).SIGNER(), solana.Meta(a.Protocol), solana.Meta(a.Vault).WRITE(), solana.Meta(a.AdaptorAddReceipt),
-		solana.Meta(a.StrategyInitReceipt).WRITE(), solana.Meta(a.Strategy), solana.Meta(a.AdaptorProgram), solana.Meta(a.VaultAssetIdleAuth).WRITE(),
-		solana.Meta(a.VaultStrategyAuth).WRITE(), solana.Meta(a.AssetMint).WRITE(), solana.Meta(a.LPMint), solana.Meta(a.VaultAssetIdleATA).WRITE(),
-		solana.Meta(a.VaultStrategyAssetATA).WRITE(), solana.Meta(a.AssetTokenProgram),
-	}, remaining...))
+func WithdrawStrategy(a StrategyAccounts, amount uint64, adaptorInstruction, adaptorArgs []byte, remaining ...squads.AccountSlot[solana.PublicKey]) *solana.GenericInstruction {
+	return strategyInstruction(WithdrawStrategyDiscriminator, amount, adaptorInstruction, adaptorArgs, metas(append(withdrawStrategySlots(a), remaining...)))
+}
+
+// WithdrawStrategyAllowed admits WithdrawStrategy as DepositStrategyAllowed
+// admits DepositStrategy.
+func WithdrawStrategyAllowed(a StrategyAllowed, remaining []squads.AccountSlot[squads.Slot], data ...squads.DataConstraintView) squads.InstructionConstraintView {
+	return allow(WithdrawStrategyDiscriminator, withdrawStrategySlots(a), remaining, data)
+}
+
+func metas(slots []squads.AccountSlot[solana.PublicKey]) []*solana.AccountMeta {
+	return squads.Metas(ProgramID, slots)
+}
+
+func allow(discriminator [8]byte, slots, remaining []squads.AccountSlot[squads.Slot], data []squads.DataConstraintView) squads.InstructionConstraintView {
+	predicates := append([]squads.DataConstraintView{squads.DataBytes(0, discriminator[:])}, data...)
+	return squads.Allow(ProgramID, predicates, squads.Slots(ProgramID, append(slots, remaining...)))
 }
 
 // strategyInstruction encodes (amount: u64, instruction_discriminator:

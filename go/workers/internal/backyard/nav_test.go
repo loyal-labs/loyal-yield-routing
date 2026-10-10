@@ -9,7 +9,7 @@ import (
 func navContext(slot int64) NAVSnapshotContext {
 	return NAVSnapshotContext{
 		Slot: slot, ReceiptFingerprint: "none",
-		ManifestSHA256: strings.Repeat("a", 64), PolicyCatalogSHA256: strings.Repeat("b", 64),
+		ManifestSHA256: strings.Repeat("a", 64),
 	}
 }
 

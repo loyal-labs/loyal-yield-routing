@@ -55,7 +55,7 @@ func TestPrefetchedOwnershipProofMatchesSerialAndCatchesLaterChanges(t *testing.
 }
 
 func TestPreDecisionSeamUsesThePrefetchedProof(t *testing.T) {
-	manifest := autoInitializerFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, productionRouteKey)
 	effects := custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000)
 	decision := Decision{Action: DeleverRouteStep, StrategyKey: cfg.Lane, AmountRaw: 2_500_000_000, IdempotencyKey: "k", Reason: "r"}

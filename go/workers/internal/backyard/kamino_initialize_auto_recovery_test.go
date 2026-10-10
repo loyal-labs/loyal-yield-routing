@@ -104,14 +104,9 @@ func TestAutoInitializerReconcilesFinalizedReceiptThroughManifest(t *testing.T) 
 		name   string
 		mutate func(*autoInitializerRecoveryFixture)
 	}{
-		{"binding_seed", func(f *autoInitializerRecoveryFixture) {
+		{"policy", func(f *autoInitializerRecoveryFixture) {
 			request := *f.effects.Initialization
-			request.PolicySeed = autoFixtureSeed
-			f.effects.Initialization = &request
-		}},
-		{"binding_digest", func(f *autoInitializerRecoveryFixture) {
-			request := *f.effects.Initialization
-			request.PolicyAccountDataSHA256 = sha256Bytes([]byte("other candidate bytes"))
+			request.Policy = testPolicyAccount(policyKey{family: BasicDebtLifecycle})
 			f.effects.Initialization = &request
 		}},
 		{"installed_lane", func(f *autoInitializerRecoveryFixture) {
@@ -149,14 +144,6 @@ func TestAutoInitializerReconcilesFinalizedReceiptThroughManifest(t *testing.T) 
 			}
 		})
 	}
-	// The seed drift is a typed binding hold, not a plain error.
-	drifted := newAutoInitializerRecoveryFixture(t)
-	request := *drifted.effects.Initialization
-	request.PolicySeed = autoFixtureSeed
-	drifted.effects.Initialization = &request
-	_, _, err = drifted.manifest.reconcileKaminoInitialization(drifted.effects, drifted.receipt)
-	assertBudgetHold(t, err, "initializer_request_manifest_mismatch")
-
 	// The installed-only public reconciler keeps refusing the candidate lane.
 	if _, _, err := reconcileKaminoInitialization(f.effects, f.receipt); err == nil || !strings.Contains(err.Error(), "unreviewed Multiply initializer lane") {
 		t.Fatalf("public reconciler admitted AUTO: %v", err)
@@ -167,7 +154,7 @@ func TestAutoInitializerReconcilesFinalizedReceiptThroughManifest(t *testing.T) 
 }
 
 // The narrow manifest-aware decision validator admits the candidate journal
-// decision only through the reviewed binding; the public Decision.Validate
+// decision; the public Decision.Validate
 // keeps refusing every AUTO initializer decision outright, and the exact
 // installed shape requirements hold in both forms.
 func TestAutoInitializerDecisionValidatesOnlyThroughManifestBinding(t *testing.T) {
@@ -195,23 +182,13 @@ func TestAutoInitializerDecisionValidatesOnlyThroughManifestBinding(t *testing.T
 			}
 		})
 	}
-	// The request itself must still resolve the reviewed binding exactly.
-	driftedRequest := r
-	driftedRequest.PolicySeed = autoFixtureSeed
-	assertBudgetHold(t, manifest.validateInitializerDecision(decision, driftedRequest), "initializer_request_manifest_mismatch")
-	// Both binding states keep the candidate held closed: the explicit absent
-	// fixture (the shipped pre-install state) with the shipped token, and the
-	// embedded manifest's installed binding with the exact typed mismatch.
-	assertBudgetHold(t, autoAbsentBindingManifest(t).validateInitializerDecision(decision, r), "auto_policy_not_activated")
-	assertBudgetHold(t, requireEmbeddedInstalledBinding(t).validateInitializerDecision(decision, r), "initializer_request_manifest_mismatch")
 	// Installed selector decisions keep validating in both forms.
 	installed := decision
 	installed.StrategyKey = PhaseOneLaneID
 	if err := installed.Validate(); err != nil || manifest.validateInitializerDecision(installed, func() KaminoInitializationRequest {
 		req := r
 		req.RouteLane = PhaseOneLaneID
-		req.PolicySeed = 141
-		req.PolicyAccountDataSHA256 = sha256Bytes([]byte("local candidate policy; hash does not enter wire"))
+		req.Policy = testPolicyAccount(policyKey{lane: PhaseOneLaneID, action: InitializeKaminoObligation})
 		return req
 	}()) != nil {
 		t.Fatalf("installed selector decision drifted: %v", err)
@@ -333,8 +310,8 @@ func seedAutoInitializerReconcilingOperation(t *testing.T, ctx context.Context, 
 
 // Locked settlement through the exact same reviewed manifest that compiled the
 // message: every drifted receipt leaves the journal in 'reconciling', the
-// valid receipt settles exactly once, and neither the public embedded-manifest
-// settlement nor a replay after completion can settle a second time.
+// valid receipt settles exactly once, and a replay after completion cannot
+// settle a second time.
 func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_locked_settlement_test", 30*time.Second)
 	defer cancel()
@@ -343,7 +320,7 @@ func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 	id, _ := seedAutoInitializerReconcilingOperation(t, ctx, db, f, routeKey)
 	defer db.ReleaseRouteLease(ctx)
 
-	for _, drift := range []string{"binding", "wire", "rent", "unfinalized", "embedded_settlement", ""} {
+	for _, drift := range []string{"binding", "wire", "rent", "unfinalized", ""} {
 		receipt := *f.receipt.Initialization
 		candidate := f.receipt
 		candidate.Initialization = &receipt
@@ -358,7 +335,7 @@ func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 		switch drift {
 		case "binding":
 			request := *expected.Initialization
-			request.PolicySeed = autoFixtureSeed
+			request.Policy = testPolicyAccount(policyKey{family: BasicDebtLifecycle})
 			expected.Initialization = &request
 		case "wire":
 			receipt.SignedWireSHA256 = sha256Bytes([]byte("unrelated wire"))
@@ -366,24 +343,11 @@ func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 			receipt.Obligation.Lamports++
 		case "unfinalized":
 			candidate.Finalized = false
-		case "embedded_settlement":
-			// The public persistence wrapper resolves the embedded reviewed
-			// manifest, which holds the candidate lane closed even for a valid
-			// receipt — production settlement stays shut pre-activation.
-			reconciliation, effects, reconcileErr := f.manifest.ReconcileConfirmedTransaction(expected, candidate)
-			if reconcileErr != nil {
-				t.Fatal(reconcileErr)
-			}
-			if err := db.MarkReconciled(ctx, id, reconciliation, effects, candidate); err == nil {
-				t.Fatal("embedded public settlement admitted the AUTO candidate")
-			}
 		case "":
 			// The valid receipt is the one that settles, last.
 		}
-		if drift != "embedded_settlement" {
-			if err := settle(); (err == nil) != (drift == "") {
-				t.Fatalf("drift=%s err=%v", drift, err)
-			}
+		if err := settle(); (err == nil) != (drift == "") {
+			t.Fatalf("drift=%s err=%v", drift, err)
 		}
 		status := operationStatus(t, ctx, db, id)
 		if drift == "" {
@@ -449,23 +413,6 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 		t.Fatal("slot-drifted initializer receipt was observed")
 	}
 	assertRecoveryStop(t, slotID, "reconciling", "")
-
-	// The public entrypoint resolves the embedded reviewed manifest, which does
-	// not review the candidate binding: decode holds and the operation lands in
-	// manual recovery — production restart stays closed pre-activation.
-	embeddedID, embeddedOp, embeddedFixture := newFixture()
-	publicRPC := autoInitializerRecoveryRPC(t, embeddedFixture, 77, func(result any) any {
-		if m, ok := result.(map[string]any); ok {
-			if _, isTx := m["transaction"]; isTx {
-				t.Fatal("public restart must hold at decode, before any receipt RPC")
-			}
-		}
-		return result
-	})
-	if err := AdvanceNonterminal(ctx, db, publicRPC, embeddedOp); err != nil {
-		t.Fatal(err)
-	}
-	assertRecoveryStop(t, embeddedID, "manual_recovery", "invalid_expected_effects")
 
 	// Success: the reconstructed operation advances through the shared state
 	// machine into locked settlement, exactly once, with reads only on the wire.
@@ -534,10 +481,6 @@ func TestAutoInitializerBuildPersistsThroughReviewedManifest(t *testing.T) {
 	 VALUES($1,$2,'decided',$3,$4,$5)`, id, key, string(InitializeKaminoObligation), f.request.RouteLane, f.raw); err != nil {
 		t.Fatal(err)
 	}
-	// The public wrapper resolves the embedded manifest and must hold closed.
-	if err := db.MarkBuilt(ctx, id, sha256Bytes(f.message), f.raw); err == nil {
-		t.Fatal("embedded build persistence admitted the AUTO candidate")
-	}
 	if err := db.markBuiltOnManifest(ctx, f.manifest, id, sha256Bytes(f.message), f.raw); err != nil {
 		t.Fatalf("reviewed build persistence refused the candidate: %v", err)
 	}
@@ -548,11 +491,8 @@ func TestAutoInitializerBuildPersistsThroughReviewedManifest(t *testing.T) {
 	if status != "built" {
 		t.Fatalf("build persistence status %s", status)
 	}
-	// Recovery decodes the persisted effects through the same manifest only.
+	// Recovery decodes the persisted effects through the same manifest.
 	if _, err := decodeExpectedEffectsWithManifest(f.manifest, []byte(persisted)); err != nil {
 		t.Fatalf("persisted candidate effects refused through the reviewed manifest: %v", err)
-	}
-	if _, err := decodeExpectedEffectsWithManifest(func() RouteManifest { m, _ := loadEmbeddedRouteManifest(); return m }(), []byte(persisted)); err == nil {
-		t.Fatal("embedded decode admitted persisted candidate effects")
 	}
 }

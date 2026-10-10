@@ -51,7 +51,7 @@ func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observa
 	if d.Reason != want || d.AmountRaw != int64(amount) {
 		t.Fatalf("partial decision: %+v snapshot %+v", d, o.Snapshot)
 	}
-	r, err := m.kaminoPacketForRoute(d.Action, kaminoLegRepay, uint64(d.AmountRaw), LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), d.Action, kaminoLegRepay, uint64(d.AmountRaw), LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestPartialRepaymentUnverifiedRiskCannotCommitUnwind(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}
-	envelope, err := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, decision, m.SHA256, *m.PolicyCatalog.SHA256)})
+	envelope, err := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, decision, m.SHA256)})
 	if err != nil {
 		t.Fatal(err)
 	}

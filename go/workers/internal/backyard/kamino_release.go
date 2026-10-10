@@ -224,19 +224,15 @@ func pilotRepaymentLiquidityAllowance(accounts []ConfirmedAccount, route Runtime
 	return pilotRepaymentLiquidityAllowanceChecked(accounts, route, position, liquidationPct)
 }
 
-// The manifest-aware form admits exactly one candidate lane: the reviewed AUTO
-// binding's release, through the SAME checked risk arithmetic the installed
-// pilot lanes use. Every public gate and the installed-lane behavior stay
-// byte-identical; an absent or drifted binding errors instead of falling back.
+// The manifest-aware form admits exactly one more lane: the AUTO lane's
+// release, through the SAME checked risk arithmetic the installed pilot lanes
+// use. Every public gate and the installed-lane behavior stay byte-identical.
 func (m RouteManifest) pilotRepaymentLiquidityAllowance(accounts []ConfirmedAccount, route RuntimeRoute, position KaminoPosition, liquidationPct byte) (uint64, error) {
 	if selectorLane(route.Lane) && route.Kamino.DebtMint == bridgeUSDC {
 		return pilotRepaymentLiquidityAllowance(accounts, route, position, liquidationPct)
 	}
 	if route.Lane != autoAUTOPYUSD.Lane {
 		return 0, budgetHold("pilot_release_lane_unreviewed")
-	}
-	if _, err := m.autoPolicyBinding(); err != nil {
-		return 0, err
 	}
 	return pilotRepaymentLiquidityAllowanceChecked(accounts, route, position, liquidationPct)
 }

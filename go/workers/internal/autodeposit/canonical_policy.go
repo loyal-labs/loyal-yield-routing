@@ -106,6 +106,10 @@ func (r CanonicalSubscriptionPolicyRequest) resolve() (canonicalSubscriptionPoli
 	return out, nil
 }
 
+// subscriptionVaultIndex is the smart account the canonical Autodeposit
+// policy executes as.
+const subscriptionVaultIndex = 1
+
 // BuildCanonicalSubscriptionPolicy builds the one PolicyCreate settings
 // transaction that installs the canonical Autodeposit policy on vault index 1.
 func BuildCanonicalSubscriptionPolicy(r CanonicalSubscriptionPolicyRequest) (fleet.RouteInstruction, error) {
@@ -116,7 +120,7 @@ func BuildCanonicalSubscriptionPolicy(r CanonicalSubscriptionPolicyRequest) (fle
 	payer, _ := solana.PublicKeyFromBase58(r.Payer)
 	root, _ := solana.PublicKeyFromBase58(r.RootAuthority)
 	ix, err := squads.PolicyApply{Settings: policy.settings, RentPayer: payer, Signer: root, Delegate: policy.delegate,
-		Seed: r.PolicySeed, VaultIndex: 1, Constraints: policy.constraints}.Instruction()
+		Seed: r.PolicySeed, VaultIndex: subscriptionVaultIndex, Constraints: policy.constraints}.Instruction()
 	if err != nil {
 		return fleet.RouteInstruction{}, err
 	}
@@ -145,7 +149,7 @@ func VerifyCanonicalSubscriptionPolicyAccount(r CanonicalSubscriptionPolicyReque
 	if current.Settings != policy.settings || current.PolicySeed != r.PolicySeed || current.PolicyAccount != policy.policy || current.DelegatedSigner != policy.delegate || current.Threshold != 1 {
 		return errors.New("current subscription policy header differs from canonical target")
 	}
-	if current.Payload.VaultIndex != 1 || len(current.Payload.SpendingLimits) != 0 || !squads.ConstraintsEqual(current.Payload.Constraints, policy.constraints) {
+	if !current.Payload.Policy.Equal(squads.Policy{VaultIndex: subscriptionVaultIndex, Constraints: policy.constraints}) {
 		return errors.New("current subscription policy full constraint matrix differs from canonical target")
 	}
 	return nil

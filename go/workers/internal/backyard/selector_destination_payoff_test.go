@@ -333,7 +333,7 @@ func autoPayoffProducer(t *testing.T, slot int64, mutate func([]ConfirmedAccount
 	if client == nil {
 		client = autoPayoffJupiter(t, route, nil)
 	}
-	payoff, err := selectorDestinationExit(context.Background(), rpc, client, m, route, accounts, autoPayoffPosition(), slot, slot,
+	payoff, err := selectorDestinationExit(context.Background(), rpc, client, m, testPolicies(t), route, accounts, autoPayoffPosition(), slot, slot,
 		entryDeposit, redepositDeposit, entryDeposit, redepositDeposit, borrow, fee, rounding)
 	if err != nil {
 		t.Fatal(err)
@@ -374,11 +374,11 @@ func autoPayoffRecipeInputs(t *testing.T, m RouteManifest, route RuntimeRoute, a
 			return err
 		}
 		e.Kind, e.ReturnData = "bridge", expectedAdaptorReturnData(equity)
-		return appendInput(BridgeBuildRequest{Action: action, AmountRaw: amount, Report: report, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight}, e)
+		return appendInput(BridgeBuildRequest{Action: action, AmountRaw: amount, Report: report, Policy: testPolicyAccount(policyKey{action: action}), AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight}, e)
 	}
 	state := selectorPayoffTemplateState{blockhash: blockhash, liquidityRaw: 100_000_000_000, debtSupplyRaw: 100 + borrow + fee,
 		entryDeposit: entryDeposit, redepositDeposit: redepositDeposit, borrow: borrow, fee: fee, rounding: rounding}
-	err := appendSelectorPayoffRecipeInputs(m, route, blockhash, accounts, payoff, state, appendInput, appendBridge)
+	err := appendSelectorPayoffRecipeInputs(m, testPolicies(t), route, blockhash, accounts, payoff, state, appendInput, appendBridge)
 	return inputs, err
 }
 
@@ -689,7 +689,7 @@ func TestSelectorDestinationPayoffRejectsWireWhoseFutureRedemptionExceedsRelease
 	})
 	batch := append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...)
 	rpc := autoPayoffRPC(t, slot, batch)
-	_, err = selectorDestinationExit(context.Background(), rpc, client, m, route, accounts, autoPayoffPosition(), slot, slot,
+	_, err = selectorDestinationExit(context.Background(), rpc, client, m, testPolicies(t), route, accounts, autoPayoffPosition(), slot, slot,
 		entryDeposit, redepositDeposit, initial, redepositDeposit, borrow, fee, rounding)
 	assertBudgetHold(t, err, "selector_destination_payoff_release_upper_exceeded")
 }
@@ -706,7 +706,7 @@ func TestSelectorDestinationPayoffRejectsProbePricedBelowFundingNeed(t *testing.
 		return 1000, 999, true
 	})
 	rpc := autoPayoffRPC(t, 77, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...))
-	_, err = selectorDestinationExit(context.Background(), rpc, client, m, route, accounts, autoPayoffPosition(), 77, 77,
+	_, err = selectorDestinationExit(context.Background(), rpc, client, m, testPolicies(t), route, accounts, autoPayoffPosition(), 77, 77,
 		10_000_000_000, 6_000_000_000, 10_000_000_000, 6_000_000_000, 50_000, 100, rounding)
 	assertBudgetHold(t, err, "selector_destination_payoff_quote_insufficient")
 }
@@ -726,7 +726,7 @@ func TestSelectorDestinationPayoffQuoteOutageIsNotAHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = selectorDestinationExit(context.Background(), rpc, client, m, route, accounts, autoPayoffPosition(), 77, 77,
+	_, err = selectorDestinationExit(context.Background(), rpc, client, m, testPolicies(t), route, accounts, autoPayoffPosition(), 77, 77,
 		10_000_000_000, 6_000_000_000, 10_000_000_000, 6_000_000_000, 50_000, 100, rounding)
 	if err == nil {
 		t.Fatal("quote outage accepted")
@@ -879,7 +879,7 @@ func TestJupiterAutoProducerRetainsEnforceableWireFloor(t *testing.T) {
 	m, route, rpc, client := autoCandidateStack(t, slot, nil)
 	const amount = uint64(1_000_000)
 	decision := Decision{Action: SwapStableToCollateralStep, AmountRaw: int64(amount), StrategyKey: route.Lane}
-	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, decision, amount, 0, slot)
+	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, testPolicies(t), decision, amount, 0, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -904,7 +904,7 @@ func TestJupiterAutoProducerRetainsEnforceableWireFloor(t *testing.T) {
 		out, _ := base(in, destination, a)
 		return out, out * 9950 / 10000
 	}, nil)
-	honestEvidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, honest, m, decision, amount, 0, slot)
+	honestEvidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, honest, m, testPolicies(t), decision, amount, 0, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -922,7 +922,7 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
 	const amount = uint64(1_000_000)
-	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, Decision{Action: SwapStableToCollateralStep, AmountRaw: int64(amount), StrategyKey: autoAUTOPYUSD.Lane}, amount, 0, slot)
+	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, testPolicies(t), Decision{Action: SwapStableToCollateralStep, AmountRaw: int64(amount), StrategyKey: autoAUTOPYUSD.Lane}, amount, 0, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -936,7 +936,7 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 	} {
 		forged := evidence.Request
 		forged.MinimumOutputRaw = forge.minimum
-		if _, err := m.compileJupiterMessage(forged, mustKey(bridgeDelegate)); err == nil || !strings.Contains(err.Error(), "exceeds enforceable wire floor") {
+		if _, err := compileJupiterMessageForDelegate(forged, mustKey(bridgeDelegate)); err == nil || !strings.Contains(err.Error(), "exceeds enforceable wire floor") {
 			t.Fatalf("%s: forged retained minimum compiled: %v", forge.name, err)
 		}
 		if err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, rpc, "forged-"+forge.name, JupiterExecutionEvidence{forged, evidence.ExpectedEffects}, Credentials{}); err == nil || !strings.Contains(err.Error(), "exceeds enforceable wire floor") {
@@ -945,10 +945,10 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 	}
 	conservative := evidence.Request
 	conservative.MinimumOutputRaw = floor - 1
-	if _, err := m.compileJupiterMessage(conservative, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileJupiterMessageForDelegate(conservative, mustKey(bridgeDelegate)); err != nil {
 		t.Fatalf("conservative minimum rejected: %v", err)
 	}
-	if _, err := m.compileJupiterMessage(evidence.Request, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileJupiterMessageForDelegate(evidence.Request, mustKey(bridgeDelegate)); err != nil {
 		t.Fatalf("retained request does not compile: %v", err)
 	}
 	// The floor helper never interprets a non-legacy payload's tail offsets.
@@ -959,7 +959,7 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 	if _, err := jupiterInstructionWireFloor(v2.Instruction); err == nil {
 		t.Fatal("wire floor read a non-legacy payload")
 	}
-	if _, err := m.compileJupiterMessage(v2, mustKey(bridgeDelegate)); err == nil {
+	if _, err := compileJupiterMessageForDelegate(v2, mustKey(bridgeDelegate)); err == nil {
 		t.Fatal("non-legacy AUTO payload retained")
 	}
 	// Other lanes keep their established minimum semantics.
@@ -983,7 +983,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 		equity = uint64(200_000_000)
 	)
 	m, route, rpc, client := autoCandidateStack(t, slot, nil)
-	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, equity, slot)
+	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, capturedTestPolicies(), equity, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1105,7 +1105,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 		out, _ := base(in, destination, a)
 		return out, out * 9950 / 10000
 	}, nil)
-	honestQuote, err := observeSelectorDestinationCandidate(context.Background(), rpc, honest, m, equity, slot)
+	honestQuote, err := observeSelectorDestinationCandidate(context.Background(), rpc, honest, m, capturedTestPolicies(), equity, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1153,7 +1153,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 func TestSelectorDestinationCandidateHoldsUnconvertibleDustResidue(t *testing.T) {
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
-	_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, 200_037_035, slot)
+	_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, capturedTestPolicies(), 200_037_035, slot)
 	assertBudgetHold(t, err, "jupiter_auto_wire_floor_zero")
 }
 
@@ -1177,14 +1177,14 @@ func TestJupiterAutoTinyResidueConvertibilityFollowsQuotedFloor(t *testing.T) {
 	decision := func(amount uint64) Decision {
 		return Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(amount), StrategyKey: route.Lane}
 	}
-	above, err := prepareJupiterQuoteEvidence(context.Background(), rpc, pegged(2_000_000), m, decision(1), 1, 0, slot)
+	above, err := prepareJupiterQuoteEvidence(context.Background(), rpc, pegged(2_000_000), m, testPolicies(t), decision(1), 1, 0, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if above.Request.AmountRaw != 1 || above.Request.MinimumOutputRaw != 1 {
 		t.Fatalf("above-peg single-unit residue drifted: %+v", above.Request)
 	}
-	_, err = prepareJupiterQuoteEvidence(context.Background(), rpc, pegged(333_334), m, decision(3), 3, 0, slot)
+	_, err = prepareJupiterQuoteEvidence(context.Background(), rpc, pegged(333_334), m, testPolicies(t), decision(3), 3, 0, slot)
 	assertBudgetHold(t, err, "jupiter_auto_wire_floor_zero")
 }
 
@@ -1203,7 +1203,7 @@ func TestSelectorDestinationCandidateConvertsTinyAbovePegResidue(t *testing.T) {
 		}
 		return quoted, quoted
 	}, nil)
-	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, abovePeg, m, 200_037_035, slot)
+	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, abovePeg, m, capturedTestPolicies(), 200_037_035, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1261,83 +1261,25 @@ func TestSelectorDestinationCandidateConvertsTinyAbovePegResidue(t *testing.T) {
 	}
 }
 
-// The three pre-candidate entry surfaces keep rejecting the AUTO lane even
-// when the manifest carries a fully valid candidate binding. Only the
-// explicit candidate entry admits it.
+// The three pre-candidate entry surfaces keep rejecting the AUTO lane. Only
+// the explicit candidate entry admits it.
 func TestSelectorDestinationCandidateKeepsPublicGatesClosed(t *testing.T) {
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
-	if _, err := m.autoPolicyBinding(); err != nil {
-		t.Fatal("fixture manifest lost the candidate binding")
-	}
-	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, testAutoLane, 1_000_000, slot, false, nil); err == nil {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, false, nil); err == nil {
 		t.Fatal("public destination priced the candidate lane")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")
 	}
-	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, testAutoLane, 1_000_000, slot, true, nil); err == nil {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, true, nil); err == nil {
 		t.Fatal("size evaluator priced the candidate lane")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")
 	}
-	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, testAutoLane, 1_000_000, slot, false, nil); err == nil {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, false, nil); err == nil {
 		t.Fatal("forecast priced the candidate lane")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")
-	}
-}
-
-// Without the validated binding the candidate entry itself fails closed
-// before any account read.
-func TestSelectorDestinationCandidateFailsClosedWithoutAutoBinding(t *testing.T) {
-	m, _, rpc, client := autoCandidateStack(t, 77, nil)
-	m.RuntimeBindings.AutoPolicy = nil
-	_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, 1_000_000, 77)
-	assertBudgetHold(t, err, "auto_policy_not_activated")
-}
-
-// An absent AUTO obligation still cannot be initialized: the reviewed
-// candidate binding carries no appended initializer constraint entry, so the
-// initializer's own gate holds the graph before any activation scope is
-// invented for the lane.
-func TestSelectorDestinationCandidateHoldsAbsentObligation(t *testing.T) {
-	route, err := runtimeRoute(testAutoLane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, _, rpc, client := autoCandidateStack(t, 77, func(accounts []ConfirmedAccount) {
-		for i := range accounts {
-			if accounts[i].Address == route.Kamino.Obligation {
-				accounts[i].Lamports, accounts[i].Data = 0, nil
-			}
-		}
-	})
-	_, err = observeSelectorDestinationCandidate(context.Background(), rpc, client, m, 1_000_000, 77)
-	assertBudgetHold(t, err, "auto_initializer_constraint_not_reviewed")
-}
-
-// The candidate readiness pins exactly the ONE combined reviewed AUTO policy:
-// an absent or wrong-bytes combined policy image holds the quote, while the
-// four unrelated basic policy families are absent entirely without blocking
-// the lane (the positive test above fetches none of them).
-func TestSelectorDestinationCandidateRequiresCombinedAutoPolicy(t *testing.T) {
-	for name, breakPolicy := range map[string]func(accounts []ConfirmedAccount){
-		"missing": func(accounts []ConfirmedAccount) {
-			for i := range accounts {
-				if accounts[i].Address == autoFixturePolicy {
-					accounts[i].Lamports, accounts[i].Data = 0, nil
-				}
-			}
-		},
-		"wrong_bytes": func(accounts []ConfirmedAccount) {
-			accountAt(accounts, autoFixturePolicy).Data[100] ^= 0x40
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			m, _, rpc, client := autoCandidateStack(t, 77, breakPolicy)
-			_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, 1_000_000, 77)
-			assertBudgetHold(t, err, "selector_destination_policy_unavailable")
-		})
 	}
 }
 
@@ -1349,9 +1291,8 @@ func autoCandidateInitializerRent() uint64 {
 	return uint64((128 + kamino.ObligationSize) * 3480 * 2)
 }
 
-// autoCandidateInitializerStack upgrades the coherent candidate stack to A's
-// eight-constraint initializer binding: the manifest binding is swapped to the
-// superseding reviewed fixture, the flat batch loses its obligation so the
+// autoCandidateInitializerStack upgrades the coherent candidate stack for the
+// AUTO initializer: the flat batch loses its obligation so the
 // producer must price recreation (or, with funded, carries the exact bounded
 // fixture position the forecast exit closes), and the transport gains a server
 // for the initializer prestate read — the one getMultipleAccounts whose
@@ -1361,7 +1302,6 @@ func autoCandidateInitializerRent() uint64 {
 // map unless a variant adds it back.
 func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64, funded bool, variant func(route RuntimeRoute, prestate map[string]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *chain.Client, *jupiter.Client) {
 	t.Helper()
-	binding := autoInitializerFixtureBinding(t)
 	route, err := runtimeRoute(testAutoLane)
 	if err != nil {
 		t.Fatal(err)
@@ -1394,17 +1334,9 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 					accounts[i].Lamports, accounts[i].Data = 0, nil
 				}
 			}
-			// Readiness pins the binding's own policy account by its raw bytes
-			// hash: serve the reviewed superseding image at its derived address.
-			if accounts[i].Address == autoFixturePolicy {
-				accounts[i].Address = autoInitializerFixturePolicy
-				accounts[i].Data = []byte(autoInitializerFixtureSyntheticAccountData)
-			}
 		}
 		batch = append(batch, accounts...)
 	})
-	// The reviewed superseding binding drives compile and prestate identity.
-	m.RuntimeBindings.AutoPolicy = &binding
 	inner, err := kaminoRouteInitializer(route)
 	if err != nil {
 		t.Fatal(err)
@@ -1415,14 +1347,9 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 		prestate[a.Address] = a
 	}
 	// Native funding and derived accounts, mirroring A's coherent initializer
-	// fixture: settings seed counter exactly the candidate seed, the reviewed
-	// policy image carrying its synthetic bytes, the 1032-byte user metadata
+	// fixture: the captured Settings, the 1032-byte user metadata
 	// naming the vault, the reviewed market image, and the rent sysvar aligned
 	// with the transport's rent stub above.
-	settings := setupSettingsAccount(t)
-	binary.LittleEndian.PutUint64(settings.Data[159:167], binding.PolicySeed)
-	prestate[bridgeSettings] = settings
-	prestate[autoInitializerFixturePolicy] = ConfirmedAccount{Address: autoInitializerFixturePolicy, Owner: squads.ProgramID.String(), Lamports: 1, Data: []byte(autoInitializerFixtureSyntheticAccountData)}
 	prestate[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000}
 	prestate[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000}
 	rent := ConfirmedAccount{Address: "SysvarRent111111111111111111111111111111111", Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 17)}
@@ -1487,19 +1414,16 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 	return m, route, rpc, client
 }
 
-// Doc 17: with A's eight-constraint initializer binding reviewed in the
-// manifest, the destination producer admits an ABSENT obligation — it compiles
-// the initializer against the reviewed binding, prices its exact rent and fee
-// as the recipe's FIRST step, and retains the binding identity — while the
-// seven-constraint manifest above keeps holding the identical graph.
+// Doc 17: the destination producer admits an ABSENT obligation — it compiles
+// the initializer through the installed AUTO policy, prices its exact rent and
+// fee as the recipe's FIRST step, and retains that policy's seed.
 func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *testing.T) {
 	const (
 		slot   = int64(77)
 		equity = uint64(200_000_000) // coherent parity economics: zero guaranteed residue
 	)
 	m, route, rpc, client := autoCandidateInitializerStack(t, slot, slot, false, nil)
-	binding := autoInitializerFixtureBinding(t)
-	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, equity, slot)
+	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, capturedTestPolicies(), equity, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1513,8 +1437,8 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 	if !ok || effects.Kind != "kamino-initialize" || !effects.Conserved || effects.Initialization == nil || *effects.Initialization != init {
 		t.Fatalf("initializer step drifted: %+v %+v", request, effects)
 	}
-	if init.RouteLane != route.Lane || init.PolicySeed != binding.PolicySeed || init.PolicyAccountDataSHA256 != binding.AccountDataSHA256 {
-		t.Fatalf("initializer lost the reviewed binding identity: %+v", init)
+	if init.RouteLane != route.Lane || init.Policy != installedAutoPolicyKey {
+		t.Fatalf("initializer lost the installed AUTO policy: %+v", init)
 	}
 	if init.RentLamports != autoCandidateInitializerRent() || init.MaximumFeeLamports != 5000 {
 		t.Fatalf("initializer rent/fee drifted: %+v", init)
@@ -1525,8 +1449,8 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 	if err != nil || !bytes.Equal(manifestMessage, message) {
 		t.Fatalf("retained initializer message is not the manifest compile: %v", err)
 	}
-	if wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:]); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitializerConstraintIndex {
-		t.Fatalf("initializer not wrapped at the appended index %d", autoInitializerConstraintIndex)
+	if wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:]); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitialize {
+		t.Fatalf("initializer not wrapped at its leg %d", autoInitialize)
 	}
 	// Rent is priced FIRST, ahead of every entry step.
 	if second, _, _, err := q.Recipe.Inputs[1].decodeWithManifest(m); err != nil {
@@ -1576,26 +1500,22 @@ func TestSelectorDestinationCandidateInitializerPrestateRefusals(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, _, rpc, client := autoCandidateInitializerStack(t, 77, variant.responseSlot, false, variant.serve)
-			_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, 2_000_000, 77)
+			_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, capturedTestPolicies(), 2_000_000, 77)
 			assertBudgetHold(t, err, variant.hold)
 		})
 	}
 }
 
-// The decode-only path binds a retained initializer to the manifest that
-// produced it: drifted seed or hash refuses against the reviewed binding, a
-// seven-constraint manifest never implies the eighth constraint, and the
-// embedded production manifest stays closed. The honest request decodes to
-// exactly the manifest compile.
-func TestCandidateInitializerDecodeOnlyAcceptsReviewedBinding(t *testing.T) {
-	m := autoInitializerFixtureManifest(t)
-	binding := autoInitializerFixtureBinding(t)
-	r, err := m.initializationRequest(testAutoLane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, autoCandidateInitializerRent(), 5000)
+// The decode-only path decodes a retained initializer to exactly the
+// manifest compile, and a request at another seed compiles another wire.
+func TestCandidateInitializerDecodesToTheManifestCompile(t *testing.T) {
+	m := embeddedTestManifest(t)
+	r, err := m.initializationRequest(testPolicies(t), testAutoLane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, autoCandidateInitializerRent(), 5000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.PolicySeed != binding.PolicySeed || r.PolicyAccountDataSHA256 != binding.AccountDataSHA256 {
-		t.Fatalf("bound request lost the reviewed identity: %+v", r)
+	if r.Policy != installedAutoPolicyKey {
+		t.Fatalf("request lost the installed AUTO policy: %+v", r)
 	}
 	encoded, err := jsonMarshalExpectedEffects(ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r})
 	if err != nil {
@@ -1616,78 +1536,10 @@ func TestCandidateInitializerDecodeOnlyAcceptsReviewedBinding(t *testing.T) {
 	if err != nil || !bytes.Equal(manifestMessage, message) {
 		t.Fatalf("decoded initializer message is not the manifest compile: %v", err)
 	}
-	for name, drifted := range map[string]KaminoInitializationRequest{
-		"seed": {RouteLane: r.RouteLane, PolicySeed: autoFixtureSeed, PolicyAccountDataSHA256: r.PolicyAccountDataSHA256, RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight, RentLamports: r.RentLamports, MaximumFeeLamports: r.MaximumFeeLamports},
-		"hash": {RouteLane: r.RouteLane, PolicySeed: r.PolicySeed, PolicyAccountDataSHA256: sha256Bytes([]byte("other candidate bytes")), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight, RentLamports: r.RentLamports, MaximumFeeLamports: r.MaximumFeeLamports},
-	} {
-		// The manifest compile refuses drifted identity with the typed
-		// mismatch hold; the persisted decode boundary wraps every compile
-		// refusal as a build that no longer compiles under THIS manifest.
-		if _, err := m.compileKaminoInitializationMessage(drifted); err == nil {
-			t.Fatalf("%s: drifted initializer compiled", name)
-		} else {
-			assertBudgetHold(t, err, "initializer_request_manifest_mismatch")
-		}
-		driftedInput, err := encodePhase3BuildInput(drifted, encoded)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, _, _, err := driftedInput.decodeWithManifest(m); err == nil {
-			t.Fatalf("%s: drifted initializer decoded", name)
-		} else {
-			assertBudgetHold(t, err, "persisted_build_no_longer_compiles")
-		}
-	}
-	seven := autoFixtureManifest(t)
-	// The seven-constraint binding never implies the appended eighth
-	// constraint, at the compile or through the decode boundary.
-	if _, err := seven.compileKaminoInitializationMessage(r); err == nil {
-		t.Fatal("seven-constraint manifest compiled the initializer")
-	} else {
-		assertBudgetHold(t, err, "auto_initializer_constraint_not_reviewed")
-	}
-	if _, _, _, err := input.decodeWithManifest(seven); err == nil {
-		t.Fatal("seven-constraint manifest decoded the initializer")
-	} else {
-		assertBudgetHold(t, err, "persisted_build_no_longer_compiles")
-	}
-	// Both binding states keep the persisted decode boundary closed: the
-	// explicit absent fixture (the shipped pre-install state) holds the compile
-	// with the shipped token, and the embedded manifest's installed binding
-	// refuses the candidate identity with the exact typed mismatch — in both
-	// cases the build no longer compiles under THAT manifest.
-	_, absentErr := autoAbsentBindingManifest(t).compileKaminoInitializationMessage(r)
-	assertBudgetHold(t, absentErr, "auto_policy_not_activated")
-	embedded := requireEmbeddedInstalledBinding(t)
-	_, embeddedErr := embedded.compileKaminoInitializationMessage(r)
-	assertBudgetHold(t, embeddedErr, "initializer_request_manifest_mismatch")
-	if _, _, _, err := input.decodeWithManifest(embedded); err == nil {
-		t.Fatal("embedded manifest decoded the initializer")
-	} else {
-		assertBudgetHold(t, err, "persisted_build_no_longer_compiles")
-	}
-	if _, _, _, err := input.decodeWithManifest(autoAbsentBindingManifest(t)); err == nil {
-		t.Fatal("absent manifest decoded the initializer")
-	} else {
-		assertBudgetHold(t, err, "persisted_build_no_longer_compiles")
-	}
-	// The installed state resolves its own request end to end: the request
-	// built from the embedded manifest carries exactly the installed identity
-	// and decodes through the persisted boundary.
-	installedRequest, err := embedded.initializationRequest(testAutoLane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, autoCandidateInitializerRent(), 5000)
-	if err != nil || installedRequest.PolicySeed != installedAutoPolicySeed || installedRequest.PolicyAccountDataSHA256 != installedAutoPolicyDigest {
-		t.Fatalf("installed initializer request drifted: %+v %v", installedRequest, err)
-	}
-	installedEncoded, err := jsonMarshalExpectedEffects(ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &installedRequest})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installedInput, err := encodePhase3BuildInput(installedRequest, installedEncoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decodedRequest, _, _, err := installedInput.decodeWithManifest(embedded); err != nil || decodedRequest != any(installedRequest) {
-		t.Fatalf("installed initializer did not decode through the embedded manifest: %v", err)
+	other := r
+	other.Policy = testPolicyAccount(policyKey{family: BasicDebtLifecycle})
+	if otherMessage, err := m.compileKaminoInitializationMessage(other); err != nil || bytes.Equal(otherMessage, message) {
+		t.Fatalf("a request through another policy compiled the same wire: %v", err)
 	}
 }
 
@@ -1697,20 +1549,12 @@ func TestCandidateInitializerDecodeOnlyAcceptsReviewedBinding(t *testing.T) {
 func TestSelectorDestinationCandidateReentryEntryStaysGated(t *testing.T) {
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateInitializerStack(t, slot, slot, false, nil)
-	if _, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, client, m, 2_000_000, slot, nil); err == nil {
+	if _, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, client, m, capturedTestPolicies(), 2_000_000, slot, nil); err == nil {
 		t.Fatal("candidate reentry priced without a bound")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")
 	}
-	m.RuntimeBindings.AutoPolicy = nil
-	if _, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, client, m, 2_000_000, slot, &selectorReentryForecast{bound: selectorExitBound{MaxCollateralRaw: 1, MaxDebtRaw: 1}}); err == nil {
-		t.Fatal("candidate reentry priced without the reviewed binding")
-	} else {
-		assertBudgetHold(t, err, "auto_policy_not_activated")
-	}
-	// The public production reentry wrapper refuses AUTO regardless of the
-	// manifest's reviewed binding.
-	m.RuntimeBindings.AutoPolicy = nil
+	// The public production reentry wrapper refuses AUTO.
 	funded := Observation{Snapshot: Snapshot{RouteLane: testAutoLane, StrategyKey: testAutoLane, Fresh: true, ObligationPresenceKnown: true, ObligationPresent: true, HasPosition: true, PositionCollateralRaw: 10_000_000_000, PositionDebtRaw: 5_000_000, StrategyNAVRaw: 1, Slot: slot, ObservationID: "candidate-observation"}}
 	source := selectorSourceQuote{Lane: testAutoLane, ObservationID: funded.Snapshot.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: 10_000_000_000, MaxDebtRaw: 5_000_000}, Recipe: selectorRecipe{EvidenceID: sha256Bytes([]byte("candidate-exit")), ValidThroughSlot: slot + 1}}
 	if _, err := observeSelectorReentryDestinationSize(context.Background(), rpc, client, m, funded, source, 2_000_000, false); err == nil {
@@ -1736,9 +1580,8 @@ func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T
 		debt       = int64(5_000_000)      // 5 PYUSD (6dp)
 	)
 	m, route, rpc, client := autoCandidateInitializerStack(t, slot, slot, true, nil)
-	binding := autoInitializerFixtureBinding(t)
 	bound := selectorExitBound{MaxCollateralRaw: collateral, MaxDebtRaw: debt}
-	q, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, client, m, equity, slot, &selectorReentryForecast{bound: bound})
+	q, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, client, m, capturedTestPolicies(), equity, slot, &selectorReentryForecast{bound: bound})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1754,8 +1597,8 @@ func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T
 	if !ok || effects.Kind != "kamino-initialize" || !effects.Conserved || effects.Initialization == nil || *effects.Initialization != init {
 		t.Fatalf("initializer step drifted: %+v %+v", request, effects)
 	}
-	if init.RouteLane != route.Lane || init.PolicySeed != binding.PolicySeed || init.PolicyAccountDataSHA256 != binding.AccountDataSHA256 {
-		t.Fatalf("initializer lost the reviewed binding identity: %+v", init)
+	if init.RouteLane != route.Lane || init.Policy != installedAutoPolicyKey {
+		t.Fatalf("initializer lost the installed AUTO policy: %+v", init)
 	}
 	if init.RentLamports != autoCandidateInitializerRent() || init.MaximumFeeLamports != 5000 {
 		t.Fatalf("initializer rent/fee drifted: %+v", init)
@@ -1764,8 +1607,8 @@ func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T
 	if err != nil || !bytes.Equal(manifestMessage, message) {
 		t.Fatalf("retained initializer message is not the manifest compile: %v", err)
 	}
-	if wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:]); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitializerConstraintIndex {
-		t.Fatalf("initializer not wrapped at the appended index %d", autoInitializerConstraintIndex)
+	if wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:]); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitialize {
+		t.Fatalf("initializer not wrapped at its leg %d", autoInitialize)
 	}
 	if second, _, _, err := q.Recipe.Inputs[1].decodeWithManifest(m); err != nil {
 		t.Fatal(err)
@@ -1780,7 +1623,7 @@ func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T
 	}
 	// The EXECUTION admission gate on the same reviewed manifest stays strictly
 	// absent-only: priced against this exact funded state it must refuse.
-	execution, err := m.initializationRequest(testAutoLane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, autoCandidateInitializerRent(), 1)
+	execution, err := m.initializationRequest(testPolicies(t), testAutoLane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, autoCandidateInitializerRent(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}

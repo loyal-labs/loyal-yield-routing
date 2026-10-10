@@ -90,7 +90,7 @@ func TestBridgeAdmissionRejectsUnpricedExposureAndPartialSweep(t *testing.T) {
 // amount parked in the strategy ATA: Voltr tracks strategy custody separately.
 func TestBridgeAdmissionStageTemplatesReportDrainedSquadsNAV(t *testing.T) {
 	o, d, evidence := bridgeAdmissionFixture(t, StageSquadsToVoltr, 999_952, 214_944, 0, 999_952)
-	steps, err := phase3BridgeTemplates(o.Snapshot, d, evidence)
+	steps, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestBridgeAdmissionStageTemplatesReportDrainedSquadsNAV(t *testing.T) {
 	// A request still carrying the pre-staging NAV contradicts the compiled
 	// poststate and must be refused at the same intent-mismatch boundary.
 	evidence.Request.Report.NAVAfterRaw = 999_952
-	_, err = phase3BridgeTemplates(o.Snapshot, d, evidence)
+	_, err = phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence)
 	assertBudgetHold(t, err, "bridge_admission_intent_mismatch")
 }
 

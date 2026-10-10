@@ -311,28 +311,8 @@ func TestSharedCustodyAdmissionSpendProofLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := autoInitializerFixtureManifest(t)
-	// Both binding states of the manifest-scoped planning read: the explicit
-	// absent fixture (the shipped pre-install state) still refuses the
-	// persisted candidate entry, while the embedded manifest — which carries
-	// the installed binding after the release — decodes it back exactly.
-	absent := autoAbsentBindingManifest(t)
-	paused, err := db.readRoutePlanningStateOnManifest(ctx, absent, key, true)
-	if err != nil || paused.entry != nil {
-		t.Fatalf("absent binding retained candidate entry authority: %+v %v", paused, err)
-	}
-	pausedSnapshot := initializationPlanningFixture(autoAUTOPYUSD.Lane).Snapshot
-	pausedSnapshot.SelectorBorrowRaw = entry.Quote.BorrowReceiveRaw
-	if err = absent.applySelectorEntry(&pausedSnapshot, paused.entry, time.Now().UTC()); err != nil {
-		t.Fatal(err)
-	}
-	if !pausedSnapshot.SelectorEntryPaused || pausedSnapshot.SelectorEntryEquityRaw != 0 || pausedSnapshot.SelectorBorrowRaw != 0 || admittedEntryAllocationReady(pausedSnapshot) {
-		t.Fatalf("absent binding authorized entry sizing: %+v", pausedSnapshot)
-	}
-	if decision := absent.DecideOnManifest(pausedSnapshot); decision.Action == InitializeKaminoObligation || decision.Action == VoltrAllocateToSquads {
-		t.Fatalf("absent binding authorized a fresh entry: %+v", decision)
-	}
-	decoded, err := db.readRoutePlanningStateOnManifest(ctx, requireEmbeddedInstalledBinding(t), key, true)
+	manifest := embeddedTestManifest(t)
+	decoded, err := db.readRoutePlanningStateOnManifest(ctx, embeddedTestManifest(t), key, true)
 	if err != nil {
 		t.Fatalf("embedded planning read refused the persisted candidate entry: %v", err)
 	}
@@ -396,7 +376,7 @@ func TestSharedCustodyAdmissionSpendProofLifecycle(t *testing.T) {
 	obs := initializationPlanningFixture(autoAUTOPYUSD.Lane)
 	decision := Decision{Action: DeleverRouteStep, Reason: "shared-custody-attribution-lifecycle",
 		AmountRaw: 2_500_000_000, IdempotencyKey: key + "-cleanup", StrategyKey: cfg.Lane}
-	record, err := db.RecordDecisionOnManifest(ctx, manifest, key, obs, decision, manifest.SHA256, sha256Bytes([]byte("policies")))
+	record, err := db.RecordDecisionOnManifest(ctx, manifest, key, obs, decision, manifest.SHA256)
 	if err != nil {
 		t.Fatalf("real RecordDecisionOnManifest failed: %v", err)
 	}
@@ -634,7 +614,7 @@ func custodyBuiltEffectsEnvelope(t *testing.T, effects ExpectedEffects) []byte {
 // for a prepared positive AUTO-PYUSD spend, carried as per-operation local
 // data on the observation, and a missing proof producer holds fail-closed.
 func TestSharedCustodyPreDecisionWorkerSeam(t *testing.T) {
-	manifest := autoInitializerFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, productionRouteKey)
 	effects := custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000)
 	decision := Decision{Action: DeleverRouteStep, StrategyKey: cfg.Lane, AmountRaw: 2_500_000_000, IdempotencyKey: "k", Reason: "r"}
@@ -983,7 +963,7 @@ func TestBindPersistsTheCarriedCustodyProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	custodyAttributionSchema(ctx, t, db)
-	manifest := autoInitializerFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	key := fmt.Sprintf("auto-bind-%d", time.Now().UnixNano())
 	routes := []string{key, key + "-missing", key + "-drift"}
 	t.Cleanup(func() {
@@ -1000,7 +980,7 @@ func TestBindPersistsTheCarriedCustodyProof(t *testing.T) {
 		db.Close()
 	})
 	effects := custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000)
-	request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, 2_500_000_000,
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegRepay, 2_500_000_000,
 		LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
 	if err != nil {
 		t.Fatal(err)
@@ -1020,7 +1000,7 @@ func TestBindPersistsTheCarriedCustodyProof(t *testing.T) {
 		}
 		observation := tickObservation(Snapshot{ObservationID: routeKey + "-obs", Slot: 42, Fresh: true,
 			RouteKind: RouteKind, RouteLane: autoAUTOPYUSD.Lane, StrategyKey: autoAUTOPYUSD.Lane, DebtIdleRaw: 3_100_000_000})
-		evidence, err := json.Marshal(newDecisionEvidence(observation, decision, sha256Bytes([]byte("manifest")), sha256Bytes([]byte("catalog"))))
+		evidence, err := json.Marshal(newDecisionEvidence(observation, decision, sha256Bytes([]byte("manifest"))))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -2,22 +2,18 @@ package backyard
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, client *jupiter.Client, enrich func(context.Context, *Observation) error) (Observation, JupiterExecutionEvidence, error) {
 	if rpc == nil || client == nil || enrich == nil || decision.AmountRaw <= 0 {
 		return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter evidence request")
-	}
-	binding, err := manifest.jupiterPolicyForRoute(decision.Action, decision.StrategyKey)
-	if err != nil {
-		return Observation{}, JupiterExecutionEvidence{}, err
 	}
 	for attempt := 0; attempt < maxConfirmedObservationAttempts; attempt++ {
 		prepareStart := time.Now()
@@ -32,6 +28,10 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 			// atomically with its route latch instead of discarding it as drift.
 			return observation, JupiterExecutionEvidence{}, nil
 		}
+		// The policies this build executes through: one read, at its slot.
+		if observation.policies, err = observeInstalledPolicies(ctx, rpc, observation.Snapshot.Slot); err != nil {
+			return Observation{}, JupiterExecutionEvidence{}, err
+		}
 		if !decisionsEqual(refreshedDecision, decision) {
 			return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(
 				fmt.Errorf("actionable decision changed before Jupiter construction"),
@@ -41,27 +41,9 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 		if err != nil {
 			return Observation{}, JupiterExecutionEvidence{}, err
 		}
-		sourceProgram, destinationProgram := bridgeTokenProgram, bridgeTokenProgram
-		if decision.StrategyKey == autoAUTOPYUSD.Lane {
-			// The candidate AUTO lane reads its token programs from the route's
-			// own reviewed identities, never from the catalog entry.
-			route, routeErr := runtimeRoute(decision.StrategyKey)
-			if routeErr != nil {
-				return Observation{}, JupiterExecutionEvidence{}, routeErr
-			}
-			if sourceProgram, destinationProgram, routeErr = autoTokenPrograms(route, decision.Action); routeErr != nil {
-				return Observation{}, JupiterExecutionEvidence{}, routeErr
-			}
-		} else if catalogJupiterRoute(decision.StrategyKey) {
-			edge, err := catalogJupiterBindingForRoute(decision.Action, decision.StrategyKey)
-			if err != nil {
-				return Observation{}, JupiterExecutionEvidence{}, err
-			}
-			sourceProgram, destinationProgram = edge.SourceTokenProgram, edge.DestinationTokenProgram
-		}
-		policy := accountAt(accounts, binding.Policy)
-		if policy.Owner != squads.ProgramID.String() || policy.Executable || policy.Lamports == 0 || sha256Bytes(policy.Data) != binding.PolicyAccountDataSHA256 {
-			return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter policy bytes or owner drifted")
+		sourceProgram, destinationProgram, err := jupiterTokenPrograms(decision.Action, decision.StrategyKey)
+		if err != nil {
+			return Observation{}, JupiterExecutionEvidence{}, err
 		}
 		decode := func(address, mint, program string) (uint64, error) {
 			mintKey, err := decodeBase58PublicKey(mint)
@@ -100,7 +82,7 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 			}
 			quoteDecision.AmountRaw = wire
 		}
-		evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, quoteDecision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
+		evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, quoteDecision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
 		logStage("prepare_jupiter_quote", prepareStart)
 		if err == nil && decision.Action == SwapStableToCollateralStep && fundedLane(decision.StrategyKey) {
 			evidence.Request.EntryReturnReserved = true
@@ -119,35 +101,37 @@ func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context,
 	return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed Jupiter construction reads did not align"))
 }
 
+// jupiterTokenPrograms is the token program of the swap's source and
+// destination custody: the AUTO lane's route identities, a catalog edge's
+// assets, and the classic program for every USDC-only lane.
+func jupiterTokenPrograms(action Action, lane string) (string, string, error) {
+	switch {
+	case lane == autoAUTOPYUSD.Lane:
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			return "", "", err
+		}
+		return autoTokenPrograms(route, action)
+	case catalogJupiterRoute(lane):
+		edges, leg, err := catalogEdge(action, lane)
+		edge := edges[leg]
+		return edge.from.program.String(), edge.to.program.String(), err
+	default:
+		return bridgeTokenProgram, bridgeTokenProgram, nil
+	}
+}
+
 // Current execution calls this after checking actual custody/policy accounts.
 // Exit costing may also quote prospective balances, but must never treat that
 // estimate as current-state simulation or promote its wire to execution.
-func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
-	binding, err := manifest.jupiterPolicyForRoute(decision.Action, decision.StrategyKey)
-	if err != nil {
-		return JupiterExecutionEvidence{}, err
-	}
+func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(decision.Action, decision.StrategyKey)
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
 	}
-	sourceProgram, destinationProgram := bridgeTokenProgram, bridgeTokenProgram
-	if decision.StrategyKey == autoAUTOPYUSD.Lane {
-		// Candidate AUTO lane: token programs from route identities, not the
-		// catalog entry.
-		route, routeErr := runtimeRoute(decision.StrategyKey)
-		if routeErr != nil {
-			return JupiterExecutionEvidence{}, routeErr
-		}
-		if sourceProgram, destinationProgram, routeErr = autoTokenPrograms(route, decision.Action); routeErr != nil {
-			return JupiterExecutionEvidence{}, routeErr
-		}
-	} else if catalogJupiterRoute(decision.StrategyKey) {
-		edge, err := catalogJupiterBindingForRoute(decision.Action, decision.StrategyKey)
-		if err != nil {
-			return JupiterExecutionEvidence{}, err
-		}
-		sourceProgram, destinationProgram = edge.SourceTokenProgram, edge.DestinationTokenProgram
+	sourceProgram, destinationProgram, err := jupiterTokenPrograms(decision.Action, decision.StrategyKey)
+	if err != nil {
+		return JupiterExecutionEvidence{}, err
 	}
 	if rpc == nil || client == nil || decision.AmountRaw <= 0 || uint64(decision.AmountRaw) > sourceRaw || slot <= 0 {
 		return JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter quote construction inputs")
@@ -173,9 +157,17 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client 
 		// serialized loop request a fresh quote on its next bounded tick.
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 	}
-	constraintIndex, err := binding.constraintIndex(instruction)
+	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
 	if err != nil {
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
+	}
+	key, _, err := jupiterPolicyLeg(decision.StrategyKey, decision.Action, data)
+	if err != nil {
+		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
+	}
+	policy, err := policies.account(key)
+	if err != nil {
+		return JupiterExecutionEvidence{}, err
 	}
 	out, minimum, err := validateJupiterQuoteForRoute(quote, decision.Action, amount, decision.StrategyKey)
 	if err != nil || destinationRaw > math.MaxUint64-minimum {
@@ -204,7 +196,7 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client 
 	if blockhashErr != nil {
 		return JupiterExecutionEvidence{}, blockhashErr
 	}
-	request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: binding.Policy, PolicyAccountDataSHA256: binding.PolicyAccountDataSHA256, PolicyConstraintIndex: constraintIndex, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey}
+	request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: policy, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey}
 	request, err = manifest.prepareJupiterLookupTables(ctx, rpc, request, slot)
 	if err != nil {
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)

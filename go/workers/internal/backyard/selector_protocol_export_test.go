@@ -70,7 +70,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 		{"repay", kaminoLegRepay, DeleverRouteStep, 5_100_000},
 		{"withdraw", kaminoLegWithdraw, DeleverRouteStep, 1_000_000_000_000},
 	} {
-		r, err := manifest.kaminoPacketForRoute(step.action, step.leg, step.amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+		r, err := manifest.kaminoPacketForRoute(testPolicies(t), step.action, step.leg, step.amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,7 +87,8 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 		wire := append(make([]byte, 65), message...)
 		wire[0] = 1
 		rows = append(rows, map[string]any{"leg": step.name, "amount": step.amount, "request": r, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)})
-		policies[r.Policy] = r.PolicyAccountDataSHA256
+		key, _ := kaminoPolicyLeg(route, step.leg)
+		policies[r.Policy] = key.String()
 	}
 	keys := []string{}
 	for key := range addresses {
@@ -161,7 +162,7 @@ func TestExportSelectorProtocolRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, bound.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, bound.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +279,7 @@ func TestExportSelectorProtocolPartialRepayment(t *testing.T) {
 	if err != nil || leg != kaminoLegRepay || amount != 1_000_000 || effect != amount {
 		t.Fatal("partial repayment selection", err)
 	}
-	r, err := m.kaminoPacketForRoute(decision.Action, leg, amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), decision.Action, leg, amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}

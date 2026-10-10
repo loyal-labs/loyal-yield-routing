@@ -81,18 +81,16 @@ type NAVReportInput struct {
 }
 
 type NAVSnapshotContext struct {
-	Slot                int64
-	ReceiptFingerprint  string
-	ManifestSHA256      string
-	PolicyCatalogSHA256 string
+	Slot               int64
+	ReceiptFingerprint string
+	ManifestSHA256     string
 }
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func ComputeNAV(ctx NAVSnapshotContext, cs []NAVComponent) (NAVReportInput, error) {
 	if ctx.Slot <= 0 || ctx.ReceiptFingerprint == "" ||
-		!sha256Pattern.MatchString(ctx.ManifestSHA256) ||
-		!sha256Pattern.MatchString(ctx.PolicyCatalogSHA256) || len(cs) == 0 {
+		!sha256Pattern.MatchString(ctx.ManifestSHA256) || len(cs) == 0 {
 		return NAVReportInput{}, fmt.Errorf("invalid slot")
 	}
 	seen := map[string]string{}
@@ -127,6 +125,6 @@ func ComputeNAV(ctx NAVSnapshotContext, cs []NAVComponent) (NAVReportInput, erro
 		return NAVReportInput{}, fmt.Errorf("NAV underflow")
 	}
 	sort.Strings(canonical)
-	h := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s:%s:%v", ctx.Slot, ctx.ReceiptFingerprint, ctx.ManifestSHA256, ctx.PolicyCatalogSHA256, canonical)))
+	h := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s:%v", ctx.Slot, ctx.ReceiptFingerprint, ctx.ManifestSHA256, canonical)))
 	return NAVReportInput{assets - liabilities, hex.EncodeToString(h[:])}, nil
 }

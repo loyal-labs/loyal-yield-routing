@@ -26,7 +26,7 @@ func releaseAdmissionFixture(t *testing.T, output uint64) (Observation, Decision
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, bound.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, bound.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestRawRepaymentReleaseSizingPassesSendRecheck(t *testing.T) {
 	if err != nil || sized.ReceiptRaw == 0 || sized.ReceiptRaw > safe.ReceiptRaw {
 		t.Fatal("raw six-step sizing must not exceed the five-step safe size", sized.ReceiptRaw, safe.ReceiptRaw, err)
 	}
-	r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, sized.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, sized.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestRawFullPayoffSizingPassesSendRecheck(t *testing.T) {
 	if err != nil || sized.UpperDebtRaw < check.UpperDebtRaw || sized.ObservedDebtRaw > check.ObservedDebtRaw {
 		t.Fatal("three-step raw payoff must cover the one-step send bound", sized, check, err)
 	}
-	r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, sized.UpperDebtRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegRepay, sized.UpperDebtRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}

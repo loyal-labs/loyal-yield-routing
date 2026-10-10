@@ -32,11 +32,11 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 	out := selectorDestinationQuote{Lane: s.RouteLane, EquityRaw: maximum}
 	// Reentry prices a NEW funded allocation for the route lane, so the lane
 	// must carry this manifest's funding authority — installed entry lanes
-	// plus the candidate AUTO lane only under its reviewed binding — not
+	// plus the candidate AUTO lane — not
 	// merely the broader decode/source-evidence authority that keeps deferred
 	// installed lanes observable.
 	if rpc == nil || client == nil || o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) ||
-		!s.Fresh || !m.selectorEntryFundingLane(s.RouteLane, false) || s.RouteLane != s.StrategyKey ||
+		!s.Fresh || !selectorEntryFundingLane(s.RouteLane) || s.RouteLane != s.StrategyKey ||
 		s.ObservationID == "" || s.DebtIdleRaw != 0 || s.CollateralIdleRaw < 0 || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return out, budgetHold("selector_reentry_destination_unavailable")
 	}
@@ -63,14 +63,12 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 	// Installed lanes keep the public wrapper's selectorLane gate unchanged.
 	// The candidate AUTO route lane dispatches to the shared authorized body
 	// only after this function's funding predicate and exact source-exit
-	// validation above both passed: the authorized form re-checks the same
-	// reviewed binding and runs the identical entry graph with this forecast's
-	// clampCapacity and reentry contract. An absent or drifted binding already
-	// failed closed at the funding gate.
+	// validation above both passed: the authorized form runs the identical
+	// entry graph with this forecast's clampCapacity and reentry contract.
 	if s.RouteLane == autoAUTOPYUSD.Lane {
-		return observeSelectorDestinationForecastAuthorized(ctx, rpc, client, m, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
+		return observeSelectorDestinationForecastAuthorized(ctx, rpc, client, m, o.policies, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
 	}
-	return observeSelectorDestinationForecast(ctx, rpc, client, m, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
+	return observeSelectorDestinationForecast(ctx, rpc, client, m, o.policies, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
 }
 
 // The reentry destination observes the actual funded lane batch and binds it
@@ -78,13 +76,13 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 // upper, the obligation present whenever the exit closes one, and no custody
 // residue beyond the idle amount that exit swaps back. An already-flat
 // destination belongs to the ordinary quote, not this forecast.
-func selectorReentryDestinationAccounts(ctx context.Context, rpc *chain.Client, m RouteManifest, route RuntimeRoute, minimumSlot int64, bound selectorExitBound, collateralIdle uint64) (int64, []ConfirmedAccount, KaminoPosition, error) {
+func selectorReentryDestinationAccounts(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot int64, bound selectorExitBound, collateralIdle uint64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
-	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, m, route, minimumSlot)
+	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, route, minimumSlot)
 	if err != nil {
 		return 0, nil, empty, err
 	}
-	custody, err := validateSelectorDestinationCommon(m, route, slot, accounts, position)
+	custody, err := validateSelectorDestinationCommon(route, slot, accounts, position)
 	if err != nil {
 		return 0, nil, empty, err
 	}

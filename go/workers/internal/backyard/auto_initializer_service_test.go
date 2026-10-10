@@ -20,7 +20,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // applyInitializerScopeMigrationFile executes one actual store migration file,
@@ -288,46 +287,17 @@ func upsertConfirmedAccount(accounts *[]ConfirmedAccount, account ConfirmedAccou
 	*accounts = append(*accounts, account)
 }
 
-// readyInitializerManifest is the reviewed initializer binding carrying the
-// same installed execution-readiness facts the production tick demands before
-// dispatch. The reviewed AUTO binding itself is untouched. The allocation
-// bridge pin keeps the captured live evidence bytes and digest; the other
-// three bridge pins follow the readiness fixture's precedent — their account
-// bytes and NormalizedDigest are regenerated together, because the test tree
-// holds captured live bytes only for the allocation policy. The returned map
-// is the pin bytes the confirmed batch must carry.
-func readyInitializerManifest(t *testing.T) (RouteManifest, map[string][]byte) {
+// readyInitializerManifest is the embedded manifest with the installed
+// execution-readiness facts the production tick demands before dispatch.
+func readyInitializerManifest(t *testing.T) RouteManifest {
 	t.Helper()
-	manifest := autoInitializerFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	manifest.Status = "ready"
 	manifest.Unresolved = nil
-	stringPtr := func(value string) *string { return &value }
-	if manifest.PolicyCatalog.SHA256 == nil {
-		manifest.PolicyCatalog.SHA256 = stringPtr(strings.Repeat("c", 64))
-	}
-	for index := range manifest.PolicyCatalog.Policies {
-		if manifest.PolicyCatalog.Policies[index].DataSHA256 == nil {
-			manifest.PolicyCatalog.Policies[index].DataSHA256 = stringPtr(strings.Repeat("def0"[index%4:], 16))
-		}
-	}
-	pinBytes := map[string][]byte{autoInitializerFixturePolicy: []byte(autoInitializerFixtureSyntheticAccountData)}
-	for index := range manifest.RuntimeBindings.BridgePolicies {
-		entry := &manifest.RuntimeBindings.BridgePolicies[index]
-		if entry.Action == VoltrAllocateToSquads {
-			if entry.NormalizedDigest != strategyTwoBridgePolicyNormalizedDigests[VoltrAllocateToSquads] {
-				t.Fatal("embedded allocation bridge digest drifted from the captured policy evidence")
-			}
-			pinBytes[entry.Account] = liveSquadsPolicy152Bytes(t)
-			continue
-		}
-		data := autoReadinessAccountBytes(byte(0x30+index), 1548)
-		entry.NormalizedDigest = autoMaskedDigest(t, data, entry.MaskedByteRanges)
-		pinBytes[entry.Account] = data
-	}
 	if blocker := manifest.executionBlocker(); blocker != nil {
 		t.Fatalf("candidate execution readiness facts incomplete: %v", blocker)
 	}
-	return manifest, pinBytes
+	return manifest
 }
 
 // autoInitializerServiceRPC serves the chain methods the initializer chain
@@ -396,6 +366,9 @@ func autoInitializerServiceRPC(t *testing.T) (*chain.Client, map[string]Confirme
 			sends++
 			return &http.Response{StatusCode: 500, Body: io.NopCloser(bytes.NewReader([]byte(`{}`))), Header: make(http.Header)}, nil
 		case "getProgramAccounts":
+			if squadsProgramAccounts(body.Params) {
+				return serve(capturedPolicyProgramAccounts(42)), nil
+			}
 			// No open Voltr withdrawal receipts in this fixture chain.
 			return serve(map[string]any{"context": map[string]int{"slot": 42}, "value": []any{}}), nil
 		case "getSignatureStatuses":
@@ -417,7 +390,7 @@ func autoInitializerServiceRPC(t *testing.T) (*chain.Client, map[string]Confirme
 // unchanged, and a simultaneously funded candidate and Maple tranche holds
 // instead of picking one.
 func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
-	candidate := autoInitializerFixtureManifest(t)
+	candidate := embeddedTestManifest(t)
 	maplePreferred := candidate
 	maplePreferred.selectorObservation = true
 	maplePreferred.observationLane = SelectedRouteID
@@ -427,16 +400,6 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	}
 	if !requested[autoAUTOPYUSD.Kamino.Obligation] || !requested[autoAUTOPYUSD.CollateralCustody] {
 		t.Fatal("preferred-Maple batch inventory misses the candidate AUTO ownership accounts")
-	}
-	installed := RouteManifest{}
-	installed.selectorObservation = true
-	installed.observationLane = SelectedRouteID
-	closed := map[string]bool{}
-	for _, address := range routeFixedAddresses(installed) {
-		closed[address] = true
-	}
-	if closed[autoAUTOPYUSD.Kamino.Obligation] || closed[autoAUTOPYUSD.CollateralCustody] {
-		t.Fatal("installed inventory grew without a reviewed binding")
 	}
 
 	_, _, accounts := autoObservationBatch(t, 77, nil)
@@ -455,11 +418,6 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	selected, err := observedSelectorRouteForManifest(accounts, SelectedRouteID, candidate)
 	if err != nil || selected.Lane != autoAUTOPYUSD.Lane {
 		t.Fatalf("candidate ownership was not selected: %q %v", selected.Lane, err)
-	}
-	// The same batch and preference through the installed closure refuses the
-	// candidate lane instead.
-	if _, err = observedSelectorRouteForManifest(accounts, autoAUTOPYUSD.Lane, RouteManifest{}); err == nil {
-		t.Fatal("installed scan admitted a candidate preference")
 	}
 	// Combined candidate and Maple exposure holds instead of picking one.
 	mapleRoute, err := runtimeRoute(SelectedRouteID)
@@ -487,7 +445,7 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testing.T) {
 	const observationSlot = int64(42)
 	const candidateEquity = int64(400_000)
-	manifest, initializerPinBytes := readyInitializerManifest(t)
+	manifest := readyInitializerManifest(t)
 	_, _, accounts := autoObservationBatch(t, observationSlot, func(batch []ConfirmedAccount) {
 		flattenAutoPosition(batch)
 		// The initializer's empty-obligation precondition, in the production
@@ -524,16 +482,9 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: laneRoute.Kamino.Obligation})
 		upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.CollateralCustody, laneRoute.Kamino.CollateralMint, bridgeVault, 0))
 	}
-	// The five reviewed policy pins this manifest digests — the candidate
-	// policy plus the four bridge policies — added outside the batch builder
-	// so the append is visible to the caller.
-	for address, data := range initializerPinBytes {
-		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: address, Owner: squads.ProgramID.String(), Lamports: 1, Data: append([]byte(nil), data...)})
-	}
 	// The rest of the production fetch inventory: the inactive lanes' protocol
-	// internals and every runtime policy account. Only the active lane's pins
-	// are digest-checked; the inactive lanes stay flat, so their accounts ride
-	// the batch as present, flat identities exactly as the scan expects.
+	// internals. The inactive lanes stay flat, so their accounts ride the
+	// batch as present, flat identities exactly as the scan expects.
 	peg := new(big.Int).Lsh(big.NewInt(1), 60)
 	for _, lane := range selectorLanes {
 		laneRoute, laneErr := runtimeRoute(lane)
@@ -547,12 +498,6 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.DebtLiquiditySupply, laneRoute.Kamino.DebtMint, laneRoute.Kamino.MarketAuthority, 1_000_000))
 		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: laneRoute.DebtFeeReceiver, Owner: "11111111111111111111111111111111", Lamports: 1})
 	}
-	for address := range manifest.runtimePolicyObservationSet() {
-		if accountAt(accounts, address).Address == address {
-			continue
-		}
-		accounts = append(accounts, ConfirmedAccount{Address: address, Owner: "11111111111111111111111111111111", Lamports: 1})
-	}
 	rpc, prestate, _, _ := autoInitializerServiceRPC(t)
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_doc23_service_test", 120*time.Second)
 	defer cancel()
@@ -561,7 +506,6 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// persisted entry — and deliberately no operation row and no reservation:
 	// both must come from the production producers below.
 	seedAutoInitializerPilotRoute(t, ctx, db, productionRouteKey, &price, candidateEquity)
-	policyHash := sha256Bytes([]byte("policies"))
 	embedded, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -608,8 +552,8 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	rt.prepareInitialization = func(ctx context.Context, m RouteManifest, dec Decision) (Observation, KaminoInitializationRequest, error) {
 		return prepareKaminoInitialization(ctx, rpc, m, dec, state.observe)
 	}
-	rt.recordDecision = func(ctx context.Context, key string, obs Observation, dec Decision, manifestSHA256, policyCatalogSHA256 string) (DecisionRecord, error) {
-		return db.RecordDecisionOnManifest(ctx, manifest, key, obs, dec, manifestSHA256, policyCatalogSHA256)
+	rt.recordDecision = func(ctx context.Context, key string, obs Observation, dec Decision, manifestSHA256 string) (DecisionRecord, error) {
+		return db.RecordDecisionOnManifest(ctx, manifest, key, obs, dec, manifestSHA256)
 	}
 	buildGatePending := errors.New("initializer build gate stops before the pinned policy signer")
 	rt.buildInitialization = func(context.Context, string, KaminoInitializationRequest) error {
@@ -621,26 +565,18 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	}
 	if !o.Snapshot.Fresh || o.Snapshot.RouteLane != autoAUTOPYUSD.Lane ||
 		!o.Snapshot.ObligationPresenceKnown || o.Snapshot.ObligationPresent || o.Snapshot.HasPosition ||
-		!o.Snapshot.InitializationPolicyReady || !o.Snapshot.PolicyReady || !o.Snapshot.ExitBuildable ||
 		o.Snapshot.SelectorEntryEquityRaw != candidateEquity || o.Snapshot.StrategyNAVRaw != 0 ||
 		o.Snapshot.CapacityRaw <= 0 || o.Snapshot.Nonterminal != "" {
 		t.Fatalf("real candidate observation did not reach initializer readiness: %+v", o.Snapshot)
 	}
 
-	// The candidate observation resolves to the exact initializer decision only
-	// through a manifest whose initializer binding resolves — named for both
-	// states: the explicit absent fixture (the shipped pre-install state)
-	// keeps the decision producer closed, while the embedded manifest's
-	// installed binding produces the identical decision the reviewed
-	// initializer fixture produces.
+	// The candidate observation resolves to the exact initializer decision
+	// through the manifest.
 	d := manifest.DecideOnManifest(o.Snapshot)
 	if d.Action != InitializeKaminoObligation || d.Reason != "multiply_obligation_missing" || d.AmountRaw != 0 || d.StrategyKey != autoAUTOPYUSD.Lane {
 		t.Fatalf("candidate decision producer drifted: %+v snapshot: %+v", d, o.Snapshot)
 	}
-	if got := autoAbsentBindingManifest(t).DecideOnManifest(o.Snapshot); got.Action == InitializeKaminoObligation {
-		t.Fatalf("absent binding admitted the candidate decision: %+v", got)
-	}
-	if installedDecision := requireEmbeddedInstalledBinding(t).DecideOnManifest(o.Snapshot); installedDecision != d {
+	if installedDecision := embeddedTestManifest(t).DecideOnManifest(o.Snapshot); installedDecision != d {
 		t.Fatalf("installed decision producer drifted from the reviewed one: %+v vs %+v", installedDecision, d)
 	}
 	if err = d.Validate(); err == nil {
@@ -650,14 +586,9 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatal(err)
 	}
 	// Persistence is manifest-scoped: the public RecordDecision wrapper only
-	// resolves the embedded manifest and forwards to RecordDecisionOnManifest.
-	// Both binding states, named: the explicit absent fixture (the shipped
-	// pre-install state) rejects the candidate decision before any row is
-	// inserted, and the installed admission is exercised by the real scoped
-	// decision recording later in this lifecycle.
-	if _, err = db.RecordDecisionOnManifest(ctx, autoAbsentBindingManifest(t), productionRouteKey, o, d, manifest.SHA256, policyHash); err == nil {
-		t.Fatal("absent binding decision persistence admitted the candidate lane")
-	}
+	// resolves the embedded manifest and forwards to RecordDecisionOnManifest;
+	// the scoped admission is exercised by the real decision recording later
+	// in this lifecycle.
 
 	// Real measured preparation through the production closure: a first pass
 	// proves the request identity, the candidate prestate for that exact request
@@ -680,7 +611,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// custody and vault bytes.
 	for address, account := range batchImage {
 		switch address {
-		case bridgeSettings, autoInitializerFixturePolicy, bridgeVault, bridgeDelegate,
+		case bridgeSettings, bridgeVault, bridgeDelegate,
 			autoAUTOPYUSD.Kamino.CollateralMint, autoAUTOPYUSD.Kamino.DebtMint:
 			continue
 		}
@@ -797,16 +728,8 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 			t.Fatalf("%s still produced the initializer: %+v", closure.name, held)
 		}
 	}
-	drifted := r
-	drifted.PolicySeed = autoFixtureSeed
-	assertBudgetHold(t, manifest.validateInitializationRequest(drifted), "initializer_request_manifest_mismatch")
-	// Both binding states on the request builder: the explicit absent fixture
-	// (the shipped pre-install state) stays held, while the embedded
-	// manifest's installed binding resolves its own installed request.
-	if _, absentErr := autoAbsentBindingManifest(t).initializationRequest(autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}, r.RentLamports, 1); absentErr == nil {
-		t.Fatal("absent binding resolved the AUTO initializer request")
-	}
-	if installedRequest, installedErr := embedded.initializationRequest(autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}, r.RentLamports, 1); installedErr != nil || installedRequest.PolicySeed != installedAutoPolicySeed {
+	// The request builder resolves the installed AUTO policy.
+	if installedRequest, installedErr := embedded.initializationRequest(testPolicies(t), autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}, r.RentLamports, 1); installedErr != nil || installedRequest.Policy != installedAutoPolicyKey {
 		t.Fatalf("installed manifest did not resolve its own initializer request: %+v %v", installedRequest, installedErr)
 	}
 
@@ -817,7 +740,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	seedAutoInitializerPilotRoute(t, ctx, db, expiredKey, &price, candidateEquity)
 	slotExpired := autoSelectorEntryFixture(time.Now().UTC().Add(-time.Minute), candidateEquity, &price)
 	storeTestSelectorEntry(t, ctx, db, expiredKey, slotExpired)
-	expiredRecord, err := db.RecordDecisionOnManifest(ctx, manifest, expiredKey, o, d, manifest.SHA256, policyHash)
+	expiredRecord, err := db.RecordDecisionOnManifest(ctx, manifest, expiredKey, o, d, manifest.SHA256)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -141,8 +141,8 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 		return budgetHold("selector_evaluate_observation_unavailable")
 	}
 	markets, _ := feed.Snapshot()
-	laneAllowed := func(lane string) bool { return selectorDestinationLaneAuthorized(deps.manifest, lane) }
-	fundingAllowed := func(lane string) bool { return deps.manifest.selectorEntryFundingLane(lane, false) }
+	laneAllowed := selectorOrAutoLane
+	fundingAllowed := selectorEntryFundingLane
 	selection := selectOpportunityWithLanes(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{}, laneAllowed, fundingAllowed)
 	request, requestErr := readPilotCanaryEntryRequestOnManifest(time.Now().UTC(), deps.manifest)
 	report := struct {

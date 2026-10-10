@@ -26,8 +26,8 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 	if path == "" {
 		t.Skip("requires AUTO_EXECUTION_GO_OUTPUT for connected local proof")
 	}
-	manifest := autoInitializerFixtureManifest(t)
-	binding := autoInitializerFixtureBinding(t)
+	manifest := embeddedTestManifest(t)
+	policy := testPolicies(t)[policyKey{lane: autoAUTOPYUSD.Lane}]
 	delegate := mustKey(bridgeDelegate)
 	messages := make([]map[string]any, 0, 10)
 
@@ -39,7 +39,7 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 			"lane":                    autoAUTOPYUSD.Lane,
 			"constraintIndex":         constraintIndex,
 			"amountRaw":               amountRaw,
-			"policyAccount":           binding.Policy,
+			"policyAccount":           policy.Account.String(),
 			"request":                 request,
 			"messageBase64":           base64.StdEncoding.EncodeToString(message),
 			"messageSha256":           sha256Bytes(message),
@@ -68,18 +68,16 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 		{kaminoLegWithdraw, DeleverRouteStep, "kamino-withdraw", "withdraw", 5_000_000, "withdraw"},
 	}
 	for _, item := range lifecycle {
-		request, err := manifest.kaminoPacketForRoute(item.action, item.leg, item.amount, blockhash, autoAUTOPYUSD.Lane)
+		request, err := manifest.kaminoPacketForRoute(testPolicies(t), item.action, item.leg, item.amount, blockhash, autoAUTOPYUSD.Lane)
 		if err != nil {
 			t.Fatalf("%s: %v", item.kind, err)
 		}
-		if request.PolicyConstraintIndex != binding.ConstraintIndices[item.indexKey] {
-			t.Fatalf("%s constraint index drifted: %d", item.kind, request.PolicyConstraintIndex)
-		}
-		message, err := manifest.compileKaminoMessage(request, delegate)
+		_, index := kaminoPolicyLeg(autoAUTOPYUSD, item.leg)
+		message, err := compileKaminoMessageForDelegate(request, delegate)
 		if err != nil {
 			t.Fatalf("%s: %v", item.kind, err)
 		}
-		addMessage(item.kind, item.legName, request.PolicyConstraintIndex, item.amount, request, message)
+		addMessage(item.kind, item.legName, index, item.amount, request, message)
 	}
 
 	// The five approved Jupiter swap directions, at the proven biclique cover
@@ -101,26 +99,27 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 	}
 	for _, item := range swaps {
 		jupiter := autoJupiterTestRequest(t, item.action, item.amount, item.out, 0)
-		jupiter.Policy = binding.Policy
-		jupiter.PolicyAccountDataSHA256 = binding.AccountDataSHA256
-		jupiter.PolicyConstraintIndex = binding.ConstraintIndices[item.indexKey]
-		message, err := manifest.compileJupiterMessage(jupiter, delegate)
+		_, index, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, item.action, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		message, err := compileJupiterMessageForDelegate(jupiter, delegate)
 		if err != nil {
 			t.Fatalf("%s: %v", item.kind, err)
 		}
-		addMessage(item.kind, item.legName, jupiter.PolicyConstraintIndex, item.amount, jupiter, message)
+		addMessage(item.kind, item.legName, index, item.amount, jupiter, message)
 	}
 
 	// The Multiply initializer: canonical heap frame + the vault-signed
 	// initializer outer.
-	initializerRequest := KaminoInitializationRequest{RouteLane: autoAUTOPYUSD.Lane, PolicySeed: binding.PolicySeed,
-		PolicyAccountDataSHA256: binding.AccountDataSHA256, RecentBlockhash: bridgeVault,
+	initializerRequest := KaminoInitializationRequest{RouteLane: autoAUTOPYUSD.Lane, Policy: policy.Account.String(),
+		RecentBlockhash:      bridgeVault,
 		LastValidBlockHeight: 100, RentLamports: 17_637_760, MaximumFeeLamports: 5000}
 	initializerMessage, err := manifest.compileKaminoInitializationMessage(initializerRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	addMessage("initializer", "initializeObligation", binding.ConstraintIndices[autoInitializerConstraintKey], nil, initializerRequest, initializerMessage)
+	addMessage("initializer", "initializeObligation", autoInitialize, nil, initializerRequest, initializerMessage)
 
 	// The export must carry exactly the ten worker-generated messages — no
 	// silent omission of a leg or direction, no duplication.

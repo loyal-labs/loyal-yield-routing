@@ -144,7 +144,7 @@ func TestPilotReleaseRevalidationBindsCurrentLimitsAndMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, bound.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, bound.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}

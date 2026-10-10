@@ -14,7 +14,7 @@ import (
 // the old quote (~1.11x). B2: no target holds; a 1.5x target borrows through
 // leverage_up sized to the target, and the entry quote is never used.
 func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
-	m := autoInitializerFixtureManifest(t)
+	m := embeddedTestManifest(t)
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		entry := selectorEntryFixture(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), lane, 1_000_000_000)
 		entry.Quote.BorrowReceiveRaw, entry.AllocationOperationID = 189_873_681, "alloc-0926"
@@ -23,7 +23,7 @@ func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
 		s.RouteLane, s.StrategyKey = lane, lane
 		s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 1_676_000_000, 1_676_000_000
 		if lane == onreONycUSDC {
-			if err := applySelectorEntryWithLane(&s, &entry, time.Now().UTC(), m.selectorEntryLaneAllowed); err != nil {
+			if err := applySelectorEntryWithLane(&s, &entry, time.Now().UTC(), selectorOrAutoLane); err != nil {
 				t.Fatal(lane, err)
 			}
 		} else {
@@ -180,12 +180,12 @@ func TestLeverageUpSizingAndCaps(t *testing.T) {
 // The borrow-authority exception is exactly: journaled reason leverage_up,
 // a borrow leg, same AUTO/OnRe lane, no unwind, a stored target above 1x.
 func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
-	borrow, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 10_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreONycUSDC)
+	manifest := embeddedTestManifest(t)
+	borrow, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 10_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreONycUSDC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	deposit, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreONycUSDC)
+	deposit, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreONycUSDC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,10 +226,10 @@ func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
 		manifest RouteManifest
 		accepted bool
 	}{
-		{autoAUTOPYUSD.Lane, autoFixtureManifest(t), true},
-		{onreONycUSDC, basicPolicyFixtureManifest(t), true},
-		{SelectedRouteID, basicPolicyFixtureManifest(t), false},
-		{PhaseOneLaneID, basicPolicyFixtureManifest(t), false},
+		{autoAUTOPYUSD.Lane, embeddedTestManifest(t), true},
+		{onreONycUSDC, embeddedTestManifest(t), true},
+		{SelectedRouteID, embeddedTestManifest(t), false},
+		{PhaseOneLaneID, embeddedTestManifest(t), false},
 	} {
 		route, err := runtimeRoute(c.lane)
 		if err != nil {
@@ -239,12 +239,12 @@ func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
 			"first borrow (collateral)":     {route.Kamino.CollateralReserve},
 			"leverage_up (collateral+debt)": {route.Kamino.CollateralReserve, route.Kamino.DebtReserve},
 		} {
-			request, err := c.manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 250_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, c.lane)
+			request, err := c.manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 250_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, c.lane)
 			if err != nil {
 				t.Fatalf("%s %s: packet: %v", c.lane, name, err)
 			}
 			request.ObligationReserves = reserves
-			message, err := c.manifest.compileKaminoMessage(request, delegate)
+			message, err := compileKaminoMessageForDelegate(request, delegate)
 			if err != nil {
 				t.Fatalf("%s %s: compile: %v", c.lane, name, err)
 			}

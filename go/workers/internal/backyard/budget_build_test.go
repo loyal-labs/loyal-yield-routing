@@ -81,6 +81,11 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 				t.Fatal("fee request must contain unsigned one-signer message")
 			}
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": fee}
+		case "getProgramAccounts":
+			if !squadsProgramAccounts(body.Params) {
+				t.Fatal("unexpected program account read")
+			}
+			result = capturedPolicyProgramAccounts(42)
 		case "getEpochInfo":
 			result = finalizedEpoch(10) // A signed HOLD at this height is not expired in the DB fixture.
 		case "getMinimumBalanceForRentExemption":
@@ -174,7 +179,7 @@ func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
 	})
 	t.Run("Jupiter", func(t *testing.T) {
 		request := JupiterSwapRequest{Action: SwapUSDCToPrimeStep, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
-			Policy: "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG", PolicyAccountDataSHA256: "fdc11ac8e9226feef4db8d30065035fde00d6f2eb9a7f940f6ebffa869962d72",
+			Policy:      "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG",
 			Instruction: jupiterTestInstruction(SwapUSDCToPrimeStep, 1_000_000, 990_000, false), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 99}
 		minimum := uint64(985_050)
 		effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Accounts: []ExpectedAccountEffect{

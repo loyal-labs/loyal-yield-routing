@@ -16,7 +16,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Controlled quote/RPC transport around actual compilers and installed Jupiter
@@ -32,7 +31,7 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 		RouteLane: route.Lane, StrategyKey: route.Lane, HasPosition: true, PositionCollateralRaw: 100_000_000,
 		PositionCollateralValueRaw: 100_000, ReportSnapshotDigest: sha256Bytes([]byte("controlled-withdrawal-state"))})
 	d := Decision{Action: DeleverRouteStep, AmountRaw: 0, StrategyKey: route.Lane, Reason: "withdrawal_withdraw_collateral", IdempotencyKey: "withdrawal-admission"}
-	r, err := manifest.kaminoPacketForRoute(d.Action, kaminoLegWithdraw, 100_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := manifest.kaminoPacketForRoute(testPolicies(t), d.Action, kaminoLegWithdraw, 100_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,20 +41,8 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 		{Address: source.Address, Owner: classicTokenProgram, Mint: source.Mint, Authority: source.Authority, BeforeRaw: 1_000_000_000, AfterRaw: 900_000_000},
 		{Address: destination.Address, Owner: classicTokenProgram, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: 0, AfterRaw: 100_000_000},
 	}}
+	o.policies = testPolicies(t)
 	extra := []ConfirmedAccount{exactReportTicketAccount(t, 1)}
-	for i := range manifest.RuntimeBindings.BridgePolicies {
-		p := &manifest.RuntimeBindings.BridgePolicies[i]
-		data := []byte("controlled-bridge-policy:" + string(p.Action))
-		hash := sha256Bytes(data)
-		p.NormalizedDigest = hash
-		p.MaskedByteRanges = nil
-		p.DataSHA256Raw = hash
-		extra = append(extra, ConfirmedAccount{Address: p.Account, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
-	}
-	binding, err := catalogJupiterBindingForRoute(SwapCollateralToStableStep, route.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
 	read := func(path string, out any) {
 		t.Helper()
 		data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/" + path)
@@ -64,19 +51,6 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 		}
 		if err = json.Unmarshal(data, out); err != nil {
 			t.Fatal(err)
-		}
-	}
-	var installed struct {
-		Operations []struct{ PolicyAddress, DataBase64 string }
-	}
-	read("policy-install-readback-v1.json", &installed)
-	for _, p := range installed.Operations {
-		if p.PolicyAddress == binding.Policy {
-			data, err := base64.StdEncoding.Strict().DecodeString(p.DataBase64)
-			if err != nil {
-				t.Fatal(err)
-			}
-			extra = append(extra, ConfirmedAccount{Address: p.PolicyAddress, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
 		}
 	}
 	reserve := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 42, new(big.Int).Lsh(big.NewInt(1), 60), 1_000_000_000, 1_000_000_000)
@@ -103,13 +77,18 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 			instruction = JupiterSwapInstruction{ProgramID: row.Instruction.ProgramID, Data: row.Instruction.DataBase64, Accounts: row.Instruction.Accounts}
 		}
 	}
+	edges, leg, err := catalogEdge(SwapCollateralToStableStep, route.Lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := edges[leg]
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) <= binding.FeeOffset {
+	if err != nil || len(data) <= binding.feeAt() {
 		t.Fatal("missing retained exit instruction")
 	}
-	binary.LittleEndian.PutUint64(data[binding.AmountOffset:], 100_000_000)
-	binary.LittleEndian.PutUint64(data[binding.AmountOffset+8:], quoted)
-	binary.LittleEndian.PutUint16(data[binding.SlippageOffset:], 50)
+	binary.LittleEndian.PutUint64(data[binding.amountAt():], 100_000_000)
+	binary.LittleEndian.PutUint64(data[binding.amountAt()+8:], quoted)
+	binary.LittleEndian.PutUint16(data[binding.slippageAt():], 50)
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
 	client, err := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var payload any
@@ -174,17 +153,16 @@ func TestWithdrawalPricingRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 			t.Fatal("invalid quote estimate accepted")
 		}
 	}
-	t.Run("exit policy drift", func(t *testing.T) {
+	t.Run("exit policy not installed", func(t *testing.T) {
 		o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
-		for i := range manifest.RuntimeBindings.BridgePolicies {
-			if manifest.RuntimeBindings.BridgePolicies[i].Action == ReportNAV {
-				hash := sha256Bytes([]byte("different policy"))
-				manifest.RuntimeBindings.BridgePolicies[i].NormalizedDigest = hash
-				manifest.RuntimeBindings.BridgePolicies[i].DataSHA256Raw = hash
+		o.policies = installedPolicies{}
+		for key, view := range testPolicies(t) {
+			if key != (policyKey{action: ReportNAV}) {
+				o.policies[key] = view
 			}
 		}
 		_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence)
-		assertBudgetHold(t, err, "withdrawal_exit_policy_drift")
+		assertBudgetHold(t, err, "REPORT_NAV policy not installed")
 	})
 	t.Run("stale construction snapshot", func(t *testing.T) {
 		o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
@@ -247,7 +225,7 @@ func TestWithdrawalReturnContinuesThroughNAVSwapAndBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	reportEffects.Kind, reportEffects.ReturnData = "bridge", expectedAdaptorReturnData(100_000)
-	steps, err := phase3BridgeTemplates(o.Snapshot, d, BridgeExecutionEvidence{report, reportEffects})
+	steps, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, BridgeExecutionEvidence{report, reportEffects})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,51 +250,20 @@ func TestWithdrawalReturnContinuesThroughNAVSwapAndBridge(t *testing.T) {
 	}
 }
 
-// This public finalized account capture is checked in; tests never fetch RPC.
-// Its provenance remains in testdata/installed-auto-policy-156.json.
-func installedAutoPolicyAccount(t *testing.T) ConfirmedAccount {
-	t.Helper()
-	raw, err := os.ReadFile("testdata/installed-auto-policy-156.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fixture struct {
-		Address    string `json:"address"`
-		DataSHA256 string `json:"dataSha256"`
-		Account    struct {
-			Data       []string `json:"data"`
-			Owner      string   `json:"owner"`
-			Executable bool     `json:"executable"`
-			Lamports   uint64   `json:"lamports"`
-		} `json:"account"`
-	}
-	if err = json.Unmarshal(raw, &fixture); err != nil {
-		t.Fatal(err)
-	}
-	if fixture.Address != installedAutoPolicyKey || fixture.DataSHA256 != installedAutoPolicyDigest || fixture.Account.Owner != squads.ProgramID.String() || fixture.Account.Executable || fixture.Account.Lamports == 0 || len(fixture.Account.Data) != 2 || fixture.Account.Data[1] != "base64" {
-		t.Fatal("installed AUTO policy capture identity drift")
-	}
-	data, err := base64.StdEncoding.Strict().DecodeString(fixture.Account.Data[0])
-	if err != nil || sha256Bytes(data) != installedAutoPolicyDigest {
-		t.Fatal("installed AUTO policy capture data drift", err)
-	}
-	return ConfirmedAccount{Address: fixture.Address, Owner: fixture.Account.Owner, Lamports: fixture.Account.Lamports, Executable: fixture.Account.Executable, Data: data}
-}
-
 // Unsupported exits refuse before any quote, journal or authority write: the
 // legacy catalog's USDC->PYUSD quote is not an edge of the current AUTO
 // combined policy, and an Ethena unwind is outside the installed lane authority.
 func TestUnsupportedExitsRefuseBeforeAnyWrite(t *testing.T) {
 	t.Run("usdc_funding", func(t *testing.T) {
 		ctx, db, key := prepareDebtClearDatabase(t)
-		manifest := requireEmbeddedInstalledBinding(t)
+		manifest := embeddedTestManifest(t)
 		var before, after string
 		if err := db.pool.QueryRow(ctx, `SELECT state::text FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&before); err != nil {
 			t.Fatal(err)
 		}
 		decision := Decision{Action: SwapUSDCToDebtStep, StrategyKey: autoAUTOPYUSD.Lane, AmountRaw: 20_000}
-		_, err := prepareJupiterQuoteEvidence(ctx, nil, nil, manifest, decision, 20_000, 0, 42)
-		if err == nil || err.Error() != "action SWAP_USDC_TO_DEBT_STEP is not an approved AUTO swap edge" {
+		_, err := prepareJupiterQuoteEvidence(ctx, nil, nil, manifest, testPolicies(t), decision, 20_000, 0, 42)
+		if err == nil || err.Error() != "action SWAP_USDC_TO_DEBT_STEP is not an approved AUTO Jupiter edge" {
 			t.Fatalf("unsupported AUTO edge did not fail before quote/RPC access: %v", err)
 		}
 		var operations int
@@ -329,7 +276,7 @@ func TestUnsupportedExitsRefuseBeforeAnyWrite(t *testing.T) {
 	})
 	t.Run("unsupported_ethena_confirmation", func(t *testing.T) {
 		ctx, db, key := prepareDebtClearDatabase(t)
-		manifest := requireEmbeddedInstalledBinding(t)
+		manifest := embeddedTestManifest(t)
 		intent := UnwindIntent{SourceLane: ethenaUSDePYUSD.Lane, Reason: "withdrawal_shortfall", ObservationID: "unsupported-ethena", MaxCollateralRaw: 100_000_000, MaxDebtRaw: 2_000, EvidenceID: sha256Bytes([]byte("unsupported-ethena")), CreatedAt: time.Now().UTC()}
 		confirmation := DebtClearConfirmation{RequestID: sha256Bytes([]byte(key)), ConfirmedBy: "privileged-test-operator", ConfirmationRecord: sha256Bytes([]byte(key + "-confirmation")), AcknowledgeUnavailableReborrow: true, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}
 		var before, after string

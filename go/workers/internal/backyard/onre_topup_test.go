@@ -90,7 +90,7 @@ func TestOnReTopupSwapPrestateAcceptsTheDebtFreePosition(t *testing.T) {
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.PayoffDebtRaw, o.Snapshot.DebtIdleRaw = 0, 0, 0, 0
 	ctx := context.Background()
 	swap := Decision{Action: SwapStableToCollateralStep, StrategyKey: onreONycUSDC, AmountRaw: 11_000, Reason: topupSwapReason}
-	e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, swap, 11_000, 0, 42)
+	e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, testPolicies(t), swap, 11_000, 0, 42)
 	if err != nil {
 		t.Fatal(err)
 	}

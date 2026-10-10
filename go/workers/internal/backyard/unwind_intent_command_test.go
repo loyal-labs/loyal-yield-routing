@@ -65,16 +65,9 @@ func TestUnwindIntentCommitExecuteRequiresDatabaseConfig(t *testing.T) {
 // admitted only through a reviewed binding — the same closure the commit and
 // every other entry point share.
 func TestUnwindIntentCandidateAuthorityMatchesEmbeddedManifest(t *testing.T) {
-	embedded := requireEmbeddedInstalledBinding(t)
-	reviewed := autoInitializerFixtureManifest(t)
+	embedded := embeddedTestManifest(t)
+	reviewed := embeddedTestManifest(t)
 	intent := unwindIntentFromRequest(unwindIntentCommandRequest(autoAUTOPYUSD.Lane), time.Now().UTC())
-	// Both binding states: the explicit absent fixture (the shipped pre-install
-	// state) refuses the candidate unwind source, and the embedded manifest's
-	// installed binding admits it — the same closure the reviewed initializer
-	// fixture admits through.
-	if autoAbsentBindingManifest(t).validateUnwindIntent(intent) == nil {
-		t.Fatal("absent binding admitted the candidate unwind source")
-	}
 	if err := embedded.validateUnwindIntent(intent); err != nil {
 		t.Fatal("installed manifest refused the candidate unwind source:", err)
 	}
@@ -91,7 +84,7 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
 	defer db.Close()
-	reviewed := autoInitializerFixtureManifest(t)
+	reviewed := embeddedTestManifest(t)
 	// Dry-run through the core needs no database and admits the candidate.
 	result, err := runUnwindIntentCommitOnManifest(ctx, reviewed, "", "selector-auto-cmd", unwindIntentCommandRequest(autoAUTOPYUSD.Lane), false)
 	if err != nil || !result.DryRun || result.Intent.SourceLane != autoAUTOPYUSD.Lane {
@@ -140,7 +133,7 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 	if err != nil || public.Intent.SourceLane != autoAUTOPYUSD.Lane {
 		t.Fatalf("installed binding refused the AUTO unwind: %+v %v", public, err)
 	}
-	embedded := requireEmbeddedInstalledBinding(t)
+	embedded := embeddedTestManifest(t)
 	stored, err = db.LoadUnwindIntentOnManifest(ctx, embedded, productionRouteKey)
 	if err != nil || stored == nil || !sameUnwindIntent(*stored, public.Intent) {
 		t.Fatalf("public execute lost the committed intent: %+v %v", stored, err)

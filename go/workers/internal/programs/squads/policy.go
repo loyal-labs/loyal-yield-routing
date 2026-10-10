@@ -57,31 +57,51 @@ type InstructionConstraintView struct {
 	DataConstraints    []DataConstraintView
 }
 
-// SpendingLimitView mirrors SquadsLimitedSpendingLimitView.
+// SpendingLimitView mirrors SquadsLimitedSpendingLimitView, with the
+// allowance rules of the legacy account layout (the compact layout has none:
+// they read zero there). Its usage counters are Squads' running state, not
+// what the policy allows, so it does not carry them.
 type SpendingLimitView struct {
-	Mint         solana.PublicKey
-	Start        int64
-	Expiration   *int64
-	Period       uint8 // 0 one-time, 1 daily, 2 weekly, 3 monthly, 4 custom
-	CustomPeriod int64
-	MaxPerPeriod uint64
+	Mint          solana.PublicKey
+	Start         int64
+	Expiration    *int64
+	Period        uint8 // 0 one-time, 1 daily, 2 weekly, 3 monthly, 4 custom
+	CustomPeriod  int64
+	MaxPerPeriod  uint64
+	Accumulate    bool   // an unspent allowance carries into the next period
+	MaxPerUse     uint64 // 0 when one use may spend the whole allowance
+	ExactQuantity bool   // a use spends exactly MaxPerUse
 }
 
-// PolicyPayloadView mirrors SquadsProgramInteractionPolicyView.
-type PolicyPayloadView struct {
+// Policy is what a ProgramInteraction policy authorizes: the smart account
+// (vault index) it executes as, its constraints in index order, and its
+// spending limits. A worker writes the policy it executes through as one, and
+// finds the installed account by Equal (FindPolicy).
+type Policy struct {
 	VaultIndex     uint8
-	PubkeyTable    []solana.PublicKey
 	Constraints    []InstructionConstraintView
 	SpendingLimits []SpendingLimitView
 }
 
+// Equal reports whether p and q authorize the same: vault index, constraints
+// and spending limits.
+func (p Policy) Equal(q Policy) bool {
+	return p.VaultIndex == q.VaultIndex && ConstraintsEqual(p.Constraints, q.Constraints) && SpendingLimitsEqual(p.SpendingLimits, q.SpendingLimits)
+}
+
+// PolicyPayloadView mirrors SquadsProgramInteractionPolicyView: the policy and,
+// in the compact layout, the pubkey table its keys index.
+type PolicyPayloadView struct {
+	Policy
+	PubkeyTable []solana.PublicKey
+}
+
 // FullPayload is a ProgramInteraction payload decoded through its tail.
 type FullPayload struct {
-	Payload             PolicyPayloadView
-	PreHook, PostHook   bool
-	ExactSpendingLimits bool
-	Start               int64
-	HasExpiration       bool
+	Payload           PolicyPayloadView
+	PreHook, PostHook bool
+	Start             int64
+	HasExpiration     bool
 }
 
 type borshCursor struct {
@@ -307,10 +327,11 @@ func decodeHeader(data []byte) (header, int, error) {
 	return header{settings, policySeed, policyBump, transactionIndex, staleTransactionIndex, signers, permissions, threshold, timeLock, kind, accountIndex}, cursor.offset, nil
 }
 
-// Policy is a ProgramInteraction Policy account: its header and instruction
-// constraints. Full is the payload decoded through hooks, spending limits and
-// the account tail in the same layout; nil when that tail does not decode.
-type Policy struct {
+// DecodedPolicy is a ProgramInteraction Policy account: its header and
+// instruction constraints. Full is the payload decoded through hooks, spending
+// limits and the account tail in the same layout; nil when that tail does not
+// decode.
+type DecodedPolicy struct {
 	Settings                                solana.PublicKey
 	Seed                                    uint64
 	Bump                                    uint8
@@ -328,19 +349,19 @@ type Policy struct {
 // DecodeProgramInteractionPolicy decodes the constraint prefix in the legacy
 // Borsh layout, or in the compact pubkey-table layout when the legacy read
 // fails or is empty; it never grants authority on its own.
-func DecodeProgramInteractionPolicy(account *chain.Account) (Policy, error) {
+func DecodeProgramInteractionPolicy(account *chain.Account) (DecodedPolicy, error) {
 	if account == nil || account.Owner != ProgramID || account.Executable {
-		return Policy{}, errors.New("policy account is absent or not owned by Squads")
+		return DecodedPolicy{}, errors.New("policy account is absent or not owned by Squads")
 	}
 	data := account.Data
 	h, offset, err := decodeHeader(data)
 	if err != nil {
-		return Policy{}, err
+		return DecodedPolicy{}, err
 	}
 	if h.Kind != 3 {
-		return Policy{}, errors.New("policy is not ProgramInteraction")
+		return DecodedPolicy{}, errors.New("policy is not ProgramInteraction")
 	}
-	p := Policy{Settings: h.Settings, Seed: h.PolicySeed, Bump: h.Bump, TransactionIndex: h.TransactionIndex, StaleTransactionIndex: h.StaleTransactionIndex, Signers: h.Signers, Permissions: h.Permissions, Threshold: h.Threshold, TimeLock: h.TimeLock, VaultIndex: h.VaultIndex}
+	p := DecodedPolicy{Settings: h.Settings, Seed: h.PolicySeed, Bump: h.Bump, TransactionIndex: h.TransactionIndex, StaleTransactionIndex: h.StaleTransactionIndex, Signers: h.Signers, Permissions: h.Permissions, Threshold: h.Threshold, TimeLock: h.TimeLock, VaultIndex: h.VaultIndex}
 	var payload PolicyPayloadView
 	compact := false
 	for _, layout := range []bool{false, true} {
@@ -388,7 +409,7 @@ func readConstraints(cursor *borshCursor, accountIndex uint8, compact bool) (Pol
 			}
 			constraints = append(constraints, constraint)
 		}
-		return PolicyPayloadView{VaultIndex: accountIndex, Constraints: constraints}, nil
+		return PolicyPayloadView{Policy: Policy{VaultIndex: accountIndex, Constraints: constraints}}, nil
 	}
 	tableCount, err := cursor.u8()
 	tableLen := int(tableCount)
@@ -414,7 +435,7 @@ func readConstraints(cursor *borshCursor, accountIndex uint8, compact bool) (Pol
 		}
 		constraints = append(constraints, constraint)
 	}
-	return PolicyPayloadView{VaultIndex: accountIndex, PubkeyTable: table, Constraints: constraints}, nil
+	return PolicyPayloadView{Policy: Policy{VaultIndex: accountIndex, Constraints: constraints}, PubkeyTable: table}, nil
 }
 func readLegacyPayload(cursor *borshCursor, accountIndex uint8) (FullPayload, error) {
 	payload, err := readConstraints(cursor, accountIndex, false)
@@ -434,26 +455,19 @@ func readLegacyPayload(cursor *borshCursor, accountIndex uint8) (FullPayload, er
 		return FullPayload{}, errors.New("too many ProgramInteraction spending limits")
 	}
 	limits := make([]SpendingLimitView, 0, limitCount)
-	exact := true
 	for i := 0; i < limitCount; i++ {
-		limit, limitExact, err := readLegacySpendingLimit(cursor)
+		limit, err := readLegacySpendingLimit(cursor)
 		if err != nil {
 			return FullPayload{}, err
 		}
 		limits = append(limits, limit)
-		exact = exact && limitExact
 	}
 	start, hasExpiration, err := readPolicyAccountTail(cursor)
 	if err != nil {
 		return FullPayload{}, err
 	}
-	return FullPayload{
-		Payload: PolicyPayloadView{
-			VaultIndex: accountIndex, Constraints: payload.Constraints, SpendingLimits: limits,
-		},
-		PreHook: preHook, PostHook: postHook, ExactSpendingLimits: exact,
-		Start: start, HasExpiration: hasExpiration,
-	}, nil
+	payload.SpendingLimits = limits
+	return FullPayload{Payload: payload, PreHook: preHook, PostHook: postHook, Start: start, HasExpiration: hasExpiration}, nil
 }
 
 func readCompactPayload(cursor *borshCursor, accountIndex uint8) (FullPayload, error) {
@@ -485,14 +499,8 @@ func readCompactPayload(cursor *borshCursor, accountIndex uint8) (FullPayload, e
 	if err != nil {
 		return FullPayload{}, err
 	}
-	return FullPayload{
-		Payload: PolicyPayloadView{
-			VaultIndex: accountIndex, PubkeyTable: payload.PubkeyTable, Constraints: payload.Constraints,
-			SpendingLimits: limits,
-		},
-		PreHook: preHook, PostHook: postHook, ExactSpendingLimits: true,
-		Start: start, HasExpiration: hasExpiration,
-	}, nil
+	payload.SpendingLimits = limits
+	return FullPayload{Payload: payload, PreHook: preHook, PostHook: postHook, Start: start, HasExpiration: hasExpiration}, nil
 }
 
 func readRawInstructionConstraint(cursor *borshCursor) (InstructionConstraintView, error) {
@@ -732,61 +740,43 @@ func readDataConstraint(cursor *borshCursor) (DataConstraintView, error) {
 	return view, nil
 }
 
-func readLegacySpendingLimit(cursor *borshCursor) (SpendingLimitView, bool, error) {
-	mint, err := cursor.pubkey()
-	if err != nil {
-		return SpendingLimitView{}, false, err
+// readLegacySpendingLimit reads one legacy account spending limit; its usage
+// counters (remaining in period, last reset) are skipped.
+func readLegacySpendingLimit(cursor *borshCursor) (SpendingLimitView, error) {
+	var limit SpendingLimitView
+	var err error
+	if limit.Mint, err = cursor.pubkey(); err != nil {
+		return SpendingLimitView{}, err
 	}
-	start, err := cursor.i64()
-	if err != nil {
-		return SpendingLimitView{}, false, err
+	if limit.Start, err = cursor.i64(); err != nil {
+		return SpendingLimitView{}, err
 	}
-	var expiration *int64
-	_, err = cursor.option(func() error {
+	if _, err = cursor.option(func() error {
 		value, err := cursor.i64()
-		if err != nil {
-			return err
-		}
-		expiration = &value
-		return nil
-	})
-	if err != nil {
-		return SpendingLimitView{}, false, err
+		limit.Expiration = &value
+		return err
+	}); err != nil {
+		return SpendingLimitView{}, err
 	}
-	period, custom, err := readPeriodV2(cursor)
-	if err != nil {
-		return SpendingLimitView{}, false, err
+	if limit.Period, limit.CustomPeriod, err = readPeriodV2(cursor); err != nil {
+		return SpendingLimitView{}, err
 	}
-	accumulateUnused, err := cursor.bool()
-	if err != nil {
-		return SpendingLimitView{}, false, err
+	if limit.Accumulate, err = cursor.bool(); err != nil {
+		return SpendingLimitView{}, err
 	}
-	maxPerPeriod, err := cursor.u64()
-	if err != nil {
-		return SpendingLimitView{}, false, err
+	if limit.MaxPerPeriod, err = cursor.u64(); err != nil {
+		return SpendingLimitView{}, err
 	}
-	maxPerUse, err := cursor.u64()
-	if err != nil {
-		return SpendingLimitView{}, false, err
+	if limit.MaxPerUse, err = cursor.u64(); err != nil {
+		return SpendingLimitView{}, err
 	}
-	enforceExactQuantity, err := cursor.bool()
-	if err != nil {
-		return SpendingLimitView{}, false, err
+	if limit.ExactQuantity, err = cursor.bool(); err != nil {
+		return SpendingLimitView{}, err
 	}
-	remainingInPeriod, err := cursor.u64()
-	if err != nil {
-		return SpendingLimitView{}, false, err
+	if _, err = cursor.take(8 + 8); err != nil { // remaining_in_period, last_reset
+		return SpendingLimitView{}, err
 	}
-	lastReset, err := cursor.i64()
-	if err != nil {
-		return SpendingLimitView{}, false, err
-	}
-	exact := !accumulateUnused && maxPerUse == 0 && !enforceExactQuantity &&
-		remainingInPeriod <= maxPerPeriod && lastReset >= start
-	return SpendingLimitView{
-		Mint: mint, Start: start, Expiration: expiration, Period: period,
-		CustomPeriod: custom, MaxPerPeriod: maxPerPeriod,
-	}, exact, nil
+	return limit, nil
 }
 
 func readCompactSpendingLimit(cursor *borshCursor, table []solana.PublicKey) (SpendingLimitView, error) {

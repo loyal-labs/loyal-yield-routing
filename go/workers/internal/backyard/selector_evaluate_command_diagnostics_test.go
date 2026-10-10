@@ -93,7 +93,7 @@ func TestSelectorEvaluateExecuteEvaluatorFailureDiagnostic(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
 	defer db.Close()
-	manifest := autoInitializerFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", fmt.Sprintf(`{"id":%q,"lane":%q,"equityRaw":250000,"expiresAt":%q}`,
 		sha256Bytes([]byte("selector-evaluate-failure")), testAutoLane, time.Now().UTC().Add(10*time.Minute).Format(time.RFC3339Nano)))
 	key := productionRouteKey

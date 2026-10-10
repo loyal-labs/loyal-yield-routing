@@ -32,15 +32,11 @@ func readPilotCanaryEntryRequest(now time.Time) (*pilotCanaryEntryRequest, error
 
 // readPilotCanaryEntryRequestOnManifest scopes the request lane authority to
 // the explicit reviewed manifest: the installed selectorEntryLane members plus
-// the candidate AUTO lane only while that manifest's plain binding resolves
-// (doc 31: new-entry candidate authority is selectorEntryFundingLane(lane,
-// false)). The read shape is byte-identical — same environment variable, same
+// the candidate AUTO lane (doc 31: new-entry candidate authority is selectorEntryFundingLane). The read shape is byte-identical — same environment variable, same
 // unknown-field and trailing-value rejection, same 512-byte bound, same
 // invalid-request hold.
 func readPilotCanaryEntryRequestOnManifest(now time.Time, manifest RouteManifest) (*pilotCanaryEntryRequest, error) {
-	return readPilotCanaryEntryRequestWithLane(now, func(lane string) bool {
-		return manifest.selectorEntryFundingLane(lane, false)
-	})
+	return readPilotCanaryEntryRequestWithLane(now, selectorEntryFundingLane)
 }
 
 func readPilotCanaryEntryRequestWithLane(now time.Time, laneAllowed func(string) bool) (*pilotCanaryEntryRequest, error) {
@@ -81,13 +77,9 @@ func (r pilotCanaryEntryRequest) validate(now time.Time) error {
 
 // validateOnManifest resolves the request lane authority through the explicit
 // reviewed manifest with the doc 31 new-entry candidate scope
-// (selectorEntryFundingLane(lane, false)). An absent binding keeps the
-// candidate lane refused; a malformed binding fails the candidate request,
-// never the installed lanes.
+// (selectorEntryFundingLane).
 func (r pilotCanaryEntryRequest) validateOnManifest(now time.Time, manifest RouteManifest) error {
-	return r.validateWithLane(now, func(lane string) bool {
-		return manifest.selectorEntryFundingLane(lane, false)
-	})
+	return r.validateWithLane(now, selectorEntryFundingLane)
 }
 
 // pilotCanaryReceiptCapacity bounds the number of retained canary receipts.
@@ -106,9 +98,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 // selectPilotCanaryEntryOnManifest is the manifest-scoped forced-acceptance
 // call for evaluateSelector: the same request identity, retained-history,
 // capacity and expiry semantics, with the request and entry lane authorities
-// resolved through the explicit reviewed manifest. An absent binding keeps
-// the candidate lane refused exactly as the embedded wrapper does; a malformed
-// binding fails the candidate request, never the installed lanes.
+// resolved through the explicit reviewed manifest.
 func selectPilotCanaryEntryOnManifest(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt, manifest RouteManifest) (SelectorResult, *pilotCanaryEntryReceipt, error) {
 	return selectPilotCanaryEntryWithManifest(input, result, history, &manifest)
 }

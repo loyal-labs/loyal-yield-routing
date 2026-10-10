@@ -52,7 +52,7 @@ func leverageUpLevel(s Snapshot) float64 {
 func leverageBorrowStep(s Snapshot, hard int64) (Action, string, int64, bool) {
 	if !leverageLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 ||
 		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw)) ||
-		!s.PolicyReady || !s.ExitBuildable || hard <= TargetLTVBPS {
+		hard <= TargetLTVBPS {
 		return "", "", 0, false
 	}
 	if s.PositionDebtRaw == 0 {

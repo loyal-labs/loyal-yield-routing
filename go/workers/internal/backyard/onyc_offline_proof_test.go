@@ -51,29 +51,17 @@ func TestExportONycOfflineProof(t *testing.T) {
 	for _, a := range []string{bridgeDelegate, bridgeSettings, bridgeVault, budgetClockAddress, reportTicketPDA, route.Kamino.CollateralMint, route.Kamino.DebtMint} {
 		addresses[a] = true
 	}
+	// The lane's policies, where today's Settings holds them; the bank must
+	// hold each as its literal.
+	initializerKey, _ := initializerPolicyLeg(route.Lane)
+	required := append([]policyKey{{family: BasicCollateralLifecycle}, {family: BasicDebtLifecycle}, {family: BasicSwapRoutesA},
+		{family: BasicSwapRoutesB}, initializerKey}, bridgePolicyKeys...)
 	policies := map[string]string{}
-	for _, family := range []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB} {
-		binding, hash, e := m.basicPolicyBinding(family)
-		if e != nil {
-			t.Fatal(e)
-		}
-		policies[binding.Policy] = hash
-		addresses[binding.Policy] = true
+	for _, key := range required {
+		address := testPolicyAccount(key)
+		policies[address] = key.String()
+		addresses[address] = true
 	}
-	for _, binding := range m.RuntimeBindings.BridgePolicies {
-		policies[binding.Account] = binding.NormalizedDigest
-		addresses[binding.Account] = true
-	}
-	initializer, err := m.initializerBinding(route.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	initializerAddress, err := derivePolicyAccount(initializer.PolicySeed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	policies[initializerAddress] = initializer.AccountDataSHA256
-	addresses[initializerAddress] = true
 	initInstruction, err := kaminoMultiplyInitializer(route.Lane)
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +76,7 @@ func TestExportONycOfflineProof(t *testing.T) {
 		if leg == kaminoLegRepay || leg == kaminoLegWithdraw {
 			action = DeleverRouteStep
 		}
-		r, e := m.kaminoPacketForRoute(action, leg, 1, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+		r, e := m.kaminoPacketForRoute(testPolicies(t), action, leg, 1, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -109,7 +97,7 @@ func TestExportONycOfflineProof(t *testing.T) {
 			amount = 0
 		}
 		r := BridgeBuildRequest{Action: action, AmountRaw: amount, Report: BridgeReport{Sequence: 1, ObservedSlot: 1, NAVAfterRaw: amount, SnapshotDigest: sha256Bytes([]byte("discovery"))}, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
-		ixs, _, _, e := ticketedBridgeInstructions(r)
+		ixs, _, e := ticketedBridgeInstructions(r)
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -140,16 +128,18 @@ func TestExportONycOfflineProof(t *testing.T) {
 		}
 		seen[a.Address] = true
 	}
-	for address, hash := range policies {
-		a := accountAt(in.Accounts, address)
-		valid := sha256Bytes(a.Data) == hash
-		for _, p := range m.RuntimeBindings.BridgePolicies {
-			if p.Account == address {
-				valid = maskedPolicyDigestMatches(a.Data, p.MaskedByteRanges, hash)
-			}
-		}
-		if !valid || a.Owner != squads.ProgramID.String() || a.Lamports == 0 || a.Executable {
-			t.Fatalf("installed policy mismatch: %s", address)
+	var bank []squads.Installed
+	for address := range policies {
+		view, _ := squads.DecodeCanonicalPolicy(chainAccount(accountAt(in.Accounts, address), address))
+		bank = append(bank, squads.Installed{Account: kaminoKey(address), View: view})
+	}
+	installed, err := findInstalledPolicies(bank)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range required {
+		if _, err := installed.account(key); err != nil {
+			t.Fatalf("installed policy mismatch: %v", err)
 		}
 	}
 	navAccounts, err := selectRouteNAVAccountsForRoute(in.Accounts, route)
@@ -249,21 +239,9 @@ func TestExportONycOfflineProof(t *testing.T) {
 		if obligationAccount.Lamports != 0 {
 			t.Fatal("initializer requires absent obligation")
 		}
-		r, e := m.initializationRequest(route.Lane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 24_165_120, 5_000)
+		r, e := m.initializationRequest(installed, route.Lane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 24_165_120, 5_000)
 		if e != nil {
 			t.Fatal(e)
-		}
-		binding, e := m.initializerBinding(route.Lane)
-		if e != nil {
-			t.Fatal(e)
-		}
-		address, e := derivePolicyAccount(binding.PolicySeed)
-		if e != nil {
-			t.Fatal(e)
-		}
-		a := accountAt(in.Accounts, address)
-		if a.Owner != squads.ProgramID.String() || a.Executable || a.Lamports == 0 || sha256Bytes(a.Data) != binding.AccountDataSHA256 {
-			t.Fatal("initializer policy mismatch")
 		}
 		message, err = CompileKaminoInitializationMessage(r)
 		result["request"] = r
@@ -296,7 +274,11 @@ func TestExportONycOfflineProof(t *testing.T) {
 				t.Fatal("report amount must be zero")
 			}
 		}
-		r := BridgeBuildRequest{Action: Action(in.Operation), AmountRaw: in.Amount, Report: report, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
+		policy, e := installed.account(policyKey{action: Action(in.Operation)})
+		if e != nil {
+			t.Fatal(e)
+		}
+		r := BridgeBuildRequest{Action: Action(in.Operation), AmountRaw: in.Amount, Report: report, Policy: policy, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
 		message, err = CompileBridgeMessage(r)
 		result["request"] = r
 	case "swap":
@@ -304,8 +286,8 @@ func TestExportONycOfflineProof(t *testing.T) {
 			t.Fatal("exact ONyc swap request required")
 		}
 		r := *in.Swap
-		if policies[r.Policy] != r.PolicyAccountDataSHA256 {
-			t.Fatal("swap policy does not match installed bytes")
+		if _, ok := policies[r.Policy]; !ok {
+			t.Fatal("swap policy is not one of the lane's installed policies")
 		}
 		_, _, source, _, e := jupiterEdgeForRoute(r.Action, r.RouteLane)
 		if e != nil {
@@ -342,7 +324,7 @@ func TestExportONycOfflineProof(t *testing.T) {
 		case "withdraw":
 			leg, action = kaminoLegWithdraw, DeleverRouteStep
 		}
-		r, e := m.kaminoPacketForRoute(action, leg, in.Amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+		r, e := m.kaminoPacketForRoute(installed, action, leg, in.Amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 		if e != nil {
 			t.Fatal(e)
 		}

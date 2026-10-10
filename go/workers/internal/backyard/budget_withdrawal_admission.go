@@ -8,7 +8,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Quote outputs are estimates, not enforceable maxima. Reserve the existing
@@ -28,37 +27,12 @@ func withdrawalUSDCExitEstimate(quoted uint64) (uint64, error) {
 	return n.Uint64(), nil
 }
 
-func observeWithdrawalExitPolicies(ctx context.Context, rpc *chain.Client, manifest RouteManifest, lane string, slot int64, conversions []Action) (int64, error) {
-	// Pins are masked digests: the bridge policies carry their volatile
-	// spending-limit spans, and policies without a mask compare as the raw
-	// account digest.
-	pins := map[string]observedPolicyPin{}
-	addresses := []string{reportTicketPDA}
-	for _, action := range conversions {
-		binding, err := manifest.jupiterPolicyForRoute(action, lane)
-		if err != nil {
-			return 0, err
-		}
-		pins[binding.Policy] = observedPolicyPin{digest: binding.PolicyAccountDataSHA256}
-		addresses = append(addresses, binding.Policy)
-	}
-	for _, action := range []Action{StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
-		binding, err := manifest.bridgePolicy(action)
-		if err != nil {
-			return 0, err
-		}
-		pins[binding.Account] = observedPolicyPin{digest: binding.NormalizedDigest, mask: binding.MaskedByteRanges}
-		addresses = append(addresses, binding.Account)
-	}
-	observed, accounts, err := confirmedAccounts(ctx, rpc, addresses, slot)
+// observeDisarmedReportTicket reads the report ticket disarmed at slot or
+// later and returns that read's slot.
+func observeDisarmedReportTicket(ctx context.Context, rpc *chain.Client, slot int64) (int64, error) {
+	observed, accounts, err := confirmedAccounts(ctx, rpc, []string{reportTicketPDA}, slot)
 	if err != nil {
-		return 0, budgetHold("withdrawal_exit_policy_observation_unavailable")
-	}
-	for address, pin := range pins {
-		a := accountAt(accounts, address)
-		if a.Owner != squads.ProgramID.String() || a.Executable || a.Lamports == 0 || !maskedPolicyDigestMatches(a.Data, pin.mask, pin.digest) {
-			return 0, budgetHold("withdrawal_exit_policy_drift")
-		}
+		return 0, budgetHold("report_ticket_observation_unavailable")
 	}
 	ticket, err := decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
 	if err != nil || ticket.Armed {
@@ -222,7 +196,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client 
 	if len(conversions) == 0 {
 		return plan, budgetHold("empty_custody_return")
 	}
-	policySlot, err := observeWithdrawalExitPolicies(ctx, rpc, manifest, s.RouteLane, s.Slot, conversions)
+	policySlot, err := observeDisarmedReportTicket(ctx, rpc, s.Slot)
 	if err != nil {
 		return plan, err
 	}
@@ -241,7 +215,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client 
 				return plan, budgetHold("withdrawal_exit_quote_unavailable")
 			}
 			d := Decision{Action: action, AmountRaw: int64(amount), StrategyKey: s.RouteLane}
-			swap, err = prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, d, amount, uint64(s.SquadsIdleRaw)+upperUSDC, policySlot)
+			swap, err = prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, d, amount, uint64(s.SquadsIdleRaw)+upperUSDC, policySlot)
 			if err != nil {
 				return plan, budgetHold("withdrawal_exit_quote_unavailable")
 			}
@@ -278,7 +252,11 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client 
 	case JupiterSwapRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	}
-	tailRequest := BridgeBuildRequest{Action: ReportNAV, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
+	navPolicy, err := observation.policies.account(policyKey{action: ReportNAV})
+	if err != nil {
+		return plan, err
+	}
+	tailRequest := BridgeBuildRequest{Action: ReportNAV, Policy: navPolicy, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
 		Report:          BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(post.Snapshot.SquadsIdleRaw), SnapshotDigest: s.ReportSnapshotDigest},
 		RecentBlockhash: blockhash, LastValidBlockHeight: height}
 	// The tail NAV, the current wire and every swap leg are priced by

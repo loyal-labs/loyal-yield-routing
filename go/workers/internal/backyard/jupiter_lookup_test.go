@@ -17,7 +17,12 @@ import (
 
 func retainedEthenaExit(t *testing.T) (JupiterSwapRequest, ExpectedEffects) {
 	t.Helper()
-	b, err := catalogJupiterBindingForRoute(SwapCollateralToDebtStep, "Ethena/USDe/PYUSD")
+	edges, leg, err := catalogEdge(SwapCollateralToDebtStep, "Ethena/USDe/PYUSD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := edges[leg]
+	key, _, err := jupiterPolicyLeg("Ethena/USDe/PYUSD", SwapCollateralToDebtStep, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +43,7 @@ func retainedEthenaExit(t *testing.T) (JupiterSwapRequest, ExpectedEffects) {
 	if err := json.Unmarshal(data, &evidence); err != nil {
 		t.Fatal(err)
 	}
-	r := JupiterSwapRequest{Action: SwapCollateralToDebtStep, RouteLane: "Ethena/USDe/PYUSD", Policy: b.Policy, PolicyAccountDataSHA256: b.PolicySHA256, PolicyConstraintIndex: b.ConstraintIndex, RecentBlockhash: bridgeVault, LastValidBlockHeight: 999, LookupTables: retainedJupiterLookups(t)}
+	r := JupiterSwapRequest{Action: SwapCollateralToDebtStep, RouteLane: "Ethena/USDe/PYUSD", Policy: testPolicyAccount(key), RecentBlockhash: bridgeVault, LastValidBlockHeight: 999, LookupTables: retainedJupiterLookups(t)}
 	for _, row := range evidence.Rows {
 		if row.Key != "USDe->PYUSD" {
 			continue
@@ -49,11 +54,11 @@ func retainedEthenaExit(t *testing.T) (JupiterSwapRequest, ExpectedEffects) {
 		}
 	}
 	ix, _ := base64.StdEncoding.Strict().DecodeString(r.Instruction.Data)
-	r.AmountRaw, r.QuotedOutputRaw = readU64(ix[b.AmountOffset:]), readU64(ix[b.AmountOffset+8:])
+	r.AmountRaw, r.QuotedOutputRaw = readU64(ix[b.inAmountAt:]), readU64(ix[b.inAmountAt+jupiter.QuotedOutAfterInAmount:])
 	r.MinimumOutputRaw = r.QuotedOutputRaw
 	return r, ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Accounts: []ExpectedAccountEffect{
-		{Address: b.SourceCustody, Owner: b.SourceTokenProgram, Mint: b.SourceMint, Authority: bridgeVault, BeforeRaw: r.AmountRaw, AfterRaw: 0},
-		{Address: b.DestinationCustody, Owner: b.DestinationTokenProgram, Mint: b.DestinationMint, Authority: bridgeVault, BeforeRaw: 0, AfterRaw: r.MinimumOutputRaw, MinimumAfterRaw: &r.MinimumOutputRaw},
+		{Address: b.from.custody.String(), Owner: b.from.program.String(), Mint: b.from.mint.String(), Authority: bridgeVault, BeforeRaw: r.AmountRaw, AfterRaw: 0},
+		{Address: b.to.custody.String(), Owner: b.to.program.String(), Mint: b.to.mint.String(), Authority: bridgeVault, BeforeRaw: 0, AfterRaw: r.MinimumOutputRaw, MinimumAfterRaw: &r.MinimumOutputRaw},
 	}}
 }
 
@@ -201,7 +206,7 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 			op := PersistedOperation{Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 			auth := phase3OperationAuthorization{IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
 			// The final send re-proves the persisted wire, then re-reads its tables.
-			m := requireEmbeddedInstalledBinding(t)
+			m := embeddedTestManifest(t)
 			request, requestEffects, err := m.validateSignedIdentity(auth, op)
 			if err != nil {
 				t.Fatal(err)
@@ -266,12 +271,5 @@ func TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping(t *testing.T) 
 		if _, err := CompileJupiterMessage(bad); err == nil {
 			t.Fatal("invalid hint accepted")
 		}
-	}
-	bad := restored
-	bad.Instruction.Accounts = append([]jupiter.AccountMeta(nil), restored.Instruction.Accounts...)
-	b, _ := catalogJupiterBindingForRoute(bad.Action, bad.RouteLane)
-	bad.Instruction.Accounts[b.DestinationIndex].Pubkey = bridgeVault
-	if _, err := CompileJupiterMessage(bad); err == nil {
-		t.Fatal("lookup hint bypassed destination policy")
 	}
 }

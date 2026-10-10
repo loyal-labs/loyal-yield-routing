@@ -116,7 +116,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	if d.Action != ReportNAV || d.StrategyKey != route.Lane {
 		t.Fatalf("expected an hourly report on the 1.75x position: %+v", d)
 	}
-	nav := BridgeBuildRequest{Action: ReportNAV, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
+	nav := BridgeBuildRequest{Action: ReportNAV, Policy: testPolicyAccount(policyKey{action: ReportNAV}), AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 		Report: BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(max(s.StrategyNAVRaw, 0)), SnapshotDigest: s.ReportSnapshotDigest}}
 	effects, _, _, err := bridgeExpectedEffects(d, uint64(s.VoltrIdleRaw), uint64(s.VoltrStrategyIdleRaw), uint64(s.SquadsIdleRaw))
 	if err != nil {
@@ -127,7 +127,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	key := fmt.Sprintf("report-window-%d", time.Now().UnixNano())
 	id := key + "-op"
 	state := mustJSON(t, map[string]any{"generation": 2})
-	envelope, _ := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, d, m.SHA256, *m.PolicyCatalog.SHA256)})
+	envelope, _ := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, d, m.SHA256)})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2::jsonb,2)`, key, string(state)); err != nil {
 		t.Fatal(err)
 	}

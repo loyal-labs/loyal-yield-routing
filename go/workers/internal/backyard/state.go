@@ -81,9 +81,8 @@ type Snapshot struct {
 	// Unwind is an admitted full exit, independent of the user's claim amount.
 	Unwind bool
 	// Expired debt envelope needs fresh same-source exit admission, not a manual latch.
-	UnwindRefreshRequired     bool
-	InitializationPolicyReady bool
-	SelectorEntryPaused       bool
+	UnwindRefreshRequired bool
+	SelectorEntryPaused   bool
 	// Exact equity authorized by a current durable selector quote.
 	SelectorEntryEquityRaw int64
 	SelectorBorrowRaw      uint64
@@ -199,8 +198,6 @@ type Snapshot struct {
 	// valued in bridge USDC (floored, less a 1% price margin). It sizes a
 	// plan B3 top-up; zero or unknown allocates nothing.
 	TopupDepositRoomRaw     int64
-	PolicyReady             bool
-	ExitBuildable           bool
 	CapitalMutated          bool
 	PostMutationNAVRequired bool
 	LastReportAgeSeconds    int64
@@ -223,7 +220,7 @@ func validateSelectorInitializerDecision(d Decision) error {
 
 // validateSelectorInitializerDecisionWithLane is the identical initializer
 // decision shape with the lane authority explicit; the manifest form admits
-// the candidate AUTO lane only while its reviewed binding resolves.
+// the candidate AUTO lane.
 func validateSelectorInitializerDecisionWithLane(d Decision, laneAllowed func(string) bool) error {
 	if !laneAllowed(d.StrategyKey) || d.AmountRaw != 0 || d.Reason != "multiply_obligation_missing" || d.IdempotencyKey == "" {
 		return fmt.Errorf("invalid Multiply initialization decision")
@@ -236,11 +233,10 @@ func (d Decision) Validate() error {
 }
 
 // validateDecision is the identical shared decision validation with the
-// initializer lane authority resolved through the manifest: the candidate
-// AUTO lane is admitted only while its reviewed binding resolves, and the
-// embedded manifest keeps the installed closure.
+// initializer lane authority resolved through the manifest, which admits the
+// candidate AUTO lane.
 func (m RouteManifest) validateDecision(d Decision) error {
-	return validateDecisionWithLane(d, m.selectorEntryLaneAllowed)
+	return validateDecisionWithLane(d, selectorOrAutoLane)
 }
 
 func validateDecisionWithLane(d Decision, initializerLaneAllowed func(string) bool) error {
@@ -254,7 +250,7 @@ func validateDecisionWithLane(d Decision, initializerLaneAllowed func(string) bo
 	catalog := false
 	basic := false
 	if route, err := runtimeRoute(d.StrategyKey); err == nil {
-		catalog = route.Kamino.DebtMint != bridgeUSDC && len(route.KaminoPolicies) == 4
+		catalog = route.Kamino.DebtMint != bridgeUSDC && catalogJupiterRoute(route.Lane)
 		basic = route.BasicPolicy
 	}
 	if neutral && d.StrategyKey != SelectedRouteID && !catalog && !basic {
@@ -295,6 +291,10 @@ type Observation struct {
 	// Tick-local account evidence, intentionally excluded from persisted JSON.
 	// It is produced only by the coherent route observer and never cached by Worker.
 	routeBatch *routeObservationBatch
+	// policies is where each Backyard literal is installed, read once by the
+	// build this observation was prepared for (prepare*, a selector sample):
+	// never by the tick's observation, never persisted or cached.
+	policies installedPolicies
 	// custodyProof carries the strict pre-decision shared-custody ownership
 	// proof for the CURRENT operation only (doc 26). Unexported: per-operation
 	// local data on the tick's own observation — never persisted in the

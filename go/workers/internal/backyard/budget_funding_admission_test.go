@@ -97,18 +97,19 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 					action, out = SwapDebtToCollateralStep, amount*2000
 				}
 			}
-			binding, err := catalogJupiterBindingForRoute(action, route.Lane)
+			bindingEdges, bindingLeg, err := catalogEdge(action, route.Lane)
 			if err != nil {
 				t.Fatal(err)
 			}
+			binding := bindingEdges[bindingLeg]
 			instruction = instructions[action]
 			wire, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-			if err != nil || len(wire) <= binding.FeeOffset {
+			if err != nil || len(wire) <= binding.feeAt() {
 				t.Fatal("missing edge wire", action, err)
 			}
-			binary.LittleEndian.PutUint64(wire[binding.AmountOffset:], amount)
-			binary.LittleEndian.PutUint64(wire[binding.AmountOffset+8:], out)
-			binary.LittleEndian.PutUint16(wire[binding.SlippageOffset:], 50)
+			binary.LittleEndian.PutUint64(wire[binding.amountAt():], amount)
+			binary.LittleEndian.PutUint64(wire[binding.amountAt()+8:], out)
+			binary.LittleEndian.PutUint16(wire[binding.slippageAt():], 50)
 			instruction.Data = base64.StdEncoding.EncodeToString(wire)
 			payload = jupiter.Quote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 9950 / 10000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else {
@@ -124,7 +125,7 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 	if fundingAction == SwapUSDCToDebtStep {
 		d.Action, d.AmountRaw, d.Reason = fundingAction, o.Snapshot.SquadsIdleRaw, "withdrawal_usdc_repayment_buffer"
 	}
-	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, d, uint64(d.AmountRaw), uint64(o.Snapshot.DebtIdleRaw), 42)
+	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, testPolicies(t), d, uint64(d.AmountRaw), uint64(o.Snapshot.DebtIdleRaw), 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,10 +434,11 @@ func TestFundingPayoffWindowIncludesInterveningSteps(t *testing.T) {
 	}
 	e.Request.QuotedOutputRaw = short.UpperDebtRaw - 1_000
 	e.Request.MinimumOutputRaw = e.Request.QuotedOutputRaw
-	b, _ := catalogJupiterBindingForRoute(e.Request.Action, e.Request.RouteLane)
+	bEdges, bLeg, _ := catalogEdge(e.Request.Action, e.Request.RouteLane)
+	b := bEdges[bLeg]
 	wire, _ := base64.StdEncoding.Strict().DecodeString(e.Request.Instruction.Data)
-	binary.LittleEndian.PutUint64(wire[b.AmountOffset+8:], e.Request.QuotedOutputRaw)
-	binary.LittleEndian.PutUint16(wire[b.SlippageOffset:], 0)
+	binary.LittleEndian.PutUint64(wire[b.amountAt()+8:], e.Request.QuotedOutputRaw)
+	binary.LittleEndian.PutUint16(wire[b.slippageAt():], 0)
 	e.Request.Instruction.Data = base64.StdEncoding.EncodeToString(wire)
 	minimum := short.UpperDebtRaw
 	e.ExpectedEffects.Accounts[1].AfterRaw = minimum

@@ -46,11 +46,12 @@ type Product struct {
 	Ops        []Op
 }
 
-// Constraints is the product's policy.
-func (p Product) Constraints() []squads.InstructionConstraintView {
-	out := make([]squads.InstructionConstraintView, len(p.Ops))
+// Policy is the product's policy: its ops' constraints on its vault, with no
+// spending limits (PolicyApply installs none).
+func (p Product) Policy() squads.Policy {
+	out := squads.Policy{VaultIndex: p.VaultIndex, Constraints: make([]squads.InstructionConstraintView, len(p.Ops))}
 	for i, op := range p.Ops {
-		out[i] = op.Allowed
+		out.Constraints[i] = op.Allowed
 	}
 	return out
 }
@@ -78,12 +79,17 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 	if err != nil {
 		return err
 	}
-	constraints := product.Constraints()
-	installed, err := squads.Policies(ctx, c, settings)
+	want := product.Policy()
+	constraints := want.Constraints
+	installed, err := squads.Policies(ctx, c, settings, 0)
 	if err != nil {
 		return err
 	}
-	if account, ok := squads.FindPolicy(installed, delegate, constraints); ok {
+	found, matches := squads.FindPolicy(installed, settings, delegate, want)
+	if matches > 1 {
+		return fmt.Errorf("%s is installed %d times on %s", product.Name, matches, settings)
+	}
+	if account := found.Account; matches == 1 {
 		fmt.Fprintf(out, "%s is already installed on %s as %s\n", product.Name, settings, account)
 		if slices.Contains(replace, account) {
 			return fmt.Errorf("--replace names the installed %s policy %s", product.Name, account)
@@ -102,7 +108,7 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 		return err
 	}
 	apply := squads.PolicyApply{Settings: settings, RentPayer: signer.PublicKey(), Signer: signer.PublicKey(), Delegate: delegate,
-		Seed: squads.NextPolicySeed(state), VaultIndex: product.VaultIndex, Constraints: constraints, Replace: replace}
+		Seed: squads.NextPolicySeed(state), VaultIndex: want.VaultIndex, Constraints: constraints, Replace: replace}
 	ix, err := apply.Instruction()
 	if err != nil {
 		return err
@@ -142,14 +148,15 @@ func Check(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 	if err != nil {
 		return err
 	}
-	installed, err := squads.Policies(ctx, c, settings)
+	installed, err := squads.Policies(ctx, c, settings, 0)
 	if err != nil {
 		return err
 	}
-	policy, ok := squads.FindPolicy(installed, delegate.PublicKey(), product.Constraints())
-	if !ok {
-		return fmt.Errorf("%s policy is not installed on %s", product.Name, settings)
+	found, matches := squads.FindPolicy(installed, settings, delegate.PublicKey(), product.Policy())
+	if matches != 1 {
+		return fmt.Errorf("%s policy is installed %d times on %s", product.Name, matches, settings)
 	}
+	policy := found.Account
 	var landed uint64
 	for i := range product.Ops {
 		if only >= 0 && i != only {

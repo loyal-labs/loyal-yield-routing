@@ -69,7 +69,7 @@ func TestSelectorAdmissionGuardBehavior(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 100*time.Second)
 	defer cancel()
 	defer db.Close()
-	manifest := autoInitializerFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	input := canaryFixtureInput(t)
 	key := productionRouteKey
 
@@ -260,7 +260,7 @@ func TestSelectorAdmissionGuardRoundTripMeasurement(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 100*time.Second)
 	defer cancel()
 	defer db.Close()
-	manifest := autoInitializerFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	input := canaryFixtureInput(t)
 	key := productionRouteKey
 	const perRead = 15 * time.Millisecond

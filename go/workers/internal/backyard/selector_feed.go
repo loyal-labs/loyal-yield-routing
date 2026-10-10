@@ -227,10 +227,10 @@ type EconomicFeed struct {
 	pool   *pgxpool.Pool
 	client *http.Client
 	routes []RuntimeRoute
-	// candidateLane is non-empty ONLY when the reviewed manifest carried a
-	// valid existing AutoPolicy binding at construction. It is the feed's
-	// manifest authority: the candidate route's evidence passes the shared
-	// content checks with THIS lane allowed — never a global allowlist change.
+	// candidateLane is non-empty ONLY for the manifest-scoped feed. It is the
+	// feed's manifest authority: the candidate route's evidence passes the
+	// shared content checks with THIS lane allowed — never a global allowlist
+	// change.
 	candidateLane string
 	mu            sync.RWMutex
 	latest        []LaneEconomics
@@ -272,18 +272,11 @@ func NewEconomicFeed(ctx context.Context, databaseURL string) (*EconomicFeed, er
 // manifest the worker's selector evaluates against, so the feed can never
 // observe a lane the selector's manifest does not bind and cannot miss one it
 // does. Installed lanes keep the embedded constructor's exact inventory; the
-// candidate AUTO route joins ONLY when the manifest carries a valid existing
-// RuntimeBindings.AutoPolicy binding — never from runtime embedded JSON
-// activation, catalog defaults, or a malformed binding. Absence and a
-// malformed binding both leave the inventory identical to the embedded one,
-// and the candidate route is appended last, after every installed lane.
+// AUTO route is appended last, after every installed lane.
 func NewEconomicFeedOnManifest(ctx context.Context, databaseURL string, manifest RouteManifest) (*EconomicFeed, error) {
 	feed, err := NewEconomicFeed(ctx, databaseURL)
 	if err != nil {
 		return nil, err
-	}
-	if _, err := manifest.autoPolicyBinding(); err != nil {
-		return feed, nil
 	}
 	feed.routes = append(feed.routes, autoAUTOPYUSD)
 	feed.candidateLane = autoAUTOPYUSD.Lane
@@ -308,8 +301,8 @@ func (f *EconomicFeed) Refresh(ctx context.Context) error {
 	}
 	// Manifest authority stays with the feed: installed lanes pass through the
 	// selectorLane set, and the candidate lane is allowed ONLY because this
-	// feed's own constructor proved the manifest binding. The candidate lane
-	// is never written into a global allowlist.
+	// feed's own manifest-scoped constructor added it. The candidate lane is
+	// never written into a global allowlist.
 	laneAllowed := func(lane string) bool {
 		return selectorLane(lane) || (f.candidateLane != "" && lane == f.candidateLane)
 	}

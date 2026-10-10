@@ -242,9 +242,7 @@ func CurrentPolicyMatches(account *chain.Account, policy PolicyConfig, delegate 
 		current.PolicyAccount == policy.Account &&
 		current.DelegatedSigner == delegate &&
 		current.Threshold == 1 &&
-		current.Payload.VaultIndex == expectedVaultIndex &&
-		len(current.Payload.SpendingLimits) == 0 &&
-		squads.ConstraintsEqual(current.Payload.Constraints, expected), nil
+		current.Payload.Policy.Equal(squads.Policy{VaultIndex: expectedVaultIndex, Constraints: expected}), nil
 }
 
 // PolicyDataHash hashes the policy account bytes for the persisted binding.

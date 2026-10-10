@@ -62,16 +62,6 @@ func nonParReviewFixture(t *testing.T, debt, collateral *BudgetPrice, equity int
 	return in
 }
 
-// Local authority closures over the reviewed manifest, independent of the
-// funded-path test helpers.
-func nonParLaneAllowed(m RouteManifest) func(string) bool {
-	return func(lane string) bool { return selectorDestinationLaneAuthorized(m, lane) }
-}
-
-func nonParFundingAllowed(m RouteManifest) func(string) bool {
-	return func(lane string) bool { return m.selectorEntryFundingLane(lane, false) }
-}
-
 func nonParCandidate(t *testing.T, result SelectorResult) *CandidateForecast {
 	t.Helper()
 	for i := range result.Candidates {
@@ -125,8 +115,7 @@ func TestAutoNonParSelectionUsesObservedPriceBounds(t *testing.T) {
 	route, price09, _ := autoDebtPriceFixture(t, 900_000)
 	_, price11, _ := autoDebtPriceFixture(t, 1_100_000)
 	coll10 := autoCollateralPriceFixture(t, 1_000_000)
-	manifest := autoInitializerFixtureManifest(t)
-	allowed, funding := nonParLaneAllowed(manifest), nonParFundingAllowed(manifest)
+	allowed, funding := selectorOrAutoLane, selectorEntryFundingLane
 	validThrough := int64(42 + budgetMaxObservationLagSlots)
 
 	upper09, proceeds := nonParBounds(t, &price09, &coll10, route, validThrough)
@@ -228,8 +217,7 @@ func TestAutoNonParSelectionUsesObservedPriceBounds(t *testing.T) {
 func TestAutoNonParStalePricesNeverSampleNorSelect(t *testing.T) {
 	route, price09, _ := autoDebtPriceFixture(t, 900_000)
 	coll10 := autoCollateralPriceFixture(t, 1_000_000)
-	manifest := autoInitializerFixtureManifest(t)
-	allowed, funding := nonParLaneAllowed(manifest), nonParFundingAllowed(manifest)
+	allowed, funding := selectorOrAutoLane, selectorEntryFundingLane
 	upper09, _ := nonParBounds(t, &price09, &coll10, route, 42+budgetMaxObservationLagSlots)
 	equity := upper09 + 1_000_000
 
@@ -304,11 +292,10 @@ func TestAutoNonParStalePricesNeverSampleNorSelect(t *testing.T) {
 func TestAutoNonParWithdrawalPriorityPrecedesCandidates(t *testing.T) {
 	route, price09, _ := autoDebtPriceFixture(t, 900_000)
 	coll10 := autoCollateralPriceFixture(t, 1_000_000)
-	manifest := autoInitializerFixtureManifest(t)
 	upper09, _ := nonParBounds(t, &price09, &coll10, route, 42+budgetMaxObservationLagSlots)
 	in := nonParReviewFixture(t, &price09, &coll10, upper09+1_000_000)
 	in.Snapshot.WithdrawalDemandRaw = 1
-	result := selectOpportunityWithLanes(in, SelectorState{}, nonParLaneAllowed(manifest), nonParFundingAllowed(manifest))
+	result := selectOpportunityWithLanes(in, SelectorState{}, selectorOrAutoLane, selectorEntryFundingLane)
 	if result.Action != "KEEP" || result.Reason != "withdrawal_unwind_or_accounting_first" {
 		t.Fatal("withdrawal demand did not hold the selection", result)
 	}

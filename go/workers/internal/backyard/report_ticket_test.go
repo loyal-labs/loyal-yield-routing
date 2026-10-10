@@ -56,20 +56,19 @@ func TestCapitalAndNAVBuildAtomicArmThenVoltrPayload(t *testing.T) {
 		action    Action
 		amount    uint64
 		operation byte
-		policy    string
 	}{
-		{VoltrAllocateToSquads, 1_000_000, reportTicketDeposit, bridgeAllocationPolicy},
-		{ReportNAV, 0, reportTicketDeposit, bridgeNAVPolicy},
-		{VoltrRestoreIdle, 1_000_000, reportTicketWithdraw, bridgeWithdrawPolicy},
+		{VoltrAllocateToSquads, 1_000_000, reportTicketDeposit},
+		{ReportNAV, 0, reportTicketDeposit},
+		{VoltrRestoreIdle, 1_000_000, reportTicketWithdraw},
 	}
 	for _, test := range tests {
 		t.Run(string(test.action), func(t *testing.T) {
-			instructions, policy, constraints, err := ticketedBridgeInstructions(bridgeTestRequest(test.action, test.amount))
+			instructions, constraints, err := ticketedBridgeInstructions(bridgeTestRequest(test.action, test.amount))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if policy != mustKey(test.policy) || len(instructions) != 2 || !bytes.Equal(constraints, []byte{0, 1}) {
-				t.Fatalf("atomic policy topology drifted: policy=%v instructions=%d constraints=%v", policy, len(instructions), constraints)
+			if len(instructions) != 2 || !bytes.Equal(constraints, []byte{bridgeArmLeg, bridgeCapitalLeg}) {
+				t.Fatalf("atomic policy topology drifted: instructions=%d constraints=%v", len(instructions), constraints)
 			}
 			arm, capital := instructions[0], instructions[1]
 			if arm.program != mustKey(bridgeAdaptorProgram) || len(arm.data) != reportTicketArmWireLen ||
@@ -107,11 +106,11 @@ func TestCapitalAndNAVBuildAtomicArmThenVoltrPayload(t *testing.T) {
 }
 
 func TestStageRemainsSingleInstructionWithoutTicket(t *testing.T) {
-	instructions, policy, constraints, err := ticketedBridgeInstructions(bridgeTestRequest(StageSquadsToVoltr, 1_000_000))
+	instructions, constraints, err := ticketedBridgeInstructions(bridgeTestRequest(StageSquadsToVoltr, 1_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy != mustKey(bridgeStagePolicy) || len(instructions) != 1 || !bytes.Equal(constraints, []byte{0}) ||
+	if len(instructions) != 1 || !bytes.Equal(constraints, []byte{bridgeStageLeg}) ||
 		instructions[0].program != mustKey(bridgeTokenProgram) {
 		t.Fatal("SPL-only staging topology drifted")
 	}
