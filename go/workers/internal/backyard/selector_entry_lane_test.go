@@ -81,7 +81,7 @@ func TestSelectorEntryFenceRejectsDeferredNewEntry(t *testing.T) {
 	if _, err := db.AcquireRouteLease(ctx, key, "entry-lane-fence", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	budget := Phase3Budget{Pilot: &pilotBudgetAuthority{}}
+	manifest := requireEmbeddedInstalledBinding(t)
 	allocation := BridgeBuildRequest{Action: VoltrAllocateToSquads, AmountRaw: 1_000_000}
 	initializer := KaminoInitializationRequest{RouteLane: PhaseOneLaneID}
 	run := func(operationID string, admission bool, request any, effects ExpectedEffects, slot int64, want string) {
@@ -94,7 +94,7 @@ func TestSelectorEntryFenceRejectsDeferredNewEntry(t *testing.T) {
 			_ = tx.Rollback(ctx)
 			t.Fatal(err)
 		}
-		err = db.authorizeSelectorEntryTx(ctx, tx, operationID, budget, request, effects, slot, admission)
+		err = db.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, request, effects, slot, admission)
 		_ = tx.Rollback(ctx)
 		if want != "" {
 			assertBudgetHold(t, err, want)

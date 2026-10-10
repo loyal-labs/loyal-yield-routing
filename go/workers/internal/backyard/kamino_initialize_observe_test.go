@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -171,7 +170,7 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 		t.Fatal(err)
 	}
 	op := PersistedOperation{Operation: Operation{Decision: Decision{Action: InitializeKaminoObligation, StrategyKey: r.RouteLane, Reason: "multiply_obligation_missing", IdempotencyKey: "initializer-controlled"}}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
-	auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
+	auth := phase3OperationAuthorization{IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
 	rpc := newFakeChain(t, nil)
 	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body struct {
@@ -201,16 +200,18 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 		encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": result})
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
 	})
-	_, err = revaluePhase3SignedInput(context.Background(), rpc, auth, op)
-	var hold *validatedSignedBudgetHold
-	if !errors.As(err, &hold) || hold.hold.Reason != "initializer_prestate_unavailable" {
-		t.Fatalf("missing policy stranded validated wire: %v", err)
+	// The final send proves the persisted wire first; only then is a missing
+	// policy a prestate hold of that proven wire.
+	m := requireEmbeddedInstalledBinding(t)
+	request, effects, err := m.validateSignedIdentity(auth, op)
+	if err != nil {
+		t.Fatal(err)
 	}
+	_, err = m.validateRequestPrestate(context.Background(), rpc, request, effects)
+	assertBudgetHold(t, err, "initializer_prestate_unavailable")
 	op.SignedWireSHA256 = sha256Bytes([]byte("other"))
-	_, err = revaluePhase3SignedInput(context.Background(), rpc, auth, op)
-	if errors.As(err, &hold) {
-		t.Fatal("untrusted wire gained expiry permission")
-	}
+	_, _, err = m.validateSignedIdentity(auth, op)
+	assertBudgetHold(t, err, "persisted_signature_or_expiry_mismatch")
 }
 
 // Fresh later fee and oracle data must not extend the earlier policy/rent read.

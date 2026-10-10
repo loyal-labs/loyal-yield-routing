@@ -137,27 +137,3 @@ func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observ
 	d := Decision{Action: OpenRouteStep, StrategyKey: route.Lane, AmountRaw: 1, Reason: "collateral_requires_borrow", IdempotencyKey: "borrow-admission"}
 	return o, d, KaminoExecutionEvidence{r, effects}, m, rpc, client, accounts
 }
-
-func TestBorrowAdmissionRejectsUnsafeProjectionFundingAndPreservesFundedPath(t *testing.T) {
-	for _, variant := range []string{"position", "fee", "collateral", "clock", "failed", "underfunded"} {
-		t.Run(variant, func(t *testing.T) {
-			output := uint64(20_000)
-			if variant == "underfunded" {
-				output = 2
-			}
-			o, d, e, m, rpc, client, _ := borrowAdmissionFixture(t, output, variant)
-			if _, err := observePhase3BorrowAdmission(context.Background(), rpc, client, m, o, d, e); err == nil {
-				t.Fatal("unsafe borrowing admitted")
-			}
-		})
-	}
-	o, d, e, m, rpc, client, _ := borrowAdmissionFixture(t, 20_000, "funded")
-	plan, err := observePhase3BorrowAdmission(context.Background(), rpc, client, m, o, d, e)
-	if err != nil || plan.BorrowRelease != nil || plan.FundingSwap != nil || len(plan.Exit) != 11 || plan.Payoff.ThroughUnix != 1180 {
-		t.Fatal("already funded return introduced an unnecessary release", err)
-	}
-	_, effects, _, err := plan.PayoffWithdrawal.decode()
-	if err != nil || effects.Accounts[1].BeforeRaw != 1 {
-		t.Fatal("funded return discarded existing collateral", err)
-	}
-}

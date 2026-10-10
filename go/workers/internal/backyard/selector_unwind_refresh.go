@@ -84,7 +84,7 @@ func (d *Database) renewSelectorUnwindOnManifest(ctx context.Context, manifest R
 	}
 	next := previous
 	next.ObservationID, next.EvidenceID, next.CreatedAt = s.ObservationID, source.Recipe.EvidenceID, time.Now().UTC()
-	next.MaxCollateralRaw, next.MaxDebtRaw, next.CostBoundRaw = source.ExitBound.MaxCollateralRaw, source.ExitBound.MaxDebtRaw, source.ExitBound.GrossMicros
+	next.MaxCollateralRaw, next.MaxDebtRaw = source.ExitBound.MaxCollateralRaw, source.ExitBound.MaxDebtRaw
 	if err := manifest.validateUnwindIntent(next); err != nil {
 		return err
 	}
@@ -119,20 +119,10 @@ func (d *Database) renewSelectorUnwindOnManifest(ctx context.Context, manifest R
 		return budgetHold("unwind_refresh_state_changed")
 	}
 	var state struct {
-		Budget Phase3Budget  `json:"phase3"`
 		Unwind *UnwindIntent `json:"selectorUnwind"`
 	}
 	if json.Unmarshal(raw, &state) != nil || state.Unwind == nil || !sameUnwindIntent(*state.Unwind, previous) {
 		return budgetHold("unwind_refresh_intent_changed")
-	}
-	if err = state.Budget.validate(); err != nil {
-		return err
-	}
-	if state.Budget.Pilot == nil {
-		return budgetHold("unwind_refresh_requires_pilot")
-	}
-	if state.Budget.Closed || state.Budget.GoalID != next.BudgetScope || len(state.Budget.Reservations) != 0 || state.Budget.Families[next.BudgetFamily].ExitMicros < next.CostBoundRaw {
-		return budgetHold("unwind_requires_existing_exit_reservation")
 	}
 	var blocked bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key=$1 AND status IN (`+nonterminalStatusSQL+`)) OR EXISTS(SELECT 1 FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key=$1 AND cleared_at IS NULL) OR EXISTS (`+manualRecoveryDerivedLatchSQL+`)`, routeKey).Scan(&blocked); err != nil {

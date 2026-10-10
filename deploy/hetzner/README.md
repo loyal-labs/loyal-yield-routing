@@ -346,7 +346,7 @@ use this additional delay.
 
 Failure guidance distinguishes initializer native funding, SQL/locks, route
 ownership, timeouts, recovery latches, debt-clear guards, quote/valuation
-inputs, budget/policy guards, transaction uncertainty and selector admission.
+inputs, policy and leg-cap guards, transaction uncertainty and selector admission.
 The exact diagnostic code remains visible. Unknown causes, including
 `selector_evaluate_unavailable` and `worker_fault`, are explicitly unclassified;
 operators check the first matching event, release, dependencies and persisted

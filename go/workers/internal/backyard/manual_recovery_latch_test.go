@@ -578,7 +578,7 @@ func TestManualRecoveryConstructionRefreshPersistsHoldBeforeDispatch(t *testing.
 			prepareCalls++
 			return refreshed, BridgeExecutionEvidence{}, nil
 		},
-		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error {
+		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
 			admitCalls++
 			return nil
 		},
@@ -678,7 +678,7 @@ func TestManualRecoveryClearBetweenLatchReadAndRerecordDoesNotRearm(t *testing.T
 		}
 		return healthy, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: decision.Action}}, nil
 	}
-	worker.runtime.admitBridge = func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error {
+	worker.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
 		return nil
 	}
 	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
@@ -737,7 +737,7 @@ func TestManualRecoveryVerifiedConstructionRefreshBuildsThroughProductionPath(t 
 		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
 			return DecisionRecord{OperationID: "verified-refresh-operation", Cycle: 1, Status: Decided}, nil
 		},
-		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
+		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },
 		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
 			buildCalls++
 			return nil
@@ -798,7 +798,7 @@ func TestManualRecoveryUnverifiedConstructionRefreshLatchesThroughProductionPath
 			return refreshed, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: decision.Action}}, nil
 		},
 		recordManualRecovery: db.RecordManualRecovery,
-		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error {
+		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
 			t.Fatal("an unverified construction refresh reached admission")
 			return nil
 		},
@@ -868,7 +868,7 @@ func TestManualRecoveryKaminoConstructionErrorAfterRefreshHoldPersists(t *testin
 			return refreshed, KaminoExecutionEvidence{}, constructionErr
 		},
 		recordManualRecovery: db.RecordManualRecovery,
-		admitKamino: func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
 			t.Fatal("a Kamino construction hold reached admission")
 			return nil
 		},

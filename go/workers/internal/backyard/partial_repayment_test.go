@@ -132,29 +132,32 @@ func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observa
 	return o, d, KaminoExecutionEvidence{r, effects}, m, rpc, client
 }
 
-func TestPartialRepaymentAdmissionPricesRemainingExit(t *testing.T) {
-	o, d, e, m, rpc, client := partialRepaymentFixture(t, "")
-	p, err := observePhase3PartialRepaymentAdmission(context.Background(), rpc, client, m, o, d, e)
+// The bound partial repay leaves debt on the obligation: its simulated
+// poststate repays exactly the step and keeps the collateral in place.
+func TestPartialRepaymentProjectionLeavesDebt(t *testing.T) {
+	o, d, e, m, rpc, _ := partialRepaymentFixture(t, "")
+	projection, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, d, e.Request, e.ExpectedEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.RepaymentProjection == nil || p.Payoff == nil || p.Payoff.ObservedDebtRaw != 500 || p.PayoffRepayment == nil || p.PayoffWithdrawal == nil || p.ExitAfterMicros <= 0 || len(p.Exit) == 0 || p.Snapshot != o.Snapshot {
-		t.Fatalf("incomplete partial exit: %+v", p)
-	}
-	if _, err = validatePilotProjectedReleaseRisk(context.Background(), rpc, &p, 42); err != nil {
-		t.Fatal("fresh partial revalidation", err)
+	route, _ := runtimeRoute(o.Snapshot.RouteLane)
+	obligation, err := decodeKaminoObligation(accountAt(projection.Accounts, route.Kamino.Obligation), route.Kamino)
+	if err != nil || obligation.debtRaw != 500 || obligation.collateralDepositedRaw != uint64(o.Snapshot.PositionCollateralRaw) {
+		t.Fatalf("partial repay poststate: %+v %v", obligation, err)
 	}
 }
+
 func TestPartialRepaymentRejectsProjectedDrift(t *testing.T) {
 	for _, variant := range []string{"debt", "receipts", "collateral", "cash", "failed"} {
 		t.Run(variant, func(t *testing.T) {
-			o, d, e, m, rpc, client := partialRepaymentFixture(t, variant)
-			if _, err := observePhase3PartialRepaymentAdmission(context.Background(), rpc, client, m, o, d, e); err == nil {
-				t.Fatal("changed projection admitted")
+			o, d, e, m, rpc, _ := partialRepaymentFixture(t, variant)
+			if _, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, d, e.Request, e.ExpectedEffects); err == nil {
+				t.Fatal("changed projection bound")
 			}
 		})
 	}
 }
+
 func TestPartialRepaymentDecisionPrincipalCashAndDust(t *testing.T) {
 	o, _, _, _, _, _ := partialRepaymentFixture(t, "")
 	s := o.Snapshot
@@ -173,81 +176,15 @@ func TestPartialRepaymentDecisionPrincipalCashAndDust(t *testing.T) {
 	}
 }
 
-func TestPartialRepaymentFundedTailRevalidatesPriceAndBacking(t *testing.T) {
-	for _, drift := range []string{"", "price", "backing", "debt"} {
-		t.Run(drift, func(t *testing.T) {
-			o, d, e, m, rpc, client := partialRepaymentFixture(t, "funded")
-			p, err := observePhase3PartialRepaymentAdmission(context.Background(), rpc, client, m, o, d, e)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if p.BorrowRelease != nil || p.FundingRelease != nil {
-				t.Fatal("fixture must have funded remaining payoff")
-			}
-			original := rpcOf(rpc).Transport
-			rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				res, err := original.RoundTrip(req)
-				if err != nil {
-					return res, err
-				}
-				body, err := io.ReadAll(res.Body)
-				if err != nil {
-					t.Fatal(err)
-				}
-				res.Body.Close()
-				var payload map[string]any
-				if json.Unmarshal(body, &payload) != nil {
-					t.Fatal("response")
-				}
-				result, _ := payload["result"].(map[string]any)
-				value, _ := result["value"].(map[string]any)
-				rows, _ := value["accounts"].([]any)
-				for i, row := range rows {
-					address := p.RepaymentProjection.Accounts[i].Address
-					a := row.(map[string]any)
-					data := a["data"].([]any)
-					raw, _ := base64.StdEncoding.DecodeString(data[0].(string))
-					route, _ := runtimeRoute(o.Snapshot.RouteLane)
-					if address == route.Kamino.CollateralReserve && drift == "price" {
-						raw[248] ^= 1
-					}
-					if address == route.Kamino.CollateralReserve && drift == "backing" {
-						binary.LittleEndian.PutUint64(raw[224:232], binary.LittleEndian.Uint64(raw[224:232])+1000)
-					}
-					if address == route.Kamino.Obligation && drift == "debt" {
-						putScaledFraction(raw[1296:1312], new(big.Int).Lsh(big.NewInt(1000), 60))
-					}
-					data[0] = base64.StdEncoding.EncodeToString(raw)
-				}
-				body, _ = json.Marshal(payload)
-				res.Body = io.NopCloser(bytes.NewReader(body))
-				return res, nil
-			})
-			_, err = validatePilotProjectedReleaseRisk(context.Background(), rpc, &p, 42)
-			if (drift == "") != (err == nil) {
-				t.Fatalf("drift %q: %v", drift, err)
-			}
-		})
-	}
-}
-
 func TestPartialRepaymentUnverifiedRiskCannotCommitUnwind(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
-	o, decision, e, m, rpc, client := partialRepaymentFixture(t, "funded")
+	o, decision, e, m, rpc, _ := partialRepaymentFixture(t, "funded")
 	key := fmt.Sprintf("partial-unwind-%d", time.Now().UnixNano())
 	id := key + "-operation"
-	prior := emptyTestBudget()
-	prior.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000}
-	authority := pilotTestAuthority(prior)
-	budget, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	budget.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000, ExitMicros: 90_000_000}
-	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget})
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
+	raw, _ := json.Marshal(map[string]any{"generation": 2})
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}
 	envelope, err := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, decision, m.SHA256, *m.PolicyCatalog.SHA256)})
@@ -262,42 +199,38 @@ func TestPartialRepaymentUnverifiedRiskCannotCommitUnwind(t *testing.T) {
 	}
 	// This historical fixture hand-sets LTV and has no coherent observer
 	// batch. A projected partial repay cannot manufacture emergency authority.
-	assertBudgetHold(t, db.admitPhase3Withdrawal(ctx, rpc, client, m, id, o, decision, e), "debt_clear_emergency_evidence_unavailable")
-	var unwind, admitted, wire, sent bool
-	if err = db.pool.QueryRow(ctx, `SELECT route.state->'selectorUnwind' IS NOT NULL,op.expected_effects ? 'phase3',op.signed_wire IS NOT NULL,op.broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route USING(route_key) WHERE operation_id=$1`, id).Scan(&unwind, &admitted, &wire, &sent); err != nil {
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, m, id, o, decision, e.Request, e.ExpectedEffects), "debt_clear_emergency_evidence_unavailable")
+	var unwind, bound, wire, sent bool
+	if err = db.pool.QueryRow(ctx, `SELECT route.state->'selectorUnwind' IS NOT NULL,op.expected_effects ? 'phase3',op.signed_wire IS NOT NULL,op.broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route USING(route_key) WHERE operation_id=$1`, id).Scan(&unwind, &bound, &wire, &sent); err != nil {
 		t.Fatal(err)
 	}
-	if unwind || admitted || wire || sent {
+	if unwind || bound || wire || sent {
 		t.Fatal("unverified risk mutated durable capital authority")
 	}
 }
 
-// B2 1.75x exit cycle: exit_partial_repay on OnRe runs the same measured
-// partial-repay admission (projection + complete remaining exit), repays
-// less than the whole debt, and writes no unwind intent of its own.
-func TestExitPartialRepayAdmissionOnLeverageLane(t *testing.T) {
-	o, d, e, m, rpc, client := partialRepaymentFixtureForLane(t, onreONycUSDC, "")
+// B2 1.75x exit cycle: exit_partial_repay on OnRe takes the same measured
+// partial-repay proof, repays less than the whole debt, and writes no unwind
+// intent of its own.
+func TestExitPartialRepayProjectionOnLeverageLane(t *testing.T) {
+	o, d, e, m, rpc, _ := partialRepaymentFixtureForLane(t, onreONycUSDC, "")
 	if d.Reason != exitPartialRepayReason || d.AmountRaw >= o.Snapshot.PositionDebtRaw {
 		t.Fatalf("decision %+v", d)
 	}
-	p, err := observePhase3PartialRepaymentAdmission(context.Background(), rpc, client, m, o, d, e)
-	if err != nil {
+	if _, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, d, e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
-	if p.RepaymentProjection == nil || p.Payoff == nil || p.PayoffRepayment == nil || p.PayoffWithdrawal == nil || p.ExitAfterMicros <= 0 || len(p.Exit) == 0 {
-		t.Fatalf("incomplete exit: %+v", p)
-	}
 	for _, variant := range []string{"debt", "receipts", "collateral", "cash", "failed"} {
-		o, d, e, m, rpc, client := partialRepaymentFixtureForLane(t, onreONycUSDC, variant)
-		if _, err := observePhase3PartialRepaymentAdmission(context.Background(), rpc, client, m, o, d, e); err == nil {
-			t.Fatalf("%s: changed projection admitted", variant)
+		o, d, e, m, rpc, _ := partialRepaymentFixtureForLane(t, onreONycUSDC, variant)
+		if _, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, d, e.Request, e.ExpectedEffects); err == nil {
+			t.Fatalf("%s: changed projection bound", variant)
 		}
 	}
 	// A full repayment is never an exit cycle; Maple keeps only hard LTV.
 	full := d
 	full.AmountRaw = o.Snapshot.PositionDebtRaw
-	if _, err := observePhase3PartialRepaymentAdmission(context.Background(), rpc, client, m, o, full, e); err == nil {
-		t.Fatal("whole-debt repay admitted as a cycle")
+	if _, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, full, e.Request, e.ExpectedEffects); err == nil {
+		t.Fatal("whole-debt repay bound as a cycle")
 	}
 	if partialRepaymentLane(SelectedRouteID, exitPartialRepayReason) || !partialRepaymentLane(autoAUTOPYUSD.Lane, exitPartialRepayReason) || partialRepaymentLane(autoAUTOPYUSD.Lane, "hard_ltv_partial_repay") {
 		t.Fatal("partial-repay lane scope")

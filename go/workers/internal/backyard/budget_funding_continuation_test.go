@@ -47,18 +47,29 @@ func TestFundingContinuationPreservesFundedAndUSDCResiduePaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if plan.FundingRelease != nil {
+		var delevers int
+		var fundingSwap, withdrawal *phase3BuildInput
+		for _, step := range plan.Exit {
+			switch step.Action {
+			case DeleverRouteStep:
+				delevers++
+				withdrawal = step.Template
+			case SwapUSDCToDebtStep:
+				fundingSwap = step.Template
+			}
+		}
+		if delevers != 2 {
 			t.Fatal("unnecessary release")
 		}
 		if funded {
-			if plan.FundingSwap != nil || len(plan.Exit) != 12 {
+			if fundingSwap != nil || len(plan.Exit) != 12 {
 				t.Fatal("funded NAV converted leftover collateral/USDC again")
 			}
 		} else {
-			if plan.FundingSwap == nil || len(plan.Exit) != 14 {
+			if fundingSwap == nil || len(plan.Exit) != 14 {
 				t.Fatal("USDC funding omitted")
 			}
-			r, effects, _, err := plan.FundingSwap.Input.decode()
+			r, effects, _, err := fundingSwap.decode()
 			if err != nil || r.(JupiterSwapRequest).Action != SwapUSDCToDebtStep {
 				t.Fatal("dust selected ahead of sufficient USDC", err)
 			}
@@ -72,7 +83,7 @@ func TestFundingContinuationPreservesFundedAndUSDCResiduePaths(t *testing.T) {
 				t.Fatal("actual USDC funding rejected collateral remainder", err)
 			}
 		}
-		_, effects, _, err := plan.PayoffWithdrawal.decode()
+		_, effects, _, err := withdrawal.decode()
 		if err != nil || effects.Accounts[1].BeforeRaw != 1 {
 			t.Fatal("return lost preserved collateral remainder", err)
 		}

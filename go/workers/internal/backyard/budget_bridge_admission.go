@@ -22,36 +22,15 @@ type phase3BridgeExitCost struct {
 }
 
 type phase3BridgeAdmission struct {
-	Snapshot              Snapshot                `json:"snapshot"`
-	Decision              Decision                `json:"decision"`
-	Input                 *phase3BuildInput       `json:"input"`
-	CurrentCost           ValuedTransactionCost   `json:"currentCost"`
-	Exit                  []phase3BridgeExitCost  `json:"exit"`
-	ExitAfterMicros       int64                   `json:"exitAfterMicros"`
-	ValidThroughSlot      int64                   `json:"validThroughSlot"`
-	QuotedExit            *phase3QuotedExit       `json:"quotedExit,omitempty"`
-	AdditionalQuotedExits []phase3QuotedExit      `json:"additionalQuotedExits,omitempty"`
-	Payoff                *KaminoPayoffBound      `json:"payoff,omitempty"`
-	PayoffWithdrawal      *phase3BuildInput       `json:"payoffWithdrawal,omitempty"`
-	PayoffRepayment       *phase3BuildInput       `json:"payoffRepayment,omitempty"`
-	FundingSwap           *phase3QuotedExit       `json:"fundingSwap,omitempty"`
-	FundingRelease        *phase3BuildInput       `json:"fundingRelease,omitempty"`
-	DepositProjection     *phase3KaminoProjection `json:"depositProjection,omitempty"`
-	BorrowProjection      *phase3KaminoProjection `json:"borrowProjection,omitempty"`
-	RepaymentProjection   *phase3KaminoProjection `json:"repaymentProjection,omitempty"`
-	LeverageProjection    *phase3KaminoProjection `json:"leverageProjection,omitempty"`
-	BorrowRelease         *phase3BuildInput       `json:"borrowRelease,omitempty"`
-	// ExitCycles is the number of B2 1.75x exit cycles priced before the
-	// final payoff; BorrowRelease is then the first cycle's release, sized
-	// over 7 + 3*ExitCycles steps.
-	ExitCycles int `json:"exitCycles,omitempty"`
-}
-
-type phase3QuotedExit struct {
-	Input                   *phase3BuildInput `json:"input"`
-	QuotedOutputRaw         uint64            `json:"quotedOutputRaw"`
-	EstimatedUpperOutputRaw uint64            `json:"estimatedUpperOutputRaw"`
-	ProofLevel              string            `json:"proofLevel"`
+	Snapshot         Snapshot               `json:"snapshot"`
+	Decision         Decision               `json:"decision"`
+	Input            *phase3BuildInput      `json:"input"`
+	CurrentCost      ValuedTransactionCost  `json:"currentCost"`
+	Exit             []phase3BridgeExitCost `json:"exit"`
+	ExitAfterMicros  int64                  `json:"exitAfterMicros"`
+	ValidThroughSlot int64                  `json:"validThroughSlot"`
+	Payoff           *KaminoPayoffBound     `json:"payoff,omitempty"`
+	PayoffRepayment  *phase3BuildInput      `json:"payoffRepayment,omitempty"`
 }
 
 // This first admission shape is deliberately closed over existing USDC bridge
@@ -61,7 +40,7 @@ func phase3BridgeTemplates(s Snapshot, decision Decision, evidence BridgeExecuti
 	r := evidence.Request
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.HasAmbiguousSubmission || s.Nonterminal != "" || s.CutoverDrain ||
-		s.StrategyKey != s.RouteLane || decision.StrategyKey != s.RouteLane || phase3BudgetFamilyForLane(s.RouteLane) == "" {
+		s.StrategyKey != s.RouteLane || decision.StrategyKey != s.RouteLane || !fundedLane(s.RouteLane) {
 		return nil, budgetHold("bridge_admission_snapshot_unavailable")
 	}
 	if _, err := runtimeRoute(s.RouteLane); err != nil {
@@ -170,9 +149,8 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *chain.Client, observ
 }
 
 // observePhase3BridgeTemplateAdmission prices a follow-up NAV report that is
-// never sent as priced: payoff and withdrawal admissions use it only for the
-// report fee of their exit plan, and the real report is prepared and admitted
-// again later. The adaptor's 32-slot report age limit therefore does not bound
+// never sent as priced: payoff and withdrawal pricers use it only for the
+// report fee of their exit plan, and the real report is prepared again later. The adaptor's 32-slot report age limit therefore does not bound
 // the current (Kamino) wire; the ordinary observation window does. Capping it
 // at 32 slots (2fc768f) made every AUTO repayment expire before send, since
 // that tick takes ~14 s (live 2026-09-28 13:33-13:39).
@@ -296,36 +274,4 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 		}
 	}
 	return plan, nil
-}
-
-// Measurement does not grant a limit. Enforce every gross transaction in the
-// complete exit under the route lock using the budget read in that transaction.
-// This also prevents a caller from understating ExitAfterMicros independently
-// of its retained step evidence.
-func (b Phase3Budget) validateExitPlanCaps(plan phase3BridgeAdmission) error {
-	cap := b.deploymentLimits().TransactionMicros
-	if plan.CurrentCost.TotalMicros <= 0 {
-		return budgetHold("invalid_current_transaction_cost")
-	}
-	if plan.CurrentCost.TotalMicros > cap {
-		return budgetHold("transaction_cap_exceeded")
-	}
-	var total int64
-	for _, step := range plan.Exit {
-		if step.Cost.TotalMicros <= 0 {
-			return budgetHold("invalid_exit_transaction_cost")
-		}
-		if step.Cost.TotalMicros > cap {
-			return budgetHold("bridge_exit_or_transaction_cap_exceeded")
-		}
-		var err error
-		total, err = budgetSum(total, step.Cost.TotalMicros)
-		if err != nil {
-			return err
-		}
-	}
-	if total != plan.ExitAfterMicros {
-		return budgetHold("exit_cost_sum_mismatch")
-	}
-	return nil
 }

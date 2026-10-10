@@ -6,10 +6,10 @@ package backyard
 // classifies that refusal correctly but the previous binary's action gate
 // forced the row into manual recovery, which capital-stops the whole route
 // through UnresolvedCapitalRecoverySQL. Reprocessing runs the SAME finalized
-// fee settlement as the automatic path (settleFinalizedReportFailure): the
-// receipt must prove the exact persisted wire rolled back, the measured fee is
-// booked as spent, and the single guarded UPDATE moves manual_recovery ->
-// failed. There is no SQL reset, no re-send, and no spent-fee discard; every
+// failure settlement as the automatic path (settleFinalizedReportFailure): the
+// receipt must prove the exact persisted wire rolled back, and the single
+// guarded UPDATE moves manual_recovery -> failed. There is no SQL reset and no
+// re-send; every
 // other manual recovery row is untouched — the worker's
 // UnresolvedCapitalRecoverySQL continues to block them for new capital.
 //
@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -55,11 +54,10 @@ type ManualRestoreFailureResult struct {
 	Executable            bool   `json:"executable"`
 	Executed              bool   `json:"executed"`
 	TerminalStatus        string `json:"terminalStatus,omitempty"`
-	BookedFeeMicros       int64  `json:"bookedFeeMicros,omitempty"`
 	LeaseReleaseConfirmed bool   `json:"leaseReleaseConfirmed,omitempty"`
 }
 
-// manualRestoreNoNonterminalSQL is the only route-activity gate for this fee
+// manualRestoreNoNonterminalSQL is the only route-activity gate for this
 // settlement command: the route lease must cover a route with no nonterminal
 // operation. Historical manual rows — including previously resolved strategy
 // resets — are deliberately not consulted here; they stay untouched, and the
@@ -202,9 +200,8 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		}
 		// A BudgetHold names the exact existing safety guard that refused
 		// settlement; surfacing its Reason alone keeps operator output fixed
-		// while still identifying the guard. The row is unchanged and the fee
-		// remains reserved; the sanitized stage code is all the operator
-		// output carries.
+		// while still identifying the guard. The row is unchanged; the
+		// sanitized stage code is all the operator output carries.
 		var hold *BudgetHold
 		if errors.As(settleErr, &hold) {
 			result.Stage = hold.Reason
@@ -217,17 +214,14 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		result.Stage = "lease_release"
 		return result, errors.New("settle-manual-restore: settled but lease release unconfirmed")
 	}
-	var terminalStatus, bookedFee string
-	if err := db.pool.QueryRow(ctx, `SELECT status, COALESCE(reconciled_effects->>'bookedFeeMicros','') FROM loyal_yield.multiply_operations
+	var terminalStatus string
+	if err := db.pool.QueryRow(ctx, `SELECT status FROM loyal_yield.multiply_operations
 		WHERE operation_id=$1 AND status='failed' AND action=$2 AND transaction_signature=$3 AND confirmation_status='finalized'`,
-		operation.ID, string(VoltrRestoreIdle), operation.TransactionSignature).Scan(&terminalStatus, &bookedFee); err != nil {
+		operation.ID, string(VoltrRestoreIdle), operation.TransactionSignature).Scan(&terminalStatus); err != nil {
 		result.Stage = "verify_failed"
 		return result, sanitizedStage(result.Stage)
 	}
 	result.Executed = true
 	result.TerminalStatus = terminalStatus
-	if fee, feeErr := strconv.ParseInt(bookedFee, 10, 64); feeErr == nil {
-		result.BookedFeeMicros = fee
-	}
 	return result, nil
 }

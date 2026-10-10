@@ -194,8 +194,9 @@ func TestAutoCleanupWithdrawalAdmissionPricesRefreshedExtraProceedsFully(t *test
 	if returnRaw <= staleForecastBound {
 		t.Fatalf("fixture lost its extra-proceeds shape: %d", returnRaw)
 	}
-	if plan.QuotedExit == nil || plan.QuotedExit.QuotedOutputRaw != returnRaw*3/2000 {
-		t.Fatalf("collateral conversion did not price the full observed remainder: %+v", plan.QuotedExit)
+	quotes := planSwapQuotes(t, plan)
+	if len(quotes) == 0 || quotes[0].QuotedOutputRaw != returnRaw*3/2000 {
+		t.Fatalf("collateral conversion did not price the full observed remainder: %+v", quotes)
 	}
 	var actions []Action
 	for _, step := range plan.Exit {
@@ -211,11 +212,8 @@ func TestAutoCleanupWithdrawalAdmissionPricesRefreshedExtraProceedsFully(t *test
 	if !reflect.DeepEqual(actions, want) {
 		t.Fatalf("cleanup exit order drifted: %v", actions)
 	}
-	if len(plan.AdditionalQuotedExits) != 1 || plan.AdditionalQuotedExits[0].QuotedOutputRaw != state.custodyPYUSD {
-		t.Fatalf("PYUSD residue conversion missing from the quoted plan: %+v", plan.AdditionalQuotedExits)
-	}
-	if plan.QuotedExit.EstimatedUpperOutputRaw <= plan.QuotedExit.QuotedOutputRaw || plan.QuotedExit.ProofLevel != "UNSIGNED_PROSPECTIVE_QUOTE_COST_ESTIMATE_NOT_EXECUTION_OR_OUTPUT_GUARANTEE" {
-		t.Fatalf("quoted exit lost its estimate/proof discipline: %+v", plan.QuotedExit)
+	if len(quotes) != 2 || quotes[1].QuotedOutputRaw != state.custodyPYUSD {
+		t.Fatalf("PYUSD residue conversion missing from the quoted plan: %+v", quotes)
 	}
 	if plan.ExitAfterMicros <= 0 || plan.CurrentCost.PrincipalMicros <= 0 {
 		t.Fatalf("cleanup plan carried no cost discipline: %+v", plan)
@@ -245,11 +243,12 @@ func TestAutoCleanupCollateralReturnAdmissionConvertsCustodyThenResidue(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.QuotedExit == nil || plan.QuotedExit.QuotedOutputRaw != state.custodyAUTO*3/2000 {
-		t.Fatalf("current custody swap was not the priced head: %+v", plan.QuotedExit)
+	quotes := planSwapQuotes(t, plan)
+	if len(quotes) != 2 || quotes[0].QuotedOutputRaw != state.custodyAUTO*3/2000 {
+		t.Fatalf("current custody swap was not the priced head: %+v", quotes)
 	}
-	if len(plan.AdditionalQuotedExits) != 1 || plan.AdditionalQuotedExits[0].QuotedOutputRaw != state.custodyPYUSD {
-		t.Fatalf("PYUSD residue conversion not quoted after the collateral swap: %+v", plan.AdditionalQuotedExits)
+	if quotes[1].QuotedOutputRaw != state.custodyPYUSD {
+		t.Fatalf("PYUSD residue conversion not quoted after the collateral swap: %+v", quotes)
 	}
 	var actions []Action
 	for _, step := range plan.Exit {
@@ -291,11 +290,9 @@ func TestAutoCleanupDebtResidueContinuesAfterCollateralExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.QuotedExit == nil || plan.QuotedExit.QuotedOutputRaw != state.custodyPYUSD {
-		t.Fatalf("debt-only tail did not price the residue: %+v", plan.QuotedExit)
-	}
-	if len(plan.AdditionalQuotedExits) != 0 {
-		t.Fatalf("debt-only tail invented extra conversions: %+v", plan.AdditionalQuotedExits)
+	quotes := planSwapQuotes(t, plan)
+	if len(quotes) != 1 || quotes[0].QuotedOutputRaw != state.custodyPYUSD {
+		t.Fatalf("debt-only tail did not price exactly the residue: %+v", quotes)
 	}
 	var actions []Action
 	for _, step := range plan.Exit {
@@ -446,8 +443,8 @@ func TestAutoCleanupDecisionProgressionFollowsPostPayoffLadder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if plan.QuotedExit == nil || plan.QuotedExit.QuotedOutputRaw != (state.custodyAUTO+redeemed)*3/2000 {
-			t.Fatalf("decide->admission handoff lost the full observed remainder: %+v", plan.QuotedExit)
+		if quotes := planSwapQuotes(t, plan); len(quotes) == 0 || quotes[0].QuotedOutputRaw != (state.custodyAUTO+redeemed)*3/2000 {
+			t.Fatalf("decide->admission handoff lost the full observed remainder: %+v", quotes)
 		}
 	})
 	t.Run("custody converts before residue", func(t *testing.T) {
@@ -476,4 +473,26 @@ func TestAutoCleanupDecisionProgressionFollowsPostPayoffLadder(t *testing.T) {
 		// construct an entry, swap, or withdrawal.
 		assertDecision(t, decision, ReportNAV, "withdrawal_terminal_nav_due", 0)
 	})
+}
+
+// planSwapQuotes decodes a priced plan's swap legs in order: the current leg
+// when it is a swap, then every swap template of its exit.
+func planSwapQuotes(t *testing.T, plan phase3BridgeAdmission) []JupiterSwapRequest {
+	t.Helper()
+	inputs := []*phase3BuildInput{plan.Input}
+	for _, step := range plan.Exit {
+		inputs = append(inputs, step.Template)
+	}
+	var quotes []JupiterSwapRequest
+	for _, input := range inputs {
+		if input == nil || input.Kind != "jupiter" {
+			continue
+		}
+		var r JupiterSwapRequest
+		if err := json.Unmarshal(input.Request, &r); err != nil {
+			t.Fatal(err)
+		}
+		quotes = append(quotes, r)
+	}
+	return quotes
 }

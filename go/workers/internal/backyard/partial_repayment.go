@@ -5,61 +5,53 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-// Partial repayment has the same recovery budget as any other exit. Its
-// simulated poststate prices a complete remaining exit, never settled NAV.
-func observePhase3PartialRepaymentAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+// observePartialRepaymentProjection is the debt-clear partial-repayment proof
+// taken at bind: the repay leg is the planner's exact partial step, its
+// custody prestate is current, and its simulated poststate leaves debt on the
+// obligation.
+func observePartialRepaymentProjection(ctx context.Context, rpc *chain.Client, m RouteManifest, s Snapshot, d Decision, r KaminoPrimeUSDCRequest, e ExpectedEffects) (phase3KaminoProjection, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	s, r := o.Snapshot, e.Request
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
-	if err != nil || rpc == nil || client == nil || !partialRepaymentLane(s.RouteLane, d.Reason) || !s.Fresh || s.Slot <= 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteKind != RouteKind || s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 1 || d.Action != DeleverRouteStep || r.Action != d.Action || !partialRepaymentReason(d.Reason) || !decisionsEqual(m.DecideOnManifest(s), d) || d.AmountRaw <= 0 || r.AmountRaw != partialRepaymentWireRaw(s, d) || r.AmountRaw == 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || uint64(debtCashRaw(s)) < r.AmountRaw || leg != kaminoLegRepay || r.FullPayoff || r.RepaymentRelease {
-		return phase3BridgeAdmission{}, budgetHold("partial_repayment_admission_unavailable")
-	}
-	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
+	if err != nil || rpc == nil || !partialRepaymentLane(s.RouteLane, d.Reason) || !s.Fresh || s.Slot <= 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteKind != RouteKind || s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 1 || d.Action != DeleverRouteStep || r.Action != d.Action || !partialRepaymentReason(d.Reason) || !decisionsEqual(m.DecideOnManifest(s), d) || d.AmountRaw <= 0 || r.AmountRaw != partialRepaymentWireRaw(s, d) || r.AmountRaw == 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || uint64(debtCashRaw(s)) < r.AmountRaw || leg != kaminoLegRepay || r.FullPayoff || r.RepaymentRelease {
+		return phase3KaminoProjection{}, budgetHold("partial_repayment_proof_unavailable")
 	}
 	route, err := runtimeRoute(r.RouteLane)
 	if err != nil {
-		return phase3BridgeAdmission{}, err
+		return phase3KaminoProjection{}, err
 	}
-	before, accounts, err := observeKaminoPayoffWindow(ctx, rpc, route, max(s.Slot, current.ObservationSlot), 1)
+	before, accounts, err := observeKaminoPayoffWindow(ctx, rpc, route, s.Slot, 1)
 	if err != nil {
-		return phase3BridgeAdmission{}, err
+		return phase3KaminoProjection{}, err
 	}
 	if !sameAccruingDebt(before, s.PositionDebtRaw) {
-		return phase3BridgeAdmission{}, budgetHold("partial_repayment_prestate_changed")
+		return phase3KaminoProjection{}, budgetHold("partial_repayment_prestate_changed")
 	}
-	for _, effect := range e.ExpectedEffects.Accounts {
+	for _, effect := range e.Accounts {
 		a := accountAt(accounts, effect.Address)
 		mint, _ := decodeBase58PublicKey(effect.Mint)
 		owner, _ := decodeBase58PublicKey(effect.Authority)
 		c, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
 		if err != nil || a.Executable || a.Lamports == 0 || a.Owner != effect.Owner || c.Raw != effect.BeforeRaw {
-			return phase3BridgeAdmission{}, budgetHold("partial_repayment_prestate_changed")
+			return phase3KaminoProjection{}, budgetHold("partial_repayment_prestate_changed")
 		}
 	}
 	message, err := CompileKaminoMessage(r)
 	if err != nil {
-		return phase3BridgeAdmission{}, err
+		return phase3KaminoProjection{}, err
 	}
 	addresses := depositProjectionAddresses(route)
 	addresses = append(addresses, route.Kamino.DebtReserve, route.DebtLiquiditySupply)
 	projection, err := simulatePhase3EntryProjection(ctx, rpc, message, addresses, before.ObservedSlot)
 	if err != nil {
-		return phase3BridgeAdmission{}, err
+		return phase3KaminoProjection{}, err
 	}
-	if _, err = validatePartialRepaymentProjection(r, e.ExpectedEffects, s, projection); err != nil {
-		return phase3BridgeAdmission{}, err
+	if _, err = validatePartialRepaymentProjection(r, e, s, projection); err != nil {
+		return phase3KaminoProjection{}, err
 	}
-	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, client, m, o, d, r, e.ExpectedEffects, current, projection)
-	if err == nil {
-		plan.RepaymentProjection = &projection
-	}
-	return plan, err
+	return projection, nil
 }
 
 func validatePartialRepaymentProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, s Snapshot, p phase3KaminoProjection) (KaminoPayoffBound, error) {
@@ -102,9 +94,9 @@ func validatePartialRepaymentProjection(r KaminoPrimeUSDCRequest, e ExpectedEffe
 }
 
 // B2 1.75x exit: exit_partial_repay repays one cycle's funding inside a
-// withdrawal, unwind or down move. It uses the same measured admission as
-// the hard-LTV partial repay (projection, complete remaining exit), but it
-// is not a risk reduction, so it writes no unwind intent of its own.
+// withdrawal, unwind or down move. It takes the same partial-repayment proof
+// as the hard-LTV partial repay, but it is not a risk reduction, so it writes
+// no unwind intent of its own.
 const exitPartialRepayReason = "exit_partial_repay"
 
 func partialRepaymentReason(reason string) bool {

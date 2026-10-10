@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"math/big"
 	"os"
-	"reflect"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -89,33 +88,15 @@ func payoffAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...Co
 	return o, d, KaminoExecutionEvidence{request, effects}, manifest, rpc, client, accounts
 }
 
-func TestFundedPayoffAdmissionReservesCompleteReturnAndPostPayoffNAV(t *testing.T) {
-	o, d, e, m, rpc, client, accounts := payoffAdmissionFixture(t, 20_000)
-	plan, err := observePhase3PayoffAdmission(context.Background(), rpc, client, m, o, d, e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var actions []Action
-	var total int64
-	for _, step := range plan.Exit {
-		actions = append(actions, step.Action)
-		total += step.Cost.TotalMicros
-	}
-	want := []Action{ReportNAV, DeleverRouteStep, ReportNAV, SwapCollateralToStableStep, ReportNAV, SwapDebtToUSDCStep, ReportNAV, StageSquadsToVoltr, ReportNAV, VoltrRestoreIdle, ReportNAV}
-	if !reflect.DeepEqual(actions, want) || total != plan.ExitAfterMicros || plan.Payoff == nil || plan.Payoff.UpperDebtRaw != 1_001 ||
-		plan.Payoff.InterestBasis != 1 || plan.PayoffWithdrawal == nil || len(plan.AdditionalQuotedExits) != 1 || plan.Snapshot.PositionDebtRaw != 1_000 {
-		t.Fatal("payoff reserve omitted interest, residue or complete return", plan)
-	}
-	withdrawRequest, _, _, err := plan.PayoffWithdrawal.decode()
-	if err != nil || withdrawRequest.(KaminoPrimeUSDCRequest).AmountRaw != 100_000_000 {
-		t.Fatal("missing full withdrawal template", err)
-	}
-	// A successful repayment now has a fresh NAV -> withdrawal -> return path.
+// After a successful repayment the debt-free position has a fresh NAV ->
+// withdrawal -> return path, and a later nonzero debt invalidates it.
+func TestPostPayoffNAVPricesTheDebtFreeReturn(t *testing.T) {
+	o, _, _, m, rpc, client, accounts := payoffAdmissionFixture(t, 20_000)
 	// Model a 1000-unit actual repayment; largest possible residue is 10000.
 	obligation := accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation)
 	clear(obligation.Data[1208:1408])
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.DebtIdleRaw = 0, 0, 10_000
-	d = Decision{Action: ReportNAV, StrategyKey: o.Snapshot.RouteLane}
+	d := Decision{Action: ReportNAV, StrategyKey: o.Snapshot.RouteLane}
 	effects, _, _, err := bridgeExpectedEffects(d, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -123,58 +104,32 @@ func TestFundedPayoffAdmissionReservesCompleteReturnAndPostPayoffNAV(t *testing.
 	request := bridgeTestRequest(ReportNAV, 0)
 	request.Report.Sequence, request.Report.ObservedSlot = 42, 42
 	nav, err := pricePhase3PositionReturn(context.Background(), rpc, client, m, o, d, request, effects, false)
-	if err != nil || len(nav.Exit) != 10 || nav.Exit[0].Action != DeleverRouteStep || nav.PayoffWithdrawal == nil {
-		t.Fatal("post-payoff NAV lost its reserved return", err)
+	if err != nil || len(nav.Exit) != 10 || nav.Exit[0].Action != DeleverRouteStep || nav.Exit[0].Template == nil {
+		t.Fatal("post-payoff NAV lost its return", err)
 	}
-	// A later nonzero debt observation invalidates that debt-free continuation.
+	withdrawRequest, _, _, err := nav.Exit[0].Template.decode()
+	if err != nil || withdrawRequest.(KaminoPrimeUSDCRequest).AmountRaw != 100_000_000 {
+		t.Fatal("missing full withdrawal template", err)
+	}
 	putScaledFraction(obligation.Data[1296:1312], new(big.Int).Lsh(big.NewInt(1), 60))
 	putKey(t, obligation.Data[1208:1240], ethenaUSDePYUSD.Kamino.DebtReserve)
 	if _, err := pricePhase3PositionReturn(context.Background(), rpc, client, m, o, d, request, effects, false); err == nil {
-		t.Fatal("nonzero debt became debt-free NAV admission")
+		t.Fatal("nonzero debt became a debt-free NAV")
 	}
 }
 
-func TestFundedPayoffRejectsInsufficientInterestAndChangedStateBeforeSigner(t *testing.T) {
-	for _, mutate := range []func(*Observation, *KaminoExecutionEvidence, []ConfirmedAccount){
-		func(_ *Observation, e *KaminoExecutionEvidence, _ []ConfirmedAccount) { e.Request.FullPayoff = false },
-		func(_ *Observation, e *KaminoExecutionEvidence, _ []ConfirmedAccount) {
-			e.Request.AmountRaw = 1_000
-			binary.LittleEndian.PutUint64(e.Request.Data[8:], 1_000)
-		},
-		func(o *Observation, _ *KaminoExecutionEvidence, _ []ConfirmedAccount) { o.Snapshot.DebtIdleRaw = 1_000 },
-		func(_ *Observation, _ *KaminoExecutionEvidence, a []ConfirmedAccount) {
-			accountAt(a, ethenaUSDePYUSD.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+9] = 2
-		},
-	} {
-		o, d, e, m, rpc, client, a := payoffAdmissionFixture(t, 20_000)
-		mutate(&o, &e, a)
-		if _, err := observePhase3PayoffAdmission(context.Background(), rpc, client, m, o, d, e); err == nil {
-			t.Fatal("unsafe payoff admitted")
-		}
-	}
-	o, d, e, m, rpc, client, _ := payoffAdmissionFixture(t, 900_000)
-	_, err := legacyAdmissionCostCheck(observePhase3PayoffAdmission(context.Background(), rpc, client, m, o, d, e))
-	assertBudgetHold(t, err, "bridge_exit_or_transaction_cap_exceeded")
-	// The same full-payoff condition runs when repricing persisted signed bytes.
+// The full-payoff condition runs on the persisted signed bytes at build and
+// send: a changed rate is not grandfathered by yesterday's sufficient wire.
+func TestFullPayoffPrestateRefusesUnderfundingBeforeSigner(t *testing.T) {
 	_, _, e, _, rpc, _, a := payoffAdmissionFixture(t, 20_000)
-	encoded, _ := jsonMarshalExpectedEffects(e.ExpectedEffects)
-	input, _ := encodePhase3BuildInput(e.Request, encoded)
-	digest, _ := Phase3IntentDigest(e.Request, encoded)
-	message, _ := CompileKaminoMessage(e.Request)
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
-	op := PersistedOperation{Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
-	auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
-	if _, err := revaluePhase3SignedInput(context.Background(), rpc, auth, op); err != nil {
+	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
-	// A changed rate is not grandfathered by yesterday's sufficient wire.
 	reserve := accountAt(a, ethenaUSDePYUSD.Kamino.DebtReserve)
 	for i := 0; i < 11; i++ {
 		binary.LittleEndian.PutUint32(reserve.Data[kaminoReserveConfigOffset+68+i*8:], 1_000_000_000)
 	}
-	_, err = revaluePhase3SignedInput(context.Background(), rpc, auth, op)
-	assertBudgetHold(t, err, "full_payoff_request_underfunded")
+	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects), "full_payoff_request_underfunded")
 }
 
 func TestPayoffBoundUsesAccrualBasisAndUnroundedDebt(t *testing.T) {

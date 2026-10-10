@@ -18,9 +18,9 @@ repayments that belongs to a full-exit flow needs the same confirmation.
 
 Debt-preserving partial withdrawals and risk reduction can continue under their
 existing checks. NAV reports and cost-only forecasts remain automatic. Every
-transaction retains its custody, budget, freshness and protocol checks.
+transaction retains its custody, freshness and protocol checks.
 
-The worker checks the approval at locked admission, before signing, and before
+The worker checks the approval at the locked bind, before signing, and before
 recording broadcast intent. Signed transactions retain the same approval
 requirement across restarts.
 
@@ -41,8 +41,8 @@ at most 4096 bytes. Its fields are:
 | `acknowledgeUnavailableReborrow` | `true`, after acknowledging that reborrowing may be unavailable. |
 | `expiresAt` | An RFC3339 timestamp in the future, at most 15 minutes from acceptance. |
 
-The command's existing lane, purpose, observation, evidence, debt, collateral
-and cost arguments define the approved exit. Review those bounds and the dry-run
+The command's existing lane, purpose, observation, evidence, debt and
+collateral arguments define the approved exit. Review those bounds and the dry-run
 output before executing. Use current observed evidence; do not guess amounts or
 reuse an expired observation. Protect credentials through the existing systemd
 credential mechanism.
@@ -70,7 +70,7 @@ Existing protocol emergency flags and genuine recovery safety stops still apply.
 
 ## Restart and rollout checks
 
-A denied signed transaction retains its exact wire and reservation while it can
+A denied signed transaction retains its exact wire while it can
 still land. Once finalized block height proves expiry, a subsequent signature
 absence check can retire it automatically. This recovery does not wait for
 operator confirmation. Already broadcast or ambiguous work keeps its existing

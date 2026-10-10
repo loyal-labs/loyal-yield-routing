@@ -39,7 +39,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// seedAdmissionRouteState reseeds the version-2 activated pilot route with no
+// seedAdmissionRouteState reseeds the version-2 route with no
 // guard rows and NO lease (the route row is replaced, so any previous lease is
 // gone); the caller's pool then acquires the lease it needs — the route lease
 // is exclusive, so exactly one pool may hold it per phase.
@@ -49,14 +49,7 @@ func seedAdmissionRouteState(t *testing.T, ctx context.Context, db *Database, ke
 	if _, err := db.ReleaseRouteLease(ctx); err != nil {
 		t.Fatal(err)
 	}
-	prior := emptyTestBudget()
-	authority := pilotTestAuthority(prior)
-	activated, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	activated.Families["AUTO"] = FamilyBudget{SpentMicros: 7_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
+	state, err := json.Marshal(map[string]any{"generation": 2})
 	if err != nil {
 		t.Fatal(err)
 	}

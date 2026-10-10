@@ -24,9 +24,8 @@ type selectorRecipe struct {
 	CostRaw int64                   `json:"costRaw"`
 	// ExpectedCostRaw is the forecast economic expense at central observed
 	// prices, always present on freshly priced recipes (zero stays zero, never
-	// an unknown). Every admission, reservation and spending bound keeps the
-	// conservative CostRaw upper exposure bound; only selector net-yield
-	// comparison reads this.
+	// an unknown). Bounds keep the conservative CostRaw upper exposure bound;
+	// only selector net-yield comparison reads this.
 	ExpectedCostRaw  *int64 `json:"expectedCostRaw,omitempty"`
 	SetupLamports    uint64 `json:"setupLamports"`
 	NetworkLamports  uint64 `json:"networkLamports"`
@@ -37,7 +36,7 @@ type selectorRecipe struct {
 // selectorMidpointPriceValue reconstructs the central observed USDC value of a
 // token amount from the symmetric independently observed upper/lower interval
 // components of one BudgetPrice, using integer arithmetic only. It prices
-// expectations, never bounds: admissions and reservations stay on CostRaw.
+// expectations, never bounds: bounds stay on CostRaw.
 func selectorMidpointPriceValue(p BudgetPrice, raw uint64, mint, program string, slot int64) (int64, error) {
 	if raw == 0 || p.Mint != mint || p.TokenProgram != program || p.Decimals > 18 || p.ObservedSlot <= 0 || slot < p.ObservedSlot || slot > p.ValidThroughSlot || p.ValidThroughSlot < p.ObservedSlot || p.ValidThroughSlot-p.ObservedSlot > budgetMaxObservationLagCeilingSlots || !sha256Pattern.MatchString(p.EvidenceSHA256) {
 		return 0, budgetHold("missing_stale_or_mismatched_usdc_valuation")
@@ -255,7 +254,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 		cost.ExecutionCost = &expense
 		// The expected swap expense prices the validated pre-threshold quote
 		// output at central observed prices. The guaranteed MinimumOutputRaw
-		// bound above remains the reservation and admission floor; fees and
+		// bound above remains the cost floor; fees and
 		// protocol rounding keep their bound expense on every step.
 		stepExpected := expense.TotalMicros
 		if r, ok := s.request.(JupiterSwapRequest); ok {

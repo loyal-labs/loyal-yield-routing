@@ -369,7 +369,7 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 					order = append(order, "build")
 					return nil
 				},
-				admitJupiter: func(_ context.Context, id string, observed Observation, d Decision, _ JupiterExecutionEvidence) error {
+				bind: func(_ context.Context, id string, observed Observation, d Decision, _ any, _ ExpectedEffects) error {
 					if id != "local-conversion" || observed != o || d != want {
 						t.Fatal("admission identity drift")
 					}
@@ -380,7 +380,7 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 			if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != "prepare,record,admit,build" {
 				t.Fatal(order, err)
 			}
-			worker.runtime.admitJupiter = func(context.Context, string, Observation, Decision, JupiterExecutionEvidence) error {
+			worker.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
 				return budgetHold("complete_collateral_return_admission_unavailable")
 			}
 			worker.runtime.buildJupiter = func(context.Context, string, JupiterExecutionEvidence) error {

@@ -16,7 +16,6 @@ func unwindIntentCommandRequest(lane string) UnwindIntentCommitRequest {
 		ObservationID:    "observation-1",
 		MaxCollateralRaw: 100,
 		MaxDebtRaw:       50,
-		CostBoundRaw:     2_000_000,
 		EvidenceID:       sha256Bytes([]byte("exit-evidence")),
 	}
 }
@@ -36,7 +35,7 @@ func TestUnwindIntentCommitDryRunValidatesWithoutDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal("embedded dry-run refused an installed-lane intent:", err)
 	}
-	if !result.DryRun || result.Intent.SourceLane != SelectedRouteID || result.Intent.BudgetScope != Phase3GoalID || result.Intent.BudgetFamily != "Maple" {
+	if !result.DryRun || result.Intent.SourceLane != SelectedRouteID || result.Intent.MaxDebtRaw != 50 || result.Intent.MaxCollateralRaw != 100 {
 		t.Fatalf("dry-run lost the derived intent identity: %+v", result)
 	}
 	if result.Intent.CreatedAt.IsZero() {
@@ -46,11 +45,6 @@ func TestUnwindIntentCommitDryRunValidatesWithoutDatabase(t *testing.T) {
 	invalid.Reason = "operator_preference"
 	if _, err = RunUnwindIntentCommit(ctx, "", invalid, false); err == nil || !strings.Contains(err.Error(), "invalid_unwind_intent") {
 		t.Fatalf("dry-run accepted an off-list reason: %v", err)
-	}
-	unfunded := unwindIntentCommandRequest(SelectedRouteID)
-	unfunded.CostBoundRaw = 0
-	if _, err = RunUnwindIntentCommit(ctx, "", unfunded, false); err == nil || !strings.Contains(err.Error(), "invalid_unwind_intent") {
-		t.Fatalf("dry-run accepted a zero cost bound: %v", err)
 	}
 	unknown := unwindIntentCommandRequest("AUTO/AUTO/USDC")
 	if _, err = RunUnwindIntentCommit(ctx, "", unknown, false); err == nil || !strings.Contains(err.Error(), "invalid_unwind_intent") {
@@ -100,18 +94,11 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 	reviewed := autoInitializerFixtureManifest(t)
 	// Dry-run through the core needs no database and admits the candidate.
 	result, err := runUnwindIntentCommitOnManifest(ctx, reviewed, "", "selector-auto-cmd", unwindIntentCommandRequest(autoAUTOPYUSD.Lane), false)
-	if err != nil || !result.DryRun || result.Intent.BudgetFamily != "AUTO" {
+	if err != nil || !result.DryRun || result.Intent.SourceLane != autoAUTOPYUSD.Lane {
 		t.Fatalf("reviewed dry-run refused the candidate intent: %+v %v", result, err)
 	}
 	key := fmt.Sprintf("selector-auto-unwind-cmd-%d", time.Now().UnixNano())
-	prior := emptyTestBudget()
-	authority := pilotTestAuthority(prior)
-	activated, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	activated.Families["AUTO"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
+	state, err := json.Marshal(map[string]any{"generation": 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,17 +120,8 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 	if _, err = db.AcquireRouteLease(ctx, key, "unwind-candidate-after", time.Minute); err != nil {
 		t.Fatal("command lease was not released:", err)
 	}
-	// Both binding states on the public path: before the release the embedded
-	// wrapper refused the candidate lane outright (invalid_unwind_intent);
-	// with the installed binding shipped, the lane authority admits it and the
-	// next guard in the same chain — the funded exit reservation — is what
-	// closes this second attempt. The reviewed commit above ran on the random
-	// candidate key and never touched the public production row, so this
-	// attempt is grounded in explicitly seeded state instead of whatever
-	// earlier tests left behind: release the asserted random-key lease, clear
-	// only the production route's operations and manual latch, and upsert its
-	// route state as generation 1 with an empty non-pilot budget — no funded
-	// AUTO exit, no lease, no committed unwind.
+	// The public wrapper resolves the same lane through the installed
+	// embedded binding and commits on a clean production row.
 	if _, err = db.ReleaseRouteLease(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -153,24 +131,28 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 	if _, err = db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_operations WHERE route_key = $1`, productionRouteKey); err != nil {
 		t.Fatal(err)
 	}
-	publicPrior := emptyTestBudget()
-	publicState, err := json.Marshal(map[string]any{"generation": 1, "phase3": publicPrior})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version)
-		VALUES($1,$2,1)
-		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = 1, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey, publicState); err != nil {
+		VALUES($1,'{"generation":1}',1)
+		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = 1, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey); err != nil {
 		t.Fatal(err)
 	}
-	_, publicErr := RunUnwindIntentCommit(ctx, url, confirmedUnwindIntentCommandRequest(autoAUTOPYUSD.Lane), true)
-	assertBudgetHold(t, publicErr, "unwind_requires_existing_exit_reservation")
+	public, err := RunUnwindIntentCommit(ctx, url, confirmedUnwindIntentCommandRequest(autoAUTOPYUSD.Lane), true)
+	if err != nil || public.Intent.SourceLane != autoAUTOPYUSD.Lane {
+		t.Fatalf("installed binding refused the AUTO unwind: %+v %v", public, err)
+	}
+	embedded := requireEmbeddedInstalledBinding(t)
+	stored, err = db.LoadUnwindIntentOnManifest(ctx, embedded, productionRouteKey)
+	if err != nil || stored == nil || !sameUnwindIntent(*stored, public.Intent) {
+		t.Fatalf("public execute lost the committed intent: %+v %v", stored, err)
+	}
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{selectorUnwind}','null',true), lease_owner=NULL, lease_expires_at=NULL WHERE route_key=$1`, productionRouteKey); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Execute acquires its own short route lease, commits through the shared
 // guarded store call, and releases the lease — proven against one real route
-// row on the disposable database with an installed lane and a funded exit
-// reservation.
+// row on the disposable database with an installed lane.
 func TestUnwindIntentCommitExecuteCommitsUnderOwnLease(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
@@ -179,19 +161,12 @@ func TestUnwindIntentCommitExecuteCommitsUnderOwnLease(t *testing.T) {
 	if _, err := db.ReleaseRouteLease(ctx); err != nil {
 		t.Fatal(err)
 	}
-	prior := emptyTestBudget()
-	authority := pilotTestAuthority(prior)
-	activated, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	activated.Families["Maple"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
+	state, err := json.Marshal(map[string]any{"generation": 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The reset above re-seeds a minimal production-route row; replace it with
-	// the activated budget this execute run commits against.
+	// the generation this execute run commits against.
 	if _, err = db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_route_states WHERE route_key = $1`, productionRouteKey); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +176,7 @@ func TestUnwindIntentCommitExecuteCommitsUnderOwnLease(t *testing.T) {
 	request := confirmedUnwindIntentCommandRequest(SelectedRouteID)
 	result, err := RunUnwindIntentCommit(ctx, url, request, true)
 	if err != nil {
-		t.Fatal("execute refused a funded installed-lane unwind:", err)
+		t.Fatal("execute refused an installed-lane unwind:", err)
 	}
 	if result.DryRun {
 		t.Fatal("execute reported itself as a dry-run")

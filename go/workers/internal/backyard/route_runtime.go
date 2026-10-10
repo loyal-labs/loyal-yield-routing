@@ -146,6 +146,17 @@ func mapleKaminoPolicyHashes() map[string]string {
 	}
 }
 
+// fundedLane reports the lanes the funded program runs. Their bridge legs
+// need every bridge policy and the report ticket, and their entry swaps return
+// to the position. Retained Prime sibling evidence does not fund a lane.
+func fundedLane(lane string) bool {
+	switch lane {
+	case "OnRe/ONyc/USDC", "OnRe/ONyc/USDG", "OnRe/ONyc/USDS", "AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD", "Prime/PRIME/USDC", SelectedRouteID:
+		return true
+	}
+	return false
+}
+
 func runtimeRoute(lane string) (RuntimeRoute, error) {
 	switch lane {
 	case RouteID:

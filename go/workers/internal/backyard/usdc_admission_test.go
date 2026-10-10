@@ -153,42 +153,6 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 	return o, m, rpc, client, accounts
 }
 
-func TestUSDCPayoffReservesCashOnceAndNoSelfSwap(t *testing.T) {
-	o, m, rpc, client, accounts := usdcReturnFixture(t)
-	route, _ := runtimeRoute(o.Snapshot.RouteLane)
-	d := Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, AmountRaw: 1000, Reason: "withdrawal_repay_debt"}
-	r, err := m.kaminoPacketForRoute(d.Action, kaminoLegRepay, 1001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.FullPayoff = true
-	r.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
-	effects, err := boundedKaminoRepaymentEffects(accounts, source, destination, 1000, 1001)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err := observePhase3PayoffAdmission(context.Background(), rpc, client, m, o, d, KaminoExecutionEvidence{r, effects})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.Snapshot != o.Snapshot || len(plan.AdditionalQuotedExits) != 0 {
-		t.Fatal("USDC representation changed or self-swap included")
-	}
-	for _, step := range plan.Exit {
-		if step.Action == SwapDebtToUSDCStep {
-			t.Fatal("USDC self-swap")
-		}
-		if step.Action == StageSquadsToVoltr && step.Amount != 10_000+plan.QuotedExit.EstimatedUpperOutputRaw {
-			t.Fatal("cash counted twice", step.Amount)
-		}
-	}
-	o.Snapshot.DebtIdleRaw = 11_000
-	if _, err = observePhase3PayoffAdmission(context.Background(), rpc, client, m, o, d, KaminoExecutionEvidence{r, effects}); err == nil {
-		t.Fatal("duplicate debt cash representation accepted")
-	}
-}
-
 func TestUSDCEntryConsumesWorkingCashAndValidatesSharedSourceOnce(t *testing.T) {
 	o, m, rpc, client, accounts := usdcReturnFixture(t)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
@@ -230,7 +194,7 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 		o, _, evidence := bridgeAdmissionFixture(t, d.Action, d.AmountRaw, s.VoltrIdleRaw, 0, 0)
 		o.Snapshot.RouteLane, o.Snapshot.StrategyKey = lane, lane
 		d.StrategyKey = lane
-		if _, err := phase3BridgeTemplates(o.Snapshot, d, evidence); phase3BudgetFamilyForLane(lane) == "" {
+		if _, err := phase3BridgeTemplates(o.Snapshot, d, evidence); !fundedLane(lane) {
 			assertBudgetHold(t, err, "bridge_admission_snapshot_unavailable")
 		} else if err != nil {
 			t.Fatal("bounded allocation return", err)
@@ -250,7 +214,7 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 			}
 			o, _, evidence = bridgeAdmissionFixture(t, d.Action, d.AmountRaw, changed.VoltrIdleRaw, 0, changed.SquadsIdleRaw)
 			o.Snapshot.RouteLane, o.Snapshot.StrategyKey = lane, lane
-			if _, err := phase3BridgeTemplates(o.Snapshot, d, evidence); phase3BudgetFamilyForLane(lane) == "" {
+			if _, err := phase3BridgeTemplates(o.Snapshot, d, evidence); !fundedLane(lane) {
 				assertBudgetHold(t, err, "bridge_admission_snapshot_unavailable")
 			} else if err != nil {
 				t.Fatal("capacity return", err)
@@ -321,7 +285,7 @@ func TestUSDCHardLTVRequiresExecutablePayoff(t *testing.T) {
 	}
 }
 
-func TestUSDCCanaryAllocationFitsMeasuredCompleteBridgeReturn(t *testing.T) {
+func TestUSDCCanaryAllocationPricesCompleteBridgeReturn(t *testing.T) {
 	s := base()
 	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 	s.VoltrIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = 5_000_000, 5_000_000, 5_000_000, int64(strategyTwoBridgeLegCapRaw)
@@ -336,12 +300,12 @@ func TestUSDCCanaryAllocationFitsMeasuredCompleteBridgeReturn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.CurrentCost.TotalMicros >= Phase3TransactionCapMicros || len(plan.Exit) != 5 {
-		t.Fatal("canary has no measured return headroom")
+	if plan.CurrentCost.TotalMicros <= 0 || len(plan.Exit) != 5 {
+		t.Fatal("canary has no measured return")
 	}
 	for _, step := range plan.Exit {
-		if step.Cost.TotalMicros >= Phase3TransactionCapMicros {
-			t.Fatal("return leg exceeds canary budget")
+		if step.Cost.TotalMicros <= 0 {
+			t.Fatal("return leg is not priced")
 		}
 	}
 }

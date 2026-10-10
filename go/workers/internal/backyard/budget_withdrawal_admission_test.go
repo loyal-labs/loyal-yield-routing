@@ -147,17 +147,17 @@ func TestWithdrawalAdmissionPricesCompleteCrossProtocolReturn(t *testing.T) {
 		actions = append(actions, step.Action)
 		total += step.Cost.TotalMicros
 	}
+	quotes := planSwapQuotes(t, plan)
 	if !reflect.DeepEqual(actions, []Action{ReportNAV, SwapCollateralToStableStep, ReportNAV, StageSquadsToVoltr, ReportNAV, VoltrRestoreIdle, ReportNAV}) ||
-		total != plan.ExitAfterMicros || plan.Input.Kind != "kamino" || plan.CurrentCost.PrincipalMicros <= 100_000 || plan.ExitAfterMicros <= 300_000 ||
-		plan.QuotedExit == nil || plan.QuotedExit.EstimatedUpperOutputRaw <= plan.QuotedExit.QuotedOutputRaw || plan.QuotedExit.Input.Kind != "jupiter" {
+		total != plan.ExitAfterMicros || plan.Input.Kind != "kamino" || plan.CurrentCost.PrincipalMicros <= 100_000 || plan.ExitAfterMicros <= 300_000 || len(quotes) != 1 {
 		t.Fatalf("incomplete exit estimate: %+v", plan)
 	}
-	// Same durable boundary as bridge admission, but missing DB cannot be
-	// mistaken for acceptance or bypassed by a successfully constructed quote.
-	assertBudgetHold(t, (&Database{}).admitPhase3Withdrawal(context.Background(), rpc, client, manifest, "missing", o, d, evidence), "bridge_admission_database_unavailable")
+	if upper, err := withdrawalUSDCExitEstimate(quotes[0].QuotedOutputRaw); err != nil || upper <= quotes[0].QuotedOutputRaw {
+		t.Fatalf("exit estimate is not margined above the quote: %+v %v", quotes[0], err)
+	}
 }
 
-func TestWithdrawalAdmissionRejectsUnsafeOrIncompleteReturn(t *testing.T) {
+func TestWithdrawalPricingRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 	for _, mutate := range []func(*Observation, *KaminoExecutionEvidence){
 		func(o *Observation, _ *KaminoExecutionEvidence) { o.Snapshot.PositionDebtRaw = 1 },
 		func(o *Observation, _ *KaminoExecutionEvidence) { o.Snapshot.DebtIdleRaw = -1 },
@@ -169,11 +169,8 @@ func TestWithdrawalAdmissionRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 		_, err := observePhase3WithdrawalAdmission(context.Background(), nil, nil, manifest, o, d, evidence)
 		assertBudgetHold(t, err, "complete_position_exit_admission_unavailable")
 	}
-	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 990_000)
-	_, err := legacyAdmissionCostCheck(observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence))
-	assertBudgetHold(t, err, "bridge_exit_or_transaction_cap_exceeded")
 	for _, value := range []uint64{0, math.MaxUint64} {
-		if _, err = withdrawalUSDCExitEstimate(value); err == nil {
+		if _, err := withdrawalUSDCExitEstimate(value); err == nil {
 			t.Fatal("invalid quote estimate accepted")
 		}
 	}
@@ -203,36 +200,12 @@ func TestWithdrawalAdmissionRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 	})
 }
 
-func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T) {
+func TestWithdrawalReturnContinuesThroughNAVSwapAndBridge(t *testing.T) {
 	ctx := context.Background()
 	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
-	plan, err := observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, o, d, evidence)
-	if err != nil {
+	if _, err := observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, o, d, evidence); err != nil {
 		t.Fatal(err)
 	}
-	budget := emptyTestBudget()
-	budget.Families["Ethena"] = FamilyBudget{ExitMicros: 1_000_000}
-	var spent int64
-	consume := func(plan phase3BridgeAdmission) {
-		t.Helper()
-		request, _, _, err := plan.Input.decode()
-		if err != nil {
-			t.Fatal(err)
-		}
-		digest, err := Phase3IntentDigest(request, plan.Input.Effects)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r := BudgetReservation{OperationID: "return", Family: "Ethena", IntentSHA256: digest, UpperMicros: plan.CurrentCost.TotalMicros, ExitAfterMicros: plan.ExitAfterMicros, Recovery: true}
-		if err = budget.Admit(r); err != nil {
-			t.Fatal(err)
-		}
-		if err = budget.Settle(r.OperationID, digest, r.UpperMicros, r.ExecutionCostUpperMicros); err != nil {
-			t.Fatal(err)
-		}
-		spent += r.UpperMicros
-	}
-	consume(plan)
 	// Controlled poststates are bookkeeping witnesses, not claims that any
 	// transaction ran. Each subsequent price uses the actual production path.
 	o.Snapshot.HasPosition = false
@@ -246,21 +219,27 @@ func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T)
 	}
 	reportEffects.Kind, reportEffects.ReturnData = "bridge", expectedAdaptorReturnData(100_000)
 	d = Decision{Action: ReportNAV, StrategyKey: o.Snapshot.RouteLane}
-	plan, err = observePhase3CollateralReturnAdmission(ctx, rpc, client, manifest, o, d, report, reportEffects)
+	plan, err := observePhase3CollateralReturnAdmission(ctx, rpc, client, manifest, o, d, report, reportEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
-	consume(plan)
-	swapRequest, swapEffects, _, err := plan.QuotedExit.Input.decode()
+	var swapTemplate *phase3BuildInput
+	for _, step := range plan.Exit {
+		if step.Action == SwapCollateralToStableStep {
+			swapTemplate = step.Template
+		}
+	}
+	if swapTemplate == nil {
+		t.Fatal("NAV omitted the collateral conversion")
+	}
+	swapRequest, swapEffects, _, err := swapTemplate.decode()
 	if err != nil {
 		t.Fatal(err)
 	}
 	d = Decision{Action: SwapCollateralToStableStep, StrategyKey: o.Snapshot.RouteLane, AmountRaw: 100_000_000}
-	plan, err = observePhase3CollateralReturnAdmission(ctx, rpc, nil, manifest, o, d, swapRequest, swapEffects)
-	if err != nil {
+	if _, err = observePhase3CollateralReturnAdmission(ctx, rpc, nil, manifest, o, d, swapRequest, swapEffects); err != nil {
 		t.Fatal(err)
 	}
-	consume(plan)
 	o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.SquadsIdleRaw = 0, 0, 100_000
 	d = Decision{Action: ReportNAV, StrategyKey: o.Snapshot.RouteLane}
 	reportEffects, _, _, err = bridgeExpectedEffects(d, 0, 0, 100_000)
@@ -274,11 +253,9 @@ func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T)
 	}
 	for _, step := range steps {
 		d.Action, d.AmountRaw = step.Request.Action, int64(step.Request.AmountRaw)
-		plan, err = observePhase3BridgeAdmission(ctx, rpc, o, d, step)
-		if err != nil {
+		if _, err = observePhase3BridgeAdmission(ctx, rpc, o, d, step); err != nil {
 			t.Fatal(err)
 		}
-		consume(plan)
 		for _, effect := range step.ExpectedEffects.Accounts {
 			switch effect.Address {
 			case bridgeIdleATA:
@@ -290,9 +267,8 @@ func TestWithdrawalReturnAdmissionContinuesThroughNAVSwapAndBridge(t *testing.T)
 			}
 		}
 	}
-	if budget.Families["Ethena"].SpentMicros != spent || spent <= 400_000 || budget.Families["Ethena"].ExitMicros != 0 ||
-		o.Snapshot.VoltrIdleRaw != 100_000 || o.Snapshot.SquadsIdleRaw != 0 || o.Snapshot.VoltrStrategyIdleRaw != 0 {
-		t.Fatal("full return lost spent, reserve or custody accounting")
+	if o.Snapshot.VoltrIdleRaw != 100_000 || o.Snapshot.SquadsIdleRaw != 0 || o.Snapshot.VoltrStrategyIdleRaw != 0 {
+		t.Fatal("full return lost custody")
 	}
 }
 
@@ -327,103 +303,10 @@ func installedAutoPolicyAccount(t *testing.T) ConfirmedAccount {
 	return ConfirmedAccount{Address: fixture.Address, Owner: fixture.Account.Owner, Lamports: fixture.Account.Lamports, Executable: fixture.Account.Executable, Data: data}
 }
 
-// Keep positive full-exit admissions on lanes the operator can actually authorize.
-// The legacy Ethena fixtures remain the independent pricing/wire tests above.
-func supportedFullExitAdmissionFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, JupiterExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
-	t.Helper()
-	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, "OnRe/ONyc/USDC")
-	route, err := runtimeRoute(o.Snapshot.RouteLane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var kamino KaminoExecutionEvidence
-	var swap JupiterExecutionEvidence
-	if variant == "auto_funding" {
-		m, route, accounts = autoObservationBatch(t, 42, func(batch []ConfirmedAccount) {
-			obligation := kaminoObligationImage(t, autoAUTOPYUSD, 42, 100_000_000, 1_000)
-			copy(accountAt(batch, autoAUTOPYUSD.Kamino.Obligation).Data, obligation.Data)
-			binary.LittleEndian.PutUint64(accountAt(batch, autoAUTOPYUSD.CollateralCustody).Data[64:72], 20_000_000)
-			binary.LittleEndian.PutUint64(accountAt(batch, autoAUTOPYUSD.DebtCustody).Data[64:72], 0)
-			binary.LittleEndian.PutUint64(accountAt(batch, bridgeSquadsATA).Data[64:72], 0)
-		})
-		// Persisted production admission recompiles against the embedded
-		// installed binding, not autoObservationBatch's synthetic candidate.
-		installed := installedAutoFixtureBinding(t)
-		m.RuntimeBindings.AutoPolicy = &installed
-		upsertConfirmedAccount(&accounts, installedAutoPolicyAccount(t))
-		o, _, err = autoObservationForAccounts(m, 42, accounts)(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		o.Snapshot.ReportSnapshotDigest = sha256Bytes([]byte("auto-collateral-funding-admission"))
-		rpc = autoPayoffRPC(t, 42, append(accounts, autoPayoffMints(t, route)...))
-		client = autoCandidateJupiter(t, route)
-	} else if variant != "payoff" {
-		o.Snapshot.SquadsIdleRaw = 0
-		binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 0)
-		if variant == "funding" {
-			o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.CollateralIdleValueRaw = 20_000_000, 20_000_000, 20_000
-			binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 20_000_000)
-		}
-	}
-	d := Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, IdempotencyKey: "supported-" + variant}
-	switch variant {
-	case "payoff":
-		d.AmountRaw, d.Reason = 1_000, "withdrawal_repay_debt"
-		request, err := m.kaminoPacketForRoute(d.Action, kaminoLegRepay, 1_001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request.FullPayoff = true
-		request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-		source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
-		effects, err := boundedKaminoRepaymentEffects(accounts, source, destination, 1_000, 1_001)
-		if err != nil {
-			t.Fatal(err)
-		}
-		kamino = KaminoExecutionEvidence{request, effects}
-	case "release":
-		d.AmountRaw, d.Reason = 1, "withdrawal_release_repayment_collateral"
-		observed, full, err := observeKaminoPayoffWindow(context.Background(), rpc, route, o.Snapshot.Slot, 5)
-		if err != nil {
-			t.Fatal(err)
-		}
-		bound, err := decodeKaminoRepaymentRelease(full, route, observed.ObservedSlot)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request, err := m.kaminoPacketForRoute(d.Action, kaminoLegWithdraw, bound.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-		request.RepaymentRelease = true
-		source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
-		effects, err := exactKaminoTokenEffects(full, source, destination, bound.LiquidityRaw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		kamino = KaminoExecutionEvidence{request, effects}
-	case "funding", "auto_funding":
-		d.Action, d.AmountRaw, d.Reason = SwapCollateralToDebtStep, o.Snapshot.CollateralIdleRaw, "withdrawal_swap_repayment_buffer"
-		swap, err = prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, d, uint64(d.AmountRaw), uint64(debtCashRaw(o.Snapshot)), o.Snapshot.Slot)
-		if err != nil {
-			t.Fatal(err)
-		}
-		swap.Request.FullPayoffFunding = true
-	default:
-		t.Fatal("unsupported full-exit fixture variant", variant)
-	}
-	return o, d, kamino, swap, m, rpc, client
-}
-
-func testProductionWithdrawalAdmission(t *testing.T, url string) {
-	for _, variant := range []string{"collateral", "debt_residue", "payoff", "funding", "auto_funding", "release", "entry_swap", "deposit"} {
-		t.Run(variant, func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, variant) })
-	}
-	// The legacy catalog's USDC->PYUSD quote is not an edge of the current
-	// AUTO combined policy. Refuse it before a build or journal write instead
-	// of promoting the old positive fixture to unsupported execution authority.
+// Unsupported exits refuse before any quote, journal or authority write: the
+// legacy catalog's USDC->PYUSD quote is not an edge of the current AUTO
+// combined policy, and an Ethena unwind is outside the installed lane authority.
+func TestUnsupportedExitsRefuseBeforeAnyWrite(t *testing.T) {
 	t.Run("usdc_funding", func(t *testing.T) {
 		ctx, db, key := prepareDebtClearDatabase(t)
 		manifest := requireEmbeddedInstalledBinding(t)
@@ -441,13 +324,13 @@ func testProductionWithdrawalAdmission(t *testing.T, url string) {
 			t.Fatal(err)
 		}
 		if before != after || operations != 0 {
-			t.Fatal("unsupported AUTO edge changed authority, budget, or operations")
+			t.Fatal("unsupported AUTO edge changed authority or operations")
 		}
 	})
 	t.Run("unsupported_ethena_confirmation", func(t *testing.T) {
 		ctx, db, key := prepareDebtClearDatabase(t)
 		manifest := requireEmbeddedInstalledBinding(t)
-		intent := UnwindIntent{SourceLane: ethenaUSDePYUSD.Lane, Reason: "withdrawal_shortfall", ObservationID: "unsupported-ethena", MaxCollateralRaw: 100_000_000, MaxDebtRaw: 2_000, CostBoundRaw: 1_000_000, BudgetScope: Phase3GoalID, BudgetFamily: "Ethena", EvidenceID: sha256Bytes([]byte("unsupported-ethena")), CreatedAt: time.Now().UTC()}
+		intent := UnwindIntent{SourceLane: ethenaUSDePYUSD.Lane, Reason: "withdrawal_shortfall", ObservationID: "unsupported-ethena", MaxCollateralRaw: 100_000_000, MaxDebtRaw: 2_000, EvidenceID: sha256Bytes([]byte("unsupported-ethena")), CreatedAt: time.Now().UTC()}
 		confirmation := DebtClearConfirmation{RequestID: sha256Bytes([]byte(key)), ConfirmedBy: "privileged-test-operator", ConfirmationRecord: sha256Bytes([]byte(key + "-confirmation")), AcknowledgeUnavailableReborrow: true, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}
 		var before, after string
 		if err := db.pool.QueryRow(ctx, `SELECT state::text FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&before); err != nil {
@@ -461,217 +344,7 @@ func testProductionWithdrawalAdmission(t *testing.T, url string) {
 			t.Fatal(err)
 		}
 		if before != after || operations != 0 {
-			t.Fatal("unsupported confirmation wrote authority, budget, or operations")
+			t.Fatal("unsupported confirmation wrote authority or operations")
 		}
 	})
-}
-
-func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string) {
-	debtResidue, payoff, funding, release := variant != "collateral", variant == "payoff", variant == "funding" || variant == "auto_funding", variant == "release"
-	entry := variant == "entry_swap"
-	deposit := variant == "deposit"
-	if entry || deposit {
-		debtResidue = false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	db, err := OpenDatabase(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
-	if debtResidue {
-		o, d, evidence, manifest, rpc, client = debtResidueAdmissionFixture(t, 20_000)
-	}
-	if deposit {
-		o, d, evidence, manifest, rpc, client, _ = depositAdmissionFixture(t, "")
-	}
-	var fundingEvidence JupiterExecutionEvidence
-	if entry {
-		o, d, fundingEvidence, manifest, rpc, client, _ = entrySwapAdmissionFixture(t)
-	}
-	confirmedExit := payoff || funding || release
-	if confirmedExit {
-		o, d, evidence, fundingEvidence, manifest, rpc, client = supportedFullExitAdmissionFixture(t, variant)
-		debtResidue = o.Snapshot.RouteLane == autoAUTOPYUSD.Lane
-	}
-	key := fmt.Sprintf("phase3-withdrawal-producer-%d", time.Now().UnixNano())
-	id := key + "-operation"
-	b := emptyTestBudget()
-	state, err := json.Marshal(map[string]any{"generation": 1, "phase3": b})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,$2::jsonb)`, key, string(state)); err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, d, manifest.SHA256, *manifest.PolicyCatalog.SHA256)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects) VALUES($1,$2,'decided',$3,$4,$5::jsonb)`, id, key, d.Action, d.StrategyKey, string(envelope)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.AcquireRouteLease(ctx, key, "withdrawal-producer", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	admit := func() error {
-		if deposit {
-			return db.admitPhase3Deposit(ctx, rpc, client, manifest, id, o, d, evidence)
-		}
-		if entry {
-			return db.admitPhase3EntrySwap(ctx, rpc, client, manifest, id, o, d, fundingEvidence)
-		}
-		if funding {
-			return db.admitPhase3Funding(ctx, rpc, client, manifest, id, o, d, fundingEvidence.Request, fundingEvidence.ExpectedEffects)
-		}
-		return db.admitPhase3Withdrawal(ctx, rpc, client, manifest, id, o, d, evidence)
-	}
-	beforeReserve, beforeJSON := int64(1_000_000), "1000000"
-	if variant == "auto_funding" {
-		// This complete non-USDC return measures 1,353,645 micros across all
-		// legs. The test operator explicitly approves $1.50 from existing
-		// reserves; per-transaction, family and goal caps remain unchanged.
-		beforeReserve, beforeJSON = 1_500_000, "1500000"
-	}
-	family := phase3BudgetFamilyForLane(o.Snapshot.RouteLane)
-	var confirmation DebtClearConfirmation
-	var intent UnwindIntent
-	if confirmedExit {
-		assertBudgetHold(t, admit(), "debt_clear_confirmation_required")
-		var admitted, wired, sent, authorized bool
-		if err = db.pool.QueryRow(ctx, `SELECT o.expected_effects ? 'phase3',o.signed_wire IS NOT NULL,o.broadcast_intent_at IS NOT NULL,s.state ? 'debtClearAuthority' FROM loyal_yield.multiply_operations o JOIN loyal_yield.multiply_route_states s USING(route_key) WHERE operation_id=$1`, id).Scan(&admitted, &wired, &sent, &authorized); err != nil {
-			t.Fatal(err)
-		}
-		if admitted || wired || sent || authorized {
-			t.Fatal("unconfirmed exit wrote admission, authority, or wire")
-		}
-		if err = db.MarkPreBroadcastFailed(ctx, id, Decided, "fixture_unconfirmed_exit"); err != nil {
-			t.Fatal(err)
-		}
-		confirmation = DebtClearConfirmation{RequestID: sha256Bytes([]byte(key)), ConfirmedBy: "privileged-test-operator", ConfirmationRecord: sha256Bytes([]byte(key + "-confirmation")), AcknowledgeUnavailableReborrow: true, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}
-		intent = UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "withdrawal_shortfall", ObservationID: o.Snapshot.ObservationID, MaxCollateralRaw: o.Snapshot.PositionCollateralRaw, MaxDebtRaw: 2_000, CostBoundRaw: beforeReserve, BudgetScope: Phase3GoalID, BudgetFamily: family, EvidenceID: sha256Bytes([]byte(key + "-observed-exit")), CreatedAt: time.Now().UTC()}
-		assertBudgetHold(t, db.commitUnwindIntentWithConfirmation(ctx, key, &intent, manifest, confirmation), "unwind_requires_existing_exit_reservation")
-	} else if deposit {
-		assertBudgetHold(t, admit(), "deposit_requires_reserved_collateral_custody")
-		beforeReserve, beforeJSON = 10_000, "10000"
-	} else if entry {
-		assertBudgetHold(t, admit(), "entry_requires_reserved_bridge_custody")
-		beforeReserve, beforeJSON = 10_000, "10000"
-	} else {
-		assertBudgetHold(t, admit(), "recovery_exceeds_reserved_exit")
-	}
-	// Controlled historical reserve only. The producer derives the current
-	// transaction and remaining exit; it cannot adopt unreserved exposure.
-	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,ARRAY['phase3','families',$3,'exitMicros'],$2::jsonb) WHERE route_key=$1`, key, beforeJSON, family); err != nil {
-		t.Fatal(err)
-	}
-	if confirmedExit {
-		if err = db.commitUnwindIntentWithConfirmation(ctx, key, &intent, manifest, confirmation); err != nil {
-			t.Fatal(err)
-		}
-		id += "-confirmed"
-		insertDebtClearOperation(t, ctx, db, key, id, o, d, manifest)
-	}
-	if err = admit(); err != nil {
-		if variant == "auto_funding" {
-			plan, planErr := observePhase3FundingAdmission(ctx, rpc, client, manifest, o, d, fundingEvidence.Request, fundingEvidence.ExpectedEffects)
-			var bound, used int64
-			readErr := db.pool.QueryRow(ctx, `SELECT (state->'debtClearAuthority'->'origin'->>'costBoundRaw')::bigint,(state->'debtClearAuthority'->>'usedCostMicros')::bigint FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&bound, &used)
-			t.Fatalf("AUTO funding admission: %v; planError=%v current=%d tail=%d authorityBound=%d used=%d readError=%v", err, planErr, plan.CurrentCost.TotalMicros, plan.ExitAfterMicros, bound, used, readErr)
-		}
-		t.Fatal(err)
-	}
-	var encoded, budgetBytes []byte
-	var hasWire, hasSend bool
-	if err = db.pool.QueryRow(ctx, `SELECT operation.expected_effects->'phase3',route.state->'phase3',operation.signed_wire IS NOT NULL,operation.broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route USING(route_key) WHERE operation_id=$1`, id).Scan(&encoded, &budgetBytes, &hasWire, &hasSend); err != nil {
-		t.Fatal(err)
-	}
-	var auth phase3OperationAuthorization
-	if json.Unmarshal(encoded, &auth) != nil || json.Unmarshal(budgetBytes, &b) != nil {
-		t.Fatal("invalid durable admission")
-	}
-	r := b.Reservations[id]
-	if r.Family != family || (confirmedExit && (auth.DebtClear == nil || auth.DebtClear.ID != confirmation.RequestID || auth.DebtClear.FirstOperationID != id)) {
-		t.Fatal("admission lost its scoped confirmation or budget family")
-	}
-	kind := "kamino"
-	if funding || entry {
-		kind = "jupiter"
-	}
-	if auth.BridgeAdmission == nil {
-		t.Fatal("production withdrawal admission omitted the admission plan")
-	}
-	wantRecovery := !(entry || deposit)
-	wantExitAfter := auth.BridgeAdmission.ExitAfterMicros
-	if wantRecovery && wantExitAfter > 0 {
-		// A nonterminal exit keeps unspent historical headroom, not just the
-		// freshly measured tail. A terminal zero tail still clears the reserve.
-		wantExitAfter = max(wantExitAfter, beforeReserve-auth.BridgeAdmission.CurrentCost.TotalMicros)
-	}
-	if hasWire || hasSend || auth.BuildInput.Kind != kind || auth.BridgeAdmission.QuotedExit == nil ||
-		r.Recovery != wantRecovery || r.ExitBeforeMicros != beforeReserve || r.ExitAfterMicros != wantExitAfter || r.UpperMicros != auth.BridgeAdmission.CurrentCost.TotalMicros {
-		t.Fatalf("production withdrawal admission did not bind current and future costs: wire=%t send=%t kind=%q wantKind=%q quotedExit=%t recovery=%t wantRecovery=%t before=%d wantBefore=%d reservedAfter=%d wantAfter=%d measuredAfter=%d upper=%d currentCost=%d",
-			hasWire, hasSend, auth.BuildInput.Kind, kind, auth.BridgeAdmission.QuotedExit != nil,
-			r.Recovery, wantRecovery, r.ExitBeforeMicros, beforeReserve,
-			r.ExitAfterMicros, wantExitAfter, auth.BridgeAdmission.ExitAfterMicros, r.UpperMicros, auth.BridgeAdmission.CurrentCost.TotalMicros)
-	}
-	exitCount := 9
-	if payoff {
-		exitCount = 11
-	}
-	if funding {
-		exitCount = 13
-	}
-	if release {
-		exitCount = 15
-	}
-	if debtResidue && (len(auth.BridgeAdmission.AdditionalQuotedExits) != 1 || len(auth.BridgeAdmission.Exit) != exitCount) {
-		t.Fatal("durable reservation dropped debt conversion")
-	}
-	if confirmedExit && !debtResidue {
-		if len(auth.BridgeAdmission.AdditionalQuotedExits) != 0 || len(auth.BridgeAdmission.Exit) != exitCount-2 {
-			t.Fatal("USDC full exit omitted its return or added a debt conversion")
-		}
-		for _, step := range auth.BridgeAdmission.Exit {
-			if step.Action == SwapDebtToUSDCStep || step.Action == SwapUSDCToDebtStep {
-				t.Fatal("USDC full exit included a self-swap")
-			}
-		}
-	}
-	if payoff && (auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.Payoff.UpperDebtRaw != 1_001 || auth.BridgeAdmission.PayoffWithdrawal == nil) {
-		t.Fatal("durable funded payoff omitted interest bound or full withdrawal")
-	}
-	if deposit && (auth.BridgeAdmission.DepositProjection == nil || auth.BridgeAdmission.PayoffWithdrawal == nil || len(auth.BridgeAdmission.Exit) != 9 || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve) {
-		t.Fatal("durable deposit omitted simulated receipts or full return reserve")
-	}
-	if entry {
-		if len(auth.BridgeAdmission.Exit) != 7 || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve {
-			t.Fatal("entry did not extend its full return reservation")
-		}
-		if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, fundingEvidence.Request, fundingEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	if release && (auth.BridgeAdmission.PayoffRepayment == nil || auth.BridgeAdmission.FundingSwap == nil || auth.BridgeAdmission.Payoff.ThroughUnix != auth.BridgeAdmission.Payoff.ChainUnix+5*kaminoPayoffWindowSeconds) {
-		t.Fatal("durable release omitted full funding/return or interest horizon")
-	}
-	if funding {
-		if auth.BridgeAdmission.PayoffRepayment == nil || auth.BridgeAdmission.FundingSwap == nil || auth.BridgeAdmission.Payoff.ThroughUnix != auth.BridgeAdmission.Payoff.ChainUnix+3*kaminoPayoffWindowSeconds {
-			t.Fatal("durable funding omitted full interest horizon or return template")
-		}
-		request, _, _, err := auth.BuildInput.decodeWithManifest(manifest)
-		if err != nil || request.(JupiterSwapRequest).Action != d.Action {
-			t.Fatal("durable funding changed the selected source asset", err)
-		}
-		if err = manifest.authorizePhase3ProductionBuild(ctx, db, rpc, id, fundingEvidence.Request, fundingEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, evidence.Request, evidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
-		t.Fatal(err)
-	}
 }

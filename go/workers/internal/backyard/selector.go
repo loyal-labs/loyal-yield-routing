@@ -169,15 +169,13 @@ func (p SelectorPolicy) validate() error {
 
 // MoveQuote values the entire proposed source exit + destination entry, including
 // setup, swap losses, origination and transaction fees for the full recipe.
-// Returned principal is not a cost: the budget separately counts gross debits.
+// Returned principal is not a cost.
 // It is bound to actual equity, source state, destination and exact policy set.
-// Remaining exit spending belongs to the existing budget, not this quote.
-// selectorExitBound refers to gross debits in the existing exit reservation.
-// It is separate from movement expense and creates no new spending authority.
+// selectorExitBound is the source position an unwind may clear. It creates no
+// spending authority.
 type selectorExitBound struct {
 	MaxCollateralRaw int64 `json:"maxCollateralRaw"`
 	MaxDebtRaw       int64 `json:"maxDebtRaw"`
-	GrossMicros      int64 `json:"grossMicros"`
 }
 
 type MoveQuote struct {
@@ -218,9 +216,8 @@ type MoveQuote struct {
 	EquityRaw              int64        `json:"equityRaw"`
 	CostRaw                int64        `json:"costRaw"`
 	// ExpectedCostRaw is the forecast economic expense at central observed
-	// prices; nil on quotes predating the forecast. Every admission gate,
-	// reservation and spending bound keeps the conservative CostRaw upper
-	// exposure bound.
+	// prices; nil on quotes predating the forecast. The selector's equity
+	// bound keeps the conservative CostRaw upper exposure bound.
 	ExpectedCostRaw *int64    `json:"expectedCostRaw,omitempty"`
 	ObservedAt      time.Time `json:"observedAt"`
 	EvidenceID      string    `json:"evidenceId"`
@@ -269,8 +266,8 @@ type SelectorInput struct {
 }
 
 // Only economic persistence lives here. A source exit is committed by the
-// existing route state's UnwindIntent after execution admission; forecasts do
-// not manufacture authorization, reservations, or a second cash ledger.
+// existing route state's UnwindIntent; forecasts do not manufacture
+// authorization or a second cash ledger.
 type AdvantageWindow struct {
 	Since      time.Time `json:"since"`
 	LastSample time.Time `json:"lastSample"`

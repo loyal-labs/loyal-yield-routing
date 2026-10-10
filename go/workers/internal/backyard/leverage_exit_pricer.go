@@ -204,66 +204,6 @@ func putLittleFraction(dst []byte, value *big.Int) error {
 	return nil
 }
 
-// observePhase3ExitCycleSwapAdmission admits the swap of a 1.75x exit
-// cycle's released collateral: it validates the current custody like the
-// funding swap does, then prices the rest of the exit (partial repay, any
-// further cycle, the final release -> payoff -> return) from the swap's
-// guaranteed MINIMUM output over cost-only account copies.
-func observePhase3ExitCycleSwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, e JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
-	s, r := o.Snapshot, e.Request
-	cash := debtCashRaw(s)
-	if rpc == nil || client == nil || !s.Fresh || !leverageLane(s.RouteLane) || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission ||
-		d.Action != SwapCollateralToDebtStep || d.Reason != exitCycleSwapReason || r.Action != d.Action || r.RouteLane != s.RouteLane || s.RouteLane != d.StrategyKey ||
-		r.FullPayoffFunding || r.PositionReturnReserved || r.EntryReturnReserved || s.CollateralIdleRaw <= 0 || d.AmountRaw != s.CollateralIdleRaw || r.AmountRaw != uint64(d.AmountRaw) ||
-		!s.HasPosition || s.PositionDebtRaw <= 1 || cash < 0 || !decisionsEqual(m.DecideOnManifest(s), d) || len(e.ExpectedEffects.Accounts) != 2 {
-		return phase3BridgeAdmission{}, budgetHold("exit_cycle_swap_admission_unavailable")
-	}
-	route, err := runtimeRoute(s.RouteLane)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	current, err := m.observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	var additional []string
-	if route.Lane == autoAUTOPYUSD.Lane {
-		additional = append(additional, route.Kamino.Market)
-	}
-	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, max(s.Slot, current.ObservationSlot), 3, additional...)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	for i, row := range []struct {
-		address, mint string
-		raw           uint64
-	}{{route.CollateralCustody, route.Kamino.CollateralMint, uint64(s.CollateralIdleRaw)}, {route.DebtCustody, route.Kamino.DebtMint, uint64(cash)}} {
-		a := accountAt(accounts, row.address)
-		mint, _ := decodeBase58PublicKey(row.mint)
-		owner, _ := decodeBase58PublicKey(bridgeVault)
-		custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
-		effect := e.ExpectedEffects.Accounts[i]
-		if err != nil || a.Executable || a.Lamports == 0 || custody.Raw != row.raw || effect.Address != row.address || effect.BeforeRaw != row.raw {
-			return phase3BridgeAdmission{}, budgetHold("exit_cycle_swap_custody_changed")
-		}
-	}
-	if !sameAccruingDebt(bound, s.PositionDebtRaw) {
-		return phase3BridgeAdmission{}, budgetHold("exit_cycle_swap_debt_changed")
-	}
-	// Cost-only post-swap state: collateral custody empty, debt cash + the
-	// enforced minimum. The projected pricer then prices the partial repay
-	// as the next cycle and every later step.
-	post := patchConfirmedTokenRaw(accounts, route.CollateralCustody, 0)
-	post = patchConfirmedTokenRaw(post, route.DebtCustody, uint64(cash)+r.MinimumOutputRaw)
-	projection := phase3KaminoProjection{Slot: bound.ObservedSlot, Accounts: post}
-	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, client, m, o, d, r, e.ExpectedEffects, current, projection)
-	if err != nil {
-		return plan, err
-	}
-	plan.Snapshot = s
-	return plan, nil
-}
-
 // priceLeverageExitFromCurrent prices a multi-cycle exit for a current
 // non-mutating step (a NAV report) from the observed accounts. ok=false:
 // one release still funds the payoff, so the installed path prices it.

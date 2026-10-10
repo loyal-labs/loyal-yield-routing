@@ -582,7 +582,10 @@ func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc 
 	if _, err := DecodeExpectedEffects(effects); err != nil {
 		return err
 	}
-	if err := authorizePhase3ProductionBuild(ctx, database, rpc, operationID, evidence.Request, evidence.ExpectedEffects, effects); err != nil {
+	if err := database.requireBoundIntent(ctx, operationID, evidence.Request, effects); err != nil {
+		return err
+	}
+	if err := validateBuildPrestate(ctx, rpc, evidence.Request, evidence.ExpectedEffects); err != nil {
 		return err
 	}
 	signer, err := credentials.signer()

@@ -157,18 +157,8 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	// The release manifest carries the installed binding; the refusing scope
 	// below is the explicit absent fixture (the shipped pre-install state).
 	requireEmbeddedInstalledBinding(t)
-	// Real candidate DB state: an activated pilot budget carrying the AUTO
-	// family. Spent history is preserved; ExitMicros stays zero because a new
-	// entry explicitly refuses any outstanding family exit
-	// (selector_entry_has_outstanding_exit).
-	prior := emptyTestBudget()
-	authority := pilotTestAuthority(prior)
-	activated, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	activated.Families["AUTO"] = FamilyBudget{SpentMicros: 7_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
+	// Real candidate DB state.
+	state, err := json.Marshal(map[string]any{"generation": 2})
 	if err != nil {
 		t.Fatal(err)
 	}

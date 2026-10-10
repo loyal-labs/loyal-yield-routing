@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"math"
 	"testing"
 )
@@ -53,21 +52,6 @@ func TestDepositRemainderDoesNotRestartEntryLoop(t *testing.T) {
 	if got := Decide(s); got.Reason != "deposit_rounding_window_unavailable" {
 		t.Fatal("missing bound treated as dust", got)
 	}
-}
-
-func TestRedepositAdmissionRejectsChangedDebtReceiptsAndConservation(t *testing.T) {
-	for _, variant := range []string{"debt", "receipts", "debt_cash", "conservation", "clock", "failed", "stale", "missing"} {
-		t.Run(variant, func(t *testing.T) {
-			o, d, e, m, rpc, client, _ := depositAdmissionFixtureForPosition(t, variant, true)
-			if _, err := observePhase3DepositAdmission(context.Background(), rpc, client, m, o, d, e); err == nil {
-				t.Fatal("unsafe redeposit admitted")
-			}
-		})
-	}
-	o, d, e, m, rpc, client, _ := depositAdmissionFixtureForPosition(t, "", true)
-	o.Snapshot.CutoverDrain = true
-	_, err := observePhase3DepositAdmission(context.Background(), rpc, client, m, o, d, e)
-	assertBudgetHold(t, err, "complete_redeposit_return_unavailable")
 }
 
 func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {

@@ -128,7 +128,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return o, nil },
 		prepareKamino: func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error) {
-			return Observation{}, KaminoExecutionEvidence{}, budgetHold("transaction_cap_exceeded")
+			return Observation{}, KaminoExecutionEvidence{}, budgetHold("squads_spending_limit_exceeded")
 		},
 		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
 			recorded = true
@@ -138,7 +138,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 	}}
 	err := w.Tick(context.Background())
 	var hold *BudgetHold
-	if !errors.As(err, &hold) || hold.Reason != "transaction_cap_exceeded" || recorded || stored.Status != "operator_attention" {
+	if !errors.As(err, &hold) || hold.Reason != "squads_spending_limit_exceeded" || recorded || stored.Status != "operator_attention" {
 		t.Fatalf("pre-operation refusal not projected: err=%v recorded=%v health=%+v", err, recorded, stored)
 	}
 }

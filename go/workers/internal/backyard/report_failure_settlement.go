@@ -80,7 +80,6 @@ type finalizedFailureSettlement struct {
 	Reason                  string                  `json:"reason"`
 	AtomicNoCapitalMovement bool                    `json:"atomicNoCapitalMovement"`
 	FeeLamports             uint64                  `json:"feeLamports"`
-	BookedFeeMicros         int64                   `json:"bookedFeeMicros"`
 	Receipt                 finalizedFailureReceipt `json:"receipt"`
 }
 
@@ -176,81 +175,17 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 	return nil
 }
 
-// Charge only the independently measured fee, conservatively valued by the
-// existing send authorization's SOL upper bound. Historic prices are checked
-// at their original admission slot, never relabeled as a fresh observation.
-func settleFailedFeeBudget(budget Phase3Budget, auth phase3OperationAuthorization, operationID string, proof *finalizedFailureSettlement) (Phase3Budget, phase3OperationAuthorization, error) {
-	fail := func() (Phase3Budget, phase3OperationAuthorization, error) {
-		return budget, auth, budgetHold("unproven_failed_fee_settlement")
-	}
-	if err := budget.validate(); err != nil {
-		return budget, auth, err
-	}
-	r, ok := budget.Reservations[operationID]
-	if !ok || auth.GoalID != Phase3GoalID || auth.ReservationReleased || auth.BookedSpentMicros != 0 || auth.BookedExecutionCostMicros != 0 || r.IntentSHA256 != auth.IntentSHA256 || auth.SignedWireSHA256 != proof.SignedWireSHA256 || auth.SendKnownCost == nil || !proof.AtomicNoCapitalMovement {
-		return fail()
-	}
-	cost := auth.SendKnownCost
-	if cost.MessageSHA256 != proof.MessageSHA256 || cost.Fee.MessageSHA256 != proof.MessageSHA256 || cost.NativePrice.Decimals != 9 || cost.Fee.Slot <= 0 || cost.Fee.Slot > cost.ObservationSlot || cost.ObservationSlot-cost.Fee.Slot > budgetMaxObservationLagCeilingSlots || proof.FeeLamports == 0 || proof.FeeLamports > cost.Fee.Lamports || proof.Slot < cost.ObservationSlot {
-		return fail()
-	}
-	quoted, err := cost.NativePrice.valueUpper(cost.Fee.Lamports, nativeSOLBudgetAsset, "11111111111111111111111111111111", cost.ObservationSlot)
-	if err != nil || quoted != cost.NetworkFeeMicros {
-		return fail()
-	}
-	fee, err := cost.NativePrice.valueUpper(proof.FeeLamports, nativeSOLBudgetAsset, "11111111111111111111111111111111", cost.ObservationSlot)
-	if err != nil || fee <= 0 || fee > r.UpperMicros || (budget.Pilot != nil && fee > r.ExecutionCostUpperMicros) {
-		return fail()
-	}
-	row := budget.Families[r.Family]
-	if row.ExitMicros != r.ExitAfterMicros {
-		return fail()
-	}
-	row.SpentMicros, err = budgetSum(row.SpentMicros, fee)
-	if err != nil {
-		return fail()
-	}
-	if budget.Pilot != nil {
-		row.ExecutionCostSpentMicros, err = budgetSum(row.ExecutionCostSpentMicros, fee)
-		if err != nil {
-			return fail()
-		}
-	}
-	row.ExitMicros = r.ExitBeforeMicros
-	// Do not mutate caller maps until the entire replacement budget validates.
-	next := budget
-	next.Families = make(map[string]FamilyBudget, len(budget.Families))
-	for k, v := range budget.Families {
-		next.Families[k] = v
-	}
-	next.Reservations = make(map[string]BudgetReservation, len(budget.Reservations))
-	for k, v := range budget.Reservations {
-		next.Reservations[k] = v
-	}
-	next.Families[r.Family] = row
-	delete(next.Reservations, operationID)
-	if err = next.validate(); err != nil {
-		return budget, auth, err
-	}
-	auth.BookedSpentMicros = fee
-	if budget.Pilot != nil {
-		auth.BookedExecutionCostMicros = fee
-	}
-	proof.BookedFeeMicros = fee
-	return next, auth, nil
-}
-
 // settleFinalizedReportFailure terminates one classified report-bearing
 // failure with the exact finalized receipt: the landed wire is byte-identical
-// to the persisted wire, the fee is measured and booked, and the terminal
-// `failed` row releases the reservation so the next tick re-observes. Both
+// to the persisted wire and moved no capital, and the terminal `failed` row
+// lets the next tick re-observe. Both
 // report-bearing bridge wires are admitted: the report-only NAV refresh in
 // every retryable state, and the VOLTR_RESTORE_IDLE wire only for the
 // adaptor's report-age refusal — in the automatic walk's broadcast states and,
 // through the scoped operator entrypoint (manualRecovery=true), in the
 // explicit manual state for rows the previous binary's action gate forced
-// into manual recovery with the unclassified marker. Same receipt proof, same
-// fee settlement, one guarded status transition per source state.
+// into manual recovery with the unclassified marker. Same receipt proof, one
+// guarded status transition per source state.
 func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *chain.Client, operation PersistedOperation, reason string, manualRecovery bool) error {
 	// A missing detailed receipt stays ambiguous even after finalized status.
 	read, err := finalizedReceipt(ctx, rpc, operation.TransactionSignature)
@@ -279,7 +214,10 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *chain.
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	budget, auth, err := d.readPhase3BudgetTx(ctx, tx, operation.ID)
+	if err = d.lockOperationLease(ctx, tx, operation.ID); err != nil {
+		return err
+	}
+	auth, err := readPhase3AuthorizationTx(ctx, tx, operation.ID)
 	if err != nil {
 		return err
 	}
@@ -349,14 +287,10 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *chain.
 	if !classification.Retryable || classification.Reason != reason {
 		return budgetHold("failed_settlement_classification_changed")
 	}
+	if auth.SignedWireSHA256 != wireHash {
+		return budgetHold("failed_settlement_intent_changed")
+	}
 	proof := finalizedFailureSettlement{Schema: "backyard-finalized-failure/v1", Signature: signature, SignedWireSHA256: wireHash, MessageSHA256: messageHash, Slot: receipt.Slot, Reason: reason, AtomicNoCapitalMovement: true, FeeLamports: *receipt.Meta.Fee, Receipt: receipt}
-	budget, auth, err = settleFailedFeeBudget(budget, auth, operation.ID, &proof)
-	if err != nil {
-		return err
-	}
-	if err = d.writePhase3BudgetTx(ctx, tx, operation.ID, budget, auth); err != nil {
-		return err
-	}
 	encoded, err := json.Marshal(proof)
 	if err != nil {
 		return err

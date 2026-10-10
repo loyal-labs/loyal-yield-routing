@@ -28,10 +28,6 @@ func TestExecutableBridgeDebitsUseSourceAndFullSweep(t *testing.T) {
 	if debit.Raw != 3_793_417 {
 		t.Fatalf("sweep understated: %+v", debit)
 	}
-	b := emptyTestBudget()
-	reservation := testReservation()
-	reservation.UpperMicros = int64(debit.Raw)
-	assertBudgetHold(t, b.Admit(reservation), "transaction_cap_exceeded")
 }
 
 func TestWithdrawalChargesUnderlyingNotReceiptUnits(t *testing.T) {
@@ -45,23 +41,4 @@ func TestWithdrawalChargesUnderlyingNotReceiptUnits(t *testing.T) {
 	if err != nil || debit.Raw != 500_000 || debit.Raw == request.AmountRaw {
 		t.Fatalf("receipt units mispriced as liquidity: %+v %v", debit, err)
 	}
-}
-
-func TestTransactionCapIncludesNetworkFee(t *testing.T) {
-	principal, err := ValueDebitMicros(999_500, 6, 1_000_000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fee, err := ValueDebitMicros(5_000, 9, 150_000_000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	total, err := budgetSum(principal, fee)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := emptyTestBudget()
-	r := testReservation()
-	r.UpperMicros = total
-	assertBudgetHold(t, b.Admit(r), "transaction_cap_exceeded")
 }

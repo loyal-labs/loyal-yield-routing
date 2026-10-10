@@ -312,44 +312,14 @@ func TestAutoInitializerObserveBindsPersistedWireThroughManifest(t *testing.T) {
 }
 
 // seedAutoInitializerReconcilingOperation reconstructs the durable pre-settle
-// state: a decided AUTO initializer operation with one reservation, the wire
-// bound to the journal, and the operation parked in 'reconciling'. The route
-// key is supplied by the owning test so cleanup deletes exactly these rows.
+// state: a bound AUTO initializer operation, the wire bound to the journal,
+// and the operation parked in 'reconciling'. The route key is supplied by the
+// owning test so cleanup deletes exactly these rows.
 func seedAutoInitializerReconcilingOperation(t *testing.T, ctx context.Context, db *Database, f autoInitializerRecoveryFixture, key string) (string, PersistedOperation) {
 	t.Helper()
-	id := key + "-op"
-	budget := emptyTestBudget()
-	stateValue := map[string]any{"generation": 1, "phase3": budget}
-	state, _ := json.Marshal(stateValue)
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,$3)`, key, state, 1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.AcquireRouteLease(ctx, key, "auto-initializer-recovery-test", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects)
-	 VALUES($1,$2,'decided',$3,$4,$5)`, id, key, string(InitializeKaminoObligation), f.request.RouteLane, f.raw); err != nil {
-		t.Fatal(err)
-	}
-	digest, err := Phase3IntentDigest(f.request, f.raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = db.ReservePhase3(ctx, BudgetReservation{OperationID: id, Family: "AUTO", IntentSHA256: digest, UpperMicros: 900000}); err != nil {
-		t.Fatal(err)
-	}
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = db.bindPhase3WireTx(ctx, tx, id, sha256Bytes(f.wire)); err != nil {
-		_ = tx.Rollback(ctx)
-		t.Fatal(err)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciling',signed_wire_sha256=$2,transaction_signature=$3,confirmed_slot=$4,signed_wire=$5 WHERE operation_id=$1`,
+	id := seedBoundOperation(t, ctx, db, key, "auto-initializer-recovery-test", InitializeKaminoObligation, f.request.RouteLane, f.request, f.raw)
+	bindTestWire(t, ctx, db, id, sha256Bytes(f.wire))
+	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciling',signed_wire_sha256=$2,transaction_signature=$3,confirmed_slot=$4,signed_wire=$5 WHERE operation_id=$1`,
 		id, sha256Bytes(f.wire), f.receipt.Signature, f.receipt.Slot, f.wire); err != nil {
 		t.Fatal(err)
 	}
@@ -361,26 +331,10 @@ func seedAutoInitializerReconcilingOperation(t *testing.T, ctx context.Context, 
 	return id, op
 }
 
-func autoRecoverySettlementState(t *testing.T, ctx context.Context, db *Database, id string) (string, int, int64) {
-	t.Helper()
-	var status string
-	var budgetBytes []byte
-	if err := db.pool.QueryRow(ctx, `SELECT o.status,s.state->'phase3' FROM loyal_yield.multiply_operations o
-	 JOIN loyal_yield.multiply_route_states s USING(route_key) WHERE operation_id=$1`, id).Scan(&status, &budgetBytes); err != nil {
-		t.Fatal(err)
-	}
-	var budget Phase3Budget
-	if json.Unmarshal(budgetBytes, &budget) != nil {
-		t.Fatal("budget decode")
-	}
-	return status, len(budget.Reservations), budget.Families["AUTO"].SpentMicros
-}
-
 // Locked settlement through the exact same reviewed manifest that compiled the
-// message: every drifted receipt leaves the journal in 'reconciling' with the
-// reservation intact, the valid receipt settles exactly once, and neither the
-// public embedded-manifest settlement nor a replay after completion can settle
-// or release a second time.
+// message: every drifted receipt leaves the journal in 'reconciling', the
+// valid receipt settles exactly once, and neither the public embedded-manifest
+// settlement nor a replay after completion can settle a second time.
 func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_locked_settlement_test", 30*time.Second)
 	defer cancel()
@@ -431,20 +385,20 @@ func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 				t.Fatalf("drift=%s err=%v", drift, err)
 			}
 		}
-		status, reservations, spent := autoRecoverySettlementState(t, ctx, db, id)
+		status := operationStatus(t, ctx, db, id)
 		if drift == "" {
-			if status != "reconciled" || reservations != 0 || spent != 900000 {
-				t.Fatalf("finalized settlement did not settle exactly once: %s %d %d", status, reservations, spent)
+			if status != "reconciled" {
+				t.Fatalf("finalized settlement did not settle: %s", status)
 			}
 			continue
 		}
-		if status != "reconciling" || reservations != 1 || spent != 0 {
-			t.Fatalf("drift=%s released the reservation: %s %d %d", drift, status, reservations, spent)
+		if status != "reconciling" {
+			t.Fatalf("drift=%s left the journal: %s", drift, status)
 		}
 	}
 
 	// No replay after completion: the journal row is no longer 'reconciling',
-	// so a repeated settlement cannot re-release or rewrite the reservation.
+	// so a repeated settlement cannot rewrite it.
 	reconciliation, effects, err := f.manifest.ReconcileConfirmedTransaction(f.effects, f.receipt)
 	if err != nil {
 		t.Fatal(err)
@@ -452,8 +406,8 @@ func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 	if err := db.markReconciledOnManifest(ctx, f.manifest, id, reconciliation, effects, f.receipt); err == nil {
 		t.Fatal("completed initializer settled twice")
 	}
-	if status, reservations, spent := autoRecoverySettlementState(t, ctx, db, id); status != "reconciled" || reservations != 0 || spent != 900000 {
-		t.Fatalf("replay mutated settled state: %s %d %d", status, reservations, spent)
+	if status := operationStatus(t, ctx, db, id); status != "reconciled" {
+		t.Fatalf("replay mutated settled state: %s", status)
 	}
 }
 
@@ -488,16 +442,13 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 
 	// Drift first: a receipt slot that differs from the journal identity is
 	// refused by the immutable-receipt observer; the operation stays in
-	// 'reconciling' with its reservation intact for the next tick.
+	// 'reconciling' for the next tick.
 	slotID, slotOp, slotFixture := newFixture()
 	rpc := autoInitializerRecoveryRPC(t, slotFixture, 78, nil)
 	if err := advanceNonterminalWithManifest(ctx, slotFixture.manifest, db, rpc, slotOp); err == nil {
 		t.Fatal("slot-drifted initializer receipt was observed")
 	}
 	assertRecoveryStop(t, slotID, "reconciling", "")
-	if _, reservations, spent := autoRecoverySettlementState(t, ctx, db, slotID); reservations != 1 || spent != 0 {
-		t.Fatalf("slot drift released the reservation: %d %d", reservations, spent)
-	}
 
 	// The public entrypoint resolves the embedded reviewed manifest, which does
 	// not review the candidate binding: decode holds and the operation lands in
@@ -535,9 +486,8 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err != nil {
 		t.Fatal(err)
 	}
-	status, reservations, spent := autoRecoverySettlementState(t, ctx, db, id)
-	if status != "reconciled" || reservations != 0 || spent != 900000 {
-		t.Fatalf("restart did not settle exactly once: %s %d %d", status, reservations, spent)
+	if status := operationStatus(t, ctx, db, id); status != "reconciled" {
+		t.Fatalf("restart did not settle: %s", status)
 	}
 	if sent != 0 {
 		t.Fatalf("recovery resent the wire %d times", sent)
@@ -548,8 +498,8 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err == nil {
 		t.Fatal("terminal initializer advanced twice")
 	}
-	if status, reservations, spent := autoRecoverySettlementState(t, ctx, db, id); status != "reconciled" || reservations != 0 || spent != 900000 {
-		t.Fatalf("replay mutated settled state: %s %d %d", status, reservations, spent)
+	if status := operationStatus(t, ctx, db, id); status != "reconciled" {
+		t.Fatalf("replay mutated settled state: %s", status)
 	}
 	if sent != 0 {
 		t.Fatalf("replay resent the wire: %d", sent)
@@ -573,9 +523,7 @@ func TestAutoInitializerBuildPersistsThroughReviewedManifest(t *testing.T) {
 	f := newAutoInitializerRecoveryFixture(t)
 	key := "auto-initializer-build-" + time.Now().Format("150405.000000000")
 	id := key + "-op"
-	budget := emptyTestBudget()
-	state, _ := json.Marshal(map[string]any{"generation": 1, "phase3": budget})
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,$3)`, key, state, 1); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, key); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.AcquireRouteLease(ctx, key, "auto-initializer-build-test", time.Minute); err != nil {

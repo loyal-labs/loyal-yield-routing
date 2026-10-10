@@ -89,32 +89,3 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifes
 	}
 	return o, r, nil
 }
-
-func (d *Database) admitKaminoInitialization(ctx context.Context, rpc *chain.Client, manifest RouteManifest, id string, o Observation, decision Decision, r KaminoInitializationRequest) error {
-	if !manifest.initializationSnapshotReady(o.Snapshot) || !decisionsEqual(manifest.DecideOnManifest(o.Snapshot), decision) || decision.StrategyKey != r.RouteLane {
-		return budgetHold("initializer_decision_changed")
-	}
-	if err := manifest.validateBindings(); err != nil {
-		return err
-	}
-	if err := manifest.validateInitializationRequest(r); err != nil {
-		return err
-	}
-	effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
-	cost, err := manifest.observePhase3KnownBuildCost(ctx, rpc, r, effects)
-	if err != nil {
-		return err
-	}
-	raw, err := jsonMarshalExpectedEffects(effects)
-	if err != nil {
-		return err
-	}
-	input, err := encodePhase3BuildInput(r, raw)
-	if err != nil {
-		return err
-	}
-	// There is no token exposure or exit graph yet. Creation cannot consume an
-	// outstanding exit reservation; the locked shared admission checks that too.
-	plan := phase3BridgeAdmission{Snapshot: o.Snapshot, Decision: decision, Input: input, CurrentCost: cost, ValidThroughSlot: min(cost.ValidThroughSlot, o.Snapshot.Slot+observationLagSlots())}
-	return d.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, id, o, decision, plan)
-}

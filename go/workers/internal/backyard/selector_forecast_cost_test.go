@@ -150,36 +150,6 @@ func TestMoveQuoteEconomicCostFallsBackAndBindsEvidence(t *testing.T) {
 	}
 }
 
-func TestPilotRemainingExecutionCostDerivesHeadroomAndClampsExhausted(t *testing.T) {
-	budget := pilotTestBudget(t)
-	raw, err := json.Marshal(budget)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if remaining, err := pilotRemainingExecutionCost(raw); err != nil || remaining != PilotEntryExecutionCostCapMicros {
-		t.Fatal("fresh pilot headroom", remaining, err)
-	}
-	if err = budget.Admit(BudgetReservation{OperationID: "leg-1", Family: "Maple", IntentSHA256: sha256Bytes([]byte("leg-1")), UpperMicros: 15_000_000, ExecutionCostUpperMicros: 10_000}); err != nil {
-		t.Fatal(err)
-	}
-	row := budget.Families["Maple"]
-	row.SpentMicros, row.ExecutionCostSpentMicros = 30_000, 30_000
-	budget.Families["Maple"] = row
-	raw, _ = json.Marshal(budget)
-	if remaining, err := pilotRemainingExecutionCost(raw); err != nil || remaining != PilotEntryExecutionCostCapMicros-40_000 {
-		t.Fatal("booked spend and outstanding bound not subtracted", remaining, err)
-	}
-	row.SpentMicros, row.ExecutionCostSpentMicros = PilotEntryExecutionCostCapMicros+50_000, PilotEntryExecutionCostCapMicros+50_000
-	budget.Families["Maple"] = row
-	raw, _ = json.Marshal(budget)
-	if remaining, err := pilotRemainingExecutionCost(raw); err != nil || remaining != 0 {
-		t.Fatal("exhausted budget must clamp to zero, never unknown", remaining, err)
-	}
-	if _, err = pilotRemainingExecutionCost([]byte("null")); err == nil {
-		t.Fatal("non-pilot budget accepted")
-	}
-}
-
 // quoteLegs records the equity-swap quote sizes actually requested.
 func quoteLegsTransport(t *testing.T, base http.RoundTripper, legs *[]uint64, impactThreshold, divisor uint64) http.RoundTripper {
 	t.Helper()
@@ -255,7 +225,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	// The ladder continues past that refused largest size and stops at the
 	// smaller profitable 1M quote.
 	legs = nil
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, -1, 10_000_000)
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 10_000_000)
 	if err != nil || len(quotes) != 1 {
 		t.Fatal("smaller profitable size not probed after economic failure", err, quotes, observed)
 	}
@@ -273,37 +243,12 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	}
 }
 
-func TestLiveSelectorBudgetExhaustedWinnerIsBlockedFromEntry(t *testing.T) {
-	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
-	var legs []uint64
-	fixtureHTTP(client).Transport = quoteLegsTransport(t, fixtureHTTP(client).Transport, &legs, math.MaxUint64, 1)
-	// Every size clears the benefit math but none fits the 1_000 micros of
-	// remaining bounded entry-cost headroom.
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 1_000, 10_000_000)
-	if err != nil || len(quotes) != 1 {
-		t.Fatal("diagnostic winner not retained", err, quotes, observed)
-	}
-	if quotes[0].CostRaw <= 1_000 {
-		t.Fatal("budget trigger did not fire", quotes[0].CostRaw)
-	}
-	if observed[0].EntryBlockedReason != "execution_cost_budget_exhausted" || observed[0].EntryCapacity.Raw != quotes[0].EquityRaw {
-		t.Fatal("over-budget diagnostic published as executable capacity", observed[0])
-	}
-	if len(legs) != 3 {
-		t.Fatal("ladder must try every size under budget pressure", legs)
-	}
-	in := SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: observed, Quotes: quotes, Policy: policy}
-	if got := SelectOpportunity(in, SelectorState{}); got.Action != "KEEP" || got.SelectedQuote != nil {
-		t.Fatal("budget-exhausted winner reached entry admission", got)
-	}
-}
-
 func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) {
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
 	policy.MinimumBenefitRaw = 1_000_000_000_000
 	var legs []uint64
 	fixtureHTTP(client).Transport = quoteLegsTransport(t, fixtureHTTP(client).Transport, &legs, math.MaxUint64, 1)
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, -1, 10_000_000)
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 10_000_000)
 	if err != nil || len(quotes) != 1 {
 		t.Fatal("bound-valid diagnostic quote dropped", err, quotes, observed)
 	}
@@ -348,7 +293,7 @@ func TestLiveSelectorLadderStopsAfterQuoteWindowBudget(t *testing.T) {
 	// past the ladder budget: only the largest size is priced, so no smaller
 	// quote can arrive with too few slots left to allocate.
 	o.ObservedAt = time.Now().UTC().Add(-selectorLadderBudget - time.Second)
-	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, -1, 10_000_000)
+	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 10_000_000)
 	if err != nil || len(quotes) != 0 || len(legs) != 1 || legs[0] != 10_000_000 {
 		t.Fatal("ladder priced smaller sizes after its budget", err, quotes, legs)
 	}

@@ -2,11 +2,8 @@ package backyard
 
 import (
 	"context"
-	"math"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 // A prospective reverse quote is not evidence of current custody. Validate only
@@ -68,122 +65,4 @@ func validateEntrySwap(ctx context.Context, rpc *chain.Client, request JupiterSw
 		}
 	}
 	return observed, nil
-}
-
-// Reserve an immediate complete exit after the initial USDC/collateral swap.
-// The later deposit/borrow must independently reprice and extend this reserve;
-// pricing an entry conversion does not authorize those future transactions.
-func observePhase3EntrySwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, observation Observation, decision Decision, evidence JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	s, r := observation.Snapshot, evidence.Request
-	if rpc == nil || client == nil || !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
-		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain ||
-		s.RouteLane != s.StrategyKey || s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane ||
-		phase3BudgetFamilyForLane(s.RouteLane) == "" || s.CollateralIdleRaw != 0 || s.PrimeIdleRaw != 0 || s.DebtIdleRaw != 0 ||
-		s.VoltrStrategyIdleRaw != 0 || s.VoltrIdleRaw < 0 || s.SquadsIdleRaw <= 0 || decision.AmountRaw <= 0 || decision.AmountRaw > s.SquadsIdleRaw ||
-		decision.Action != SwapStableToCollateralStep || r.Action != decision.Action || r.AmountRaw != uint64(decision.AmountRaw) || !r.EntryReturnReserved ||
-		r.TopupReturnReserved != (decision.Reason == topupSwapReason) {
-		return phase3BridgeAdmission{}, budgetHold("complete_entry_swap_return_unavailable")
-	}
-	// Plan B3: the top-up swap keeps a funded position (debt-free, or with
-	// debt on AUTO); every other entry swap stays closed over a flat route.
-	debt := s.PositionDebtRaw > 0 && s.PositionDebtValueRaw > 0 && debtTopupLane(s.RouteLane)
-	topup := r.TopupReturnReserved && s.HasPosition && s.PositionCollateralRaw > 0 && s.PositionCollateralValueRaw > 0 &&
-		(debt || (s.PositionDebtRaw == 0 && s.PositionDebtValueRaw == 0)) && s.WithdrawalDemandRaw == 0 && !s.Unwind && decision.AmountRaw == s.SquadsIdleRaw
-	flat := !r.TopupReturnReserved && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 &&
-		s.PositionCollateralValueRaw == 0 && s.PositionDebtValueRaw == 0
-	if !topup && !flat {
-		return phase3BridgeAdmission{}, budgetHold("complete_entry_swap_return_unavailable")
-	}
-	slot, err := validateEntrySwap(ctx, rpc, r, evidence.ExpectedEffects, s.Slot)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	if evidence.ExpectedEffects.Accounts[0].BeforeRaw != uint64(s.SquadsIdleRaw) {
-		return phase3BridgeAdmission{}, budgetHold("entry_swap_snapshot_changed")
-	}
-	// Reuse the existing two-sided estimate for full-custody exit costing.
-	// The actual output is reobserved after execution; this is not a maximum
-	// enforced by Jupiter, and excess output never permits a truncated return.
-	upper, err := withdrawalUSDCExitEstimate(r.QuotedOutputRaw)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	post := observation
-	post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = int64(upper), int64(upper)
-	post.Snapshot.SquadsIdleRaw -= int64(r.AmountRaw)
-	var plan phase3BridgeAdmission
-	if topup && debt {
-		plan, err = priceTopupSwapBesideDebt(ctx, rpc, client, manifest, observation, decision, evidence, slot)
-	} else if topup {
-		// NAV, then withdraw the whole position and return it together with
-		// the swapped collateral, exactly like the post-payoff return.
-		plan, err = pricePhase3PositionReturn(ctx, rpc, client, manifest, post, decision, r, evidence.ExpectedEffects, true)
-	} else {
-		plan, err = pricePhase3CollateralReturn(ctx, rpc, client, manifest, post, decision, r, evidence.ExpectedEffects, upper, true, nil)
-	}
-	if err != nil {
-		return plan, err
-	}
-	plan.Snapshot = s
-	if slot > plan.ValidThroughSlot {
-		return plan, budgetHold("stale_entry_swap_admission")
-	}
-	return plan, nil
-}
-
-// Beside debt the top-up swap is priced like the leverage swap: simulate the
-// compiled swap, require that it spends the Squads cash, raises collateral
-// custody by at least the minimum and leaves the obligation, reserves and
-// supplies unchanged, then price the complete return (payoff included) from
-// that poststate with the Squads cash it spent removed.
-func priceTopupSwapBesideDebt(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, observation Observation, decision Decision, evidence JupiterExecutionEvidence, slot int64) (phase3BridgeAdmission, error) {
-	s, r := observation.Snapshot, evidence.Request
-	current, err := manifest.observePhase3KnownBuildCost(ctx, rpc, r, evidence.ExpectedEffects)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	route, err := runtimeRoute(s.RouteLane)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	additional := []string{bridgeSquadsATA}
-	if route.Lane == autoAUTOPYUSD.Lane {
-		additional = append(additional, route.Kamino.Market)
-	}
-	bound, before, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, max(slot, current.ObservationSlot), 3, additional...)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	position, err := decodeKaminoObligation(accountAt(before, route.Kamino.Obligation), route.Kamino)
-	if err != nil || position.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || position.debtRaw == 0 {
-		return phase3BridgeAdmission{}, budgetHold("entry_swap_position_changed")
-	}
-	message, err := CompileJupiterMessage(r)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	var addresses []string
-	for _, a := range before {
-		addresses = append(addresses, a.Address)
-	}
-	projection, err := simulatePhase3EntryProjection(ctx, rpc, message, addresses, bound.ObservedSlot)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	if err := validateLeverageProjection(r, evidence.ExpectedEffects, before, projection); err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	post := observation
-	post.Snapshot.SquadsIdleRaw -= int64(r.AmountRaw)
-	return pricePhase3ProjectedPositionReturn(ctx, rpc, client, manifest, post, decision, r, evidence.ExpectedEffects, current, projection)
-}
-
-func (d *Database) admitPhase3EntrySwap(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
-	plan, err := observePhase3EntrySwapAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
-	if err != nil {
-		return err
-	}
-	return d.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
 }

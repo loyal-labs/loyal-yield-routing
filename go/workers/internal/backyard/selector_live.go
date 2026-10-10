@@ -16,10 +16,8 @@ import (
 // collectSelectorQuotes prices a source once, then at most three independent
 // destinations, each with a biggest-first sizing ladder of at most three
 // exact-size quotes. Nothing here writes a journal row or signs a transaction.
-// entryCostRemainingRaw is advisory sizing headroom under the bounded
-// execution-cost stop; negative means unknown and skips that trigger.
-func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
-	return collectSelectorQuotesForLane(ctx, rpc, client, manifest, o, markets, policy, entryCostRemainingRaw, "", canaryMaximum...)
+func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+	return collectSelectorQuotesForLane(ctx, rpc, client, manifest, o, markets, policy, "", canaryMaximum...)
 }
 
 // selectorLadderBudget stops pricing smaller ladder sizes once this much of
@@ -34,7 +32,7 @@ const selectorLadderBudget = 3 * time.Second
 // suppressed, so other lanes' destination quotes are never used and only
 // delay the canary's own quote. Those lanes keep their market economics and
 // are published as blocked without a quote.
-func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, entryCostRemainingRaw int64, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
 	if err := policy.validate(); err != nil {
@@ -157,9 +155,8 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 				return q, "", false, nil
 			}
 			// Biggest-first sizing ladder: when the largest tranche cannot clear
-			// the existing selector benefit under its expected expense, or would
-			// exhaust the remaining bounded entry-cost budget, reprice at most
-			// two smaller exact sizes. Every leg stays inside the caller's
+			// the existing selector benefit under its expected expense, reprice
+			// at most two smaller exact sizes. Every leg stays inside the caller's
 			// existing collection deadline; no deadline is ever extended.
 			sizes := [3]uint64{maximum, maximum / 10, maximum / 100}
 			var collected []MoveQuote
@@ -182,7 +179,7 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 					continue
 				}
 				collected = append(collected, q)
-				if j < len(sizes)-1 && selectorQuoteSizeSufficient(manifest, o, markets, out[i].Lane, policy, entryCostRemainingRaw, q) {
+				if j < len(sizes)-1 && selectorQuoteSizeSufficient(manifest, o, markets, out[i].Lane, policy, q) {
 					break
 				}
 			}
@@ -196,11 +193,8 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 	}
 	wg.Wait()
 	// Keep the best quote per lane; the locked pure selector owns cross-lane
-	// competition and persistence. Profitable, budget-fitting quotes are
-	// published as executable capacity. A positive-benefit quote beyond the
-	// remaining bounded entry-cost budget is retained only as diagnostics with
-	// an explicit block, so pure selection can never attempt its admission.
-	// Without any profitable size, the best bound-valid quote stays published
+	// competition and persistence. Profitable quotes are published as
+	// executable capacity. Without any profitable size, the best bound-valid quote stays published
 	// for evidence — pure SelectOpportunity then decides KEEP from its own math.
 	result := make([]MoveQuote, 0, len(out))
 	for i := range out {
@@ -210,29 +204,22 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 		best, bestProfitable, bestBenefit := 0, false, math.Inf(-1)
 		for j, q := range laddered[i] {
 			benefit, admissible := selectorMoveQuoteBenefit(manifest, o, markets, out[i].Lane, policy, q)
-			withinBudget := entryCostRemainingRaw < 0 || q.CostRaw <= entryCostRemainingRaw
-			profitable := admissible && withinBudget && benefit > float64(policy.MinimumBenefitRaw)
+			profitable := admissible && benefit > float64(policy.MinimumBenefitRaw)
 			if j == 0 || profitable && !bestProfitable || profitable == bestProfitable && benefit > bestBenefit {
 				best, bestProfitable, bestBenefit = j, profitable, benefit
 			}
 		}
 		bestQuote := laddered[i][best]
 		out[i].EntryCapacity = Capacity{Known: true, Raw: bestQuote.EquityRaw}
-		if !bestProfitable && entryCostRemainingRaw >= 0 && bestQuote.CostRaw > entryCostRemainingRaw {
-			out[i].EntryBlockedReason = "execution_cost_budget_exhausted"
-		}
 		result = append(result, bestQuote)
 	}
 	return out, result, nil
 }
 
 // selectorQuoteSizeSufficient reports whether an already-collected quote
-// clears the existing selector benefit under its expected expense inside the
-// remaining bounded entry-cost budget, so no smaller ladder size is priced.
-func selectorQuoteSizeSufficient(manifest RouteManifest, o Observation, markets []LaneEconomics, lane string, policy SelectorPolicy, entryCostRemainingRaw int64, q MoveQuote) bool {
-	if entryCostRemainingRaw >= 0 && q.CostRaw > entryCostRemainingRaw {
-		return false
-	}
+// clears the existing selector benefit under its expected expense, so no
+// smaller ladder size is priced.
+func selectorQuoteSizeSufficient(manifest RouteManifest, o Observation, markets []LaneEconomics, lane string, policy SelectorPolicy, q MoveQuote) bool {
 	benefit, admissible := selectorMoveQuoteBenefit(manifest, o, markets, lane, policy, q)
 	return admissible && benefit > float64(policy.MinimumBenefitRaw)
 }
@@ -315,13 +302,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 		maximum = []uint64{uint64(request.EquityRaw)}
 		onlyLane = request.Lane
 	}
-	// Advisory sizing headroom from the same planning snapshot; the binding
-	// bounded-cost stop still runs at reservation time under the record lock.
-	remaining := int64(PilotEntryExecutionCostCapMicros)
-	if o.planning != nil {
-		remaining = o.planning.remainingExecutionCost
-	}
-	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, productionJupiter, manifest, o, markets, policy, remaining, onlyLane, maximum...)
+	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, productionJupiter, manifest, o, markets, policy, onlyLane, maximum...)
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
 		// can still maintain persistence, while pure selection cannot enter/switch.

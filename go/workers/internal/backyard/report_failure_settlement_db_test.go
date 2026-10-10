@@ -14,9 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Real PostgreSQL checks the shipped lifecycle SQL and atomic budget/proof
-// persistence. This deliberately uses a synthetic signed fixture: the pure
-// validator tests the cryptographic/effect boundary, not a production signer.
+// Real PostgreSQL checks the shipped lifecycle SQL and proof persistence,
+// through 0099, which stops requiring booked-cost fields. This deliberately
+// uses a synthetic signed fixture: the pure validator tests the
+// cryptographic/effect boundary, not a production signer.
 func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 	url := os.Getenv("PHASE3_TEST_DATABASE_URL")
 	if url == "" {
@@ -45,9 +46,7 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 	}
 	defer func() { _, _ = pool.Exec(context.Background(), "DROP SCHEMA "+qualified+" CASCADE") }()
 	operations := qualified + ".multiply_operations"
-	routes := qualified + ".multiply_route_states"
-	_, err = pool.Exec(ctx, `CREATE TABLE `+routes+`(route_key text PRIMARY KEY,state jsonb NOT NULL);
- CREATE TABLE `+operations+`(
+	_, err = pool.Exec(ctx, `CREATE TABLE `+operations+`(
  operation_id text PRIMARY KEY,route_key text NOT NULL,status text NOT NULL,engine_version text NOT NULL DEFAULT 'backyard_rwa_v1',
  action text,strategy_key text,expected_effects jsonb NOT NULL DEFAULT '{}',signed_wire bytea,signed_wire_sha256 text,
  message_sha256 text,transaction_signature text,recent_blockhash text,last_valid_block_height bigint,
@@ -89,19 +88,7 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 	if err = validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, delegate, effects); err != nil {
 		t.Fatal(err)
 	}
-	budget := emptyTestBudget()
-	budget.Families["OnRe"] = FamilyBudget{SpentMicros: 100, ExitMicros: 2000}
-	reservation := BudgetReservation{OperationID: "failed", Family: "OnRe", IntentSHA256: sha256Bytes([]byte("intent")), UpperMicros: 1000, ExitAfterMicros: 500, Recovery: true}
-	if err = budget.Admit(reservation); err != nil {
-		t.Fatal(err)
-	}
-	cost := ValuedTransactionCost{MessageSHA256: messageHash, Fee: MessageFeeObservation{MessageSHA256: messageHash, Slot: 42, Lamports: 5000}, NativePrice: budgetTestPrice(nativeSOLBudgetAsset, "11111111111111111111111111111111", 9, 100, 1), ObservationSlot: 42, NetworkFeeMicros: 500}
-	auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: reservation.IntentSHA256, SignedWireSHA256: wireHash, SendKnownCost: &cost}
-	proof := finalizedFailureSettlement{Schema: "backyard-finalized-failure/v1", Signature: signature, SignedWireSHA256: wireHash, MessageSHA256: messageHash, Slot: receipt.Slot, Reason: "adaptor_report_slot_refused", AtomicNoCapitalMovement: true, FeeLamports: 5000, Receipt: receipt}
-	next, booked, err := settleFailedFeeBudget(budget, auth, "failed", &proof)
-	if err != nil {
-		t.Fatal(err)
-	}
+	migrate("0083_backyard_rwa_finalized_restore_failure.sql")
 	marshal := func(v any) string {
 		raw, err := json.Marshal(v)
 		if err != nil {
@@ -109,46 +96,54 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 		}
 		return string(raw)
 	}
-	originalState := marshal(map[string]any{"generation": 1, "phase3": budget, "history": "preserved"})
-	originalEffects := marshal(map[string]any{"phase3": auth, "decision": map[string]string{"reason": "report"}})
-	_, err = pool.Exec(ctx, `INSERT INTO `+routes+` VALUES('route',$1::jsonb);
- `, originalState)
-	if err != nil {
+	proof := finalizedFailureSettlement{Schema: "backyard-finalized-failure/v1", Signature: signature, SignedWireSHA256: wireHash, MessageSHA256: messageHash, Slot: receipt.Slot, Reason: "adaptor_report_slot_refused", AtomicNoCapitalMovement: true, FeeLamports: 5000, Receipt: receipt}
+	insert := func(id, status, effects string) error {
+		_, err := pool.Exec(ctx, `INSERT INTO `+operations+`(operation_id,route_key,status,action,strategy_key,expected_effects,signed_wire,signed_wire_sha256,message_sha256,transaction_signature,recent_blockhash,last_valid_block_height,simulation_slot,simulation_result,broadcast_intent_at)
+ VALUES($1,'route',$2,'REPORT_NAV','OnRe/ONyc/USDC',$3::jsonb,$4,$5,$6,$7,$8,99,42,'{}',clock_timestamp())`, id, status, effects, wire, wireHash, messageHash, signature, bridgeVault)
+		return err
+	}
+	settle := func(id, proofJSON, suffix string) error {
+		_, err := pool.Exec(ctx, `UPDATE `+operations+` SET status='failed',confirmation_status='finalized',confirmed_slot=$2,reconciliation_sha256=$3,reconciled_effects=$4::jsonb,recovery_reason=$5`+suffix+` WHERE operation_id=$1 AND status='submitted'`, id, proof.Slot, sha256Bytes([]byte(proofJSON)), proofJSON, proof.Reason)
+		return err
+	}
+	// A finalized failure written under 0083 with its booked fee stays valid:
+	// 0099 re-validates every existing row.
+	var legacyProof map[string]any
+	if err = json.Unmarshal([]byte(marshal(proof)), &legacyProof); err != nil {
 		t.Fatal(err)
 	}
-	_, err = pool.Exec(ctx, `INSERT INTO `+operations+`(operation_id,route_key,status,action,strategy_key,expected_effects,signed_wire,signed_wire_sha256,message_sha256,transaction_signature,recent_blockhash,last_valid_block_height,simulation_slot,simulation_result,broadcast_intent_at)
- VALUES('failed','route','submitted','REPORT_NAV','OnRe/ONyc/USDC',$1::jsonb,$2,$3,$4,$5,$6,99,42,'{}',clock_timestamp())`, originalEffects, wire, wireHash, messageHash, signature, bridgeVault)
-	if err != nil {
+	legacyProof["bookedFeeMicros"] = 500
+	legacyAuth := map[string]any{"goalId": "01a06b6c-8023-72b1-ad5d-c97c0662820e", "intentSha256": sha256Bytes([]byte("intent")), "signedWireSha256": wireHash, "bookedSpentMicros": 500}
+	if err = insert("legacy", "submitted", marshal(map[string]any{"phase3": legacyAuth})); err != nil {
+		t.Fatal(err)
+	}
+	if err = settle("legacy", marshal(legacyProof), ""); err != nil {
+		t.Fatal("0083 refused its own booked failure:", err)
+	}
+	// Under 0083 a failure without booked cost is refused.
+	auth := phase3OperationAuthorization{IntentSHA256: sha256Bytes([]byte("intent")), SignedWireSHA256: wireHash}
+	if err = insert("unbooked", "submitted", marshal(map[string]any{"phase3": auth})); err != nil {
+		t.Fatal(err)
+	}
+	if err = settle("unbooked", marshal(proof), ""); err == nil {
+		t.Fatal("0083 admitted a failure without booked cost")
+	}
+	if _, err = pool.Exec(ctx, `DELETE FROM `+operations+` WHERE operation_id='unbooked'`); err != nil {
+		t.Fatal(err)
+	}
+	migrate("0099_backyard_rwa_failure_without_booked_cost.sql")
+	originalEffects := marshal(map[string]any{"phase3": auth, "decision": map[string]string{"reason": "report"}})
+	if err = insert("failed", "submitted", originalEffects); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := func() string {
 		var result string
-		if err := pool.QueryRow(ctx, `SELECT jsonb_build_array(r.state,to_jsonb(o))::text FROM `+routes+` r JOIN `+operations+` o ON o.route_key=r.route_key WHERE o.operation_id='failed'`).Scan(&result); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT to_jsonb(o)::text FROM `+operations+` o WHERE o.operation_id='failed'`).Scan(&result); err != nil {
 			t.Fatal(err)
 		}
 		return result
 	}
 	before := snapshot()
-	// The update shape mirrors the durable method, including writing booked
-	// authorization before the lifecycle row, under one transaction.
-	attempt := func(proofJSON string, suffix string) error {
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if _, err = tx.Exec(ctx, `UPDATE `+routes+` SET state=jsonb_set(state,'{phase3}',$1::jsonb) WHERE route_key='route'`, marshal(next)); err != nil {
-			return err
-		}
-		if _, err = tx.Exec(ctx, `UPDATE `+operations+` SET expected_effects=jsonb_set(expected_effects,'{phase3}',$1::jsonb) WHERE operation_id='failed'`, marshal(booked)); err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `UPDATE `+operations+` SET status='failed',confirmation_status='finalized',confirmed_slot=$1,reconciliation_sha256=$2,reconciled_effects=$3::jsonb,recovery_reason=$4`+suffix+` WHERE operation_id='failed' AND status='submitted'`, proof.Slot, sha256Bytes([]byte(proofJSON)), proofJSON, proof.Reason)
-		if err != nil {
-			return err
-		}
-		return tx.Commit(ctx)
-	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(map[string]any)
@@ -162,12 +157,13 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 		{"wrong signature", func(p map[string]any) { p["signature"] = "wrong" }, ""},
 		{"wrong slot", func(p map[string]any) { p["slot"] = 1 }, ""},
 		{"no rollback proof", func(p map[string]any) { delete(p, "atomicNoCapitalMovement") }, ""},
-		{"unbooked fee", func(p map[string]any) { p["bookedFeeMicros"] = 501 }, ""},
+		{"no fee", func(p map[string]any) { delete(p, "feeLamports") }, ""},
 		{"unfinalized", func(map[string]any) {}, ",confirmation_status='confirmed'"},
 		{"null action", func(map[string]any) {}, ",action=NULL"},
 		{"capital action", func(map[string]any) {}, ",action='VOLTR_ALLOCATE_TO_SQUADS'"},
 		{"missing digest", func(map[string]any) {}, ",reconciliation_sha256=NULL"},
 		{"missing signed wire", func(map[string]any) {}, ",signed_wire=NULL"},
+		{"unbound wire", func(map[string]any) {}, `,expected_effects=jsonb_set(expected_effects,'{phase3,signedWireSha256}','"other"')`},
 		{"wrong raw receipt", func(p map[string]any) {
 			r := p["receipt"].(map[string]any)
 			r["transaction"] = []string{"wrong", "base64"}
@@ -179,36 +175,29 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.mutate(altered)
-			if err := attempt(marshal(altered), tc.suffix); err == nil {
+			if err := settle("failed", marshal(altered), tc.suffix); err == nil {
 				t.Fatal("malformed finalized failure admitted")
 			}
 			if snapshot() != before {
-				t.Fatal("failed lifecycle update leaked fee booking or changed historical wire")
+				t.Fatal("failed lifecycle update changed the historical wire")
 			}
 		})
 	}
-	if err = attempt(marshal(proof), ""); err != nil {
+	if err = settle("failed", marshal(proof), ""); err != nil {
 		t.Fatal(err)
 	}
-	var finalBudget Phase3Budget
-	var raw []byte
-	if err = pool.QueryRow(ctx, `SELECT state->'phase3' FROM `+routes+` WHERE route_key='route'`).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	if json.Unmarshal(raw, &finalBudget) != nil || finalBudget.Families["OnRe"].SpentMicros != 600 || finalBudget.Families["OnRe"].ExitMicros != 2000 || len(finalBudget.Reservations) != 0 {
-		t.Fatal("fee accounting not committed atomically")
-	}
-	var status, confirmed, savedSignature, savedHash, history, decision string
+	var status, confirmed, savedSignature, savedHash, decision string
 	var savedWire []byte
 	var savedSlot int64
-	err = pool.QueryRow(ctx, `SELECT o.status,o.confirmation_status,o.transaction_signature,o.signed_wire_sha256,o.signed_wire,o.confirmed_slot,r.state->>'history',o.expected_effects->'decision'->>'reason' FROM `+operations+` o JOIN `+routes+` r ON r.route_key=o.route_key WHERE o.operation_id='failed'`).Scan(&status, &confirmed, &savedSignature, &savedHash, &savedWire, &savedSlot, &history, &decision)
+	err = pool.QueryRow(ctx, `SELECT o.status,o.confirmation_status,o.transaction_signature,o.signed_wire_sha256,o.signed_wire,o.confirmed_slot,o.expected_effects->'decision'->>'reason' FROM `+operations+` o WHERE o.operation_id='failed'`).Scan(&status, &confirmed, &savedSignature, &savedHash, &savedWire, &savedSlot, &decision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status != "failed" || confirmed != "finalized" || savedSignature != signature || savedHash != wireHash || !bytes.Equal(savedWire, wire) || savedSlot != proof.Slot || history != "preserved" || decision != "report" {
+	if status != "failed" || confirmed != "finalized" || savedSignature != signature || savedHash != wireHash || !bytes.Equal(savedWire, wire) || savedSlot != proof.Slot || decision != "report" {
 		t.Fatal("finalized history or identity lost")
 	}
-	if _, _, err = settleFailedFeeBudget(finalBudget, booked, "failed", &proof); err == nil {
-		t.Fatal("replayed settlement admitted")
+	var count int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM `+operations+` WHERE status='failed' AND operation_id IN ('failed','legacy')`).Scan(&count); err != nil || count != 2 {
+		t.Fatal("terminal rows changed", count, err)
 	}
 }

@@ -117,7 +117,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 	return rpc
 }
 
-func TestProductionBridgeRequiresDurableBudgetBeforeSigner(t *testing.T) {
+func TestProductionBridgeRequiresBindBeforeSigner(t *testing.T) {
 	for _, tc := range []struct {
 		action      Action
 		amount, fee uint64
@@ -132,8 +132,6 @@ func TestProductionBridgeRequiresDurableBudgetBeforeSigner(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := bridgeTestRequest(tc.action, tc.amount)
-			// Measurement cannot infer pilot authority or authorize signing.
-			assertKnownCostExceedsLegacyBudget(t, budgetBuildRPC(t, tc.fee, 42), request, effects)
 			err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, tc.fee, 42), "negative-probe", BridgeExecutionEvidence{request, effects}, Credentials{})
 			if err == nil || err.Error() != "database is not configured" {
 				t.Fatalf("unconfigured builder reached signer: %v", err)
@@ -149,19 +147,19 @@ func TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission(t *testin
 		t.Fatal(err)
 	}
 	cost, err := observePhase3KnownBuildCost(context.Background(), budgetBuildRPC(t, 5_000, 42), request, effects)
-	if err != nil || cost.TotalMicros <= 0 || cost.TotalMicros >= Phase3TransactionCapMicros || cost.PrincipalMicros != 0 {
+	if err != nil || cost.TotalMicros <= 0 || cost.PrincipalMicros != 0 {
 		t.Fatalf("unexpected measured report cost: %+v %v", cost, err)
 	}
 	_, err = observePhase3KnownBuildCost(context.Background(), budgetBuildRPC(t, 5_000, 75), request, effects)
 	assertBudgetHold(t, err, "fee_message_or_slot_mismatch")
-	// Passing known-cost measurement cannot replace durable admission.
-	err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), "unreserved", BridgeExecutionEvidence{request, effects}, Credentials{})
+	// Passing known-cost measurement cannot replace the bind.
+	err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), "unbound", BridgeExecutionEvidence{request, effects}, Credentials{})
 	if err == nil {
-		t.Fatal("unreserved production build passed")
+		t.Fatal("unbound production build passed")
 	}
 }
 
-func TestProductionKaminoAndJupiterRequireDurableBudgetBeforeSigner(t *testing.T) {
+func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
 	t.Run("Kamino", func(t *testing.T) {
 		request := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegBorrow)
 		source, destination := kaminoLegCustodies(kaminoLegBorrow)
@@ -169,7 +167,6 @@ func TestProductionKaminoAndJupiterRequireDurableBudgetBeforeSigner(t *testing.T
 			{Address: source.Address, Owner: classicTokenProgram, Mint: source.Mint, Authority: source.Authority, BeforeRaw: 2_000_000, AfterRaw: 1_000_000},
 			{Address: destination.Address, Owner: classicTokenProgram, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: 0, AfterRaw: 1_000_000},
 		}}
-		assertKnownCostExceedsLegacyBudget(t, budgetBuildRPC(t, 5_000, 42), request, effects)
 		err := BuildSimulateAndPersistKamino(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), "negative-kamino", KaminoExecutionEvidence{request, effects}, Credentials{})
 		if err == nil || err.Error() != "database is not configured" {
 			t.Fatalf("unconfigured builder reached signer: %v", err)
@@ -184,24 +181,11 @@ func TestProductionKaminoAndJupiterRequireDurableBudgetBeforeSigner(t *testing.T
 			{Address: bridgeSquadsATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeVault, BeforeRaw: 1_000_000, AfterRaw: 0},
 			{Address: kaminoPrimeCustody, Owner: classicTokenProgram, Mint: kaminoPrimeMint, Authority: bridgeVault, BeforeRaw: 0, AfterRaw: minimum, MinimumAfterRaw: &minimum},
 		}}
-		assertKnownCostExceedsLegacyBudget(t, budgetBuildRPC(t, 5_000, 42), request, effects)
 		err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), "negative-jupiter", JupiterExecutionEvidence{request, effects}, Credentials{})
 		if err == nil || err.Error() != "database is not configured" {
 			t.Fatalf("unconfigured builder reached signer: %v", err)
 		}
 	})
-}
-
-func assertKnownCostExceedsLegacyBudget(t *testing.T, rpc *chain.Client, request any, effects ExpectedEffects) {
-	t.Helper()
-	cost, err := observePhase3KnownBuildCost(context.Background(), rpc, request, effects)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b := emptyTestBudget()
-	r := testReservation()
-	r.UpperMicros = cost.TotalMicros
-	assertBudgetHold(t, b.Admit(r), "transaction_cap_exceeded")
 }
 
 func TestKnownBuildCostReadsIndependentValuationsTogether(t *testing.T) {

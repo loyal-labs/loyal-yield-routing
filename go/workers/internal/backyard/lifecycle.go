@@ -62,7 +62,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 			// in-memory status would revalue and send again on this tick.
 			return nil
 		}
-		if err := database.RevalueAndMarkBroadcastIntentOnManifest(ctx, manifest, rpc, operation); err != nil {
+		if err := database.CheckAndMarkBroadcastIntentOnManifest(ctx, manifest, rpc, operation); err != nil {
 			var hold *BudgetHold
 			if errors.As(err, &hold) {
 				if journalErr := database.RecordPhase3SignedBudgetHold(ctx, operation.ID, hold); journalErr != nil {
@@ -72,7 +72,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 				if !errors.As(err, &validated) {
 					return err
 				}
-				// A failed fresh valuation must not trap an expired, absent wire
+				// A held final check must not trap an expired, absent wire
 				// in Signed forever. Release only after finalized expiry and a
 				// subsequent explicit signature-absence observation; never resend.
 				height, heightErr := finalizedHeight(ctx, rpc)
@@ -130,7 +130,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 		if height > operation.LastValidBlockHeight {
 			// Recheck after finalized expiry. The earlier absence observation
 			// may predate a last-valid-block landing. A malformed response or
-			// any found signature retains the reservation and recovery fence.
+			// any found signature retains the recovery fence.
 			afterExpiry, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
 			if err != nil {
 				return err

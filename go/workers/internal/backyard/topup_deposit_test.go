@@ -1,9 +1,6 @@
 package backyard
 
 import (
-	"context"
-	"encoding/binary"
-	"reflect"
 	"testing"
 )
 
@@ -41,71 +38,5 @@ func TestTopupDepositDecisionJoinsDebtFreePosition(t *testing.T) {
 	debt.PositionDebtRaw, debt.PositionDebtValueRaw, debt.LTVBPS = 100_000_000, 100_000_000, 3000
 	if got := Decide(debt); got.Reason != "single_loop_redeposit" {
 		t.Fatalf("leveraged position used the top-up deposit: %+v", got)
-	}
-}
-
-func TestTopupDepositAdmissionJoinsDebtFreeObligation(t *testing.T) {
-	o, d, e, m, rpc, client, accounts := depositAdmissionFixture(t, "")
-	route := ethenaUSDePYUSD
-	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Obligation).Data[128:136], 100_000_000)
-	o.Snapshot.HasPosition, o.Snapshot.PositionCollateralRaw, o.Snapshot.PositionCollateralValueRaw = true, 100_000_000, 100_000
-	flatDecision := d
-	d.Reason = topupDepositReason
-	plan, err := observePhase3DepositAdmission(context.Background(), rpc, client, m, o, d, e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var actions []Action
-	var total int64
-	for _, step := range plan.Exit {
-		actions = append(actions, step.Action)
-		total += step.Cost.TotalMicros
-	}
-	want := []Action{ReportNAV, DeleverRouteStep, ReportNAV, SwapCollateralToStableStep, ReportNAV, StageSquadsToVoltr, ReportNAV, VoltrRestoreIdle, ReportNAV}
-	if !reflect.DeepEqual(actions, want) || total != plan.ExitAfterMicros || plan.DepositProjection == nil || plan.Snapshot != o.Snapshot {
-		t.Fatalf("incomplete top-up deposit reserve: %v", actions)
-	}
-	withdraw, _, _, err := plan.PayoffWithdrawal.decode()
-	if err != nil || withdraw.(KaminoPrimeUSDCRequest).AmountRaw != 100_909_090 {
-		t.Fatal("return does not withdraw the whole enlarged position", err)
-	}
-	// Final send rechecks the unchanged debt-free position.
-	_, _, message, err := plan.Input.decode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
-	intent, _ := Phase3IntentDigest(e.Request, plan.Input.Effects)
-	op := PersistedOperation{Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
-	auth := phase3OperationAuthorization{GoalID: Phase3GoalID, BuildInput: plan.Input, IntentSHA256: intent, SignedWireSHA256: op.SignedWireSHA256, BridgeAdmission: &plan}
-	if _, err := revaluePhase3SignedInput(context.Background(), rpc, auth, op); err != nil {
-		t.Fatal(err)
-	}
-	collateral := accountAt(accounts, route.Kamino.Obligation).Data[128:136]
-	binary.LittleEndian.PutUint64(collateral, 100_000_001)
-	if _, err := revaluePhase3SignedInput(context.Background(), rpc, auth, op); err == nil {
-		t.Fatal("final send accepted a changed position")
-	}
-	binary.LittleEndian.PutUint64(collateral, 100_000_000)
-	// Without the journaled reason, or with debt/demand, a funded obligation
-	// is still refused; the top-up reason never admits a flat one.
-	if _, err := observePhase3DepositAdmission(context.Background(), rpc, client, m, o, flatDecision, e); err == nil {
-		t.Fatal("plain deposit admitted beside a position")
-	}
-	for name, mutate := range map[string]func(*Observation){
-		"debt":   func(o *Observation) { o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw = 1, 1 },
-		"demand": func(o *Observation) { o.Snapshot.WithdrawalDemandRaw = 1 },
-		"unwind": func(o *Observation) { o.Snapshot.Unwind = true },
-		"flat": func(o *Observation) {
-			o.Snapshot.HasPosition, o.Snapshot.PositionCollateralRaw, o.Snapshot.PositionCollateralValueRaw = false, 0, 0
-		},
-		"moved": func(o *Observation) { o.Snapshot.PositionCollateralRaw++ },
-	} {
-		bad := o
-		mutate(&bad)
-		if _, err := observePhase3DepositAdmission(context.Background(), rpc, client, m, bad, d, e); err == nil {
-			t.Fatalf("%s: unsafe top-up deposit admitted", name)
-		}
 	}
 }

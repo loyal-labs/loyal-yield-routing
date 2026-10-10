@@ -12,7 +12,7 @@ func TestExpiredUnwindDebtRequiresReadmissionWithoutBlockingRisk(t *testing.T) {
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 150, 150
 	s.PositionDebtRaw, s.PositionDebtValueRaw = 51, 51
 	s.PayoffDebtRaw, s.LTVBPS = 52, 3400
-	intent := UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: s.ObservationID, MaxCollateralRaw: 150, MaxDebtRaw: 50, CostBoundRaw: 100, BudgetScope: Phase3GoalID, BudgetFamily: "Maple", EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: selectorFixture().Now}
+	intent := UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: s.ObservationID, MaxCollateralRaw: 150, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: selectorFixture().Now}
 	if err := applyUnwindIntentWithLane(&s, &intent, selectorLane); err != nil || !s.Unwind || !s.UnwindRefreshRequired || s.ManualReason != "" {
 		t.Fatal("interest created permanent latch", err, s)
 	}

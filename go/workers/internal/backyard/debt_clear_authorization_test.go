@@ -15,9 +15,9 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, phase3BridgeAdmission) {
+func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, debtClearPlan) {
 	t.Helper()
-	o, m, rpc, client, accounts := usdcReturnFixture(t)
+	o, m, rpc, _, accounts := usdcReturnFixture(t)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
 	decision := Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, AmountRaw: o.Snapshot.PositionDebtRaw, Reason: "withdrawal_repay_debt"}
 	request, err := m.kaminoPacketForRoute(decision.Action, kaminoLegRepay, 1001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
@@ -31,18 +31,13 @@ func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutio
 	if err != nil {
 		t.Fatal(err)
 	}
-	evidence := KaminoExecutionEvidence{request, effects}
-	plan, err := observePhase3PayoffAdmission(context.Background(), rpc, client, m, o, decision, evidence)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return o, decision, evidence, m, rpc, plan
+	return o, decision, KaminoExecutionEvidence{request, effects}, m, rpc, debtClearPlan{Snapshot: o.Snapshot, Decision: decision}
 }
 
 func TestDebtClearClassifiesWholeFlowBeforeFirstCapitalLeg(t *testing.T) {
 	_, _, evidence, m, _, plan := debtClearPayoffFixture(t)
 	evidence.Request.FullPayoff = false // The actual repay amount, not this flag, controls consent.
-	required, err := debtClearRequired(m, evidence.Request, evidence.ExpectedEffects, &plan, debtClearRouteState{})
+	required, err := debtClearRequired(m, evidence.Request, evidence.ExpectedEffects, plan, debtClearRouteState{})
 	if err != nil || !required {
 		t.Fatal("whole-debt repayment escaped confirmation", err)
 	}
@@ -59,24 +54,24 @@ func TestDebtClearClassifiesWholeFlowBeforeFirstCapitalLeg(t *testing.T) {
 			s := livePartialSnapshot()
 			change.mutate(&s)
 			decision := Decide(s)
-			p := phase3BridgeAdmission{Snapshot: s, Decision: decision}
+			p := debtClearPlan{Snapshot: s, Decision: decision}
 			// Releasing collateral/funding, before any repayment, is capital work.
-			required, err := debtClearRequired(m, JupiterSwapRequest{Action: SwapCollateralToDebtStep}, ExpectedEffects{}, &p, debtClearRouteState{})
+			required, err := debtClearRequired(m, JupiterSwapRequest{Action: SwapCollateralToDebtStep}, ExpectedEffects{}, p, debtClearRouteState{})
 			if err != nil || !required {
 				t.Fatal("first full-exit capital leg escaped confirmation", err)
 			}
 		})
 	}
 	s := livePartialSnapshot()
-	p := phase3BridgeAdmission{Snapshot: s, Decision: Decide(s)}
-	required, err = debtClearRequired(m, JupiterSwapRequest{Action: SwapCollateralToDebtStep}, ExpectedEffects{}, &p, debtClearRouteState{})
+	p := debtClearPlan{Snapshot: s, Decision: Decide(s)}
+	required, err = debtClearRequired(m, JupiterSwapRequest{Action: SwapCollateralToDebtStep}, ExpectedEffects{}, p, debtClearRouteState{})
 	if err != nil || required {
 		t.Fatal("genuine debt-retaining partial release blocked", err)
 	}
 	// Utilization alone never turns a partial move into a full-clear emergency.
 	s.BorrowUtilizationBlocked = true
 	p.Snapshot = s
-	required, err = debtClearRequired(m, JupiterSwapRequest{Action: SwapCollateralToDebtStep}, ExpectedEffects{}, &p, debtClearRouteState{})
+	required, err = debtClearRequired(m, JupiterSwapRequest{Action: SwapCollateralToDebtStep}, ExpectedEffects{}, p, debtClearRouteState{})
 	if err != nil || required {
 		t.Fatal("utilization changed partial classification", err)
 	}
@@ -95,7 +90,7 @@ func TestDebtClearHighRiskReportingNeedsNoAuthority(t *testing.T) {
 	if proof, err := verifyDebtClearEmergency(m, o, decision, "report", time.Now().UTC()); err != nil || proof != nil {
 		t.Fatal("report requested emergency proof", err)
 	}
-	if required, err := debtClearRequired(m, bridgeTestRequest(ReportNAV, 0), ExpectedEffects{}, nil, debtClearRouteState{}); err != nil || required {
+	if required, err := debtClearRequired(m, bridgeTestRequest(ReportNAV, 0), ExpectedEffects{}, debtClearPlan{}, debtClearRouteState{}); err != nil || required {
 		t.Fatal("report requested consent", err)
 	}
 }
@@ -117,10 +112,7 @@ func prepareDebtClearDatabase(t *testing.T) (context.Context, *Database, string)
 		t.Fatal(err)
 	}
 	key := fmt.Sprintf("debt-clear-%d", time.Now().UnixNano())
-	b := emptyTestBudget()
-	b.Families["Maple"] = FamilyBudget{ExitMicros: 4_000_000}
-	state, _ := json.Marshal(map[string]any{"generation": 1, "phase3": b})
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,$2)`, key, state); err != nil {
+	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,'{"generation":1}')`, key); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.AcquireRouteLease(ctx, key, "debt-clear-test", time.Minute); err != nil {
@@ -137,24 +129,39 @@ func insertDebtClearOperation(t *testing.T, ctx context.Context, db *Database, k
 	}
 }
 
-func TestDebtClearDatabaseAdmissionConfirmationAndReplay(t *testing.T) {
-	ctx, db, key := prepareDebtClearDatabase(t)
-	o, decision, e, m, rpc, plan := debtClearPayoffFixture(t)
-	id := key + "-ordinary"
-	insertDebtClearOperation(t, ctx, db, key, id, o, decision, m)
-	assertBudgetHold(t, db.persistPhase3ExitAdmissionOnManifest(ctx, rpc, m, id, o, decision, plan), "debt_clear_confirmation_required")
-	var admitted, wire, broadcast bool
-	if err := db.pool.QueryRow(ctx, `SELECT expected_effects ? 'phase3',signed_wire IS NOT NULL,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&admitted, &wire, &broadcast); err != nil {
+// signedDebtClearCheck runs the send-time debt-clear fence for one bound
+// operation under its operation lock.
+func signedDebtClearCheck(t *testing.T, ctx context.Context, db *Database, m RouteManifest, id string, request any, auth phase3OperationAuthorization) error {
+	t.Helper()
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if admitted || wire || broadcast {
-		t.Fatal("unapproved capital admission mutated authority or wire")
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err = db.lockOperationLease(ctx, tx, id); err != nil {
+		t.Fatal(err)
+	}
+	return db.checkSignedDebtClearTx(ctx, tx, m, id, request, auth, nil, 42)
+}
+
+func TestDebtClearDatabaseBindConfirmationAndReplay(t *testing.T) {
+	ctx, db, key := prepareDebtClearDatabase(t)
+	o, decision, e, m, rpc, _ := debtClearPayoffFixture(t)
+	id := key + "-ordinary"
+	insertDebtClearOperation(t, ctx, db, key, id, o, decision, m)
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, m, id, o, decision, e.Request, e.ExpectedEffects), "debt_clear_confirmation_required")
+	var bound, wire, broadcast bool
+	if err := db.pool.QueryRow(ctx, `SELECT expected_effects ? 'phase3',signed_wire IS NOT NULL,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&bound, &wire, &broadcast); err != nil {
+		t.Fatal(err)
+	}
+	if bound || wire || broadcast {
+		t.Fatal("unapproved capital bind mutated authority or wire")
 	}
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='failed' WHERE operation_id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	confirmation := DebtClearConfirmation{RequestID: strings.Repeat("c", 64), ConfirmedBy: "privileged-test-operator", ConfirmationRecord: strings.Repeat("d", 64), AcknowledgeUnavailableReborrow: true, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}
-	intent := UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "economic_rotation", ObservationID: o.Snapshot.ObservationID, MaxCollateralRaw: o.Snapshot.PositionCollateralRaw, MaxDebtRaw: 2000, CostBoundRaw: 4_000_000, BudgetScope: Phase3GoalID, BudgetFamily: "Maple", EvidenceID: strings.Repeat("e", 64), CreatedAt: time.Now().UTC()}
+	intent := UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "economic_rotation", ObservationID: o.Snapshot.ObservationID, MaxCollateralRaw: o.Snapshot.PositionCollateralRaw, MaxDebtRaw: 2000, EvidenceID: strings.Repeat("e", 64), CreatedAt: time.Now().UTC()}
 	if err := db.commitUnwindIntentWithConfirmation(ctx, key, &intent, m, confirmation); err != nil {
 		t.Fatal(err)
 	}
@@ -168,24 +175,30 @@ func TestDebtClearDatabaseAdmissionConfirmationAndReplay(t *testing.T) {
 	assertBudgetHold(t, db.commitUnwindIntentWithConfirmation(ctx, key, &changed, m, confirmation), "debt_clear_confirmation_reused")
 	id = key + "-approved"
 	insertDebtClearOperation(t, ctx, db, key, id, o, decision, m)
-	if err := db.persistPhase3ExitAdmissionOnManifest(ctx, rpc, m, id, o, decision, plan); err != nil {
+	if err := db.bindOperation(ctx, rpc, m, id, o, decision, e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
-	// Successful authorization reaches the existing signer boundary; this test
-	// deliberately never supplies a signer and never creates a signed wire.
-	effects, _ := jsonMarshalExpectedEffects(e.ExpectedEffects)
-	if err := db.authorizePhase3BuildOnManifest(ctx, m, rpc, id, e.Request, effects, plan.CurrentCost); err != nil {
-		t.Fatal("approved pre-sign authorization refused", err)
+	var encoded []byte
+	if err := db.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	var auth phase3OperationAuthorization
+	if json.Unmarshal(encoded, &auth) != nil || auth.DebtClear == nil || auth.DebtClear.ID != confirmation.RequestID || auth.DebtClear.FirstOperationID != id {
+		t.Fatalf("bind lost its scoped confirmation: %s", encoded)
+	}
+	// The bound leg sends only while that authority stays live.
+	if err := signedDebtClearCheck(t, ctx, db, m, id, e.Request, auth); err != nil {
+		t.Fatal("approved send refused", err)
 	}
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=state-'debtClearAuthority' WHERE route_key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
-	assertBudgetHold(t, db.authorizePhase3BuildOnManifest(ctx, m, rpc, id, e.Request, effects, plan.CurrentCost), "debt_clear_confirmation_required")
+	assertBudgetHold(t, signedDebtClearCheck(t, ctx, db, m, id, e.Request, auth), "debt_clear_operation_not_authorized")
 	if err := db.pool.QueryRow(ctx, `SELECT signed_wire IS NOT NULL,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&wire, &broadcast); err != nil {
 		t.Fatal(err)
 	}
 	if wire || broadcast {
-		t.Fatal("pre-sign denial wrote a signed or broadcast operation")
+		t.Fatal("send denial wrote a signed or broadcast operation")
 	}
 	// Receipt survives completed/superseded authority and cannot be reactivated.
 	if err := db.MarkPreBroadcastFailed(ctx, id, Decided, "fixture_confirmation_retired"); err != nil {
@@ -194,41 +207,45 @@ func TestDebtClearDatabaseAdmissionConfirmationAndReplay(t *testing.T) {
 	assertBudgetHold(t, db.commitUnwindIntentWithConfirmation(ctx, key, &intent, m, confirmation), "debt_clear_confirmation_reused")
 }
 
-func TestDebtClearOldSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
+// A signed leg whose debt-clear authority was revoked after bind is denied at
+// send, and that denial may retire the wire only once it is expired and absent.
+func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 	for _, found := range []bool{false, true} {
 		t.Run(fmt.Sprint(found), func(t *testing.T) {
 			ctx, db, key := prepareDebtClearDatabase(t)
-			o, decision, e, m, _, plan := debtClearPayoffFixture(t)
+			o, decision, e, m, base, _ := debtClearPayoffFixture(t)
 			id := key + "-old-signed"
 			insertDebtClearOperation(t, ctx, db, key, id, o, decision, m)
-			input := plan.Input
-			digest, _ := Phase3IntentDigest(e.Request, input.Effects)
+			raw, _ := jsonMarshalExpectedEffects(e.ExpectedEffects)
+			input, _ := encodePhase3BuildInput(e.Request, raw)
+			digest, _ := Phase3IntentDigest(e.Request, raw)
 			message, err := m.compileKaminoMessage(e.Request, mustKey(bridgeDelegate))
 			if err != nil {
 				t.Fatal(err)
 			}
 			wire := append(make([]byte, 65), message...)
 			wire[0] = 1
-			auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: digest, BuildInput: input, BridgeAdmission: &plan, SignedWireSHA256: sha256Bytes(wire)}
+			origin := UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "economic_rotation", ObservationID: o.Snapshot.ObservationID, MaxCollateralRaw: o.Snapshot.PositionCollateralRaw, MaxDebtRaw: 2000, EvidenceID: strings.Repeat("e", 64), CreatedAt: time.Now().UTC()}
+			revoked, err := newDebtClearAuthority(m, key, strings.Repeat("c", 64), origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			auth := phase3OperationAuthorization{IntentSHA256: digest, BuildInput: input, SignedWireSHA256: sha256Bytes(wire), DebtClear: &revoked}
 			encoded, _ := json.Marshal(auth)
-			b := emptyTestBudget()
-			b.Families["Maple"] = FamilyBudget{ExitMicros: 4_000_000}
-			if err = b.Admit(BudgetReservation{OperationID: id, Family: "Maple", IntentSHA256: digest, UpperMicros: plan.CurrentCost.TotalMicros, ExitAfterMicros: plan.ExitAfterMicros, Recovery: true}); err != nil {
-				t.Fatal(err)
-			}
-			budget, _ := json.Marshal(b)
-			if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{phase3}',$2::jsonb) WHERE route_key=$1`, key, budget); err != nil {
-				t.Fatal(err)
-			}
 			if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2,expected_effects=jsonb_set(expected_effects,'{phase3}',$3::jsonb) WHERE operation_id=$1`, id, wire, encoded); err != nil {
 				t.Fatal(err)
 			}
-			operation := PersistedOperation{Operation: Operation{ID: id, RouteKey: key, Decision: decision}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
+			var envelope []byte
+			if err = db.pool.QueryRow(ctx, `SELECT expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&envelope); err != nil {
+				t.Fatal(err)
+			}
+			operation := PersistedOperation{Operation: Operation{ID: id, RouteKey: key, Decision: decision}, Status: Signed, ExpectedEffects: envelope, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
 			height := int64(99)
 			sends, absenceReads := 0, 0
-			rpc := newFakeChain(t, nil)
-			rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			chainReads := rpcOf(base).Transport
+			rpc := newFakeChain(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				body, _ := io.ReadAll(req.Body)
+				req.Body = io.NopCloser(strings.NewReader(string(body)))
 				var call struct{ Method string }
 				if json.Unmarshal(body, &call) != nil {
 					t.Fatal("RPC request")
@@ -244,9 +261,10 @@ func TestDebtClearOldSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 					return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":[null]}}`), nil
 				case "sendTransaction":
 					sends++
+					return nil, fmt.Errorf("unexpected send during consent hold")
 				}
-				return nil, fmt.Errorf("unexpected RPC during consent hold: %s", call.Method)
-			})
+				return chainReads.RoundTrip(req)
+			}))
 			assertBudgetHold(t, advanceNonterminalWithManifest(ctx, m, db, rpc, operation), "debt_clear_operation_not_authorized")
 			var status string
 			var sent bool
@@ -302,7 +320,7 @@ func TestDebtClearRiskRequiresCoherentFreshAccounts(t *testing.T) {
 	}
 }
 
-func debtClearRiskFixture(t *testing.T) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, phase3BridgeAdmission) {
+func debtClearRiskFixture(t *testing.T) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, debtClearPlan) {
 	t.Helper()
 	o, m, _, _, accounts := usdcReturnFixture(t)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
@@ -382,14 +400,7 @@ func debtClearRiskFixture(t *testing.T) (Observation, Decision, KaminoExecutionE
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, _ := jsonMarshalExpectedEffects(effects)
-	input, _ := encodePhase3BuildInput(request, encoded)
-	payoff, err := decodeKaminoPayoffWindow(accounts, route, o.Snapshot.Slot, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan := phase3BridgeAdmission{Payoff: &payoff, Snapshot: o.Snapshot, Decision: decision, Input: input, CurrentCost: ValuedTransactionCost{TotalMicros: 10, ObservationSlot: 42, ValidThroughSlot: 74}, ExitAfterMicros: 90, ValidThroughSlot: 74}
-	return o, decision, KaminoExecutionEvidence{request, effects}, m, plan
+	return o, decision, KaminoExecutionEvidence{request, effects}, m, debtClearPlan{Snapshot: o.Snapshot, Decision: decision}
 }
 
 func TestDebtClearVerifiedRiskAndStaleEvidence(t *testing.T) {
@@ -432,7 +443,7 @@ func TestDebtClearVerifiedRiskAndStaleEvidence(t *testing.T) {
 func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *testing.T) {
 	ctx, db, key := prepareDebtClearDatabase(t)
 	o, decision, e, m, plan := debtClearRiskFixture(t)
-	old := UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "economic_rotation", ObservationID: "old-ordinary", MaxCollateralRaw: o.Snapshot.PositionCollateralRaw - 1, MaxDebtRaw: 500, CostBoundRaw: 4_000_000, BudgetScope: Phase3GoalID, BudgetFamily: "Maple", EvidenceID: strings.Repeat("a", 64), CreatedAt: time.Now().UTC()}
+	old := UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "economic_rotation", ObservationID: "old-ordinary", MaxCollateralRaw: o.Snapshot.PositionCollateralRaw - 1, MaxDebtRaw: 500, EvidenceID: strings.Repeat("a", 64), CreatedAt: time.Now().UTC()}
 	c := DebtClearConfirmation{RequestID: strings.Repeat("b", 64), ConfirmedBy: "test-operator", ConfirmationRecord: strings.Repeat("c", 64), AcknowledgeUnavailableReborrow: true, ExpiresAt: time.Now().UTC().Add(time.Minute)}
 	if err := db.commitUnwindIntentWithConfirmation(ctx, key, &old, m, c); err != nil {
 		t.Fatal(err)
@@ -459,18 +470,16 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	budget, auth, err := db.readPhase3BudgetTx(ctx, tx, id)
-	if err != nil {
+	if err = db.lockOperationLease(ctx, tx, id); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.authorizeDebtClearTx(ctx, tx, m, id, e.Request, e.ExpectedEffects, &plan, &auth, risk, 42, true); err != nil {
+	var auth phase3OperationAuthorization
+	if err = db.authorizeDebtClearTx(ctx, tx, m, id, e.Request, e.ExpectedEffects, plan, &auth, risk, 42); err != nil {
+		_ = tx.Rollback(ctx)
 		t.Fatal("old ordinary bounds blocked risk", err)
 	}
-	auth.GoalID = Phase3GoalID
-	auth.BridgeAdmission = &plan
-	auth.BuildInput = plan.Input
-	auth.IntentSHA256, _ = Phase3IntentDigest(e.Request, plan.Input.Effects)
-	if err = db.writePhase3BudgetTx(ctx, tx, id, budget, auth); err != nil {
+	encoded, _ := json.Marshal(auth)
+	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=jsonb_set(expected_effects,'{phase3}',$2::jsonb) WHERE operation_id=$1`, id, encoded); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -484,8 +493,6 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 	continuation := plan
 	continuation.Snapshot.LTVBPS = 3333
 	continuation.Snapshot.UnwindRefreshRequired = false
-	continuation.CurrentCost.TotalMicros = 10
-	continuation.ExitAfterMicros = 80
 	insertDebtClearOperation(t, ctx, db, key, next, o, decision, m)
 	var continuationRequest any = e.Request
 	check := func(commit bool) error {
@@ -498,7 +505,7 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 			return err
 		}
 		var nextAuth phase3OperationAuthorization
-		err = db.authorizeDebtClearTx(ctx, tx, m, next, continuationRequest, e.ExpectedEffects, &continuation, &nextAuth, nil, 42, true)
+		err = db.authorizeDebtClearTx(ctx, tx, m, next, continuationRequest, e.ExpectedEffects, continuation, &nextAuth, nil, 42)
 		if err != nil {
 			return err
 		}
@@ -515,9 +522,7 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 		t.Fatal("reconciled risk continuation required ordinary consent", err)
 	}
 	continuation.Snapshot.PositionDebtRaw, continuation.Snapshot.PayoffDebtRaw = 0, 0
-	continuation.Payoff = nil
 	continuation.Decision.Action = StageSquadsToVoltr
-	continuation.ExitAfterMicros = 70
 	continuationRequest = bridgeTestRequest(StageSquadsToVoltr, 1000)
 	if err = check(false); err != nil {
 		t.Fatal("reconciled emergency debt-free tail blocked", err)
@@ -544,20 +549,18 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 	assertBudgetHold(t, check(false), "debt_clear_confirmation_required")
 }
 
-func TestDebtClearActiveDebtFreeTailKeepsExpiryScopeAndCostFence(t *testing.T) {
+func TestDebtClearActiveDebtFreeTailKeepsExpiryAndScope(t *testing.T) {
 	for _, kind := range []string{"withdraw", "swap", "stage"} {
-		for _, condition := range []string{"valid", "expired", "revoked", "cost_exceeded"} {
+		for _, condition := range []string{"valid", "expired", "revoked"} {
 			t.Run(kind+"/"+condition, func(t *testing.T) {
 				ctx, db, key := prepareDebtClearDatabase(t)
 				o, _, _, m, _, plan := debtClearPayoffFixture(t)
-				origin := UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "economic_rotation", ObservationID: o.Snapshot.ObservationID, MaxCollateralRaw: o.Snapshot.PositionCollateralRaw, MaxDebtRaw: 2000, CostBoundRaw: 100, BudgetScope: Phase3GoalID, BudgetFamily: "Maple", EvidenceID: strings.Repeat("d", 64), CreatedAt: time.Now().UTC()}
+				origin := UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "economic_rotation", ObservationID: o.Snapshot.ObservationID, MaxCollateralRaw: o.Snapshot.PositionCollateralRaw, MaxDebtRaw: 2000, EvidenceID: strings.Repeat("d", 64), CreatedAt: time.Now().UTC()}
 				c := DebtClearConfirmation{RequestID: strings.Repeat("f", 64), ConfirmedBy: "test-operator", ConfirmationRecord: strings.Repeat("e", 64), AcknowledgeUnavailableReborrow: true, ExpiresAt: time.Now().UTC().Add(time.Minute)}
 				if err := db.commitUnwindIntentWithConfirmation(ctx, key, &origin, m, c); err != nil {
 					t.Fatal(err)
 				}
 				plan.Snapshot.PositionDebtRaw, plan.Snapshot.PayoffDebtRaw = 0, 0
-				plan.Payoff = nil
-				plan.CurrentCost.TotalMicros, plan.ExitAfterMicros = 10, 20
 				plan.Decision = Decision{Action: StageSquadsToVoltr, StrategyKey: o.Snapshot.RouteLane, Reason: "withdrawal_stage", AmountRaw: 1000}
 				var request any = bridgeTestRequest(StageSquadsToVoltr, 1000)
 				if kind == "swap" {
@@ -578,29 +581,24 @@ func TestDebtClearActiveDebtFreeTailKeepsExpiryScopeAndCostFence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				budget, auth, err := db.readPhase3BudgetTx(ctx, tx, id)
-				if err != nil {
+				if err = db.lockOperationLease(ctx, tx, id); err != nil {
 					t.Fatal(err)
 				}
-				if err = db.authorizeDebtClearTx(ctx, tx, m, id, request, ExpectedEffects{}, &plan, &auth, nil, 42, true); err != nil {
+				var auth phase3OperationAuthorization
+				if err = db.authorizeDebtClearTx(ctx, tx, m, id, request, ExpectedEffects{}, plan, &auth, nil, 42); err != nil {
 					t.Fatal("valid tail refused", err)
-				}
-				auth.GoalID = Phase3GoalID
-				auth.BridgeAdmission = &plan
-				if err = db.writePhase3BudgetTx(ctx, tx, id, budget, auth); err != nil {
-					t.Fatal(err)
 				}
 				if err = tx.Commit(ctx); err != nil {
 					t.Fatal(err)
 				}
+				if auth.DebtClear == nil {
+					t.Fatal("tail bound no debt-clear authority")
+				}
 				a := *auth.DebtClear
-				switch condition {
-				case "expired":
+				if condition == "expired" {
 					expired := *a.Confirmation
 					expired.ExpiresAt = time.Now().UTC().Add(-time.Minute)
 					a.Confirmation = &expired
-				case "cost_exceeded":
-					a.UsedCostMicros = a.Origin.CostBoundRaw + 1
 				}
 				encoded, _ := json.Marshal(a)
 				if condition == "revoked" {
@@ -611,22 +609,18 @@ func TestDebtClearActiveDebtFreeTailKeepsExpiryScopeAndCostFence(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				tx, err = db.pool.Begin(ctx)
-				if err != nil {
-					t.Fatal(err)
+				// The bound record carries the authority the send compares;
+				// an expired copy expires the send just as a revoked one.
+				if condition == "expired" {
+					auth.DebtClear = &a
 				}
-				if err = db.lockOperationLease(ctx, tx, id); err != nil {
-					t.Fatal(err)
-				}
-				gateErr := db.authorizeDebtClearTx(ctx, tx, m, id, request, ExpectedEffects{}, &plan, &auth, nil, 42, false)
-				tx.Rollback(ctx)
-				signedErr := db.checkSignedDebtClearConsent(ctx, m, PersistedOperation{Operation: Operation{ID: id, RouteKey: key}}, auth, request, ExpectedEffects{})
+				sendErr := signedDebtClearCheck(t, ctx, db, m, id, request, auth)
 				if condition == "valid" {
-					if gateErr != nil || signedErr != nil {
-						t.Fatal("valid tail lost authority", gateErr, signedErr)
+					if sendErr != nil {
+						t.Fatal("valid tail lost authority", sendErr)
 					}
-				} else if gateErr == nil || signedErr == nil {
-					t.Fatal("debt-free tail lost its consent/cost fence", gateErr, signedErr)
+				} else if sendErr == nil {
+					t.Fatal("debt-free tail lost its consent fence")
 				}
 				var wire, sent bool
 				if err = db.pool.QueryRow(ctx, `SELECT signed_wire IS NOT NULL,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&wire, &sent); err != nil {

@@ -16,10 +16,10 @@ func TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena(t *testing.T) {
 
 func TestCatalogKaminoConstructionMatchesRetainedPrimeSiblings(t *testing.T) {
 	testCatalogKaminoConstruction(t, []string{"Prime/PRIME/PYUSD", "Prime/PRIME/USDS"})
-	// Catalog support does not expand the three new-family canary budget.
+	// Catalog support does not make a sibling a funded lane.
 	for _, lane := range []string{"Prime/PRIME/PYUSD", "Prime/PRIME/USDS"} {
-		if phase3BudgetFamilyForLane(lane) != "" {
-			t.Fatal("sibling construction authorized an extra funded canary")
+		if fundedLane(lane) {
+			t.Fatal("sibling construction authorized an extra funded lane")
 		}
 	}
 }
