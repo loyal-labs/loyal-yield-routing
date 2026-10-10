@@ -16,19 +16,25 @@ import (
 )
 
 const policyUsage = `usage: loyal-engine policy apply|check klend --settings <settings> --reserve <reserve> [flags]
+       loyal-engine policy remove --settings <settings> --policies <a,b,...> [--send]
   apply: install the product's policy (simulates; --send lands it). Needs --delegate and
          credential POLICY_SETTINGS_SIGNER, the Settings' one signer, who pays.
   check: run each op (or --op N) through the installed policy (simulates; --send lands them in order).
          Needs credential POLICY_DELEGATE, the policy's delegate, who pays.
-  Both read credential SOLANA_RPC_URL.`
+  remove: remove the policies in one settings transaction (simulates; --send lands it).
+         Needs credential POLICY_SETTINGS_SIGNER.
+  All read credential SOLANA_RPC_URL.`
 
-// runPolicy is the developer loop for a policy: apply it, check it, both
-// against the real chain.
+// runPolicy is the developer loop for a policy: apply it, check it, remove
+// it, against the real chain.
 func runPolicy(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) < 2 || args[1] != "klend" {
+	if len(args) < 1 || (args[0] != "remove" && (len(args) < 2 || args[1] != "klend")) {
 		return errors.New(policyUsage)
 	}
-	act := args[0]
+	act, rest := args[0], args[1:]
+	if act != "remove" {
+		rest = args[2:]
+	}
 	flags := flag.NewFlagSet("policy", flag.ContinueOnError)
 	flags.SetOutput(out)
 	settingsFlag := flags.String("settings", "", "Squads Settings account")
@@ -37,18 +43,15 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	amount := flags.Uint64("amount", 1_000_000, "deposit amount, raw liquidity units")
 	delegateFlag := flags.String("delegate", "", "apply: the policy's delegated signer")
 	replaceFlag := flags.String("replace", "", "apply: comma-separated policies the new one replaces")
+	policiesFlag := flags.String("policies", "", "remove: comma-separated policies to remove")
 	only := flags.Int("op", -1, "check: run only this op, by its policy position")
 	send := flags.Bool("send", false, "land the transactions instead of only simulating")
-	if err := flags.Parse(args[2:]); err != nil {
+	if err := flags.Parse(rest); err != nil {
 		return err
 	}
 	settings, err := solana.PublicKeyFromBase58(*settingsFlag)
 	if err != nil {
 		return fmt.Errorf("--settings: %w", err)
-	}
-	reserve, err := solana.PublicKeyFromBase58(*reserveFlag)
-	if err != nil {
-		return fmt.Errorf("--reserve: %w", err)
 	}
 	if *vaultIndex > 255 {
 		return errors.New("--vault-index must be at most 255")
@@ -61,22 +64,30 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if act == "remove" {
+		policies, err := publicKeyList("--policies", *policiesFlag)
+		if err != nil {
+			return err
+		}
+		signer, err := credentialKeypair("POLICY_SETTINGS_SIGNER")
+		if err != nil {
+			return err
+		}
+		return policy.Remove(ctx, c, out, settings, signer, policies, *send)
+	}
+	reserve, err := solana.PublicKeyFromBase58(*reserveFlag)
+	if err != nil {
+		return fmt.Errorf("--reserve: %w", err)
+	}
 	switch act {
 	case "apply":
 		delegate, err := solana.PublicKeyFromBase58(*delegateFlag)
 		if err != nil {
 			return fmt.Errorf("--delegate: %w", err)
 		}
-		var replace []solana.PublicKey
-		for _, value := range strings.Split(*replaceFlag, ",") {
-			if value == "" {
-				continue
-			}
-			key, err := solana.PublicKeyFromBase58(value)
-			if err != nil {
-				return fmt.Errorf("--replace: %w", err)
-			}
-			replace = append(replace, key)
+		replace, err := publicKeyList("--replace", *replaceFlag)
+		if err != nil {
+			return err
 		}
 		signer, err := credentialKeypair("POLICY_SETTINGS_SIGNER")
 		if err != nil {
@@ -93,6 +104,22 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 		return policy.Check(ctx, c, out, settings, build, delegate, *only, *send)
 	}
 	return errors.New(policyUsage)
+}
+
+// publicKeyList parses a comma-separated flag of public keys.
+func publicKeyList(name, value string) ([]solana.PublicKey, error) {
+	var out []solana.PublicKey
+	for _, part := range strings.Split(value, ",") {
+		if part == "" {
+			continue
+		}
+		key, err := solana.PublicKeyFromBase58(part)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		out = append(out, key)
+	}
+	return out, nil
 }
 
 // credentialKeypair reads a keypair from a systemd credential.
