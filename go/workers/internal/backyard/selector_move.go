@@ -35,7 +35,7 @@ func observeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, cli
 	if err != nil {
 		return empty, err
 	}
-	return composeSelectorMove(ctx, rpc, view, o, source, destination)
+	return composeSelectorMove(ctx, view, o, source, destination)
 }
 
 // copyDebtPrice deep-copies observed price evidence so a composed quote owns
@@ -54,8 +54,8 @@ func copyDebtPrice(p *BudgetPrice) *BudgetPrice {
 	return &copied
 }
 
-func composeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, o Observation, source selectorSourceQuote, destination selectorDestinationQuote) (MoveQuote, error) {
-	return composeSelectorMoveWithLane(ctx, rpc, view, o, source, destination, selectorLane)
+func composeSelectorMove(ctx context.Context, view *View, o Observation, source selectorSourceQuote, destination selectorDestinationQuote) (MoveQuote, error) {
+	return composeSelectorMoveWithLane(ctx, view, o, source, destination, selectorLane)
 }
 
 // composeSelectorMoveWithLane is the identical quote composition with the
@@ -64,7 +64,7 @@ func composeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, o O
 // manifest that observed it. Every debt-price identity,
 // equity bound and recipe-evidence check is shared verbatim; the public form
 // above keeps the installed selector-lane gate.
-func composeSelectorMoveWithLane(ctx context.Context, rpc *chain.Client, view *View, o Observation, source selectorSourceQuote, destination selectorDestinationQuote, laneAllowed func(string) bool) (MoveQuote, error) {
+func composeSelectorMoveWithLane(ctx context.Context, view *View, o Observation, source selectorSourceQuote, destination selectorDestinationQuote, laneAllowed func(string) bool) (MoveQuote, error) {
 	s := o.Snapshot
 	validThrough := min(source.Recipe.ValidThroughSlot, destination.Recipe.ValidThroughSlot)
 	if destination.DebtPrice != nil {
@@ -104,7 +104,7 @@ func composeSelectorMoveWithLane(ctx context.Context, rpc *chain.Client, view *V
 		q.CollateralAssetPrice = copyDebtPrice(destination.CollateralAssetPrice)
 		q.RedepositCollateralRaw = destination.RedepositCollateralRaw
 	}
-	if rpc == nil || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || !laneAllowed(destination.Lane) || destination.EquityRaw == 0 || destination.EquityRaw > strategyTwoBridgeLegCapRaw || destination.EquityRaw > source.MinimumIdleRaw || source.MinimumIdleRaw > math.MaxInt64 || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || !sha256Pattern.MatchString(destination.Recipe.EvidenceID) || !q.currentAtSlot(s.Slot) || o.ObservedAt.IsZero() {
+	if view == nil || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || !laneAllowed(destination.Lane) || destination.EquityRaw == 0 || destination.EquityRaw > strategyTwoBridgeLegCapRaw || destination.EquityRaw > source.MinimumIdleRaw || source.MinimumIdleRaw > math.MaxInt64 || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || !sha256Pattern.MatchString(destination.Recipe.EvidenceID) || !q.currentAtSlot(s.Slot) || o.ObservedAt.IsZero() {
 		return q, budgetHold("invalid_selector_move")
 	}
 	q.EquityRaw = int64(destination.EquityRaw)
@@ -158,11 +158,7 @@ func composeSelectorMoveWithLane(ctx context.Context, rpc *chain.Client, view *V
 			return q, budgetHold("selector_move_native_funding_unavailable")
 		}
 	}
-	current, err := confirmedSlot(ctx, rpc)
-	if err != nil {
-		return q, err
-	}
-	if current < slot || current > q.ValidThroughSlot || !freshAt(time.Now().UTC(), q.ObservedAt, 30*time.Second) {
+	if slot > q.ValidThroughSlot || !freshAt(time.Now().UTC(), q.ObservedAt, 30*time.Second) {
 		return q, budgetHold("selector_recipe_observation_expired")
 	}
 	raw, err := json.Marshal(struct {

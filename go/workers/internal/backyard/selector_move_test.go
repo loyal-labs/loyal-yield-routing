@@ -30,13 +30,13 @@ func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *test
 	// A bounded synthetic source cost isolates this composition check. Actual
 	// source graph production is covered separately by the full-loop test.
 	source.Recipe.NetworkLamports = 1_000_000_000
-	if _, err = composeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), o, source, destination); err == nil {
+	if _, err = composeSelectorMove(context.Background(), fixtureView(t, rpc), o, source, destination); err == nil {
 		t.Fatal("combined native fee shortfall accepted")
 	}
 	// Refuse a destination that exceeds the guaranteed source return.
 	source.Recipe.NetworkLamports = 0
 	source.MinimumIdleRaw = 9_999_999
-	_, err = composeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), o, source, destination)
+	_, err = composeSelectorMove(context.Background(), fixtureView(t, rpc), o, source, destination)
 	assertBudgetHold(t, err, "invalid_selector_move")
 }
 

@@ -177,8 +177,9 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 	} {
 		t.Run(name, func(t *testing.T) {
 			rpc, reads := lookupRPC(t, r.LookupTables, tc.mutate, tc.allowFee)
+			view := accountView(t, r.LookupTables[0].ObservedSlot+1, nil)
 			// The builder's prestate gate re-reads the tables before any signer.
-			err := validateBuildPrestate(context.Background(), rpc, nil, r, effects)
+			err := validateBuildPrestate(context.Background(), rpc, view, r, effects)
 			if tc.reason == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -211,7 +212,7 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = m.validateRequestPrestate(context.Background(), rpc, nil, request, requestEffects)
+			_, err = m.validateRequestPrestate(context.Background(), rpc, view, request, requestEffects)
 			if tc.reason == "" {
 				if err != nil {
 					t.Fatal(err)

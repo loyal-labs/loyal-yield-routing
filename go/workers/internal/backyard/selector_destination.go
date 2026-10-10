@@ -391,13 +391,13 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 			// Forecast-only prestate: the initializer is priced against the
 			// exact observed funded obligation this exit will close. The
 			// execution admission wrapper stays strictly absent-only.
-			if initSlot, err = m.validateKaminoReentryForecastPrestate(ctx, view, r, max(slot, fee.Slot), reentry.bound); err != nil {
+			if initSlot, err = m.validateKaminoReentryForecastPrestate(ctx, view, r, slot, reentry.bound); err != nil {
 				return out, err
 			}
-		} else if initSlot, err = m.validateKaminoInitializationPrestate(ctx, view, r, max(slot, fee.Slot)); err != nil {
+		} else if initSlot, err = m.validateKaminoInitializationPrestate(ctx, view, r, slot); err != nil {
 			return out, err
 		}
-		observationFloor = max(slot, fee.Slot, initSlot)
+		observationFloor = max(slot, initSlot)
 		if observationFloor > sampleSlot+observationLagSlots() {
 			return out, budgetHold("selector_recipe_observation_expired")
 		}

@@ -160,15 +160,10 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	}
 	// Sign locally and simulate (a heavier round trip), then the landing
 	// status read and the broadcast itself.
+	time.Sleep(2 * rpcLatency)
+	simulated := clock.slot()
 	time.Sleep(rpcLatency)
-	simulated, err := confirmedSlot(ctx, rpc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sent, err := confirmedSlot(ctx, rpc)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sent := clock.slot()
 	time.Sleep(rpcLatency)
 	t.Logf("S=%d bound=S+%d simulated=S+%d sent=S+%d", s.Slot, bound-s.Slot, simulated-s.Slot, sent-s.Slot)
 	if ReportExpiredAtLanding(s.Slot, simulated) {

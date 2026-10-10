@@ -432,7 +432,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 	}
 	plan.Snapshot, plan.Payoff = original, &bound
 	plan.ValidThroughSlot = min(plan.ValidThroughSlot, payoffCost.ValidThroughSlot, bound.ObservedSlot+observationLagSlots())
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil || slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_funding_exit_admission")
 	}

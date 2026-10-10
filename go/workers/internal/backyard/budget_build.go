@@ -97,7 +97,7 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	if solErr != nil {
 		return ValuedTransactionCost{}, budgetHold("build_native_valuation_unavailable")
 	}
-	slot, err = confirmedSlot(ctx, rpc)
+	slot, err = view.slot(ctx)
 	if err != nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}

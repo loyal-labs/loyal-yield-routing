@@ -1,13 +1,11 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"sync/atomic"
@@ -80,7 +78,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 			if err != nil || len(decoded) < 4 || (decoded[0] != 1 && (decoded[0] != 0x80 || decoded[1] != 1)) {
 				t.Fatal("fee request must contain unsigned one-signer message")
 			}
-			result = map[string]any{"context": map[string]int{"slot": 42}, "value": fee}
+			result = map[string]any{"context": map[string]int64{"slot": finalSlot}, "value": fee}
 		case "getProgramAccounts":
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": []any{}} // no withdrawal receipts
 			if squadsProgramAccounts(body.Params) {
@@ -110,7 +108,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 				}
 				values = append(values, map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}})
 			}
-			result = map[string]any{"context": map[string]int{"slot": 42}, "value": values}
+			result = map[string]any{"context": map[string]int64{"slot": finalSlot}, "value": values}
 		default:
 			t.Fatalf("unexpected RPC before cap rejection: %s", body.Method)
 		}
@@ -152,7 +150,7 @@ func TestProductionBridgeRequiresBindBeforeSigner(t *testing.T) {
 	}
 }
 
-func TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission(t *testing.T) {
+func TestKnownBuildCostDoesNotGrantAdmission(t *testing.T) {
 	request := bridgeTestRequest(ReportNAV, 0)
 	effects, _, _, err := bridgeExpectedEffects(Decision{Action: ReportNAV}, 0, 0, 0)
 	if err != nil {
@@ -162,8 +160,6 @@ func TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission(t *testin
 	if err != nil || cost.TotalMicros <= 0 || cost.PrincipalMicros != 0 {
 		t.Fatalf("unexpected measured report cost: %+v %v", cost, err)
 	}
-	_, err = observePhase3KnownBuildCost(context.Background(), budgetBuildRPC(t, 5_000, 75), budgetView(t), request, effects)
-	assertBudgetHold(t, err, "fee_message_or_slot_mismatch")
 	// Passing known-cost measurement cannot replace the bind.
 	err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), budgetView(t), "unbound", BridgeExecutionEvidence{request, effects}, Credentials{})
 	if err == nil {
@@ -198,80 +194,6 @@ func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
 			t.Fatalf("unconfigured builder reached signer: %v", err)
 		}
 	})
-}
-
-func TestKnownBuildCostConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
-	for _, tc := range []struct {
-		name                         string
-		feeSlot, viewSlot, finalSlot int64
-		nullFee                      bool
-		hold                         string
-	}{
-		{"oldest fee bounds validity", 42, 70, 74, false, ""},
-		{"oldest valuation bounds validity", 70, 42, 74, false, ""},
-		{"future fee rejected", 70, 42, 60, false, "fee_message_or_slot_mismatch"},
-		{"future valuation rejected", 42, 70, 60, false, "missing_stale_or_mismatched_usdc_valuation"},
-		{"expired fee rejected", 42, 70, 75, false, "fee_message_or_slot_mismatch"},
-		{"expired valuation rejected", 70, 42, 75, false, "missing_stale_or_mismatched_usdc_valuation"},
-		{"null fee rejected", 42, 42, 42, true, "network_fee_unavailable"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
-			rpc := budgetBuildRPC(t, 5_000, tc.finalSlot)
-			base := rpcOf(rpc).Transport
-			rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-				body, err := io.ReadAll(request.Body)
-				if err != nil {
-					return nil, err
-				}
-				request.Body = io.NopCloser(bytes.NewReader(body))
-				var call struct {
-					Method string            `json:"method"`
-					Params []json.RawMessage `json:"params"`
-				}
-				if err := json.Unmarshal(body, &call); err != nil {
-					return nil, err
-				}
-				res, err := base.RoundTrip(request)
-				if err != nil {
-					return nil, err
-				}
-				if call.Method != "getFeeForMessage" && call.Method != "getMultipleAccounts" {
-					return res, nil
-				}
-				defer res.Body.Close()
-				var payload map[string]any
-				if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
-					return nil, err
-				}
-				result := payload["result"].(map[string]any)
-				slot := tc.viewSlot
-				if call.Method == "getFeeForMessage" {
-					slot = tc.feeSlot
-					if tc.nullFee {
-						result["value"] = nil
-					}
-				}
-				result["context"].(map[string]any)["slot"] = slot
-				encoded, err := json.Marshal(payload)
-				if err != nil {
-					return nil, err
-				}
-				return response(string(encoded)), nil
-			})
-			cost, err := observePhase3KnownBuildCost(context.Background(), rpc, fixtureView(t, rpc), evidence.Request, evidence.ExpectedEffects)
-			if tc.hold != "" {
-				assertBudgetHold(t, err, tc.hold)
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cost.ValidThroughSlot != 74 || cost.ObservationSlot != tc.finalSlot || cost.Fee.Slot != tc.feeSlot || cost.TokenPrice == nil || cost.TokenPrice.ObservedSlot != tc.viewSlot || cost.NativePrice.ObservedSlot != tc.viewSlot {
-				t.Fatalf("lost independently observed validity: %+v", cost)
-			}
-		})
-	}
 }
 
 // A failed read stops the pricing pass as the serial sequence did: the reads

@@ -362,7 +362,7 @@ func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, vie
 	for _, cost := range out.Recipe.Costs {
 		observationFloor = max(observationFloor, cost.ObservationSlot)
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return out, err
 	}

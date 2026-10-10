@@ -325,6 +325,14 @@ func (v *View) sync(ctx context.Context) {
 	}
 }
 
+// slot is S of the live view: the "current slot" of planning and the floor of
+// its reads. No floor comes from an RPC node; an RPC read that must not
+// predate the view takes S as its minContextSlot and is labelled with it.
+func (v *View) slot(ctx context.Context) (int64, error) {
+	slot, _, _, err := v.read(ctx, nil, 0)
+	return slot, err
+}
+
 // errViewReplayGap stops the worker: a stream silent for longer than the
 // provider replays cannot resume, and a restart takes a new start-up read.
 var errViewReplayGap = errors.New("account view stream gap exceeds the provider replay window")

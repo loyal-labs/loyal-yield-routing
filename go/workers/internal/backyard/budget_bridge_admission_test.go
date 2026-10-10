@@ -75,7 +75,8 @@ func TestBridgeAdmissionRejectsUnpricedExposureAndPartialSweep(t *testing.T) {
 	})
 	t.Run("stale snapshot", func(t *testing.T) {
 		o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 1, 2, 0, 0)
-		_, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 75), budgetView(t), o, d, evidence)
+		rpc := budgetBuildRPC(t, 5_000, 75)
+		_, err := observePhase3BridgeAdmission(context.Background(), rpc, fixtureView(t, rpc), o, d, evidence)
 		assertBudgetHold(t, err, "stale_bridge_admission_snapshot")
 	})
 	t.Run("existing bridge custody cannot be new allocation", func(t *testing.T) {
@@ -166,82 +167,6 @@ func TestBridgeAdmissionReadsIndependentValuationsTogether(t *testing.T) {
 	}
 	if started.Load() != 6 || len(plan.Exit) != 5 || plan.ValidThroughSlot != 74 {
 		t.Fatalf("incomplete concurrent admission: reads=%d exits=%d validity=%d", started.Load(), len(plan.Exit), plan.ValidThroughSlot)
-	}
-}
-
-func TestBridgeAdmissionConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
-	for _, tc := range []struct {
-		name                          string
-		feeSlot, priceSlot, finalSlot int64
-		nullFee                       bool
-		hold                          string
-	}{
-		{"different fresh slots retain oldest fee", 42, 70, 74, false, ""},
-		{"future fee rejected", 70, 42, 60, false, "fee_message_or_slot_mismatch"},
-		{"future price rejected", 42, 70, 60, false, "missing_stale_or_mismatched_usdc_valuation"},
-		{"expired snapshot rejected", 42, 70, 75, false, "stale_bridge_admission_snapshot"},
-		{"null fee rejected", 42, 42, 42, true, "network_fee_unavailable"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
-			rpc := budgetBuildRPC(t, 5_000, tc.finalSlot)
-			base := rpcOf(rpc).Transport
-			rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-				body, err := io.ReadAll(request.Body)
-				if err != nil {
-					return nil, err
-				}
-				request.Body = io.NopCloser(bytes.NewReader(body))
-				var call struct {
-					Method string `json:"method"`
-				}
-				if err := json.Unmarshal(body, &call); err != nil {
-					return nil, err
-				}
-				res, err := base.RoundTrip(request)
-				if err != nil {
-					return nil, err
-				}
-				if call.Method != "getFeeForMessage" && call.Method != "getMultipleAccounts" {
-					return res, nil
-				}
-				defer res.Body.Close()
-				var payload map[string]any
-				if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
-					return nil, err
-				}
-				result := payload["result"].(map[string]any)
-				slot := tc.priceSlot
-				if call.Method == "getFeeForMessage" {
-					slot = tc.feeSlot
-					if tc.nullFee {
-						result["value"] = nil
-					}
-				}
-				result["context"].(map[string]any)["slot"] = slot
-				encoded, err := json.Marshal(payload)
-				if err != nil {
-					return nil, err
-				}
-				return response(string(encoded)), nil
-			})
-			plan, err := observePhase3BridgeAdmission(context.Background(), rpc, fixtureView(t, rpc), o, d, evidence)
-			if tc.hold != "" {
-				assertBudgetHold(t, err, tc.hold)
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if plan.ValidThroughSlot != 74 {
-				t.Fatalf("newer price extended old fee validity: %d", plan.ValidThroughSlot)
-			}
-			for _, cost := range append([]phase3BridgeExitCost{{Cost: plan.CurrentCost}}, plan.Exit...) {
-				if cost.Cost.ObservationSlot != tc.finalSlot || cost.Cost.Fee.Slot != tc.feeSlot || cost.Cost.NativePrice.ObservedSlot != tc.priceSlot || cost.Cost.ValidThroughSlot != 74 {
-					t.Fatalf("lost independently observed slot: %+v", cost.Cost)
-				}
-			}
-		})
 	}
 }
 

@@ -219,7 +219,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 		slot = max(slot, tokenPrices[i].ObservedSlot)
 	}
 	slot = max(slot, sol.ObservedSlot)
-	nowSlot, err := confirmedSlot(ctx, rpc)
+	nowSlot, err := view.slot(ctx)
 	if err != nil {
 		return out, err
 	}

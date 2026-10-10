@@ -29,7 +29,7 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 	if rpc == nil {
 		return 0, budgetHold("prestate_unavailable")
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return 0, budgetHold("prestate_unavailable")
 	}

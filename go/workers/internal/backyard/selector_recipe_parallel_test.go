@@ -87,15 +87,13 @@ func TestSelectorRecipeParallelFeesStayBoundToMessagesAndSlots(t *testing.T) {
 		t.Fatal("fixture needs distinct compiled messages")
 	}
 	for _, tc := range []struct {
-		name                          string
-		feeSlot, priceSlot, finalSlot int64
-		invalid                       bool
+		name              string
+		feeSlot, viewSlot int64
+		invalid           bool
 	}{
-		{"exact messages", 42, 42, 43, false},
-		{"future fee", 44, 42, 43, true},
-		{"stale fee", 41, 42, 43, true},
-		{"future price", 42, 44, 43, true},
-		{"expired sample", 42, 42, 75, true},
+		{"exact messages", 42, 42, false},
+		{"stale fee", 41, 42, true},
+		{"expired sample", 42, 75, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rpc := budgetBuildRPC(t, 5000, 42)
@@ -116,8 +114,6 @@ func TestSelectorRecipeParallelFeesStayBoundToMessagesAndSlots(t *testing.T) {
 				}
 				var result any
 				switch body.Method {
-				case "getSlot":
-					result = tc.finalSlot
 				case "getFeeForMessage":
 					feeReads.Add(1)
 					var encoded string
@@ -148,7 +144,7 @@ func TestSelectorRecipeParallelFeesStayBoundToMessagesAndSlots(t *testing.T) {
 					if err = json.NewDecoder(response.Body).Decode(&envelope); err != nil {
 						return nil, err
 					}
-					envelope.Result.Context["slot"] = tc.priceSlot
+					envelope.Result.Context["slot"] = tc.viewSlot
 					result = envelope.Result
 				case "getProgramAccounts":
 					return base.RoundTrip(r)

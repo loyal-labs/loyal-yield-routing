@@ -103,18 +103,18 @@ func observeJupiterLookupTables(ctx context.Context, rpc *chain.Client, addresse
 	if rpc == nil {
 		return nil, 0, budgetHold("lookup_observation_unavailable")
 	}
-	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
+	_, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
 	if err != nil {
 		return nil, 0, budgetHold("lookup_observation_unavailable")
 	}
 	tables := make([]LookupTableSnapshot, len(accounts))
 	for i, a := range accounts {
-		tables[i] = LookupTableSnapshot{Address: a.Address, Owner: a.Owner, Lamports: a.Lamports, Executable: a.Executable, Data: a.Data, ObservedSlot: slot}
+		tables[i] = LookupTableSnapshot{Address: a.Address, Owner: a.Owner, Lamports: a.Lamports, Executable: a.Executable, Data: a.Data, ObservedSlot: minimumSlot}
 		if _, err := decodeMessageLookupTable(tables[i]); err != nil {
 			return nil, 0, budgetHold("lookup_account_invalid")
 		}
 	}
-	return tables, slot, nil
+	return tables, minimumSlot, nil
 }
 
 // prepareJupiterLookupTables compiles for callers holding only the embedded

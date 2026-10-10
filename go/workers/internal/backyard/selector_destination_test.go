@@ -1,13 +1,11 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"reflect"
@@ -269,57 +267,6 @@ func TestSelectorDestinationFullPilotTrancheHasQuotedPayoff(t *testing.T) {
 	if q.PayoffSwap.Request.MinimumOutputRaw < q.PayoffUpperRaw || q.Recipe.CostRaw >= 10_000_000 || len(q.Recipe.Inputs) != 12 {
 		t.Fatal("incomplete full tranche forecast", q)
 	}
-}
-
-func TestSelectorDestinationIncludesPayoffLookupReadInFreshness(t *testing.T) {
-	m, rpc, client, accounts := selectorDestinationFixture(t)
-	tables := map[string]bool{}
-	for _, a := range accounts {
-		if a.Owner == "AddressLookupTab1e1111111111111111111111111" {
-			tables[a.Address] = true
-		}
-	}
-	original := rpcOf(rpc).Transport
-	changed := false
-	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		raw, err := io.ReadAll(req.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Body = io.NopCloser(bytes.NewReader(raw))
-		var body struct {
-			Method string
-			Params []json.RawMessage
-		}
-		if json.Unmarshal(raw, &body) != nil {
-			t.Fatal("bad fixture request")
-		}
-		res, err := original.RoundTrip(req)
-		if err != nil {
-			return res, err
-		}
-		if body.Method == "getMultipleAccounts" {
-			var addresses []string
-			_ = json.Unmarshal(body.Params[0], &addresses)
-			if len(addresses) > 0 && tables[addresses[0]] {
-				var envelope map[string]any
-				if json.NewDecoder(res.Body).Decode(&envelope) != nil {
-					t.Fatal("bad fixture response")
-				}
-				_ = res.Body.Close()
-				envelope["result"].(map[string]any)["context"].(map[string]any)["slot"] = 100
-				encoded, _ := json.Marshal(envelope)
-				res = response(string(encoded))
-				changed = true
-			}
-		}
-		return res, nil
-	})
-	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
-	if !changed {
-		t.Fatal("fixture never read payoff lookups")
-	}
-	assertBudgetHold(t, err, "selector_recipe_observation_expired")
 }
 
 func TestSelectorReceiptBoundIncludesPreBorrowInterest(t *testing.T) {

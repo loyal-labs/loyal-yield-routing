@@ -21,13 +21,9 @@ package backyard
 //     semantics are changed (that recovery plumbing is A922's).
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -121,29 +117,6 @@ func autoCleanupWithdrawalEffects(t *testing.T, route RuntimeRoute, accounts []C
 func autoCleanupRPC(t *testing.T, slot int64, accounts []ConfirmedAccount) *chain.Client {
 	t.Helper()
 	return autoPayoffRPC(t, slot, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, autoAUTOPYUSD)...))
-}
-
-func autoCleanupStaleRPC(t *testing.T, slot int64, accounts []ConfirmedAccount) *chain.Client {
-	t.Helper()
-	base := autoCleanupRPC(t, slot, accounts)
-	inner := rpcOf(base).Transport
-	rpcOf(base).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			return nil, err
-		}
-		request.Body = io.NopCloser(bytes.NewReader(body))
-		var call struct {
-			Method string `json:"method"`
-		}
-		if json.Unmarshal(body, &call) != nil || call.Method != "getSlot" {
-			return inner.RoundTrip(request)
-		}
-		// Confirm one slot BELOW the observed policy slot: every read is
-		// behind the confirmed floor, so the return pricing must fail closed.
-		return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d}`, slot-1)), nil
-	})
-	return base
 }
 
 func autoCleanupClient(t *testing.T, route RuntimeRoute) *jupiter.Client {
@@ -320,26 +293,6 @@ func TestAutoCleanupZeroResidueRefusesEmptyReturn(t *testing.T) {
 	}
 	if _, err := pricePhase3CollateralReturn(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation, decision, JupiterSwapRequest{}, ExpectedEffects{}, 0, false, nil); err == nil || !strings.Contains(err.Error(), "empty_custody_return") {
 		t.Fatalf("zero residue must hold empty_custody_return, got %v", err)
-	}
-}
-
-// TestAutoCleanupStaleConfirmedSlotHoldsReturn proves the pricer's confirmed
-// floor: when the confirmed slot falls behind the slot the policies were
-// observed at, the return pricing fails closed.
-func TestAutoCleanupStaleConfirmedSlotHoldsReturn(t *testing.T) {
-	const slot = int64(58)
-	state := autoCleanupState{receipts: 0, custodyAUTO: 0, custodyPYUSD: 4_500_000}
-	manifest, route, observation, accounts := autoCleanupObservation(t, slot, state)
-	rpc := autoCleanupStaleRPC(t, slot, accounts)
-	client := autoCleanupClient(t, route)
-	decision := Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(state.custodyPYUSD), StrategyKey: route.Lane, IdempotencyKey: "auto-cleanup-stale"}
-	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, testPolicies(t), decision, state.custodyPYUSD, uint64(observation.Snapshot.SquadsIdleRaw), slot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
-	if err == nil || !strings.Contains(err.Error(), "stale") {
-		t.Fatalf("stale confirmed slot must hold, got plan %+v err %v", plan, err)
 	}
 }
 

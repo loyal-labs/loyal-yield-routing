@@ -230,7 +230,7 @@ func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *V
 	if err != nil {
 		return err
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return err
 	}

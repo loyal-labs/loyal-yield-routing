@@ -39,7 +39,7 @@ func TestSimulatedReserveRefreshOptionalCapturePreservesPinnedAbsence(t *testing
 	})
 	addresses := []string{budgetClockAddress, bridgeVault, bridgeStrategy}
 	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, addresses, []string{budgetClockAddress, bridgeStrategy}, 41)
-	if err != nil || slot != 43 {
+	if err != nil || slot != 41 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}
 	for _, index := range []int{0, 2} {
@@ -231,7 +231,7 @@ func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
 		return response(body2), nil
 	})
 	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, []string{bridgeVault, budgetClockAddress}, []string{budgetClockAddress}, 41)
-	if err != nil || slot != 43 {
+	if err != nil || slot != 41 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}
 	if accounts[0].Lamports != 9 || accounts[1].Data != nil || accounts[1].Address != budgetClockAddress {

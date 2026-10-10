@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"io"
 	"maps"
 	"math"
@@ -121,24 +120,10 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 	}
 	op := PersistedOperation{Operation: Operation{Decision: Decision{Action: InitializeKaminoObligation, StrategyKey: r.RouteLane, Reason: "multiply_obligation_missing", IdempotencyKey: "initializer-controlled"}}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 	auth := phase3OperationAuthorization{IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
-	rpc := newFakeChain(t, nil)
-	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		var body struct {
-			Method string
-			Params []json.RawMessage
-			ID     any
-		}
-		_ = json.NewDecoder(req.Body).Decode(&body)
-		var result any
-		switch body.Method {
-		case "getSlot":
-			result = 77
-		default:
-			t.Fatal("unexpected RPC", body.Method)
-		}
-		encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": result})
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
-	})
+	rpc := newFakeChain(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("the prestate read RPC")
+		return nil, nil
+	}))
 	// The final send proves the persisted wire first; only then is a missing
 	// policy a prestate hold of that proven wire.
 	m := embeddedTestManifest(t)
@@ -153,52 +138,31 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 	assertBudgetHold(t, err, "persisted_signature_or_expiry_mismatch")
 }
 
-// A fresher fee must not extend the earlier policy/rent read.
+// A fee read later than the view must not extend the policy/rent read.
 func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
-	for _, finalSlot := range []int64{60, 74, 75} {
-		t.Run(fmt.Sprint(finalSlot), func(t *testing.T) {
-			r, accounts := initializationPrestateFixture(t)
-			// Controlled lower rent allows the success path under the finite canary cap.
-			r.RentLamports = 3_472_000
-			rent := accounts["SysvarRent111111111111111111111111111111111"]
-			binary.LittleEndian.PutUint64(rent.Data, 1000)
-			e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
-			view := initializationView(t, accounts)
-			rpc := newFakeChain(t, nil)
-			slotReads := 0
-			rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				var body struct {
-					Method string
-					ID     any
-				}
-				_ = json.NewDecoder(req.Body).Decode(&body)
-				var result any
-				switch body.Method {
-				case "getSlot":
-					slotReads++
-					result = 42
-					if slotReads > 1 {
-						result = finalSlot
-					}
-				case "getFeeForMessage":
-					result = map[string]any{"context": map[string]any{"slot": 60}, "value": 5000}
-				default:
-					t.Fatal("unexpected build RPC", body.Method)
-				}
-				encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": result})
-				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
-			})
-			cost, err := observePhase3KnownBuildCost(context.Background(), rpc, view, r, e)
-			if finalSlot == 75 {
-				assertBudgetHold(t, err, "initializer_prestate_expired")
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cost.SetupLamports != r.RentLamports || cost.SetupLamportsMicros <= 0 || cost.PrincipalMicros != 0 || cost.TotalMicros != cost.SetupLamportsMicros+cost.NetworkFeeMicros || cost.ValidThroughSlot != 74 {
-				t.Fatalf("rent or prestate bound lost: %+v", cost)
-			}
-		})
+	r, accounts := initializationPrestateFixture(t)
+	// Controlled lower rent allows the success path under the finite canary cap.
+	r.RentLamports = 3_472_000
+	rent := accounts["SysvarRent111111111111111111111111111111111"]
+	binary.LittleEndian.PutUint64(rent.Data, 1000)
+	e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
+	rpc := newFakeChain(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body struct {
+			Method string
+			ID     any
+		}
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		if body.Method != "getFeeForMessage" {
+			t.Fatal("unexpected build RPC", body.Method)
+		}
+		encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": map[string]any{"context": map[string]any{"slot": 60}, "value": 5000}})
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
+	}))
+	cost, err := observePhase3KnownBuildCost(context.Background(), rpc, initializationView(t, accounts), r, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost.SetupLamports != r.RentLamports || cost.SetupLamportsMicros <= 0 || cost.PrincipalMicros != 0 || cost.TotalMicros != cost.SetupLamportsMicros+cost.NetworkFeeMicros || cost.ValidThroughSlot != 74 {
+		t.Fatalf("rent or prestate bound lost: %+v", cost)
 	}
 }

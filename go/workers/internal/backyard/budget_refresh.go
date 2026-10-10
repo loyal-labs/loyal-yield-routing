@@ -148,5 +148,5 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		}
 		accounts[i] = confirmedAccount(addresses[i], a)
 	}
-	return int64(simulated.Slot), accounts, nil
+	return minimumSlot, accounts, nil
 }

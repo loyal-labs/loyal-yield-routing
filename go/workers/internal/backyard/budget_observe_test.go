@@ -24,9 +24,10 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 	if err != nil {
 		t.Fatal("RPC configuration unavailable")
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	view := fixtureView(t, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
-		t.Fatal("confirmed slot unavailable")
+		t.Fatal("view slot unavailable")
 	}
 	for _, lane := range []string{RouteID, SelectedRouteID} {
 		route, err := runtimeRoute(lane)
@@ -34,7 +35,7 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, mint := range []string{route.Kamino.CollateralMint, bridgeUSDC} {
-			price, err := ObserveBudgetTokenPrice(ctx, rpc, fixtureView(t, rpc), lane, ExecutableDebit{Source: route.CollateralCustody, Mint: mint, TokenProgram: classicTokenProgram, Raw: 1}, slot)
+			price, err := ObserveBudgetTokenPrice(ctx, rpc, view, lane, ExecutableDebit{Source: route.CollateralCustody, Mint: mint, TokenProgram: classicTokenProgram, Raw: 1}, slot)
 			if err != nil {
 				var hold *BudgetHold
 				if errors.As(err, &hold) {
@@ -72,7 +73,7 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("READ_ONLY_MESSAGE_FEE %s", encoded)
-	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, fixtureView(t, rpc), fee.Slot)
+	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, view, fee.Slot)
 	if err != nil {
 		var hold *BudgetHold
 		if errors.As(err, &hold) {

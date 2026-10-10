@@ -477,12 +477,12 @@ func TestComposeRejectsForeignDebtPrice(t *testing.T) {
 	source := selectorSourceQuote{Lane: route.Lane, ObservationID: "o", MinimumIdleRaw: 1, Recipe: selectorRecipe{CostRaw: 1, ValidThroughSlot: 74, EvidenceID: strings.Repeat("a", 64)}}
 	s := base()
 	s.Slot = 42
-	_, err := composeSelectorMove(context.Background(), nil, nil, Observation{Snapshot: s}, source, destination)
+	_, err := composeSelectorMove(context.Background(), nil, Observation{Snapshot: s}, source, destination)
 	assertBudgetHold(t, err, "selector_debt_price_identity_invalid")
 	// A price observed before the sample is equally rejected.
 	early := price
 	early.ObservedSlot = 9
 	destination.DebtPrice = &early
-	_, err = composeSelectorMove(context.Background(), nil, nil, Observation{Snapshot: s}, source, destination)
+	_, err = composeSelectorMove(context.Background(), nil, Observation{Snapshot: s}, source, destination)
 	assertBudgetHold(t, err, "selector_debt_price_identity_invalid")
 }

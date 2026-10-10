@@ -338,7 +338,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		recordManualRecovery:             database.RecordManualRecovery,
 		recordManualRecoveryAtGeneration: database.RecordManualRecoveryAtGeneration,
 		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
-			return prepareBridgeFromTickObservation(ctx, rpc, manifest, decision, observation)
+			return prepareBridgeFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
 		prepareKamino: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
 			manifest, err := manifestForUnwind(ctx, database, manifest)

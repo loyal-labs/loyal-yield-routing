@@ -56,7 +56,6 @@ func TestSelectorRecipePricesRepeatedReportsWithoutChargingPrincipalOrRent(t *te
 	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPC(t, init.Initialization.MaximumFeeLamports+1, 42), budgetView(t), init.Initialization.RouteLane, inputs, 42)
 	assertBudgetHold(t, err, "initializer_fee_changed")
 	staleRPC := budgetBuildRPC(t, 5000, 75)
-	_, _ = confirmedSlot(context.Background(), staleRPC)
 	_, err = priceSelectorRecipe(context.Background(), staleRPC, fixtureView(t, staleRPC), init.Initialization.RouteLane, inputs, 42)
 	if err == nil {
 		t.Fatal("stale prices admitted")

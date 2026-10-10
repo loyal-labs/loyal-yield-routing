@@ -85,7 +85,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *V
 		return o, r, err
 	}
 	r.MaximumFeeLamports = fee.Lamports
-	if _, err = manifest.validateKaminoInitializationPrestate(ctx, view, r, max(o.Snapshot.Slot, fee.Slot)); err != nil {
+	if _, err = manifest.validateKaminoInitializationPrestate(ctx, view, r, o.Snapshot.Slot); err != nil {
 		return o, r, err
 	}
 	return o, r, nil

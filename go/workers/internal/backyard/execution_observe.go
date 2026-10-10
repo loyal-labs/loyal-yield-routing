@@ -52,15 +52,16 @@ func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfi
 	return observedAdaptorConfig{}, nil
 }
 
-// Reuse the enriched, receipt-fenced bank owned by this Tick. Only the current
-// slot and blockhash need new RPC reads; admission, signing simulation, durable
-// authority binding and final send revalidation still run unchanged.
-func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
+// Reuse the enriched, receipt-fenced bank owned by this Tick. The current slot
+// is the view's; only the blockhash needs a new RPC read. Admission, signing
+// simulation, durable authority binding and final send revalidation still run
+// unchanged.
+func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 	batch := observation.routeBatch
 	if rpc == nil || batch == nil || batch.Slot != observation.Snapshot.Slot || batch.ObservationID != observation.Snapshot.ObservationID || batch.ManifestSHA256 != manifest.SHA256 || observation.Validate() != nil || !freshAt(time.Now().UTC(), observation.ObservedAt, 30*time.Second) {
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation is missing or stale"))
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}

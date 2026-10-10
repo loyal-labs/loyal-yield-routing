@@ -145,7 +145,7 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
 					return MoveQuote{}, "complete_entry_quote_unavailable", false, err
 				}
-				q, err := composeSelectorMoveWithLane(ctx, rpc, view, o, source, destination, laneAllowed)
+				q, err := composeSelectorMoveWithLane(ctx, view, o, source, destination, laneAllowed)
 				if err != nil {
 					// Cost beyond equity is an economic outcome smaller sizes can
 					// repair; every other refusal is terminal for this lane.
@@ -324,7 +324,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 			enriched[i].EntryBlockedReason = reason
 		}
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}

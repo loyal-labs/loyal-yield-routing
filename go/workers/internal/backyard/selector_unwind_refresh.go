@@ -47,7 +47,7 @@ func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client,
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}

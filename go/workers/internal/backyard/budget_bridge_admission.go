@@ -181,7 +181,7 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 	if err != nil {
 		return plan, err
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return plan, err
 	}
@@ -242,7 +242,7 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 	if solErr != nil {
 		return plan, budgetHold("bridge_admission_native_valuation_unavailable")
 	}
-	slot, err = confirmedSlot(ctx, rpc)
+	slot, err = view.slot(ctx)
 	if err != nil {
 		return plan, err
 	}
