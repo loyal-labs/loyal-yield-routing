@@ -30,7 +30,7 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 		t.Fatal(err)
 	}
 	e.Request.PositionReturnReserved = true
-	_, before, err := observeKaminoPayoffWindow(context.Background(), rpc, route, 42, 3)
+	_, before, err := observeKaminoPayoffWindow(context.Background(), fixtureView(t, rpc), route, 42, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,11 +116,11 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 // that also claims entry-return authority is refused by the effect graph.
 func TestLeverageSwapPrestateBindsCustodyAndIntent(t *testing.T) {
 	_, _, e, _, rpc, _, accounts := leverageAdmissionFixture(t, 20_000, "")
-	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
+	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 999)
-	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects), "leverage_swap_custody_changed")
+	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects), "leverage_swap_custody_changed")
 	e.Request.EntryReturnReserved = true
 	_, err := MeasureExecutableDebit(e.Request, e.ExpectedEffects)
 	assertBudgetHold(t, err, "invalid_position_return_intent")

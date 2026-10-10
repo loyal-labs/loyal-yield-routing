@@ -58,7 +58,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := fixtureView(t, rpc).slot(ctx)
 	if err != nil {
 		t.Fatal("probe slot unavailable")
 	}

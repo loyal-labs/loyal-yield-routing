@@ -25,7 +25,7 @@ type selectorReentryForecast struct {
 // recipe always includes obligation-recreation rent and the exact initializer
 // fee. Every flat execution admission/build/send prerequisite stays enforced
 // where it already lives; nothing here relaxes one.
-func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, source selectorSourceQuote, maximum uint64, clampCapacity bool) (selectorDestinationQuote, error) {
+func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, source selectorSourceQuote, maximum uint64, clampCapacity bool) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s := o.Snapshot
@@ -66,9 +66,9 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 	// validation above both passed: the authorized form runs the identical
 	// entry graph with this forecast's clampCapacity and reentry contract.
 	if s.RouteLane == autoAUTOPYUSD.Lane {
-		return observeSelectorDestinationForecastAuthorized(ctx, rpc, client, m, o.policies, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
+		return observeSelectorDestinationForecastAuthorized(ctx, rpc, view, client, m, o.policies, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
 	}
-	return observeSelectorDestinationForecast(ctx, rpc, client, m, o.policies, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
+	return observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
 }
 
 // The reentry destination observes the actual funded lane batch and binds it
@@ -76,9 +76,9 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 // upper, the obligation present whenever the exit closes one, and no custody
 // residue beyond the idle amount that exit swaps back. An already-flat
 // destination belongs to the ordinary quote, not this forecast.
-func selectorReentryDestinationAccounts(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot int64, bound selectorExitBound, collateralIdle uint64) (int64, []ConfirmedAccount, KaminoPosition, error) {
+func selectorReentryDestinationAccounts(ctx context.Context, rpc *chain.Client, view *View, route RuntimeRoute, minimumSlot int64, bound selectorExitBound, collateralIdle uint64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
-	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, route, minimumSlot)
+	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, view, route, minimumSlot)
 	if err != nil {
 		return 0, nil, empty, err
 	}

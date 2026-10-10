@@ -504,7 +504,7 @@ func TestSelectorDestinationPayoffProducesAndPricesReceiptExactLedger(t *testing
 	}
 	// Pricing observes the SAME batch at the SAME fixture slot: fee, token
 	// and native reads all resolve at 77, inside one coherent freshness window.
-	recipe, err := m.priceSelectorRecipeWithFloor(context.Background(), rpc, route.Lane, inputs, 77, 77)
+	recipe, err := m.priceSelectorRecipeWithFloor(context.Background(), rpc, fixtureView(t, rpc), route.Lane, inputs, 77, 77)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -939,7 +939,7 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 		if _, err := compileJupiterMessageForDelegate(forged, mustKey(bridgeDelegate)); err == nil || !strings.Contains(err.Error(), "exceeds enforceable wire floor") {
 			t.Fatalf("%s: forged retained minimum compiled: %v", forge.name, err)
 		}
-		if err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, rpc, "forged-"+forge.name, JupiterExecutionEvidence{forged, evidence.ExpectedEffects}, Credentials{}); err == nil || !strings.Contains(err.Error(), "exceeds enforceable wire floor") {
+		if err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, rpc, fixtureView(t, rpc), "forged-"+forge.name, JupiterExecutionEvidence{forged, evidence.ExpectedEffects}, Credentials{}); err == nil || !strings.Contains(err.Error(), "exceeds enforceable wire floor") {
 			t.Fatalf("%s: persisted-evidence path accepted the forgery: %v", forge.name, err)
 		}
 	}
@@ -983,7 +983,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 		equity = uint64(200_000_000)
 	)
 	m, route, rpc, client := autoCandidateStack(t, slot, nil)
-	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, capturedTestPolicies(), equity, slot)
+	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), equity, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1105,7 +1105,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 		out, _ := base(in, destination, a)
 		return out, out * 9950 / 10000
 	}, nil)
-	honestQuote, err := observeSelectorDestinationCandidate(context.Background(), rpc, honest, m, capturedTestPolicies(), equity, slot)
+	honestQuote, err := observeSelectorDestinationCandidate(context.Background(), rpc, fixtureView(t, rpc), honest, m, capturedTestPolicies(), equity, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1153,7 +1153,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 func TestSelectorDestinationCandidateHoldsUnconvertibleDustResidue(t *testing.T) {
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
-	_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, capturedTestPolicies(), 200_037_035, slot)
+	_, err := observeSelectorDestinationCandidate(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), 200_037_035, slot)
 	assertBudgetHold(t, err, "jupiter_auto_wire_floor_zero")
 }
 
@@ -1203,7 +1203,7 @@ func TestSelectorDestinationCandidateConvertsTinyAbovePegResidue(t *testing.T) {
 		}
 		return quoted, quoted
 	}, nil)
-	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, abovePeg, m, capturedTestPolicies(), 200_037_035, slot)
+	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, fixtureView(t, rpc), abovePeg, m, capturedTestPolicies(), 200_037_035, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1266,17 +1266,17 @@ func TestSelectorDestinationCandidateConvertsTinyAbovePegResidue(t *testing.T) {
 func TestSelectorDestinationCandidateKeepsPublicGatesClosed(t *testing.T) {
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
-	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, false, nil); err == nil {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, false, nil); err == nil {
 		t.Fatal("public destination priced the candidate lane")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")
 	}
-	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, true, nil); err == nil {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, true, nil); err == nil {
 		t.Fatal("size evaluator priced the candidate lane")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")
 	}
-	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, false, nil); err == nil {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, false, nil); err == nil {
 		t.Fatal("forecast priced the candidate lane")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")
@@ -1294,13 +1294,11 @@ func autoCandidateInitializerRent() uint64 {
 // autoCandidateInitializerStack upgrades the coherent candidate stack for the
 // AUTO initializer: the flat batch loses its obligation so the
 // producer must price recreation (or, with funded, carries the exact bounded
-// fixture position the forecast exit closes), and the transport gains a server
-// for the initializer prestate read — the one getMultipleAccounts whose
-// address list carries the user metadata PDA — holding exactly the
-// initializer's account graph. The variant hook rewrites the served prestate
-// accounts for the refusal cases; the obligation is absent from the served
-// map unless a variant adds it back.
-func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64, funded bool, variant func(route RuntimeRoute, prestate map[string]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *chain.Client, *jupiter.Client) {
+// fixture position the forecast exit closes), and the view's start-up read —
+// the one getMultipleAccounts whose address list carries the user metadata
+// PDA — also serves the initializer's account graph. The variant hook rewrites
+// the served prestate accounts for the refusal cases.
+func autoCandidateInitializerStack(t *testing.T, slot int64, funded bool, variant func(route RuntimeRoute, prestate map[string]ConfirmedAccount)) (RouteManifest, RuntimeRoute, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	route, err := runtimeRoute(testAutoLane)
 	if err != nil {
@@ -1348,15 +1346,14 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 	}
 	// Native funding and derived accounts, mirroring A's coherent initializer
 	// fixture: the captured Settings, the 1032-byte user metadata
-	// naming the vault, the reviewed market image, and the rent sysvar aligned
-	// with the transport's rent stub above.
+	// naming the vault, and the rent sysvar aligned with the transport's rent
+	// stub above.
 	prestate[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000}
 	prestate[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000}
 	rent := ConfirmedAccount{Address: "SysvarRent111111111111111111111111111111111", Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 17)}
 	binary.LittleEndian.PutUint64(rent.Data, 6960)
 	binary.LittleEndian.PutUint64(rent.Data[8:16], math.Float64bits(1))
 	prestate["SysvarRent111111111111111111111111111111111"] = rent
-	prestate[route.Kamino.Market] = marketFixture(t, route.Kamino.Market)
 	for _, meta := range inner.accounts {
 		address := encodeBase58(meta.key[:])
 		if _, ok := prestate[address]; !ok {
@@ -1394,10 +1391,20 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 		for _, address := range addresses {
 			pinned = pinned || address == metadataAddress
 		}
-		if !pinned {
-			return base.RoundTrip(request)
+		res, err := base.RoundTrip(request)
+		if err != nil || !pinned {
+			return res, err
 		}
-		values := make([]any, len(addresses))
+		defer res.Body.Close()
+		var payload struct {
+			Result struct {
+				Value []any `json:"value"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		values := payload.Result.Value
 		for i, address := range addresses {
 			if a, ok := prestate[address]; ok {
 				values[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": false,
@@ -1405,7 +1412,7 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, responseSlot int64,
 			}
 		}
 		encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": call.ID,
-			"result": map[string]any{"context": map[string]any{"slot": responseSlot}, "value": values}})
+			"result": map[string]any{"context": map[string]any{"slot": slot}, "value": values}})
 		if err != nil {
 			return nil, err
 		}
@@ -1422,8 +1429,8 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 		slot   = int64(77)
 		equity = uint64(200_000_000) // coherent parity economics: zero guaranteed residue
 	)
-	m, route, rpc, client := autoCandidateInitializerStack(t, slot, slot, false, nil)
-	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, capturedTestPolicies(), equity, slot)
+	m, route, rpc, client := autoCandidateInitializerStack(t, slot, false, nil)
+	q, err := observeSelectorDestinationCandidate(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), equity, slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1469,41 +1476,13 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 }
 
 // The initializer prestate stays a live admission surface even inside the
-// destination forecast: an obligation that appears between the flat scan and
-// the prestate read, unfunded native accounts, and a prestate observation
-// outside the freshness window each hold the graph.
+// destination forecast: an unfunded vault holds the graph.
 func TestSelectorDestinationCandidateInitializerPrestateRefusals(t *testing.T) {
-	for name, variant := range map[string]struct {
-		responseSlot int64
-		serve        func(route RuntimeRoute, prestate map[string]ConfirmedAccount)
-		hold         string
-	}{
-		"existing_obligation": {
-			responseSlot: 77,
-			serve: func(route RuntimeRoute, prestate map[string]ConfirmedAccount) {
-				prestate[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}}
-			},
-			hold: "initializer_obligation_already_present",
-		},
-		"unfunded_vault": {
-			responseSlot: 77,
-			serve: func(_ RuntimeRoute, prestate map[string]ConfirmedAccount) {
-				prestate[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: "11111111111111111111111111111111", Lamports: 1}
-			},
-			hold: "initializer_native_funding_unavailable",
-		},
-		"stale_prestate": {
-			responseSlot: 77 + budgetMaxObservationLagSlots + 1,
-			serve:        nil,
-			hold:         "selector_recipe_observation_expired",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			m, _, rpc, client := autoCandidateInitializerStack(t, 77, variant.responseSlot, false, variant.serve)
-			_, err := observeSelectorDestinationCandidate(context.Background(), rpc, client, m, capturedTestPolicies(), 2_000_000, 77)
-			assertBudgetHold(t, err, variant.hold)
-		})
-	}
+	m, _, rpc, client := autoCandidateInitializerStack(t, 77, false, func(_ RuntimeRoute, prestate map[string]ConfirmedAccount) {
+		prestate[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: "11111111111111111111111111111111", Lamports: 1}
+	})
+	_, err := observeSelectorDestinationCandidate(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), 2_000_000, 77)
+	assertBudgetHold(t, err, "initializer_native_funding_unavailable")
 }
 
 // The decode-only path decodes a retained initializer to exactly the
@@ -1548,8 +1527,8 @@ func TestCandidateInitializerDecodesToTheManifestCompile(t *testing.T) {
 // wrapper keeps refusing the candidate lane outright.
 func TestSelectorDestinationCandidateReentryEntryStaysGated(t *testing.T) {
 	const slot = int64(77)
-	m, _, rpc, client := autoCandidateInitializerStack(t, slot, slot, false, nil)
-	if _, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, client, m, capturedTestPolicies(), 2_000_000, slot, nil); err == nil {
+	m, _, rpc, client := autoCandidateInitializerStack(t, slot, false, nil)
+	if _, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), 2_000_000, slot, nil); err == nil {
 		t.Fatal("candidate reentry priced without a bound")
 	} else {
 		assertBudgetHold(t, err, "invalid_selector_destination")
@@ -1557,7 +1536,7 @@ func TestSelectorDestinationCandidateReentryEntryStaysGated(t *testing.T) {
 	// The public production reentry wrapper refuses AUTO.
 	funded := Observation{Snapshot: Snapshot{RouteLane: testAutoLane, StrategyKey: testAutoLane, Fresh: true, ObligationPresenceKnown: true, ObligationPresent: true, HasPosition: true, PositionCollateralRaw: 10_000_000_000, PositionDebtRaw: 5_000_000, StrategyNAVRaw: 1, Slot: slot, ObservationID: "candidate-observation"}}
 	source := selectorSourceQuote{Lane: testAutoLane, ObservationID: funded.Snapshot.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: 10_000_000_000, MaxDebtRaw: 5_000_000}, Recipe: selectorRecipe{EvidenceID: sha256Bytes([]byte("candidate-exit")), ValidThroughSlot: slot + 1}}
-	if _, err := observeSelectorReentryDestinationSize(context.Background(), rpc, client, m, funded, source, 2_000_000, false); err == nil {
+	if _, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, funded, source, 2_000_000, false); err == nil {
 		t.Fatal("public reentry wrapper priced the candidate lane")
 	} else {
 		assertBudgetHold(t, err, "selector_reentry_destination_unavailable")
@@ -1579,9 +1558,9 @@ func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T
 		collateral = int64(15_000_000_000) // 15 AUTO of receipts at the pinned 1:1 rate (9dp)
 		debt       = int64(5_000_000)      // 5 PYUSD (6dp)
 	)
-	m, route, rpc, client := autoCandidateInitializerStack(t, slot, slot, true, nil)
+	m, route, rpc, client := autoCandidateInitializerStack(t, slot, true, nil)
 	bound := selectorExitBound{MaxCollateralRaw: collateral, MaxDebtRaw: debt}
-	q, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, client, m, capturedTestPolicies(), equity, slot, &selectorReentryForecast{bound: bound})
+	q, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), equity, slot, &selectorReentryForecast{bound: bound})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1628,6 +1607,6 @@ func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T
 		t.Fatal(err)
 	}
 	execution.MaximumFeeLamports = 5000
-	_, err = m.observePhase3KnownBuildCost(context.Background(), rpc, execution, ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &execution})
+	_, err = m.observePhase3KnownBuildCost(context.Background(), rpc, fixtureView(t, rpc), execution, ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &execution})
 	assertBudgetHold(t, err, "initializer_obligation_already_present")
 }

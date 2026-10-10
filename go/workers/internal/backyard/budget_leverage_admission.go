@@ -3,11 +3,9 @@ package backyard
 import (
 	"context"
 	"math"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func validateLeverageSwap(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, e ExpectedEffects, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+func validateLeverageSwap(ctx context.Context, view *View, r JupiterSwapRequest, e ExpectedEffects, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if !r.PositionReturnReserved || r.Action != SwapDebtToCollateralStep || r.EntryReturnReserved || r.FullPayoffFunding || len(e.Accounts) != 2 {
 		return KaminoPayoffBound{}, nil, budgetHold("leverage_swap_intent_mismatch")
 	}
@@ -22,7 +20,7 @@ func validateLeverageSwap(ctx context.Context, rpc *chain.Client, r JupiterSwapR
 	if route.Lane == autoAUTOPYUSD.Lane {
 		additional = append(additional, route.Kamino.Market)
 	}
-	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, 3, additional...)
+	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 3, additional...)
 	if err != nil {
 		return bound, nil, err
 	}

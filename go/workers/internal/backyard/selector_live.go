@@ -16,8 +16,8 @@ import (
 // collectSelectorQuotes prices a source once, then at most three independent
 // destinations, each with a biggest-first sizing ladder of at most three
 // exact-size quotes. Nothing here writes a journal row or signs a transaction.
-func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
-	return collectSelectorQuotesForLane(ctx, rpc, client, manifest, o, markets, policy, "", canaryMaximum...)
+func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+	return collectSelectorQuotesForLane(ctx, rpc, view, client, manifest, o, markets, policy, "", canaryMaximum...)
 }
 
 // selectorLadderBudget stops pricing smaller ladder sizes once this much of
@@ -32,7 +32,7 @@ const selectorLadderBudget = 3 * time.Second
 // suppressed, so other lanes' destination quotes are never used and only
 // delay the canary's own quote. Those lanes keep their market economics and
 // are published as blocked without a quote.
-func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
 	if err := policy.validate(); err != nil {
@@ -80,7 +80,7 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 		sourceManifest = o.planning.observationManifest(manifest)
 		observeSource = observeAutoSelectorSource
 	}
-	source, err := observeSource(ctx, rpc, client, sourceManifest, o)
+	source, err := observeSource(ctx, rpc, view, client, sourceManifest, o)
 	if err != nil {
 		return out, nil, err
 	}
@@ -133,19 +133,19 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 				var destination selectorDestinationQuote
 				var err error
 				if sameLane {
-					destination, err = observeSelectorReentryDestinationSize(ctx, rpc, client, manifest, o, source, size, true)
+					destination, err = observeSelectorReentryDestinationSize(ctx, rpc, view, client, manifest, o, source, size, true)
 				} else {
 					// The lane authority was resolved above; the authorized form
 					// prices the identical entry graph while the candidate lane
 					// goes through the same checks the public gate applies to
 					// installed lanes.
-					destination, err = observeSelectorDestinationForecastAuthorized(ctx, rpc, client, manifest, o.policies, out[i].Lane, size, s.Slot, true, nil)
+					destination, err = observeSelectorDestinationForecastAuthorized(ctx, rpc, view, client, manifest, o.policies, out[i].Lane, size, s.Slot, true, nil)
 				}
 				if err != nil {
 					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
 					return MoveQuote{}, "complete_entry_quote_unavailable", false, err
 				}
-				q, err := composeSelectorMoveWithLane(ctx, rpc, o, source, destination, laneAllowed)
+				q, err := composeSelectorMoveWithLane(ctx, view, o, source, destination, laneAllowed)
 				if err != nil {
 					// Cost beyond equity is an economic outcome smaller sizes can
 					// repair; every other refusal is terminal for this lane.
@@ -305,7 +305,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 		maximum = []uint64{uint64(request.EquityRaw)}
 		onlyLane = request.Lane
 	}
-	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, productionJupiter, manifest, o, markets, policy, onlyLane, maximum...)
+	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, maximum...)
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
 		// can still maintain persistence, while pure selection cannot enter/switch.
@@ -324,7 +324,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 			enriched[i].EntryBlockedReason = reason
 		}
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}

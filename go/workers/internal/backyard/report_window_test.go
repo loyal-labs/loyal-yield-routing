@@ -144,7 +144,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	clock := &slotClock{start: time.Now(), origin: s.Slot + 2, slotTime: slotTime}
 	rpcOf(rpc).Transport = clock.rpc(rpcOf(rpc).Transport, rpcLatency)
 	fixtureHTTP(client).Transport = clock.jupiter(fixtureHTTP(client).Transport, jupiterLatency)
-	if err = db.bindOperation(ctx, rpc, m, id, o, d, nav, effects); err != nil {
+	if err = db.bindOperation(ctx, rpc, fixtureView(t, rpc), m, id, o, d, nav, effects); err != nil {
 		t.Fatalf("bind at slot S+%d: %v", clock.slot()-s.Slot, err)
 	}
 	bound := clock.slot()
@@ -155,20 +155,15 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	if err = db.requireBoundIntent(ctx, id, nav, encoded); err != nil {
 		t.Fatalf("bind was not persisted: %v", err)
 	}
-	if _, err = m.validateRequestPrestate(ctx, rpc, nav, effects); err != nil {
+	if _, err = m.validateRequestPrestate(ctx, rpc, fixtureView(t, rpc), nav, effects); err != nil {
 		t.Fatalf("build gate at slot S+%d: %v", clock.slot()-s.Slot, err)
 	}
 	// Sign locally and simulate (a heavier round trip), then the landing
 	// status read and the broadcast itself.
+	time.Sleep(2 * rpcLatency)
+	simulated := clock.slot()
 	time.Sleep(rpcLatency)
-	simulated, err := confirmedSlot(ctx, rpc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sent, err := confirmedSlot(ctx, rpc)
-	if err != nil {
-		t.Fatal(err)
-	}
+	sent := clock.slot()
 	time.Sleep(rpcLatency)
 	t.Logf("S=%d bound=S+%d simulated=S+%d sent=S+%d", s.Slot, bound-s.Slot, simulated-s.Slot, sent-s.Slot)
 	if ReportExpiredAtLanding(s.Slot, simulated) {

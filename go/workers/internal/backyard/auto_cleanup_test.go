@@ -21,13 +21,9 @@ package backyard
 //     semantics are changed (that recovery plumbing is A922's).
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -123,29 +119,6 @@ func autoCleanupRPC(t *testing.T, slot int64, accounts []ConfirmedAccount) *chai
 	return autoPayoffRPC(t, slot, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, autoAUTOPYUSD)...))
 }
 
-func autoCleanupStaleRPC(t *testing.T, slot int64, accounts []ConfirmedAccount) *chain.Client {
-	t.Helper()
-	base := autoCleanupRPC(t, slot, accounts)
-	inner := rpcOf(base).Transport
-	rpcOf(base).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			return nil, err
-		}
-		request.Body = io.NopCloser(bytes.NewReader(body))
-		var call struct {
-			Method string `json:"method"`
-		}
-		if json.Unmarshal(body, &call) != nil || call.Method != "getSlot" {
-			return inner.RoundTrip(request)
-		}
-		// Confirm one slot BELOW the observed policy slot: every read is
-		// behind the confirmed floor, so the return pricing must fail closed.
-		return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d}`, slot-1)), nil
-	})
-	return base
-}
-
 func autoCleanupClient(t *testing.T, route RuntimeRoute) *jupiter.Client {
 	t.Helper()
 	return autoJupiterTransport(t, route, autoCollateralSellQuote(t, route, nil), nil)
@@ -185,7 +158,7 @@ func TestAutoCleanupWithdrawalAdmissionPricesRefreshedExtraProceedsFully(t *test
 	}
 	returnRaw := state.custodyAUTO + redeemed
 	decision := Decision{Action: DeleverRouteStep, AmountRaw: int64(state.receipts), StrategyKey: route.Lane, Reason: "withdrawal_withdraw_collateral", IdempotencyKey: "auto-cleanup-withdrawal"}
-	plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, observation, decision, KaminoExecutionEvidence{request, effects})
+	plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation, decision, KaminoExecutionEvidence{request, effects})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +213,7 @@ func TestAutoCleanupCollateralReturnAdmissionConvertsCustodyThenResidue(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
+	plan, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +260,7 @@ func TestAutoCleanupDebtResidueContinuesAfterCollateralExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
+	plan, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,31 +288,11 @@ func TestAutoCleanupZeroResidueRefusesEmptyReturn(t *testing.T) {
 	rpc := autoCleanupRPC(t, slot, accounts)
 	client := autoCleanupClient(t, route)
 	decision := Decision{Action: SwapCollateralToStableStep, StrategyKey: route.Lane, IdempotencyKey: "auto-cleanup-empty"}
-	if _, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, client, manifest, observation, decision, JupiterSwapRequest{Action: SwapCollateralToStableStep, RouteLane: route.Lane}, ExpectedEffects{}); err == nil || !strings.Contains(err.Error(), "complete_collateral_return_admission_unavailable") {
+	if _, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation, decision, JupiterSwapRequest{Action: SwapCollateralToStableStep, RouteLane: route.Lane}, ExpectedEffects{}); err == nil || !strings.Contains(err.Error(), "complete_collateral_return_admission_unavailable") {
 		t.Fatalf("zero residue must refuse the return admission, got %v", err)
 	}
-	if _, err := pricePhase3CollateralReturn(context.Background(), rpc, client, manifest, observation, decision, JupiterSwapRequest{}, ExpectedEffects{}, 0, false, nil); err == nil || !strings.Contains(err.Error(), "empty_custody_return") {
+	if _, err := pricePhase3CollateralReturn(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation, decision, JupiterSwapRequest{}, ExpectedEffects{}, 0, false, nil); err == nil || !strings.Contains(err.Error(), "empty_custody_return") {
 		t.Fatalf("zero residue must hold empty_custody_return, got %v", err)
-	}
-}
-
-// TestAutoCleanupStaleConfirmedSlotHoldsReturn proves the pricer's confirmed
-// floor: when the confirmed slot falls behind the slot the policies were
-// observed at, the return pricing fails closed.
-func TestAutoCleanupStaleConfirmedSlotHoldsReturn(t *testing.T) {
-	const slot = int64(58)
-	state := autoCleanupState{receipts: 0, custodyAUTO: 0, custodyPYUSD: 4_500_000}
-	manifest, route, observation, accounts := autoCleanupObservation(t, slot, state)
-	rpc := autoCleanupStaleRPC(t, slot, accounts)
-	client := autoCleanupClient(t, route)
-	decision := Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(state.custodyPYUSD), StrategyKey: route.Lane, IdempotencyKey: "auto-cleanup-stale"}
-	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, testPolicies(t), decision, state.custodyPYUSD, uint64(observation.Snapshot.SquadsIdleRaw), slot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
-	if err == nil || !strings.Contains(err.Error(), "stale") {
-		t.Fatalf("stale confirmed slot must hold, got plan %+v err %v", plan, err)
 	}
 }
 
@@ -364,7 +317,7 @@ func TestAutoCleanupRefusesNonterminalAndAmbiguousOperations(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			poisoned := observation
 			c.mutae(&poisoned.Snapshot)
-			if _, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, client, manifest, poisoned, decision, JupiterSwapRequest{Action: SwapCollateralToStableStep, RouteLane: route.Lane, AmountRaw: state.custodyAUTO}, ExpectedEffects{}); err == nil || !strings.Contains(err.Error(), "complete_collateral_return_admission_unavailable") {
+			if _, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, poisoned, decision, JupiterSwapRequest{Action: SwapCollateralToStableStep, RouteLane: route.Lane, AmountRaw: state.custodyAUTO}, ExpectedEffects{}); err == nil || !strings.Contains(err.Error(), "complete_collateral_return_admission_unavailable") {
 				t.Fatalf("nonterminal/ambiguous state must refuse the return, got %v", err)
 			}
 		})
@@ -382,7 +335,7 @@ func TestAutoCleanupRefusesWrongLaneDecision(t *testing.T) {
 	rpc := autoCleanupRPC(t, slot, accounts)
 	client := autoCleanupClient(t, route)
 	foreign := Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(state.custodyAUTO), StrategyKey: ethenaUSDePYUSD.Lane, IdempotencyKey: "auto-cleanup-wrong-lane"}
-	if _, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, client, manifest, observation, foreign, JupiterSwapRequest{Action: SwapCollateralToStableStep, RouteLane: ethenaUSDePYUSD.Lane, AmountRaw: state.custodyAUTO}, ExpectedEffects{}); err == nil || !strings.Contains(err.Error(), "complete_collateral_return_admission_unavailable") {
+	if _, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation, foreign, JupiterSwapRequest{Action: SwapCollateralToStableStep, RouteLane: ethenaUSDePYUSD.Lane, AmountRaw: state.custodyAUTO}, ExpectedEffects{}); err == nil || !strings.Contains(err.Error(), "complete_collateral_return_admission_unavailable") {
 		t.Fatalf("foreign lane decision must refuse, got %v", err)
 	}
 	// Same discipline on the withdrawal side: the request's lane must equal
@@ -396,7 +349,7 @@ func TestAutoCleanupRefusesWrongLaneDecision(t *testing.T) {
 	}
 	request.RouteLane = ethenaUSDePYUSD.Lane
 	miskeyed := Decision{Action: DeleverRouteStep, AmountRaw: int64(withdrawState.receipts), StrategyKey: route.Lane, Reason: "withdrawal_withdraw_collateral", IdempotencyKey: "auto-cleanup-wrong-lane-withdrawal"}
-	if _, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, withdrawObservation, miskeyed, KaminoExecutionEvidence{request, ExpectedEffects{}}); err == nil || !strings.Contains(err.Error(), "complete_position_exit_admission_unavailable") {
+	if _, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, withdrawObservation, miskeyed, KaminoExecutionEvidence{request, ExpectedEffects{}}); err == nil || !strings.Contains(err.Error(), "complete_position_exit_admission_unavailable") {
 		t.Fatalf("foreign lane withdrawal packet must refuse, got %v", err)
 	}
 }
@@ -439,7 +392,8 @@ func TestAutoCleanupDecisionProgressionFollowsPostPayoffLadder(t *testing.T) {
 		}
 		request.ObligationReserves = []string{route.Kamino.CollateralReserve}
 		effects, redeemed := autoCleanupWithdrawalEffects(t, route, accounts, state)
-		plan, err := observePhase3WithdrawalAdmission(context.Background(), autoCleanupRPC(t, slot, accounts), autoCleanupClient(t, route),
+		rpc := autoCleanupRPC(t, slot, accounts)
+		plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), autoCleanupClient(t, route),
 			manifest, observation, decision, KaminoExecutionEvidence{request, effects})
 		if err != nil {
 			t.Fatal(err)

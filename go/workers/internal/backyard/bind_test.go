@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -253,9 +252,7 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 	if _, err = db.AcquireRouteLease(ctx, key, "writer-a", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	slotRPC := newFakeChain(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return response(`{"jsonrpc":"2.0","id":1,"result":47}`), nil
-	}))
+	unread, view := newFakeChain(t, nil), accountView(t, 47, nil)
 	request := bridgeTestRequest(ReportNAV, 0)
 	request.LastValidBlockHeight = 10
 	request.Report.ObservedSlot, request.Report.Sequence = 47, 47
@@ -274,12 +271,12 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 	// The bind binds only the decision the row records.
 	other := observation
 	other.Snapshot.ObservationID = "obs-other"
-	assertBudgetHold(t, db.bindOperation(ctx, slotRPC, manifest, op, other, decision, request, effects), "bind_journal_mismatch")
-	if err = db.bindOperation(ctx, slotRPC, manifest, op, observation, decision, request, effects); err != nil {
+	assertBudgetHold(t, db.bindOperation(ctx, unread, view, manifest, op, other, decision, request, effects), "bind_journal_mismatch")
+	if err = db.bindOperation(ctx, unread, view, manifest, op, observation, decision, request, effects); err != nil {
 		t.Fatal(err)
 	}
 	// A bound row is never bound again, and the builder signs only its intent.
-	assertBudgetHold(t, db.bindOperation(ctx, slotRPC, manifest, op, observation, decision, request, effects), "bind_journal_mismatch")
+	assertBudgetHold(t, db.bindOperation(ctx, unread, view, manifest, op, observation, decision, request, effects), "bind_journal_mismatch")
 	if err = db.requireBoundIntent(ctx, op, request, encoded); err != nil {
 		t.Fatal(err)
 	}

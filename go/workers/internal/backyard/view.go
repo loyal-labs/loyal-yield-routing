@@ -16,6 +16,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
@@ -121,16 +122,21 @@ func OpenView(ctx context.Context, client *chain.Client, connector stream.Connec
 	return v, v.subscribe(v.seedLow + 1)
 }
 
-// viewAddresses is every fixed account a route-catalog lane observes, plus
-// the pinned program identity accounts.
+// viewAddresses is every fixed account a route-catalog lane observes, prices,
+// builds or admits against, plus the pinned program identity accounts. The
+// stream bills by the byte, so no oracle or AMM pool is among them.
 func viewAddresses() []string {
+	metadata, _ := kamino.UserMetadataAddress(kaminoKey(bridgeVault))
 	addresses := []string{reportTicketPDA, budgetClockAddress, kaminoMarket, kaminoPrimeLiquiditySupply, kaminoUSDCLiquiditySupply,
 		kaminoCollateralReserve, kaminoDebtReserve, kaminoPrimeCustody, kaminoPrimeUSDCObligation,
-		voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress}
+		voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress,
+		bridgeVault, bridgeDelegate, metadata.String(), solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(),
+		bridgeUSDC, budgetSOLReserve, budgetWrappedSOLMint}
 	for _, lane := range []string{RouteID, PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC", autoAUTOPYUSD.Lane, ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane} {
 		route, _ := runtimeRoute(lane)
 		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(route)...),
-			route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver)
+			route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,
+			route.CollateralReceiptMint, route.CollateralReceiptSupply, route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm)
 	}
 	return uniqueNonzero(addresses)
 }
@@ -317,6 +323,15 @@ func (v *View) sync(ctx context.Context) {
 		}
 		v.mu.Unlock()
 	}
+}
+
+// slot is S of the live view: the "current slot" of planning. A view read's
+// floor is a snapshot or decision slot, or our own receipt slot, never an RPC
+// node's slot; an RPC read that must not predate the view takes S as its
+// minContextSlot and keeps its own context slot.
+func (v *View) slot(ctx context.Context) (int64, error) {
+	slot, _, _, err := v.read(ctx, nil, 0)
+	return slot, err
 }
 
 // errViewReplayGap stops the worker: a stream silent for longer than the

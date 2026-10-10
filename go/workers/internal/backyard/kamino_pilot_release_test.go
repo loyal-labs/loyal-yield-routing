@@ -2,13 +2,8 @@ package backyard
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
-	"io"
 	"math/big"
-	"net/http"
-	"strings"
 	"testing"
 )
 
@@ -155,34 +150,7 @@ func TestPilotReleaseRevalidationBindsCurrentLimitsAndMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rpc := newFakeChain(t, nil)
-	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		var call struct {
-			Method string
-			Params []json.RawMessage
-			ID     any
-		}
-		if json.NewDecoder(req.Body).Decode(&call) != nil || call.Method != "getMultipleAccounts" {
-			t.Fatal("unexpected RPC")
-		}
-		var addresses []string
-		_ = json.Unmarshal(call.Params[0], &addresses)
-		var rows []any
-		marketRead := false
-		for _, address := range addresses {
-			if address == route.Kamino.Market {
-				marketRead = true
-			}
-			a := accountAt(accounts, address)
-			rows = append(rows, map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}})
-		}
-		if !marketRead {
-			t.Fatal("release omitted same-batch market cap")
-		}
-		body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": call.ID, "result": map[string]any{"context": map[string]any{"slot": 42}, "value": rows}})
-		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
-	})
-	if _, _, err = validateRepaymentReleaseRequest(context.Background(), rpc, r, effects, 42); err != nil {
+	if _, _, err = validateRepaymentReleaseRequest(context.Background(), accountView(t, 42, accounts), r, effects, 42); err != nil {
 		t.Fatal(err)
 	}
 	encoded, _ := jsonMarshalExpectedEffects(effects)
@@ -192,12 +160,12 @@ func TestPilotReleaseRevalidationBindsCurrentLimitsAndMode(t *testing.T) {
 	if digest == legacyDigest {
 		t.Fatal("release mode escaped persisted intent identity")
 	}
-	if _, _, err = validateRepaymentReleaseRequest(context.Background(), rpc, r, effects, 42); err == nil {
+	if _, _, err = validateRepaymentReleaseRequest(context.Background(), accountView(t, 42, accounts), r, effects, 42); err == nil {
 		t.Fatal("pilot amount authorized by historical model")
 	}
 	r.PilotRepaymentRelease = true
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Market).Data[kaminoGlobalBorrowValueOffset:], 6)
-	if _, _, err = validateRepaymentReleaseRequest(context.Background(), rpc, r, effects, 42); err == nil {
+	if _, _, err = validateRepaymentReleaseRequest(context.Background(), accountView(t, 42, accounts), r, effects, 42); err == nil {
 		t.Fatal("persisted release survived tighter market cap")
 	}
 	r.RepaymentRelease = false

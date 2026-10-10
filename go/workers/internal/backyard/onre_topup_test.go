@@ -95,7 +95,7 @@ func TestOnReTopupSwapPrestateAcceptsTheDebtFreePosition(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Request.EntryReturnReserved, e.Request.TopupReturnReserved = true, true
-	if _, err := m.validateRequestPrestate(ctx, rpc, e.Request, e.ExpectedEffects); err != nil {
+	if _, err := m.validateRequestPrestate(ctx, rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatalf("OnRe top-up swap refused: %v", err)
 	}
 }

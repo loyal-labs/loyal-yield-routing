@@ -22,8 +22,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	if decision.Action != ReportNAV {
 		t.Fatalf("fixture expected report: %+v", decision)
 	}
-	client := newFakeChain(t, nil)
-	slot := int64(78)
+	client, view := newFakeChain(t, nil), accountView(t, 78, nil)
 	requests := map[string]int{}
 	uninstalled := false
 	rpcOf(client).Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -35,10 +34,8 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 		}
 		requests[request.Method]++
 		switch request.Method {
-		case "getSlot":
-			return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%d}`, slot)), nil
 		case "getProgramAccounts":
-			result := capturedPolicyProgramAccounts(slot)
+			result := capturedPolicyProgramAccounts(78)
 			if uninstalled {
 				result["value"] = []any{}
 			}
@@ -51,11 +48,11 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 			return nil, fmt.Errorf("unexpected read")
 		}
 	})
-	prepared, evidence, err := prepareBridgeFromTickObservation(context.Background(), client, m, decision, o)
+	prepared, evidence, err := prepareBridgeFromTickObservation(context.Background(), client, view, m, decision, o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.routeBatch != o.routeBatch || evidence.Request.Action != ReportNAV || len(evidence.ExpectedEffects.Accounts) == 0 || requests["getSlot"] != 1 || requests["getProgramAccounts"] != 1 || requests["getLatestBlockhash"] != 1 {
+	if prepared.routeBatch != o.routeBatch || evidence.Request.Action != ReportNAV || len(evidence.ExpectedEffects.Accounts) == 0 || requests["getProgramAccounts"] != 1 || requests["getLatestBlockhash"] != 1 {
 		t.Fatal("lost shared batch or unexpected preparation reads", requests)
 	}
 	withBatch, _ := json.Marshal(o)
@@ -68,22 +65,20 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	for _, change := range []func(*Observation){func(x *Observation) { x.routeBatch = nil }, func(x *Observation) { x.ObservedAt = x.ObservedAt.Add(-31 * time.Second) }, func(x *Observation) { x.Snapshot.Slot++ }, func(x *Observation) { x.Snapshot.ObservationID = "changed" }} {
 		changed := o
 		change(&changed)
-		if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, m, decision, changed); !errors.Is(err, errConfirmedObservationUnavailable) {
+		if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, view, m, decision, changed); !errors.Is(err, errConfirmedObservationUnavailable) {
 			t.Fatal("bad batch not held", err)
 		}
 	}
-	slot = 110
-	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, m, decision, o); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, accountView(t, 110, nil), m, decision, o); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatal("expired slot admitted", err)
 	}
-	slot = 78
 	changed := decision
 	changed.AmountRaw++
-	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, m, changed, o); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, view, m, changed, o); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatal("ordinary decision drift is not retryable", err)
 	}
 	uninstalled = true
-	_, _, err = prepareBridgeFromTickObservation(context.Background(), client, m, decision, o)
+	_, _, err = prepareBridgeFromTickObservation(context.Background(), client, view, m, decision, o)
 	assertBudgetHold(t, err, "REPORT_NAV policy not installed")
 }
 

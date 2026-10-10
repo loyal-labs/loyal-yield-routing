@@ -3,12 +3,13 @@ package backyard
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -78,19 +79,6 @@ func initializationRuntimeRPC(t *testing.T) (*chain.Client, RouteManifest, Kamin
 			result = r.RentLamports
 		case "getLatestBlockhash":
 			result = map[string]any{"context": map[string]any{"slot": 42}, "value": map[string]any{"blockhash": r.RecentBlockhash, "lastValidBlockHeight": r.LastValidBlockHeight}}
-		case "getMultipleAccounts":
-			var addresses []string
-			json.Unmarshal(body.Params[0], &addresses)
-			if len(addresses) == 0 || addresses[0] != bridgeDelegate {
-				return base.RoundTrip(req)
-			}
-			values := make([]any, len(addresses))
-			for i, address := range addresses {
-				if a, ok := accounts[address]; ok {
-					values[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": a.Executable, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}
-				}
-			}
-			result = map[string]any{"context": map[string]any{"slot": 42}, "value": values}
 		default:
 			return base.RoundTrip(req)
 		}
@@ -99,23 +87,31 @@ func initializationRuntimeRPC(t *testing.T) (*chain.Client, RouteManifest, Kamin
 	})
 	return rpc, m, r, accounts
 }
+
+// initializationView holds the initializer's accounts beside the valuation
+// accounts.
+func initializationView(t *testing.T, accounts map[string]ConfirmedAccount) *View {
+	t.Helper()
+	return fixtureView(t, budgetBuildRPCWithAccounts(t, 5000, 42, slices.Collect(maps.Values(accounts))))
+}
+
 func TestInitializerPreparationMeasuresNativeFundingAndRefusesAccountRace(t *testing.T) {
 	rpc, m, template, accounts := initializationRuntimeRPC(t)
 	o := initializationPlanningFixture(template.RouteLane)
 	o.policies = testPolicies(t)
 	d := Decide(o.Snapshot)
 	observe := func(context.Context) (Observation, error) { return o, nil }
-	got, r, err := prepareKaminoInitialization(context.Background(), rpc, m, d, observe)
+	got, r, err := prepareKaminoInitialization(context.Background(), rpc, initializationView(t, accounts), m, d, observe)
 	if err != nil || !reflect.DeepEqual(got, o) || r.RentLamports != template.RentLamports || r.MaximumFeeLamports != 5000 {
 		t.Fatalf("unmeasured initialization: %+v %v", r, err)
 	}
 	route, _ := runtimeRoute(r.RouteLane)
 	accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1}
-	_, _, err = prepareKaminoInitialization(context.Background(), rpc, m, d, observe)
+	_, _, err = prepareKaminoInitialization(context.Background(), rpc, initializationView(t, accounts), m, d, observe)
 	assertBudgetHold(t, err, "initializer_obligation_already_present")
 	delete(accounts, route.Kamino.Obligation)
 	o.Snapshot.WithdrawalDemandRaw = 1
-	_, _, err = prepareKaminoInitialization(context.Background(), rpc, m, d, observe)
+	_, _, err = prepareKaminoInitialization(context.Background(), rpc, initializationView(t, accounts), m, d, observe)
 	assertBudgetHold(t, err, "initializer_decision_changed")
 }
 
@@ -128,10 +124,11 @@ func TestInitializerBindSendFenceAndExpiryRetirement(t *testing.T) {
 	defer db.Close()
 	key := fmt.Sprintf("initializer-admission-%d", time.Now().UnixNano())
 	id := key + "-op"
-	rpc, m, template, _ := initializationRuntimeRPC(t)
+	rpc, m, template, accounts := initializationRuntimeRPC(t)
+	view := initializationView(t, accounts)
 	o := initializationPlanningFixture(template.RouteLane)
 	d := Decide(o.Snapshot)
-	_, r, err := prepareKaminoInitialization(ctx, rpc, m, d, func(context.Context) (Observation, error) { return o, nil })
+	_, r, err := prepareKaminoInitialization(ctx, rpc, view, m, d, func(context.Context) (Observation, error) { return o, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +144,7 @@ func TestInitializerBindSendFenceAndExpiryRetirement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.ReleaseRouteLease(ctx)
-	if err = db.bindOperation(ctx, rpc, m, id, o, d, r, kaminoInitializationEffects(r)); err != nil {
+	if err = db.bindOperation(ctx, rpc, view, m, id, o, d, r, kaminoInitializationEffects(r)); err != nil {
 		t.Fatal(err)
 	}
 	var encodedAuth []byte
@@ -161,7 +158,7 @@ func TestInitializerBindSendFenceAndExpiryRetirement(t *testing.T) {
 	if bound, _, _, err := auth.BuildInput.decodeWithManifest(m); err != nil || bound != r {
 		t.Fatal("bind changed the measured initializer", err)
 	}
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, m, id, o, d, r, kaminoInitializationEffects(r)), "bind_journal_mismatch")
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, view, m, id, o, d, r, kaminoInitializationEffects(r)), "bind_journal_mismatch")
 	if err = db.requireBoundIntent(ctx, id, r, auth.BuildInput.Effects); err != nil {
 		t.Fatal("pre-signing gate", err)
 	}

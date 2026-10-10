@@ -149,7 +149,7 @@ func TestDebtClearDatabaseBindConfirmationAndReplay(t *testing.T) {
 	o, decision, e, m, rpc, _ := debtClearPayoffFixture(t)
 	id := key + "-ordinary"
 	insertDebtClearOperation(t, ctx, db, key, id, o, decision, m)
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, m, id, o, decision, e.Request, e.ExpectedEffects), "debt_clear_confirmation_required")
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, fixtureView(t, rpc), m, id, o, decision, e.Request, e.ExpectedEffects), "debt_clear_confirmation_required")
 	var bound, wire, broadcast bool
 	if err := db.pool.QueryRow(ctx, `SELECT expected_effects ? 'phase3',signed_wire IS NOT NULL,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&bound, &wire, &broadcast); err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestDebtClearDatabaseBindConfirmationAndReplay(t *testing.T) {
 	assertBudgetHold(t, db.commitUnwindIntentWithConfirmation(ctx, key, &changed, m, confirmation), "debt_clear_confirmation_reused")
 	id = key + "-approved"
 	insertDebtClearOperation(t, ctx, db, key, id, o, decision, m)
-	if err := db.bindOperation(ctx, rpc, m, id, o, decision, e.Request, e.ExpectedEffects); err != nil {
+	if err := db.bindOperation(ctx, rpc, fixtureView(t, rpc), m, id, o, decision, e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
 	var encoded []byte

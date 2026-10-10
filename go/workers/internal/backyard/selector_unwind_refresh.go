@@ -13,7 +13,7 @@ import (
 // envelope. It never adds exit spending or makes a new destination choice.
 // Renewal authority resolves through the explicit reviewed manifest, the same
 // way the commit, decode and merge paths already do.
-func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client, manifest RouteManifest, observe func(context.Context) (Observation, error)) error {
+func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, observe func(context.Context) (Observation, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var version int64
@@ -43,11 +43,11 @@ func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client,
 	if forecast.policies, err = observeInstalledPolicies(ctx, rpc, o.Snapshot.Slot); err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}
-	source, err := observeSelectorSource(ctx, rpc, productionJupiter, manifest, forecast)
+	source, err := observeSelectorSource(ctx, rpc, view, productionJupiter, manifest, forecast)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}
@@ -80,7 +80,7 @@ func (d *Database) renewSelectorUnwindOnManifest(ctx context.Context, manifest R
 		floor = max(floor, cost.ObservationSlot)
 	}
 	current := func() bool {
-		return freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) && s.Slot > 0 && confirmedSlot >= floor && confirmedSlot <= source.Recipe.ValidThroughSlot && source.Recipe.ValidThroughSlot-s.Slot <= observationLagSlots()
+		return freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) && s.Slot > 0 && max(confirmedSlot, floor) <= source.Recipe.ValidThroughSlot && source.Recipe.ValidThroughSlot-s.Slot <= observationLagSlots()
 	}
 	if manifest.validateUnwindIntent(previous) != nil || !current() || !s.Fresh || !s.Unwind || !s.UnwindRefreshRequired || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain || s.RouteLane != previous.SourceLane || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || s.ObservationID == "" || source.ExitBound == nil || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || s.PositionCollateralRaw < 0 || s.PositionCollateralRaw > previous.MaxCollateralRaw || source.ExitBound.MaxCollateralRaw != s.PositionCollateralRaw || s.PositionDebtRaw <= previous.MaxDebtRaw || source.ExitBound.MaxDebtRaw < s.PositionDebtRaw {
 		return budgetHold("unwind_refresh_evidence_unavailable")

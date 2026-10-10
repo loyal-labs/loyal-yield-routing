@@ -554,7 +554,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	rt := productionTickRuntime(db, rpc, view, manifest, Credentials{})
 	rt.observe = state.observe
 	rt.prepareInitialization = func(ctx context.Context, m RouteManifest, dec Decision) (Observation, KaminoInitializationRequest, error) {
-		return prepareKaminoInitialization(ctx, rpc, m, dec, state.observe)
+		return prepareKaminoInitialization(ctx, rpc, view, m, dec, state.observe)
 	}
 	rt.recordDecision = func(ctx context.Context, key string, obs Observation, dec Decision, manifestSHA256 string) (DecisionRecord, error) {
 		return db.RecordDecisionOnManifest(ctx, manifest, key, obs, dec, manifestSHA256)
@@ -639,13 +639,17 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	splMint := func(address string, decimals byte) ConfirmedAccount {
 		data := make([]byte, 82)
 		data[44], data[45] = decimals, 1
-		return ConfirmedAccount{Address: address, Owner: classicTokenProgram, Data: data}
+		return ConfirmedAccount{Address: address, Owner: classicTokenProgram, Lamports: 1, Data: data}
 	}
 	if _, ok := prestate[budgetWrappedSOLMint]; !ok {
 		prestate[budgetWrappedSOLMint] = splMint(budgetWrappedSOLMint, 9)
 	}
 	if _, ok := prestate[bridgeUSDC]; !ok {
 		prestate[bridgeUSDC] = splMint(bridgeUSDC, 6)
+	}
+	// The view takes its start-up read again, now with the candidate prestate.
+	if err = view.seed(ctx); err != nil {
+		t.Fatal(err)
 	}
 	_, r, err = rt.prepareInitialization(ctx, manifest, d)
 	if err != nil {
@@ -712,7 +716,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatalf("initializer bind drifted the persisted entry: lane=%q allocation=%q", entryLane, allocationID)
 	}
 	// A bound row is never bound again.
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, id, o, d, r, kaminoInitializationEffects(r)), "bind_journal_mismatch")
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, view, manifest, id, o, d, r, kaminoInitializationEffects(r)), "bind_journal_mismatch")
 
 	// Installed-closure and hold regressions on the producer and bind.
 	for _, closure := range []struct {
@@ -748,7 +752,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, expiredRecord.OperationID, o, d, r, kaminoInitializationEffects(r)), "selector_entry_quote_expired")
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, view, manifest, expiredRecord.OperationID, o, d, r, kaminoInitializationEffects(r)), "selector_entry_quote_expired")
 	var bound bool
 	if err = db.pool.QueryRow(ctx, `SELECT expected_effects ? 'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, expiredRecord.OperationID).Scan(&bound); err != nil {
 		t.Fatal(err)

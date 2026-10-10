@@ -731,7 +731,7 @@ func TestBindPersistsTheCarriedCustodyProof(t *testing.T) {
 	rpc := budgetBuildRPC(t, 5_000, 42)
 
 	id, lease, observation := seed(key)
-	if err := db.bindOperation(ctx, rpc, manifest, id, observation, decision, request, effects); err != nil {
+	if err := db.bindOperation(ctx, rpc, fixtureView(t, rpc), manifest, id, observation, decision, request, effects); err != nil {
 		t.Fatalf("bind refused the carried proof: %v", err)
 	}
 	var authBytes []byte
@@ -752,17 +752,17 @@ func TestBindPersistsTheCarriedCustodyProof(t *testing.T) {
 	if _, err := db.ObserveSharedCustodyOwnershipProof(ctx, manifest, autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, key), effects, 3_100_000_000, 42); custodyAttributionHoldReason(t, err) != "custody_attribution_unresolved_operation" {
 		t.Fatalf("ownership proof observed while the decided row exists: %v", err)
 	}
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, id, observation, decision, request, effects), "bind_journal_mismatch")
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, fixtureView(t, rpc), manifest, id, observation, decision, request, effects), "bind_journal_mismatch")
 
 	// A real AUTO spend without its carried proof holds.
 	missingID, _, missing := seed(key + "-missing")
 	missing.custodyProof = nil
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, missingID, missing, decision, request, effects), "custody_attribution_proof_missing")
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, fixtureView(t, rpc), manifest, missingID, missing, decision, request, effects), "custody_attribution_proof_missing")
 
 	// A proof taken under an earlier route generation holds.
 	driftID, _, drift := seed(key + "-drift")
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state_version=2, state='{"generation":2}' WHERE route_key=$1`, key+"-drift"); err != nil {
 		t.Fatal(err)
 	}
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, driftID, drift, decision, request, effects), "custody_attribution_generation_drift")
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, fixtureView(t, rpc), manifest, driftID, drift, decision, request, effects), "custody_attribution_generation_drift")
 }

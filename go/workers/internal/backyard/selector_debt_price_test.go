@@ -32,7 +32,7 @@ func autoDebtPriceFixture(t *testing.T, tokenPriceScale int64) (RuntimeRoute, Bu
 	mint := ConfirmedAccount{Address: route.Kamino.DebtMint, Owner: token2022Program, Lamports: 1, Data: make([]byte, 82)}
 	mint.Data[44], mint.Data[45] = 6, 1
 	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, []ConfirmedAccount{debtReserve, mint})
-	price, err := ObserveBudgetTokenPrice(context.Background(), rpc, route.Lane, ExecutableDebit{Mint: route.Kamino.DebtMint, TokenProgram: token2022Program, Raw: 1_000}, 42)
+	price, err := ObserveBudgetTokenPrice(context.Background(), rpc, fixtureView(t, rpc), route.Lane, ExecutableDebit{Mint: route.Kamino.DebtMint, TokenProgram: token2022Program, Raw: 1_000}, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func autoCollateralPriceFixture(t *testing.T, tokenPriceScale int64) BudgetPrice
 	mint := ConfirmedAccount{Address: route.Kamino.CollateralMint, Owner: classicTokenProgram, Lamports: 1, Data: make([]byte, 82)}
 	mint.Data[44], mint.Data[45] = 6, 1
 	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, []ConfirmedAccount{reserve, mint})
-	price, err := ObserveBudgetTokenPrice(context.Background(), rpc, route.Lane, ExecutableDebit{Mint: route.Kamino.CollateralMint, TokenProgram: classicTokenProgram, Raw: 1_000}, 42)
+	price, err := ObserveBudgetTokenPrice(context.Background(), rpc, fixtureView(t, rpc), route.Lane, ExecutableDebit{Mint: route.Kamino.CollateralMint, TokenProgram: classicTokenProgram, Raw: 1_000}, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,15 +88,15 @@ func debtPriceEqual(a, b BudgetPrice) bool {
 
 func TestSelectorDestinationDebtPriceWiring(t *testing.T) {
 	route, price, rpc := autoDebtPriceFixture(t, 1_000_000)
-	got, err := selectorDestinationDebtPrice(context.Background(), rpc, route, 1_000, 42)
+	got, err := selectorDestinationDebtPrice(context.Background(), rpc, fixtureView(t, rpc), route, 1_000, 42)
 	if err != nil || got == nil || !debtPriceEqual(*got, price) {
 		t.Fatalf("wiring: %+v %v", got, err)
 	}
 	usdc, _ := runtimeRoute(SelectedRouteID)
-	if p, err := selectorDestinationDebtPrice(context.Background(), rpc, usdc, 1_000, 42); err != nil || p != nil {
+	if p, err := selectorDestinationDebtPrice(context.Background(), rpc, fixtureView(t, rpc), usdc, 1_000, 42); err != nil || p != nil {
 		t.Fatal("USDC debt lane must not carry price evidence", p, err)
 	}
-	if _, err := selectorDestinationDebtPrice(context.Background(), rpc, route, 0, 42); err == nil {
+	if _, err := selectorDestinationDebtPrice(context.Background(), rpc, fixtureView(t, rpc), route, 0, 42); err == nil {
 		t.Fatal("zero borrow ceiling accepted")
 	}
 	// A classic-program PYUSD mint fails the strict Token-2022 parser.
@@ -106,7 +106,7 @@ func TestSelectorDestinationDebtPriceWiring(t *testing.T) {
 	classicMint := ConfirmedAccount{Address: route.Kamino.DebtMint, Owner: classicTokenProgram, Lamports: 1, Data: make([]byte, 82)}
 	classicMint.Data[44], classicMint.Data[45] = 6, 1
 	wrongRPC := budgetBuildRPCWithAccounts(t, 5000, 42, []ConfirmedAccount{wrongProgram, classicMint})
-	if _, err := ObserveBudgetTokenPrice(context.Background(), wrongRPC, route.Lane, ExecutableDebit{Mint: route.Kamino.DebtMint, TokenProgram: token2022Program, Raw: 1_000}, 42); err == nil {
+	if _, err := ObserveBudgetTokenPrice(context.Background(), wrongRPC, fixtureView(t, wrongRPC), route.Lane, ExecutableDebit{Mint: route.Kamino.DebtMint, TokenProgram: token2022Program, Raw: 1_000}, 42); err == nil {
 		t.Fatal("mint program mismatch accepted")
 	}
 }

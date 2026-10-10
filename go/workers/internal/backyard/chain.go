@@ -92,14 +92,6 @@ func publicKeys(addresses []string) ([]solana.PublicKey, error) {
 	return keys, nil
 }
 
-func confirmedSlot(ctx context.Context, c *chain.Client) (int64, error) {
-	slot, err := c.Slot(ctx, rpc.CommitmentConfirmed)
-	if err != nil {
-		return 0, confirmedObservationUnavailable(err)
-	}
-	return int64(slot), nil
-}
-
 func finalizedSlot(ctx context.Context, c *chain.Client) (int64, error) {
 	slot, err := c.Slot(ctx, rpc.CommitmentFinalized)
 	if err != nil {

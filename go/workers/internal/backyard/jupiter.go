@@ -370,7 +370,7 @@ func (s SignedJupiterTransaction) BuildResult(simulationSlot int64) (BuildResult
 	return BuildResult{MessageSHA256: s.messageSHA256, SignedWire: append([]byte(nil), s.signedWire...), SignedWireSHA256: s.signedWireSHA256, TransactionSignature: s.transactionSignature, RecentBlockhash: s.recentBlockhash, LastValidBlockHeight: s.lastValidBlockHeight, SimulationSlot: simulationSlot}, nil
 }
 
-func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc *chain.Client, operationID string, evidence JupiterExecutionEvidence, credentials Credentials) error {
+func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc *chain.Client, view *View, operationID string, evidence JupiterExecutionEvidence, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("Jupiter runtime dependencies are required")
 	}
@@ -391,7 +391,7 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 	if err := database.requireBoundIntent(ctx, operationID, evidence.Request, effects); err != nil {
 		return err
 	}
-	if err := validateBuildPrestate(ctx, rpc, evidence.Request, evidence.ExpectedEffects); err != nil {
+	if err := validateBuildPrestate(ctx, rpc, view, evidence.Request, evidence.ExpectedEffects); err != nil {
 		return err
 	}
 	logStage("jupiter_build_prestate", buildStart)

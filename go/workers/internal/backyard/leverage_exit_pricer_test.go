@@ -111,7 +111,7 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	effects.Kind, effects.ReturnData = "bridge", expectedAdaptorReturnData(0)
-	plan, err, ok := priceLeverageExitFromCurrent(context.Background(), rpc, client, m, o, d, nav, effects, route, rows)
+	plan, err, ok := priceLeverageExitFromCurrent(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, nav, effects, route, rows)
 	if !ok || err != nil {
 		t.Fatalf("ok=%t err=%v", ok, err)
 	}
@@ -200,10 +200,10 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.LTVBPS = 33_333_333, 33_333_333, 3333
 	_, rows, _ := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
 	d := Decision{Action: ReportNAV, StrategyKey: route.Lane, Reason: "nav_due"}
-	if _, err, ok := priceLeverageExitFromCurrent(context.Background(), rpc, broken, m, o, d, BridgeBuildRequest{}, ExpectedEffects{}, route, rows); ok || err != nil {
+	if _, err, ok := priceLeverageExitFromCurrent(context.Background(), rpc, fixtureView(t, rpc), broken, m, o, d, BridgeBuildRequest{}, ExpectedEffects{}, route, rows); ok || err != nil {
 		t.Fatalf("1.5x NAV left the installed path: ok=%t err=%v", ok, err)
 	}
-	if _, err, ok := priceLeverageExitAfterRelease(context.Background(), rpc, broken, m, o, d, KaminoPrimeUSDCRequest{RouteLane: route.Lane}, ExpectedEffects{}, KaminoReleaseBound{}, rows); ok || err != nil {
+	if _, err, ok := priceLeverageExitAfterRelease(context.Background(), rpc, fixtureView(t, rpc), broken, m, o, d, KaminoPrimeUSDCRequest{RouteLane: route.Lane}, ExpectedEffects{}, KaminoReleaseBound{}, rows); ok || err != nil {
 		t.Fatalf("1.5x release left the installed path: ok=%t err=%v", ok, err)
 	}
 	if leverageExitAccountsMayNeedCycles(rows, route, o.Snapshot) {
@@ -249,7 +249,7 @@ func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err, ok := priceLeverageExitAfterRelease(context.Background(), rpc, client, m, o, d, r, effects, bound, rows)
+	plan, err, ok := priceLeverageExitAfterRelease(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, r, effects, bound, rows)
 	if !ok || err != nil || plan.ExitAfterMicros <= 0 || plan.PayoffRepayment == nil || plan.Payoff == nil {
 		t.Fatalf("ok=%t err=%v plan=%+v", ok, err, plan.Payoff)
 	}

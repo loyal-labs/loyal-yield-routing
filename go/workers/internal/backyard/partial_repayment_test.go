@@ -136,7 +136,7 @@ func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observa
 // poststate repays exactly the step and keeps the collateral in place.
 func TestPartialRepaymentProjectionLeavesDebt(t *testing.T) {
 	o, d, e, m, rpc, _ := partialRepaymentFixture(t, "")
-	projection, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, d, e.Request, e.ExpectedEffects)
+	projection, err := observePartialRepaymentProjection(context.Background(), rpc, fixtureView(t, rpc), m, o.Snapshot, d, e.Request, e.ExpectedEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestPartialRepaymentRejectsProjectedDrift(t *testing.T) {
 	for _, variant := range []string{"debt", "receipts", "collateral", "cash", "failed"} {
 		t.Run(variant, func(t *testing.T) {
 			o, d, e, m, rpc, _ := partialRepaymentFixture(t, variant)
-			if _, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, d, e.Request, e.ExpectedEffects); err == nil {
+			if _, err := observePartialRepaymentProjection(context.Background(), rpc, fixtureView(t, rpc), m, o.Snapshot, d, e.Request, e.ExpectedEffects); err == nil {
 				t.Fatal("changed projection bound")
 			}
 		})
@@ -199,7 +199,7 @@ func TestPartialRepaymentUnverifiedRiskCannotCommitUnwind(t *testing.T) {
 	}
 	// This historical fixture hand-sets LTV and has no coherent observer
 	// batch. A projected partial repay cannot manufacture emergency authority.
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, m, id, o, decision, e.Request, e.ExpectedEffects), "debt_clear_emergency_evidence_unavailable")
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, fixtureView(t, rpc), m, id, o, decision, e.Request, e.ExpectedEffects), "debt_clear_emergency_evidence_unavailable")
 	var unwind, bound, wire, sent bool
 	if err = db.pool.QueryRow(ctx, `SELECT route.state->'selectorUnwind' IS NOT NULL,op.expected_effects ? 'phase3',op.signed_wire IS NOT NULL,op.broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route USING(route_key) WHERE operation_id=$1`, id).Scan(&unwind, &bound, &wire, &sent); err != nil {
 		t.Fatal(err)
@@ -217,19 +217,19 @@ func TestExitPartialRepayProjectionOnLeverageLane(t *testing.T) {
 	if d.Reason != exitPartialRepayReason || d.AmountRaw >= o.Snapshot.PositionDebtRaw {
 		t.Fatalf("decision %+v", d)
 	}
-	if _, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, d, e.Request, e.ExpectedEffects); err != nil {
+	if _, err := observePartialRepaymentProjection(context.Background(), rpc, fixtureView(t, rpc), m, o.Snapshot, d, e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
 	for _, variant := range []string{"debt", "receipts", "collateral", "cash", "failed"} {
 		o, d, e, m, rpc, _ := partialRepaymentFixtureForLane(t, onreONycUSDC, variant)
-		if _, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, d, e.Request, e.ExpectedEffects); err == nil {
+		if _, err := observePartialRepaymentProjection(context.Background(), rpc, fixtureView(t, rpc), m, o.Snapshot, d, e.Request, e.ExpectedEffects); err == nil {
 			t.Fatalf("%s: changed projection bound", variant)
 		}
 	}
 	// A full repayment is never an exit cycle; Maple keeps only hard LTV.
 	full := d
 	full.AmountRaw = o.Snapshot.PositionDebtRaw
-	if _, err := observePartialRepaymentProjection(context.Background(), rpc, m, o.Snapshot, full, e.Request, e.ExpectedEffects); err == nil {
+	if _, err := observePartialRepaymentProjection(context.Background(), rpc, fixtureView(t, rpc), m, o.Snapshot, full, e.Request, e.ExpectedEffects); err == nil {
 		t.Fatal("whole-debt repay bound as a cycle")
 	}
 	if partialRepaymentLane(SelectedRouteID, exitPartialRepayReason) || !partialRepaymentLane(autoAUTOPYUSD.Lane, exitPartialRepayReason) || partialRepaymentLane(autoAUTOPYUSD.Lane, "hard_ltv_partial_repay") {

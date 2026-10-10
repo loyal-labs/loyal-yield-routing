@@ -19,7 +19,7 @@ const budgetPriceMarginBPS uint16 = 100
 // This is valuation-only: it does not broaden execution routes or authority.
 // Native SOL fees need a separate reviewed price observation and cannot fall
 // back to an assumed dollar price when this token observer does not cover them.
-func ObserveBudgetTokenPrice(ctx context.Context, rpc *chain.Client, lane string, debit ExecutableDebit, minimumSlot int64) (BudgetPrice, error) {
+func ObserveBudgetTokenPrice(ctx context.Context, rpc *chain.Client, view *View, lane string, debit ExecutableDebit, minimumSlot int64) (BudgetPrice, error) {
 	if rpc == nil || minimumSlot <= 0 || debit.Raw == 0 {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_request")
 	}
@@ -48,7 +48,7 @@ func ObserveBudgetTokenPrice(ctx context.Context, rpc *chain.Client, lane string
 		return BudgetPrice{}, budgetHold("unbound_valuation_mint")
 	}
 	addresses := uniqueNonzero([]string{reserveAddress, reference.DebtReserve, debit.Mint, bridgeUSDC, budgetClockAddress})
-	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
+	slot, accounts, _, err := view.read(ctx, addresses, minimumSlot)
 	if err != nil {
 		return BudgetPrice{}, err
 	}

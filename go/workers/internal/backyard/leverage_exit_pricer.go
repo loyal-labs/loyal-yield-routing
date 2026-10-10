@@ -207,12 +207,12 @@ func putLittleFraction(dst []byte, value *big.Int) error {
 // priceLeverageExitFromCurrent prices a multi-cycle exit for a current
 // non-mutating step (a NAV report) from the observed accounts. ok=false:
 // one release still funds the payoff, so the installed path prices it.
-func priceLeverageExitFromCurrent(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, route RuntimeRoute, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
+func priceLeverageExitFromCurrent(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, route RuntimeRoute, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
 	need, err := leverageExitNeedsCycles(ctx, rpc, client, m, o.policies, route, o.Snapshot, accounts)
 	if err != nil || !need {
 		return phase3BridgeAdmission{}, err, err != nil
 	}
-	current, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	current, err := m.observePhase3KnownBuildCost(ctx, rpc, view, request, effects)
 	if err != nil {
 		return phase3BridgeAdmission{}, err, true
 	}
@@ -220,7 +220,7 @@ func priceLeverageExitFromCurrent(ctx context.Context, rpc *chain.Client, client
 	if clock := accountAt(accounts, budgetClockAddress); len(clock.Data) == 40 {
 		slot = int64(binary.LittleEndian.Uint64(clock.Data[:8]))
 	}
-	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, client, m, o, d, request, effects, current, phase3KaminoProjection{Slot: max(slot, o.Snapshot.Slot), Accounts: accounts})
+	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, view, client, m, o, d, request, effects, current, phase3KaminoProjection{Slot: max(slot, o.Snapshot.Slot), Accounts: accounts})
 	if err == nil {
 		plan.Snapshot = o.Snapshot
 	}
@@ -229,7 +229,7 @@ func priceLeverageExitFromCurrent(ctx context.Context, rpc *chain.Client, client
 
 // priceLeverageExitAfterRelease prices the rest of a multi-cycle exit after
 // the current repayment release, from its cost-only projected poststate.
-func priceLeverageExitAfterRelease(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, r KaminoPrimeUSDCRequest, effects ExpectedEffects, bound KaminoReleaseBound, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
+func priceLeverageExitAfterRelease(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, d Decision, r KaminoPrimeUSDCRequest, effects ExpectedEffects, bound KaminoReleaseBound, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
 	route, err := runtimeRoute(r.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err, true
@@ -242,7 +242,7 @@ func priceLeverageExitAfterRelease(ctx context.Context, rpc *chain.Client, clien
 			return phase3BridgeAdmission{}, err, err != nil
 		}
 	}
-	current, err := m.observePhase3KnownBuildCost(ctx, rpc, r, effects)
+	current, err := m.observePhase3KnownBuildCost(ctx, rpc, view, r, effects)
 	if err != nil {
 		return phase3BridgeAdmission{}, err, true
 	}
@@ -257,7 +257,7 @@ func priceLeverageExitAfterRelease(ctx context.Context, rpc *chain.Client, clien
 	if err != nil {
 		return phase3BridgeAdmission{}, err, true
 	}
-	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, client, m, o, d, r, effects, current, phase3KaminoProjection{Slot: bound.Payoff.ObservedSlot, Accounts: post})
+	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, view, client, m, o, d, r, effects, current, phase3KaminoProjection{Slot: bound.Payoff.ObservedSlot, Accounts: post})
 	if err == nil {
 		plan.Snapshot = o.Snapshot
 	}

@@ -175,7 +175,7 @@ func Phase3IntentDigest(request any, effects []byte) (string, error) {
 // operation's integrity: the intent hash and exact build input of the prepared
 // wire, the AUTO-PYUSD shared-custody proof, the selector-entry allocation and
 // the debt-clear authority (with the partial-repayment proof it classifies).
-func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, m RouteManifest, operationID string, o Observation, decision Decision, request any, effects ExpectedEffects) error {
+func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *View, m RouteManifest, operationID string, o Observation, decision Decision, request any, effects ExpectedEffects) error {
 	if d == nil || d.pool == nil || rpc == nil {
 		return budgetHold("bind_database_unavailable")
 	}
@@ -197,7 +197,7 @@ func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, m Route
 	}
 	plan := debtClearPlan{Snapshot: o.Snapshot, Decision: decision}
 	if r, ok := request.(KaminoPrimeUSDCRequest); ok && partialRepaymentReason(decision.Reason) {
-		projection, err := observePartialRepaymentProjection(ctx, rpc, m, o.Snapshot, decision, r, effects)
+		projection, err := observePartialRepaymentProjection(ctx, rpc, view, m, o.Snapshot, decision, r, effects)
 		if err != nil {
 			return err
 		}
@@ -230,7 +230,7 @@ func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, m Route
 	if err != nil {
 		return err
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return err
 	}

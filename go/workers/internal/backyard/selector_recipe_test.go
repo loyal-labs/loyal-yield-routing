@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"math/big"
 	"testing"
+	"time"
 )
 
 func selectorRecipeInput(t *testing.T, request any, effects ExpectedEffects) *phase3BuildInput {
@@ -33,7 +34,7 @@ func TestSelectorRecipePricesRepeatedReportsWithoutChargingPrincipalOrRent(t *te
 		selectorRecipeInput(t, report.Request, report.ExpectedEffects),
 		selectorRecipeInput(t, report.Request, report.ExpectedEffects),
 	}
-	got, err := priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 5000, 42), init.Initialization.RouteLane, inputs, 42)
+	got, err := priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 5000, 42), budgetView(t), init.Initialization.RouteLane, inputs, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,23 +49,22 @@ func TestSelectorRecipePricesRepeatedReportsWithoutChargingPrincipalOrRent(t *te
 	if got.CostRaw != network || gross <= 1_000_000 || got.ValidThroughSlot != 74 {
 		t.Fatal("gross movement mixed with execution expense", got.CostRaw, network, gross)
 	}
-	changed, err := priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 6000, 42), init.Initialization.RouteLane, inputs[1:], 42)
+	changed, err := priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 6000, 42), budgetView(t), init.Initialization.RouteLane, inputs[1:], 42)
 	if err != nil || changed.CostRaw <= 0 || changed.EvidenceID == got.EvidenceID {
 		t.Fatal("fee evidence not bound", err)
 	}
-	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPC(t, init.Initialization.MaximumFeeLamports+1, 42), init.Initialization.RouteLane, inputs, 42)
+	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPC(t, init.Initialization.MaximumFeeLamports+1, 42), budgetView(t), init.Initialization.RouteLane, inputs, 42)
 	assertBudgetHold(t, err, "initializer_fee_changed")
 	staleRPC := budgetBuildRPC(t, 5000, 75)
-	_, _ = confirmedSlot(context.Background(), staleRPC)
-	_, err = priceSelectorRecipe(context.Background(), staleRPC, init.Initialization.RouteLane, inputs, 42)
+	_, err = priceSelectorRecipe(context.Background(), staleRPC, fixtureView(t, staleRPC), init.Initialization.RouteLane, inputs, 42)
 	if err == nil {
 		t.Fatal("stale prices admitted")
 	}
-	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 5000, 42), PhaseOneLaneID, inputs, 42)
+	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 5000, 42), budgetView(t), PhaseOneLaneID, inputs, 42)
 	if init.Initialization.RouteLane != PhaseOneLaneID {
 		assertBudgetHold(t, err, "selector_recipe_lane_mismatch")
 	}
-	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 5000, 42), PhaseOneLaneID, []*phase3BuildInput{nil}, 42)
+	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 5000, 42), budgetView(t), PhaseOneLaneID, []*phase3BuildInput{nil}, 42)
 	assertBudgetHold(t, err, "missing_persisted_build_input")
 }
 
@@ -84,10 +84,11 @@ func TestSelectorRecipeValuesActualBasicSwapMinimum(t *testing.T) {
 	reserve := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 42, sf, 1, 1)
 	putKey(t, reserve.Data[32:64], route.Kamino.Market)
 	binary.LittleEndian.PutUint64(reserve.Data[264:272], 1000)
-	mint := ConfirmedAccount{Address: route.Kamino.CollateralMint, Owner: classicTokenProgram, Data: make([]byte, 82)}
+	mint := ConfirmedAccount{Address: route.Kamino.CollateralMint, Owner: classicTokenProgram, Lamports: 1, Data: make([]byte, 82)}
 	mint.Data[44], mint.Data[45] = 6, 1
 	input := selectorRecipeInput(t, request, effects)
-	got, err := priceSelectorRecipe(context.Background(), budgetBuildRPCWithAccounts(t, 5000, 42, []ConfirmedAccount{reserve, mint}), lane, []*phase3BuildInput{input}, 42)
+	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, []ConfirmedAccount{reserve, mint})
+	got, err := priceSelectorRecipe(context.Background(), rpc, fixtureView(t, rpc), lane, []*phase3BuildInput{input}, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +102,7 @@ func TestSelectorRecipeValuesActualBasicSwapMinimum(t *testing.T) {
 		t.Fatal("swap omitted floor output/margin", got.CostRaw, want)
 	}
 	effects.Accounts[1].AfterRaw++
-	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPCWithAccounts(t, 5000, 42, []ConfirmedAccount{reserve, mint}), lane, []*phase3BuildInput{selectorRecipeInput(t, request, effects)}, 42)
+	_, err = priceSelectorRecipe(context.Background(), rpc, fixtureView(t, rpc), lane, []*phase3BuildInput{selectorRecipeInput(t, request, effects)}, 42)
 	if err == nil {
 		t.Fatal("unenforced optimistic credit admitted")
 	}
@@ -110,10 +111,15 @@ func TestSelectorRecipeValuesActualBasicSwapMinimum(t *testing.T) {
 func TestSelectorRecipePreservesPrerequisiteObservationFloor(t *testing.T) {
 	_, _, report := bridgeAdmissionFixture(t, ReportNAV, 0, 0, 0, 1_000_000)
 	input := selectorRecipeInput(t, report.Request, report.ExpectedEffects)
-	_, err := priceSelectorRecipeWithFloor(context.Background(), budgetBuildRPC(t, 5000, 42), SelectedRouteID, []*phase3BuildInput{input}, 42, 60)
+	rpc := budgetBuildRPC(t, 5000, 42)
+	view := fixtureView(t, rpc)
+	// A view behind the floor does not answer within the deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := priceSelectorRecipeWithFloor(ctx, rpc, view, SelectedRouteID, []*phase3BuildInput{input}, 42, 60)
 	if err == nil {
 		t.Fatal("later prerequisite accepted with lagging fee/price/final slot")
 	}
-	_, err = priceSelectorRecipeWithFloor(context.Background(), budgetBuildRPC(t, 5000, 42), SelectedRouteID, []*phase3BuildInput{input}, 42, 75)
+	_, err = priceSelectorRecipeWithFloor(context.Background(), rpc, view, SelectedRouteID, []*phase3BuildInput{input}, 42, 75)
 	assertBudgetHold(t, err, "invalid_selector_recipe")
 }

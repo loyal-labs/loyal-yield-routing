@@ -1,15 +1,11 @@
 package backyard
 
-import (
-	"context"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-)
+import "context"
 
 // A prospective reverse quote is not evidence of current custody. Validate only
 // the persisted current entry against one fresh account batch, also at final
 // send. No entry is allowed to adopt an unaccounted open position or balance.
-func validateEntrySwap(ctx context.Context, rpc *chain.Client, request JupiterSwapRequest, effects ExpectedEffects, slot int64) (int64, error) {
+func validateEntrySwap(ctx context.Context, view *View, request JupiterSwapRequest, effects ExpectedEffects, slot int64) (int64, error) {
 	if selectorLane(request.RouteLane) && (len(effects.Accounts) == 0 || effects.Accounts[0].BeforeRaw != request.AmountRaw) {
 		return 0, budgetHold("entry_swap_must_consume_working_cash")
 	}
@@ -30,7 +26,7 @@ func validateEntrySwap(ctx context.Context, rpc *chain.Client, request JupiterSw
 	if err != nil || source != bridgeSquadsATA || sourceMint != bridgeUSDC || destination != route.CollateralCustody {
 		return 0, budgetHold("entry_swap_custody_mismatch")
 	}
-	observed, accounts, err := confirmedAccounts(ctx, rpc, []string{source, destination, route.DebtCustody, route.Kamino.Obligation}, slot)
+	observed, accounts, _, err := view.read(ctx, []string{source, destination, route.DebtCustody, route.Kamino.Obligation}, slot)
 	if err != nil {
 		return 0, budgetHold("entry_swap_state_unavailable")
 	}

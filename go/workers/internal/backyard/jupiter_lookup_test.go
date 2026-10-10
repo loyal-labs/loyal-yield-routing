@@ -148,8 +148,9 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 	} {
 		t.Run(name, func(t *testing.T) {
 			rpc, reads := lookupRPC(t, r.LookupTables, tc.mutate, tc.allowFee)
+			view := accountView(t, r.LookupTables[0].ObservedSlot+1, nil)
 			// The builder's prestate gate re-reads the tables before any signer.
-			err := validateBuildPrestate(context.Background(), rpc, r, effects)
+			err := validateBuildPrestate(context.Background(), rpc, view, r, effects)
 			if tc.reason == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -182,7 +183,7 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = m.validateRequestPrestate(context.Background(), rpc, request, requestEffects)
+			_, err = m.validateRequestPrestate(context.Background(), rpc, view, request, requestEffects)
 			if tc.reason == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -231,11 +232,11 @@ func TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping(t *testing.T) 
 	if err != nil || !bytes.Equal(message, again) {
 		t.Fatal("persisted hint changed wire", err)
 	}
-	if _, err := revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot); err != nil {
+	if err := revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot); err != nil {
 		t.Fatal("final-send cannot revalidate fresh hint", err)
 	}
 	rpc, _ = lookupRPC(t, r.LookupTables, func(s *LookupTableSnapshot) { s.Data[56] ^= 1 }, false)
-	_, err = revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot)
+	err = revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot)
 	assertBudgetHold(t, err, "lookup_mapping_changed")
 	for _, addresses := range [][]string{{"not-a-key"}, {bridgeVault, bridgeVault}, {bridgeVault, bridgeDelegate, bridgeUSDC, bridgeSquadsATA, bridgeTokenProgram}} {
 		bad := input

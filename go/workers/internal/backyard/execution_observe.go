@@ -52,19 +52,20 @@ func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfi
 	return observedAdaptorConfig{}, nil
 }
 
-// Reuse the enriched, receipt-fenced bank owned by this Tick. Only the current
-// slot and blockhash need new RPC reads; admission, signing simulation, durable
-// authority binding and final send revalidation still run unchanged.
-func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
+// Reuse the enriched, receipt-fenced bank owned by this Tick. The current slot
+// is the view's; only the blockhash needs a new RPC read. Admission, signing
+// simulation, durable authority binding and final send revalidation still run
+// unchanged.
+func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 	batch := observation.routeBatch
 	if rpc == nil || batch == nil || batch.Slot != observation.Snapshot.Slot || batch.ObservationID != observation.Snapshot.ObservationID || batch.ManifestSHA256 != manifest.SHA256 || observation.Validate() != nil || !freshAt(time.Now().UTC(), observation.ObservedAt, 30*time.Second) {
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation is missing or stale"))
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := view.slot(ctx)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	if slot < batch.Slot || slot-batch.Slot > min(observationLagSlots(), adaptorMaxReportAgeSlots) {
+	if slot-batch.Slot > min(observationLagSlots(), adaptorMaxReportAgeSlots) {
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation exceeded slot freshness"))
 	}
 	// The policies this build executes through: one read, at its slot.
@@ -217,7 +218,7 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 
 // prepareKaminoFromTickObservation builds from the tick's own view batch, as
 // the bridge does; it reads only the policies it executes through, at its slot.
-func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
+func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
 	if rpc == nil || observation.routeBatch == nil || (decision.Action != OpenPrimeUSDCStep && decision.Action != DeleverPrimeUSDCStep &&
 		decision.Action != OpenRouteStep && decision.Action != DeleverRouteStep) {
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
@@ -241,7 +242,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, ma
 	// Release and full-payoff sizing read raw reserves (see the helpers).
 	releaseAccounts := accounts
 	if repaymentRelease {
-		bound, raw, err := manifest.observeRawRepaymentRelease(ctx, rpc, route, observation.Snapshot.Slot)
+		bound, raw, err := manifest.observeRawRepaymentRelease(ctx, view, route, observation.Snapshot.Slot)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
@@ -296,7 +297,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, ma
 	}
 	fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
 	if fullPayoff {
-		bound, raw, err := observeRawFullPayoff(ctx, rpc, route, observation.Snapshot.Slot)
+		bound, raw, err := observeRawFullPayoff(ctx, view, route, observation.Snapshot.Slot)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}

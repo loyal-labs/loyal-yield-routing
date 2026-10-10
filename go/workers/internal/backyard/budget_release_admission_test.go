@@ -18,7 +18,7 @@ func releaseAdmissionFixture(t *testing.T, output uint64) (Observation, Decision
 	o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.DebtIdleRaw = 0, 0, 0
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 0)
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 0)
-	observed, full, err := observeKaminoPayoffWindow(context.Background(), rpc, route, 42, 5)
+	observed, full, err := observeKaminoPayoffWindow(context.Background(), fixtureView(t, rpc), route, 42, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func releaseAdmissionFixture(t *testing.T, output uint64) (Observation, Decision
 
 func TestReleasePricesFundingPayoffAndCompleteReturn(t *testing.T) {
 	o, d, e, m, rpc, client, accounts := releaseAdmissionFixture(t, 20_000)
-	plan, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	plan, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,22 +72,22 @@ func TestReleasePricesFundingPayoffAndCompleteReturn(t *testing.T) {
 
 func TestReleaseRejectsUnsafeFundingAndChangedSignedState(t *testing.T) {
 	o, d, e, m, rpc, client, _ := releaseAdmissionFixture(t, 1_000)
-	_, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	_, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
 	// The persisted release is re-checked at build and send.
 	_, _, e, _, rpc, _, accounts := releaseAdmissionFixture(t, 20_000)
-	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
+	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 1)
-	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects), "repayment_release_debt_cash_changed")
+	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects), "repayment_release_debt_cash_changed")
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 0)
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.CollateralCustody).Data[64:72], 1)
-	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects), "repayment_release_effects_changed")
+	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects), "repayment_release_effects_changed")
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.CollateralCustody).Data[64:72], 0)
 	// A rate/debt move cannot retain the original maximum release authority.
 	putScaledFraction(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(2_000), 60))
-	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects), "repayment_release_exceeds_safe_size")
+	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects), "repayment_release_exceeds_safe_size")
 }
 
 // The release is re-checked at build and send on a raw five-step capture, so
@@ -105,7 +105,7 @@ func TestRawRepaymentReleaseSizingPassesSendRecheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sized, rows, err := m.observeRawRepaymentRelease(context.Background(), rpc, route, 42)
+	sized, rows, err := m.observeRawRepaymentRelease(context.Background(), fixtureView(t, rpc), route, 42)
 	if err != nil || sized.ReceiptRaw == 0 || sized.ReceiptRaw > safe.ReceiptRaw {
 		t.Fatal("raw six-step sizing must not exceed the five-step safe size", sized.ReceiptRaw, safe.ReceiptRaw, err)
 	}
@@ -120,7 +120,7 @@ func TestRawRepaymentReleaseSizingPassesSendRecheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := m.validateRepaymentReleaseRequest(context.Background(), rpc, r, effects, 42); err != nil {
+	if _, _, err := m.validateRepaymentReleaseRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err != nil {
 		t.Fatal("sized release refused by its own send re-check", err)
 	}
 }
@@ -134,11 +134,11 @@ func TestRawFullPayoffSizingPassesSendRecheck(t *testing.T) {
 	route := ethenaUSDePYUSD
 	// Funded debt custody, served by the fixture RPC to every capture.
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 1_000_000)
-	sized, rows, err := observeRawFullPayoff(context.Background(), rpc, route, 42)
+	sized, rows, err := observeRawFullPayoff(context.Background(), fixtureView(t, rpc), route, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
-	check, _, err := observeKaminoPayoffBound(context.Background(), rpc, route, 42)
+	check, _, err := observeKaminoPayoffBound(context.Background(), fixtureView(t, rpc), route, 42)
 	if err != nil || sized.UpperDebtRaw < check.UpperDebtRaw || sized.ObservedDebtRaw > check.ObservedDebtRaw {
 		t.Fatal("three-step raw payoff must cover the one-step send bound", sized, check, err)
 	}
@@ -152,7 +152,7 @@ func TestRawFullPayoffSizingPassesSendRecheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.validateFullPayoffRequest(context.Background(), rpc, r, effects, 42); err != nil {
+	if _, err := m.validateFullPayoffRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err != nil {
 		t.Fatal("raw-sized payoff refused by its own send re-check", err)
 	}
 }

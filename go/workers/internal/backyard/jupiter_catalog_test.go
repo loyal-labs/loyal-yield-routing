@@ -66,7 +66,7 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 					t.Fatal("fresh preparation changed Prime packet", err)
 				}
 				rpc, _ = lookupRPC(t, tables, func(s *LookupTableSnapshot) { s.Data[56] ^= 1 }, false)
-				_, err = revalidateJupiterLookupTables(context.Background(), rpc, request, tables[0].ObservedSlot)
+				err = revalidateJupiterLookupTables(context.Background(), rpc, request, tables[0].ObservedSlot)
 				assertBudgetHold(t, err, "lookup_mapping_changed")
 			})
 		}

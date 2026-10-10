@@ -35,7 +35,7 @@ func payoffAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...Co
 	putKey(t, obligation.Data[32:64], route.Kamino.Market)
 	putKey(t, obligation.Data[96:128], route.Kamino.CollateralReserve)
 	putKey(t, obligation.Data[1208:1240], route.Kamino.DebtReserve)
-	clock := ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Data: make([]byte, 40)}
+	clock := ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 40)}
 	binary.LittleEndian.PutUint64(clock.Data[:8], 42)
 	binary.LittleEndian.PutUint64(clock.Data[32:40], 1000)
 	accounts := []ConfirmedAccount{reserve, obligation, clock}
@@ -103,7 +103,7 @@ func TestPostPayoffNAVPricesTheDebtFreeReturn(t *testing.T) {
 	}
 	request := bridgeTestRequest(ReportNAV, 0)
 	request.Report.Sequence, request.Report.ObservedSlot = 42, 42
-	nav, err := pricePhase3PositionReturn(context.Background(), rpc, client, m, o, d, request, effects, false)
+	nav, err := pricePhase3PositionReturn(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, request, effects, false)
 	if err != nil || len(nav.Exit) != 10 || nav.Exit[0].Action != DeleverRouteStep || nav.Exit[0].Template == nil {
 		t.Fatal("post-payoff NAV lost its return", err)
 	}
@@ -113,7 +113,7 @@ func TestPostPayoffNAVPricesTheDebtFreeReturn(t *testing.T) {
 	}
 	putScaledFraction(obligation.Data[1296:1312], new(big.Int).Lsh(big.NewInt(1), 60))
 	putKey(t, obligation.Data[1208:1240], ethenaUSDePYUSD.Kamino.DebtReserve)
-	if _, err := pricePhase3PositionReturn(context.Background(), rpc, client, m, o, d, request, effects, false); err == nil {
+	if _, err := pricePhase3PositionReturn(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, request, effects, false); err == nil {
 		t.Fatal("nonzero debt became a debt-free NAV")
 	}
 }
@@ -122,14 +122,14 @@ func TestPostPayoffNAVPricesTheDebtFreeReturn(t *testing.T) {
 // send: a changed rate is not grandfathered by yesterday's sufficient wire.
 func TestFullPayoffPrestateRefusesUnderfundingBeforeSigner(t *testing.T) {
 	_, _, e, _, rpc, _, a := payoffAdmissionFixture(t, 20_000)
-	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
+	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
 	reserve := accountAt(a, ethenaUSDePYUSD.Kamino.DebtReserve)
 	for i := 0; i < 11; i++ {
 		binary.LittleEndian.PutUint32(reserve.Data[kaminoReserveConfigOffset+68+i*8:], 1_000_000_000)
 	}
-	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects), "full_payoff_request_underfunded")
+	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects), "full_payoff_request_underfunded")
 }
 
 func TestPayoffBoundUsesAccrualBasisAndUnroundedDebt(t *testing.T) {

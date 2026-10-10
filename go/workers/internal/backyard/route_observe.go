@@ -181,7 +181,8 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			}
 			slot, accounts = refreshedSlot, refreshedAccounts
 			// The withdrawal receipts come from the view at the capture's
-			// slot or later, so no fact in the snapshot predates it.
+			// slot or later, so no fact in the snapshot predates it: the one
+			// view floor an RPC slot sets, a wait of about a slot like own-tx.
 			if _, _, receipts, err = runtime.read(ctx, nil, slot); err != nil {
 				return Observation{}, nil, err
 			}

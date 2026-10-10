@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"math/big"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -143,18 +142,18 @@ func decodeKaminoRepaymentReleaseWithAllowance(accounts []ConfirmedAccount, rout
 // Recheck the actual persisted release at build and final send. A smaller
 // already-admitted amount may remain safe, but stale effects cannot survive a
 // changed exchange rate/custody or an interest/price move beyond the safe size.
-func validateRepaymentReleaseRequest(ctx context.Context, rpc *chain.Client, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
+func validateRepaymentReleaseRequest(ctx context.Context, view *View, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return KaminoReleaseBound{}, nil, err
 	}
-	return manifest.validateRepaymentReleaseRequest(ctx, rpc, request, effects, slot)
+	return manifest.validateRepaymentReleaseRequest(ctx, view, request, effects, slot)
 }
 
 // The manifest-aware form keeps every release-size, custody and effects check
 // unchanged and only lets the candidate AUTO source path measure its request
 // through the SAME reviewed manifest that produced it.
-func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, rpc *chain.Client, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
+func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, view *View, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
 	var result KaminoReleaseBound
 	if !request.RepaymentRelease || request.FullPayoff {
 		return result, nil, budgetHold("invalid_repayment_release_intent")
@@ -173,7 +172,7 @@ func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, rpc 
 	if request.PilotRepaymentRelease && route.Lane == autoAUTOPYUSD.Lane {
 		payoffAdditional = append(payoffAdditional, route.Kamino.Market)
 	}
-	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, 5, payoffAdditional...)
+	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 5, payoffAdditional...)
 	if err != nil {
 		return result, nil, err
 	}
@@ -338,12 +337,12 @@ const kaminoMinRemainingValueOffset = 3224
 // release held with repayment_release_exceeds_safe_size). Sizing one window
 // longer than the five-step re-check leaves headroom for the slots between
 // build and send.
-func (m RouteManifest) observeRawRepaymentRelease(ctx context.Context, rpc *chain.Client, route RuntimeRoute, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
+func (m RouteManifest) observeRawRepaymentRelease(ctx context.Context, view *View, route RuntimeRoute, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
 	var additional []string
 	if route.Lane == autoAUTOPYUSD.Lane {
 		additional = append(additional, route.Kamino.Market)
 	}
-	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, 6, additional...)
+	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 6, additional...)
 	if err != nil {
 		return KaminoReleaseBound{}, nil, err
 	}

@@ -188,6 +188,64 @@ func streamView(t *testing.T) (*View, *chain.Client, *fakeLaserStream) {
 	return view, client, connector
 }
 
+// fixtureView is a view without a stream: the start-up read of a fake chain.
+func fixtureView(t *testing.T, rpc *chain.Client) *View {
+	t.Helper()
+	view, err := OpenView(context.Background(), rpc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return view
+}
+
+// accountView is a view without a stream holding accounts at slot.
+func accountView(t *testing.T, slot int64, accounts []ConfirmedAccount) *View {
+	t.Helper()
+	return fixtureView(t, seedChain(t, slot, accounts))
+}
+
+// fillAccounts answers account reads through base, taking each account base
+// does not hold from accounts.
+func fillAccounts(base http.RoundTripper, accounts map[string]ConfirmedAccount) http.RoundTripper {
+	return roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		raw, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		request.Body = io.NopCloser(bytes.NewReader(raw))
+		var call struct {
+			ID     any               `json:"id"`
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		res, err := base.RoundTrip(request)
+		if err != nil || json.Unmarshal(raw, &call) != nil || call.Method != "getMultipleAccounts" {
+			return res, err
+		}
+		defer res.Body.Close()
+		var payload struct {
+			Result struct {
+				Context any   `json:"context"`
+				Value   []any `json:"value"`
+			} `json:"result"`
+		}
+		var addresses []string
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil || json.Unmarshal(call.Params[0], &addresses) != nil {
+			return nil, fmt.Errorf("account read: %v", err)
+		}
+		for i, address := range addresses {
+			if a, ok := accounts[address]; ok && payload.Result.Value[i] == nil {
+				payload.Result.Value[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": a.Executable, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}
+			}
+		}
+		encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": call.ID, "result": payload.Result})
+		if err != nil {
+			return nil, err
+		}
+		return response(string(encoded)), nil
+	})
+}
+
 // fence is a persisted operation decided at slot 0.
 var fence = PersistedOperation{ExpectedEffects: []byte(`{"decision":{"observationSlot":0}}`)}
 

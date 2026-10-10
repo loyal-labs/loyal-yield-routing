@@ -17,7 +17,7 @@ const budgetSOLMarket = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 
 var budgetWrappedSOLMint = solana.WrappedSol.String()
 
-func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, minimumSlot int64) (BudgetPrice, error) {
+func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *View, minimumSlot int64) (BudgetPrice, error) {
 	if rpc == nil || minimumSlot <= 0 {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_request")
 	}
@@ -28,7 +28,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, minimum
 	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: budgetSOLMarket}
 	debit := ExecutableDebit{Mint: budgetWrappedSOLMint, TokenProgram: classicTokenProgram, Raw: 1}
 	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, bridgeUSDC, budgetClockAddress}
-	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
+	slot, accounts, _, err := view.read(ctx, addresses, minimumSlot)
 	if err != nil {
 		return BudgetPrice{}, err
 	}
