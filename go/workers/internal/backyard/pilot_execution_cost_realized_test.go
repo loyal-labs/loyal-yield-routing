@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 // marketTestPrice builds an observation the way decodeBudgetTokenPrice does:
@@ -160,104 +159,5 @@ func TestPilotCapAdmitsWorstCaseBoundWithinThreeThousandDollars(t *testing.T) {
 			continue
 		}
 		assertBudgetHold(t, err, tc.hold)
-	}
-}
-
-func TestRecomputeReplacesProvenBoundsUnderTheRouteLease(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 20*time.Second)
-	defer cancel()
-	defer db.Close()
-	if _, err := db.pool.Exec(ctx, `ALTER TABLE loyal_yield.multiply_operations
- ADD COLUMN IF NOT EXISTS confirmation_status text,
- ADD COLUMN IF NOT EXISTS reconciled_effects jsonb`); err != nil {
-		t.Fatal(err)
-	}
-	key := fmt.Sprintf("pilot-cost-recompute-%d", time.Now().UnixNano())
-	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
-	flatJSON, _ := json.Marshal(flat)
-	previous, _ := json.Marshal(prior)
-	authority := pilotTestAuthority(prior)
-	authority.Generation, authority.FinalizedSlot, authority.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(flatJSON)
-	settled, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proven, reconciled := swapRealizedFixture(t)
-	const bookedProven, bookedUnproven, failedFee int64 = 2_519_550_296, 2_000_000, 500
-	settled.Families["Maple"] = FamilyBudget{SpentMicros: 300_000_000_000, ExecutionCostSpentMicros: bookedProven + bookedUnproven + failedFee}
-	open := settled
-	open.Families = map[string]FamilyBudget{}
-	for family, row := range settled.Families {
-		open.Families[family] = row
-	}
-	open.Reservations = map[string]BudgetReservation{}
-	if err = open.Admit(BudgetReservation{OperationID: "open", Family: "Maple", IntentSHA256: sha256Bytes([]byte("open")), UpperMicros: 1000, ExecutionCostUpperMicros: 1000, ExitAfterMicros: 1000}); err != nil {
-		t.Fatal(err)
-	}
-	state, _ := json.Marshal(map[string]any{"generation": 2, "phase3": open, "pilotBudgetActivation": pilotBudgetActivation{authority, previous, flat}})
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
-		t.Fatal(err)
-	}
-	proven.BookedSpentMicros, proven.BookedExecutionCostMicros = 100_000_000_766, bookedProven
-	unproven := proven
-	unproven.SendKnownCost, unproven.BookedExecutionCostMicros = nil, bookedUnproven
-	for i, auth := range []phase3OperationAuthorization{proven, unproven} {
-		effects, _ := json.Marshal(map[string]any{"phase3": auth})
-		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,strategy_key,expected_effects,confirmation_status,confirmed_slot,reconciled_effects)
- VALUES($1,$2,'reconciled',$3,$4,'finalized',$5,$6)`, fmt.Sprintf("%s-%d", key, i), key, SelectedRouteID, effects, 10+i, reconciled); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want := settled.Families["Maple"].ExecutionCostSpentMicros - bookedProven + swapTestRealizedMicros
-	report, err := db.recomputePilotExecutionCost(ctx, key, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Executed || len(report.Operations) != 2 ||
-		report.Operations[0].RealizedMicros != swapTestRealizedMicros || report.Operations[0].BookedMicros != bookedProven || report.Operations[0].Unproven != "" ||
-		report.Operations[1].Unproven != "realized_execution_cost_evidence_missing" || report.Operations[1].BookedMicros != bookedUnproven ||
-		report.Families["Maple"] != (PilotExecutionCostRecomputeFamily{settled.Families["Maple"].ExecutionCostSpentMicros, want}) {
-		t.Fatalf("dry run report: %+v", report)
-	}
-	if _, err = db.AcquireRouteLease(ctx, key, "recompute-test", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	defer db.ReleaseRouteLease(ctx)
-	_, err = db.recomputePilotExecutionCost(ctx, key, true)
-	assertBudgetHold(t, err, "recompute_requires_settled_route")
-	readBack := func() (Phase3Budget, int64, int64) {
-		var budgetJSON []byte
-		var version, booked int64
-		if err := db.pool.QueryRow(ctx, `SELECT s.state->'phase3',s.state_version,(o.expected_effects->'phase3'->>'bookedExecutionCostMicros')::bigint FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, key+"-0").Scan(&budgetJSON, &version, &booked); err != nil {
-			t.Fatal(err)
-		}
-		var b Phase3Budget
-		if json.Unmarshal(budgetJSON, &b) != nil {
-			t.Fatal("budget decode")
-		}
-		return b, version, booked
-	}
-	if b, version, booked := readBack(); len(b.Reservations) != 1 || version != 2 || booked != bookedProven {
-		t.Fatal("refused recompute wrote")
-	}
-	settledJSON, _ := json.Marshal(settled)
-	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{phase3}',$2::jsonb) WHERE route_key=$1`, key, settledJSON); err != nil {
-		t.Fatal(err)
-	}
-	if report, err = db.recomputePilotExecutionCost(ctx, key, true); err != nil || !report.Executed {
-		t.Fatal(report, err)
-	}
-	b, version, booked := readBack()
-	if b.Families["Maple"].ExecutionCostSpentMicros != want || b.Families["Maple"].SpentMicros != 300_000_000_000 || version != 3 || booked != swapTestRealizedMicros {
-		t.Fatalf("execute wrote %+v version=%d booked=%d", b.Families["Maple"], version, booked)
-	}
-	var unprovenBooked int64
-	if err = db.pool.QueryRow(ctx, `SELECT (expected_effects->'phase3'->>'bookedExecutionCostMicros')::bigint FROM loyal_yield.multiply_operations WHERE operation_id=$1`, key+"-1").Scan(&unprovenBooked); err != nil || unprovenBooked != bookedUnproven {
-		t.Fatal("unproven operation lost its booked bound", unprovenBooked, err)
-	}
-	// Recomputing again changes nothing: realized cost is already booked.
-	if report, err = db.recomputePilotExecutionCost(ctx, key, false); err != nil || report.Families["Maple"].BeforeMicros != want || report.Families["Maple"].AfterMicros != want {
-		t.Fatal("recompute is not idempotent", report, err)
 	}
 }

@@ -139,7 +139,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [inspect-pilot-flat-state | activate-pilot-budget | recompute-pilot-execution-cost [--execute] | selector-evaluate [--execute] | inspect-phase3 lane ... | initialize-phase3-budget | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [inspect-pilot-flat-state | activate-pilot-budget | selector-evaluate [--execute] | inspect-phase3 lane ... | initialize-phase3-budget | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
@@ -178,15 +178,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		return backyard.RunSelectorEvaluate(ctx, out, cfg, len(rest) == 1)
 	case command == "activate-pilot-budget" && len(rest) == 0:
 		return encode(backyard.RunPilotBudgetActivation(ctx, cfg.DatabaseURL, cfg.RPCURL, backyard.FixedRouteKey))
-	case command == "recompute-pilot-execution-cost" && (len(rest) == 0 || len(rest) == 1 && rest[0] == "--execute"):
-		// Dry run by default; --execute writes under a short route lease and
-		// refuses while any reservation or operation is open.
-		result, err := backyard.RunPilotExecutionCostRecompute(ctx, cfg.DatabaseURL, backyard.FixedRouteKey, len(rest) == 1)
-		if err != nil {
-			_ = json.NewEncoder(out).Encode(result)
-			return err
-		}
-		return encode(result, nil)
 	case command == "initialize-phase3-budget" && len(rest) == 0:
 		return encode(backyard.RunPhase3BudgetInitialization(ctx, cfg.DatabaseURL, backyard.FixedRouteKey))
 	case command == "inspect-phase3" && len(rest) > 0:
