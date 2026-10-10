@@ -16,6 +16,22 @@ type Instruction struct {
 	Data      []byte
 }
 
+// InstructionOf is ix with its accounts resolved.
+func InstructionOf(ix solana.Instruction) (Instruction, error) {
+	data, err := ix.Data()
+	if err != nil {
+		return Instruction{}, err
+	}
+	out := Instruction{ProgramID: ix.ProgramID(), Data: data}
+	for _, meta := range ix.Accounts() {
+		if meta == nil {
+			return Instruction{}, errors.New("instruction has a nil account")
+		}
+		out.Accounts = append(out.Accounts, *meta)
+	}
+	return out, nil
+}
+
 // ExecuteSync is an execute_transaction_sync_v2 that runs inner instructions
 // as the smart account through a ProgramInteraction policy.
 type ExecuteSync struct {

@@ -7,16 +7,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// admits is squads.Admits for a built instruction; these constraints pin
-// keys only.
-func admits(c squads.InstructionConstraintView, ix *solana.GenericInstruction) bool {
-	inner := squads.Instruction{ProgramID: ix.ProgramID(), Data: ix.DataBytes}
-	for _, meta := range ix.AccountValues {
-		inner.Accounts = append(inner.Accounts, *meta)
-	}
-	return squads.Admits(c, inner, nil)
-}
-
 // A policy constraint built from an instruction's own account order, every
 // slot pinned (the fixed ones by squads.Pinned), admits exactly that
 // instruction, with and without a farm.
@@ -61,7 +51,11 @@ func TestAllowedAdmitsItsOwnInstruction(t *testing.T) {
 		if len(tc.allowed.AccountConstraints) != len(tc.ix.Accounts()) {
 			t.Fatalf("%s: %d of %d account slots pinned", name, len(tc.allowed.AccountConstraints), len(tc.ix.Accounts()))
 		}
-		if !admits(tc.allowed, tc.ix) {
+		inner, err := squads.InstructionOf(tc.ix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !squads.Admits(tc.allowed, inner, nil) {
 			t.Fatalf("%s: constraint does not admit its own instruction", name)
 		}
 	}
