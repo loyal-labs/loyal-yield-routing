@@ -37,6 +37,7 @@ func TestCanaryRequestCannotTargetDeferredLane(t *testing.T) {
 }
 
 func TestFundedDeferredTrancheCompletes(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	entry := selectorEntryFixture(now, PhaseOneLaneID, 1_000_000)
 	entry.AllocationOperationID = "funded-before-revision"

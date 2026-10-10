@@ -163,6 +163,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 }
 
 func TestPhase3JupiterProbeMatchesProduction(t *testing.T) {
+	t.Parallel()
 	dir := os.Getenv("PHASE3_JUPITER_PROBE_DIR")
 	if dir == "" {
 		t.Skip("explicit public local probe required")

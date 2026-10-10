@@ -16,6 +16,7 @@ import (
 )
 
 func TestInitializationRPCBindsThePersistedWireAndRejectsUnexpectedMetadata(t *testing.T) {
+	t.Parallel()
 	for _, drift := range []string{"", "wire", "slot", "fee_missing", "failed", "tokens", "return_data", "account_owner", "journal_action", "journal_signature"} {
 		t.Run(drift, func(t *testing.T) {
 			e, receipt := initializationReconcileFixture(t)
@@ -144,6 +145,7 @@ func initializationReconcileFixture(t *testing.T) (ExpectedEffects, ConfirmedTra
 }
 
 func TestInitializationConservesNativeRentAndPreservesTokenContract(t *testing.T) {
+	t.Parallel()
 	e, receipt := initializationReconcileFixture(t)
 	raw, _ := json.Marshal(e)
 	decoded, err := DecodeExpectedEffects(raw)
@@ -178,6 +180,7 @@ func TestInitializationConservesNativeRentAndPreservesTokenContract(t *testing.T
 }
 
 func TestInitializationRejectsNativeAndCreatedStateDrift(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		mutate func(*ConfirmedTransactionEvidence)

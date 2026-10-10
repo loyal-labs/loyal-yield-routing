@@ -6,6 +6,7 @@ import (
 )
 
 func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
+	t.Parallel()
 	const slot = int64(77)
 	manifest := readyWorkerManifest(t)
 	route, _ := runtimeRoute(RouteID)

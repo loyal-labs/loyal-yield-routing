@@ -129,6 +129,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 }
 
 func TestUSDCEntryConsumesWorkingCashAndValidatesSharedSourceOnce(t *testing.T) {
+	t.Parallel()
 	o, m, rpc, client, accounts := usdcReturnFixture(t)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
 	clear(accountAt(accounts, route.Kamino.Obligation).Data[96:1408])
@@ -153,6 +154,7 @@ func TestUSDCEntryConsumesWorkingCashAndValidatesSharedSourceOnce(t *testing.T) 
 }
 
 func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
+	t.Parallel()
 	for _, lane := range selectorLanes {
 		s := base()
 		scale := int64(1)
@@ -234,6 +236,7 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 }
 
 func TestUSDCHardLTVRequiresExecutablePayoff(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw, s.PayoffDebtRaw, s.LTVBPS = true, 200, 100, 101, 6000
@@ -261,6 +264,7 @@ func TestUSDCHardLTVRequiresExecutablePayoff(t *testing.T) {
 }
 
 func TestUSDCCanaryAllocationPricesCompleteBridgeReturn(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 	s.VoltrIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = 5_000_000, 5_000_000, 5_000_000, int64(strategyTwoBridgeLegCapRaw)

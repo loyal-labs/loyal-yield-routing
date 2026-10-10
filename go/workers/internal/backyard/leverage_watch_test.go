@@ -5,6 +5,7 @@ import "testing"
 // B2 watch-only: one step per sample, up/down thresholds with a gap, and an
 // unreadable spread never moves.
 func TestNextLeverageLevelStepsOnceWithHysteresis(t *testing.T) {
+	t.Parallel()
 	spread := func(v float64) func(float64) (float64, bool) {
 		return func(float64) (float64, bool) { return v, true }
 	}

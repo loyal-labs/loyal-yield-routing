@@ -91,6 +91,8 @@ func TestWatchStateRecoveryIsBatchedUnboundedByOnePassAndIdempotent(t *testing.T
 	var slot atomic.Uint64
 	slot.Store(400_000_000)
 	var calls atomic.Int64
+	var slow atomic.Bool
+	slow.Store(true)
 	var mu sync.Mutex
 	changedData := []byte{1}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -109,8 +111,11 @@ func TestWatchStateRecoveryIsBatchedUnboundedByOnePassAndIdempotent(t *testing.T
 			return
 		}
 		calls.Add(1)
-		// Each batch uses 40% of a pass; three batches exceed one pass.
-		time.Sleep(passTimeout * 2 / 5)
+		// Each first-recovery batch uses 40% of a pass; three batches exceed
+		// one pass. The restarts below only prove idempotence.
+		if slow.Load() {
+			time.Sleep(passTimeout * 2 / 5)
+		}
 		values := make([]map[string]any, len(addresses))
 		for index, address := range addresses {
 			data := []byte{0}
@@ -163,6 +168,7 @@ func TestWatchStateRecoveryIsBatchedUnboundedByOnePassAndIdempotent(t *testing.T
 		t.Fatalf("watch observation = %d, %v; want recovery start 399999000", watchCursor, err)
 	}
 
+	slow.Store(false)
 	// A restart reads identical confirmed state at newer slots.
 	inserted, err = runtime.recoverWatchState(ctx, set, watchConsumer, 399_999_000)
 	if err != nil {

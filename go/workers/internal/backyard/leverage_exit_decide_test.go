@@ -22,6 +22,7 @@ func setDebtCash(s *Snapshot, raw int64) {
 }
 
 func TestExitCycleDecisionsOnEveryExitPath(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		for path, mutate := range map[string]func(*Snapshot){
 			// Large demand needs its own explicitly admitted unwind.
@@ -72,6 +73,7 @@ func TestExitCycleDecisionsOnEveryExitPath(t *testing.T) {
 // 1.5x keeps its installed exit: after the release the idle collateral pays
 // off the debt, so no cycle leg is ever chosen; Maple never cycles.
 func TestExitCycleNeverChangesA15xOrMapleExit(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC, SelectedRouteID} {
 		s := leverageSnapshot(1.5)
 		s.RouteLane, s.StrategyKey, s.Unwind = lane, lane, true
@@ -94,6 +96,7 @@ func TestExitCycleNeverChangesA15xOrMapleExit(t *testing.T) {
 // the residual floor, and cash within the floor of the debt repays nothing
 // (the installed release -> full payoff funds it).
 func TestExitCycleRepayRespectsTheResidualFloor(t *testing.T) {
+	t.Parallel()
 	s := leverageExitSnapshot(onreONycUSDC)
 	s.Unwind = true
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.LTVBPS = 1_360_000_000, 1_360_000_000, 5500
@@ -115,6 +118,7 @@ func TestExitCycleRepayRespectsTheResidualFloor(t *testing.T) {
 // debt 837.77 PYUSD, LTV 33.3%): every exit chain (withdrawal, unwind, down
 // to 1x) releases, then swaps enough to pay off in full; no cycle leg ever.
 func TestLiveShaped15xExitsNeverCycle(t *testing.T) {
+	t.Parallel()
 	for path, mutate := range map[string]func(*Snapshot){
 		"withdrawal": func(s *Snapshot) { s.WithdrawalDemandRaw, s.Unwind = 2_000_000_000, true },
 		"unwind":     func(s *Snapshot) { s.Unwind = true },

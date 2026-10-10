@@ -260,6 +260,7 @@ func usdcAmount(account ConfirmedAccount, raw uint64) ConfirmedAccount {
 // write_version orders one session's writes; across sessions the later
 // arrival wins.
 func TestViewIsCompleteThroughThePreviousConfirmedSlot(t *testing.T) {
+	t.Parallel()
 	view := &View{accounts: map[string]viewAccount{}, receipts: map[string]uint64{}, advanced: make(chan struct{})}
 	squadsUSDC := ConfirmedAccount{Address: bridgeSquadsATA, Owner: bridgeTokenProgram, Lamports: 1, Data: make([]byte, 165)}
 	processed := slotFrame(13)
@@ -308,6 +309,7 @@ func TestViewIsCompleteThroughThePreviousConfirmedSlot(t *testing.T) {
 // A transaction's writes at S+1 are invisible together until S+1 is complete,
 // then visible together.
 func TestViewShowsATransactionOnlyWhenItsSlotIsComplete(t *testing.T) {
+	t.Parallel()
 	view, _, connector := streamView(t)
 	batch := viewRouteBatch(t, nil)
 	connector.send(t, view, true, slotFrame(80), slotFrame(81),
@@ -394,6 +396,7 @@ func TestViewStreamPlansAtS(t *testing.T) {
 // filter; until promotion the view is incomplete. After promotion its close
 // arrives through the by-address filter and the demand is gone.
 func TestViewReceiptDiscoveredThenClosed(t *testing.T) {
+	t.Parallel()
 	view, _, connector := streamView(t)
 	address, data := receiptFixture(t, bridgeVoltrVault, testPublicKey(44), 7, 5<<48)
 	receipt := ConfirmedAccount{Address: address, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}

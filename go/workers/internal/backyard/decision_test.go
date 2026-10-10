@@ -6,6 +6,7 @@ func base() Snapshot {
 	return Snapshot{ObservationID: "o", Slot: 9, RouteKind: RouteKind, Fresh: true, LiquidationThresholdBPS: 8000, CapacityRaw: 7, PolicyLimitRaw: 10, MaxTargetLTVEntryRaw: 7, MinimumCollateralDepositRaw: 1}
 }
 func TestDecisionPrecedenceAndOneAction(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.Nonterminal = Submitted
 	s.HasAmbiguousSubmission = true
@@ -65,6 +66,7 @@ func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 }
 
 func TestSelectedRouteCoveredWithdrawalUsesOrdinaryHold(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane = SelectedRouteID
 	s.WithdrawalDemandRaw = 1
@@ -76,6 +78,7 @@ func TestSelectedRouteCoveredWithdrawalUsesOrdinaryHold(t *testing.T) {
 }
 
 func TestSelectedRouteRestoreModelsFullWithinCapSweep(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane = SelectedRouteID
 	s.WithdrawalDemandRaw = 500_000
@@ -88,6 +91,7 @@ func TestSelectedRouteRestoreModelsFullWithinCapSweep(t *testing.T) {
 	}
 }
 func TestDuplicateObservationIsIdempotent(t *testing.T) {
+	t.Parallel()
 	a, b := Decide(base()), Decide(base())
 	if a.IdempotencyKey != b.IdempotencyKey || a.Action != b.Action {
 		t.Fatalf("%+v %+v", a, b)
@@ -101,6 +105,7 @@ func TestDuplicateObservationIsIdempotent(t *testing.T) {
 }
 
 func TestIdempotencyIdentityIncludesEconomics(t *testing.T) {
+	t.Parallel()
 	baseline := base()
 	baseline.SquadsIdleRaw = 4
 	a := Decide(baseline)
@@ -113,6 +118,7 @@ func TestIdempotencyIdentityIncludesEconomics(t *testing.T) {
 }
 
 func TestEntryIsBoundedAndInvalidThresholdFailsClosed(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.SquadsIdleRaw = 4
 	if got := Decide(s); got.Action != SwapUSDCToPrimeStep || got.AmountRaw != 4 {
@@ -135,6 +141,7 @@ func TestEntryIsBoundedAndInvalidThresholdFailsClosed(t *testing.T) {
 }
 
 func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
+	t.Parallel()
 	entry := base()
 	entry.PolicyLimitRaw = 1_000
 	entry.CapacityRaw = 1_000
@@ -213,6 +220,7 @@ func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
 }
 
 func TestDebtReserveUtilizationDefersBorrowWithoutBlockingWithdrawal(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.HasPosition = true
 	s.PositionCollateralRaw = 99

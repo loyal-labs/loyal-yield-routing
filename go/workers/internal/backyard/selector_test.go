@@ -34,6 +34,7 @@ func advanceSelectorFixture(in *SelectorInput, d time.Duration) {
 }
 
 func TestSelectorDoesNotRefreshOldRecipeWithFreshTimestamp(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"expired", "future", "unbounded", "missing"} {
 		t.Run(kind, func(t *testing.T) {
 			in := selectorFixture()
@@ -57,6 +58,7 @@ func TestSelectorDoesNotRefreshOldRecipeWithFreshTimestamp(t *testing.T) {
 	}
 }
 func TestSelectorPersistenceSurvivesCapacityClosureAndJSONRestart(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	first := SelectOpportunity(in, SelectorState{})
 	if first.Action != "KEEP" || first.Reason != "advantage_not_yet_persistent" {
@@ -86,6 +88,7 @@ func TestSelectorPersistenceSurvivesCapacityClosureAndJSONRestart(t *testing.T) 
 	}
 }
 func TestSelectorPartialCapacityValuesIdleAndDoesNotExitFullCurrentLane(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	s := &in.Snapshot
 	s.VoltrIdleRaw = 0
@@ -122,6 +125,7 @@ func TestSelectorPartialCapacityValuesIdleAndDoesNotExitFullCurrentLane(t *testi
 	}
 }
 func TestSelectorMissingEvidenceNeverBecomesFreeCapacityOrZeroCosts(t *testing.T) {
+	t.Parallel()
 	for _, mutate := range []func(*SelectorInput){
 		func(i *SelectorInput) { i.Markets[0].EntryCapacity = Capacity{} },
 		func(i *SelectorInput) { i.Quotes = nil },
@@ -140,6 +144,7 @@ func TestSelectorMissingEvidenceNeverBecomesFreeCapacityOrZeroCosts(t *testing.T
 	}
 }
 func TestSelectorPricesOneBorrowPassAtProjectedUtilization(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	in.Markets[0].DebtSupplyRaw = 2_000_000_000
 	in.Markets[0].DebtBorrowRaw = 1_500_000_000
@@ -152,6 +157,7 @@ func TestSelectorPricesOneBorrowPassAtProjectedUtilization(t *testing.T) {
 	}
 }
 func TestWithdrawalDemandRemainsTruthfulAcrossTypedLanes(t *testing.T) {
+	t.Parallel()
 	for _, lane := range selectorLanes {
 		s := base()
 		s.RouteLane = lane
@@ -184,6 +190,7 @@ func TestWithdrawalDemandRemainsTruthfulAcrossTypedLanes(t *testing.T) {
 	}
 }
 func TestEconomicOutageDoesNotBlockSafetyWithdrawalOrExactRecovery(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	in.Markets = nil
 	s := in.Snapshot
@@ -211,6 +218,7 @@ func TestEconomicOutageDoesNotBlockSafetyWithdrawalOrExactRecovery(t *testing.T)
 	}
 }
 func TestCommittedUnwindDoesNotRewriteWithdrawalOrTrustFlatIntent(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane = SelectedRouteID
 	s.StrategyKey = s.RouteLane
@@ -250,6 +258,7 @@ func TestCommittedUnwindDoesNotRewriteWithdrawalOrTrustFlatIntent(t *testing.T) 
 }
 
 func TestSelectorNeverPreemptsExecutableRiskReduction(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	in.Snapshot.HasPosition = true
 	in.Snapshot.PositionDebtRaw = 100
@@ -262,6 +271,7 @@ func TestSelectorNeverPreemptsExecutableRiskReduction(t *testing.T) {
 }
 
 func TestSelectorNAVDoesNotEraseFreshAdvantage(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	first := SelectOpportunity(in, SelectorState{})
 	in.Snapshot.LastReportAgeSeconds = 3600
@@ -283,6 +293,7 @@ func TestSelectorNAVDoesNotEraseFreshAdvantage(t *testing.T) {
 }
 
 func TestSelectorPartialAllocationCanBecomePersistent(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	in.Markets[0].DebtSupplyRaw = 1_000_000_000
 	in.Markets[0].DebtBorrowRaw = 900_000_000
@@ -298,6 +309,7 @@ func TestSelectorPartialAllocationCanBecomePersistent(t *testing.T) {
 }
 
 func TestStagedRestoreFinishesAfterWithdrawalDemandChanges(t *testing.T) {
+	t.Parallel()
 	for _, demand := range []int64{0, 3} {
 		s := base()
 		s.RouteLane = SelectedRouteID
@@ -315,6 +327,7 @@ func TestStagedRestoreFinishesAfterWithdrawalDemandChanges(t *testing.T) {
 }
 
 func TestTypedUSDCRepaymentUsesCanonicalExecutionContract(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{"PRIME/USDC", SelectedRouteID, "OnRe/ONyc/USDC"} {
 		s := base()
 		s.RouteLane = lane
@@ -331,6 +344,7 @@ func TestTypedUSDCRepaymentUsesCanonicalExecutionContract(t *testing.T) {
 }
 
 func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	// The destination quotes only the bounded executable tranche; the rest of
 	// the vault stays idle.
@@ -374,6 +388,7 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 }
 
 func TestPilotSelectorKeepsActualSourceIncomeWhenCandidateTrancheIsSmaller(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	// The destination quotes only the bounded candidate tranche against the
 	// larger funded source position.
@@ -402,6 +417,7 @@ func TestPilotSelectorKeepsActualSourceIncomeWhenCandidateTrancheIsSmaller(t *te
 }
 
 func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	// The destination quotes exactly the bounded executable tranche.
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
@@ -455,6 +471,7 @@ func sameLaneSelectorHistory(in SelectorInput) SelectorState {
 // pilot's settled, positively funded Maple position with idle above the buffer
 // may price a same-lane reinvestment. Everything else stays a keep baseline.
 func TestSameLaneReinvestmentEligibilityBindings(t *testing.T) {
+	t.Parallel()
 	in := sameLaneSelectorFixture()
 	if !sameLaneReinvestmentEligible(in.Snapshot, in.Policy) {
 		t.Fatal("settled funded Maple position with excess idle not eligible", in.Snapshot)
@@ -485,6 +502,7 @@ func TestSameLaneReinvestmentEligibilityBindings(t *testing.T) {
 }
 
 func TestPilotSelectorSwitchesToLargerSameLaneReinvestment(t *testing.T) {
+	t.Parallel()
 	in := sameLaneSelectorFixture()
 	got := SelectOpportunity(in, sameLaneSelectorHistory(in))
 	if got.Action != "SWITCH" || got.DestinationLane != in.Snapshot.RouteLane || got.EquityRaw != 19_999_900 || got.SelectedQuote == nil {
@@ -496,6 +514,7 @@ func TestPilotSelectorSwitchesToLargerSameLaneReinvestment(t *testing.T) {
 }
 
 func TestPilotSameLaneSwitchStaysBlockedWithoutStrictReinvestmentCase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mutate func(*SelectorInput)
@@ -555,6 +574,7 @@ func TestPilotSameLaneSwitchStaysBlockedWithoutStrictReinvestmentCase(t *testing
 }
 
 func TestFlatMapleUnwindReportsBeforeCompleting(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane = SelectedRouteID
 	s.StrategyKey = s.RouteLane

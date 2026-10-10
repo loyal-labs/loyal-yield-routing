@@ -35,6 +35,7 @@ func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutio
 }
 
 func TestDebtClearClassifiesWholeFlowBeforeFirstCapitalLeg(t *testing.T) {
+	t.Parallel()
 	_, _, evidence, m, _, plan := debtClearPayoffFixture(t)
 	evidence.Request.FullPayoff = false // The actual repay amount, not this flag, controls consent.
 	required, err := debtClearRequired(m, evidence.Request, evidence.ExpectedEffects, plan, debtClearRouteState{})
@@ -78,6 +79,7 @@ func TestDebtClearClassifiesWholeFlowBeforeFirstCapitalLeg(t *testing.T) {
 }
 
 func TestDebtClearHighRiskReportingNeedsNoAuthority(t *testing.T) {
+	t.Parallel()
 	s := livePartialSnapshot()
 	s.LTVBPS = 6000
 	s.Unwind = true
@@ -297,6 +299,7 @@ func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 // This fixture uses account bytes and the normal health/debt/LTV decoders,
 // not a Snapshot.LTVBPS assertion masquerading as emergency authority.
 func TestDebtClearRiskRequiresCoherentFreshAccounts(t *testing.T) {
+	t.Parallel()
 	m, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -406,6 +409,7 @@ func debtClearRiskFixture(t *testing.T) (Observation, Decision, KaminoExecutionE
 }
 
 func TestDebtClearVerifiedRiskAndStaleEvidence(t *testing.T) {
+	t.Parallel()
 	for _, variant := range []string{"confirmed", "refresh", "stale_time", "stale_reserve", "stale_oracle", "missing_batch", "snapshot_only", "bad_provenance"} {
 		t.Run(variant, func(t *testing.T) {
 			o, d, _, m, _ := debtClearRiskFixture(t)

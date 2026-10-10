@@ -55,6 +55,7 @@ func custodyAdmissionSignedBuild(t *testing.T, seed []byte) (BuildResult, public
 }
 
 func TestSharedCustodySpendRawGatesExactDebit(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	// A partial repay debits the shared custody by the actual move.
 	if spend := sharedCustodySpendRaw(custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000), cfg); spend != 2_500_000_000 {
@@ -89,6 +90,7 @@ func TestSharedCustodySpendRawGatesExactDebit(t *testing.T) {
 // observation actually measured: BeforeRaw == observedRaw, one pinned
 // custody account, and a spend that never exceeds that balance.
 func TestSharedCustodySpendIntentBindsObservedPrestate(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	// Coherent: the journal tip and the observation both say 3.1B.
 	if err := validateSharedCustodySpendIntent(custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000), 3_100_000_000, cfg); err != nil {
@@ -115,6 +117,7 @@ func TestSharedCustodySpendIntentBindsObservedPrestate(t *testing.T) {
 }
 
 func TestSharedCustodyAdmissionProofBindsGeneration(t *testing.T) {
+	t.Parallel()
 	proof := sharedCustodyAdmissionProof{SpendRaw: 1, Generation: 4, LeaseFencing: 9}
 	if !proof.BindsGeneration(4, 9) {
 		t.Fatal("matching generation and fence refused")
@@ -354,6 +357,7 @@ func custodyBuiltEffectsEnvelope(t *testing.T, effects ExpectedEffects) []byte {
 // for a prepared positive AUTO-PYUSD spend, carried as per-operation local
 // data on the observation, and a missing proof producer holds fail-closed.
 func TestSharedCustodyPreDecisionWorkerSeam(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, productionRouteKey)
 	effects := custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000)

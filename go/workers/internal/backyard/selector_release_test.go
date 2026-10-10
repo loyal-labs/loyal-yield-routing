@@ -13,6 +13,7 @@ func selectorReleaseValues() kaminoReleaseValues {
 }
 
 func TestSelectorScalarReleaseRespectsProtocolAndRiskLimits(t *testing.T) {
+	t.Parallel()
 	base := kaminoPilotReleaseLimits{MaxLTVPct: 80, LiquidationPct: 90, GlobalAllowedBorrowValue: 45_000_000}
 	for _, tc := range []struct {
 		name string
@@ -51,6 +52,7 @@ func TestSelectorScalarReleaseRespectsProtocolAndRiskLimits(t *testing.T) {
 }
 
 func TestSelectorScalarReleaseUsesTokenScalesAndRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
 	limits := kaminoPilotReleaseLimits{MaxLTVPct: 80, LiquidationPct: 90, GlobalAllowedBorrowValue: 45_000_000}
 	values := selectorReleaseValues()
 	// 7.5 collateral tokens at $2 each and six-decimal USDC debt. The same
@@ -78,6 +80,7 @@ func TestSelectorScalarReleaseUsesTokenScalesAndRejectsInvalidValues(t *testing.
 }
 
 func TestPilotScalarExtractionPreservesRuntimeReceiptFloors(t *testing.T) {
+	t.Parallel()
 	route, accounts := pilotReleaseFixture(t, SelectedRouteID)
 	values := selectorReleaseValues()
 	position := KaminoPosition{CollateralDepositedRaw: 6, RedeemablePrimeRaw: values.CollateralRaw, DebtRaw: values.DebtRaw,

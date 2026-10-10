@@ -10,7 +10,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	resendEvery = time.Millisecond
+	resendEvery, lookupResendEvery = time.Millisecond, time.Millisecond
 	os.Exit(m.Run())
 }
 

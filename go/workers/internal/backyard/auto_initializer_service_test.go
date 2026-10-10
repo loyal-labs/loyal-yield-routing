@@ -390,6 +390,7 @@ func autoInitializerServiceRPC(t *testing.T) (*chain.Client, map[string]Confirme
 // unchanged, and a simultaneously funded candidate and Maple tranche holds
 // instead of picking one.
 func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
+	t.Parallel()
 	candidate := embeddedTestManifest(t)
 	maplePreferred := candidate
 	maplePreferred.selectorObservation = true

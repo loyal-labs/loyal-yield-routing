@@ -346,6 +346,7 @@ func pinnedIdentityHeaders(t *testing.T, slots map[string]int64) []ConfirmedAcco
 // hash to its pin never counts as verified, so every tick re-verifies it, and
 // an absent or moved identity stays unverified with its observed slot.
 func TestProgramIdentityWatcherHoldsOnUnverifiedImage(t *testing.T) {
+	t.Parallel()
 	watcher := newProgramIdentityWatcher(identityReader(pinnedIdentityHeaders(t, nil)))
 	for range 2 {
 		if observation, err := watcher.observe(context.Background()); err != nil || observation.Verified || observation.VoltrProgramDeploySlot != voltrProgramDeploySlot {
@@ -367,6 +368,7 @@ func TestProgramIdentityWatcherHoldsOnUnverifiedImage(t *testing.T) {
 // authority cannot look like a new binary while changing one executable byte
 // must.
 func TestProgramDataImageVerificationChecksOwnerDiscriminatorSlotAndHash(t *testing.T) {
+	t.Parallel()
 	data := make([]byte, 512)
 	binary.LittleEndian.PutUint32(data[0:4], programDataDiscriminant)
 	binary.LittleEndian.PutUint64(data[4:12], 445223838)

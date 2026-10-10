@@ -18,6 +18,7 @@ func liveTopupSnapshot() Snapshot {
 }
 
 func TestTopupAllocationSizingAndPriority(t *testing.T) {
+	t.Parallel()
 	s := liveTopupSnapshot()
 	got := Decide(s)
 	if got.Action != VoltrAllocateToSquads || got.Reason != topupAllocationReason || got.AmountRaw != s.VoltrIdleRaw || got.Validate() != nil {
@@ -87,6 +88,7 @@ func liveDebtTopupSnapshot() Snapshot {
 // a collateral-only redeposit into the same obligation, then hold. No leg
 // borrows or repays; re-levering stays with the leverage rules.
 func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
+	t.Parallel()
 	s := liveDebtTopupSnapshot()
 	steps := []struct {
 		mutate func(*Snapshot)
@@ -170,6 +172,7 @@ func autoDebtTopupFixture(t *testing.T) (Observation, RouteManifest, *chain.Clie
 }
 
 func TestSelectorEntryFenceBypassedOnlyForJournaledTopupAllocation(t *testing.T) {
+	t.Parallel()
 	allocation := BridgeBuildRequest{Action: VoltrAllocateToSquads, AmountRaw: 1}
 	if !topupAllocationBypassesEntryFence(allocation, topupAllocationReason, false) {
 		t.Fatal("journaled top-up allocation still needs a selector entry")

@@ -10,6 +10,7 @@ import (
 )
 
 func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)
 	debt := accountAt(accounts, route.Kamino.DebtReserve).Data
@@ -67,6 +68,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 }
 
 func TestLiveSelectorRejectsDuplicateMarketFanoutAndStaleSource(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
@@ -82,6 +84,7 @@ func TestLiveSelectorRejectsDuplicateMarketFanoutAndStaleSource(t *testing.T) {
 }
 
 func TestLiveSelectorCancelsSlowSiblingAndRetainsCompletedQuote(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
@@ -118,6 +121,7 @@ func TestLiveSelectorCancelsSlowSiblingAndRetainsCompletedQuote(t *testing.T) {
 }
 
 func TestPilotSelectorCannotSwitchDuringFundedTranche(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	s := &in.Snapshot
 	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 90_000_000, 100_000_000
@@ -154,6 +158,7 @@ func TestPilotSelectorCannotSwitchDuringFundedTranche(t *testing.T) {
 // A settled funded lane is only quoted when a strictly larger same-lane
 // reinvestment is eligible; otherwise it stays the unquotable keep baseline.
 func TestLiveSelectorPricesEligibleSameLaneReentryAndSkipsIneligible(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _, o, _, _ := reentryFundedFixture(t)
 	now := time.Now().UTC()
 	market := LaneEconomics{Lane: SelectedRouteID, EvidenceID: "rates", ObservedAt: now, NativeObservedAt: now, NativeAPY: .10, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}
@@ -183,6 +188,7 @@ func TestLiveSelectorPricesEligibleSameLaneReentryAndSkipsIneligible(t *testing.
 }
 
 func TestCanaryQuoteCollectionSkipsOtherLanes(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))

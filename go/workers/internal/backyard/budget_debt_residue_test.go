@@ -79,6 +79,7 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 }
 
 func TestDebtFreeReturnPricesBothCollateralAndDebtResidue(t *testing.T) {
+	t.Parallel()
 	o, d, e, m, rpc, client := debtResidueAdmissionFixture(t, 20_000)
 	plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e)
 	if err != nil {
@@ -132,6 +133,7 @@ func TestDebtFreeReturnPricesBothCollateralAndDebtResidue(t *testing.T) {
 }
 
 func TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap(t *testing.T) {
+	t.Parallel()
 	o, _, _, m, rpc, client := debtResidueAdmissionFixture(t, 20_000)
 	o.Snapshot.HasPosition = false
 	o.Snapshot.PositionCollateralRaw, o.Snapshot.PositionCollateralValueRaw = 0, 0

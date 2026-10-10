@@ -7,6 +7,7 @@ import (
 )
 
 func TestInjectedSignerRejectsForgedPinnedPublicHalf(t *testing.T) {
+	t.Parallel()
 	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	pinned := mustKey(bridgeDelegate)
 	copy(key[ed25519.SeedSize:], pinned[:])

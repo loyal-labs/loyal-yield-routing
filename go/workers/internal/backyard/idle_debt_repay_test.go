@@ -15,6 +15,7 @@ func liveIdleDebtSnapshot() Snapshot {
 }
 
 func TestIdleDebtBufferRepaysWholeDebtWithoutDemand(t *testing.T) {
+	t.Parallel()
 	s := liveIdleDebtSnapshot()
 	if got := Decide(s); got.Action != DeleverRouteStep || got.Reason != "idle_debt_repay" || got.AmountRaw != s.PositionDebtRaw || got.Validate() != nil {
 		t.Fatalf("live stuck state did not repay the debt: %+v", got)

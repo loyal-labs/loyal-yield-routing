@@ -65,6 +65,7 @@ func cadenceArmedIdentity(s *Snapshot) {
 }
 
 func TestOptionalLifecycleObligationPrefersSelectedPhase2Close(t *testing.T) {
+	t.Parallel()
 	selected := mapleSyrupUSDCUSDC.Kamino.Obligation
 	if got := optionalLifecycleObligations([]string{kaminoPrimeUSDCObligation, selected}); len(got) != 2 || got[0] != selected || got[1] != kaminoPrimeUSDCObligation {
 		t.Fatalf("both closed lifecycle obligations must be optional: %v", got)
@@ -83,6 +84,7 @@ func TestOptionalLifecycleObligationPrefersSelectedPhase2Close(t *testing.T) {
 }
 
 func TestRouteNAVCadenceDoesNotSpamUnchangedFreshReports(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	snapshot := base()
 	nav := cadenceNAV(uint64(snapshot.Slot), 42, 42, now.Add(-10*time.Second))
@@ -105,6 +107,7 @@ func TestRouteNAVCadenceDoesNotSpamUnchangedFreshReports(t *testing.T) {
 }
 
 func TestRouteEconomicObservationIdentityExcludesReportSlot(t *testing.T) {
+	t.Parallel()
 	first := routeEconomicObservationID("bridge-state", 10, 20, 7, false, 42, 41, 100)
 	// The report slot/sequence is intentionally not an input to this helper. Two
 	// coherent observations with the same economics therefore remain identical.
@@ -129,6 +132,7 @@ func TestRouteEconomicObservationIdentityExcludesReportSlot(t *testing.T) {
 }
 
 func TestRouteNAVCadenceReportsMutationBeforeNextRiskAction(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	snapshot := base()
 	snapshot.SquadsIdleRaw = 100
@@ -151,6 +155,7 @@ func TestRouteNAVCadenceReportsMutationBeforeNextRiskAction(t *testing.T) {
 }
 
 func TestRouteNAVCadenceReportsReconciledRiskMutationEvenWhenValueIsUnchanged(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	snapshot := base()
 	snapshot.SquadsIdleRaw = 100
@@ -170,6 +175,7 @@ func TestRouteNAVCadenceReportsReconciledRiskMutationEvenWhenValueIsUnchanged(t 
 }
 
 func TestRouteNAVCadenceReportsAtOneHour(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	snapshot := base()
 	nav := cadenceNAV(uint64(snapshot.Slot), 42, 42, now.Add(-time.Hour))
@@ -184,6 +190,7 @@ func TestRouteNAVCadenceReportsAtOneHour(t *testing.T) {
 }
 
 func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	snapshot := base()
 	mixed := cadenceNAV(uint64(snapshot.Slot+1), 42, 42, now)
@@ -202,6 +209,7 @@ func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) 
 }
 
 func TestRouteFixedAddressesIncludeEveryMutableConstructionInput(t *testing.T) {
+	t.Parallel()
 	addresses := routeFixedAddresses(readyWorkerManifest(t))
 	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, bridgeVoltrVault: false, bridgeLPMint: false, kaminoPrimeCustody: false, kaminoPrimeUSDCObligation: false, kaminoCollateralReserve: false, kaminoDebtReserve: false, kaminoPrimeLiquiditySupply: false, kaminoUSDCLiquiditySupply: false, reportTicketPDA: false}
 	for _, address := range addresses {
@@ -218,6 +226,7 @@ func TestRouteFixedAddressesIncludeEveryMutableConstructionInput(t *testing.T) {
 
 // The view holds every account the route observer reads, on every lane.
 func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
+	t.Parallel()
 	held := map[string]bool{}
 	for _, address := range viewAddresses() {
 		held[address] = true

@@ -20,6 +20,7 @@ import (
 // startup. This pins that derivation to the addresses the lifecycle evidence
 // recorded when the four policies were actually created on mainnet.
 func TestLegacyPolicyGateDerivesTheRecordedSeed6265Addresses(t *testing.T) {
+	t.Parallel()
 	derived, err := legacyCustomPolicyAddresses()
 	if err != nil {
 		t.Fatalf("derive legacy policy addresses: %v", err)
@@ -60,6 +61,7 @@ func TestLegacyPolicyGateDerivesTheRecordedSeed6265Addresses(t *testing.T) {
 }
 
 func TestIsOnCurveRejectsCurvePointsAndAcceptsHashes(t *testing.T) {
+	t.Parallel()
 	// RFC 8032 test-vector public keys (TEST 1, TEST 2): real curve points that
 	// must decompress, so a base/sign parsing error in the decompression math
 	// fails here instead of silently skipping the bump Solana chose for a PDA.
@@ -160,6 +162,7 @@ func legacyGateClient(t *testing.T, url string) *chain.Client {
 }
 
 func TestAssertLegacyPoliciesRetiredFailsClosedOnSurvivors(t *testing.T) {
+	t.Parallel()
 	addresses, err := legacyCustomPolicyAddresses()
 	if err != nil {
 		t.Fatalf("derive legacy policy addresses: %v", err)
@@ -185,6 +188,7 @@ func TestAssertLegacyPoliciesRetiredFailsClosedOnSurvivors(t *testing.T) {
 }
 
 func TestAssertLegacyPoliciesRetiredRequiresAnchorForAllNullPolicies(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(stubLegacyRPC{anchor: true})
 	defer server.Close()
 	if surviving, err := AssertLegacyPoliciesRetired(context.Background(), legacyGateClient(t, server.URL)); err != nil || surviving != nil {
@@ -199,6 +203,7 @@ func TestAssertLegacyPoliciesRetiredRequiresAnchorForAllNullPolicies(t *testing.
 }
 
 func TestAssertLegacyPoliciesRetiredRefusesWrongGenesis(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(stubLegacyRPC{
 		genesis: bridgeVault, anchor: true,
 	})

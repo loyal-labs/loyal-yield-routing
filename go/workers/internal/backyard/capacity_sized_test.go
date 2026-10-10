@@ -15,6 +15,7 @@ import (
 )
 
 func TestCapacitySizedEntryRetainsCollateralRoom(t *testing.T) {
+	t.Parallel()
 	route, accounts, position := pairCapacityFixture(t)
 	route.Lane = onreONycUSDC
 	binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], 77)
@@ -39,6 +40,7 @@ func TestCapacitySizedEntryRetainsCollateralRoom(t *testing.T) {
 }
 
 func TestCapacitySizedActualCarry(t *testing.T) {
+	t.Parallel()
 	s := leverageSnapshot(1.5)
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 136_000_000, 36_000_000
 	s.PositionDebtRaw, s.LTVBPS = 36_000_000, 2647
@@ -52,6 +54,7 @@ func TestCapacitySizedActualCarry(t *testing.T) {
 }
 
 func TestCapacitySizedPartialRatioUsesActualBeforeRelease(t *testing.T) {
+	t.Parallel()
 	s := leverageSnapshot(1.5)
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw, s.PositionDebtRaw = 136_000_000, 36_000_000, 36_000_000
 	s.LTVBPS = 2647
@@ -63,6 +66,7 @@ func TestCapacitySizedPartialRatioUsesActualBeforeRelease(t *testing.T) {
 
 // Old durable targets decode, but carry no authority for a new raw borrow.
 func TestCapacitySizedOldTargetAndMarkerStayReadable(t *testing.T) {
+	t.Parallel()
 	target, err := decodeLeverageTarget([]byte(`{"lane":"OnRe/ONyc/USDC","level":1.5,"decidedAt":"2026-09-28T12:00:00Z"}`))
 	if err != nil || target == nil {
 		t.Fatal(err)
@@ -227,6 +231,7 @@ func runCapacityPartialRestart(t *testing.T, lane string) {
 }
 
 func TestCapacitySizedFinalBorrowGateRejectsShrinkingRoom(t *testing.T) {
+	t.Parallel()
 	for _, debt := range []uint64{0, 33_333_333} {
 		t.Run(fmt.Sprintf("existing_debt_%d", debt), func(t *testing.T) { capacityFinalBorrowGate(t, debt) })
 	}
@@ -359,6 +364,7 @@ func TestCapacitySizedAuthorizationIsSingleUseBelowInterestTolerance(t *testing.
 }
 
 func TestCapacitySizedDebtRoomBoundaries(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mutate func([]ConfirmedAccount)

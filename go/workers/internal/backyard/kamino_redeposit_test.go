@@ -59,6 +59,7 @@ func TestExportPhase3RedepositProbe(t *testing.T) {
 }
 
 func TestPhase3RedepositMatchesProduction(t *testing.T) {
+	t.Parallel()
 	dir, name := os.Getenv("PHASE3_JUPITER_RETURN_PROBE_DIR"), os.Getenv("PHASE3_JUPITER_PROBE_RESULT")
 	if dir == "" || name == "" {
 		t.Skip("explicit deployed-program probe required")

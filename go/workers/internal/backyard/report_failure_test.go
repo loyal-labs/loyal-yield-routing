@@ -49,6 +49,7 @@ func jsonNumberHex(code int) string {
 // are retryable terminal failures, never manual recovery, and a wire whose
 // report can only land past observed_slot+28 is refused before broadcast.
 func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
+	t.Parallel()
 	t.Run("classified adaptor report failures are retryable", func(t *testing.T) {
 		cases := []struct {
 			name      string
@@ -262,6 +263,7 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 // processed-only error can be forked away, so it must stay an observation and
 // never drive a terminal journal transition.
 func TestSignatureStatusFailureRequiresSettlement(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name                          string
 		value                         string
@@ -314,6 +316,7 @@ func TestSignatureStatusFailureRequiresSettlement(t *testing.T) {
 // ambiguous submission state so later ticks can read the receipt again, and
 // only the bounded receipt retry window terminates it - never manual recovery.
 func TestUnreadableFailureReceiptKeepsObservingUntilBounded(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	if receiptRetryExpired(time.Time{}, now) {
 		t.Fatal("a missing broadcast timestamp expired the receipt retry window")

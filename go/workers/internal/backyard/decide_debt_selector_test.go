@@ -8,6 +8,7 @@ import "testing"
 // completion. These snapshots reproduce the live 370333-idle/250000-admitted
 // allocation failure and the lifecycle holds around it.
 func TestAUTOSelectorNonUSDCLifecycle(t *testing.T) {
+	t.Parallel()
 	const lane = "AUTO/AUTO/PYUSD"
 	ready := func(s Snapshot) Snapshot {
 		s.RouteLane = lane

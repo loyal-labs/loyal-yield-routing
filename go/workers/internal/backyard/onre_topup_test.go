@@ -18,6 +18,7 @@ func onreTopupSnapshot() Snapshot {
 }
 
 func TestOnReTopupSequenceOnTheUSDCPath(t *testing.T) {
+	t.Parallel()
 	s := onreTopupSnapshot()
 	check := func(s Snapshot, action Action, reason string, amount int64) {
 		t.Helper()
@@ -44,6 +45,7 @@ func TestOnReTopupSequenceOnTheUSDCPath(t *testing.T) {
 }
 
 func TestOnReTopupKeepsSafetyPriorityAndOtherLanesUnchanged(t *testing.T) {
+	t.Parallel()
 	s := onreTopupSnapshot()
 	for name, mutate := range map[string]func(*Snapshot){
 		"uncovered demand": func(s *Snapshot) { s.WithdrawalDemandRaw = s.VoltrIdleRaw + 1 },
@@ -84,6 +86,7 @@ func TestOnReTopupKeepsSafetyPriorityAndOtherLanesUnchanged(t *testing.T) {
 // its build/send prestate on the lane's real Jupiter exports and the
 // shared-cash USDC custody.
 func TestOnReTopupSwapPrestateAcceptsTheDebtFreePosition(t *testing.T) {
+	t.Parallel()
 	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, onreONycUSDC)
 	route, _ := runtimeRoute(onreONycUSDC)
 	clear(accountAt(accounts, route.Kamino.Obligation).Data[1208:1408])

@@ -88,7 +88,10 @@ func TestTransportFailuresKeepTheKeyOut(t *testing.T) {
 			client := serve(t, func(request) (int, any) {
 				return http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
 			})
-			_, err := client.Slot(context.Background(), rpc.CommitmentConfirmed)
+			// A behind node is asked again a slot later, within the caller's deadline.
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			_, err := client.Slot(ctx, rpc.CommitmentConfirmed)
 			if !errors.Is(err, ErrBehind) {
 				t.Fatalf("want ErrBehind, got %v", err)
 			}

@@ -7,6 +7,7 @@ import "testing"
 // $99.50 Maple borrow held every step because 99,495,523 != 99,495,499.
 // Interest inside the priced window passes; a real borrow or repay does not.
 func TestSameAccruingDebtToleratesOnlyPricedInterest(t *testing.T) {
+	t.Parallel()
 	b := KaminoPayoffBound{ObservedDebtRaw: 99_495_499, UpperDebtRaw: 99_495_685}
 	for _, c := range []struct {
 		snapshot int64

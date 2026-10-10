@@ -12,6 +12,7 @@ import (
 )
 
 func TestRestorePersistedDecisionIncludesImmutableAmountAndReason(t *testing.T) {
+	t.Parallel()
 	expected := []byte(`{"decision":{"amountRaw":896575,"reason":"withdrawal_repay_debt","strategyKey":"PRIME/USDC"}}`)
 	decision, err := restorePersistedDecision(expected, DeleverPrimeUSDCStep, "durable-key", RouteID)
 	if err != nil {
@@ -26,6 +27,7 @@ func TestRestorePersistedDecisionIncludesImmutableAmountAndReason(t *testing.T) 
 }
 
 func TestEveryDecisionHasDurableInitialStatus(t *testing.T) {
+	t.Parallel()
 	held, reason := initialDecisionStatus(Decision{Action: Hold, Reason: "no_action"})
 	if held != Held || reason != nil || IsNonterminal(held) {
 		t.Fatalf("HOLD was not terminal and durable: status=%s reason=%v", held, reason)
@@ -41,6 +43,7 @@ func TestEveryDecisionHasDurableInitialStatus(t *testing.T) {
 }
 
 func TestFlatObservationProjectionRetainsConfirmedDashboardTruth(t *testing.T) {
+	t.Parallel()
 	observedAt := time.Unix(1_700_000_000, 0).UTC()
 	observation := Observation{ObservedAt: observedAt, Snapshot: Snapshot{
 		ObservationID: "flat", Slot: 123, RouteKind: RouteKind, Fresh: true,
@@ -66,6 +69,7 @@ func TestFlatObservationProjectionRetainsConfirmedDashboardTruth(t *testing.T) {
 }
 
 func TestMigrationPreservesOneNonterminalAndTerminalHolds(t *testing.T) {
+	t.Parallel()
 	migrationsRoot := filepath.Join("..", "..", "..", "..", "migrations", "yield")
 	legacyPath := filepath.Join(migrationsRoot, "0055_backyard_rwa_worker.sql")
 	if _, err := os.Stat(legacyPath); !errors.Is(err, fs.ErrNotExist) {
@@ -124,6 +128,7 @@ func TestMigrationPreservesOneNonterminalAndTerminalHolds(t *testing.T) {
 }
 
 func TestSnapshotConflictMatches0067(t *testing.T) {
+	t.Parallel()
 	if !strings.Contains(PositionSnapshotInsert, "ON CONFLICT (route_key, observed_slot) DO NOTHING") {
 		t.Fatal("position snapshot insert does not target the unique key installed by migration 0067")
 	}
@@ -133,6 +138,7 @@ func TestSnapshotConflictMatches0067(t *testing.T) {
 }
 
 func TestMigration0071UpgradesApplied0070ForPhaseOne(t *testing.T) {
+	t.Parallel()
 	migrationsRoot := filepath.Join("..", "..", "..", "..", "migrations", "yield")
 	data, err := os.ReadFile(filepath.Join(migrationsRoot, "0071_backyard_rwa_phase1_activation.sql"))
 	if err != nil {
@@ -193,6 +199,7 @@ func TestMigration0071UpgradesApplied0070ForPhaseOne(t *testing.T) {
 }
 
 func TestMigration0072ScopesRouteNeutralActionsToSelectedStrategy(t *testing.T) {
+	t.Parallel()
 	migrationsRoot := filepath.Join("..", "..", "..", "..", "migrations", "yield")
 	data, err := os.ReadFile(filepath.Join(migrationsRoot, "0072_backyard_rwa_phase2_route_neutral_actions.sql"))
 	if err != nil {
@@ -212,6 +219,7 @@ func TestMigration0072ScopesRouteNeutralActionsToSelectedStrategy(t *testing.T) 
 }
 
 func TestMigration0073PermitsOnlyDefinitivePostIntentFailure(t *testing.T) {
+	t.Parallel()
 	migrationsRoot := filepath.Join("..", "..", "..", "..", "migrations", "yield")
 	data, err := os.ReadFile(filepath.Join(migrationsRoot, "0073_backyard_rwa_expired_absent_failure.sql"))
 	if err != nil {
@@ -233,6 +241,7 @@ func TestMigration0073PermitsOnlyDefinitivePostIntentFailure(t *testing.T) {
 }
 
 func TestRouteLeaseDatabaseContractIsNonReentrantAndFenced(t *testing.T) {
+	t.Parallel()
 	acquire := normalizeSQL(AcquireRouteLeaseSQL)
 	for _, required := range []string{
 		"lease_owner = $2",
@@ -279,6 +288,7 @@ func TestRouteLeaseDatabaseContractIsNonReentrantAndFenced(t *testing.T) {
 }
 
 func TestPostMutationNAVCadenceUsesLatestReconciledMoneyMutation(t *testing.T) {
+	t.Parallel()
 	query := normalizeSQL(PostMutationNAVRequiredSQL)
 	for _, required := range []string{
 		"status = 'reconciled'",
@@ -299,6 +309,7 @@ func TestPostMutationNAVCadenceUsesLatestReconciledMoneyMutation(t *testing.T) {
 }
 
 func TestActionableIdempotencyUsesDurableTerminalEpoch(t *testing.T) {
+	t.Parallel()
 	query := normalizeSQL(LatestDecisionEpochSQL)
 	for _, required := range []string{
 		"operation_id",
@@ -349,6 +360,7 @@ func TestActionableIdempotencyUsesDurableTerminalEpoch(t *testing.T) {
 }
 
 func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
+	t.Parallel()
 	query := normalizeSQL(UnresolvedCapitalRecoverySQL)
 	for _, required := range []string{
 		"status = 'manual_recovery'",
@@ -377,6 +389,7 @@ func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
 }
 
 func TestExistingRouteStateMigrationProvidesLeaseFence(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join("..", "..", "..", "..", "migrations", "yield", "0051_multiply_route_state.sql")
 	data, err := os.ReadFile(path)
 	if err != nil {

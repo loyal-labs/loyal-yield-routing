@@ -133,6 +133,8 @@ func loadAutoInitializerAuth(t *testing.T, ctx context.Context, db *Database, id
 // reviewed binding — while an unbound row, the embedded public prestate gate
 // and a drifted binding all refuse it without transitioning the journal.
 func TestAutoInitializerBuildGateThroughReviewedManifest(t *testing.T) {
+	// A dedicated disposable database: nothing shared with other tests.
+	t.Parallel()
 	f := autoInitializerAuthorizationFixture(t)
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_build_authorization_test", 30*time.Second)
 	defer cancel()
@@ -192,6 +194,8 @@ func TestAutoInitializerBuildGateThroughReviewedManifest(t *testing.T) {
 // public entrypoint keeps the same wire closed at decode, a drifted journal
 // identity never reaches the chain, and a completed send cannot be replayed.
 func TestAutoInitializerSignedTransitionThroughReviewedManifest(t *testing.T) {
+	// A dedicated disposable database: nothing shared with other tests.
+	t.Parallel()
 	f := autoInitializerAuthorizationFixture(t)
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_signed_transition_test", 30*time.Second)
 	defer cancel()

@@ -130,6 +130,7 @@ func budgetView(t *testing.T) *View {
 }
 
 func TestProductionBridgeRequiresBindBeforeSigner(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		action      Action
 		amount, fee uint64
@@ -153,6 +154,7 @@ func TestProductionBridgeRequiresBindBeforeSigner(t *testing.T) {
 }
 
 func TestKnownBuildCostDoesNotGrantAdmission(t *testing.T) {
+	t.Parallel()
 	request := bridgeTestRequest(ReportNAV, 0)
 	effects, _, _, err := bridgeExpectedEffects(Decision{Action: ReportNAV}, 0, 0, 0)
 	if err != nil {
@@ -170,6 +172,7 @@ func TestKnownBuildCostDoesNotGrantAdmission(t *testing.T) {
 }
 
 func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
+	t.Parallel()
 	t.Run("Kamino", func(t *testing.T) {
 		request := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegBorrow)
 		source, destination := kaminoLegCustodies(kaminoLegBorrow)
@@ -201,6 +204,7 @@ func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
 // A fee read ahead of the view is valued at its own slot: the view's prices
 // keep their window, and a fee too far ahead of them holds.
 func TestKnownBuildCostValuesAFeeReadAheadOfTheView(t *testing.T) {
+	t.Parallel()
 	_, _, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
 	for _, tc := range []struct {
 		feeSlot int64
@@ -232,6 +236,7 @@ func TestKnownBuildCostValuesAFeeReadAheadOfTheView(t *testing.T) {
 // after it are cancelled, and the reported failure is the first in step
 // order, so a consequence never displaces its root cause.
 func TestConcurrentReadsStopsAtTheFirstFailureInOrder(t *testing.T) {
+	t.Parallel()
 	stale := fmt.Errorf("stale confirmed slot")
 	started := time.Now()
 	err := concurrentReads(t.Context(),

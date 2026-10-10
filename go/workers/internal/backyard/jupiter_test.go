@@ -78,6 +78,7 @@ func v2TestInstruction(lane string, action Action, amount, out uint64, filler in
 }
 
 func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
+	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{11}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	for _, test := range []struct {
@@ -112,6 +113,7 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 }
 
 func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T) {
+	t.Parallel()
 	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99)
 	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err != nil {
 		t.Fatal(err)
@@ -130,6 +132,7 @@ func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T
 }
 
 func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) {
+	t.Parallel()
 	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99)
 	companion := false
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -174,6 +177,7 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 }
 
 func TestJupiterAcceptsCanonicalSystemProgramAccount(t *testing.T) {
+	t.Parallel()
 	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 95)
 	instruction.Accounts = append(instruction.Accounts, jupiter.AccountMeta{
 		Pubkey: "11111111111111111111111111111111",

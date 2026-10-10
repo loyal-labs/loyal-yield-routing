@@ -3,6 +3,7 @@ package backyard
 import "testing"
 
 func TestLeverageLevelsAndOneStepRule(t *testing.T) {
+	t.Parallel()
 	for level, want := range map[float64]int64{1: 0, 1.5: 3333, 1.75: 4285} {
 		if got := leverageLevelLTVBPS(level); got != want {
 			t.Fatalf("level %.2f LTV %d, want %d", level, got, want)
@@ -37,6 +38,7 @@ func TestLeverageLevelsAndOneStepRule(t *testing.T) {
 // 1x chosen on purpose is finished: no first borrow loop, and the selector
 // no longer freezes on complete_current_tranche_first.
 func TestOneXByChoiceIsAFinishedPosition(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		s := base()
 		s.RouteLane, s.StrategyKey = lane, lane

@@ -9,6 +9,7 @@ import "testing"
 // in prepare. Re-deciding with debt accrued (+1 raw .. +0.01%) and the
 // collateral price moved +/-1 bp must give an equal decision.
 func TestPartialAndExitDecisionsAreStableAcrossRefresh(t *testing.T) {
+	t.Parallel()
 	type leg struct {
 		name string
 		snap Snapshot

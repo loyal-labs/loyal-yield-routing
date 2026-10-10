@@ -9,6 +9,7 @@ import (
 )
 
 func TestWithdrawalHealthPreservesAttentionUntilCurrentRecovery(t *testing.T) {
+	t.Parallel()
 	o := Observation{ObservedAt: time.Unix(1000, 0).UTC(), Snapshot: livePartialSnapshot()}
 	h, ok := assessWithdrawalHealth(o, Decision{Action: Hold, Reason: "withdrawal_full_exit_unproven"}, nil)
 	if !ok || h.Status != "operator_attention" {

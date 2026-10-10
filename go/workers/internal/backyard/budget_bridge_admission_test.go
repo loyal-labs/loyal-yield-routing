@@ -34,6 +34,7 @@ func bridgeAdmissionFixture(t *testing.T, action Action, amount, idle, strategy,
 }
 
 func TestBridgeAdmissionMeasuresCompleteCashReturnWithoutSigner(t *testing.T) {
+	t.Parallel()
 	o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
 	plan, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), budgetView(t), o, d, evidence)
 	if err != nil {
@@ -56,6 +57,7 @@ func TestBridgeAdmissionMeasuresCompleteCashReturnWithoutSigner(t *testing.T) {
 }
 
 func TestBridgeAdmissionRejectsUnpricedExposureAndPartialSweep(t *testing.T) {
+	t.Parallel()
 	t.Run("position needs complete exit", func(t *testing.T) {
 		o, d, evidence := bridgeAdmissionFixture(t, ReportNAV, 0, 0, 0, 0)
 		o.Snapshot.PositionDebtRaw = 1
@@ -90,6 +92,7 @@ func TestBridgeAdmissionRejectsUnpricedExposureAndPartialSweep(t *testing.T) {
 // template must report the drained Squads vault as NAV (zero) and never the
 // amount parked in the strategy ATA: Voltr tracks strategy custody separately.
 func TestBridgeAdmissionStageTemplatesReportDrainedSquadsNAV(t *testing.T) {
+	t.Parallel()
 	o, d, evidence := bridgeAdmissionFixture(t, StageSquadsToVoltr, 999_952, 214_944, 0, 999_952)
 	steps, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence)
 	if err != nil {
@@ -119,6 +122,7 @@ func TestBridgeAdmissionStageTemplatesReportDrainedSquadsNAV(t *testing.T) {
 // Hold all eight independent valuation reads at a barrier. A serialized
 // implementation cannot finish; no timing threshold or live RPC is involved.
 func TestBridgeAdmissionReadsIndependentValuationsTogether(t *testing.T) {
+	t.Parallel()
 	o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
 	rpc := budgetBuildRPC(t, 5_000, 42)
 	view := fixtureView(t, rpc)

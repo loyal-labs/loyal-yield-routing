@@ -6,6 +6,7 @@ import (
 )
 
 func TestExpiredUnwindDebtRequiresReadmissionWithoutBlockingRisk(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 	s.HasPosition = true

@@ -6,6 +6,7 @@ import "testing"
 // runs release -> funding swap -> full payoff under leverage_down_* reasons,
 // the same legs (and admissions) as a withdrawal payoff, without an unwind.
 func TestLeverageDownTo1xRunsTheReleaseSwapPayoffChain(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		s := leverageSnapshot(1.5)
 		s.RouteLane, s.StrategyKey, s.LeverageTargetLevel = lane, lane, 1

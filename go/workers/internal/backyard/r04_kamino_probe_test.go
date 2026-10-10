@@ -97,6 +97,7 @@ func TestExportPhase3KaminoReleaseProbe(t *testing.T) {
 }
 
 func TestPhase3KaminoReleaseProbeMatchesProduction(t *testing.T) {
+	t.Parallel()
 	dir, name := os.Getenv("PHASE3_KAMINO_PROBE_DIR"), os.Getenv("PHASE3_KAMINO_PROBE_RESULT")
 	if dir == "" || name == "" {
 		t.Skip("explicit executed release witness required")
@@ -226,6 +227,7 @@ func TestPhase3KaminoReleaseProbeMatchesProduction(t *testing.T) {
 // compiler, amount selector, economic debit measurement and reconciliation.
 // These are local SVM transitions, not confirmed RPC receipts or signer proof.
 func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
+	t.Parallel()
 	dir, resultName := os.Getenv("PHASE3_KAMINO_PROBE_DIR"), os.Getenv("PHASE3_KAMINO_PROBE_RESULT")
 	if dir == "" || resultName == "" {
 		t.Skip("explicit local probe snapshot and execution result required")
@@ -395,6 +397,7 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 }
 
 func TestPhase3KaminoProbeMatchesProduction(t *testing.T) {
+	t.Parallel()
 	dir := os.Getenv("PHASE3_KAMINO_PROBE_DIR")
 	if dir == "" {
 		t.Skip("explicit local probe snapshot required")

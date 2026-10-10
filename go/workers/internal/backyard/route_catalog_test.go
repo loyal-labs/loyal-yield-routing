@@ -10,10 +10,12 @@ import (
 // Independent retained SDK/account-vector evidence, not output from this Go
 // compiler. No RPC, signer, simulation or send is used by this witness.
 func TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena(t *testing.T) {
+	t.Parallel()
 	testCatalogKaminoConstruction(t, []string{"AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD"})
 }
 
 func TestCatalogKaminoConstructionMatchesRetainedPrimeSiblings(t *testing.T) {
+	t.Parallel()
 	testCatalogKaminoConstruction(t, []string{"Prime/PRIME/PYUSD", "Prime/PRIME/USDS"})
 	// Catalog support does not make a sibling a funded lane.
 	for _, lane := range []string{"Prime/PRIME/PYUSD", "Prime/PRIME/USDS"} {

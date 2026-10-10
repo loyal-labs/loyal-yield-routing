@@ -5,6 +5,7 @@ import (
 )
 
 func TestTopupDepositDecisionJoinsDebtFreePosition(t *testing.T) {
+	t.Parallel()
 	s := liveTopupSnapshot()
 	s.VoltrIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw, s.MinimumCollateralDepositRaw = 0, 300_000_000, 300_000_000, 1
 	got := Decide(s)

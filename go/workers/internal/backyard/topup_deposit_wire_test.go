@@ -13,6 +13,7 @@ import (
 // obligation's one collateral reserve, so the wire refreshes that reserve;
 // the persisted-wire gate must accept exactly that deposit topology.
 func TestTopupDepositWirePassesThePersistedWireGate(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	delegateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(delegateKey.Public().(ed25519.PublicKey))
@@ -43,6 +44,7 @@ func TestTopupDepositWirePassesThePersistedWireGate(t *testing.T) {
 // A wire the persisted gate refuses is a retryable hold before any write or
 // send, never a worker exit.
 func TestPersistSignedRefusalIsARetryableHold(t *testing.T) {
+	t.Parallel()
 	err := (&Database{}).PersistSigned(context.Background(), "op", BuildResult{SignedWire: []byte{1}})
 	var hold *BudgetHold
 	if !errors.As(err, &hold) || hold.Reason != "signed_wire_shape_refused" || !isPreSendHold(err) {

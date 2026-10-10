@@ -13,6 +13,7 @@ import (
 // experiment. It has no RPC, signer, persistence or production admission path.
 // Discovery wires identify accounts only; execution requires raw local prestate.
 func TestExportOnReBridgeProbe(t *testing.T) {
+	t.Parallel()
 	input := os.Getenv("PHASE3_ONRE_BRIDGE_INPUT")
 	if input == "" {
 		t.Skip("explicit local bridge request required")

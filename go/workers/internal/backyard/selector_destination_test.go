@@ -170,6 +170,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 }
 
 func TestSelectorDestinationPricesCompleteEntryWithoutMutatingAccounts(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	before := hashConfirmedAccounts(accounts)
 	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
@@ -204,6 +205,7 @@ func TestSelectorDestinationPricesCompleteEntryWithoutMutatingAccounts(t *testin
 }
 
 func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"farm_missing", "farm_frozen", "foreign_user", "foreign_delegate", "reserve_farm", "receipt_authority", "nonflat", "capacity"} {
 		t.Run(kind, func(t *testing.T) {
 			m, rpc, client, accounts := selectorDestinationFixture(t)
@@ -234,6 +236,7 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 }
 
 func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"global_cap", "release_ceiling", "minimum_collateral", "repayment_quote"} {
 		t.Run(kind, func(t *testing.T) {
 			m, rpc, client, accounts := selectorDestinationFixture(t)
@@ -270,6 +273,7 @@ func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
 }
 
 func TestSelectorDestinationFullPilotTrancheHasQuotedPayoff(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 10_000_000, 42, false, nil)
 	if err != nil {
@@ -281,6 +285,7 @@ func TestSelectorDestinationFullPilotTrancheHasQuotedPayoff(t *testing.T) {
 }
 
 func TestSelectorDestinationIncludesPayoffLookupReadInFreshness(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	tables := map[string]bool{}
 	for _, a := range accounts {
@@ -332,6 +337,7 @@ func TestSelectorDestinationIncludesPayoffLookupReadInFreshness(t *testing.T) {
 }
 
 func TestSelectorReceiptBoundIncludesPreBorrowInterest(t *testing.T) {
+	t.Parallel()
 	_, _, _, accounts := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)
 	a := accountAt(accounts, route.Kamino.CollateralReserve)

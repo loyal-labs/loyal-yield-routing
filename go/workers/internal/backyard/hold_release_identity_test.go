@@ -16,6 +16,7 @@ import (
 // Executable identities keep the epoch namespace and are never bound here,
 // and the epoch-free base identity of both hold actions stays stable.
 func TestHoldAuditIdentityBindsManifest(t *testing.T) {
+	t.Parallel()
 	manifestA, manifestB := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	hold := Decision{Action: Hold, IdempotencyKey: "obs:HOLD:0:no_eligible_action"}
 

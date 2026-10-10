@@ -7,6 +7,7 @@ import (
 )
 
 func TestCapacityReviewNonParBenchmarkDebtUnits(t *testing.T) {
+	t.Parallel()
 	m := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .12, BorrowCurve: []BorrowCurvePoint{{0, 0}, {10000, 1000}}, DebtSupplyRaw: 1_000_000_000, DebtBorrowRaw: 100_000_000}
 	s := Snapshot{RouteLane: autoAUTOPYUSD.Lane, PositionDebtRaw: 50_000_000, BorrowCapacityKnown: true, BorrowDebtDecimals: 6}
 	binary.LittleEndian.PutUint64(s.BorrowDebtPriceSF[:8], (uint64(1)<<60)/5*4)
@@ -20,6 +21,7 @@ func TestCapacityReviewNonParBenchmarkDebtUnits(t *testing.T) {
 }
 
 func TestCapacityReviewBenchmarkMissingPriceAndUSDC(t *testing.T) {
+	t.Parallel()
 	m := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .12, BorrowCurve: []BorrowCurvePoint{{0, 0}, {10000, 1000}}, DebtSupplyRaw: 1_000_000_000, DebtBorrowRaw: 100_000_000}
 	if _, ok := leverageSpread(m, 1.5, 100_000_000, true); ok {
 		t.Fatal("non-par benchmark silently assumed parity")

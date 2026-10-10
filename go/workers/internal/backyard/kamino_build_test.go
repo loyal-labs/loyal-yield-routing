@@ -46,6 +46,7 @@ func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCReq
 }
 
 func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
+	t.Parallel()
 	route, err := runtimeRoute(RouteID)
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +72,7 @@ func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
 }
 
 func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		action        Action
@@ -128,6 +130,7 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 }
 
 func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	var err error
 	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
@@ -165,6 +168,7 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 }
 
 func TestKaminoWithdrawWireAcceptsDebtBearingObligationTopology(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	var err error
 	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
@@ -245,6 +249,7 @@ func kaminoResultForMessage(message []byte, key ed25519.PrivateKey) BuildResult 
 }
 
 func TestPersistedKaminoWireRejectsMutatedEnvelope(t *testing.T) {
+	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	signed, err := buildAndSignKaminoPrimeUSDCTransactionForDelegate(
@@ -325,6 +330,7 @@ func TestPersistedKaminoWireRejectsMutatedEnvelope(t *testing.T) {
 }
 
 func TestKaminoPrimeUSDCBuilderFailsClosedOnEveryAuthorityBoundary(t *testing.T) {
+	t.Parallel()
 	request := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
 	request.Accounts[2].Address = bridgeSettings
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {

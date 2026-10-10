@@ -28,6 +28,7 @@ func pairCapacityFixture(t *testing.T) (RuntimeRoute, []ConfirmedAccount, Kamino
 }
 
 func TestPairCapacityConstrainsWholeLoopAllocation(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		mutate func(c, d, o []byte)
@@ -96,6 +97,7 @@ func TestPairCapacityConstrainsWholeLoopAllocation(t *testing.T) {
 }
 
 func TestPairCapacityPreservesUnknownAndClosedBoundaries(t *testing.T) {
+	t.Parallel()
 	route, accounts, position := pairCapacityFixture(t)
 	position.EntryCapacityRaw = 0
 	if got, err := kaminoPairEntryCapacity(position, nil, route); err != nil || got != 0 {
@@ -117,6 +119,7 @@ func TestPairCapacityPreservesUnknownAndClosedBoundaries(t *testing.T) {
 }
 
 func TestNetBorrowHeadroom(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name              string
 		capacity, current int64

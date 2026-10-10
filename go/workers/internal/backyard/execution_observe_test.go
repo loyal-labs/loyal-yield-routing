@@ -10,6 +10,7 @@ import (
 )
 
 func TestStageExpectedEffectsMatchDirectTransferReceipt(t *testing.T) {
+	t.Parallel()
 	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(
 		Decision{Action: StageSquadsToVoltr, AmountRaw: 119}, 0, 0, 1_792_877,
 	)
@@ -47,6 +48,7 @@ func exactAdaptorConfigAccount(t *testing.T) ConfirmedAccount {
 }
 
 func TestExecutionObserverDecodesOnlyExactAdaptorV2Bindings(t *testing.T) {
+	t.Parallel()
 	account := exactAdaptorConfigAccount(t)
 	if _, err := decodeObservedAdaptorConfig(account); err != nil {
 		t.Fatal(err)
@@ -63,6 +65,7 @@ func TestExecutionObserverDecodesOnlyExactAdaptorV2Bindings(t *testing.T) {
 }
 
 func TestBridgeExpectedEffectsAreExactAndConserved(t *testing.T) {
+	t.Parallel()
 	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(
 		Decision{Action: VoltrAllocateToSquads, AmountRaw: 4}, 10, 7, 3,
 	)
@@ -78,6 +81,7 @@ func TestBridgeExpectedEffectsAreExactAndConserved(t *testing.T) {
 }
 
 func TestExpectedAdaptorReturnDataIsExactNAVLittleEndian(t *testing.T) {
+	t.Parallel()
 	expected := expectedAdaptorReturnData(0x0807060504030201)
 	decoded, err := base64.StdEncoding.DecodeString(expected.DataBase64)
 	if err != nil || expected.ProgramID != bridgeAdaptorProgram ||
@@ -102,6 +106,7 @@ func TestExpectedAdaptorReturnDataIsExactNAVLittleEndian(t *testing.T) {
 }
 
 func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
+	t.Parallel()
 	borrowPosition := KaminoPosition{CollateralDepositedRaw: 9, RedeemablePrimeRaw: 8, CollateralDecimals: 6, DebtDecimals: 6}
 	binary.LittleEndian.PutUint64(borrowPosition.CollateralPriceSF[:8], uint64(1)<<60)
 	binary.LittleEndian.PutUint64(borrowPosition.DebtPriceSF[:8], uint64(1)<<60)
@@ -132,6 +137,7 @@ func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
 }
 
 func TestUnwindWithdrawsOnlyConservativeCollateralExcess(t *testing.T) {
+	t.Parallel()
 	position := KaminoPosition{CollateralDepositedRaw: 150, RedeemablePrimeRaw: 150, DebtRaw: 50}
 	binary.LittleEndian.PutUint64(position.CollateralPriceSF[:8], uint64(1)<<60)
 	binary.LittleEndian.PutUint64(position.DebtPriceSF[:8], uint64(1)<<60)

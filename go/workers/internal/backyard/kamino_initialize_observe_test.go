@@ -56,6 +56,7 @@ func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, m
 // Exercise the view's absent-account contract and the native funding gate.
 // Only the exact target obligation may be absent; all prerequisites must exist.
 func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testing.T) {
+	t.Parallel()
 	for _, drift := range []string{"", "target_exists", "vault_funding", "delegate_funding", "metadata_owner", "metadata_referrer", "metadata_vault", "market_emergency", "mint_program", "mint_uninitialized", "rent_changed", "rent_nan"} {
 		t.Run(drift, func(t *testing.T) {
 			r, accounts := initializationPrestateFixture(t)
@@ -101,6 +102,7 @@ func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testin
 }
 
 func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testing.T) {
+	t.Parallel()
 	e, _ := initializationReconcileFixture(t)
 	r := *e.Initialization
 	raw, _ := json.Marshal(e)
@@ -140,6 +142,7 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 
 // A fee read later than the view must not extend the policy/rent read.
 func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
+	t.Parallel()
 	r, accounts := initializationPrestateFixture(t)
 	// Controlled lower rent allows the success path under the finite canary cap.
 	r.RentLamports = 3_472_000

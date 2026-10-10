@@ -29,6 +29,7 @@ func confirmedUnwindIntentCommandRequest(lane string) UnwindIntentCommitRequest 
 // The dry-run default validates the exact intent shape and the installed
 // embedded manifest's lane authority without opening any database connection.
 func TestUnwindIntentCommitDryRunValidatesWithoutDatabase(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result, err := RunUnwindIntentCommit(ctx, "", unwindIntentCommandRequest(SelectedRouteID), false)
@@ -55,6 +56,7 @@ func TestUnwindIntentCommitDryRunValidatesWithoutDatabase(t *testing.T) {
 // Execute without a database configuration is a config hold, after shape
 // validation, and never reaches a lease.
 func TestUnwindIntentCommitExecuteRequiresDatabaseConfig(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := RunUnwindIntentCommit(ctx, "", confirmedUnwindIntentCommandRequest(SelectedRouteID), true)
@@ -65,6 +67,7 @@ func TestUnwindIntentCommitExecuteRequiresDatabaseConfig(t *testing.T) {
 // admitted only through a reviewed binding — the same closure the commit and
 // every other entry point share.
 func TestUnwindIntentCandidateAuthorityMatchesEmbeddedManifest(t *testing.T) {
+	t.Parallel()
 	embedded := embeddedTestManifest(t)
 	reviewed := embeddedTestManifest(t)
 	intent := unwindIntentFromRequest(unwindIntentCommandRequest(autoAUTOPYUSD.Lane), time.Now().UTC())

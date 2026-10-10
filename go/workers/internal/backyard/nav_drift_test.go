@@ -14,6 +14,7 @@ import (
 // unwind legs intentionally outrank the drift gate, so the drift hold is
 // decided on the identical merged snapshot instead.
 func TestUnexplainedNavDriftHoldsWithoutReconciledMutation(t *testing.T) {
+	t.Parallel()
 	drift := monitorSnapshot(t, func(accounts []ConfirmedAccount, s *Snapshot) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 20_000)
 		s.SquadsIdleRaw = 20_000
@@ -47,6 +48,7 @@ func TestUnexplainedNavDriftHoldsWithoutReconciledMutation(t *testing.T) {
 // valuation moved beyond the drift tolerance, while the post-mutation
 // requirement and the aging cadence still report unconditionally.
 func TestReportChurnToleranceSuppressesUnchangedValuation(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		nav        int64

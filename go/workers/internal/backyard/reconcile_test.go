@@ -9,6 +9,7 @@ import (
 )
 
 func TestConfirmedTransactionReconciliationUsesReceiptDeltasAndAdaptorReturn(t *testing.T) {
+	t.Parallel()
 	mint, authority := testPublicKey(11), testPublicKey(44)
 	a, b := testPublicKey(77), testPublicKey(99)
 	returnBytes := make([]byte, 8)
@@ -48,6 +49,7 @@ func TestConfirmedTransactionReconciliationUsesReceiptDeltasAndAdaptorReturn(t *
 }
 
 func TestConfirmedTransactionReconciliationRejectsReturnDataDrift(t *testing.T) {
+	t.Parallel()
 	mint, authority, address := testPublicKey(11), testPublicKey(44), testPublicKey(77)
 	encoded := base64.StdEncoding.EncodeToString(make([]byte, 8))
 	expected := ExpectedEffects{
@@ -67,6 +69,7 @@ func TestConfirmedTransactionReconciliationRejectsReturnDataDrift(t *testing.T) 
 }
 
 func TestConfirmedTransactionReconciliationAcceptsExactRuntimeReturnLog(t *testing.T) {
+	t.Parallel()
 	mint, authority, address := testPublicKey(11), testPublicKey(44), testPublicKey(77)
 	encoded := base64.StdEncoding.EncodeToString(make([]byte, 8))
 	expected := ExpectedEffects{
@@ -95,6 +98,7 @@ func TestConfirmedTransactionReconciliationAcceptsExactRuntimeReturnLog(t *testi
 }
 
 func TestDecodeExpectedEffectsFromOperationEnvelope(t *testing.T) {
+	t.Parallel()
 	mint, authority, address := testPublicKey(11), testPublicKey(44), testPublicKey(77)
 	expected := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{{Address: address, Owner: classicTokenProgram, Mint: mint, Authority: authority}}}
 	encoded, err := json.Marshal(map[string]any{"schema": "loyal-backyard-rwa-operation-evidence/v1", "expectedEffects": expected})
@@ -115,6 +119,7 @@ func TestDecodeExpectedEffectsFromOperationEnvelope(t *testing.T) {
 // transaction's own delta, which stays exact. Regression for the 2026-09-24
 // out_of_band_crank halt (ASK-2304).
 func TestReconciliationChecksEachAccountsTransactionDelta(t *testing.T) {
+	t.Parallel()
 	strategyAuth, strategyATA := bridgeStrategyAuth, bridgeStrategyATA
 	effects := func(idleBefore, idleAfter uint64) ExpectedEffects {
 		return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{

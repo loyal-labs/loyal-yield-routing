@@ -14,6 +14,7 @@ import (
 )
 
 func TestSelectorRecipeReadsBoundsConcurrencyAndChecksEveryError(t *testing.T) {
+	t.Parallel()
 	for fail := 0; fail < 17; fail++ {
 		started, release := make(chan struct{}, 17), make(chan struct{})
 		var active, peak atomic.Int32
@@ -63,6 +64,7 @@ func TestSelectorRecipeReadsBoundsConcurrencyAndChecksEveryError(t *testing.T) {
 }
 
 func TestSelectorRecipeParallelFeesStayBoundToMessagesAndSlots(t *testing.T) {
+	t.Parallel()
 	_, _, allocate := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 1_000_000, 1_000_000, 0, 0)
 	_, _, report := bridgeAdmissionFixture(t, ReportNAV, 0, 0, 0, 1_000_000)
 	inputs := []*phase3BuildInput{

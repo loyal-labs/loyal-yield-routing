@@ -15,6 +15,7 @@ func selectorEntryFixture(now time.Time, lane string, amount int64) SelectorEntr
 }
 
 func TestSelectorEntryExpiryAndCapacityPreserveLifecycle(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	for _, lane := range selectorLanes {
 		entry := selectorEntryFixture(now, lane, 3_000_000)
@@ -127,6 +128,7 @@ func (j *selectorEntryJournal) LoadSelectorEntry(context.Context, string) (*Sele
 	return j.entry, j.entryErr
 }
 func TestSelectorEntryEnrichesPreparationAndRefusesCorruptState(t *testing.T) {
+	t.Parallel()
 	entry := selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 1_000_000)
 	j := &selectorEntryJournal{entry: &entry}
 	state := productionObserveState{routeKey: "fixture", journal: j}
@@ -342,6 +344,7 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 }
 
 func TestSelectorBorrowUsesReviewedAmountAfterQuoteExpiry(t *testing.T) {
+	t.Parallel()
 	entry := selectorEntryFixture(time.Now().Add(-time.Minute), SelectedRouteID, 1_000_000)
 	entry.AllocationOperationID = "funded"
 	s := Snapshot{RouteLane: entry.Lane, HasPosition: true, PositionCollateralRaw: 1_000_000, Slot: 1000}

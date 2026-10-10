@@ -102,6 +102,7 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 }
 
 func TestWithdrawalAdmissionPricesCompleteCrossProtocolReturn(t *testing.T) {
+	t.Parallel()
 	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
 	plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, o, d, evidence)
 	if err != nil {
@@ -124,6 +125,7 @@ func TestWithdrawalAdmissionPricesCompleteCrossProtocolReturn(t *testing.T) {
 }
 
 func TestWithdrawalPricingRejectsUnsafeOrIncompleteReturn(t *testing.T) {
+	t.Parallel()
 	for _, mutate := range []func(*Observation, *KaminoExecutionEvidence){
 		func(o *Observation, _ *KaminoExecutionEvidence) { o.Snapshot.PositionDebtRaw = 1 },
 		func(o *Observation, _ *KaminoExecutionEvidence) { o.Snapshot.DebtIdleRaw = -1 },
@@ -166,6 +168,7 @@ func TestWithdrawalPricingRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 }
 
 func TestWithdrawalReturnContinuesThroughNAVSwapAndBridge(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
 	if _, err := observePhase3WithdrawalAdmission(ctx, rpc, fixtureView(t, rpc), client, manifest, o, d, evidence); err != nil {

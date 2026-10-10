@@ -14,6 +14,7 @@ import (
 // the old quote (~1.11x). B2: no target holds; a 1.5x target borrows through
 // leverage_up sized to the target, and the entry quote is never used.
 func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
+	t.Parallel()
 	m := embeddedTestManifest(t)
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		entry := selectorEntryFixture(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), lane, 1_000_000_000)
@@ -61,6 +62,7 @@ func leverageTestPosition(collateral, debt uint64) KaminoPosition {
 }
 
 func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		at := func(level, target float64) Snapshot {
 			s := leverageSnapshot(level)
@@ -125,6 +127,7 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 // Sizing lands each step on its level; receive+fee never takes the instant
 // LTV above 50%; the loop result stays at or below 45%.
 func TestLeverageUpSizingAndCaps(t *testing.T) {
+	t.Parallel()
 	noFee := func(uint64) (uint64, error) { return 0, nil }
 	// 1x -> 1.5x on $1,000: borrow $500 (debt/equity 0.5).
 	p := leverageTestPosition(1_000_000_000, 0)
@@ -180,6 +183,7 @@ func TestLeverageUpSizingAndCaps(t *testing.T) {
 // The borrow-authority exception is exactly: journaled reason leverage_up,
 // a borrow leg, same AUTO/OnRe lane, no unwind, a stored target above 1x.
 func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	borrow, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 10_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreONycUSDC)
 	if err != nil {
@@ -219,6 +223,7 @@ func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
 // real compiler's wire must pass the persisted-wire gate for AUTO and OnRe,
 // and stay refused for Maple and Prime.
 func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
+	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{61}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	for _, c := range []struct {
@@ -263,6 +268,7 @@ func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
 // The one-release exit covers 1.5x but not 1.75x: that is why 1.75x runs
 // the multi-cycle exit (leverage_exit_pricer.go).
 func TestOneReleaseExitCoversOnlyUpTo1_5x(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		collateral, debt uint64
 		covered          bool

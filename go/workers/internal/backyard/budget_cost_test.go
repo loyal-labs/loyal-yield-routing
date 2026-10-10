@@ -3,6 +3,7 @@ package backyard
 import "testing"
 
 func TestExecutableBridgeDebitsUseSourceAndFullSweep(t *testing.T) {
+	t.Parallel()
 	for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
 		amount := uint64(100_000)
 		if action == ReportNAV {
@@ -31,6 +32,7 @@ func TestExecutableBridgeDebitsUseSourceAndFullSweep(t *testing.T) {
 }
 
 func TestWithdrawalChargesUnderlyingNotReceiptUnits(t *testing.T) {
+	t.Parallel()
 	request := kaminoTestRequest(DeleverPrimeUSDCStep, kaminoLegWithdraw)
 	source, destination := kaminoLegCustodies(kaminoLegWithdraw)
 	effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{

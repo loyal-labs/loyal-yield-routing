@@ -37,6 +37,7 @@ func bridgeTestRequest(action Action, amount uint64) BridgeBuildRequest {
 }
 
 func TestUnsignedBridgeMessageEqualsSignedMessage(t *testing.T) {
+	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{37}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
@@ -60,6 +61,7 @@ func TestUnsignedBridgeMessageEqualsSignedMessage(t *testing.T) {
 }
 
 func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
+	t.Parallel()
 	request := bridgeTestRequest(VoltrAllocateToSquads, 1_000_000)
 	inner, err := bridgeInstruction(request)
 	if err != nil {
@@ -120,6 +122,7 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 }
 
 func TestBridgeTransactionSignsExactLegacyWireAndPersistsOnlyAfterSimulation(t *testing.T) {
+	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	signed, err := buildAndSignBridgeTransactionForDelegate(bridgeTestRequest(ReportNAV, 0), key, delegate)
@@ -181,6 +184,7 @@ func TestBridgeTransactionSignsExactLegacyWireAndPersistsOnlyAfterSimulation(t *
 }
 
 func TestBridgeBuilderRejectsCapitalAndReportMutations(t *testing.T) {
+	t.Parallel()
 	bad := bridgeTestRequest(ReportNAV, 1)
 	if _, err := bridgeInstruction(bad); err == nil {
 		t.Fatal("NAV refresh capital movement accepted")

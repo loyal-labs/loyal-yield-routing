@@ -13,6 +13,7 @@ import (
 )
 
 func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *testing.T) {
+	t.Parallel()
 	m := readyWorkerManifest(t)
 	accounts := append(routeNAVFixture(t, 77), exactReportTicketAccount(t, 4))
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], 0)
@@ -83,6 +84,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 }
 
 func TestSelectorWakeWaitsForActiveTickAndCoalesces(t *testing.T) {
+	t.Parallel()
 	w := Worker{interval: time.Hour, wake: make(chan struct{}, 1)}
 	w.notifySelectorCommit("KEEP")
 	if len(w.wake) != 0 {

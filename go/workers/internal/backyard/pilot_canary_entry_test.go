@@ -25,6 +25,7 @@ func pilotCanaryFixture() SelectorInput {
 	return in
 }
 func TestPilotCanaryUsesRealQuoteWithoutEconomicRecommendation(t *testing.T) {
+	t.Parallel()
 	in := pilotCanaryFixture()
 	economic := SelectOpportunity(in, SelectorState{})
 	if economic.Action != "KEEP" {
@@ -177,6 +178,7 @@ func canaryHoldReason(t *testing.T, err error) string {
 }
 
 func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testing.T) {
+	t.Parallel()
 	in := pilotCanaryFixture()
 	economic := SelectOpportunity(in, SelectorState{})
 
@@ -246,6 +248,7 @@ func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testi
 // allocation, which outlive one 30-second entry (live 2026-09-24). A bound
 // allocation, another request's entry or a still-live entry keeps it consumed.
 func TestPilotCanaryReacceptsOnlyUnallocatedLapsedEntry(t *testing.T) {
+	t.Parallel()
 	in := pilotCanaryFixture()
 	economic := SelectOpportunity(in, SelectorState{})
 	_, receipt, err := selectPilotCanaryEntry(in, economic, nil)

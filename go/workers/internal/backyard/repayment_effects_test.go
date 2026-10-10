@@ -41,6 +41,7 @@ func repaymentEffectsFixture(t *testing.T) (KaminoPrimeUSDCRequest, ExpectedEffe
 }
 
 func TestBoundedKaminoRepaymentReconcilesActualDebitWithoutClaimingPayoff(t *testing.T) {
+	t.Parallel()
 	_, effects, receipt := repaymentEffectsFixture(t)
 	for _, amount := range []uint64{1_000, 1_005, 1_010, 0, 999, 1_011} {
 		receipt.PostTokenBalances[0].Raw = receipt.PreTokenBalances[0].Raw - amount
@@ -83,6 +84,7 @@ func TestBoundedKaminoRepaymentReconcilesActualDebitWithoutClaimingPayoff(t *tes
 }
 
 func TestBoundedKaminoRepaymentReservesWireMaximumAndRejectsWeakenedEffects(t *testing.T) {
+	t.Parallel()
 	request, effects, _ := repaymentEffectsFixture(t)
 	debit, err := MeasureExecutableDebit(request, effects)
 	if err != nil || debit.Raw != 1_010 || debit.Mint != ethenaUSDePYUSD.Kamino.DebtMint {

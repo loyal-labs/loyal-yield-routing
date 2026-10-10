@@ -84,6 +84,7 @@ func autoFixtureLookupTable(t *testing.T, entries []string) LookupTableSnapshot 
 }
 
 func TestAutoOversizedSwapEdgeIsMeasuredAndUsesTheV0EscapeHatch(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	delegate := mustKey(bridgeDelegate)
 	// Measure where the legacy packet limit is crossed across the validator's
@@ -161,6 +162,7 @@ func TestAutoOversizedSwapEdgeIsMeasuredAndUsesTheV0EscapeHatch(t *testing.T) {
 }
 
 func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	route, err := runtimeRoute(autoAUTOPYUSD.Lane)
 	if err != nil {
@@ -245,6 +247,7 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 }
 
 func TestAutoQuoteEvidencePreparesChainLookupTablesForOversizedEdges(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	route, err := runtimeRoute(autoAUTOPYUSD.Lane)
 	if err != nil {
