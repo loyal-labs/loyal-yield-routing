@@ -39,6 +39,16 @@ func TestJobConsumerDeadLettersAndBacklogProgress(t *testing.T) {
 	if outcome, err := app.processNextJob(ctx, "owner"); err != nil || outcome.applied || outcome.deferred || outcome.idle {
 		t.Fatalf("an unsigned account update is a completed Noop: %+v %v", outcome, err)
 	}
+	// The stream projects a policy transaction; the wallet's own update reads
+	// nothing (this application has no chain client) and moves no position.
+	signature := "signature"
+	wallet := NormalizedUpdate{Filters: []string{watch.EarnWallets}, EventKind: "account", AccountPubkey: &vault.Wallet, Slot: 5, Signature: &signature}
+	if _, err := app.store.Enqueue(ctx, app.consumer, "wallet", 5, wallet, []watch.Vault{vault}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := app.processNextJob(ctx, "owner"); err != nil || outcome.applied || outcome.deferred || outcome.idle {
+		t.Fatalf("a signed wallet update is a completed Noop: %+v %v", outcome, err)
+	}
 	vault.Vault = "other-vault"
 	if _, err := app.store.Enqueue(ctx, app.consumer, "broken", 6, json.RawMessage(`"not an event"`), []watch.Vault{vault}, ""); err != nil {
 		t.Fatal(err)

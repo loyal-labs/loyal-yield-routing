@@ -93,7 +93,7 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 	}
 	observed, err := decodeObservation(target, pubkey, account.GetLamports(), account.GetOwner(), account.GetData(), accountUpdate.GetSlot(), laserStreamSource, signature, time.Now().UTC())
 	if err != nil {
-		return h.recheck(ctx, target, accountUpdate.GetSlot(), err)
+		return Outcome{}, err
 	}
 	return h.persist(ctx, observed)
 }
@@ -138,9 +138,7 @@ func (h *Handler) Seed(ctx context.Context) (uint64, error) {
 			}
 			observed, err := decodeObservation(target, target.WalletATA, account.Lamports, account.Owner[:], account.Data, slot, rpcSeedSource, nil, time.Now().UTC())
 			if err != nil {
-				// Existing-but-invalid token accounts have no routeable USDC; settle
-				// the prior balance to zero with the exact RPC evidence.
-				observed = observation{target: target, pubkey: target.WalletATA, lamports: account.Lamports, amount: 0, mint: target.Mint, slot: slot, source: rpcSeedSource, data: account.Data, received: time.Now().UTC()}
+				return 0, err
 			}
 			if _, err := h.persist(ctx, observed); err != nil {
 				return 0, err
@@ -150,53 +148,29 @@ func (h *Handler) Seed(ctx context.Context) (uint64, error) {
 	return minimum, nil
 }
 
+// decodeObservation settles a closed account, or one that is not a USDC token
+// account, to zero on its own bytes: no routeable USDC is at that address.
 func decodeObservation(target watch.ATATarget, pubkey string, lamports uint64, ownerBytes, data []byte, slot uint64, source string, signature *string, received time.Time) (observation, error) {
 	if slot == 0 || slot > math.MaxInt64 {
 		return observation{}, fmt.Errorf("ATA slot is invalid")
 	}
-	owner, err := publicKey(ownerBytes)
-	if err != nil {
+	if _, err := publicKey(ownerBytes); err != nil {
 		return observation{}, fmt.Errorf("decode ATA owner program: %w", err)
 	}
+	observed := observation{target: target, pubkey: pubkey, lamports: lamports, mint: target.Mint, slot: slot, source: source, signature: signature, data: data, received: received}
 	if lamports == 0 {
-		return observation{target: target, pubkey: pubkey, amount: 0, mint: target.Mint, slot: slot, source: source, signature: signature, data: data, received: received}, nil
+		return observed, nil
 	}
 	held, err := spl.DecodeTokenAccount(&chain.Account{Owner: solana.PublicKeyFromBytes(ownerBytes), Lamports: lamports, Data: data})
-	if err != nil || held.Program != solana.TokenProgramID {
-		return observation{}, fmt.Errorf("ATA %s owned by %s is not an SPL Token account: %v", pubkey, owner, err)
-	}
-	mint, tokenOwner := held.Mint.String(), held.Owner.String()
-	if mint != usdcMint {
-		return observation{}, fmt.Errorf("ATA %s mint is %s, expected USDC", pubkey, mint)
+	if err != nil || held.Program != solana.TokenProgramID || held.Mint.String() != usdcMint {
+		return observed, nil
 	}
 	if held.Amount > math.MaxInt64 {
 		return observation{}, fmt.Errorf("ATA amount exceeds PostgreSQL BIGINT")
 	}
-	return observation{target: target, pubkey: pubkey, lamports: lamports, amount: held.Amount, owner: &tokenOwner, mint: mint, slot: slot, source: source, signature: signature, data: data, received: received}, nil
-}
-
-func (h *Handler) recheck(ctx context.Context, target watch.ATATarget, minimumSlot uint64, streamError error) (Outcome, error) {
-	address, err := solana.PublicKeyFromBase58(target.WalletATA)
-	if err != nil {
-		return Outcome{}, err
-	}
-	// minContextSlot makes the node refuse a view older than the stream slot.
-	slot, accounts, err := h.rpc.Accounts(ctx, []solana.PublicKey{address}, rpc.CommitmentConfirmed, minimumSlot)
-	if err != nil {
-		return Outcome{}, fmt.Errorf("ATA stream evidence was invalid (%v) and confirmed recheck failed: %w", streamError, err)
-	}
-	account := accounts[0]
-	if account == nil {
-		evidence := sha256.Sum256([]byte("missing:" + target.WalletATA))
-		return h.persist(ctx, observation{target: target, pubkey: target.WalletATA, amount: 0, mint: target.Mint, slot: slot, source: "rpc_recheck", data: evidence[:], received: time.Now().UTC()})
-	}
-	observed, err := decodeObservation(target, target.WalletATA, account.Lamports, account.Owner[:], account.Data, slot, "rpc_recheck", nil, time.Now().UTC())
-	if err != nil {
-		// A confirmed wrong-owner or wrong-mint account proves there is no
-		// routeable USDC at this address, so settle the target to zero.
-		observed = observation{target: target, pubkey: target.WalletATA, lamports: account.Lamports, amount: 0, mint: target.Mint, slot: slot, source: "rpc_recheck", data: account.Data, received: time.Now().UTC()}
-	}
-	return h.persist(ctx, observed)
+	tokenOwner := held.Owner.String()
+	observed.amount, observed.owner, observed.mint = held.Amount, &tokenOwner, usdcMint
+	return observed, nil
 }
 
 func (h *Handler) persist(ctx context.Context, observed observation) (Outcome, error) {

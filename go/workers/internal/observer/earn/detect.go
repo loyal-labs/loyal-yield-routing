@@ -61,7 +61,6 @@ const (
 	hubSwapTagOffset               = 0
 	hubSwapMaxFeeOffset            = 25
 	subscriptionsTransferRecurring = 5
-	subscriptionsInitAuthority     = 0
 	subscriptionsCreateRecurring   = 2
 	transferDelegatorOffset        = 9
 	transferMintOffset             = 41

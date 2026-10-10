@@ -2,12 +2,14 @@ package earn
 
 import (
 	"context"
+	"encoding/binary"
 	"net/url"
 	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
@@ -217,4 +219,64 @@ func TestEarnCleanupEndsVaultAutodepositWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertVaultWork(t, pool, f, work)
+}
+
+// createRecurringUpdate is a stream transaction in which wallet creates a
+// Subscriptions recurring delegation to vault, outside Squads.
+func createRecurringUpdate(slot uint64, wallet, vault, delegation string, nonce, amount, period uint64) *pb.SubscribeUpdate {
+	keys := [][]byte{solana.MustPublicKeyFromBase58(wallet).Bytes(), solana.NewWallet().PublicKey().Bytes(), solana.MustPublicKeyFromBase58(delegation).Bytes(),
+		solana.MustPublicKeyFromBase58(vault).Bytes(), solana.SystemProgramID.Bytes(), subscriptionsProgram.Bytes()}
+	data := []byte{subscriptionsCreateRecurring}
+	for _, value := range []uint64{nonce, amount, period, 0, 2_000_000_000, 123} {
+		data = binary.LittleEndian.AppendUint64(data, value)
+	}
+	signature := solana.NewWallet().PublicKey().Bytes()
+	return &pb.SubscribeUpdate{UpdateOneof: &pb.SubscribeUpdate_Transaction{Transaction: &pb.SubscribeUpdateTransaction{Slot: slot, Transaction: &pb.SubscribeUpdateTransactionInfo{
+		Signature: append(signature, signature...), Meta: &pb.TransactionStatusMeta{},
+		Transaction: &pb.Transaction{Message: &pb.Message{Header: &pb.MessageHeader{NumRequiredSignatures: 1, NumReadonlyUnsignedAccounts: 3}, AccountKeys: keys,
+			Instructions: []*pb.CompiledInstruction{{ProgramIdIndex: 5, Accounts: []byte{0, 1, 2, 3, 4}, Data: data}}}},
+	}}}}
+}
+
+// The delegation transaction carries no Squads instruction: the stream
+// projects it onto the wallet's Autodeposit target with no chain read, and a
+// delegation of a wallet and vault without a target writes nothing.
+func TestStreamRecurringDelegationProjectsAutodepositTarget(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	f := seedRoutedAutodeposit(t, pool)
+	var wallet string
+	if err := pool.QueryRow(ctx, `SELECT wallet FROM loyal_yield.balance_sweep_targets WHERE id = $1`, f.targetID).Scan(&wallet); err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewApplication(ctx, pool, nil, "mainnet-beta", solana.NewWallet().PublicKey(), nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The shared policy cursor follows these slots; the worker fixture expects
+	// it within 100,000 slots of 449,073,607.
+	const slot = 449_073_500
+	stranger, delegation := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
+	if err := app.HandlePolicyTransaction(ctx, createRecurringUpdate(slot-1, stranger, f.vault, solana.NewWallet().PublicKey().String(), 1, 1, 1)); err != nil {
+		t.Fatalf("a delegation without an Autodeposit target stopped the stream: %v", err)
+	}
+	var untouched bool
+	if err := pool.QueryRow(ctx, `SELECT recurring_delegation IS NULL FROM loyal_yield.balance_sweep_targets WHERE id = $1`, f.targetID).Scan(&untouched); err != nil || !untouched {
+		t.Fatalf("another wallet's delegation attached to the target: %v", err)
+	}
+	if err := app.HandlePolicyTransaction(ctx, createRecurringUpdate(slot, wallet, f.vault, delegation, 7, 5_000_000, 86_400)); err != nil {
+		t.Fatal(err)
+	}
+	var recorded, status string
+	var nonce, amount, period, confirmed, requested int64
+	if err := pool.QueryRow(ctx, `SELECT target.recurring_delegation, target.recurring_delegation_nonce, target.max_amount_per_period,
+            target.period_length_seconds, target.recurring_delegation_confirmed_slot, target.chain_status, request.requested_slot
+        FROM loyal_yield.balance_sweep_targets AS target
+        JOIN loyal_yield.autodeposit_reconciliation_requests AS request ON request.target_id = target.id
+        WHERE target.id = $1`, f.targetID).Scan(&recorded, &nonce, &amount, &period, &confirmed, &status, &requested); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != delegation || nonce != 7 || amount != 5_000_000 || period != 86_400 || confirmed != slot || status != "pending" || requested != slot {
+		t.Fatalf("target delegation=%s nonce=%d amount=%d period=%d slot=%d status=%s requested=%d", recorded, nonce, amount, period, confirmed, status, requested)
+	}
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -79,24 +78,40 @@ func (a *Application) HandlePolicyTransaction(ctx context.Context, update *pb.Su
 	}
 	if decoded != nil {
 		if len(decoded.Instructions) > 0 {
-			if _, err := a.monitor.ProcessPolicyInstructions(ctx, decoded.Signature, decoded.Slot, decoded.Instructions, true); err != nil {
+			if _, err := a.monitor.ProcessPolicyInstructions(ctx, decoded.Signature, decoded.Slot, decoded.Instructions); err != nil {
 				return err
 			}
 		}
 		if _, err := projectEarnMaxMemos(ctx, a.multiply, decoded); err != nil {
 			return err
 		}
+		if err := a.recordRecurringDelegations(ctx, decoded); err != nil {
+			return err
+		}
 	}
 	return a.store.AdvanceProjectionCursor(ctx, PolicyProjectionConsumer, slot)
 }
 
-type targetedOutcome int
-
-const (
-	notReconciled targetedOutcome = iota
-	reconciled
-	noStateChange
-)
+// recordRecurringDelegations projects each Subscriptions create_recurring
+// onto the Autodeposit target of its wallet and vault.
+func (a *Application) recordRecurringDelegations(ctx context.Context, transaction *PolicyTransaction) error {
+	for _, instruction := range transaction.Instructions {
+		accounts, data := instruction.Accounts, instruction.Data
+		if instruction.ProgramID != subscriptionsProgram || len(data) < 41 || data[0] != subscriptionsCreateRecurring || len(accounts) < 4 {
+			continue
+		}
+		if err := a.store.RecordRecurringDelegation(ctx, RecurringDelegationObserved{
+			Wallet: accounts[0].PublicKey.String(), VaultPubkey: accounts[3].PublicKey.String(),
+			SubscriptionAuthority: accounts[1].PublicKey.String(), RecurringDelegation: accounts[2].PublicKey.String(),
+			Nonce: binary.LittleEndian.Uint64(data[1:9]), AmountPerPeriod: binary.LittleEndian.Uint64(data[9:17]),
+			PeriodLengthSeconds: binary.LittleEndian.Uint64(data[17:25]), StartTimestamp: int64(binary.LittleEndian.Uint64(data[25:33])),
+			ExpiryTimestamp: int64(binary.LittleEndian.Uint64(data[33:41])), Signature: transaction.Signature, Slot: transaction.Slot,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func touchesPolicyIdentity(update NormalizedUpdate, vault watch.Vault) bool {
 	policyFilter := false
@@ -116,99 +131,6 @@ func touchesPolicyIdentity(update NormalizedUpdate, vault watch.Vault) bool {
 		}
 	}
 	return false
-}
-
-// reconcileTargetedPolicy is reconcile_targeted_policy_vault_update_outcome.
-func (a *Application) reconcileTargetedPolicy(ctx context.Context, update NormalizedUpdate, vault watch.Vault) (targetedOutcome, error) {
-	if update.EventKind == "refund_cleanup_repair" || !touchesPolicyIdentity(update, vault) || update.Signature == nil {
-		return notReconciled, nil
-	}
-	read, err := readExecution(ctx, a.rpc, *update.Signature)
-	if err != nil {
-		return notReconciled, err
-	}
-	transaction, err := decodeRPCPolicyTransaction(read, *update.Signature, update.Slot)
-	if err != nil {
-		return notReconciled, err
-	}
-	if transaction == nil {
-		return noStateChange, nil
-	}
-	settings, err := solana.PublicKeyFromBase58(vault.Settings)
-	if err != nil {
-		return notReconciled, err
-	}
-	var policyInstructions []squads.Instruction
-	for _, instruction := range transaction.Instructions {
-		if instruction.ProgramID != squads.ProgramID {
-			continue
-		}
-		for _, account := range instruction.Accounts {
-			if account.PublicKey == settings {
-				policyInstructions = append(policyInstructions, instruction)
-				break
-			}
-		}
-	}
-	policyReconciled, intentReconciled, subscriptionObserved := false, false, false
-	if len(policyInstructions) > 0 {
-		if _, err := a.monitor.ProcessPolicyInstructions(ctx, transaction.Signature, transaction.Slot, policyInstructions, false); err != nil {
-			return notReconciled, err
-		}
-		policyReconciled = true
-		vaultKey, err := solana.PublicKeyFromBase58(vault.Vault)
-		if err != nil {
-			return notReconciled, err
-		}
-		for _, memo := range transaction.Memos {
-			if !containsKey(memo.Accounts, vaultKey) {
-				continue
-			}
-			intent, err := parseEarnMaxIntent(memo.Data)
-			if err != nil {
-				return notReconciled, err
-			}
-			if intent == nil {
-				continue
-			}
-			if _, err := a.multiply.ProjectIntent(ctx, intentInput(vault.Settings, vault.VaultIndex, transaction, memo, intent)); err != nil {
-				return notReconciled, err
-			}
-			intentReconciled = true
-		}
-	}
-	for _, instruction := range transaction.Instructions {
-		if instruction.ProgramID != subscriptionsProgram || len(instruction.Data) == 0 {
-			continue
-		}
-		if instruction.Data[0] == subscriptionsInitAuthority {
-			if len(instruction.Accounts) > 0 && instruction.Accounts[0].PublicKey.String() == vault.Wallet {
-				subscriptionObserved = true
-			}
-			continue
-		}
-		if instruction.Data[0] != subscriptionsCreateRecurring || len(instruction.Accounts) < 4 || len(instruction.Data) < 41 {
-			continue
-		}
-		accounts, data := instruction.Accounts, instruction.Data
-		if accounts[0].PublicKey.String() != vault.Wallet || accounts[3].PublicKey.String() != vault.Vault {
-			continue
-		}
-		if err := a.store.RecordRecurringDelegation(ctx, RecurringDelegationObserved{
-			Wallet: accounts[0].PublicKey.String(), VaultPubkey: accounts[3].PublicKey.String(),
-			SubscriptionAuthority: accounts[1].PublicKey.String(), RecurringDelegation: accounts[2].PublicKey.String(),
-			Nonce: binary.LittleEndian.Uint64(data[1:9]), AmountPerPeriod: binary.LittleEndian.Uint64(data[9:17]),
-			PeriodLengthSeconds: binary.LittleEndian.Uint64(data[17:25]), StartTimestamp: int64(binary.LittleEndian.Uint64(data[25:33])),
-			ExpiryTimestamp: int64(binary.LittleEndian.Uint64(data[33:41])), Signature: transaction.Signature, Slot: transaction.Slot,
-		}); err != nil {
-			return notReconciled, err
-		}
-		subscriptionObserved = true
-	}
-	if intentReconciled || policyReconciled || subscriptionObserved {
-		return reconciled, nil
-	}
-	return notReconciled, nil
 }
 
 type deferral int
@@ -239,20 +161,15 @@ type jobOutcome struct {
 }
 
 func (a *Application) decideMutation(ctx context.Context, update NormalizedUpdate, vault watch.Vault) (EarnMutation, error) {
-	outcome := reconciled
-	var err error
 	if vault.EarnMax {
-		err = a.projectEarnMaxAccountUpdate(ctx, update, vault)
-	} else {
-		outcome, err = a.reconcileTargetedPolicy(ctx, update, vault)
+		return EarnMutation{}, a.projectEarnMaxAccountUpdate(ctx, update, vault)
 	}
-	if err != nil {
-		return EarnMutation{}, err
-	}
-	// Policy removal updates catalog state, not position accounting; a legacy
-	// policy deletion still needs the zero-balance and closed-policy proof.
-	needsCleanup := !vault.EarnMax && isPolicyDeletion(update, vault)
-	if outcome == noStateChange || outcome == reconciled && !needsCleanup {
+	// The stream's transaction filter projects every Squads and Subscriptions
+	// instruction, so a policy identity's own update moves no position: cash
+	// flow changes a watched token account or obligation in the same
+	// transaction. A legacy policy deletion still needs the zero-balance and
+	// closed-policy proof.
+	if update.EventKind != "refund_cleanup_repair" && touchesPolicyIdentity(update, vault) && !isPolicyDeletion(update, vault) {
 		return EarnMutation{}, nil
 	}
 	context, err := a.store.LoadContext(ctx, vault.Settings, vault.VaultIndex, vault.Vault)

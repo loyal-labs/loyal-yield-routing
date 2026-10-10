@@ -2,11 +2,9 @@ package earn
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
@@ -130,46 +128,6 @@ func TestOnlyTerminalFailuresDeadLetter(t *testing.T) {
 	}
 	if deferralKind(errors.New("route policy missing")) != deferFailure {
 		t.Fatal("a terminal error was not classified as a failure")
-	}
-}
-
-func TestRPCPolicyTransactionDecodesSquadsInstructions(t *testing.T) {
-	raw, err := os.ReadFile("../../../testdata/earn/squads-policy-create.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	signature := "5SyQHcNK5xFLgKFQUmibNDrDNarXz7FCoJpjgvwjmb2ogPDUiWxQyWXKnziBdp92Rbc69JmMNY9YZsPeWbs7MyG9"
-	read, err := readExecution(context.Background(), confirmedTransactionServer(t, json.RawMessage(raw)), signature)
-	if err != nil {
-		t.Fatal(err)
-	}
-	transaction, err := decodeRPCPolicyTransaction(read, signature, 448_495_297)
-	if err != nil || transaction == nil {
-		t.Fatal(err)
-	}
-	settings, wallet := solana.MustPublicKeyFromBase58("4PQiGQn4AkkxPP4agjkbqwSDtnmB3wsHUcWmoGKEXDZJ"), solana.MustPublicKeyFromBase58("FtCYES2CLXxKpVGxqEATmkBYg7RDMGz4zjMiBkFUszNU")
-	if len(transaction.Signers) != 1 || transaction.Signers[0] != wallet {
-		t.Fatalf("signers = %v", transaction.Signers)
-	}
-	var policyInstructions []squads.Instruction
-	for _, instruction := range transaction.Instructions {
-		if instruction.ProgramID == squads.ProgramID {
-			policyInstructions = append(policyInstructions, instruction)
-		}
-	}
-	if len(policyInstructions) == 0 {
-		t.Fatal("outer Squads instruction was dropped")
-	}
-	foundSettings, foundWallet := false, false
-	for _, account := range policyInstructions[0].Accounts {
-		foundSettings = foundSettings || account.PublicKey == settings && account.IsWritable && !account.IsSigner
-		foundWallet = foundWallet || account.PublicKey == wallet && account.IsSigner
-	}
-	if !foundSettings || !foundWallet {
-		t.Fatal("settings must be writable and the wallet must sign")
-	}
-	if _, err := decodeRPCPolicyTransaction(read, signature, 448_495_298); err == nil {
-		t.Fatal("slot drift was accepted")
 	}
 }
 

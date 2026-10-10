@@ -781,7 +781,10 @@ func (s *Store) RecordRecurringDelegation(ctx context.Context, input RecurringDe
               AND chain_status <> 'closed'
             FOR UPDATE`, input.Wallet, input.VaultPubkey).Scan(&targetID, &currentSlot)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errors.New("Autodeposit policy target is not indexed yet; retry the durable event")
+			// The stream projects in chain order and the app confirms the
+			// Autodeposit policy before it builds the delegation, so a wallet
+			// and vault without a target is not an Autodeposit delegation.
+			return nil
 		}
 		if err != nil {
 			return err

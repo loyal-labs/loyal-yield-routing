@@ -3,6 +3,7 @@ package subscription
 import (
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -45,8 +46,8 @@ func TestBuildUsesOneCombinedConfirmedRequest(t *testing.T) {
 			t.Fatalf("%s must require transaction signatures, got %v", label, value)
 		}
 	}
-	if request.Transactions[EarnMaxPolicyTransactions].AccountInclude[0] != squads.ProgramID.String() {
-		t.Fatal("Earn MAX policy filter does not target the Squads smart-account program")
+	if include := request.Transactions[EarnMaxPolicyTransactions].AccountInclude; len(include) != 2 || include[0] != squads.ProgramID.String() || include[1] != autodeposit.SubscriptionsProgramID {
+		t.Fatalf("policy transaction filter = %v, want the Squads and Subscriptions programs", include)
 	}
 }
 
