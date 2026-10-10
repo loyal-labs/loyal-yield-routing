@@ -1,5 +1,5 @@
 GO ?= go
-.PHONY: fmt vet test race build verify release
+.PHONY: fmt vet test race build verify verify-db release
 fmt:
 	gofmt -w cmd internal
 vet:
@@ -12,6 +12,9 @@ build:
 	$(GO) build ./cmd/loyal-observer ./cmd/loyal-engine ./cmd/loyal-evidence ./cmd/loyal-migrate
 verify:
 	../../scripts/verify-workers-v2.sh
+# verify against a throwaway local Postgres with the CI fixture databases.
+verify-db:
+	../../scripts/verify-local-db.sh
 # Static Linux binaries for deploy/hetzner. The release identity is the
 # commit, stamped by the linker; there is no version environment variable.
 GOARCH ?= amd64

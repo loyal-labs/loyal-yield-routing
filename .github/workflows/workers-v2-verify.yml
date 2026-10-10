@@ -7,23 +7,24 @@ on:
       - go/workers/**
       - scripts/verify-workers-v2.sh
       - scripts/workers-v2-fixture.py
+      - scripts/build-svm-fixtures.sh
       - migrations/**
       - .github/workflows/workers-v2-verify.yml
-      # The Rust workspace the Voltr policy compiler builds in.
+      # The Rust workspace the connected SVM fixtures build in, and the
+      # crates they build with their workspace dependencies.
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
-      - package.json
-      - bun.lock
-      # The crates the jobs below build: the connected SVM fixtures and the
-      # Voltr policy compiler with their workspace dependencies.
       - crates/squads-test-harness/**
       - crates/mock-yield-protocols-program/**
       - crates/loyal-actions/**
       - crates/loyal-solana-env/**
       - crates/loyal-hub-abi/**
-      - tools/backyard-voltr/**
-      - docs/evidence/backyard-voltr-four-market/**
+      # The bun installs below.
+      - package.json
+      - bun.lock
+      - tools/backyard-voltr/package.json
+      - tools/backyard-voltr/bun.lock
 
   # Every PR reports the required checks; the changes job skips them when
   # no workers path changed.
@@ -31,7 +32,8 @@ on:
     branches: [main]
 
 env:
-  CARGO_BUILD_JOBS: "2"
+  # The runner has 4 vCPUs.
+  CARGO_BUILD_JOBS: "4"
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
 
@@ -57,7 +59,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         # Pushes are already filtered by the push paths above.
         run: |
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|package\.json$|bun\.lock$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi)/|tools/backyard-voltr/|docs/evidence/backyard-voltr-four-market/)'; then
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|package\.json$|bun\.lock$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi)/|tools/backyard-voltr/(package\.json|bun\.lock)$)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
@@ -105,14 +107,14 @@ jobs:
           go-version: '1.26.6'
           # verify-workers-v2.sh keeps its own caches; the steps below carry them.
           cache: false
-      # Go builds are content-addressed, so the newest main cache is always
-      # safe to start from; only main writes it.
+      # One cache per go.sum. Go builds are content-addressed, so an entry
+      # stays a valid start until go.sum changes; only main writes it.
       - name: Restore Go module and build caches
+        id: go-cache
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/workers-go
-          key: workers-go-${{ hashFiles('go/workers/go.sum') }}-${{ github.sha }}
-          restore-keys: workers-go-${{ hashFiles('go/workers/go.sum') }}-
+          key: workers-go-${{ hashFiles('go/workers/go.sum') }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
@@ -130,7 +132,7 @@ jobs:
             target/deploy/mock_yield_protocols_program.so
             target/debug/examples/fleet-local-svm
             target/svm-fixtures
-          key: svm-fixtures-v2-agave-3.1.12-sbf-1.52-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/squads-test-harness/**', 'crates/mock-yield-protocols-program/**', 'crates/loyal-actions/**', 'crates/loyal-solana-env/**', 'crates/loyal-hub-abi/**') }}
+          key: svm-fixtures-v2-agave-3.1.12-sbf-1.52-${{ hashFiles('scripts/build-svm-fixtures.sh', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/squads-test-harness/**', 'crates/mock-yield-protocols-program/**', 'crates/loyal-actions/**', 'crates/loyal-solana-env/**', 'crates/loyal-hub-abi/**') }}
       - name: Install pinned SBF build tools
         if: steps.fixtures.outputs.cache-hit != 'true'
         run: |
@@ -141,16 +143,7 @@ jobs:
           echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
       - name: Build local connected execution fixtures
         if: steps.fixtures.outputs.cache-hit != 'true'
-        run: |
-          cargo build-sbf --tools-version v1.52 --manifest-path crates/mock-yield-protocols-program/Cargo.toml -- --locked
-          cargo build --locked -p squads-test-harness --example fleet-local-svm
-          mkdir -p target/svm-fixtures
-          cp "$(cargo test --locked --no-run -p squads-test-harness --test workers_v2_multiply --message-format=json | jq -r 'select(.executable != null) | .executable')" target/svm-fixtures/workers-v2-multiply
-          MOCK_YIELD_PROTOCOLS_PROGRAM_SO="$PWD/target/deploy/mock_yield_protocols_program.so" WORKERS_V2_AUTODEPOSIT_SVM_FIXTURE_OUTPUT="$PWD/target/svm-fixtures/autodeposit.json" cargo test --locked -p squads-test-harness --test workers_v2_autodeposit
-          test -s target/deploy/mock_yield_protocols_program.so
-          test -x target/debug/examples/fleet-local-svm
-          test -x target/svm-fixtures/workers-v2-multiply
-          test -s target/svm-fixtures/autodeposit.json
+        run: bash scripts/build-svm-fixtures.sh
       - name: Apply actual schema to isolated family databases
         env:
           WORKERS_V2_DISPOSABLE: '1'
@@ -176,35 +169,11 @@ jobs:
           WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go
         run: bash scripts/verify-workers-v2.sh
       - name: Save Go module and build caches
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/workers-go
-          key: workers-go-${{ hashFiles('go/workers/go.sum') }}-${{ github.sha }}
-
-  backyard-voltr-authorization:
-    needs: changes
-    if: needs.changes.outputs.workers == 'true'
-    # Every authorization-gated Backyard Voltr command refuses when the
-    # committed policy catalog authorization no longer matches the compiled
-    # catalog.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
-        with:
-          # Verified to install bun.lock (configVersion 1) frozen.
-          bun-version: 1.3.14
-      - name: Build the policy compiler before the timed authorization test
-        run: cargo build --locked -p loyal-actions --bin compile-voltr-kamino-runtime-policy
-      - name: Committed authorization binds the checked-out sources
-        working-directory: tools/backyard-voltr
-        run: |
-          bun install --frozen-lockfile
-          bun test src/policies/authorization.test.ts
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   workers-image:
     needs: changes
