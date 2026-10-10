@@ -12,7 +12,8 @@ import (
 )
 
 // Simulation is one transaction as the cluster ran it in simulation. Err is
-// the transaction's error, nil when it succeeded.
+// the transaction's error, nil when it succeeded; a failed transaction moved
+// nothing, so it has no watched balances.
 type Simulation struct {
 	Slot, Units uint64
 	Err         any
@@ -54,15 +55,7 @@ func Simulate(ctx context.Context, c *chain.Client, payer solana.PublicKey, ixs 
 		MinContextSlot: &slot, Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: watch}})
 	var failed *chain.SimulationError
 	if errors.As(err, &failed) {
-		out := Simulation{Slot: failed.Slot, Err: failed.Err, Logs: failed.Logs}
-		for i, key := range watch {
-			amount, err := tokenAmount(before[i])
-			if err != nil {
-				return Simulation{}, err
-			}
-			out.Watched = append(out.Watched, Watched{Account: key, Before: amount, After: amount})
-		}
-		return out, nil
+		return Simulation{Slot: failed.Slot, Err: failed.Err, Logs: failed.Logs}, nil
 	}
 	if err != nil {
 		return Simulation{}, err
