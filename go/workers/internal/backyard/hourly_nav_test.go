@@ -57,7 +57,6 @@ func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
 	if !ok || gain < -300_000 || gain >= 0 {
 		t.Fatalf("rounding budget=%f known=%t", -gain, ok)
 	}
-	in.Snapshot.PilotActive = true
 	in.Quotes[0].Unlevered, in.Quotes[0].BorrowReceiveRaw = true, 0
 	in.Quotes[0].CostRaw = 100_000
 	in.Markets[0].NativeAPY = .10
@@ -91,7 +90,7 @@ func TestHourlyFeeComparisonDoesNotExemptKEEP(t *testing.T) {
 	floor := new(big.Int).Quo(new(big.Int).Lsh(big.NewInt(wealth), 48), big.NewInt(supply))
 	in := coherentFeeSelectorFixture(t, wealth, supply, floor)
 	s := &in.Snapshot
-	s.PilotActive, s.HasPosition, s.LeverageTargetLevel = true, true, 1
+	s.HasPosition, s.LeverageTargetLevel = true, 1
 	s.LiquidationThresholdBPS = 8000
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = wealth, wealth
 	s.VoltrIdleRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.JournalArmedNAVRaw = 0, wealth, wealth, wealth

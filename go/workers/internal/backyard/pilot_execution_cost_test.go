@@ -115,18 +115,12 @@ func TestPilotMeasuredAdmissionPersistsCostAndRejectsChangedBuildAndSend(t *test
 	key := fmt.Sprintf("pilot-cost-%d", time.Now().UnixNano())
 	id := key + "-op"
 	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
-	flatJSON, _ := json.Marshal(flat)
-	previous, _ := json.Marshal(prior)
 	authority := pilotTestAuthority(prior)
-	authority.Generation = 2
-	authority.FinalizedSlot = flat.Slot
-	authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 	budget, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, _ := json.Marshal(map[string]any{"generation": 2, "selectorEntry": selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 10_000_000), "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{authority, previous, flat}})
+	state, _ := json.Marshal(map[string]any{"generation": 2, "selectorEntry": selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 10_000_000), "phase3": budget})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
 		t.Fatal(err)
 	}

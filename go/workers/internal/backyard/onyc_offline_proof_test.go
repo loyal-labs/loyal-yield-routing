@@ -189,7 +189,7 @@ func TestExportONycOfflineProof(t *testing.T) {
 		}
 		position := KaminoPosition{Slot: in.Slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, ObligationPresent: true, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, CollateralDepositedRaw: obligation.collateralDepositedRaw, RedeemablePrimeRaw: underlying, DebtRaw: owed, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF}
 		result["position"] = position
-		snapshot := Snapshot{RouteLane: route.Lane, PilotActive: true, HasPosition: obligation.hasPosition, PositionCollateralRaw: int64(obligation.collateralDepositedRaw), PositionDebtRaw: int64(owed), PositionCollateralValueRaw: int64(nav.PositionCollateralValue), PositionDebtValueRaw: int64(nav.PositionDebtValue), CollateralIdleRaw: int64(nav.Custodies.SquadsPRIMEraw), CollateralIdleValueRaw: int64(nav.PrimeIdleValueRaw), SquadsIdleRaw: int64(nav.Custodies.SquadsUSDCraw), LeverageTargetLevel: 1.75}
+		snapshot := Snapshot{RouteLane: route.Lane, HasPosition: obligation.hasPosition, PositionCollateralRaw: int64(obligation.collateralDepositedRaw), PositionDebtRaw: int64(owed), PositionCollateralValueRaw: int64(nav.PositionCollateralValue), PositionDebtValueRaw: int64(nav.PositionDebtValue), CollateralIdleRaw: int64(nav.Custodies.SquadsPRIMEraw), CollateralIdleValueRaw: int64(nav.PrimeIdleValueRaw), SquadsIdleRaw: int64(nav.Custodies.SquadsUSDCraw), LeverageTargetLevel: 1.75}
 		if in.PartialTarget != nil {
 			snapshot.PartialWithdrawalOperationID = "offline-in-memory-not-durable"
 			snapshot.PartialWithdrawalLTVBPS = *in.PartialTarget

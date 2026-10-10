@@ -20,7 +20,6 @@ func TestSelectorEntryExpiryAndCapacityPreserveLifecycle(t *testing.T) {
 		entry := selectorEntryFixture(now, lane, 3_000_000)
 		original := base()
 		original.Slot = 42
-		original.PilotActive = true
 		original.RouteLane, original.StrategyKey = lane, lane
 		original.VoltrIdleRaw = 100_000_000
 		original.CapacityRaw, original.PolicyLimitRaw, original.MaxTargetLTVEntryRaw = 10_000_000, 10_000_000, 10_000_000
@@ -121,7 +120,7 @@ func TestSelectorEntryExpiryAndCapacityPreserveLifecycle(t *testing.T) {
 }
 
 type selectorEntryJournal struct {
-	pilotPlanningJournal
+	stubProductionJournal
 	entry    *SelectorEntry
 	entryErr error
 }
@@ -131,7 +130,7 @@ func (j *selectorEntryJournal) LoadSelectorEntry(context.Context, string) (*Sele
 }
 func TestSelectorEntryEnrichesPreparationAndRefusesCorruptState(t *testing.T) {
 	entry := selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 1_000_000)
-	j := &selectorEntryJournal{pilotPlanningJournal: pilotPlanningJournal{active: true}, entry: &entry}
+	j := &selectorEntryJournal{entry: &entry}
 	state := productionObserveState{routeKey: "fixture", journal: j}
 	o := Observation{Snapshot: Snapshot{RouteLane: SelectedRouteID, Slot: 42}}
 	if err := state.mergeJournal(context.Background(), &o); err != nil || o.Snapshot.SelectorEntryEquityRaw != entry.EquityRaw {
@@ -153,18 +152,13 @@ func TestSelectorEvaluationDurabilityFencesAndBudgetContinuity(t *testing.T) {
 	key := fmt.Sprintf("selector-entry-%d", time.Now().UnixNano())
 	prior := emptyTestBudget()
 	prior.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000}
-	previous, _ := json.Marshal(prior)
-	flat := pilotFlatFixture(t)
-	flatJSON, _ := json.Marshal(flat)
 	a := pilotTestAuthority(prior)
-	a.Generation, a.FinalizedSlot, a.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(flatJSON)
 	budget, err := activatePilotBudget(prior, a)
 	if err != nil {
 		t.Fatal(err)
 	}
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	in.Snapshot.PilotActive = true
 	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000
 	// A 100 USDC fixture sits under the reviewed ceilings, so the durable entry
 	// pins this explicitly bounded 10 USDC tranche instead of the cap constant;
@@ -181,7 +175,7 @@ func TestSelectorEvaluationDurabilityFencesAndBudgetContinuity(t *testing.T) {
 	in.Quotes = append([]MoveQuote{other}, in.Quotes...)
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{in.Markets[0].Lane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
-	state := map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
+	state := map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
 	raw, _ := json.Marshal(state)
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
@@ -366,7 +360,7 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 func TestSelectorBorrowUsesReviewedAmountAfterQuoteExpiry(t *testing.T) {
 	entry := selectorEntryFixture(time.Now().Add(-time.Minute), SelectedRouteID, 1_000_000)
 	entry.AllocationOperationID = "funded"
-	s := Snapshot{PilotActive: true, RouteLane: entry.Lane, HasPosition: true, PositionCollateralRaw: 1_000_000, Slot: 1000}
+	s := Snapshot{RouteLane: entry.Lane, HasPosition: true, PositionCollateralRaw: 1_000_000, Slot: 1000}
 	if err := applySelectorEntry(&s, &entry, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -384,10 +378,6 @@ func TestSelectorBorrowUsesReviewedAmountAfterQuoteExpiry(t *testing.T) {
 		change(&changed)
 		_, err = selectorBorrowAmount(changed, 600_000)
 		assertBudgetHold(t, err, "selector_entry_borrow_unavailable")
-	}
-	s.PilotActive = false
-	if got, err = selectorBorrowAmount(s, 600_000); err != nil || got != 600_000 {
-		t.Fatal("historical execution changed", got, err)
 	}
 }
 
@@ -465,11 +455,7 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	defer db.Close()
 	key := fmt.Sprintf("selector-switch-%d", time.Now().UnixNano())
 	prior := emptyTestBudget()
-	previous, _ := json.Marshal(prior)
-	flat := pilotFlatFixture(t)
-	flatJSON, _ := json.Marshal(flat)
 	a := pilotTestAuthority(prior)
-	a.Generation, a.FinalizedSlot, a.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(flatJSON)
 	budget, err := activatePilotBudget(prior, a)
 	if err != nil {
 		t.Fatal(err)
@@ -480,7 +466,7 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
 	s := &in.Snapshot
-	s.PilotActive, s.HasPosition = true, true
+	s.HasPosition = true
 	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 90_000_000, 100_000_000
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 15_000_000, 15_000_000
 	s.PositionDebtRaw, s.PositionDebtValueRaw = 5_000_000, 5_000_000
@@ -498,7 +484,7 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	history := SelectorResult{State: SelectorState{SourceLane: s.RouteLane, Advantages: map[string]AdvantageWindow{in.Markets[0].Lane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
 	entry := selectorEntryFixture(in.Now, s.RouteLane, 10_000_000)
-	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"result": history}, "selectorEntry": entry})
+	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"result": history}, "selectorEntry": entry})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}
@@ -643,11 +629,7 @@ func TestSelectorSameLaneSwitchReusesExitReservationAndEntersOnlyAfterFlat(t *te
 	defer db.Close()
 	key := fmt.Sprintf("selector-same-lane-%d", time.Now().UnixNano())
 	prior := emptyTestBudget()
-	previous, _ := json.Marshal(prior)
-	flat := pilotFlatFixture(t)
-	flatJSON, _ := json.Marshal(flat)
 	a := pilotTestAuthority(prior)
-	a.Generation, a.FinalizedSlot, a.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(flatJSON)
 	budget, err := activatePilotBudget(prior, a)
 	if err != nil {
 		t.Fatal(err)
@@ -663,7 +645,7 @@ func TestSelectorSameLaneSwitchReusesExitReservationAndEntersOnlyAfterFlat(t *te
 	q.SourceExit = &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: 5_001_000, GrossMicros: 10_000_000}
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	entry := selectorEntryFixture(in.Now, s.RouteLane, 10_000_000)
-	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{a, previous, flat}, "selector": map[string]any{"result": SelectorResult{State: sameLaneSelectorHistory(in)}}, "selectorEntry": entry})
+	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"result": SelectorResult{State: sameLaneSelectorHistory(in)}}, "selectorEntry": entry})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}

@@ -26,7 +26,7 @@ func priceLeverageExitCycles(ctx context.Context, rpc *chain.Client, client *jup
 	var first *KaminoPayoffBound
 	for {
 		steps := min(int64(7+3*(cycles+1)), kaminoPayoffMaxWindowSteps)
-		limit, err := m.decodeKaminoRepaymentReleaseForMode(accounts, route, slot, steps, s.PilotActive)
+		limit, err := m.decodeKaminoRepaymentReleaseForMode(accounts, route, slot, steps, true)
 		if err != nil {
 			return nil, nil, 0, 0, nil, err
 		}
@@ -212,7 +212,7 @@ func putLittleFraction(dst []byte, value *big.Int) error {
 func observePhase3ExitCycleSwapAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, e JupiterExecutionEvidence) (phase3BridgeAdmission, error) {
 	s, r := o.Snapshot, e.Request
 	cash := debtCashRaw(s)
-	if rpc == nil || client == nil || !s.Fresh || !s.PilotActive || !leverageLane(s.RouteLane) || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission ||
+	if rpc == nil || client == nil || !s.Fresh || !leverageLane(s.RouteLane) || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission ||
 		d.Action != SwapCollateralToDebtStep || d.Reason != exitCycleSwapReason || r.Action != d.Action || r.RouteLane != s.RouteLane || s.RouteLane != d.StrategyKey ||
 		r.FullPayoffFunding || r.PositionReturnReserved || r.EntryReturnReserved || s.CollateralIdleRaw <= 0 || d.AmountRaw != s.CollateralIdleRaw || r.AmountRaw != uint64(d.AmountRaw) ||
 		!s.HasPosition || s.PositionDebtRaw <= 1 || cash < 0 || !decisionsEqual(m.DecideOnManifest(s), d) || len(e.ExpectedEffects.Accounts) != 2 {
@@ -339,7 +339,7 @@ func leverageExitNeedsCycles(ctx context.Context, rpc *chain.Client, client *jup
 		return false, budgetHold("leverage_exit_clock_unavailable")
 	}
 	slot := int64(binary.LittleEndian.Uint64(clock.Data[:8]))
-	limit, err := m.decodeKaminoRepaymentReleaseForMode(accounts, route, slot, 7, s.PilotActive)
+	limit, err := m.decodeKaminoRepaymentReleaseForMode(accounts, route, slot, 7, true)
 	if err != nil {
 		return false, err
 	}

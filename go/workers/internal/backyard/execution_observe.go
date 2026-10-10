@@ -271,7 +271,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		// Release and full-payoff sizing read raw reserves (see the helpers).
 		releaseAccounts := accounts
 		if repaymentRelease {
-			bound, raw, err := manifest.observeRawRepaymentRelease(ctx, rpc, route, observation.Snapshot.Slot, observation.Snapshot.PilotActive)
+			bound, raw, err := manifest.observeRawRepaymentRelease(ctx, rpc, route, observation.Snapshot.Slot)
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
@@ -306,7 +306,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 				}
 				legDecision.AmountRaw = wire
 			}
-			leg, wireAmount, effectAmount, err = selectKaminoLeg(observation.Snapshot.PilotActive, legDecision, position)
+			leg, wireAmount, effectAmount, err = selectKaminoLeg(legDecision, position)
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
@@ -346,7 +346,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		request.ObligationReserves = []string{}
 		request.FullPayoff = fullPayoff
 		request.RepaymentRelease = repaymentRelease
-		request.PilotRepaymentRelease = repaymentRelease && observation.Snapshot.PilotActive
+		request.PilotRepaymentRelease = repaymentRelease
 		if repaymentRelease {
 			request.ReleaseDebtIdleRaw = uint64(debtCashRaw(observation.Snapshot))
 		}
@@ -385,7 +385,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 	return Observation{}, KaminoExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("confirmed bridge and Kamino construction reads did not align"))
 }
 
-func selectKaminoLeg(pilotActive bool, decision Decision, position KaminoPosition) (kaminoPrimeUSDCLeg, uint64, uint64, error) {
+func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSDCLeg, uint64, uint64, error) {
 	action := decision.Action
 	if action == OpenRouteStep {
 		action = OpenPrimeUSDCStep
@@ -436,10 +436,6 @@ func selectKaminoLeg(pilotActive bool, decision Decision, position KaminoPositio
 			if err != nil {
 				return 0, 0, 0, err
 			}
-			receiptRaw, primeRaw, err = capSelectedWithdrawalEffect(pilotActive, decision, position, receiptRaw, primeRaw)
-			if err != nil {
-				return 0, 0, 0, err
-			}
 			return kaminoLegWithdraw, receiptRaw, primeRaw, nil
 		}
 		if position.DebtRaw > 0 {
@@ -462,34 +458,10 @@ func selectKaminoLeg(pilotActive bool, decision Decision, position KaminoPositio
 			if !primeRaw.IsUint64() || primeRaw.Sign() <= 0 {
 				return 0, 0, 0, fmt.Errorf("partial collateral withdrawal rounds to zero")
 			}
-			cappedReceipt, cappedPrime, err := capSelectedWithdrawalEffect(pilotActive, decision, position, receiptRaw, primeRaw.Uint64())
-			if err != nil {
-				return 0, 0, 0, err
-			}
-			return kaminoLegWithdraw, cappedReceipt, cappedPrime, nil
+			return kaminoLegWithdraw, receiptRaw, primeRaw.Uint64(), nil
 		}
 	}
 	return 0, 0, 0, fmt.Errorf("PRIME/USDC position is not in a supported next-leg state")
-}
-
-func capSelectedWithdrawalEffect(pilotActive bool, decision Decision, position KaminoPosition, receiptRaw, collateralRaw uint64) (uint64, uint64, error) {
-	if pilotActive || decision.StrategyKey != SelectedRouteID || collateralRaw <= uint64(Phase2TransactionCapRaw) {
-		return receiptRaw, collateralRaw, nil
-	}
-	if position.CollateralDepositedRaw == 0 || position.RedeemablePrimeRaw == 0 {
-		return 0, 0, fmt.Errorf("selected withdrawal cap has no collateral exchange rate")
-	}
-	receipt := new(big.Int).Mul(new(big.Int).SetUint64(uint64(Phase2TransactionCapRaw)), new(big.Int).SetUint64(position.CollateralDepositedRaw))
-	receipt.Quo(receipt, new(big.Int).SetUint64(position.RedeemablePrimeRaw))
-	if !receipt.IsUint64() || receipt.Sign() <= 0 || receipt.Uint64() > receiptRaw {
-		return 0, 0, fmt.Errorf("selected withdrawal cap produced an invalid receipt amount")
-	}
-	collateral := new(big.Int).Mul(receipt, new(big.Int).SetUint64(position.RedeemablePrimeRaw))
-	collateral.Quo(collateral, new(big.Int).SetUint64(position.CollateralDepositedRaw))
-	if !collateral.IsUint64() || collateral.Sign() <= 0 || collateral.Uint64() > uint64(Phase2TransactionCapRaw) {
-		return 0, 0, fmt.Errorf("selected withdrawal effect exceeds the transaction cap")
-	}
-	return receipt.Uint64(), collateral.Uint64(), nil
 }
 
 const unwindLTVBPS uint64 = 4_500

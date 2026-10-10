@@ -19,7 +19,7 @@ func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
 		entry := selectorEntryFixture(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), lane, 1_000_000_000)
 		entry.Quote.BorrowReceiveRaw, entry.AllocationOperationID = 189_873_681, "alloc-0926"
 		s := base()
-		s.Slot, s.PilotActive = 451_000_000, true
+		s.Slot = 451_000_000
 		s.RouteLane, s.StrategyKey = lane, lane
 		s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 1_676_000_000, 1_676_000_000
 		if lane == onreONycUSDC {
@@ -45,7 +45,7 @@ func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
 		}
 		// Sizing: 50% of collateral value (the target), not the entry quote.
 		position := leverageTestPosition(1_676_000_000, 0)
-		leg, wire, _, err := selectKaminoLeg(true, got, position)
+		leg, wire, _, err := selectKaminoLeg(got, position)
 		if err != nil || leg != kaminoLegBorrow || wire != 837_162_000 || wire == entry.Quote.BorrowReceiveRaw {
 			t.Fatalf("%s: leverage_up sized %d (leg %d, err %v), want 837162000", lane, wire, leg, err)
 		}

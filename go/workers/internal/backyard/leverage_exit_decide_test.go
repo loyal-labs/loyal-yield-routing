@@ -121,7 +121,7 @@ func TestLiveShaped15xExitsNeverCycle(t *testing.T) {
 		"down to 1x": func(s *Snapshot) { s.LeverageTargetLevel = 1 },
 	} {
 		s := base()
-		s.RouteLane, s.StrategyKey, s.PilotActive = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true
+		s.RouteLane, s.StrategyKey = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane
 		s.HasPosition, s.LeverageTargetLevel = true, 1.5
 		s.PositionCollateralRaw, s.PositionCollateralValueRaw = 2_463_480_000, 2_514_967_000
 		s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 837_770_000, 837_770_000, 837_900_000

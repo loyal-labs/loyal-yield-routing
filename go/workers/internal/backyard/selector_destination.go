@@ -362,7 +362,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
-	if rpc == nil || client == nil || !selectorDestinationLaneAuthorized(m, lane) || equity == 0 || equity > uint64(PilotWorkingTrancheCapRaw) || sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
+	if rpc == nil || client == nil || !selectorDestinationLaneAuthorized(m, lane) || equity == 0 || equity > strategyTwoBridgeLegCapRaw || sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return out, budgetHold("invalid_selector_destination")
 	}
 	route, _ := runtimeRoute(lane)

@@ -347,7 +347,7 @@ func (b Phase3Budget) validatePilotReleaseAuthority(request any) error {
 // simulation with one fresh batch before signing and sending. Drift requires
 // a newly quoted complete plan, even when it might be economically favorable.
 func validatePilotProjectedReleaseRisk(ctx context.Context, rpc *chain.Client, plan *phase3BridgeAdmission, slot int64) (int64, error) {
-	if plan == nil || !plan.Snapshot.PilotActive || (plan.FundingRelease == nil && plan.BorrowRelease == nil && plan.RepaymentProjection == nil) {
+	if plan == nil || (plan.FundingRelease == nil && plan.BorrowRelease == nil && plan.RepaymentProjection == nil) {
 		return slot, nil
 	}
 	projection := plan.DepositProjection
@@ -578,16 +578,16 @@ func validateProjectedRiskSettings(projection, fresh phase3KaminoProjection, rou
 // release held with repayment_release_exceeds_safe_size). Sizing one window
 // longer than the five-step re-check leaves headroom for the slots between
 // build and send.
-func (m RouteManifest) observeRawRepaymentRelease(ctx context.Context, rpc *chain.Client, route RuntimeRoute, slot int64, pilot bool) (KaminoReleaseBound, []ConfirmedAccount, error) {
+func (m RouteManifest) observeRawRepaymentRelease(ctx context.Context, rpc *chain.Client, route RuntimeRoute, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
 	var additional []string
-	if pilot && route.Lane == autoAUTOPYUSD.Lane {
+	if route.Lane == autoAUTOPYUSD.Lane {
 		additional = append(additional, route.Kamino.Market)
 	}
 	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, 6, additional...)
 	if err != nil {
 		return KaminoReleaseBound{}, nil, err
 	}
-	bound, err := m.decodeKaminoRepaymentReleaseForMode(accounts, route, observed.ObservedSlot, 6, pilot)
+	bound, err := m.decodeKaminoRepaymentReleaseForMode(accounts, route, observed.ObservedSlot, 6, true)
 	return bound, accounts, err
 }
 

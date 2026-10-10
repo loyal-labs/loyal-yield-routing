@@ -36,7 +36,7 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 	// merely the broader decode/source-evidence authority that keeps deferred
 	// installed lanes observable.
 	if rpc == nil || client == nil || o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) ||
-		!s.PilotActive || !s.Fresh || !m.selectorEntryFundingLane(s.RouteLane, false) || s.RouteLane != s.StrategyKey ||
+		!s.Fresh || !m.selectorEntryFundingLane(s.RouteLane, false) || s.RouteLane != s.StrategyKey ||
 		s.ObservationID == "" || s.DebtIdleRaw != 0 || s.CollateralIdleRaw < 0 || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return out, budgetHold("selector_reentry_destination_unavailable")
 	}
@@ -56,7 +56,7 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 		source.Recipe.ValidThroughSlot < s.Slot || source.Recipe.ValidThroughSlot-s.Slot > observationLagSlots() {
 		return out, budgetHold("selector_reentry_exit_bound_unavailable")
 	}
-	if maximum == 0 || maximum > uint64(PilotWorkingTrancheCapRaw) || maximum > source.MinimumIdleRaw {
+	if maximum == 0 || maximum > strategyTwoBridgeLegCapRaw || maximum > source.MinimumIdleRaw {
 		return out, budgetHold("selector_reentry_equity_unavailable")
 	}
 	reentry := selectorReentryForecast{bound: *source.ExitBound, collateralIdle: uint64(s.CollateralIdleRaw)}

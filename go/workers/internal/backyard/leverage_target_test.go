@@ -18,7 +18,7 @@ func leverageMarket(lane string, yield, borrowAPR float64) LaneEconomics {
 // A settled funded AUTO position at the given level, equity ~$1,000.
 func leverageSnapshot(level float64) Snapshot {
 	s := base()
-	s.RouteLane, s.StrategyKey, s.PilotActive = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true
+	s.RouteLane, s.StrategyKey = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane
 	s.HasPosition = true
 	s.PositionCollateralValueRaw = int64(1_000_000_000 * level)
 	s.PositionCollateralRaw = s.PositionCollateralValueRaw

@@ -103,7 +103,7 @@ func TestSelectorPartialCapacityValuesIdleAndDoesNotExitFullCurrentLane(t *testi
 	current.EntryCapacity = Capacity{Known: true, Raw: 0}
 	in.Markets = append(in.Markets, current)
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 100_000_000}
-	in.Quotes[0].EquityRaw = 100_000_000
+	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 100_000_000, 50_000_000
 	got := SelectOpportunity(in, SelectorState{})
 	if got.Action != "KEEP" || got.KeepGainRaw <= 0 {
 		t.Fatal(got)
@@ -260,15 +260,6 @@ func TestSelectorNeverPreemptsExecutableRiskReduction(t *testing.T) {
 		t.Fatal(got)
 	}
 }
-func TestSelectedFullCustodyExitCannotBeSilentlyClamped(t *testing.T) {
-	s := base()
-	s.RouteLane = SelectedRouteID
-	s.WithdrawalDemandRaw = 1
-	s.SquadsIdleRaw = Phase2TransactionCapRaw + 1
-	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "full_custody_exit_exceeds_transaction_cap" {
-		t.Fatal(got)
-	}
-}
 
 func TestSelectorNAVDoesNotEraseFreshAdvantage(t *testing.T) {
 	in := selectorFixture()
@@ -297,7 +288,7 @@ func TestSelectorPartialAllocationCanBecomePersistent(t *testing.T) {
 	in.Markets[0].DebtBorrowRaw = 900_000_000
 	in.Markets[0].BorrowCurve = []BorrowCurvePoint{{0, 100}, {10000, 100}}
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 200_000_000}
-	in.Quotes[0].EquityRaw = 200_000_000
+	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 200_000_000, 100_000_000
 	first := SelectOpportunity(in, SelectorState{})
 	advanceSelectorFixture(&in, time.Minute)
 	got := SelectOpportunity(in, first.State)
@@ -341,7 +332,6 @@ func TestTypedUSDCRepaymentUsesCanonicalExecutionContract(t *testing.T) {
 
 func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *testing.T) {
 	in := selectorFixture()
-	in.Snapshot.PilotActive = true
 	// The destination quotes only the bounded executable tranche; the rest of
 	// the vault stays idle.
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
@@ -385,7 +375,6 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 
 func TestPilotSelectorKeepsActualSourceIncomeWhenCandidateTrancheIsSmaller(t *testing.T) {
 	in := selectorFixture()
-	in.Snapshot.PilotActive = true
 	// The destination quotes only the bounded candidate tranche against the
 	// larger funded source position.
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
@@ -414,7 +403,6 @@ func TestPilotSelectorKeepsActualSourceIncomeWhenCandidateTrancheIsSmaller(t *te
 
 func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *testing.T) {
 	in := selectorFixture()
-	in.Snapshot.PilotActive = true
 	// The destination quotes exactly the bounded executable tranche.
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
 	in.Quotes[0].EquityRaw = 10_000_000
@@ -444,7 +432,7 @@ func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *tes
 func sameLaneSelectorFixture() SelectorInput {
 	in := selectorFixture()
 	s := &in.Snapshot
-	s.PilotActive, s.HasPosition = true, true
+	s.HasPosition = true
 	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 90_000_000, 100_000_000
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 15_000_000, 15_000_000
 	s.PositionDebtRaw, s.PositionDebtValueRaw = 5_000_000, 5_000_000
@@ -475,7 +463,6 @@ func TestSameLaneReinvestmentEligibilityBindings(t *testing.T) {
 		name   string
 		mutate func(*SelectorInput)
 	}{
-		{"pilot_inactive", func(i *SelectorInput) { i.Snapshot.PilotActive = false }},
 		{"non_entry_lane", func(i *SelectorInput) {
 			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
 		}},
@@ -531,14 +518,14 @@ func TestPilotSameLaneSwitchStaysBlockedWithoutStrictReinvestmentCase(t *testing
 		}, "current_position_is_keep_baseline"},
 		{"working_ceiling", func(i *SelectorInput) {
 			s := &i.Snapshot
-			s.PositionCollateralRaw, s.PositionCollateralValueRaw = 150_000_000_000, 150_000_000_000
-			s.PositionDebtRaw, s.PositionDebtValueRaw = 50_000_000_000, 50_000_000_000
-			s.StrategyNAVRaw, s.PriorReportedNAVRaw = PilotWorkingTrancheCapRaw, PilotWorkingTrancheCapRaw
-			s.VoltrIdleRaw, s.TotalVaultNAVRaw = 100_000_000_000, 200_000_000_000
-			i.Quotes[0].EquityRaw = PilotWorkingTrancheCapRaw
-			i.Quotes[0].BorrowReceiveRaw = uint64(PilotWorkingTrancheCapRaw) / 2
-			i.Quotes[0].MinimumIdleRaw = 199_900_000_000
-			i.Markets[0].EntryCapacity = Capacity{Known: true, Raw: PilotWorkingTrancheCapRaw}
+			s.PositionCollateralRaw, s.PositionCollateralValueRaw = 300_000_000_000, 300_000_000_000
+			s.PositionDebtRaw, s.PositionDebtValueRaw = 100_000_000_000, 100_000_000_000
+			s.StrategyNAVRaw, s.PriorReportedNAVRaw = int64(strategyTwoBridgeLegCapRaw), int64(strategyTwoBridgeLegCapRaw)
+			s.VoltrIdleRaw, s.TotalVaultNAVRaw = 200_000_000_000, 400_000_000_000
+			i.Quotes[0].EquityRaw = int64(strategyTwoBridgeLegCapRaw)
+			i.Quotes[0].BorrowReceiveRaw = strategyTwoBridgeLegCapRaw / 2
+			i.Quotes[0].MinimumIdleRaw = 399_900_000_000
+			i.Markets[0].EntryCapacity = Capacity{Known: true, Raw: int64(strategyTwoBridgeLegCapRaw)}
 		}, "same_lane_reinvestment_not_larger"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

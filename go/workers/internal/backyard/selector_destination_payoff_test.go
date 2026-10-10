@@ -1711,7 +1711,7 @@ func TestSelectorDestinationCandidateReentryEntryStaysGated(t *testing.T) {
 	// The public production reentry wrapper refuses AUTO regardless of the
 	// manifest's reviewed binding.
 	m.RuntimeBindings.AutoPolicy = nil
-	funded := Observation{Snapshot: Snapshot{RouteLane: testAutoLane, StrategyKey: testAutoLane, PilotActive: true, Fresh: true, ObligationPresenceKnown: true, ObligationPresent: true, HasPosition: true, PositionCollateralRaw: 10_000_000_000, PositionDebtRaw: 5_000_000, StrategyNAVRaw: 1, Slot: slot, ObservationID: "candidate-observation"}}
+	funded := Observation{Snapshot: Snapshot{RouteLane: testAutoLane, StrategyKey: testAutoLane, Fresh: true, ObligationPresenceKnown: true, ObligationPresent: true, HasPosition: true, PositionCollateralRaw: 10_000_000_000, PositionDebtRaw: 5_000_000, StrategyNAVRaw: 1, Slot: slot, ObservationID: "candidate-observation"}}
 	source := selectorSourceQuote{Lane: testAutoLane, ObservationID: funded.Snapshot.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: 10_000_000_000, MaxDebtRaw: 5_000_000}, Recipe: selectorRecipe{EvidenceID: sha256Bytes([]byte("candidate-exit")), ValidThroughSlot: slot + 1}}
 	if _, err := observeSelectorReentryDestinationSize(context.Background(), rpc, client, m, funded, source, 2_000_000, false); err == nil {
 		t.Fatal("public reentry wrapper priced the candidate lane")

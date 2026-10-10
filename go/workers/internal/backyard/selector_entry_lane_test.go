@@ -42,7 +42,6 @@ func TestFundedDeferredTrancheCompletes(t *testing.T) {
 	entry.AllocationOperationID = "funded-before-revision"
 	s := base()
 	s.Slot = entry.Quote.SampleSlot
-	s.PilotActive = true
 	s.RouteLane, s.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
 	s.VoltrIdleRaw = 100_000_000
 	s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw = 10_000_000, 10_000_000, 10_000_000

@@ -109,14 +109,26 @@ func TestReleaseAdmissionRejectsUnsafeFundingAndChangedSignedState(t *testing.T)
 // 2026-09-24: sizing on the refreshed-reserve simulation produced a release
 // 290 receipts above what the raw re-check allowed, and every withdrawal held.
 func TestRawRepaymentReleaseSizingPassesSendRecheck(t *testing.T) {
-	_, _, e, m, rpc, _, _ := releaseAdmissionFixture(t, 20_000)
-	route := ethenaUSDePYUSD
-	sized, rows, err := m.observeRawRepaymentRelease(context.Background(), rpc, route, 42, false)
-	if err != nil || sized.ReceiptRaw == 0 || sized.ReceiptRaw > e.Request.AmountRaw {
-		t.Fatal("raw six-step sizing must not exceed the five-step safe size", sized.ReceiptRaw, e.Request.AmountRaw, err)
+	route, accounts := pilotReleaseFixture(t, SelectedRouteID)
+	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
+	m, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
 	}
-	r := e.Request
-	r.AmountRaw = sized.ReceiptRaw
+	safe, err := decodeKaminoRepaymentReleaseForMode(accounts, route, 42, 5, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sized, rows, err := m.observeRawRepaymentRelease(context.Background(), rpc, route, 42)
+	if err != nil || sized.ReceiptRaw == 0 || sized.ReceiptRaw > safe.ReceiptRaw {
+		t.Fatal("raw six-step sizing must not exceed the five-step safe size", sized.ReceiptRaw, safe.ReceiptRaw, err)
+	}
+	r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, sized.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+	r.RepaymentRelease, r.PilotRepaymentRelease = true, true
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
 	effects, err := exactKaminoTokenEffects(rows, source, destination, sized.LiquidityRaw)
 	if err != nil {

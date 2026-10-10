@@ -285,7 +285,7 @@ func repaymentReleaseReason(reason string) bool {
 // instead of releasing again. ok=false keeps the installed next leg.
 // The caller has already run hard-LTV safety, which preempts every cycle.
 func exitCycleStep(s Snapshot) (Action, string, int64, bool) {
-	if !leverageLane(s.RouteLane) || !s.PilotActive || s.PositionDebtRaw <= 1 || s.LTVBPS < leverageExitCycleLTVBPS {
+	if !leverageLane(s.RouteLane) || s.PositionDebtRaw <= 1 || s.LTVBPS < leverageExitCycleLTVBPS {
 		return "", "", 0, false
 	}
 	payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
@@ -347,7 +347,7 @@ func leverageDownPartialStep(s Snapshot) (Action, string, int64, bool) {
 }
 
 func leverageDownPartialStepAt(s Snapshot, enabled bool) (Action, string, int64, bool) {
-	if !enabled || !leverageLane(s.RouteLane) || !s.PilotActive || s.LeverageTargetLevel != 1.5 || !s.HasPosition || s.PositionDebtRaw <= 1 ||
+	if !enabled || !leverageLane(s.RouteLane) || s.LeverageTargetLevel != 1.5 || !s.HasPosition || s.PositionDebtRaw <= 1 ||
 		s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw <= 0 {
 		return "", "", 0, false
 	}

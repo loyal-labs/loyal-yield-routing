@@ -69,7 +69,7 @@ func readPilotCanaryEntryRequestWithLane(now time.Time, laneAllowed func(string)
 // not enable ordinary switching on this tick. ID shape, equity bounds and the
 // expiry window are the exact installed checks for every caller.
 func (r pilotCanaryEntryRequest) validateWithLane(now time.Time, laneAllowed func(string) bool) error {
-	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !laneAllowed(r.Lane) || r.EquityRaw <= 0 || r.EquityRaw > PilotWorkingTrancheCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) {
+	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !laneAllowed(r.Lane) || r.EquityRaw <= 0 || uint64(r.EquityRaw) > strategyTwoBridgeLegCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) {
 		return budgetHold("invalid_pilot_canary_request")
 	}
 	return nil
@@ -142,7 +142,7 @@ func selectPilotCanaryEntryWithManifest(input SelectorInput, result SelectorResu
 		return result, nil, budgetHold("pilot_canary_history_full")
 	}
 	s := input.Snapshot
-	if !s.PilotActive || !s.Fresh || !unwindComplete(s) || s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.PostMutationNAVRequired || s.CapitalMutated || s.LastReportAgeSeconds >= 60 || s.VoltrIdleRaw < request.EquityRaw || Decide(s).Action == ReportNAV {
+	if !s.Fresh || !unwindComplete(s) || s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.PostMutationNAVRequired || s.CapitalMutated || s.LastReportAgeSeconds >= 60 || s.VoltrIdleRaw < request.EquityRaw || Decide(s).Action == ReportNAV {
 		return result, nil, nil
 	}
 	// Candidate validity includes current market data, capacity, bounded full

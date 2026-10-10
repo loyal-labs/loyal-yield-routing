@@ -8,7 +8,7 @@ import (
 // 837.77 PYUSD, equity ~$1,677; Vlad withdraws $470 with Voltr idle 0.
 func livePartialSnapshot() Snapshot {
 	s := base()
-	s.RouteLane, s.StrategyKey, s.PilotActive, s.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true, true
+	s.RouteLane, s.StrategyKey, s.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true
 	s.LeverageTargetLevel = 1.5
 	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 2_463_480_000, 2_514_967_000
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 837_770_000, 837_770_000, 837_900_000

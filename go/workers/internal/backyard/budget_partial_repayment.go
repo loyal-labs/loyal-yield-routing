@@ -15,7 +15,7 @@ func observePhase3PartialRepaymentAdmission(ctx context.Context, rpc *chain.Clie
 	defer cancel()
 	s, r := o.Snapshot, e.Request
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
-	if err != nil || rpc == nil || client == nil || !s.PilotActive || !partialRepaymentLane(s.RouteLane, d.Reason) || !s.Fresh || s.Slot <= 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteKind != RouteKind || s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 1 || d.Action != DeleverRouteStep || r.Action != d.Action || !partialRepaymentReason(d.Reason) || !decisionsEqual(m.DecideOnManifest(s), d) || d.AmountRaw <= 0 || r.AmountRaw != partialRepaymentWireRaw(s, d) || r.AmountRaw == 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || uint64(debtCashRaw(s)) < r.AmountRaw || leg != kaminoLegRepay || r.FullPayoff || r.RepaymentRelease {
+	if err != nil || rpc == nil || client == nil || !partialRepaymentLane(s.RouteLane, d.Reason) || !s.Fresh || s.Slot <= 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteKind != RouteKind || s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 1 || d.Action != DeleverRouteStep || r.Action != d.Action || !partialRepaymentReason(d.Reason) || !decisionsEqual(m.DecideOnManifest(s), d) || d.AmountRaw <= 0 || r.AmountRaw != partialRepaymentWireRaw(s, d) || r.AmountRaw == 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || uint64(debtCashRaw(s)) < r.AmountRaw || leg != kaminoLegRepay || r.FullPayoff || r.RepaymentRelease {
 		return phase3BridgeAdmission{}, budgetHold("partial_repayment_admission_unavailable")
 	}
 	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
@@ -65,7 +65,7 @@ func observePhase3PartialRepaymentAdmission(ctx context.Context, rpc *chain.Clie
 func validatePartialRepaymentProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, s Snapshot, p phase3KaminoProjection) (KaminoPayoffBound, error) {
 	message, err := CompileKaminoMessage(r)
 	_, leg, legErr := kaminoPrimeUSDCInstruction(r)
-	if err != nil || legErr != nil || leg != kaminoLegRepay || r.Action != DeleverRouteStep || r.FullPayoff || r.RepaymentRelease || !s.PilotActive || !(selectorLane(r.RouteLane) || leverageLane(r.RouteLane)) || r.RouteLane != s.RouteLane || p.MessageSHA256 != sha256Bytes(message) || p.UnitsConsumed == 0 || p.Slot < s.Slot || p.Slot-s.Slot > observationLagSlots() || r.AmountRaw == 0 || s.PositionDebtRaw <= 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || e.Repayment == nil || e.Repayment.MinimumDebitRaw != r.AmountRaw || e.Repayment.MaximumDebitRaw != r.AmountRaw {
+	if err != nil || legErr != nil || leg != kaminoLegRepay || r.Action != DeleverRouteStep || r.FullPayoff || r.RepaymentRelease || !(selectorLane(r.RouteLane) || leverageLane(r.RouteLane)) || r.RouteLane != s.RouteLane || p.MessageSHA256 != sha256Bytes(message) || p.UnitsConsumed == 0 || p.Slot < s.Slot || p.Slot-s.Slot > observationLagSlots() || r.AmountRaw == 0 || s.PositionDebtRaw <= 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || e.Repayment == nil || e.Repayment.MinimumDebitRaw != r.AmountRaw || e.Repayment.MaximumDebitRaw != r.AmountRaw {
 		return KaminoPayoffBound{}, budgetHold("partial_repayment_projection_identity_mismatch")
 	}
 	if _, err = MeasureExecutableDebit(r, e); err != nil {

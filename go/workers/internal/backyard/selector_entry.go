@@ -38,7 +38,7 @@ func (e SelectorEntry) validate() error {
 // evidence identity, borrow shape and the 30-second quote window stay the
 // exact installed checks for every caller.
 func validateSelectorEntry(e SelectorEntry, laneAllowed func(string) bool) error {
-	if !laneAllowed(e.Lane) || e.ObservationID == "" || e.EquityRaw <= 0 || e.EquityRaw > PilotWorkingTrancheCapRaw ||
+	if !laneAllowed(e.Lane) || e.ObservationID == "" || e.EquityRaw <= 0 || uint64(e.EquityRaw) > strategyTwoBridgeLegCapRaw ||
 		e.Quote.DestinationLane != e.Lane || !laneAllowed(e.Quote.SourceLane) || e.Quote.ObservationID != e.ObservationID || e.Quote.EquityRaw != e.EquityRaw || e.Quote.CostRaw < 0 || e.Quote.CostRaw >= e.EquityRaw || !sha256Pattern.MatchString(e.Quote.EvidenceID) ||
 		e.Quote.MinimumIdleRaw < uint64(e.EquityRaw) || !e.Quote.validBorrow() || !e.Quote.storedWindowValid() || e.AcceptedAt.IsZero() || e.Quote.ObservedAt.IsZero() || e.Quote.ObservedAt.After(e.AcceptedAt) || !e.ExpiresAt.After(e.AcceptedAt) || e.ExpiresAt.After(e.Quote.ObservedAt.Add(30*time.Second)) {
 		return fmt.Errorf("invalid_selector_entry")
@@ -104,14 +104,11 @@ func applySelectorEntry(s *Snapshot, entry *SelectorEntry, now time.Time) error 
 // applySelectorEntryWithLane is the identical entry merge with the entry
 // validity authority parameterized: an explicit reviewed manifest accepts its
 // candidate initializer lane through the same reviewed binding that decides
-// and admits it. Every installed check — pilot gating, expiry, allocation and
-// quote currency — is shared verbatim.
+// and admits it. Every installed check — expiry, allocation and quote
+// currency — is shared verbatim.
 func applySelectorEntryWithLane(s *Snapshot, entry *SelectorEntry, now time.Time, laneAllowed func(string) bool) error {
 	s.SelectorEntryEquityRaw = 0
 	s.SelectorBorrowRaw = 0
-	if !s.PilotActive {
-		return nil
-	}
 	if entry == nil {
 		s.SelectorEntryPaused = true
 		return nil
@@ -262,7 +259,7 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 		return result, budgetHold("selector_fee_evidence_unavailable")
 	}
 	now := time.Now().UTC()
-	if !input.Snapshot.PilotActive || input.Now.After(now) || now.Sub(input.Now) > 5*time.Second || input.Snapshot.Slot <= 0 || confirmedSlot < input.Snapshot.Slot || confirmedSlot-input.Snapshot.Slot > observationLagSlots() {
+	if input.Now.After(now) || now.Sub(input.Now) > 5*time.Second || input.Snapshot.Slot <= 0 || confirmedSlot < input.Snapshot.Slot || confirmedSlot-input.Snapshot.Slot > observationLagSlots() {
 		return result, budgetHold("selector_evaluation_not_current")
 	}
 	// Recompute wall-clock quote expiry after waiting for the route lock below.
@@ -291,7 +288,6 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 	}
 	var state struct {
 		Budget        Phase3Budget                       `json:"phase3"`
-		Activation    json.RawMessage                    `json:"pilotBudgetActivation"`
 		Unwind        *UnwindIntent                      `json:"selectorUnwind"`
 		CanaryHistory map[string]pilotCanaryEntryReceipt `json:"pilotCanaryEntries"`
 		Entry         *SelectorEntry                     `json:"selectorEntry"`
@@ -307,9 +303,6 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 	}
 	if state.Budget.Pilot == nil || state.Budget.Closed {
 		return result, budgetHold("selector_requires_active_pilot")
-	}
-	if _, err = validatePersistedPilotActivation(state.Budget, state.Activation, version); err != nil {
-		return result, err
 	}
 	if state.Unwind != nil || len(state.Budget.Reservations) != 0 {
 		return result, budgetHold("selector_finish_current_work_first")
@@ -600,9 +593,6 @@ func topupAllocationBypassesEntryFence(request any, journaledReason string, unwi
 // Hold when the reviewed amount is no longer supportable. Do not silently
 // change the swap input or origination fee used by the complete move forecast.
 func selectorBorrowAmount(s Snapshot, currentTarget uint64) (uint64, error) {
-	if !s.PilotActive {
-		return currentTarget, nil
-	}
 	if s.SelectorBorrowRaw == 0 || s.SelectorBorrowRaw > currentTarget || s.SelectorEntryPaused || s.Unwind || s.CutoverDrain || s.WithdrawalDemandRaw > 0 {
 		return 0, budgetHold("selector_entry_borrow_unavailable")
 	}

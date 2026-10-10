@@ -1,16 +1,8 @@
 package backyard
 
-import "encoding/json"
-
 const (
 	pilotBudgetAuthoritySchema = "voltr-rwa-pilot-budget/v1"
 	pilotBudgetAuthorityID     = "01a0a776-cb66-7333-99eb-7e6927c1e114"
-	// Reviewed ceilings: $100,000 total deposits, deployed in one tranche.
-	// Widening these code ceilings never widens a budget already activated
-	// under the previous limits: its persisted Limits record keeps binding
-	// until an explicit operator limit update.
-	PilotDepositCapRaw        int64 = 100_000_000_000
-	PilotWorkingTrancheCapRaw int64 = 100_000_000_000
 	// Stop starting new work once $3,000 of execution cost is spent. Settlement
 	// books each operation's realized cost; admission still refuses unless the
 	// spent total plus the new work's worst-case bound fits, so the cap is a
@@ -84,55 +76,4 @@ func (b Phase3Budget) executionCostSpent() (int64, error) {
 		}
 	}
 	return total, nil
-}
-
-// Pure half of the explicit transition. The DB boundary supplies finalized
-// flat evidence under the route lock and refuses historical unresolved work.
-// Copy maps before mutation: a rejected transition never changes the caller.
-func activatePilotBudget(prior Phase3Budget, a pilotBudgetAuthority) (Phase3Budget, error) {
-	if err := prior.validate(); err != nil {
-		return Phase3Budget{}, err
-	}
-	if prior.Pilot != nil || prior.Closed || len(prior.Reservations) != 0 {
-		return Phase3Budget{}, budgetHold("pilot_transition_requires_open_unreserved_legacy_budget")
-	}
-	encoded, err := json.Marshal(prior)
-	if err != nil {
-		return Phase3Budget{}, err
-	}
-	if err = a.validate(); err != nil {
-		return Phase3Budget{}, err
-	}
-	if a.PreviousBudgetWasAbsent {
-		for _, row := range prior.Families {
-			if row.SpentMicros != 0 || row.ExitMicros != 0 {
-				return Phase3Budget{}, budgetHold("absent_prior_budget_has_history")
-			}
-		}
-		encoded = []byte("null")
-	}
-	if a.PreviousBudgetSHA256 != sha256Bytes(encoded) {
-		return Phase3Budget{}, budgetHold("pilot_transition_prior_budget_mismatch")
-	}
-	next := prior
-	next.Families = make(map[string]FamilyBudget, len(prior.Families)+2)
-	for family, row := range prior.Families {
-		if row.ExitMicros != 0 {
-			return Phase3Budget{}, budgetHold("pilot_transition_cannot_clear_exit_reserve")
-		}
-		next.Families[family] = row
-	}
-	for _, family := range []string{"Prime", "Maple", "OnRe"} {
-		if _, ok := next.Families[family]; !ok {
-			next.Families[family] = FamilyBudget{}
-		}
-	}
-	next.Reservations = map[string]BudgetReservation{}
-	limits := pilotDeploymentLimits()
-	next.Limits = &limits
-	next.Pilot = &a
-	if err = next.validate(); err != nil {
-		return Phase3Budget{}, err
-	}
-	return next, nil
 }

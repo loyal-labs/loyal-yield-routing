@@ -22,9 +22,9 @@ func obligationEntryStates() []struct {
 		{"legacy allocates voltr idle", "", func(s Snapshot) Snapshot { s.VoltrIdleRaw = 4; return s }, VoltrAllocateToSquads},
 		{"legacy swaps usdc for collateral", "", func(s Snapshot) Snapshot { s.SquadsIdleRaw = 4; return s }, SwapUSDCToPrimeStep},
 		{"selected deposits collateral", SelectedRouteID, func(s Snapshot) Snapshot { s.CollateralIdleRaw = 4; return s }, OpenRouteStep},
-		{"selected allocates voltr idle", SelectedRouteID, func(s Snapshot) Snapshot { s.VoltrIdleRaw = 4; return s }, VoltrAllocateToSquads},
+		{"selected allocates voltr idle", SelectedRouteID, func(s Snapshot) Snapshot { s.VoltrIdleRaw, s.SelectorEntryEquityRaw = 4, 4; return s }, VoltrAllocateToSquads},
 		{"non usdc swaps usdc for collateral", "Ethena/USDe/PYUSD", func(s Snapshot) Snapshot { s.SquadsIdleRaw = 4; return s }, SwapStableToCollateralStep},
-		{"non usdc allocates voltr idle", "Ethena/USDe/PYUSD", func(s Snapshot) Snapshot { s.VoltrIdleRaw = 4; return s }, VoltrAllocateToSquads},
+		{"non usdc allocates voltr idle", "Ethena/USDe/PYUSD", func(s Snapshot) Snapshot { s.VoltrIdleRaw, s.SelectorEntryEquityRaw = 4, 4; return s }, VoltrAllocateToSquads},
 	}
 }
 

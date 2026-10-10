@@ -22,7 +22,6 @@ func TestOnReIsAnEntryLaneUnderTheUnchangedSelectorRule(t *testing.T) {
 	// The unchanged rule: an OnRe advantage must persist for the policy's
 	// persistence window before the selector enters.
 	in := selectorFixture() // Maple source, OnRe destination market
-	in.Snapshot.PilotActive = true
 	first := selectOpportunityWithLanes(in, SelectorState{}, selectorLane, selectorEntryLane)
 	if first.Action != "KEEP" || first.Reason != "advantage_not_yet_persistent" {
 		t.Fatalf("OnRe entered before its advantage persisted: %+v", first)

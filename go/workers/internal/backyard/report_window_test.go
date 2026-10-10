@@ -129,15 +129,13 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	id := key + "-op"
 	// An activated pilot route whose OnRe family already reserves its exit.
 	prior := emptyTestBudget()
-	flat := pilotFlatFixture(t)
 	authority := pilotTestAuthority(prior)
-	authority.Generation, authority.FinalizedSlot, authority.FlatEvidenceSHA256 = 2, flat.Slot, sha256Bytes(mustJSON(t, flat))
 	budget, err := activatePilotBudget(prior, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	budget.Families["OnRe"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 50_000_000}
-	state := mustJSON(t, map[string]any{"generation": 2, "phase3": budget, "pilotBudgetActivation": pilotBudgetActivation{authority, mustJSON(t, prior), flat}})
+	state := mustJSON(t, map[string]any{"generation": 2, "phase3": budget})
 	envelope, _ := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, d, m.SHA256, *m.PolicyCatalog.SHA256)})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2::jsonb,2)`, key, string(state)); err != nil {
 		t.Fatal(err)

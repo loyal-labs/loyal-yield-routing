@@ -171,7 +171,7 @@ func evaluatePricedQuote(t *testing.T, q MoveQuote, m LaneEconomics) pricedRun {
 		t.Fatal("priced quote rejected")
 	}
 	out := pricedRun{receive: q.BorrowReceiveRaw, invested: float64(q.EquityRaw - q.CostRaw), years: float64((7 * 24 * time.Hour).Hours()) / (365.25 * 24)}
-	e, blocked := pilotQuoteEconomics(true, q, m, out.invested, out.years)
+	e, blocked := pilotQuoteEconomics(q, m, out.invested, out.years)
 	if blocked != "" {
 		t.Fatal(blocked)
 	}
@@ -403,7 +403,6 @@ func TestGatedAutoLaneNeverReachesFeedEconomics(t *testing.T) {
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 	route, _ := runtimeRoute(testAutoLane)
 	in := selectorFixture()
-	in.Snapshot.PilotActive = true
 	in.Snapshot.Slot = 42
 	in.Markets = []LaneEconomics{{Lane: route.Lane, EvidenceID: "rates", ObservedAt: in.Now, NativeObservedAt: in.Now, NativeAPY: .15, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}}
 	in.Quotes = []MoveQuote{autoMoveQuote(t, &price)}

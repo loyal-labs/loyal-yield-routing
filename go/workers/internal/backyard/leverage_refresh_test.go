@@ -41,7 +41,7 @@ func TestConstructionRefreshKeepsTheStoredLeverageTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, o := range []*Observation{&outer, &refreshed} {
-		o.Snapshot.PilotActive, o.Snapshot.SelectorEntryPaused = true, false
+		o.Snapshot.SelectorEntryPaused = false
 	}
 	a, b := Decide(outer.Snapshot), Decide(refreshed.Snapshot)
 	if a.Reason != leverageUpReason || !decisionsEqual(a, b) {

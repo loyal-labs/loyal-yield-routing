@@ -219,9 +219,8 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 		scale := int64(1)
 		if leverageLane(lane) {
 			scale = 10_000
-			s.PilotActive = true
-			s.SelectorEntryEquityRaw = 200_000_000
 		}
+		s.SelectorEntryEquityRaw = 20_000 * scale
 		s.RouteLane, s.StrategyKey = lane, lane
 		s.VoltrIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = (100_000 * scale), (20_000 * scale), (20_000 * scale), (100_000 * scale)
 		d := Decide(s)
@@ -303,8 +302,8 @@ func TestUSDCHardLTVRequiresExecutablePayoff(t *testing.T) {
 		s.SquadsIdleRaw = cash
 		d := Decide(s)
 		if cash < 101 {
-			if d.Action != HoldManualRecovery || d.Reason != "hard_ltv_partial_repayment_requires_admission" {
-				t.Fatalf("unadmitted partial repayment: %+v", d)
+			if d.Action != DeleverRouteStep || d.Reason != "hard_ltv_partial_repay" || d.AmountRaw != min(cash, 99) {
+				t.Fatalf("partial repayment: %+v", d)
 			}
 		} else if d.Action != DeleverRouteStep || d.AmountRaw != 100 {
 			t.Fatalf("funded full payoff: %+v", d)
@@ -326,6 +325,7 @@ func TestUSDCCanaryAllocationFitsMeasuredCompleteBridgeReturn(t *testing.T) {
 	s := base()
 	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 	s.VoltrIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = 5_000_000, 5_000_000, 5_000_000, int64(strategyTwoBridgeLegCapRaw)
+	s.SelectorEntryEquityRaw = 500_000
 	d := Decide(s)
 	if d.Action != VoltrAllocateToSquads || d.AmountRaw != 500_000 {
 		t.Fatalf("canary size: %+v", d)

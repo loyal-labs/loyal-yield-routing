@@ -19,9 +19,7 @@ import (
 func liveTopupSnapshot() Snapshot {
 	s := liveIdleDebtSnapshot()
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw, s.LTVBPS, s.DebtIdleRaw = 0, 0, 0, 0, 0
-	s.PilotActive, s.BorrowUtilizationBlocked, s.TopupDepositRoomRaw = true, true, 5_000_000_000
-	// Production stamps the reviewed candidate lane for the pilot tranche.
-	s.PilotTrancheCapLane = autoAUTOPYUSD.Lane
+	s.BorrowUtilizationBlocked, s.TopupDepositRoomRaw = true, 5_000_000_000
 	return s
 }
 
@@ -38,8 +36,8 @@ func TestTopupAllocationSizingAndPriority(t *testing.T) {
 		t.Fatalf("deposit-limit room ignored: %+v", got)
 	}
 	capped := s
-	capped.VoltrIdleRaw, capped.TopupDepositRoomRaw = PilotWorkingTrancheCapRaw+5, PilotWorkingTrancheCapRaw+5
-	if got := Decide(capped); got.AmountRaw != PilotWorkingTrancheCapRaw {
+	capped.VoltrIdleRaw, capped.TopupDepositRoomRaw = int64(strategyTwoBridgeLegCapRaw)+5, int64(strategyTwoBridgeLegCapRaw)+5
+	if got := Decide(capped); got.AmountRaw != int64(strategyTwoBridgeLegCapRaw) {
 		t.Fatalf("working tranche cap ignored: %+v", got)
 	}
 	// Open borrowing does not jump ahead of idle cash: top up first, then the
@@ -67,9 +65,7 @@ func TestTopupAllocationSizingAndPriority(t *testing.T) {
 		"hard ltv":         func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS, s.DebtIdleRaw = 1, 1, 6000, 1 },
 		"report due":       func(s *Snapshot) { s.PostMutationNAVRequired = true },
 		"nonterminal":      func(s *Snapshot) { s.Nonterminal = Built },
-		"no pilot":         func(s *Snapshot) { s.PilotActive = false },
 		"no room":          func(s *Snapshot) { s.TopupDepositRoomRaw = 0 },
-		"legacy tranche":   func(s *Snapshot) { s.PilotTrancheCapLane = "" },
 		"dust":             func(s *Snapshot) { s.VoltrIdleRaw = topupMinimumRaw - 1 },
 		"borrowed debt":    func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw, s.DebtIdleRaw = 1, 1, 1 },
 		"unvalued debt":    func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw = 1, 0 },
@@ -104,8 +100,8 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 		reason string
 		amount int64
 	}{
-		{func(*Snapshot) {}, VoltrAllocateToSquads, topupAllocationReason, PilotWorkingTrancheCapRaw},
-		{func(s *Snapshot) { s.VoltrIdleRaw, s.SquadsIdleRaw = 5_000_000, PilotWorkingTrancheCapRaw }, SwapStableToCollateralStep, topupSwapReason, PilotWorkingTrancheCapRaw},
+		{func(*Snapshot) {}, VoltrAllocateToSquads, topupAllocationReason, 100_005_000_000},
+		{func(s *Snapshot) { s.VoltrIdleRaw, s.SquadsIdleRaw = 5_000_000, 100_005_000_000 }, SwapStableToCollateralStep, topupSwapReason, 100_005_000_000},
 		{func(s *Snapshot) {
 			s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 0, 97_900_000_000, 97_900_000_000, 99_900_000_000
 		}, OpenRouteStep, "single_loop_redeposit", 97_900_000_000},
@@ -152,7 +148,7 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 	// OnRe debt is Squads USDC: borrowed cash there still goes to the
 	// leverage swap, never the top-up swap.
 	onre := liveDebtTopupSnapshot()
-	onre.RouteLane, onre.StrategyKey, onre.PilotTrancheCapLane, onre.SquadsIdleRaw = onreONycUSDC, onreONycUSDC, onreONycUSDC, 1_000_000
+	onre.RouteLane, onre.StrategyKey, onre.SquadsIdleRaw = onreONycUSDC, onreONycUSDC, 1_000_000
 	if got := Decide(onre); got.Action != SwapDebtToCollateralStep || got.Reason != "borrowed_usdc_requires_prime_buffer" {
 		t.Fatalf("OnRe borrowed cash became a top-up: %+v", got)
 	}
@@ -173,7 +169,7 @@ func autoDebtTopupFixture(t *testing.T) (Observation, RouteManifest, *chain.Clie
 	s.PartialWithdrawalOperationID, s.PartialWithdrawalLTVBPS, s.LeverageTargetLevel, s.WithdrawalDemandRaw = "", 0, 0, 0
 	s.VoltrStrategyIdleRaw, s.StagedAmountRaw, s.StagedAmountKnown, s.StageTransient = 0, 0, false, false
 	s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw, s.DebtIdleRaw, s.VoltrIdleRaw = 0, 0, 0, 0, 50_000_000
-	if !s.HasPosition || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || !s.PilotActive {
+	if !s.HasPosition || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 {
 		t.Fatalf("fixture lost the debt-bearing AUTO position: %+v", *s)
 	}
 	return o, m, rpc, client, accounts

@@ -34,13 +34,13 @@ func TestStoredSelectorEntryIgnoresTheRuntimeLag(t *testing.T) {
 		t.Fatalf("invalid stored entry: %v %v", decoded, err)
 	}
 	s := base()
-	s.PilotActive, s.RouteLane, s.StrategyKey = true, SelectedRouteID, SelectedRouteID
+	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 	if err := applySelectorEntry(&s, &bad, time.Now().UTC()); err != nil || !s.SelectorEntryPaused || s.SelectorEntryEquityRaw != 0 {
 		t.Fatalf("apply invalid entry: err=%v paused=%t", err, s.SelectorEntryPaused)
 	}
 	// A new allocation still needs a quote current at the observed slot.
 	s = base()
-	s.PilotActive, s.RouteLane, s.StrategyKey = true, SelectedRouteID, SelectedRouteID
+	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 	s.Slot = entry.Quote.ValidThroughSlot + 1
 	if err := applySelectorEntry(&s, &entry, time.Now().UTC()); err != nil || !s.SelectorEntryPaused {
 		t.Fatalf("stale quote still authorized an allocation: err=%v paused=%t", err, s.SelectorEntryPaused)

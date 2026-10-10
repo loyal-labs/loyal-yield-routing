@@ -144,12 +144,11 @@ func (d *Database) readPhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationI
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
 		return Phase3Budget{}, phase3OperationAuthorization{}, err
 	}
-	var budgetBytes, authBytes, activationBytes []byte
-	var stateVersion int64
+	var budgetBytes, authBytes []byte
 	var lane string
-	err := tx.QueryRow(ctx, `SELECT COALESCE(route.state->'phase3','null'::jsonb), COALESCE(operation.expected_effects->'phase3','null'::jsonb),COALESCE(operation.strategy_key,''),COALESCE(route.state->'pilotBudgetActivation','null'::jsonb),route.state_version
+	err := tx.QueryRow(ctx, `SELECT COALESCE(route.state->'phase3','null'::jsonb), COALESCE(operation.expected_effects->'phase3','null'::jsonb),COALESCE(operation.strategy_key,'')
 		FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key=operation.route_key
-		WHERE operation.operation_id=$1`, operationID).Scan(&budgetBytes, &authBytes, &lane, &activationBytes, &stateVersion)
+		WHERE operation.operation_id=$1`, operationID).Scan(&budgetBytes, &authBytes, &lane)
 	if err != nil {
 		return Phase3Budget{}, phase3OperationAuthorization{}, err
 	}
@@ -162,9 +161,6 @@ func (d *Database) readPhase3BudgetTx(ctx context.Context, tx pgx.Tx, operationI
 		return budget, auth, err
 	}
 	if budget.Pilot != nil {
-		if _, err := validatePersistedPilotActivation(budget, activationBytes, stateVersion); err != nil {
-			return budget, auth, err
-		}
 		if auth.GoalID != "" && auth.PilotAuthorityID != budget.Pilot.AuthorityID {
 			return budget, auth, budgetHold("pilot_operation_authority_mismatch")
 		}
@@ -322,9 +318,6 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 	}
 	if err = budget.validatePilotReleaseAuthority(request); err != nil {
 		return err
-	}
-	if plan.Snapshot.PilotActive && budget.Pilot == nil {
-		return budgetHold("pilot_planning_authority_required")
 	}
 	if budget.Pilot != nil {
 		plan.CurrentCost, err = manifest.observePilotExecutionCost(ctx, rpc, request, effects, plan.CurrentCost)
@@ -543,7 +536,7 @@ func (d *Database) persistPhase3ExitAdmissionOnManifest(ctx context.Context, rpc
 // The measured plan remains unchanged: only the durable reservation retains
 // additional headroom. An actual unwind still consumes its existing reserve.
 func phase3MaintenanceNAVReserve(budget Phase3Budget, family string, s Snapshot, decision Decision, plan phase3BridgeAdmission, lastReconciledAction Action, durableUnwind bool) (bool, int64, error) {
-	if decision.Action != ReportNAV || budget.Pilot == nil || !s.PilotActive ||
+	if decision.Action != ReportNAV || budget.Pilot == nil ||
 		(decision.Reason != "post_mutation_nav_due" && decision.Reason != "nav_due") ||
 		s.Unwind || durableUnwind || s.UnwindRefreshRequired || s.CutoverDrain || s.WithdrawalDemandRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
 		return false, plan.ExitAfterMicros, nil

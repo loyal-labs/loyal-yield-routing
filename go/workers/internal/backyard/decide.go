@@ -97,17 +97,6 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if s.RouteLane == "" || s.RouteLane == RouteID {
 		decision.Action = legacyUSDCAction(decision.Action)
 	}
-	if !s.PilotActive && s.RouteLane == SelectedRouteID && decision.AmountRaw > Phase2TransactionCapRaw {
-		// Restore consumes all staged custody; never conceal its actual effect.
-		if decision.Action == VoltrRestoreIdle {
-			decision.Action, decision.Reason, decision.AmountRaw = HoldManualRecovery, "voltr_restore_actual_effect_exceeds_cap", 0
-		} else if decision.Action == StageSquadsToVoltr {
-			decision.Action, decision.Reason, decision.AmountRaw = HoldManualRecovery, "full_custody_exit_exceeds_transaction_cap", 0
-		} else {
-			decision.AmountRaw = Phase2TransactionCapRaw
-		}
-		decision.IdempotencyKey = fmt.Sprintf("%s:%s:%d:%s", s.ObservationID, decision.Action, decision.AmountRaw, decision.Reason)
-	}
 	return decision
 }
 
@@ -175,7 +164,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 				if s.PositionDebtRaw > 0 && debtCashRaw(s) >= payoff {
 					return decision(DeleverRouteStep, "hard_ltv_repay", s.PositionDebtRaw)
 				}
-				if s.PilotActive && s.PositionDebtRaw > 1 && debtCashRaw(s) > 0 {
+				if s.PositionDebtRaw > 1 && debtCashRaw(s) > 0 {
 					return decision(DeleverRouteStep, "hard_ltv_partial_repay", min(debtCashRaw(s), s.PositionDebtRaw-1))
 				}
 				if s.PositionDebtRaw > 0 {
@@ -371,14 +360,11 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		if !s.PolicyReady || !s.ExitBuildable || s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
 			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
 		}
-		amount := min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw, workingTrancheCap(s))
-		if s.PilotActive {
-			if s.SelectorEntryEquityRaw <= 0 || s.SelectorEntryEquityRaw > amount {
-				return decision(Hold, "selector_entry_amount_requires_fresh_quote", 0)
-			}
-			amount = s.SelectorEntryEquityRaw
+		amount := min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw)
+		if s.SelectorEntryEquityRaw <= 0 || s.SelectorEntryEquityRaw > amount {
+			return decision(Hold, "selector_entry_amount_requires_fresh_quote", 0)
 		}
-		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", amount)
+		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", s.SelectorEntryEquityRaw)
 	}
 	if (s.SquadsIdleRaw > 0 || s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) && s.PolicyReady && s.ExitBuildable &&
 		(s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
@@ -451,7 +437,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 // Drift, post-mutation and custody reports keep their priority, and only a
 // flat route whose sole working cash is Voltr idle qualifies.
 func admittedEntryAllocationReady(s Snapshot) bool {
-	return s.PilotActive && !s.SelectorEntryPaused && s.SelectorEntryEquityRaw > 0 &&
+	return !s.SelectorEntryPaused && s.SelectorEntryEquityRaw > 0 &&
 		s.VoltrIdleRaw >= s.SelectorEntryEquityRaw && !s.CapitalMutated && !s.PostMutationNAVRequired &&
 		s.WithdrawalDemandRaw == 0 && !s.Unwind && !s.CutoverDrain && !hasWorkingCapital(s)
 }

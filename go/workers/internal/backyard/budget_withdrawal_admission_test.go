@@ -418,7 +418,7 @@ func supportedFullExitAdmissionFixture(t *testing.T, variant string) (Observatio
 }
 
 func testProductionWithdrawalAdmission(t *testing.T, url string) {
-	for _, variant := range []string{"collateral", "debt_residue", "payoff", "funding", "auto_funding", "release", "entry_swap", "deposit", "borrow", "funding_nav", "leverage", "redeposit"} {
+	for _, variant := range []string{"collateral", "debt_residue", "payoff", "funding", "auto_funding", "release", "entry_swap", "deposit"} {
 		t.Run(variant, func(t *testing.T) { testProductionWithdrawalAdmissionFixture(t, url, variant) })
 	}
 	// The legacy catalog's USDC->PYUSD quote is not an edge of the current
@@ -470,10 +470,7 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 	debtResidue, payoff, funding, release := variant != "collateral", variant == "payoff", variant == "funding" || variant == "auto_funding", variant == "release"
 	entry := variant == "entry_swap"
 	deposit := variant == "deposit"
-	borrow := variant == "borrow"
-	fundingNAV := variant == "funding_nav"
-	leverage, redeposit := variant == "leverage", variant == "redeposit"
-	if entry || deposit || borrow || leverage || redeposit {
+	if entry || deposit {
 		debtResidue = false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -490,16 +487,7 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 	if deposit {
 		o, d, evidence, manifest, rpc, client, _ = depositAdmissionFixture(t, "")
 	}
-	if borrow {
-		o, d, evidence, manifest, rpc, client, _ = borrowAdmissionFixture(t, 20_000, "")
-	}
 	var fundingEvidence JupiterExecutionEvidence
-	if leverage {
-		o, d, fundingEvidence, manifest, rpc, client, _ = leverageAdmissionFixture(t, 20_000, "")
-	}
-	if redeposit {
-		o, d, evidence, manifest, rpc, client, _ = depositAdmissionFixtureForPosition(t, "", true)
-	}
 	if entry {
 		o, d, fundingEvidence, manifest, rpc, client, _ = entrySwapAdmissionFixture(t)
 	}
@@ -507,10 +495,6 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 	if confirmedExit {
 		o, d, evidence, fundingEvidence, manifest, rpc, client = supportedFullExitAdmissionFixture(t, variant)
 		debtResidue = o.Snapshot.RouteLane == autoAUTOPYUSD.Lane
-	}
-	var navEvidence BridgeExecutionEvidence
-	if fundingNAV {
-		o, d, navEvidence, manifest, rpc, client, _ = fundingContinuationFixture(t, 20_000)
 	}
 	key := fmt.Sprintf("phase3-withdrawal-producer-%d", time.Now().UnixNano())
 	id := key + "-operation"
@@ -533,18 +517,6 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 		t.Fatal(err)
 	}
 	admit := func() error {
-		if leverage {
-			return db.admitPhase3LeverageSwap(ctx, rpc, client, manifest, id, o, d, fundingEvidence)
-		}
-		if redeposit {
-			return db.admitPhase3Deposit(ctx, rpc, client, manifest, id, o, d, evidence)
-		}
-		if fundingNAV {
-			return db.admitPhase3Funding(ctx, rpc, client, manifest, id, o, d, navEvidence.Request, navEvidence.ExpectedEffects)
-		}
-		if borrow {
-			return db.admitPhase3Borrow(ctx, rpc, client, manifest, id, o, d, evidence)
-		}
 		if deposit {
 			return db.admitPhase3Deposit(ctx, rpc, client, manifest, id, o, d, evidence)
 		}
@@ -581,16 +553,6 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 		confirmation = DebtClearConfirmation{RequestID: sha256Bytes([]byte(key)), ConfirmedBy: "privileged-test-operator", ConfirmationRecord: sha256Bytes([]byte(key + "-confirmation")), AcknowledgeUnavailableReborrow: true, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}
 		intent = UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "withdrawal_shortfall", ObservationID: o.Snapshot.ObservationID, MaxCollateralRaw: o.Snapshot.PositionCollateralRaw, MaxDebtRaw: 2_000, CostBoundRaw: beforeReserve, BudgetScope: Phase3GoalID, BudgetFamily: family, EvidenceID: sha256Bytes([]byte(key + "-observed-exit")), CreatedAt: time.Now().UTC()}
 		assertBudgetHold(t, db.commitUnwindIntentWithConfirmation(ctx, key, &intent, manifest, confirmation), "unwind_requires_existing_exit_reservation")
-	} else if leverage || redeposit {
-		reason := "leverage_requires_reserved_position"
-		if redeposit {
-			reason = "redeposit_requires_reserved_position"
-		}
-		assertBudgetHold(t, admit(), reason)
-		beforeReserve, beforeJSON = 10_000, "10000"
-	} else if borrow {
-		assertBudgetHold(t, admit(), "borrow_requires_reserved_position")
-		beforeReserve, beforeJSON = 10_000, "10000"
 	} else if deposit {
 		assertBudgetHold(t, admit(), "deposit_requires_reserved_collateral_custody")
 		beforeReserve, beforeJSON = 10_000, "10000"
@@ -635,16 +597,13 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 		t.Fatal("admission lost its scoped confirmation or budget family")
 	}
 	kind := "kamino"
-	if fundingNAV {
-		kind = "bridge"
-	}
-	if funding || entry || leverage {
+	if funding || entry {
 		kind = "jupiter"
 	}
 	if auth.BridgeAdmission == nil {
 		t.Fatal("production withdrawal admission omitted the admission plan")
 	}
-	wantRecovery := !(entry || deposit || borrow || leverage || redeposit)
+	wantRecovery := !(entry || deposit)
 	wantExitAfter := auth.BridgeAdmission.ExitAfterMicros
 	if wantRecovery && wantExitAfter > 0 {
 		// A nonterminal exit keeps unspent historical headroom, not just the
@@ -668,30 +627,6 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 	if release {
 		exitCount = 15
 	}
-	if fundingNAV {
-		exitCount = 16
-	}
-	if leverage || redeposit {
-		if len(auth.BridgeAdmission.Exit) != 17 || auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.FundingRelease == nil || auth.BridgeAdmission.PayoffWithdrawal == nil || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve {
-			t.Fatal("durable position entry omitted complete return")
-		}
-		if leverage {
-			if auth.BridgeAdmission.LeverageProjection == nil {
-				t.Fatal("missing swap poststate")
-			}
-			if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, fundingEvidence.Request, fundingEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
-				t.Fatal(err)
-			}
-		} else {
-			if auth.BridgeAdmission.DepositProjection == nil {
-				t.Fatal("missing redeposit poststate")
-			}
-			if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, evidence.Request, evidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return
-	}
 	if debtResidue && (len(auth.BridgeAdmission.AdditionalQuotedExits) != 1 || len(auth.BridgeAdmission.Exit) != exitCount) {
 		t.Fatal("durable reservation dropped debt conversion")
 	}
@@ -711,23 +646,11 @@ func testProductionWithdrawalAdmissionFixture(t *testing.T, url, variant string)
 	if deposit && (auth.BridgeAdmission.DepositProjection == nil || auth.BridgeAdmission.PayoffWithdrawal == nil || len(auth.BridgeAdmission.Exit) != 9 || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve) {
 		t.Fatal("durable deposit omitted simulated receipts or full return reserve")
 	}
-	if borrow && (auth.BridgeAdmission.BorrowProjection == nil || auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.Payoff.ThroughUnix != 1420 || auth.BridgeAdmission.BorrowRelease == nil || auth.BridgeAdmission.PayoffRepayment == nil || auth.BridgeAdmission.PayoffWithdrawal == nil || len(auth.BridgeAdmission.Exit) != 17 || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve) {
-		t.Fatal("durable borrowing omitted projected state or full fee/interest return")
-	}
 	if entry {
 		if len(auth.BridgeAdmission.Exit) != 7 || auth.BridgeAdmission.ExitAfterMicros <= beforeReserve {
 			t.Fatal("entry did not extend its full return reservation")
 		}
 		if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, fundingEvidence.Request, fundingEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	if fundingNAV {
-		if auth.BridgeAdmission.FundingRelease == nil || auth.BridgeAdmission.FundingSwap == nil || auth.BridgeAdmission.Payoff == nil || auth.BridgeAdmission.Payoff.ThroughUnix != 1360 {
-			t.Fatal("durable NAV omitted release and combined funding")
-		}
-		if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, navEvidence.Request, navEvidence.ExpectedEffects, auth.BuildInput.Effects); err != nil {
 			t.Fatal(err)
 		}
 		return

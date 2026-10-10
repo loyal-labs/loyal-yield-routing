@@ -81,30 +81,9 @@ type Snapshot struct {
 	// Unwind is an admitted full exit, independent of the user's claim amount.
 	Unwind bool
 	// Expired debt envelope needs fresh same-source exit admission, not a manual latch.
-	UnwindRefreshRequired bool
-	// PilotActive comes only from validated persisted budget authority.
-	// Transaction admission rechecks that authority under the route lock.
+	UnwindRefreshRequired     bool
 	InitializationPolicyReady bool
-	PilotActive               bool
-	// PilotBaselineKnown marks a validated pilot activation whose archived
-	// finalized flat evidence explains the ticket's consumed sequence before
-	// this worker's journal has any reconciled ticket-consuming operation: the
-	// approved operator cleanup consumed the report ticket to reach the flat
-	// baseline. M8 requires PilotActive alongside this flag and then compares
-	// the ticket exactly against PilotBaselineTicketSequenceRaw — the sequence
-	// archived in that evidence. It is a bookkeeping fact, not a journal row:
-	// it carries no NAV, arms nothing, and never explains any sequence other
-	// than its own.
-	PilotBaselineKnown             bool
-	PilotBaselineTicketSequenceRaw int64
-	SelectorEntryPaused            bool
-	// PilotTrancheCapLane names the one non-installed route lane whose tranche
-	// sizing may use the reviewed pilot cap: it is stamped only by the
-	// reviewed-manifest observation merge while that manifest's funded binding
-	// resolves, and it is consulted only when it equals RouteLane. It carries
-	// no amount — the tranche value stays the reviewed pilot cap — and every
-	// embedded lane closure is unchanged.
-	PilotTrancheCapLane string
+	SelectorEntryPaused       bool
 	// Exact equity authorized by a current durable selector quote.
 	SelectorEntryEquityRaw int64
 	SelectorBorrowRaw      uint64

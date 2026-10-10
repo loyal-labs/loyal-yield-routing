@@ -34,13 +34,7 @@ func testInitializationDatabaseSettlement(t *testing.T, pilot bool) {
 	stateValue := map[string]any{"generation": 1, "phase3": budget}
 	version := int64(1)
 	if pilot {
-		flat := pilotFlatFixture(t)
-		flatJSON, _ := json.Marshal(flat)
-		previous, _ := json.Marshal(budget)
 		authority := pilotTestAuthority(budget)
-		authority.Generation = 2
-		authority.FinalizedSlot = flat.Slot
-		authority.FlatEvidenceSHA256 = sha256Bytes(flatJSON)
 		var err error
 		budget, err = activatePilotBudget(budget, authority)
 		if err != nil {
@@ -49,7 +43,6 @@ func testInitializationDatabaseSettlement(t *testing.T, pilot bool) {
 		version = 2
 		stateValue["generation"] = version
 		stateValue["phase3"] = budget
-		stateValue["pilotBudgetActivation"] = pilotBudgetActivation{authority, previous, flat}
 	}
 	state, _ := json.Marshal(stateValue)
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,$3)`, key, state, version); err != nil {

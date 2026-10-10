@@ -75,7 +75,7 @@ func TestCapacitySizedOldTargetAndMarkerStayReadable(t *testing.T) {
 		t.Fatalf("old target borrowed: %+v", got)
 	}
 	marker := Decision{Action: OpenRouteStep, Reason: leverageUpReason, StrategyKey: s.RouteLane, AmountRaw: 150}
-	if _, _, _, err := selectKaminoLeg(true, marker, leverageTestPosition(100_000_000, 0)); err == nil {
+	if _, _, _, err := selectKaminoLeg(marker, leverageTestPosition(100_000_000, 0)); err == nil {
 		t.Fatal("old marker rebuilt as a new loan")
 	}
 	s.WithdrawalDemandRaw = 20_000_000

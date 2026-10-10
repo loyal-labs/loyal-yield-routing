@@ -312,17 +312,6 @@ func mustBasicPolicy(t *testing.T, family BasicPolicyFamily) BasicPolicyBinding 
 	return binding
 }
 
-func TestPhase2AllocationLeavesRoomForCanaryFeesAndLeverage(t *testing.T) {
-	decision := Decide(Snapshot{
-		ObservationID: "cap", Slot: 1, RouteKind: RouteKind, RouteLane: SelectedRouteID,
-		Fresh: true, VoltrIdleRaw: Phase2TransactionCapRaw + 1,
-		PolicyReady: true, ExitBuildable: true, CapacityRaw: Phase2TransactionCapRaw + 1, PolicyLimitRaw: Phase2TransactionCapRaw + 1, MaxTargetLTVEntryRaw: Phase2TransactionCapRaw + 1,
-	})
-	if decision.Action != VoltrAllocateToSquads || decision.AmountRaw != 500_000 {
-		t.Fatalf("selected route decision exceeded cap: %+v", decision)
-	}
-}
-
 func TestRouteNeutralActionRequiresSelectedStrategy(t *testing.T) {
 	decision := Decision{Action: OpenRouteStep, Reason: "test", AmountRaw: 1, IdempotencyKey: "test"}
 	if decision.Validate() == nil {
@@ -363,7 +352,7 @@ func TestPhase2CutoverDrainChunksLegacyCollateral(t *testing.T) {
 	if decision.Action != DeleverPrimeUSDCStep || decision.AmountRaw != Phase2TransactionCapRaw {
 		t.Fatalf("legacy cutover was not chunked: %+v", decision)
 	}
-	leg, receiptRaw, collateralRaw, err := selectKaminoLeg(false, decision, KaminoPosition{
+	leg, receiptRaw, collateralRaw, err := selectKaminoLeg(decision, KaminoPosition{
 		HasPosition: true, CollateralDepositedRaw: 1_500_000, RedeemablePrimeRaw: 1_200_000,
 	})
 	if err != nil || leg != kaminoLegWithdraw || receiptRaw != 1_000_000 || collateralRaw != 800_000 {

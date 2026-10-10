@@ -8,7 +8,6 @@ import (
 func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *testing.T) {
 	o, d, e := bridgeAdmissionFixture(t, ReportNAV, 0, 90_000_000, 0, 10_000_000)
 	o.Snapshot.RouteLane, o.Snapshot.StrategyKey = SelectedRouteID, SelectedRouteID
-	o.Snapshot.PilotActive = true
 	d.StrategyKey = SelectedRouteID
 	rpc := budgetBuildRPC(t, 5000, 42)
 	plan, err := observePhase3BridgeAdmission(context.Background(), rpc, o, d, e)
@@ -64,7 +63,6 @@ func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *te
 
 func TestSelectorSourcePricesFundedPositionAndUsesMinimumResidue(t *testing.T) {
 	o, m, rpc, client, _ := usdcReturnFixture(t)
-	o.Snapshot.PilotActive = true
 	o.Snapshot.WithdrawalDemandRaw = 0
 	o.Snapshot.ReportSnapshotDigest = sha256Bytes([]byte("controlled-source-nav"))
 	q, err := observeSelectorSource(context.Background(), rpc, client, m, o)
@@ -102,7 +100,7 @@ func TestSelectorSourcePricesFundedPositionAndUsesMinimumResidue(t *testing.T) {
 
 func TestSelectorSourceIdleNeedsNoExitAndPendingWorkPrecedesEconomics(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
-	s := Snapshot{PilotActive: true, Fresh: true, Slot: 42, ObservationID: "idle", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 10_000_000}
+	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 10_000_000}
 	q, err := observeSelectorSource(context.Background(), rpc, client, m, tickObservation(s))
 	if err != nil || q.MinimumIdleRaw != 10_000_000 || q.Recipe.CostRaw != 0 || len(q.Recipe.Inputs) != 0 {
 		t.Fatal(q, err)
@@ -123,7 +121,7 @@ func TestSelectorSourcePricesFullTenUSDCLoopWithRepaymentRelease(t *testing.T) {
 	putKey(t, obligation.Data[96:128], route.Kamino.CollateralReserve)
 	putKey(t, obligation.Data[1208:1240], route.Kamino.DebtReserve)
 	copy(accountAt(accounts, route.Kamino.Obligation).Data, obligation.Data)
-	s := Snapshot{PilotActive: true, Fresh: true, Slot: 42, ObservationID: "full-loop", RouteKind: RouteKind, RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 90_000_000,
+	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "full-loop", RouteKind: RouteKind, RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 90_000_000,
 		HasPosition: true, PositionCollateralRaw: 15_000_000, PositionCollateralValueRaw: 15_000_000, PositionDebtRaw: 5_000_000, PositionDebtValueRaw: 5_000_000, StrategyNAVRaw: 10_000_000, TotalVaultNAVRaw: 100_000_000, ReportSnapshotDigest: sha256Bytes([]byte("full-loop-nav"))}
 	before := hashConfirmedAccounts(accounts)
 	q, err := observeSelectorSource(context.Background(), rpc, client, m, tickObservation(s))
@@ -163,7 +161,6 @@ func TestSelectorSourcePricesFullTenUSDCLoopWithRepaymentRelease(t *testing.T) {
 func TestSelectorSourceRetainedObservationCannotMoveBackwards(t *testing.T) {
 	o, d, e := bridgeAdmissionFixture(t, ReportNAV, 0, 0, 0, 1_000_000)
 	o.Snapshot.RouteLane, o.Snapshot.StrategyKey = SelectedRouteID, SelectedRouteID
-	o.Snapshot.PilotActive = true
 	d.StrategyKey = SelectedRouteID
 	rpc := budgetBuildRPC(t, 5000, 42)
 	plan, err := observePhase3BridgeAdmission(context.Background(), rpc, o, d, e)
