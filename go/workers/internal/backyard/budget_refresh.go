@@ -106,7 +106,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		// Reuse the existing partner lookup table only as an address encoding
 		// hint. The compiler resolves exact keys from this closed refresh and
 		// capture set; table contents cannot introduce an instruction or signer.
-		tables, _, lookupErr := observeJupiterLookupTables(ctx, c, []string{routeValuationLookupTable}, minimumSlot)
+		tables, lookupErr := observeJupiterLookupTables(ctx, c, []string{routeValuationLookupTable}, minimumSlot)
 		if lookupErr != nil {
 			return 0, nil, budgetHold("price_refresh_lookup_unavailable")
 		}
@@ -148,5 +148,5 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		}
 		accounts[i] = confirmedAccount(addresses[i], a)
 	}
-	return minimumSlot, accounts, nil
+	return int64(simulated.Slot), accounts, nil
 }

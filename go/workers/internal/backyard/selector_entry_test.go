@@ -548,9 +548,6 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	o := tickObservation(fresh)
 	o.ObservedAt = time.Now().UTC()
 	source := selectorSourceQuote{Lane: fresh.RouteLane, ObservationID: fresh.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: fresh.PositionCollateralRaw, MaxDebtRaw: fresh.PositionDebtRaw + 1000}, Recipe: selectorRecipe{Costs: []ValuedTransactionCost{{ObservationSlot: fresh.Slot, TotalMicros: 10_000_000}}, EvidenceID: sha256Bytes([]byte("fresh-full-exit")), ValidThroughSlot: fresh.Slot + 32}}
-	lagging := source
-	lagging.Recipe.Costs = []ValuedTransactionCost{{ObservationSlot: fresh.Slot + 1, TotalMicros: 10_000_000}}
-	assertBudgetHold(t, restarted.renewSelectorUnwind(ctx, key, 3, *intent, o, lagging, fresh.Slot), "unwind_refresh_evidence_unavailable")
 	empty := source
 	empty.Recipe.Costs = nil
 	assertBudgetHold(t, restarted.renewSelectorUnwind(ctx, key, 3, *intent, o, empty, fresh.Slot), "unwind_refresh_evidence_unavailable")

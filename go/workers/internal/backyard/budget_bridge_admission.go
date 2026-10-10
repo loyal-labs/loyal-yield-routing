@@ -204,8 +204,8 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 	}
 	// These valuation reads have no dependency on one another. The closed
 	// cash-return graph has at most six fee messages and two prices. Give
-	// every read the same confirmed floor, then validate every result against
-	// a final confirmed slot; an earlier response never extends freshness.
+	// every read the same view floor, then validate every result against the
+	// newest slot any read saw; an earlier response never extends freshness.
 	minimumSlot := max(slot, observation.Snapshot.Slot)
 	feeErrors := make([]error, len(steps))
 	var token, sol BudgetPrice
@@ -245,6 +245,10 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 	slot, err = view.slot(ctx)
 	if err != nil {
 		return plan, err
+	}
+	slot = max(slot, sol.ObservedSlot, token.ObservedSlot)
+	for _, fee := range fees {
+		slot = max(slot, fee.Slot)
 	}
 	// Every bridge wire carries a report for this snapshot slot, and the adaptor
 	// refuses a report older than adaptorMaxReportAgeSlots (Custom 9): the wider

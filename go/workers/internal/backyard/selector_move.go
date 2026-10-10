@@ -145,7 +145,7 @@ func composeSelectorMoveWithLane(ctx context.Context, view *View, o Observation,
 	if source.Recipe.NetworkLamports > math.MaxUint64-destination.Recipe.NetworkLamports || source.Recipe.SetupLamports > math.MaxUint64-destination.Recipe.SetupLamports {
 		return q, budgetHold("selector_move_native_overflow")
 	}
-	slot, accounts, _, err := view.read(ctx, []string{bridgeDelegate, bridgeVault}, floor)
+	slot, accounts, _, err := view.read(ctx, []string{bridgeDelegate, bridgeVault}, s.Slot)
 	if err != nil {
 		return q, err
 	}

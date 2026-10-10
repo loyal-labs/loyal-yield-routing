@@ -80,7 +80,7 @@ func (d *Database) renewSelectorUnwindOnManifest(ctx context.Context, manifest R
 		floor = max(floor, cost.ObservationSlot)
 	}
 	current := func() bool {
-		return freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) && s.Slot > 0 && confirmedSlot >= floor && confirmedSlot <= source.Recipe.ValidThroughSlot && source.Recipe.ValidThroughSlot-s.Slot <= observationLagSlots()
+		return freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) && s.Slot > 0 && max(confirmedSlot, floor) <= source.Recipe.ValidThroughSlot && source.Recipe.ValidThroughSlot-s.Slot <= observationLagSlots()
 	}
 	if manifest.validateUnwindIntent(previous) != nil || !current() || !s.Fresh || !s.Unwind || !s.UnwindRefreshRequired || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain || s.RouteLane != previous.SourceLane || source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || s.ObservationID == "" || source.ExitBound == nil || !sha256Pattern.MatchString(source.Recipe.EvidenceID) || s.PositionCollateralRaw < 0 || s.PositionCollateralRaw > previous.MaxCollateralRaw || source.ExitBound.MaxCollateralRaw != s.PositionCollateralRaw || s.PositionDebtRaw <= previous.MaxDebtRaw || source.ExitBound.MaxDebtRaw < s.PositionDebtRaw {
 		return budgetHold("unwind_refresh_evidence_unavailable")

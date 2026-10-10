@@ -55,8 +55,7 @@ func simulatePhase3EntryProjection(ctx context.Context, c *chain.Client, message
 	if slot-minimumSlot > observationLagSlots() || simulated.Units == 0 {
 		return projection, budgetHold("deposit_projection_failed")
 	}
-	// Like every RPC read a plan relies on, it carries the slot it was floored at.
-	projection.Slot, projection.MessageSHA256, projection.UnitsConsumed = minimumSlot, sha256Bytes(message), simulated.Units
+	projection.Slot, projection.MessageSHA256, projection.UnitsConsumed = slot, sha256Bytes(message), simulated.Units
 	for i, a := range simulated.Accounts {
 		if a == nil || a.Executable {
 			return projection, budgetHold("deposit_projection_incomplete")

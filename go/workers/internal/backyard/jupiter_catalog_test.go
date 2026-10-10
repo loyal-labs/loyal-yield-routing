@@ -174,7 +174,7 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 							{func(s *LookupTableSnapshot) { s.Owner = classicTokenProgram }, "lookup_account_invalid"},
 						} {
 							rpc, _ := lookupRPC(t, request.LookupTables, tc.mutate, false)
-							_, err := revalidateJupiterLookupTables(context.Background(), rpc, request, request.LookupTables[0].ObservedSlot)
+							err := revalidateJupiterLookupTables(context.Background(), rpc, request, request.LookupTables[0].ObservedSlot)
 							assertBudgetHold(t, err, tc.reason)
 						}
 					}

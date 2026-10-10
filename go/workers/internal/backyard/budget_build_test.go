@@ -1,11 +1,13 @@
 package backyard
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"sync/atomic"
@@ -194,6 +196,36 @@ func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
 			t.Fatalf("unconfigured builder reached signer: %v", err)
 		}
 	})
+}
+
+// A fee read ahead of the view is valued at its own slot: the view's prices
+// keep their window, and a fee too far ahead of them holds.
+func TestKnownBuildCostValuesAFeeReadAheadOfTheView(t *testing.T) {
+	_, _, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
+	for _, tc := range []struct {
+		feeSlot int64
+		hold    string
+	}{{70, ""}, {80, "missing_stale_or_mismatched_usdc_valuation"}} {
+		rpc := budgetBuildRPC(t, 5_000, 42)
+		view, base := fixtureView(t, rpc), rpcOf(rpc).Transport
+		rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			res, err := base.RoundTrip(request)
+			if err != nil {
+				return nil, err
+			}
+			body, _ := io.ReadAll(res.Body)
+			body = bytes.Replace(body, []byte(`"context":{"slot":42},"value":5000`), []byte(fmt.Sprintf(`"context":{"slot":%d},"value":5000`, tc.feeSlot)), 1)
+			return response(string(body)), nil
+		})
+		cost, err := observePhase3KnownBuildCost(context.Background(), rpc, view, evidence.Request, evidence.ExpectedEffects)
+		if tc.hold != "" {
+			assertBudgetHold(t, err, tc.hold)
+			continue
+		}
+		if err != nil || cost.ObservationSlot != 70 || cost.Fee.Slot != 70 || cost.NativePrice.ObservedSlot != 42 || cost.ValidThroughSlot != 74 {
+			t.Fatalf("fee ahead of the view lost a slot: %+v %v", cost, err)
+		}
+	}
 }
 
 // A failed read stops the pricing pass as the serial sequence did: the reads

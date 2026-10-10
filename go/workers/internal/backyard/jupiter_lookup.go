@@ -99,22 +99,22 @@ func validateJupiterLookupIdentities(r JupiterSwapRequest) error {
 	return nil
 }
 
-func observeJupiterLookupTables(ctx context.Context, rpc *chain.Client, addresses []string, minimumSlot int64) ([]LookupTableSnapshot, int64, error) {
+func observeJupiterLookupTables(ctx context.Context, rpc *chain.Client, addresses []string, minimumSlot int64) ([]LookupTableSnapshot, error) {
 	if rpc == nil {
-		return nil, 0, budgetHold("lookup_observation_unavailable")
+		return nil, budgetHold("lookup_observation_unavailable")
 	}
-	_, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
+	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
 	if err != nil {
-		return nil, 0, budgetHold("lookup_observation_unavailable")
+		return nil, budgetHold("lookup_observation_unavailable")
 	}
 	tables := make([]LookupTableSnapshot, len(accounts))
 	for i, a := range accounts {
-		tables[i] = LookupTableSnapshot{Address: a.Address, Owner: a.Owner, Lamports: a.Lamports, Executable: a.Executable, Data: a.Data, ObservedSlot: minimumSlot}
+		tables[i] = LookupTableSnapshot{Address: a.Address, Owner: a.Owner, Lamports: a.Lamports, Executable: a.Executable, Data: a.Data, ObservedSlot: slot}
 		if _, err := decodeMessageLookupTable(tables[i]); err != nil {
-			return nil, 0, budgetHold("lookup_account_invalid")
+			return nil, budgetHold("lookup_account_invalid")
 		}
 	}
-	return tables, minimumSlot, nil
+	return tables, nil
 }
 
 // prepareJupiterLookupTables compiles for callers holding only the embedded
@@ -139,7 +139,7 @@ func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *chai
 	if len(addresses) == 0 {
 		return r, fmt.Errorf("Jupiter message requires unsupported construction")
 	}
-	tables, _, err := observeJupiterLookupTables(ctx, rpc, addresses, minimumSlot)
+	tables, err := observeJupiterLookupTables(ctx, rpc, addresses, minimumSlot)
 	if err != nil {
 		return r, err
 	}
@@ -151,31 +151,31 @@ func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *chai
 // Called by the common build-cost gate before signer access AND the persisted
 // wire's final-send revaluation. Appends are allowed, but can never change the
 // persisted message: its entire referenced prefix must still resolve identically.
-func revalidateJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) (int64, error) {
+func revalidateJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) error {
 	if err := validateJupiterLookupIdentities(r); err != nil {
-		return 0, budgetHold("lookup_identity_invalid")
+		return budgetHold("lookup_identity_invalid")
 	}
 	if len(r.LookupTables) == 0 {
-		return minimumSlot, nil
+		return nil
 	}
 	for _, s := range r.LookupTables {
 		minimumSlot = max(minimumSlot, s.ObservedSlot)
 	}
-	fresh, slot, err := observeJupiterLookupTables(ctx, rpc, jupiterLookupAddresses(r), minimumSlot)
+	fresh, err := observeJupiterLookupTables(ctx, rpc, jupiterLookupAddresses(r), minimumSlot)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	for i, retained := range r.LookupTables {
 		old, _ := decodeMessageLookupTable(retained)
 		now, _ := decodeMessageLookupTable(fresh[i])
 		if len(now.addresses) < len(old.addresses) {
-			return 0, budgetHold("lookup_mapping_changed")
+			return budgetHold("lookup_mapping_changed")
 		}
 		for j, key := range old.addresses {
 			if key != now.addresses[j] {
-				return 0, budgetHold("lookup_mapping_changed")
+				return budgetHold("lookup_mapping_changed")
 			}
 		}
 	}
-	return slot, nil
+	return nil
 }

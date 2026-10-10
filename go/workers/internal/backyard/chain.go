@@ -160,9 +160,8 @@ type MessageFeeObservation struct {
 }
 
 // observeMessageFee asks the chain to price the exact unsigned message,
-// including its compute-budget instructions, at minimumSlot or later, and
-// labels the fee with minimumSlot. Null (expired blockhash) or any failed read
-// is a HOLD, never a zero-fee assumption.
+// including its compute-budget instructions. Null (expired blockhash) or any
+// failed read is a HOLD, never a zero-fee assumption.
 func observeMessageFee(ctx context.Context, c *chain.Client, message []byte, minimumSlot int64) (MessageFeeObservation, error) {
 	if _, err := checkedUnsignedMessage(message); err != nil {
 		return MessageFeeObservation{}, err
@@ -170,11 +169,11 @@ func observeMessageFee(ctx context.Context, c *chain.Client, message []byte, min
 	if minimumSlot <= 0 {
 		return MessageFeeObservation{}, budgetHold("invalid_fee_observation_slot")
 	}
-	fee, _, err := c.Fee(ctx, message, rpc.CommitmentConfirmed, uint64(minimumSlot))
+	fee, slot, err := c.Fee(ctx, message, rpc.CommitmentConfirmed, uint64(minimumSlot))
 	if err != nil || fee == 0 {
 		return MessageFeeObservation{}, budgetHold("network_fee_unavailable")
 	}
-	return MessageFeeObservation{MessageSHA256: sha256Bytes(message), Slot: minimumSlot, Lamports: fee}, nil
+	return MessageFeeObservation{MessageSHA256: sha256Bytes(message), Slot: int64(slot), Lamports: fee}, nil
 }
 
 // simulateSigned verifies the exact signed bytes that would later be

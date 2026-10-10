@@ -183,8 +183,9 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 	}
 	sort.Strings(keys)
 	// Compile and validate the entire recipe before starting any read. All
-	// exact-message fees and independent prices use the prerequisite floor;
-	// retain their individual slots and validate them at the final slot.
+	// exact-message fees use the prerequisite floor and the view prices the
+	// sample slot; retain their individual slots and validate them at the
+	// newest one.
 	// Four reads per recipe bounds fanout even when all three lanes quote.
 	floor := slot
 	tokenPrices := make([]BudgetPrice, len(keys))
@@ -195,9 +196,9 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 			steps[i].fee, err = observeMessageFee(ctx, rpc, steps[i].message, floor)
 		case i < len(steps)+len(keys):
 			j := i - len(steps)
-			tokenPrices[j], err = ObserveBudgetTokenPrice(ctx, rpc, view, lane, sources[keys[j]], floor)
+			tokenPrices[j], err = ObserveBudgetTokenPrice(ctx, rpc, view, lane, sources[keys[j]], minimumSlot)
 		default:
-			sol, err = ObserveNativeSOLBudgetPrice(ctx, rpc, view, floor)
+			sol, err = ObserveNativeSOLBudgetPrice(ctx, rpc, view, minimumSlot)
 		}
 		return err
 	}); err != nil {
@@ -223,7 +224,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 	if err != nil {
 		return out, err
 	}
-	if nowSlot < slot || nowSlot > out.ValidThroughSlot {
+	if nowSlot = max(nowSlot, slot); nowSlot > out.ValidThroughSlot {
 		return out, budgetHold("selector_recipe_observation_expired")
 	}
 	expectedTotal := int64(0)

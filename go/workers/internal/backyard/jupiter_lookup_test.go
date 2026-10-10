@@ -260,11 +260,11 @@ func TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping(t *testing.T) 
 	if err != nil || !bytes.Equal(message, again) {
 		t.Fatal("persisted hint changed wire", err)
 	}
-	if _, err := revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot); err != nil {
+	if err := revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot); err != nil {
 		t.Fatal("final-send cannot revalidate fresh hint", err)
 	}
 	rpc, _ = lookupRPC(t, r.LookupTables, func(s *LookupTableSnapshot) { s.Data[56] ^= 1 }, false)
-	_, err = revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot)
+	err = revalidateJupiterLookupTables(context.Background(), rpc, restored, r.LookupTables[0].ObservedSlot)
 	assertBudgetHold(t, err, "lookup_mapping_changed")
 	for _, addresses := range [][]string{{"not-a-key"}, {bridgeVault, bridgeVault}, {bridgeVault, bridgeDelegate, bridgeUSDC, bridgeSquadsATA, bridgeTokenProgram}} {
 		bad := input

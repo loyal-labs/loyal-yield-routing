@@ -366,7 +366,7 @@ func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, vie
 	if err != nil {
 		return out, err
 	}
-	if slot < observationFloor || slot > out.Recipe.ValidThroughSlot {
+	if max(slot, observationFloor) > out.Recipe.ValidThroughSlot {
 		return out, budgetHold("selector_recipe_observation_expired")
 	}
 	raw, err := json.Marshal(out)

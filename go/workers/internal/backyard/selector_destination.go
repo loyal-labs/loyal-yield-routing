@@ -320,7 +320,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 	// downwards at the established budget price observation before the result
 	// may bound a USDC equity; USDC lanes keep exact raw==USDC parity.
 	if capacity > 0 {
-		debtPrice, err := selectorDestinationDebtPrice(ctx, rpc, view, route, int64(capacity/2), slot)
+		debtPrice, err := selectorDestinationDebtPrice(ctx, rpc, view, route, int64(capacity/2), sampleSlot)
 		if err != nil {
 			return out, err
 		}
@@ -391,10 +391,10 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 			// Forecast-only prestate: the initializer is priced against the
 			// exact observed funded obligation this exit will close. The
 			// execution admission wrapper stays strictly absent-only.
-			if initSlot, err = m.validateKaminoReentryForecastPrestate(ctx, view, r, slot, reentry.bound); err != nil {
+			if initSlot, err = m.validateKaminoReentryForecastPrestate(ctx, view, r, sampleSlot, reentry.bound); err != nil {
 				return out, err
 			}
-		} else if initSlot, err = m.validateKaminoInitializationPrestate(ctx, view, r, slot); err != nil {
+		} else if initSlot, err = m.validateKaminoInitializationPrestate(ctx, view, r, sampleSlot); err != nil {
 			return out, err
 		}
 		observationFloor = max(slot, initSlot)
@@ -603,7 +603,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 			if err != nil {
 				return out, err
 			}
-			assetPrice, err := ObserveBudgetTokenPrice(ctx, rpc, view, lane, ExecutableDebit{Source: route.CollateralCustody, Mint: route.Kamino.CollateralMint, TokenProgram: route.CollateralTokenProgram, Raw: deposited}, slot)
+			assetPrice, err := ObserveBudgetTokenPrice(ctx, rpc, view, lane, ExecutableDebit{Source: route.CollateralCustody, Mint: route.Kamino.CollateralMint, TokenProgram: route.CollateralTokenProgram, Raw: deposited}, sampleSlot)
 			if err != nil {
 				return out, err
 			}

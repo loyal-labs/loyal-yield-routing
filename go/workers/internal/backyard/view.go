@@ -325,9 +325,10 @@ func (v *View) sync(ctx context.Context) {
 	}
 }
 
-// slot is S of the live view: the "current slot" of planning and the floor of
-// its reads. No floor comes from an RPC node; an RPC read that must not
-// predate the view takes S as its minContextSlot and is labelled with it.
+// slot is S of the live view: the "current slot" of planning. A view read's
+// floor is a snapshot or decision slot, or our own receipt slot, never an RPC
+// node's slot; an RPC read that must not predate the view takes S as its
+// minContextSlot and keeps its own context slot.
 func (v *View) slot(ctx context.Context) (int64, error) {
 	slot, _, _, err := v.read(ctx, nil, 0)
 	return slot, err

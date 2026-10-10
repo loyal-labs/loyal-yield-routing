@@ -21,7 +21,7 @@ func validateBuildPrestate(ctx context.Context, rpc *chain.Client, view *View, r
 // the initializer's obligation is still absent, a full payoff still covers the
 // debt, a borrow still fits capacity and the loop LTV, a repayment release and
 // the leverage, entry and funding swaps still see their custody, and the
-// lookup tables are unchanged. It returns the confirmed slot of those reads.
+// lookup tables are unchanged. It returns the view slot of those reads.
 func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.Client, view *View, request any, effects ExpectedEffects) (int64, error) {
 	if _, err := m.measureExecutableDebit(request, effects); err != nil {
 		return 0, err
@@ -86,7 +86,9 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 			}
 			slot = max(slot, bound.ObservedSlot)
 		}
-		return revalidateJupiterLookupTables(ctx, rpc, r, slot)
+		if err := revalidateJupiterLookupTables(ctx, rpc, r, slot); err != nil {
+			return 0, err
+		}
 	}
 	return slot, nil
 }
