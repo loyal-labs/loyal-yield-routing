@@ -187,7 +187,7 @@ func (e *events) tickResult(err error, fatal bool) {
 	}
 	code := errorCode(err)
 	if !fatal {
-		e.log.Warn("backyard_tick_deferred", "code", code, "action", string(action))
+		e.log.Warn("backyard_tick_deferred", "code", code, "action", string(action), "detail", sanitizedDetail(err.Error()))
 		return
 	}
 	e.log.Error("backyard_worker_exit", "code", code, "action", string(action), "hold", holdDetail(err), "detail", sanitizedDetail(err.Error()))

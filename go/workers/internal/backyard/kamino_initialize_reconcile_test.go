@@ -95,7 +95,7 @@ func TestInitializationRPCBindsThePersistedWireAndRejectsUnexpectedMetadata(t *t
 				encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": result})
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
 			})
-			got, err := observeFinalizedKaminoInitialization(context.Background(), rpc, r, op)
+			got, err := embeddedTestManifest(t).observeFinalizedKaminoInitialization(context.Background(), rpc, r, op)
 			if err == nil {
 				_, _, err = ReconcileConfirmedTransaction(e, got)
 			}

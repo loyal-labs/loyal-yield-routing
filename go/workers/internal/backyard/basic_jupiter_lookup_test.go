@@ -116,7 +116,7 @@ func TestBasicSwapLegsBuildLegacyOrV0FromQuotedLookupHints(t *testing.T) {
 					if err != nil || message[0] != 1 {
 						t.Fatalf("fitting basic lane leg did not stay legacy: %v", err)
 					}
-					prepared, err := prepareJupiterLookupTables(context.Background(), nil, request, 1)
+					prepared, err := embeddedTestManifest(t).prepareJupiterLookupTables(context.Background(), nil, request, 1)
 					if err != nil || len(prepared.LookupTables) != 0 {
 						t.Fatalf("fitting leg reached chain lookup preparation: %v", err)
 					}
@@ -142,7 +142,7 @@ func TestBasicSwapLegsBuildLegacyOrV0FromQuotedLookupHints(t *testing.T) {
 				rpc, reads := lookupRPC(t, tables, nil, false)
 				unprepared := request
 				unprepared.LookupTables = nil
-				prepared, err := prepareJupiterLookupTables(context.Background(), rpc, unprepared, tables[0].ObservedSlot)
+				prepared, err := embeddedTestManifest(t).prepareJupiterLookupTables(context.Background(), rpc, unprepared, tables[0].ObservedSlot)
 				if err != nil || *reads != 1 || len(prepared.LookupTables) != len(tables) {
 					t.Fatalf("basic lane preparation did not load the hinted chain tables: %v", err)
 				}

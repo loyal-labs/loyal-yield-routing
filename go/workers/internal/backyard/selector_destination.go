@@ -150,7 +150,7 @@ func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, vie
 		route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm,
 		budgetClockAddress, bridgeVault, bridgeDelegate, bridgeStrategy, reportTicketPDA}
 	optional := uniqueNonzero([]string{route.Kamino.Obligation, route.ObligationCollateralFarm, route.ObligationDebtFarm})
-	slot, accounts, _, err := view.read(ctx, uniqueNonzero(addresses), minimumSlot, optional...)
+	slot, accounts, err := view.read(ctx, uniqueNonzero(addresses), minimumSlot, optional...)
 	if err != nil {
 		return 0, nil, empty, err
 	}

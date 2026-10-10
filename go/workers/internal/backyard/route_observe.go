@@ -32,7 +32,7 @@ func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view 
 		read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
 			// A null strategy receipt must reach the integrity classifier
 			// instead of failing the batch as a required absent account.
-			return view.read(ctx, addresses, minSlot, append(optionalLifecycleObligations(addresses), bridgeStrategyReceipt)...)
+			return view.readWithReceipts(ctx, addresses, minSlot, append(optionalLifecycleObligations(addresses), bridgeStrategyReceipt)...)
 		},
 		refreshValuation: func(ctx context.Context, route RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
 			return simulateRouteValuationRefresh(ctx, rpc, route, addresses, minSlot)

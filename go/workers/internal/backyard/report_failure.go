@@ -8,10 +8,8 @@ package backyard
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -46,13 +44,7 @@ const squadsSpendingLimitReason = "squads_spending_limit_exceeded"
 
 // adaptorMaxReportAgeSlots is the deployed adaptor config's max report age.
 const (
-	adaptorMaxReportAgeSlots = int64(32)
-	// failureReceiptRetryWindow bounds how long a settled failure keeps its
-	// ambiguous submission state while its receipt is unreadable. A lagging or
-	// pruned RPC may recover later. Past this window recheck finalized status,
-	// but never terminate the row without the complete failure receipt.
-	failureReceiptRetryWindow        = 15 * time.Minute
-	failureReceiptUnavailableReason  = "failure_receipt_unavailable"
+	adaptorMaxReportAgeSlots         = int64(32)
 	unclassifiedTransactionErrReason = "confirmed_transaction_error"
 )
 
@@ -63,18 +55,6 @@ const (
 type ConfirmedFailureClassification struct {
 	Retryable bool
 	Reason    string
-	// ReceiptUnavailable marks a settled failure whose receipt could not be
-	// read at all (lagging or pruned RPC, truncated logs). Nothing is proven
-	// either way, so the row keeps its ambiguous submission state and the
-	// receipt is fetched again on later ticks.
-	ReceiptUnavailable bool
-}
-
-// ConfirmedFailureEvidence is the immutable failure receipt of one signature.
-type ConfirmedFailureEvidence struct {
-	Slot int64
-	Err  json.RawMessage
-	Logs []string
 }
 
 // decodeInstructionErrorCustom returns the innermost InstructionError custom
@@ -228,141 +208,22 @@ func squadsSpendingLimitExceeded(rawErr json.RawMessage, logs []string) bool {
 	return ok && code == squads.ErrSpendingLimitExceeded && failingProgramFromLogs(logs) == squads.ProgramID.String()
 }
 
-// ReportExpiredAtLanding reports whether the landing slot is already past the
-// adaptor's maximum report age. Any failure of a report-bearing wire at such a
-// slot is independent of the decoded error: the report can no longer be armed,
-// so the transaction cannot have moved capital.
-func ReportExpiredAtLanding(observedSlot, landingSlot int64) bool {
-	return observedSlot > 0 && landingSlot > observedSlot+adaptorMaxReportAgeSlots
-}
-
-// persistedReportObservedSlot reads the wire's own report slot back from the
-// persisted build input. Only report-bearing bridge wires carry a report, so
-// other actions return zero and never classify as an expired report.
-func (d *Database) persistedReportObservedSlot(ctx context.Context, operationID string) (int64, error) {
-	if d == nil || d.pool == nil || operationID == "" {
-		return 0, fmt.Errorf("report slot database is not configured")
-	}
-	// The build input's request bytes are stored as a JSONB string (the
-	// canonical encoding), so the typed phase3BuildInput decode restores them;
-	// selecting the nested `request` object directly would return that string
-	// and silently read a zero report slot.
-	var encoded []byte
-	if err := d.pool.QueryRow(ctx, `SELECT expected_effects->'phase3'->'buildInput' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&encoded); err != nil {
-		return 0, fmt.Errorf("read persisted build request: %w", err)
-	}
-	var input phase3BuildInput
-	if len(encoded) == 0 || json.Unmarshal(encoded, &input) != nil {
-		return 0, nil
-	}
-	decoded, _, _, err := input.decode()
-	if err != nil {
-		return 0, nil
-	}
-	bridge, ok := decoded.(BridgeBuildRequest)
-	if !ok {
-		// Only report-bearing bridge wires carry a report slot to fence on.
-		return 0, nil
-	}
-	if bridge.Report.ObservedSlot > uint64(int64(^uint64(0)>>1)) {
-		return 0, fmt.Errorf("persisted report slot exceeds signed range")
-	}
-	return int64(bridge.Report.ObservedSlot), nil
-}
-
-// broadcastIntentAt reads when the wire's submission was journaled. That
-// timestamp is the durable clock for the receipt retry window; a missing one
-// never expires the window.
-func (d *Database) broadcastIntentAt(ctx context.Context, operationID string) (time.Time, error) {
-	if d == nil || d.pool == nil || operationID == "" {
-		return time.Time{}, fmt.Errorf("receipt retry database is not configured")
-	}
-	var sentAt time.Time
-	if err := d.pool.QueryRow(ctx, `SELECT broadcast_intent_at FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&sentAt); err != nil {
-		return time.Time{}, fmt.Errorf("read broadcast intent time: %w", err)
-	}
-	return sentAt, nil
-}
-
-// receiptRetryExpired bounds when unreadable receipts trigger another finalized
-// status read. Elapsed time alone never proves a zero-fee failure.
-func receiptRetryExpired(sentAt, now time.Time) bool {
-	return !sentAt.IsZero() && now.Sub(sentAt) > failureReceiptRetryWindow
-}
-
-// classifyPersistedFailure decodes the failure receipt of a broadcast
-// signature. A readable receipt yields either a retryable adaptor proof or an
-// unclassified capital stop; an unreadable one yields the bounded
-// receipt-unavailable outcome instead of an immediate manual recovery.
-func (d *Database) classifyPersistedFailure(ctx context.Context, rpc *chain.Client, operation PersistedOperation) (ConfirmedFailureClassification, bool) {
-	evidence, err := failedTransactionEvidence(ctx, rpc, operation.TransactionSignature)
-	if err != nil {
-		return d.unreadableReceiptOutcome(ctx, operation)
-	}
-	if classification := ClassifyConfirmedReportFailure(evidence.Err, evidence.Logs); classification.Retryable {
-		return classification, true
-	}
-	observed, err := d.persistedReportObservedSlot(ctx, operation.ID)
-	if err == nil && ReportExpiredAtLanding(observed, evidence.Slot) {
-		return ConfirmedFailureClassification{Retryable: true, Reason: "report_expired_at_landing"}, true
-	}
-	return ConfirmedFailureClassification{}, false
-}
-
-// unreadableReceiptOutcome keeps a settled-but-unreadable failure in its
-// ambiguous submission state, so later ticks fetch the receipt again, and
-// rechecks finalized status once the retry window is exhausted.
-func (d *Database) unreadableReceiptOutcome(ctx context.Context, operation PersistedOperation) (ConfirmedFailureClassification, bool) {
-	classification := ConfirmedFailureClassification{Reason: failureReceiptUnavailableReason, ReceiptUnavailable: true}
-	sentAt, err := d.broadcastIntentAt(ctx, operation.ID)
-	if err != nil {
-		return classification, false
-	}
-	return classification, receiptRetryExpired(sentAt, time.Now())
-}
-
-// recoverConfirmedFailure replaces the unconditional manual-recovery mapping
-// for failed broadcasts. Retryable adaptor failures terminate in `failed` so
-// the next tick can decide again; UnresolvedCapitalRecoverySQL never sees them.
-// Manual recovery is reserved for a readable receipt that proves a
-// non-retryable error, never for an RPC that simply could not answer.
+// recoverConfirmedFailure settles one failed broadcast from its finalized
+// receipt, read once. A classified refusal of a report-bearing wire
+// terminates in `failed`, so the next tick plans again from fresh state;
+// UnresolvedCapitalRecoverySQL never sees it. Every other failure latches
+// manual recovery. A receipt that is not finalized yet leaves the row in its
+// submission state, and the next tick lands it again.
 func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *chain.Client, operation PersistedOperation) error {
-	classification, terminal := d.classifyPersistedFailure(ctx, rpc, operation)
-	if classification.ReceiptUnavailable {
-		if !terminal {
-			// Nothing is proven either way: keep the row in its ambiguous
-			// submission state and retry the receipt on the next tick.
-			return nil
-		}
-		// The wall-time window only triggers this finalized re-read; it never
-		// terminates on its own. A merely confirmed failure can still be
-		// forked away, and a confirmation that settles as a success must reach
-		// the confirmation path instead of a terminal `failed`.
-		status, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
-		if err != nil {
-			return nil
-		}
-		if status.Failed {
-			if !status.Finalized {
-				return nil
-			}
-			// Status alone cannot prove the exact wire's atomic rollback. Keep
-			// the row until its receipt returns.
-			return nil
-		}
-		if status.Settled {
-			return d.MarkConfirmed(ctx, operation.ID, operation.Status, status.ConfirmationSlot)
-		}
-		// Not finalized yet, or absent: keep observing.
-		return nil
+	receipt, err := readFailureReceipt(ctx, rpc, operation.TransactionSignature)
+	if err != nil {
+		return err
 	}
-	if !terminal {
+	classification := ClassifyConfirmedReportFailure(receipt.Meta.Err, receipt.Meta.LogMessages)
+	if !classification.Retryable || !isSettleableReportFailure(operation.Decision.Action, classification.Reason) {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unclassifiedTransactionErrReason)
 	}
-	if !isSettleableReportFailure(operation.Decision.Action, classification.Reason) {
-		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unclassifiedTransactionErrReason)
-	}
-	return d.settleFinalizedReportFailure(ctx, rpc, operation, classification.Reason, false)
+	return d.settleFinalizedReportFailure(ctx, operation, receipt, classification.Reason, false)
 }
 
 // isSettleableReportFailure scopes automatic finalized-fee settlement to the

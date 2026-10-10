@@ -130,43 +130,19 @@ func reconcileKaminoInitializationAdmission(e ExpectedEffects, receipt Confirmed
 	return Reconciliation{ConfirmedSlot: receipt.Slot, EffectsSHA256: sha256Bytes(evidence), Conserved: true}, evidence, nil
 }
 
-// Recovery reads the immutable receipt for the persisted wire. Account presence
-// alone never establishes which submission created it or authorizes a retry.
-func observeFinalizedKaminoInitialization(ctx context.Context, rpc *chain.Client, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
-	return observeFinalizedKaminoInitializationAdmission(ctx, rpc, r, op, CompileKaminoInitializationMessage, observeInitializerDecisionInstalled)
-}
-
-// observeInitializerDecisionInstalled is the exact installed journal-decision
-// check the public observer has always applied.
-func observeInitializerDecisionInstalled(d Decision, r KaminoInitializationRequest) error {
-	if d.Action != InitializeKaminoObligation || d.StrategyKey != r.RouteLane || d.Validate() != nil {
-		return fmt.Errorf("initializer journal decision differs")
-	}
-	return nil
-}
-
-// observeFinalizedKaminoInitialization is the manifest-aware variant: the same
-// receipt observer with the persisted-wire recompilation and the journal
-// decision validation resolved through the explicit reviewed manifest, so
-// recovery re-derives the candidate AUTO wire from its persisted request.
-// The public form above is unchanged.
+// observeFinalizedKaminoInitialization reads the immutable receipt for the
+// persisted wire, recompiled and its journal decision validated through the
+// explicit reviewed manifest. Account presence alone never establishes which
+// submission created it or authorizes a retry.
 func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context, rpc *chain.Client, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
-	return observeFinalizedKaminoInitializationAdmission(ctx, rpc, r, op, m.compileKaminoInitializationMessage, m.validateInitializerDecision)
-}
-
-// observeFinalizedKaminoInitializationAdmission is the shared observer body;
-// the installed and manifest forms differ only in the compiler that must
-// reproduce the exact persisted wire and in the decision validator applied to
-// the journal decision.
-func observeFinalizedKaminoInitializationAdmission(ctx context.Context, rpc *chain.Client, r KaminoInitializationRequest, op PersistedOperation, compile func(KaminoInitializationRequest) ([]byte, error), validateDecision func(Decision, KaminoInitializationRequest) error) (ConfirmedTransactionEvidence, error) {
 	var out ConfirmedTransactionEvidence
 	if rpc == nil {
 		return out, fmt.Errorf("initializer RPC unavailable")
 	}
-	if err := validateDecision(op.Decision, r); err != nil {
+	if err := m.validateInitializerDecision(op.Decision, r); err != nil {
 		return out, err
 	}
-	message, err := compile(r)
+	message, err := m.compileKaminoInitializationMessage(r)
 	if err != nil {
 		return out, err
 	}

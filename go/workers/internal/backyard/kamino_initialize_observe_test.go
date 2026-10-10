@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -146,19 +147,24 @@ func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 	rent := accounts["SysvarRent111111111111111111111111111111111"]
 	binary.LittleEndian.PutUint64(rent.Data, 1000)
 	e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
-	rpc := newFakeChain(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		var body struct {
-			Method string
-			ID     any
-		}
-		_ = json.NewDecoder(req.Body).Decode(&body)
-		if body.Method != "getFeeForMessage" {
-			t.Fatal("unexpected build RPC", body.Method)
-		}
-		encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": map[string]any{"context": map[string]any{"slot": 60}, "value": 5000}})
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
-	}))
-	cost, err := observePhase3KnownBuildCost(context.Background(), rpc, initializationView(t, accounts), r, e)
+	feeAt := func(slot int64) *chain.Client {
+		return newFakeChain(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			var body struct {
+				Method string
+				ID     any
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			if body.Method != "getFeeForMessage" {
+				t.Fatal("unexpected build RPC", body.Method)
+			}
+			encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": map[string]any{"context": map[string]any{"slot": slot}, "value": 5000}})
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
+		}))
+	}
+	// A fee read 33 slots past the prestate read is past its window.
+	_, err := observePhase3KnownBuildCost(context.Background(), feeAt(42+33), initializationView(t, accounts), r, e)
+	assertBudgetHold(t, err, "initializer_prestate_expired")
+	cost, err := observePhase3KnownBuildCost(context.Background(), feeAt(60), initializationView(t, accounts), r, e)
 	if err != nil {
 		t.Fatal(err)
 	}

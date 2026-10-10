@@ -3,11 +3,9 @@ package backyard
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
@@ -198,18 +196,6 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 		}
 	})
 
-	t.Run("a locally expired report is retryable regardless of the decoded error", func(t *testing.T) {
-		if !ReportExpiredAtLanding(100, 133) {
-			t.Fatal("a landing slot past observed+32 was not recognized as expiry")
-		}
-		if ReportExpiredAtLanding(100, 132) {
-			t.Fatal("a landing slot at observed+32 was treated as expired")
-		}
-		if ReportExpiredAtLanding(0, 1_000) {
-			t.Fatal("a wire without a report was treated as expirable")
-		}
-	})
-
 	t.Run("the failure receipt is read from the chain and classified", func(t *testing.T) {
 		evidence := `{"jsonrpc":"2.0","id":1,"result":` + transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 9}}},
 			"fee": 5000, "preBalances": []uint64{1}, "postBalances": []uint64{1}, "logMessages": adaptorFailureLogs(bridgeAdaptorProgram, 9)}) + `}`
@@ -217,27 +203,16 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 		rpcOf(rpc).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return response(evidence), nil
 		})
-		receipt, err := failedTransactionEvidence(context.Background(), rpc, testSignature)
+		receipt, err := readFailureReceipt(context.Background(), rpc, testSignature)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if receipt.Slot != 500 {
 			t.Fatalf("failure receipt slot = %d, want 500", receipt.Slot)
 		}
-		classification := ClassifyConfirmedReportFailure(receipt.Err, receipt.Logs)
+		classification := ClassifyConfirmedReportFailure(receipt.Meta.Err, receipt.Meta.LogMessages)
 		if !classification.Retryable || classification.Reason != "adaptor_report_slot_refused" {
 			t.Fatalf("classified receipt = %+v, want retryable adaptor_report_slot_refused", classification)
-		}
-		// The persisted classification runs without touching the journal when
-		// the decoded error already proves the report was refused unconsumed.
-		var database *Database
-		classified, ok := database.classifyPersistedFailure(context.Background(), rpc, PersistedOperation{
-			Operation:            Operation{Decision: Decision{Action: VoltrAllocateToSquads}},
-			Status:               Submitted,
-			TransactionSignature: testSignature,
-		})
-		if !ok || !classified.Retryable || classified.Reason != "adaptor_report_slot_refused" {
-			t.Fatalf("persisted classification = %+v ok=%t, want retryable adaptor_report_slot_refused", classified, ok)
 		}
 	})
 
@@ -307,39 +282,6 @@ func TestSignatureStatusFailureRequiresSettlement(t *testing.T) {
 			status.Confirmed != testCase.confirmed || status.Finalized != testCase.finalized || status.Failed != testCase.failed {
 			t.Fatalf("%s: observation = %+v", testCase.name, status)
 		}
-	}
-}
-
-// Review fix: an unreadable receipt is not evidence. The row keeps its
-// ambiguous submission state so later ticks can read the receipt again, and
-// only the bounded receipt retry window terminates it - never manual recovery.
-func TestUnreadableFailureReceiptKeepsObservingUntilBounded(t *testing.T) {
-	now := time.Now()
-	if receiptRetryExpired(time.Time{}, now) {
-		t.Fatal("a missing broadcast timestamp expired the receipt retry window")
-	}
-	if receiptRetryExpired(now.Add(-failureReceiptRetryWindow), now) {
-		t.Fatal("the receipt retry window expired at its boundary")
-	}
-	if !receiptRetryExpired(now.Add(-failureReceiptRetryWindow-time.Second), now) {
-		t.Fatal("an exhausted receipt retry window never expired")
-	}
-
-	rpc := newFakeChain(t, nil)
-	rpcOf(rpc).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, fmt.Errorf("failure receipt pruned")
-	})
-	var database *Database
-	operation := PersistedOperation{
-		Operation: Operation{ID: "unreadable"}, Status: Submitted, TransactionSignature: testSignature,
-	}
-	classification, terminal := database.classifyPersistedFailure(context.Background(), rpc, operation)
-	if terminal || !classification.ReceiptUnavailable || classification.Retryable ||
-		classification.Reason != failureReceiptUnavailableReason {
-		t.Fatalf("unreadable receipt classification = %+v terminal=%t", classification, terminal)
-	}
-	if err := database.recoverConfirmedFailure(context.Background(), rpc, operation); err != nil {
-		t.Fatalf("an unreadable receipt entered manual recovery: %v", err)
 	}
 }
 

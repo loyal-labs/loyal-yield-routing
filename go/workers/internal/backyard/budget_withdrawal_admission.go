@@ -30,7 +30,7 @@ func withdrawalUSDCExitEstimate(quoted uint64) (uint64, error) {
 // observeDisarmedReportTicket reads the report ticket disarmed at slot or
 // later and returns that read's slot.
 func observeDisarmedReportTicket(ctx context.Context, view *View, slot int64) (int64, error) {
-	observed, accounts, _, err := view.read(ctx, []string{reportTicketPDA}, slot)
+	observed, accounts, err := view.read(ctx, []string{reportTicketPDA}, slot)
 	if err != nil {
 		return 0, budgetHold("report_ticket_observation_unavailable")
 	}
@@ -312,14 +312,20 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, swapCost.ValidThroughSlot)
 	}
 	plan.Exit = append(plan.Exit, tail.Exit...)
+	slot, err := view.slot(ctx)
+	if err != nil {
+		return plan, budgetHold("stale_withdrawal_exit_admission")
+	}
+	// The chain is at least at the newest slot any input was read at.
+	slot = max(slot, current.ObservationSlot)
 	for _, step := range plan.Exit {
 		plan.ExitAfterMicros, err = budgetSum(plan.ExitAfterMicros, step.Cost.TotalMicros)
 		if err != nil {
 			return plan, err
 		}
+		slot = max(slot, step.Cost.ObservationSlot)
 	}
-	slot, err := view.slot(ctx)
-	if err != nil || slot > plan.ValidThroughSlot {
+	if slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_withdrawal_exit_admission")
 	}
 	return plan, nil

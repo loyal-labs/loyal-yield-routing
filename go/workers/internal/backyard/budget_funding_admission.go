@@ -410,16 +410,22 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost, Template: plan.PayoffRepayment})
 	plan.Exit = append(prefix, plan.Exit...)
 	plan.ExitAfterMicros = 0
+	slot, err := view.slot(ctx)
+	if err != nil {
+		return plan, budgetHold("stale_funding_exit_admission")
+	}
+	// The chain is at least at the newest slot any input was read at.
+	slot = max(slot, bound.ObservedSlot, plan.CurrentCost.ObservationSlot)
 	for _, step := range plan.Exit {
 		plan.ExitAfterMicros, err = budgetSum(plan.ExitAfterMicros, step.Cost.TotalMicros)
 		if err != nil {
 			return plan, err
 		}
+		slot = max(slot, step.Cost.ObservationSlot)
 	}
 	plan.Snapshot, plan.Payoff = original, &bound
 	plan.ValidThroughSlot = min(plan.ValidThroughSlot, payoffCost.ValidThroughSlot, bound.ObservedSlot+observationLagSlots())
-	slot, err := view.slot(ctx)
-	if err != nil || slot > plan.ValidThroughSlot {
+	if slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_funding_exit_admission")
 	}
 	return plan, nil

@@ -109,17 +109,6 @@ func observeJupiterLookupTables(ctx context.Context, rpc *chain.Client, addresse
 	return tables, nil
 }
 
-// prepareJupiterLookupTables compiles for callers holding only the embedded
-// reviewed manifest. The manifest-owning observation path uses
-// (RouteManifest).prepareJupiterLookupTables instead of reloading it.
-func prepareJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return r, err
-	}
-	return manifest.prepareJupiterLookupTables(ctx, rpc, r, minimumSlot)
-}
-
 func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
 	if _, err := compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate)); err == nil {
 		return r, nil

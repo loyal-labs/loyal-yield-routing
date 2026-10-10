@@ -196,7 +196,7 @@ func simulateSigned(ctx context.Context, c *chain.Client, signedWire []byte) (Si
 		}
 		err := fmt.Errorf("signed transaction simulation failed: slot=%d err=%s log_tail=%q", slot, string(raw), strings.Join(logTail, " | "))
 		if code, ok := decodeInstructionErrorCustom(raw); ok && code == adaptorErrorReportSlot && failingProgramFromLogs(failure.Logs) == bridgeAdaptorProgram {
-			return SimulationResult{}, &ReportSlotSimulationError{Slot: slot, err: err}
+			return SimulationResult{}, &ReportSlotSimulationError{err: err}
 		}
 		return SimulationResult{}, err
 	}
@@ -207,11 +207,8 @@ func simulateSigned(ctx context.Context, c *chain.Client, signedWire []byte) (Si
 }
 
 // ReportSlotSimulationError is a simulation the NAV adaptor refused with
-// ReportSlot (Custom 9). Slot is the simulation's confirmed slot.
-type ReportSlotSimulationError struct {
-	Slot int64
-	err  error
-}
+// ReportSlot (Custom 9).
+type ReportSlotSimulationError struct{ err error }
 
 func (e *ReportSlotSimulationError) Error() string { return e.err.Error() }
 
@@ -334,23 +331,4 @@ func transactionTokenBalances(balances map[solana.PublicKey]chain.TokenBalance) 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Address < out[j].Address })
 	return out, nil
-}
-
-// failedTransactionEvidence reads the immutable failure receipt for the exact
-// persisted signature, keeping the chain error and the failing program's log
-// lines. Only a finalized receipt is acceptable: a failure can only be
-// classified once it provably cannot be forked away.
-func failedTransactionEvidence(ctx context.Context, c *chain.Client, signature string) (ConfirmedFailureEvidence, error) {
-	receipt, err := finalizedReceipt(ctx, c, signature)
-	if err != nil {
-		return ConfirmedFailureEvidence{}, err
-	}
-	if receipt.Err == nil {
-		return ConfirmedFailureEvidence{}, fmt.Errorf("failed transaction receipt is unavailable")
-	}
-	raw, err := json.Marshal(receipt.Err)
-	if err != nil {
-		return ConfirmedFailureEvidence{}, fmt.Errorf("failed transaction error: %w", err)
-	}
-	return ConfirmedFailureEvidence{Slot: int64(receipt.Slot), Err: raw, Logs: receipt.Logs}, nil
 }

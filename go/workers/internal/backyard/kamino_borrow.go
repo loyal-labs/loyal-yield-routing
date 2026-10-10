@@ -89,7 +89,7 @@ func validateBorrowRequest(ctx context.Context, view *View, r KaminoPrimeUSDCReq
 	if err != nil {
 		return 0, err
 	}
-	observed, accounts, _, err := view.read(ctx, []string{route.Kamino.DebtReserve, route.Kamino.Obligation, route.DebtLiquiditySupply, route.DebtCustody, route.DebtFeeReceiver, route.Kamino.CollateralReserve, budgetClockAddress}, slot)
+	observed, accounts, err := view.read(ctx, []string{route.Kamino.DebtReserve, route.Kamino.Obligation, route.DebtLiquiditySupply, route.DebtCustody, route.DebtFeeReceiver, route.Kamino.CollateralReserve, budgetClockAddress}, slot)
 	if err != nil {
 		return 0, err
 	}

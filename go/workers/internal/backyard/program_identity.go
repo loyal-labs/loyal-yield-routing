@@ -51,7 +51,7 @@ type programIdentityReader func(ctx context.Context) ([]ConfirmedAccount, error)
 func viewProgramIdentity(view *View) programIdentityReader {
 	return func(ctx context.Context) ([]ConfirmedAccount, error) {
 		addresses := []string{voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress}
-		_, accounts, _, err := view.read(ctx, addresses, 0, addresses...)
+		_, accounts, err := view.read(ctx, addresses, 0, addresses...)
 		return accounts, err
 	}
 }
