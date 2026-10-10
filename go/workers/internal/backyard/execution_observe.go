@@ -65,7 +65,7 @@ func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	if slot < batch.Slot || slot-batch.Slot > min(observationLagSlots(), adaptorMaxReportAgeSlots) {
+	if slot-batch.Slot > min(observationLagSlots(), adaptorMaxReportAgeSlots) {
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation exceeded slot freshness"))
 	}
 	// The policies this build executes through: one read, at its slot.

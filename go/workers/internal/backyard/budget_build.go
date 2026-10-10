@@ -103,7 +103,7 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	}
 	// The chain is at least at the newest slot any input was read at.
 	slot = max(slot, fee.Slot, sol.ObservedSlot, token.ObservedSlot)
-	if initializerPrestateSlot > 0 && (slot < initializerPrestateSlot || slot-initializerPrestateSlot > observationLagSlots()) {
+	if initializerPrestateSlot > 0 && slot-initializerPrestateSlot > observationLagSlots() {
 		return ValuedTransactionCost{}, budgetHold("initializer_prestate_expired")
 	}
 	cost, err := ValueTransactionCost(message, debit, fee, setupLamports, token, sol, slot)

@@ -319,7 +319,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 		}
 	}
 	slot, err := view.slot(ctx)
-	if err != nil || slot < policySlot || slot > plan.ValidThroughSlot {
+	if err != nil || slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_withdrawal_exit_admission")
 	}
 	return plan, nil

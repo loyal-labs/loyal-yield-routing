@@ -254,7 +254,7 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 	// refuses a report older than adaptorMaxReportAgeSlots (Custom 9): the wider
 	// A1 window must not apply here.
 	plan.ValidThroughSlot = observation.Snapshot.Slot + windowSlots
-	if slot < observation.Snapshot.Slot || slot > plan.ValidThroughSlot {
+	if slot > plan.ValidThroughSlot {
 		return plan, budgetHold("stale_bridge_admission_snapshot")
 	}
 	for i, step := range steps {
