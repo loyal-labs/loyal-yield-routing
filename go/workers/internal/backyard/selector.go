@@ -41,19 +41,24 @@ type BorrowCurvePoint struct {
 // APR for the borrow curve, including the fixed host rate separately. Rewards
 // are omitted until eligibility and recurrence can be proven.
 type LaneEconomics struct {
-	Lane               string             `json:"lane"`
-	EvidenceID         string             `json:"evidenceId"`
-	ObservedAt         time.Time          `json:"observedAt"`
-	NativeObservedAt   time.Time          `json:"nativeObservedAt"`
-	NativeAPY          float64            `json:"nativeApy"`
-	SupplyAPY          float64            `json:"supplyApy"`
-	CurrentBorrowAPY   float64            `json:"currentBorrowApy"`
-	BorrowCurve        []BorrowCurvePoint `json:"borrowCurve"`
-	HostBorrowBPS      float64            `json:"hostBorrowBps"`
-	DebtSupplyRaw      float64            `json:"debtSupplyUsdcRaw"`
-	DebtBorrowRaw      float64            `json:"debtBorrowUsdcRaw"`
-	EntryCapacity      Capacity           `json:"entryCapacity"`
-	EntryBlockedReason string             `json:"entryBlockedReason,omitempty"`
+	Lane             string             `json:"lane"`
+	EvidenceID       string             `json:"evidenceId"`
+	ObservedAt       time.Time          `json:"observedAt"`
+	NativeObservedAt time.Time          `json:"nativeObservedAt"`
+	NativeAPY        float64            `json:"nativeApy"`
+	SupplyAPY        float64            `json:"supplyApy"`
+	CurrentBorrowAPY float64            `json:"currentBorrowApy"`
+	BorrowCurve      []BorrowCurvePoint `json:"borrowCurve"`
+	HostBorrowBPS    float64            `json:"hostBorrowBps"`
+	DebtSupplyRaw    float64            `json:"debtSupplyUsdcRaw"`
+	DebtBorrowRaw    float64            `json:"debtBorrowUsdcRaw"`
+	// DebtRawPerUSDCRaw converts a USDC value into a non-USDC debt lane's raw
+	// debt units at the verified debt and USDC reserve prices of the same feed
+	// read; 0 when unknown and on USDC debt, whose raw units are USDC. Forecast
+	// only (projected utilization); money never moves at this rate.
+	DebtRawPerUSDCRaw  float64  `json:"debtRawPerUsdcRaw,omitempty"`
+	EntryCapacity      Capacity `json:"entryCapacity"`
+	EntryBlockedReason string   `json:"entryBlockedReason,omitempty"`
 }
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
@@ -72,14 +77,24 @@ func (e LaneEconomics) validate(now time.Time, p SelectorPolicy) error {
 			return fmt.Errorf("invalid_economic_rate")
 		}
 	}
-	if e.SupplyAPY < 0 || e.CurrentBorrowAPY < 0 || !finite(e.HostBorrowBPS) || e.HostBorrowBPS < 0 || e.HostBorrowBPS > 100_000 || !finite(e.DebtSupplyRaw) || !finite(e.DebtBorrowRaw) || e.DebtSupplyRaw <= 0 || e.DebtBorrowRaw < 0 || e.DebtBorrowRaw > e.DebtSupplyRaw {
+	// Borrowed may exceed total supply: KLend's total supply nets accumulated
+	// protocol and referrer fees out of available liquidity, so a fully
+	// borrowed reserve whose fees exceed its available cash reports
+	// utilization above 100% (Prime USDS on 2026-10-10).
+	if e.SupplyAPY < 0 || e.CurrentBorrowAPY < 0 || !finite(e.HostBorrowBPS) || e.HostBorrowBPS < 0 || e.HostBorrowBPS > 100_000 || !finite(e.DebtSupplyRaw) || !finite(e.DebtBorrowRaw) || e.DebtSupplyRaw <= 0 || e.DebtBorrowRaw < 0 ||
+		!finite(e.DebtRawPerUSDCRaw) || e.DebtRawPerUSDCRaw < 0 {
 		return fmt.Errorf("invalid_debt_market")
 	}
 	_, err := projectedBorrowAPR(e, 0)
 	return err
 }
+
+// projectedBorrowAPR is the KLend borrow curve plus host rate at the reserve's
+// utilization after additionalDebt raw debt units. Like KLend's
+// get_borrow_rate, utilization above 100% prices at the terminal point; this
+// prices the rate only, never whether the borrow can be funded.
 func projectedBorrowAPR(e LaneEconomics, additionalDebt float64) (float64, error) {
-	if !finite(additionalDebt) || additionalDebt < 0 || e.DebtSupplyRaw <= 0 || e.DebtBorrowRaw+additionalDebt > e.DebtSupplyRaw {
+	if !finite(additionalDebt) || additionalDebt < 0 || e.DebtSupplyRaw <= 0 {
 		return 0, fmt.Errorf("projected_debt_unavailable")
 	}
 	points := e.BorrowCurve
@@ -96,7 +111,7 @@ func projectedBorrowAPR(e LaneEconomics, additionalDebt float64) (float64, error
 			return 0, fmt.Errorf("invalid_borrow_curve")
 		}
 	}
-	u := (e.DebtBorrowRaw + additionalDebt) / e.DebtSupplyRaw * 10_000
+	u := min((e.DebtBorrowRaw+additionalDebt)/e.DebtSupplyRaw*10_000, 10_000)
 	for i := 1; i < len(points); i++ {
 		if u <= points[i].UtilizationBPS {
 			a, b := points[i-1], points[i]
@@ -156,10 +171,13 @@ type MoveQuote struct {
 	// meaning, recomputed from the bound evidence at every use.
 	BorrowReceiveRaw uint64 `json:"borrowReceiveRaw"`
 	BorrowFeeRaw     uint64 `json:"borrowFeeRaw"`
-	// Unlevered is a B2 1x entry quoted while the destination debt reserve
-	// blocks borrowing: no borrow (receive and fee are zero), scored at the
-	// lane's 1x yield, and persisted in its own advantage window.
-	Unlevered bool `json:"unlevered,omitempty"`
+	// Unlevered is a B2 1x entry: no borrow (receive and fee are zero), scored
+	// at the lane's 1x yield, and persisted in its own advantage window. It is
+	// quoted while the destination debt reserve blocks borrowing, or
+	// (SpreadUnlevered) while borrowing is open but the lane's spread at the
+	// 1.5x borrow is below the live leverage rule's 1.5x minimum.
+	Unlevered       bool `json:"unlevered,omitempty"`
+	SpreadUnlevered bool `json:"spreadUnlevered,omitempty"`
 	// DebtPrice is nil for USDC-debt lanes (raw==USDC parity, old JSON decodes
 	// unchanged). A non-USDC debt quote without this evidence is invalid:
 	// missing price evidence is rejected, never waivered. The observation is
@@ -410,6 +428,11 @@ func quoteLeverageAndNetAPY(e pilotEconomics, invested float64, m LaneEconomics)
 // All candidate collateral is supplied. A nonnegative asset exponential minus
 // a nonnegative borrow exponential has its minimum at an endpoint when the
 // initial collateral equity is positive. Reject the other case economically.
+//
+// invested is the collateral the move leaves earning, already net of the
+// move's expense: the expense is money the move loses before anything earns.
+// So the post-move NAV is collateral minus debt, and the expense is charged
+// once, in Gain, which is measured against the NAV before the move.
 func pilotForecastEconomics(e pilotEconomics, invested float64, m LaneEconomics, years float64, expense int64) pilotEconomics {
 	collateral := invested + e.Proceeds
 	assetRate := math.Log1p(m.NativeAPY) + math.Log1p(m.SupplyAPY)
@@ -424,9 +447,10 @@ func pilotForecastEconomics(e pilotEconomics, invested float64, m LaneEconomics,
 		peak = max(0, min(years, math.Log(assetRate*collateral/(e.APR*e.Debt))/(e.APR-assetRate)))
 	}
 	e.PositiveIncome = max(incomeAt(peak), 0)
-	e.Gain = incomeAt(years) - float64(expense)
-	e.InitialNAV = collateral - e.Debt - float64(expense)
-	e.EndingNAV = collateral - e.Debt + e.Gain
+	income := incomeAt(years)
+	e.Gain = income - float64(expense)
+	e.InitialNAV = collateral - e.Debt
+	e.EndingNAV = e.InitialNAV + income
 	return e
 }
 
@@ -621,7 +645,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		}
 		c.BorrowAPR = economics.APR
 		c.Leverage, c.NetAPY = quoteLeverageAndNetAPY(economics, float64(c.InvestedRaw), m)
-		c.BorrowBlocked, c.DebtRoomUSDCRaw = quote.Unlevered, quote.DebtRoomUSDCRaw
+		c.BorrowBlocked, c.DebtRoomUSDCRaw = quote.Unlevered && !quote.SpreadUnlevered, quote.DebtRoomUSDCRaw
 		var feeKnown bool
 		c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))
 		// Candidate pays the repeated-fee reserve; KEEP gets the upper return

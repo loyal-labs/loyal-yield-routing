@@ -20,7 +20,7 @@ func TestCurrentAPYMatchesTheLeverageWatchFigure(t *testing.T) {
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 2_112_337_500, 905_287_500
 	apr := 0.068
 	m := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .0948, SupplyAPY: .002, CurrentBorrowAPY: math.Expm1(apr),
-		BorrowCurve: []BorrowCurvePoint{{0, apr * 10_000}, {10_000, apr * 10_000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
+		BorrowCurve: []BorrowCurvePoint{{0, apr * 10_000}, {10_000, apr * 10_000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, DebtRawPerUSDCRaw: 1.0002}
 	got, ok := currentPositionAPY(s, []LaneEconomics{m})
 	if !ok || got.Level != 1.75 || got.Flat {
 		t.Fatalf("%+v ok=%t", got, ok)

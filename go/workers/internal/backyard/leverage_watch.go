@@ -31,16 +31,13 @@ var leverageWatchOptions = map[string][]leverageStep{
 
 // leverageSpread is token yield minus the borrow APY at the utilization the
 // lane's hypothetical debt would reach at that level. Current raw source debt
-// is already included in observed utilization. Non-USDC columns require the
-// matching observation's reserve price authority; missing columns are omitted.
+// is already included in observed utilization. The hypothetical debt begins as
+// USDC value and becomes raw debt units at the lane's own verified reserve
+// prices (DebtRawPerUSDCRaw); a lane without that price omits the column.
 func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool, observed ...Snapshot) (float64, bool) {
 	debt := (level - 1) * float64(equityRaw)
 	if !finite(debt) || debt < 0 || debt > 1<<53 {
 		return 0, false
-	}
-	var snapshot *Snapshot
-	if len(observed) == 1 && observed[0].RouteLane == m.Lane {
-		snapshot = &observed[0]
 	}
 	if debt > 0 {
 		route, err := runtimeRoute(m.Lane)
@@ -48,29 +45,19 @@ func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool
 			return 0, false
 		}
 		if route.Kamino.DebtMint != bridgeUSDC {
-			if snapshot == nil || !snapshot.BorrowCapacityKnown {
+			if !finite(m.DebtRawPerUSDCRaw) || m.DebtRawPerUSDCRaw <= 0 {
 				return 0, false
 			}
-			// Hypothetical debt begins as USDC VALUE. Convert through the same
-			// batch's reserve prices/decimals before using the debt reserve curve.
-			raw, err := valueBetweenTokenRaw(uint64(math.Ceil(debt)), 6, snapshot.BorrowDebtDecimals, snapshot.BorrowUSDCPriceSF, snapshot.BorrowDebtPriceSF, true)
-			if err != nil {
-				return 0, false
-			}
-			debt = float64(raw)
+			debt = math.Ceil(debt * m.DebtRawPerUSDCRaw)
 		}
 	}
-	if source && snapshot != nil {
-		if snapshot.PositionDebtRaw < 0 {
+	if source && len(observed) == 1 && observed[0].RouteLane == m.Lane {
+		if observed[0].PositionDebtRaw < 0 {
 			return 0, false
 		}
-		debt -= float64(snapshot.PositionDebtRaw)
+		debt -= float64(observed[0].PositionDebtRaw)
 	}
-	apr, err := projectedBorrowAPR(m, max(debt, 0))
-	if err != nil || !finite(apr) {
-		return 0, false
-	}
-	return m.NativeAPY + m.SupplyAPY - math.Expm1(apr), true
+	return leverageBorrowSpread(m, max(debt, 0))
 }
 
 // leverageLevelAPY is the lane's APY at a leverage level: token yield plus

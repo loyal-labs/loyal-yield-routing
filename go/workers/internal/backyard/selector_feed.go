@@ -28,7 +28,8 @@ const selectorReserveSQL = `SELECT jsonb_build_object(
  'status',v.reserve_status,'emergency',v.emergency_mode,'curve',v.borrow_rate_curve,
  'hostBps',s.snapshot->'host_fixed_interest_rate_bps',
  'borrowApr',s.snapshot->'borrow_apr',
- 'schema',s.snapshot->'observation_schema_version')
+ 'schema',s.snapshot->'observation_schema_version',
+ 'priceUsd',s.snapshot->'market_price_usd','decimals',s.snapshot->'mint_decimals')
  FROM kamino.latest_verified_reserve_updates v
  JOIN kamino.reserve_updates s ON s.event_id=v.event_id AND s.reserve=v.reserve AND s.account_data_hash=v.account_data_hash
  WHERE v.reserve=ANY($1::text[])`
@@ -55,6 +56,10 @@ type verifiedEconomicReserve struct {
 	Curve     []BorrowCurvePoint `json:"curve"`
 	HostBPS   *float64           `json:"hostBps"`
 	Schema    *int               `json:"schema"`
+	// PriceUSD and Decimals are the reserve's own oracle price and liquidity
+	// mint decimals from the same verified event.
+	PriceUSD *float64 `json:"priceUsd"`
+	Decimals *int     `json:"decimals"`
 }
 
 type nativeYield struct {
@@ -142,7 +147,10 @@ func fetchNativeYields(ctx context.Context, client *http.Client, endpoint string
 }
 
 func readVerifiedEconomics(ctx context.Context, pool *pgxpool.Pool, routes []RuntimeRoute) (map[string]verifiedEconomicReserve, error) {
-	ids := make([]string, 0, len(routes)*2)
+	// The pinned USDC reserve is the USDC side of every non-USDC debt lane's
+	// price conversion, as in the live borrow capacity observation.
+	ids := make([]string, 0, len(routes)*2+1)
+	ids = append(ids, kaminoDebtReserve)
 	for _, r := range routes {
 		ids = append(ids, r.Kamino.CollateralReserve, r.Kamino.DebtReserve)
 	}
@@ -186,6 +194,11 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]verifiedEconomi
 	valid := func(r verifiedEconomicReserve, reserve, mint, market string) bool {
 		return r.Reserve == reserve && r.Mint == mint && r.Market == market && r.Commitment == "confirmed" && r.Slot > 0 && sha256Pattern.MatchString(r.Hash) && r.Schema != nil && *r.Schema == 2 && r.Status != nil && r.Emergency != nil && freshAt(now, r.ObservedAt, p.MarketMaxAge)
 	}
+	priced := func(r verifiedEconomicReserve) bool {
+		return r.PriceUSD != nil && finite(*r.PriceUSD) && *r.PriceUSD > 0 && r.Decimals != nil && *r.Decimals >= 0 && *r.Decimals <= 18
+	}
+	usdc := reserves[kaminoDebtReserve]
+	usdcPriced := valid(usdc, kaminoDebtReserve, bridgeUSDC, kaminoMarket) && priced(usdc) && *usdc.Decimals == 6
 	for _, route := range routes {
 		c, d := reserves[route.Kamino.CollateralReserve], reserves[route.Kamino.DebtReserve]
 		y, ok := yields[route.Lane]
@@ -198,6 +211,16 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]verifiedEconomi
 		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: c.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: *c.SupplyAPY, CurrentBorrowAPY: *d.BorrowAPY, BorrowCurve: d.Curve, HostBorrowBPS: *d.HostBPS, DebtSupplyRaw: *d.SupplyRaw, DebtBorrowRaw: *d.BorrowRaw}
 		if d.ObservedAt.Before(e.ObservedAt) {
 			e.ObservedAt = d.ObservedAt
+		}
+		// Every lane's debt reserve row carries its own price, so the projected
+		// utilization of a USDC-valued borrow is known for every non-USDC debt
+		// lane, not only the one the vault holds. Missing price evidence leaves
+		// it unknown (0); USDC debt needs no conversion.
+		if route.Kamino.DebtMint != bridgeUSDC && usdcPriced && priced(d) {
+			e.DebtRawPerUSDCRaw = *usdc.PriceUSD / *d.PriceUSD * math.Pow10(*d.Decimals-6)
+			if usdc.ObservedAt.Before(e.ObservedAt) {
+				e.ObservedAt = usdc.ObservedAt
+			}
 		}
 		// Feed capacity is deliberately not pair admission. The action-time adapter
 		// supplies exact execution-size capacity after policies, caps and swaps pass.

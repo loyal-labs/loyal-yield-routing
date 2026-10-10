@@ -30,10 +30,14 @@ type selectorDestinationQuote struct {
 	// capacity and borrow quantities into USDC without assuming a peg.
 	DebtPrice      *BudgetPrice `json:"debtPrice,omitempty"`
 	PayoffUpperRaw uint64       `json:"payoffUpperRaw"`
-	// Unlevered marks a B2 1x entry priced while the destination debt reserve
-	// blocks borrowing: no borrow, no debt, exit = withdraw -> swap back.
-	Unlevered  bool                     `json:"unlevered,omitempty"`
-	PayoffSwap JupiterExecutionEvidence `json:"payoffSwap"`
+	// Unlevered marks a B2 1x entry: no borrow, no debt, exit = withdraw ->
+	// swap back. It is priced while the destination debt reserve blocks
+	// borrowing, or (SpreadUnlevered) while the reserve could fund the 1.5x
+	// borrow but the live spread rule would not lever: the same rule the
+	// leverage decision applies.
+	Unlevered       bool                     `json:"unlevered,omitempty"`
+	SpreadUnlevered bool                     `json:"spreadUnlevered,omitempty"`
+	PayoffSwap      JupiterExecutionEvidence `json:"payoffSwap"`
 	// PayoffLegs retains EVERY non-USDC payoff swap leg (funding, residue?,
 	// return?) as recipe evidence; nil on USDC-debt lanes, whose payoff stays
 	// the single PayoffSwap leg. PayoffResidueInputRaw is the guaranteed
@@ -249,9 +253,13 @@ func validateSelectorDestinationCommon(route RuntimeRoute, slot int64, accounts 
 // the same graph as the recreated position after the bound source exit closes
 // the funded one. Future balances stay explicit scalars; no invented account
 // image reaches an RPC simulation or execution admission.
-func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
+//
+// market is the lane's economics from the same sample; its spread decides
+// whether the entry levers (see the borrow below).
+func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, market LaneEconomics, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	lane := market.Lane
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
 	if rpc == nil || client == nil || !earnActiveLane(lane) || equity == 0 || equity > strategyTwoBridgeLegCapRaw || sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return out, budgetHold("invalid_selector_destination")
@@ -465,6 +473,18 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 		}
 		if borrow < leverageMinimumBorrowRaw {
 			borrow = 0
+		}
+		// The entry levers only where the live spread rule would lever the
+		// funded lane: the spread at this exact borrow (fee included) must
+		// reach the 1.5x minimum. Otherwise the lane is quoted at 1x.
+		if borrow > 0 {
+			fee, err := kaminoBorrowFeeAtRate(binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:]), borrow)
+			if err != nil {
+				return out, err
+			}
+			if _, levered := leverageUpAllowed(market, 1.5, float64(borrow+fee)); !levered {
+				borrow, out.SpreadUnlevered = 0, true
+			}
 		}
 		unlevered, out.Unlevered = borrow == 0, borrow == 0
 	} else {

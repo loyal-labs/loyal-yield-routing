@@ -13,7 +13,7 @@ func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *test
 	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle-move", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 1_000_000_000}
 	o := tickObservation(s)
 	o.ObservedAt = time.Now().UTC()
-	q, err := observeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), client, m, o, SelectedRouteID, 100_000_000, 0)
+	q, err := observeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), client, m, o, leveredTestMarket(SelectedRouteID), 100_000_000, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	destination, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 100_000_000, 42, false, nil)
+	destination, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 100_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +81,10 @@ func TestPilotSelectorRetainsBufferAfterSourceExitLoss(t *testing.T) {
 	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "buffer", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 7_900_000}
 	o := tickObservation(s)
 	o.ObservedAt = time.Now().UTC()
-	got, err := observeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), client, m, o, SelectedRouteID, 8_000_000, 2_000_000)
+	got, err := observeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), client, m, o, leveredTestMarket(SelectedRouteID), 8_000_000, 2_000_000)
 	if err != nil || got.EquityRaw != 5_900_000 {
 		t.Fatal("producer buffer disagrees with selector", got, err)
 	}
-	_, err = observeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), client, m, o, SelectedRouteID, 8_000_000, 7_900_000)
+	_, err = observeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), client, m, o, leveredTestMarket(SelectedRouteID), 8_000_000, 7_900_000)
 	assertBudgetHold(t, err, "selector_move_has_no_entry_cash")
 }

@@ -56,3 +56,37 @@ func currentLeverageBand(s Snapshot) float64 {
 func nextLiveLeverageLevel(current float64, spreadAt func(float64) (float64, bool)) float64 {
 	return nextLeverageLevel(leverageWatchOptions["1"], current, spreadAt)
 }
+
+// leverageUpMinimumSpread is the live rule's spread an up move to level needs
+// (1% to 1.5x, 2% to 1.75x); false for a level the rule never moves up to.
+func leverageUpMinimumSpread(level float64) (float64, bool) {
+	for _, s := range leverageWatchOptions["1"] {
+		if s.to == level && s.to > s.from {
+			return s.min, true
+		}
+	}
+	return 0, false
+}
+
+// leverageBorrowSpread is the lane's token yield minus the borrow APY once
+// debtRaw more raw debt units are borrowed from its debt reserve.
+func leverageBorrowSpread(m LaneEconomics, debtRaw float64) (float64, bool) {
+	apr, err := projectedBorrowAPR(m, debtRaw)
+	if err != nil || !finite(apr) {
+		return 0, false
+	}
+	spread := m.NativeAPY + m.SupplyAPY - math.Expm1(apr)
+	return spread, finite(spread)
+}
+
+// leverageUpAllowed applies the live spread rule to borrowing debtRaw more raw
+// debt units to reach level: the same test the leverage decision and the
+// selector's entry quote apply.
+func leverageUpAllowed(m LaneEconomics, level, debtRaw float64) (float64, bool) {
+	minimum, ok := leverageUpMinimumSpread(level)
+	if !ok {
+		return 0, false
+	}
+	spread, ok := leverageBorrowSpread(m, debtRaw)
+	return spread, ok && spread >= minimum
+}
