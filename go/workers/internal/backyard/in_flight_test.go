@@ -58,11 +58,11 @@ func TestCountNonterminalAgainstDatabase(t *testing.T) {
 	}
 	expect(0)
 	// A terminal row is history, not in-flight work.
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status) VALUES('in-flight-done',$1,'reconciled')`, routeKey); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES('in-flight-done',$1,'reconciled','OPEN_ROUTE_STEP','{}')`, routeKey); err != nil {
 		t.Fatal(err)
 	}
 	expect(0)
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status) VALUES('in-flight-open',$1,'submitted')`, routeKey); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES('in-flight-open',$1,'submitted','OPEN_ROUTE_STEP','{}')`, routeKey); err != nil {
 		t.Fatal(err)
 	}
 	expect(1)
