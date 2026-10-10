@@ -70,7 +70,8 @@ func TestAllocationSentWindowKeysIntentTimeAndCountsManualRecovery(t *testing.T)
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS cycle bigint NOT NULL DEFAULT 1;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS engine_version text NOT NULL DEFAULT 'linus_v1';
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS idempotency_key text NOT NULL DEFAULT '';
-	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS action text;`)
+	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS action text;
+	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS signed_wire bytea;`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,22 +85,26 @@ func TestAllocationSentWindowKeysIntentTimeAndCountsManualRecovery(t *testing.T)
 		status                  string
 		amount                  string
 		intent, created, update *time.Time
+		wire                    []byte
 	}{
 		// Parked in manual_recovery an hour after its broadcast: counts.
-		{"parked", "manual_recovery", "100", ptrTime(now.Add(-time.Hour)), ptrTime(now.Add(-2 * time.Hour)), ptrTime(now.Add(-time.Hour))},
+		{"parked", "manual_recovery", "100", ptrTime(now.Add(-time.Hour)), ptrTime(now.Add(-2 * time.Hour)), ptrTime(now.Add(-time.Hour)), []byte{1}},
 		// Broadcast 25h ago, but reconciliation retries refreshed updated_at
 		// into the window: must NOT count, the window keys on the intent.
-		{"stale-refreshed", "failed", "400", ptrTime(now.Add(-25 * time.Hour)), ptrTime(now.Add(-26 * time.Hour)), ptrTime(now.Add(-time.Hour))},
+		{"stale-refreshed", "failed", "400", ptrTime(now.Add(-25 * time.Hour)), ptrTime(now.Add(-26 * time.Hour)), ptrTime(now.Add(-time.Hour)), []byte{1}},
 		// Broadcast recently but the intent stamp is missing: the immutable
 		// creation time keeps it counted instead of silently dropping it.
-		{"no-stamp", "submitted", "30", nil, ptrTime(now.Add(-2 * time.Hour)), ptrTime(now.Add(-2 * time.Hour))},
+		{"no-stamp", "submitted", "30", nil, ptrTime(now.Add(-2 * time.Hour)), ptrTime(now.Add(-2 * time.Hour)), []byte{1}},
+		// Refused by admission before signing (live Oct 10: twelve 10k
+		// allocations failed on RPC holds): nothing left, must NOT count.
+		{"never-signed", "failed", "10000", nil, ptrTime(now.Add(-time.Hour)), ptrTime(now.Add(-time.Hour)), nil},
 	}
 	for _, row := range rows {
 		if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations
-			(operation_id,route_key,cycle,engine_version,idempotency_key,action,status,expected_effects,broadcast_intent_at,created_at,updated_at)
+			(operation_id,route_key,cycle,engine_version,idempotency_key,action,status,expected_effects,broadcast_intent_at,created_at,updated_at,signed_wire)
 			VALUES($1,$2,1,'linus_v1',$3,'VOLTR_ALLOCATE_TO_SQUADS',$4,
-			 jsonb_build_object('decision',jsonb_build_object('amountRaw',$5::text)),$6,$7,$8)`,
-			route+"-"+row.name, route, route+"-"+row.name, row.status, row.amount, row.intent, row.created, row.update); err != nil {
+			 jsonb_build_object('decision',jsonb_build_object('amountRaw',$5::text)),$6,$7,$8,$9)`,
+			route+"-"+row.name, route, route+"-"+row.name, row.status, row.amount, row.intent, row.created, row.update, row.wire); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -110,9 +115,10 @@ func TestAllocationSentWindowKeysIntentTimeAndCountsManualRecovery(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The refreshed-but-stale row is excluded; intent-less rows still count.
+	// The refreshed-but-stale and never-signed rows are excluded; signed
+	// intent-less rows still count.
 	if sent != 130 {
-		t.Fatalf("trailing window summed %d raw, want 130 (parked 100 + intent-less 30, stale-refreshed 400 aged out)", sent)
+		t.Fatalf("trailing window summed %d raw, want 130 (parked 100 + intent-less 30; stale-refreshed 400 aged out, never-signed 10000 never sent)", sent)
 	}
 }
 
