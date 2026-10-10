@@ -5,13 +5,12 @@ import "encoding/json"
 const (
 	pilotBudgetAuthoritySchema = "voltr-rwa-pilot-budget/v1"
 	pilotBudgetAuthorityID     = "01a0a776-cb66-7333-99eb-7e6927c1e114"
-	// Reviewed ceilings: $100,000 total deposits, deployed $10,000 per
-	// tranche while the first top-up beside debt is a canary. Widening these
-	// code ceilings never widens a budget already activated under the
-	// previous limits: its persisted Limits record keeps binding until an
-	// explicit operator limit update.
+	// Reviewed ceilings: $100,000 total deposits, deployed in one tranche.
+	// Widening these code ceilings never widens a budget already activated
+	// under the previous limits: its persisted Limits record keeps binding
+	// until an explicit operator limit update.
 	PilotDepositCapRaw        int64 = 100_000_000_000
-	PilotWorkingTrancheCapRaw int64 = 10_000_000_000
+	PilotWorkingTrancheCapRaw int64 = 100_000_000_000
 	// Stop starting new work once $3,000 of execution cost is spent. Settlement
 	// books each operation's realized cost; admission still refuses unless the
 	// spent total plus the new work's worst-case bound fits, so the cap is a
