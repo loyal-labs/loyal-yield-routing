@@ -184,7 +184,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			// never runs beside a selector move, unwind or open
 			// operation, and changes no money by itself.
 			if decision, ok := decideLeverageTarget(observed.Snapshot, result, markets, DefaultSelectorPolicy()); ok && observed.planning != nil {
-				if levDecisionLog.due(time.Now(), decision, observed.Snapshot.LeverageTargetLevel) {
+				if levDecisionLog.due(time.Now(), decision) {
 					_, _ = fmt.Fprintln(out, decision.logLine())
 				}
 				if decision.changesTarget(observed.Snapshot.LeverageTargetLevel) || decision.BorrowRaw != observed.Snapshot.LeverageApprovedBorrowRaw || decision.SourceDebtRaw != observed.Snapshot.LeverageSourceDebtRaw || observed.Snapshot.LeverageBorrowOperationID != "" {

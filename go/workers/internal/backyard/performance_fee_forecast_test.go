@@ -291,13 +291,57 @@ func TestPerformanceFeeLeverageUPNeedsFeeReservedWholePositionEdge(t *testing.T)
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)
 	// A positive spread alone is insufficient: fees and movement costs
 	// consume this low-margin edge.
-	if !ok || got.Next != 1 || got.Reason != "up_move_below_minimum_benefit" {
+	if !ok || got.Next != 1 || got.Reason != "up_move_not_worth_cost" || got.GainRaw > 0 || got.BorrowRaw != 0 {
 		t.Fatalf("gross-only leverage edge spent: %+v ok=%t", got, ok)
 	}
 	market.NativeAPY = .12
 	got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)
-	if !ok || got.Next != 1.5 || got.GainRaw <= float64(p.MinimumBenefitRaw) {
+	if !ok || got.Next != 1.5 || got.GainRaw <= 0 || got.BorrowRaw == 0 {
 		t.Fatalf("proved fee-reserved UP was not supported: %+v ok=%t", got, ok)
+	}
+}
+
+// An up move needs the level's spread and a positive gain after its own cost
+// and the fee reserve, nothing more. With no borrow room the reason says so
+// (live 2026-10-10: the PYUSD reserve sat at its 90% utilization limit and
+// the hold was reported as the spread rule).
+func TestLeverageUPNeedsOnlySpreadAndPositiveGain(t *testing.T) {
+	t.Parallel()
+	const wealth = 100_000_000_000
+	in := coherentFeeSelectorFixture(t, wealth, wealth, new(big.Int).Lsh(big.NewInt(1), 48))
+	s := in.Snapshot
+	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
+	s.HasPosition, s.LeverageTargetLevel = true, 1
+	s.PositionCollateralRaw, s.PositionCollateralValueRaw = wealth, wealth
+	s.VoltrIdleRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.JournalArmedNAVRaw = 0, wealth, wealth, wealth
+	armLeverageCapacityFixture(&s)
+	s.AdditionalDebtRoomRaw = wealth
+	p := DefaultSelectorPolicy()
+	decide := func(s Snapshot, native float64) leverageDecision {
+		market := leverageMarket(s.RouteLane, native, math.Log1p(.06))
+		market.CurrentBorrowAPY = .06
+		got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)
+		if !ok {
+			t.Fatalf("no decision at native %.3f", native)
+		}
+		return got
+	}
+	if got := decide(s, .12); got.Next != 1.5 || got.BorrowRaw == 0 || got.GainRaw <= 0 {
+		t.Fatalf("a profitable up move was not approved: %+v", got)
+	}
+	if got := decide(s, .075); got.Next != 1 || got.BorrowRaw != 0 || got.GainRaw > 0 || got.Reason != "up_move_not_worth_cost" {
+		t.Fatalf("an up move that does not repay its cost was approved: %+v", got)
+	}
+	if got := decide(s, .065); got.Next != 1 || got.BorrowRaw != 0 || got.Reason != "spread_rule" {
+		t.Fatalf("an up move below the 1%% spread was approved: %+v", got)
+	}
+	// As live: the stored target is above the 1x position and the debt
+	// reserve is at its utilization limit.
+	full := s
+	full.LeverageTargetLevel = 1.75
+	full.LeverageBorrow150Raw, full.LeverageBorrow175Raw = 0, 0
+	if got := decide(full, .12); got.Next != 1.75 || got.BorrowRaw != 0 || got.Reason != "no_borrow_room" {
+		t.Fatalf("a full debt reserve was not reported as no room: %+v", got)
 	}
 }
 

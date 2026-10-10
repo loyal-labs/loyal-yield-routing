@@ -80,7 +80,7 @@ func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
 	market := leverageMarket(s.RouteLane, .12, math.Log1p(.06))
 	market.CurrentBorrowAPY = .06
 	up, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, DefaultSelectorPolicy())
-	if !ok || up.Next != 1.5 || up.GainRaw <= float64(DefaultSelectorPolicy().MinimumBenefitRaw) {
+	if !ok || up.Next != 1.5 || up.GainRaw <= 0 || up.BorrowRaw == 0 {
 		t.Fatalf("profitable pilot-size leverage move blocked: %+v known=%t", up, ok)
 	}
 }

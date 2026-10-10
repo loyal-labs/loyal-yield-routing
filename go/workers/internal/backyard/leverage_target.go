@@ -118,10 +118,13 @@ type leverageDecision struct {
 
 // decideLeverageTarget applies the option-1 rule to the funded lane. It runs
 // only on a settled position: no selector SWITCH/unwind, nothing nonterminal,
-// no withdrawal, and the selector itself chose KEEP. Up moves must also beat
-// MinimumBenefit after the existing estimated move expense and the shared
-// whole-position fee reserve, compared to KEEP gross. Unarmed inputs cannot
-// produce an economic UP target. DOWN/no-change never use this gate.
+// no withdrawal, and the selector itself chose KEEP. An up move needs the
+// level's spread (1% to 1.5x, 2% to 1.75x) and a positive gain over KEEP
+// after the move's own cost and the shared whole-position fee reserve. It
+// does not need the selector's MinimumBenefit, which is SWITCH hysteresis
+// against a full unwind, not a cost of borrowing more in place. Unarmed
+// inputs cannot produce an economic UP target.
+// DOWN/no-change never use this gate.
 // Cost = moved notional x 2 x UncertaintyBPS + 3 fees of 10,000 raw.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane}
@@ -182,6 +185,14 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	level := leverageUpLevel(candidateSnapshot)
 	raw := leverageBorrowCeiling(s, level)
 	if raw < leverageMinimumBorrowRaw {
+		// A wanted up step the debt reserve cannot fund (utilization limit,
+		// caps or liquidity) is not a spread decision.
+		switch {
+		case level > 0 && !s.BorrowCapacityKnown:
+			out.Reason = "borrow_capacity_unknown"
+		case level > 0:
+			out.Reason = "no_borrow_room"
+		}
 		return out, true
 	}
 	fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
@@ -218,8 +229,8 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		return out, true
 	}
 	out.GainRaw = net - selectorKeepGainUpper(s, keepGross)
-	if out.GainRaw <= float64(p.MinimumBenefitRaw) {
-		out.Next, out.Reason = out.Current, "up_move_below_minimum_benefit"
+	if out.GainRaw <= 0 {
+		out.Next, out.Reason = out.Current, "up_move_not_worth_cost"
 	} else {
 		out.BorrowRaw, out.SourceDebtRaw = raw, uint64(s.PositionDebtRaw)
 	}
@@ -237,24 +248,32 @@ func (d leverageDecision) changesTarget(stored float64) bool {
 }
 
 func (d leverageDecision) logLine() string {
-	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f reason=%s",
-		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.Reason)
+	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f borrow=%d reason=%s",
+		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.BorrowRaw, d.Reason)
 }
 
 // leverageDecisionLog rate-limits the 'leverage decision' line: it prints
-// when the decision changes the stored target, otherwise at most once an
-// hour (live 2026-09-28: a 1x->1.5x decision held by blocked borrowing
-// printed on every 15 s selector sample).
+// when the outcome (level, reason, approved borrow) changes, otherwise at
+// most once an hour (live 2026-09-28: a 1x->1.5x decision held by blocked
+// borrowing printed on every 15 s selector sample). Holds print too: the
+// stored target is the cap, so an approved or refused up move keeps
+// Next == Current, and keying on the level alone hid every one of them
+// (live 2026-10-10).
 type leverageDecisionLog struct {
 	printed time.Time
+	last    leverageDecisionKey
 }
 
-func (l *leverageDecisionLog) due(now time.Time, d leverageDecision, storedLevel float64) bool {
-	if d.Next == d.Current {
-		return false
-	}
-	if d.changesTarget(storedLevel) || now.Sub(l.printed) >= time.Hour {
-		l.printed = now
+type leverageDecisionKey struct {
+	next      float64
+	reason    string
+	borrowRaw uint64
+}
+
+func (l *leverageDecisionLog) due(now time.Time, d leverageDecision) bool {
+	key := leverageDecisionKey{d.Next, d.Reason, d.BorrowRaw}
+	if key != l.last || now.Sub(l.printed) >= time.Hour {
+		l.printed, l.last = now, key
 		return true
 	}
 	return false
