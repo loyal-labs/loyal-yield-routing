@@ -29,15 +29,11 @@ func debtTopupLane(lane string) bool {
 	return leverageLane(lane) && !sharedUSDCDebt(lane)
 }
 
-// usdcDebtSwapLane: Squads USDC funds a debt repayment only where the policy
-// has a USDC->debt edge. OnRe's debt is that USDC, and AUTO has no USDC->PYUSD
-// edge, so Squads cash beside AUTO debt is top-up cash.
-func usdcDebtSwapLane(lane string) bool {
-	if lane == autoAUTOPYUSD.Lane {
-		_, err := autoSwapConstraintKey(SwapUSDCToDebtStep)
-		return err == nil
-	}
-	return !sharedUSDCDebt(lane)
+// laneSwap reads the edge table the builder signs from, so the planner never
+// picks a swap the lane's policy lacks (AUTO and OnRe have no USDC->debt edge).
+func laneSwap(lane string, action Action) bool {
+	_, _, _, _, err := jupiterEdgeForRoute(action, lane)
+	return err == nil
 }
 
 // topupStep is the plan B3 sequence beside a funded position: convert a
@@ -99,7 +95,7 @@ func payoffFundingSource(s Snapshot, upperDebt uint64) (Action, int64) {
 		{SwapCollateralToDebtStep, s.CollateralIdleRaw, s.CollateralIdleValueRaw},
 		{SwapUSDCToDebtStep, s.SquadsIdleRaw, s.SquadsIdleRaw},
 	} {
-		if source.action == SwapUSDCToDebtStep && !usdcDebtSwapLane(s.RouteLane) {
+		if !laneSwap(s.RouteLane, source.action) {
 			continue
 		}
 		if source.amount <= 0 || source.value <= 0 {
@@ -157,7 +153,7 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		if s.PositionDebtRaw > 0 && s.CollateralIdleRaw > 0 {
 			return d(SwapCollateralToDebtStep, "hard_ltv_buffer_swap", s.CollateralIdleRaw)
 		}
-		if s.PositionDebtRaw > 0 && s.SquadsIdleRaw > 0 && usdcDebtSwapLane(s.RouteLane) {
+		if s.PositionDebtRaw > 0 && s.SquadsIdleRaw > 0 && laneSwap(s.RouteLane, SwapUSDCToDebtStep) {
 			return d(SwapUSDCToDebtStep, "hard_ltv_usdc_repayment_buffer", s.SquadsIdleRaw)
 		}
 		return d(HoldManualRecovery, "hard_ltv_without_repayment_buffer", 0)
