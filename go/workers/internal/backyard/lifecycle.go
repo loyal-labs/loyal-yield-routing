@@ -121,13 +121,9 @@ func persistedWireIntact(operation PersistedOperation) bool {
 // recorded it resends the same bytes, which cannot spend twice. A signed row
 // stays signed while a fence holds, until its expiry proves the wire absent.
 func (d *Database) land(ctx context.Context, rpc *chain.Client, operation PersistedOperation, markIntent func(context.Context) error) error {
-	sends := 1
-	if operation.Status == Signed {
-		sends = 0
-	}
 	out, err := chain.Land(ctx, rpc, chain.Attempt{
 		Wire: operation.SignedWire, Signature: operation.TransactionSignature,
-		LastValidBlockHeight: uint64(operation.LastValidBlockHeight), Sends: sends, Required: chain.Confirmed,
+		LastValidBlockHeight: uint64(operation.LastValidBlockHeight), Required: chain.Confirmed,
 	}, landResendEvery, func(ctx context.Context) error {
 		if operation.Status != Signed {
 			return nil

@@ -599,13 +599,6 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 	if err := validate(&proof, []byte("{}")); err == nil {
 		t.Fatalf("undecodable persisted effects admitted at the broadcast lock")
 	}
-	// The custody observation must be confirmed no earlier than the decision
-	// it spends for.
-	early := proof
-	early.ObservedSlot = 289
-	if err := validate(&early, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
-		t.Fatalf("bound proof observed before the decision admitted: %v", err)
-	}
 	// Generation drift under the lock holds.
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state_version=2, state='{"generation":2}' WHERE route_key=$1`, key); err != nil {
 		t.Fatal(err)

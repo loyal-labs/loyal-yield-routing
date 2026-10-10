@@ -351,8 +351,7 @@ func (m RouteManifest) validateSignedIdentity(auth phase3OperationAuthorization,
 // returns the locked fence that records broadcast intent before its first
 // send. Nothing here reads the chain: the transaction itself enforces the
 // swap minimum, klend limits, the Squads policy and the adaptor's report age,
-// and simulation already ran it. The database fences run at the decision's
-// observation slot.
+// and simulation already ran it. Only the database fences run again.
 func (d *Database) finalSend(ctx context.Context, manifest RouteManifest, operation PersistedOperation) (func(context.Context) error, error) {
 	if d == nil || d.pool == nil || operation.ID == "" || operation.Status != Signed {
 		return nil, fmt.Errorf("invalid final-send input")
@@ -369,21 +368,15 @@ func (d *Database) finalSend(ctx context.Context, manifest RouteManifest, operat
 	if err != nil {
 		return nil, err
 	}
-	var envelope struct {
-		Decision decisionEvidence `json:"decision"`
-	}
-	if json.Unmarshal(operation.ExpectedEffects, &envelope) != nil || envelope.Decision.ObservationSlot <= 0 {
-		return nil, budgetHold("operation_decision_slot_unavailable")
-	}
 	return func(ctx context.Context) error {
-		return d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, request, auth, envelope.Decision.ObservationSlot)
+		return d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, request, auth)
 	}, nil
 }
 
 // authorizeSendTx is the locked final-send fence: the signed row is the bound
 // wire, the debt-clear authority it was bound under is still live, and a
 // selector entry still authorizes its allocation.
-func (d *Database) authorizeSendTx(ctx context.Context, m RouteManifest, tx pgx.Tx, operationID string, request any, bound phase3OperationAuthorization, slot int64) error {
+func (d *Database) authorizeSendTx(ctx context.Context, m RouteManifest, tx pgx.Tx, operationID string, request any, bound phase3OperationAuthorization) error {
 	auth, err := readPhase3AuthorizationTx(ctx, tx, operationID)
 	if err != nil {
 		return err
@@ -402,5 +395,5 @@ func (d *Database) authorizeSendTx(ctx context.Context, m RouteManifest, tx pgx.
 	if err = d.checkSignedDebtClearTx(ctx, tx, m, operationID, request, auth); err != nil {
 		return err
 	}
-	return d.authorizeSelectorEntryTxOnManifest(ctx, m, tx, operationID, request, effects, slot, false)
+	return d.authorizeSelectorEntryTxOnManifest(ctx, m, tx, operationID, request, effects, 0, false)
 }

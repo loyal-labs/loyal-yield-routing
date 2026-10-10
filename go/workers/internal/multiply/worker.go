@@ -455,10 +455,6 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 		return TickResult{}, errors.New("signed operation omitted a supported blockhash expiry")
 	}
 	unsent := operation.Status == StatusSignedPersisted
-	sends := 1
-	if unsent {
-		sends = 0
-	}
 	intent := func(sendCtx context.Context) error {
 		ok, err := w.store.MarkBroadcastIntent(sendCtx, lease, operation.OperationID, time.Now().UTC())
 		if err == nil && !ok {
@@ -471,7 +467,7 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 	}
 	out, err := chain.Land(ctx, w.chain, chain.Attempt{
 		Wire: operation.SignedWire, Signature: *operation.TransactionSignature,
-		LastValidBlockHeight: *operation.LastValidBlockHeight, Sends: sends, Required: chain.Confirmed,
+		LastValidBlockHeight: *operation.LastValidBlockHeight, Required: chain.Confirmed,
 	}, landResendEvery, func(sendCtx context.Context) error {
 		if unsent {
 			return intent(sendCtx)

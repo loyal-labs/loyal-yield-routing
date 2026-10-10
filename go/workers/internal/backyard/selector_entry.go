@@ -496,8 +496,9 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 	now := time.Now().UTC()
 	// The initializer (requestedLane set, no borrow) moves no principal; it
 	// keeps the entry's own expiry but not the quote slot window. See
-	// applySelectorEntryWithLane.
-	if (requestedLane == "" && !entry.Quote.currentAtSlot(slot)) || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt) {
+	// applySelectorEntryWithLane. The slot window is checked at admission
+	// only: send runs at the same decision, which admission already proved.
+	if (admission && requestedLane == "" && !entry.Quote.currentAtSlot(slot)) || now.Before(entry.AcceptedAt) || !now.Before(entry.ExpiresAt) {
 		return budgetHold("selector_entry_quote_expired")
 	}
 	if requestedLane != "" {

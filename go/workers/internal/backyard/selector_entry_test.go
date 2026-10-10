@@ -327,18 +327,18 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 	if err != nil || got.AllocationOperationID != key+"-second" {
 		t.Fatal("allocation association not durable", err, got)
 	}
-	for _, admission := range []bool{true, false} {
-		tx, err := db.pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = db.lockOperationLease(ctx, tx, key+"-second"); err != nil {
-			t.Fatal(err)
-		}
-		err = db.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, key+"-second", request, ExpectedEffects{}, entry.Quote.ValidThroughSlot+1, admission)
-		_ = tx.Rollback(ctx)
-		assertBudgetHold(t, err, "selector_entry_quote_expired")
+	// The quote's slot window closes admission; send runs at that admitted
+	// decision and keeps only the entry's wall-clock expiry.
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err = db.lockOperationLease(ctx, tx, key+"-second"); err != nil {
+		t.Fatal(err)
+	}
+	err = db.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, key+"-second", request, ExpectedEffects{}, entry.Quote.ValidThroughSlot+1, true)
+	_ = tx.Rollback(ctx)
+	assertBudgetHold(t, err, "selector_entry_quote_expired")
 }
 
 func TestSelectorBorrowUsesReviewedAmountAfterQuoteExpiry(t *testing.T) {

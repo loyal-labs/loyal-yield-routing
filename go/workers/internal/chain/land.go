@@ -38,12 +38,11 @@ type LandChain interface {
 }
 
 // Attempt is a signed transaction already written to its operation row with
-// its blockhash expiry. Sends counts the sends that row already records.
+// its blockhash expiry.
 type Attempt struct {
 	Wire                 []byte
 	Signature            string
 	LastValidBlockHeight uint64
-	Sends                int
 	// Required is the commitment the family treats as landed.
 	Required Commitment
 }
@@ -118,8 +117,11 @@ func observe(ctx context.Context, chain LandChain, attempt Attempt) (Outcome, bo
 // signature is the transaction's identity.
 //
 // recordSend runs before every send and must durably count it on the
-// operation row; if it fails, nothing is sent. A send error is not an outcome:
-// only the signature status and the block height decide.
+// operation row; if it fails, nothing is sent. Every send keeps preflight, so
+// the cluster never forwards bytes that fail at its current state: such a wire
+// expires without effect instead of failing on chain. A send error, including
+// a preflight refusal or an already-processed answer, is not an outcome: only
+// the signature status and the block height decide.
 func Land(ctx context.Context, chain LandChain, attempt Attempt, every time.Duration, recordSend func(context.Context) error) (Outcome, error) {
 	if len(attempt.Wire) == 0 || attempt.Signature == "" || attempt.LastValidBlockHeight == 0 || every <= 0 || recordSend == nil {
 		return Outcome{}, errors.New("land requires signed bytes, signature, expiry, interval and send record")
@@ -141,11 +143,9 @@ func Land(ctx context.Context, chain LandChain, attempt Attempt, every time.Dura
 			if err := recordSend(ctx); err != nil {
 				return Outcome{}, err
 			}
-			// The first send keeps preflight; resends of the same bytes skip it.
-			if err := chain.SendWire(ctx, attempt.Wire, attempt.Sends > 0); err != nil {
+			if err := chain.SendWire(ctx, attempt.Wire, false); err != nil {
 				sendErr = err
 			}
-			attempt.Sends++
 		}
 		timer := time.NewTimer(every)
 		select {

@@ -1349,9 +1349,8 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 }
 
 // markBroadcastIntentOnManifest records broadcast intent under the operation
-// lock, after the custody, debt-clear and selector-entry fences pass at the
-// decision's observation slot.
-func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, request any, bound phase3OperationAuthorization, slot int64) error {
+// lock, after the custody, debt-clear and selector-entry fences pass.
+func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, request any, bound phase3OperationAuthorization) error {
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -1366,7 +1365,7 @@ func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest R
 	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, bound.CustodyProof); err != nil {
 		return err
 	}
-	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound, slot); err != nil {
+	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)

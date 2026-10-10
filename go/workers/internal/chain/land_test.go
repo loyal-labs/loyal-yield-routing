@@ -67,8 +67,8 @@ func TestLandResendsSameBytesUntilDroppedForwardLands(t *testing.T) {
 			t.Fatal("resend changed the bytes")
 		}
 	}
-	if !chain.preflight[0] || chain.preflight[1] || chain.preflight[2] {
-		t.Fatalf("preflight %v; only the first send keeps preflight", chain.preflight)
+	if !chain.preflight[0] || !chain.preflight[1] || !chain.preflight[2] {
+		t.Fatalf("preflight %v; every send keeps preflight", chain.preflight)
 	}
 }
 

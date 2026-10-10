@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -230,18 +229,22 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	})
 
 	// The landing path on the real journal: a signed row records broadcast
-	// intent before its first send (with preflight), a resumed row resends the
-	// same bytes without it, and only the signature status and the finalized
+	// intent before its first send, a resumed row resends the same bytes, every
+	// send keeps preflight, and only the signature status and the finalized
 	// height decide the row.
 	for _, tc := range []struct {
 		name, from, want, reason string
 		// landAfter is the send count after which the signature confirms;
 		// zero never lands and the blockhash expires after the first send.
 		landAfter int
-		sends     []bool
+		// refused: preflight refuses every send, so the cluster never
+		// forwards the wire.
+		refused bool
+		sends   int
 	}{
-		{"a signed wire is resent until it lands and confirms at its slot", "signed", "confirmed", "", 2, []bool{false, true}},
-		{"a resumed wire resends the same bytes and fails once expired and absent", "broadcast_intent", "failed", "signature_absent_after_blockhash_expiry", 0, []bool{true}},
+		{"a signed wire is resent until it lands and confirms at its slot", "signed", "confirmed", "", 2, false, 2},
+		{"a resumed wire resends the same bytes and fails once expired and absent", "broadcast_intent", "failed", "signature_absent_after_blockhash_expiry", 0, false, 1},
+		{"a wire refused by preflight is never forced on chain and fails once expired", "signed", "failed", "signature_absent_after_blockhash_expiry", 0, true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			routeKey := fmt.Sprintf("failure-lifecycle-land-%d", time.Now().UnixNano())
@@ -273,7 +276,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 				ExpectedEffects: []byte(evidence), SignedWire: wire, SignedWireSHA256: sha256Bytes(wire),
 				TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10,
 			}
-			var sends []bool
+			sends := 0
 			rpc := newFakeChain(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				body, _ := io.ReadAll(r.Body)
 				switch {
@@ -281,16 +284,22 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 					if !strings.Contains(string(body), base64.StdEncoding.EncodeToString(wire)) {
 						t.Errorf("sent bytes other than the persisted wire")
 					}
-					sends = append(sends, strings.Contains(string(body), `"skipPreflight":true`))
+					if strings.Contains(string(body), `"skipPreflight":true`) {
+						t.Errorf("a send skipped preflight")
+					}
+					sends++
+					if tc.refused {
+						return response(`{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"Transaction simulation failed: custom program error: 0x9"}}`), nil
+					}
 					return response(`{"jsonrpc":"2.0","id":1,"result":"` + operation.TransactionSignature + `"}`), nil
 				case strings.Contains(string(body), `"method":"getEpochInfo"`):
-					if tc.landAfter == 0 && len(sends) > 0 {
+					if tc.landAfter == 0 && sends > 0 {
 						return response(finalizedEpochJSON(11)), nil
 					}
 					return response(finalizedEpochJSON(5)), nil
 				case strings.Contains(string(body), `"method":"getSignatureStatuses"`):
 					status := "null"
-					if tc.landAfter > 0 && len(sends) >= tc.landAfter {
+					if tc.landAfter > 0 && sends >= tc.landAfter {
 						status = `{"slot":45,"confirmations":1,"err":null,"confirmationStatus":"confirmed"}`
 					}
 					return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":5000},"value":[` + status + `]}}`), nil
@@ -307,8 +316,8 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			if err := db.pool.QueryRow(ctx, `SELECT status,COALESCE(recovery_reason,''),COALESCE(confirmed_slot,0),broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status, &reason, &slot, &intent); err != nil {
 				t.Fatal(err)
 			}
-			if wantSlot := int64(45 * min(tc.landAfter, 1)); status != tc.want || reason != tc.reason || slot != wantSlot || !intent || !reflect.DeepEqual(sends, tc.sends) {
-				t.Fatalf("landing outcome: status=%s reason=%q slot=%d intent=%t sends=%v", status, reason, slot, intent, sends)
+			if wantSlot := int64(45 * min(tc.landAfter, 1)); status != tc.want || reason != tc.reason || slot != wantSlot || !intent || sends != tc.sends {
+				t.Fatalf("landing outcome: status=%s reason=%q slot=%d intent=%t sends=%d", status, reason, slot, intent, sends)
 			}
 		})
 	}

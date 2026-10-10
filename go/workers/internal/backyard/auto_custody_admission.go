@@ -384,8 +384,6 @@ func sharedCustodyAdmissionDigest(p sharedCustodyAdmissionProof) string {
 	b.WriteString(p.LeaseOwner)
 	b.WriteByte('|')
 	b.WriteString(strconv.FormatInt(p.LeaseFencing, 10))
-	// The empty field that named an excluded operation keeps digests stable.
-	b.WriteByte('|')
 	for _, step := range p.Proof.Steps {
 		b.WriteByte('|')
 		b.WriteString(step.OperationID)
@@ -469,13 +467,13 @@ func bindSharedCustodyAdmissionProofOnManifest(ctx context.Context, tx pgx.Tx, r
 // the caller's decode. The persisted effects decode under the SAME reviewed
 // manifest the caller threads, so a candidate AUTO initializer (zero PYUSD
 // spend) decodes exactly as it did at bind and keeps installed behavior.
-// A proof missing, over other effects, observed before the decision's slot,
-// or taken under a stale generation/fence/lease holds before broadcast intent
-// is recorded.
+// A proof missing, over other effects, or taken under a stale
+// generation/fence/lease holds before broadcast intent is recorded. Its
+// observation slot was bound to the decision's at bind.
 func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx, manifest RouteManifest, operationID string, custody *sharedCustodyProofBinding) error {
 	var lane, routeKey string
 	var effectsBytes []byte
-	var generation, decisionSlot int64
+	var generation int64
 	var leaseOwner string
 	var fencing int64
 	var leaseLive bool
@@ -484,10 +482,9 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 	// below still works there, while a positive spend still requires the
 	// lease checks that follow.
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(op.strategy_key,''), op.route_key, op.expected_effects, route.state_version,
-			COALESCE(route.lease_owner,''), route.fencing_token, (route.lease_expires_at>clock_timestamp()) IS TRUE,
-			COALESCE((op.expected_effects->'decision'->>'observationSlot')::bigint,0)
+			COALESCE(route.lease_owner,''), route.fencing_token, (route.lease_expires_at>clock_timestamp()) IS TRUE
 		FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route ON route.route_key=op.route_key
-		WHERE op.operation_id=$1 FOR UPDATE OF route`, operationID).Scan(&lane, &routeKey, &effectsBytes, &generation, &leaseOwner, &fencing, &leaseLive, &decisionSlot); err != nil {
+		WHERE op.operation_id=$1 FOR UPDATE OF route`, operationID).Scan(&lane, &routeKey, &effectsBytes, &generation, &leaseOwner, &fencing, &leaseLive); err != nil {
 		return err
 	}
 	// Lane applicability first: an installed (non-candidate) lane never
@@ -530,9 +527,6 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 		return budgetHold("custody_attribution_generation_drift")
 	}
 	if !custody.valid() || !custody.bindsGeneration(generation) ||
-		// The custody observation is confirmed no earlier than the decision
-		// it spends for.
-		decisionSlot <= 0 || custody.ObservedSlot < decisionSlot ||
 		custody.SpendRaw != spend || custody.EffectsSHA256 != effectsSHA256 ||
 		custody.RouteKey != routeKey || custody.Lane != lane || custody.Custody != cfg.Custody {
 		return budgetHold("custody_attribution_proof_drift")

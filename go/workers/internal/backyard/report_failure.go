@@ -238,7 +238,7 @@ func ReportExpiredAtLanding(observedSlot, landingSlot int64) bool {
 
 // persistedReportObservedSlot reads the wire's own report slot back from the
 // persisted build input. Only report-bearing bridge wires carry a report, so
-// other actions return zero and are never fenced.
+// other actions return zero and never classify as an expired report.
 func (d *Database) persistedReportObservedSlot(ctx context.Context, operationID string) (int64, error) {
 	if d == nil || d.pool == nil || operationID == "" {
 		return 0, fmt.Errorf("report slot database is not configured")
