@@ -33,7 +33,6 @@ done
 host=${LOYAL_WORKERS_SSH:-loyal-workers}
 dropin=/etc/systemd/system/loyal-backyard.service.d/40-verified-release.conf
 releases=/opt/loyal/releases/backyard
-build=$HOME/.loyal/deploy-build
 
 cd "$(dirname "$0")/.."
 git fetch -q origin main
@@ -91,10 +90,11 @@ if [[ -n $changed ]]; then
   echo "--migrations-applied: proceeding"
 fi
 
-# A fixed build dir, emptied, then filled from the commit alone: no
-# uncommitted file reaches a release.
-mkdir -p "$build"
-find "$build" -mindepth 1 -delete
+# A fresh build dir per run, filled from the commit alone: no uncommitted
+# file reaches a release, and two deploys on one machine never share one.
+mkdir -p "$HOME/.loyal"
+build=$(mktemp -d "$HOME/.loyal/deploy-build.XXXXXX")
+trap 'rm -rf "$build"' EXIT
 git archive "$sha" go/workers deploy/hetzner | tar -x -C "$build"
 if [[ ! -f $build/deploy/hetzner/activate-backyard.sh ]]; then
   echo "$sha predates activate-backyard.sh; it cannot be deployed with this command" >&2
