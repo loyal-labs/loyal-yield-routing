@@ -41,7 +41,7 @@ type policyKey struct {
 type conversion struct{ from, to string }
 
 // splitKaminoRoutes are the routes with one split KLend policy per leg.
-var splitKaminoRoutes = []RuntimeRoute{autoAUTOPYUSD, ethenaUSDePYUSD, primePRIMEPYUSD, primePRIMEUSDS, mapleSyrupUSDCUSDC}
+var splitKaminoRoutes = []RuntimeRoute{ethenaUSDePYUSD, primePRIMEPYUSD, primePRIMEUSDS}
 
 var kaminoLegs = []kaminoPrimeUSDCLeg{kaminoLegDeposit, kaminoLegWithdraw, kaminoLegBorrow, kaminoLegRepay}
 
@@ -84,8 +84,6 @@ func backyardPolicies() (map[policyKey]squads.Policy, error) {
 	add(policyKey{lane: RouteID, action: SwapUSDCToPrimeStep}, forward, err)
 	swaps, err := primeUSDCSwapPolicy()
 	add(policyKey{lane: RouteID, action: SwapPrimeToUSDCStep}, swaps, err)
-	mapleOut, err := mapleSwapOutPolicy()
-	add(policyKey{lane: mapleSyrupUSDCUSDC.Lane, action: SwapCollateralToStableStep}, mapleOut, err)
 	catalog, err := catalogSwapEdges()
 	if err != nil {
 		return nil, err
@@ -403,7 +401,7 @@ func primeUSDCForwardPolicy() (squads.Policy, error) {
 	for leg, id := range primeForwardPlanIDs {
 		// id, one step: swap variant 116 with its one byte, 100 percent, token 0 into 1.
 		plan := jupiter.ArgsPrefix([]byte{id, 1, 0, 0, 0, 0x74, 0, 100, 0, 1})
-		forward[leg] = sharedEdge(a.usdc, a.prime, 18, bridgeCapRaw, plan)
+		forward[leg] = sharedEdge(a.usdc, a.prime, 18, plan)
 	}
 	return swapPolicy(forward[:]...), nil
 }
@@ -419,16 +417,6 @@ func primeUSDCSwapPolicy() (squads.Policy, error) {
 	return swapPolicy(swaps[:]...), nil
 }
 
-// mapleSwapOutPolicy is the Maple lane's split policy that swaps syrupUSDC
-// into USDC, at most one syrupUSDC (6 decimals) at a time.
-func mapleSwapOutPolicy() (squads.Policy, error) {
-	a, err := routeSwapAssets()
-	if err != nil {
-		return squads.Policy{}, err
-	}
-	return swapPolicy(sharedEdge(a.syrup, a.usdc, 18, 1_000_000)), nil
-}
-
 // catalogSwapEdges are the two-edge Jupiter policies the catalog lanes swap
 // through, each its edges in constraint order. An edge's in_amount offset is
 // where the route plan of the quote it was installed from put it.
@@ -439,18 +427,15 @@ func catalogSwapEdges() ([][2]swapEdge, error) {
 	}
 	return [][2]swapEdge{
 		{shared(a.usdc, a.onyc, 19), shared(a.usdc, a.prime, 22)},
-		{shared(a.usdc, a.syrup, 18), shared(a.usdc, a.auto, 18)},
 		{shared(a.usdc, a.usde, 18), shared(a.usds, a.onyc, 28)},
 		{shared(a.prime, a.usdc, 18), shared(a.prime, a.usds, 23)},
 		{routed(a.usdc, a.usdg, 17, 20, 21), shared(a.usdc, a.pyusd, 18)},
 		{routed(a.pyusd, a.prime, 26, 18, 19), routed(a.pyusd, a.syrup, 22, 18, 19)},
 		{routed(a.pyusd, a.auto, 23, 10, 15), routed(a.pyusd, a.usde, 22, 23, 22)},
 		{shared(a.prime, a.usdg, 23), shared(a.prime, a.pyusd, 29)},
-		{shared(a.auto, a.usdg, 28), shared(a.auto, a.pyusd, 23)},
 		{shared(a.usde, a.usdg, 23), shared(a.usde, a.pyusd, 29)},
 		{shared(a.pyusd, a.usdc, 18), shared(a.pyusd, a.usds, 23)},
 		{shared(a.usds, a.prime, 27), shared(a.usds, a.syrup, 23)},
-		{shared(a.auto, a.usdc, 18), shared(a.auto, a.usds, 23)},
 		{shared(a.usde, a.usdc, 17), shared(a.usde, a.usds, 29)},
 		{shared(a.usdc, a.usds, 18), shared(a.usdg, a.pyusd, 24)},
 		{shared(a.usds, a.usdc, 18), shared(a.pyusd, a.usdg, 23)},
@@ -542,21 +527,21 @@ func swapPolicy(edges ...swapEdge) squads.Policy {
 }
 
 // swapBounds bounds a split swap whose in_amount is at inAmountAt: at most
-// maxIn, the worker's slippage bound and no platform fee.
-func swapBounds(inAmountAt, maxIn uint64) []squads.DataConstraintView {
-	return jupiter.Bounds(inAmountAt, maxIn, jupiterMaxSlippageBPS)
+// the vault cap, the worker's slippage bound and no platform fee.
+func swapBounds(inAmountAt uint64) []squads.DataConstraintView {
+	return jupiter.Bounds(inAmountAt, bridgeCapRaw, jupiterMaxSlippageBPS)
 }
 
 // shared is the shared_accounts_route edge from the vault's custody into its
 // custody, at most the vault cap.
 func shared(from, to swapAsset, inAmountAt uint64) swapEdge {
-	return sharedEdge(from, to, inAmountAt, bridgeCapRaw)
+	return sharedEdge(from, to, inAmountAt)
 }
 
 // sharedEdge is the shared_accounts_route edge from the vault's custody into
 // its custody, both mints pinned and each token program the edge uses, with
-// the leading data predicates given and at most maxIn in.
-func sharedEdge(from, to swapAsset, inAmountAt, maxIn uint64, leading ...squads.DataConstraintView) swapEdge {
+// the leading data predicates given and at most the vault cap in.
+func sharedEdge(from, to swapAsset, inAmountAt uint64, leading ...squads.DataConstraintView) swapEdge {
 	free := squads.Any
 	uses := func(program solana.PublicKey) squads.Slot {
 		if from.program == program || to.program == program {
@@ -567,7 +552,7 @@ func sharedEdge(from, to swapAsset, inAmountAt, maxIn uint64, leading ...squads.
 	return swapEdge{from, to, inAmountAt, true, jupiter.SharedAccountsRouteAllowed(jupiter.SharedRouteAllowed{TokenProgram: uses(solana.TokenProgramID),
 		ProgramAuthority: free, User: squads.Pin(kaminoKey(bridgeVault)), Source: squads.Pin(from.custody), ProgramSource: free,
 		ProgramDestination: free, Destination: squads.Pin(to.custody), SourceMint: squads.Pin(from.mint), DestinationMint: squads.Pin(to.mint),
-		PlatformFee: free, Token2022Program: uses(solana.Token2022ProgramID), EventAuthority: free}, append(leading, swapBounds(inAmountAt, maxIn)...)...)}
+		PlatformFee: free, Token2022Program: uses(solana.Token2022ProgramID), EventAuthority: free}, append(leading, swapBounds(inAmountAt)...)...)}
 }
 
 // routed is the route edge from the vault's custody into its custody; the
@@ -578,7 +563,7 @@ func routed(from, to swapAsset, inAmountAt uint64, sourceProgramAt, sourceMintAt
 	return swapEdge{from, to, inAmountAt, false, jupiter.RouteAllowed(jupiter.Route{TokenProgram: squads.Pin(to.program),
 		User: squads.Pin(kaminoKey(bridgeVault)), Source: squads.Pin(from.custody), Destination: squads.Pin(to.custody),
 		DestinationAccount: free, DestinationMint: squads.Pin(to.mint), PlatformFee: free, EventAuthority: free},
-		map[int]squads.Slot{sourceProgramAt: squads.Pin(from.program), sourceMintAt: squads.Pin(from.mint)}, swapBounds(inAmountAt, bridgeCapRaw)...)}
+		map[int]squads.Slot{sourceProgramAt: squads.Pin(from.program), sourceMintAt: squads.Pin(from.mint)}, swapBounds(inAmountAt)...)}
 }
 
 // pinned is the slot that admits only the route addresses given.
