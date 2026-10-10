@@ -7,20 +7,13 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// Reviewed Prime sibling swaps and installed USDe->PYUSD support v0 packets.
-// Fresh API table identities are encoding hints, never execution authority:
-// chain-owned table contents are validated and the compiler only looks up exact
-// keys from the policy-validated instruction. No table is created or extended.
-// Retain the old identities for persisted pre-hint requests and fixtures.
+// Swaps on lanes that take lookup hints support v0 packets. Fresh API table
+// identities are encoding hints, never execution authority: chain-owned table
+// contents are validated and the compiler only looks up exact keys from the
+// policy-validated instruction. No table is created or extended.
 func jupiterLookupAddresses(r JupiterSwapRequest) []string {
-	if acceptsJupiterLookupHints(r.RouteLane, r.Action) && len(r.Instruction.LookupTableAddresses) > 0 {
+	if acceptsJupiterLookupHints(r.RouteLane, r.Action) {
 		return r.Instruction.LookupTableAddresses
-	}
-	if r.RouteLane == "Ethena/USDe/PYUSD" && r.Action == SwapCollateralToDebtStep {
-		if len(r.Instruction.LookupTableAddresses) > 0 {
-			return r.Instruction.LookupTableAddresses
-		}
-		return []string{"FQCY2Cbea1jazkUc6xjBUD72gMT2o8Mr4mnMd7gpL2F1", "8mLN3ZeRSmrMuRZf3CcWfcUF19FaCLJVRNQastGkdh4M"}
 	}
 	return nil
 }
@@ -43,7 +36,7 @@ func acceptsJupiterLookupHints(lane string, action Action) bool {
 		// are pinned to the persisted request identities. Eligibility is an
 		// AUTO swap edge, so oversized packets stay constructible under its
 		// one policy.
-		_, _, err := jupiterPolicyLeg(lane, action, nil)
+		_, _, err := jupiterPolicyLeg(lane, action)
 		return err == nil
 	}
 	if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {

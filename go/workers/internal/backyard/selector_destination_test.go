@@ -112,9 +112,18 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 	u.Data[80] = 1
 	putKey(t, u.Data[480:512], route.Kamino.Obligation)
 	add(u)
-	captured, _ := basicJupiterRequestFromExport(t, route.Lane, "USDC->"+route.CollateralSymbol)
-	reverse, record := basicJupiterRequestFromExport(t, route.Lane, route.CollateralSymbol+"->USDC")
-	for _, table := range retainedOrReconstructedLookupTables(t, reverse.Instruction.LookupTableAddresses, legacyMessageKeys(t, record.MessageBase64), []string{record.PolicyAccount}) {
+	captured, _ := basicJupiterRequest(t, route.Lane, "USDC->"+route.CollateralSymbol)
+	// The exit carries a multi-hop route's venue accounts, so it needs the
+	// API's lookup tables, as the payoff path must read them.
+	reverse, _ := basicJupiterRequest(t, route.Lane, route.CollateralSymbol+"->USDC")
+	for index := range 24 {
+		reverse.Instruction.Accounts = append(reverse.Instruction.Accounts, jupiter.AccountMeta{Pubkey: autoVenueKey(byte(index))})
+	}
+	_, tables := compileTestSwap(t, reverse)
+	if len(tables) == 0 {
+		t.Fatal("the padded exit fits a legacy packet")
+	}
+	for _, table := range tables {
 		binary.LittleEndian.PutUint64(table.Data[12:20], 41)
 		add(ConfirmedAccount{Address: table.Address, Owner: table.Owner, Lamports: table.Lamports, Data: table.Data})
 	}
@@ -142,10 +151,10 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 				instruction.LookupTableAddresses = nil
 			}
 			data, _ := base64.StdEncoding.DecodeString(instruction.Data)
-			binary.LittleEndian.PutUint64(data[len(data)-19:], amount)
+			binary.LittleEndian.PutUint64(data[jupiter.V2InAmountOffset:], amount)
 			quotedOut, _ := strconv.ParseUint(body.QuoteResponse.OutAmount, 10, 64)
-			binary.LittleEndian.PutUint64(data[len(data)-11:], quotedOut)
-			binary.LittleEndian.PutUint16(data[len(data)-3:], 50)
+			binary.LittleEndian.PutUint64(data[jupiter.V2QuotedOutOffset:], quotedOut)
+			binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], 50)
 			instruction.Data = base64.StdEncoding.EncodeToString(data)
 			payload = map[string]any{"swapInstruction": instruction, "addressLookupTableAddresses": instruction.LookupTableAddresses}
 		default:

@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"math"
 	"time"
@@ -140,11 +139,7 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client 
 		// serialized loop request a fresh quote on its next bounded tick.
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 	}
-	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil {
-		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
-	}
-	key, _, err := jupiterPolicyLeg(decision.StrategyKey, decision.Action, data)
+	key, _, err := jupiterPolicyLeg(decision.StrategyKey, decision.Action)
 	if err != nil {
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 	}

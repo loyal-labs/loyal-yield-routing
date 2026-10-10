@@ -220,7 +220,7 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 			{SwapStableToCollateralStep, BasicSwapRoutesA},
 			{SwapCollateralToStableStep, BasicSwapRoutesB},
 		} {
-			key, leg, err := jupiterPolicyLeg(lane, test.action, nil)
+			key, leg, err := jupiterPolicyLeg(lane, test.action)
 			if err != nil {
 				t.Fatalf("%s %s: %v", lane, test.action, err)
 			}
@@ -256,11 +256,11 @@ func TestPhase2CutoverRejectsAnyLegacyPrimeExposure(t *testing.T) {
 }
 
 func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T) {
-	entry, entryLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapStableToCollateralStep, nil)
+	entry, entryLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapStableToCollateralStep)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exit, exitLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapCollateralToStableStep, nil)
+	exit, exitLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapCollateralToStableStep)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -71,7 +71,7 @@ func TestSelectorRecipePricesRepeatedReportsWithoutChargingPrincipalOrRent(t *te
 func TestSelectorRecipeValuesActualBasicSwapMinimum(t *testing.T) {
 	lane := SelectedRouteID
 	route, _ := runtimeRoute(lane)
-	request, _ := basicJupiterRequestFromExport(t, lane, "USDC->syrupUSDC")
+	request, _ := basicJupiterRequest(t, lane, "USDC->syrupUSDC")
 	// This recorded leg fits the legacy message; no synthetic lookup account
 	// or execution-state projection is needed for a fee-only forecast.
 	request.Instruction.LookupTableAddresses = nil

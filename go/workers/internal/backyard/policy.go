@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"slices"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
@@ -95,6 +96,25 @@ func backyardPolicies() (map[policyKey]squads.Policy, error) {
 		add(policyKey{action: action}, policy, nil)
 	}
 	return out, first
+}
+
+// PolicyLiteral is the Backyard policy the runtime holds under name, the name
+// a hold gives it (policyKey's String), so `loyal-engine policy apply
+// backyard` installs exactly the literal the runtime looks for.
+func PolicyLiteral(name string) (squads.Policy, error) {
+	literals, err := backyardPolicies()
+	if err != nil {
+		return squads.Policy{}, err
+	}
+	var names []string
+	for key, literal := range literals {
+		if key.String() == name {
+			return literal, nil
+		}
+		names = append(names, key.String())
+	}
+	slices.Sort(names)
+	return squads.Policy{}, fmt.Errorf("no Backyard policy %q; there are %q", name, names)
 }
 
 func (l kaminoPrimeUSDCLeg) String() string {
@@ -196,9 +216,8 @@ func initializerPolicyLeg(lane string) (policyKey, byte) {
 }
 
 // jupiterPolicyLeg is the policy lane swaps action through and the edge's
-// constraint there. The PRIME/USDC forward policy admits two route plans,
-// told apart by the plan id that follows the discriminator in data.
-func jupiterPolicyLeg(lane string, action Action, data []byte) (policyKey, byte, error) {
+// constraint there.
+func jupiterPolicyLeg(lane string, action Action) (policyKey, byte, error) {
 	if lane == "" {
 		lane = RouteID
 	}
@@ -224,12 +243,7 @@ func jupiterPolicyLeg(lane string, action Action, data []byte) (policyKey, byte,
 		}
 		return policyKey{family: family}, basicSwapLeg[lane], nil
 	case lane == RouteID && action == SwapUSDCToPrimeStep:
-		for leg, id := range primeForwardPlanIDs {
-			if len(data) > 8 && data[8] == id {
-				return policyKey{lane: lane, action: action}, byte(leg), nil
-			}
-		}
-		return policyKey{}, 0, fmt.Errorf("the forward PRIME/USDC policy admits no such route plan")
+		return policyKey{lane: lane, action: action}, splitLeg, nil
 	case lane == RouteID && action == SwapPrimeToUSDCStep:
 		return policyKey{lane: lane, action: action}, primeSwapOut, nil
 	default:
@@ -253,8 +267,8 @@ const (
 
 // autoPolicy is the AUTO lane's policy. The KLend legs pin the vault, an
 // obligation it owns, and the reserve (or market) and custody they move; the
-// swaps pin the vault, their custody accounts and no platform fee; the
-// initializer pins every account of the lane's one obligation. KLend and
+// swaps pin the vault's custodies of their direction and no fee (vaultSwap);
+// the initializer pins every account of the lane's one obligation. KLend and
 // Jupiter check the rest themselves.
 func autoPolicy(route RuntimeRoute) (squads.Policy, error) {
 	var out [autoLegs]squads.InstructionConstraintView
@@ -264,9 +278,10 @@ func autoPolicy(route RuntimeRoute) (squads.Policy, error) {
 	out[autoWithdraw] = kamino.WithdrawV2Allowed(collateralLeg, squads.Unpinned)
 	out[autoBorrow] = kamino.BorrowV2Allowed(debtLeg, squads.Unpinned)
 	out[autoRepay] = kamino.RepayV2Allowed(debtLeg, squads.Unpinned)
-	out[autoSwapToCollateral] = vaultSwap(pinned(bridgeSquadsATA, route.DebtCustody), pinned(route.CollateralCustody))
-	out[autoSwapFromCollateral] = vaultSwap(pinned(route.CollateralCustody), pinned(bridgeSquadsATA, route.DebtCustody))
-	out[autoSwapDebtToUSDC] = vaultSwap(pinned(route.DebtCustody), pinned(bridgeSquadsATA))
+	usdc, collateral, debt := usdcAsset(), collateralAsset(route), debtAsset(route)
+	out[autoSwapToCollateral] = vaultSwap([]swapAsset{usdc, debt}, []swapAsset{collateral})
+	out[autoSwapFromCollateral] = vaultSwap([]swapAsset{collateral}, []swapAsset{usdc, debt})
+	out[autoSwapDebtToUSDC] = vaultSwap([]swapAsset{debt}, []swapAsset{usdc})
 	var err error
 	out[autoInitialize], err = obligationInitAllowed(route)
 	return vaultPolicy(out[:]...), err
@@ -300,8 +315,8 @@ var basicSwapLeg = map[string]byte{"OnRe/ONyc/USDC": basicSwapONycPrime, PhaseOn
 // basicPolicy is one basic family's policy, shared by the three runtime lanes
 // (OnRe, Prime, Maple, in that order in every pin). Its KLend legs pin the
 // vault, an obligation it owns, each lane's collateral reserve (or market) and
-// the custodies; its swaps pin the vault, the custodies of their direction and
-// no platform fee.
+// the custodies; its swaps pin the vault's custodies of their direction and no
+// fee (vaultSwap).
 func basicPolicy(family BasicPolicyFamily) (squads.Policy, error) {
 	var lanes [3]RuntimeRoute
 	for i, lane := range [3]string{onreONycUSDC, PhaseOneLaneID, SelectedRouteID} {
@@ -328,8 +343,8 @@ func basicPolicy(family BasicPolicyFamily) (squads.Policy, error) {
 		out[basicRepay] = kamino.RepayV2Allowed(leg, squads.Unpinned)
 		return vaultPolicy(out[:]...), nil
 	case BasicSwapRoutesA, BasicSwapRoutesB:
-		stables := [basicSwapLegs]squads.Slot{pinned(bridgeSquadsATA, primePRIMEUSDS.DebtCustody), pinned(bridgeSquadsATA, autoAUTOPYUSD.DebtCustody)}
-		collaterals := [basicSwapLegs]squads.Slot{pinned(onre.CollateralCustody, prime.CollateralCustody), pinned(prime.CollateralCustody, maple.CollateralCustody)}
+		stables := [basicSwapLegs][]swapAsset{{usdcAsset(), debtAsset(primePRIMEUSDS)}, {usdcAsset(), debtAsset(autoAUTOPYUSD)}}
+		collaterals := [basicSwapLegs][]swapAsset{{collateralAsset(onre), collateralAsset(prime)}, {collateralAsset(prime), collateralAsset(maple)}}
 		var out [basicSwapLegs]squads.InstructionConstraintView
 		for leg := range out {
 			if family == BasicSwapRoutesA {
@@ -374,36 +389,26 @@ func initializerPolicy(route RuntimeRoute) (squads.Policy, error) {
 	return vaultPolicy(constraint), err
 }
 
-// The PRIME/USDC route's two swap policies. The forward one admits only two
-// fixed route plans, which differ in their id byte; the other admits USDC into
-// PRIME and PRIME back into USDC.
-const (
-	primeForwardPlanID1 = iota
-	primeForwardPlanID2
-	primeForwardLegs
-)
-
+// The PRIME/USDC route's two swap policies. The forward one admits USDC into
+// PRIME along one fixed route plan as its one constraint; the other admits
+// USDC into PRIME and PRIME back into USDC.
 const (
 	primeSwapIn  = iota // USDC into PRIME
 	primeSwapOut        // PRIME into USDC
 	primeSwapLegs
 )
 
-// primeForwardPlanIDs is the id byte of each forward route plan, by leg.
-var primeForwardPlanIDs = [primeForwardLegs]byte{primeForwardPlanID1: 1, primeForwardPlanID2: 2}
+// primeForwardPlan is the forward policy's route plan, the whole
+// Vec<RoutePlanStepV2> at jupiter.V2RoutePlanOffset: one step, Manifest (swap
+// variant 116) on side 0, all 10,000 bps, token 0 into token 1.
+var primeForwardPlan = []byte{1, 0, 0, 0, 116, 0, 0x10, 0x27, 0, 1}
 
 func primeUSDCForwardPolicy() (squads.Policy, error) {
 	a, err := routeSwapAssets()
 	if err != nil {
 		return squads.Policy{}, err
 	}
-	var forward [primeForwardLegs]swapEdge
-	for leg, id := range primeForwardPlanIDs {
-		// id, one step: swap variant 116 with its one byte, 100 percent, token 0 into 1.
-		plan := jupiter.ArgsPrefix([]byte{id, 1, 0, 0, 0, 0x74, 0, 100, 0, 1})
-		forward[leg] = sharedEdge(a.usdc, a.prime, 18, plan)
-	}
-	return swapPolicy(forward[:]...), nil
+	return vaultPolicy(swapEdge{a.usdc, a.prime}.allowed(squads.DataBytes(jupiter.V2RoutePlanOffset, primeForwardPlan))), nil
 }
 
 func primeUSDCSwapPolicy() (squads.Policy, error) {
@@ -412,33 +417,32 @@ func primeUSDCSwapPolicy() (squads.Policy, error) {
 		return squads.Policy{}, err
 	}
 	var swaps [primeSwapLegs]swapEdge
-	swaps[primeSwapIn] = shared(a.usdc, a.prime, 22)
-	swaps[primeSwapOut] = shared(a.prime, a.usdc, 18)
+	swaps[primeSwapIn] = swapEdge{a.usdc, a.prime}
+	swaps[primeSwapOut] = swapEdge{a.prime, a.usdc}
 	return swapPolicy(swaps[:]...), nil
 }
 
 // catalogSwapEdges are the two-edge Jupiter policies the catalog lanes swap
-// through, each its edges in constraint order. An edge's in_amount offset is
-// where the route plan of the quote it was installed from put it.
+// through, each its edges in constraint order.
 func catalogSwapEdges() ([][2]swapEdge, error) {
 	a, err := routeSwapAssets()
 	if err != nil {
 		return nil, err
 	}
 	return [][2]swapEdge{
-		{shared(a.usdc, a.onyc, 19), shared(a.usdc, a.prime, 22)},
-		{shared(a.usdc, a.usde, 18), shared(a.usds, a.onyc, 28)},
-		{shared(a.prime, a.usdc, 18), shared(a.prime, a.usds, 23)},
-		{routed(a.usdc, a.usdg, 17, 20, 21), shared(a.usdc, a.pyusd, 18)},
-		{routed(a.pyusd, a.prime, 26, 18, 19), routed(a.pyusd, a.syrup, 22, 18, 19)},
-		{routed(a.pyusd, a.auto, 23, 10, 15), routed(a.pyusd, a.usde, 22, 23, 22)},
-		{shared(a.prime, a.usdg, 23), shared(a.prime, a.pyusd, 29)},
-		{shared(a.usde, a.usdg, 23), shared(a.usde, a.pyusd, 29)},
-		{shared(a.pyusd, a.usdc, 18), shared(a.pyusd, a.usds, 23)},
-		{shared(a.usds, a.prime, 27), shared(a.usds, a.syrup, 23)},
-		{shared(a.usde, a.usdc, 17), shared(a.usde, a.usds, 29)},
-		{shared(a.usdc, a.usds, 18), shared(a.usdg, a.pyusd, 24)},
-		{shared(a.usds, a.usdc, 18), shared(a.pyusd, a.usdg, 23)},
+		{{a.usdc, a.onyc}, {a.usdc, a.prime}},
+		{{a.usdc, a.usde}, {a.usds, a.onyc}},
+		{{a.prime, a.usdc}, {a.prime, a.usds}},
+		{{a.usdc, a.usdg}, {a.usdc, a.pyusd}},
+		{{a.pyusd, a.prime}, {a.pyusd, a.syrup}},
+		{{a.pyusd, a.auto}, {a.pyusd, a.usde}},
+		{{a.prime, a.usdg}, {a.prime, a.pyusd}},
+		{{a.usde, a.usdg}, {a.usde, a.pyusd}},
+		{{a.pyusd, a.usdc}, {a.pyusd, a.usds}},
+		{{a.usds, a.prime}, {a.usds, a.syrup}},
+		{{a.usde, a.usdc}, {a.usde, a.usds}},
+		{{a.usdc, a.usds}, {a.usdg, a.pyusd}},
+		{{a.usds, a.usdc}, {a.pyusd, a.usdg}},
 	}, nil
 }
 
@@ -466,104 +470,75 @@ type swapAsset struct {
 	custody, mint, program solana.PublicKey
 }
 
+// pyusdMint is PayPal USD. The swap API routes it through no program
+// authority's token account: every V2 shared-accounts answer with PYUSD in or
+// out (8 edges, testdata/jupiter-v2-swap-instructions.json) puts the vault's
+// own PYUSD account in that slot, while USDG, with the same Token-2022
+// extensions, goes through the authority's.
+const pyusdMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+
+// programAccounts are the accounts a shared route may move a through on
+// Jupiter's side: each program authority's token account of it, or the
+// vault's own account for a mint the API routes directly.
+func (a swapAsset) programAccounts() []solana.PublicKey {
+	if a.mint == kaminoKey(pyusdMint) {
+		return []solana.PublicKey{a.custody}
+	}
+	return jupiter.AuthorityTokenAccounts(jupiter.APIAuthorities, a.mint, a.program)
+}
+
 type swapAssets struct{ usdc, prime, usds, pyusd, auto, usde, syrup, onyc, usdg swapAsset }
 
 // usdgMint is Global Dollar, which only the catalog swap policies name.
 const usdgMint = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
+
+func asset(symbol, custody, mint, program string) swapAsset {
+	return swapAsset{symbol: symbol, custody: kaminoKey(custody), mint: kaminoKey(mint), program: kaminoKey(program)}
+}
+
+func usdcAsset() swapAsset { return asset("USDC", bridgeSquadsATA, bridgeUSDC, classicTokenProgram) }
+
+func collateralAsset(r RuntimeRoute) swapAsset {
+	return asset(r.CollateralSymbol, r.CollateralCustody, r.Kamino.CollateralMint, r.CollateralTokenProgram)
+}
+
+func debtAsset(r RuntimeRoute) swapAsset {
+	return asset(r.DebtSymbol, r.DebtCustody, r.Kamino.DebtMint, r.DebtTokenProgram)
+}
 
 func routeSwapAssets() (swapAssets, error) {
 	onre, err := basicRuntimeRoute("OnRe/ONyc/USDC")
 	if err != nil {
 		return swapAssets{}, err
 	}
-	asset := func(symbol, custody, mint, program string) swapAsset {
-		return swapAsset{symbol: symbol, custody: kaminoKey(custody), mint: kaminoKey(mint), program: kaminoKey(program)}
-	}
-	collateral := func(r RuntimeRoute) swapAsset {
-		return asset(r.CollateralSymbol, r.CollateralCustody, r.Kamino.CollateralMint, r.CollateralTokenProgram)
-	}
-	debt := func(r RuntimeRoute) swapAsset {
-		return asset(r.DebtSymbol, r.DebtCustody, r.Kamino.DebtMint, r.DebtTokenProgram)
-	}
 	usdg, err := spl.AssociatedTokenAddress(kaminoKey(bridgeVault), kaminoKey(usdgMint), solana.Token2022ProgramID)
 	if err != nil {
 		return swapAssets{}, err
 	}
 	return swapAssets{
-		usdc: asset("USDC", bridgeSquadsATA, bridgeUSDC, classicTokenProgram), prime: collateral(primePRIMEPYUSD),
-		usds: debt(primePRIMEUSDS), pyusd: debt(autoAUTOPYUSD), auto: collateral(autoAUTOPYUSD), usde: collateral(ethenaUSDePYUSD),
-		syrup: collateral(mapleSyrupUSDCUSDC), onyc: collateral(onre), usdg: asset("USDG", usdg.String(), usdgMint, token2022Program),
+		usdc: usdcAsset(), prime: collateralAsset(primePRIMEPYUSD), usds: debtAsset(primePRIMEUSDS), pyusd: debtAsset(autoAUTOPYUSD),
+		auto: collateralAsset(autoAUTOPYUSD), usde: collateralAsset(ethenaUSDePYUSD), syrup: collateralAsset(mapleSyrupUSDCUSDC),
+		onyc: collateralAsset(onre), usdg: asset("USDG", usdg.String(), usdgMint, token2022Program),
 	}, nil
 }
 
-// swapEdge is one conversion a split swap policy admits. inAmountAt is where
-// the edge's data holds in_amount: after the route plan of the quote it was
-// installed from. The quoted out amount, slippage and platform fee follow it
-// at jupiter's fixed offsets; its bounds read them there (jupiter.Bounds, which
-// only the PRIME/USDC forward policy makes exact by pinning its route plan),
-// and so does the runtime validator of the swap API's instruction.
-type swapEdge struct {
-	from, to   swapAsset
-	inAmountAt uint64
-	shared     bool // shared_accounts_route, else route
-	constraint squads.InstructionConstraintView
-}
+// swapEdge is one conversion a swap policy admits: the vault's custody of from
+// into its custody of to.
+type swapEdge struct{ from, to swapAsset }
 
 func (e swapEdge) conversion() conversion { return conversion{e.from.symbol, e.to.symbol} }
 
-// The route tail's fields, where the edge's instruction holds them.
-func (e swapEdge) amountAt() int   { return int(e.inAmountAt) }
-func (e swapEdge) quotedAt() int   { return e.amountAt() + jupiter.QuotedOutAfterInAmount }
-func (e swapEdge) slippageAt() int { return e.amountAt() + jupiter.SlippageAfterInAmount }
-func (e swapEdge) feeAt() int      { return e.amountAt() + jupiter.PlatformFeeAfterInAmount }
+func (e swapEdge) allowed(data ...squads.DataConstraintView) squads.InstructionConstraintView {
+	return vaultSwap([]swapAsset{e.from}, []swapAsset{e.to}, data...)
+}
 
 // swapPolicy is the vault's policy of swap edges, in constraint order.
 func swapPolicy(edges ...swapEdge) squads.Policy {
 	constraints := make([]squads.InstructionConstraintView, len(edges))
 	for i, edge := range edges {
-		constraints[i] = edge.constraint
+		constraints[i] = edge.allowed()
 	}
 	return vaultPolicy(constraints...)
-}
-
-// swapBounds bounds a split swap whose in_amount is at inAmountAt: at most
-// the vault cap, the worker's slippage bound and no platform fee.
-func swapBounds(inAmountAt uint64) []squads.DataConstraintView {
-	return jupiter.Bounds(inAmountAt, bridgeCapRaw, jupiterMaxSlippageBPS)
-}
-
-// shared is the shared_accounts_route edge from the vault's custody into its
-// custody, at most the vault cap.
-func shared(from, to swapAsset, inAmountAt uint64) swapEdge {
-	return sharedEdge(from, to, inAmountAt)
-}
-
-// sharedEdge is the shared_accounts_route edge from the vault's custody into
-// its custody, both mints pinned and each token program the edge uses, with
-// the leading data predicates given and at most the vault cap in.
-func sharedEdge(from, to swapAsset, inAmountAt uint64, leading ...squads.DataConstraintView) swapEdge {
-	free := squads.Any
-	uses := func(program solana.PublicKey) squads.Slot {
-		if from.program == program || to.program == program {
-			return squads.Pin(program)
-		}
-		return free
-	}
-	return swapEdge{from, to, inAmountAt, true, jupiter.SharedAccountsRouteAllowed(jupiter.SharedRouteAllowed{TokenProgram: uses(solana.TokenProgramID),
-		ProgramAuthority: free, User: squads.Pin(kaminoKey(bridgeVault)), Source: squads.Pin(from.custody), ProgramSource: free,
-		ProgramDestination: free, Destination: squads.Pin(to.custody), SourceMint: squads.Pin(from.mint), DestinationMint: squads.Pin(to.mint),
-		PlatformFee: free, Token2022Program: uses(solana.Token2022ProgramID), EventAuthority: free}, append(leading, swapBounds(inAmountAt)...)...)}
-}
-
-// routed is the route edge from the vault's custody into its custody; the
-// source's token program and mint are the remaining accounts at the given
-// positions of the route it was installed from.
-func routed(from, to swapAsset, inAmountAt uint64, sourceProgramAt, sourceMintAt int) swapEdge {
-	free := squads.Any
-	return swapEdge{from, to, inAmountAt, false, jupiter.RouteAllowed(jupiter.Route{TokenProgram: squads.Pin(to.program),
-		User: squads.Pin(kaminoKey(bridgeVault)), Source: squads.Pin(from.custody), Destination: squads.Pin(to.custody),
-		DestinationAccount: free, DestinationMint: squads.Pin(to.mint), PlatformFee: free, EventAuthority: free},
-		map[int]squads.Slot{sourceProgramAt: squads.Pin(from.program), sourceMintAt: squads.Pin(from.mint)}, swapBounds(inAmountAt)...)}
 }
 
 // pinned is the slot that admits only the route addresses given.
@@ -593,13 +568,30 @@ func vaultDebt(market, custody squads.Slot) kamino.LiquidityAllowed {
 		TokenProgram: free, FeeReceiver: free, ObligationFarmUserState: free, ReserveFarmState: free}
 }
 
-// vaultSwap is a shared_accounts_route by the vault from source into
-// destination with no platform fee; Jupiter checks the rest.
-func vaultSwap(source, destination squads.Slot) squads.InstructionConstraintView {
-	free := squads.Any
-	return jupiter.SharedAccountsRouteAllowed(jupiter.SharedRouteAllowed{TokenProgram: free, ProgramAuthority: free,
-		User: squads.Pin(kaminoKey(bridgeVault)), Source: source, ProgramSource: free, ProgramDestination: free, Destination: destination,
-		SourceMint: free, DestinationMint: free, PlatformFee: squads.Pin(jupiter.ProgramID), Token2022Program: free, EventAuthority: free})
+// vaultSwap is a shared_accounts_route_v2 by the vault from its custody of
+// any from asset into its custody of any to asset, through any program
+// authority the swap API routes through, with no fee: output reaches only a
+// to custody. The price is not bounded: in_amount, quoted_out_amount,
+// slippage and the route are free, by the owner's no-limits choice for swaps
+// (jupiter.SharedAccountsRouteV2Allowed).
+func vaultSwap(from, to []swapAsset, data ...squads.DataConstraintView) squads.InstructionConstraintView {
+	side := func(assets []swapAsset) (custody, programAccount, mint, program squads.Slot) {
+		var custodies, programAccounts, mints, programs []solana.PublicKey
+		for _, a := range assets {
+			custodies, mints = append(custodies, a.custody), append(mints, a.mint)
+			programAccounts = append(programAccounts, a.programAccounts()...)
+			if !slices.Contains(programs, a.program) {
+				programs = append(programs, a.program)
+			}
+		}
+		return squads.Pin(custodies...), squads.Pin(programAccounts...), squads.Pin(mints...), squads.Pin(programs...)
+	}
+	source, programSource, sourceMint, sourceProgram := side(from)
+	destination, programDestination, destinationMint, destinationProgram := side(to)
+	return jupiter.SharedAccountsRouteV2Allowed(jupiter.SharedRouteV2Allowed{ProgramAuthority: squads.Pin(jupiter.Authorities(jupiter.APIAuthorities)...),
+		User: squads.Pin(kaminoKey(bridgeVault)), Source: source, ProgramSource: programSource, ProgramDestination: programDestination,
+		Destination: destination, SourceMint: sourceMint, DestinationMint: destinationMint, SourceTokenProgram: sourceProgram,
+		DestinationTokenProgram: destinationProgram}, data...)
 }
 
 // obligationInitAllowed creates the route's one Multiply obligation: every

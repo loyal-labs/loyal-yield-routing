@@ -951,16 +951,16 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 	if _, err := compileJupiterMessageForDelegate(evidence.Request, mustKey(bridgeDelegate)); err != nil {
 		t.Fatalf("retained request does not compile: %v", err)
 	}
-	// The floor helper never interprets a non-legacy payload's tail offsets.
-	v2 := evidence.Request
-	v2Data, _ := base64.StdEncoding.DecodeString(v2.Instruction.Data)
-	copy(v2Data[:8], jupiter.SharedAccountsRouteV2Discriminator[:])
-	v2.Instruction.Data = base64.StdEncoding.EncodeToString(v2Data)
-	if _, err := jupiterInstructionWireFloor(v2.Instruction); err == nil {
-		t.Fatal("wire floor read a non-legacy payload")
+	// The floor helper reads only shared_accounts_route_v2's fixed offsets.
+	legacy := evidence.Request
+	legacyData, _ := base64.StdEncoding.DecodeString(legacy.Instruction.Data)
+	copy(legacyData[:8], jupiter.SharedAccountsRouteDiscriminator[:])
+	legacy.Instruction.Data = base64.StdEncoding.EncodeToString(legacyData)
+	if _, err := jupiterInstructionWireFloor(legacy.Instruction); err == nil {
+		t.Fatal("wire floor read a legacy payload")
 	}
-	if _, err := compileJupiterMessageForDelegate(v2, mustKey(bridgeDelegate)); err == nil {
-		t.Fatal("non-legacy AUTO payload retained")
+	if _, err := compileJupiterMessageForDelegate(legacy, mustKey(bridgeDelegate)); err == nil {
+		t.Fatal("legacy AUTO payload retained")
 	}
 	// Other lanes keep their established minimum semantics.
 	if err := jupiterValidateAutoRetainedMinimum(JupiterSwapRequest{RouteLane: SelectedRouteID, MinimumOutputRaw: ^uint64(0)}); err != nil {
@@ -1437,7 +1437,7 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 	if !ok || effects.Kind != "kamino-initialize" || !effects.Conserved || effects.Initialization == nil || *effects.Initialization != init {
 		t.Fatalf("initializer step drifted: %+v %+v", request, effects)
 	}
-	if init.RouteLane != route.Lane || init.Policy != installedAutoPolicyKey {
+	if init.RouteLane != route.Lane || init.Policy != installedAutoPolicyKey() {
 		t.Fatalf("initializer lost the installed AUTO policy: %+v", init)
 	}
 	if init.RentLamports != autoCandidateInitializerRent() || init.MaximumFeeLamports != 5000 {
@@ -1514,7 +1514,7 @@ func TestCandidateInitializerDecodesToTheManifestCompile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Policy != installedAutoPolicyKey {
+	if r.Policy != installedAutoPolicyKey() {
 		t.Fatalf("request lost the installed AUTO policy: %+v", r)
 	}
 	encoded, err := jsonMarshalExpectedEffects(ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r})
@@ -1597,7 +1597,7 @@ func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T
 	if !ok || effects.Kind != "kamino-initialize" || !effects.Conserved || effects.Initialization == nil || *effects.Initialization != init {
 		t.Fatalf("initializer step drifted: %+v %+v", request, effects)
 	}
-	if init.RouteLane != route.Lane || init.Policy != installedAutoPolicyKey {
+	if init.RouteLane != route.Lane || init.Policy != installedAutoPolicyKey() {
 		t.Fatalf("initializer lost the installed AUTO policy: %+v", init)
 	}
 	if init.RentLamports != autoCandidateInitializerRent() || init.MaximumFeeLamports != 5000 {

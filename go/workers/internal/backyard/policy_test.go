@@ -79,8 +79,8 @@ func TestUninstalledLiteralHoldsByName(t *testing.T) {
 	}
 }
 
-// The AUTO policy's installed account.
-const installedAutoPolicyKey = "H6X87EqwDcM2qigQ4SadS3uWFozkkGSwvUxDuYYcD92q"
+// installedAutoPolicyKey is the AUTO policy's installed account.
+func installedAutoPolicyKey() string { return testPolicyAccount(policyKey{lane: autoAUTOPYUSD.Lane}) }
 
 // policyCapture is testdata/installed-policies.json: one finalized
 // getProgramAccounts of every policy on Backyard's Settings (the policy

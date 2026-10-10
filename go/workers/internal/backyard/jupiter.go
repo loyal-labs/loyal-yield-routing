@@ -115,17 +115,10 @@ func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string,
 	if err != nil {
 		return jupiter.Quote{}, JupiterSwapInstruction{}, err
 	}
-	request := jupiter.QuoteRequest{InputMint: sourceMint, OutputMint: destinationMint, Amount: amount, SlippageBPS: jupiterMaxSlippageBPS, MaxAccounts: 32}
-	useSharedAccounts := true
-	if catalogJupiterRoute(lane) && lane != autoAUTOPYUSD.Lane {
-		// AUTO's dialect is its one policy's (legacy SharedAccountsRoute); a
-		// catalog edge's is the one its literal admits.
-		edges, leg, err := catalogEdge(action, lane)
-		if err != nil {
-			return jupiter.Quote{}, JupiterSwapInstruction{}, err
-		}
-		useSharedAccounts = edges[leg].shared
-	}
+	// Every swap policy admits shared_accounts_route_v2 only, which the API
+	// returns for a V2 quote with shared accounts.
+	request := jupiter.QuoteRequest{InputMint: sourceMint, OutputMint: destinationMint, Amount: amount, SlippageBPS: jupiterMaxSlippageBPS,
+		MaxAccounts: 32, InstructionVersion: "V2"}
 	if lane == SelectedRouteID {
 		// The selected RWA representative was reviewed against Manifest. Keep
 		// Jupiter's optimizer inside that one venue family instead of accepting
@@ -140,7 +133,7 @@ func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string,
 	if err != nil {
 		return jupiter.Quote{}, JupiterSwapInstruction{}, err
 	}
-	response, err := client.SwapInstructions(ctx, quote, solana.MustPublicKeyFromBase58(bridgeVault), useSharedAccounts)
+	response, err := client.SwapInstructions(ctx, quote, solana.MustPublicKeyFromBase58(bridgeVault), true)
 	if err != nil {
 		return jupiter.Quote{}, JupiterSwapInstruction{}, err
 	}
@@ -152,11 +145,6 @@ func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string,
 	if _, err := validateJupiterInstructionForRoute(instruction, action, amount, out, minimum, lane); err != nil {
 		return jupiter.Quote{}, JupiterSwapInstruction{}, err
 	}
-	if lane == RouteID || lane == "" {
-		if err := validateInstalledJupiterHeader(action, instruction); err != nil {
-			return jupiter.Quote{}, JupiterSwapInstruction{}, err
-		}
-	}
 	if acceptsJupiterLookupHints(lane, action) {
 		instruction.LookupTableAddresses = response.AddressLookupTableAddresses
 		if err := validateJupiterLookupCandidates(response.AddressLookupTableAddresses); err != nil {
@@ -164,22 +152,6 @@ func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string,
 		}
 	}
 	return quote, instruction, nil
-}
-
-// The installed Phase 1 and selected Phase 2 policies accept only legacy 37-byte
-// SharedAccountsRoute data with the amount at offset 18. The forward policy
-// additionally selects one of its two exact route-plan-prefix constraints from
-// the manifest after the fresh instruction is built.
-func validateInstalledJupiterHeader(action Action, instruction JupiterSwapInstruction) error {
-	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) < 8 || [8]byte(data[:8]) != jupiter.SharedAccountsRouteDiscriminator {
-		return fmt.Errorf("installed Phase 1 swap policy does not authorize this Jupiter dialect")
-	}
-	if action != SwapUSDCToPrimeStep && action != SwapPrimeToUSDCStep &&
-		action != SwapStableToCollateralStep && action != SwapCollateralToStableStep || len(data) != 37 {
-		return fmt.Errorf("fresh Jupiter header does not match the installed policy offsets")
-	}
-	return nil
 }
 
 func validateJupiterQuoteForRoute(quote jupiter.Quote, action Action, amount uint64, lane string) (uint64, uint64, error) {
@@ -204,51 +176,35 @@ func validateJupiterQuoteForRoute(quote jupiter.Quote, action Action, amount uin
 	return out, minimum, nil
 }
 
+// validateJupiterInstructionForRoute checks the swap API's instruction against
+// the request: a shared_accounts_route_v2 by the vault alone, from the edge's
+// source custody and mint into its destination custody and mint, of exactly
+// amount at the quoted out with at most the worker's slippage. Its policy
+// pins the rest on chain.
 func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Action, amount, out, minimum uint64, lane string) (compiledInstruction, error) {
-	if catalogJupiterRoute(lane) && lane != autoAUTOPYUSD.Lane {
-		return validateCatalogJupiterInstruction(value, action, amount, out, minimum, lane)
-	}
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
 		return compiledInstruction{}, err
 	}
-	if value.ProgramID != jupiter.ProgramID.String() || len(value.Accounts) == 0 || len(value.Accounts) > 64 {
+	if value.ProgramID != jupiter.ProgramID.String() || len(value.Accounts) > 64 {
 		return compiledInstruction{}, fmt.Errorf("Jupiter program or account set drifted")
 	}
 	data, err := base64.StdEncoding.Strict().DecodeString(value.Data)
-	if err != nil || len(data) < 28 {
+	if err != nil {
 		return compiledInstruction{}, fmt.Errorf("Jupiter instruction data is malformed")
 	}
-	legacy, v2 := [8]byte(data[:8]) == jupiter.SharedAccountsRouteDiscriminator, [8]byte(data[:8]) == jupiter.SharedAccountsRouteV2Discriminator
-	autoLane := lane == autoAUTOPYUSD.Lane
-	if autoLane && !legacy {
-		return compiledInstruction{}, fmt.Errorf("AUTO policy requires legacy sharedAccountsRoute")
+	args, err := jupiter.DecodeSharedAccountsRouteV2Args(data)
+	if err != nil {
+		return compiledInstruction{}, fmt.Errorf("unsupported Jupiter instruction dialect: %w", err)
 	}
-	if selectorLane(lane) && !legacy {
-		return compiledInstruction{}, fmt.Errorf("basic policy requires legacy sharedAccountsRoute")
+	if args.InAmount != amount || args.QuotedOutAmount != out || args.SlippageBPS > jupiterMaxSlippageBPS || minimum == 0 || minimum > out {
+		return compiledInstruction{}, fmt.Errorf("Jupiter instruction economics drifted")
 	}
-	if !legacy && !v2 {
-		return compiledInstruction{}, fmt.Errorf("unsupported Jupiter instruction dialect")
-	}
-	type boundary struct {
+	for _, expected := range []struct {
 		index            int
 		key              string
 		signer, writable bool
-	}
-	boundaries := []boundary{}
-	if selectorLane(lane) || autoLane {
-		// Both the basic swap families and the combined AUTO policy pin the
-		// platform-fee account to the Jupiter program.
-		boundaries = append(boundaries, boundary{9, jupiter.ProgramID.String(), false, false})
-	}
-	slippageOffset, feeOffset := len(data)-3, len(data)-1
-	if legacy {
-		boundaries = append(boundaries, []boundary{{2, bridgeVault, true, false}, {3, sourceATA, false, true}, {6, destinationATA, false, true}, {7, sourceMint, false, false}, {8, destinationMint, false, false}, {0, bridgeTokenProgram, false, false}}...)
-	} else {
-		boundaries = []boundary{{1, bridgeVault, true, false}, {2, sourceATA, false, true}, {5, destinationATA, false, true}, {6, sourceMint, false, false}, {7, destinationMint, false, false}, {8, bridgeTokenProgram, false, false}, {9, bridgeTokenProgram, false, false}}
-		slippageOffset, feeOffset = 25, 27
-	}
-	for _, expected := range boundaries {
+	}{{1, bridgeVault, true, false}, {2, sourceATA, false, true}, {5, destinationATA, false, true}, {6, sourceMint, false, false}, {7, destinationMint, false, false}} {
 		if expected.index >= len(value.Accounts) {
 			return compiledInstruction{}, fmt.Errorf("Jupiter account boundary is absent")
 		}
@@ -268,30 +224,24 @@ func validateJupiterInstructionForRoute(value JupiterSwapInstruction, action Act
 		}
 		accounts[index] = accountMeta{key: key, signer: input.IsSigner, writable: input.IsWritable}
 	}
-	if len(data) < 19 || readU64(data[len(data)-19:]) != amount || readU64(data[len(data)-11:]) != out ||
-		int(slippageOffset)+2 > len(data) || uint16(data[slippageOffset])|uint16(data[slippageOffset+1])<<8 > jupiterMaxSlippageBPS ||
-		feeOffset >= len(data) || data[feeOffset] != 0 || minimum == 0 || minimum > out {
-		return compiledInstruction{}, fmt.Errorf("Jupiter instruction economics drifted")
-	}
 	return compiledInstruction{program: publicKey(jupiter.ProgramID), accounts: accounts, data: data}, nil
 }
 
-// jupiterInstructionWireFloor computes the exact output floor a legacy
-// sharedAccountsRoute wire can enforce: the on-wire quoted output scaled by
-// the on-wire slippage in wide integer arithmetic. The legacy dialect carries
-// no explicit minimum-out argument, so any larger JSON threshold is advisory
-// and must never be retained as a funding guarantee. Other dialects have no
-// such floor.
+// jupiterInstructionWireFloor is the output floor the wire itself enforces:
+// Jupiter fails a swap that returns less than its quoted_out_amount less its
+// slippage_bps, computed here in wide integer arithmetic. The instruction
+// carries no other minimum, so a larger JSON threshold is advisory and must
+// never be retained as a funding guarantee.
 func jupiterInstructionWireFloor(instruction JupiterSwapInstruction) (uint64, error) {
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
 	if err != nil {
 		return 0, fmt.Errorf("Jupiter instruction data is malformed")
 	}
-	route, err := jupiter.DecodeSharedAccountsRoute(data)
-	if err != nil || route.SlippageBPS > jupiterMaxSlippageBPS {
+	args, err := jupiter.DecodeSharedAccountsRouteV2Args(data)
+	if err != nil || args.SlippageBPS > jupiterMaxSlippageBPS {
 		return 0, fmt.Errorf("Jupiter AUTO wire floor unavailable")
 	}
-	floor := new(big.Int).Mul(new(big.Int).SetUint64(route.QuotedOutAmount), big.NewInt(int64(10_000-route.SlippageBPS)))
+	floor := new(big.Int).Mul(new(big.Int).SetUint64(args.QuotedOutAmount), big.NewInt(int64(10_000-args.SlippageBPS)))
 	return floor.Div(floor, big.NewInt(10_000)).Uint64(), nil
 }
 
@@ -340,12 +290,7 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 	if err := jupiterValidateAutoRetainedMinimum(request); err != nil {
 		return nil, err
 	}
-	if request.RouteLane == RouteID || request.RouteLane == "" {
-		if err := validateInstalledJupiterHeader(request.Action, request.Instruction); err != nil {
-			return nil, err
-		}
-	}
-	_, index, err := jupiterPolicyLeg(request.RouteLane, request.Action, inner.data)
+	_, index, err := jupiterPolicyLeg(request.RouteLane, request.Action)
 	if err != nil {
 		return nil, err
 	}
