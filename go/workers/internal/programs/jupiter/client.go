@@ -3,6 +3,7 @@ package jupiter
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +16,9 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// The swap/v1 API bases. Lite is keyless and rate limited; Keyed serves the
-// same API to requests carrying an API key.
+// The swap/v1 API bases. Lite is keyless and rate limited (it answered 503 for
+// a few minutes on 2026-10-09). Keyed serves the same API to requests carrying
+// an API key, and also answers keyless requests under a smaller rate limit.
 const (
 	LiteBase  = "https://lite-api.jup.ag/swap/v1"
 	KeyedBase = "https://api.jup.ag/swap/v1"
@@ -92,6 +94,27 @@ type AccountMeta struct {
 	Pubkey     string `json:"pubkey"`
 	IsSigner   bool   `json:"isSigner"`
 	IsWritable bool   `json:"isWritable"`
+}
+
+// Decode is the instruction as the chain takes it.
+func (ix Instruction) Decode() (*solana.GenericInstruction, error) {
+	program, err := solana.PublicKeyFromBase58(ix.ProgramID)
+	if err != nil {
+		return nil, fmt.Errorf("Jupiter instruction program: %w", err)
+	}
+	data, err := base64.StdEncoding.DecodeString(ix.Data)
+	if err != nil {
+		return nil, fmt.Errorf("Jupiter instruction data: %w", err)
+	}
+	metas := make(solana.AccountMetaSlice, len(ix.Accounts))
+	for i, a := range ix.Accounts {
+		key, err := solana.PublicKeyFromBase58(a.Pubkey)
+		if err != nil {
+			return nil, fmt.Errorf("Jupiter instruction account %d: %w", i, err)
+		}
+		metas[i] = &solana.AccountMeta{PublicKey: key, IsSigner: a.IsSigner, IsWritable: a.IsWritable}
+	}
+	return solana.NewInstruction(program, metas, data), nil
 }
 
 // Null reports whether an optional JSON value is absent or null.
