@@ -339,3 +339,32 @@ func TestSlotSamplesSumOnlyUsableSamples(t *testing.T) {
 		t.Fatalf("samples %d slots over %d s, %v", slots, seconds, err)
 	}
 }
+
+// A pooled endpoint's lagging node answers -32016 until it reaches the asked
+// slot: the read gets the caught-up answer, a broadcast is never sent twice,
+// and a node that stays behind is still unavailable.
+func TestLaggingNodeIsAskedAgainForReadsOnly(t *testing.T) {
+	behind := map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
+	calls, lag := 0, 2
+	client := serve(t, func(req request) (int, any) {
+		calls++
+		if req.Method == "sendTransaction" || calls <= lag {
+			return http.StatusOK, behind
+		}
+		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": 5000})
+	})
+	lamports, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42)
+	if err != nil || lamports != 5000 || calls != lag+1 {
+		t.Fatalf("fee %d after %d calls: %v", lamports, calls, err)
+	}
+	calls = 0
+	if err := client.SendWire(context.Background(), []byte{1, 2, 3}, true); !errors.Is(err, ErrBehind) || calls != 1 {
+		t.Fatalf("broadcast sent %d times: %v", calls, err)
+	}
+	calls, lag = 0, 1_000
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, _, err := client.Fee(ctx, []byte{1}, rpc.CommitmentConfirmed, 42); !errors.Is(err, ErrBehind) {
+		t.Fatalf("a node that stays behind answered: %v", err)
+	}
+}
