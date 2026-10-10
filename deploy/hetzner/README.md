@@ -87,7 +87,7 @@ bun run deploy backyard [sha]     # sha defaults to origin/main
 refuses a commit that is not on origin/main, and it refuses when
 `migrations/` differs between the running release and the target: apply
 them first, then rerun with `--migrations-applied`. It builds `make release`
-from a `git archive` snapshot of the commit in `~/.loyal/deploy-build`,
+from a `git archive` snapshot of the commit in a fresh `~/.loyal/deploy-build.*` dir,
 uploads the binary and `activate-backyard.sh` from that snapshot to
 `/opt/loyal/releases/backyard/<sha>/`, and runs the script there as a
 transient unit (`systemd-run --wait --pipe`), so a dropped ssh session
