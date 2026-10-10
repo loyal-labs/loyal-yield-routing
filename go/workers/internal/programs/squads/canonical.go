@@ -173,8 +173,18 @@ func dataConstraintsEqual(left, right []DataConstraintView) bool {
 // for that action.
 func EncodeLegacyPolicyCreate(seed uint64, accountIndex uint8, constraints []InstructionConstraintView, delegate solana.PublicKey) ([]byte, error) {
 	out := append([]byte(nil), ExecuteSettingsTransactionSyncDiscriminator[:]...)
-	out = append(out, 1)                              // num_signers
-	out = binary.LittleEndian.AppendUint32(out, 1)    // actions
+	out = append(out, 1)                           // num_signers
+	out = binary.LittleEndian.AppendUint32(out, 1) // actions
+	out, err := appendLegacyPolicyCreate(out, seed, accountIndex, constraints, delegate)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, 0), nil // memo
+}
+
+// appendLegacyPolicyCreate writes the one PolicyCreate settings action that
+// EncodeLegacyPolicyCreate describes.
+func appendLegacyPolicyCreate(out []byte, seed uint64, accountIndex uint8, constraints []InstructionConstraintView, delegate solana.PublicKey) ([]byte, error) {
 	out = append(out, 7)                              // SettingsAction::PolicyCreate
 	out = binary.LittleEndian.AppendUint64(out, seed) // seed
 	out = append(out, 3, accountIndex)                // LegacyProgramInteraction
@@ -214,8 +224,7 @@ func EncodeLegacyPolicyCreate(seed uint64, accountIndex uint8, constraints []Ins
 	out = append(append(out, delegate[:]...), FullPermissions)
 	out = binary.LittleEndian.AppendUint16(out, 1) // threshold
 	out = binary.LittleEndian.AppendUint32(out, 0) // time_lock
-	out = append(out, 0, 0)                        // start_timestamp, expiration_args
-	return append(out, 0), nil                     // memo
+	return append(out, 0, 0), nil                  // start_timestamp, expiration_args
 }
 
 func appendDataConstraints(out []byte, constraints []DataConstraintView) ([]byte, error) {
