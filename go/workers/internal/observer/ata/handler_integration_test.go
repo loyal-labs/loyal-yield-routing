@@ -56,4 +56,19 @@ func TestHandlerPersistsRealATAObservationSchema(t *testing.T) {
 	if amount != 123 {
 		t.Fatalf("persisted ATA amount = %d", amount)
 	}
+	// Bytes that are not a USDC token account settle the target to zero as
+	// the stream delivered them; the handler has no chain client to ask.
+	copy(data[:32], solana.NewWallet().PublicKey().Bytes())
+	update.GetAccount().Slot = 51
+	settled, err := handler.HandleAccount(ctx, update)
+	if err != nil || !settled.Inserted {
+		t.Fatalf("wrong-mint ATA = %+v, %v", settled, err)
+	}
+	var source string
+	if err := pool.QueryRow(ctx, `SELECT amount_raw, source FROM loyal_prod.balance_sweep_wallet_ata_observations WHERE event_id=$1`, settled.EventID).Scan(&amount, &source); err != nil {
+		t.Fatal(err)
+	}
+	if amount != 0 || source != laserStreamSource {
+		t.Fatalf("wrong-mint ATA settled amount=%d source=%s, want 0 from %s", amount, source, laserStreamSource)
+	}
 }

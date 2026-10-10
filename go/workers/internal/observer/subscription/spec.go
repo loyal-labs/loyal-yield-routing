@@ -7,6 +7,7 @@ import (
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -23,9 +24,8 @@ type AccountFilter struct {
 }
 
 type Spec struct {
-	FromSlot      uint64
-	Accounts      map[string]AccountFilter
-	PolicyProgram string
+	FromSlot uint64
+	Accounts map[string]AccountFilter
 }
 
 // Build creates the single combined request used by the Go worker. Earn's role
@@ -63,10 +63,6 @@ func Build(spec Spec) (*pb.SubscribeRequest, error) {
 		return nil, fmt.Errorf("required combined account filter %q is missing", KaminoReserves)
 	}
 
-	policyProgram := spec.PolicyProgram
-	if policyProgram == "" {
-		policyProgram = squads.ProgramID.String()
-	}
 	vote := false
 	failed := false
 	filterByCommitment := true
@@ -74,10 +70,12 @@ func Build(spec Spec) (*pb.SubscribeRequest, error) {
 	return &pb.SubscribeRequest{
 		Accounts: accounts,
 		Transactions: map[string]*pb.SubscribeRequestFilterTransactions{
+			// Subscriptions carries the Autodeposit recurring delegations a
+			// wallet creates outside Squads.
 			EarnMaxPolicyTransactions: {
 				Vote:           &vote,
 				Failed:         &failed,
-				AccountInclude: []string{policyProgram},
+				AccountInclude: []string{squads.ProgramID.String(), autodeposit.SubscriptionsProgramID},
 			},
 		},
 		Slots: map[string]*pb.SubscribeRequestFilterSlots{

@@ -4,21 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Policy transaction decoding, ported from earn_reconciliation.rs
-// decode_laserstream_squads_policy_transaction,
-// decode_json_squads_policy_transaction, parse_earn_max_intent and
+// decode_laserstream_squads_policy_transaction, parse_earn_max_intent and
 // project_earn_max_memos.
 
 var memoProgram = solana.MustPublicKeyFromBase58("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
@@ -180,64 +179,6 @@ func memoFrom(source uint16, accounts []solana.AccountMeta, data []byte) Memo {
 	return Memo{SourceIndex: source, Accounts: keys, Data: data}
 }
 
-func byteIndexes(values []uint16) []byte {
-	out := make([]byte, 0, len(values))
-	for _, value := range values {
-		if value <= 0xff {
-			out = append(out, byte(value))
-		}
-	}
-	return out
-}
-
-// decodeRPCPolicyTransaction decodes a confirmed transaction read from RPC.
-// Only inner Earn MAX memos are collected on this path.
-func decodeRPCPolicyTransaction(read chain.Execution, signature string, expectedSlot uint64) (*PolicyTransaction, error) {
-	if read.Slot != expectedSlot {
-		return nil, fmt.Errorf("transaction %s landed at slot %d, expected %d", signature, read.Slot, expectedSlot)
-	}
-	if read.Err != nil {
-		return nil, nil
-	}
-	message := read.Transaction.Message
-	table := accountTable{keys: read.Keys, staticLen: len(message.AccountKeys), loadedWritable: len(read.LoadedWritable),
-		requiredSigners: int(message.Header.NumRequiredSignatures), readonlySigners: int(message.Header.NumReadonlySignedAccounts),
-		readonlyUnsigned: int(message.Header.NumReadonlyUnsignedAccounts)}
-	out := &PolicyTransaction{Signature: signature, Slot: expectedSlot, Signers: table.signers()}
-	for _, compiled := range message.Instructions {
-		if int(compiled.ProgramIDIndex) >= len(table.keys) {
-			continue
-		}
-		if program := table.keys[compiled.ProgramIDIndex]; isPolicyProgram(program) {
-			out.Instructions = append(out.Instructions, squads.Instruction{ProgramID: program, Accounts: table.metas(byteIndexes(compiled.Accounts)), Data: compiled.Data})
-		}
-	}
-	for _, group := range read.Inner {
-		for inner, compiled := range group.Instructions {
-			if int(compiled.ProgramIDIndex) >= len(table.keys) {
-				continue
-			}
-			program := table.keys[compiled.ProgramIDIndex]
-			accounts := table.metas(byteIndexes(compiled.Accounts))
-			if isPolicyProgram(program) {
-				out.Instructions = append(out.Instructions, squads.Instruction{ProgramID: program, Accounts: accounts, Data: compiled.Data})
-			}
-			if program != memoProgram {
-				continue
-			}
-			if group.Index > 0xff {
-				return nil, errors.New("Earn MAX memo instruction index overflow")
-			}
-			source, err := innerMemoIndex(uint32(group.Index), inner)
-			if err != nil {
-				return nil, err
-			}
-			out.Memos = append(out.Memos, memoFrom(source, accounts, compiled.Data))
-		}
-	}
-	return out, nil
-}
-
 func validRequestID(value string) bool {
 	if len(value) < 8 || len(value) > 64 {
 		return false
@@ -306,13 +247,16 @@ func projectionIntent(input EarnMaxIntentProjectionInput) multiply.IntentInput {
 }
 
 // projectEarnMaxMemos is project_earn_max_memos: a memo projects only when
-// exactly one instruction account is the settings of a memo vault.
-func projectEarnMaxMemos(ctx context.Context, store *multiply.Store, transaction *PolicyTransaction) (int, error) {
+// exactly one instruction account is the settings of a memo vault. Anyone can
+// write a memo, so a malformed one, or one naming no single vault, is logged
+// and skipped.
+func projectEarnMaxMemos(ctx context.Context, store *multiply.Store, logger *slog.Logger, transaction *PolicyTransaction) (int, error) {
 	applied := 0
 	for _, memo := range transaction.Memos {
 		intent, err := parseEarnMaxIntent(memo.Data)
 		if err != nil {
-			return applied, err
+			logger.Info("skipped an Earn MAX memo", "event", "earn_max_memo_skipped", "reason", err.Error(), "signature", transaction.Signature)
+			continue
 		}
 		if intent == nil {
 			continue
@@ -328,14 +272,15 @@ func projectEarnMaxMemos(ctx context.Context, store *multiply.Store, transaction
 			}
 		}
 		if len(matches) != 1 {
+			logger.Info("skipped an Earn MAX memo", "event", "earn_max_memo_skipped", "reason", "the memo names no single vault", "signature", transaction.Signature)
 			continue
 		}
 		for match := range matches {
 			if _, err := store.ProjectIntent(ctx, intentInput(match[0].String(), 0, transaction, memo, intent)); err != nil {
 				return applied, err
 			}
+			applied++
 		}
-		applied++
 	}
 	return applied, nil
 }
