@@ -58,11 +58,13 @@ func (p Product) Constraints() []squads.InstructionConstraintView {
 // can rebuild after each landed op.
 type Build func(ctx context.Context) (Product, error)
 
-// The transaction budget every policy transaction asks for: v1 carries it in
-// the message, and the heap frame lets Squads parse a many-constraint policy.
+// The transaction budget every policy transaction asks for. v1 carries it in
+// the message and an unset limit is zero, so each is explicit; the heap frame
+// lets Squads parse a many-constraint policy.
 const (
 	computeUnits        = 1_400_000
 	heapBytes           = 256 << 10
+	loadedAccountsBytes = 64 << 20
 	priorityFeeLamports = 10_000
 )
 
@@ -169,7 +171,8 @@ func run(ctx context.Context, c *chain.Client, out io.Writer, payer solana.Priva
 		return err
 	}
 	tx, err := solana.NewTransaction(ixs, hash, solana.TransactionPayer(payer.PublicKey()), solana.TransactionV1Config(
-		solana.TransactionConfig{}.WithComputeUnitLimit(computeUnits).WithHeapSize(heapBytes).WithPriorityFee(priorityFeeLamports)))
+		solana.TransactionConfig{}.WithComputeUnitLimit(computeUnits).WithHeapSize(heapBytes).
+			WithLoadedAccountsDataSizeLimit(loadedAccountsBytes).WithPriorityFee(priorityFeeLamports)))
 	if err != nil {
 		return err
 	}

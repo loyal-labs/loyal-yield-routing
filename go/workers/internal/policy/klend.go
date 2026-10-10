@@ -3,7 +3,6 @@ package policy
 import (
 	"context"
 	"fmt"
-	"math"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -15,9 +14,10 @@ import (
 
 // KLend is the product of one smart-account vault lending in one KLend
 // reserve through its vanilla obligation: create the user metadata and the
-// obligation, deposit amount of liquidity, withdraw all of it. The vault signs
-// and pays rent for what it owns; payer funds the vault's ATA and the
-// obligation farm outside the policy, as the Earn route does.
+// obligation, deposit amount of liquidity, withdraw the collateral that
+// deposit minted. The vault signs and pays rent for what it owns; payer funds
+// the vault's ATA and the obligation farm outside the policy, as the Earn
+// route does.
 func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve, payer solana.PublicKey, amount uint64) Build {
 	return func(ctx context.Context) (Product, error) {
 		vault, _, err := squads.SmartAccountAddress(settings, vaultIndex)
@@ -68,6 +68,12 @@ func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve
 			deposited = o.DepositReserves()
 		}
 
+		// The withdrawal takes back only what the deposit minted, never the
+		// vault's other collateral in the reserve.
+		minted, err := r.LiquidityToCollateral(amount)
+		if err != nil {
+			return Product{}, err
+		}
 		collateral := kamino.CollateralAccounts{Owner: vault, Obligation: obligation, LendingMarket: market, LendingMarketAuthority: authority,
 			Reserve: reserve, LiquidityMint: r.LiquidityMint, LiquiditySupply: r.LiquiditySupply, CollateralMint: r.CollateralMint,
 			CollateralSupply: r.CollateralSupply, UserLiquidity: ata, LiquidityTokenProgram: r.LiquidityTokenProgram,
@@ -115,9 +121,9 @@ func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve
 				Before:  append(depositBefore, refresh(deposited...)...),
 			},
 			{
-				Name:    "withdraw all",
+				Name:    fmt.Sprintf("withdraw %d collateral (the deposit)", minted),
 				Allowed: kamino.WithdrawV2Allowed(allowed),
-				Inner:   kamino.WithdrawV2(collateral, math.MaxUint64),
+				Inner:   kamino.WithdrawV2(collateral, minted),
 				Before:  refresh(deposited...),
 			},
 		}}, nil
