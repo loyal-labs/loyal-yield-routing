@@ -539,7 +539,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 			if err != nil {
 				return Observation{}, err
 			}
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, planning.observationManifest(manifest))
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, planning.observationManifest(manifest), planning.landedSlot)
 			if err != nil {
 				return Observation{}, err
 			}

@@ -40,7 +40,7 @@ func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.C
 	}
 	manifest = planning.observationManifest(manifest)
 	manifest.selectorObservation = true
-	observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest)
+	observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, planning.landedSlot)
 	if err != nil {
 		return Observation{}, fmt.Errorf("shadow confirmed observation unavailable: %w", err)
 	}

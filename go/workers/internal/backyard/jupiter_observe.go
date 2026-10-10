@@ -11,30 +11,16 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-func observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, client *jupiter.Client, enrich func(context.Context, *Observation) error) (Observation, JupiterExecutionEvidence, error) {
-	if rpc == nil || client == nil || enrich == nil || decision.AmountRaw <= 0 {
+// prepareJupiterFromTickObservation builds from the tick's own view batch, as
+// the bridge does; it reads only the policies it executes through, at its slot.
+func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, client *jupiter.Client, observation Observation) (Observation, JupiterExecutionEvidence, error) {
+	if rpc == nil || client == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
 		return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter evidence request")
 	}
-	prepareStart := time.Now()
-	observation, accounts, err := observeRouteFromViewWithEnrichment(ctx, rpc, view, manifest, enrich)
-	logStage("prepare_jupiter_observe", prepareStart)
-	if err != nil {
-		return Observation{}, JupiterExecutionEvidence{}, err
-	}
-	refreshedDecision := Decide(observation.Snapshot)
-	if refreshedDecision.Action == HoldManualRecovery {
-		// Preserve the refreshed safety decision for Worker.Tick to journal
-		// atomically with its route latch instead of discarding it as drift.
-		return observation, JupiterExecutionEvidence{}, nil
-	}
-	// The policies this build executes through: one read, at its slot.
+	prepareStart, accounts := time.Now(), observation.routeBatch.Accounts
+	var err error
 	if observation.policies, err = observeInstalledPolicies(ctx, rpc, observation.Snapshot.Slot); err != nil {
 		return Observation{}, JupiterExecutionEvidence{}, err
-	}
-	if !decisionsEqual(refreshedDecision, decision) {
-		return Observation{}, JupiterExecutionEvidence{}, confirmedObservationUnavailable(
-			fmt.Errorf("actionable decision changed before Jupiter construction"),
-		)
 	}
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(decision.Action, decision.StrategyKey)
 	if err != nil {

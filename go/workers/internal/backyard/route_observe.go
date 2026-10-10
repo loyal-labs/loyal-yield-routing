@@ -20,44 +20,25 @@ import (
 // position and custody, read from the view. It reads no policy: a build reads
 // the policies it executes through, and Squads checks them on chain. Only a
 // stale reserve's valuation refresh simulates through RPC, at the view slot.
-func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest) (Observation, []ConfirmedAccount, error) {
+//
+// minSlot is the highest slot the route's own operations landed at: nothing
+// plans from a view that has not seen its own transactions.
+func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, minSlot int64) (Observation, []ConfirmedAccount, error) {
 	if rpc == nil || view == nil {
 		return Observation{}, nil, fmt.Errorf("RPC client and account view are required")
 	}
 	return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
-		read: func(ctx context.Context, addresses []string) (int64, []ConfirmedAccount, []programAccount, error) {
+		minSlot: minSlot,
+		read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
 			// A null strategy receipt must reach the integrity classifier
 			// instead of failing the batch as a required absent account.
-			return view.read(ctx, addresses, 0, append(optionalLifecycleObligations(addresses), bridgeStrategyReceipt)...)
+			return view.read(ctx, addresses, minSlot, append(optionalLifecycleObligations(addresses), bridgeStrategyReceipt)...)
 		},
 		refreshValuation: func(ctx context.Context, route RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
 			return simulateRouteValuationRefresh(ctx, rpc, route, addresses, minSlot)
 		},
 		now: func() time.Time { return time.Now().UTC() },
 	})
-}
-
-// observeRouteFromViewWithEnrichment is the construction refresh seam. It
-// requires the same journal and verified-identity merge as the outer
-// production observation before any monitor sees this snapshot.
-func observeRouteFromViewWithEnrichment(
-	ctx context.Context,
-	rpc *chain.Client,
-	view *View,
-	manifest RouteManifest,
-	enrich func(context.Context, *Observation) error,
-) (Observation, []ConfirmedAccount, error) {
-	if enrich == nil {
-		return Observation{}, nil, fmt.Errorf("route observation enrichment is required")
-	}
-	observation, accounts, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest)
-	if err != nil {
-		return observation, accounts, err
-	}
-	if err := enrich(ctx, &observation); err != nil {
-		return Observation{}, nil, err
-	}
-	return observation, accounts, nil
 }
 
 func applyProgramIdentityObservation(observation *Observation, identity programIdentityObservation) {
@@ -109,9 +90,10 @@ type routeObservationBatch struct {
 type routeObservationRuntime struct {
 	refreshValuation func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)
 	// read returns the fixed accounts and the vault's open withdrawal
-	// receipts at one view slot.
-	read func(context.Context, []string) (int64, []ConfirmedAccount, []programAccount, error)
-	now  func() time.Time
+	// receipts at one view slot no older than its minimum.
+	read    func(context.Context, []string, int64) (int64, []ConfirmedAccount, []programAccount, error)
+	minSlot int64
+	now     func() time.Time
 }
 
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
@@ -124,7 +106,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	}
 	addresses := routeFixedAddresses(manifest)
 	route := selectedRoute
-	slot, accounts, receipts, err := runtime.read(ctx, addresses)
+	slot, accounts, receipts, err := runtime.read(ctx, addresses, runtime.minSlot)
 	if err != nil {
 		return Observation{}, nil, err
 	}
@@ -198,6 +180,14 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 				}
 			}
 			slot, accounts = refreshedSlot, refreshedAccounts
+			// The withdrawal receipts come from the view at the capture's
+			// slot or later, so no fact in the snapshot predates it.
+			if _, _, receipts, err = runtime.read(ctx, nil, slot); err != nil {
+				return Observation{}, nil, err
+			}
+			if demand, fingerprint, err = decodeConfirmedWithdrawalDemand(receipts); err != nil {
+				return Observation{}, nil, err
+			}
 			if usdcReferenceStale {
 				// Keep the position on the same refreshed bank as the NAV.
 				position, reserveErr = observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)

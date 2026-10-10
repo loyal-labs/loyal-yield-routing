@@ -57,8 +57,8 @@ type tickRuntime struct {
 	recordManualRecoveryAtGeneration func(context.Context, string, Observation, Decision, string, int64) (DecisionRecord, error)
 	beforeRecordLatchedHold          func(context.Context, ManualRecoveryLatch) error
 	prepareBridge                    func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
-	prepareKamino                    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
-	prepareJupiter                   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
+	prepareKamino                    func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
+	prepareJupiter                   func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
 	recordDecision                   func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
 	// bind persists the decided operation's integrity record before build.
 	bind                  func(context.Context, string, Observation, Decision, any, ExpectedEffects) error
@@ -285,12 +285,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			if err != nil {
 				return Observation{}, err
 			}
-			// After this route's own transaction landed at slot R, plan only
-			// from a view complete through R.
-			if _, _, _, err = view.read(ctx, nil, planning.landedSlot); err != nil {
-				return Observation{}, err
-			}
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, planning.observationManifest(manifest))
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, planning.observationManifest(manifest), planning.landedSlot)
 			if err != nil {
 				return Observation{}, err
 			}
@@ -345,19 +340,19 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 			return prepareBridgeFromTickObservation(ctx, rpc, manifest, decision, observation)
 		},
-		prepareKamino: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, KaminoExecutionEvidence, error) {
+		prepareKamino: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
 			manifest, err := manifestForUnwind(ctx, database, manifest)
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
-			return observeConfirmedKaminoExecutionEvidenceWithEnrichment(ctx, rpc, view, manifest, decision, state.enrich)
+			return prepareKaminoFromTickObservation(ctx, rpc, manifest, decision, observation)
 		},
-		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision) (Observation, JupiterExecutionEvidence, error) {
+		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, JupiterExecutionEvidence, error) {
 			manifest, err := manifestForUnwind(ctx, database, manifest)
 			if err != nil {
 				return Observation{}, JupiterExecutionEvidence{}, err
 			}
-			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, view, manifest, decision, productionJupiter, state.enrich)
+			return prepareJupiterFromTickObservation(ctx, rpc, manifest, decision, productionJupiter, observation)
 		},
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
@@ -541,9 +536,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision)
+		observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision)
+		observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision, observation)
 	default:
 		return fmt.Errorf("action %s is not dispatchable", decision.Action)
 	}
@@ -569,13 +564,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	if err := w.manifest.validateDecision(decision); err != nil {
 		return err
 	}
-	// A whole-debt repayment accrues interest between decide and prepare; it
-	// is accepted only when preparation built the full payoff of that debt.
-	// Any other drift is a new state: nothing is recorded yet, so retry the
-	// leg on the next tick instead of stopping the worker (live 2026-09-28).
-	accruedRepayment := executionDecision == DeleverRouteStep && kaminoEvidence.Request.FullPayoff &&
-		fullDebtRepaymentRefreshed(preparedDecision, decision, observation.Snapshot)
-	if !decisionsEqual(decision, preparedDecision) && !accruedRepayment {
+	// Drift is a new state: nothing is recorded yet, so retry the leg on the
+	// next tick instead of stopping the worker.
+	if !decisionsEqual(decision, preparedDecision) {
 		return confirmedObservationUnavailable(fmt.Errorf("prepared evidence does not match the refreshed decision: decided %s/%s/%d, refreshed %s/%s/%d",
 			preparedDecision.Action, preparedDecision.Reason, preparedDecision.AmountRaw, decision.Action, decision.Reason, decision.AmountRaw))
 	}

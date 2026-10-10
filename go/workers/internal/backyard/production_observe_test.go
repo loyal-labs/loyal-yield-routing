@@ -69,8 +69,8 @@ func productionRouteBatchAccounts(t *testing.T, slot int64, mutate func([]Confir
 
 // fixtureBatchRuntime reads one account list at slot, with no open
 // withdrawal receipts; a removed account is absent.
-func fixtureBatchRuntime(slot int64, accounts []ConfirmedAccount) func(context.Context, []string) (int64, []ConfirmedAccount, []programAccount, error) {
-	return func(_ context.Context, addresses []string) (int64, []ConfirmedAccount, []programAccount, error) {
+func fixtureBatchRuntime(slot int64, accounts []ConfirmedAccount) func(context.Context, []string, int64) (int64, []ConfirmedAccount, []programAccount, error) {
+	return func(_ context.Context, addresses []string, _ int64) (int64, []ConfirmedAccount, []programAccount, error) {
 		observed := make([]ConfirmedAccount, 0, len(addresses))
 		for _, address := range addresses {
 			for _, account := range accounts {

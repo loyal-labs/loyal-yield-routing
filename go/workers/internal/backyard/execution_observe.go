@@ -215,39 +215,17 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: accounts}, strategyAfter, squadsAfter, nil
 }
 
-func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
-	ctx context.Context,
-	rpc *chain.Client,
-	view *View,
-	manifest RouteManifest,
-	decision Decision,
-	enrich func(context.Context, *Observation) error,
-) (Observation, KaminoExecutionEvidence, error) {
-	if rpc == nil || enrich == nil || (decision.Action != OpenPrimeUSDCStep && decision.Action != DeleverPrimeUSDCStep &&
+// prepareKaminoFromTickObservation builds from the tick's own view batch, as
+// the bridge does; it reads only the policies it executes through, at its slot.
+func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
+	if rpc == nil || observation.routeBatch == nil || (decision.Action != OpenPrimeUSDCStep && decision.Action != DeleverPrimeUSDCStep &&
 		decision.Action != OpenRouteStep && decision.Action != DeleverRouteStep) {
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
 	}
-	prepareStart := time.Now()
-	observation, accounts, err := observeRouteFromViewWithEnrichment(ctx, rpc, view, manifest, enrich)
-	logStage("prepare_kamino_observe", prepareStart)
-	if err != nil {
-		return Observation{}, KaminoExecutionEvidence{}, err
-	}
-	refreshedDecision := Decide(observation.Snapshot)
-	if refreshedDecision.Action == HoldManualRecovery {
-		// Do not attempt reserve decoding or packet construction after the
-		// refresh has already found a durable safety stop. Worker.Tick receives
-		// this coherent observation and persists it before returning.
-		return observation, KaminoExecutionEvidence{}, nil
-	}
-	// The policies this build executes through: one read, at its slot.
+	prepareStart, accounts := time.Now(), observation.routeBatch.Accounts
+	var err error
 	if observation.policies, err = observeInstalledPolicies(ctx, rpc, observation.Snapshot.Slot); err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
-	}
-	// Size a whole-debt repayment on this refreshed debt, so it is built
-	// as the full payoff the worker will record.
-	if fullDebtRepaymentRefreshed(decision, refreshedDecision, observation.Snapshot) {
-		decision.AmountRaw = refreshedDecision.AmountRaw
 	}
 	route, err := runtimeRoute(decision.StrategyKey)
 	if err != nil {

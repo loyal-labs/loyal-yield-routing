@@ -127,7 +127,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 	w := Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return o, nil },
-		prepareKamino: func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error) {
+		prepareKamino: func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error) {
 			return Observation{}, KaminoExecutionEvidence{}, budgetHold("squads_spending_limit_exceeded")
 		},
 		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {

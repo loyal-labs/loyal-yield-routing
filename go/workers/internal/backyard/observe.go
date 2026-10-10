@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -19,14 +20,19 @@ func (o Observation) Validate() error {
 	return nil
 }
 
-// ObserveConfirmedBridgeSnapshot obtains the only observation that can be
-// made from the currently pinned, locally evidenced bridge identities: the
-// withdrawal receipts and all three USDC custodies at one view slot no older
-// than minSlot. Kamino state is intentionally not inferred here; without an
-// exact current account graph the decision engine can only HOLD or select a
-// bridge/withdrawal action.
-func ObserveConfirmedBridgeSnapshot(ctx context.Context, view *View, minSlot int64) (Observation, error) {
-	slot, accounts, receipts, err := view.read(ctx, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, minSlot)
+// ObserveConfirmedBridgeSnapshot is the withdrawal fence of a persisted
+// operation: the withdrawal receipts and all three USDC custodies at one view
+// slot no older than the slot the operation was decided at. Kamino state is
+// intentionally not inferred here; without an exact current account graph the
+// decision engine can only HOLD or select a bridge/withdrawal action.
+func ObserveConfirmedBridgeSnapshot(ctx context.Context, view *View, operation PersistedOperation) (Observation, error) {
+	var effects struct {
+		Decision decisionEvidence `json:"decision"`
+	}
+	if err := json.Unmarshal(operation.ExpectedEffects, &effects); err != nil {
+		return Observation{}, fmt.Errorf("decode the operation's decision slot: %w", err)
+	}
+	slot, accounts, receipts, err := view.read(ctx, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, effects.Decision.ObservationSlot)
 	if err != nil {
 		return Observation{}, err
 	}

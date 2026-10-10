@@ -173,6 +173,24 @@ func viewRouteBatch(t *testing.T, mutate func([]ConfirmedAccount)) []ConfirmedAc
 	return accounts
 }
 
+// streamView opens a streaming view over viewRouteBatch whose wall clock is
+// the fixture Clock's time, so the view is live once it passes slot 77.
+func streamView(t *testing.T) (*View, *chain.Client, *fakeLaserStream) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	client, connector := seedChain(t, 77, viewRouteBatch(t, nil)), &fakeLaserStream{}
+	view, err := OpenView(ctx, client, connector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view.now = func() time.Time { return time.Unix(kaminoFixtureUnix, 0) }
+	return view, client, connector
+}
+
+// fence is a persisted operation decided at slot 0.
+var fence = PersistedOperation{ExpectedEffects: []byte(`{"decision":{"observationSlot":0}}`)}
+
 func usdcAmount(account ConfirmedAccount, raw uint64) ConfirmedAccount {
 	account.Data = slices.Clone(account.Data)
 	binary.LittleEndian.PutUint64(account.Data[64:72], raw)
@@ -180,9 +198,11 @@ func usdcAmount(account ConfirmedAccount, raw uint64) ConfirmedAccount {
 }
 
 // S is the previous confirmed slot status: a slot's account updates are only
-// known complete once the next confirmed slot arrives.
+// known complete once the next confirmed slot arrives. Within a slot,
+// write_version orders one session's writes; across sessions the later
+// arrival wins.
 func TestViewIsCompleteThroughThePreviousConfirmedSlot(t *testing.T) {
-	view := &View{accounts: map[string]viewAccount{}, receipts: map[string]uint64{}}
+	view := &View{accounts: map[string]viewAccount{}, receipts: map[string]uint64{}, advanced: make(chan struct{})}
 	squadsUSDC := ConfirmedAccount{Address: bridgeSquadsATA, Owner: bridgeTokenProgram, Lamports: 1, Data: make([]byte, 165)}
 	processed := slotFrame(13)
 	processed.GetSlot().Status = pb.SlotStatus_SLOT_PROCESSED
@@ -205,26 +225,61 @@ func TestViewIsCompleteThroughThePreviousConfirmedSlot(t *testing.T) {
 			t.Fatalf("after %v the view is complete through %d, want %d", step.frame, view.through, step.through)
 		}
 	}
+	replay, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for _, write := range []struct {
+		ctx      context.Context
+		lamports uint64
+		version  uint64
+	}{{context.Background(), 1, 9}, {context.Background(), 2, 8}, {replay, 3, 1}} {
+		squadsUSDC.Lamports = write.lamports
+		if err := view.Handle(write.ctx, accountFrame(squadsUSDC, 15, write.version, viewAccountsFilter)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, slot := range []uint64{16, 17} {
+		if err := view.Handle(replay, slotFrame(slot)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if held := view.accounts[bridgeSquadsATA]; held.slot != 15 || held.Lamports != 3 {
+		t.Fatalf("slot 15 resolved to %+v, want the later session's write", held)
+	}
+}
+
+// A transaction's writes at S+1 are invisible together until S+1 is complete,
+// then visible together.
+func TestViewShowsATransactionOnlyWhenItsSlotIsComplete(t *testing.T) {
+	view, _, connector := streamView(t)
+	batch := viewRouteBatch(t, nil)
+	connector.send(t, view, true, slotFrame(80), slotFrame(81),
+		accountFrame(usdcAmount(accountAt(batch, bridgeIdleATA), 404), 82, 1, viewAccountsFilter),
+		accountFrame(usdcAmount(accountAt(batch, bridgeSquadsATA), 606), 82, 2, viewAccountsFilter),
+		slotFrame(82))
+	before, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence)
+	if err != nil || before.Snapshot.Slot != 81 || before.Snapshot.VoltrIdleRaw == 404 || before.Snapshot.SquadsIdleRaw == 606 {
+		t.Fatalf("slot 82 leaked into the view at %d: idle %d squads %d %v", before.Snapshot.Slot, before.Snapshot.VoltrIdleRaw, before.Snapshot.SquadsIdleRaw, err)
+	}
+	connector.send(t, view, true, slotFrame(83))
+	after, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence)
+	if err != nil || after.Snapshot.Slot != 82 || after.Snapshot.VoltrIdleRaw != 404 || after.Snapshot.SquadsIdleRaw != 606 {
+		t.Fatalf("slot 82 is not whole at %d: idle %d squads %d %v", after.Snapshot.Slot, after.Snapshot.VoltrIdleRaw, after.Snapshot.SquadsIdleRaw, err)
+	}
 }
 
 // The stream feeds planning at S: nothing before the start-up read is passed,
 // stale writes are ignored, the route's own landing at R holds planning until
-// S >= R, a quiet stream stops the tick, and a failed stream reconnects 32
-// slots behind S.
+// S >= R, a view whose chain time is old stops the tick, and a failed stream
+// reconnects 32 slots behind S.
 func TestViewStreamPlansAtS(t *testing.T) {
-	client, connector := seedChain(t, 77, viewRouteBatch(t, nil)), &fakeLaserStream{}
-	view, err := OpenView(context.Background(), client, connector)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer view.Close()
+	view, client, connector := streamView(t)
 	request, _ := connector.last()
 	if request.GetFromSlot() != 78 || !slices.Contains(request.Accounts[viewAccountsFilter].Account, bridgeSquadsATA) ||
 		request.Accounts[viewReceiptsFilter].Owner[0] != voltr.ProgramID.String() || request.GetCommitment() != pb.CommitmentLevel_CONFIRMED {
 		t.Fatalf("subscription does not start after the start-up read: %v", request)
 	}
 	manifest := readyWorkerManifest(t)
-	if _, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, 0); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("a view without confirmed slots planned: %v", err)
 	}
 	squadsUSDC := accountAt(viewRouteBatch(t, nil), bridgeSquadsATA)
@@ -233,12 +288,14 @@ func TestViewStreamPlansAtS(t *testing.T) {
 		accountFrame(usdcAmount(squadsUSDC, 111), 79, 9, viewAccountsFilter),
 		accountFrame(usdcAmount(squadsUSDC, 222), 80, 4, viewAccountsFilter),
 		slotFrame(80), slotFrame(81))
-	observation, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest)
+	observation, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, 0)
 	if err != nil || observation.Snapshot.Slot != 80 || observation.Snapshot.SquadsIdleRaw != 900 {
 		t.Fatalf("observed slot %d squads USDC %d, want 80 and 900: %v", observation.Snapshot.Slot, observation.Snapshot.SquadsIdleRaw, err)
 	}
 
-	if _, _, _, err := view.read(context.Background(), nil, 85); !errors.Is(err, errConfirmedObservationUnavailable) {
+	short, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, _, _, err := view.read(short, nil, 85); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("planned from slot 80 after a landing at 85: %v", err)
 	}
 	connector.send(t, view, true, slotFrame(200), slotFrame(201))
@@ -246,24 +303,22 @@ func TestViewStreamPlansAtS(t *testing.T) {
 		t.Fatalf("view through %d: %v", slot, err)
 	}
 
-	view.mu.Lock()
-	view.slotAt = time.Now().Add(-10 * time.Second)
-	view.mu.Unlock()
+	view.now = func() time.Time { return time.Unix(kaminoFixtureUnix+60, 0) }
 	state := productionObserveState{routeKey: productionRouteKey, manifest: manifest, journal: &stubProductionJournal{journal: reconciledJournal()}, identity: pinnedIdentityObservation,
 		batch: func(ctx context.Context) (Observation, error) {
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, client, view, manifest)
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, client, view, manifest, 0)
 			return observation, err
 		}}
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         state.observe,
 		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
-			t.Fatal("a quiet view reached a decision")
+			t.Fatal("a view a minute behind reached a decision")
 			return DecisionRecord{}, nil
 		},
 	}}
 	if err := worker.Tick(context.Background()); !errors.Is(err, errConfirmedObservationUnavailable) {
-		t.Fatalf("tick on a quiet view: %v", err)
+		t.Fatalf("tick on a view a minute behind: %v", err)
 	}
 
 	_, subscription := connector.last()
@@ -281,59 +336,32 @@ func TestViewStreamPlansAtS(t *testing.T) {
 // filter; until promotion the view is incomplete. After promotion its close
 // arrives through the by-address filter and the demand is gone.
 func TestViewReceiptDiscoveredThenClosed(t *testing.T) {
-	connector := &fakeLaserStream{}
-	view, err := OpenView(context.Background(), seedChain(t, 77, viewRouteBatch(t, nil)), connector)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer view.Close()
+	view, _, connector := streamView(t)
 	address, data := receiptFixture(t, bridgeVoltrVault, testPublicKey(44), 7, 5<<48)
 	receipt := ConfirmedAccount{Address: address, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}
-	connector.send(t, view, true, accountFrame(receipt, 82, 1, viewReceiptsFilter), slotFrame(82), slotFrame(83))
+	connector.send(t, view, true, slotFrame(80), slotFrame(81), accountFrame(receipt, 82, 1, viewReceiptsFilter), slotFrame(82), slotFrame(83))
 	done := make(chan Observation, 1)
 	go func() {
-		observation, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, 0)
+		observation, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence)
 		if err != nil {
 			t.Error(err)
 		}
 		done <- observation
 	}()
 	waitFor(t, func() bool { return connector.opened() == 2 })
-	if _, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, 0); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("the view planned before the receipt handoff promoted: %v", err)
 	}
 	if request, _ := connector.last(); !slices.Contains(request.Accounts[viewAccountsFilter].Account, address) || request.GetFromSlot() > 82 {
 		t.Fatalf("handoff does not watch the receipt from its discovery slot: from %d", request.GetFromSlot())
 	}
-	connector.send(t, view, false, slotFrame(83), slotFrame(84))
+	connector.send(t, view, false, slotFrame(84))
 	if observation := <-done; observation.Snapshot.WithdrawalDemandRaw != 5 {
 		t.Fatalf("discovered receipt demand: %+v", observation.Snapshot)
 	}
 	connector.send(t, view, true, accountFrame(ConfirmedAccount{Address: address}, 90, 1, viewAccountsFilter), slotFrame(90), slotFrame(91))
-	observation, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, 0)
+	observation, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence)
 	if err != nil || observation.Snapshot.WithdrawalDemandRaw != 0 || observation.Snapshot.Slot != 90 {
 		t.Fatalf("closed receipt still owed: %+v %v", observation.Snapshot, err)
-	}
-}
-
-// A construction refresh reads the same view and merges the program identity
-// before any monitor sees it: verified, the decision stays actionable;
-// unverified, the Kamino construction returns the hold without building.
-func TestConstructionRefreshMergesIdentityOverTheView(t *testing.T) {
-	client := seedChain(t, 77, viewRouteBatch(t, nil))
-	view, err := OpenView(context.Background(), client, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := productionObserveState{routeKey: productionRouteKey, journal: &stubProductionJournal{journal: reconciledJournal()}, identity: pinnedIdentityObservation}
-	observation, _, err := observeRouteFromViewWithEnrichment(context.Background(), client, view, readyWorkerManifest(t), state.enrich)
-	if err != nil || !observation.Snapshot.ProgramIdentityKnown || Decide(observation.Snapshot).Action != DeleverPrimeUSDCStep {
-		t.Fatalf("verified construction refresh: %+v %v", observation.Snapshot, err)
-	}
-	state.identity = func(context.Context) (programIdentityObservation, error) { return programIdentityObservation{}, nil }
-	decision := Decision{Action: DeleverPrimeUSDCStep, Reason: "hard_ltv_repay", AmountRaw: 1, IdempotencyKey: "kamino-refresh-regression", StrategyKey: RouteID}
-	observation, evidence, err := observeConfirmedKaminoExecutionEvidenceWithEnrichment(context.Background(), client, view, readyWorkerManifest(t), decision, state.enrich)
-	if refreshed := Decide(observation.Snapshot); err != nil || evidence.Request.Action != "" || refreshed.Reason != "program_identity_unverified" {
-		t.Fatalf("Kamino construction past an unverified identity: %+v %+v %v", refreshed, evidence, err)
 	}
 }

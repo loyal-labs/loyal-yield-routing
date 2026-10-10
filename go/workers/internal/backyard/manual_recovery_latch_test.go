@@ -87,11 +87,11 @@ func TestManualRecoveryLatchLifecycleAgainstDatabase(t *testing.T) {
 			preparedCalls++
 			return Observation{}, BridgeExecutionEvidence{}, errExecutionResumed
 		},
-		prepareKamino: func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error) {
+		prepareKamino: func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error) {
 			preparedCalls++
 			return Observation{}, KaminoExecutionEvidence{}, errExecutionResumed
 		},
-		prepareJupiter: func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error) {
+		prepareJupiter: func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error) {
 			preparedCalls++
 			return Observation{}, JupiterExecutionEvidence{}, errExecutionResumed
 		},
@@ -856,7 +856,7 @@ func TestManualRecoveryKaminoConstructionErrorAfterRefreshHoldPersists(t *testin
 		loadLatch:       db.ManualRecoveryLatch,
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         state.observe,
-		prepareKamino: func(ctx context.Context, _ RouteManifest, decision Decision) (Observation, KaminoExecutionEvidence, error) {
+		prepareKamino: func(ctx context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, KaminoExecutionEvidence, error) {
 			prepareCalls++
 			if decision.Action != DeleverPrimeUSDCStep {
 				t.Fatalf("initial decision did not select the Kamino path: %+v", decision)

@@ -35,10 +35,13 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 				binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[kaminoMarketPriceLastUpdatedTSOffset:], 1)
 			}
 		})
-		refreshCalls := 0
+		refreshCalls, read, readSlots := 0, fixtureBatchRuntime(77, initial), []int64{}
 		o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
-			read: fixtureBatchRuntime(77, initial),
-			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+			read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
+				readSlots = append(readSlots, minSlot)
+				return read(ctx, addresses, minSlot)
+			},
+			now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(_ context.Context, _ RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
 				refreshCalls++
 				out := make([]ConfirmedAccount, len(addresses))
@@ -54,8 +57,8 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if refreshCalls != 1 {
-			t.Fatal("refresh was not used for noncash exposure", refreshCalls)
+		if refreshCalls != 1 || len(readSlots) != 2 || readSlots[1] != 78 {
+			t.Fatal("refresh was not used for noncash exposure, or the receipts predate it", refreshCalls, readSlots)
 		}
 		if staleOracle {
 			if o.Snapshot.ManualReason != "kamino_stale" || o.Snapshot.Fresh {

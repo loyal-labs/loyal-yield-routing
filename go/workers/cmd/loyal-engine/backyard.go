@@ -80,7 +80,6 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if err != nil {
 		return err
 	}
-	defer view.Close()
 	database, err := backyard.OpenDatabase(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err

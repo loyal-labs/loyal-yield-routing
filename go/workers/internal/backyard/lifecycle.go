@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -45,7 +44,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 		return database.MarkPreBroadcastFailed(ctx, operation.ID, operation.Status, reason)
 	case Signed:
 		if WithdrawalPreemptsOpenLoop(operation.Decision.Action, Signed, 1) {
-			observation, err := ObserveConfirmedBridgeSnapshot(ctx, view, decisionObservationSlot(operation))
+			observation, err := ObserveConfirmedBridgeSnapshot(ctx, view, operation)
 			if err != nil {
 				return err
 			}
@@ -172,7 +171,7 @@ func preBroadcastRecoveryReason(ctx context.Context, view *View, operation Persi
 	if !WithdrawalPreemptsOpenLoop(operation.Decision.Action, operation.Status, 1) {
 		return "prebroadcast_restart_reobserve_required", nil
 	}
-	observation, err := ObserveConfirmedBridgeSnapshot(ctx, view, decisionObservationSlot(operation))
+	observation, err := ObserveConfirmedBridgeSnapshot(ctx, view, operation)
 	if err != nil {
 		return "", err
 	}
@@ -180,16 +179,6 @@ func preBroadcastRecoveryReason(ctx context.Context, view *View, operation Persi
 		return "prebroadcast_withdrawal_preempted", nil
 	}
 	return "prebroadcast_restart_reobserve_required", nil
-}
-
-// decisionObservationSlot is the slot the operation was decided at: the
-// withdrawal fence reads demand no older than that.
-func decisionObservationSlot(operation PersistedOperation) int64 {
-	var effects struct {
-		Decision decisionEvidence `json:"decision"`
-	}
-	_ = json.Unmarshal(operation.ExpectedEffects, &effects)
-	return effects.Decision.ObservationSlot
 }
 
 func sha256Bytes(data []byte) string {

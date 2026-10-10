@@ -2,7 +2,9 @@ package backyard
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"sync"
@@ -19,22 +21,23 @@ import (
 
 // View is Backyard's LaserStream view of its own accounts; planning reads it
 // instead of polling pooled RPC. A start-up read takes every account at
-// finalized, each keeping its own slot; the stream replays from the oldest of
-// those slots at confirmed, and applies an update only when its (slot,
-// write_version) is newer than the held one.
+// finalized, each keeping its own slot, and the stream replays from the
+// oldest of those slots at confirmed.
 //
-// S, the slot the view is complete through, is the previous confirmed slot
-// status. The observer's frontier (the highest slot of any handled update) is
-// a replay cursor, not a completeness claim, and neither it nor Yellowstone
-// orders a slot's account updates before that slot's confirmed status. So S
-// lags one confirmed slot, assuming every account update of a slot arrives
-// before the next confirmed slot's status. Accounts may hold writes newer
-// than S; none older than S is missing.
+// The view is exactly the chain at S, the slot it is complete through: the
+// previous confirmed slot status. The observer's frontier (the highest slot of
+// any handled update) is a replay cursor, not a completeness claim, and
+// neither it nor Yellowstone orders a slot's account updates before that
+// slot's confirmed status. So S lags one confirmed slot, assuming every
+// account update of a slot arrives before the next confirmed slot's status.
+// Writes above S wait in arrival order until S reaches their slot; a write at
+// or below S that arrives late is applied and counted in a warning.
 type View struct {
 	rpc       *chain.Client
 	connector stream.Connector
 	fixed     []string
 	ctx       context.Context // owns the stream
+	now       func() time.Time
 
 	// control serializes reconnects and handoffs; it guards manager and subscribed.
 	control    sync.Mutex
@@ -43,6 +46,7 @@ type View struct {
 
 	mu       sync.Mutex
 	accounts map[string]viewAccount
+	queued   []viewAccount
 	// receipts maps every known withdrawal receipt to its discovery slot
 	// until it is in the by-address filter, then to zero; pending counts the
 	// nonzero ones.
@@ -50,12 +54,36 @@ type View struct {
 	pending            int
 	seedLow, seedHigh  uint64
 	confirmed, through uint64
-	slotAt             time.Time
+	advanced           chan struct{} // closed and replaced whenever S moves
+	slotAt             time.Time     // arrival of the last slot status: stall detection only
+	// session counts delivering stream sessions; the Manager hands each its
+	// own context. A new session replays already applied slots, so the view
+	// is not read until that session confirms a new slot.
+	session    int
+	sessionCtx context.Context
+	replaying  bool
+	late       int
 }
 
 type viewAccount struct {
 	ConfirmedAccount
 	slot, writeVersion uint64
+	session            int // 0: the start-up read, the end of its slot
+}
+
+// supersedes reports whether w replaces held. write_version is node-local,
+// so it orders writes of one slot only within one session; across sessions
+// the later arrival wins, except over the start-up read.
+func (w viewAccount) supersedes(held viewAccount) bool {
+	switch {
+	case w.slot != held.slot:
+		return w.slot > held.slot
+	case held.session == 0:
+		return false
+	case held.session == w.session:
+		return w.writeVersion > held.writeVersion
+	}
+	return true
 }
 
 const (
@@ -65,35 +93,32 @@ const (
 	viewAccountsFilter = "backyard_accounts"
 	viewReceiptsFilter = "backyard_voltr_receipts"
 	viewSlotsFilter    = "backyard_slots"
-	viewLiveness       = 5 * time.Second
-	viewStall          = 30 * time.Second
-	viewReplaySlots    = 32
-	// The provider replays 200,000 slots (observer runtime.go); a longer gap
-	// needs a fresh start-up read.
+	// Chain time at S trails the wall clock by confirmation, the one-slot lag
+	// and the stream: a few seconds. 10s leaves room for Clock drift while a
+	// view tens of slots behind stops planning.
+	viewMaxClockAge = 10 * time.Second
+	viewStall       = 30 * time.Second
+	viewReplaySlots = 32
+	// The provider replays 200,000 slots (observer runtime.go).
 	viewReplayWindow = 200_000 * 400 * time.Millisecond
 )
 
 // OpenView reads the view's accounts once and, given a connector, streams
-// them. Without one the view is its start-up read, which one-shot operator
-// commands plan from.
+// them until ctx ends. Without one the view is its start-up read, which
+// one-shot commands plan from, labelled with its newest read slot: decoders
+// treat any slot an account carries above the label as the future, and each
+// read is the finalized state of its own slot, all within a second.
 func OpenView(ctx context.Context, client *chain.Client, connector stream.Connector) (*View, error) {
-	v := &View{rpc: client, connector: connector, fixed: viewAddresses(), ctx: ctx}
+	v := &View{rpc: client, connector: connector, fixed: viewAddresses(), ctx: ctx, now: time.Now,
+		accounts: map[string]viewAccount{}, receipts: map[string]uint64{}, advanced: make(chan struct{}), seedLow: math.MaxUint64}
 	if err := v.seed(ctx); err != nil {
 		return nil, err
 	}
 	if connector == nil {
-		v.through = v.seedLow
+		v.through = v.seedHigh
 		return v, nil
 	}
 	return v, v.subscribe(v.seedLow + 1)
-}
-
-func (v *View) Close() {
-	v.control.Lock()
-	defer v.control.Unlock()
-	if v.manager != nil {
-		v.manager.Close()
-	}
 }
 
 // viewAddresses is every fixed account a route-catalog lane observes, plus
@@ -110,16 +135,12 @@ func viewAddresses() []string {
 	return uniqueNonzero(addresses)
 }
 
-// seed is the start-up read. It is not a fallback: planning never reads RPC
-// for these accounts, and it runs again only after a gap longer than the
-// provider's replay window.
+// seed is the start-up read, before the view is shared. It is not a
+// fallback: planning never reads RPC for these accounts.
 func (v *View) seed(ctx context.Context) error {
-	accounts, receipts := map[string]viewAccount{}, map[string]uint64{}
-	low, high := uint64(math.MaxUint64), uint64(0)
 	held := func(account ConfirmedAccount, slot uint64) {
-		// A finalized read is the end of its slot: no write of that slot is newer.
-		accounts[account.Address] = viewAccount{account, slot, math.MaxUint64}
-		low, high = min(low, slot), max(high, slot)
+		v.accounts[account.Address] = viewAccount{ConfirmedAccount: account, slot: slot}
+		v.seedLow, v.seedHigh = min(v.seedLow, slot), max(v.seedHigh, slot)
 	}
 	// ProgramData images are read alone: the Voltr image is over a megabyte
 	// and batch responses are size-capped.
@@ -149,11 +170,8 @@ func (v *View) seed(ctx context.Context) error {
 	}
 	for _, account := range read {
 		held(confirmedAccount(account.Key.String(), &account), slot)
-		receipts[account.Key.String()] = 0
+		v.receipts[account.Key.String()] = 0
 	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	v.accounts, v.receipts, v.pending, v.seedLow, v.seedHigh, v.confirmed, v.through = accounts, receipts, 0, low, high, 0, 0
 	return nil
 }
 
@@ -193,15 +211,32 @@ func (v *View) subscribe(from uint64) error {
 	return nil
 }
 
-// Handle applies one stream update. It never blocks on IO.
-func (v *View) Handle(_ context.Context, update *pb.SubscribeUpdate) error {
+// Handle takes one stream update. It never blocks on IO.
+func (v *View) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if ctx != v.sessionCtx {
+		v.sessionCtx, v.session, v.replaying = ctx, v.session+1, true
+	}
 	if slot := update.GetSlot(); slot != nil {
-		if slot.Status == pb.SlotStatus_SLOT_CONFIRMED && slot.Slot > v.confirmed {
-			v.through, v.confirmed = v.confirmed, slot.Slot
-		}
 		v.slotAt = time.Now()
+		if slot.Status != pb.SlotStatus_SLOT_CONFIRMED || slot.Slot <= v.confirmed {
+			return nil
+		}
+		v.through, v.confirmed, v.replaying = v.confirmed, slot.Slot, false
+		v.queued = slices.DeleteFunc(v.queued, func(write viewAccount) bool {
+			if write.slot > v.through {
+				return false
+			}
+			v.apply(write)
+			return true
+		})
+		close(v.advanced)
+		v.advanced = make(chan struct{})
+		if v.late > 0 {
+			slog.Warn("backyard view applied account writes that arrived after their slot was complete", "count", v.late, "through", v.through)
+			v.late = 0
+		}
 		return nil
 	}
 	write := update.GetAccount()
@@ -209,28 +244,36 @@ func (v *View) Handle(_ context.Context, update *pb.SubscribeUpdate) error {
 		return nil
 	}
 	info := write.Account
-	if len(info.Pubkey) != solana.PublicKeyLength || len(info.Owner) != solana.PublicKeyLength {
-		return fmt.Errorf("LaserStream account update has a malformed key")
-	}
 	address := solana.PublicKeyFromBytes(info.Pubkey).String()
-	if held, ok := v.accounts[address]; ok && (write.Slot < held.slot || write.Slot == held.slot && info.WriteVersion <= held.writeVersion) {
-		return nil
-	}
 	// A closed account reads like an absent RPC account: its address alone.
 	account := ConfirmedAccount{Address: address}
 	if info.Lamports > 0 {
 		account = ConfirmedAccount{Address: address, Owner: solana.PublicKeyFromBytes(info.Owner).String(), Lamports: info.Lamports, Data: info.Data, Executable: info.Executable}
 	}
-	v.accounts[address] = viewAccount{account, write.Slot, info.WriteVersion}
+	// Discovery is recorded on arrival so the handoff starts at once.
 	if _, known := v.receipts[address]; !known && slices.Contains(update.Filters, viewReceiptsFilter) {
 		v.receipts[address], v.pending = write.Slot, v.pending+1
 	}
+	held := viewAccount{account, write.Slot, info.WriteVersion, v.session}
+	if held.slot > v.through {
+		v.queued = append(v.queued, held)
+		return nil
+	}
+	if !v.replaying {
+		v.late++
+	}
+	v.apply(held)
 	return nil
 }
 
+func (v *View) apply(write viewAccount) {
+	if held, ok := v.accounts[write.Address]; !ok || write.supersedes(held) {
+		v.accounts[write.Address] = write
+	}
+}
+
 // sync is the stream upkeep each read does first, never more than once at a
-// time. A failed or stalled stream reconnects once from S−32 (after a gap
-// longer than the replay window, from a fresh start-up read); the next read
+// time. A failed or stalled stream reconnects once from S−32; the next read
 // makes the next attempt. Discovered receipts are handed off into the
 // by-address filter from their discovery slot, so a close is not missed.
 func (v *View) sync(ctx context.Context) {
@@ -263,12 +306,6 @@ func (v *View) sync(ctx context.Context) {
 			v.manager.Close()
 			v.manager = nil
 		}
-		if !last.IsZero() && time.Since(last) > viewReplayWindow {
-			if err = v.seed(ctx); err != nil {
-				return
-			}
-			from, pending = v.seedLow+1, nil
-		}
 		err = v.subscribe(min(from, discovered))
 	case len(pending) > 0:
 		err = v.manager.Handoff(ctx, v.request(discovered))
@@ -282,25 +319,47 @@ func (v *View) sync(ctx context.Context) {
 	}
 }
 
+// errViewReplayGap stops the worker: a stream silent for longer than the
+// provider replays cannot resume, and a restart takes a new start-up read.
+var errViewReplayGap = errors.New("account view stream gap exceeds the provider replay window")
+
 // read returns addresses and the vault's open withdrawal receipts at S >=
-// minSlot. Only an optional address may be absent; an address outside the
+// minSlot, waiting for S to get there no longer than a live view's chain time
+// may trail. Only an optional address may be absent; an address outside the
 // view is an error, never an absence.
 func (v *View) read(ctx context.Context, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
 	if v == nil {
 		return 0, nil, nil, fmt.Errorf("account view is required")
 	}
 	v.sync(ctx)
+	wait, cancel := context.WithTimeout(ctx, viewMaxClockAge)
+	defer cancel()
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	switch {
-	case v.connector != nil && v.through < v.seedHigh:
-		return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view has not passed its start-up read"))
-	case v.connector != nil && time.Since(v.slotAt) > viewLiveness:
-		return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view has no recent confirmed slot"))
-	case v.pending > 0:
-		return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view has a receipt filter change pending"))
-	case int64(v.through) < minSlot:
-		return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view slot %d is behind %d", v.through, minSlot))
+	for int64(v.through) < minSlot {
+		advanced := v.advanced
+		v.mu.Unlock()
+		select {
+		case <-wait.Done():
+		case <-advanced:
+		}
+		v.mu.Lock()
+		if wait.Err() != nil && int64(v.through) < minSlot {
+			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view slot %d is behind %d", v.through, minSlot))
+		}
+	}
+	if v.connector != nil {
+		clockAge := v.now().Sub(time.Unix(clockUnixTimestamp([]ConfirmedAccount{v.accounts[budgetClockAddress].ConfirmedAccount}), 0))
+		switch {
+		case !v.slotAt.IsZero() && time.Since(v.slotAt) > viewReplayWindow:
+			return 0, nil, nil, errViewReplayGap
+		case v.through < v.seedHigh || v.replaying:
+			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view is replaying"))
+		case clockAge > viewMaxClockAge:
+			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view chain time at slot %d is %s old", v.through, clockAge))
+		case v.pending > 0:
+			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view has a receipt filter change pending"))
+		}
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for i, address := range addresses {
