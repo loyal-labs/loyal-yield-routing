@@ -358,12 +358,10 @@ func TestOutsideBytesNeverStopTheStream(t *testing.T) {
 	settings := solana.NewWallet().PublicKey()
 	vault := squadsVault(settings, 0)
 	keys := [][]byte{solana.NewWallet().PublicKey().Bytes(), settings.Bytes(), vault.Bytes(), squads.ProgramID.Bytes(), memoProgram.Bytes()}
-	for _, memo := range []string{"loyal:earn-max:v2:unknown", "loyal:earn-max:v2:cancel:request-1"} {
-		update := streamTransaction(streamSlot, keys, &pb.CompiledInstruction{ProgramIdIndex: 3, Accounts: []byte{1}, Data: []byte{0}},
-			&pb.CompiledInstruction{ProgramIdIndex: 4, Accounts: []byte{2}, Data: []byte(memo)})
-		if err := app.HandlePolicyTransaction(ctx, update); err != nil {
-			t.Fatalf("memo %q stopped the stream: %v", memo, err)
-		}
+	update := streamTransaction(streamSlot, keys, &pb.CompiledInstruction{ProgramIdIndex: 3, Accounts: []byte{1}, Data: []byte{0}},
+		&pb.CompiledInstruction{ProgramIdIndex: 4, Accounts: []byte{2}, Data: []byte("loyal:earn-max:v2:unknown")})
+	if err := app.HandlePolicyTransaction(ctx, update); err != nil {
+		t.Fatalf("a malformed memo stopped the stream: %v", err)
 	}
 }
 

@@ -224,10 +224,6 @@ type IntentInput struct {
 	CancelRequestID *string
 }
 
-// ErrIntentRejected is an intent memo the route does not accept: its route is
-// not projected, it predates the route, or the route's state refuses it.
-var ErrIntentRejected = errors.New("Earn MAX intent rejected")
-
 // ProjectIntent is project_earn_max_intent: the chain location is the
 // operation key, so replaying one memo is a no-op.
 func (s *Store) ProjectIntent(ctx context.Context, input IntentInput) (bool, error) {
@@ -253,7 +249,7 @@ func (s *Store) ProjectIntent(ctx context.Context, input IntentInput) (bool, err
             WHERE settings=$1 AND vault_index=$2
             FOR UPDATE`, input.Settings, int16(input.VaultIndex)).Scan(&routeKey, &raw, &owner, &expires)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, fmt.Errorf("%w: its route is not projected", ErrIntentRejected)
+		return false, errors.New("Earn MAX intent route is not projected yet")
 	}
 	if err != nil {
 		return false, err
@@ -273,7 +269,7 @@ func (s *Store) ProjectIntent(ctx context.Context, input IntentInput) (bool, err
 		return false, err
 	}
 	if input.Slot < state.ObservedSlot {
-		return false, fmt.Errorf("%w: it is older than the projected route", ErrIntentRejected)
+		return false, errors.New("Earn MAX intent is older than the projected route")
 	}
 	var action MultiplyAction
 	var evidence map[string]any
@@ -301,13 +297,13 @@ func (s *Store) ProjectIntent(ctx context.Context, input IntentInput) (bool, err
 			}
 		}
 		if _, err := state.RequestWithdrawal(input.Withdraw.RequestID, input.Withdraw.DestinationAccount, amount, input.ObservedAt); err != nil {
-			return false, fmt.Errorf("%w: %w", ErrIntentRejected, err)
+			return false, err
 		}
 		action = ActionRequestWithdrawal
 		evidence = map[string]any{"kind": "withdraw", "requestId": input.Withdraw.RequestID, "destinationAccount": input.Withdraw.DestinationAccount, "amountRaw": amount}
 	case input.CancelRequestID != nil:
 		if err := state.CancelWithdrawal(*input.CancelRequestID); err != nil {
-			return false, fmt.Errorf("%w: %w", ErrIntentRejected, err)
+			return false, err
 		}
 		action = ActionCancelWithdrawal
 		evidence = map[string]any{"kind": "cancel", "requestId": *input.CancelRequestID}
