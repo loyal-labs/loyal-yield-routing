@@ -21,10 +21,10 @@ import (
 
 // PolicyMonitor projects confirmed Squads settings instructions, ported from
 // loyal-squads-policy-monitor PolicyMonitor::process_policy_instructions with
-// PostgresPolicyMatchSink and Earn MAX projection. Only the stream calls it,
-// in chain order; a replayed transaction is replayed with every later one, so
-// a setup match, which activates its vault without a slot order, is followed
-// again by any removal that came after it.
+// PostgresPolicyMatchSink and Earn MAX projection. Only the stream calls it.
+// A replay can stop before it reaches later transactions, so every write is
+// slot-ordered or derived: a replayed setup match takes its vault's active
+// flag from the route policy, which an older event cannot reactivate.
 type PolicyMonitor struct {
 	store    *Store
 	rpc      *chain.Client

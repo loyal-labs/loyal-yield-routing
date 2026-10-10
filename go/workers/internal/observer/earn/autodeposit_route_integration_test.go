@@ -3,6 +3,7 @@ package earn
 import (
 	"context"
 	"encoding/binary"
+	"log/slog"
 	"net/url"
 	"os"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -221,26 +223,67 @@ func TestEarnCleanupEndsVaultAutodepositWork(t *testing.T) {
 	assertVaultWork(t, pool, f, work)
 }
 
-// createRecurringUpdate is a stream transaction in which wallet creates a
+// streamTransaction is one successful stream transaction whose signer is keys[0].
+func streamTransaction(slot uint64, keys [][]byte, instructions ...*pb.CompiledInstruction) *pb.SubscribeUpdate {
+	signature := solana.NewWallet().PublicKey().Bytes()
+	return &pb.SubscribeUpdate{UpdateOneof: &pb.SubscribeUpdate_Transaction{Transaction: &pb.SubscribeUpdateTransaction{Slot: slot, Transaction: &pb.SubscribeUpdateTransactionInfo{
+		Signature: append(signature, signature...), Meta: &pb.TransactionStatusMeta{},
+		Transaction: &pb.Transaction{Message: &pb.Message{Header: &pb.MessageHeader{NumRequiredSignatures: 1}, AccountKeys: keys, Instructions: instructions}},
+	}}}}
+}
+
+// createRecurringUpdate is a transaction in which wallet creates a USDC
 // Subscriptions recurring delegation to vault, outside Squads.
-func createRecurringUpdate(slot uint64, wallet, vault, delegation string, nonce, amount, period uint64) *pb.SubscribeUpdate {
-	keys := [][]byte{solana.MustPublicKeyFromBase58(wallet).Bytes(), solana.NewWallet().PublicKey().Bytes(), solana.MustPublicKeyFromBase58(delegation).Bytes(),
+func createRecurringUpdate(t *testing.T, slot uint64, wallet, vault, delegation string, nonce, amount, period uint64) *pb.SubscribeUpdate {
+	t.Helper()
+	authority, err := subscriptionAuthority(wallet, itestUSDCMint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := [][]byte{solana.MustPublicKeyFromBase58(wallet).Bytes(), solana.MustPublicKeyFromBase58(authority).Bytes(), solana.MustPublicKeyFromBase58(delegation).Bytes(),
 		solana.MustPublicKeyFromBase58(vault).Bytes(), solana.SystemProgramID.Bytes(), subscriptionsProgram.Bytes()}
 	data := []byte{subscriptionsCreateRecurring}
 	for _, value := range []uint64{nonce, amount, period, 0, 2_000_000_000, 123} {
 		data = binary.LittleEndian.AppendUint64(data, value)
 	}
-	signature := solana.NewWallet().PublicKey().Bytes()
-	return &pb.SubscribeUpdate{UpdateOneof: &pb.SubscribeUpdate_Transaction{Transaction: &pb.SubscribeUpdateTransaction{Slot: slot, Transaction: &pb.SubscribeUpdateTransactionInfo{
-		Signature: append(signature, signature...), Meta: &pb.TransactionStatusMeta{},
-		Transaction: &pb.Transaction{Message: &pb.Message{Header: &pb.MessageHeader{NumRequiredSignatures: 1, NumReadonlyUnsignedAccounts: 3}, AccountKeys: keys,
-			Instructions: []*pb.CompiledInstruction{{ProgramIdIndex: 5, Accounts: []byte{0, 1, 2, 3, 4}, Data: data}}}},
-	}}}}
+	return streamTransaction(slot, keys, &pb.CompiledInstruction{ProgramIdIndex: 5, Accounts: []byte{0, 1, 2, 3, 4}, Data: data})
+}
+
+func streamApplication(t *testing.T, pool *pgxpool.Pool) *Application {
+	t.Helper()
+	app, err := NewApplication(context.Background(), pool, nil, "mainnet-beta", solana.NewWallet().PublicKey(), nil, slog.New(slog.DiscardHandler), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return app
+}
+
+// The shared policy cursor follows these slots; the worker fixture expects it
+// within 100,000 slots of 449,073,607.
+const streamSlot = 449_073_500
+
+type delegationRow struct {
+	delegation, status          string
+	nonce, amount, period, slot int64
+	requested                   int64
+}
+
+func targetDelegation(t *testing.T, pool *pgxpool.Pool, targetID int64) delegationRow {
+	t.Helper()
+	var row delegationRow
+	if err := pool.QueryRow(context.Background(), `SELECT target.recurring_delegation, target.recurring_delegation_nonce, target.max_amount_per_period,
+            target.period_length_seconds, target.recurring_delegation_confirmed_slot, target.chain_status, request.requested_slot
+        FROM loyal_yield.balance_sweep_targets AS target
+        JOIN loyal_yield.autodeposit_reconciliation_requests AS request ON request.target_id = target.id
+        WHERE target.id = $1`, targetID).Scan(&row.delegation, &row.nonce, &row.amount, &row.period, &row.slot, &row.status, &row.requested); err != nil {
+		t.Fatal(err)
+	}
+	return row
 }
 
 // The delegation transaction carries no Squads instruction: the stream
-// projects it onto the wallet's Autodeposit target with no chain read, and a
-// delegation of a wallet and vault without a target writes nothing.
+// projects it onto the wallet's Autodeposit target with no chain read, and
+// another wallet's delegation to the same vault leaves the target alone.
 func TestStreamRecurringDelegationProjectsAutodepositTarget(t *testing.T) {
 	pool := observerPool(t)
 	ctx := context.Background()
@@ -249,34 +292,99 @@ func TestStreamRecurringDelegationProjectsAutodepositTarget(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT wallet FROM loyal_yield.balance_sweep_targets WHERE id = $1`, f.targetID).Scan(&wallet); err != nil {
 		t.Fatal(err)
 	}
-	app, err := NewApplication(ctx, pool, nil, "mainnet-beta", solana.NewWallet().PublicKey(), nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The shared policy cursor follows these slots; the worker fixture expects
-	// it within 100,000 slots of 449,073,607.
-	const slot = 449_073_500
+	app := streamApplication(t, pool)
 	stranger, delegation := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
-	if err := app.HandlePolicyTransaction(ctx, createRecurringUpdate(slot-1, stranger, f.vault, solana.NewWallet().PublicKey().String(), 1, 1, 1)); err != nil {
-		t.Fatalf("a delegation without an Autodeposit target stopped the stream: %v", err)
+	if err := app.HandlePolicyTransaction(ctx, createRecurringUpdate(t, streamSlot-1, stranger, f.vault, solana.NewWallet().PublicKey().String(), 1, 1, 1)); err != nil {
+		t.Fatal(err)
 	}
 	var untouched bool
 	if err := pool.QueryRow(ctx, `SELECT recurring_delegation IS NULL FROM loyal_yield.balance_sweep_targets WHERE id = $1`, f.targetID).Scan(&untouched); err != nil || !untouched {
 		t.Fatalf("another wallet's delegation attached to the target: %v", err)
 	}
-	if err := app.HandlePolicyTransaction(ctx, createRecurringUpdate(slot, wallet, f.vault, delegation, 7, 5_000_000, 86_400)); err != nil {
+	if err := app.HandlePolicyTransaction(ctx, createRecurringUpdate(t, streamSlot, wallet, f.vault, delegation, 7, 5_000_000, 86_400)); err != nil {
 		t.Fatal(err)
 	}
-	var recorded, status string
-	var nonce, amount, period, confirmed, requested int64
-	if err := pool.QueryRow(ctx, `SELECT target.recurring_delegation, target.recurring_delegation_nonce, target.max_amount_per_period,
-            target.period_length_seconds, target.recurring_delegation_confirmed_slot, target.chain_status, request.requested_slot
-        FROM loyal_yield.balance_sweep_targets AS target
-        JOIN loyal_yield.autodeposit_reconciliation_requests AS request ON request.target_id = target.id
-        WHERE target.id = $1`, f.targetID).Scan(&recorded, &nonce, &amount, &period, &confirmed, &status, &requested); err != nil {
+	if got := targetDelegation(t, pool, f.targetID); got != (delegationRow{delegation, "pending", 7, 5_000_000, 86_400, streamSlot, streamSlot}) {
+		t.Fatalf("target delegation = %+v", got)
+	}
+}
+
+// Mobile sends the Autodeposit policy and its delegation together, so the
+// delegation can land first; the target the policy creates still gets it.
+func TestDelegationBeforeItsPolicyReachesTheTarget(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	f := seedRoutedAutodeposit(t, pool)
+	wallet, delegation := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
+	if err := streamApplication(t, pool).HandlePolicyTransaction(ctx, createRecurringUpdate(t, streamSlot, wallet, f.vault, delegation, 3, 9_000_000, 3_600)); err != nil {
 		t.Fatal(err)
 	}
-	if recorded != delegation || nonce != 7 || amount != 5_000_000 || period != 86_400 || confirmed != slot || status != "pending" || requested != slot {
-		t.Fatalf("target delegation=%s nonce=%d amount=%d period=%d slot=%d status=%s requested=%d", recorded, nonce, amount, period, confirmed, status, requested)
+	policy := solana.NewWallet().PublicKey().String()
+	if err := NewStore(pool).RecordBalanceSweepPolicyMatch(ctx, BalanceSweepPolicyMatchInput{Signature: solana.NewWallet().PublicKey().String(), Slot: streamSlot + 1,
+		Cluster: "mainnet-beta", Settings: f.settings, Authority: f.authority, PolicySeed: 11, PolicyAccount: policy, VaultIndex: 1, VaultPubkey: f.vault,
+		Wallet: wallet, WalletUSDCATA: wallet, VaultUSDCATA: f.vault, TokenMint: itestUSDCMint, WalletTokenATA: wallet, VaultTokenATA: f.vault,
+		DelegatedSigners: []string{f.authority}, Threshold: 1, MaxAmountPerPeriod: 9_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	var targetID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE policy_account = $1`, policy).Scan(&targetID); err != nil {
+		t.Fatal(err)
+	}
+	if got := targetDelegation(t, pool, targetID); got != (delegationRow{delegation, "pending", 3, 9_000_000, 3_600, streamSlot, streamSlot}) {
+		t.Fatalf("target delegation = %+v", got)
+	}
+}
+
+// Anyone can call the Subscriptions program or write a memo: bytes that are
+// not ours, or that are out of range, never stop the stream.
+func TestOutsideBytesNeverStopTheStream(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	f := seedRoutedAutodeposit(t, pool)
+	app := streamApplication(t, pool)
+	wallet, delegation := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
+	for name, update := range map[string]*pb.SubscribeUpdate{
+		"out of range delegation to a managed vault": createRecurringUpdate(t, streamSlot, wallet, f.vault, delegation, 1<<63, 1, 1),
+		"delegation to an unknown vault":             createRecurringUpdate(t, streamSlot, wallet, solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String(), 1, 1, 1),
+	} {
+		if err := app.HandlePolicyTransaction(ctx, update); err != nil {
+			t.Fatalf("%s stopped the stream: %v", name, err)
+		}
+	}
+	var recorded bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.recurring_delegation_observations WHERE wallet = $1)`, wallet).Scan(&recorded); err != nil || recorded {
+		t.Fatalf("outside delegation was recorded: %v", err)
+	}
+	settings := solana.NewWallet().PublicKey()
+	vault := squadsVault(settings, 0)
+	keys := [][]byte{solana.NewWallet().PublicKey().Bytes(), settings.Bytes(), vault.Bytes(), squads.ProgramID.Bytes(), memoProgram.Bytes()}
+	for _, memo := range []string{"loyal:earn-max:v2:unknown", "loyal:earn-max:v2:cancel:request-1"} {
+		update := streamTransaction(streamSlot, keys, &pb.CompiledInstruction{ProgramIdIndex: 3, Accounts: []byte{1}, Data: []byte{0}},
+			&pb.CompiledInstruction{ProgramIdIndex: 4, Accounts: []byte{2}, Data: []byte(memo)})
+		if err := app.HandlePolicyTransaction(ctx, update); err != nil {
+			t.Fatalf("memo %q stopped the stream: %v", memo, err)
+		}
+	}
+}
+
+// Fleet reads managed_vaults.active: a setup replayed after its route policy
+// was removed must not reactivate the vault.
+func TestReplayedSetupKeepsARemovedVaultInactive(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	f := seedRoutedAutodeposit(t, pool)
+	store := NewStore(pool)
+	if err := store.RecordPolicyRemoval(ctx, PolicyRemovalInput{Signature: solana.NewWallet().PublicKey().String(), Slot: 200, Cluster: "mainnet-beta",
+		SourceCommitment: "confirmed", Settings: f.settings, Authority: f.authority, PolicyAccount: f.routePolicy}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordSetupPolicyMatch(ctx, PolicyMatchInput{Signature: solana.NewWallet().PublicKey().String(), Slot: 150, Cluster: "mainnet-beta",
+		SourceCommitment: "confirmed", Settings: f.settings, Authority: f.authority, PolicySeed: 8, PolicyAccount: solana.NewWallet().PublicKey().String(),
+		VaultIndex: 1, VaultPubkey: f.vault, Threshold: 1, RouteModes: []string{"kamino_init_obligation"}}); err != nil {
+		t.Fatal(err)
+	}
+	var active bool
+	if err := pool.QueryRow(ctx, `SELECT active FROM loyal_yield.managed_vaults WHERE vault_pubkey = $1`, f.vault).Scan(&active); err != nil || active {
+		t.Fatalf("replayed setup reactivated the removed vault: active=%v %v", active, err)
 	}
 }

@@ -82,7 +82,7 @@ func (a *Application) HandlePolicyTransaction(ctx context.Context, update *pb.Su
 				return err
 			}
 		}
-		if _, err := projectEarnMaxMemos(ctx, a.multiply, decoded); err != nil {
+		if _, err := projectEarnMaxMemos(ctx, a.multiply, a.logger, decoded); err != nil {
 			return err
 		}
 		if err := a.recordRecurringDelegations(ctx, decoded); err != nil {
@@ -92,22 +92,29 @@ func (a *Application) HandlePolicyTransaction(ctx context.Context, update *pb.Su
 	return a.store.AdvanceProjectionCursor(ctx, PolicyProjectionConsumer, slot)
 }
 
-// recordRecurringDelegations projects each Subscriptions create_recurring
-// onto the Autodeposit target of its wallet and vault.
+// recordRecurringDelegations records each Subscriptions create_recurring.
+// The program is public: bytes that are not ours are logged and skipped.
 func (a *Application) recordRecurringDelegations(ctx context.Context, transaction *PolicyTransaction) error {
 	for _, instruction := range transaction.Instructions {
 		accounts, data := instruction.Accounts, instruction.Data
-		if instruction.ProgramID != subscriptionsProgram || len(data) < 41 || data[0] != subscriptionsCreateRecurring || len(accounts) < 4 {
+		if instruction.ProgramID != subscriptionsProgram || len(data) == 0 || data[0] != subscriptionsCreateRecurring {
 			continue
 		}
-		if err := a.store.RecordRecurringDelegation(ctx, RecurringDelegationObserved{
-			Wallet: accounts[0].PublicKey.String(), VaultPubkey: accounts[3].PublicKey.String(),
-			SubscriptionAuthority: accounts[1].PublicKey.String(), RecurringDelegation: accounts[2].PublicKey.String(),
-			Nonce: binary.LittleEndian.Uint64(data[1:9]), AmountPerPeriod: binary.LittleEndian.Uint64(data[9:17]),
-			PeriodLengthSeconds: binary.LittleEndian.Uint64(data[17:25]), StartTimestamp: int64(binary.LittleEndian.Uint64(data[25:33])),
-			ExpiryTimestamp: int64(binary.LittleEndian.Uint64(data[33:41])), Signature: transaction.Signature, Slot: transaction.Slot,
-		}); err != nil {
-			return err
+		skipped := "the instruction is shorter than create_recurring"
+		if len(data) >= 41 && len(accounts) >= 4 {
+			var err error
+			if skipped, err = a.store.RecordRecurringDelegation(ctx, RecurringDelegationObserved{
+				Wallet: accounts[0].PublicKey.String(), VaultPubkey: accounts[3].PublicKey.String(),
+				SubscriptionAuthority: accounts[1].PublicKey.String(), RecurringDelegation: accounts[2].PublicKey.String(),
+				Nonce: binary.LittleEndian.Uint64(data[1:9]), AmountPerPeriod: binary.LittleEndian.Uint64(data[9:17]),
+				PeriodLengthSeconds: binary.LittleEndian.Uint64(data[17:25]), StartTimestamp: int64(binary.LittleEndian.Uint64(data[25:33])),
+				ExpiryTimestamp: int64(binary.LittleEndian.Uint64(data[33:41])), Signature: transaction.Signature, Slot: transaction.Slot,
+			}); err != nil {
+				return err
+			}
+		}
+		if skipped != "" {
+			a.logger.Info("skipped a recurring delegation", "event", "recurring_delegation_skipped", "reason", skipped, "signature", transaction.Signature)
 		}
 	}
 	return nil

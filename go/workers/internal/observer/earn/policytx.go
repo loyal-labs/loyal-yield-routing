@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -246,13 +247,16 @@ func projectionIntent(input EarnMaxIntentProjectionInput) multiply.IntentInput {
 }
 
 // projectEarnMaxMemos is project_earn_max_memos: a memo projects only when
-// exactly one instruction account is the settings of a memo vault.
-func projectEarnMaxMemos(ctx context.Context, store *multiply.Store, transaction *PolicyTransaction) (int, error) {
+// exactly one instruction account is the settings of a memo vault. Anyone can
+// write a memo, so a malformed one, or one the route rejects, is logged and
+// skipped.
+func projectEarnMaxMemos(ctx context.Context, store *multiply.Store, logger *slog.Logger, transaction *PolicyTransaction) (int, error) {
 	applied := 0
 	for _, memo := range transaction.Memos {
 		intent, err := parseEarnMaxIntent(memo.Data)
 		if err != nil {
-			return applied, err
+			logger.Info("skipped an Earn MAX memo", "event", "earn_max_memo_skipped", "reason", err.Error(), "signature", transaction.Signature)
+			continue
 		}
 		if intent == nil {
 			continue
@@ -268,14 +272,20 @@ func projectEarnMaxMemos(ctx context.Context, store *multiply.Store, transaction
 			}
 		}
 		if len(matches) != 1 {
+			logger.Info("skipped an Earn MAX memo", "event", "earn_max_memo_skipped", "reason", "the memo names no single vault", "signature", transaction.Signature)
 			continue
 		}
 		for match := range matches {
-			if _, err := store.ProjectIntent(ctx, intentInput(match[0].String(), 0, transaction, memo, intent)); err != nil {
+			_, err := store.ProjectIntent(ctx, intentInput(match[0].String(), 0, transaction, memo, intent))
+			if errors.Is(err, multiply.ErrIntentRejected) {
+				logger.Info("skipped an Earn MAX memo", "event", "earn_max_memo_skipped", "reason", err.Error(), "signature", transaction.Signature)
+				continue
+			}
+			if err != nil {
 				return applied, err
 			}
+			applied++
 		}
-		applied++
 	}
 	return applied, nil
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Policy projection writers, ported from loyal-yield-store store.rs
@@ -161,7 +162,7 @@ func upsertVaultWithSetup(ctx context.Context, tx pgx.Tx, routePolicyID, setupPo
         ON CONFLICT (settings, vault_index, vault_pubkey) DO UPDATE SET
             active_policy_id = EXCLUDED.active_policy_id,
             setup_policy_id = EXCLUDED.setup_policy_id,
-            active = TRUE,
+            active = (SELECT active FROM loyal_yield.route_policies WHERE id = EXCLUDED.active_policy_id),
             last_seen_at = now()
         RETURNING id`, event.Settings, int16(event.VaultIndex), event.VaultPubkey, routePolicyID, setupPolicyID).Scan(&id)
 	return id, err
@@ -189,7 +190,7 @@ func (s *Store) RecordSetupPolicyMatch(ctx context.Context, event PolicyMatchInp
 		tag, err := tx.Exec(ctx, `
             UPDATE loyal_yield.managed_vaults
             SET setup_policy_id = $1,
-                active = TRUE,
+                active = (SELECT active FROM loyal_yield.route_policies WHERE id = managed_vaults.active_policy_id),
                 last_seen_at = now()
             WHERE settings = $2
               AND vault_index = $3
@@ -281,7 +282,9 @@ func (s *Store) RecordBalanceSweepPolicyMatch(ctx context.Context, event Balance
 		for _, column := range columns {
 			sets = append(sets, newer(column))
 		}
-		_, err = tx.Exec(ctx, `
+		var targetID int64
+		var inserted bool
+		err = tx.QueryRow(ctx, `
             INSERT INTO loyal_yield.balance_sweep_targets
                 (cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
                  wallet, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata,
@@ -316,11 +319,20 @@ func (s *Store) RecordBalanceSweepPolicyMatch(ctx context.Context, event Balance
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
                     THEN EXCLUDED.last_seen_signature
                     ELSE loyal_yield.balance_sweep_targets.last_seen_signature
-                END`,
+                END
+            RETURNING id, xmax = 0`,
 			event.Cluster, event.Settings, event.Authority, seed, event.PolicyAccount, int16(event.VaultIndex), event.VaultPubkey,
 			event.Wallet, event.WalletUSDCATA, event.VaultUSDCATA, event.TokenMint, event.WalletTokenATA,
-			event.VaultTokenATA, strings0(event.DelegatedSigners), int32(event.Threshold), maxAmount, slot, event.Signature)
-		return err
+			event.VaultTokenATA, strings0(event.DelegatedSigners), int32(event.Threshold), maxAmount, slot, event.Signature).Scan(&targetID, &inserted)
+		if err != nil || !inserted {
+			return err
+		}
+		// A delegation the stream recorded before this policy attaches now.
+		authority, err := subscriptionAuthority(event.Wallet, event.TokenMint)
+		if err != nil {
+			return err
+		}
+		return attachRecurringDelegation(ctx, tx, targetID, event.Wallet, event.VaultPubkey, authority)
 	})
 }
 
@@ -701,122 +713,144 @@ func upsertAutodepositReconciliationRequest(ctx context.Context, tx pgx.Tx, targ
 	return err
 }
 
-// RecordRecurringDelegation projects one confirmed Subscriptions recurring
-// delegation onto its Autodeposit target and requests reconciliation.
-func (s *Store) RecordRecurringDelegation(ctx context.Context, input RecurringDelegationObserved) error {
-	slot, err := slotBigint(input.Slot)
+// subscriptionAuthority is the Subscriptions authority PDA of wallet and mint.
+func subscriptionAuthority(wallet, mint string) (string, error) {
+	walletKey, err := solana.PublicKeyFromBase58(wallet)
 	if err != nil {
-		return err
+		return "", err
 	}
-	var values [3]int64
-	for i, raw := range []uint64{input.Nonce, input.AmountPerPeriod, input.PeriodLengthSeconds} {
-		if values[i], err = amountBigint(raw); err != nil {
+	mintKey, err := solana.PublicKeyFromBase58(mint)
+	if err != nil {
+		return "", err
+	}
+	return pda(subscriptionsProgram, []byte("SubscriptionAuthority"), walletKey[:], mintKey[:]).String(), nil
+}
+
+// RecordRecurringDelegation records one confirmed Subscriptions recurring
+// delegation to a managed vault, whether or not its Autodeposit target exists
+// yet, and attaches it to the wallet's targets on that vault whose mint the
+// subscription authority is for. It returns why bytes that are not ours were
+// skipped; an error is only ever a storage failure.
+func (s *Store) RecordRecurringDelegation(ctx context.Context, input RecurringDelegationObserved) (string, error) {
+	skipped := ""
+	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		var ours bool
+		if err := tx.QueryRow(ctx, `
+            SELECT EXISTS (SELECT 1 FROM loyal_yield.managed_vaults WHERE vault_pubkey = $1)
+                OR EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_targets WHERE vault_pubkey = $1)`, input.VaultPubkey).Scan(&ours); err != nil {
 			return err
 		}
-	}
-	nonce, amount, period := values[0], values[1], values[2]
-	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if !ours {
+			skipped = "the delegatee is not a managed vault"
+			return nil
+		}
+		for _, value := range []uint64{input.Nonce, input.AmountPerPeriod, input.PeriodLengthSeconds, input.Slot} {
+			if value > math.MaxInt64 {
+				skipped = "a delegation value exceeds BIGINT"
+				return nil
+			}
+		}
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, input.Wallet+"|"+input.VaultPubkey); err != nil {
 			return err
 		}
-		// A durable transaction can arrive after its setup lifecycle closed:
-		// resolve the immutable delegation owner first so a historical replay
-		// cannot attach to the wallet's current target.
-		var targetID int64
-		var wallet, vault, chainStatus string
-		var authority *string
-		var existingNonce, existingSlot *int64
-		err := tx.QueryRow(ctx, `
-            SELECT id, wallet, vault_pubkey, subscription_authority,
-                   recurring_delegation_nonce, recurring_delegation_confirmed_slot,
-                   chain_status
-            FROM loyal_yield.balance_sweep_targets
-            WHERE recurring_delegation = $1
-            FOR UPDATE`, input.RecurringDelegation).Scan(&targetID, &wallet, &vault, &authority, &existingNonce, &existingSlot, &chainStatus)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		if _, err := tx.Exec(ctx, `
+            INSERT INTO loyal_yield.recurring_delegation_observations AS fact
+                (recurring_delegation, wallet, vault_pubkey, subscription_authority, nonce, amount_per_period,
+                 period_length_seconds, start_timestamp, expiry_timestamp, signature, slot)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (recurring_delegation) DO UPDATE SET
+                wallet = EXCLUDED.wallet, vault_pubkey = EXCLUDED.vault_pubkey,
+                subscription_authority = EXCLUDED.subscription_authority, nonce = EXCLUDED.nonce,
+                amount_per_period = EXCLUDED.amount_per_period, period_length_seconds = EXCLUDED.period_length_seconds,
+                start_timestamp = EXCLUDED.start_timestamp, expiry_timestamp = EXCLUDED.expiry_timestamp,
+                signature = EXCLUDED.signature, slot = EXCLUDED.slot, observed_at = now()
+            WHERE EXCLUDED.slot >= fact.slot`, input.RecurringDelegation, input.Wallet, input.VaultPubkey, input.SubscriptionAuthority,
+			int64(input.Nonce), int64(input.AmountPerPeriod), int64(input.PeriodLengthSeconds), input.StartTimestamp, input.ExpiryTimestamp,
+			input.Signature, int64(input.Slot)); err != nil {
 			return err
 		}
-		if err == nil {
-			if wallet != input.Wallet || vault != input.VaultPubkey || (authority != nil && *authority != input.SubscriptionAuthority) || (existingNonce != nil && *existingNonce != nonce) {
-				return fmt.Errorf("recurring delegation %s is assigned to target %d with conflicting immutable ownership", input.RecurringDelegation, targetID)
-			}
-			if existingSlot == nil || slot >= *existingSlot {
-				if err := tx.QueryRow(ctx, `
-                    UPDATE loyal_yield.balance_sweep_targets
-                    SET subscription_authority = $1,
-                        recurring_delegation_nonce = $2,
-                        max_amount_per_period = $3,
-                        period_length_seconds = $4,
-                        start_timestamp = $5,
-                        recurring_delegation_expiry_timestamp = $6,
-                        recurring_delegation_signature = $7,
-                        recurring_delegation_confirmed_slot = $8,
-                        chain_status = CASE
-                            WHEN chain_status = 'closed' OR $8 <= chain_observation_slot
-                            THEN chain_status
-                            ELSE 'pending'
-                        END,
-                        chain_observation_slot = GREATEST(chain_observation_slot, $8),
-                        last_seen_at = CASE WHEN $8 > last_seen_slot THEN now() ELSE last_seen_at END,
-                        last_seen_slot = GREATEST(last_seen_slot, $8),
-                        last_seen_signature = CASE
-                            WHEN $8 > last_seen_slot THEN $7 ELSE last_seen_signature
-                        END
-                    WHERE id = $9
-                    RETURNING chain_status`, input.SubscriptionAuthority, nonce, amount, period, input.StartTimestamp, input.ExpiryTimestamp, input.Signature, slot, targetID).Scan(&chainStatus); err != nil {
-					return err
-				}
-			}
-			if chainStatus != "closed" {
-				return upsertAutodepositReconciliationRequest(ctx, tx, targetID, slot)
-			}
-			return nil
-		}
-		var currentSlot *int64
-		err = tx.QueryRow(ctx, `
-            SELECT id, recurring_delegation_confirmed_slot
-            FROM loyal_yield.balance_sweep_targets
-            WHERE wallet = $1
-              AND vault_pubkey = $2
-              AND chain_status <> 'closed'
-            FOR UPDATE`, input.Wallet, input.VaultPubkey).Scan(&targetID, &currentSlot)
-		if errors.Is(err, pgx.ErrNoRows) {
-			// The stream projects in chain order and the app confirms the
-			// Autodeposit policy before it builds the delegation, so a wallet
-			// and vault without a target is not an Autodeposit delegation.
-			return nil
-		}
+		rows, err := tx.Query(ctx, `
+            SELECT id, token_mint FROM loyal_yield.balance_sweep_targets
+            WHERE wallet = $1 AND vault_pubkey = $2 AND chain_status <> 'closed'`, input.Wallet, input.VaultPubkey)
 		if err != nil {
 			return err
 		}
-		if currentSlot != nil && slot < *currentSlot {
-			return nil
+		var targets []int64
+		for rows.Next() {
+			var id int64
+			var mint string
+			if err := rows.Scan(&id, &mint); err != nil {
+				rows.Close()
+				return err
+			}
+			authority, err := subscriptionAuthority(input.Wallet, mint)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			if authority == input.SubscriptionAuthority {
+				targets = append(targets, id)
+			}
 		}
-		if _, err := tx.Exec(ctx, `
-            UPDATE loyal_yield.balance_sweep_targets
-            SET setup_generation = CASE
-                    WHEN recurring_delegation IS NOT NULL
-                         AND recurring_delegation IS DISTINCT FROM $2
-                    THEN setup_generation + 1
-                    ELSE setup_generation
-                END,
-                subscription_authority = $1,
-                recurring_delegation = $2,
-                recurring_delegation_nonce = $3,
-                max_amount_per_period = $4,
-                period_length_seconds = $5,
-                start_timestamp = $6,
-                recurring_delegation_expiry_timestamp = $7,
-                recurring_delegation_signature = $8,
-                recurring_delegation_confirmed_slot = $9,
-                chain_status = CASE WHEN chain_status = 'closed' THEN chain_status ELSE 'pending' END,
-                chain_observation_slot = GREATEST(chain_observation_slot, $9),
-                last_seen_at = now(),
-                last_seen_slot = GREATEST(last_seen_slot, $9),
-                last_seen_signature = CASE WHEN $9 >= last_seen_slot THEN $8 ELSE last_seen_signature END
-            WHERE id = $10`, input.SubscriptionAuthority, input.RecurringDelegation, nonce, amount, period, input.StartTimestamp, input.ExpiryTimestamp, input.Signature, slot, targetID); err != nil {
+		rows.Close()
+		if err := rows.Err(); err != nil {
 			return err
 		}
-		return upsertAutodepositReconciliationRequest(ctx, tx, targetID, slot)
+		for _, id := range targets {
+			if err := attachRecurringDelegation(ctx, tx, id, input.Wallet, input.VaultPubkey, input.SubscriptionAuthority); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
+	return skipped, err
+}
+
+// attachRecurringDelegation sets a target's delegation to the latest recorded
+// one of its wallet, vault and subscription authority, unless the target
+// already holds a later one, and requests reconciliation.
+func attachRecurringDelegation(ctx context.Context, tx pgx.Tx, targetID int64, wallet, vault, authority string) error {
+	var status string
+	var slot int64
+	err := tx.QueryRow(ctx, `
+        UPDATE loyal_yield.balance_sweep_targets AS target
+        SET setup_generation = CASE
+                WHEN target.recurring_delegation IS NOT NULL
+                     AND target.recurring_delegation IS DISTINCT FROM fact.recurring_delegation
+                THEN target.setup_generation + 1
+                ELSE target.setup_generation
+            END,
+            subscription_authority = fact.subscription_authority,
+            recurring_delegation = fact.recurring_delegation,
+            recurring_delegation_nonce = fact.nonce,
+            max_amount_per_period = fact.amount_per_period,
+            period_length_seconds = fact.period_length_seconds,
+            start_timestamp = fact.start_timestamp,
+            recurring_delegation_expiry_timestamp = fact.expiry_timestamp,
+            recurring_delegation_signature = fact.signature,
+            recurring_delegation_confirmed_slot = fact.slot,
+            chain_status = CASE
+                WHEN target.chain_status = 'closed' OR fact.slot <= target.chain_observation_slot
+                THEN target.chain_status
+                ELSE 'pending'
+            END,
+            chain_observation_slot = GREATEST(target.chain_observation_slot, fact.slot),
+            last_seen_at = now(),
+            last_seen_slot = GREATEST(target.last_seen_slot, fact.slot),
+            last_seen_signature = CASE WHEN fact.slot > target.last_seen_slot THEN fact.signature ELSE target.last_seen_signature END
+        FROM (
+            SELECT * FROM loyal_yield.recurring_delegation_observations
+            WHERE wallet = $2 AND vault_pubkey = $3 AND subscription_authority = $4
+            ORDER BY slot DESC, recurring_delegation DESC
+            LIMIT 1
+        ) AS fact
+        WHERE target.id = $1 AND fact.slot >= COALESCE(target.recurring_delegation_confirmed_slot, 0)
+        RETURNING target.chain_status, fact.slot`, targetID, wallet, vault, authority).Scan(&status, &slot)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && status == "closed" {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return upsertAutodepositReconciliationRequest(ctx, tx, targetID, slot)
 }
