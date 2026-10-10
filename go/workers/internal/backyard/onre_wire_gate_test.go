@@ -13,6 +13,7 @@ const onreLane = "OnRe/ONyc/USDC"
 // gate PersistSigned uses. A refusal here is a signed wire the worker cannot
 // persist (live 2026-09-28: the AUTO top-up deposit).
 func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{51}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
@@ -57,6 +58,7 @@ func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
 // The installed OnRe initializer compiles with the pinned delegate as payer,
 // so only its wire shape is checked here, like the AUTO initializer test.
 func TestOnReInitializerWirePassesTheDecodeGate(t *testing.T) {
+	t.Parallel()
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +79,7 @@ func TestOnReInitializerWirePassesTheDecodeGate(t *testing.T) {
 
 // The top-up topology stays closed for the other installed lanes.
 func TestTopupDepositTopologyOnlyForAUTOAndOnRe(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{53}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
@@ -101,6 +104,7 @@ func TestTopupDepositTopologyOnlyForAUTOAndOnRe(t *testing.T) {
 // or, when it does not fit, a v0 packet with lookup tables.
 // Each signed wire must pass the gate PersistSigned uses.
 func TestOnReSwapWiresPassThePersistedWireGate(t *testing.T) {
+	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{54}, ed25519.SeedSize))
 	for _, leg := range []string{"USDC->ONyc", "ONyc->USDC"} {
 		request, tables := basicJupiterRequest(t, onreLane, leg)

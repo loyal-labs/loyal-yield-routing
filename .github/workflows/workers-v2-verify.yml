@@ -20,11 +20,6 @@ on:
       - crates/loyal-actions/**
       - crates/loyal-solana-env/**
       - crates/loyal-hub-abi/**
-      # The bun installs below.
-      - package.json
-      - bun.lock
-      - tools/backyard-voltr/package.json
-      - tools/backyard-voltr/bun.lock
 
   # Every PR reports the required checks; the changes job skips them when
   # no workers path changed.
@@ -59,7 +54,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         # Pushes are already filtered by the push paths above.
         run: |
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|package\.json$|bun\.lock$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi)/|tools/backyard-voltr/(package\.json|bun\.lock)$)'; then
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi)/)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
@@ -115,14 +110,6 @@ jobs:
         with:
           path: ${{ runner.temp }}/workers-go
           key: workers-go-${{ hashFiles('go/workers/go.sum') }}
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-      - name: Install locked SDK oracle dependencies
-        run: |
-          bun install --frozen-lockfile
-          cd tools/backyard-voltr
-          bun install --frozen-lockfile
       # The fixtures are a pure function of these sources and the pinned tools.
       - name: Restore connected execution fixtures
         id: fixtures

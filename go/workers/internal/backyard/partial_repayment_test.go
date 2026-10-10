@@ -135,6 +135,7 @@ func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observa
 // The bound partial repay leaves debt on the obligation: its simulated
 // poststate repays exactly the step and keeps the collateral in place.
 func TestPartialRepaymentProjectionLeavesDebt(t *testing.T) {
+	t.Parallel()
 	o, d, e, m, rpc, _ := partialRepaymentFixture(t, "")
 	projection, err := observePartialRepaymentProjection(context.Background(), rpc, fixtureView(t, rpc), m, o.Snapshot, d, e.Request, e.ExpectedEffects)
 	if err != nil {
@@ -148,6 +149,7 @@ func TestPartialRepaymentProjectionLeavesDebt(t *testing.T) {
 }
 
 func TestPartialRepaymentRejectsProjectedDrift(t *testing.T) {
+	t.Parallel()
 	for _, variant := range []string{"debt", "receipts", "collateral", "cash", "failed"} {
 		t.Run(variant, func(t *testing.T) {
 			o, d, e, m, rpc, _ := partialRepaymentFixture(t, variant)
@@ -159,6 +161,7 @@ func TestPartialRepaymentRejectsProjectedDrift(t *testing.T) {
 }
 
 func TestPartialRepaymentDecisionPrincipalCashAndDust(t *testing.T) {
+	t.Parallel()
 	o, _, _, _, _, _ := partialRepaymentFixture(t, "")
 	s := o.Snapshot
 	s.SquadsIdleRaw = s.PositionDebtRaw
@@ -213,6 +216,7 @@ func TestPartialRepaymentUnverifiedRiskCannotCommitUnwind(t *testing.T) {
 // partial-repay proof, repays less than the whole debt, and writes no unwind
 // intent of its own.
 func TestExitPartialRepayProjectionOnLeverageLane(t *testing.T) {
+	t.Parallel()
 	o, d, e, m, rpc, _ := partialRepaymentFixtureForLane(t, onreONycUSDC, "")
 	if d.Reason != exitPartialRepayReason || d.AmountRaw >= o.Snapshot.PositionDebtRaw {
 		t.Fatalf("decision %+v", d)

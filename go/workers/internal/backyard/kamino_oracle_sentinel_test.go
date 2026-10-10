@@ -34,6 +34,7 @@ func oracleSentinelFixture(t *testing.T) (RuntimeRoute, []ConfirmedAccount) {
 // regression: with the AUTO probe's account images the observation succeeds
 // and only the real scope oracle is configured.
 func TestKaminoOracleSentinelIsNeverAConfiguredOracle(t *testing.T) {
+	t.Parallel()
 	route, accounts := oracleSentinelFixture(t)
 	position, err := observeKaminoFromFixedAccounts(77, append(append([]ConfirmedAccount{}, accounts...), clockFixture()), route.Kamino)
 	if err != nil {
@@ -48,6 +49,7 @@ func TestKaminoOracleSentinelIsNeverAConfiguredOracle(t *testing.T) {
 // no-configured-oracle refusal exact: a reserve pair configured with ONLY the
 // sentinel fails with the unchanged fixed error.
 func TestKaminoOracleSentinelOnlyConfiguredStillFails(t *testing.T) {
+	t.Parallel()
 	route, accounts := oracleSentinelFixture(t)
 	putKey(t, accountAt(accounts, route.Kamino.CollateralReserve).Data[5112:5144], kaminoOracleSentinelPubkey)
 	putKey(t, accountAt(accounts, route.Kamino.DebtReserve).Data[5112:5144], kaminoOracleSentinelPubkey)

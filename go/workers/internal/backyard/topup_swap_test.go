@@ -111,6 +111,7 @@ func TestTopupSwapBesideDebtPrestateAcceptsOnlyTheFlaggedTopup(t *testing.T) {
 }
 
 func TestTopupSwapDecisionBesideDebtFreePosition(t *testing.T) {
+	t.Parallel()
 	s := liveIdleDebtSnapshot()
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw, s.LTVBPS, s.DebtIdleRaw = 0, 0, 0, 0, 0
 	s.SquadsIdleRaw = 336_000_000
@@ -135,6 +136,7 @@ func TestTopupSwapDecisionBesideDebtFreePosition(t *testing.T) {
 // Build and send accept the flagged top-up swap beside the debt-free
 // position; a flat entry swap may not carry it.
 func TestTopupSwapPrestateAcceptsTheFlaggedPosition(t *testing.T) {
+	t.Parallel()
 	_, _, e, _, rpc, _, _ := topupSwapAdmissionFixture(t)
 	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal("prestate refused the top-up swap", err)

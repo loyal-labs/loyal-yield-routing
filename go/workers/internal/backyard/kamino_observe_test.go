@@ -10,6 +10,7 @@ import (
 )
 
 func TestKaminoAccruedDebtUsesUnroundedFractionAndFullRateLimbs(t *testing.T) {
+	t.Parallel()
 	// KLend accrue_interest floors amountSF * newRate / oldRate before
 	// converting Fraction to ceil raw. SDK 7.3.9 decodes these same offsets.
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
@@ -63,6 +64,7 @@ func TestKaminoAccruedDebtUsesUnroundedFractionAndFullRateLimbs(t *testing.T) {
 }
 
 func TestAccruedDebtFlowsThroughObservationNAVAndRepayment(t *testing.T) {
+	t.Parallel()
 	route, accounts := nonUSDCDebtNAVFixture(t)
 	reserve := accountAt(accounts, route.Kamino.DebtReserve)
 	putKey(t, reserve.Data[5112:5144], kaminoScopePrices)
@@ -103,6 +105,7 @@ func TestAccruedDebtFlowsThroughObservationNAVAndRepayment(t *testing.T) {
 }
 
 func TestTargetBorrowRespectsNineDecimalCollateral(t *testing.T) {
+	t.Parallel()
 	p := KaminoPosition{CollateralDepositedRaw: 1_000_000_000, RedeemablePrimeRaw: 1_000_000_000, CollateralDecimals: 9, DebtDecimals: 6}
 	binary.LittleEndian.PutUint64(p.CollateralPriceSF[:8], uint64(1)<<60)
 	binary.LittleEndian.PutUint64(p.DebtPriceSF[:8], uint64(1)<<60)
@@ -117,6 +120,7 @@ func TestTargetBorrowRespectsNineDecimalCollateral(t *testing.T) {
 }
 
 func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
+	t.Parallel()
 	c := KaminoObservationConfig{
 		Program: kamino.ProgramID.String(), Market: kaminoMarket, Obligation: bridgeSettings,
 		CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve,
@@ -145,6 +149,7 @@ func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 }
 
 func TestKaminoObligationAcceptsTheFourLifecycleStates(t *testing.T) {
+	t.Parallel()
 	c := KaminoObservationConfig{
 		Program: kamino.ProgramID.String(), Market: kaminoMarket, Obligation: bridgeSettings,
 		CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve,
@@ -174,6 +179,7 @@ func TestKaminoObligationAcceptsTheFourLifecycleStates(t *testing.T) {
 }
 
 func TestKaminoCollateralExchangeRateUsesExactScaledFractionFloor(t *testing.T) {
+	t.Parallel()
 	reserve := decodedKaminoReserve{totalLiquiditySF: new(big.Int).Lsh(big.NewInt(120), 60), collateralMintSupply: 100}
 	got, err := reserve.redeemLiquidityRaw(25)
 	if err != nil || got != 30 {
@@ -182,6 +188,7 @@ func TestKaminoCollateralExchangeRateUsesExactScaledFractionFloor(t *testing.T) 
 }
 
 func TestKaminoEntryCapacityBoundsOneRedepositAndBorrowHeadroom(t *testing.T) {
+	t.Parallel()
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
 	price := [16]byte{}
 	putScaledFraction(price[:], one)
@@ -207,6 +214,7 @@ func TestKaminoEntryCapacityBoundsOneRedepositAndBorrowHeadroom(t *testing.T) {
 }
 
 func TestKaminoUtilizationGateCapsEntryAndBlocksBorrowAtBoundary(t *testing.T) {
+	t.Parallel()
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
 	total := new(big.Int).Mul(new(big.Int).Set(one), big.NewInt(100))
 	borrowed := new(big.Int).Mul(new(big.Int).Set(one), big.NewInt(9368))
@@ -243,6 +251,7 @@ func TestKaminoUtilizationGateCapsEntryAndBlocksBorrowAtBoundary(t *testing.T) {
 }
 
 func TestKaminoRefreshAcceptsIndependentRefreshMarkersAndRejectsOlderState(t *testing.T) {
+	t.Parallel()
 	o := decodedKaminoObligation{refreshedSlot: 10, hasPosition: true}
 	if err := validateKaminoRefresh(o,
 		decodedKaminoReserve{refreshedSlot: 11},

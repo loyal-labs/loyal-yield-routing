@@ -128,6 +128,7 @@ func autoInitializerFundedObligation(t *testing.T, r KaminoInitializationRequest
 // initializer leg, through the installed AUTO policy — and the public
 // compiler must still refuse the lane outright.
 func TestAutoInitializerCompilesAtItsLeg(t *testing.T) {
+	t.Parallel()
 	manifest, r := autoInitializerRequestFixture(t)
 	message, err := manifest.compileKaminoInitializationMessage(r)
 	if err != nil {
@@ -182,6 +183,7 @@ func TestAutoInitializerCompilesAtItsLeg(t *testing.T) {
 // admitted through the reviewed extension parser and every malformed or
 // unsupported variant refused.
 func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
+	t.Parallel()
 	for _, drift := range []string{"", "target_exists", "mint_program", "mint_uninitialized", "mint_unsupported_extension", "mint_transfer_fee_enabled", "mint_truncated_tlv", "classic_extensionless_debt", "rent_changed"} {
 		t.Run(drift, func(t *testing.T) {
 			manifest, r := autoInitializerRequestFixture(t)
@@ -241,6 +243,7 @@ func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
 // The reentry forecast prices recreation of the exact obligation the validated
 // source exit is forecast to close: same identity, observed amounts, bounded.
 func TestAutoInitializerReentryForecastIsBounded(t *testing.T) {
+	t.Parallel()
 	manifest, r := autoInitializerRequestFixture(t)
 	const collateralRaw, debtRaw = uint64(2_000_000), uint64(1_000_000)
 	// The exact observed funded lane at the exact exit bound is admitted.
@@ -281,6 +284,7 @@ func holdFor(run func() error) error { return run() }
 // The post-state validator keeps its exact installed empty-state checks on the
 // candidate lane.
 func TestAutoInitializerEmptyObligationValidated(t *testing.T) {
+	t.Parallel()
 	manifest, r := autoInitializerRequestFixture(t)
 	route, err := runtimeRoute(r.RouteLane)
 	if err != nil {
@@ -311,6 +315,7 @@ func TestAutoInitializerEmptyObligationValidated(t *testing.T) {
 // effect validates through it; the public form keeps the exact installed
 // behavior and refuses the candidate lane outright.
 func TestAutoInitializationEffectsValidateThroughTheManifest(t *testing.T) {
+	t.Parallel()
 	manifest, r := autoInitializerRequestFixture(t)
 	valid := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
 	if err := manifest.validateInitializationEffects(valid); err != nil {

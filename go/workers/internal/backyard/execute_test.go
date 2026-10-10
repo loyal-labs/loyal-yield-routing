@@ -3,6 +3,7 @@ package backyard
 import "testing"
 
 func TestTransitions(t *testing.T) {
+	t.Parallel()
 	if !CanTransition(Signed, BroadcastIntent) || !CanTransition(Confirmed, Reconciling) ||
 		CanTransition(Confirmed, Reconciled) || CanTransition(Held, Decided) ||
 		CanTransition(Failed, Decided) || CanTransition(Submitted, Signed) {
@@ -11,6 +12,7 @@ func TestTransitions(t *testing.T) {
 }
 
 func TestExpiredAbsentSubmissionCanTerminateWithoutResend(t *testing.T) {
+	t.Parallel()
 	if !CanTransition(BroadcastIntent, Failed) || !CanTransition(Submitted, Failed) {
 		t.Fatal("expired absent submission cannot reach its migration-backed terminal state")
 	}
@@ -20,6 +22,7 @@ func TestExpiredAbsentSubmissionCanTerminateWithoutResend(t *testing.T) {
 }
 
 func TestNonterminalSetExcludesPersistedHolds(t *testing.T) {
+	t.Parallel()
 	for _, status := range []OperationStatus{Decided, Built, Simulated, Signed, BroadcastIntent, Submitted, Confirmed, Reconciling} {
 		if !IsNonterminal(status) {
 			t.Fatalf("expected %s to be nonterminal", status)
@@ -33,6 +36,7 @@ func TestNonterminalSetExcludesPersistedHolds(t *testing.T) {
 }
 
 func TestWithdrawalPreemptsEveryOpenPreBroadcastState(t *testing.T) {
+	t.Parallel()
 	for _, status := range []OperationStatus{Decided, Built, Simulated, Signed} {
 		if !WithdrawalPreemptsOpenLoop(OpenPrimeUSDCStep, status, 1) {
 			t.Fatalf("withdrawal did not preempt OPEN in %s", status)

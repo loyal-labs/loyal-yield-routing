@@ -416,6 +416,7 @@ func TestAutoCandidateAbsentObligationStaysExplicit(t *testing.T) {
 // when its reserves are stale, like an empty USDC lane; any AUTO exposure
 // keeps the health hold (TestAutoCandidateStaleValuationHoldsAndNeverDropsToCash).
 func TestAutoEmptyLaneStaleReserveFallsBackToCash(t *testing.T) {
+	t.Parallel()
 	stale := func(accounts []ConfirmedAccount) {
 		flattenAutoPosition(accounts)
 		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
@@ -467,6 +468,7 @@ func TestKaminoStaleHealthHoldLatchesOnlyOnThirdInARow(t *testing.T) {
 // A6: BlockhashNotFound means the simulating node never evaluated the
 // refresh; it retries without counting toward the rejected-refresh latch.
 func TestRefreshBlockhashNotFoundIsTransient(t *testing.T) {
+	t.Parallel()
 	notFound := &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `"BlockhashNotFound"`}}
 	rejected := &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
 	if !transientValuationRefreshFailure(notFound) || transientValuationRefreshFailure(rejected) || transientValuationRefreshFailure(budgetHold("price_refresh_simulation_failed")) {

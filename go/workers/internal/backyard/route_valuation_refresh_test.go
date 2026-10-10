@@ -102,6 +102,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 }
 
 func TestRouteValuationCaptureFreshnessRequiresIntegrity(t *testing.T) {
+	t.Parallel()
 	const minimumSlot int64 = 77
 	for _, lag := range []int64{0, observationLagSlots(), observationLagSlots() + 1} {
 		slot := minimumSlot + lag
@@ -147,6 +148,7 @@ func TestRouteValuationCaptureFreshnessRequiresIntegrity(t *testing.T) {
 }
 
 func TestSelectorValuationCaptureRetainsNAVAndOwnership(t *testing.T) {
+	t.Parallel()
 	m := readyWorkerManifest(t)
 	m.selectorObservation = true
 	all := routeFixedAddresses(m)
@@ -174,6 +176,7 @@ func TestSelectorValuationCaptureRetainsNAVAndOwnership(t *testing.T) {
 // Archived pilot activation hashes include this exact pre-valuation account
 // encoding. New optional metadata must not change old zero-source bytes.
 func TestConfirmedAccountPreservesArchivedJSONEncoding(t *testing.T) {
+	t.Parallel()
 	a := ConfirmedAccount{Address: "fixed", Owner: "owner", Lamports: 7, Data: []byte{1, 2}, Executable: false}
 	b, err := json.Marshal(a)
 	const archived = `{"Address":"fixed","Owner":"owner","Lamports":7,"Data":"AQI=","Executable":false}`

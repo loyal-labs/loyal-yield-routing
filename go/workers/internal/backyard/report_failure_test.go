@@ -47,6 +47,7 @@ func jsonNumberHex(code int) string {
 // are retryable terminal failures, never manual recovery, and a wire whose
 // report can only land past observed_slot+28 is refused before broadcast.
 func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
+	t.Parallel()
 	t.Run("classified adaptor report failures are retryable", func(t *testing.T) {
 		cases := []struct {
 			name      string
@@ -237,6 +238,7 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 // processed-only error can be forked away, so it must stay an observation and
 // never drive a terminal journal transition.
 func TestSignatureStatusFailureRequiresSettlement(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name                          string
 		value                         string

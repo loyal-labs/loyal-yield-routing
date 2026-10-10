@@ -152,11 +152,25 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [selector-evaluate [--execute] | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [in-flight | selector-evaluate [--execute] | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
 func runBackyardOperator(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) == 1 && args[0] == "in-flight" {
+		// The release gate (deploy/hetzner/activate-backyard.sh): prints the
+		// number of operations a restart would resume. Needs only the DB.
+		url, err := engine.Credential("BACKYARD_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		count, err := backyard.CountNonterminal(ctx, url, backyard.FixedRouteKey)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(out, count)
+		return err
+	}
 	cfg, err := backyardRuntimeConfig()
 	if err != nil {
 		return err

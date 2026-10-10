@@ -36,6 +36,7 @@ func receiptFixture(t *testing.T, vault, user string, amountLP uint64, amountBit
 }
 
 func TestDecodeVoltrWithdrawalReceiptRequiresExactDeployedLayoutAndPDA(t *testing.T) {
+	t.Parallel()
 	program := voltr.ProgramID.String()
 	vault, user := testPublicKey(11), testPublicKey(44)
 	address, data := receiptFixture(t, vault, user, 7, 3<<48)

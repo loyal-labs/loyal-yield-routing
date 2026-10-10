@@ -50,6 +50,7 @@ func selectorRecipeActions(t *testing.T, q selectorDestinationQuote) []Action {
 // swap -> deposit, exit = withdraw -> swap back -> stage -> restore. No
 // borrow, no leverage swap, no redeposit.
 func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
 	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
 	if err != nil {
@@ -79,6 +80,7 @@ func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 // (c) Not blocked: the same lane keeps the leveraged entry exactly, and
 // Maple never takes the 1x path even when blocked.
 func TestUnblockedOrNonLeverageLaneKeepsTheLeveragedEntry(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, nil)
 	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 100_000_000, 42, true, nil)
 	if err != nil {
@@ -134,6 +136,7 @@ func onreCandidate(t *testing.T, r SelectorResult) CandidateForecast {
 // full switch cost; SWITCH needs gain > MinimumBenefit + cost over the 30-day
 // horizon, persisted 30 minutes in its own 1x window.
 func TestUnleveredSwitchIsScoredAt1xAndNeedsPersistence(t *testing.T) {
+	t.Parallel()
 	in := unleveredSwitchFixtureAt(3_000_000, .16) // a clearly better 1x lane
 	years := in.Policy.Horizon.Hours() / (365.25 * 24)
 	first := selectUnlevered(in, SelectorState{})
@@ -185,6 +188,7 @@ func TestUnleveredSwitchIsScoredAt1xAndNeedsPersistence(t *testing.T) {
 
 // A 1x quote carrying any borrow is invalid; 1x is AUTO/OnRe only.
 func TestUnleveredQuoteShape(t *testing.T) {
+	t.Parallel()
 	q := unleveredSwitchFixture(1).Quotes[0]
 	if !q.validBorrow() {
 		t.Fatal("valid 1x quote refused")
@@ -207,6 +211,7 @@ func TestUnleveredQuoteShape(t *testing.T) {
 // finished tranche (no selector freeze, no re-entry loop), and same-lane
 // reinvestment stays closed. When the pool reopens, B2 owns leverage.
 func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
 	s.BorrowUtilizationBlocked = true
@@ -241,6 +246,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 // (e) Every Kamino and Jupiter wire the 1x entry and its exit use, compiled
 // by the real compiler from the priced recipe, passes the persisted-wire gate.
 func TestUnleveredEntryRecipeWiresPassThePersistedWireGate(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
 	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
 	if err != nil {
@@ -287,6 +293,7 @@ func TestUnleveredEntryRecipeWiresPassThePersistedWireGate(t *testing.T) {
 // Live numbers (2026-09-29): AUTO 1x 9.48%, OnRe 1x 11.02%, $1,677. Reports
 // the largest switch cost the unchanged rule accepts.
 func TestUnleveredSwitchLiveBreakEven(t *testing.T) {
+	t.Parallel()
 	in := unleveredSwitchFixture(0)
 	r := selectUnlevered(in, SelectorState{})
 	c := onreCandidate(t, r)

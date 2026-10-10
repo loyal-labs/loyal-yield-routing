@@ -23,6 +23,7 @@ func (s *stubLeverageJournal) LoadLeverageTarget(context.Context, string) (*Leve
 // journal without planning, lost the target (0 -> Hold
 // leverage_target_required), and every tick failed decisionsEqual.
 func TestConstructionRefreshKeepsTheStoredLeverageTarget(t *testing.T) {
+	t.Parallel()
 	target := &LeverageTarget{Lane: autoAUTOPYUSD.Lane, Level: 1.5, BorrowRaw: 499_500_000, SpreadBPS: 300, DecidedAt: time.Now().UTC()}
 	journal := &stubLeverageJournal{target: target}
 	state := productionObserveState{manifest: readyWorkerManifest(t), routeKey: productionRouteKey, journal: journal, identity: pinnedIdentityObservation}

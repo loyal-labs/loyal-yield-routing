@@ -32,6 +32,7 @@ func entrySwapAdmissionFixture(t *testing.T) (Observation, Decision, JupiterExec
 // passes against its own chain state and refuses an unaccounted position,
 // changed custody or a changed output bound.
 func TestEntrySwapPrestateRefusesUnaccountedPositionAndCustodyDrift(t *testing.T) {
+	t.Parallel()
 	_, _, e, _, rpc, _, _ := entrySwapAdmissionFixture(t)
 	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)

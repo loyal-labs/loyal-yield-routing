@@ -8,6 +8,7 @@ import (
 )
 
 func TestValuationPersistencePreservesLegacyReplayAndProjectedSource(t *testing.T) {
+	t.Parallel()
 	o := Observation{ObservedAt: time.Unix(1_700_000_000, 0), Snapshot: Snapshot{Slot: 123, ObservationID: "same-economics", ReportSequence: 123, ReportSnapshotDigest: strings.Repeat("a", 64)}}
 	d := Decision{Action: Hold, Reason: "no_action", StrategyKey: RouteID}
 	old := newDecisionEvidence(o, d, "manifest")

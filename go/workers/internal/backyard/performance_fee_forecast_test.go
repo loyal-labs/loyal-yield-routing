@@ -11,6 +11,7 @@ import (
 
 // A fee-paying forecast must reduce profitable carry without rebating losses.
 func TestPerformanceFeeAPYUsesNetProfit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		native, want float64
@@ -30,6 +31,7 @@ func TestPerformanceFeeAPYUsesNetProfit(t *testing.T) {
 // Forecast profit is taxed after movement expense, not before. The conservative
 // user-benefit gate must not persist or enter a route with only a gross edge.
 func TestPerformanceFeeSelectorDoesNotSpendOnGrossOnlyBenefit(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	in.Policy.Horizon = 365 * 24 * time.Hour
 	in.Policy.MinimumBenefitRaw = 90_000_000
@@ -55,6 +57,7 @@ func TestPerformanceFeeSelectorDoesNotSpendOnGrossOnlyBenefit(t *testing.T) {
 // Feed-level persistence also uses investor benefit; it must not accumulate an
 // advantage that fails once the same fee is included in the executable quote.
 func TestPerformanceFeeFeedPersistenceUsesInvestorBenefit(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	in.Policy.Horizon = 365 * 24 * time.Hour
 	in.Policy.MinimumBenefitRaw = 130_000_000
@@ -70,6 +73,7 @@ func TestPerformanceFeeFeedPersistenceUsesInvestorBenefit(t *testing.T) {
 // The priced 1x window must not persist a pre-fee advantage when the fee-aware
 // investor benefit is below the required minimum.
 func TestPerformanceFeeUnleveredPersistenceUsesInvestorBenefit(t *testing.T) {
+	t.Parallel()
 	in := unleveredSwitchFixtureAt(3_000_000, .16)
 	in.Policy.MinimumBenefitRaw = 3_000_000
 	state := SelectorState{}
@@ -130,6 +134,7 @@ func coherentFeeSelectorFixture(t *testing.T, wealth, supply uint64, hwm *big.In
 // Pin the program proof's independent holder-wealth literals, not a fee
 // simulator which could reproduce the same forecast bug.
 func TestPerformanceFeeMoneyBoundCoversPinnedDilutionAndRounding(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name              string
 		gross, holderGain float64
@@ -155,6 +160,7 @@ func TestPerformanceFeeMoneyBoundCoversPinnedDilutionAndRounding(t *testing.T) {
 }
 
 func TestPerformanceFeeLegacyHWMBlocksOnlyEconomicSelector(t *testing.T) {
+	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 47))
 	previous := SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{
 		in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now},
@@ -176,6 +182,7 @@ func TestPerformanceFeeLegacyHWMBlocksOnlyEconomicSelector(t *testing.T) {
 }
 
 func TestPerformanceFeeBoundReservesRepeatedRoundingAndPendingNAV(t *testing.T) {
+	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
 	e := pilotEconomics{Gain: 100_000, PositiveIncome: 100_000, InitialNAV: 1_000_000, EndingNAV: 1_100_000}
 	gain, ok := selectorFeeReservedGain(in.Snapshot, 5*time.Second, e, 0)
@@ -196,6 +203,7 @@ func TestPerformanceFeeBoundReservesRepeatedRoundingAndPendingNAV(t *testing.T) 
 }
 
 func TestPerformanceFeeQ48FloorKnownAndUnknownBaseline(t *testing.T) {
+	t.Parallel()
 	floor := new(big.Int).Quo(new(big.Int).Lsh(big.NewInt(1_000_000), 48), big.NewInt(3_000_000))
 	in := coherentFeeSelectorFixture(t, 1_000_000, 3_000_000, floor)
 	if !selectorFeeBaselineKnown(in.Snapshot) {
@@ -222,6 +230,7 @@ func TestPerformanceFeeQ48FloorKnownAndUnknownBaseline(t *testing.T) {
 }
 
 func TestPerformanceFeeReservesHWMPrecisionAtEveryReport(t *testing.T) {
+	t.Parallel()
 	// Exact baseline: A=2^20, S=2^60, HWM bits=256. Later HWM floors
 	// can leave thousands of eligible raw assets even without an old cliff.
 	in := coherentFeeSelectorFixture(t, 1<<20, 1<<60, big.NewInt(256))
@@ -238,6 +247,7 @@ func TestPerformanceFeeReservesHWMPrecisionAtEveryReport(t *testing.T) {
 }
 
 func TestPerformanceFeeLeverageHWMKEEPDoesNotRaiseTarget(t *testing.T) {
+	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_000_000_000, 1_000_000_000, new(big.Int).Lsh(big.NewInt(1), 47))
 	s := in.Snapshot
 	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
@@ -267,6 +277,7 @@ func TestPerformanceFeeLeverageHWMKEEPDoesNotRaiseTarget(t *testing.T) {
 }
 
 func TestPerformanceFeeLeverageUPNeedsFeeReservedWholePositionEdge(t *testing.T) {
+	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_000_000_000, 1_000_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
 	s := in.Snapshot
 	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
@@ -291,6 +302,7 @@ func TestPerformanceFeeLeverageUPNeedsFeeReservedWholePositionEdge(t *testing.T)
 }
 
 func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
@@ -318,6 +330,7 @@ func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
 }
 
 func TestPerformanceFeeUnarmedCannotProduceEconomicUP(t *testing.T) {
+	t.Parallel()
 	s := leverageSnapshot(1)
 	// Even copied HWM terms do not make an unarmed snapshot a coherent book.
 	in := coherentFeeSelectorFixture(t, 1_000_000_000, 1_000_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
@@ -367,6 +380,7 @@ func armFeeAuthorityFixture(t *testing.T, s *Snapshot) {
 }
 
 func TestPerformanceFeeArmedAdmissionFixturesHaveProvableCandidates(t *testing.T) {
+	t.Parallel()
 	_, debt, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateral := autoCollateralPriceFixture(t, 1_000_000)
 	for _, funded := range []bool{false, true} {

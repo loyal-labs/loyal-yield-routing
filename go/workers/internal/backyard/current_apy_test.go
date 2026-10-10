@@ -14,6 +14,7 @@ import (
 // $1,207.05 (1.749x). The published APY matches the leverage watch's
 // "apy 1.75x=" figure for the same economics within rounding.
 func TestCurrentAPYMatchesTheLeverageWatchFigure(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane, s.StrategyKey, s.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 2_112_337_500, 905_287_500
@@ -51,6 +52,7 @@ func TestCurrentAPYMatchesTheLeverageWatchFigure(t *testing.T) {
 }
 
 func TestCurrentAPYWriteThrottle(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_000_000, 0)
 	var th currentAPYThrottle
 	v := CurrentAPY{Lane: autoAUTOPYUSD.Lane, APYBPS: 1500}
@@ -94,6 +96,7 @@ func TestCurrentAPYWriteThrottle(t *testing.T) {
 // A refused write (lost fence, newer state) only logs: publishCurrentAPY
 // returns nothing, keeps the throttle unwritten, and retries next sample.
 func TestCurrentAPYWriteFailureOnlyLogs(t *testing.T) {
+	t.Parallel()
 	s := leverageSnapshot(1.5)
 	o := Observation{Snapshot: s, planning: &routePlanningState{generation: 7}}
 	m := LaneEconomics{Lane: s.RouteLane, NativeAPY: .1, CurrentBorrowAPY: .05, BorrowCurve: []BorrowCurvePoint{{0, 500}, {10_000, 500}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
@@ -176,6 +179,7 @@ func TestRecordCurrentAPYFencedWrite(t *testing.T) {
 // The stored summary is the printed line's numbers: the fixture line is
 // rebuilt from the stored lanes and must match exactly.
 func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
+	t.Parallel()
 	apr := 0.068
 	auto := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .0948, SupplyAPY: .002, BorrowCurve: []BorrowCurvePoint{{0, apr * 10_000}, {10_000, apr * 10_000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
 	onre := auto
@@ -215,6 +219,7 @@ func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
 }
 
 func TestLeverageWatchMergeKeepsMissingLanes(t *testing.T) {
+	t.Parallel()
 	old := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
 	now := old.Add(time.Hour)
 	previous := &LeverageWatchSummary{ObservedAt: old, Lanes: []leverageWatchLane{
@@ -240,6 +245,7 @@ func TestLeverageWatchMergeKeepsMissingLanes(t *testing.T) {
 }
 
 func TestLeverageWatchWriteFailureOnlyLogs(t *testing.T) {
+	t.Parallel()
 	watch := &leverageWatch{summary: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane}}}
 	o := Observation{planning: &routePlanningState{generation: 3}}
 	logged := 0

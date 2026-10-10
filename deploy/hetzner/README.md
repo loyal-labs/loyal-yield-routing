@@ -73,6 +73,49 @@ next start lands them (`land()`). Restart one unit at a time. Only one writer
 per family runs: with `HoldFamily`, a second process exits and restarts until
 the first one stops.
 
+## Backyard release
+
+Backyard deploys with one command from a Mac clone, and only with the
+owner's go-ahead (implementation lanes never deploy):
+
+```sh
+bun run deploy backyard [sha]     # sha defaults to origin/main
+```
+
+`scripts/deploy-workers.sh` reaches the host through the ssh alias in
+`LOYAL_WORKERS_SSH` (default `loyal-workers`, logging in as root). It
+refuses a commit that is not on origin/main, and it refuses when
+`migrations/` differs between the running release and the target: apply
+them first, then rerun with `--migrations-applied`. It builds `make release`
+from a `git archive` snapshot of the commit in a fresh `~/.loyal/deploy-build.*` dir,
+uploads the binary and `activate-backyard.sh` from that snapshot to
+`/opt/loyal/releases/backyard/<sha>/`, and runs the script there as a
+transient unit (`systemd-run --wait --pipe`), so a dropped ssh session
+cannot cut the swap short. The host log is
+`/var/log/loyal-deploy/backyard-<sha>.log`.
+
+`activate-backyard.sh` on the host:
+
+1. Takes `/run/lock/loyal-deploy-backyard.lock` (waits up to 300 s): one
+   Backyard deploy at a time, whichever session starts it.
+2. Checks the binary's sha256 and reads the running release from
+   `/etc/systemd/system/loyal-backyard.service.d/40-verified-release.conf`.
+   The same release already active is a no-op. A unit that is not active
+   stops the deploy: someone stopped it on purpose.
+3. Gates on `loyal-engine backyard in-flight` of the new release, run under
+   the unit's own `BACKYARD_DATABASE_URL` credential: the count of
+   operations a restart would resume. It waits up to 120 s for 0, stops the
+   unit, and checks again; a nonzero count starts the previous release.
+4. Backs the drop-in up to `/root/40-verified-release.conf.<prev>.bak`,
+   points it at the new release and starts the unit. The release counts as
+   up when, within 60 s, the unit is active, `NRestarts` is 0 and the
+   journal shows `backyard_worker_start` with lease owner `…sha-<sha>`.
+   Otherwise it restores the backup and restarts the previous release.
+
+Roll back with `bun run deploy backyard <prev-sha>`. Only commits that
+contain `activate-backyard.sh` and the `in-flight` command can be deployed
+this way; an older release goes back by hand through the drop-in.
+
 ## Realtime (Rust)
 
 `loyal-realtime.service` runs `loyal-yield-realtime`, the SSE service behind

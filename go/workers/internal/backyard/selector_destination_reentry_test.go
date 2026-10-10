@@ -86,6 +86,7 @@ func reentryFundedFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiter.
 }
 
 func TestSelectorReentryForecastIncludesObligationRecreation(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _, o, source, rent := reentryFundedFixture(t)
 	q, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, o, source, 10_000_000, true)
 	if err != nil {
@@ -119,6 +120,7 @@ func TestSelectorReentryForecastIncludesObligationRecreation(t *testing.T) {
 }
 
 func TestSelectorReentryRejectsMissingSourceBoundAndUnrelatedQuote(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)
 	idle := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle", RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 10_000_000}
@@ -177,6 +179,7 @@ func TestSelectorReentryRejectsMissingSourceBoundAndUnrelatedQuote(t *testing.T)
 }
 
 func TestSelectorReentryRejectsFlatDestinationAndDriftedBound(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)
 	// A structurally valid exit bound over a flat, incomplete observation must
@@ -228,6 +231,7 @@ func TestSelectorReentryRejectsFlatDestinationAndDriftedBound(t *testing.T) {
 }
 
 func TestSelectorReentryForecastPrestateRejectsInvalidBoundsAndUnreviewedLanes(t *testing.T) {
+	t.Parallel()
 	request, _ := initializationPrestateFixture(t)
 	_, err := validateKaminoReentryForecastPrestate(context.Background(), nil, request, 42, selectorExitBound{MaxCollateralRaw: -1, MaxDebtRaw: 5_000_000})
 	assertBudgetHold(t, err, "initializer_reentry_bound_invalid")

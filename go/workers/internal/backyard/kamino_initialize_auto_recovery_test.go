@@ -83,6 +83,7 @@ func newAutoInitializerRecoveryFixture(t *testing.T) autoInitializerRecoveryFixt
 // or digest, lane, message hash, fee, slot, wire hash, rent, poststate and the
 // native balance graph. The installed-only public reconciler stays closed.
 func TestAutoInitializerReconcilesFinalizedReceiptThroughManifest(t *testing.T) {
+	t.Parallel()
 	f := newAutoInitializerRecoveryFixture(t)
 	reconciled, body, err := f.manifest.reconcileKaminoInitialization(f.effects, f.receipt)
 	if err != nil || reconciled.Validate() != nil || reconciled.ConfirmedSlot != 77 || !json.Valid(body) {
@@ -158,6 +159,7 @@ func TestAutoInitializerReconcilesFinalizedReceiptThroughManifest(t *testing.T) 
 // keeps refusing every AUTO initializer decision outright, and the exact
 // installed shape requirements hold in both forms.
 func TestAutoInitializerDecisionValidatesOnlyThroughManifestBinding(t *testing.T) {
+	t.Parallel()
 	manifest, r := autoInitializerRequestFixture(t)
 	decision := Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: r.RouteLane, IdempotencyKey: "controlled-init"}
 	if err := manifest.validateInitializerDecision(decision, r); err != nil {
@@ -244,6 +246,7 @@ func autoInitializerRecoveryRPC(t *testing.T, f autoInitializerRecoveryFixture, 
 // decision and the finalized RPC receipt before reconciliation; every drifted
 // observation is refused.
 func TestAutoInitializerObserveBindsPersistedWireThroughManifest(t *testing.T) {
+	t.Parallel()
 	for _, drift := range []string{"", "wire", "slot", "fee_missing", "failed", "tokens", "journal_action", "journal_signature"} {
 		t.Run(drift, func(t *testing.T) {
 			f := newAutoInitializerRecoveryFixture(t)
@@ -313,6 +316,8 @@ func seedAutoInitializerReconcilingOperation(t *testing.T, ctx context.Context, 
 // valid receipt settles exactly once, and a replay after completion cannot
 // settle a second time.
 func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
+	// A dedicated disposable database: nothing shared with other tests.
+	t.Parallel()
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_locked_settlement_test", 30*time.Second)
 	defer cancel()
 	routeKey := "auto-initializer-recovery-settlement-" + time.Now().Format("150405.000000000")
@@ -382,6 +387,8 @@ func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 // recovery stops. The public embedded-manifest entrypoint keeps the candidate
 // lane closed at decode.
 func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T) {
+	// A dedicated disposable database: nothing shared with other tests.
+	t.Parallel()
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_restart_recovery_test", 30*time.Second)
 	defer cancel()
 	var routeKeys []string
@@ -465,6 +472,8 @@ func TestAutoInitializerRestartReconcilesThroughSharedStateMachine(t *testing.T)
 // embedded manifest, and the produced build effects decode only through that
 // same manifest on recovery.
 func TestAutoInitializerBuildPersistsThroughReviewedManifest(t *testing.T) {
+	// A dedicated disposable database: nothing shared with other tests.
+	t.Parallel()
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_build_persistence_test", 30*time.Second)
 	defer cancel()
 	f := newAutoInitializerRecoveryFixture(t)

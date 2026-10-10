@@ -9,6 +9,7 @@ import (
 )
 
 func TestPhase3LinkedLendingMessagesMatchGo(t *testing.T) {
+	t.Parallel()
 	dir, name := os.Getenv("PHASE3_JUPITER_RETURN_PROBE_DIR"), os.Getenv("PHASE3_JUPITER_PROBE_RESULT")
 	if dir == "" || name == "" {
 		t.Skip("explicit linked execution required")

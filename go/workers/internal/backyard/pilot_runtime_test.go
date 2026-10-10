@@ -3,6 +3,7 @@ package backyard
 import "testing"
 
 func TestPilotPlannerSizesOneTrancheAndPreservesExitPriority(t *testing.T) {
+	t.Parallel()
 	for _, lane := range selectorLanes {
 		s := base()
 		s.RouteLane = lane
@@ -41,6 +42,7 @@ func TestPilotPlannerSizesOneTrancheAndPreservesExitPriority(t *testing.T) {
 }
 
 func TestPilotWithdrawalPreservesFullExitAmount(t *testing.T) {
+	t.Parallel()
 	d := Decision{Action: DeleverRouteStep, StrategyKey: SelectedRouteID, Reason: "withdrawal_withdraw_collateral"}
 	p := KaminoPosition{HasPosition: true, CollateralDepositedRaw: 12_000_000, RedeemablePrimeRaw: 15_000_000}
 	leg, receipt, liquidity, err := selectKaminoLeg(d, p)
@@ -55,6 +57,7 @@ func TestPilotWithdrawalPreservesFullExitAmount(t *testing.T) {
 // Drift and withdrawal demand keep their priority, and without an admitted
 // entry the age-only report still runs.
 func TestAdmittedEntryAllocatesBeforeAgeOnlyReport(t *testing.T) {
+	t.Parallel()
 	for _, lane := range selectorLanes {
 		s := base()
 		s.RouteLane, s.StrategyKey = lane, lane

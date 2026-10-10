@@ -37,6 +37,7 @@ func pilotCostFixture(t *testing.T, request any, effects ExpectedEffects) Valued
 }
 
 func TestPilotExecutionCostPreservesPrincipalAndBindsExactValuation(t *testing.T) {
+	t.Parallel()
 	_, _, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 500_000, 500_000, 0, 0)
 	request, effects := evidence.Request, evidence.ExpectedEffects
 	cost := pilotCostFixture(t, request, effects)
@@ -51,6 +52,7 @@ func TestPilotExecutionCostPreservesPrincipalAndBindsExactValuation(t *testing.T
 }
 
 func TestPilotSwapCostUsesMinimumOutputAndLowerPrice(t *testing.T) {
+	t.Parallel()
 	_, _, e, _, _, _, _ := entrySwapAdmissionFixture(t)
 	cost := pilotCostFixture(t, e.Request, e.ExpectedEffects)
 	dest := e.ExpectedEffects.Accounts[1]
@@ -73,6 +75,7 @@ func TestPilotSwapCostUsesMinimumOutputAndLowerPrice(t *testing.T) {
 }
 
 func TestPilotNativeInitializationBooksFeeAndRetainsRentAsAsset(t *testing.T) {
+	t.Parallel()
 	effects, _ := initializationReconcileFixture(t)
 	request := *effects.Initialization
 	cost := pilotCostFixture(t, request, effects)
@@ -83,6 +86,7 @@ func TestPilotNativeInitializationBooksFeeAndRetainsRentAsAsset(t *testing.T) {
 }
 
 func TestPilotProtocolCostIncludesBorrowFeeAndRounding(t *testing.T) {
+	t.Parallel()
 	_, _, borrow, _, _, _, _ := borrowAdmissionFixture(t, 20_000, "")
 	_, _, deposit, _, _, _, _ := depositAdmissionFixture(t, "")
 	_, _, payoff, _, _, _, _ := payoffAdmissionFixture(t, 20_000)
@@ -123,6 +127,7 @@ func TestPilotProtocolCostIncludesBorrowFeeAndRounding(t *testing.T) {
 }
 
 func TestBudgetCreditRejectsInvertedIntervals(t *testing.T) {
+	t.Parallel()
 	for _, side := range []string{"token", "usdc"} {
 		p := budgetTestPrice("asset", classicTokenProgram, 6, 2, 2)
 		p.Credit = &BudgetCreditBounds{TokenLowerSF: p.TokenUpperSF, USDCUpperSF: p.USDCLowerSF}

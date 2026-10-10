@@ -43,6 +43,7 @@ func decodedHealthFixtures(t *testing.T, slot int64) (decodedKaminoObligation, d
 // stale oracle price, or an emergency market must hold the tick instead of
 // reporting the last valuation, and a fresh healthy batch must pass.
 func TestKaminoRefreshGateRejectsStaleOrPausedReserve(t *testing.T) {
+	t.Parallel()
 	const slot = int64(5_000_000)
 	config, err := pinnedKaminoObservationConfig()
 	if err != nil {

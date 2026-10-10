@@ -15,6 +15,7 @@ func budgetTestPrice(mint, program string, decimals uint8, token, usdc uint64) B
 }
 
 func TestTransactionValuationNormalizesUSDCAndNativeFees(t *testing.T) {
+	t.Parallel()
 	message, err := CompileBridgeMessage(bridgeTestRequest(ReportNAV, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -42,6 +43,7 @@ func TestTransactionValuationNormalizesUSDCAndNativeFees(t *testing.T) {
 }
 
 func TestBudgetPriceRejectsStaleMismatchedAndOverflowInputs(t *testing.T) {
+	t.Parallel()
 	p := budgetTestPrice("asset", classicTokenProgram, 9, 1, 1)
 	for _, tc := range []struct {
 		mint, program string
@@ -56,6 +58,7 @@ func TestBudgetPriceRejectsStaleMismatchedAndOverflowInputs(t *testing.T) {
 }
 
 func TestPriceMarginCeilsAndRejectsU128Overflow(t *testing.T) {
+	t.Parallel()
 	var price [16]byte
 	price[0] = 1
 	upper, err := UpperPriceMargin(price, 1)

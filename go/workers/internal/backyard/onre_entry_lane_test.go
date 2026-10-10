@@ -9,6 +9,7 @@ import (
 // The live quote collector quotes only selectorEntryFundingLane destinations
 // (others get lane_entry_deferred), so the funding scope is the fence.
 func TestOnReIsAnEntryLaneUnderTheUnchangedSelectorRule(t *testing.T) {
+	t.Parallel()
 	if !selectorEntryLane(onreONycUSDC) || !selectorEntryLane(SelectedRouteID) || selectorEntryLane(PhaseOneLaneID) || selectorEntryLane(autoAUTOPYUSD.Lane) {
 		t.Fatal("entry lanes must be exactly Maple and OnRe (AUTO stays manifest-gated)")
 	}

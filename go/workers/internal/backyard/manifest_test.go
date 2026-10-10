@@ -10,6 +10,7 @@ import (
 )
 
 func TestEmbeddedManifestIsExecutable(t *testing.T) {
+	t.Parallel()
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -20,6 +21,7 @@ func TestEmbeddedManifestIsExecutable(t *testing.T) {
 }
 
 func TestManifestPacketTemplatePatchesOnlyTheV2Amount(t *testing.T) {
+	t.Parallel()
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)

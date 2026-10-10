@@ -33,6 +33,7 @@ func sampleWindow(t *testing.T, in SelectorInput, state SelectorState, available
 }
 
 func TestAdvantageWindowSurvivesQuoteOutages(t *testing.T) {
+	t.Parallel()
 	key := unleveredAdvantageKey(onreONycUSDC)
 	// (a) profitable, unavailable, profitable (gaps < 10 min): Since kept,
 	// ENTER once 30 minutes of the window have passed.

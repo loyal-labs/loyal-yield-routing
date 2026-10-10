@@ -18,6 +18,7 @@ func nativeFixture(t *testing.T) (RuntimeRoute, time.Time, string) {
 	return r, now, `{"` + r.Kamino.CollateralReserve + `":{"token":"` + r.Kamino.CollateralMint + `","underlyingApy":{"current":"0.04965083163","sourceType":"yield-feed","sourceMint":"` + r.Kamino.CollateralMint + `","observedAt":"2026-09-15T23:00:13.804Z"},"borrowCaps":{"globalDebt":{"capacity":"0"}},"actualAvailableLiquidityUsd":"0"}}`
 }
 func TestNativeYieldAPIContractAndMissingValues(t *testing.T) {
+	t.Parallel()
 	r, now, body := nativeFixture(t)
 	got, err := parseNativeYields([]byte(body), []RuntimeRoute{r}, now, 2*time.Hour)
 	if err != nil || got[r.Lane].APY != .04965083163 {
@@ -43,6 +44,7 @@ func TestNativeYieldAPIContractAndMissingValues(t *testing.T) {
 	}
 }
 func TestNativeYieldHTTPBoundaries(t *testing.T) {
+	t.Parallel()
 	r, now, body := nativeFixture(t)
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.Method != "GET" || req.URL.Query().Get("reserve") != r.Kamino.CollateralReserve {
@@ -68,6 +70,7 @@ func TestNativeYieldHTTPBoundaries(t *testing.T) {
 	}
 }
 func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
+	t.Parallel()
 	r, now, body := nativeFixture(t)
 	native, _ := parseNativeYields([]byte(body), []RuntimeRoute{r}, now, 2*time.Hour)
 	f := selectorFixture().Markets[0]
@@ -115,6 +118,7 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	}
 }
 func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
+	t.Parallel()
 	accounts := []ConfirmedAccount{}
 	for _, lane := range selectorLanes {
 		r, _ := runtimeRoute(lane)
@@ -146,6 +150,7 @@ func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
 // of the manifest, and the manifest-scoped constructor appends the AUTO route.
 // pgxpool connects lazily, so no database is needed to pin inventory shape.
 func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const url = "postgresql://backyard_feed@/economic_feed_shape_test"
 	embedded := embeddedTestManifest(t)
@@ -220,6 +225,7 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 // validation is never emitted. The installed acceptance scope inside
 // LaneEconomics.validate is the selector's decision, not the feed's.
 func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
+	t.Parallel()
 	auto := autoAUTOPYUSD
 	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
 	nativeBody := `{"` + auto.Kamino.CollateralReserve + `":{"token":"` + auto.Kamino.CollateralMint + `","underlyingApy":{"current":"0.0612","sourceType":"yield-feed","sourceMint":"` + auto.Kamino.CollateralMint + `","observedAt":"2026-09-15T23:00:13.804Z"}}}`

@@ -54,6 +54,7 @@ func pagedCustodyEvidence(t *testing.T, journal []custodyAttributionRow, pageSiz
 }
 
 func TestSharedCustodyWindowPagesBackToTheOrigin(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	// Live shape: the origin sits behind 98 inert reports, past one 64-row page.
 	journal := custodyPagedJournal(t, 98, -1)
@@ -73,6 +74,7 @@ func TestSharedCustodyWindowPagesBackToTheOrigin(t *testing.T) {
 }
 
 func TestSharedCustodyWindowBoundRefusesAnOriginBeyondIt(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	journal := custodyPagedJournal(t, 300, -1)
 	evidence, _ := pagedCustodyEvidence(t, journal, 64, 256)
@@ -90,6 +92,7 @@ func TestSharedCustodyWindowBoundRefusesAnOriginBeyondIt(t *testing.T) {
 }
 
 func TestSharedCustodyWindowStillChecksRowsInLaterPages(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	// A corrupt no-custody record on the second page, between tip and origin.
 	journal := custodyPagedJournal(t, 98, 80)
@@ -111,6 +114,7 @@ func TestSharedCustodyWindowStillChecksRowsInLaterPages(t *testing.T) {
 // A funding row without a positive confirmed slot is not a paging origin:
 // paging continues past it and the route-wide malformed-identity gate holds.
 func TestSharedCustodyWindowNeverStopsAtAnUnorderedOrigin(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	unordered := custodyAttributionFundingRow(t, "auto-fund-null", "sig-fund-null", 100)
 	if !custodyRowIsZeroStartOrigin(unordered, cfg) {

@@ -12,6 +12,7 @@ import (
 )
 
 func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
+	t.Parallel()
 	dir, name := os.Getenv("PHASE3_JUPITER_RETURN_PROBE_DIR"), os.Getenv("PHASE3_JUPITER_PROBE_RESULT")
 	if dir == "" || name == "" {
 		t.Skip("explicit linked deployed-program evidence required")
@@ -148,6 +149,7 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 }
 
 func TestDepositReconcilesFromTheReceiptAndRejectsMalformedEffects(t *testing.T) {
+	t.Parallel()
 	_, _, _, manifest, _, _, accounts := fundingAdmissionFixture(t, 20_000)
 	route := ethenaUSDePYUSD
 	reserve := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 42, new(big.Int).Lsh(big.NewInt(1), 60), 1_100_000_000, 1_000_000_000)

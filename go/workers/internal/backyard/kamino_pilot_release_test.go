@@ -62,6 +62,7 @@ func pilotReleaseFixture(t *testing.T, lane string) (RuntimeRoute, []ConfirmedAc
 }
 
 func TestPilotReleaseCanFundFullyRedepositedSinglePass(t *testing.T) {
+	t.Parallel()
 	for _, lane := range selectorLanes {
 		t.Run(lane, func(t *testing.T) {
 			route, accounts := pilotReleaseFixture(t, lane)
@@ -97,6 +98,7 @@ func TestPilotReleaseCanFundFullyRedepositedSinglePass(t *testing.T) {
 }
 
 func TestPilotReleaseRefusesChangedRiskModel(t *testing.T) {
+	t.Parallel()
 	for _, drift := range []string{"factor", "group", "max_ltv", "threshold", "cap", "missing_market", "emergency", "no_excess"} {
 		t.Run(drift, func(t *testing.T) {
 			route, accounts := pilotReleaseFixture(t, SelectedRouteID)
@@ -130,6 +132,7 @@ func TestPilotReleaseRefusesChangedRiskModel(t *testing.T) {
 }
 
 func TestPilotReleaseRevalidationBindsCurrentLimitsAndMode(t *testing.T) {
+	t.Parallel()
 	route, accounts := pilotReleaseFixture(t, SelectedRouteID)
 	bound, err := decodeKaminoRepaymentReleaseForMode(accounts, route, 42, 5, true)
 	if err != nil {
@@ -175,6 +178,7 @@ func TestPilotReleaseRevalidationBindsCurrentLimitsAndMode(t *testing.T) {
 }
 
 func TestPilotReleaseRetainsProtocolMinimumCollateral(t *testing.T) {
+	t.Parallel()
 	route, accounts := pilotReleaseFixture(t, SelectedRouteID)
 	putScaledFraction(accountAt(accounts, route.Kamino.Market).Data[kaminoMinRemainingValueOffset:kaminoMinRemainingValueOffset+16], new(big.Int).Lsh(big.NewInt(10), 60))
 	bound, err := decodeKaminoRepaymentReleaseForMode(accounts, route, 42, 7, true)

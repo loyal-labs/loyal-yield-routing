@@ -46,6 +46,7 @@ func monitorSnapshot(t *testing.T, mutate func(accounts []ConfirmedAccount, s *S
 }
 
 func TestMonitorBookIdentityHoldsOnVaultMismatch(t *testing.T) {
+	t.Parallel()
 	if hold, blocked := bridgeMonitorHold(monitorSnapshot(t, nil)); blocked {
 		t.Fatalf("coherent book held: %+v", hold)
 	}
@@ -57,6 +58,7 @@ func TestMonitorBookIdentityHoldsOnVaultMismatch(t *testing.T) {
 }
 
 func TestMonitorReceiptMatchesArmedNAVAndObservedExternal(t *testing.T) {
+	t.Parallel()
 	healthy := monitorSnapshot(t, nil)
 	if hold, blocked := bridgeMonitorHold(healthy); blocked {
 		t.Fatalf("matched receipt held: %+v", hold)
@@ -82,6 +84,7 @@ func TestMonitorReceiptMatchesArmedNAVAndObservedExternal(t *testing.T) {
 }
 
 func TestMonitorCustodyZeroAtRestAndStageAmountPresent(t *testing.T) {
+	t.Parallel()
 	resting := monitorSnapshot(t, nil)
 	if resting.VoltrStrategyIdleRaw != 0 || resting.VoltrReceiptCustodyTrackedRaw != 0 {
 		t.Fatalf("resting fixture is not flat: %+v", resting)
@@ -125,6 +128,7 @@ func TestMonitorCustodyZeroAtRestAndStageAmountPresent(t *testing.T) {
 }
 
 func TestMonitorIdleCoversPendingRequestQuotes(t *testing.T) {
+	t.Parallel()
 	s := monitorSnapshot(t, func(_ []ConfirmedAccount, s *Snapshot) {
 		s.PostMutationNAVRequired = true
 		s.WithdrawalDemandRaw = 20
@@ -143,6 +147,7 @@ func TestMonitorIdleCoversPendingRequestQuotes(t *testing.T) {
 }
 
 func TestMonitorProgramDataPinHoldsOnChange(t *testing.T) {
+	t.Parallel()
 	if hold, blocked := bridgeMonitorHold(monitorSnapshot(t, nil)); blocked {
 		t.Fatalf("pinned program identity held: %+v", hold)
 	}
@@ -169,6 +174,7 @@ func TestMonitorProgramDataPinHoldsOnChange(t *testing.T) {
 }
 
 func TestMonitorSingleReporterSequenceMismatchHolds(t *testing.T) {
+	t.Parallel()
 	s := monitorSnapshot(t, func(_ []ConfirmedAccount, s *Snapshot) { s.TicketLastConsumedSequenceRaw = 5 })
 	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "out_of_band_crank" {
 		t.Fatalf("ticket sequence moved outside the journal: %+v", got)

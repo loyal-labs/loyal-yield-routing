@@ -116,6 +116,7 @@ func transactionResult(t testing.TB, slot int64, wire []byte, meta map[string]an
 // cluster does not have yet end the tick as a wait. A required account the
 // cluster says is absent is a failure, and a null fee is a hold.
 func TestChainAnswersMapToWaitFailureOrHold(t *testing.T) {
+	t.Parallel()
 	answer := func(status int, body string) *chain.Client {
 		return newFakeChain(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
 			answer := response(body)
@@ -128,7 +129,10 @@ func TestChainAnswersMapToWaitFailureOrHold(t *testing.T) {
 	}
 	ctx := context.Background()
 	waits := map[string]error{}
-	_, _, waits["behind"] = confirmedAccounts(ctx, answer(http.StatusOK, nodeError(-32016)), []string{bridgeVault}, 42)
+	// A behind node is asked again a slot later, within the caller's deadline.
+	behindCtx, behindDone := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer behindDone()
+	_, _, waits["behind"] = confirmedAccounts(behindCtx, answer(http.StatusOK, nodeError(-32016)), []string{bridgeVault}, 42)
 	_, waits["unhealthy"] = signatureStatus(ctx, answer(http.StatusOK, nodeError(-32005)), testSignature)
 	_, waits["rate limited"] = signatureStatus(ctx, answer(http.StatusTooManyRequests, "Too Many Requests"), testSignature)
 	_, waits["not landed"] = finalizedTransaction(ctx, answer(http.StatusOK, `{"jsonrpc":"2.0","id":1,"result":null}`), testSignature)

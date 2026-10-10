@@ -23,6 +23,7 @@ func custodyFixture(mint, authority [32]byte, amount uint64, token2022 bool) []b
 }
 
 func TestDecodeClassicAndToken2022Custodies(t *testing.T) {
+	t.Parallel()
 	var mint, authority [32]byte
 	mint[0], authority[0] = 1, 2
 	classic, err := DecodeTokenCustody(classicTokenProgram, custodyFixture(mint, authority, 9, false), mint, authority)
@@ -45,6 +46,7 @@ func TestDecodeClassicAndToken2022Custodies(t *testing.T) {
 }
 
 func TestDecodeTokenCustodyRejectsFrozenAndExtraAuthority(t *testing.T) {
+	t.Parallel()
 	var mint, authority [32]byte
 	mint[0], authority[0] = 1, 2
 	frozen := custodyFixture(mint, authority, 1, false)
@@ -60,6 +62,7 @@ func TestDecodeTokenCustodyRejectsFrozenAndExtraAuthority(t *testing.T) {
 }
 
 func TestExtendedCustodySpendabilityBoundary(t *testing.T) {
+	t.Parallel()
 	var mint, authority [32]byte
 	mint[0], authority[0] = 1, 2
 	base := append(custodyFixture(mint, authority, 123, true), 2)
@@ -92,6 +95,7 @@ func TestExtendedCustodySpendabilityBoundary(t *testing.T) {
 }
 
 func TestConservativeValuationRounding(t *testing.T) {
+	t.Parallel()
 	asset, err := ValueRawUSDC(1, 1, 15, false)
 	if err != nil || asset != 1 {
 		t.Fatalf("asset=%d err=%v", asset, err)
@@ -103,6 +107,7 @@ func TestConservativeValuationRounding(t *testing.T) {
 }
 
 func TestNAVAssetsMinusLiabilitiesAndDigest(t *testing.T) {
+	t.Parallel()
 	c := []NAVComponent{{Account: "classic", Owner: "Tokenkeg", Raw: 10, Slot: 7, Known: true}, {Account: "t22", Owner: "Tokenz", Raw: 11, Slot: 7, Known: true}, {Account: "debt", Owner: "Tokenkeg", Raw: 4, Slot: 7, Known: true, Liability: true}, {Account: "classic", Owner: "Tokenkeg", Raw: 10, Slot: 7, Known: true}}
 	got, e := ComputeNAV(navContext(7), c)
 	if e != nil || got.Raw != 17 || len(got.SnapshotDigest) != 64 {
@@ -114,6 +119,7 @@ func TestNAVAssetsMinusLiabilitiesAndDigest(t *testing.T) {
 	}
 }
 func TestNAVRejectsInvalidAndUnderflow(t *testing.T) {
+	t.Parallel()
 	if _, e := ComputeNAV(navContext(7), []NAVComponent{{Account: "x", Owner: "Token", Raw: 1, Slot: 7}}); e == nil {
 		t.Fatal("unknown accepted")
 	}

@@ -72,6 +72,7 @@ func fundedAutoSourceFixture(t *testing.T, debtPrice, collateralPrice BudgetPric
 // beyond MaxSampleGap restarts the hysteresis. The public embedded wrapper
 // keeps the installed Maple-only closure on the identical input.
 func TestAutoCandidateOrdinarySelectionAcrossSamples(t *testing.T) {
+	t.Parallel()
 	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
 	in := fundedAutoFixture(t, debtPrice, collateralPrice)
@@ -111,6 +112,7 @@ func TestAutoCandidateOrdinarySelectionAcrossSamples(t *testing.T) {
 // Full, unknown, deferred and unpriced candidate markets must hold without
 // accumulating any persistence: only a complete priced quote samples.
 func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testing.T) {
+	t.Parallel()
 	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
 	cases := []struct {
@@ -163,6 +165,7 @@ func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testin
 // installed lane. The public embedded wrapper still refuses the candidate
 // source outright.
 func TestAutoSourceKeepsEconomicsAndSelectsSafeUnwind(t *testing.T) {
+	t.Parallel()
 	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
 	in := fundedAutoSourceFixture(t, debtPrice, collateralPrice)
@@ -194,6 +197,7 @@ func TestAutoSourceKeepsEconomicsAndSelectsSafeUnwind(t *testing.T) {
 // with the initializer onboarding path requiring the complete initialize
 // constraint. Seed/address drift keeps every candidate path closed.
 func TestSelectorEntryFundingLaneAuthority(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	cases := []struct {
 		name        string

@@ -104,6 +104,7 @@ func decodeV0OuterInstruction(t *testing.T, message []byte) ([]string, []string,
 // through the API's lookup tables with the Squads authorities static, and the
 // runtime's chain preparation of those tables yields the same packet.
 func TestBasicSwapLegsBuildLegacyOrV0FromQuotedLookupHints(t *testing.T) {
+	t.Parallel()
 	for lane, legs := range map[string][2]string{PhaseOneLaneID: {"USDC->PRIME", "PRIME->USDC"}, SelectedRouteID: {"USDC->syrupUSDC", "syrupUSDC->USDC"}, onreONycUSDC: {"USDC->ONyc", "ONyc->USDC"}} {
 		for _, leg := range legs {
 			t.Run(lane+"/"+leg, func(t *testing.T) {
@@ -155,6 +156,7 @@ func TestBasicSwapLegsBuildLegacyOrV0FromQuotedLookupHints(t *testing.T) {
 }
 
 func TestBasicLaneLookupHintsStayScopedToSwapEdges(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		if !acceptsJupiterLookupHints(lane, SwapStableToCollateralStep) || !acceptsJupiterLookupHints(lane, SwapCollateralToStableStep) {
 			t.Fatalf("basic lane %s lost its swap hint admission", lane)

@@ -34,6 +34,7 @@ func sfRaw(raw uint64) *big.Int {
 // across unequal decimals. totalLiquidity=100 tokens, mintSupply=50 receipts,
 // deposit=10 tokens yields exactly 5 receipts.
 func TestPayoffDepositReceiptConversionIncludesMintSupply(t *testing.T) {
+	t.Parallel()
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
 	for _, tc := range []struct {
 		name                string
@@ -70,6 +71,7 @@ func TestPayoffDepositReceiptConversionIncludesMintSupply(t *testing.T) {
 // The inverse conversions floor redemptions and ceil wires so the wire's
 // redemption at ANY later (higher) rate still covers its target.
 func TestPayoffWireAndLiquidityConversionsRoundTrip(t *testing.T) {
+	t.Parallel()
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
 	if got, err := payoffLiquidityForReceipts(new(big.Int).Mul(big.NewInt(100), one), 50, 5); err != nil || got != 10 {
 		t.Fatalf("liquidity(5)=%d err=%v", got, err)
@@ -388,6 +390,7 @@ func autoPayoffRecipeInputs(t *testing.T, m RouteManifest, route RuntimeRoute, a
 // real manifest-aware recipe consumer without tripping the structural window
 // guard.
 func TestSelectorDestinationPayoffProducesAndPricesReceiptExactLedger(t *testing.T) {
+	t.Parallel()
 	m, route, rpc, accounts, payoff, rounding := autoPayoffProducer(t, 77, nil, nil)
 	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil {
@@ -575,6 +578,7 @@ func TestSelectorDestinationPayoffProducesAndPricesReceiptExactLedger(t *testing
 // must validate the wire's upper redemption against the LTV release — not
 // only the current-rate lower output — and hold with its own reason.
 func TestSelectorDestinationPayoffRejectsWireWhoseFutureRedemptionExceedsRelease(t *testing.T) {
+	t.Parallel()
 	const slot = int64(2000)
 	m, route, accounts := autoPayoffBatch(t, slot, func(accounts []ConfirmedAccount) {
 		// An older collateral refresh compounds the pool ceiling above the
@@ -697,6 +701,7 @@ func TestSelectorDestinationPayoffRejectsWireWhoseFutureRedemptionExceedsRelease
 // A probe that prices the release far below the funding need sizes an input
 // larger than the permitted release; the producer must refuse, never wire it.
 func TestSelectorDestinationPayoffRejectsProbePricedBelowFundingNeed(t *testing.T) {
+	t.Parallel()
 	m, route, accounts := autoPayoffBatch(t, 77, nil)
 	rounding, err := selectorReceiptRounding(accounts, route, 77)
 	if err != nil {
@@ -714,6 +719,7 @@ func TestSelectorDestinationPayoffRejectsProbePricedBelowFundingNeed(t *testing.
 // A quote outage is an observation miss, not a policy hold: the exit
 // propagates the transport failure so the serialized loop retries next tick.
 func TestSelectorDestinationPayoffQuoteOutageIsNotAHold(t *testing.T) {
+	t.Parallel()
 	m, route, accounts := autoPayoffBatch(t, 77, nil)
 	rounding, err := selectorReceiptRounding(accounts, route, 77)
 	if err != nil {
@@ -740,6 +746,7 @@ func TestSelectorDestinationPayoffQuoteOutageIsNotAHold(t *testing.T) {
 // The recipe consumer replays the conserved ledger before retaining anything;
 // a tampered wire or custody bound must hold, never price a broken recipe.
 func TestSelectorPayoffRecipeConsumerRejectsBrokenLedger(t *testing.T) {
+	t.Parallel()
 	m, route, _, accounts, payoff, rounding := autoPayoffProducer(t, 77, nil, nil)
 	tampered := payoff
 	tampered.ReturnReceiptsRaw++
@@ -875,6 +882,7 @@ func autoCandidateStack(t *testing.T, slot int64, extra func([]ConfirmedAccount)
 // threshold == output while the instruction encodes slippage 50, so the
 // enforceable floor is strictly below the quoted output.
 func TestJupiterAutoProducerRetainsEnforceableWireFloor(t *testing.T) {
+	t.Parallel()
 	const slot = int64(77)
 	m, route, rpc, client := autoCandidateStack(t, slot, nil)
 	const amount = uint64(1_000_000)
@@ -919,6 +927,7 @@ func TestJupiterAutoProducerRetainsEnforceableWireFloor(t *testing.T) {
 // conservative) minimums stay constructible, the floor helper is
 // dialect-defensive, and other lanes keep their established semantics.
 func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
+	t.Parallel()
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
 	const amount = uint64(1_000_000)
@@ -978,6 +987,7 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 // chosen so the funding floor meets the debt upper exactly: no guaranteed
 // residue exists and no residue conversion leg is invented.
 func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
+	t.Parallel()
 	const (
 		slot   = int64(77)
 		equity = uint64(200_000_000)
@@ -1151,6 +1161,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 // Remaining blocker: tranche sizings that land on this boundary stay HOLD
 // until unconverted-dust continuation accounting is reviewed.
 func TestSelectorDestinationCandidateHoldsUnconvertibleDustResidue(t *testing.T) {
+	t.Parallel()
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
 	_, err := observeSelectorDestinationCandidate(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), 200_037_035, slot)
@@ -1162,6 +1173,7 @@ func TestSelectorDestinationCandidateHoldsUnconvertibleDustResidue(t *testing.T)
 // enforceable floor of one, while below peg three raw units quote one whose
 // floor is zero and hold.
 func TestJupiterAutoTinyResidueConvertibilityFollowsQuotedFloor(t *testing.T) {
+	t.Parallel()
 	const slot = int64(77)
 	m, route, rpc, _ := autoCandidateStack(t, slot, nil)
 	base := autoCandidateQuote(route)
@@ -1193,6 +1205,7 @@ func TestJupiterAutoTinyResidueConvertibilityFollowsQuotedFloor(t *testing.T) {
 // so the residue conversion leg is retained and priced — and the quote still
 // carries the bounded-exit residual inventory.
 func TestSelectorDestinationCandidateConvertsTinyAbovePegResidue(t *testing.T) {
+	t.Parallel()
 	const slot = int64(77)
 	m, route, rpc, _ := autoCandidateStack(t, slot, nil)
 	base := autoCandidateQuote(route)
@@ -1264,6 +1277,7 @@ func TestSelectorDestinationCandidateConvertsTinyAbovePegResidue(t *testing.T) {
 // The three pre-candidate entry surfaces keep rejecting the AUTO lane. Only
 // the explicit candidate entry admits it.
 func TestSelectorDestinationCandidateKeepsPublicGatesClosed(t *testing.T) {
+	t.Parallel()
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
 	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), testAutoLane, 1_000_000, slot, false, nil); err == nil {
@@ -1425,6 +1439,7 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, funded bool, varian
 // the initializer through the installed AUTO policy, prices its exact rent and
 // fee as the recipe's FIRST step, and retains that policy's seed.
 func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *testing.T) {
+	t.Parallel()
 	const (
 		slot   = int64(77)
 		equity = uint64(200_000_000) // coherent parity economics: zero guaranteed residue
@@ -1478,6 +1493,7 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 // The initializer prestate stays a live admission surface even inside the
 // destination forecast: an unfunded vault holds the graph.
 func TestSelectorDestinationCandidateInitializerPrestateRefusals(t *testing.T) {
+	t.Parallel()
 	m, _, rpc, client := autoCandidateInitializerStack(t, 77, false, func(_ RuntimeRoute, prestate map[string]ConfirmedAccount) {
 		prestate[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: "11111111111111111111111111111111", Lamports: 1}
 	})
@@ -1488,6 +1504,7 @@ func TestSelectorDestinationCandidateInitializerPrestateRefusals(t *testing.T) {
 // The decode-only path decodes a retained initializer to exactly the
 // manifest compile, and a request at another seed compiles another wire.
 func TestCandidateInitializerDecodesToTheManifestCompile(t *testing.T) {
+	t.Parallel()
 	m := embeddedTestManifest(t)
 	r, err := m.initializationRequest(testPolicies(t), testAutoLane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, autoCandidateInitializerRent(), 5000)
 	if err != nil {
@@ -1526,6 +1543,7 @@ func TestCandidateInitializerDecodesToTheManifestCompile(t *testing.T) {
 // the candidate entry and refuses to run without a bound; the public reentry
 // wrapper keeps refusing the candidate lane outright.
 func TestSelectorDestinationCandidateReentryEntryStaysGated(t *testing.T) {
+	t.Parallel()
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateInitializerStack(t, slot, false, nil)
 	if _, err := observeSelectorDestinationCandidateReentry(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), 2_000_000, slot, nil); err == nil {
@@ -1552,6 +1570,7 @@ func TestSelectorDestinationCandidateReentryEntryStaysGated(t *testing.T) {
 // quote's, not re-proved here). The strictly absent-only EXECUTION prestate
 // behind the same manifest stays enforced.
 func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T) {
+	t.Parallel()
 	const (
 		slot       = int64(77)
 		equity     = uint64(200_000_000)

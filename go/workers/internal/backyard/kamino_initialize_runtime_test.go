@@ -33,6 +33,7 @@ func initializationPlanningFixture(lane string) Observation {
 	return tickObservation(s)
 }
 func TestInitializationDecisionPreservesRecoveryWithdrawalAndEntryGuards(t *testing.T) {
+	t.Parallel()
 	for _, lane := range selectorLanes {
 		o := initializationPlanningFixture(lane)
 		d := Decide(o.Snapshot)
@@ -96,6 +97,7 @@ func initializationView(t *testing.T, accounts map[string]ConfirmedAccount) *Vie
 }
 
 func TestInitializerPreparationMeasuresNativeFundingAndRefusesAccountRace(t *testing.T) {
+	t.Parallel()
 	rpc, m, template, accounts := initializationRuntimeRPC(t)
 	o := initializationPlanningFixture(template.RouteLane)
 	o.policies = testPolicies(t)
@@ -307,6 +309,7 @@ func TestWorkerDispatchesInitializationOnlyAfterPersistedBind(t *testing.T) {
 // that admitted it; the embedded validator refuses the candidate lane and
 // left the live route unable to finish its own initializer (2026-09-24).
 func TestNonterminalAutoInitializerRestoresOnManifest(t *testing.T) {
+	t.Parallel()
 	d := Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: autoAUTOPYUSD.Lane, IdempotencyKey: "obs:initialize:AUTO/AUTO/PYUSD"}
 	effects := []byte(`{"decision":{"reason":"multiply_obligation_missing","amountRaw":0,"strategyKey":"AUTO/AUTO/PYUSD"}}`)
 	if _, err := restorePersistedDecision(effects, d.Action, d.IdempotencyKey, d.StrategyKey); err == nil {

@@ -11,6 +11,7 @@ import (
 // debt before sizing the release ($664 release, "covered"); the real safe
 // release sits on the full debt ($164) and cannot fund the payoff.
 func TestLeverageExitPreCheckSizesTheReleaseOnTheFullDebt(t *testing.T) {
+	t.Parallel()
 	c, d, cash := big.NewInt(1_809_882_868), big.NewInt(905_262_160), big.NewInt(302_395_505)
 	if !leverageExitOneReleaseMayNotCover(c, big.NewInt(0), d, cash) {
 		t.Fatal("live post-borrow 1.75x judged coverable by one release")
@@ -31,6 +32,7 @@ func TestLeverageExitPreCheckSizesTheReleaseOnTheFullDebt(t *testing.T) {
 // observation and landing never fail reconciliation; this transaction's own
 // delta on every account, the fee included, still must match.
 func TestBorrowReceiptReconcilesDespiteSharedReserveMoves(t *testing.T) {
+	t.Parallel()
 	route := ethenaUSDePYUSD
 	e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-borrow", Conserved: true, Accounts: []ExpectedAccountEffect{
 		{Address: route.DebtLiquiditySupply, Owner: route.DebtTokenProgram, Mint: route.Kamino.DebtMint, Authority: route.Kamino.MarketAuthority, BeforeRaw: 1_000, AfterRaw: 896},

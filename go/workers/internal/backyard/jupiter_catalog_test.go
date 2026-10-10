@@ -18,6 +18,7 @@ import (
 // does not fit a legacy packet), and the worker refuses an instruction that
 // does not swap the requested amount at the quoted output.
 func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
+	t.Parallel()
 	seen := map[string]bool{}
 	for _, lane := range []string{ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane} {
 		for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {

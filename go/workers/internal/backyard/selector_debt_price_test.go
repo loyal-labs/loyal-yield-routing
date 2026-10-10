@@ -87,6 +87,7 @@ func debtPriceEqual(a, b BudgetPrice) bool {
 }
 
 func TestSelectorDestinationDebtPriceWiring(t *testing.T) {
+	t.Parallel()
 	route, price, rpc := autoDebtPriceFixture(t, 1_000_000)
 	got, err := selectorDestinationDebtPrice(context.Background(), rpc, fixtureView(t, rpc), route, 1_000, 42)
 	if err != nil || got == nil || !debtPriceEqual(*got, price) {
@@ -112,6 +113,7 @@ func TestSelectorDestinationDebtPriceWiring(t *testing.T) {
 }
 
 func TestBudgetPriceMarginsBracketParity(t *testing.T) {
+	t.Parallel()
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 	upper, err := price.valueUpper(1_000_000, price.Mint, price.TokenProgram, 42)
 	if err != nil || upper <= 1_000_000 {
@@ -210,6 +212,7 @@ func pricedAssetRun(t *testing.T, m LaneEconomics, price *BudgetPrice, redeposit
 }
 
 func TestOffPegDebtKeepsReserveAPRAndMovesUSDCEconomics(t *testing.T) {
+	t.Parallel()
 	_, parityPrice, _ := autoDebtPriceFixture(t, 1_000_000)
 	_, highPrice, _ := autoDebtPriceFixture(t, 1_050_000)
 	// Sloped in the utilization region the borrow lands in (pinned flat in the
@@ -321,6 +324,7 @@ func TestOffPegDebtKeepsReserveAPRAndMovesUSDCEconomics(t *testing.T) {
 }
 
 func TestNonUSDCDebtQuoteRequiresBoundPriceEvidence(t *testing.T) {
+	t.Parallel()
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 	quote := autoMoveQuote(t, &price)
 	if !quote.validBorrow() {
@@ -400,6 +404,7 @@ func TestNonUSDCDebtQuoteRequiresBoundPriceEvidence(t *testing.T) {
 }
 
 func TestGatedAutoLaneNeverReachesFeedEconomics(t *testing.T) {
+	t.Parallel()
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 	route, _ := runtimeRoute(testAutoLane)
 	in := selectorFixture()
@@ -435,6 +440,7 @@ func TestGatedAutoLaneNeverReachesFeedEconomics(t *testing.T) {
 }
 
 func TestAutoPairCapacityFailsClosedUntilLaneAdmission(t *testing.T) {
+	t.Parallel()
 	route, err := runtimeRoute(testAutoLane)
 	if err != nil {
 		t.Fatal(err)
@@ -449,6 +455,7 @@ func TestAutoPairCapacityFailsClosedUntilLaneAdmission(t *testing.T) {
 }
 
 func TestComposedDebtPriceIsAnImmutableCopy(t *testing.T) {
+	t.Parallel()
 	original := BudgetPrice{Mint: "mint", TokenProgram: "program", Decimals: 6, TokenUpperSF: [16]byte{1}, USDCLowerSF: [16]byte{2}, ObservedSlot: 1, ValidThroughSlot: 2, EvidenceSHA256: strings.Repeat("a", 64), Credit: &BudgetCreditBounds{TokenLowerSF: [16]byte{3}, USDCUpperSF: [16]byte{4}}}
 	copied := copyDebtPrice(&original)
 	original.Mint = "mutated"
@@ -469,6 +476,7 @@ func TestComposedDebtPriceIsAnImmutableCopy(t *testing.T) {
 }
 
 func TestComposeRejectsForeignDebtPrice(t *testing.T) {
+	t.Parallel()
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 	route, _ := runtimeRoute(testAutoLane)
 	foreign := price

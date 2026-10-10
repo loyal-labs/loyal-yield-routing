@@ -112,6 +112,7 @@ func nonParBounds(t *testing.T, debt *BudgetPrice, collateral *BudgetPrice, rout
 // the conservative reassembly of the observed interval ends — and that the
 // priced UPPER bound rejects an equity that raw-unit parity would admit.
 func TestAutoNonParSelectionUsesObservedPriceBounds(t *testing.T) {
+	t.Parallel()
 	route, price09, _ := autoDebtPriceFixture(t, 900_000)
 	_, price11, _ := autoDebtPriceFixture(t, 1_100_000)
 	coll10 := autoCollateralPriceFixture(t, 1_000_000)
@@ -215,6 +216,7 @@ func TestAutoNonParSelectionUsesObservedPriceBounds(t *testing.T) {
 // candidate without persistence, and that a stale tick cannot bridge a
 // persistence window that healthy ticks built.
 func TestAutoNonParStalePricesNeverSampleNorSelect(t *testing.T) {
+	t.Parallel()
 	route, price09, _ := autoDebtPriceFixture(t, 900_000)
 	coll10 := autoCollateralPriceFixture(t, 1_000_000)
 	allowed, funding := selectorOrAutoLane, selectorEntryFundingLane
@@ -290,6 +292,7 @@ func TestAutoNonParStalePricesNeverSampleNorSelect(t *testing.T) {
 // for a funded AUTO source are covered by
 // TestAutoSourceKeepsEconomicsAndSelectsSafeUnwind and are not repeated.
 func TestAutoNonParWithdrawalPriorityPrecedesCandidates(t *testing.T) {
+	t.Parallel()
 	route, price09, _ := autoDebtPriceFixture(t, 900_000)
 	coll10 := autoCollateralPriceFixture(t, 1_000_000)
 	upper09, _ := nonParBounds(t, &price09, &coll10, route, 42+budgetMaxObservationLagSlots)

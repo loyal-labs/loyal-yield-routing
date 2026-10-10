@@ -14,6 +14,7 @@ import (
 const selectorSourceAutoLane = "AUTO/AUTO/PYUSD"
 
 func TestSelectorSourcePoolsTrackDebtFundingSeparately(t *testing.T) {
+	t.Parallel()
 	route, err := runtimeRoute(selectorSourceAutoLane)
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +53,7 @@ func TestSelectorSourcePoolsTrackDebtFundingSeparately(t *testing.T) {
 }
 
 func TestSelectorSourcePoolsRejectDuplicateAndOversizedResidueConversion(t *testing.T) {
+	t.Parallel()
 	route, err := runtimeRoute(selectorSourceAutoLane)
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +79,7 @@ func TestSelectorSourcePoolsRejectDuplicateAndOversizedResidueConversion(t *test
 }
 
 func TestSelectorSourcePoolsBindSellToRouteCollateral(t *testing.T) {
+	t.Parallel()
 	route, err := runtimeRoute(selectorSourceAutoLane)
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +110,7 @@ func TestSelectorSourcePoolsBindSellToRouteCollateral(t *testing.T) {
 }
 
 func TestSelectorSourcePoolsRepayFailsClosedWithoutFunding(t *testing.T) {
+	t.Parallel()
 	route, err := runtimeRoute(selectorSourceAutoLane)
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +134,7 @@ func TestSelectorSourcePoolsRepayFailsClosedWithoutFunding(t *testing.T) {
 }
 
 func TestSelectorSourcePoolsKeepMapleUSDCRepayFromCash(t *testing.T) {
+	t.Parallel()
 	usdc, err := runtimeRoute(SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +167,7 @@ func TestSelectorSourcePoolsKeepMapleUSDCRepayFromCash(t *testing.T) {
 }
 
 func TestSelectorSourcePoolsOverflowFailsClosed(t *testing.T) {
+	t.Parallel()
 	route, err := runtimeRoute(selectorSourceAutoLane)
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +193,7 @@ func TestSelectorSourcePoolsOverflowFailsClosed(t *testing.T) {
 // helper accepts them all — only the bound pairs, the input pool and the
 // output overflow are safety checks.
 func TestSelectorSourcePoolsNeverCompareRawAmountsAcrossMints(t *testing.T) {
+	t.Parallel()
 	autoRoute, err := runtimeRoute(selectorSourceAutoLane)
 	if err != nil {
 		t.Fatal(err)
@@ -239,6 +246,7 @@ func TestSelectorSourcePoolsNeverCompareRawAmountsAcrossMints(t *testing.T) {
 }
 
 func TestSelectorRepayMintIdentityBound(t *testing.T) {
+	t.Parallel()
 	route, err := runtimeRoute(selectorSourceAutoLane)
 	if err != nil {
 		t.Fatal(err)

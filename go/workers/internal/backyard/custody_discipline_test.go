@@ -11,6 +11,7 @@ import (
 // external value: Squads cash, idle collateral, and the Kamino net position.
 // The Sep 4 incident reported the custody balance twice.
 func TestObservedExternalNAVExcludesCustodyBalance(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	observe := func(strategyCustodyRaw uint64) RouteNAVSnapshot {
 		t.Helper()
@@ -48,6 +49,7 @@ func TestObservedExternalNAVExcludesCustodyBalance(t *testing.T) {
 // adds nothing (the cash already left Squads when it was staged), and a
 // refresh adds nothing at all.
 func TestBridgePoststateNAVComposesExternalValueOnly(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	for _, tc := range []struct {
 		name               string
@@ -80,6 +82,7 @@ func TestBridgePoststateNAVComposesExternalValueOnly(t *testing.T) {
 // amount the journal recorded for the last stage, otherwise the custody is
 // unexplained and the worker stops for manual recovery.
 func TestRestoreAmountEqualsJournaledStagedAmount(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		custody    int64
@@ -113,6 +116,7 @@ func TestRestoreAmountEqualsJournaledStagedAmount(t *testing.T) {
 // Reports require empty custody; journal-explained staged USDC must first
 // complete its existing restore even after the original request disappears.
 func TestRefreshRequiresEmptyStrategyCustody(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.CapitalMutated = true
 	s.LastReportAgeSeconds = 60

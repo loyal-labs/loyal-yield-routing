@@ -6,6 +6,7 @@ import (
 )
 
 func TestManifestIdentitiesMatchStrategyTwo(t *testing.T) {
+	t.Parallel()
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -19,6 +20,7 @@ func TestManifestIdentitiesMatchStrategyTwo(t *testing.T) {
 }
 
 func TestStrategyTwoBridgeLegsRespectPerExecutionCap(t *testing.T) {
+	t.Parallel()
 	digest := make([]byte, 32)
 	digest[0] = 1
 	request := func(action Action, amountRaw uint64) BridgeBuildRequest {
@@ -46,6 +48,7 @@ func TestStrategyTwoBridgeLegsRespectPerExecutionCap(t *testing.T) {
 }
 
 func TestReportTicketIsDerivedFromStrategyTwoConfig(t *testing.T) {
+	t.Parallel()
 	config, err := decodeKey(bridgeStrategy)
 	if err != nil {
 		t.Fatal(err)

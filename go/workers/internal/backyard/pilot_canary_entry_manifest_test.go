@@ -40,6 +40,7 @@ func autoCanaryFixture(t *testing.T) SelectorInput {
 // the embedded wrapper keeps refusing it, and every ID, equity and expiry
 // negative is identical under both scopes.
 func TestPilotCanaryRequestValidateOnManifest(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Add(time.Minute)
 	request := pilotCanaryEntryRequest{ID: sha256Bytes([]byte("auto-one-acceptance")), Lane: autoAUTOPYUSD.Lane, EquityRaw: 1_000, ExpiresAt: now.Add(5 * time.Minute)}
 	if err := request.validateOnManifest(now, embeddedTestManifest(t)); err != nil {
@@ -107,6 +108,7 @@ func TestPilotCanaryReadOnManifest(t *testing.T) {
 // candidate lane, and consumed-ID, capacity and receipt semantics are the
 // exact installed ones.
 func TestPilotCanarySelectOnManifest(t *testing.T) {
+	t.Parallel()
 	in := autoCanaryFixture(t)
 	result := SelectorResult{Candidates: []CandidateForecast{{Lane: autoAUTOPYUSD.Lane, CostsKnown: true}}}
 	if _, _, err := selectPilotCanaryEntry(in, result, nil); err == nil {

@@ -12,6 +12,7 @@ import (
 )
 
 func TestPhase3BorrowFeesMatchProduction(t *testing.T) {
+	t.Parallel()
 	dir, name := os.Getenv("PHASE3_JUPITER_RETURN_PROBE_DIR"), os.Getenv("PHASE3_JUPITER_PROBE_RESULT")
 	if dir == "" || name == "" {
 		t.Skip("explicit linked deployed-program evidence required")
@@ -134,6 +135,7 @@ func TestPhase3BorrowFeesMatchProduction(t *testing.T) {
 }
 
 func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
+	t.Parallel()
 	_, _, _, m, _, _, accounts := fundingAdmissionFixture(t, 20_000)
 	route := ethenaUSDePYUSD
 	reserve := accountAt(accounts, route.Kamino.DebtReserve)
