@@ -200,7 +200,9 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 	canonical := make([]string, 0, len(expected.Accounts))
 	bounds := expected.Repayment
 	if expected.Deposit != nil {
-		bounds = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
+		// KLend debits at most the signed amount; whatever it leaves stays in
+		// our custody, and the receipt says what moved.
+		bounds = &ExpectedRepayment{1, expected.Deposit.MaximumDebitRaw}
 	}
 	beforeByMint := make(map[string]uint64, len(expected.Accounts))
 	afterByMint := make(map[string]uint64, len(expected.Accounts))
@@ -212,15 +214,14 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 			pre.Authority != effect.Authority || post.Authority != effect.Authority {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
-		// Voltr idle is also written by permissionless user deposits and claims,
-		// which can land between our observation and this transaction. For that
-		// one account only, reconcile this transaction's own delta; every other
-		// account keeps the exact pre/post contract.
-		// The debt reserve's fee receiver is shared by every borrower: like
-		// Voltr idle, reconcile this transaction's own fee delta only.
-		sharedFeeReceiver := expected.Kind == "kamino-borrow" && i == 2 && bounds == nil && effect.MinimumAfterRaw == nil
-		if (effect.Address == bridgeIdleATA || sharedFeeReceiver) && bounds == nil && effect.MinimumAfterRaw == nil {
-			if int64(post.Raw)-int64(pre.Raw) != int64(effect.AfterRaw)-int64(effect.BeforeRaw) {
+		// Only the Squads vault's and the Voltr strategy's custody is ours
+		// alone. Voltr idle and the Kamino reserve accounts are also written by
+		// third parties between our observation and this transaction, so their
+		// observed balance is no precondition: the receipt's pre and post
+		// bracket this transaction only, and per-mint conservation over our
+		// exact custody fixes their move.
+		if effect.Authority != bridgeVault && effect.Authority != bridgeStrategyAuth {
+			if !expected.Conserved && int64(post.Raw)-int64(pre.Raw) != int64(effect.AfterRaw)-int64(effect.BeforeRaw) {
 				return Reconciliation{}, nil, fmt.Errorf("transaction-scoped shared-account delta mismatch: %s", effect.Address)
 			}
 		} else if pre.Raw != effect.BeforeRaw {

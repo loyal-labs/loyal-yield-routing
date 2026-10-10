@@ -235,22 +235,12 @@ func (m RouteManifest) validateFullPayoffRequest(ctx context.Context, rpc *chain
 	if err != nil {
 		return KaminoPayoffBound{}, err
 	}
-	bound, accounts, err := observeKaminoPayoffBound(ctx, rpc, route, minimumSlot)
+	bound, _, err := observeKaminoPayoffBound(ctx, rpc, route, minimumSlot)
 	if err != nil {
 		return bound, err
 	}
 	if !request.FullPayoff || effects.Repayment == nil || request.AmountRaw < bound.UpperDebtRaw || effects.Repayment.MinimumDebitRaw > bound.ObservedDebtRaw {
 		return bound, budgetHold("full_payoff_request_underfunded")
-	}
-	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
-	fresh, err := boundedKaminoRepaymentEffects(accounts, source, destination, effects.Repayment.MinimumDebitRaw, request.AmountRaw)
-	if err != nil {
-		return bound, err
-	}
-	for i, account := range fresh.Accounts {
-		if account != effects.Accounts[i] {
-			return bound, budgetHold("full_payoff_custody_changed")
-		}
 	}
 	return bound, nil
 }

@@ -215,7 +215,6 @@ func TestDepositAdmissionReservesWithdrawalResidueAndCompleteBridgeReturn(t *tes
 		offset   int
 		original uint64
 	}{
-		{ethenaUSDePYUSD.CollateralCustody, 64, 20_000_000},
 		{ethenaUSDePYUSD.DebtCustody, 64, 0},
 		{ethenaUSDePYUSD.Kamino.Obligation, 128, 0},
 	} {
@@ -251,7 +250,7 @@ func TestDepositAdmissionReservesWithdrawalResidueAndCompleteBridgeReturn(t *tes
 }
 
 func TestDepositAdmissionRejectsFailedProjectionAndChangedCustody(t *testing.T) {
-	for _, variant := range []string{"failed", "missing", "stale", "clock", "conservation", "position", "debt", "source"} {
+	for _, variant := range []string{"failed", "missing", "stale", "clock", "conservation", "position", "debt"} {
 		t.Run(variant, func(t *testing.T) {
 			o, d, e, m, rpc, client, accounts := depositAdmissionFixture(t, variant)
 			switch variant {
@@ -259,8 +258,6 @@ func TestDepositAdmissionRejectsFailedProjectionAndChangedCustody(t *testing.T) 
 				binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[128:136], 1)
 			case "debt":
 				binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 1)
-			case "source":
-				binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.CollateralCustody).Data[64:72], 20_000_001)
 			}
 			if _, err := observePhase3DepositAdmission(context.Background(), rpc, client, m, o, d, e); err == nil {
 				t.Fatal("unsafe deposit admitted")

@@ -143,9 +143,6 @@ func TestFundedPayoffRejectsInsufficientInterestAndChangedStateBeforeSigner(t *t
 		},
 		func(o *Observation, _ *KaminoExecutionEvidence, _ []ConfirmedAccount) { o.Snapshot.DebtIdleRaw = 1_000 },
 		func(_ *Observation, _ *KaminoExecutionEvidence, a []ConfirmedAccount) {
-			binary.LittleEndian.PutUint64(accountAt(a, ethenaUSDePYUSD.DebtCustody).Data[64:72], 10_999)
-		},
-		func(_ *Observation, _ *KaminoExecutionEvidence, a []ConfirmedAccount) {
 			accountAt(a, ethenaUSDePYUSD.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+9] = 2
 		},
 	} {

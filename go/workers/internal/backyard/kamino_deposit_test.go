@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -148,7 +147,7 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 	}
 }
 
-func TestDepositRoundingBoundsRevalidateCustodyAndRejectMalformedEffects(t *testing.T) {
+func TestDepositReconcilesFromTheReceiptAndRejectsMalformedEffects(t *testing.T) {
 	_, _, _, manifest, _, _, accounts := fundingAdmissionFixture(t, 20_000)
 	route := ethenaUSDePYUSD
 	reserve := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 42, new(big.Int).Lsh(big.NewInt(1), 60), 1_100_000_000, 1_000_000_000)
@@ -173,17 +172,27 @@ func TestDepositRoundingBoundsRevalidateCustodyAndRejectMalformedEffects(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
-	if _, err = validateDepositRequest(context.Background(), rpc, r, effects, 42); err != nil {
-		t.Fatal(err)
+	// The reserve supply is shared: other depositors moved it before landing,
+	// and KLend debited less than the signed maximum. The receipt is the truth.
+	supply := effects.Accounts[1].Address
+	receipt := receiptFor(effects, map[string][2]uint64{
+		effects.Accounts[0].Address: {effects.Accounts[0].BeforeRaw, effects.Accounts[0].AfterRaw + 3},
+		supply:                      {effects.Accounts[1].BeforeRaw + 7_000, effects.Accounts[1].AfterRaw + 7_000 - 3},
+	})
+	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err != nil {
+		t.Fatal("a landed deposit beside third-party reserve moves failed reconciliation", err)
 	}
-	binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 20_000_001)
-	_, err = validateDepositRequest(context.Background(), rpc, r, effects, 42)
-	assertBudgetHold(t, err, "deposit_custody_changed")
-	binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 20_000_000)
-	binary.LittleEndian.PutUint64(reserve.Data[2592:2600], 500_000_000)
-	_, err = validateDepositRequest(context.Background(), rpc, r, effects, 42)
-	assertBudgetHold(t, err, "deposit_rounding_window_changed")
+	receipt = receiptFor(effects, map[string][2]uint64{effects.Accounts[0].Address: {effects.Accounts[0].BeforeRaw + 1, effects.Accounts[0].AfterRaw + 1}})
+	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err == nil {
+		t.Fatal("our collateral custody drift reconciled")
+	}
+	receipt = receiptFor(effects, map[string][2]uint64{
+		effects.Accounts[0].Address: {effects.Accounts[0].BeforeRaw, effects.Accounts[0].BeforeRaw},
+		supply:                      {effects.Accounts[1].BeforeRaw, effects.Accounts[1].BeforeRaw},
+	})
+	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err == nil {
+		t.Fatal("a deposit that moved nothing reconciled")
+	}
 	for _, mutate := range []func(*ExpectedEffects){
 		func(e *ExpectedEffects) { e.Kind = "kamino-repay" },
 		func(e *ExpectedEffects) { e.Repayment = &ExpectedRepayment{1, 1_000_000} },
