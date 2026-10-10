@@ -31,6 +31,7 @@ func leverageSnapshot(level float64) Snapshot {
 }
 
 func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
+	t.Parallel()
 	keep := SelectorResult{Action: "KEEP"}
 	p := DefaultSelectorPolicy()
 	for _, tc := range []struct {
@@ -75,6 +76,7 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 // work, and a selector move never runs beside a pending level move: the
 // selector freezes while the tranche is in progress.
 func TestLeverageDecisionAndSelectorMovesExcludeEachOther(t *testing.T) {
+	t.Parallel()
 	markets := []LaneEconomics{leverageMarket(autoAUTOPYUSD.Lane, 0.12, math.Log1p(0.06))}
 	p := DefaultSelectorPolicy()
 	s := leverageSnapshot(1.5)
@@ -115,6 +117,7 @@ func TestLeverageDecisionAndSelectorMovesExcludeEachOther(t *testing.T) {
 }
 
 func TestLeverageTargetStateRoundTrip(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(2_000_000_000, 0).UTC()
 	target := LeverageTarget{Lane: onreONycUSDC, Level: 1.75, SpreadBPS: 250, DecidedAt: now}
 	raw := []byte(`{"lane":"OnRe/ONyc/USDC","level":1.75,"spreadBps":250,"decidedAt":"2033-05-18T03:33:20Z"}`)
@@ -144,6 +147,7 @@ func TestLeverageTargetStateRoundTrip(t *testing.T) {
 }
 
 func TestBorrowBlockedHoldLogsOncePerHour(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	l := borrowBlockedLog{out: &out}
 	now := time.Unix(1_000, 0)
@@ -159,6 +163,7 @@ func TestBorrowBlockedHoldLogsOncePerHour(t *testing.T) {
 }
 
 func TestLeverageDecisionLogPrintsOnChangeOrHourly(t *testing.T) {
+	t.Parallel()
 	l := &leverageDecisionLog{}
 	now := time.Unix(10_000, 0)
 	up := leverageDecision{Current: 1, Next: 1.5}
@@ -191,6 +196,7 @@ func TestLeverageDecisionLogPrintsOnChangeOrHourly(t *testing.T) {
 // sample stored 1.5x again. Now: unavailable spread -> no decision, no write;
 // available again -> the stored 1.5x stands (no flip).
 func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
+	t.Parallel()
 	keep := SelectorResult{Action: "KEEP"}
 	p := DefaultSelectorPolicy()
 	s := leverageSnapshot(1) // debt-free, ~$1,000 equity

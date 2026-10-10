@@ -99,6 +99,7 @@ func reasons(legs []Decision) []string {
 }
 
 func TestPartialWithdrawalLive15xAUTO(t *testing.T) {
+	t.Parallel()
 	s, legs := runPartialWithdrawal(t, livePartialSnapshot(), 1.0209)
 	want := []string{partialReleaseReason, partialSwapToDebtReason, exitPartialRepayReason, partialSwapToUSDCReason}
 	got := reasons(legs)
@@ -129,6 +130,7 @@ func TestPartialWithdrawalLive15xAUTO(t *testing.T) {
 }
 
 func TestPartialWithdrawalDebtFree1xAndOnRe15x(t *testing.T) {
+	t.Parallel()
 	s := livePartialSnapshot()
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw, s.LTVBPS, s.LeverageTargetLevel = 0, 0, 0, 0, 1
 	after, legs := runPartialWithdrawal(t, s, 1.0209)
@@ -146,6 +148,7 @@ func TestPartialWithdrawalDebtFree1xAndOnRe15x(t *testing.T) {
 }
 
 func TestPartialWithdrawalExclusionsNeverAuthorizeFullExit(t *testing.T) {
+	t.Parallel()
 	// >= 90% of equity: hold, never a proof of full-exit necessity.
 	s := livePartialSnapshot()
 	s.WithdrawalDemandRaw = 1_600_000_000
@@ -189,6 +192,7 @@ func TestPartialWithdrawalExclusionsNeverAuthorizeFullExit(t *testing.T) {
 // intermediate LTV under the release ceiling, run rounds as needed, end at
 // the level with the position kept; 1x debt-free has no ceiling issue.
 func TestPartialWithdrawalRoundsKeepLTVUnderTheCeiling(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		for _, pct := range []int64{28, 39, 50, 75, 89} {
 			s := livePartialSnapshot()
@@ -233,6 +237,7 @@ func TestPartialWithdrawalRoundsKeepLTVUnderTheCeiling(t *testing.T) {
 }
 
 func TestSmallFiveDollarWithdrawalPreservesResidualDebt(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		s := livePartialSnapshot()
 		s.RouteLane, s.StrategyKey = lane, lane

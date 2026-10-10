@@ -17,6 +17,7 @@ import (
 // account is some literal's. Which leg each
 // instruction executes at is TestEveryRuntimeLegExecutesAtItsOwnConstraint.
 func TestPolicyLiteralsAreTheInstalledAccounts(t *testing.T) {
+	t.Parallel()
 	literals, err := backyardPolicies()
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +55,7 @@ func TestPolicyLiteralsAreTheInstalledAccounts(t *testing.T) {
 // (an apply removes it only in its last create), each literal still finds one
 // account.
 func TestNoLiteralMatchesTwoAccounts(t *testing.T) {
+	t.Parallel()
 	literals, err := backyardPolicies()
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +75,7 @@ func TestNoLiteralMatchesTwoAccounts(t *testing.T) {
 // A literal installed on no account, or on two, holds by name, and nothing
 // else stands in for it.
 func TestUninstalledLiteralHoldsByName(t *testing.T) {
+	t.Parallel()
 	policies := testPolicies(t)
 	route, err := runtimeRoute(SelectedRouteID)
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 // stable code without leaking RPC or database credentials, and the heartbeat
 // must expose the fee-accumulator boundary the alert rule reads.
 func TestEventsRedactCredentialsAndExposeHeartbeatFields(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	e := newEvents(slog.New(slog.NewJSONHandler(&out, nil)), nil)
 	now := time.Unix(kaminoFixtureUnix, 0)
@@ -55,6 +56,7 @@ func TestEventsRedactCredentialsAndExposeHeartbeatFields(t *testing.T) {
 // A latched route keeps ticking without error but is stopped: progress must go
 // stale so the backyard stale-progress alert pages until clear-hold.
 func TestLatchedRouteStopsProgress(t *testing.T) {
+	t.Parallel()
 	registry := prometheus.NewRegistry()
 	facts := engine.NewFacts(registry)
 	facts.Own(engine.FamilyBackyard)
@@ -84,6 +86,7 @@ func TestLatchedRouteStopsProgress(t *testing.T) {
 }
 
 func TestSelectorExpectedDeferralDoesNotCountAsFailed(t *testing.T) {
+	t.Parallel()
 	registry := prometheus.NewRegistry()
 	e := newEvents(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), engine.NewFacts(registry))
 	e.selectorSampleError(budgetHold("selector_finish_current_work_first"))
@@ -112,6 +115,7 @@ func TestSelectorExpectedDeferralDoesNotCountAsFailed(t *testing.T) {
 }
 
 func TestWithdrawalMetricsKeepAttentionAndClockWhenEvidenceUnavailable(t *testing.T) {
+	t.Parallel()
 	registry := prometheus.NewRegistry()
 	e := newEvents(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), engine.NewFacts(registry))
 	now := time.Unix(1000, 0)

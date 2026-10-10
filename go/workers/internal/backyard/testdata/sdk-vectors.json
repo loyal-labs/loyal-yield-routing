@@ -1,0 +1,224 @@
+{
+ "provenance": "Captured once from the installed SDKs the deleted bun oracles ran (bun.lock @solana/web3.js 1.98.4; tools/backyard-voltr bun.lock @kamino-finance/klend-sdk 7.3.9) on the exact inputs each test builds. No network or signing.",
+ "base58LeadingZeros": {
+  "sdk": "new PublicKey(key).toBase58() for keys with 0..32 leading zero bytes, byte i = i+1 after them",
+  "keys": [
+   "4wBqpZM9xaSheZzJSMawUKKwhdpChKbZ5eu5ky4Vigw",
+   "12nCKqGG85jHxT1nw693Ya6gh53VkDgyDM1aZf4mv2b",
+   "11c3kQNy6QqwgZ51qyKuSxsuJP5s3DpnwJrCGiqfcj",
+   "111BarpcJzP4FNVTvm31TiSpW1njNkvySd5KApAGRV",
+   "11113zp91qVZasjnnvwUyvkpB3VRWiNgadULiW4d9R",
+   "11111pFTBfr3JrpvYDeyLc4nXCM4hTPxb6UbaPjvw",
+   "111111DVJCXSzftq8ustScCvJNEcJ52wskypEPHbD",
+   "11111114EXczQXcVrXnMiky4VV7dcKF5v4bpZ4UoH",
+   "11111111po7Y9JpQpmpFeGs8pZkc8x3t148gPpGX",
+   "111111111D2p1T4phV5ML6GRQn1vuw8G5jtzino9",
+   "11111111113zuGqC3nydKCy3z45d2AsE4eqK2Vd1",
+   "11111111111jyqipMYTH7rRtfk1xoK2yaDJ4cJK",
+   "111111111111BYqNg8sD9yQRHymtanAg1A1agwZ",
+   "11111111111113aH9Z4kdYhcXPPtgKE86awLdwV",
+   "11111111111111dEgsSPpqfg41ZWSS6MohGtDd",
+   "1111111111111119kuAtu1zb7xa5L7uSkrMneT",
+   "111111111111111137G9X3VBf9g7tEbWtLBu9Z",
+   "11111111111111111WL58zCnxKew7f3zsnKnX",
+   "11111111111111111181oiFYTeaHqZBC21sfD",
+   "11111111111111111112g1yGTECMjiEsSxaiB",
+   "11111111111111111111Q5bGvYVUoiQZnbjm",
+   "1111111111111111111116UiP514Bj1NMxwy",
+   "11111111111111111111112JFh2mpFzeZdAP",
+   "11111111111111111111111Jns1yrNcSEfy",
+   "1111111111111111111111115CXCLobxJv3",
+   "1111111111111111111111111zNzd8d7E7",
+   "11111111111111111111111111EVzf9HEo",
+   "1111111111111111111111111114Ay3zz3",
+   "1111111111111111111111111111kAkzK",
+   "11111111111111111111111111111B7pK",
+   "1111111111111111111111111111113NP",
+   "1111111111111111111111111111111Z",
+   "11111111111111111111111111111111"
+  ]
+ },
+ "messageV0": {
+  "sdk": "MessageV0.compile(...).serialize(), base64; capture-only keys compiled then removed from the last instruction",
+  "messages": {
+   "twoTablesSharedEntries": "gAIBAQNtZZBDuqUqGBtYRCOejVQtH97c1oHOfnHQdSnayW4mrSFNNHkBpeusi8reG00OG0hFMD0EAtYLzF38Mqf1L8H/QSRuzH14/oHkF3OkaWVBmTeSOgdkR5ffbz61FEJgEMsGhRPEjPI4Gqg7RxgsmEGpHw8zfQPPH4h8HDCMFlPC+gEChQEDBAEDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDggEHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAdX1BJ+5xopx4Bc9mNRq9M9kkGALXMYE2phoCsidpHAYAgIOAA==",
+   "captureOnlyKeys": "gAEAAgNKn59U6HJmbXw9jdbgbeZ+xfiVPAxkYf1ZNVPUjUj7QASyrLESWMzjaCxBi6hy/z35EQJxLxWvEra+abNDWwAI9aTrVhjQn9co+5P34M1i0nEE2OPK2RXEfVtWWBF9b1fG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQEBAQMDAQIDAdX1BJ+5xopx4Bc9mNRq9M9kkGALXMYE2phoCsidpHAYAQIBBQ=="
+  }
+ },
+ "kaminoInitializer": {
+  "sdk": "klend-sdk initObligation({tag:1,id:0}) per lane, PublicKey.findProgramAddressSync([1,0,owner,market,seed1,seed2]) for the obligation, and the 8-byte-discriminated layout offsets",
+  "instructions": [
+   {
+    "lane": "Prime/PRIME/USDC",
+    "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+    "data": "+wrnTBsLn2ABAA==",
+    "accounts": [
+     {
+      "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+      "signer": true,
+      "writable": false
+     },
+     {
+      "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+      "signer": true,
+      "writable": true
+     },
+     {
+      "address": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+      "signer": false,
+      "writable": true
+     },
+     {
+      "address": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "78e2ZY7pcpQjhimGg9DUn8cipXaFPdpHEkd2YkMDNEr1",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "SysvarRent111111111111111111111111111111111",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "11111111111111111111111111111111",
+      "signer": false,
+      "writable": false
+     }
+    ],
+    "obligation": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv"
+   },
+   {
+    "lane": "Maple/syrupUSDC/USDC",
+    "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+    "data": "+wrnTBsLn2ABAA==",
+    "accounts": [
+     {
+      "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+      "signer": true,
+      "writable": false
+     },
+     {
+      "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+      "signer": true,
+      "writable": true
+     },
+     {
+      "address": "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
+      "signer": false,
+      "writable": true
+     },
+     {
+      "address": "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "78e2ZY7pcpQjhimGg9DUn8cipXaFPdpHEkd2YkMDNEr1",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "SysvarRent111111111111111111111111111111111",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "11111111111111111111111111111111",
+      "signer": false,
+      "writable": false
+     }
+    ],
+    "obligation": "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT"
+   },
+   {
+    "lane": "OnRe/ONyc/USDC",
+    "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+    "data": "+wrnTBsLn2ABAA==",
+    "accounts": [
+     {
+      "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+      "signer": true,
+      "writable": false
+     },
+     {
+      "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+      "signer": true,
+      "writable": true
+     },
+     {
+      "address": "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
+      "signer": false,
+      "writable": true
+     },
+     {
+      "address": "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "78e2ZY7pcpQjhimGg9DUn8cipXaFPdpHEkd2YkMDNEr1",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "SysvarRent111111111111111111111111111111111",
+      "signer": false,
+      "writable": false
+     },
+     {
+      "address": "11111111111111111111111111111111",
+      "signer": false,
+      "writable": false
+     }
+    ],
+    "obligation": "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei"
+   }
+  ],
+  "offsets": {
+   "elevationGroup": 2285,
+   "outsideUsed": 6704,
+   "outsideLimit": 5504,
+   "disableCross": 5500,
+   "debtWithdrawalCap": 5448,
+   "borrowFactor": 5008,
+   "loanToValue": 4872,
+   "queuedCollateral": 6968,
+   "globalBorrowValue": 152,
+   "minimumRemainingValue": 3224
+  }
+ }
+}

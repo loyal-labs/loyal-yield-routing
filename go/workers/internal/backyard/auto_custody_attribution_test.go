@@ -21,6 +21,7 @@ import (
 
 	"os"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -231,6 +232,7 @@ func custodyAttributionHoldReason(t *testing.T, err error) string {
 // price improvement is accepted through the actual receipt, never truncated.
 // A restart over freshly built rows reconstructs the identical proof.
 func TestSharedCustodyAttributionProvesFundedResidueChain(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	build := func() sharedCustodyAttributionEvidence {
 		return sharedCustodyAttributionEvidence{Rows: []custodyAttributionRow{
@@ -268,6 +270,7 @@ func TestSharedCustodyAttributionProvesFundedResidueChain(t *testing.T) {
 // is NOT an origin: the bind is the action plus expected-input shape, never
 // the label alone.
 func TestSharedCustodyAttributionProvesBorrowOriginOnlyInProductionShape(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	chain := func(action string) sharedCustodyAttributionEvidence {
 		pre, post := custodyAttributionRepayBalances(4_900_000_000, 3_100_000_000, 1_000_000_000, 2_800_000_000)
@@ -320,6 +323,7 @@ func TestSharedCustodyAttributionProvesBorrowOriginOnlyInProductionShape(t *test
 // An old funding row cannot be reused as proof after its proceeds were
 // spent: the tip's actual after must equal the fresh observed residue.
 func TestSharedCustodyAttributionRejectsSpentFundingReuse(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	_, err := validateSharedCustodyAttribution(3_100_000_000, 300, cfg, sharedCustodyAttributionEvidence{
 		Rows: []custodyAttributionRow{custodyAttributionFundingRow(t, "auto-fund", "sig-fund", 100)},
@@ -332,6 +336,7 @@ func TestSharedCustodyAttributionRejectsSpentFundingReuse(t *testing.T) {
 // A newer foreign-lane touch of the shared custody is refused even when the
 // balances happen to line up.
 func TestSharedCustodyAttributionRejectsForeignNewerTouch(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	foreign := custodyAttributionFundingRow(t, "ethena-fund", "sig-foreign", 400)
 	foreign.StrategyKey = "Ethena/ETH/PYUSD"
@@ -348,6 +353,7 @@ func TestSharedCustodyAttributionRejectsForeignNewerTouch(t *testing.T) {
 // intend a custody touch but whose strict receipt has no custody account is
 // equally unclassifiable.
 func TestSharedCustodyAttributionRejectsUnknownTopUps(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	impostorExpected := ExpectedEffects{
 		Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap",
@@ -408,6 +414,7 @@ func TestSharedCustodyAttributionRejectsUnknownTopUps(t *testing.T) {
 // Balance mismatch at the tip and a continuity gap between links are
 // distinct refusals.
 func TestSharedCustodyAttributionRejectsBalanceMismatchAndGap(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	chain := sharedCustodyAttributionEvidence{Rows: []custodyAttributionRow{
 		custodyAttributionRepayRow(t, "auto-repay", "sig-repay", 200),
@@ -445,6 +452,7 @@ func TestSharedCustodyAttributionRejectsBalanceMismatchAndGap(t *testing.T) {
 // unresolved operation (which may carry NO custody evidence at all) fails
 // the route regardless of the chain.
 func TestSharedCustodyAttributionRejectsUnfinalizedAndRouteWideConflicts(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	tip := custodyAttributionRepayRow(t, "auto-repay", "sig-repay", 200)
 	tip.Status, tip.ConfirmationStatus = "confirmed", "confirmed"
@@ -475,6 +483,7 @@ func TestSharedCustodyAttributionRejectsUnfinalizedAndRouteWideConflicts(t *test
 // stored digest is bound to the canonical bytes, and the chain may never
 // reach past the fresh observation slot.
 func TestSharedCustodyAttributionRejectsMutatedEvidenceAndSnapshotDrift(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	mutated := custodyAttributionRepayRow(t, "auto-repay", "sig-repay", 200)
 	funding := custodyAttributionFundingRow(t, "auto-fund", "sig-fund", 100)
@@ -512,6 +521,7 @@ func TestSharedCustodyAttributionRejectsMutatedEvidenceAndSnapshotDrift(t *testi
 // address, wrong field count, non-canonical slot encoding), same-slot
 // ambiguity and depth exhaustion all refuse closed.
 func TestSharedCustodyAttributionRejectsMalformedAmbiguousAndExhausted(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	funding := custodyAttributionFundingRow(t, "auto-fund", "sig-fund", 100)
 	truncated := custodyAttributionRepayRow(t, "auto-repay", "sig-repay", 200)
@@ -623,6 +633,7 @@ func custodyAttributionJournalOnlyRow(opID, signature string, slot int64, body, 
 // an otherwise provable chain: the unfiltered window carries it and the
 // strict per-row checks run at every position.
 func TestSharedCustodyAttributionRejectsMalformedInterveningNoCustodyRow(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	corrupt := custodyAttributionJournalOnlyRow("nav-report", "sig-nav", 150, `{}`, sha256Bytes([]byte(`{}`)))
 	_, err := validateSharedCustodyAttribution(3_100_000_000, 300, cfg, sharedCustodyAttributionEvidence{
@@ -642,6 +653,7 @@ func TestSharedCustodyAttributionRejectsMalformedInterveningNoCustodyRow(t *test
 // account: the custody intent of the built operation is unreadable, so the
 // proof refuses instead of silently skipping the row.
 func TestSharedCustodyAttributionRejectsUnreadableExpectedEffectsAsInert(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	unrelatedExpected := ExpectedEffects{
 		Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true,
@@ -676,6 +688,7 @@ func TestSharedCustodyAttributionRejectsUnreadableExpectedEffectsAsInert(t *test
 // never proves ownership, and the completeness boundary is the origin, not
 // the window bottom.
 func TestSharedCustodyAttributionRejectsConsistentChainWithoutOrigin(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	_, err := validateSharedCustodyAttribution(3_000_000_000, 300, cfg, sharedCustodyAttributionEvidence{
 		Rows: []custodyAttributionRow{
@@ -696,6 +709,7 @@ func TestSharedCustodyAttributionRejectsConsistentChainWithoutOrigin(t *testing.
 // route-wide gates: the malformed-ordering-identity flag holds for direct
 // callers exactly as the reader's EXISTS holds for the database.
 func TestSharedCustodyAttributionAcceptsPriorLifecycleOnlyBehindProvenOrigin(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	foreignPrior := custodyAttributionFundingRow(t, "ethena-prior", "sig-prior", 50)
 	foreignPrior.StrategyKey = "Ethena/ETH/PYUSD"
@@ -770,6 +784,7 @@ func quoteAll(t *testing.T, values []string) []string {
 // proven origin and never parses what sorts behind it, so this gate is what
 // keeps behind-origin records closed.
 func TestSharedCustodyAttributionRejectsUnknownStateRegardlessOfChronology(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	chain := func() sharedCustodyAttributionEvidence {
 		return sharedCustodyAttributionEvidence{Rows: []custodyAttributionRow{
@@ -794,6 +809,7 @@ func TestSharedCustodyAttributionRejectsUnknownStateRegardlessOfChronology(t *te
 // The reader is scoped to the worker Database's OWN current lease: no
 // current lease, or a foreign lease identity, refuses before any SQL runs.
 func TestSharedCustodyAttributionReaderRequiresWorkerLease(t *testing.T) {
+	t.Parallel()
 	reader := &Database{}
 	_, err := reader.observeSharedCustodyAttributionEvidence(context.Background(), RouteLease{RouteKey: custodyAttributionRouteKey, Owner: "worker", FencingToken: 1}, custodyAttributionConfig(), 0)
 	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_lease_unavailable" {
@@ -1294,12 +1310,14 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	navReports := &pgx.Batch{}
 	for i := 0; i < sharedCustodyUnknownRowBound+10; i++ {
-		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,signed_wire_sha256,transaction_signature,message_sha256,recent_blockhash,last_valid_block_height,simulation_slot,broadcast_intent_at,recovery_reason)
+		navReports.Queue(`INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,signed_wire_sha256,transaction_signature,message_sha256,recent_blockhash,last_valid_block_height,simulation_slot,broadcast_intent_at,recovery_reason)
 			VALUES($1,$2,'failed','REPORT_NAV',$3::jsonb,$4,$5,$6,$7,$8,$9,$10,now(),'report_stale')`,
-			fmt.Sprintf("%s-nav-%03d", routeKey, i), routeKey, string(effects), build.SignedWire, build.SignedWireSHA256, build.TransactionSignature, build.MessageSHA256, build.RecentBlockhash, build.LastValidBlockHeight, build.SimulationSlot); err != nil {
-			t.Fatal(err)
-		}
+			fmt.Sprintf("%s-nav-%03d", routeKey, i), routeKey, string(effects), build.SignedWire, build.SignedWireSHA256, build.TransactionSignature, build.MessageSHA256, build.RecentBlockhash, build.LastValidBlockHeight, build.SimulationSlot)
+	}
+	if err = db.pool.SendBatch(ctx, navReports).Close(); err != nil {
+		t.Fatal(err)
 	}
 	for _, action := range []string{"HOLD_MANUAL_RECOVERY", "HOLD_CLEARED"} {
 		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,recovery_reason) VALUES($1,$2,'manual_recovery',$3,'{}','kamino_stale')`, routeKey+"-"+action, routeKey, action); err != nil {
@@ -1325,10 +1343,12 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 	if err != nil || len(evidence.UnknownRows) != 1 || evidence.UnknownRows[0].OperationID != routeKey+"-sent-confirmed_transaction_error" {
 		t.Fatal("sent expired-absent row not excused, or another sent failure excused", len(evidence.UnknownRows), err)
 	}
+	openSteps := &pgx.Batch{}
 	for i := 0; i <= sharedCustodyUnknownRowBound; i++ {
-		if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,broadcast_intent_at,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','OPEN_ROUTE_STEP','{}','\x01',now(),5,'confirmed_transaction_error')`, fmt.Sprintf("%s-open-%03d", routeKey, i), routeKey); err != nil {
-			t.Fatal(err)
-		}
+		openSteps.Queue(`INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,broadcast_intent_at,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','OPEN_ROUTE_STEP','{}','\x01',now(),5,'confirmed_transaction_error')`, fmt.Sprintf("%s-open-%03d", routeKey, i), routeKey)
+	}
+	if err = db.pool.SendBatch(ctx, openSteps).Close(); err != nil {
+		t.Fatal(err)
 	}
 	_, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0)
 	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_unknown_overflow" {

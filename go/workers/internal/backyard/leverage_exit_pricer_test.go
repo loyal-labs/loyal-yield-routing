@@ -51,6 +51,7 @@ func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *chain.Client
 // repay of the swap's MINIMUM) before the final release -> payoff, over the
 // longer 7+3 window, and the repay never pays the whole debt.
 func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
+	t.Parallel()
 	o, m, rpc, client, _, route := leverage175Fixture(t)
 	_, rows, err := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
 	if err != nil {
@@ -99,6 +100,7 @@ func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 // withdraw -> return), binding the FIRST cycle's payoff window and release
 // for build/send revalidation.
 func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
+	t.Parallel()
 	o, m, rpc, client, _, route := leverage175Fixture(t)
 	_, rows, err := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
 	if err != nil {
@@ -158,6 +160,7 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 // {collateral, debt}) is an existing topology: compiled by the real
 // compiler, it passes the persisted-wire gate on AUTO and OnRe.
 func TestExitCycleKaminoWiresPassThePersistedWireGate(t *testing.T) {
+	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{81}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	for lane, manifest := range map[string]RouteManifest{autoAUTOPYUSD.Lane: embeddedTestManifest(t), onreONycUSDC: embeddedTestManifest(t)} {
@@ -184,6 +187,7 @@ func TestExitCycleKaminoWiresPassThePersistedWireGate(t *testing.T) {
 // PYUSD) and the OnRe fixture at 1.5x take the installed path even when the
 // Jupiter client fails.
 func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
+	t.Parallel()
 	broken, _ := jupiter.NewClient("https://jupiter.invalid", "", nil)
 	live := base()
 	live.RouteLane, live.StrategyKey, live.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true
@@ -224,6 +228,7 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 // Step 5 admission: the sized 1.75x -> 1.5x release is priced from its
 // poststate (complete remaining exit), never as a payoff funding.
 func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
+	t.Parallel()
 	o, m, rpc, client, _, route := leverage175Fixture(t)
 	o.Snapshot.LeverageTargetLevel = 1.5
 	_, rows, _ := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
@@ -260,6 +265,7 @@ func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
 // ({collateral}) and the partial repay ({collateral, debt}), compiled by the
 // real compiler, pass the persisted-wire gate on AUTO and OnRe.
 func TestPartialWithdrawalKaminoWiresPassThePersistedWireGate(t *testing.T) {
+	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{91}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	for lane, manifest := range map[string]RouteManifest{autoAUTOPYUSD.Lane: embeddedTestManifest(t), onreONycUSDC: embeddedTestManifest(t)} {

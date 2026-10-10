@@ -6,6 +6,7 @@ import (
 )
 
 func TestPreBroadcastRecoveryTerminatesWithoutRPCForNonEntryAction(t *testing.T) {
+	t.Parallel()
 	operation := PersistedOperation{
 		Operation: Operation{Decision: Decision{Action: ReportNAV}},
 		Status:    Built,
@@ -20,6 +21,7 @@ func TestPreBroadcastRecoveryTerminatesWithoutRPCForNonEntryAction(t *testing.T)
 }
 
 func TestPreBroadcastRecoveryRejectsPostBroadcastStatus(t *testing.T) {
+	t.Parallel()
 	operation := PersistedOperation{Status: BroadcastIntent}
 	if _, err := preBroadcastRecoveryReason(context.Background(), nil, operation); err == nil {
 		t.Fatal("post-broadcast operation accepted by pre-broadcast recovery")

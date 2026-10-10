@@ -58,6 +58,7 @@ func failureSettlementFixture(t *testing.T) (finalizedFailureReceipt, []byte, pu
 }
 
 func TestFinalizedReportFailureRequiresCompleteExactRollbackReceipt(t *testing.T) {
+	t.Parallel()
 	base, wire, delegate, effects := failureSettlementFixture(t)
 	for _, tc := range []struct {
 		name   string

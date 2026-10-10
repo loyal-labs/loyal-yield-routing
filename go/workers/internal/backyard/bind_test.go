@@ -53,6 +53,7 @@ func signedBindFixture(t *testing.T) (phase3OperationAuthorization, PersistedOpe
 }
 
 func TestSignedIdentityProvesTheBoundWireBeforeAnyRPC(t *testing.T) {
+	t.Parallel()
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -432,6 +433,7 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 // Rows written while the budget existed keep their extra phase3 fields;
 // decoding ignores them and keeps the integrity record.
 func TestLegacyPhase3RecordDecodes(t *testing.T) {
+	t.Parallel()
 	auth, _ := signedBindFixture(t)
 	encoded, err := json.Marshal(auth)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 // other: the leg constants and the literals are proven against each other,
 // through the bytes a worker signs.
 func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	policies := testPolicies(t)
 	literals, err := backyardPolicies()

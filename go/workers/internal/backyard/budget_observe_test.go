@@ -15,6 +15,7 @@ import (
 // price-only simulation. No signer, journal mutation or submission is used.
 // A passing result proves only price/fee observation, not lifecycle execution.
 func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PHASE3_READONLY_PRICE_PREFLIGHT") != "1" {
 		t.Skip("explicit read-only preflight gate required")
 	}

@@ -129,6 +129,7 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 }
 
 func TestUSDCFundingAdmissionPricesReturnWithoutDoubleCountingSpentCash(t *testing.T) {
+	t.Parallel()
 	o, d, e, m, rpc, client, accounts := fundingAdmissionFixtureForSource(t, 20_000, SwapUSDCToDebtStep)
 	plan, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	if err != nil {
@@ -200,6 +201,7 @@ func TestUSDCFundingAdmissionPricesReturnWithoutDoubleCountingSpentCash(t *testi
 }
 
 func TestUSDCFundingRejectsChangedCashAndUnderfunding(t *testing.T) {
+	t.Parallel()
 	o, d, e, m, rpc, client, accounts := fundingAdmissionFixtureForSource(t, 20_000, SwapUSDCToDebtStep)
 	// The persisted funding swap passes the build and send prestate against
 	// its own custody, and refuses changed custody.
@@ -218,6 +220,7 @@ func TestUSDCFundingRejectsChangedCashAndUnderfunding(t *testing.T) {
 }
 
 func TestFundingAdmissionPricesPayoffReturnAndBothNAVContinuations(t *testing.T) {
+	t.Parallel()
 	o, d, e, m, rpc, client, accounts := fundingAdmissionFixture(t, 20_000)
 	plan, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	if err != nil {
@@ -263,6 +266,7 @@ func TestFundingAdmissionPricesPayoffReturnAndBothNAVContinuations(t *testing.T)
 }
 
 func TestFundingAdmissionRejectsUnderfundingAndFinalSendDrift(t *testing.T) {
+	t.Parallel()
 	o, d, e, m, rpc, client, accounts := fundingAdmissionFixture(t, 20_000)
 	// A declared threshold above the wire's slippage-adjusted minimum must
 	// not masquerade as enforceable repayment funding.
@@ -298,6 +302,7 @@ func TestFundingAdmissionRejectsUnderfundingAndFinalSendDrift(t *testing.T) {
 // so both sides measure executable debt on one basis — while a genuinely
 // mutated obligation principal still fails the exact comparison.
 func TestFundingAdmissionBindsDebtComparisonToSnapshotReserveBasis(t *testing.T) {
+	t.Parallel()
 	nav := bridgeTestRequest(ReportNAV, 0)
 	nav.Report.Sequence, nav.Report.ObservedSlot = 42, 42
 	decision := func(o Observation) Decision { return Decision{Action: ReportNAV, StrategyKey: o.Snapshot.RouteLane} }
@@ -417,6 +422,7 @@ func TestFundingAdmissionBindsDebtComparisonToSnapshotReserveBasis(t *testing.T)
 }
 
 func TestFundingPayoffWindowIncludesInterveningSteps(t *testing.T) {
+	t.Parallel()
 	_, _, e, _, rpc, _, accounts := fundingAdmissionFixture(t, 20_000)
 	putScaledFraction(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(1_000_000), 60))
 	short, err := decodeKaminoPayoffWindow(accounts, ethenaUSDePYUSD, 42, 1)

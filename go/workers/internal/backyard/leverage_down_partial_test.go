@@ -6,6 +6,7 @@ import "testing"
 // R = (3D - C)/2, swap it, repay the proceeds, stop. Never the whole debt,
 // never below 1.5x by more than the swap loss.
 func TestDownMove175To15IsOneSizedCycle(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		s := leverageSnapshot(1.75) // C 1750, D 750 (value = raw)
 		s.RouteLane, s.StrategyKey, s.LeverageTargetLevel = lane, lane, 1.5

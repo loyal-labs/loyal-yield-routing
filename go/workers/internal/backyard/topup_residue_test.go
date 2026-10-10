@@ -9,6 +9,7 @@ import (
 // Plan B3 leg 0: the PYUSD residue left beside a debt-free position after
 // idle_debt_repay is converted to bridge USDC, keeping the position.
 func TestDebtResidueSwapBesideDebtFreePosition(t *testing.T) {
+	t.Parallel()
 	s := liveIdleDebtSnapshot()
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw, s.LTVBPS, s.DebtIdleRaw = 0, 0, 0, 0, 36_520_000
 	got := Decide(s)
@@ -35,6 +36,7 @@ func TestDebtResidueSwapBesideDebtFreePosition(t *testing.T) {
 }
 
 func TestDebtResidueSwapAdmissionKeepsPositionAndReservesItsReturn(t *testing.T) {
+	t.Parallel()
 	// The funded-payoff fixture after its payoff: debt-free position, 10,000
 	// raw PYUSD residue in debt custody.
 	o, _, _, m, rpc, client, accounts := payoffAdmissionFixture(t, 20_000)

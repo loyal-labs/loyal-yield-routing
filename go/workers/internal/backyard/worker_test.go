@@ -246,6 +246,7 @@ func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {
 }
 
 func TestExecutionGateKeepsPhaseTwoCatalogOutOfFirstRelease(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	manifest.Deployment.SourceCommit = nil
 	manifest.Deployment.ImageDigest = nil
@@ -329,6 +330,7 @@ func (f *fakeRouteLeaseRuntime) snapshotEvents() []string {
 }
 
 func TestLeasedWorkerAcquiresBeforeTickAndReleasesOnCleanShutdown(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	leasing := &fakeRouteLeaseRuntime{}
@@ -357,6 +359,7 @@ func TestLeasedWorkerAcquiresBeforeTickAndReleasesOnCleanShutdown(t *testing.T) 
 }
 
 func TestLeasedWorkerRetriesObservationWithoutDroppingTheFence(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	leasing := &fakeRouteLeaseRuntime{}
@@ -390,6 +393,7 @@ func TestLeasedWorkerRetriesObservationWithoutDroppingTheFence(t *testing.T) {
 }
 
 func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	leasing := &fakeRouteLeaseRuntime{}
@@ -436,6 +440,7 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 }
 
 func TestLeasedWorkerDoesNotRetryDatabaseObservationFailure(t *testing.T) {
+	t.Parallel()
 	databaseErr := errors.New("position snapshot constraint failed")
 	leasing := &fakeRouteLeaseRuntime{}
 	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, runtime: tickRuntime{
@@ -455,6 +460,7 @@ func TestLeasedWorkerDoesNotRetryDatabaseObservationFailure(t *testing.T) {
 }
 
 func TestLeasedWorkerFailsClosedWhenRefreshLosesFence(t *testing.T) {
+	t.Parallel()
 	leasing := &fakeRouteLeaseRuntime{refreshErr: ErrRouteLeaseLost, refreshCalls: make(chan struct{}, 1)}
 	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, runtime: tickRuntime{
 		loadNonterminal: func(ctx context.Context, _ string) (*PersistedOperation, error) {
@@ -479,6 +485,7 @@ func TestLeasedWorkerFailsClosedWhenRefreshLosesFence(t *testing.T) {
 }
 
 func TestLeasedWorkerPrefersRefreshFailureOverIdleTimerCancellation(t *testing.T) {
+	t.Parallel()
 	refreshErr := errors.New("refresh database failure")
 	leasing := &fakeRouteLeaseRuntime{refreshErr: refreshErr, refreshCalls: make(chan struct{}, 1)}
 	worker := &Worker{routeKey: productionRouteKey, interval: time.Hour, manifest: readyWorkerManifest(t), runtime: tickRuntime{
@@ -502,6 +509,7 @@ func TestLeasedWorkerPrefersRefreshFailureOverIdleTimerCancellation(t *testing.T
 }
 
 func TestLeasedWorkerDoesNotRunOrReleaseAfterFailedAcquisition(t *testing.T) {
+	t.Parallel()
 	leasing := &fakeRouteLeaseRuntime{acquireErr: ErrRouteLeaseUnavailable}
 	ticked := false
 	now := time.Unix(1_700_000_000, 0)
@@ -524,6 +532,7 @@ func TestLeasedWorkerDoesNotRunOrReleaseAfterFailedAcquisition(t *testing.T) {
 }
 
 func TestLeasedWorkerWaitsForRollingDeployLeaseHandoffBeforeFirstTick(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -560,6 +569,7 @@ func TestLeasedWorkerWaitsForRollingDeployLeaseHandoffBeforeFirstTick(t *testing
 }
 
 func TestLeasedWorkerLeaseHandoffTimeoutDoesNotTickOrRelease(t *testing.T) {
+	t.Parallel()
 	leasing := &fakeRouteLeaseRuntime{acquireErr: ErrRouteLeaseUnavailable}
 	now := time.Unix(1_700_000_000, 0)
 	ticked := false
@@ -582,6 +592,7 @@ func TestLeasedWorkerLeaseHandoffTimeoutDoesNotTickOrRelease(t *testing.T) {
 }
 
 func TestLeasedWorkerLeaseHandoffBoundsBlockingAcquire(t *testing.T) {
+	t.Parallel()
 	leasing := &fakeRouteLeaseRuntime{acquireBlocks: true}
 	ticked := false
 	worker := &Worker{routeKey: productionRouteKey, runtime: tickRuntime{
@@ -601,6 +612,7 @@ func TestLeasedWorkerLeaseHandoffBoundsBlockingAcquire(t *testing.T) {
 }
 
 func TestLeasedWorkerLeaseHandoffHonorsCancellation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	leasing := &fakeRouteLeaseRuntime{acquireErr: ErrRouteLeaseUnavailable}
@@ -619,6 +631,7 @@ func TestLeasedWorkerLeaseHandoffHonorsCancellation(t *testing.T) {
 }
 
 func TestLeasedWorkerRejectsCallerSuppliedOwnerOutsideDeploymentConvention(t *testing.T) {
+	t.Parallel()
 	leasing := &fakeRouteLeaseRuntime{}
 	worker := &Worker{routeKey: productionRouteKey}
 	if err := worker.Run(context.Background(), leasing, "developer-laptop", DefaultConfig()); err == nil {
@@ -630,6 +643,7 @@ func TestLeasedWorkerRejectsCallerSuppliedOwnerOutsideDeploymentConvention(t *te
 }
 
 func TestLeasedWorkerSurfacesReleaseFailureOnCleanShutdown(t *testing.T) {
+	t.Parallel()
 	releaseErr := errors.New("database unavailable during release")
 	leasing := &fakeRouteLeaseRuntime{releaseErr: releaseErr}
 	ctx, cancel := context.WithCancel(context.Background())

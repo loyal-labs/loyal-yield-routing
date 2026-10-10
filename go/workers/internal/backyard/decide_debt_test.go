@@ -10,6 +10,7 @@ import (
 
 // Controlled snapshots exercise production decisions, not executed transfers.
 func TestNonUSDCDrainFundsInterestShortfallBeforePayoff(t *testing.T) {
+	t.Parallel()
 	_, _, _, _, _, _, accounts := payoffAdmissionFixture(t, 20_000)
 	bound, err := decodeKaminoPayoffBound(accounts, ethenaUSDePYUSD, 42)
 	if err != nil || bound.UpperDebtRaw != 1_001 {
@@ -57,6 +58,7 @@ func TestNonUSDCDrainFundsInterestShortfallBeforePayoff(t *testing.T) {
 }
 
 func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{"AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD"} {
 		t.Run(lane, func(t *testing.T) {
 			s := base()
@@ -135,6 +137,7 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 }
 
 func TestNonUSDCLifecycleSafetyPrecedence(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane = "AUTO/AUTO/PYUSD"
 	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw = true, 100, 40
@@ -184,6 +187,7 @@ func TestNonUSDCLifecycleSafetyPrecedence(t *testing.T) {
 }
 
 func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing.T) {
+	t.Parallel()
 	route, accounts := nonUSDCDebtNAVFixture(t)
 	// Feed the production fixed-account decoder a configured oracle, and 9/6
 	// decimal assets. At 1.5/2 prices, 20,000 collateral raw units support

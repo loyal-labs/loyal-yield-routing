@@ -128,7 +128,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	t.Run("a processed-only failure keeps observing without a resend", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "processed")
 		op := submittedOperation(id, routeKey)
-		waiting, stop := context.WithTimeout(ctx, 1500*time.Millisecond)
+		waiting, stop := context.WithTimeout(ctx, 200*time.Millisecond)
 		defer stop()
 		status, reason, receiptReads := advance(t, waiting, op,
 			`{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"processed"}`,

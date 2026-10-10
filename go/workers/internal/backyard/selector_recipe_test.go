@@ -25,6 +25,7 @@ func selectorRecipeInput(t *testing.T, request any, effects ExpectedEffects) *ph
 // The transport refuses simulation, signing and sends, and the actual price
 // decoders and expense classifier value every supplied message.
 func TestSelectorRecipePricesRepeatedReportsWithoutChargingPrincipalOrRent(t *testing.T) {
+	t.Parallel()
 	_, _, allocate := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 1_000_000, 1_000_000, 0, 0)
 	_, _, report := bridgeAdmissionFixture(t, ReportNAV, 0, 0, 0, 1_000_000)
 	init, _ := initializationReconcileFixture(t)
@@ -69,6 +70,7 @@ func TestSelectorRecipePricesRepeatedReportsWithoutChargingPrincipalOrRent(t *te
 }
 
 func TestSelectorRecipeValuesActualBasicSwapMinimum(t *testing.T) {
+	t.Parallel()
 	lane := SelectedRouteID
 	route, _ := runtimeRoute(lane)
 	request, _ := basicJupiterRequest(t, lane, "USDC->syrupUSDC")
@@ -109,6 +111,7 @@ func TestSelectorRecipeValuesActualBasicSwapMinimum(t *testing.T) {
 }
 
 func TestSelectorRecipePreservesPrerequisiteObservationFloor(t *testing.T) {
+	t.Parallel()
 	_, _, report := bridgeAdmissionFixture(t, ReportNAV, 0, 0, 0, 1_000_000)
 	input := selectorRecipeInput(t, report.Request, report.ExpectedEffects)
 	rpc := budgetBuildRPC(t, 5000, 42)

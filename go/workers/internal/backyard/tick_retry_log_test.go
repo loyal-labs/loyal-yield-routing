@@ -9,6 +9,7 @@ import (
 )
 
 func TestTickRetryLogRateLimitsRepeatedErrors(t *testing.T) {
+	t.Parallel()
 	var out bytes.Buffer
 	l := tickRetryLog{out: &out}
 	now := time.Unix(1_000, 0)

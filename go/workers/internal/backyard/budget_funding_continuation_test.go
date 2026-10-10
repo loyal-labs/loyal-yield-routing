@@ -35,6 +35,7 @@ func fundingContinuationFixture(t *testing.T, output uint64) (Observation, Decis
 }
 
 func TestFundingContinuationPreservesFundedAndUSDCResiduePaths(t *testing.T) {
+	t.Parallel()
 	for _, funded := range []bool{false, true} {
 		o, d, e, m, rpc, client, accounts := fundingContinuationFixture(t, 20_000)
 		o.Snapshot.SquadsIdleRaw = 20_000

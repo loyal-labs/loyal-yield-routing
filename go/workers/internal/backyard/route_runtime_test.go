@@ -11,6 +11,7 @@ import (
 // decode to exactly 32 bytes; a wrong-but-well-formed address still decodes,
 // so the parity test below is what binds the values to the captured graph.
 func TestBasicRuntimeRoutePinnedAddressesDecode(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		route, err := runtimeRoute(lane)
 		if err != nil {
@@ -80,6 +81,7 @@ func basicLanePinnedFields(route RuntimeRoute) any {
 }
 
 func TestOnReRuntimeLaneMatchesCapturedParityTable(t *testing.T) {
+	t.Parallel()
 	installed, err := runtimeRoute("OnRe/ONyc/USDC")
 	if err != nil {
 		t.Fatal(err)

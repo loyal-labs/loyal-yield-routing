@@ -9,6 +9,7 @@ import (
 )
 
 func TestReportTicketV1ABIIsPinned(t *testing.T) {
+	t.Parallel()
 	if reportTicketPDA != "8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq" ||
 		reportTicketStateLength != 96 || reportTicketVersion != 1 || reportTicketBump != 255 ||
 		!bytes.Equal(reportTicketStateDiscriminator, []byte{0xf5, 0x68, 0xb6, 0xc5, 0x3a, 0xe7, 0x74, 0xed}) ||
@@ -33,6 +34,7 @@ func exactReportTicketAccount(t *testing.T, lastConsumed uint64) ConfirmedAccoun
 }
 
 func TestReportTicketObservationRejectsArmedAndLayoutDrift(t *testing.T) {
+	t.Parallel()
 	account := exactReportTicketAccount(t, 100)
 	ticket, err := decodeObservedReportTicket(account)
 	if err != nil || ticket.Armed || ticket.LastConsumedSequence != 100 {
@@ -52,6 +54,7 @@ func TestReportTicketObservationRejectsArmedAndLayoutDrift(t *testing.T) {
 }
 
 func TestCapitalAndNAVBuildAtomicArmThenVoltrPayload(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		action    Action
 		amount    uint64
@@ -106,6 +109,7 @@ func TestCapitalAndNAVBuildAtomicArmThenVoltrPayload(t *testing.T) {
 }
 
 func TestStageRemainsSingleInstructionWithoutTicket(t *testing.T) {
+	t.Parallel()
 	instructions, constraints, err := ticketedBridgeInstructions(bridgeTestRequest(StageSquadsToVoltr, 1_000_000))
 	if err != nil {
 		t.Fatal(err)

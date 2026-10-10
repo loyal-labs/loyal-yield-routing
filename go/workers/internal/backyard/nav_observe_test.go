@@ -12,6 +12,7 @@ import (
 )
 
 func TestCrossDecimalValuationUsesPricesAndConservativeRounding(t *testing.T) {
+	t.Parallel()
 	var one, two [16]byte
 	binary.LittleEndian.PutUint64(one[:8], uint64(1)<<60)
 	binary.LittleEndian.PutUint64(two[:8], uint64(2)<<60)
@@ -193,6 +194,7 @@ func routeNAVFixture(t *testing.T, slot int64) []ConfirmedAccount {
 }
 
 func TestComputeRouteNAVValuesConfirmedCustodyAndPositionConservatively(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	accounts := routeNAVFixture(t, 77)
 	got, err := ComputeRouteNAV(77, accounts, manifest, nil)
@@ -251,6 +253,7 @@ func nonUSDCDebtNAVFixture(t *testing.T) (RuntimeRoute, []ConfirmedAccount) {
 }
 
 func TestRouteNAVNormalizesNonUSDCDebtAndIncludesIdleDebt(t *testing.T) {
+	t.Parallel()
 	route, accounts := nonUSDCDebtNAVFixture(t)
 	got, err := ComputeRouteNAVForRoute(77, accounts, readyWorkerManifest(t), nil, route)
 	if err != nil {
@@ -270,6 +273,7 @@ func TestRouteNAVNormalizesNonUSDCDebtAndIncludesIdleDebt(t *testing.T) {
 }
 
 func TestNonUSDCDebtNAVRejectsIncompleteOrMismatchedInputs(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"missing reference", "missing custody", "wrong program", "wrong reference decimals", "future reference"} {
 		t.Run(name, func(t *testing.T) {
 			route, accounts := nonUSDCDebtNAVFixture(t)
@@ -300,6 +304,7 @@ func TestNonUSDCDebtNAVRejectsIncompleteOrMismatchedInputs(t *testing.T) {
 }
 
 func TestComputeRouteNAVPoststateOverridesOnlyCustody(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	accounts := routeNAVFixture(t, 77)
 	post := RouteNAVCustodies{VoltrIdleRaw: 7, StrategyUSDCraw: 5, SquadsUSDCraw: 10, SquadsPRIMEraw: 3}
@@ -315,6 +320,7 @@ func TestComputeRouteNAVPoststateOverridesOnlyCustody(t *testing.T) {
 }
 
 func TestComputeRouteNAVAcceptsRefreshMarkerAndRejectsInvalidInputs(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	t.Run("refresh marker", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
@@ -357,6 +363,7 @@ func TestComputeRouteNAVAcceptsRefreshMarkerAndRejectsInvalidInputs(t *testing.T
 }
 
 func TestComputeRouteNAVRejectsOverflowNegativeNAVAndReceiptDrift(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	t.Run("valuation overflow", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
@@ -383,6 +390,7 @@ func TestComputeRouteNAVRejectsOverflowNegativeNAVAndReceiptDrift(t *testing.T) 
 }
 
 func TestStrategyTwoReceiptVersionAndTrackedCustody(t *testing.T) {
+	t.Parallel()
 	a := strategyReceiptWithCustodyFixture(t, 500, 100)
 	r, err := decodeStrategyReceipt(a)
 	if err != nil || r.PositionValueRaw != 500 || r.CustodyTrackedRaw != 100 {

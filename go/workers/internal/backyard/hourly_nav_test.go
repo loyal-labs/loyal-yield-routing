@@ -8,6 +8,7 @@ import (
 )
 
 func TestHourlyRoutineNAVKeepsUrgentReportsAndSafety(t *testing.T) {
+	t.Parallel()
 	for _, lane := range []string{RouteID, SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane} {
 		t.Run(lane, func(t *testing.T) {
 			s := base()
@@ -47,6 +48,7 @@ func TestHourlyRoutineNAVKeepsUrgentReportsAndSafety(t *testing.T) {
 }
 
 func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
+	t.Parallel()
 	const wealth, supply = 1_207_762_608, 3_256_644
 	floor := new(big.Int).Quo(new(big.Int).Lsh(big.NewInt(wealth), 48), big.NewInt(supply))
 	in := coherentFeeSelectorFixture(t, wealth, supply, floor)
@@ -86,6 +88,7 @@ func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
 // KEEP also pays the approved fee. Comparing a taxed candidate to untaxed KEEP
 // can reject a profitable move even after correcting the report cadence.
 func TestHourlyFeeComparisonDoesNotExemptKEEP(t *testing.T) {
+	t.Parallel()
 	const wealth, supply = 1_207_762_608, 3_256_644
 	floor := new(big.Int).Quo(new(big.Int).Lsh(big.NewInt(wealth), 48), big.NewInt(supply))
 	in := coherentFeeSelectorFixture(t, wealth, supply, floor)
@@ -105,6 +108,7 @@ func TestHourlyFeeComparisonDoesNotExemptKEEP(t *testing.T) {
 }
 
 func TestHourlyKEEPUpperCoversPinnedHolderReturns(t *testing.T) {
+	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
 	for _, tc := range []struct{ gain, actual float64 }{
 		{100_000, 79_999.489455}, {100_000, 79_616.834171}, {1, 0}, {-100_000, -100_000},
@@ -122,6 +126,7 @@ func TestHourlyKEEPUpperCoversPinnedHolderReturns(t *testing.T) {
 }
 
 func TestHourlyFeeIncomeIncludesPeakBeforeEndingLoss(t *testing.T) {
+	t.Parallel()
 	m := LaneEconomics{NativeAPY: math.Expm1(.10)}
 	e := pilotForecastEconomics(pilotEconomics{Debt: 1_000_000_000, Proceeds: 1_000_000_000, APR: .19}, 1_000_000_000, m, 3, 0)
 	if e.Gain >= 0 || e.PositiveIncome < 2_000_000 || e.PositiveIncome > 4_000_000 {
@@ -130,6 +135,7 @@ func TestHourlyFeeIncomeIncludesPeakBeforeEndingLoss(t *testing.T) {
 }
 
 func TestHourlyNAVFreshnessRetainsActualReportTimestamp(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0).UTC()
 	for _, age := range []int64{1800, 3599, 3600} {
 		s := base()
@@ -148,6 +154,7 @@ func TestHourlyNAVFreshnessRetainsActualReportTimestamp(t *testing.T) {
 }
 
 func TestHourlyKEEPUpperDoesNotTaxQ48DustWithoutProfit(t *testing.T) {
+	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_051_576, 1<<60, big.NewInt(256))
 	for _, gain := range []float64{0, -1, -1000} {
 		if got := selectorKeepGainUpper(in.Snapshot, gain); got != gain {

@@ -44,6 +44,7 @@ func sfIntervalPrice(mint, program string, decimals byte, slot int64) BudgetPric
 }
 
 func TestSelectorMidpointPriceValueReconstructsCenterAndRefusesMalformed(t *testing.T) {
+	t.Parallel()
 	p := sfIntervalPrice("Mint11", "Prog11", 6, 42)
 	value, err := selectorMidpointPriceValue(p, 1_000_000, "Mint11", "Prog11", 42)
 	if err != nil || value < 999_998 || value > 1_000_002 {
@@ -84,6 +85,7 @@ func TestSelectorMidpointPriceValueReconstructsCenterAndRefusesMalformed(t *test
 }
 
 func TestComposeExpectedExpenseFallsBackPerRecipeWithoutErasingDestination(t *testing.T) {
+	t.Parallel()
 	zero := int64(0)
 	seven := int64(7)
 	destination := selectorRecipe{CostRaw: 400, ExpectedCostRaw: &seven}
@@ -108,6 +110,7 @@ func TestComposeExpectedExpenseFallsBackPerRecipeWithoutErasingDestination(t *te
 }
 
 func TestMoveQuoteEconomicCostFallsBackAndBindsEvidence(t *testing.T) {
+	t.Parallel()
 	fallback := MoveQuote{CostRaw: 300_000}
 	if fallback.selectorEconomicCostRaw() != 300_000 {
 		t.Fatal("old quote must fall back to the bounded cost")
@@ -196,6 +199,7 @@ func ladderLiveObservation(t *testing.T, nativeAPY float64) (RouteManifest, *cha
 }
 
 func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
 	// This synthetic vault holds only 100 USDC of NAV, so the default 10 bps
 	// uncertainty wedge (0.10) would exceed a 1 USDC candidate's whole forecast
@@ -244,6 +248,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 }
 
 func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
 	policy.MinimumBenefitRaw = 1_000_000_000_000
 	var legs []uint64
@@ -265,6 +270,7 @@ func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) 
 }
 
 func TestRecipeExpectedCostExcludesMarginWhileBoundKeepsFloor(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
 	if err != nil {
@@ -285,6 +291,7 @@ func TestRecipeExpectedCostExcludesMarginWhileBoundKeepsFloor(t *testing.T) {
 }
 
 func TestLiveSelectorLadderStopsAfterQuoteWindowBudget(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
 	policy.UncertaintyBPS = 0
 	var legs []uint64

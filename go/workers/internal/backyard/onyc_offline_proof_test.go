@@ -23,6 +23,7 @@ type onycProofInput struct {
 }
 
 func TestExportONycOfflineProof(t *testing.T) {
+	t.Parallel()
 	name := os.Getenv("ONYC_PROOF_INPUT")
 	if name == "" {
 		t.Skip("explicit offline request file required")
@@ -378,6 +379,7 @@ func onycProofPrint(t *testing.T, result map[string]any) {
 // USDC-value product before dividing. A zero release otherwise sends a modest
 // withdrawal into the full-exit fallback at the approved pilot size.
 func TestONycPilotSizedPartialWithdrawalDoesNotOverflow(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name                                 string
 		collateral, debt, receipts, expected int64

@@ -18,6 +18,7 @@ import (
 // hold reason only when it is one of the locked admission's own codes, and
 // that every allowlisted code echoes itself verbatim.
 func TestSelectorEvaluateFailureCodesAllowlisted(t *testing.T) {
+	t.Parallel()
 	for reason := range selectorEvaluateAdmissionHoldCodes {
 		if got := sanitizedSelectorEvaluateFailure(&BudgetHold{Reason: reason}); got != reason {
 			t.Fatalf("allowlisted hold %q did not echo itself: %q", reason, got)
@@ -37,6 +38,7 @@ func TestSelectorEvaluateFailureCodesAllowlisted(t *testing.T) {
 // TestSelectorEvaluateFailureDatabaseClasses proves each known database error
 // class maps to its one fixed code, including when wrapped.
 func TestSelectorEvaluateFailureDatabaseClasses(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -60,6 +62,7 @@ func TestSelectorEvaluateFailureDatabaseClasses(t *testing.T) {
 // errors and unlisted SQL classes collapse to the generic code without ever
 // carrying their text — DSNs, hosts and passwords stay masked.
 func TestSelectorEvaluateFailureMasksSecrets(t *testing.T) {
+	t.Parallel()
 	secrets := []string{"hunter2", "postgresql://", "10.0.0.7"}
 	cases := []struct {
 		name string

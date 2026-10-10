@@ -91,6 +91,7 @@ func payoffAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...Co
 // After a successful repayment the debt-free position has a fresh NAV ->
 // withdrawal -> return path, and a later nonzero debt invalidates it.
 func TestPostPayoffNAVPricesTheDebtFreeReturn(t *testing.T) {
+	t.Parallel()
 	o, _, _, m, rpc, client, accounts := payoffAdmissionFixture(t, 20_000)
 	// Model a 1000-unit actual repayment; largest possible residue is 10000.
 	obligation := accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation)
@@ -121,6 +122,7 @@ func TestPostPayoffNAVPricesTheDebtFreeReturn(t *testing.T) {
 // The full-payoff condition runs on the persisted signed bytes at build and
 // send: a changed rate is not grandfathered by yesterday's sufficient wire.
 func TestFullPayoffPrestateRefusesUnderfundingBeforeSigner(t *testing.T) {
+	t.Parallel()
 	_, _, e, _, rpc, _, a := payoffAdmissionFixture(t, 20_000)
 	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
@@ -133,6 +135,7 @@ func TestFullPayoffPrestateRefusesUnderfundingBeforeSigner(t *testing.T) {
 }
 
 func TestPayoffBoundUsesAccrualBasisAndUnroundedDebt(t *testing.T) {
+	t.Parallel()
 	_, _, _, _, _, _, accounts := payoffAdmissionFixture(t, 20_000)
 	route := ethenaUSDePYUSD
 	obligation := accountAt(accounts, route.Kamino.Obligation)

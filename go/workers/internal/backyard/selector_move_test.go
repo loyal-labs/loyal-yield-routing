@@ -7,6 +7,7 @@ import (
 )
 
 func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle-move", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 100_000_000}
 	o := tickObservation(s)
@@ -41,6 +42,7 @@ func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *test
 }
 
 func TestPilotSelectorSizesFromMinimumReturnedCash(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 10_000_000, 10_000_000
 	q := &in.Quotes[0]
@@ -58,6 +60,7 @@ func TestPilotSelectorSizesFromMinimumReturnedCash(t *testing.T) {
 }
 
 func TestPilotSelectorRetainsBufferAfterSourceExitLoss(t *testing.T) {
+	t.Parallel()
 	in := selectorFixture()
 	in.Snapshot.TotalVaultNAVRaw, in.Snapshot.VoltrIdleRaw = 10_000_000, 10_000_000
 	in.Policy.IdleBufferRaw = 2_000_000

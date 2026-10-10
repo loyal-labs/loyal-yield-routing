@@ -28,6 +28,7 @@ func obligationEntryStates() []struct {
 }
 
 func TestAbsentObligationHoldsEntryBeforeAnyConstruction(t *testing.T) {
+	t.Parallel()
 	for _, state := range obligationEntryStates() {
 		t.Run(state.name, func(t *testing.T) {
 			s := state.seed(base())
@@ -64,6 +65,7 @@ func TestAbsentObligationHoldsEntryBeforeAnyConstruction(t *testing.T) {
 }
 
 func TestObligationHoldIsADecidableNonPolicyHold(t *testing.T) {
+	t.Parallel()
 	for _, state := range obligationEntryStates() {
 		t.Run(state.name, func(t *testing.T) {
 			s := state.seed(base())
@@ -87,6 +89,7 @@ func TestObligationHoldIsADecidableNonPolicyHold(t *testing.T) {
 }
 
 func TestAbsentObligationKeepsAccountingLegsLive(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.WithdrawalDemandRaw = 3
 	s.VoltrIdleRaw = 3
@@ -112,6 +115,7 @@ func flattenObligation(accounts []ConfirmedAccount) []ConfirmedAccount {
 }
 
 func TestObligationPresenceIsObservedNotAssumed(t *testing.T) {
+	t.Parallel()
 	manifest := readyWorkerManifest(t)
 	config, err := pinnedKaminoObservationConfig()
 	if err != nil {

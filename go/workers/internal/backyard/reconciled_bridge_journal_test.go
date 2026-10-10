@@ -18,6 +18,7 @@ import (
 // columns the SQL ordering uses, so "latest" never depends on which row the
 // database happens to scan first.
 func TestJournalOrderAfterCompositeIdentity(t *testing.T) {
+	t.Parallel()
 	early := time.Unix(1_700_000_000, 0)
 	later := early.Add(time.Second)
 	if !journalOrderAfter(journalOrderKey{slot: 200, updatedAt: later, operationID: "b"}, journalOrderKey{slot: 200, updatedAt: early, operationID: "a"}) {

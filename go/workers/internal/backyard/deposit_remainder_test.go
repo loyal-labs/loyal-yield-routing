@@ -6,6 +6,7 @@ import (
 )
 
 func TestDepositRemainderDoesNotRestartEntryLoop(t *testing.T) {
+	t.Parallel()
 	_, _, _, _, _, _, accounts := depositAdmissionFixtureForPosition(t, "", true)
 	minimum, err := kaminoDepositMinimum(accounts, ethenaUSDePYUSD, 42, math.MaxInt64)
 	if err != nil {
@@ -55,6 +56,7 @@ func TestDepositRemainderDoesNotRestartEntryLoop(t *testing.T) {
 }
 
 func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
+	t.Parallel()
 	for _, lane := range selectorLanes {
 		t.Run(lane, func(t *testing.T) {
 			s := base()

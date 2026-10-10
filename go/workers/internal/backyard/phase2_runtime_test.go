@@ -20,6 +20,7 @@ func embeddedTestManifest(t testing.TB) RouteManifest {
 }
 
 func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
+	t.Parallel()
 	snapshot := Snapshot{
 		ObservationID: "maple-state", Slot: 42, RouteKind: RouteKind, RouteLane: SelectedRouteID,
 		StrategyKey: SelectedRouteID, Fresh: true, SquadsIdleRaw: 100,
@@ -40,6 +41,7 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 }
 
 func TestPhase2WithdrawalDemandRequiresExplicitDrain(t *testing.T) {
+	t.Parallel()
 	snapshot := Snapshot{
 		ObservationID: "maple-withdrawal", Slot: 42, RouteKind: RouteKind,
 		RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, Fresh: true,
@@ -66,6 +68,7 @@ func TestPhase2WithdrawalDemandRequiresExplicitDrain(t *testing.T) {
 }
 
 func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
+	t.Parallel()
 	snapshot := Snapshot{
 		ObservationID: "maple-terminal", Slot: 43, RouteKind: RouteKind,
 		RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, Fresh: true,
@@ -80,6 +83,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 }
 
 func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	addresses := routeFixedAddresses(manifest)
 	for _, lane := range []string{RouteID, SelectedRouteID} {
@@ -103,6 +107,7 @@ func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
 }
 
 func TestPhase2UnsupportedLaneFailsClosed(t *testing.T) {
+	t.Parallel()
 	if _, err := runtimeRoute("OnRe/ONyc/USDC"); err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +122,7 @@ func TestPhase2UnsupportedLaneFailsClosed(t *testing.T) {
 }
 
 func TestPhase2RuntimeActivationIncludesBasicRoutes(t *testing.T) {
+	t.Parallel()
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -133,6 +139,7 @@ func TestPhase2RuntimeActivationIncludesBasicRoutes(t *testing.T) {
 }
 
 func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	var err error
 	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
@@ -162,6 +169,7 @@ func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
 }
 
 func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
 	if err != nil {
@@ -183,6 +191,7 @@ func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
 }
 
 func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		route, err := runtimeRoute(lane)
@@ -236,6 +245,7 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 }
 
 func TestPhase2CutoverRejectsAnyLegacyPrimeExposure(t *testing.T) {
+	t.Parallel()
 	if legacyPrimeExposure(KaminoPosition{}, 0) {
 		t.Fatal("flat legacy route was treated as exposed")
 	}
@@ -256,6 +266,7 @@ func TestPhase2CutoverRejectsAnyLegacyPrimeExposure(t *testing.T) {
 }
 
 func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T) {
+	t.Parallel()
 	entry, entryLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapStableToCollateralStep)
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +282,7 @@ func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T
 }
 
 func TestPhase2JupiterQuotePinsManifestVenue(t *testing.T) {
+	t.Parallel()
 	quote := jupiter.Quote{
 		InputMint: bridgeUSDC, OutputMint: mapleSyrupUSDCUSDC.Kamino.CollateralMint,
 		InAmount: "1000000", OutAmount: "846514", OtherAmountThreshold: "842281",
@@ -292,6 +304,7 @@ func mustBasicPolicy(t *testing.T, family BasicPolicyFamily) string {
 }
 
 func TestRouteNeutralActionRequiresSelectedStrategy(t *testing.T) {
+	t.Parallel()
 	decision := Decision{Action: OpenRouteStep, Reason: "test", AmountRaw: 1, IdempotencyKey: "test"}
 	if decision.Validate() == nil {
 		t.Fatal("route-neutral action without selected strategy was accepted")
@@ -303,6 +316,7 @@ func TestRouteNeutralActionRequiresSelectedStrategy(t *testing.T) {
 }
 
 func TestPreparedDecisionEqualityUsesRefreshedIdentityButPinsSemantics(t *testing.T) {
+	t.Parallel()
 	prepared := Decision{Action: OpenRouteStep, Reason: "prime_collateral_ready", AmountRaw: 1_000_000, IdempotencyKey: "old-observation", StrategyKey: SelectedRouteID}
 	refreshed := prepared
 	refreshed.IdempotencyKey = "new-accrued-observation"
@@ -321,6 +335,7 @@ func TestPreparedDecisionEqualityUsesRefreshedIdentityButPinsSemantics(t *testin
 }
 
 func TestPhase2CutoverDrainChunksLegacyCollateral(t *testing.T) {
+	t.Parallel()
 	decision := Decide(Snapshot{
 		ObservationID: "cutover", Slot: 1, RouteKind: RouteKind, RouteLane: RouteID,
 		Fresh: true, CutoverDrain: true, HasPosition: true,
@@ -340,6 +355,7 @@ func TestPhase2CutoverDrainChunksLegacyCollateral(t *testing.T) {
 }
 
 func TestPhase2CutoverFundsMaxLTVRepaymentBeforeCollateralRelease(t *testing.T) {
+	t.Parallel()
 	decision := Decide(Snapshot{
 		ObservationID: "cutover-repayment", Slot: 1, RouteKind: RouteKind, RouteLane: RouteID,
 		Fresh: true, CutoverDrain: true, HasPosition: true,

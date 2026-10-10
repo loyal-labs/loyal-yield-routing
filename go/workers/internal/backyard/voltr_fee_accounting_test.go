@@ -76,6 +76,7 @@ func TestVoltrApprovedFeeTupleAndEveryTermDrift(t *testing.T) {
 }
 
 func TestVoltrLegitimateFeeRatioKeepsNAVAndQueueUnwindLive(t *testing.T) {
+	t.Parallel()
 	var s Snapshot
 	// Accrued fee LP is ~2% of effective supply. A withdrawal burns 1000
 	// circulating LP and lifts the unchanged accumulator to ~4%. Decode each
@@ -119,6 +120,7 @@ func TestVoltrLegitimateFeeRatioKeepsNAVAndQueueUnwindLive(t *testing.T) {
 }
 
 func TestVoltrLPTotalsRejectWrapAndSignedOverflowAtBothBoundaries(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                                 string
 		manager, admin, protocol, mint, dead uint64
@@ -156,6 +158,7 @@ func TestVoltrLPTotalsRejectWrapAndSignedOverflowAtBothBoundaries(t *testing.T) 
 }
 
 func TestVoltrFeeHarvestPreservesEffectiveSupplyAndGrossNAV(t *testing.T) {
+	t.Parallel()
 	accounts := routeNAVFixture(t, 77)
 	vault := accountAt(accounts, bridgeVoltrVault).Data
 	binary.LittleEndian.PutUint16(vault[514:516], 2000)

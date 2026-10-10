@@ -10,6 +10,7 @@ import (
 // The finisher must give the serial proof for the same inputs and refuse a
 // custody or config change after the read.
 func TestPrefetchedOwnershipProofMatchesSerialAndCatchesLaterChanges(t *testing.T) {
+	t.Parallel()
 	cfg := custodyAttributionConfig()
 	spend := custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000)
 	lease := RouteLease{RouteKey: cfg.RouteKey, Owner: "owner", FencingToken: 7}
@@ -55,6 +56,7 @@ func TestPrefetchedOwnershipProofMatchesSerialAndCatchesLaterChanges(t *testing.
 }
 
 func TestPreDecisionSeamUsesThePrefetchedProof(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, productionRouteKey)
 	effects := custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000)

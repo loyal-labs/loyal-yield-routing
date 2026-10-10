@@ -42,6 +42,7 @@ func releaseAdmissionFixture(t *testing.T, output uint64) (Observation, Decision
 }
 
 func TestReleasePricesFundingPayoffAndCompleteReturn(t *testing.T) {
+	t.Parallel()
 	o, d, e, m, rpc, client, accounts := releaseAdmissionFixture(t, 20_000)
 	plan, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	if err != nil {
@@ -71,6 +72,7 @@ func TestReleasePricesFundingPayoffAndCompleteReturn(t *testing.T) {
 }
 
 func TestReleaseRejectsUnsafeFundingAndChangedSignedState(t *testing.T) {
+	t.Parallel()
 	o, d, e, m, rpc, client, _ := releaseAdmissionFixture(t, 1_000)
 	_, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
@@ -95,6 +97,7 @@ func TestReleaseRejectsUnsafeFundingAndChangedSignedState(t *testing.T) {
 // 2026-09-24: sizing on the refreshed-reserve simulation produced a release
 // 290 receipts above what the raw re-check allowed, and every withdrawal held.
 func TestRawRepaymentReleaseSizingPassesSendRecheck(t *testing.T) {
+	t.Parallel()
 	route, accounts := pilotReleaseFixture(t, SelectedRouteID)
 	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
 	m, err := loadEmbeddedRouteManifest()
@@ -130,6 +133,7 @@ func TestRawRepaymentReleaseSizingPassesSendRecheck(t *testing.T) {
 // refreshed simulation left the wire under the send-time bound and every
 // withdrawal repay held with full_payoff_request_underfunded.
 func TestRawFullPayoffSizingPassesSendRecheck(t *testing.T) {
+	t.Parallel()
 	_, _, _, m, rpc, _, accounts := releaseAdmissionFixture(t, 20_000)
 	route := ethenaUSDePYUSD
 	// Funded debt custody, served by the fixture RPC to every capture.

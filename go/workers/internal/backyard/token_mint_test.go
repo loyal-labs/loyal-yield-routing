@@ -6,6 +6,7 @@ import (
 )
 
 func TestExecutionMintRejectsChangedTransferSemantics(t *testing.T) {
+	t.Parallel()
 	data := make([]byte, 166)
 	data[44], data[45], data[165] = 6, 1, 1
 	appendExtension := func(kind uint16, value []byte) {

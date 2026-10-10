@@ -5,6 +5,7 @@ import "testing"
 // Live 2026-09-28: a $5 claim against $1,295 Voltr idle started a full AUTO
 // unwind. Covered demand on a debt lane must report or hold, never unwind.
 func TestNonUSDCCoveredWithdrawalDoesNotUnwind(t *testing.T) {
+	t.Parallel()
 	s := base()
 	s.RouteLane = autoAUTOPYUSD.Lane
 	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw = true, 560_000_000, 190_000_000

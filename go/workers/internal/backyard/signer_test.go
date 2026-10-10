@@ -8,6 +8,7 @@ import (
 )
 
 func TestDecodeSolanaKeypairMaterialMatchesRepoFormats(t *testing.T) {
+	t.Parallel()
 	seed := bytes.Repeat([]byte{7}, ed25519.SeedSize)
 	expected := ed25519.NewKeyFromSeed(seed)
 	for _, encoded := range []string{hex.EncodeToString(seed), encodeBase58(seed), "[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7]"} {

@@ -7,6 +7,7 @@ import (
 )
 
 func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *testing.T) {
+	t.Parallel()
 	o, d, e := bridgeAdmissionFixture(t, ReportNAV, 0, 90_000_000, 0, 10_000_000)
 	o.Snapshot.RouteLane, o.Snapshot.StrategyKey = SelectedRouteID, SelectedRouteID
 	d.StrategyKey = SelectedRouteID
@@ -44,6 +45,7 @@ func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *te
 }
 
 func TestSelectorSourcePricesFundedPositionAndUsesMinimumResidue(t *testing.T) {
+	t.Parallel()
 	o, m, rpc, client, _ := usdcReturnFixture(t)
 	o.Snapshot.WithdrawalDemandRaw = 0
 	o.Snapshot.ReportSnapshotDigest = sha256Bytes([]byte("controlled-source-nav"))
@@ -81,6 +83,7 @@ func TestSelectorSourcePricesFundedPositionAndUsesMinimumResidue(t *testing.T) {
 }
 
 func TestSelectorSourceIdleNeedsNoExitAndPendingWorkPrecedesEconomics(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 10_000_000}
 	q, err := observeSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, m, tickObservation(s))
@@ -96,6 +99,7 @@ func TestSelectorSourceIdleNeedsNoExitAndPendingWorkPrecedesEconomics(t *testing
 }
 
 func TestSelectorSourcePricesFullTenUSDCLoopWithRepaymentRelease(t *testing.T) {
+	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)
 	obligation := obligationFixture(t, 42, 15_000_000, 5_000_000)
@@ -141,6 +145,7 @@ func TestSelectorSourcePricesFullTenUSDCLoopWithRepaymentRelease(t *testing.T) {
 }
 
 func TestSelectorSourceRetainedObservationCannotMoveBackwards(t *testing.T) {
+	t.Parallel()
 	o, d, e := bridgeAdmissionFixture(t, ReportNAV, 0, 0, 0, 1_000_000)
 	o.Snapshot.RouteLane, o.Snapshot.StrategyKey = SelectedRouteID, SelectedRouteID
 	d.StrategyKey = SelectedRouteID

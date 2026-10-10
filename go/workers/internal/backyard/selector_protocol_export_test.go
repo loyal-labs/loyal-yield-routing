@@ -195,6 +195,7 @@ func TestExportSelectorProtocolRelease(t *testing.T) {
 
 // Retained SBF witnesses must remain byte-identical to today's compiler.
 func TestSelectorProtocolMessagesMatchCurrentCompiler(t *testing.T) {
+	t.Parallel()
 	dir := os.Getenv("SELECTOR_PROTOCOL_DIR")
 	if dir == "" {
 		t.Skip("explicit retained protocol evidence required")

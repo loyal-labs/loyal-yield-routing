@@ -115,6 +115,7 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 // passes against its own custody; a changed debt buffer refuses, and a request
 // that also claims entry-return authority is refused by the effect graph.
 func TestLeverageSwapPrestateBindsCustodyAndIntent(t *testing.T) {
+	t.Parallel()
 	_, _, e, _, rpc, _, accounts := leverageAdmissionFixture(t, 20_000, "")
 	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)

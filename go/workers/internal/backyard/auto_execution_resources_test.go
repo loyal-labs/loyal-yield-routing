@@ -98,6 +98,7 @@ func resourceInstructionIsCanonicalUnitLimit(t *testing.T, instruction resourceT
 }
 
 func TestAutoExecutionHeapInstructionIsCanonical(t *testing.T) {
+	t.Parallel()
 	heap := autoComputeBudgetHeapInstruction()
 	if heap.program != publicKey(solana.ComputeBudget) {
 		t.Fatal("heap instruction program drifted from the ComputeBudget identity")
@@ -115,6 +116,7 @@ func TestAutoExecutionHeapInstructionIsCanonical(t *testing.T) {
 }
 
 func TestAutoExecutionHeapInstructionRejectsDrift(t *testing.T) {
+	t.Parallel()
 	canonical := autoComputeBudgetHeapInstruction()
 	drifts := map[string]compiledInstruction{
 		"wrong discriminator": {program: canonical.program, data: []byte{2, 0, 0, 1, 0}},
@@ -137,6 +139,7 @@ func TestAutoExecutionHeapInstructionRejectsDrift(t *testing.T) {
 // refresh-plus-policy four, and the AUTO legacy wrapper carries the canonical
 // frame ahead of exactly one payload.
 func TestLegacyPublicCompilerGatesArePreserved(t *testing.T) {
+	t.Parallel()
 	delegate, hash := mustKey(bridgeDelegate), mustKey(bridgeSettings)
 	outer := compiledInstruction{program: publicKey(squads.ProgramID), data: append([]byte(nil), squads.ExecuteTransactionSyncV2Discriminator[:]...)}
 	if _, err := compileLegacyMessage(delegate, hash, nil); err == nil {
@@ -169,6 +172,7 @@ func TestLegacyPublicCompilerGatesArePreserved(t *testing.T) {
 // back: legacy envelope, canonical heap frame first, then the exact
 // refresh-plus-policy payload, still inside the 1232-byte signed packet.
 func TestAutoKaminoExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	delegate := mustKey(bridgeDelegate)
 	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
@@ -219,6 +223,7 @@ func TestAutoKaminoExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 // both lead with the canonical heap frame, and the oversized edge stays
 // fail-closed without hints.
 func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
+	t.Parallel()
 	delegate := mustKey(bridgeDelegate)
 	request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 0)
 	legacy, err := compileJupiterMessageForDelegate(request, delegate)
@@ -275,6 +280,7 @@ func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 // wire back; the public compiler above it keeps the exact installed
 // selector-lane bytes with no resource instruction.
 func TestAutoInitializerExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
+	t.Parallel()
 	manifest, request := autoInitializerRequestFixture(t)
 	message, err := manifest.compileKaminoInitializationMessage(request)
 	if err != nil {
@@ -317,6 +323,7 @@ func TestAutoInitializerExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T
 // four-instruction installed wire with no resource instruction, even though
 // the candidate AUTO binding is present on the same manifest.
 func TestInstalledExecutionMessagesStayByteIdenticalWithoutResources(t *testing.T) {
+	t.Parallel()
 	request := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
 	compiled, err := compileKaminoMessageForDelegate(request, mustKey(bridgeDelegate))
 	if err != nil {
@@ -399,6 +406,7 @@ func signTestWire(t *testing.T, key []byte, message []byte) []byte {
 // every mutation — stripped, reordered, duplicated, non-canonical, or an
 // arbitrary compute instruction — fails closed.
 func TestAutoSignedWireValidatesThroughTheDecodeGate(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	delegateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{31}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(delegateKey.Public().(ed25519.PublicKey))
@@ -501,6 +509,7 @@ func TestAutoSignedWireValidatesThroughTheDecodeGate(t *testing.T) {
 // of the static Squads outer validates, the installed single-outer shape stays
 // admitted, and duplicated or drifted resource frames fail closed.
 func TestAutoVersionedWireValidatesThroughTheDecodeGate(t *testing.T) {
+	t.Parallel()
 	delegateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{32}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(delegateKey.Public().(ed25519.PublicKey))
 	request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-12)
@@ -581,6 +590,7 @@ func signedTestBuildResult(t *testing.T, key ed25519.PrivateKey, message []byte)
 // unknown message version is rejected, and retained signature/hash checks still
 // fire on both routes.
 func TestAutoPersistedBuildResultValidationRoutesByWireVersion(t *testing.T) {
+	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	delegateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{33}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(delegateKey.Public().(ed25519.PublicKey))

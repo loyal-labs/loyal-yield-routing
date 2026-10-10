@@ -3,6 +3,7 @@ package backyard
 import "testing"
 
 func TestKaminoFarmUserStateDerivationMatchesRustPairs(t *testing.T) {
+	t.Parallel()
 	maple, err := deriveKaminoObligationFarmUserState(
 		"87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y",
 		"Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",

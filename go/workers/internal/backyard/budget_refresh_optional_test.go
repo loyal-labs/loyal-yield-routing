@@ -17,6 +17,7 @@ import (
 // zero-value shape confirmedAccounts returns — while every
 // required address still resolves.
 func TestSimulatedReserveRefreshOptionalCapturePreservesPinnedAbsence(t *testing.T) {
+	t.Parallel()
 	client := newFakeChain(t, nil)
 	rpcOf(client).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var payload struct {
@@ -56,6 +57,7 @@ func TestSimulatedReserveRefreshOptionalCapturePreservesPinnedAbsence(t *testing
 // optional-aware capture still rejects a null required account, and the strict
 // price consumer keeps rejecting any null at all.
 func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		optional  bool
@@ -107,6 +109,7 @@ func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
 // a single-fee-payer message with canonical roles, deduplicated keys, valid
 // instruction indexes, and no lowered privilege for instruction accounts.
 func TestEncodeLegacyMessageCaptureAccountsStayReadOnly(t *testing.T) {
+	t.Parallel()
 	feePayer := mustKey(bridgeDelegate)
 	hash := mustKey(bridgeUSDC)
 	instruction := compiledInstruction{
@@ -178,6 +181,7 @@ func TestEncodeLegacyMessageCaptureAccountsStayReadOnly(t *testing.T) {
 // with -32602. The compiled refresh message must therefore carry every
 // requested capture address so one simulation returns the full batch.
 func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
+	t.Parallel()
 	client := newFakeChain(t, nil)
 	rpcOf(client).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		var payload struct {

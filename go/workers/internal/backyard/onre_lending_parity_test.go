@@ -39,6 +39,7 @@ func onreLendingParityRoute() RuntimeRoute {
 }
 
 func TestOnReConnectedLendingMatchesGoWithoutRegistration(t *testing.T) {
+	t.Parallel()
 	dir, name := os.Getenv("PHASE3_ONRE_PROBE_DIR"), os.Getenv("PHASE3_JUPITER_PROBE_RESULT")
 	if dir == "" || name == "" {
 		t.Skip("explicit connected OnRe execution required")

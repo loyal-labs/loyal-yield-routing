@@ -62,6 +62,8 @@ func seedAutoInitializerEntryOperation(t *testing.T, ctx context.Context, db *Da
 // path — embedded prestate gate, embedded final-send entrypoint, embedded
 // entry validation — still refuses the same durable rows.
 func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
+	// A dedicated disposable database: nothing shared with other tests.
+	t.Parallel()
 	f := autoInitializerAuthorizationFixture(t)
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_pilot_entry_test", 30*time.Second)
 	defer cancel()
@@ -219,6 +221,7 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 // deferred installed lanes still deferred — and the public embedded decode
 // stays a compile-time closure that no manifest widens.
 func TestSelectorEntryManifestLaneAuthorityKeepsInstalledClosure(t *testing.T) {
+	t.Parallel()
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 	entry := autoSelectorEntryFixture(time.Now().UTC(), 3_000_000, &price)
 	if err := entry.validate(); err == nil {

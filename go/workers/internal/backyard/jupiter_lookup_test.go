@@ -101,6 +101,7 @@ func lookupRPC(t *testing.T, tables []LookupTableSnapshot, mutate func(*LookupTa
 }
 
 func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T) {
+	t.Parallel()
 	r, effects := oversizedCatalogExit(t)
 	// Exercise real v0 signing using deterministic, non-production test keys.
 	// No production secret or signature is needed for byte/signature proof.
@@ -204,6 +205,7 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 }
 
 func TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping(t *testing.T) {
+	t.Parallel()
 	r, _ := oversizedCatalogExit(t)
 	// A different table can encode the same already-validated instruction keys.
 	// Its address grants no account, signer or program authority.
