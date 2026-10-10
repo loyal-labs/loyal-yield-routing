@@ -10,6 +10,7 @@
     "start": "next start",
     "lint": "eslint",
     "ci:wait-main": "bash scripts/wait-for-main-workflow.sh",
+    "deploy": "bash scripts/deploy-workers.sh",
     "same-mint:alt-cleanup-paginated": "bun scripts/route-lookup-table-cleanup-paginated.ts",
     "hub:cli": "cargo run -p loyal-hub-cli --",
     "hub:devnet-smoke": "bash scripts/devnet-test-loyal-hub-swap-program.sh",
