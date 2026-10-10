@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -49,4 +50,25 @@ func DecodeSharedAccountsRoute(data []byte) (SharedAccountsRoute, error) {
 		SlippageBPS:     binary.LittleEndian.Uint16(tail[16:18]),
 		PlatformFeeBPS:  tail[18],
 	}, nil
+}
+
+// SharedRoute is the legacy shared_accounts_route account set, in its order;
+// the route's remaining accounts follow it. The instruction itself comes from
+// the swap API, so the slot list serves its policy constraint. PlatformFee is
+// optional: ProgramID when the route takes no platform fee.
+type SharedRoute[T any] struct {
+	TokenProgram, ProgramAuthority, User, Source, ProgramSource, ProgramDestination T
+	Destination, SourceMint, DestinationMint, PlatformFee, Token2022Program         T
+	EventAuthority                                                                  T
+}
+
+func sharedRouteSlots[T any](a SharedRoute[T], fixed func(solana.PublicKey) T) []T {
+	return []T{a.TokenProgram, a.ProgramAuthority, a.User, a.Source, a.ProgramSource, a.ProgramDestination,
+		a.Destination, a.SourceMint, a.DestinationMint, a.PlatformFee, a.Token2022Program, a.EventAuthority, fixed(ProgramID)}
+}
+
+// SharedAccountsRouteAllowed admits shared_accounts_route over the allowed
+// accounts, any route plan and amounts.
+func SharedAccountsRouteAllowed(a SharedRoute[squads.Slot], fixed func(solana.PublicKey) squads.Slot) squads.InstructionConstraintView {
+	return squads.Allow(ProgramID, SharedAccountsRouteDiscriminator[:], sharedRouteSlots(a, fixed))
 }
