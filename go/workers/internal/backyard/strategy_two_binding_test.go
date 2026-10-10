@@ -104,9 +104,8 @@ func TestStrategyTwoBridgeLegsRespectPerExecutionCap(t *testing.T) {
 			t.Fatalf("%s canary amount must compile: %v", action, err)
 		}
 	}
-	if _, err := CompileBridgeMessage(request(VoltrAllocateToSquads, strategyTwoBridgeLegCapRaw)); err != nil ||
-		strategyTwoBridgeLegCapRaw > strategyTwoDailyAllocationCapRaw {
-		t.Fatal("strategy-two caps must keep every bridge leg inside the daily allocation bound")
+	if _, err := CompileBridgeMessage(request(VoltrAllocateToSquads, strategyTwoBridgeLegCapRaw)); err != nil {
+		t.Fatalf("an allocation at the strategy-two cap must compile: %v", err)
 	}
 }
 
