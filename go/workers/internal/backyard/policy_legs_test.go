@@ -1,10 +1,13 @@
 package backyard
 
 import (
-	"encoding/base64"
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -87,38 +90,18 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 			return message, nil
 		}})
 	}
-	for _, action := range []Action{SwapStableToCollateralStep, SwapDebtToCollateralStep, SwapCollateralToStableStep, SwapCollateralToDebtStep, SwapDebtToUSDCStep} {
-		rows = append(rows, row{"swap/" + autoAUTOPYUSD.Lane + "/" + string(action), func(t *testing.T) ([]byte, []LookupTableSnapshot) {
-			return compileTestSwap(t, autoJupiterTestRequest(t, action, 1_000_000, 990_000, 0))
-		}})
-	}
-	for plan, id := range primeForwardPlanIDs {
-		rows = append(rows, row{fmt.Sprintf("swap/%s/%s/plan-%d", RouteID, SwapUSDCToPrimeStep, plan), func(t *testing.T) ([]byte, []LookupTableSnapshot) {
-			request := legacyPrimeSwapRequest(SwapUSDCToPrimeStep)
-			data, _ := base64.StdEncoding.DecodeString(request.Instruction.Data)
-			data[8] = id
-			request.Instruction.Data = base64.StdEncoding.EncodeToString(data)
-			return compileTestSwap(t, request)
-		}})
-	}
-	rows = append(rows, row{fmt.Sprintf("swap/%s/%s", RouteID, SwapPrimeToUSDCStep), func(t *testing.T) ([]byte, []LookupTableSnapshot) {
-		return compileTestSwap(t, legacyPrimeSwapRequest(SwapPrimeToUSDCStep))
-	}})
-	for lane, legs := range map[string][2]string{PhaseOneLaneID: {"USDC->PRIME", "PRIME->USDC"}, SelectedRouteID: {"USDC->syrupUSDC", "syrupUSDC->USDC"}, onreONycUSDC: {"USDC->ONyc", "ONyc->USDC"}} {
-		for _, leg := range legs {
-			rows = append(rows, row{"swap/" + lane + "/" + leg, func(t *testing.T) ([]byte, []LookupTableSnapshot) {
-				request, record := basicJupiterRequestFromExport(t, lane, leg)
-				if _, err := CompileJupiterMessage(request); err != nil && len(request.Instruction.LookupTableAddresses) > 0 {
-					request.LookupTables = retainedOrReconstructedLookupTables(t, request.Instruction.LookupTableAddresses, legacyMessageKeys(t, record.MessageBase64), []string{record.PolicyAccount})
-				}
-				return compileTestSwap(t, request)
-			}})
-		}
+	swaps := map[string][]Action{autoAUTOPYUSD.Lane: {SwapStableToCollateralStep, SwapDebtToCollateralStep, SwapCollateralToStableStep, SwapCollateralToDebtStep, SwapDebtToUSDCStep},
+		RouteID: {SwapUSDCToPrimeStep, SwapPrimeToUSDCStep}}
+	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, onreONycUSDC} {
+		swaps[lane] = []Action{SwapStableToCollateralStep, SwapCollateralToStableStep}
 	}
 	for _, lane := range []string{ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane} {
-		for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
+		swaps[lane] = []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep}
+	}
+	for lane, actions := range swaps {
+		for _, action := range actions {
 			rows = append(rows, row{"swap/" + lane + "/" + string(action), func(t *testing.T) ([]byte, []LookupTableSnapshot) {
-				return compileTestSwap(t, catalogSwapRequest(t, lane, action))
+				return compileTestSwap(t, fixtureSwapRequest(t, lane, action))
 			}})
 		}
 	}
@@ -138,19 +121,30 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 						admitting = append(admitting, leg)
 					}
 				}
-				if want := []int{int(execution.ConstraintIndexes[i])}; fmt.Sprint(admitting) != fmt.Sprint(want) && !sharedSwapLeg(key, admitting, want[0]) {
+				if want := []int{int(execution.ConstraintIndexes[i])}; fmt.Sprint(admitting) != fmt.Sprint(want) {
 					t.Errorf("%s: instruction %d executes at constraint %d, but constraints %v admit it", key, i, want[0], admitting)
+				}
+				if ix.ProgramID != jupiter.ProgramID {
+					continue
+				}
+				// A swap's output stays in the vault and pays no fee.
+				foreign := solanaKey(bridgeDelegate) // not a vault custody
+				for name, mutate := range map[string]func(*squads.Instruction){
+					"foreign destination": func(ix *squads.Instruction) { ix.Accounts[5].PublicKey = foreign },
+					"platform fee":        func(ix *squads.Instruction) { ix.Data[jupiter.V2FeesOffset] = 1 },
+					"positive slippage":   func(ix *squads.Instruction) { ix.Data[jupiter.V2FeesOffset+2] = 1 },
+				} {
+					changed := squads.Instruction{ProgramID: ix.ProgramID, Accounts: slices.Clone(ix.Accounts), Data: slices.Clone(ix.Data)}
+					mutate(&changed)
+					for leg, constraint := range literals[key].Constraints {
+						if squads.Admits(constraint, changed, vaultObligation) {
+							t.Errorf("%s: constraint %d admits a swap with a %s", key, leg, name)
+						}
+					}
 				}
 			}
 		})
 	}
-}
-
-// sharedSwapLeg is the one documented overlap: a basic swap family admits
-// PRIME under both of its legs, and PRIME swaps under the first.
-func sharedSwapLeg(key policyKey, admitting []int, leg int) bool {
-	return (key.family == BasicSwapRoutesA || key.family == BasicSwapRoutesB) &&
-		fmt.Sprint(admitting) == fmt.Sprint([]int{basicSwapONycPrime, basicSwapPrimeSyrup}) && leg == basicSwapONycPrime
 }
 
 // vaultObligation is the state a KLend leg's obligation predicate reads: an
@@ -162,26 +156,27 @@ func vaultObligation(solana.PublicKey) *chain.Account {
 	return &chain.Account{Owner: kamino.ProgramID, Data: data}
 }
 
-// compileTestSwap is the swap's production message and the lookup tables it
-// needs when it does not fit a legacy packet.
+// compileTestSwap is the swap's message as production sends it: a legacy
+// packet, or, when that does not fit and the lane takes the swap API's lookup
+// tables, a v0 packet through them, standing in here for the chain's tables by
+// holding the swap's own accounts. A swap that fits neither fails the test.
 func compileTestSwap(t *testing.T, request JupiterSwapRequest) ([]byte, []LookupTableSnapshot) {
 	t.Helper()
 	message, err := CompileJupiterMessage(request)
 	if err == nil {
 		return message, request.LookupTables
 	}
-	if !strings.Contains(err.Error(), "does not fit") {
-		t.Fatal(err)
+	if !strings.Contains(err.Error(), "does not fit") || len(request.Instruction.LookupTableAddresses) == 0 {
+		t.Fatalf("%s %s does not compile as production sends it: %v", request.RouteLane, request.Action, err)
 	}
-	if len(request.Instruction.LookupTableAddresses) == 0 {
-		request.LookupTables = retainedJupiterLookups(t)
+	var accounts []string
+	for _, account := range request.Instruction.Accounts {
+		accounts = append(accounts, account.Pubkey)
 	}
 	for _, address := range request.Instruction.LookupTableAddresses {
-		for _, table := range readRetainedJupiterLookups(t, "prime-sibling-lookup-review-2026-09-05.json", 8) {
-			if table.Address == address {
-				request.LookupTables = append(request.LookupTables, table)
-			}
-		}
+		table := autoFixtureLookupTable(t, accounts)
+		table.Address, accounts = address, nil
+		request.LookupTables = append(request.LookupTables, table)
 	}
 	message, err = CompileJupiterMessage(request)
 	if err != nil {
@@ -190,66 +185,113 @@ func compileTestSwap(t *testing.T, request JupiterSwapRequest) ([]byte, []Lookup
 	return message, request.LookupTables
 }
 
-// legacyPrimeSwapRequest is the legacy PRIME/USDC route's swap of action
-// through its installed policy.
-func legacyPrimeSwapRequest(action Action) JupiterSwapRequest {
-	return JupiterSwapRequest{Action: action, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
-		Policy:      testPolicyAccount(policyKey{lane: RouteID, action: action}),
-		Instruction: jupiterTestInstruction(action, 1_000_000, 990_000, false), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 2}
+// jupiterV2FixturePath holds a live V2 /swap-instructions answer for the
+// Backyard vault on every edge a Backyard swap policy admits.
+const jupiterV2FixturePath = "testdata/jupiter-v2-swap-instructions.json"
+
+type recordedJupiterInstruction struct {
+	ProgramID  string                `json:"programId"`
+	Accounts   []jupiter.AccountMeta `json:"accounts"`
+	DataBase64 string                `json:"dataBase64"`
 }
 
-// catalogSwapRequest is a catalog lane's swap of action from the retained
-// mainnet Jupiter header of its edge, through the policy that edge executes
-// under.
-func catalogSwapRequest(t *testing.T, lane string, action Action) JupiterSwapRequest {
+type jupiterV2Row struct {
+	Key   string `json:"key"`
+	Quote struct {
+		InAmountRaw             string `json:"inAmountRaw"`
+		OutAmountRaw            string `json:"outAmountRaw"`
+		OtherAmountThresholdRaw string `json:"otherAmountThresholdRaw"`
+		RoutePlanLength         int    `json:"routePlanLength"`
+	} `json:"quote"`
+	QuoteResponse json.RawMessage            `json:"quoteResponse"`
+	MaxAccounts   int                        `json:"maxAccounts"`
+	Instruction   recordedJupiterInstruction `json:"instruction"`
+	LookupTables  []string                   `json:"lookupTables"`
+}
+
+// jupiterV2Fixture is the fixture's row for the swap of action on lane.
+func jupiterV2Fixture(t testing.TB, lane string, action Action) jupiterV2Row {
 	t.Helper()
-	var headers struct {
-		Rows []struct {
-			Key          string
-			LookupTables []string
-			Instruction  struct {
-				ProgramID, DataBase64 string
-				Accounts              []jupiter.AccountMeta
-			}
-		}
-	}
-	raw, err := os.ReadFile(basicJupiterFixturePath)
-	if err != nil || json.Unmarshal(raw, &headers) != nil {
-		t.Fatal("retained Jupiter headers unavailable", err)
+	var fixture struct{ Rows []jupiterV2Row }
+	raw, err := os.ReadFile(jupiterV2FixturePath)
+	if err != nil || json.Unmarshal(raw, &fixture) != nil {
+		t.Fatal("v2 swap fixture unavailable", err)
 	}
 	from, to, _, _, err := jupiterEdgeForRoute(action, lane)
 	if err != nil {
 		t.Fatal(err)
 	}
+	a, err := routeSwapAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
 	symbol := map[string]string{}
-	for _, route := range []RuntimeRoute{ethenaUSDePYUSD, primePRIMEPYUSD, primePRIMEUSDS} {
-		symbol[route.Kamino.CollateralMint], symbol[route.Kamino.DebtMint] = route.CollateralSymbol, route.DebtSymbol
+	for _, asset := range []swapAsset{a.usdc, a.prime, a.usds, a.pyusd, a.auto, a.usde, a.syrup, a.onyc, a.usdg} {
+		symbol[asset.mint.String()] = asset.symbol
 	}
-	symbol[bridgeUSDC] = "USDC"
 	key := symbol[from] + "->" + symbol[to]
-	for _, row := range headers.Rows {
-		if row.Key != key {
-			continue
+	for _, row := range fixture.Rows {
+		if row.Key == key {
+			return row
 		}
-		instruction := JupiterSwapInstruction{ProgramID: row.Instruction.ProgramID, Data: row.Instruction.DataBase64, Accounts: row.Instruction.Accounts}
-		if strings.HasPrefix(lane, "Prime/") {
-			instruction.LookupTableAddresses = row.LookupTables
-		}
-		data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		at := len(data) - jupiter.PlatformFeeAfterInAmount - 1
-		amount, out := readU64(data[at:]), readU64(data[at+jupiter.QuotedOutAfterInAmount:])
-		policy, _, err := jupiterPolicyLeg(lane, action, data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return JupiterSwapRequest{Action: action, RouteLane: lane, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: out,
-			Policy: testPolicyAccount(policy), Instruction: instruction, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
 	}
-	t.Fatalf("no retained header for %s", key)
-	return JupiterSwapRequest{}
+	t.Fatalf("no v2 fixture row for %s", key)
+	return jupiterV2Row{}
+}
+
+// fixtureSwapRequest is the request the production builder makes for the
+// swap of action on lane from the fixture's quote and instruction, through
+// the policy the swap executes under, at the floor its wire enforces.
+func fixtureSwapRequest(t *testing.T, lane string, action Action) JupiterSwapRequest {
+	t.Helper()
+	row := jupiterV2Fixture(t, lane, action)
+	client, err := fixtureJupiter(roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/quote" {
+			if r.URL.Query().Get("instructionVersion") != "V2" {
+				t.Error("quote asks for another instruction version")
+			}
+			// A route quoted at a larger maxAccounts is no answer to this quote.
+			if asked, err := strconv.Atoi(r.URL.Query().Get("maxAccounts")); err != nil || asked < row.MaxAccounts {
+				t.Errorf("quote asks for at most %s accounts; the fixture route was quoted at %d", r.URL.Query().Get("maxAccounts"), row.MaxAccounts)
+			}
+			return response(string(row.QuoteResponse)), nil
+		}
+		var asked struct {
+			UserPublicKey     string
+			UseSharedAccounts bool
+		}
+		if json.NewDecoder(r.Body).Decode(&asked) != nil || asked.UserPublicKey != bridgeVault || !asked.UseSharedAccounts {
+			t.Error("swap-instructions asks for another user or route")
+		}
+		body, err := json.Marshal(map[string]any{"swapInstruction": map[string]any{"programId": row.Instruction.ProgramID,
+			"accounts": row.Instruction.Accounts, "data": row.Instruction.DataBase64}, "addressLookupTableAddresses": row.LookupTables})
+		return response(string(body)), err
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, err := strconv.ParseUint(row.Quote.InAmountRaw, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote, instruction, err := freshSwapForRoute(context.Background(), client, lane, action, amount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := validateJupiterQuoteForRoute(quote, action, amount, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	floor, err := jupiterInstructionWireFloor(instruction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _, err := jupiterPolicyLeg(lane, action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return JupiterSwapRequest{Action: action, RouteLane: lane, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: floor,
+		Policy: testPolicyAccount(key), Instruction: instruction, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
 }
 
 // decodeTestExecution reads a compiled message back into its one Squads

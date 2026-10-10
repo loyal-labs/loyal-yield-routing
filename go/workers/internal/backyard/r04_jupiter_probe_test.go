@@ -79,7 +79,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 			bindingEdges, bindingLeg, _ := catalogEdge(action, ethenaUSDePYUSD.Lane)
 			binding := bindingEdges[bindingLeg]
 			data, _ := base64.StdEncoding.DecodeString(transport.lastInstruction.Data)
-			t.Logf("public layout diagnostic: bytes=%d expected=%d instructionData=%x binding=%+v", len(data), binding.feeAt()+1, data, binding)
+			t.Logf("public layout diagnostic: bytes=%d instructionData=%x binding=%+v", len(data), data, binding)
 			// RPC transport errors can contain endpoint credentials. Keep only
 			// local Jupiter validation messages; never print the wrapped error.
 			boundary := regexp.MustCompile(`unsigned message does not fit the single-signer packet envelope|fresh Jupiter header does not match the manifest binding|HOLD: [a-z_]+|Jupiter (?:instruction does not match installed edge economics or layout|catalog account boundary [0-9]+ drifted|route requires unapproved companion instructions|message requires unsupported construction|packet is [0-9]+ bytes, exceeds [0-9]+|returned invalid HTTP [0-9]+ response)`).FindString(err.Error())
@@ -126,14 +126,14 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 			t.Fatal(err)
 		}
 		binding := bindingEdges[bindingLeg]
-		key, _, err := jupiterPolicyLeg(ethenaUSDePYUSD.Lane, action, nil)
+		key, _, err := jupiterPolicyLeg(ethenaUSDePYUSD.Lane, action)
 		if err != nil {
 			t.Fatal(err)
 		}
 		policies[e.Request.Policy] = key.String()
 		rows = append(rows, map[string]any{"action": action, "request": e.Request, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire),
 			"source": binding.from.custody.String(), "destination": binding.to.custody.String(), "amountRaw": amount, "minimumOutputRaw": e.Request.MinimumOutputRaw,
-			"instructionDataBase64": e.Request.Instruction.Data, "amountOffset": binding.amountAt()})
+			"instructionDataBase64": e.Request.Instruction.Data})
 		amount = e.Request.MinimumOutputRaw
 	}
 	keys := []string{}

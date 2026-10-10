@@ -19,11 +19,6 @@ import (
 func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...ConfirmedAccount) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	route := ethenaUSDePYUSD
-	bindingEdges, bindingLeg, err := catalogEdge(SwapDebtToUSDCStep, route.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binding := bindingEdges[bindingLeg]
 	reserve := reserveFixture(t, route.Kamino.DebtReserve, route.Kamino.DebtMint, 42, new(big.Int).Lsh(big.NewInt(2), 60), 1_000_000, 1_000_000)
 	putKey(t, reserve.Data[32:64], route.Kamino.Market)
 	binary.LittleEndian.PutUint64(reserve.Data[264:272], 1000)
@@ -39,7 +34,7 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 			}
 		}
 	}
-	data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json")
+	data, err := os.ReadFile(jupiterV2FixturePath)
 	if err != nil || json.Unmarshal(data, &headers) != nil {
 		t.Fatal("header evidence missing", err)
 	}
@@ -50,12 +45,12 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 		}
 	}
 	data, err = base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) <= binding.feeAt() {
+	if err != nil || len(data) < jupiter.V2RoutePlanOffset {
 		t.Fatal("missing debt exit bytes")
 	}
-	binary.LittleEndian.PutUint64(data[binding.amountAt():], 10_000)
-	binary.LittleEndian.PutUint64(data[binding.amountAt()+8:], debtOutput)
-	binary.LittleEndian.PutUint16(data[binding.slippageAt():], 50)
+	binary.LittleEndian.PutUint64(data[jupiter.V2InAmountOffset:], 10_000)
+	binary.LittleEndian.PutUint64(data[jupiter.V2QuotedOutOffset:], debtOutput)
+	binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], 50)
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
 	o, d, e, m, rpc, client := withdrawalAdmissionFixture(t, 100_000, append(extra, extraAccounts...)...)
 	o.Snapshot.DebtIdleRaw = 10_000

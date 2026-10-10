@@ -6,56 +6,27 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-func retainedEthenaExit(t *testing.T) (JupiterSwapRequest, ExpectedEffects) {
+// oversizedCatalogExit is the Prime/PRIME/PYUSD lane's PRIME->PYUSD exit,
+// which needs lookup tables, with the tables it compiles through and its
+// effects.
+func oversizedCatalogExit(t *testing.T) (JupiterSwapRequest, ExpectedEffects) {
 	t.Helper()
-	edges, leg, err := catalogEdge(SwapCollateralToDebtStep, "Ethena/USDe/PYUSD")
+	edges, leg, err := catalogEdge(SwapCollateralToDebtStep, primePRIMEPYUSD.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := edges[leg]
-	key, _, err := jupiterPolicyLeg("Ethena/USDe/PYUSD", SwapCollateralToDebtStep, nil)
-	if err != nil {
-		t.Fatal(err)
+	r := fixtureSwapRequest(t, primePRIMEPYUSD.Lane, SwapCollateralToDebtStep)
+	r.LastValidBlockHeight = 999
+	if _, r.LookupTables = compileTestSwap(t, r); len(r.LookupTables) == 0 {
+		t.Fatal("the PRIME->PYUSD exit fits a legacy packet; this test needs one that does not")
 	}
-	data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var evidence struct {
-		Rows []struct {
-			Key          string
-			LookupTables []string
-			Instruction  struct {
-				ProgramID, DataBase64 string
-				Accounts              []jupiter.AccountMeta
-			}
-		}
-	}
-	if err := json.Unmarshal(data, &evidence); err != nil {
-		t.Fatal(err)
-	}
-	r := JupiterSwapRequest{Action: SwapCollateralToDebtStep, RouteLane: "Ethena/USDe/PYUSD", Policy: testPolicyAccount(key), RecentBlockhash: bridgeVault, LastValidBlockHeight: 999, LookupTables: retainedJupiterLookups(t)}
-	for _, row := range evidence.Rows {
-		if row.Key != "USDe->PYUSD" {
-			continue
-		}
-		r.Instruction = JupiterSwapInstruction{ProgramID: row.Instruction.ProgramID, Data: row.Instruction.DataBase64, Accounts: row.Instruction.Accounts}
-		if fmt.Sprint(row.LookupTables) != fmt.Sprint(jupiterLookupAddresses(r)) {
-			t.Fatal("lookup identities diverge from retained route")
-		}
-	}
-	ix, _ := base64.StdEncoding.Strict().DecodeString(r.Instruction.Data)
-	r.AmountRaw, r.QuotedOutputRaw = readU64(ix[b.inAmountAt:]), readU64(ix[b.inAmountAt+jupiter.QuotedOutAfterInAmount:])
-	r.MinimumOutputRaw = r.QuotedOutputRaw
 	return r, ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Accounts: []ExpectedAccountEffect{
 		{Address: b.from.custody.String(), Owner: b.from.program.String(), Mint: b.from.mint.String(), Authority: bridgeVault, BeforeRaw: r.AmountRaw, AfterRaw: 0},
 		{Address: b.to.custody.String(), Owner: b.to.program.String(), Mint: b.to.mint.String(), Authority: bridgeVault, BeforeRaw: 0, AfterRaw: r.MinimumOutputRaw, MinimumAfterRaw: &r.MinimumOutputRaw},
@@ -130,7 +101,7 @@ func lookupRPC(t *testing.T, tables []LookupTableSnapshot, mutate func(*LookupTa
 }
 
 func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T) {
-	r, effects := retainedEthenaExit(t)
+	r, effects := oversizedCatalogExit(t)
 	// Exercise real v0 signing using deterministic, non-production test keys.
 	// No production secret or signature is needed for byte/signature proof.
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{37}, ed25519.SeedSize))
@@ -144,7 +115,7 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 	legacy := r
 	legacy.LookupTables = nil
 	prepared, err := prepareJupiterLookupTables(context.Background(), rpc, legacy, r.LookupTables[0].ObservedSlot)
-	if err != nil || len(prepared.LookupTables) != 2 || *reads != 1 {
+	if err != nil || len(prepared.LookupTables) != len(r.LookupTables) || *reads != 1 {
 		t.Fatal("production preparation failed", err)
 	}
 	original, err := CompileJupiterMessage(r)
@@ -152,7 +123,7 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, mutate := range []func(*JupiterSwapRequest){
-		func(r *JupiterSwapRequest) { r.LookupTables = r.LookupTables[:1] },
+		func(r *JupiterSwapRequest) { r.LookupTables = r.LookupTables[:len(r.LookupTables)-1] },
 		func(r *JupiterSwapRequest) { r.LookupTables[0].Address = bridgeVault },
 		func(r *JupiterSwapRequest) { r.RouteLane = "AUTO/AUTO/PYUSD" },
 	} {
@@ -233,10 +204,11 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 }
 
 func TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping(t *testing.T) {
-	r, _ := retainedEthenaExit(t)
+	r, _ := oversizedCatalogExit(t)
 	// A different table can encode the same already-validated instruction keys.
 	// Its address grants no account, signer or program authority.
 	r.LookupTables[0].Address = encodeBase58(bytes.Repeat([]byte{83}, 32))
+	r.Instruction.LookupTableAddresses = nil
 	for _, table := range r.LookupTables {
 		r.Instruction.LookupTableAddresses = append(r.Instruction.LookupTableAddresses, table.Address)
 	}

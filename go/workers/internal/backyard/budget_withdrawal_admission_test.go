@@ -43,16 +43,6 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 	}}
 	o.policies = testPolicies(t)
 	extra := []ConfirmedAccount{exactReportTicketAccount(t, 1)}
-	read := func(path string, out any) {
-		t.Helper()
-		data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/" + path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = json.Unmarshal(data, out); err != nil {
-			t.Fatal(err)
-		}
-	}
 	reserve := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 42, new(big.Int).Lsh(big.NewInt(1), 60), 1_000_000_000, 1_000_000_000)
 	putKey(t, reserve.Data[32:64], route.Kamino.Market)
 	binary.LittleEndian.PutUint64(reserve.Data[272:280], 9)
@@ -70,25 +60,22 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 			}
 		}
 	}
-	read("policy-jupiter-headers-v1.json", &headers)
+	if raw, err := os.ReadFile(jupiterV2FixturePath); err != nil || json.Unmarshal(raw, &headers) != nil {
+		t.Fatal("v2 swap fixture unavailable", err)
+	}
 	var instruction JupiterSwapInstruction
 	for _, row := range headers.Rows {
 		if row.Key == "USDe->USDC" {
 			instruction = JupiterSwapInstruction{ProgramID: row.Instruction.ProgramID, Data: row.Instruction.DataBase64, Accounts: row.Instruction.Accounts}
 		}
 	}
-	edges, leg, err := catalogEdge(SwapCollateralToStableStep, route.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binding := edges[leg]
 	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil || len(data) <= binding.feeAt() {
+	if err != nil || len(data) < jupiter.V2RoutePlanOffset {
 		t.Fatal("missing retained exit instruction")
 	}
-	binary.LittleEndian.PutUint64(data[binding.amountAt():], 100_000_000)
-	binary.LittleEndian.PutUint64(data[binding.amountAt()+8:], quoted)
-	binary.LittleEndian.PutUint16(data[binding.slippageAt():], 50)
+	binary.LittleEndian.PutUint64(data[jupiter.V2InAmountOffset:], 100_000_000)
+	binary.LittleEndian.PutUint64(data[jupiter.V2QuotedOutOffset:], quoted)
+	binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], 50)
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
 	client, err := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var payload any
@@ -263,7 +250,7 @@ func TestUnsupportedExitsRefuseBeforeAnyWrite(t *testing.T) {
 		}
 		decision := Decision{Action: SwapUSDCToDebtStep, StrategyKey: autoAUTOPYUSD.Lane, AmountRaw: 20_000}
 		_, err := prepareJupiterQuoteEvidence(ctx, nil, nil, manifest, testPolicies(t), decision, 20_000, 0, 42)
-		if err == nil || err.Error() != "action SWAP_USDC_TO_DEBT_STEP is not an approved AUTO Jupiter edge" {
+		if err == nil || err.Error() != "action SWAP_USDC_TO_DEBT_STEP is no catalog conversion on AUTO/AUTO/PYUSD" {
 			t.Fatalf("unsupported AUTO edge did not fail before quote/RPC access: %v", err)
 		}
 		var operations int

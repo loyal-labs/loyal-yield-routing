@@ -97,16 +97,14 @@ func TestTopupDepositTopologyOnlyForAUTOAndOnRe(t *testing.T) {
 	}
 }
 
-// Both OnRe swap directions from the recorded Jupiter exports: USDC->ONyc
-// stays a legacy packet, ONyc->USDC needs the v0 packet with lookup tables.
+// Both OnRe swap directions from the v2 swap fixture, each as a legacy packet
+// or, when it does not fit, a v0 packet with lookup tables.
 // Each signed wire must pass the gate PersistSigned uses.
 func TestOnReSwapWiresPassThePersistedWireGate(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{54}, ed25519.SeedSize))
 	for _, leg := range []string{"USDC->ONyc", "ONyc->USDC"} {
-		request, record := basicJupiterRequestFromExport(t, onreLane, leg)
-		if !record.SingleSignerPacketFits {
-			request.LookupTables = retainedOrReconstructedLookupTables(t, request.Instruction.LookupTableAddresses, legacyMessageKeys(t, record.MessageBase64), []string{record.PolicyAccount})
-		}
+		request, tables := basicJupiterRequest(t, onreLane, leg)
+		request.LookupTables = tables
 		message, err := CompileJupiterMessage(request)
 		if err != nil {
 			t.Fatalf("%s: compile: %v", leg, err)

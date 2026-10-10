@@ -66,17 +66,13 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 		}
 		accounts = append(accounts, a)
 	}
-	tables := retainedJupiterLookups(t)
-	for _, leg := range []string{symbol + "->USDC"} {
-		req, record := basicJupiterRequestFromExport(t, route.Lane, leg)
-		tables = append(tables, retainedOrReconstructedLookupTables(t, req.Instruction.LookupTableAddresses, legacyMessageKeys(t, record.MessageBase64), []string{record.PolicyAccount})...)
-	}
+	_, tables := basicJupiterRequest(t, route.Lane, symbol+"->USDC")
 	for _, table := range tables {
 		binary.LittleEndian.PutUint64(table.Data[12:20], 41)
 		accounts = append(accounts, ConfirmedAccount{Address: table.Address, Owner: table.Owner, Lamports: table.Lamports, Data: table.Data})
 	}
 	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
-	raw, err := os.ReadFile(basicJupiterFixturePath)
+	raw, err := os.ReadFile(jupiterV2FixturePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,12 +108,12 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 				}
 			}
 			wire, err := base64.StdEncoding.DecodeString(instruction.Data)
-			if err != nil || len(wire) < 28 {
+			if err != nil || len(wire) < jupiter.V2RoutePlanOffset {
 				t.Fatal("missing basic quote")
 			}
-			binary.LittleEndian.PutUint64(wire[len(wire)-19:], amount)
-			binary.LittleEndian.PutUint64(wire[len(wire)-11:], out)
-			binary.LittleEndian.PutUint16(wire[len(wire)-3:], 50)
+			binary.LittleEndian.PutUint64(wire[jupiter.V2InAmountOffset:], amount)
+			binary.LittleEndian.PutUint64(wire[jupiter.V2QuotedOutOffset:], out)
+			binary.LittleEndian.PutUint16(wire[jupiter.V2SlippageOffset:], 50)
 			instruction.Data = base64.StdEncoding.EncodeToString(wire)
 			payload = jupiter.Quote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 9950 / 10000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else {

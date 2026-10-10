@@ -220,13 +220,13 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 			{SwapStableToCollateralStep, BasicSwapRoutesA},
 			{SwapCollateralToStableStep, BasicSwapRoutesB},
 		} {
-			key, leg, err := jupiterPolicyLeg(lane, test.action, nil)
+			key, leg, err := jupiterPolicyLeg(lane, test.action)
 			if err != nil {
 				t.Fatalf("%s %s: %v", lane, test.action, err)
 			}
 			wantLeg := byte(basicSwapONycPrime)
 			if lane == SelectedRouteID {
-				wantLeg = basicSwapPrimeSyrup
+				wantLeg = basicSwapSyrup
 			}
 			if key != (policyKey{family: test.family}) || leg != wantLeg {
 				t.Fatalf("%s %s resolved to policy=%s leg=%d", lane, test.action, key, leg)
@@ -256,16 +256,16 @@ func TestPhase2CutoverRejectsAnyLegacyPrimeExposure(t *testing.T) {
 }
 
 func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T) {
-	entry, entryLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapStableToCollateralStep, nil)
+	entry, entryLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapStableToCollateralStep)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exit, exitLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapCollateralToStableStep, nil)
+	exit, exitLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapCollateralToStableStep)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry != (policyKey{family: BasicSwapRoutesA}) || entryLeg != basicSwapPrimeSyrup ||
-		exit != (policyKey{family: BasicSwapRoutesB}) || exitLeg != basicSwapPrimeSyrup {
+	if entry != (policyKey{family: BasicSwapRoutesA}) || entryLeg != basicSwapSyrup ||
+		exit != (policyKey{family: BasicSwapRoutesB}) || exitLeg != basicSwapSyrup {
 		t.Fatalf("unexpected Phase 2 basic swap policies: entry=%s/%d exit=%s/%d", entry, entryLeg, exit, exitLeg)
 	}
 }

@@ -185,7 +185,7 @@ func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
 	t.Run("Jupiter", func(t *testing.T) {
 		request := JupiterSwapRequest{Action: SwapUSDCToPrimeStep, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
 			Policy:      "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG",
-			Instruction: jupiterTestInstruction(SwapUSDCToPrimeStep, 1_000_000, 990_000, false), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 99}
+			Instruction: jupiterTestInstruction(SwapUSDCToPrimeStep, 1_000_000, 990_000), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 99}
 		minimum := uint64(985_050)
 		effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Accounts: []ExpectedAccountEffect{
 			{Address: bridgeSquadsATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeVault, BeforeRaw: 1_000_000, AfterRaw: 0},

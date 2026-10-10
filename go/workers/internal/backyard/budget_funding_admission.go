@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
@@ -84,31 +83,18 @@ func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRe
 		}
 	}
 	source, destination := effects.Accounts[0], effects.Accounts[1]
-	// The legacy wire carries quoted output and slippage, not the JSON
-	// threshold. Derive its lower bound with wide arithmetic. Use a floor for
-	// funding even though Jupiter rounds its actual minimum up.
+	// The wire carries quoted output and slippage, not the JSON threshold.
+	// Derive its lower bound with wide arithmetic. Use a floor for funding even
+	// though Jupiter rounds its actual minimum up.
 	wire, err := base64.StdEncoding.Strict().DecodeString(request.Instruction.Data)
 	if err != nil {
 		return bound, nil, err
 	}
-	// Compile validates this lane's actual Jupiter dialect and policy boundaries.
-	// Basic USDC edges use the same physical collateral/USDC swap for funding.
-	offset := len(wire) - 3
-	if catalogJupiterRoute(request.RouteLane) && request.RouteLane != autoAUTOPYUSD.Lane {
-		// AUTO swaps legacy SharedAccountsRoute only, so its slippage byte
-		// stays at len-3; a catalog edge's sits after its in_amount.
-		edges, leg, err := catalogEdge(request.Action, request.RouteLane)
-		if err != nil {
-			return bound, nil, err
-		}
-		offset = edges[leg].slippageAt()
-	} else if len(wire) >= 8 && bytes.Equal(wire[:8], jupiter.SharedAccountsRouteV2Discriminator[:]) {
-		offset = 25
-	}
-	if offset < 0 || offset+2 > len(wire) {
+	args, err := jupiter.DecodeSharedAccountsRouteV2Args(wire)
+	if err != nil {
 		return bound, nil, budgetHold("funding_slippage_encoding_invalid")
 	}
-	slippage := binary.LittleEndian.Uint16(wire[offset:])
+	slippage := args.SlippageBPS
 	if slippage > jupiterMaxSlippageBPS {
 		return bound, nil, budgetHold("funding_slippage_exceeds_policy")
 	}

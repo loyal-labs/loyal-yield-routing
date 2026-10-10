@@ -1,8 +1,6 @@
 package backyard
 
 import (
-	"fmt"
-
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -82,54 +80,4 @@ var primePRIMEUSDS = RuntimeRoute{
 	CollateralLiquiditySupply: "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352", CollateralReceiptMint: "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
 	CollateralReceiptSupply: "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN", DebtLiquiditySupply: "5tP1kDJBYnjtrpUaRQhsrU1Y28ahiJVjz8p9mbqJFpz5",
 	DebtFeeReceiver: "DjmdtvsvctUXCZ32y6UGdCEvXPTds6Ci7LFnVhw5HaQY", CollateralTokenProgram: classicTokenProgram, DebtTokenProgram: classicTokenProgram,
-}
-
-// autoSwapEdge resolves the exact custody pair from the route's own reviewed
-// identities (protocol identity, not activation). The five pairs are the
-// minimal exact cover of the AUTO recipe; every other pair is rejected.
-func autoSwapEdge(route RuntimeRoute, action Action) (sourceMint, destinationMint, sourceATA, destinationATA string, err error) {
-	collateral, debt := route.Kamino.CollateralMint, route.Kamino.DebtMint
-	switch action {
-	case SwapStableToCollateralStep:
-		return bridgeUSDC, collateral, bridgeSquadsATA, route.CollateralCustody, nil
-	case SwapDebtToCollateralStep:
-		return debt, collateral, route.DebtCustody, route.CollateralCustody, nil
-	case SwapCollateralToStableStep:
-		return collateral, bridgeUSDC, route.CollateralCustody, bridgeSquadsATA, nil
-	case SwapCollateralToDebtStep:
-		return collateral, debt, route.CollateralCustody, route.DebtCustody, nil
-	case SwapDebtToUSDCStep:
-		return debt, bridgeUSDC, route.DebtCustody, bridgeSquadsATA, nil
-	default:
-		return "", "", "", "", fmt.Errorf("action %s is not an approved AUTO Jupiter edge", action)
-	}
-}
-
-func autoTokenProgram(route RuntimeRoute, mint string) (string, error) {
-	switch mint {
-	case bridgeUSDC:
-		return classicTokenProgram, nil
-	case route.Kamino.CollateralMint:
-		return route.CollateralTokenProgram, nil
-	case route.Kamino.DebtMint:
-		return route.DebtTokenProgram, nil
-	default:
-		return "", fmt.Errorf("mint %s is not an AUTO route asset", mint)
-	}
-}
-
-// autoTokenPrograms replaces the catalog metadata read for the candidate AUTO
-// lane in the observation paths.
-func autoTokenPrograms(route RuntimeRoute, action Action) (source, destination string, err error) {
-	sourceMint, destinationMint, _, _, err := autoSwapEdge(route, action)
-	if err != nil {
-		return "", "", err
-	}
-	if source, err = autoTokenProgram(route, sourceMint); err != nil {
-		return "", "", err
-	}
-	if destination, err = autoTokenProgram(route, destinationMint); err != nil {
-		return "", "", err
-	}
-	return source, destination, nil
 }

@@ -19,7 +19,7 @@ import (
 func autoInitializerRequestFixture(t *testing.T) (RouteManifest, KaminoInitializationRequest) {
 	t.Helper()
 	manifest := embeddedTestManifest(t)
-	r := KaminoInitializationRequest{RouteLane: autoAUTOPYUSD.Lane, Policy: installedAutoPolicyKey,
+	r := KaminoInitializationRequest{RouteLane: autoAUTOPYUSD.Lane, Policy: installedAutoPolicyKey(),
 		RecentBlockhash:      bridgeVault,
 		LastValidBlockHeight: 100, RentLamports: 17_637_760, MaximumFeeLamports: 5000}
 	return manifest, r
@@ -155,7 +155,7 @@ func TestAutoInitializerCompilesAtItsLeg(t *testing.T) {
 	if err != nil || !bytes.Equal(message, repeated) {
 		t.Fatal("candidate initializer compilation is not deterministic", err)
 	}
-	if policy != mustKey(installedAutoPolicyKey) {
+	if policy != mustKey(installedAutoPolicyKey()) {
 		t.Fatal("the AUTO initializer does not execute through the installed AUTO policy")
 	}
 	// Any other non-selector lane stays unreviewed.
@@ -173,7 +173,7 @@ func TestAutoInitializerCompilesAtItsLeg(t *testing.T) {
 	}
 	// The request builder resolves the installed AUTO policy's account.
 	resolved, err := manifest.initializationRequest(testPolicies(t), autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, r.RentLamports, r.MaximumFeeLamports)
-	if err != nil || resolved.Policy != installedAutoPolicyKey || manifest.validateInitializationRequest(resolved) != nil {
+	if err != nil || resolved.Policy != installedAutoPolicyKey() || manifest.validateInitializationRequest(resolved) != nil {
 		t.Fatalf("bound request builder drifted: %v %+v", err, resolved)
 	}
 }

@@ -737,7 +737,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		}
 	}
 	// The request builder resolves the installed AUTO policy.
-	if installedRequest, installedErr := embedded.initializationRequest(testPolicies(t), autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}, r.RentLamports, 1); installedErr != nil || installedRequest.Policy != installedAutoPolicyKey {
+	if installedRequest, installedErr := embedded.initializationRequest(testPolicies(t), autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}, r.RentLamports, 1); installedErr != nil || installedRequest.Policy != installedAutoPolicyKey() {
 		t.Fatalf("installed manifest did not resolve its own initializer request: %+v %v", installedRequest, installedErr)
 	}
 
