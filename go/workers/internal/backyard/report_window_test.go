@@ -158,8 +158,8 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	if _, err = m.validateRequestPrestate(ctx, rpc, nav, effects); err != nil {
 		t.Fatalf("build gate at slot S+%d: %v", clock.slot()-s.Slot, err)
 	}
-	// Sign locally and simulate (a heavier round trip), then the send fence's
-	// slot read and the broadcast itself.
+	// Sign locally and simulate (a heavier round trip), then the landing
+	// status read and the broadcast itself.
 	time.Sleep(rpcLatency)
 	simulated, err := confirmedSlot(ctx, rpc)
 	if err != nil {
@@ -174,7 +174,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	if ReportExpiredAtLanding(s.Slot, simulated) {
 		t.Fatalf("report expired in simulation at S+%d", simulated-s.Slot)
 	}
-	if stale, reason := EvaluateReportSendFreshness(s.Slot, sent); stale {
-		t.Fatalf("send fence refused the report: %s at S+%d", reason, sent-s.Slot)
+	if ReportExpiredAtLanding(s.Slot, sent) {
+		t.Fatalf("report expired at send S+%d", sent-s.Slot)
 	}
 }

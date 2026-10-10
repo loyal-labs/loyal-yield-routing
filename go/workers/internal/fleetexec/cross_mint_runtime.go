@@ -247,7 +247,7 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 
 func (r *CrossMintRuntime) attempt(l SubmissionLease) chain.Attempt {
 	return chain.Attempt{Wire: l.Submission.SignedTransaction, Signature: l.Submission.Signature,
-		LastValidBlockHeight: uint64(l.Submission.LastValidBlockHeight), Sends: l.Submission.BroadcastCount, Required: chain.Finalized}
+		LastValidBlockHeight: uint64(l.Submission.LastValidBlockHeight), Required: chain.Finalized}
 }
 
 // land resends the leg's exact bytes until they finalize or expire. The first

@@ -53,7 +53,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -322,9 +321,7 @@ type sharedCustodyAttributionConfig struct {
 	BorrowEdgeAuthority   string
 	BorrowEdgeFeeReceiver string
 	// Delegate is the sole top-level signer every admitted signed wire must
-	// carry: the production config pins the checked-in bridge delegate, and
-	// the signed-phase current-operation validation reconstructs the
-	// persisted wire evidence and validates it against exactly this key.
+	// carry: the production config pins the checked-in bridge delegate.
 	Delegate publicKey
 }
 
@@ -597,107 +594,6 @@ func sharedCustodySpendRaw(expected ExpectedEffects, cfg sharedCustodyAttributio
 		}
 	}
 	return spend
-}
-
-// sharedCustodyCurrentOperation is the caller's claim that exactly one
-// in-flight operation is the shared-custody spend being admitted, built, or
-// broadcast. It is NEVER trusted: the reader validates the persisted row
-// inside its own snapshot before applying any exclusion. The expected
-// effects are the SAME decoded spend intent the caller is acting on — the
-// reader requires them to equal the persisted built effects exactly (the
-// same custody at a different amount is not the same spend).
-type sharedCustodyCurrentOperation struct {
-	OperationID string
-	// SignedWireSHA256 and TransactionSignature are the exact persisted wire
-	// digest and signature; REQUIRED once the operation is signed and must
-	// both be empty before signing.
-	SignedWireSHA256     string
-	TransactionSignature string
-	ExpectedEffects      ExpectedEffects
-}
-
-// sharedCustodyCurrentOperationRow is the persisted projection the reader
-// validates the claim against.
-type sharedCustodyCurrentOperationRow struct {
-	Status               string
-	StrategyKey          string
-	SignedWirePresent    bool
-	SignedWire           []byte
-	SignedWireSHA256     string
-	TransactionSignature string
-	MessageSHA256        string
-	RecentBlockhash      string
-	LastValidBlockHeight int64
-	SimulationSlot       int64
-	BroadcastIntent      bool
-	ExpectedEffects      []byte
-}
-
-// signedWirePersistedEvidence rebuilds the exact evidence the production
-// signing persistence validates, so the exclusion binds the claimed wire to
-// the persisted bytes with the production validator itself: wire digest,
-// message digest, recent blockhash, sole-signer signature recovery and
-// signature encoding must all match.
-func signedWirePersistedEvidence(row sharedCustodyCurrentOperationRow) BuildResult {
-	return BuildResult{
-		MessageSHA256: row.MessageSHA256, SignedWire: row.SignedWire, SignedWireSHA256: row.SignedWireSHA256,
-		TransactionSignature: row.TransactionSignature, RecentBlockhash: row.RecentBlockhash,
-		LastValidBlockHeight: row.LastValidBlockHeight, SimulationSlot: row.SimulationSlot,
-	}
-}
-
-// validateSharedCustodyCurrentOperation refuses every persisted state that
-// does not make the operation the route's one SIGNED custody spend of this
-// lane: exact route (by the query), exact lane (lanes share route keys),
-// signed status with the exact persisted signature the production signing
-// persistence wrote — bound to the decoded signed wire's own signature and to
-// the hash of the actual bytes — with no broadcast intent. Decided/built/
-// simulated rows are NEVER excludable: recordDecisionTx persists only the
-// decision evidence (expectedEffects is null and DecodeExpectedEffects
-// refuses that state), so no custody walk runs while such a row is current —
-// the ownership proof runs BEFORE RecordDecision (no row exists, strict
-// gates) and the send proof AFTER signing. The caller's spend intent must
-// equal the persisted built effects exactly, and must positively debit the
-// shared custody. The one-nonterminal-per-route index alone never authorizes
-// an exclusion.
-func validateSharedCustodyCurrentOperation(current sharedCustodyCurrentOperation, row sharedCustodyCurrentOperationRow, cfg sharedCustodyAttributionConfig) error {
-	if current.OperationID == "" || row.StrategyKey != cfg.Lane {
-		return budgetHold("custody_attribution_current_operation_invalid")
-	}
-	switch row.Status {
-	case "signed":
-		if !row.SignedWirePresent || len(row.SignedWire) == 0 ||
-			row.SignedWireSHA256 == "" || row.SignedWireSHA256 != current.SignedWireSHA256 ||
-			row.TransactionSignature == "" || row.TransactionSignature != current.TransactionSignature ||
-			row.BroadcastIntent {
-			return budgetHold("custody_attribution_current_operation_invalid")
-		}
-		// The persisted wire must be the complete exact evidence the signing
-		// persistence writes — digest, message, blockhash, sole-signer
-		// signature — AND carry the pinned delegate as its signer.
-		if signedWirePersistedEvidence(row).validateForDelegate(cfg.Delegate) != nil {
-			return budgetHold("custody_attribution_current_operation_invalid")
-		}
-	default:
-		// decided/built/simulated (no built effects persisted yet — see
-		// above), submitted, broadcast_intent, confirmed, reconciling,
-		// failed, manual-recovery and every terminal state: not excludable.
-		return budgetHold("custody_attribution_current_operation_invalid")
-	}
-	if row.BroadcastIntent {
-		return budgetHold("custody_attribution_current_operation_invalid")
-	}
-	persisted, err := DecodeExpectedEffects(row.ExpectedEffects)
-	if err != nil {
-		return budgetHold("custody_attribution_current_operation_invalid")
-	}
-	if !reflect.DeepEqual(persisted, current.ExpectedEffects) {
-		return budgetHold("custody_attribution_current_operation_invalid")
-	}
-	if sharedCustodySpendRaw(persisted, cfg) == 0 {
-		return budgetHold("custody_attribution_current_operation_invalid")
-	}
-	return nil
 }
 
 // isProvenZeroStartEdge binds the reviewed funding/borrow edge by ACTION and
@@ -985,7 +881,7 @@ func validateSharedCustodyAttributionResolved(ctx context.Context, observedRaw u
 // truncation; the window bound is the proof's completeness boundary.
 // Conflicting lanes are never filtered out — the validator refuses them. No
 // schema change, no row rewrite.
-func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, lease RouteLease, cfg sharedCustodyAttributionConfig, limit int, current *sharedCustodyCurrentOperation) (sharedCustodyAttributionEvidence, error) {
+func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, lease RouteLease, cfg sharedCustodyAttributionConfig, limit int) (sharedCustodyAttributionEvidence, error) {
 	var evidence sharedCustodyAttributionEvidence
 	if d == nil || d.pool == nil {
 		return evidence, budgetHold("custody_attribution_lease_unavailable")
@@ -1019,44 +915,15 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 		}
 		return evidence, err
 	}
-	// The one excludable in-flight operation, validated INSIDE this snapshot
-	// against its persisted row. A claim that does not validate is a refusal
-	// with no exclusion — never a silent strict read.
-	excludeOperationID := ""
-	if current != nil {
-		var row sharedCustodyCurrentOperationRow
-		var effectsText string
-		if err := tx.QueryRow(ctx, `SELECT status, COALESCE(strategy_key,''), signed_wire IS NOT NULL,
-			COALESCE(signed_wire,''), COALESCE(signed_wire_sha256,''), COALESCE(transaction_signature,''),
-			COALESCE(message_sha256,''), COALESCE(recent_blockhash,''), COALESCE(last_valid_block_height,0),
-			COALESCE(simulation_slot,0), broadcast_intent_at IS NOT NULL, COALESCE(expected_effects::text,'')
-			FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND route_key=$2`,
-			current.OperationID, lease.RouteKey).Scan(&row.Status, &row.StrategyKey, &row.SignedWirePresent,
-			&row.SignedWire, &row.SignedWireSHA256, &row.TransactionSignature, &row.MessageSHA256,
-			&row.RecentBlockhash, &row.LastValidBlockHeight, &row.SimulationSlot, &row.BroadcastIntent,
-			&effectsText); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return evidence, budgetHold("custody_attribution_current_operation_invalid")
-			}
-			return evidence, err
-		}
-		row.ExpectedEffects = []byte(effectsText)
-		if err := validateSharedCustodyCurrentOperation(*current, row, cfg); err != nil {
-			return evidence, err
-		}
-		excludeOperationID = current.OperationID
-	}
 	// Precheck 1, route-wide existence probe, independent of any ordering or
 	// limit: any unresolved (nonterminal) operation on the route, with or
-	// without custody evidence — EXCEPT the one validated in-flight operation
-	// above (an empty excluded ID matches nothing, so a nil current leaves
-	// the gate strict). A NULL confirmed_slot sorts LAST in the
+	// without custody evidence. A NULL confirmed_slot sorts LAST in the
 	// journal composite order — behind a proven zero-start origin — and
 	// could otherwise hide there or beyond the window bound; an existence
 	// flag cannot be hidden by either.
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.multiply_operations
-		WHERE route_key=$1 AND status IN `+sharedCustodyUnresolvedStatuses+` AND operation_id <> $2)`,
-		lease.RouteKey, excludeOperationID).Scan(&evidence.Unresolved); err != nil {
+		WHERE route_key=$1 AND status IN `+sharedCustodyUnresolvedStatuses+`)`,
+		lease.RouteKey).Scan(&evidence.Unresolved); err != nil {
 		return evidence, err
 	}
 	// Precheck 2, route-wide, independent of any ordering or limit: the

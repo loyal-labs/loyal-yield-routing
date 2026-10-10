@@ -22,7 +22,7 @@ func TestPrefetchedOwnershipProofMatchesSerialAndCatchesLaterChanges(t *testing.
 	}
 	ctx := context.Background()
 	proof, err := finishPrefetchedOwnershipProof(ctx, cfg, cfg, spend, inputs, nil, 3_100_000_000, 300, nil)
-	if err != nil || proof.ExcludedOperation != "" || proof.Generation != 11 {
+	if err != nil || proof.Generation != 11 {
 		t.Fatalf("prefetched proof refused or malformed: %v %+v", err, proof)
 	}
 	serialInputs := inputs

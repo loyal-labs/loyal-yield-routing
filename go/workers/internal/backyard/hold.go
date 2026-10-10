@@ -67,13 +67,6 @@ func budgetSum(values ...int64) (int64, error) {
 	return total, nil
 }
 
-// Only this marker permits the signed-HOLD expiry path. Invalid persisted
-// identities must never release funds using untrusted expiry metadata.
-type validatedSignedBudgetHold struct{ hold *BudgetHold }
-
-func (e *validatedSignedBudgetHold) Error() string { return e.hold.Error() }
-func (e *validatedSignedBudgetHold) Unwrap() error { return e.hold }
-
 // RecordPhase3BudgetHold preserves a pre-send hold before restart recovery can
 // replace it with a generic reason. Only never-submitted states may fail; the
 // transition's lease and status CAS protect against concurrent progress.

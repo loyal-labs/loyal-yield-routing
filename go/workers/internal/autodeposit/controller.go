@@ -204,7 +204,7 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 	landCtx, cancel := context.WithTimeout(scope.ctx, landWindow)
 	out, err := chain.Land(landCtx, c.chain, chain.Attempt{
 		Wire: wire, Signature: attempt.Signature, LastValidBlockHeight: uint64(attempt.LastValidBlockHeight),
-		Sends: attempt.BroadcastCount, Required: chain.Confirmed,
+		Required: chain.Confirmed,
 	}, landResendEvery, func(sendCtx context.Context) error {
 		if attempt.BroadcastCount == 0 {
 			// A simulation error leaves the wire prepared, unsent and claimed.

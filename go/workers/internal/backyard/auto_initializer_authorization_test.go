@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -47,9 +46,8 @@ func autoInitializerAuthorizationFixture(t *testing.T) autoInitializerRecoveryFi
 // the initializer prestate batch is served from those accounts with the target
 // obligation absent, and every other read delegates to the base transport.
 // The rent sysvar prices the fixture request's exact rent. sendTransaction is
-// counted and refused, simulateTransaction is refused outright: these tests
-// prove the build gates and the locked send fence only, never a signer or a
-// broadcast.
+// counted and refused, and the signature lands once it was attempted;
+// simulateTransaction is refused outright: no signer exists in these tests.
 func autoInitializerAuthorizationRPC(t *testing.T, f autoInitializerRecoveryFixture) (*chain.Client, *int) {
 	t.Helper()
 	accounts := autoInitializerPrestateAccounts(t, f.request)
@@ -77,10 +75,16 @@ func autoInitializerAuthorizationRPC(t *testing.T, f autoInitializerRecoveryFixt
 		switch body.Method {
 		case "sendTransaction":
 			// The lifecycle attempts the broadcast only after durable
-			// broadcast intent committed. Count the attempt and refuse it:
-			// the test proves the intent, never a send.
+			// broadcast intent committed. Count the attempt and refuse it;
+			// the status below lands the signature once it was sent.
 			sends++
 			return &http.Response{StatusCode: 500, Body: io.NopCloser(bytes.NewReader([]byte(`{}`))), Header: make(http.Header)}, nil
+		case "getSignatureStatuses":
+			status := `null`
+			if sends > 0 {
+				status = `{"slot":43,"confirmations":1,"err":null,"confirmationStatus":"confirmed"}`
+			}
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":[` + status + `]}}`), nil
 		case "simulateTransaction":
 			t.Fatalf("authorization must not simulate: no signer exists in this chain")
 		case "getMultipleAccounts":
@@ -199,8 +203,8 @@ func TestAutoInitializerBuildGateThroughReviewedManifest(t *testing.T) {
 
 // The real Signed transition: through the manifest-threaded internal lifecycle
 // path, the candidate's persisted wire is proven against the reviewed binding,
-// the locked final-send fence passes, and broadcast intent is recorded
-// atomically before any broadcast — which this transport refuses. The embedded
+// the locked final-send fence passes, broadcast intent is recorded
+// atomically before the broadcast, and the landed wire confirms. The embedded
 // public entrypoint keeps the same wire closed at decode, a drifted journal
 // identity never reaches the chain, and a completed send cannot be replayed.
 func TestAutoInitializerSignedTransitionThroughReviewedManifest(t *testing.T) {
@@ -234,41 +238,30 @@ func TestAutoInitializerSignedTransitionThroughReviewedManifest(t *testing.T) {
 	}
 	op.ExpectedEffects = []byte(`{"decision":{"observationSlot":42}}`)
 
-	// The wired internal lifecycle path: identity proof, prestate, locked
-	// final-send fence, durable broadcast intent, then the refused broadcast.
-	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err == nil || !strings.Contains(err.Error(), "ambiguous send after durable broadcast intent") {
-		t.Fatalf("expected the ambiguous-send fence, got %v", err)
+	// The wired internal lifecycle path: identity proof, locked final-send
+	// fence, durable broadcast intent, then the wire lands at its slot.
+	if err := advanceNonterminalWithManifest(ctx, f.manifest, db, rpc, op); err != nil {
+		t.Fatal(err)
 	}
-	if status := operationStatus(t, ctx, db, op.ID); status != "broadcast_intent" {
-		t.Fatalf("durable broadcast intent missing: %s", status)
+	var confirmedSlot int64
+	if err := db.pool.QueryRow(ctx, `SELECT confirmed_slot FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='confirmed' AND broadcast_intent_at IS NOT NULL`, op.ID).Scan(&confirmedSlot); err != nil || confirmedSlot != 43 {
+		t.Fatalf("landed wire not confirmed at its slot: %d %v", confirmedSlot, err)
 	}
 	if *sends != 1 {
-		t.Fatalf("broadcast attempted %d times, exactly-once fence lost", *sends)
+		t.Fatalf("broadcast attempted %d times before landing", *sends)
 	}
 
 	// A completed send cannot be replayed: the durable row is no longer
-	// signed, so neither the final-send entrypoint nor a repeated lifecycle
-	// pass can re-fence or re-record it.
-	if err := db.CheckAndMarkBroadcastIntentOnManifest(ctx, f.manifest, rpc, op); err == nil {
+	// signed, so the final-send fence cannot re-record it.
+	if err := markBroadcastIntent(ctx, db, f.manifest, op); err == nil {
 		t.Fatal("completed send replayed")
-	}
-	reloaded := op
-	reloaded.Status = BroadcastIntent
-	if err := db.CheckAndMarkBroadcastIntentOnManifest(ctx, f.manifest, rpc, reloaded); err == nil {
-		t.Fatal("non-signed durable row re-entered the final-send fence")
-	}
-	if status := operationStatus(t, ctx, db, op.ID); status != "broadcast_intent" {
-		t.Fatalf("replay mutated the durable transition: %s", status)
-	}
-	if *sends != 1 {
-		t.Fatalf("replay attempted another broadcast: %d", *sends)
 	}
 
 	// A journal decision that lost its initializer identity is refused before
 	// any chain read and before any transition.
 	foreign := signedOperation("auto-initializer-identity-"+time.Now().Format("150405.000000000"),
 		Decision{Action: Hold, Reason: "unrelated", StrategyKey: f.request.RouteLane, IdempotencyKey: "controlled-init"})
-	assertBudgetHold(t, db.CheckAndMarkBroadcastIntentOnManifest(ctx, f.manifest, rpc, foreign), "initializer_journal_identity_mismatch")
+	assertBudgetHold(t, markBroadcastIntent(ctx, db, f.manifest, foreign), "initializer_journal_identity_mismatch")
 	if status := operationStatus(t, ctx, db, foreign.ID); status != "signed" {
 		t.Fatalf("identity refusal mutated the signed journal row: %s", status)
 	}

@@ -141,7 +141,7 @@ func signedDebtClearCheck(t *testing.T, ctx context.Context, db *Database, m Rou
 	if err = db.lockOperationLease(ctx, tx, id); err != nil {
 		t.Fatal(err)
 	}
-	return db.checkSignedDebtClearTx(ctx, tx, m, id, request, auth, nil, 42)
+	return db.checkSignedDebtClearTx(ctx, tx, m, id, request, auth)
 }
 
 func TestDebtClearDatabaseBindConfirmationAndReplay(t *testing.T) {
@@ -241,7 +241,7 @@ func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 			}
 			operation := PersistedOperation{Operation: Operation{ID: id, RouteKey: key, Decision: decision}, Status: Signed, ExpectedEffects: envelope, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
 			height := int64(99)
-			sends, absenceReads := 0, 0
+			sends := 0
 			chainReads := rpcOf(base).Transport
 			rpc := newFakeChain(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				body, _ := io.ReadAll(req.Body)
@@ -254,40 +254,42 @@ func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 				case "getEpochInfo":
 					return response(finalizedEpochJSON(height)), nil
 				case "getSignatureStatuses":
-					absenceReads++
 					if found {
-						return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":[{"slot":42,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}`), nil
+						return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":5000},"value":[{"slot":42,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}`), nil
 					}
-					return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":[null]}}`), nil
+					return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":5000},"value":[null]}}`), nil
 				case "sendTransaction":
 					sends++
 					return nil, fmt.Errorf("unexpected send during consent hold")
 				}
 				return chainReads.RoundTrip(req)
 			}))
+			journal := func(want string) {
+				t.Helper()
+				var status string
+				var sent bool
+				if err = db.pool.QueryRow(ctx, `SELECT status,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status, &sent); err != nil {
+					t.Fatal(err)
+				}
+				if status != want || sent || sends != 0 {
+					t.Fatalf("unsafe signed denial: status=%s want=%s sent=%t sends=%d", status, want, sent, sends)
+				}
+			}
+			if found {
+				// On chain without a recorded send: a capital stop, never a send.
+				if err = advanceNonterminalWithManifest(ctx, m, db, rpc, operation); err != nil {
+					t.Fatal(err)
+				}
+				journal("manual_recovery")
+				return
+			}
 			assertBudgetHold(t, advanceNonterminalWithManifest(ctx, m, db, rpc, operation), "debt_clear_operation_not_authorized")
-			var status string
-			var sent bool
-			if err = db.pool.QueryRow(ctx, `SELECT status,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status, &sent); err != nil {
-				t.Fatal(err)
-			}
-			if status != "signed" || sent || sends != 0 || absenceReads != 0 {
-				t.Fatal("valid signed wire was sent or retired")
-			}
+			journal("signed")
 			height = 100
 			if err = advanceNonterminalWithManifest(ctx, m, db, rpc, operation); err != nil {
 				t.Fatal(err)
 			}
-			if err = db.pool.QueryRow(ctx, `SELECT status,broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status, &sent); err != nil {
-				t.Fatal(err)
-			}
-			want := "failed"
-			if found {
-				want = "manual_recovery"
-			}
-			if status != want || sent || sends != 0 || absenceReads != 1 {
-				t.Fatalf("unsafe expiry result %s sends=%d absence=%d", status, sends, absenceReads)
-			}
+			journal("failed")
 		})
 	}
 }

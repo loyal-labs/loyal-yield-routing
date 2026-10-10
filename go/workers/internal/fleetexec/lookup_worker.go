@@ -223,8 +223,7 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt LookupAttempt) error {
 	target := chain.Attempt{
 		Wire: attempt.Wire.SignedTransaction, Signature: attempt.Wire.TransactionSignature,
-		LastValidBlockHeight: uint64(attempt.Wire.LastValidBlockHeight), Sends: attempt.BroadcastCount,
-		Required: chain.Finalized,
+		LastValidBlockHeight: uint64(attempt.Wire.LastValidBlockHeight), Required: chain.Finalized,
 	}
 	var out chain.Outcome
 	var err error

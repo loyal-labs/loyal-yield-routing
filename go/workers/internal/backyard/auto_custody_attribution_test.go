@@ -795,7 +795,7 @@ func TestSharedCustodyAttributionRejectsUnknownStateRegardlessOfChronology(t *te
 // current lease, or a foreign lease identity, refuses before any SQL runs.
 func TestSharedCustodyAttributionReaderRequiresWorkerLease(t *testing.T) {
 	reader := &Database{}
-	_, err := reader.observeSharedCustodyAttributionEvidence(context.Background(), RouteLease{RouteKey: custodyAttributionRouteKey, Owner: "worker", FencingToken: 1}, custodyAttributionConfig(), 0, nil)
+	_, err := reader.observeSharedCustodyAttributionEvidence(context.Background(), RouteLease{RouteKey: custodyAttributionRouteKey, Owner: "worker", FencingToken: 1}, custodyAttributionConfig(), 0)
 	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_lease_unavailable" {
 		t.Fatalf("reader ran without a current worker lease: %s", reason)
 	}
@@ -917,7 +917,7 @@ func TestSharedCustodyAttributionDatabaseRoundtrip(t *testing.T) {
 	funding.StrategyKey, repay.StrategyKey = cfg.Lane, cfg.Lane
 	insert(repay)
 	insert(funding)
-	evidence, err := db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	evidence, err := db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -932,7 +932,7 @@ func TestSharedCustodyAttributionDatabaseRoundtrip(t *testing.T) {
 		t.Fatalf("unexpected roundtrip proof: %+v", proof)
 	}
 	// A foreign lease identity is refused before any read.
-	_, err = db.observeSharedCustodyAttributionEvidence(ctx, RouteLease{RouteKey: routeKey, Owner: "other", FencingToken: 9}, cfg, 0, nil)
+	_, err = db.observeSharedCustodyAttributionEvidence(ctx, RouteLease{RouteKey: routeKey, Owner: "other", FencingToken: 9}, cfg, 0)
 	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_lease_unavailable" {
 		t.Fatalf("foreign lease identity accepted: %s", reason)
 	}
@@ -942,7 +942,7 @@ func TestSharedCustodyAttributionDatabaseRoundtrip(t *testing.T) {
 	foreign := custodyAttributionFundingRow(t, routeKey+"-foreign", "sig-foreign", 400)
 	foreign.RouteKey, foreign.StrategyKey = routeKey, "Ethena/ETH/PYUSD"
 	insert(foreign)
-	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -962,7 +962,7 @@ func TestSharedCustodyAttributionDatabaseRoundtrip(t *testing.T) {
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects) VALUES($1,$2,'manual_recovery','{}')`, routeKey+"-manual", routeKey); err != nil {
 		t.Fatal(err)
 	}
-	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -979,7 +979,7 @@ func TestSharedCustodyAttributionDatabaseRoundtrip(t *testing.T) {
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,strategy_key,expected_effects,confirmed_slot) VALUES($1,$2,'built',$3,'{}',450)`, routeKey+"-pending", routeKey, cfg.Lane); err != nil {
 		t.Fatal(err)
 	}
-	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1012,7 +1012,7 @@ func TestSharedCustodyAttributionDatabaseRoundtrip(t *testing.T) {
 		tailKey+"-corrupt", tailKey, tailCfg.Lane, corruptDigest); err != nil {
 		t.Fatal(err)
 	}
-	tailEvidence, err := db.observeSharedCustodyAttributionEvidence(ctx, tailLease, tailCfg, 0, nil)
+	tailEvidence, err := db.observeSharedCustodyAttributionEvidence(ctx, tailLease, tailCfg, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1124,7 +1124,7 @@ func TestSharedCustodyAttributionDatabaseLifecycleGates(t *testing.T) {
 	funding.RouteKey, repay.RouteKey, funding.StrategyKey, repay.StrategyKey = key, key, initCfg.Lane, initCfg.Lane
 	insert(repay)
 	insert(funding)
-	evidence, err := db.observeSharedCustodyAttributionEvidence(ctx, lease, initCfg, 0, nil)
+	evidence, err := db.observeSharedCustodyAttributionEvidence(ctx, lease, initCfg, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1150,7 +1150,7 @@ func TestSharedCustodyAttributionDatabaseLifecycleGates(t *testing.T) {
 		row.RouteKey, row.StrategyKey = slotKey, slotCfg.Lane
 		insert(row)
 	}
-	slotEvidence, err := db.observeSharedCustodyAttributionEvidence(ctx, slotLease, slotCfg, 4, nil)
+	slotEvidence, err := db.observeSharedCustodyAttributionEvidence(ctx, slotLease, slotCfg, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1166,7 +1166,7 @@ func TestSharedCustodyAttributionDatabaseLifecycleGates(t *testing.T) {
 		nullSlot.TransactionSignature, nullSlot.ReconciliationSHA256, nullSlot.ReconciledEffects); err != nil {
 		t.Fatal(err)
 	}
-	slotEvidence, err = db.observeSharedCustodyAttributionEvidence(ctx, slotLease, slotCfg, 4, nil)
+	slotEvidence, err = db.observeSharedCustodyAttributionEvidence(ctx, slotLease, slotCfg, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1208,7 +1208,7 @@ func TestSharedCustodyAttributionDatabaseLifecycleGates(t *testing.T) {
 	if storedSignature != nil || storedWire != nil || storedBroadcast != nil || storedReason == nil || *storedReason == "" {
 		t.Fatalf("presend failure row is not provably no-sign/no-broadcast: sig=%v wire=%v broadcast=%v reason=%v", storedSignature, storedWire, storedBroadcast, storedReason)
 	}
-	failEvidence, err := db.observeSharedCustodyAttributionEvidence(ctx, failLease, failCfg, 0, nil)
+	failEvidence, err := db.observeSharedCustodyAttributionEvidence(ctx, failLease, failCfg, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1226,7 +1226,7 @@ func TestSharedCustodyAttributionDatabaseLifecycleGates(t *testing.T) {
 		failKey+"-ambiguous", failKey, failCfg.Lane, sha256Bytes([]byte("carried wire"))); err != nil {
 		t.Fatal(err)
 	}
-	failEvidence, err = db.observeSharedCustodyAttributionEvidence(ctx, failLease, failCfg, 0, nil)
+	failEvidence, err = db.observeSharedCustodyAttributionEvidence(ctx, failLease, failCfg, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1310,7 +1310,7 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects,signed_wire,transaction_signature,last_valid_block_height,recovery_reason) VALUES($1,$2,'failed','SWAP_DEBT_TO_COLLATERAL_STEP','{}','\\x01','sig-unsent',999999999,'signature_absent_after_blockhash_expiry')`, routeKey+"-unsent", routeKey); err != nil {
 		t.Fatal(err)
 	}
-	evidence, err := db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	evidence, err := db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0)
 	if err != nil || evidence.Unknown || len(evidence.UnknownRows) != 0 {
 		t.Fatal("inert NAV reports, hold markers or unsent expired rows counted as unknown", len(evidence.UnknownRows), err)
 	}
@@ -1321,7 +1321,7 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	evidence, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0)
 	if err != nil || len(evidence.UnknownRows) != 1 || evidence.UnknownRows[0].OperationID != routeKey+"-sent-confirmed_transaction_error" {
 		t.Fatal("sent expired-absent row not excused, or another sent failure excused", len(evidence.UnknownRows), err)
 	}
@@ -1330,7 +1330,7 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0, nil)
+	_, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0)
 	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_unknown_overflow" {
 		t.Fatalf("unrecognized rows beyond the bound did not hold: %s", reason)
 	}

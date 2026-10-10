@@ -1,7 +1,9 @@
 package backyard
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
@@ -77,21 +80,28 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		}
 		return routeKey, id
 	}
+	// A wire whose signature is testSignature, as an older binary left a
+	// submitted row.
+	signature := solana.Signature{5}
+	submittedWire := append(append([]byte{1}, signature[:]...), 7)
 	submittedOperation := func(id, routeKey string) PersistedOperation {
 		return PersistedOperation{
 			Operation: Operation{ID: id, RouteKey: routeKey, Decision: Decision{Action: ReportNAV}}, Status: Submitted,
-			TransactionSignature: testSignature, LastValidBlockHeight: 10,
+			SignedWire: submittedWire, SignedWireSHA256: sha256Bytes(submittedWire), TransactionSignature: testSignature,
+			RecentBlockhash: bridgeVault, LastValidBlockHeight: 10,
 		}
 	}
 	// statusValue is the getSignatureStatuses row; transactionValue is the
 	// getTransaction result, or "RPC_ERROR" for a pruned/lagging receipt.
-	advance := func(t *testing.T, op PersistedOperation, statusValue, transactionValue string) (string, string, int) {
+	advance := func(t *testing.T, landCtx context.Context, op PersistedOperation, statusValue, transactionValue string) (string, string, int) {
 		t.Helper()
 		receiptReads := 0
 		rpc := newFakeChain(t, nil)
 		rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 			body, _ := io.ReadAll(request.Body)
 			switch {
+			case strings.Contains(string(body), `"method":"getEpochInfo"`):
+				return response(finalizedEpochJSON(5)), nil
 			case strings.Contains(string(body), `"method":"getSignatureStatuses"`):
 				return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":600},"value":[` + statusValue + `]}}`), nil
 			case strings.Contains(string(body), `"method":"getTransaction"`):
@@ -104,7 +114,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			t.Fatalf("unexpected RPC during failure recovery: %s", body)
 			return nil, fmt.Errorf("unexpected RPC")
 		})
-		if err := AdvanceNonterminal(ctx, db, rpc, op); err != nil {
+		if err := AdvanceNonterminal(landCtx, db, rpc, op); err != nil && landCtx.Err() == nil {
 			t.Fatal(err)
 		}
 		var status, reason string
@@ -115,10 +125,12 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	}
 	finalizedFailure := `{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"finalized"}`
 
-	t.Run("a processed-only failure keeps observing", func(t *testing.T) {
+	t.Run("a processed-only failure keeps observing without a resend", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "processed")
 		op := submittedOperation(id, routeKey)
-		status, reason, receiptReads := advance(t, op,
+		waiting, stop := context.WithTimeout(ctx, 1500*time.Millisecond)
+		defer stop()
+		status, reason, receiptReads := advance(t, waiting, op,
 			`{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"processed"}`,
 			`{"slot":45,"meta":{"err":null,"logMessages":[]}}`)
 		if status != "submitted" || reason != "" || receiptReads != 0 {
@@ -126,36 +138,6 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		}
 	})
 
-	// advanceRechecked is advance with a mutable signature status: the receipt
-	// timeout re-reads the signature at finalized commitment, and the re-read
-	// must be able to observe a different confirmation state than the failure
-	// that first reached the ambiguous path.
-	advanceRechecked := func(t *testing.T, op PersistedOperation, statusValue *string, transactionValue string) (string, string) {
-		t.Helper()
-		rpc := newFakeChain(t, nil)
-		rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			body, _ := io.ReadAll(request.Body)
-			switch {
-			case strings.Contains(string(body), `"method":"getSignatureStatuses"`):
-				return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":600},"value":[` + *statusValue + `]}}`), nil
-			case strings.Contains(string(body), `"method":"getTransaction"`):
-				if transactionValue == "RPC_ERROR" {
-					return nil, fmt.Errorf("failure receipt pruned")
-				}
-				return response(`{"jsonrpc":"2.0","id":1,"result":` + transactionValue + `}`), nil
-			}
-			t.Fatalf("unexpected RPC during the receipt timeout re-read: %s", body)
-			return nil, fmt.Errorf("unexpected RPC")
-		})
-		if err := AdvanceNonterminal(ctx, db, rpc, op); err != nil {
-			t.Fatal(err)
-		}
-		var status, reason string
-		if err := db.pool.QueryRow(ctx, `SELECT status,COALESCE(recovery_reason,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, op.ID).Scan(&status, &reason); err != nil {
-			t.Fatal(err)
-		}
-		return status, reason
-	}
 	ageBroadcast := func(t *testing.T, id string) {
 		t.Helper()
 		if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET broadcast_intent_at=clock_timestamp()-interval '16 minutes' WHERE operation_id=$1`, id); err != nil {
@@ -167,11 +149,11 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "unreadable")
 		op := submittedOperation(id, routeKey)
 		receipt := `{"slot":45,"meta":{"err":null,"logMessages":[]}}`
-		status, reason, _ := advance(t, op, finalizedFailure, receipt)
+		status, reason, _ := advance(t, ctx, op, finalizedFailure, receipt)
 		if status != "submitted" || reason != "" {
 			t.Fatalf("a contradictory receipt left the ambiguous submission state: %s %q", status, reason)
 		}
-		status, reason, _ = advance(t, op, finalizedFailure, "RPC_ERROR")
+		status, reason, _ = advance(t, ctx, op, finalizedFailure, "RPC_ERROR")
 		if status != "submitted" || reason != "" {
 			t.Fatalf("a lagging RPC entered manual recovery: %s %q", status, reason)
 		}
@@ -180,7 +162,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		// terminate the row, and it must stay in its ambiguous submission
 		// state for the next tick.
 		confirmedOnly := `{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"confirmed"}`
-		status, reason = advanceRechecked(t, op, &confirmedOnly, "RPC_ERROR")
+		status, reason, _ = advance(t, ctx, op, confirmedOnly, "RPC_ERROR")
 		if status != "submitted" || reason != "" {
 			t.Fatalf("a confirmed-only re-read terminated the row: %s %q", status, reason)
 		}
@@ -191,7 +173,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		op := submittedOperation(id, routeKey)
 		ageBroadcast(t, id)
 		settledSuccess := `{"slot":45,"err":null,"confirmationStatus":"finalized"}`
-		status, reason := advanceRechecked(t, op, &settledSuccess, "RPC_ERROR")
+		status, reason, _ := advance(t, ctx, op, settledSuccess, "RPC_ERROR")
 		if status != "confirmed" || reason != "" {
 			t.Fatalf("a settled success did not reach the confirmation path: %s %q", status, reason)
 		}
@@ -202,7 +184,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		op := submittedOperation(id, routeKey)
 		ageBroadcast(t, id)
 		finalizedFailureAgain := `{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"finalized"}`
-		status, reason := advanceRechecked(t, op, &finalizedFailureAgain, "RPC_ERROR")
+		status, reason, _ := advance(t, ctx, op, finalizedFailureAgain, "RPC_ERROR")
 		if status != "submitted" || reason != "" {
 			t.Fatalf("status-only proof released an ambiguous paid failure: %s %q", status, reason)
 		}
@@ -213,7 +195,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		op := submittedOperation(id, routeKey)
 		receipt := `{"slot":500,"meta":{"err":{"InstructionError":[0,{"Custom":9}]},"logMessages":` +
 			mustJSONLogs(t, adaptorFailureLogs(bridgeAdaptorProgram, 9)) + `}}`
-		status, reason, _ := advance(t, op, finalizedFailure, receipt)
+		status, reason, _ := advance(t, ctx, op, finalizedFailure, receipt)
 		if status != "submitted" || reason != "" {
 			t.Fatalf("logs-only refusal settled without fee and wire proof: %s %q", status, reason)
 		}
@@ -222,7 +204,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	t.Run("unattributable and non-adaptor errors stay capital stops", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "unattributable")
 		op := submittedOperation(id, routeKey)
-		status, reason, _ := advance(t, op, finalizedFailure,
+		status, reason, _ := advance(t, ctx, op, finalizedFailure,
 			transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 9}}}, "logMessages": []string{}}))
 		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason {
 			t.Fatalf("truncated failure logs lost the capital stop: %s %q", status, reason)
@@ -231,7 +213,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		other := submittedOperation(otherID, otherRoute)
 		otherReceipt := transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 6004}}},
 			"logMessages": adaptorFailureLogs(voltr.ProgramID.String(), 6004)})
-		status, reason, _ = advance(t, other, finalizedFailure, otherReceipt)
+		status, reason, _ = advance(t, ctx, other, finalizedFailure, otherReceipt)
 		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason {
 			t.Fatalf("a non-adaptor error lost the capital stop: %s %q", status, reason)
 		}
@@ -240,70 +222,103 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	t.Run("a settled success is never classified", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "success")
 		op := submittedOperation(id, routeKey)
-		status, reason, receiptReads := advance(t, op, `{"slot":45,"err":null,"confirmationStatus":"confirmed"}`, "RPC_ERROR")
+		status, reason, receiptReads := advance(t, ctx, op, `{"slot":45,"err":null,"confirmationStatus":"confirmed"}`, "RPC_ERROR")
 		if status != "confirmed" || reason != "" || receiptReads != 0 {
 			t.Fatalf("a successful receipt was classified as a failure: status=%s reason=%q receiptReads=%d", status, reason, receiptReads)
 		}
 	})
 
-	// The send fence runs the real signed path: bound build input, wire
-	// binding, then refusal. A refused wire must terminate without ever being
-	// revalued, submitted, or kept advancing on a later tick.
-	t.Run("the stale signed fence refuses without revaluation or send", func(t *testing.T) {
-		routeKey := fmt.Sprintf("failure-lifecycle-stale-%d", time.Now().UnixNano())
-		request := bridgeTestRequest(ReportNAV, 0)
-		request.LastValidBlockHeight = 10
-		request.Report.ObservedSlot, request.Report.Sequence = 42, 42
-		buildEffects, _, _, err := bridgeExpectedEffects(Decision{Action: ReportNAV}, 0, 0, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		effects, err := jsonMarshalExpectedEffects(buildEffects)
-		if err != nil {
-			t.Fatal(err)
-		}
-		id := seedBoundOperation(t, ctx, db, routeKey, "failure-lifecycle-writer", ReportNAV, "OnRe/ONyc/USDC", request, effects)
-		message, err := CompileBridgeMessage(request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		wire := append(make([]byte, 65), message...)
-		wire[0] = 1
-		bindTestWire(t, ctx, db, id, sha256Bytes(wire))
-		if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2 WHERE operation_id=$1`, id, wire); err != nil {
-			t.Fatal(err)
-		}
-		operation := PersistedOperation{
-			Operation: Operation{ID: id, RouteKey: routeKey, Decision: Decision{Action: ReportNAV}}, Status: Signed,
-			SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]),
-			RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10,
-		}
-		slotReads := 0
-		rpc := newFakeChain(t, nil)
-		// observed slot 42 + a confirmed slot of 71 is past observed+28, so the
-		// report can no longer land inside the adaptor's age window.
-		rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			body, _ := io.ReadAll(request.Body)
-			if strings.Contains(string(body), `"method":"getSlot"`) {
-				slotReads++
-				return response(`{"jsonrpc":"2.0","id":1,"result":71}`), nil
+	// The landing path on the real journal: a signed row records broadcast
+	// intent before its first send, a resumed row resends the same bytes, every
+	// send keeps preflight, and only the signature status and the finalized
+	// height decide the row.
+	for _, tc := range []struct {
+		name, from, want, reason string
+		// landAfter is the send count after which the signature confirms;
+		// zero never lands and the blockhash expires after the first send.
+		landAfter int
+		// refused: preflight refuses every send, so the cluster never
+		// forwards the wire.
+		refused bool
+		sends   int
+	}{
+		{"a signed wire is resent until it lands and confirms at its slot", "signed", "confirmed", "", 2, false, 2},
+		{"a resumed wire resends the same bytes and fails once expired and absent", "broadcast_intent", "failed", "signature_absent_after_blockhash_expiry", 0, false, 1},
+		{"a wire refused by preflight is never forced on chain and fails once expired", "signed", "failed", "signature_absent_after_blockhash_expiry", 0, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			routeKey := fmt.Sprintf("failure-lifecycle-land-%d", time.Now().UnixNano())
+			request := bridgeTestRequest(ReportNAV, 0)
+			request.LastValidBlockHeight = 10
+			request.Report.ObservedSlot, request.Report.Sequence = 42, 42
+			buildEffects, _, _, err := bridgeExpectedEffects(Decision{Action: ReportNAV}, 0, 0, 0)
+			if err != nil {
+				t.Fatal(err)
 			}
-			t.Fatalf("the stale fence allowed another RPC call: %s", body)
-			return nil, fmt.Errorf("unexpected RPC")
+			effects, err := jsonMarshalExpectedEffects(buildEffects)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := seedBoundOperation(t, ctx, db, routeKey, "failure-lifecycle-writer", ReportNAV, "OnRe/ONyc/USDC", request, effects)
+			message, err := CompileBridgeMessage(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire := append(append([]byte{1}, bytes.Repeat([]byte{3}, 64)...), message...)
+			bindTestWire(t, ctx, db, id, sha256Bytes(wire))
+			evidence := `{"decision":{"observationSlot":42}}`
+			if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status=$2,signed_wire=$3,expected_effects=expected_effects||$4::jsonb,
+				broadcast_intent_at=CASE WHEN $2='signed' THEN NULL ELSE clock_timestamp() END WHERE operation_id=$1`, id, tc.from, wire, evidence); err != nil {
+				t.Fatal(err)
+			}
+			operation := PersistedOperation{
+				Operation: Operation{ID: id, RouteKey: routeKey, Decision: Decision{Action: ReportNAV}}, Status: OperationStatus(tc.from),
+				ExpectedEffects: []byte(evidence), SignedWire: wire, SignedWireSHA256: sha256Bytes(wire),
+				TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10,
+			}
+			sends := 0
+			rpc := newFakeChain(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				body, _ := io.ReadAll(r.Body)
+				switch {
+				case strings.Contains(string(body), `"method":"sendTransaction"`):
+					if !strings.Contains(string(body), base64.StdEncoding.EncodeToString(wire)) {
+						t.Errorf("sent bytes other than the persisted wire")
+					}
+					if strings.Contains(string(body), `"skipPreflight":true`) {
+						t.Errorf("a send skipped preflight")
+					}
+					sends++
+					if tc.refused {
+						return response(`{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"Transaction simulation failed: custom program error: 0x9"}}`), nil
+					}
+					return response(`{"jsonrpc":"2.0","id":1,"result":"` + operation.TransactionSignature + `"}`), nil
+				case strings.Contains(string(body), `"method":"getEpochInfo"`):
+					if tc.landAfter == 0 && sends > 0 {
+						return response(finalizedEpochJSON(11)), nil
+					}
+					return response(finalizedEpochJSON(5)), nil
+				case strings.Contains(string(body), `"method":"getSignatureStatuses"`):
+					status := "null"
+					if tc.landAfter > 0 && sends >= tc.landAfter {
+						status = `{"slot":45,"confirmations":1,"err":null,"confirmationStatus":"confirmed"}`
+					}
+					return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":5000},"value":[` + status + `]}}`), nil
+				}
+				t.Errorf("unexpected RPC while landing: %s", body)
+				return nil, fmt.Errorf("unexpected RPC")
+			}))
+			if err := AdvanceNonterminal(ctx, db, rpc, operation); err != nil {
+				t.Fatal(err)
+			}
+			var status, reason string
+			var slot int64
+			var intent bool
+			if err := db.pool.QueryRow(ctx, `SELECT status,COALESCE(recovery_reason,''),COALESCE(confirmed_slot,0),broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status, &reason, &slot, &intent); err != nil {
+				t.Fatal(err)
+			}
+			if wantSlot := int64(45 * min(tc.landAfter, 1)); status != tc.want || reason != tc.reason || slot != wantSlot || !intent || sends != tc.sends {
+				t.Fatalf("landing outcome: status=%s reason=%q slot=%d intent=%t sends=%d", status, reason, slot, intent, sends)
+			}
 		})
-		if err := AdvanceNonterminal(ctx, db, rpc, operation); err != nil {
-			t.Fatal(err)
-		}
-		if slotReads != 1 {
-			t.Fatalf("refusal did not stop the lifecycle: %d slot reads", slotReads)
-		}
-		var status, reason string
-		var submitted bool
-		if err := db.pool.QueryRow(ctx, `SELECT status,COALESCE(recovery_reason,''),broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status, &reason, &submitted); err != nil {
-			t.Fatal(err)
-		}
-		if status != "failed" || reason != "report_stale" || submitted {
-			t.Fatalf("a refused wire crossed the broadcast boundary: status=%s reason=%q submitted=%t", status, reason, submitted)
-		}
-	})
+	}
 }

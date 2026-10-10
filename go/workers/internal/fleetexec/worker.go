@@ -217,8 +217,7 @@ func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) erro
 	}
 	out, err := chain.Land(leaseCtx, w.chain, chain.Attempt{
 		Wire: record.SignedTransaction, Signature: record.Signature,
-		LastValidBlockHeight: uint64(record.LastValidBlockHeight), Sends: record.BroadcastCount,
-		Required: chain.Confirmed,
+		LastValidBlockHeight: uint64(record.LastValidBlockHeight), Required: chain.Confirmed,
 	}, resendEvery, func(sendCtx context.Context) error {
 		if err := w.store.RecordBroadcastIntent(sendCtx, lease); err != nil {
 			return err

@@ -45,12 +45,8 @@ const (
 const squadsSpendingLimitReason = "squads_spending_limit_exceeded"
 
 // adaptorMaxReportAgeSlots is the deployed adaptor config's max report age.
-// reportFreshnessMarginSlots keeps the send fence inside that window: a wire
-// refused at observed+28 can never land as an on-chain ReportSlot failure.
 const (
-	adaptorMaxReportAgeSlots      = int64(32)
-	reportFreshnessMarginSlots    = int64(4)
-	reportSendFreshnessLimitSlots = adaptorMaxReportAgeSlots - reportFreshnessMarginSlots
+	adaptorMaxReportAgeSlots = int64(32)
 	// failureReceiptRetryWindow bounds how long a settled failure keeps its
 	// ambiguous submission state while its receipt is unreadable. A lagging or
 	// pruned RPC may recover later. Past this window recheck finalized status,
@@ -240,22 +236,9 @@ func ReportExpiredAtLanding(observedSlot, landingSlot int64) bool {
 	return observedSlot > 0 && landingSlot > observedSlot+adaptorMaxReportAgeSlots
 }
 
-// EvaluateReportSendFreshness is the pure send fence. A wire refused here can
-// never land inside the adaptor window, so it must not be broadcast; a fresh
-// observation replaces it on the next tick.
-func EvaluateReportSendFreshness(observedSlot, confirmedSlot int64) (stale bool, reason string) {
-	if observedSlot <= 0 {
-		return false, ""
-	}
-	if confirmedSlot > observedSlot+reportSendFreshnessLimitSlots {
-		return true, "report_stale"
-	}
-	return false, ""
-}
-
 // persistedReportObservedSlot reads the wire's own report slot back from the
 // persisted build input. Only report-bearing bridge wires carry a report, so
-// other actions return zero and are never fenced.
+// other actions return zero and never classify as an expired report.
 func (d *Database) persistedReportObservedSlot(ctx context.Context, operationID string) (int64, error) {
 	if d == nil || d.pool == nil || operationID == "" {
 		return 0, fmt.Errorf("report slot database is not configured")
@@ -285,48 +268,6 @@ func (d *Database) persistedReportObservedSlot(ctx context.Context, operationID 
 		return 0, fmt.Errorf("persisted report slot exceeds signed range")
 	}
 	return int64(bridge.Report.ObservedSlot), nil
-}
-
-// TerminalTransition reports that the durable row already moved to a terminal
-// status during this tick. It is a result, not an error: the caller must stop
-// advancing the now-obsolete in-memory status instead of treating the row as
-// still nonterminal.
-type TerminalTransition struct {
-	OperationID string
-}
-
-// RefuseStaleReportSend is the pre-broadcast fence for a persisted signed
-// wire. It runs before broadcast intent is recorded, so a refused wire
-// terminates in `failed` without ever being submitted.
-func (d *Database) RefuseStaleReportSend(ctx context.Context, rpc *chain.Client, operationID string, from OperationStatus) (TerminalTransition, error) {
-	if rpc == nil {
-		return TerminalTransition{}, fmt.Errorf("RPC client is required")
-	}
-	observed, err := d.persistedReportObservedSlot(ctx, operationID)
-	if err != nil || observed <= 0 {
-		return TerminalTransition{}, err
-	}
-	confirmed, err := confirmedSlot(ctx, rpc)
-	if err != nil {
-		return TerminalTransition{}, err
-	}
-	if stale, _ := EvaluateReportSendFreshness(observed, confirmed); !stale {
-		return TerminalTransition{}, nil
-	}
-	if err := d.MarkReportStaleFailed(ctx, operationID, from); err != nil {
-		return TerminalTransition{}, err
-	}
-	return TerminalTransition{OperationID: operationID}, nil
-}
-
-// MarkReportStaleFailed terminates a never-broadcast wire whose report can no
-// longer land inside the adaptor's age window. Nothing was submitted, so the
-// terminal failure releases the one-nonterminal slot.
-func (d *Database) MarkReportStaleFailed(ctx context.Context, operationID string, from OperationStatus) error {
-	if from != Signed && from != Built && from != Simulated {
-		return fmt.Errorf("report staleness fence requires a never-broadcast source")
-	}
-	return d.transition(ctx, operationID, from, Failed, `, recovery_reason = 'report_stale'`)
 }
 
 // broadcastIntentAt reads when the wire's submission was journaled. That

@@ -210,23 +210,6 @@ func TestAdaptorErrors9And18AreRetryableAndLateSendRefused(t *testing.T) {
 		}
 	})
 
-	t.Run("the send fence refuses a wire past observed_slot+28", func(t *testing.T) {
-		if reportFreshnessMarginSlots != 4 || adaptorMaxReportAgeSlots != 32 || reportSendFreshnessLimitSlots != 28 {
-			t.Fatalf("fence constants drifted: margin=%d max=%d limit=%d",
-				reportFreshnessMarginSlots, adaptorMaxReportAgeSlots, reportSendFreshnessLimitSlots)
-		}
-		if stale, reason := EvaluateReportSendFreshness(100, 128); stale || reason != "" {
-			t.Fatalf("a wire at observed+28 was refused: %t %q", stale, reason)
-		}
-		stale, reason := EvaluateReportSendFreshness(100, 129)
-		if !stale || reason != "report_stale" {
-			t.Fatalf("a wire at observed+29 was not refused: %t %q", stale, reason)
-		}
-		if stale, _ = EvaluateReportSendFreshness(0, 1_000_000); stale {
-			t.Fatal("a wire without a report was refused by the freshness fence")
-		}
-	})
-
 	t.Run("the failure receipt is read from the chain and classified", func(t *testing.T) {
 		evidence := `{"jsonrpc":"2.0","id":1,"result":` + transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 9}}},
 			"fee": 5000, "preBalances": []uint64{1}, "postBalances": []uint64{1}, "logMessages": adaptorFailureLogs(bridgeAdaptorProgram, 9)}) + `}`

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -115,113 +114,6 @@ func TestSharedCustodySpendIntentBindsObservedPrestate(t *testing.T) {
 			Mint: autoAUTOPYUSD.Kamino.CollateralMint, Authority: bridgeVault, BeforeRaw: 5, AfterRaw: 1}}}, 5)
 }
 
-func TestSharedCustodyCurrentOperationValidation(t *testing.T) {
-	cfg := custodyAttributionConfig()
-	spend := custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000)
-	spendBytes, err := jsonMarshalExpectedEffects(spend)
-	if err != nil {
-		t.Fatal(err)
-	}
-	build, delegate := custodyAdmissionSignedBuild(t, bytes.Repeat([]byte{11}, ed25519.SeedSize))
-	cfg.Delegate = delegate
-	signedRow := sharedCustodyCurrentOperationRow{
-		Status: "signed", StrategyKey: cfg.Lane, SignedWirePresent: true, SignedWire: build.SignedWire,
-		SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: build.TransactionSignature,
-		MessageSHA256: build.MessageSHA256, RecentBlockhash: build.RecentBlockhash,
-		LastValidBlockHeight: build.LastValidBlockHeight, SimulationSlot: build.SimulationSlot,
-		ExpectedEffects: spendBytes,
-	}
-	decidedRow := sharedCustodyCurrentOperationRow{Status: "decided", StrategyKey: cfg.Lane, ExpectedEffects: spendBytes}
-
-	// Happy path: the exact persisted signed wire (bound digest AND
-	// signature) at Signed — the ONLY excludable state.
-	if err := validateSharedCustodyCurrentOperation(sharedCustodyCurrentOperation{
-		OperationID: "op", SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: build.TransactionSignature,
-		ExpectedEffects: spend,
-	}, signedRow, cfg); err != nil {
-		t.Fatalf("exact persisted signed wire refused: %v", err)
-	}
-
-	invalid := func(name string, current sharedCustodyCurrentOperation, row sharedCustodyCurrentOperationRow, rowCfg sharedCustodyAttributionConfig) {
-		t.Helper()
-		err := validateSharedCustodyCurrentOperation(current, row, rowCfg)
-		if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_current_operation_invalid" {
-			t.Fatalf("%s: %s", name, reason)
-		}
-	}
-	// At Signed the claim must be the exact persisted digest AND signature.
-	invalid("wrong claimed digest", sharedCustodyCurrentOperation{OperationID: "op", SignedWireSHA256: strings.Repeat("a", 64), TransactionSignature: build.TransactionSignature, ExpectedEffects: spend}, signedRow, cfg)
-	invalid("wrong claimed signature", sharedCustodyCurrentOperation{OperationID: "op", SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: "3Zyv", ExpectedEffects: spend}, signedRow, cfg)
-	// The persisted wire must bind together: digest, message, blockhash and
-	// the sole-signer signature.
-	invalid("tampered persisted wire", sharedCustodyCurrentOperation{OperationID: "op", SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: build.TransactionSignature, ExpectedEffects: spend},
-		func() sharedCustodyCurrentOperationRow {
-			row := signedRow
-			row.SignedWire = append([]byte(nil), row.SignedWire...)
-			row.SignedWire[len(row.SignedWire)-1] ^= 1
-			return row
-		}(), cfg)
-	// A self-consistent wire from a DIFFERENT signer is refused by the
-	// delegate pin, even though every digest binds.
-	other, otherDelegate := custodyAdmissionSignedBuild(t, bytes.Repeat([]byte{12}, ed25519.SeedSize))
-	_ = otherDelegate
-	pinned := cfg.Delegate
-	cfg.Delegate = publicKeyFromBytes(bytes.Repeat([]byte{13}, 32))
-	invalid("delegate pin", sharedCustodyCurrentOperation{OperationID: "op", SignedWireSHA256: other.SignedWireSHA256, TransactionSignature: other.TransactionSignature, ExpectedEffects: spend},
-		sharedCustodyCurrentOperationRow{Status: "signed", StrategyKey: cfg.Lane, SignedWirePresent: true, SignedWire: other.SignedWire,
-			SignedWireSHA256: other.SignedWireSHA256, TransactionSignature: other.TransactionSignature, MessageSHA256: other.MessageSHA256,
-			RecentBlockhash: other.RecentBlockhash, LastValidBlockHeight: other.LastValidBlockHeight, SimulationSlot: other.SimulationSlot,
-			ExpectedEffects: spendBytes}, cfg)
-	cfg.Delegate = pinned
-	// Pre-sign rows are NEVER excludable: recordDecisionTx persists only the
-	// decision evidence (no built effects — DecodeExpectedEffects refuses
-	// that state), so the custody walk runs before the row exists and after
-	// signing, never in between.
-	invalid("decided row", sharedCustodyCurrentOperation{OperationID: "op", ExpectedEffects: spend}, decidedRow, cfg)
-	invalid("built row", sharedCustodyCurrentOperation{OperationID: "op", SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: build.TransactionSignature, ExpectedEffects: spend},
-		func() sharedCustodyCurrentOperationRow { row := decidedRow; row.Status = "built"; return row }(), cfg)
-	invalid("simulated row", sharedCustodyCurrentOperation{OperationID: "op", SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: build.TransactionSignature, ExpectedEffects: spend},
-		func() sharedCustodyCurrentOperationRow { row := decidedRow; row.Status = "simulated"; return row }(), cfg)
-	// Broadcast intent, post-broadcast states, foreign lanes sharing the
-	// route key, and mismatched operation IDs are never excludable.
-	invalid("broadcast intent", sharedCustodyCurrentOperation{OperationID: "op", SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: build.TransactionSignature, ExpectedEffects: spend},
-		func() sharedCustodyCurrentOperationRow { row := signedRow; row.BroadcastIntent = true; return row }(), cfg)
-	invalid("submitted status", sharedCustodyCurrentOperation{OperationID: "op", SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: build.TransactionSignature, ExpectedEffects: spend},
-		func() sharedCustodyCurrentOperationRow { row := signedRow; row.Status = "submitted"; return row }(), cfg)
-	invalid("manual recovery status", sharedCustodyCurrentOperation{OperationID: "op", ExpectedEffects: spend},
-		func() sharedCustodyCurrentOperationRow { row := decidedRow; row.Status = "manual_recovery"; return row }(), cfg)
-	invalid("foreign lane on shared route key", sharedCustodyCurrentOperation{OperationID: "op", ExpectedEffects: spend},
-		func() sharedCustodyCurrentOperationRow {
-			row := decidedRow
-			row.StrategyKey = "Ethena/ETH/PYUSD"
-			return row
-		}(), cfg)
-	invalid("mismatched operation id", sharedCustodyCurrentOperation{OperationID: "", ExpectedEffects: spend}, decidedRow, cfg)
-	// The caller's spend intent must equal the persisted built effects
-	// exactly: the same custody at a different amount is a different spend.
-	drifted := custodyAttributionRepayExpected(3_100_000_000, 700_000_000, 6_000_000_000, 8_500_000_000)
-	invalid("same custody different amount", sharedCustodyCurrentOperation{OperationID: "op", ExpectedEffects: drifted}, decidedRow, cfg)
-	// Undecodable persisted effects and persisted non-spends are refused.
-	invalid("undecodable persisted effects", sharedCustodyCurrentOperation{OperationID: "op", ExpectedEffects: spend},
-		func() sharedCustodyCurrentOperationRow {
-			row := decidedRow
-			row.ExpectedEffects = []byte("{}")
-			return row
-		}(), cfg)
-	invalid("persisted credit-only effects", sharedCustodyCurrentOperation{OperationID: "op",
-		ExpectedEffects: custodyAttributionFundingExpected(10_000_000_000, 8_000_000_000, nil)},
-		func() sharedCustodyCurrentOperationRow {
-			funding, err := jsonMarshalExpectedEffects(custodyAttributionFundingExpected(10_000_000_000, 8_000_000_000, nil))
-			if err != nil {
-				t.Fatal(err)
-			}
-			row := decidedRow
-			row.ExpectedEffects = funding
-			return row
-		}(), cfg)
-	_ = spend
-}
-
 func TestSharedCustodyAdmissionProofBindsGeneration(t *testing.T) {
 	proof := sharedCustodyAdmissionProof{SpendRaw: 1, Generation: 4, LeaseFencing: 9}
 	if !proof.BindsGeneration(4, 9) {
@@ -239,15 +131,12 @@ func TestSharedCustodyAdmissionProofBindsGeneration(t *testing.T) {
 	}
 }
 
-// The full lifecycle in the production Tick phase order: REAL journal rows,
+// The ownership proof in the production Tick phase order: REAL journal rows,
 // the REAL decision persistence (RecordDecisionOnManifest — which stores ONLY
-// decision evidence, expectedEffects null), REAL build/simulation transitions
-// (MarkBuilt, MarkSimulated), the production PersistSignedUpdate SQL with a
-// genuinely signed wire, and the real candidate-AUTO planning state: a
-// persisted candidate selector entry that only the explicit reviewed manifest
-// decodes. The custody proofs bind at the exact persisted state of each
-// phase: strict ownership proof BEFORE the row exists, send recheck only at
-// Signed.
+// decision evidence, expectedEffects null) and the real candidate-AUTO
+// planning state: a persisted candidate selector entry that only the explicit
+// reviewed manifest decodes. The strict proof binds BEFORE the row exists and
+// holds while it is in flight.
 func TestSharedCustodyAdmissionSpendProofLifecycle(t *testing.T) {
 	url := os.Getenv("PHASE3_TEST_DATABASE_URL")
 	if url == "" {
@@ -324,7 +213,7 @@ func TestSharedCustodyAdmissionSpendProofLifecycle(t *testing.T) {
 	}
 
 	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, key)
-	build, delegate := custodyAdmissionSignedBuild(t, bytes.Repeat([]byte{11}, ed25519.SeedSize))
+	_, delegate := custodyAdmissionSignedBuild(t, bytes.Repeat([]byte{11}, ed25519.SeedSize))
 	cfg.Delegate = delegate
 
 	insertRow := func(row custodyAttributionRow) {
@@ -354,7 +243,7 @@ func TestSharedCustodyAdmissionSpendProofLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pre-decision ownership proof refused: %v", err)
 	}
-	if proof.SpendRaw != 2_500_000_000 || proof.ExcludedOperation != "" || proof.Generation != 1 ||
+	if proof.SpendRaw != 2_500_000_000 || proof.Generation != 1 ||
 		proof.LeaseFencing != lease.FencingToken || proof.Digest == "" || len(proof.Proof.Steps) != 2 ||
 		proof.Proof.Origin.Signature != "sig-admission-fund" {
 		t.Fatalf("unexpected pre-decision proof: %+v", proof)
@@ -396,155 +285,6 @@ func TestSharedCustodyAdmissionSpendProofLifecycle(t *testing.T) {
 	if _, err = db.ObserveSharedCustodyOwnershipProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300); custodyAttributionHoldReason(t, err) != "custody_attribution_unresolved_operation" {
 		t.Fatalf("mid-flight strict proof did not hold: %v", err)
 	}
-	// The send proof refuses a decided row — no blind exemption by route,
-	// lane, or operation id.
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300,
-		sharedCustodySignedSpend{OperationID: id, SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: build.TransactionSignature}); custodyAttributionHoldReason(t, err) != "custody_attribution_current_operation_invalid" {
-		t.Fatalf("decided row excluded: %v", err)
-	}
-
-	// (a3) REAL build persistence: MarkBuilt persists the built expected
-	// effects (the first point at which DecodeExpectedEffects succeeds on
-	// the row), then MarkSimulated.
-	envelope, err := jsonMarshalExpectedEffects(cleanup)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.MarkBuilt(ctx, id, sha256Bytes([]byte("cleanup-build-message")), envelope); err != nil {
-		t.Fatalf("real MarkBuilt failed: %v", err)
-	}
-	if err := db.MarkSimulated(ctx, id, SimulationResult{Slot: 500, UnitsConsumed: 42_000}); err != nil {
-		t.Fatalf("real MarkSimulated failed: %v", err)
-	}
-
-	// REAL signed persistence: the production PersistSignedUpdate statement,
-	// simulated -> signed, exactly as the production send path calls it (see
-	// the fixture-scope note at the top of this file for the delegate
-	// narrowing), then verify every signed column actually landed.
-	signedUpdate, err := db.pool.Exec(ctx, PersistSignedUpdate, id, build.MessageSHA256, build.SignedWire,
-		build.SignedWireSHA256, build.TransactionSignature, build.RecentBlockhash, build.LastValidBlockHeight)
-	if err != nil {
-		t.Fatalf("production PersistSignedUpdate failed: %v", err)
-	}
-	if signedUpdate.RowsAffected() != 1 {
-		t.Fatalf("PersistSignedUpdate touched %d rows, want the one simulated operation", signedUpdate.RowsAffected())
-	}
-	var (
-		persistedStatus, persistedDigest, persistedSignature, persistedBlockhash string
-		persistedWire                                                            []byte
-		persistedHeight                                                          int64
-	)
-	if err := db.pool.QueryRow(ctx, `SELECT status, COALESCE(signed_wire_sha256,''), COALESCE(transaction_signature,''),
-		COALESCE(recent_blockhash,''), COALESCE(signed_wire,''), COALESCE(last_valid_block_height,0)
-		FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&persistedStatus, &persistedDigest,
-		&persistedSignature, &persistedBlockhash, &persistedWire, &persistedHeight); err != nil {
-		t.Fatal(err)
-	}
-	if persistedStatus != "signed" || persistedDigest != build.SignedWireSHA256 || persistedSignature != build.TransactionSignature ||
-		persistedBlockhash != build.RecentBlockhash || !bytes.Equal(persistedWire, build.SignedWire) || persistedHeight != build.LastValidBlockHeight {
-		t.Fatalf("PersistSignedUpdate did not persist the exact signed wire identity: %+v", build)
-	}
-
-	// (b) Send recheck at the Signed phase: the exact persisted wire identity
-	// — digest AND signature — admits the pre-broadcast proof.
-	signed := sharedCustodySignedSpend{OperationID: id, SignedWireSHA256: build.SignedWireSHA256, TransactionSignature: build.TransactionSignature}
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300, signed); err != nil {
-		t.Fatalf("signed recheck proof refused: %v", err)
-	}
-	wrongDigest := signed
-	wrongDigest.SignedWireSHA256 = strings.Repeat("a", 64)
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300, wrongDigest); custodyAttributionHoldReason(t, err) != "custody_attribution_current_operation_invalid" {
-		t.Fatalf("wrong claimed wire digest accepted: %v", err)
-	}
-	wrongSignature := signed
-	wrongSignature.TransactionSignature = "3Zyv"
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300, wrongSignature); custodyAttributionHoldReason(t, err) != "custody_attribution_current_operation_invalid" {
-		t.Fatalf("wrong claimed signature accepted: %v", err)
-	}
-
-	// (c) A tampered persisted wire breaks the persisted binding.
-	other, otherDelegate := custodyAdmissionSignedBuild(t, bytes.Repeat([]byte{12}, ed25519.SeedSize))
-	_ = otherDelegate
-	exec(`UPDATE loyal_yield.multiply_operations SET signed_wire=$2 WHERE operation_id=$1`, id, other.SignedWire)
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300, signed); custodyAttributionHoldReason(t, err) != "custody_attribution_current_operation_invalid" {
-		t.Fatalf("tampered persisted wire accepted: %v", err)
-	}
-	exec(`UPDATE loyal_yield.multiply_operations SET signed_wire=$2 WHERE operation_id=$1`, id, build.SignedWire)
-
-	// (d) A self-consistent wire from a DIFFERENT signer fails the delegate
-	// pin even though every digest binds: the claim matches the persisted
-	// (other) wire exactly, so ONLY the signer pin can refuse it.
-	exec(`UPDATE loyal_yield.multiply_operations SET signed_wire=$2, signed_wire_sha256=$3, transaction_signature=$4,
-		message_sha256=$5, recent_blockhash=$6, last_valid_block_height=$7 WHERE operation_id=$1`,
-		id, other.SignedWire, other.SignedWireSHA256, other.TransactionSignature, other.MessageSHA256, other.RecentBlockhash, other.LastValidBlockHeight)
-	otherSigned := sharedCustodySignedSpend{OperationID: id, SignedWireSHA256: other.SignedWireSHA256, TransactionSignature: other.TransactionSignature}
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300, otherSigned); custodyAttributionHoldReason(t, err) != "custody_attribution_current_operation_invalid" {
-		t.Fatalf("non-pinned delegate wire accepted: %v", err)
-	}
-	exec(`UPDATE loyal_yield.multiply_operations SET signed_wire=$2, signed_wire_sha256=$3, transaction_signature=$4,
-		message_sha256=$5, recent_blockhash=$6, last_valid_block_height=$7 WHERE operation_id=$1`,
-		id, build.SignedWire, build.SignedWireSHA256, build.TransactionSignature, build.MessageSHA256, build.RecentBlockhash, build.LastValidBlockHeight)
-
-	// (e) Broadcast intent and post-broadcast states are never excludable.
-	exec(`UPDATE loyal_yield.multiply_operations SET broadcast_intent_at=now() WHERE operation_id=$1`, id)
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300, signed); custodyAttributionHoldReason(t, err) != "custody_attribution_current_operation_invalid" {
-		t.Fatalf("broadcast-intent operation excluded: %v", err)
-	}
-	exec(`UPDATE loyal_yield.multiply_operations SET broadcast_intent_at=NULL WHERE operation_id=$1`, id)
-	exec(`UPDATE loyal_yield.multiply_operations SET status='submitted' WHERE operation_id=$1`, id)
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300, signed); custodyAttributionHoldReason(t, err) != "custody_attribution_current_operation_invalid" {
-		t.Fatalf("submitted operation excluded: %v", err)
-	}
-	exec(`UPDATE loyal_yield.multiply_operations SET status='signed' WHERE operation_id=$1`, id)
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300, signed); err != nil {
-		t.Fatalf("proof did not recover after fixture reset: %v", err)
-	}
-
-	// (f) A foreign lane touching the SAME production route key is the newest
-	// participant and refuses the proof; removing it restores the proof.
-	foreign := custodyAttributionFundingRow(t, key+"-foreign", "sig-admission-foreign", 400)
-	foreign.RouteKey, foreign.StrategyKey = key, "Ethena/ETH/PYUSD"
-	insertRow(foreign)
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 500, signed); custodyAttributionHoldReason(t, err) != "custody_attribution_foreign_lane" {
-		t.Fatalf("same-route foreign-lane touch not refused: %v", err)
-	}
-	exec(`DELETE FROM loyal_yield.multiply_operations WHERE operation_id=$1`, key+"-foreign")
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 500, signed); err != nil {
-		t.Fatalf("proof did not recover after foreign row removal: %v", err)
-	}
-
-	// (g) Observed-amount drift with no journal row is a tip balance
-	// mismatch, never a pass.
-	if _, err = db.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 700_000_000, 600, signed); custodyAttributionHoldReason(t, err) != "custody_attribution_balance_mismatch" {
-		t.Fatalf("amount drift accepted: %v", err)
-	}
-
-	// (h) Restart: a fresh worker handle re-acquiring the route lease
-	// reconstructs the identical chain under the new fence. AcquireRouteLease
-	// never treats an unexpired lease as re-entrant — even for the identical
-	// owner — so the restart overlap is simulated by expiring the test-owned
-	// lease row first: only an expired row may increment the fence.
-	restarted, err := OpenDatabase(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restarted.Close()
-	exec(`UPDATE loyal_yield.multiply_route_states SET lease_expires_at = now() - interval '1 second' WHERE route_key=$1`, key)
-	newLease, err := restarted.AcquireRouteLease(ctx, key, "admission-worker", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restartedProof, err := restarted.ObserveSharedCustodySendProof(ctx, manifest, cfg, cleanup, 3_100_000_000, 300, signed)
-	if err != nil {
-		t.Fatalf("restart proof refused: %v", err)
-	}
-	if !reflect.DeepEqual(restartedProof.Proof.Steps, proof.Proof.Steps) || restartedProof.Proof.Origin != proof.Proof.Origin {
-		t.Fatal("restart did not reconstruct the identical chain")
-	}
-	if restartedProof.LeaseFencing == lease.FencingToken || restartedProof.LeaseFencing != newLease.FencingToken {
-		t.Fatal("restart fence not carried")
-	}
-
 	// (i) Zero spend skips the gate entirely: an unrelated unresolved row on
 	// the route and a positive balance never block a credit-only operation.
 	exec(`INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,'{"generation":1}')`, navKey)
@@ -766,10 +506,10 @@ func TestSharedCustodyAdmissionBindingAtRouteLock(t *testing.T) {
 	}
 }
 
-// The broadcast-intent lock seam (doc 26 §4): the fresh send proof is
+// The broadcast-intent lock seam (doc 26 §4): the bound proof is
 // re-validated INSIDE the locked transaction against the PERSISTED built
-// effects and the route lock row; missing, foreign, and drifted proofs hold
-// before broadcast intent is recorded.
+// effects and the route lock row; missing and drifted proofs hold before
+// broadcast intent is recorded.
 func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 	url := os.Getenv("PHASE3_TEST_DATABASE_URL")
 	if url == "" {
@@ -822,14 +562,9 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 		VALUES($1,$2,'signed',$3,$4,$5::jsonb || '{"decision":{"observationSlot":290}}'::jsonb)`, opID, key, string(DeleverRouteStep), cfg.Lane, envelope); err != nil {
 		t.Fatal(err)
 	}
-	proof := custodyAdmissionProofFixture(t, cfg, key, effects, 3_100_000_000, 300, 1, lease.FencingToken, "sendlock-worker")
-	proof.ExcludedOperation = opID
-	// The exclusion is part of the digested content: re-commit after naming
-	// the signed operation, as ObserveSharedCustodySendProof does.
-	proof.Digest = sharedCustodyAdmissionDigest(proof)
+	proof := sharedCustodyProofBindingFrom(custodyAdmissionProofFixture(t, cfg, key, effects, 3_100_000_000, 300, 1, lease.FencingToken, "sendlock-worker"))
 
-	const slot = int64(310)
-	validate := func(carried *sharedCustodyAdmissionProof, rowEffects []byte) error {
+	validate := func(carried *sharedCustodyProofBinding, rowEffects []byte) error {
 		t.Helper()
 		tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
@@ -848,16 +583,10 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 		return validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, opID, carried)
 	}
 	if err := validate(&proof, nil); err != nil {
-		t.Fatalf("coherent send proof refused at the broadcast lock: %v", err)
+		t.Fatalf("coherent bound proof refused at the broadcast lock: %v", err)
 	}
 	if err := validate(nil, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_missing" {
-		t.Fatalf("missing send proof admitted: %v", err)
-	}
-	foreign := proof
-	foreign.ExcludedOperation = key + "-other"
-	foreign.Digest = sharedCustodyAdmissionDigest(foreign)
-	if err := validate(&foreign, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
-		t.Fatalf("proof for another operation admitted: %v", err)
+		t.Fatalf("missing bound proof admitted: %v", err)
 	}
 	// The persisted built effects are the authority: a proof over DIFFERENT
 	// (still decode-valid, conserved) built effects drifts even though the
@@ -869,21 +598,6 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 	// typed hold: nothing broadcasts, and the failure is loud, not silent.
 	if err := validate(&proof, []byte("{}")); err == nil {
 		t.Fatalf("undecodable persisted effects admitted at the broadcast lock")
-	}
-	// A proof mutated after digesting refuses on self-consistency: the digest
-	// is recomputed from the carried content at the lock.
-	mutated := proof
-	mutated.Proof.ObservedRaw++
-	if err := validate(&mutated, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
-		t.Fatalf("mutated send proof admitted: %v", err)
-	}
-	// The custody observation must be confirmed no earlier than the decision
-	// it spends for.
-	early := proof
-	early.ObservedSlot = 289
-	early.Digest = sharedCustodyAdmissionDigest(early)
-	if err := validate(&early, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
-		t.Fatalf("send proof observed before the decision admitted: %v", err)
 	}
 	// Generation drift under the lock holds.
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state_version=2, state='{"generation":2}' WHERE route_key=$1`, key); err != nil {

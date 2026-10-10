@@ -130,7 +130,7 @@ func TestChainAnswersMapToWaitFailureOrHold(t *testing.T) {
 	waits := map[string]error{}
 	_, _, waits["behind"] = confirmedAccounts(ctx, answer(http.StatusOK, nodeError(-32016)), []string{bridgeVault}, 42)
 	_, waits["unhealthy"] = signatureStatus(ctx, answer(http.StatusOK, nodeError(-32005)), testSignature)
-	_, waits["rate limited"] = finalizedHeight(ctx, answer(http.StatusTooManyRequests, "Too Many Requests"))
+	_, waits["rate limited"] = signatureStatus(ctx, answer(http.StatusTooManyRequests, "Too Many Requests"), testSignature)
 	_, waits["not landed"] = finalizedTransaction(ctx, answer(http.StatusOK, `{"jsonrpc":"2.0","id":1,"result":null}`), testSignature)
 	for name, err := range waits {
 		if !errors.Is(err, errConfirmedObservationUnavailable) {
