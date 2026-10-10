@@ -85,7 +85,7 @@ func autoInitializerAuthorizationRPC(t *testing.T, f autoInitializerRecoveryFixt
 			t.Fatalf("authorization must not simulate: no signer exists in this chain")
 		case "getMultipleAccounts":
 			var addresses []string
-			if err = json.Unmarshal(body.Params[0], &addresses); err == nil && len(addresses) > 0 && addresses[0] == bridgeSettings {
+			if err = json.Unmarshal(body.Params[0], &addresses); err == nil && len(addresses) > 0 && addresses[0] == bridgeDelegate {
 				values := make([]any, len(addresses))
 				for i, address := range addresses {
 					if a, ok := accounts[address]; ok {
@@ -174,15 +174,6 @@ func TestAutoInitializerBuildGateThroughReviewedManifest(t *testing.T) {
 	if request.(KaminoInitializationRequest) != f.request || *effects.Initialization != f.request || !bytes.Equal(message, f.message) {
 		t.Fatal("persisted candidate build input drifted from the reviewed binding")
 	}
-	// The same persisted bytes stay closed through the embedded public decode:
-	// only the explicit reviewed manifest admits them.
-	if _, _, _, err := auth.BuildInput.decode(); err == nil {
-		t.Fatal("embedded decode admitted the candidate build input")
-	}
-	// The embedded public prestate gate keeps the candidate lane closed.
-	if err := validateBuildPrestate(ctx, rpc, f.request, f.effects); err == nil {
-		t.Fatal("embedded public build gate admitted the AUTO candidate")
-	}
 
 	// No bind, no signer.
 	unbound := newOp(false)
@@ -191,10 +182,10 @@ func TestAutoInitializerBuildGateThroughReviewedManifest(t *testing.T) {
 		t.Fatalf("unbound refusal transitioned the journal: %s", status)
 	}
 
-	// A request that lost the reviewed seed is refused before the binding
+	// A request that names another policy is refused before the binding
 	// comparison even runs, and the journal row keeps its bound build input.
 	drifted := f.request
-	drifted.PolicySeed = autoFixtureSeed
+	drifted.Policy = testPolicyAccount(policyKey{family: BasicDebtLifecycle})
 	if _, err := f.manifest.validateRequestPrestate(ctx, rpc, drifted, f.effects); err == nil {
 		t.Fatal("drifted initializer request passed the prestate gate")
 	}
@@ -242,15 +233,6 @@ func TestAutoInitializerSignedTransitionThroughReviewedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	op.ExpectedEffects = []byte(`{"decision":{"observationSlot":42}}`)
-
-	// The embedded public final-send entrypoint refuses the candidate at
-	// decode, before any transition or RPC.
-	if err := db.CheckAndMarkBroadcastIntent(ctx, rpc, op); err == nil {
-		t.Fatal("embedded public send entrypoint admitted the AUTO candidate")
-	}
-	if status := operationStatus(t, ctx, db, op.ID); status != "signed" {
-		t.Fatalf("public send refusal transitioned the journal: %s", status)
-	}
 
 	// The wired internal lifecycle path: identity proof, prestate, locked
 	// final-send fence, durable broadcast intent, then the refused broadcast.

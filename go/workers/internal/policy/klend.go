@@ -121,13 +121,13 @@ func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve
 			},
 			{
 				Name:    fmt.Sprintf("deposit %d", amount),
-				Allowed: kamino.DepositV2Allowed(allowed),
+				Allowed: kamino.DepositV2Allowed(allowed, squads.Unpinned),
 				Inner:   kamino.DepositV2(collateral, amount),
 				Before:  append(depositBefore, refresh...),
 			},
 			{
 				Name:    fmt.Sprintf("withdraw %d collateral (the deposit)", minted),
-				Allowed: kamino.WithdrawV2Allowed(allowed),
+				Allowed: kamino.WithdrawV2Allowed(allowed, squads.Unpinned),
 				Inner:   kamino.WithdrawV2(collateral, minted),
 				Before:  refresh,
 			},

@@ -81,7 +81,7 @@ func TestSelectorEntryFenceRejectsDeferredNewEntry(t *testing.T) {
 	if _, err := db.AcquireRouteLease(ctx, key, "entry-lane-fence", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	manifest := requireEmbeddedInstalledBinding(t)
+	manifest := embeddedTestManifest(t)
 	allocation := BridgeBuildRequest{Action: VoltrAllocateToSquads, AmountRaw: 1_000_000}
 	initializer := KaminoInitializationRequest{RouteLane: PhaseOneLaneID}
 	run := func(operationID string, admission bool, request any, effects ExpectedEffects, slot int64, want string) {
@@ -113,7 +113,7 @@ func TestSelectorEntryFenceRejectsDeferredNewEntry(t *testing.T) {
 	run(key+"-alloc", true, allocation, ExpectedEffects{}, entry.Quote.SampleSlot, "selector_entry_lane_deferred")
 	run(key+"-alloc", false, allocation, ExpectedEffects{}, entry.Quote.SampleSlot, "selector_entry_lane_deferred")
 	// Funded completion through the borrow leg keeps its existing guards.
-	request, err := basicPolicyFixtureManifest(t).kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 500_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, PhaseOneLaneID)
+	request, err := embeddedTestManifest(t).kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 500_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, PhaseOneLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}

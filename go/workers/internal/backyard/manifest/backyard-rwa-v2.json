@@ -35,182 +35,344 @@
     "Maple/syrupUSDC/USDC",
     "OnRe/ONyc/USDC"
   ],
-  "policyCatalog": {
-    "schema": "loyal-backyard-rwa-policy-catalog/v2",
-    "sha256": "1a91e42894e4248deef16812882a0e73f577bd2cbed4b0ee1c89cc3ac2695e7f",
-    "addressesResolved": true,
-    "packingRung": null,
-    "policyAccounts": [
-      "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
-      "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
-      "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
-      "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz"
-    ],
-    "policies": [
-      {
-        "family": "CollateralLifecycle",
-        "seed": 141,
-        "account": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
-        "dataSha256": "c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9"
-      },
-      {
-        "family": "DebtLifecycle",
-        "seed": 142,
-        "account": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
-        "dataSha256": "bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704"
-      },
-      {
-        "family": "SwapRoutesA",
-        "seed": 143,
-        "account": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
-        "dataSha256": "7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f"
-      },
-      {
-        "family": "SwapRoutesB",
-        "seed": 144,
-        "account": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
-        "dataSha256": "43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a"
-      }
-    ]
-  },
   "runtimeBindings": {
-    "bridgePolicies": [
-      {
-        "action": "VOLTR_ALLOCATE_TO_SQUADS",
-        "seed": 152,
-        "account": "Bt2SEmvnWFyqSV83CieMHzBjYSL7CJL8fXmTshD2RNAv",
-        "normalizedDigest": "453ba26c074cb35366f6d097d8818210604b4972b654de313a9954da445972bb",
-        "maskedByteRanges": [
-          [
-            945,
-            953
+    "primeUsdc": {
+      "packets": [
+        {
+          "action": "OPEN_PRIME_USDC_STEP",
+          "accounts": [
+            {
+              "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "signer": true,
+              "writable": true
+            },
+            {
+              "address": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
           ],
-          [
-            973,
-            989
-          ]
-        ],
-        "dataSha256Raw": "57043335df88ac51cbdbe2a6f4bcb2bedaab4b4ea1ca02f2f9a1c9ec06669c32"
-      },
-      {
-        "action": "REPORT_NAV",
-        "seed": 153,
-        "account": "5r4gVPentTwudZXQAtvjqx8iWfmBjLjnJGBypB7aPi8f",
-        "normalizedDigest": "8215849592af46928ae42273cbf65248d351db96e16cb2f3eabb38bfd237b1e5",
-        "maskedByteRanges": [
-          [
-            909,
-            917
+          "dataBase64": "2OC/G8yXZq8AAAAAAAAAAA=="
+        },
+        {
+          "action": "OPEN_PRIME_USDC_STEP",
+          "accounts": [
+            {
+              "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
           ],
-          [
-            937,
-            953
-          ]
-        ],
-        "dataSha256Raw": "13aadb4368399dcccdddc95c312c9a3088346cef6d5ead4001fc330bac5df64a"
-      },
-      {
-        "action": "STAGE_SQUADS_TO_VOLTR",
-        "seed": 154,
-        "account": "7EW76UaxsNTnLG931HTNSteRjhR3s9rcKVJ7UtqyN6e3",
-        "normalizedDigest": "66618b0a47eeed818ea38521aedf26b89494616d79643f4e9e50f0df81281708",
-        "maskedByteRanges": [
-          [
-            406,
-            414
+          "dataBase64": "oYCP9avHwgYAAAAAAAAAAA=="
+        },
+        {
+          "action": "DELEVER_PRIME_USDC_STEP",
+          "accounts": [
+            {
+              "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "signer": true,
+              "writable": false
+            },
+            {
+              "address": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
           ],
-          [
-            434,
-            450
-          ]
-        ],
-        "dataSha256Raw": "cd33348d492b9a5d2ffc7b0e1fedbb401e56374bb6b644f3a49a87ffe6bdc69d"
-      },
-      {
-        "action": "VOLTR_RESTORE_IDLE",
-        "seed": 155,
-        "account": "GSY3mcsWHPv7LvH38eZZR6WTj4YiMqdQ9Ai1WRKnR76K",
-        "normalizedDigest": "563a0624b874235a78817f44f7563c4629b6b03892bd012b5eaf734cadd66834",
-        "maskedByteRanges": [
-          [
-            945,
-            953
+          "dataBase64": "dK7VTLQ10pAAAAAAAAAAAA=="
+        },
+        {
+          "action": "DELEVER_PRIME_USDC_STEP",
+          "accounts": [
+            {
+              "address": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh",
+              "signer": true,
+              "writable": true
+            },
+            {
+              "address": "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct",
+              "signer": false,
+              "writable": true
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "Sysvar1nstructions1111111111111111111111111",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+              "signer": false,
+              "writable": false
+            },
+            {
+              "address": "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr",
+              "signer": false,
+              "writable": false
+            }
           ],
-          [
-            973,
-            989
-          ]
-        ],
-        "dataSha256Raw": "ad7d9f26dd6ef2d0444142ef77ac40778eb72c793de50b6dafbebce1213fee1b"
-      }
-    ],
-    "collateralLifecycle": {
-      "policy": "2Wn69xc4ntC2aTjQNi4nnfmTCAqHngWYVfLSyeRbkkKh",
-      "dataSha256": "c716c948bb6f20c4bf951386ea9d49b43b933a6009778518fa04263be0df0ae9",
-      "constraintIndices": {
-        "deposit": 0,
-        "withdraw": 1
-      }
-    },
-    "debtLifecycle": {
-      "policy": "BmWgjEMgfYpfAYJCUSUkBmQqRKVxodjioob1gtc8ekuA",
-      "dataSha256": "bb42c52b1f5641e8105a7b04607a35fe92034d71ad87b3e528d7914edd38e704",
-      "constraintIndices": {
-        "borrow": 0,
-        "repay": 1
-      }
-    },
-    "swapRoutesA": {
-      "policy": "9Z9cCwWbh6ygM6zrw5peG6VABYtNufjkwqitE9pdd3aA",
-      "dataSha256": "7058ac2cc0db6befa76c4e10cd8558f52ccb9814532970241d6cfd0038f79f3f",
-      "constraintIndices": {
-        "route0": 0,
-        "route1": 1
-      }
-    },
-    "swapRoutesB": {
-      "policy": "Z9jqB9pWDf1L1yFKVzXU1XnX8eKLndFP37FUwZMfWyz",
-      "dataSha256": "43d09b3cbdd63f1c775f7a660ac75ac76f699b18bd1298ec1bf87d088e6d535a",
-      "constraintIndices": {
-        "route0": 0,
-        "route1": 1
-      }
-    },
-    "multiplyInitializers": [
-      {
-        "lane": "Prime/PRIME/USDC",
-        "policySeed": 149,
-        "policy": "ChdpvLcYi3cWGZEKGc5e8A9k2g1cQbeKUYHVuaQJuCEV",
-        "accountDataSha256": "ab0b698dcc89180462318595fdbaafd48dd6da41f1979c369d15f9b3f03f0b28"
-      },
-      {
-        "lane": "Maple/syrupUSDC/USDC",
-        "policySeed": 150,
-        "policy": "2cfywGhD1iVgZBthmCBNcattYWSPidJ1MxmsEnFm2U7E",
-        "accountDataSha256": "cad37ac825f5e454e9b7a4525bc54b787d01b56b772da8fd3ea851c3ac61b5e0"
-      },
-      {
-        "lane": "OnRe/ONyc/USDC",
-        "policySeed": 151,
-        "policy": "CbtyAVtdWfr6sVrHayN1cZQXbdPxYHFoQgzQXJkhrtXt",
-        "accountDataSha256": "d9b39f6df13b67532f7d28b1e67bb933d4ae929b6bfa76872e01b9617c47cb7e"
-      }
-    ],
-    "autoPolicy": {
-      "lane": "AUTO/AUTO/PYUSD",
-      "policySeed": 156,
-      "policy": "H6X87EqwDcM2qigQ4SadS3uWFozkkGSwvUxDuYYcD92q",
-      "accountDataSha256": "80b702a28425a937a6e852b71b4e3c85b24cebb2170df1f717253015f8261a78",
-      "constraintIndices": {
-        "deposit": 0,
-        "withdraw": 1,
-        "borrow": 2,
-        "repay": 3,
-        "swapUSDCOrPYUSDToAUTO": 4,
-        "swapAUTOToUSDCOrPYUSD": 5,
-        "swapPYUSDToUSDC": 6,
-        "initialize": 7
-      }
+          "dataBase64": "6zR3mJXFFAcAAAAAAAAAAA=="
+        }
+      ]
     }
   },
   "runtimeActivation": {

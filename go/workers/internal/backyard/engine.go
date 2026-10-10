@@ -104,7 +104,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	if e.runtime.Selector != SelectorOff {
 		// The feed's route inventory is scoped to the SAME reviewed manifest
 		// the selector evaluates (worker.manifest): installed lanes plus the
-		// candidate AUTO route only when the manifest carries a valid binding.
+		// the candidate AUTO route.
 		feed, err := NewEconomicFeedOnManifest(ctx, e.runtime.TimescaleURL, e.worker.manifest)
 		if err != nil {
 			return err
@@ -167,7 +167,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			}
 			lastEvaluateFailure = ""
 			// B2 watch-only: log lines, never a decision input.
-			for _, line := range levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(levWatchSummary) >= time.Hour, func(lane string) bool { return worker.manifest.selectorEntryFundingLane(lane, false) }, observed.Snapshot) {
+			for _, line := range levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(levWatchSummary) >= time.Hour, selectorEntryFundingLane, observed.Snapshot) {
 				_, _ = fmt.Fprintln(out, line)
 			}
 			if time.Since(levWatchSummary) >= time.Hour {

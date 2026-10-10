@@ -7,7 +7,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // The simulation's poststate is used only for complete exit costing. Each
@@ -80,7 +79,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	windowSteps := int64(7)
 	if cash < bound.UpperDebtRaw && leverageLane(s.RouteLane) && leverageExitAccountsMayNeedCycles(accounts, route, s) {
 		var cycleCash uint64
-		cycles, accounts, cycleCash, windowSteps, firstPayoff, err = priceLeverageExitCycles(ctx, rpc, client, m, route, s, accounts, projection.Slot, blockhash, cash)
+		cycles, accounts, cycleCash, windowSteps, firstPayoff, err = priceLeverageExitCycles(ctx, rpc, client, m, o.policies, route, s, accounts, projection.Slot, blockhash, cash)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -109,7 +108,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		if limit.LiquidityRaw > uint64(math.MaxInt64-s.CollateralIdleRaw) {
 			return phase3BridgeAdmission{}, budgetHold("borrow_release_buffer_overflow")
 		}
-		req, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, limit.ReceiptRaw, blockhash, s.RouteLane)
+		req, err := m.kaminoPacketForRoute(o.policies, DeleverRouteStep, kaminoLegWithdraw, limit.ReceiptRaw, blockhash, s.RouteLane)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -121,7 +120,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		}
 		release = &KaminoExecutionEvidence{req, effects}
 		buffer := uint64(s.CollateralIdleRaw) + limit.LiquidityRaw
-		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToDebtStep, StrategyKey: s.RouteLane, AmountRaw: int64(buffer)}, buffer, cash, projection.Slot)
+		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, o.policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: s.RouteLane, AmountRaw: int64(buffer)}, buffer, cash, projection.Slot)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -161,7 +160,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 			}
 		}
 	}
-	payoff, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, bound.UpperDebtRaw, blockhash, s.RouteLane)
+	payoff, err := m.kaminoPacketForRoute(o.policies, DeleverRouteStep, kaminoLegRepay, bound.UpperDebtRaw, blockhash, s.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -178,19 +177,11 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	withdrawal, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, remaining, blockhash, s.RouteLane)
+	withdrawal, err := m.kaminoPacketForRoute(o.policies, DeleverRouteStep, kaminoLegWithdraw, remaining, blockhash, s.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
 	withdrawal.ObligationReserves = []string{route.Kamino.CollateralReserve}
-	policies := map[string]string{payoff.Policy: payoff.PolicyAccountDataSHA256, withdrawal.Policy: withdrawal.PolicyAccountDataSHA256}
-	if release != nil {
-		policies[release.Request.Policy] = release.Request.PolicyAccountDataSHA256
-	}
-	var addresses []string
-	for address := range policies {
-		addresses = append(addresses, address)
-	}
 	amount, err := reserve.redeemLiquidityRaw(remaining)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
@@ -208,8 +199,8 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	if funding != nil {
 		post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = 0, 0
 	}
-	// The exit's shape is fixed now. Its leg costs, the policy check and the
-	// tail are reads that feed nothing back into it: read them all at once.
+	// The exit's shape is fixed now. Its leg costs and the tail are reads that
+	// feed nothing back into it: read them all at once.
 	var payoffCost ValuedTransactionCost
 	var tail phase3BridgeAdmission
 	reads := exitLegCostReads(rpc, m, cycles)
@@ -225,18 +216,6 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	reads = append(reads, func(ctx context.Context) (err error) {
 		payoffCost, err = observePhase3KnownBuildCost(ctx, rpc, payoff, payoffEffects)
 		return err
-	}, func(ctx context.Context) error {
-		_, rows, err := confirmedAccounts(ctx, rpc, addresses, projection.Slot)
-		if err != nil {
-			return err
-		}
-		for address, hash := range policies {
-			a := accountAt(rows, address)
-			if a.Owner != squads.ProgramID.String() || a.Executable || a.Lamports == 0 || sha256Bytes(a.Data) != hash {
-				return budgetHold("borrow_exit_policy_drift")
-			}
-		}
-		return nil
 	}, func(ctx context.Context) (err error) {
 		tail, err = observePhase3WithdrawalAdmission(ctx, rpc, client, m, post, Decision{Action: DeleverRouteStep, StrategyKey: s.RouteLane}, KaminoExecutionEvidence{withdrawal, withdrawalEffects})
 		return err

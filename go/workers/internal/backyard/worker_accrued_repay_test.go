@@ -23,7 +23,7 @@ func TestTickAcceptsAccruedWholeDebtRepaymentAndRetriesOtherDrift(t *testing.T) 
 			}
 			return tickObservation(refreshed), KaminoExecutionEvidence{Request: KaminoPrimeUSDCRequest{Action: DeleverRouteStep, FullPayoff: true, AmountRaw: uint64(refreshed.PayoffDebtRaw)}}, nil
 		},
-		recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _ string) (DecisionRecord, error) {
 			recorded = d
 			return DecisionRecord{OperationID: "repay", Status: Decided}, nil
 		},

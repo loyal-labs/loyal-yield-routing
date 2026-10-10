@@ -130,7 +130,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 		prepareKamino: func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error) {
 			return Observation{}, KaminoExecutionEvidence{}, budgetHold("squads_spending_limit_exceeded")
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			recorded = true
 			return DecisionRecord{}, errors.New("must not create operation")
 		},

@@ -17,7 +17,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Controlled real-layout accounts and captured Jupiter instruction topology.
@@ -32,7 +31,7 @@ func selectorDestinationFixture(t *testing.T) (RouteManifest, *chain.Client, *ju
 // fixture captures them.
 func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]ConfirmedAccount)) (RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
-	m := basicPolicyFixtureManifest(t)
+	m := embeddedTestManifest(t)
 	route, _ := runtimeRoute(lane)
 	var accounts []ConfirmedAccount
 	add := func(a ConfirmedAccount) { accounts = append(accounts, a) }
@@ -101,34 +100,6 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 	for _, a := range []string{bridgeVault, bridgeDelegate} {
 		add(ConfirmedAccount{Address: a, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000})
 	}
-	for i, f := range []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB} {
-		binding, _, err := m.basicPolicyBinding(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data := []byte(fmt.Sprint("controlled basic policy ", i))
-		hash := sha256Bytes(data)
-		switch f {
-		case BasicCollateralLifecycle:
-			m.RuntimeBindings.CollateralLifecycle.DataSHA256 = &hash
-		case BasicDebtLifecycle:
-			m.RuntimeBindings.DebtLifecycle.DataSHA256 = &hash
-		case BasicSwapRoutesA:
-			m.RuntimeBindings.SwapRoutesA.DataSHA256 = &hash
-		case BasicSwapRoutesB:
-			m.RuntimeBindings.SwapRoutesB.DataSHA256 = &hash
-		}
-		add(ConfirmedAccount{Address: binding.Policy, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
-	}
-	for i := range m.RuntimeBindings.BridgePolicies {
-		p := &m.RuntimeBindings.BridgePolicies[i]
-		data := []byte("controlled bridge policy " + string(p.Action))
-		hash := sha256Bytes(data)
-		p.NormalizedDigest = hash
-		p.DataSHA256Raw = hash
-		p.MaskedByteRanges = nil
-		add(ConfirmedAccount{Address: p.Account, Owner: squads.ProgramID.String(), Lamports: 1, Data: data})
-	}
 	farm := ConfirmedAccount{Address: route.DebtFarm, Owner: kamino.FarmsProgramID.String(), Lamports: 1, Data: make([]byte, 8336)}
 	copy(farm.Data, []byte{198, 102, 216, 74, 63, 66, 163, 190})
 	putKey(t, farm.Data[7328:7360], route.Kamino.MarketAuthority)
@@ -192,7 +163,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 func TestSelectorDestinationPricesCompleteEntryWithoutMutatingAccounts(t *testing.T) {
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	before := hashConfirmedAccounts(accounts)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +217,7 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 			case "capacity":
 				binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoOutsideBorrowLimitOffset:], 0)
 			}
-			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42, false, nil); err == nil {
+			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil); err == nil {
 				t.Fatal("unready lane priced")
 			}
 		})
@@ -282,7 +253,7 @@ func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
 					return original.RoundTrip(req)
 				})
 			}
-			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42, false, nil); err == nil {
+			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 10_000_000, 42, false, nil); err == nil {
 				t.Fatal("unfundable destination quoted")
 			}
 		})
@@ -291,7 +262,7 @@ func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
 
 func TestSelectorDestinationFullPilotTrancheHasQuotedPayoff(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 10_000_000, 42, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 10_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +315,7 @@ func TestSelectorDestinationIncludesPayoffLookupReadInFreshness(t *testing.T) {
 		}
 		return res, nil
 	})
-	_, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, SelectedRouteID, 1_000_000, 42, false, nil)
+	_, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
 	if !changed {
 		t.Fatal("fixture never read payoff lookups")
 	}

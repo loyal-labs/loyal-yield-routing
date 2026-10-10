@@ -36,7 +36,7 @@ type phase3BridgeAdmission struct {
 // This first admission shape is deliberately closed over existing USDC bridge
 // custody with no selected-lane collateral/debt. It cannot price a position or
 // a swap exit, initialize an account, adopt historical exposure, or reset funds.
-func phase3BridgeTemplates(s Snapshot, decision Decision, evidence BridgeExecutionEvidence) ([]BridgeExecutionEvidence, error) {
+func phase3BridgeTemplates(policies installedPolicies, s Snapshot, decision Decision, evidence BridgeExecutionEvidence) ([]BridgeExecutionEvidence, error) {
 	r := evidence.Request
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.HasAmbiguousSubmission || s.Nonterminal != "" || s.CutoverDrain ||
@@ -75,8 +75,12 @@ func phase3BridgeTemplates(s Snapshot, decision Decision, evidence BridgeExecuti
 		if afterStrategy > math.MaxUint64-afterSquads {
 			return BridgeExecutionEvidence{}, budgetHold("bridge_exit_amount_overflow")
 		}
+		policy, err := policies.account(policyKey{action: action})
+		if err != nil {
+			return BridgeExecutionEvidence{}, err
+		}
 		next := r
-		next.Action, next.AmountRaw = action, amount
+		next.Action, next.AmountRaw, next.Policy = action, amount, policy
 		// Voltr tracks strategy custody separately, so reported NAV excludes it.
 		next.Report.NAVAfterRaw = afterSquads
 		effects.Kind = "bridge"
@@ -162,7 +166,7 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	plan := phase3BridgeAdmission{Snapshot: observation.Snapshot, Decision: decision}
-	steps, err := phase3BridgeTemplates(observation.Snapshot, decision, evidence)
+	steps, err := phase3BridgeTemplates(observation.policies, observation.Snapshot, decision, evidence)
 	if err != nil {
 		return plan, err
 	}

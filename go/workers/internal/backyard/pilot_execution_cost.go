@@ -41,14 +41,14 @@ func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedE
 	case BridgeBuildRequest:
 		message, err = CompileBridgeMessage(r)
 	case KaminoPrimeUSDCRequest:
-		message, err = m.compileKaminoMessage(r, mustKey(bridgeDelegate))
+		message, err = compileKaminoMessageForDelegate(r, mustKey(bridgeDelegate))
 	case KaminoInitializationRequest:
 		// Same explicit manifest as the decode that produced this request:
 		// installed lanes keep the exact public compile, the candidate AUTO
-		// initializer compiles only against its reviewed binding.
+		// initializer compiles through the manifest form.
 		message, err = m.compileKaminoInitializationMessage(r)
 	case JupiterSwapRequest:
-		message, err = m.compileJupiterMessage(r, mustKey(bridgeDelegate))
+		message, err = compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate))
 	}
 	if err != nil {
 		return out, err

@@ -79,9 +79,9 @@ func TestManualRecoveryLatchLifecycleAgainstDatabase(t *testing.T) {
 			return state.observe(ctx)
 		},
 		loadLatch: db.ManualRecoveryLatch,
-		recordManualRecovery: func(ctx context.Context, key string, observation Observation, decision Decision, manifestHash, policyHash string) (DecisionRecord, error) {
+		recordManualRecovery: func(ctx context.Context, key string, observation Observation, decision Decision, manifestHash string) (DecisionRecord, error) {
 			recorded = append(recorded, decision)
-			return db.RecordManualRecovery(ctx, key, observation, decision, manifestHash, policyHash)
+			return db.RecordManualRecovery(ctx, key, observation, decision, manifestHash)
 		},
 		prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
 			preparedCalls++
@@ -338,7 +338,7 @@ func TestManualRecoveryHoldAndLatchAreAtomic(t *testing.T) {
 	observation := manualRecoveryTestObservation("atomic-observation", 901)
 	decision := manualRecoveryTestDecision(observation.Snapshot.ObservationID, "injected_after_hold_insert")
 	injected := errors.New("injected failure after hold insert")
-	if _, err := db.recordManualRecovery(ctx, routeKey, observation, decision, strings.Repeat("a", 64), strings.Repeat("b", 64), func() error {
+	if _, err := db.recordManualRecovery(ctx, routeKey, observation, decision, strings.Repeat("a", 64), func() error {
 		return injected
 	}); !errors.Is(err, injected) {
 		t.Fatalf("post-insert failure was not returned: %v", err)
@@ -408,7 +408,7 @@ func TestManualRecoveryDerivedLatchBlocksWithoutLatchRow(t *testing.T) {
 			t.Fatal("derived latch allowed a chain observation")
 			return Observation{}, nil
 		},
-		recordManualRecovery: func(_ context.Context, _ string, _ Observation, decision Decision, _, _ string) (DecisionRecord, error) {
+		recordManualRecovery: func(_ context.Context, _ string, _ Observation, decision Decision, _ string) (DecisionRecord, error) {
 			recorded = decision
 			return DecisionRecord{OperationID: "derived-latched", Cycle: 1, Status: ManualRecovery}, nil
 		},
@@ -448,10 +448,9 @@ func TestManualRecoveryDerivedLatchIgnoresLatchedRerecords(t *testing.T) {
 	resetManualRecoveryProductionRoute(t, ctx, db, "manual-recovery-derived-ordering")
 
 	hash := strings.Repeat("a", 64)
-	policyHash := strings.Repeat("b", 64)
 	initial := manualRecoveryTestObservation("derived-ordering-initial", 903)
 	initialDecision := manualRecoveryTestDecision(initial.Snapshot.ObservationID, "initial_safety")
-	if _, err := db.RecordManualRecovery(ctx, productionRouteKey, initial, initialDecision, hash, policyHash); err != nil {
+	if _, err := db.RecordManualRecovery(ctx, productionRouteKey, initial, initialDecision, hash); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ClearManualRecoveryHold(ctx, url, productionRouteKey, "operator cleared the initial hold"); err != nil {
@@ -463,7 +462,7 @@ func TestManualRecoveryDerivedLatchIgnoresLatchedRerecords(t *testing.T) {
 	// physical row disappears.
 	genuine := manualRecoveryTestObservation("derived-ordering-genuine", 904)
 	genuineDecision := manualRecoveryTestDecision(genuine.Snapshot.ObservationID, "new_safety")
-	if _, err := db.RecordManualRecovery(ctx, productionRouteKey, genuine, genuineDecision, hash, policyHash); err != nil {
+	if _, err := db.RecordManualRecovery(ctx, productionRouteKey, genuine, genuineDecision, hash); err != nil {
 		t.Fatal(err)
 	}
 	latch, latched, err := db.ManualRecoveryLatch(ctx, productionRouteKey)
@@ -471,7 +470,7 @@ func TestManualRecoveryDerivedLatchIgnoresLatchedRerecords(t *testing.T) {
 		t.Fatalf("the genuine post-clear hold did not re-arm generation 1: %+v %v", latch, err)
 	}
 	latchedDecision := manualRecoveryTestDecision("derived-ordering-rerecord", "latched:"+genuineDecision.Reason)
-	if _, err := db.RecordManualRecoveryAtGeneration(ctx, productionRouteKey, manualRecoveryTestObservation("derived-ordering-rerecord", 905), latchedDecision, hash, policyHash, latch.Generation); err != nil {
+	if _, err := db.RecordManualRecoveryAtGeneration(ctx, productionRouteKey, manualRecoveryTestObservation("derived-ordering-rerecord", 905), latchedDecision, hash, latch.Generation); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.pool.Exec(ctx, `DELETE FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key = $1`, productionRouteKey); err != nil {
@@ -610,7 +609,7 @@ func TestManualRecoveryClearBetweenLatchReadAndRerecordDoesNotRearm(t *testing.T
 
 	initial := manualRecoveryTestObservation("generation-race-hold", 905)
 	decision := manualRecoveryTestDecision(initial.Snapshot.ObservationID, "operator_review_required")
-	if _, err := db.RecordManualRecovery(ctx, productionRouteKey, initial, decision, strings.Repeat("a", 64), strings.Repeat("b", 64)); err != nil {
+	if _, err := db.RecordManualRecovery(ctx, productionRouteKey, initial, decision, strings.Repeat("a", 64)); err != nil {
 		t.Fatal(err)
 	}
 	manifest := readyWorkerManifest(t)
@@ -669,7 +668,7 @@ func TestManualRecoveryClearBetweenLatchReadAndRerecordDoesNotRearm(t *testing.T
 		observeCalls++
 		return healthy, nil
 	}
-	worker.runtime.recordDecision = func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+	worker.runtime.recordDecision = func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 		return DecisionRecord{OperationID: "generation-race-operation", Cycle: 1, Status: Decided}, nil
 	}
 	worker.runtime.prepareBridge = func(_ context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
@@ -720,7 +719,7 @@ func TestManualRecoveryVerifiedConstructionRefreshBuildsThroughProductionPath(t 
 		loadLatch:       db.ManualRecoveryLatch,
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         state.observe,
-		recordManualRecovery: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordManualRecovery: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			t.Fatal("a verified construction refresh produced a manual-recovery hold")
 			return DecisionRecord{}, nil
 		},
@@ -734,7 +733,7 @@ func TestManualRecoveryVerifiedConstructionRefreshBuildsThroughProductionPath(t 
 			}
 			return refreshed, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: decision.Action}}, nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			return DecisionRecord{OperationID: "verified-refresh-operation", Cycle: 1, Status: Decided}, nil
 		},
 		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },

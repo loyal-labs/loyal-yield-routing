@@ -114,7 +114,7 @@ func runCapacityPartialRestart(t *testing.T, lane string) {
 		if i == 1 {
 			sparse := Observation{Snapshot: base(), ObservedAt: time.Now().UTC()}
 			hold := Decision{Action: Hold, Reason: "safety_wait", IdempotencyKey: strings.Repeat("d", 64), StrategyKey: s.RouteLane}
-			if _, err := db.RecordDecisionOnManifest(ctx, autoInitializerFixtureManifest(t), key, sparse, hold, strings.Repeat("a", 64), strings.Repeat("b", 64)); err != nil {
+			if _, err := db.RecordDecisionOnManifest(ctx, embeddedTestManifest(t), key, sparse, hold, strings.Repeat("a", 64)); err != nil {
 				t.Fatal("sparse safety hold refused", err)
 			}
 			if context, err := db.LoadPartialWithdrawal(ctx, key); err != nil || context == nil {
@@ -128,7 +128,7 @@ func runCapacityPartialRestart(t *testing.T, lane string) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = db.recordDecisionTx(ctx, tx, key, o, d, strings.Repeat("a", 64), strings.Repeat("b", 64)); err != nil {
+			if _, err = db.recordDecisionTx(ctx, tx, key, o, d, strings.Repeat("a", 64)); err != nil {
 				t.Fatal(err)
 			}
 			if err = tx.Rollback(ctx); err != nil {
@@ -138,7 +138,7 @@ func runCapacityPartialRestart(t *testing.T, lane string) {
 				t.Fatal("rolled-back capture leaked", context, err)
 			}
 		}
-		record, err := db.RecordDecisionOnManifest(ctx, autoInitializerFixtureManifest(t), key, o, d, strings.Repeat("a", 64), strings.Repeat("b", 64))
+		record, err := db.RecordDecisionOnManifest(ctx, embeddedTestManifest(t), key, o, d, strings.Repeat("a", 64))
 		if err != nil {
 			t.Fatalf("record %s: %v", d.Reason, err)
 		}
@@ -255,7 +255,7 @@ func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
 	for _, address := range []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve} {
 		binary.LittleEndian.PutUint64(accountAt(accounts, address).Data[kaminoMarketPriceLastUpdatedTSOffset:], 1000)
 	}
-	r, err := m.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 10_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 10_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{61}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	message, err := m.compileKaminoMessage(r, delegate)
+	message, err := compileKaminoMessageForDelegate(r, delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
 	if _, err = validateBorrowRequest(context.Background(), rpc, r, effects, 42); err != nil {
 		t.Fatal("expanded collateral capacity refused", err)
 	}
-	after, err := m.compileKaminoMessage(r, delegate)
+	after, err := compileKaminoMessageForDelegate(r, delegate)
 	if err != nil || !bytes.Equal(message, after) || r.AmountRaw != 10_000_000 {
 		t.Fatal("room expansion resized immutable wire")
 	}
@@ -332,7 +332,7 @@ func TestCapacitySizedAuthorizationIsSingleUseBelowInterestTolerance(t *testing.
 	s.PositionDebtRaw = int64(target.SourceDebtRaw)
 	d := Decision{Action: OpenRouteStep, StrategyKey: s.RouteLane, Reason: leverageUpReason, AmountRaw: int64(target.BorrowRaw), IdempotencyKey: strings.Repeat("c", 64)}
 	o := Observation{Snapshot: s, ObservedAt: time.Now().UTC()}
-	first, err := db.RecordDecision(ctx, key, o, d, strings.Repeat("a", 64), strings.Repeat("b", 64))
+	first, err := db.RecordDecision(ctx, key, o, d, strings.Repeat("a", 64))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestCapacitySizedAuthorizationIsSingleUseBelowInterestTolerance(t *testing.
 		t.Fatal("counterexample did not fit interest tolerance")
 	}
 	o.Snapshot = s
-	if _, err = db.RecordDecision(ctx, key, o, d, strings.Repeat("a", 64), strings.Repeat("b", 64)); err == nil {
+	if _, err = db.RecordDecision(ctx, key, o, d, strings.Repeat("a", 64)); err == nil {
 		t.Fatal("same economic authority borrowed twice")
 	}
 	applyLeverageTarget(&s, stored)

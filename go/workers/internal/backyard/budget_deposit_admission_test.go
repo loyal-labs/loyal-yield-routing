@@ -56,7 +56,7 @@ func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit 
 	if redeposit {
 		_, _, _, _, rpc, _ = debtResidueAdmissionFixture(t, 20_000, accounts...)
 	}
-	r, err := m.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,23 +17,20 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// The initializer-enabled candidate request carries the binding identity
-// verbatim: seed and account digest are retained from the reviewed manifest,
-// never invented here.
+// The AUTO initializer request executes through the account the AUTO policy
+// is installed on.
 func autoInitializerRequestFixture(t *testing.T) (RouteManifest, KaminoInitializationRequest) {
 	t.Helper()
-	manifest := autoInitializerFixtureManifest(t)
-	binding := autoInitializerFixtureBinding(t)
-	r := KaminoInitializationRequest{RouteLane: autoAUTOPYUSD.Lane, PolicySeed: binding.PolicySeed,
-		PolicyAccountDataSHA256: binding.AccountDataSHA256, RecentBlockhash: bridgeVault,
+	manifest := embeddedTestManifest(t)
+	r := KaminoInitializationRequest{RouteLane: autoAUTOPYUSD.Lane, Policy: installedAutoPolicyKey,
+		RecentBlockhash:      bridgeVault,
 		LastValidBlockHeight: 100, RentLamports: 17_637_760, MaximumFeeLamports: 5000}
 	return manifest, r
 }
 
 // autoInitializerPrestateAccounts mirrors initializationPrestateFixture for the
-// candidate AUTO lane: same settings seed gate, same metadata image, same rent
-// arithmetic — with the policy account carrying the exact synthetic bytes the
-// fixture binding digests, and the PYUSD debt mint under Token-2022.
+// candidate AUTO lane: same Settings, same metadata image, same rent
+// arithmetic — with the PYUSD debt mint under Token-2022.
 func autoInitializerPrestateAccounts(t *testing.T, r KaminoInitializationRequest) map[string]ConfirmedAccount {
 	t.Helper()
 	route, err := runtimeRoute(r.RouteLane)
@@ -44,11 +41,6 @@ func autoInitializerPrestateAccounts(t *testing.T, r KaminoInitializationRequest
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := policySetupAddress(r.PolicySeed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	policyAddress := encodeBase58(policy[:])
 	metadataAddress := encodeBase58(inner.accounts[6].key[:])
 	rentAddress := "SysvarRent111111111111111111111111111111111"
 	system := "11111111111111111111111111111111"
@@ -58,13 +50,6 @@ func autoInitializerPrestateAccounts(t *testing.T, r KaminoInitializationRequest
 		accounts[address] = ConfirmedAccount{Address: address, Owner: system, Lamports: 1}
 	}
 	delete(accounts, route.Kamino.Obligation)
-	settings := setupSettingsAccount(t)
-	// Captured Settings seed counter is exactly the candidate seed: the next
-	// derived seed must stay strictly ahead of the bound policy seed.
-	binary.LittleEndian.PutUint64(settings.Data[159:167], r.PolicySeed)
-	accounts[bridgeSettings] = settings
-	accounts[policyAddress] = ConfirmedAccount{Address: policyAddress, Owner: squads.ProgramID.String(), Lamports: 1,
-		Data: []byte(autoInitializerFixtureSyntheticAccountData)}
 	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
 	accounts[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
 	m := ConfirmedAccount{Address: metadataAddress, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, 1032)}
@@ -171,20 +156,16 @@ func autoInitializerFundedObligation(t *testing.T, r KaminoInitializationRequest
 	return accounts
 }
 
-// The candidate message must wrap the initializer at exactly the appended
-// eighth index against exactly the reviewed policy identity — and the public
+// The AUTO initializer message wraps the initializer at the AUTO policy's
+// initializer leg, through the installed AUTO policy — and the public
 // compiler must still refuse the lane outright.
-func TestAutoInitializerCandidateCompilesOnlyAgainstReviewedBinding(t *testing.T) {
+func TestAutoInitializerCompilesAtItsLeg(t *testing.T) {
 	manifest, r := autoInitializerRequestFixture(t)
-	binding := autoInitializerFixtureBinding(t)
 	message, err := manifest.compileKaminoInitializationMessage(r)
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := policySetupAddress(binding.PolicySeed)
-	if err != nil {
-		t.Fatal(err)
-	}
+	policy := mustKey(r.Policy)
 	route, err := runtimeRoute(autoAUTOPYUSD.Lane)
 	if err != nil {
 		t.Fatal(err)
@@ -197,48 +178,17 @@ func TestAutoInitializerCandidateCompilesOnlyAgainstReviewedBinding(t *testing.T
 		t.Fatal("candidate initializer message lost the reviewed policy or obligation identity")
 	}
 	// The Squads execute-sync payload pins the constraint index at a fixed
-	// offset behind the discriminator: exactly the appended eighth index.
+	// offset behind the discriminator: the AUTO policy's initializer leg.
 	wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:])
-	if wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitializerConstraintIndex {
-		t.Fatalf("initializer not wrapped at the appended index %d", autoInitializerConstraintIndex)
+	if wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitialize {
+		t.Fatalf("initializer not wrapped at its leg %d", autoInitialize)
 	}
 	repeated, err := manifest.compileKaminoInitializationMessage(r)
 	if err != nil || !bytes.Equal(message, repeated) {
 		t.Fatal("candidate initializer compilation is not deterministic", err)
 	}
-	// Identity comes from the manifest, never from the request.
-	drifted := r
-	drifted.PolicySeed = autoFixtureSeed
-	_, err = manifest.compileKaminoInitializationMessage(drifted)
-	assertBudgetHold(t, err, "initializer_request_manifest_mismatch")
-	drifted = r
-	drifted.PolicyAccountDataSHA256 = sha256Bytes([]byte("other candidate bytes"))
-	_, err = manifest.compileKaminoInitializationMessage(drifted)
-	assertBudgetHold(t, err, "initializer_request_manifest_mismatch")
-	// Seven proven constraints never imply the eighth.
-	seven := autoFixtureManifest(t)
-	_, err = seven.compileKaminoInitializationMessage(r)
-	assertBudgetHold(t, err, "auto_initializer_constraint_not_reviewed")
-	// No reviewed binding at all keeps every AUTO initializer path held: the
-	// explicit absent fixture (the shipped pre-install state) holds with the
-	// shipped token, while the embedded manifest's installed binding refuses
-	// the candidate identity with the exact typed mismatch.
-	_, absentErr := autoAbsentBindingManifest(t).compileKaminoInitializationMessage(r)
-	assertBudgetHold(t, absentErr, "auto_policy_not_activated")
-	embedded := requireEmbeddedInstalledBinding(t)
-	_, embeddedErr := embedded.compileKaminoInitializationMessage(r)
-	assertBudgetHold(t, embeddedErr, "initializer_request_manifest_mismatch")
-	// The installed state compiles end to end: the request built from the
-	// embedded manifest itself resolves exactly the installed identity.
-	installedRequest, installedErr := embedded.initializationRequest(autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, r.RentLamports, r.MaximumFeeLamports)
-	if installedErr != nil {
-		t.Fatal(installedErr)
-	}
-	if installedRequest.PolicySeed != installedAutoPolicySeed || installedRequest.PolicyAccountDataSHA256 != installedAutoPolicyDigest {
-		t.Fatalf("installed initializer request lost the installed identity: %+v", installedRequest)
-	}
-	if _, err := embedded.compileKaminoInitializationMessage(installedRequest); err != nil {
-		t.Fatalf("installed initializer did not compile against the embedded manifest: %v", err)
+	if policy != mustKey(installedAutoPolicyKey) {
+		t.Fatal("the AUTO initializer does not execute through the installed AUTO policy")
 	}
 	// Any other non-selector lane stays unreviewed.
 	foreign := r
@@ -253,9 +203,9 @@ func TestAutoInitializerCandidateCompilesOnlyAgainstReviewedBinding(t *testing.T
 	if err := validateInitializedKaminoObligation(r, funded); err == nil || !strings.Contains(err.Error(), "unreviewed initialized obligation") {
 		t.Fatalf("public initialized validator admitted AUTO: %v", err)
 	}
-	// The manifest-aware request builder resolves the same binding identity.
-	resolved, err := manifest.initializationRequest(autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, r.RentLamports, r.MaximumFeeLamports)
-	if err != nil || resolved.PolicySeed != binding.PolicySeed || resolved.PolicyAccountDataSHA256 != binding.AccountDataSHA256 || manifest.validateInitializationRequest(resolved) != nil {
+	// The request builder resolves the installed AUTO policy's account.
+	resolved, err := manifest.initializationRequest(testPolicies(t), autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, r.RentLamports, r.MaximumFeeLamports)
+	if err != nil || resolved.Policy != installedAutoPolicyKey || manifest.validateInitializationRequest(resolved) != nil {
 		t.Fatalf("bound request builder drifted: %v %+v", err, resolved)
 	}
 }
@@ -264,7 +214,7 @@ func TestAutoInitializerCandidateCompilesOnlyAgainstReviewedBinding(t *testing.T
 // admitted through the reviewed extension parser and every malformed or
 // unsupported variant refused.
 func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
-	for _, drift := range []string{"", "target_exists", "settings_seed", "policy_hash", "policy_bytes", "mint_program", "mint_uninitialized", "mint_unsupported_extension", "mint_transfer_fee_enabled", "mint_truncated_tlv", "classic_extensionless_debt", "rent_changed"} {
+	for _, drift := range []string{"", "target_exists", "mint_program", "mint_uninitialized", "mint_unsupported_extension", "mint_transfer_fee_enabled", "mint_truncated_tlv", "classic_extensionless_debt", "rent_changed"} {
 		t.Run(drift, func(t *testing.T) {
 			manifest, r := autoInitializerRequestFixture(t)
 			accounts := autoInitializerPrestateAccounts(t, r)
@@ -272,11 +222,6 @@ func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			policy, err := policySetupAddress(r.PolicySeed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			policyAddress := encodeBase58(policy[:])
 			change := func(address string, fn func(*ConfirmedAccount)) {
 				a := accounts[address]
 				fn(&a)
@@ -285,12 +230,6 @@ func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
 			switch drift {
 			case "target_exists":
 				accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: "11111111111111111111111111111111", Lamports: 1}
-			case "settings_seed":
-				change(bridgeSettings, func(a *ConfirmedAccount) { binary.LittleEndian.PutUint64(a.Data[159:167], r.PolicySeed-1) })
-			case "policy_hash":
-				change(policyAddress, func(a *ConfirmedAccount) { a.Data[0] ^= 1 })
-			case "policy_bytes":
-				change(policyAddress, func(a *ConfirmedAccount) { a.Data = []byte("different candidate account bytes") })
 			case "mint_program":
 				change(route.Kamino.DebtMint, func(a *ConfirmedAccount) { a.Owner = classicTokenProgram })
 			case "mint_uninitialized":
@@ -377,8 +316,8 @@ func TestAutoInitializerReentryForecastIsBounded(t *testing.T) {
 func holdFor(run func() error) error { return run() }
 
 // The post-state validator keeps its exact installed empty-state checks on the
-// candidate lane once the binding resolved.
-func TestAutoInitializerEmptyObligationValidatedThroughBinding(t *testing.T) {
+// candidate lane.
+func TestAutoInitializerEmptyObligationValidated(t *testing.T) {
 	manifest, r := autoInitializerRequestFixture(t)
 	route, err := runtimeRoute(r.RouteLane)
 	if err != nil {
@@ -401,69 +340,19 @@ func TestAutoInitializerEmptyObligationValidatedThroughBinding(t *testing.T) {
 	if err := manifest.validateInitializedKaminoObligation(r, ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: r.RentLamports + 1, Data: append([]byte(nil), empty.Data...)}); err == nil {
 		t.Fatal("changed rent validated")
 	}
-	// The post-state validator enforces the same request identity as compile
-	// and prestate: seed and account digest come from the reviewed binding.
-	driftedSeed := r
-	driftedSeed.PolicySeed = autoFixtureSeed
-	assertBudgetHold(t, manifest.validateInitializedKaminoObligation(driftedSeed, empty), "initializer_request_manifest_mismatch")
-	driftedHash := r
-	driftedHash.PolicyAccountDataSHA256 = sha256Bytes([]byte("other candidate bytes"))
-	assertBudgetHold(t, manifest.validateInitializedKaminoObligation(driftedHash, empty), "initializer_request_manifest_mismatch")
-	// Both binding states: the explicit absent fixture (the shipped pre-install
-	// state) holds with the shipped token; the embedded manifest's installed
-	// binding refuses the candidate identity with the exact typed mismatch.
-	assertBudgetHold(t, autoAbsentBindingManifest(t).validateInitializedKaminoObligation(r, empty), "auto_policy_not_activated")
-	assertBudgetHold(t, requireEmbeddedInstalledBinding(t).validateInitializedKaminoObligation(r, empty), "initializer_request_manifest_mismatch")
-}
-
-// The build pipeline refuses the candidate before any authority is loaded or
-// RPC is reached, in both binding states: the explicit absent fixture (the
-// shipped pre-install state) holds with the shipped token, and the embedded
-// manifest's installed binding refuses the candidate identity with the exact
-// typed mismatch.
-func TestAutoInitializerBuildRequiresReviewedBinding(t *testing.T) {
-	_, r := autoInitializerRequestFixture(t)
-	embedded := requireEmbeddedInstalledBinding(t)
-	rpc := newFakeChain(t, nil)
-	rpcOf(rpc).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-		t.Fatal("unactivated candidate initializer reached RPC")
-		return nil, nil
-	})
-	err := BuildSimulateAndPersistKaminoInitialization(context.Background(), &Database{}, rpc, "controlled-op", embedded, r, Credentials{})
-	assertBudgetHold(t, err, "initializer_request_manifest_mismatch")
-	err = BuildSimulateAndPersistKaminoInitialization(context.Background(), &Database{}, rpc, "controlled-op", autoAbsentBindingManifest(t), r, Credentials{})
-	assertBudgetHold(t, err, "auto_policy_not_activated")
-	seven := autoFixtureManifest(t)
-	err = BuildSimulateAndPersistKaminoInitialization(context.Background(), &Database{}, rpc, "controlled-op", seven, r, Credentials{})
-	assertBudgetHold(t, err, "auto_initializer_constraint_not_reviewed")
-	manifest, bound := autoInitializerRequestFixture(t)
-	drifted := bound
-	drifted.PolicySeed = autoFixtureSeed
-	err = BuildSimulateAndPersistKaminoInitialization(context.Background(), &Database{}, rpc, "controlled-op", manifest, drifted, Credentials{})
-	assertBudgetHold(t, err, "initializer_request_manifest_mismatch")
 }
 
 // Expected-effects validation is the seam the cost and decode paths consume.
 // The manifest-aware form shares the exact structural shape check and
 // recompiles the embedded admission through the manifest compiler, so an AUTO
-// effect only validates when its request matches the reviewed binding; the
-// public form keeps the exact installed behavior and refuses the candidate
-// lane outright.
-func TestAutoInitializationEffectsValidateThroughTheManifestBinding(t *testing.T) {
+// effect validates through it; the public form keeps the exact installed
+// behavior and refuses the candidate lane outright.
+func TestAutoInitializationEffectsValidateThroughTheManifest(t *testing.T) {
 	manifest, r := autoInitializerRequestFixture(t)
 	valid := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
 	if err := manifest.validateInitializationEffects(valid); err != nil {
 		t.Fatalf("bound AUTO effect refused by the manifest validator: %v", err)
 	}
-	// Identity retention: a request that drifts from the binding is a typed
-	// hold, never compiled from request-supplied values.
-	driftedSeed := r
-	driftedSeed.PolicySeed = autoFixtureSeed
-	assertBudgetHold(t, manifest.validateInitializationEffects(ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &driftedSeed}), "initializer_request_manifest_mismatch")
-	driftedHash := r
-	driftedHash.PolicyAccountDataSHA256 = sha256Bytes([]byte("other candidate bytes"))
-	assertBudgetHold(t, manifest.validateInitializationEffects(ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &driftedHash}), "initializer_request_manifest_mismatch")
-
 	// The public form refuses the candidate lane outright and stays byte-identical
 	// for installed selector effects.
 	if err := validateInitializationEffects(valid); err == nil || !strings.Contains(err.Error(), "unreviewed Multiply initializer lane") {
@@ -471,8 +360,7 @@ func TestAutoInitializationEffectsValidateThroughTheManifestBinding(t *testing.T
 	}
 	installed := r
 	installed.RouteLane = PhaseOneLaneID
-	installed.PolicySeed = 141
-	installed.PolicyAccountDataSHA256 = sha256Bytes([]byte("local candidate policy; hash does not enter wire"))
+	installed.Policy = testPolicyAccount(policyKey{lane: PhaseOneLaneID, action: InitializeKaminoObligation})
 	if err := validateInitializationEffects(ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &installed}); err != nil {
 		t.Fatalf("installed selector effect refused after the shared-shape refactor: %v", err)
 	}

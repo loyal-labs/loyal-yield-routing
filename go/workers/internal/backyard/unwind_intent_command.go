@@ -50,9 +50,8 @@ func unwindIntentFromRequest(req UnwindIntentCommitRequest, now time.Time) Unwin
 // manifest's source-lane authority and prints what execute would commit; it
 // opens no database connection. Execute acquires its own short route lease and
 // commits through CommitUnwindIntentOnManifest, so every fence stays shared
-// verbatim: no nonterminal transaction, no unresolved capital recovery, and the reviewed binding's lane authority —
-// which admits the candidate AUTO source only while the installed manifest
-// carries it.
+// verbatim: no nonterminal transaction, no unresolved capital recovery, and
+// the manifest's lane authority, which admits the candidate AUTO source.
 func RunUnwindIntentCommit(ctx context.Context, databaseURL string, req UnwindIntentCommitRequest, execute bool) (UnwindIntentCommitResult, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
@@ -63,7 +62,7 @@ func RunUnwindIntentCommit(ctx context.Context, databaseURL string, req UnwindIn
 
 // runUnwindIntentCommitOnManifest is the identical command with the manifest
 // and route row injectable, so tests can drive the exact command through a
-// reviewed candidate binding without modifying the installed embedded form.
+// reviewed candidate manifest without modifying the installed embedded form.
 // The public wrapper keeps the embedded authority.
 func runUnwindIntentCommitOnManifest(ctx context.Context, manifest RouteManifest, databaseURL, routeKey string, req UnwindIntentCommitRequest, execute bool) (result UnwindIntentCommitResult, err error) {
 	intent := unwindIntentFromRequest(req, time.Now().UTC())

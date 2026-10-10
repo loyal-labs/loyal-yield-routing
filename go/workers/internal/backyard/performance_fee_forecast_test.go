@@ -369,7 +369,6 @@ func armFeeAuthorityFixture(t *testing.T, s *Snapshot) {
 func TestPerformanceFeeArmedAdmissionFixturesHaveProvableCandidates(t *testing.T) {
 	_, debt, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateral := autoCollateralPriceFixture(t, 1_000_000)
-	manifest := autoInitializerFixtureManifest(t)
 	for _, funded := range []bool{false, true} {
 		in := fundedAutoFixture(t, debt, collateral)
 		if funded {
@@ -380,9 +379,9 @@ func TestPerformanceFeeArmedAdmissionFixturesHaveProvableCandidates(t *testing.T
 			in.Markets[0].NativeAPY = 2
 		}
 		armFeeAuthorityFixture(t, &in.Snapshot)
-		first := selectOpportunityWithLanes(in, SelectorState{}, manifestLaneAllowed(manifest), manifestFundingAllowed(manifest))
+		first := selectOpportunityWithLanes(in, SelectorState{}, selectorOrAutoLane, selectorEntryFundingLane)
 		advanceSelectorFixture(&in, time.Minute)
-		got := selectOpportunityWithLanes(in, first.State, manifestLaneAllowed(manifest), manifestFundingAllowed(manifest))
+		got := selectOpportunityWithLanes(in, first.State, selectorOrAutoLane, selectorEntryFundingLane)
 		want := "ENTER"
 		if funded {
 			want = "SWITCH"

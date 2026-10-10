@@ -12,8 +12,7 @@ import (
 // Renewal observes the same source again before replacing an expired interest
 // envelope. It never adds exit spending or makes a new destination choice.
 // Renewal authority resolves through the explicit reviewed manifest, the same
-// way the commit, decode and merge paths already do: the candidate AUTO
-// source renews exactly while that manifest's reviewed binding resolves.
+// way the commit, decode and merge paths already do.
 func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client, manifest RouteManifest, observe func(context.Context) (Observation, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -40,6 +39,10 @@ func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client,
 	forecast.Snapshot.Unwind = false
 	forecast.Snapshot.UnwindRefreshRequired = false
 	forecast.Snapshot.WithdrawalDemandRaw = 0
+	// The policies the forecast exit is priced through: one read, at its slot.
+	if forecast.policies, err = observeInstalledPolicies(ctx, rpc, o.Snapshot.Slot); err != nil {
+		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
+	}
 	source, err := observeSelectorSource(ctx, rpc, productionJupiter, manifest, forecast)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)

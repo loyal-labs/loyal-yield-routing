@@ -63,7 +63,7 @@ func TestVoltrApprovedFeeTupleAndEveryTermDrift(t *testing.T) {
 			w := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 				observe:         func(context.Context) (Observation, error) { return tickObservation(s), nil },
-				recordManualRecovery: func(_ context.Context, _ string, _ Observation, d Decision, _, _ string) (DecisionRecord, error) {
+				recordManualRecovery: func(_ context.Context, _ string, _ Observation, d Decision, _ string) (DecisionRecord, error) {
 					recorded = d.Action == HoldManualRecovery && d.Reason == "voltr_fee_terms_unapproved"
 					return DecisionRecord{Status: ManualRecovery}, nil
 				},

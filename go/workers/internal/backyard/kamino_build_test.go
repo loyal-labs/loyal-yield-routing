@@ -39,9 +39,8 @@ func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCReq
 	data = appendU64(data, 1_000_000)
 	return KaminoPrimeUSDCRequest{
 		// Synthetic fixture address, frozen literal: independent of the Voltr
-		// bridge policy rollover and paired with the synthetic digest below.
+		// bridge policy rollover.
 		Action: action, AmountRaw: 1_000_000, Policy: "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh",
-		PolicyConstraintIndex: 0, PolicyAccountDataSHA256: hex.EncodeToString(bytes.Repeat([]byte{1}, 32)),
 		Accounts: manifestAccounts(metas), Data: data, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 	}
 }
@@ -129,9 +128,9 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 }
 
 func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	var err error
-	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,9 +165,9 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 }
 
 func TestKaminoWithdrawWireAcceptsDebtBearingObligationTopology(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	var err error
-	request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,8 +291,7 @@ func TestPersistedKaminoWireRejectsMutatedEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	borrowOuter, err := wrapSquadsKaminoPolicy(mustKey(borrowRequest.Policy), delegate, delegate,
-		borrowRequest.PolicyConstraintIndex, borrowInner)
+	borrowOuter, err := wrapSquadsKaminoPolicy(mustKey(borrowRequest.Policy), delegate, delegate, splitLeg, borrowInner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,8 +309,7 @@ func TestPersistedKaminoWireRejectsMutatedEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	depositOuter, err := wrapSquadsKaminoPolicy(mustKey(depositRequest.Policy), delegate, delegate,
-		depositRequest.PolicyConstraintIndex, depositInner)
+	depositOuter, err := wrapSquadsKaminoPolicy(mustKey(depositRequest.Policy), delegate, delegate, splitLeg, depositInner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,11 +341,6 @@ func TestKaminoPrimeUSDCBuilderFailsClosedOnEveryAuthorityBoundary(t *testing.T)
 		t.Fatal("wrong custody role accepted")
 	}
 	request = kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
-	request.PolicyConstraintIndex = 2
-	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
-		t.Fatal("wrong lane constraint index accepted")
-	}
-	request = kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
 	request.Data[8]++
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
 		t.Fatal("amount mutation accepted")
@@ -363,10 +355,10 @@ func TestKaminoPrimeUSDCBuilderFailsClosedOnEveryAuthorityBoundary(t *testing.T)
 		t.Fatal("historical non-v2 discriminator accepted")
 	}
 	request = kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
-	request.PolicyAccountDataSHA256 = "not-a-hash"
+	request.Policy = ""
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	if _, err := buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, key, delegate); err == nil {
-		t.Fatal("unbound policy bytes accepted")
+		t.Fatal("a request naming no policy was signed")
 	}
 }

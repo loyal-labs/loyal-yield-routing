@@ -54,6 +54,8 @@ type BridgeBuildRequest struct {
 	Action    Action
 	AmountRaw uint64
 	Report    BridgeReport
+	// Policy is the installed account of the action's bridge policy.
+	Policy string
 	// These bindings are read from the confirmed immutable adaptor config and
 	// Squads Settings before a transaction is built. They are repeated here so
 	// a stale observation cannot be silently paired with the hard-coded wire.
@@ -103,14 +105,7 @@ const (
 	bridgeSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
 	bridgeVault          = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
 	bridgeDelegate       = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
-	// Fresh policy seed rollover: candidate public identities at Squads seeds
-	// 152-155. legacyPolicyGate asserts only the retired 62-65 set absent;
-	// root retires 145-148 operationally before opening.
-	bridgeAllocationPolicy = "Bt2SEmvnWFyqSV83CieMHzBjYSL7CJL8fXmTshD2RNAv" // seed 152, VOLTR_ALLOCATE_TO_SQUADS
-	bridgeNAVPolicy        = "5r4gVPentTwudZXQAtvjqx8iWfmBjLjnJGBypB7aPi8f" // seed 153, REPORT_NAV
-	bridgeStagePolicy      = "7EW76UaxsNTnLG931HTNSteRjhR3s9rcKVJ7UtqyN6e3" // seed 154, STAGE_SQUADS_TO_VOLTR
-	bridgeWithdrawPolicy   = "GSY3mcsWHPv7LvH38eZZR6WTj4YiMqdQ9Ai1WRKnR76K" // seed 155, VOLTR_RESTORE_IDLE
-	bridgeVoltrVault       = "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
+	bridgeVoltrVault     = "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
 	// Strategy-two adaptor config: its key IS the Voltr strategy key, derived
 	// offline from the setup admin over domain loyal-rwa-multiply-mainnet-v3.
 	// It replaces the retired v2 config 9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj.
@@ -170,9 +165,13 @@ func compileBridgeMessageForDelegate(request BridgeBuildRequest, delegate public
 	if err != nil {
 		return nil, err
 	}
-	inner, policy, indexes, err := ticketedBridgeInstructions(request)
+	inner, indexes, err := ticketedBridgeInstructions(request)
 	if err != nil {
 		return nil, err
+	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil {
+		return nil, fmt.Errorf("bridge policy: %w", err)
 	}
 	outer, err := wrapSquadsPolicyForDelegate(policy, delegate, delegate, indexes, inner)
 	if err != nil {
@@ -228,41 +227,37 @@ func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, execut
 	}, nil
 }
 
-func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, publicKey, byte, error) {
+func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, error) {
 	switch request.Action {
 	case VoltrAllocateToSquads:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
-			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid allocation amount")
+			return compiledInstruction{}, fmt.Errorf("invalid allocation amount")
 		}
-		ix, err := voltrStrategyInstruction(voltr.DepositStrategy, adaptorDepositDiscriminator, request.AmountRaw, request.Report)
-		return ix, mustKey(bridgeAllocationPolicy), 0, err
+		return voltrStrategyInstruction(voltr.DepositStrategy, adaptorDepositDiscriminator, request.AmountRaw, request.Report)
 	case ReportNAV:
 		if request.AmountRaw != 0 {
-			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("NAV refresh cannot move capital")
+			return compiledInstruction{}, fmt.Errorf("NAV refresh cannot move capital")
 		}
-		ix, err := voltrStrategyInstruction(voltr.DepositStrategy, adaptorDepositDiscriminator, 0, request.Report)
-		return ix, mustKey(bridgeNAVPolicy), 0, err
+		return voltrStrategyInstruction(voltr.DepositStrategy, adaptorDepositDiscriminator, 0, request.Report)
 	case VoltrRestoreIdle:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
-			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid Voltr restore amount")
+			return compiledInstruction{}, fmt.Errorf("invalid Voltr restore amount")
 		}
-		ix, err := voltrStrategyInstruction(voltr.WithdrawStrategy, adaptorWithdrawDiscriminator, request.AmountRaw, request.Report)
-		return ix, mustKey(bridgeWithdrawPolicy), 0, err
+		return voltrStrategyInstruction(voltr.WithdrawStrategy, adaptorWithdrawDiscriminator, request.AmountRaw, request.Report)
 	case StageSquadsToVoltr:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
-			return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("invalid staging amount")
+			return compiledInstruction{}, fmt.Errorf("invalid staging amount")
 		}
-		return stageInstruction(request.AmountRaw), mustKey(bridgeStagePolicy), 0, nil
+		return stageInstruction(request.AmountRaw), nil
 	default:
-		return compiledInstruction{}, publicKey{}, 0, fmt.Errorf("action %s has no approved bridge transaction", request.Action)
+		return compiledInstruction{}, fmt.Errorf("action %s has no approved bridge transaction", request.Action)
 	}
 }
 
 // voltrStrategyInstruction is a bridge Voltr deposit_strategy or
 // withdraw_strategy: Voltr calls the pinned adaptor instruction with the
-// encoded report, and the adaptor's remaining accounts are the Squads
-// settings, the vault signer and its USDC custody.
-func voltrStrategyInstruction(build func(voltr.StrategyAccounts, uint64, []byte, []byte, ...*solana.AccountMeta) *solana.GenericInstruction,
+// encoded report, over the bridge's remaining accounts.
+func voltrStrategyInstruction(build func(voltr.StrategyAccounts, uint64, []byte, []byte, ...squads.AccountSlot[solana.PublicKey]) *solana.GenericInstruction,
 	adaptorDiscriminator []byte, amount uint64, report BridgeReport) (compiledInstruction, error) {
 	encodedReport, err := encodeBridgeReport(report)
 	if err != nil {
@@ -273,9 +268,32 @@ func voltrStrategyInstruction(build func(voltr.StrategyAccounts, uint64, []byte,
 		VaultAssetIdleAuth: solanaKey(bridgeIdleAuthority), VaultStrategyAuth: solanaKey(bridgeStrategyAuth), AssetMint: solanaKey(bridgeUSDC),
 		LPMint: solanaKey(bridgeLPMint), VaultAssetIdleATA: solanaKey(bridgeIdleATA), VaultStrategyAssetATA: solanaKey(bridgeStrategyATA),
 		AssetTokenProgram: solanaKey(bridgeTokenProgram), AdaptorProgram: solanaKey(bridgeAdaptorProgram)}
-	return sdkInstruction(build(accounts, amount, adaptorDiscriminator, encodedReport,
-		solana.Meta(solanaKey(bridgeSettings)), solana.Meta(solanaKey(bridgeVault)).SIGNER(), solana.Meta(solanaKey(bridgeSquadsATA)).WRITE())), nil
+	remaining := bridgeRemainingSlots(bridgeRemaining[solana.PublicKey]{Settings: solanaKey(bridgeSettings), Vault: solanaKey(bridgeVault),
+		Custody: solanaKey(bridgeSquadsATA), Ticket: solanaKey(reportTicketPDA)})
+	return sdkInstruction(build(accounts, amount, adaptorDiscriminator, encodedReport, remaining...)), nil
 }
+
+// bridgeRemaining is the adaptor's remaining accounts after Voltr's own, as
+// both the bridge's Voltr legs and their policy constraints read them
+// (bridgeRemainingSlots): the Squads settings, the vault that signs, its USDC
+// custody, then the report ticket the adaptor consumes.
+type bridgeRemaining[T any] struct {
+	Settings, Vault, Custody, Ticket T
+}
+
+func bridgeRemainingSlots[T any](r bridgeRemaining[T]) []squads.AccountSlot[T] {
+	return []squads.AccountSlot[T]{squads.ReadOnly(r.Settings), squads.Signing(r.Vault), squads.Writable(r.Custody), squads.Writable(r.Ticket)}
+}
+
+// The adaptor report both bridge legs carry as Voltr's additional_args,
+// Some(Vec<u8>): the option tag and u32 length, then ReportV1, which is its
+// version, sequence, observed slot, NAV after and snapshot digest.
+const (
+	bridgeReportArgsPrefixLen = 1 + 4
+	bridgeReportVersion       = 1
+	bridgeReportNAVOffset     = 1 + 8 + 8
+	bridgeReportLen           = bridgeReportNAVOffset + 8 + 32
+)
 
 func encodeBridgeReport(report BridgeReport) ([]byte, error) {
 	if report.Sequence == 0 || report.Sequence != report.ObservedSlot || report.NAVAfterRaw > bridgeMaxNAV {
@@ -285,7 +303,7 @@ func encodeBridgeReport(report BridgeReport) ([]byte, error) {
 	if err != nil || len(digest) != 32 || allZero(digest) {
 		return nil, fmt.Errorf("invalid adaptor snapshot digest")
 	}
-	data := []byte{1}
+	data := []byte{bridgeReportVersion}
 	data = appendU64(data, report.Sequence)
 	data = appendU64(data, report.ObservedSlot)
 	data = appendU64(data, report.NAVAfterRaw)
@@ -298,6 +316,15 @@ func stageInstruction(amount uint64) compiledInstruction {
 
 func solanaKey(value string) solana.PublicKey { return solana.PublicKey(mustKey(value)) }
 
+// squads is ix as Squads reads an inner instruction.
+func (ix compiledInstruction) squads() squads.Instruction {
+	out := squads.Instruction{ProgramID: solana.PublicKey(ix.program), Data: ix.data}
+	for _, account := range ix.accounts {
+		out.Accounts = append(out.Accounts, solana.AccountMeta{PublicKey: solana.PublicKey(account.key), IsSigner: account.signer, IsWritable: account.writable})
+	}
+	return out
+}
+
 // sdkInstruction is an instruction solana-go built.
 func sdkInstruction(ix *solana.GenericInstruction) compiledInstruction {
 	out := compiledInstruction{program: publicKey(ix.ProgID), data: ix.DataBytes}
@@ -308,22 +335,19 @@ func sdkInstruction(ix *solana.GenericInstruction) compiledInstruction {
 }
 
 func wrapSquadsPolicyForDelegate(policy, executor, expectedDelegate publicKey, constraintIndexes []byte, inner []compiledInstruction) (compiledInstruction, error) {
-	if !isBridgePolicy(policy) || executor != expectedDelegate {
-		return compiledInstruction{}, fmt.Errorf("unrecognized Squads bridge policy or delegate")
+	if executor != expectedDelegate {
+		return compiledInstruction{}, fmt.Errorf("unrecognized Squads bridge delegate")
 	}
 	return wrapSquadsPolicy(policy, executor, constraintIndexes, inner...)
 }
 
-// wrapSquadsPolicy runs inner as the bridge vault (smart account index 0)
+// wrapSquadsPolicy runs inner as the bridge vault (backyardVaultIndex)
 // through policy, signed by executor.
 func wrapSquadsPolicy(policy, executor publicKey, constraintIndexes []byte, inner ...compiledInstruction) (compiledInstruction, error) {
-	execute := squads.ExecuteSync{Policy: solana.PublicKey(policy), Signer: solana.PublicKey(executor), ConstraintIndexes: constraintIndexes}
+	execute := squads.ExecuteSync{Policy: solana.PublicKey(policy), Signer: solana.PublicKey(executor), AccountIndex: backyardVaultIndex,
+		ConstraintIndexes: constraintIndexes}
 	for _, ix := range inner {
-		instruction := squads.Instruction{ProgramID: solana.PublicKey(ix.program), Data: ix.data}
-		for _, account := range ix.accounts {
-			instruction.Accounts = append(instruction.Accounts, solana.AccountMeta{PublicKey: solana.PublicKey(account.key), IsSigner: account.signer, IsWritable: account.writable})
-		}
-		execute.Inner = append(execute.Inner, instruction)
+		execute.Inner = append(execute.Inner, ix.squads())
 	}
 	wrapped, err := squads.ExecuteTransactionSyncV2(execute)
 	if err != nil {
@@ -434,10 +458,6 @@ func pushOrMergeMeta(accounts *[]accountMeta, next accountMeta) byte {
 	}
 	*accounts = append(*accounts, next)
 	return byte(len(*accounts) - 1)
-}
-func metas(values ...accountMeta) []accountMeta { return values }
-func meta(value string, signer, writable bool) accountMeta {
-	return accountMeta{key: mustKey(value), signer: signer, writable: writable}
 }
 func mustKey(value string) publicKey {
 	key, err := decodeKey(value)
@@ -929,18 +949,15 @@ func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kamino
 	// Exact Borsh envelope emitted by wrapSquadsKaminoPolicy:
 	// discriminator | vault | signer count | policy kind | interaction kind |
 	// Some(constraint indexes) | vec len | index | sync tx | inner vault |
-	// compact payload len | compact payload.
+	// compact payload len | compact payload. The index is the builder's and
+	// Squads checks it against the policy on chain; it is not re-derived here.
 	if lane == "" {
 		lane = RouteID
-	}
-	route, err := runtimeRoute(lane)
-	if err != nil {
-		return false
 	}
 	if len(outer.accounts) < 4 || len(outer.data) < 27 ||
 		!bytes.Equal(outer.data[:8], squads.ExecuteTransactionSyncV2Discriminator[:]) ||
 		!bytes.Equal(outer.data[8:13], []byte{0, 1, 1, 1, 1}) ||
-		readU32LE(outer.data[13:17]) != 1 || outer.data[17] != kaminoConstraintIndexForRoute(route, leg) ||
+		readU32LE(outer.data[13:17]) != 1 ||
 		!bytes.Equal(outer.data[18:20], []byte{1, 0}) {
 		return false
 	}
@@ -1029,13 +1046,6 @@ func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
 
 func readU32LE(value []byte) uint32 {
 	return uint32(value[0]) | uint32(value[1])<<8 | uint32(value[2])<<16 | uint32(value[3])<<24
-}
-
-func isBridgePolicy(policy publicKey) bool {
-	return policy == mustKey(bridgeAllocationPolicy) ||
-		policy == mustKey(bridgeNAVPolicy) ||
-		policy == mustKey(bridgeStagePolicy) ||
-		policy == mustKey(bridgeWithdrawPolicy)
 }
 
 func decodeShortVec(data []byte, offset *int) (int, error) {

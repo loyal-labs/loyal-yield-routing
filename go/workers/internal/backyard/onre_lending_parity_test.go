@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -36,7 +35,6 @@ func onreLendingParityRoute() RuntimeRoute {
 		CollateralTokenProgram:    classicTokenProgram, DebtTokenProgram: classicTokenProgram,
 		DebtFarm:           "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF",
 		ObligationDebtFarm: "nMqFZFPQsNwot49QAD1B76LxNV7qRG1tnbkXyTjbUAD",
-		KaminoPolicies:     map[kaminoPrimeUSDCLeg]kaminoPolicyBinding{},
 	}
 }
 
@@ -123,16 +121,16 @@ func TestOnReConnectedLendingMatchesGoWithoutRegistration(t *testing.T) {
 			continue
 		}
 		t.Run(step.Leg, func(t *testing.T) {
-			op, leg, action, disc := step.Leg, kaminoLegDeposit, OpenRouteStep, kamino.DepositV2Discriminator[:]
+			op, action, disc := step.Leg, OpenRouteStep, kamino.DepositV2Discriminator[:]
 			switch step.Leg {
 			case "redeposit":
 				op = "deposit"
 			case "borrow":
-				leg, disc = kaminoLegBorrow, kamino.BorrowV2Discriminator[:]
+				disc = kamino.BorrowV2Discriminator[:]
 			case "repay":
-				leg, action, disc = kaminoLegRepay, DeleverRouteStep, kamino.RepayV2Discriminator[:]
+				action, disc = DeleverRouteStep, kamino.RepayV2Discriminator[:]
 			case "withdraw":
-				leg, action, disc = kaminoLegWithdraw, DeleverRouteStep, kamino.WithdrawV2Discriminator[:]
+				action, disc = DeleverRouteStep, kamino.WithdrawV2Discriminator[:]
 			}
 			policyHash := ""
 			for _, a := range step.Before {
@@ -148,9 +146,8 @@ func TestOnReConnectedLendingMatchesGoWithoutRegistration(t *testing.T) {
 			if !validSHA256(policyHash) {
 				t.Fatal("missing executed policy")
 			}
-			route.KaminoPolicies[leg] = kaminoPolicyBinding{policies[op], policyHash}
 			request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: step.AmountRaw,
-				Policy: policies[op], PolicyAccountDataSHA256: policyHash, Accounts: accounts[op],
+				Policy: policies[op], Accounts: accounts[op],
 				RouteLane: route.Lane, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 				Data: append(append([]byte{}, disc...), make([]byte, 8)...)}
 			binary.LittleEndian.PutUint64(request.Data[8:], step.AmountRaw)
@@ -204,10 +201,7 @@ func TestOnReConnectedLendingMatchesGoWithoutRegistration(t *testing.T) {
 			}
 			for _, mutate := range []func(*KaminoPrimeUSDCRequest){
 				func(r *KaminoPrimeUSDCRequest) { r.RouteLane = SelectedRouteID },
-				func(r *KaminoPrimeUSDCRequest) { r.Policy = bridgeAllocationPolicy },
-				func(r *KaminoPrimeUSDCRequest) { r.PolicyAccountDataSHA256 = strings.Repeat("0", 64) },
 				func(r *KaminoPrimeUSDCRequest) { r.AmountRaw++ },
-				func(r *KaminoPrimeUSDCRequest) { r.PolicyConstraintIndex = 1 },
 				func(r *KaminoPrimeUSDCRequest) { r.ObligationReserves = []string{route.Kamino.DebtReserve} },
 			} {
 				mutant := request

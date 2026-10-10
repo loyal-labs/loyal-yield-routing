@@ -88,8 +88,6 @@ func ObserveConfirmedBridgeSnapshot(ctx context.Context, rpc *chain.Client) (Obs
 			CapacityRaw:             0,
 			PolicyLimitRaw:          0,
 			MaxTargetLTVEntryRaw:    0,
-			PolicyReady:             false,
-			ExitBuildable:           false,
 			LastReportAgeSeconds:    0,
 			LiquidationThresholdBPS: 0,
 		}}, nil

@@ -67,11 +67,15 @@ func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, ma
 	if slot < batch.Slot || slot-batch.Slot > min(observationLagSlots(), adaptorMaxReportAgeSlots) {
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation exceeded slot freshness"))
 	}
+	// The policies this build executes through: one read, at its slot.
+	if observation.policies, err = observeInstalledPolicies(ctx, rpc, batch.Slot); err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
 	return prepareBridgeFromObservedAccounts(ctx, rpc, manifest, decision, observation, batch.Accounts)
 }
 
 func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation, accounts []ConfirmedAccount) (Observation, BridgeExecutionEvidence, error) {
-	policyPin, err := manifest.bridgePolicy(decision.Action)
+	policy, err := observation.policies.account(policyKey{action: decision.Action})
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -91,26 +95,10 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	}
 	ticketRequired := decision.Action != StageSquadsToVoltr
 	if fundedLane(route.Lane) {
-		// Reserve the entire bridge exit, including a report after staging.
-		// Every required policy and the existing ticket must be present in
-		// this same confirmed snapshot; admission cannot authorize setup.
+		// Reserve the entire bridge exit, including a report after staging:
+		// the existing ticket must be present in this same observation;
+		// admission cannot authorize setup.
 		ticketRequired = true
-		for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
-			binding, err := manifest.bridgePolicy(action)
-			if err != nil {
-				return Observation{}, BridgeExecutionEvidence{}, err
-			}
-			account := accountAt(accounts, binding.Account)
-			if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 ||
-				!maskedPolicyDigestMatches(account.Data, binding.MaskedByteRanges, binding.NormalizedDigest) {
-				return Observation{}, BridgeExecutionEvidence{}, budgetHold("bridge_exit_policy_unavailable")
-			}
-		}
-	}
-	policyAccount := accountAt(accounts, policyPin.Account)
-	if policyAccount.Owner != squads.ProgramID.String() || policyAccount.Executable ||
-		policyAccount.Lamports == 0 || !maskedPolicyDigestMatches(policyAccount.Data, policyPin.MaskedByteRanges, policyPin.NormalizedDigest) {
-		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("bridge policy bytes or owner drifted")
 	}
 	var ticket observedReportTicket
 	if ticketRequired {
@@ -166,7 +154,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	return observation, BridgeExecutionEvidence{
 		Request: BridgeBuildRequest{
 			Action: decision.Action, AmountRaw: uint64(decision.AmountRaw),
-			Report:        nav.Report,
+			Report: nav.Report, Policy: policy,
 			AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
 			RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
 		},
@@ -251,6 +239,10 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 			// refresh has already found a durable safety stop. Worker.Tick receives
 			// this coherent observation and persists it before returning.
 			return observation, KaminoExecutionEvidence{}, nil
+		}
+		// The policies this build executes through: one read, at its slot.
+		if observation.policies, err = observeInstalledPolicies(ctx, rpc, observation.Snapshot.Slot); err != nil {
+			return Observation{}, KaminoExecutionEvidence{}, err
 		}
 		// Size a whole-debt repayment on this refreshed debt, so it is built
 		// as the full payoff the worker will record.
@@ -339,7 +331,7 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
-		request, err := manifest.kaminoPacketForRoute(decision.Action, leg, wireAmount, blockhash, decision.StrategyKey)
+		request, err := manifest.kaminoPacketForRoute(observation.policies, decision.Action, leg, wireAmount, blockhash, decision.StrategyKey)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
@@ -360,11 +352,6 @@ func observeConfirmedKaminoExecutionEvidenceWithEnrichment(
 			request.ObligationReserves = append(request.ObligationReserves, route.Kamino.DebtReserve)
 		}
 		source, destination := kaminoLegCustodiesForRoute(leg, route)
-		policy := accountAt(accounts, request.Policy)
-		if policy.Owner != squads.ProgramID.String() || policy.Executable || policy.Lamports == 0 ||
-			sha256Bytes(policy.Data) != request.PolicyAccountDataSHA256 {
-			return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("PRIME/USDC policy bytes or owner drifted")
-		}
 		var effects ExpectedEffects
 		if leg == kaminoLegDeposit {
 			effects, err = boundedKaminoDepositEffects(accounts, route, observation.Snapshot.Slot, wireAmount)

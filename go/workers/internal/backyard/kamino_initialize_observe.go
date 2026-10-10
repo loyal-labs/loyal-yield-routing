@@ -7,8 +7,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
-	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Execution admission prestate: strictly absent-only. The target obligation
@@ -23,9 +21,9 @@ func validateKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client
 	return observeKaminoInitializationPrestate(ctx, rpc, r, minimumSlot, selectorExitBound{}, false, inner)
 }
 
-// validateKaminoInitializationPrestateOnRoute is the manifest-aware form: the
-// candidate AUTO lane is admitted only after the reviewed binding resolved the
-// request; every absent-only check below is the exact installed check.
+// validateKaminoInitializationPrestate is the manifest-aware form that also
+// admits the AUTO lane once its request compiles; every absent-only check
+// below is the exact installed check.
 func (m RouteManifest) validateKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client, r KaminoInitializationRequest, minimumSlot int64) (int64, error) {
 	if err := m.validateInitializationRequest(r); err != nil {
 		return 0, err
@@ -55,7 +53,7 @@ func (m RouteManifest) validateKaminoReentryForecastPrestate(ctx context.Context
 
 // initializerRouteForRequest resolves the lane topology: installed selector
 // lanes through the unchanged public gate, the candidate AUTO lane through the
-// checked route-aware core (already binding-gated by the caller).
+// checked route-aware core (its request already compiled by the caller).
 func initializerRouteForRequest(r KaminoInitializationRequest) (RuntimeRoute, compiledInstruction, error) {
 	route, err := runtimeRoute(r.RouteLane)
 	if err != nil {
@@ -90,11 +88,7 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client,
 	if rpc == nil || minimumSlot <= 0 {
 		return 0, budgetHold("initializer_prestate_unavailable")
 	}
-	policy, err := policySetupAddress(r.PolicySeed)
-	if err != nil {
-		return 0, err
-	}
-	addresses := []string{bridgeSettings, encodeBase58(policy[:]), bridgeDelegate}
+	addresses := []string{bridgeDelegate}
 	for _, a := range inner.accounts {
 		addresses = append(addresses, encodeBase58(a.key[:]))
 	}
@@ -111,14 +105,6 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client,
 	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot, route.Kamino.Obligation)
 	if err != nil {
 		return 0, budgetHold("initializer_prestate_unavailable")
-	}
-	next, err := policySetupNextSeed(accountAt(accounts, bridgeSettings))
-	if err != nil || next <= r.PolicySeed {
-		return 0, budgetHold("initializer_settings_or_seed_changed")
-	}
-	p := accountAt(accounts, encodeBase58(policy[:]))
-	if p.Owner != squads.ProgramID.String() || p.Executable || p.Lamports == 0 || sha256Bytes(p.Data) != r.PolicyAccountDataSHA256 {
-		return 0, budgetHold("initializer_policy_changed")
 	}
 	for _, a := range []struct {
 		address string
@@ -180,42 +166,4 @@ func observeKaminoInitializationPrestate(ctx context.Context, rpc *chain.Client,
 		return 0, budgetHold("initializer_rent_changed")
 	}
 	return slot, nil
-}
-
-// Read only the deployed Settings fields required by the pinned admin's
-// synchronous PolicyCreate. This is not a membership-management decoder.
-func policySetupNextSeed(account ConfirmedAccount) (uint64, error) {
-	bad := budgetHold("policy_setup_settings_envelope_mismatch")
-	owner, err := decodeKey(account.Owner)
-	if err != nil || account.Address != bridgeSettings || account.Lamports == 0 {
-		return 0, bad
-	}
-	settings, err := squads.DecodeSettings(&chain.Account{Key: solana.PublicKey(mustKey(bridgeSettings)), Owner: solana.PublicKey(owner), Lamports: account.Lamports, Data: account.Data, Executable: account.Executable})
-	// Zero Settings authority means the installed signer/threshold flow, not a
-	// different authority able to bypass it. Never silently adapt membership.
-	if err != nil || !settings.SettingsAuthority.IsZero() || settings.Threshold != 1 || settings.TimeLock != 0 ||
-		len(settings.Signers) != 1 || settings.Signers[0].Key != solana.PublicKey(mustKey(bridgeSettingsSigner)) || settings.Signers[0].Permissions != squads.FullPermissions {
-		return 0, bad
-	}
-	// policySeed must already exist for forward repair.
-	if settings.PolicySeed == nil || settings.Reserved != 0 || *settings.PolicySeed < 139 || *settings.PolicySeed == math.MaxUint64 {
-		return 0, bad
-	}
-	return *settings.PolicySeed + 1, nil
-}
-
-func policySetupAddress(seed uint64) (publicKey, error) {
-	key, _, err := policySetupAddressAndBump(seed)
-	return key, err
-}
-
-func policySetupAddressAndBump(seed uint64) (publicKey, byte, error) {
-	if seed == 0 {
-		return publicKey{}, 0, budgetHold("invalid_policy_setup_seed")
-	}
-	key, bump, err := squads.PolicyAddress(solana.PublicKey(mustKey(bridgeSettings)), seed)
-	if err != nil {
-		return publicKey{}, 0, budgetHold("invalid_policy_setup_seed")
-	}
-	return publicKey(key), bump, nil
 }

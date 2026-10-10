@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Report-ticket v1 is the narrow fallback for Voltr not forwarding the Squads
@@ -24,8 +26,6 @@ const (
 	reportTicketBump        = byte(255)
 	reportTicketDeposit     = byte(0)
 	reportTicketWithdraw    = byte(1)
-	reportTicketArmWireLen  = 79
-	voltrCapitalTailLen     = 70
 )
 
 var (
@@ -57,23 +57,21 @@ func decodeObservedReportTicket(account ConfirmedAccount) (observedReportTicket,
 	return observedReportTicket{LastConsumedSequence: lastConsumed, Armed: armed}, nil
 }
 
-func ticketedBridgeInstructions(request BridgeBuildRequest) ([]compiledInstruction, publicKey, []byte, error) {
-	capital, policy, constraintIndex, err := bridgeInstruction(request)
+// ticketedBridgeInstructions is the bridge action's inner instructions and
+// the leg each executes under.
+func ticketedBridgeInstructions(request BridgeBuildRequest) ([]compiledInstruction, []byte, error) {
+	capital, err := bridgeInstruction(request)
 	if err != nil {
-		return nil, publicKey{}, nil, err
+		return nil, nil, err
 	}
 	if request.Action == StageSquadsToVoltr {
-		return []compiledInstruction{capital}, policy, []byte{constraintIndex}, nil
+		return []compiledInstruction{capital}, []byte{bridgeStageLeg}, nil
 	}
 	arm, err := armReportInstruction(request.Action, capital.data)
 	if err != nil {
-		return nil, publicKey{}, nil, err
+		return nil, nil, err
 	}
-	if len(capital.accounts) != 17 {
-		return nil, publicKey{}, nil, fmt.Errorf("Voltr capital account layout drifted before ticket append")
-	}
-	capital.accounts = append(capital.accounts, meta(reportTicketPDA, false, true))
-	return []compiledInstruction{arm, capital}, policy, []byte{0, 1}, nil
+	return []compiledInstruction{arm, capital}, []byte{bridgeArmLeg, bridgeCapitalLeg}, nil
 }
 
 func armReportInstruction(action Action, voltrData []byte) (compiledInstruction, error) {
@@ -93,37 +91,58 @@ func armReportInstruction(action Action, voltrData []byte) (compiledInstruction,
 	data := append([]byte(nil), armReportDiscriminator...)
 	data = append(data, operation)
 	data = append(data, tail...)
-	if len(data) != reportTicketArmWireLen {
-		return compiledInstruction{}, fmt.Errorf("ArmReport wire length drifted")
-	}
-	return compiledInstruction{
-		program: mustKey(bridgeAdaptorProgram),
-		accounts: metas(
-			meta(bridgeStrategy, false, false),
-			meta(reportTicketPDA, false, true),
-			meta(bridgeSettings, false, false),
-			meta(bridgeVault, true, false),
-			meta(squads.ProgramID.String(), false, false),
-		),
-		data: data,
-	}, nil
+	adaptor := solanaKey(bridgeAdaptorProgram)
+	accounts := squads.Metas(adaptor, armReportSlots(armReport[solana.PublicKey]{Strategy: solanaKey(bridgeStrategy), Ticket: solanaKey(reportTicketPDA),
+		Settings: solanaKey(bridgeSettings), Vault: solanaKey(bridgeVault)}, squads.ProgramID))
+	return sdkInstruction(solana.NewInstruction(adaptor, accounts, data)), nil
+}
+
+// armReport is the adaptor's ArmReport account set: the strategy-two adaptor
+// config, the report ticket, the Squads settings and the vault that signs;
+// the Squads program follows them. The builder and armReportAllowed read the
+// same slot list.
+type armReport[T any] struct {
+	Strategy, Ticket, Settings, Vault T
+}
+
+func armReportSlots[T any](a armReport[T], squadsProgram T) []squads.AccountSlot[T] {
+	return []squads.AccountSlot[T]{squads.ReadOnly(a.Strategy), squads.Writable(a.Ticket), squads.ReadOnly(a.Settings), squads.Signing(a.Vault),
+		squads.ReadOnly(squadsProgram)}
+}
+
+// ArmReport data: discriminator, operation, then the Voltr capital tail: its
+// amount and the additional_args option carrying the report.
+const (
+	armAmountOffset        = 8 + 1
+	armReportArgsOffset    = armAmountOffset + 8
+	reportTicketArmWireLen = armReportArgsOffset + bridgeReportArgsPrefixLen + bridgeReportLen
+)
+
+// armReportAllowed admits ArmReport of operation over the allowed accounts,
+// with data predicates after its discriminator and operation. The Squads
+// program slot is free: the adaptor checks it.
+func armReportAllowed(a armReport[squads.Slot], operation byte, data ...squads.DataConstraintView) squads.InstructionConstraintView {
+	adaptor := solanaKey(bridgeAdaptorProgram)
+	leading := append(append([]byte(nil), armReportDiscriminator...), operation)
+	return squads.Allow(adaptor, append([]squads.DataConstraintView{squads.DataBytes(0, leading)}, data...), squads.Slots(adaptor, armReportSlots(a, squads.Any)))
 }
 
 // Voltr outer data is:
 // discriminator8 | amount8 | Some(discriminator)1+u32+8 |
-// Some(additional_args)1+u32+ReportV1[57]. The ticket binds exactly the 70
-// bytes that Voltr later forwards after selecting the adaptor discriminator.
+// Some(additional_args)1+u32+ReportV1. The ticket binds exactly the amount
+// and the additional_args that Voltr later forwards after selecting the
+// adaptor discriminator.
 func exactVoltrCapitalTail(data []byte) ([]byte, error) {
-	const reportOffset = 34
-	if len(data) != 91 || data[16] != 1 || binary.LittleEndian.Uint32(data[17:21]) != 8 ||
-		(!bytes.Equal(data[21:29], adaptorDepositDiscriminator) && !bytes.Equal(data[21:29], adaptorWithdrawDiscriminator)) ||
-		data[29] != 1 || binary.LittleEndian.Uint32(data[30:reportOffset]) != 57 || data[reportOffset] != 1 {
+	const (
+		call         = voltr.StrategyAdaptorCallOffset
+		args         = call + 1 + 4 + 8
+		reportOffset = args + bridgeReportArgsPrefixLen
+	)
+	if len(data) != reportOffset+bridgeReportLen || data[call] != 1 || binary.LittleEndian.Uint32(data[call+1:call+5]) != 8 ||
+		(!bytes.Equal(data[call+5:args], adaptorDepositDiscriminator) && !bytes.Equal(data[call+5:args], adaptorWithdrawDiscriminator)) ||
+		data[args] != 1 || binary.LittleEndian.Uint32(data[args+1:reportOffset]) != bridgeReportLen || data[reportOffset] != bridgeReportVersion {
 		return nil, fmt.Errorf("Voltr capital envelope cannot be bound to report ticket")
 	}
-	tail := append([]byte(nil), data[8:16]...)
-	tail = append(tail, data[29:]...)
-	if len(tail) != voltrCapitalTailLen {
-		return nil, fmt.Errorf("Voltr capital tail length drifted")
-	}
-	return tail, nil
+	tail := append([]byte(nil), data[voltr.StrategyAmountOffset:call]...)
+	return append(tail, data[args:]...), nil
 }

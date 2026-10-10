@@ -18,7 +18,7 @@ import (
 // every existing build/send/reconcile caller keeps this behavior. The
 // manifest-aware form below serves only the internal candidate AUTO source
 // path, whose retained legs compile against the SAME reviewed manifest that
-// produced them (its validated autoPolicy binding).
+// produced them.
 func observePhase3KnownBuildCost(ctx context.Context, rpc *chain.Client, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
@@ -41,13 +41,13 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	case BridgeBuildRequest:
 		message, err = CompileBridgeMessage(r)
 	case KaminoPrimeUSDCRequest:
-		message, err = m.compileKaminoMessage(r, mustKey(bridgeDelegate))
+		message, err = compileKaminoMessageForDelegate(r, mustKey(bridgeDelegate))
 		lane = r.RouteLane
 	case KaminoInitializationRequest:
 		message, err = m.compileKaminoInitializationMessage(r)
 		lane, setupLamports = r.RouteLane, r.RentLamports
 	case JupiterSwapRequest:
-		message, err = m.compileJupiterMessage(r, mustKey(bridgeDelegate))
+		message, err = compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate))
 		lane = r.RouteLane
 	default:
 		return ValuedTransactionCost{}, budgetHold("unmapped_economic_action")

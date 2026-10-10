@@ -121,7 +121,7 @@ func TestRestartJournalRecoveryPrecedesFreshDecisions(t *testing.T) {
 			ambiguous.add("observe")
 			return Observation{}, nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			ambiguous.add("journal")
 			return DecisionRecord{}, nil
 		},
@@ -157,7 +157,7 @@ func TestRestartJournalRecoveryPrecedesFreshDecisions(t *testing.T) {
 			recovered.add("observe")
 			return tickObservation(Snapshot{ObservationID: "post-recovery", Slot: 11, RouteKind: RouteKind, Fresh: true}), nil
 		},
-		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _ string) (DecisionRecord, error) {
 			recovered.add("journal")
 			if decision.Action != Hold {
 				t.Fatalf("post-recovery tick journaled an executable decision: %+v", decision)
@@ -256,7 +256,7 @@ func holdTickRuntime(events *runtimeEvents, cancel context.CancelFunc) tickRunti
 			events.add("observe")
 			return tickObservation(Snapshot{ObservationID: "engine-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
 		},
-		recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			events.add("journal")
 			return DecisionRecord{Status: Held}, nil
 		},

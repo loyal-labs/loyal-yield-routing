@@ -53,13 +53,13 @@ type tickRuntime struct {
 	advance                          func(context.Context, PersistedOperation) error
 	observe                          func(context.Context) (Observation, error)
 	loadLatch                        func(context.Context, string) (ManualRecoveryLatch, bool, error)
-	recordManualRecovery             func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
-	recordManualRecoveryAtGeneration func(context.Context, string, Observation, Decision, string, string, int64) (DecisionRecord, error)
+	recordManualRecovery             func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
+	recordManualRecoveryAtGeneration func(context.Context, string, Observation, Decision, string, int64) (DecisionRecord, error)
 	beforeRecordLatchedHold          func(context.Context, ManualRecoveryLatch) error
 	prepareBridge                    func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
 	prepareKamino                    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
 	prepareJupiter                   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
-	recordDecision                   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
+	recordDecision                   func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
 	// bind persists the decided operation's integrity record before build.
 	bind                  func(context.Context, string, Observation, Decision, any, ExpectedEffects) error
 	buildBridge           func(context.Context, string, BridgeExecutionEvidence) error
@@ -144,16 +144,6 @@ func (p productionObserveState) enrich(ctx context.Context, observation *Observa
 		return identityErr
 	}
 	applyProgramIdentityObservation(observation, identity)
-	// Resolve the binding the same way initializationRequest does: the
-	// candidate AUTO lane is governed by the auto-initializer constraint set,
-	// the installed lanes by the multiply-initializer bindings.
-	var bindingErr error
-	if observation.Snapshot.RouteLane == autoAUTOPYUSD.Lane {
-		_, _, bindingErr = p.manifest.autoInitializerBinding()
-	} else {
-		_, bindingErr = p.manifest.initializerBinding(observation.Snapshot.RouteLane)
-	}
-	observation.Snapshot.InitializationPolicyReady = bindingErr == nil
 	return nil
 }
 
@@ -192,7 +182,7 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	observation.Snapshot.CapitalMutated = journal.MutationAfterReport
 	if observation.planning != nil {
 		planning := observation.planning
-		if err := applyUnwindIntentWithLane(&observation.Snapshot, planning.unwind, p.manifest.selectorEntryLaneAllowed); err != nil {
+		if err := applyUnwindIntentWithLane(&observation.Snapshot, planning.unwind, selectorOrAutoLane); err != nil {
 			observation.Snapshot.ManualReason = err.Error()
 		}
 		observation.Snapshot.SelectorEntryPaused = planning.paused
@@ -203,8 +193,8 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		return p.manifest.applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
 	}
 	// The manifest-aware reader is preferred exactly as the entry read below:
-	// a recorded candidate-source unwind survives restart only while the
-	// reviewed manifest's binding resolves. The plain reader stays for legacy
+	// a recorded candidate-source unwind survives restart through the
+	// reviewed manifest's lane authority. The plain reader stays for legacy
 	// test interfaces and keeps its installed closure.
 	if reader, ok := p.journal.(interface {
 		LoadUnwindIntentOnManifest(context.Context, RouteManifest, string) (*UnwindIntent, error)
@@ -213,7 +203,7 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		if err != nil {
 			return err
 		}
-		if err := applyUnwindIntentWithLane(&observation.Snapshot, intent, p.manifest.selectorEntryLaneAllowed); err != nil {
+		if err := applyUnwindIntentWithLane(&observation.Snapshot, intent, selectorOrAutoLane); err != nil {
 			observation.Snapshot.ManualReason = err.Error()
 		}
 	} else if reader, ok := p.journal.(interface {
@@ -223,7 +213,7 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		if err != nil {
 			return err
 		}
-		if err := applyUnwindIntentWithLane(&observation.Snapshot, intent, p.manifest.selectorEntryLaneAllowed); err != nil {
+		if err := applyUnwindIntentWithLane(&observation.Snapshot, intent, selectorOrAutoLane); err != nil {
 			observation.Snapshot.ManualReason = err.Error()
 		}
 	}
@@ -364,8 +354,8 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 			}
 			return observeConfirmedJupiterExecutionEvidenceWithEnrichment(ctx, rpc, manifest, decision, productionJupiter, state.enrich)
 		},
-		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256, policyCatalogSHA256 string) (DecisionRecord, error) {
-			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256, policyCatalogSHA256)
+		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
+			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
 		},
 		prefetchCustodyProof: func(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig) custodyProofFinisher {
 			return database.prefetchSharedCustodyOwnershipProof(ctx, manifest, cfg, rpc)
@@ -506,16 +496,12 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	healthDecision = decision
 	backyardEvents.noteAction(decision.Action)
-	if w.manifest.PolicyCatalog.SHA256 == nil || !sha256Pattern.MatchString(*w.manifest.PolicyCatalog.SHA256) {
-		return ErrBridgePrerequisitesUnavailable
-	}
-	policyHash := *w.manifest.PolicyCatalog.SHA256
 	if decision.Action == Hold || decision.Action == HoldManualRecovery {
 		healthDecision = decision
 		if decision.Action == HoldManualRecovery {
-			return w.recordManualRecoveryDecision(ctx, observation, decision, policyHash)
+			return w.recordManualRecoveryDecision(ctx, observation, decision)
 		}
-		if _, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash); err != nil {
+		if _, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256); err != nil {
 			return err
 		}
 		return nil
@@ -562,7 +548,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	// Construction refreshes the same confirmed inputs that will be sent. A
 	// refreshed manual-recovery decision is a new durable stop, not ordinary
 	// decision drift, and must be recorded before the tick returns.
-	if ok, persistErr := w.persistRefreshedManualRecovery(ctx, observation, policyHash); ok {
+	if ok, persistErr := w.persistRefreshedManualRecovery(ctx, observation); ok {
 		healthDecision = Decision{Action: HoldManualRecovery}
 		if persistErr != nil {
 			return persistErr
@@ -605,7 +591,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return err
 	}
 	logStage("custody_proof", tickStart)
-	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash)
+	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256)
 	if err != nil {
 		return err
 	}
@@ -722,12 +708,8 @@ func (w *Worker) recordLatchedHold(ctx context.Context, latch ManualRecoveryLatc
 	if err := decision.Validate(); err != nil {
 		return err
 	}
-	if w.manifest.PolicyCatalog.SHA256 == nil || !sha256Pattern.MatchString(*w.manifest.PolicyCatalog.SHA256) {
-		return ErrBridgePrerequisitesUnavailable
-	}
-	policyHash := *w.manifest.PolicyCatalog.SHA256
 	if w.runtime.recordManualRecoveryAtGeneration != nil {
-		if _, err := w.runtime.recordManualRecoveryAtGeneration(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash, latch.Generation); err != nil {
+		if _, err := w.runtime.recordManualRecoveryAtGeneration(ctx, w.routeKey, observation, decision, w.manifest.SHA256, latch.Generation); err != nil {
 			if errors.Is(err, errManualRecoveryLatchGenerationChanged) && w.runtime.loadLatch != nil {
 				_, _, rereadErr := w.runtime.loadLatch(ctx, w.routeKey)
 				return rereadErr
@@ -736,14 +718,14 @@ func (w *Worker) recordLatchedHold(ctx context.Context, latch ManualRecoveryLatc
 		}
 		return nil
 	}
-	return w.recordManualRecoveryDecision(ctx, observation, decision, policyHash)
+	return w.recordManualRecoveryDecision(ctx, observation, decision)
 }
 
-func (w *Worker) recordManualRecoveryDecision(ctx context.Context, observation Observation, decision Decision, policyHash string) error {
+func (w *Worker) recordManualRecoveryDecision(ctx context.Context, observation Observation, decision Decision) error {
 	if w.runtime.recordManualRecovery == nil {
 		return fmt.Errorf("manual recovery persistence runtime is unavailable")
 	}
-	if _, err := w.runtime.recordManualRecovery(ctx, w.routeKey, observation, decision, w.manifest.SHA256, policyHash); err != nil {
+	if _, err := w.runtime.recordManualRecovery(ctx, w.routeKey, observation, decision, w.manifest.SHA256); err != nil {
 		return err
 	}
 	// A "latched:" reason is the per-tick re-record of an existing stop.
@@ -753,7 +735,7 @@ func (w *Worker) recordManualRecoveryDecision(ctx context.Context, observation O
 	return nil
 }
 
-func (w *Worker) persistRefreshedManualRecovery(ctx context.Context, observation Observation, policyHash string) (bool, error) {
+func (w *Worker) persistRefreshedManualRecovery(ctx context.Context, observation Observation) (bool, error) {
 	if observation.Snapshot.ObservationID == "" || observation.Snapshot.Slot <= 0 {
 		return false, nil
 	}
@@ -761,7 +743,7 @@ func (w *Worker) persistRefreshedManualRecovery(ctx context.Context, observation
 	if decision.Action != HoldManualRecovery {
 		return false, nil
 	}
-	return true, w.recordManualRecoveryDecision(ctx, observation, decision, policyHash)
+	return true, w.recordManualRecoveryDecision(ctx, observation, decision)
 }
 
 type routeLeaser interface {

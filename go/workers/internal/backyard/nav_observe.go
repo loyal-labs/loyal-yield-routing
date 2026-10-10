@@ -316,8 +316,7 @@ func ComputeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 }
 
 func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, route RuntimeRoute) (RouteNAVSnapshot, error) {
-	if slot <= 0 || !sha256Pattern.MatchString(manifest.SHA256) || manifest.PolicyCatalog.SHA256 == nil ||
-		!sha256Pattern.MatchString(*manifest.PolicyCatalog.SHA256) {
+	if slot <= 0 || !sha256Pattern.MatchString(manifest.SHA256) {
 		return RouteNAVSnapshot{}, fmt.Errorf("NAV manifest or slot is invalid")
 	}
 	if len(accounts) != len(pinnedRouteNAVAddressesForRoute(route)) {
@@ -463,7 +462,7 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	}
 	nav, err := ComputeNAV(NAVSnapshotContext{
 		Slot: slot, ReceiptFingerprint: fingerprint,
-		ManifestSHA256: manifest.SHA256, PolicyCatalogSHA256: *manifest.PolicyCatalog.SHA256,
+		ManifestSHA256: manifest.SHA256,
 	}, components)
 	if err != nil || nav.Raw < 0 {
 		return RouteNAVSnapshot{}, fmt.Errorf("compute route NAV: %w", err)

@@ -63,7 +63,7 @@ func TestExportPhase3KaminoReleaseProbe(t *testing.T) {
 	}
 	rows := []any{}
 	for i, amount := range []uint64{20_000_000, 1_000_000_000, bound.ReceiptRaw} {
-		request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, amount,
+		request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, amount,
 			LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 		if err != nil {
 			t.Fatal(err)
@@ -461,7 +461,7 @@ func TestExportPhase3KaminoControlledProbe(t *testing.T) {
 		{"repay", kaminoLegRepay, DeleverRouteStep, 100_000},
 		{"withdraw", kaminoLegWithdraw, DeleverRouteStep, 1_000_000_000},
 	} {
-		r, err := manifest.kaminoPacketForRoute(step.action, step.leg, step.amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+		r, err := manifest.kaminoPacketForRoute(testPolicies(t), step.action, step.leg, step.amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -480,7 +480,8 @@ func TestExportPhase3KaminoControlledProbe(t *testing.T) {
 		wire := append(make([]byte, 65), message...)
 		wire[0] = 1
 		rows = append(rows, map[string]any{"leg": step.name, "amount": step.amount, "request": r, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)})
-		policies[r.Policy] = r.PolicyAccountDataSHA256
+		key, _ := kaminoPolicyLeg(route, step.leg)
+		policies[r.Policy] = key.String()
 	}
 	keys := []string{}
 	for k := range addresses {

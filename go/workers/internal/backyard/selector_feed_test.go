@@ -141,19 +141,14 @@ func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
 	}
 }
 
-// TestEconomicFeedInventoryIsManifestScoped pins the inventory closure in
-// both binding states: the embedded constructor stays exactly the installed
-// selector lanes regardless of the manifest, and the manifest-scoped
-// constructor appends the candidate AUTO route ONLY for a manifest carrying a
-// valid RuntimeBindings.AutoPolicy binding — the explicit absent-binding
-// fixture (the shipped pre-install state) and a malformed binding leave the
-// inventory identical to the embedded constructor, while the embedded release
-// manifest carries the installed binding and appends the route. pgxpool
-// connects lazily, so no database is needed to pin inventory shape.
+// TestEconomicFeedInventoryIsManifestScoped pins the inventory closure: the
+// embedded constructor stays exactly the installed selector lanes regardless
+// of the manifest, and the manifest-scoped constructor appends the AUTO route.
+// pgxpool connects lazily, so no database is needed to pin inventory shape.
 func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 	ctx := context.Background()
 	const url = "postgresql://backyard_feed@/economic_feed_shape_test"
-	embedded := requireEmbeddedInstalledBinding(t)
+	embedded := embeddedTestManifest(t)
 	plain, err := NewEconomicFeed(ctx, url)
 	if err != nil {
 		t.Fatal(err)
@@ -186,27 +181,7 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 			t.Fatal("embedded inventory contains the candidate route")
 		}
 	}
-	// The absent-binding fixture (the shipped pre-install state) keeps the
-	// manifest-scoped inventory identical to the embedded constructor.
-	scoped, err := NewEconomicFeedOnManifest(ctx, url, autoAbsentBindingManifest(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer scoped.Close()
-	if len(scoped.routes) != len(scoredLanes) {
-		t.Fatalf("absent binding changed the scoped inventory size: %d", len(scoped.routes))
-	}
-	for i, lane := range scoredLanes {
-		want, err := runtimeRoute(lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if scoped.routes[i].Lane != want.Lane || scoped.routes[i].Kamino.CollateralReserve != want.Kamino.CollateralReserve {
-			t.Fatalf("absent binding drifted scoped route %d: %+v", i, scoped.routes[i])
-		}
-	}
-	// The embedded manifest carries the installed binding, so the scoped
-	// inventory appends exactly one AUTO route, last.
+	// The manifest-scoped inventory appends exactly one AUTO route, last.
 	installedScoped, err := NewEconomicFeedOnManifest(ctx, url, embedded)
 	if err != nil {
 		t.Fatal(err)
@@ -234,44 +209,6 @@ func TestEconomicFeedInventoryIsManifestScoped(t *testing.T) {
 		if installedScoped.routes[i].Lane != want.Lane || installedScoped.routes[i].Kamino.CollateralReserve != want.Kamino.CollateralReserve {
 			t.Fatalf("installed binding drifted installed route %d: %+v", i, installedScoped.routes[i])
 		}
-	}
-	withAuto, err := NewEconomicFeedOnManifest(ctx, url, autoFixtureManifest(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer withAuto.Close()
-	if len(withAuto.routes) != len(scoredLanes)+1 {
-		t.Fatalf("valid binding did not add exactly one route: %d", len(withAuto.routes))
-	}
-	if last := withAuto.routes[len(withAuto.routes)-1]; last.Lane != autoAUTOPYUSD.Lane {
-		t.Fatalf("candidate route is not appended last: %+v", last)
-	}
-	candidateWant, err := runtimeRoute(autoAUTOPYUSD.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidateAppended := withAuto.routes[len(withAuto.routes)-1]
-	if candidateAppended.Kamino.CollateralReserve != candidateWant.Kamino.CollateralReserve {
-		t.Fatalf("candidate route drifted from its route config: %+v", candidateAppended)
-	}
-	for i, lane := range scoredLanes {
-		want, err := runtimeRoute(lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if withAuto.routes[i].Lane != want.Lane || withAuto.routes[i].Kamino.CollateralReserve != want.Kamino.CollateralReserve {
-			t.Fatalf("valid binding drifted installed route %d: %+v", i, withAuto.routes[i])
-		}
-	}
-	malformed := embedded
-	malformed.RuntimeBindings.AutoPolicy = &AutoPolicyBinding{Lane: autoAUTOPYUSD.Lane}
-	refused, err := NewEconomicFeedOnManifest(ctx, url, malformed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer refused.Close()
-	if len(refused.routes) != len(scoredLanes) {
-		t.Fatalf("malformed binding admitted the candidate route: %d", len(refused.routes))
 	}
 }
 

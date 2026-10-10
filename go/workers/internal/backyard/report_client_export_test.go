@@ -14,7 +14,7 @@ func TestExportClientReportMessage(t *testing.T) {
 	if path == "" {
 		t.Skip("explicit output path required")
 	}
-	request := BridgeBuildRequest{Action: ReportNAV, Report: BridgeReport{Sequence: 447487692, ObservedSlot: 447487692, NAVAfterRaw: 1234567, SnapshotDigest: sha256Bytes([]byte("controlled-client-report"))}, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
+	request := BridgeBuildRequest{Action: ReportNAV, Policy: testPolicyAccount(policyKey{action: ReportNAV}), Report: BridgeReport{Sequence: 447487692, ObservedSlot: 447487692, NAVAfterRaw: 1234567, SnapshotDigest: sha256Bytes([]byte("controlled-client-report"))}, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
 	message, err := CompileBridgeMessage(request)
 	if err != nil {
 		t.Fatal(err)

@@ -249,7 +249,7 @@ func (m *PolicyMonitor) earnMaxSeedBase(action squads.SettingsAction) (uint64, b
 		if err != nil {
 			return 0, false, err
 		}
-		if action.Payload.VaultIndex != 0 || len(action.Payload.SpendingLimits) != 0 || !squads.ConstraintsEqual(action.Payload.Constraints, constraints) {
+		if !action.Payload.Policy.Equal(squads.Policy{VaultIndex: topology.VaultIndex, Constraints: constraints}) {
 			continue
 		}
 		if action.PolicySeed < uint64(offset) {

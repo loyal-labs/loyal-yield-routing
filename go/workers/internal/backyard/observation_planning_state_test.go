@@ -75,7 +75,7 @@ func TestRoutePlanningStateSharesValidatedAuthorityAndSelectors(t *testing.T) {
 			if err != nil || planning.entry != nil {
 				t.Fatalf("invalid entry retained planning authority: %+v %v", planning, err)
 			}
-			manifest := requireEmbeddedInstalledBinding(t)
+			manifest := embeddedTestManifest(t)
 			snapshot := initializationPlanningFixture(entry.Lane).Snapshot
 			snapshot.SelectorBorrowRaw = 1
 			if err = manifest.applySelectorEntry(&snapshot, planning.entry, time.Now().UTC()); err != nil {
@@ -141,7 +141,7 @@ func TestRoutePlanningGenerationChangeCannotReachDecision(t *testing.T) {
 					escaped = true
 					return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("unexpected construction")
 				},
-				recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+				recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 					escaped = true
 					return DecisionRecord{}, fmt.Errorf("unexpected decision")
 				},

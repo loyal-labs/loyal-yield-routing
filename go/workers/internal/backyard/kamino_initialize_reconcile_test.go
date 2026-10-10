@@ -109,7 +109,8 @@ func TestInitializationRPCBindsThePersistedWireAndRejectsUnexpectedMetadata(t *t
 func initializationReconcileFixture(t *testing.T) (ExpectedEffects, ConfirmedTransactionEvidence) {
 	t.Helper()
 	route, accounts, _ := pairCapacityFixture(t)
-	r := KaminoInitializationRequest{RouteLane: route.Lane, PolicySeed: 145, PolicyAccountDataSHA256: sha256Bytes([]byte("controlled policy")),
+	key, _ := initializerPolicyLeg(route.Lane)
+	r := KaminoInitializationRequest{RouteLane: route.Lane, Policy: testPolicyAccount(key),
 		RecentBlockhash: bridgeVault, LastValidBlockHeight: 100, RentLamports: 17_637_760, MaximumFeeLamports: 5000}
 	message, err := CompileKaminoInitializationMessage(r)
 	if err != nil {

@@ -12,11 +12,7 @@ func TestOnReIsAnEntryLaneUnderTheUnchangedSelectorRule(t *testing.T) {
 	if !selectorEntryLane(onreONycUSDC) || !selectorEntryLane(SelectedRouteID) || selectorEntryLane(PhaseOneLaneID) || selectorEntryLane(autoAUTOPYUSD.Lane) {
 		t.Fatal("entry lanes must be exactly Maple and OnRe (AUTO stays manifest-gated)")
 	}
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !manifest.selectorEntryFundingLane(onreONycUSDC, false) || manifest.selectorEntryFundingLane(PhaseOneLaneID, false) {
+	if !selectorEntryFundingLane(onreONycUSDC) || selectorEntryFundingLane(PhaseOneLaneID) {
 		t.Fatal("funding scope does not follow the entry lanes")
 	}
 	// The unchanged rule: an OnRe advantage must persist for the policy's

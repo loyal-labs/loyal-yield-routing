@@ -24,8 +24,8 @@ func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDeb
 
 // The manifest-aware form exists only for the internal recipe-pricing path:
 // retained selector payoff inputs compile against the SAME manifest that
-// produced them (existing lanes and exact AUTO with a validated autoPolicy
-// binding). Every other caller keeps the embedded-manifest behavior above.
+// produced them (existing lanes and exact AUTO). Every other caller keeps the
+// embedded-manifest behavior above.
 func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDebit, error) {
 	if effects.Kind == "kamino-initialize" || effects.Initialization != nil {
 		r, ok := request.(KaminoInitializationRequest)
@@ -83,7 +83,7 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 		}
 		exactAmount = &r.AmountRaw
 	case KaminoPrimeUSDCRequest:
-		if _, err = m.compileKaminoMessage(r, mustKey(bridgeDelegate)); err != nil {
+		if _, err = compileKaminoMessageForDelegate(r, mustKey(bridgeDelegate)); err != nil {
 			return ExecutableDebit{}, err
 		}
 		_, leg, err := kaminoPrimeUSDCInstruction(r)
@@ -142,7 +142,7 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 		if r.FullPayoffFunding && !isPayoffFundingAction(r.Action) {
 			return ExecutableDebit{}, budgetHold("funding_bounds_on_non_funding_swap")
 		}
-		if _, err = m.compileJupiterMessage(r, mustKey(bridgeDelegate)); err != nil {
+		if _, err = compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate)); err != nil {
 			return ExecutableDebit{}, err
 		}
 		mint, _, address, _, err := jupiterEdgeForRoute(r.Action, r.RouteLane)

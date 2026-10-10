@@ -37,8 +37,6 @@ type basicMessageRecord struct {
 	PolicySeed              uint64                    `json:"policySeed"`
 	ConstraintIndex         byte                      `json:"constraintIndex"`
 	PolicyAccount           string                    `json:"policyAccount"`
-	PolicyDataSHA256        string                    `json:"policyDataSha256"`
-	PolicyDataSHA256Source  string                    `json:"policyDataSha256Source"`
 	AmountRaw               uint64                    `json:"amountRaw"`
 	RecentBlockhash         string                    `json:"recentBlockhash"`
 	LastValidBlockHeight    int64                     `json:"lastValidBlockHeight"`
@@ -53,16 +51,15 @@ type basicMessageRecord struct {
 }
 
 type basicMessageExport struct {
-	Schema                 string               `json:"schema"`
-	Cluster                string               `json:"cluster"`
-	Commitment             string               `json:"commitment"`
-	ReadOnly               bool                 `json:"readOnly"`
-	Broadcast              bool                 `json:"broadcast"`
-	PolicySeeds            map[string]uint64    `json:"policySeeds"`
-	PolicyDataSHA256Source string               `json:"policyDataSha256Source"`
-	JupiterFixtureSource   string               `json:"jupiterFixtureSource"`
-	PreExistingFailures    []string             `json:"preExistingFailures"`
-	Messages               []basicMessageRecord `json:"messages"`
+	Schema               string               `json:"schema"`
+	Cluster              string               `json:"cluster"`
+	Commitment           string               `json:"commitment"`
+	ReadOnly             bool                 `json:"readOnly"`
+	Broadcast            bool                 `json:"broadcast"`
+	PolicySeeds          map[string]uint64    `json:"policySeeds"`
+	JupiterFixtureSource string               `json:"jupiterFixtureSource"`
+	PreExistingFailures  []string             `json:"preExistingFailures"`
+	Messages             []basicMessageRecord `json:"messages"`
 }
 
 type recordedJupiterInstruction struct {
@@ -90,24 +87,6 @@ type recordedJupiterHeaders struct {
 
 const basicJupiterFixturePath = "../../../../docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json"
 
-func basicPolicyFixtureHash(manifest RouteManifest, family BasicPolicyFamily) string {
-	var hash *string
-	switch family {
-	case BasicCollateralLifecycle:
-		hash = manifest.RuntimeBindings.CollateralLifecycle.DataSHA256
-	case BasicDebtLifecycle:
-		hash = manifest.RuntimeBindings.DebtLifecycle.DataSHA256
-	case BasicSwapRoutesA:
-		hash = manifest.RuntimeBindings.SwapRoutesA.DataSHA256
-	case BasicSwapRoutesB:
-		hash = manifest.RuntimeBindings.SwapRoutesB.DataSHA256
-	}
-	if hash == nil {
-		return ""
-	}
-	return *hash
-}
-
 func basicMessageInstructionFromCompiled(kind string, instruction compiledInstruction, encodedInOuter bool) basicMessageInstruction {
 	accounts := make([]basicMessageAccount, len(instruction.accounts))
 	for index, account := range instruction.accounts {
@@ -132,12 +111,12 @@ func basicAccountsToLoad(instructions []basicMessageInstruction) []string {
 	return accounts
 }
 
-func basicMessageRecordFromBytes(lane, leg, kind string, family BasicPolicyFamily, policy BasicPolicyBinding, hash string, amount uint64, blockhash LatestBlockhash, message []byte, instructions []basicMessageInstruction) basicMessageRecord {
+func basicMessageRecordFromBytes(t *testing.T, lane, leg, kind string, family BasicPolicyFamily, index byte, amount uint64, blockhash LatestBlockhash, message []byte, instructions []basicMessageInstruction) basicMessageRecord {
 	digest := sha256.Sum256(message)
-	return basicMessageRecord{Lane: lane, Leg: leg, Kind: kind, PolicyFamily: family, PolicySeed: policy.Seed,
-		ConstraintIndex: policy.Index[leg], PolicyAccount: policy.Policy, PolicyDataSHA256: hash,
-		PolicyDataSHA256Source: "offline fixture hash; replace with finalized policy readback before runtime",
-		AmountRaw:              amount, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
+	policy := testPolicies(t)[policyKey{family: family}]
+	return basicMessageRecord{Lane: lane, Leg: leg, Kind: kind, PolicyFamily: family, PolicySeed: policy.View.PolicySeed,
+		ConstraintIndex: index, PolicyAccount: policy.Account.String(),
+		AmountRaw: amount, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
 		MessageBase64: base64.StdEncoding.EncodeToString(message), MessageSHA256: hex.EncodeToString(digest[:]),
 		Instructions: instructions, AccountsToLoad: basicAccountsToLoad(instructions),
 		SingleSignerPacketBytes: 1 + ed25519.SignatureSize + len(message), SingleSignerPacketFits: 1+ed25519.SignatureSize+len(message) <= solanaPacketBytes}
@@ -147,7 +126,7 @@ func exportBasicKaminoMessage(t *testing.T, manifest RouteManifest, lane string,
 	t.Helper()
 	amount := uint64(1_000_000)
 	blockhash := LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}
-	request, err := manifest.kaminoPacketForRoute(action, leg, amount, blockhash, lane)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), action, leg, amount, blockhash, lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +138,8 @@ func exportBasicKaminoMessage(t *testing.T, manifest RouteManifest, lane string,
 	if err != nil || resolvedLeg != leg {
 		t.Fatalf("resolve %s: %v", name, err)
 	}
-	outer, err := wrapSquadsKaminoPolicy(mustKey(request.Policy), mustKey(bridgeDelegate), mustKey(bridgeDelegate), request.PolicyConstraintIndex, inner)
+	key, index := kaminoPolicyLeg(route, leg)
+	outer, err := wrapSquadsKaminoPolicy(mustKey(request.Policy), mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,13 +158,7 @@ func exportBasicKaminoMessage(t *testing.T, manifest RouteManifest, lane string,
 	if err != nil {
 		t.Fatal(err)
 	}
-	family := basicPolicyFamilyForKaminoLeg(leg)
-	policy, err := basicPolicyBinding(family)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := basicMessageRecordFromBytes(lane, name, "kamino", family, policy, basicPolicyFixtureHash(manifest, family), amount, blockhash, message, instructions)
-	return record
+	return basicMessageRecordFromBytes(t, lane, name, "kamino", key.family, index, amount, blockhash, message, instructions)
 }
 
 func exportBasicJupiterMessage(t *testing.T, manifest RouteManifest, lane string, action Action, row struct {
@@ -211,13 +185,13 @@ func exportBasicJupiterMessage(t *testing.T, manifest RouteManifest, lane string
 	if err != nil {
 		t.Fatalf("quote %s: %v", row.Key, err)
 	}
-	binding, err := manifest.jupiterPolicyForRoute(action, lane)
+	key, index, err := jupiterPolicyLeg(lane, action, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	blockhash := LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}
 	request := JupiterSwapRequest{Action: action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum,
-		Policy: binding.Policy, PolicyAccountDataSHA256: binding.PolicyAccountDataSHA256, PolicyConstraintIndex: binding.PolicyConstraintIndex,
+		Policy:      testPolicyAccount(key),
 		Instruction: row.Instruction.runtime(), RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
 	_, workerCompileErr := CompileJupiterMessage(request)
 	if workerCompileErr != nil && !strings.Contains(workerCompileErr.Error(), "unsigned message does not fit") {
@@ -227,7 +201,7 @@ func exportBasicJupiterMessage(t *testing.T, manifest RouteManifest, lane string
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer, err := wrapSquadsJupiterPolicy(mustKey(binding.Policy), mustKey(bridgeDelegate), mustKey(bridgeDelegate), binding.PolicyConstraintIndex, inner)
+	outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,16 +213,7 @@ func exportBasicJupiterMessage(t *testing.T, manifest RouteManifest, lane string
 		basicMessageInstructionFromCompiled("squads_execute_transaction_sync", outer, false),
 		basicMessageInstructionFromCompiled("jupiter_shared_accounts_route", inner, true),
 	}
-	family := BasicSwapRoutesA
-	if action == SwapCollateralToStableStep {
-		family = BasicSwapRoutesB
-	}
-	policy, err := basicPolicyBinding(family)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := basicMessageRecordFromBytes(lane, row.Key, "jupiter", family, policy, basicPolicyFixtureHash(manifest, family), amount, blockhash, message, instructions)
-	record.ConstraintIndex = binding.PolicyConstraintIndex
+	record := basicMessageRecordFromBytes(t, lane, row.Key, "jupiter", key.family, index, amount, blockhash, message, instructions)
 	if workerCompileErr != nil {
 		record.WorkerCompileError = workerCompileErr.Error()
 	}
@@ -265,7 +230,7 @@ func parseUint(value string) (uint64, error) {
 }
 
 func TestExportBasicGoMessages(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	var fixture recordedJupiterHeaders
 	data, err := os.ReadFile(basicJupiterFixturePath)
 	if err != nil {
@@ -317,10 +282,12 @@ func TestExportBasicGoMessages(t *testing.T) {
 		}
 	}
 	export := basicMessageExport{Schema: "loyal-backyard-rwa-basic-go-messages/v1", Cluster: "mainnet-beta", Commitment: "confirmed", ReadOnly: true, Broadcast: false,
-		PolicySeeds:            map[string]uint64{"CollateralLifecycle": 141, "DebtLifecycle": 142, "SwapRoutesA": 143, "SwapRoutesB": 144},
-		PolicyDataSHA256Source: "offline fixture hash; replace with finalized policy readback before runtime",
-		JupiterFixtureSource:   basicJupiterFixturePath,
-		PreExistingFailures:    []string{"TestPhase3ReturnQuoteCompatibility", "TestPolicySetupCreatedStateMatchesSDKAndRejectsAuthorityDrift"}, Messages: records}
+		PolicySeeds:          map[string]uint64{},
+		JupiterFixtureSource: basicJupiterFixturePath,
+		PreExistingFailures:  []string{"TestPhase3ReturnQuoteCompatibility", "TestPolicySetupCreatedStateMatchesSDKAndRejectsAuthorityDrift"}, Messages: records}
+	for _, family := range []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB} {
+		export.PolicySeeds[string(family)] = testPolicies(t)[policyKey{family: family}].View.PolicySeed
+	}
 	output, err := json.MarshalIndent(export, "", "  ")
 	if err != nil {
 		t.Fatal(err)

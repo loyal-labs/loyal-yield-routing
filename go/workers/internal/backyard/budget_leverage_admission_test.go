@@ -25,7 +25,7 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 	putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(1004), 60))
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 1)
 	d := Decision{Action: SwapDebtToCollateralStep, StrategyKey: route.Lane, AmountRaw: 1000, Reason: "borrowed_debt_requires_collateral_buffer", IdempotencyKey: "leverage-admission"}
-	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, d, 1000, 1, 42)
+	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, testPolicies(t), d, 1000, 1, 42)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -56,11 +56,11 @@ func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	need, err := leverageExitNeedsCycles(context.Background(), rpc, client, m, route, o.Snapshot, rows)
+	need, err := leverageExitNeedsCycles(context.Background(), rpc, client, m, testPolicies(t), route, o.Snapshot, rows)
 	if err != nil || !need {
 		t.Fatalf("1.75x needs cycles: %v %v", need, err)
 	}
-	legs, post, cash, steps, first, err := priceLeverageExitCycles(context.Background(), rpc, client, m, route, o.Snapshot, rows, 42, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 0)
+	legs, post, cash, steps, first, err := priceLeverageExitCycles(context.Background(), rpc, client, m, testPolicies(t), route, o.Snapshot, rows, 42, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 		t.Fatalf("projection %+v -> %+v", before, after)
 	}
 	s := o.Snapshot
-	need, err = leverageExitNeedsCycles(context.Background(), rpc, client, m, route, s, post)
+	need, err = leverageExitNeedsCycles(context.Background(), rpc, client, m, testPolicies(t), route, s, post)
 	if err != nil || need {
 		t.Fatalf("post-cycle still needs cycles: %v %v", need, err)
 	}
@@ -105,7 +105,7 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := Decision{Action: ReportNAV, StrategyKey: route.Lane, Reason: "nav_due"}
-	nav := BridgeBuildRequest{Action: ReportNAV, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, Report: BridgeReport{Sequence: 42, ObservedSlot: 42, SnapshotDigest: o.Snapshot.ReportSnapshotDigest}, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
+	nav := BridgeBuildRequest{Action: ReportNAV, Policy: testPolicyAccount(policyKey{action: ReportNAV}), AdaptorConfig: bridgeStrategy, Settings: bridgeSettings, Report: BridgeReport{Sequence: 42, ObservedSlot: 42, SnapshotDigest: o.Snapshot.ReportSnapshotDigest}, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
 	effects, _, _, err := bridgeExpectedEffects(d, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 	putScaledFraction(accountAt(accounts15, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(33_333_333), 60))
 	o15.Snapshot.PositionDebtRaw, o15.Snapshot.PositionDebtValueRaw, o15.Snapshot.LTVBPS = 33_333_333, 33_333_333, 3333
 	_, rows15, _ := confirmedAccounts(context.Background(), rpc15, payoffWindowAddresses(route, route.Kamino.Market), 42)
-	if need, err := leverageExitNeedsCycles(context.Background(), rpc15, client15, m15, route, o15.Snapshot, rows15); err != nil || need {
+	if need, err := leverageExitNeedsCycles(context.Background(), rpc15, client15, m15, testPolicies(t), route, o15.Snapshot, rows15); err != nil || need {
 		t.Fatalf("1.5x needs cycles: %v %v", need, err)
 	}
 }
@@ -160,15 +160,15 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 func TestExitCycleKaminoWiresPassThePersistedWireGate(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{81}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	for lane, manifest := range map[string]RouteManifest{autoAUTOPYUSD.Lane: autoFixtureManifest(t), onreONycUSDC: basicPolicyFixtureManifest(t)} {
+	for lane, manifest := range map[string]RouteManifest{autoAUTOPYUSD.Lane: embeddedTestManifest(t), onreONycUSDC: embeddedTestManifest(t)} {
 		route, _ := runtimeRoute(lane)
 		for _, leg := range []kaminoPrimeUSDCLeg{kaminoLegWithdraw, kaminoLegRepay} {
-			request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, leg, 386_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, lane)
+			request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, leg, 386_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, lane)
 			if err != nil {
 				t.Fatal(err)
 			}
 			request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-			message, err := manifest.compileKaminoMessage(request, delegate)
+			message, err := compileKaminoMessageForDelegate(request, delegate)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -192,7 +192,7 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 	if leverageExitMayNeedCycles(live) {
 		t.Fatal("live 1.5x flagged for cycles")
 	}
-	if need, err := leverageExitNeedsCycles(context.Background(), nil, broken, RouteManifest{}, autoAUTOPYUSD, live, nil); need || err != nil {
+	if need, err := leverageExitNeedsCycles(context.Background(), nil, broken, RouteManifest{}, testPolicies(t), autoAUTOPYUSD, live, nil); need || err != nil {
 		t.Fatalf("1.5x touched RPC/Jupiter: %v %v", need, err)
 	}
 	o, m, rpc, _, accounts, route := leverage175Fixture(t)
@@ -236,7 +236,7 @@ func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
 		t.Fatalf("partial release %d vs safe %d", receipts, bound.ReceiptRaw)
 	}
 	d := Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, Reason: leverageDownPartialReleaseReason, AmountRaw: receipts}
-	r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, uint64(receipts), LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, uint64(receipts), LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,19 +262,19 @@ func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
 func TestPartialWithdrawalKaminoWiresPassThePersistedWireGate(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{91}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	for lane, manifest := range map[string]RouteManifest{autoAUTOPYUSD.Lane: autoFixtureManifest(t), onreONycUSDC: basicPolicyFixtureManifest(t)} {
+	for lane, manifest := range map[string]RouteManifest{autoAUTOPYUSD.Lane: embeddedTestManifest(t), onreONycUSDC: embeddedTestManifest(t)} {
 		route, _ := runtimeRoute(lane)
 		both := []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 		for _, c := range []struct {
 			leg      kaminoPrimeUSDCLeg
 			reserves []string
 		}{{kaminoLegWithdraw, both}, {kaminoLegWithdraw, []string{route.Kamino.CollateralReserve}}, {kaminoLegRepay, both}} {
-			request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, c.leg, 176_750_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, lane)
+			request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, c.leg, 176_750_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, lane)
 			if err != nil {
 				t.Fatal(err)
 			}
 			request.ObligationReserves = c.reserves
-			message, err := manifest.compileKaminoMessage(request, delegate)
+			message, err := compileKaminoMessageForDelegate(request, delegate)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -303,9 +303,6 @@ func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Obs
 			binary.LittleEndian.PutUint64(accountAt(batch, bridgeIdleATA).Data[64:72], 0)
 			binary.LittleEndian.PutUint64(accountAt(batch, bridgeStrategyATA).Data[64:72], 11_000_000)
 		})
-		installed := installedAutoFixtureBinding(t)
-		m.RuntimeBindings.AutoPolicy = &installed
-		upsertConfirmedAccount(&accounts, installedAutoPolicyAccount(t))
 		// The last report still includes the $11 waiting in staged custody;
 		// staging has not yet changed Voltr's book or consumed its ticket.
 		upsertConfirmedAccount(&accounts, strategyReceiptFixture(t, 94_000_000))
@@ -317,6 +314,7 @@ func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Obs
 		if err != nil {
 			t.Fatal(err)
 		}
+		o.policies = testPolicies(t) // the policies the admission builds through
 		// Controlled counterparts of journal/identity enrichment; keep all
 		// production monitors armed rather than disabling their checks.
 		o.Snapshot.JournalSequenceKnown, o.Snapshot.JournalReconciledSequenceRaw = true, 40
@@ -357,7 +355,7 @@ func TestPartialWithdrawalRestoreKeepsCashOnlyTemplatesClosed(t *testing.T) {
 	}{{onreONycUSDC, 33_333_333}, {onreONycUSDC, 0}, {autoAUTOPYUSD.Lane, int64(autoFixtureDebtRaw)}} {
 		t.Run(fmt.Sprintf("%s/%d", tc.lane, tc.debt), func(t *testing.T) {
 			o, d, evidence, _, _, _, _ := partialWithdrawalRestoreFixture(t, tc.lane, tc.debt)
-			_, err := phase3BridgeTemplates(o.Snapshot, d, evidence)
+			_, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence)
 			assertBudgetHold(t, err, "complete_position_exit_admission_unavailable")
 		})
 	}

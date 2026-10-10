@@ -165,11 +165,7 @@ func TestNonUSDCLifecycleSafetyPrecedence(t *testing.T) {
 		t.Fatal(got)
 	}
 	s = base()
-	s.RouteLane, s.VoltrIdleRaw, s.ExitBuildable = "AUTO/AUTO/PYUSD", 100, false
-	if got := Decide(s); got.Action != Hold {
-		t.Fatal("allocation preceded exit readiness", got)
-	}
-	s.ExitBuildable, s.DebtIdleRaw = true, -1
+	s.RouteLane, s.VoltrIdleRaw, s.DebtIdleRaw = "AUTO/AUTO/PYUSD", 100, -1
 	if got := Decide(s); got.Action != HoldManualRecovery {
 		t.Fatal(got)
 	}

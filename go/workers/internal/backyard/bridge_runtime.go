@@ -32,7 +32,7 @@ func BuildSimulateAndPersistBridge(
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("bridge runtime dependencies are required")
 	}
-	if _, _, _, err := ticketedBridgeInstructions(evidence.Request); err != nil {
+	if _, _, err := ticketedBridgeInstructions(evidence.Request); err != nil {
 		return err
 	}
 	encodedEffects, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)

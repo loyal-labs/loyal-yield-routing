@@ -40,11 +40,9 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 	}
 	out := append([]LaneEconomics(nil), markets...)
 	// The market-set lane authority is the reviewed manifest's: installed
-	// selector lanes always, the candidate AUTO lane only while this manifest
-	// itself carries the fully validated autoPolicy binding. An AUTO market
-	// under an absent or drifted binding fails closed with the same set error
-	// as any unknown lane.
-	laneAllowed := func(lane string) bool { return selectorDestinationLaneAuthorized(manifest, lane) }
+	// selector lanes and the candidate AUTO lane. Any other market fails
+	// closed with the set error of an unknown lane.
+	laneAllowed := selectorOrAutoLane
 	seen := map[string]bool{}
 	for _, market := range out {
 		if !laneAllowed(market.Lane) || seen[market.Lane] {
@@ -59,14 +57,20 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 	if selectorTrancheInProgress(s) {
 		return out, nil, budgetHold("complete_current_tranche_first")
 	}
+	// The policies every quote of this sample is priced through: one read,
+	// at the sample's slot.
+	policies, err := observeInstalledPolicies(ctx, rpc, s.Slot)
+	if err != nil {
+		return out, nil, err
+	}
+	o.policies = policies
 	// An AUTO route's source quote always comes from the candidate producer
 	// through the durable planning observation manifest: idle cash prices the
 	// OBSERVED_IDLE_NO_EXIT source there, and funded capital prices the same
 	// reviewed finite exit the installed lanes get — the candidate producer is
 	// the only one whose lane authority admits the AUTO route lane. The reviewed
-	// gates bound to this manifest's autoPolicy and active lane are unchanged;
-	// an absent or drifted binding fails closed, and installed lanes keep the
-	// reviewed producer.
+	// gates bound to this manifest's active lane are unchanged, and installed
+	// lanes keep the reviewed producer.
 	observeSource := observeSelectorSource
 	sourceManifest := manifest
 	if s.RouteLane == autoAUTOPYUSD.Lane {
@@ -94,10 +98,9 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 		// Deferred rollout lanes keep their economics observable for KEEP
 		// baselines and valuation, but receive no executable destination quote,
 		// so no ENTER, SWITCH, or canary can select them. The candidate AUTO
-		// lane is quoted exactly when this manifest's reviewed binding admits
-		// its funded allocation — the same authority the funding fence below
-		// enforces; absent or drifted bindings keep it deferred.
-		if !manifest.selectorEntryFundingLane(market.Lane, false) {
+		// lane is quoted exactly when this manifest admits its funded
+		// allocation — the same authority the funding fence below enforces.
+		if !selectorEntryFundingLane(market.Lane) {
 			if market.EntryBlockedReason == "" {
 				out[i].EntryCapacity = Capacity{Known: true}
 				out[i].EntryBlockedReason = "lane_entry_deferred"
@@ -115,7 +118,7 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 		// to quote the same destination — unless a strictly larger same-lane
 		// reinvestment is eligible. Idle ownership can enter that lane normally.
 		sameLane := hasWorkingCapital(s) && market.Lane == s.RouteLane
-		fundingAllowed := func(l string) bool { return manifest.selectorEntryFundingLane(l, false) }
+		fundingAllowed := selectorEntryFundingLane
 		if (sameLane && !sameLaneReinvestmentEligibleWithLane(s, policy, fundingAllowed)) || market.validateWithLane(time.Now().UTC(), policy, laneAllowed) != nil || market.EntryBlockedReason != "" {
 			continue
 		}
@@ -136,7 +139,7 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, client
 					// prices the identical entry graph while the candidate lane
 					// goes through the same checks the public gate applies to
 					// installed lanes.
-					destination, err = observeSelectorDestinationForecastAuthorized(ctx, rpc, client, manifest, out[i].Lane, size, s.Slot, true, nil)
+					destination, err = observeSelectorDestinationForecastAuthorized(ctx, rpc, client, manifest, o.policies, out[i].Lane, size, s.Slot, true, nil)
 				}
 				if err != nil {
 					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
@@ -227,8 +230,8 @@ func selectorQuoteSizeSufficient(manifest RouteManifest, o Observation, markets 
 // selectorMoveQuoteBenefit reuses the pure SelectOpportunity evaluator on one
 // exact quote rather than duplicating any financial formula. It reports the
 // candidate's BenefitRaw and whether the quote is admissible at all. The lane
-// authority is the caller manifest's — the same reviewed binding that priced
-// the quote — so a candidate lane's exact quote is evaluated, never silently
+// authority is the caller manifest's — the same manifest that priced the
+// quote — so a candidate lane's exact quote is evaluated, never silently
 // dropped, while installed behavior is unchanged.
 func selectorMoveQuoteBenefit(manifest RouteManifest, o Observation, markets []LaneEconomics, lane string, policy SelectorPolicy, q MoveQuote) (float64, bool) {
 	eval := append([]LaneEconomics(nil), markets...)
@@ -238,8 +241,8 @@ func selectorMoveQuoteBenefit(manifest RouteManifest, o Observation, markets []L
 			eval[i].EntryBlockedReason = ""
 		}
 	}
-	laneAllowed := func(l string) bool { return selectorDestinationLaneAuthorized(manifest, l) }
-	fundingAllowed := func(l string) bool { return manifest.selectorEntryFundingLane(l, false) }
+	laneAllowed := selectorOrAutoLane
+	fundingAllowed := selectorEntryFundingLane
 	result := selectOpportunityWithLanes(SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: eval, Quotes: []MoveQuote{q}, Policy: policy}, SelectorState{}, laneAllowed, fundingAllowed)
 	for _, c := range result.Candidates {
 		if c.Lane == lane && c.CostsKnown {

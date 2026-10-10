@@ -7,23 +7,23 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// All identities are fixed by the lane and a reviewed, installed policy. Rent
-// and network fees are native SOL flows, separate from user USDC principal.
+// All identities are fixed by the lane and the account its initializer
+// policy literal is installed on (Policy). Rent and network fees are native SOL
+// flows, separate from user USDC principal.
 type KaminoInitializationRequest struct {
-	RouteLane               string `json:"routeLane"`
-	PolicySeed              uint64 `json:"policySeed"`
-	PolicyAccountDataSHA256 string `json:"policyAccountDataSha256"`
-	RecentBlockhash         string `json:"recentBlockhash"`
-	LastValidBlockHeight    int64  `json:"lastValidBlockHeight"`
-	RentLamports            uint64 `json:"rentLamports"`
-	MaximumFeeLamports      uint64 `json:"maximumFeeLamports"`
+	RouteLane            string `json:"routeLane"`
+	Policy               string `json:"policy"`
+	RecentBlockhash      string `json:"recentBlockhash"`
+	LastValidBlockHeight int64  `json:"lastValidBlockHeight"`
+	RentLamports         uint64 `json:"rentLamports"`
+	MaximumFeeLamports   uint64 `json:"maximumFeeLamports"`
 }
 
 func CompileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, error) {
-	if r.LastValidBlockHeight <= 0 || r.RentLamports == 0 || r.MaximumFeeLamports == 0 || !validSHA256(r.PolicyAccountDataSHA256) {
+	if r.LastValidBlockHeight <= 0 || r.RentLamports == 0 || r.MaximumFeeLamports == 0 {
 		return nil, fmt.Errorf("incomplete Multiply initialization admission")
 	}
-	policy, err := policySetupAddress(r.PolicySeed)
+	policy, err := decodeKey(r.Policy)
 	if err != nil {
 		return nil, err
 	}
@@ -35,7 +35,8 @@ func CompileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	outer, err := wrapSquadsKaminoPolicy(policy, mustKey(bridgeDelegate), mustKey(bridgeDelegate), 0, inner)
+	_, index := initializerPolicyLeg(r.RouteLane)
+	outer, err := wrapSquadsKaminoPolicy(policy, mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
 	if err != nil {
 		return nil, err
 	}
@@ -46,11 +47,9 @@ func CompileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, 
 	return checkedUnsignedMessage(message)
 }
 
-// compileKaminoInitializationMessage is the manifest-aware form. Installed
-// selector lanes keep the exact public path above; the candidate AUTO lane is
-// admitted only against the reviewed binding, whose policy identity, account
-// digest and appended initializer index are retained from the manifest — never
-// from the request. Any other lane holds.
+// compileKaminoInitializationMessage is the form that also admits the AUTO
+// lane, which initializes under its one policy's initializer leg. Installed
+// selector lanes keep the exact public path above. Any other lane holds.
 func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, error) {
 	if selectorLane(r.RouteLane) {
 		return CompileKaminoInitializationMessage(r)
@@ -58,17 +57,10 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 	if r.RouteLane != autoAUTOPYUSD.Lane {
 		return nil, budgetHold("initializer_lane_unreviewed")
 	}
-	binding, index, err := m.autoInitializerBinding()
-	if err != nil {
-		return nil, err
-	}
-	if r.PolicySeed != binding.PolicySeed || r.PolicyAccountDataSHA256 != binding.AccountDataSHA256 {
-		return nil, budgetHold("initializer_request_manifest_mismatch")
-	}
 	if r.LastValidBlockHeight <= 0 || r.RentLamports == 0 || r.MaximumFeeLamports == 0 {
 		return nil, fmt.Errorf("incomplete Multiply initialization admission")
 	}
-	policy, err := policySetupAddress(binding.PolicySeed)
+	policy, err := decodeKey(r.Policy)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +76,7 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 	if err != nil {
 		return nil, err
 	}
+	_, index := initializerPolicyLeg(r.RouteLane)
 	outer, err := wrapSquadsKaminoPolicy(policy, mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
 	if err != nil {
 		return nil, err
@@ -107,24 +100,14 @@ func validateInitializedKaminoObligation(r KaminoInitializationRequest, a Confir
 	return validateInitializedObligationOnRoute(route, r, a)
 }
 
-// validateInitializedKaminoObligationOnRoute is the manifest-aware form: the
-// AUTO candidate is admitted only after the request identity matches the
-// reviewed binding — the same seed and account digest check compile and
-// prestate apply — and the empty-state checks below are the exact installed
-// checks.
+// validateInitializedKaminoObligation is the form that also admits the AUTO
+// lane; the empty-state checks below are the exact installed checks.
 func (m RouteManifest) validateInitializedKaminoObligation(r KaminoInitializationRequest, a ConfirmedAccount) error {
 	if selectorLane(r.RouteLane) {
 		return validateInitializedKaminoObligation(r, a)
 	}
 	if r.RouteLane != autoAUTOPYUSD.Lane {
 		return budgetHold("initializer_lane_unreviewed")
-	}
-	binding, _, err := m.autoInitializerBinding()
-	if err != nil {
-		return err
-	}
-	if binding.PolicySeed != r.PolicySeed || binding.AccountDataSHA256 != r.PolicyAccountDataSHA256 {
-		return budgetHold("initializer_request_manifest_mismatch")
 	}
 	route, err := runtimeRoute(r.RouteLane)
 	if err != nil {

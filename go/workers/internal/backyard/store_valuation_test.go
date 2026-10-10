@@ -10,11 +10,11 @@ import (
 func TestValuationPersistencePreservesLegacyReplayAndProjectedSource(t *testing.T) {
 	o := Observation{ObservedAt: time.Unix(1_700_000_000, 0), Snapshot: Snapshot{Slot: 123, ObservationID: "same-economics", ReportSequence: 123, ReportSnapshotDigest: strings.Repeat("a", 64)}}
 	d := Decision{Action: Hold, Reason: "no_action", StrategyKey: RouteID}
-	old := newDecisionEvidence(o, d, "manifest", "policies")
+	old := newDecisionEvidence(o, d, "manifest")
 	before, _ := json.Marshal(old)
 	o.ValuationSource, o.ValuationSlot = "confirmed", 123
 	o.Snapshot.ValuationSource, o.Snapshot.ValuationSlot = "confirmed", 123
-	confirmed := newDecisionEvidence(o, d, "manifest", "policies")
+	confirmed := newDecisionEvidence(o, d, "manifest")
 	after, _ := json.Marshal(confirmed)
 	if string(before) != string(after) || strings.Contains(string(after), "valuation") {
 		t.Fatal("confirmed decision JSON changed")
@@ -28,7 +28,7 @@ func TestValuationPersistencePreservesLegacyReplayAndProjectedSource(t *testing.
 		t.Fatal("confirmed projection gained provenance fields")
 	}
 	o.ValuationSource, o.Snapshot.ValuationSource = routeRefreshValuationSource, routeRefreshValuationSource
-	projected := newDecisionEvidence(o, d, "manifest", "policies")
+	projected := newDecisionEvidence(o, d, "manifest")
 	projection, err = newRouteObservationProjection(o)
 	if err != nil {
 		t.Fatal(err)

@@ -7,8 +7,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// Reviewed Prime sibling swaps, installed USDe->PYUSD and explicitly bound V2
-// conversions support v0 packets.
+// Reviewed Prime sibling swaps and installed USDe->PYUSD support v0 packets.
 // Fresh API table identities are encoding hints, never execution authority:
 // chain-owned table contents are validated and the compiler only looks up exact
 // keys from the policy-validated instruction. No table is created or extended.
@@ -39,12 +38,12 @@ func basicSwapLaneEdge(action Action) bool {
 
 func acceptsJupiterLookupHints(lane string, action Action) bool {
 	if lane == autoAUTOPYUSD.Lane {
-		// The candidate AUTO lane keeps the same v0 escape hatch as the basic
-		// lanes: hints come only from the fresh quote, are resolved from chain,
-		// and are pinned to the persisted request identities. Eligibility is
-		// the exact reviewed AUTO edge, never the catalog entry, so oversized
-		// packets stay constructible under the one reviewed binding.
-		_, err := autoSwapConstraintKey(action)
+		// The AUTO lane keeps the same v0 escape hatch as the basic lanes:
+		// hints come only from the fresh quote, are resolved from chain, and
+		// are pinned to the persisted request identities. Eligibility is an
+		// AUTO swap edge, so oversized packets stay constructible under its
+		// one policy.
+		_, _, err := jupiterPolicyLeg(lane, action, nil)
 		return err == nil
 	}
 	if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {
@@ -59,8 +58,8 @@ func acceptsJupiterLookupHints(lane string, action Action) bool {
 		route, err := runtimeRoute(lane)
 		return err == nil && route.BasicPolicy && basicSwapLaneEdge(action)
 	}
-	b, err := catalogJupiterBindingForRoute(action, lane)
-	return err == nil && (b.fixedPrefixV2() || lane == primePRIMEPYUSD.Lane || lane == primePRIMEUSDS.Lane)
+	_, _, err := catalogEdge(action, lane)
+	return err == nil && (lane == primePRIMEPYUSD.Lane || lane == primePRIMEUSDS.Lane)
 }
 
 func validateJupiterLookupCandidates(addresses []string) error {
@@ -119,9 +118,8 @@ func observeJupiterLookupTables(ctx context.Context, rpc *chain.Client, addresse
 }
 
 // prepareJupiterLookupTables compiles for callers holding only the embedded
-// reviewed manifest. The manifest-owning observation path must use
-// (RouteManifest).prepareJupiterLookupTables so a candidate AUTO binding is
-// retained instead of reloading the embedded (binding-less) manifest.
+// reviewed manifest. The manifest-owning observation path uses
+// (RouteManifest).prepareJupiterLookupTables instead of reloading it.
 func prepareJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
@@ -131,7 +129,7 @@ func prepareJupiterLookupTables(ctx context.Context, rpc *chain.Client, r Jupite
 }
 
 func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) (JupiterSwapRequest, error) {
-	if _, err := m.compileJupiterMessage(r, mustKey(bridgeDelegate)); err == nil {
+	if _, err := compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate)); err == nil {
 		return r, nil
 	}
 	addresses := jupiterLookupAddresses(r)
@@ -146,7 +144,7 @@ func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *chai
 		return r, err
 	}
 	r.LookupTables = tables
-	_, err = m.compileJupiterMessage(r, mustKey(bridgeDelegate))
+	_, err = compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate))
 	return r, err
 }
 

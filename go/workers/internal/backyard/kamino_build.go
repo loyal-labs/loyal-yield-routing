@@ -32,16 +32,15 @@ type KaminoPrimeUSDCAccounts []struct {
 // intentionally outside this narrow builder and cannot be smuggled in as an
 // arbitrary program instruction.
 type KaminoPrimeUSDCRequest struct {
-	Action                  Action
-	AmountRaw               uint64
-	Policy                  string
-	PolicyConstraintIndex   byte
-	PolicyAccountDataSHA256 string
-	Accounts                KaminoPrimeUSDCAccounts
-	Data                    []byte
-	RecentBlockhash         string
-	LastValidBlockHeight    int64
-	RouteLane               string
+	Action    Action
+	AmountRaw uint64
+	// Policy is the installed account of the leg's policy (kaminoPolicyLeg).
+	Policy               string
+	Accounts             KaminoPrimeUSDCAccounts
+	Data                 []byte
+	RecentBlockhash      string
+	LastValidBlockHeight int64
+	RouteLane            string
 	// FullPayoff requires a fresh finite interest-window bound at build/send.
 	// It changes no instruction bytes and never asserts terminal debt by itself.
 	FullPayoff         bool   `json:"fullPayoff,omitempty"`
@@ -105,19 +104,7 @@ func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
 	return compileKaminoMessageForDelegate(request, mustKey(bridgeDelegate))
 }
 
-// The production wrapper supplies the embedded reviewed manifest exactly once;
-// the manifest-aware helper retains that value into AUTO policy validation so
-// a candidate binding is provable against a supplied manifest and the shipped
-// wrapper still fails closed while no binding exists.
 func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return nil, err
-	}
-	return manifest.compileKaminoMessage(request, delegate)
-}
-
-func (m RouteManifest) compileKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
 	lane := request.RouteLane
 	if lane == "" {
 		lane = RouteID
@@ -127,9 +114,6 @@ func (m RouteManifest) compileKaminoMessage(request KaminoPrimeUSDCRequest, dele
 		return nil, err
 	}
 	if lane == autoAUTOPYUSD.Lane {
-		if err := m.requireAutoKaminoBinding(request, route); err != nil {
-			return nil, err
-		}
 		return compileReviewedKaminoMessage(request, delegate, route)
 	}
 	return compileResolvedKaminoMessage(request, delegate, route)
@@ -146,10 +130,8 @@ func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 }
 
 // compileReviewedKaminoMessage is the checked byte builder behind both
-// entries. Installed selector lanes pass the public pilot gate above, and the
-// candidate AUTO lane arrives only through the manifest compiler, whose
-// requireAutoKaminoBinding has already validated the request against the
-// reviewed catalog binding. The pilot release still must be a withdrawal-only
+// entries: installed selector lanes pass the public pilot gate above, the AUTO
+// lane comes straight here. The pilot release still must be a withdrawal-only
 // repayment release in both cases.
 func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
 	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff) {
@@ -170,19 +152,19 @@ func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 		return nil, budgetHold("invalid_pilot_repayment_release")
 	}
 	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) || !validSHA256(request.PolicyAccountDataSHA256) {
-		return nil, fmt.Errorf("Kamino policy is not bound to confirmed catalog bytes")
+	if err != nil || policy == (publicKey{}) {
+		return nil, fmt.Errorf("Kamino request names no installed policy")
 	}
-	outer, err := wrapSquadsKaminoPolicy(policy, delegate, delegate, request.PolicyConstraintIndex, inner)
+	_, index := kaminoPolicyLeg(route, leg)
+	outer, err := wrapSquadsKaminoPolicy(policy, delegate, delegate, index, inner)
 	if err != nil {
 		return nil, err
 	}
 	instructions := append(kaminoRefreshInstructionsForResolvedRoute(leg, request, route), outer)
-	// Installed lanes keep the exact installed legacy bytes; the candidate AUTO
-	// lane arrives only after requireAutoKaminoBinding and carries the reviewed
-	// ComputeBudget heap frame ahead of the identical refresh-plus-policy
-	// payload, so the eight-constraint policy parses and executes on the
-	// deployed Squads ELF.
+	// Installed lanes keep the exact installed legacy bytes; the AUTO lane
+	// carries the reviewed ComputeBudget heap frame ahead of the identical
+	// refresh-plus-policy payload, so the eight-constraint policy parses and
+	// executes on the deployed Squads ELF.
 	var message []byte
 	if route.Lane == autoAUTOPYUSD.Lane {
 		message, err = compileAutoKaminoLegacyMessage(delegate, blockhash, instructions)
@@ -371,51 +353,7 @@ func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route Runtim
 	if !ok {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet is not an approved PRIME/USDC lifecycle step")
 	}
-	if request.PolicyConstraintIndex != kaminoConstraintIndexForRoute(route, leg) {
-		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet uses the wrong fixed lane constraint index")
-	}
-	if route.BasicPolicy {
-		family := basicPolicyFamilyForKaminoLeg(leg)
-		binding, err := basicPolicyBinding(family)
-		if err != nil || request.Policy != binding.Policy {
-			return compiledInstruction{}, 0, fmt.Errorf("Kamino policy does not match the basic family binding")
-		}
-	} else if route.Lane == autoAUTOPYUSD.Lane {
-		// The combined AUTO candidate policy has no static identity to compare
-		// here: the per-leg constraint index was pinned above, and policy
-		// identity is retained against the reviewed manifest binding at the
-		// compile entry (compileKaminoMessage), never from these observation
-		// pins on the route struct.
-	} else if route.Lane != RouteID {
-		binding, ok := route.KaminoPolicies[leg]
-		if !ok || request.Policy != binding.Policy || request.PolicyAccountDataSHA256 != binding.DataSHA256 {
-			return compiledInstruction{}, 0, fmt.Errorf("Kamino policy does not match the exact route leg binding")
-		}
-	}
 	return compiledInstruction{program: publicKey(kamino.ProgramID), accounts: accounts, data: append([]byte(nil), request.Data...)}, leg, nil
-}
-
-func kaminoConstraintIndexForRoute(route RuntimeRoute, leg kaminoPrimeUSDCLeg) byte {
-	// The combined AUTO candidate policy carries all four lifecycle legs in one
-	// account at the proven per-leg indexes. Retained split-policy routes still
-	// have one constraint at index zero, and the four-policy basic set uses the
-	// family indexes above; Phase 2 attaches that model to the three runtime
-	// lanes.
-	if route.Lane == autoAUTOPYUSD.Lane {
-		return autoKaminoConstraintIndex(leg)
-	}
-	if !route.BasicPolicy && (route.Lane == RouteID || len(route.KaminoPolicies) > 0) {
-		return 0
-	}
-	return kaminoConstraintIndex(leg)
-}
-
-func kaminoConstraintIndex(leg kaminoPrimeUSDCLeg) byte {
-	index := basicPolicyConstraintIndex(leg)
-	if index == 0xff {
-		return math.MaxUint8
-	}
-	return index
 }
 
 func matchesKaminoStepForResolvedRoute(action Action, discriminator []byte, accounts []accountMeta, route RuntimeRoute) (kaminoPrimeUSDCLeg, bool) {
@@ -517,17 +455,24 @@ func kaminoRefreshInstructionsForResolvedRoute(leg kaminoPrimeUSDCLeg, request K
 // only the bound market/custody/token/farm identities vary. An empty farm is
 // absent.
 func kaminoMetasForRoute(r RuntimeRoute) (deposit, borrow, repay, withdraw []accountMeta) {
-	vault, obligation, market, authority := kaminoKey(r.Kamino.Vault), kaminoKey(r.Kamino.Obligation), kaminoKey(r.Kamino.Market), kaminoKey(r.Kamino.MarketAuthority)
-	collateral := kamino.CollateralAccounts{Owner: vault, Obligation: obligation, LendingMarket: market, LendingMarketAuthority: authority,
-		Reserve: kaminoKey(r.Kamino.CollateralReserve), LiquidityMint: kaminoKey(r.Kamino.CollateralMint), LiquiditySupply: kaminoKey(r.CollateralLiquiditySupply),
-		CollateralMint: kaminoKey(r.CollateralReceiptMint), CollateralSupply: kaminoKey(r.CollateralReceiptSupply), UserLiquidity: kaminoKey(r.CollateralCustody),
-		LiquidityTokenProgram: kaminoKey(r.CollateralTokenProgram), ObligationFarmUserState: kaminoKey(r.ObligationCollateralFarm), ReserveFarmState: kaminoKey(r.CollateralFarm)}
-	debt := kamino.LiquidityAccounts{Owner: vault, Obligation: obligation, LendingMarket: market, LendingMarketAuthority: authority,
-		Reserve: kaminoKey(r.Kamino.DebtReserve), LiquidityMint: kaminoKey(r.Kamino.DebtMint), LiquiditySupply: kaminoKey(r.DebtLiquiditySupply),
-		FeeReceiver: kaminoKey(r.DebtFeeReceiver), UserLiquidity: kaminoKey(r.DebtCustody), TokenProgram: kaminoKey(r.DebtTokenProgram),
-		ObligationFarmUserState: kaminoKey(r.ObligationDebtFarm), ReserveFarmState: kaminoKey(r.DebtFarm)}
+	collateral, debt := kaminoRouteAccounts(r, kaminoKey)
 	return kaminoCompiled(kamino.DepositV2(collateral, 0)).accounts, kaminoCompiled(kamino.BorrowV2(debt, 0)).accounts,
 		kaminoCompiled(kamino.RepayV2(debt, 0)).accounts, kaminoCompiled(kamino.WithdrawV2(collateral, 0)).accounts
+}
+
+// kaminoRouteAccounts is the route's collateral and debt account sets, each
+// address as key gives it: the keys the route's legs send, or the slots its
+// split policies pin. An absent (empty) address is the zero key either way.
+func kaminoRouteAccounts[T any](r RuntimeRoute, key func(string) T) (kamino.Collateral[T], kamino.Liquidity[T]) {
+	vault, obligation, market, authority := key(r.Kamino.Vault), key(r.Kamino.Obligation), key(r.Kamino.Market), key(r.Kamino.MarketAuthority)
+	return kamino.Collateral[T]{Owner: vault, Obligation: obligation, LendingMarket: market, LendingMarketAuthority: authority,
+			Reserve: key(r.Kamino.CollateralReserve), LiquidityMint: key(r.Kamino.CollateralMint), LiquiditySupply: key(r.CollateralLiquiditySupply),
+			CollateralMint: key(r.CollateralReceiptMint), CollateralSupply: key(r.CollateralReceiptSupply), UserLiquidity: key(r.CollateralCustody),
+			LiquidityTokenProgram: key(r.CollateralTokenProgram), ObligationFarmUserState: key(r.ObligationCollateralFarm), ReserveFarmState: key(r.CollateralFarm)},
+		kamino.Liquidity[T]{Owner: vault, Obligation: obligation, LendingMarket: market, LendingMarketAuthority: authority,
+			Reserve: key(r.Kamino.DebtReserve), LiquidityMint: key(r.Kamino.DebtMint), LiquiditySupply: key(r.DebtLiquiditySupply),
+			FeeReceiver: key(r.DebtFeeReceiver), UserLiquidity: key(r.DebtCustody), TokenProgram: key(r.DebtTokenProgram),
+			ObligationFarmUserState: key(r.ObligationDebtFarm), ReserveFarmState: key(r.DebtFarm)}
 }
 
 // kaminoKey is a route address; an empty one is the absent (zero) key.

@@ -4,27 +4,18 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-func basicPolicyFixtureManifest(t *testing.T) RouteManifest {
+// embeddedTestManifest is the manifest the worker runs.
+func embeddedTestManifest(t testing.TB) RouteManifest {
 	t.Helper()
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	hashes := map[BasicPolicyFamily]*string{}
-	for index, family := range []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB} {
-		hash := strings.Repeat(string("abcd"[index:index+1]), 64)
-		hashes[family] = &hash
-	}
-	manifest.RuntimeBindings.CollateralLifecycle.DataSHA256 = hashes[BasicCollateralLifecycle]
-	manifest.RuntimeBindings.DebtLifecycle.DataSHA256 = hashes[BasicDebtLifecycle]
-	manifest.RuntimeBindings.SwapRoutesA.DataSHA256 = hashes[BasicSwapRoutesA]
-	manifest.RuntimeBindings.SwapRoutesB.DataSHA256 = hashes[BasicSwapRoutesB]
 	return manifest
 }
 
@@ -32,8 +23,7 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 	snapshot := Snapshot{
 		ObservationID: "maple-state", Slot: 42, RouteKind: RouteKind, RouteLane: SelectedRouteID,
 		StrategyKey: SelectedRouteID, Fresh: true, SquadsIdleRaw: 100,
-		CollateralIdleRaw: 0, MinimumCollateralDepositRaw: 1, PolicyReady: true, ExitBuildable: true,
-		CapacityRaw: 100, PolicyLimitRaw: 100, MaxTargetLTVEntryRaw: 100,
+		CollateralIdleRaw: 0, MinimumCollateralDepositRaw: 1, CapacityRaw: 100, PolicyLimitRaw: 100, MaxTargetLTVEntryRaw: 100,
 		LiquidationThresholdBPS: 9000,
 	}
 	decision := Decide(snapshot)
@@ -57,7 +47,6 @@ func TestPhase2WithdrawalDemandRequiresExplicitDrain(t *testing.T) {
 		HasPosition: true, PositionCollateralRaw: 3_000_000,
 		PositionDebtRaw: 590_717, CollateralIdleRaw: 250_000,
 		LiquidationThresholdBPS: 8_000, LTVBPS: 2_000,
-		PolicyReady: true, ExitBuildable: true,
 	}
 
 	decision := Decide(snapshot)
@@ -82,8 +71,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 		RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, Fresh: true,
 		WithdrawalDemandRaw: 1, StrategyNAVRaw: 2_793_180,
 		VoltrIdleRaw: 2_793_180, CollateralIdleRaw: 0,
-		LiquidationThresholdBPS: 8_000, PolicyReady: true, ExitBuildable: true,
-	}
+		LiquidationThresholdBPS: 8_000}
 
 	decision := Decide(snapshot)
 	if decision.Action != Hold || decision.Reason != "withdrawal_covered" || decision.AmountRaw != 0 {
@@ -92,7 +80,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 }
 
 func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	addresses := routeFixedAddresses(manifest)
 	for _, lane := range []string{RouteID, SelectedRouteID} {
 		route, err := runtimeRoute(lane)
@@ -145,37 +133,37 @@ func TestPhase2RuntimeActivationIncludesBasicRoutes(t *testing.T) {
 }
 
 func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	var err error
-	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if request.RouteLane != SelectedRouteID || request.Policy != mustBasicPolicy(t, BasicCollateralLifecycle).Policy || request.PolicyConstraintIndex != 0 || len(request.Accounts) != 17 {
+	if request.RouteLane != SelectedRouteID || request.Policy != mustBasicPolicy(t, BasicCollateralLifecycle) || len(request.Accounts) != 17 {
 		t.Fatalf("unexpected Maple Kamino packet: %+v", request)
 	}
 	if _, leg, err := kaminoRouteInstruction(request, SelectedRouteID); err != nil || leg != kaminoLegDeposit {
 		t.Fatalf("Maple packet did not validate as deposit: %v, %v", err, leg)
 	}
-	borrow, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	borrow, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if borrow.Policy != mustBasicPolicy(t, BasicDebtLifecycle).Policy || borrow.PolicyConstraintIndex != 0 || borrow.Accounts[12].Address != mapleObligationDebtFarm || borrow.Accounts[13].Address != mapleDebtFarm {
+	if borrow.Policy != mustBasicPolicy(t, BasicDebtLifecycle) || borrow.Accounts[12].Address != mapleObligationDebtFarm || borrow.Accounts[13].Address != mapleDebtFarm {
 		t.Fatalf("borrow packet did not pin live farm accounts: %+v", borrow)
 	}
-	repay, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	repay, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegRepay, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repay.Policy != mustBasicPolicy(t, BasicDebtLifecycle).Policy || repay.PolicyConstraintIndex != 1 || repay.Accounts[9].Address != mapleObligationDebtFarm || repay.Accounts[10].Address != mapleDebtFarm {
+	if repay.Policy != mustBasicPolicy(t, BasicDebtLifecycle) || repay.Accounts[9].Address != mapleObligationDebtFarm || repay.Accounts[10].Address != mapleDebtFarm {
 		t.Fatalf("repay packet did not pin live farm accounts: %+v", repay)
 	}
 }
 
 func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
-	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
+	manifest := embeddedTestManifest(t)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +183,7 @@ func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
 }
 
 func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		route, err := runtimeRoute(lane)
 		if err != nil || !route.BasicPolicy {
@@ -208,20 +196,18 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 			leg    kaminoPrimeUSDCLeg
 			action Action
 			family BasicPolicyFamily
-			index  byte
 		}{
-			{kaminoLegDeposit, OpenRouteStep, BasicCollateralLifecycle, 0},
-			{kaminoLegWithdraw, DeleverRouteStep, BasicCollateralLifecycle, 1},
-			{kaminoLegBorrow, OpenRouteStep, BasicDebtLifecycle, 0},
-			{kaminoLegRepay, DeleverRouteStep, BasicDebtLifecycle, 1},
+			{kaminoLegDeposit, OpenRouteStep, BasicCollateralLifecycle},
+			{kaminoLegWithdraw, DeleverRouteStep, BasicCollateralLifecycle},
+			{kaminoLegBorrow, OpenRouteStep, BasicDebtLifecycle},
+			{kaminoLegRepay, DeleverRouteStep, BasicDebtLifecycle},
 		} {
-			request, err := manifest.kaminoPacketForRoute(test.action, test.leg, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, lane)
+			request, err := manifest.kaminoPacketForRoute(testPolicies(t), test.action, test.leg, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, lane)
 			if err != nil {
 				t.Fatalf("%s %v: %v", lane, test.leg, err)
 			}
-			policy, _ := basicPolicyBinding(test.family)
-			if request.Policy != policy.Policy || request.PolicyConstraintIndex != test.index {
-				t.Fatalf("%s %v resolved to policy=%s index=%d", lane, test.leg, request.Policy, request.PolicyConstraintIndex)
+			if request.Policy != mustBasicPolicy(t, test.family) {
+				t.Fatalf("%s %v resolved to policy=%s", lane, test.leg, request.Policy)
 			}
 			if _, got, err := kaminoRouteInstruction(request, lane); err != nil || got != test.leg {
 				t.Fatalf("%s %v did not validate: %v, %v", lane, test.leg, err, got)
@@ -234,17 +220,16 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 			{SwapStableToCollateralStep, BasicSwapRoutesA},
 			{SwapCollateralToStableStep, BasicSwapRoutesB},
 		} {
-			binding, err := manifest.jupiterPolicyForRoute(test.action, lane)
+			key, leg, err := jupiterPolicyLeg(lane, test.action, nil)
 			if err != nil {
 				t.Fatalf("%s %s: %v", lane, test.action, err)
 			}
-			policy, _ := basicPolicyBinding(test.family)
-			wantIndex := byte(0)
+			wantLeg := byte(basicSwapONycPrime)
 			if lane == SelectedRouteID {
-				wantIndex = 1
+				wantLeg = basicSwapPrimeSyrup
 			}
-			if binding.Policy != policy.Policy || binding.PolicyConstraintIndex != wantIndex {
-				t.Fatalf("%s %s resolved to policy=%s index=%d", lane, test.action, binding.Policy, binding.PolicyConstraintIndex)
+			if key != (policyKey{family: test.family}) || leg != wantLeg {
+				t.Fatalf("%s %s resolved to policy=%s leg=%d", lane, test.action, key, leg)
 			}
 		}
 	}
@@ -271,19 +256,17 @@ func TestPhase2CutoverRejectsAnyLegacyPrimeExposure(t *testing.T) {
 }
 
 func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T) {
-	manifest := basicPolicyFixtureManifest(t)
-	var err error
-	entry, err := manifest.jupiterPolicyForRoute(SwapStableToCollateralStep, SelectedRouteID)
+	entry, entryLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapStableToCollateralStep, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exit, err := manifest.jupiterPolicyForRoute(SwapCollateralToStableStep, SelectedRouteID)
+	exit, exitLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapCollateralToStableStep, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.Policy != mustBasicPolicy(t, BasicSwapRoutesA).Policy || entry.PolicyConstraintIndex != 1 ||
-		exit.Policy != mustBasicPolicy(t, BasicSwapRoutesB).Policy || exit.PolicyConstraintIndex != 1 {
-		t.Fatalf("unexpected Phase 2 basic swap bindings: entry=%+v exit=%+v", entry, exit)
+	if entry != (policyKey{family: BasicSwapRoutesA}) || entryLeg != basicSwapPrimeSyrup ||
+		exit != (policyKey{family: BasicSwapRoutesB}) || exitLeg != basicSwapPrimeSyrup {
+		t.Fatalf("unexpected Phase 2 basic swap policies: entry=%s/%d exit=%s/%d", entry, entryLeg, exit, exitLeg)
 	}
 }
 
@@ -303,13 +286,9 @@ func TestPhase2JupiterQuotePinsManifestVenue(t *testing.T) {
 	}
 }
 
-func mustBasicPolicy(t *testing.T, family BasicPolicyFamily) BasicPolicyBinding {
+func mustBasicPolicy(t *testing.T, family BasicPolicyFamily) string {
 	t.Helper()
-	binding, err := basicPolicyBinding(family)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return binding
+	return testPolicyAccount(policyKey{family: family})
 }
 
 func TestRouteNeutralActionRequiresSelectedStrategy(t *testing.T) {

@@ -44,7 +44,7 @@ func TestWorkerAttemptsRenewalBeforeJournalingOrdinaryUnwind(t *testing.T) {
 	worker.runtime.observe = func(context.Context) (Observation, error) { return tickObservation(s), nil }
 	calls := 0
 	worker.runtime.refreshUnwind = func(context.Context) error { calls++; return nil }
-	worker.runtime.recordDecision = func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
+	worker.runtime.recordDecision = func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 		t.Fatal("renewal also created executable operation")
 		return DecisionRecord{}, nil
 	}

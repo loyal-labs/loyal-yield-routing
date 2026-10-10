@@ -35,8 +35,8 @@ func (d *Database) readRoutePlanningState(ctx context.Context, routeKey string, 
 // readRoutePlanningStateOnManifest is the identical batch planning read with
 // the durable entry and unwind decodes resolved through the explicit reviewed
 // manifest: the candidate AUTO entry and a recorded candidate-source unwind
-// are decoded only while that manifest's reviewed binding resolves, and every
-// lease and generation check is shared verbatim.
+// are decoded through that manifest's lane authority, and every lease and
+// generation check is shared verbatim.
 func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifest RouteManifest, routeKey string, execution bool) (*routePlanningState, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return nil, fmt.Errorf("planning state database is not configured")

@@ -7,23 +7,19 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *testing.T) {
-	read := func(name string, target any) {
-		t.Helper()
-		data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/" + name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = json.Unmarshal(data, target); err != nil {
-			t.Fatal(err)
-		}
-	}
+// Each catalog lane's conversion builds through its installed literal edge:
+// the swap API is asked for the edge's mints and dialect, the retained
+// instruction compiles under the edge's leg (with reviewed lookups when the
+// legacy packet does not fit), and the worker refuses an instruction that does
+// not swap the requested amount at the quoted output.
+func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 	var headers struct {
 		Rows []struct {
 			Key          string
@@ -34,97 +30,21 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 			}
 		}
 	}
-	read("policy-jupiter-headers-v1.json", &headers)
-	var installed struct {
-		Operations []struct {
-			PolicyAddress, DataSHA256, DataBase64 string
-			Active                                bool
-		}
-	}
-	read("policy-install-readback-v1.json", &installed)
-	var compiled struct {
-		Policies []struct {
-			Policy      string
-			Constraints []struct {
-				ProgramID      string
-				AccountPubkeys []struct {
-					Index   int
-					Pubkeys []string
-				}
-				Data []struct {
-					Kind     string
-					Offset   int
-					Value    uint64
-					ValueHex string
-				}
-			}
-		}
-	}
-	read("policy-compiled-v1.json", &compiled)
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
+	data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json")
+	if err != nil || json.Unmarshal(data, &headers) != nil {
+		t.Fatal("retained Jupiter headers unavailable", err)
 	}
 	seen := map[string]bool{}
-	for _, lane := range []string{"AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD", "Prime/PRIME/PYUSD", "Prime/PRIME/USDS"} {
+	for _, lane := range []string{"Ethena/USDe/PYUSD", "Prime/PRIME/PYUSD", "Prime/PRIME/USDS"} {
 		for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
-			b, err := catalogJupiterBindingForRoute(action, lane)
+			edges, leg, err := catalogEdge(action, lane)
 			if err != nil {
 				t.Fatal(err)
 			}
-			key := b.From + "->" + b.To
+			edge := edges[leg]
+			key := edge.from.symbol + "->" + edge.to.symbol
 			seen[key] = true
 			t.Run(lane+"/"+key, func(t *testing.T) {
-				if lane == autoAUTOPYUSD.Lane {
-					// The historical catalog shards stay observation pins:
-					// AUTO construction is bound to the reviewed binding —
-					// absent fixture closed, installed manifest resolved
-					// (see auto_policy_binding_test.go).
-					testAutoJupiterCatalogLaneFailClosed(t, action, key)
-					return
-				}
-				foundPolicy := false
-				for _, p := range installed.Operations {
-					if p.PolicyAddress == b.Policy {
-						bytes, err := base64.StdEncoding.Strict().DecodeString(p.DataBase64)
-						if err != nil || !p.Active || p.DataSHA256 != b.PolicySHA256 || sha256Bytes(bytes) != b.PolicySHA256 {
-							t.Fatal("installed policy provenance drift")
-						}
-						foundPolicy = true
-					}
-				}
-				if !foundPolicy {
-					t.Fatal("missing installed policy")
-				}
-				pinned := map[int]string{b.AuthorityIndex: b.Authority, b.SourceIndex: b.SourceCustody, b.DestinationIndex: b.DestinationCustody,
-					b.SourceMintIndex: b.SourceMint, b.DestinationMintIndex: b.DestinationMint, b.SourceTokenProgramIndex: b.SourceTokenProgram, b.DestinationTokenProgramIndex: b.DestinationTokenProgram}
-				foundConstraint := false
-				for _, p := range compiled.Policies {
-					if p.Policy == b.Policy {
-						if int(b.ConstraintIndex) >= len(p.Constraints) {
-							t.Fatal("constraint absent")
-						}
-						c := p.Constraints[b.ConstraintIndex]
-						if c.ProgramID != jupiter.ProgramID.String() || len(c.AccountPubkeys) != len(pinned) || len(c.Data) != 4 {
-							t.Fatal("omitted compiled constraint")
-						}
-						for _, a := range c.AccountPubkeys {
-							if len(a.Pubkeys) != 1 || pinned[a.Index] != a.Pubkeys[0] {
-								t.Fatal("compiled account constraint drift")
-							}
-						}
-						if c.Data[0].Kind != "slice-equals" || c.Data[0].Offset != 0 || c.Data[0].ValueHex != b.DiscriminatorHex ||
-							c.Data[1].Kind != "u64-less-than-or-equal" || c.Data[1].Offset != b.AmountOffset || c.Data[1].Value != b.MaxInputRaw ||
-							c.Data[2].Kind != "u16-less-than-or-equal" || c.Data[2].Offset != b.SlippageOffset || c.Data[2].Value != uint64(b.MaxSlippageBPS) ||
-							c.Data[3].Kind != "u8-equals" || c.Data[3].Offset != b.FeeOffset || c.Data[3].Value != 0 {
-							t.Fatal("compiled data constraint drift")
-						}
-						foundConstraint = true
-					}
-				}
-				if !foundConstraint {
-					t.Fatal("missing compiled policy")
-				}
 				var instruction JupiterSwapInstruction
 				for _, row := range headers.Rows {
 					if row.Key == key {
@@ -134,21 +54,22 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 						}
 					}
 				}
+				at := int(edge.inAmountAt)
 				data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-				if err != nil || len(data) != b.FeeOffset+1 {
+				if err != nil || len(data) != at+jupiter.PlatformFeeAfterInAmount+1 {
 					t.Fatal("retained instruction missing")
 				}
-				amount, out := readU64(data[b.AmountOffset:]), readU64(data[b.AmountOffset+8:])
+				amount, out := readU64(data[at:]), readU64(data[at+jupiter.QuotedOutAfterInAmount:])
 				calls := 0
 				client, err := fixtureJupiter(roundTripFunc(func(r *http.Request) (*http.Response, error) {
 					calls++
 					var payload any
 					if r.Method == "GET" && r.URL.Path == "/quote" {
 						q := r.URL.Query()
-						if q.Get("inputMint") != b.SourceMint || q.Get("outputMint") != b.DestinationMint || q.Get("amount") != fmt.Sprint(amount) {
+						if q.Get("inputMint") != edge.from.mint.String() || q.Get("outputMint") != edge.to.mint.String() || q.Get("amount") != fmt.Sprint(amount) {
 							t.Fatal("quote identity drift")
 						}
-						payload = jupiter.Quote{InputMint: b.SourceMint, OutputMint: b.DestinationMint, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+						payload = jupiter.Quote{InputMint: edge.from.mint.String(), OutputMint: edge.to.mint.String(), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 					} else if r.Method == "POST" && r.URL.Path == "/swap-instructions" {
 						var request struct {
 							UserPublicKey     string
@@ -157,7 +78,7 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 						if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 							t.Fatal(err)
 						}
-						if request.UserPublicKey != bridgeVault || request.UseSharedAccounts != (b.DiscriminatorHex == "c1209b3341d69c81") {
+						if request.UserPublicKey != bridgeVault || request.UseSharedAccounts != edge.shared {
 							t.Fatal("requested wrong installed instruction family")
 						}
 						payload = map[string]any{"swapInstruction": instruction, "addressLookupTableAddresses": []string{bridgeVault}}
@@ -184,21 +105,17 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 				} else if len(returned.LookupTableAddresses) != 0 {
 					t.Fatal("lookup hints expanded outside selected conversion")
 				}
-				binding, err := manifest.jupiterPolicyForRoute(action, lane)
-				if err != nil {
-					t.Fatal(err)
-				}
-				index, err := binding.constraintIndex(instruction)
-				if err != nil || index != b.ConstraintIndex {
+				policyKey, index, err := jupiterPolicyLeg(lane, action, data)
+				if err != nil || index != leg {
 					t.Fatal("policy selector drift", err)
 				}
 				request := JupiterSwapRequest{Action: action, RouteLane: lane, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: out,
-					Policy: b.Policy, PolicyAccountDataSHA256: b.PolicySHA256, PolicyConstraintIndex: index, Instruction: instruction, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
+					Policy: testPolicyAccount(policyKey), Instruction: instruction, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
 				inner, err := validateJupiterInstructionForRoute(instruction, action, amount, out, out, lane)
 				if err != nil {
 					t.Fatal(err)
 				}
-				outer, err := wrapSquadsJupiterPolicy(mustKey(b.Policy), mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
+				outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -264,42 +181,25 @@ func TestCatalogJupiterInstructionsMatchInstalledEdgesAndRejectMutations(t *test
 				}
 				packetEvidence, _ := json.Marshal(map[string]any{"lane": lane, "edge": key, "packetBytes": len(message) + 65, "legacyPacketBytes": len(raw) + 65, "fits": len(message)+65 <= solanaPacketBytes})
 				t.Logf("PHASE3_JUPITER_PACKET %s", packetEvidence)
-				for index := range pinned {
-					for _, field := range []string{"key", "signer", "writable"} {
-						mutant := instruction
-						mutant.Accounts = append([]jupiter.AccountMeta(nil), instruction.Accounts...)
-						switch field {
-						case "key":
-							mutant.Accounts[index].Pubkey = bridgeSettings
-						case "signer":
-							mutant.Accounts[index].IsSigner = !mutant.Accounts[index].IsSigner
-						case "writable":
-							mutant.Accounts[index].IsWritable = !mutant.Accounts[index].IsWritable
-						}
-						if _, err := validateJupiterInstructionForRoute(mutant, action, amount, out, out, lane); err == nil {
-							t.Fatalf("accepted %d %s substitution", index, field)
-						}
-					}
-				}
-				for _, offset := range []int{0, b.AmountOffset, b.AmountOffset + 8, b.FeeOffset} {
+				for _, offset := range []int{at, at + jupiter.QuotedOutAfterInAmount} {
 					mutant := instruction
 					changed := append([]byte(nil), data...)
 					changed[offset] ^= 1
 					mutant.Data = base64.StdEncoding.EncodeToString(changed)
 					if _, err := validateJupiterInstructionForRoute(mutant, action, amount, out, out, lane); err == nil {
-						t.Fatal("accepted data substitution", offset)
+						t.Fatal("accepted another amount or quote", offset)
 					}
 				}
-				mutant := request
-				mutant.Policy = bridgeAllocationPolicy
-				if _, err := CompileJupiterMessage(mutant); err == nil {
-					t.Fatal("accepted wrong policy")
+				mutant := instruction
+				mutant.Data = base64.StdEncoding.EncodeToString(append(append([]byte(nil), data...), 0))
+				if _, err := validateJupiterInstructionForRoute(mutant, action, amount, out, out, lane); err == nil {
+					t.Fatal("accepted a route tail the edge's offsets do not end")
 				}
 			})
 		}
 	}
-	if len(seen) != 18 {
-		t.Fatal("missing conversion coverage")
+	if len(seen) != 14 {
+		t.Fatal("missing conversion coverage", len(seen))
 	}
 	if _, _, _, _, err := jupiterEdgeForRoute(SwapUSDCToPrimeStep, "unknown/asset/debt"); err == nil {
 		t.Fatal("unknown lane inherited Prime edge")
@@ -355,7 +255,7 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 					order = append(order, "prepare")
 					return o, JupiterExecutionEvidence{Request: JupiterSwapRequest{Action: d.Action, RouteLane: d.StrategyKey}}, nil
 				},
-				recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _, _ string) (DecisionRecord, error) {
+				recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _ string) (DecisionRecord, error) {
 					if d != want {
 						t.Fatal(d)
 					}
@@ -370,7 +270,7 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 					return nil
 				},
 				bind: func(_ context.Context, id string, observed Observation, d Decision, _ any, _ ExpectedEffects) error {
-					if id != "local-conversion" || observed != o || d != want {
+					if id != "local-conversion" || !reflect.DeepEqual(observed, o) || d != want {
 						t.Fatal("admission identity drift")
 					}
 					order = append(order, "admit")

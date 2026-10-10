@@ -11,7 +11,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Check the enforced quote minimum against debt through swap -> NAV -> payoff,
@@ -22,7 +21,7 @@ func isPayoffFundingAction(action Action) bool {
 }
 
 // validatePayoffFunding keeps the explicit reviewed manifest so an AUTO
-// funding swap measures through the same binding that produced it; existing
+// funding swap measures through the manifest that produced it; existing
 // lanes resolve identically through either manifest.
 func validatePayoffFunding(ctx context.Context, rpc *chain.Client, manifest RouteManifest, request JupiterSwapRequest, effects ExpectedEffects, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if !request.FullPayoffFunding || !isPayoffFundingAction(request.Action) {
@@ -95,25 +94,14 @@ func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRe
 	// Compile validates this lane's actual Jupiter dialect and policy boundaries.
 	// Basic USDC edges use the same physical collateral/USDC swap for funding.
 	offset := len(wire) - 3
-	if request.RouteLane == autoAUTOPYUSD.Lane {
-		// The reviewed AUTO binding authorizes only the legacy
-		// SharedAccountsRoute dialect — structurally validated here through the
-		// explicit reviewed binding — so its slippage byte stays at len-3. The
-		// historical catalog entry describes the retired AUTO policy layout
-		// and is never consulted for the candidate lane.
-		binding, err := manifest.jupiterPolicyForRoute(request.Action, request.RouteLane)
+	if catalogJupiterRoute(request.RouteLane) && request.RouteLane != autoAUTOPYUSD.Lane {
+		// AUTO swaps legacy SharedAccountsRoute only, so its slippage byte
+		// stays at len-3; a catalog edge's sits after its in_amount.
+		edges, leg, err := catalogEdge(request.Action, request.RouteLane)
 		if err != nil {
 			return bound, nil, err
 		}
-		if _, err := binding.constraintIndex(request.Instruction); err != nil {
-			return bound, nil, err
-		}
-	} else if catalogJupiterRoute(request.RouteLane) {
-		binding, err := catalogJupiterBindingForRoute(request.Action, request.RouteLane)
-		if err != nil {
-			return bound, nil, err
-		}
-		offset = binding.SlippageOffset
+		offset = edges[leg].slippageAt()
 	} else if len(wire) >= 8 && bytes.Equal(wire[:8], jupiter.SharedAccountsRouteV2Discriminator[:]) {
 		offset = 25
 	}
@@ -239,7 +227,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
-			req, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, releaseBound.ReceiptRaw, blockhash, s.RouteLane)
+			req, err := manifest.kaminoPacketForRoute(observation.policies, DeleverRouteStep, kaminoLegWithdraw, releaseBound.ReceiptRaw, blockhash, s.RouteLane)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
@@ -254,7 +242,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 			release, releaseAccounts, futureRelease, steps = &KaminoExecutionEvidence{req, e}, rows, true, 6
 		}
 		if amount > 0 {
-			quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: action, AmountRaw: amount, StrategyKey: s.RouteLane}, uint64(amount), uint64(debtCashRaw(s)), s.Slot)
+			quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, Decision{Action: action, AmountRaw: amount, StrategyKey: s.RouteLane}, uint64(amount), uint64(debtCashRaw(s)), s.Slot)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
@@ -275,7 +263,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 		// Cost-only metadata, not a reportable NAV.
 		remainingValue := new(big.Int).Mul(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(s.PositionCollateralRaw))
 		s.PositionCollateralValueRaw = remainingValue.Quo(remainingValue, big.NewInt(original.PositionCollateralRaw)).Int64()
-		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, Decision{Action: SwapCollateralToDebtStep, AmountRaw: s.CollateralIdleRaw, StrategyKey: s.RouteLane}, uint64(s.CollateralIdleRaw), uint64(debtCashRaw(s)), releaseBound.Payoff.ObservedSlot)
+		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, Decision{Action: SwapCollateralToDebtStep, AmountRaw: s.CollateralIdleRaw, StrategyKey: s.RouteLane}, uint64(s.CollateralIdleRaw), uint64(debtCashRaw(s)), releaseBound.Payoff.ObservedSlot)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -341,7 +329,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	payoff, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, bound.UpperDebtRaw, blockhash, s.RouteLane)
+	payoff, err := manifest.kaminoPacketForRoute(observation.policies, DeleverRouteStep, kaminoLegRepay, bound.UpperDebtRaw, blockhash, s.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -351,14 +339,6 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 	payoffEffects, err := boundedKaminoRepaymentEffects(projected, source, destination, bound.ObservedDebtRaw, bound.UpperDebtRaw)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
-	}
-	_, policies, err := confirmedAccounts(ctx, rpc, []string{payoff.Policy}, bound.ObservedSlot)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	p := accountAt(policies, payoff.Policy)
-	if p.Owner != squads.ProgramID.String() || p.Executable || p.Lamports == 0 || sha256Bytes(p.Data) != payoff.PolicyAccountDataSHA256 {
-		return phase3BridgeAdmission{}, budgetHold("funding_payoff_policy_drift")
 	}
 	post := observation
 	post.Snapshot = s
@@ -409,7 +389,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 		prefix = append(prefix, phase3BridgeExitCost{Action: ReportNAV, Cost: plan.Exit[0].Cost, Template: plan.Exit[0].Template})
 	}
 	if funding != nil {
-		policySlot, err := observeWithdrawalExitPolicies(ctx, rpc, manifest, s.RouteLane, s.Slot, []Action{funding.Request.Action})
+		policySlot, err := observeDisarmedReportTicket(ctx, rpc, s.Slot)
 		if err != nil {
 			return plan, err
 		}

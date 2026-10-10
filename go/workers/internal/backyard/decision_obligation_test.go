@@ -43,6 +43,14 @@ func TestAbsentObligationHoldsEntryBeforeAnyConstruction(t *testing.T) {
 			}
 			s.ObligationPresent = false
 			hold := Decide(s)
+			if initializationSnapshotReady(s) {
+				// A quoted selector entry creates the obligation: the one
+				// construction an absent obligation admits.
+				if hold.Action != InitializeKaminoObligation {
+					t.Fatalf("absent obligation with a quoted entry produced %+v", hold)
+				}
+				return
+			}
 			if hold.Action != Hold || hold.Reason != obligationAbsentHoldReason || hold.AmountRaw != 0 {
 				t.Fatalf("absent obligation produced %+v", hold)
 			}
@@ -63,6 +71,12 @@ func TestObligationHoldIsADecidableNonPolicyHold(t *testing.T) {
 			s.RouteLane = state.lane
 			s.ObligationPresenceKnown = true
 			hold := Decide(s)
+			if initializationSnapshotReady(s) {
+				if hold.Action != InitializeKaminoObligation || hold.Validate() != nil {
+					t.Fatalf("absent obligation with a quoted entry produced %+v", hold)
+				}
+				return
+			}
 			if hold.Action != Hold || hold.Reason != obligationAbsentHoldReason {
 				t.Fatalf("absent obligation produced %+v", hold)
 			}

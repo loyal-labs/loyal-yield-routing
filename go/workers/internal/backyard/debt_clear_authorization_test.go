@@ -20,7 +20,7 @@ func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutio
 	o, m, rpc, _, accounts := usdcReturnFixture(t)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
 	decision := Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, AmountRaw: o.Snapshot.PositionDebtRaw, Reason: "withdrawal_repay_debt"}
-	request, err := m.kaminoPacketForRoute(decision.Action, kaminoLegRepay, 1001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	request, err := m.kaminoPacketForRoute(testPolicies(t), decision.Action, kaminoLegRepay, 1001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func prepareDebtClearDatabase(t *testing.T) (context.Context, *Database, string)
 
 func insertDebtClearOperation(t *testing.T, ctx context.Context, db *Database, key, id string, o Observation, decision Decision, m RouteManifest) {
 	t.Helper()
-	envelope, _ := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, decision, m.SHA256, *m.PolicyCatalog.SHA256)})
+	envelope, _ := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, decision, m.SHA256)})
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects) VALUES($1,$2,'decided',$3,$4,$5)`, id, key, decision.Action, decision.StrategyKey, envelope); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 			raw, _ := jsonMarshalExpectedEffects(e.ExpectedEffects)
 			input, _ := encodePhase3BuildInput(e.Request, raw)
 			digest, _ := Phase3IntentDigest(e.Request, raw)
-			message, err := m.compileKaminoMessage(e.Request, mustKey(bridgeDelegate))
+			message, err := compileKaminoMessageForDelegate(e.Request, mustKey(bridgeDelegate))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -389,7 +389,7 @@ func debtClearRiskFixture(t *testing.T) (Observation, Decision, KaminoExecutionE
 	if decision.Reason != "hard_ltv_repay" {
 		t.Fatal("fixture not real hard risk", decision)
 	}
-	request, err := m.kaminoPacketForRoute(decision.Action, kaminoLegRepay, 1001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	request, err := m.kaminoPacketForRoute(testPolicies(t), decision.Action, kaminoLegRepay, 1001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 	if err := db.commitUnwindIntentWithConfirmation(ctx, key, &old, m, c); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyUnwindIntentWithLane(&o.Snapshot, &old, m.selectorEntryLaneAllowed); err != nil {
+	if err := applyUnwindIntentWithLane(&o.Snapshot, &old, selectorOrAutoLane); err != nil {
 		t.Fatal("amount growth became global integrity failure", err)
 	}
 	if !o.Snapshot.UnwindRefreshRequired || Decide(o.Snapshot).Reason != "hard_ltv_repay" {
@@ -568,7 +568,7 @@ func TestDebtClearActiveDebtFreeTailKeepsExpiryAndScope(t *testing.T) {
 					plan.Decision.Action = SwapCollateralToStableStep
 				}
 				if kind == "withdraw" {
-					r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, 1000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, o.Snapshot.RouteLane)
+					r, err := m.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, 1000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, o.Snapshot.RouteLane)
 					if err != nil {
 						t.Fatal(err)
 					}

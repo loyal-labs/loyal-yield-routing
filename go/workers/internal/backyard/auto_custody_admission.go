@@ -37,8 +37,8 @@ package backyard
 // MANIFEST: pass the SAME explicit reviewed manifest the calling lifecycle
 // already threads. Both proofs run the planning read through
 // readRoutePlanningStateOnManifest so a persisted candidate AUTO selector
-// entry decodes under the same reviewed binding that admits the candidate
-// lane — never through the embedded manifest, and never by skipping entry
+// entry decodes under the same manifest that admits the candidate lane —
+// never through the embedded manifest, and never by skipping entry
 // validation.
 //
 // BINDING HONESTY: the planning read and the journal snapshot are two reads;
@@ -292,8 +292,8 @@ func (d *Database) readSharedCustodyJournal(ctx context.Context, manifest RouteM
 	}
 	// Planning read at proof time through the caller's explicit reviewed
 	// manifest: refuses without THIS database's current lease on the route,
-	// decodes the persisted selector entry under the SAME reviewed binding
-	// the caller's lifecycle uses (a candidate AUTO entry is rejected by the
+	// decodes the persisted selector entry under the SAME manifest the
+	// caller's lifecycle uses (a candidate AUTO entry is rejected by the
 	// embedded manifest's decode), and yields the generation + fence the
 	// proof carries.
 	proofStart := time.Now()

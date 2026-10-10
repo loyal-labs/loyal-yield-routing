@@ -64,6 +64,7 @@ func autoCleanupObservation(t *testing.T, slot int64, state autoCleanupState) (R
 	if err != nil {
 		t.Fatal(err)
 	}
+	observation.policies = testPolicies(t) // the policies the admission builds through
 	observation.Snapshot.ReportSnapshotDigest = sha256Bytes([]byte("auto-cleanup-trace"))
 	if err := observation.Validate(); err != nil {
 		t.Fatal(err)
@@ -172,7 +173,7 @@ func TestAutoCleanupWithdrawalAdmissionPricesRefreshedExtraProceedsFully(t *test
 	manifest, route, observation, accounts := autoCleanupObservation(t, slot, state)
 	rpc := autoCleanupRPC(t, slot, accounts)
 	client := autoCleanupClient(t, route)
-	request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, uint64(observation.Snapshot.PositionCollateralRaw),
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, uint64(observation.Snapshot.PositionCollateralRaw),
 		LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +236,7 @@ func TestAutoCleanupCollateralReturnAdmissionConvertsCustodyThenResidue(t *testi
 	rpc := autoCleanupRPC(t, slot, accounts)
 	client := autoCleanupClient(t, route)
 	decision := Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(state.custodyAUTO), StrategyKey: route.Lane, IdempotencyKey: "auto-cleanup-return"}
-	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, decision, state.custodyAUTO, uint64(observation.Snapshot.SquadsIdleRaw), slot)
+	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, testPolicies(t), decision, state.custodyAUTO, uint64(observation.Snapshot.SquadsIdleRaw), slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +283,7 @@ func TestAutoCleanupDebtResidueContinuesAfterCollateralExhausted(t *testing.T) {
 	rpc := autoCleanupRPC(t, slot, accounts)
 	client := autoCleanupClient(t, route)
 	decision := Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(state.custodyPYUSD), StrategyKey: route.Lane, IdempotencyKey: "auto-cleanup-residue"}
-	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, decision, state.custodyPYUSD, uint64(observation.Snapshot.SquadsIdleRaw), slot)
+	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, testPolicies(t), decision, state.custodyPYUSD, uint64(observation.Snapshot.SquadsIdleRaw), slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +333,7 @@ func TestAutoCleanupStaleConfirmedSlotHoldsReturn(t *testing.T) {
 	rpc := autoCleanupStaleRPC(t, slot, accounts)
 	client := autoCleanupClient(t, route)
 	decision := Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(state.custodyPYUSD), StrategyKey: route.Lane, IdempotencyKey: "auto-cleanup-stale"}
-	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, decision, state.custodyPYUSD, uint64(observation.Snapshot.SquadsIdleRaw), slot)
+	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, testPolicies(t), decision, state.custodyPYUSD, uint64(observation.Snapshot.SquadsIdleRaw), slot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +389,7 @@ func TestAutoCleanupRefusesWrongLaneDecision(t *testing.T) {
 	// the observed lane.
 	withdrawState := autoCleanupState{receipts: 18_000_000_000, custodyAUTO: 2_000_000_000, custodyPYUSD: 9_000_000}
 	_, _, withdrawObservation, _ := autoCleanupObservation(t, slot, withdrawState)
-	request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, uint64(withdrawObservation.Snapshot.PositionCollateralRaw),
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, uint64(withdrawObservation.Snapshot.PositionCollateralRaw),
 		LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
@@ -431,7 +432,7 @@ func TestAutoCleanupDecisionProgressionFollowsPostPayoffLadder(t *testing.T) {
 		assertDecision(t, decision, DeleverRouteStep, "withdrawal_withdraw_collateral", 0)
 		// The decide-selected decision must be admissible as-is: the existing
 		// withdrawal admission prices the full observed remainder.
-		request, err := manifest.kaminoPacketForRoute(decision.Action, kaminoLegWithdraw, uint64(observation.Snapshot.PositionCollateralRaw),
+		request, err := manifest.kaminoPacketForRoute(testPolicies(t), decision.Action, kaminoLegWithdraw, uint64(observation.Snapshot.PositionCollateralRaw),
 			LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 		if err != nil {
 			t.Fatal(err)

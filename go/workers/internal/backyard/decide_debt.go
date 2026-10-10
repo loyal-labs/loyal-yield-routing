@@ -44,7 +44,7 @@ func laneSwap(lane string, action Action) bool {
 // It runs before any borrow, so a later borrow levers the whole collateral.
 // Every withdrawal, hard-LTV, unwind and report rule has already run.
 func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (Decision, bool) {
-	if !s.HasPosition || s.PositionCollateralRaw <= 0 || !s.PolicyReady || !s.ExitBuildable || hard <= TargetLTVBPS ||
+	if !s.HasPosition || s.PositionCollateralRaw <= 0 || hard <= TargetLTVBPS ||
 		(s.PositionDebtRaw != 0 && (!debtTopupLane(s.RouteLane) || s.PositionDebtValueRaw <= 0 || s.DebtIdleRaw != 0 || s.CollateralIdleRaw != 0)) ||
 		s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.UnwindRefreshRequired || s.VoltrStrategyIdleRaw != 0 {
 		return Decision{}, false
@@ -309,9 +309,6 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	// withdrawal legs above stay live.
 	if hold, absent := obligationPrerequisiteHold(s, initializationReady); absent {
 		return hold
-	}
-	if !s.PolicyReady || !s.ExitBuildable {
-		return d(Hold, "policy_or_exit_not_ready", 0)
 	}
 	if hard <= TargetLTVBPS {
 		return d(HoldManualRecovery, "invalid_entry_ltv", 0)

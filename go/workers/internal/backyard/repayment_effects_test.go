@@ -27,7 +27,7 @@ func repaymentEffectsFixture(t *testing.T) (KaminoPrimeUSDCRequest, ExpectedEffe
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, 1_010, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegRepay, 1_010, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}

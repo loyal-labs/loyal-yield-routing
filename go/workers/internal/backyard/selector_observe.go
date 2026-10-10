@@ -35,7 +35,7 @@ func observedSelectorRouteForManifest(accounts []ConfirmedAccount, preferred str
 	if active == "" {
 		active = preferred
 	}
-	if !manifest.selectorEntryLaneAllowed(active) {
+	if !selectorOrAutoLane(active) {
 		return RuntimeRoute{}, fmt.Errorf("selector_preferred_lane_invalid")
 	}
 	return runtimeRoute(active)
@@ -46,7 +46,7 @@ func observedSelectorRouteForManifest(accounts []ConfirmedAccount, preferred str
 // candidate AUTO lane only while this explicit manifest admits it. The global
 // lane list is never mutated.
 func selectorObservationLanes(manifest RouteManifest) []string {
-	if !manifest.selectorEntryLaneAllowed(autoAUTOPYUSD.Lane) {
+	if !selectorOrAutoLane(autoAUTOPYUSD.Lane) {
 		return selectorLanes
 	}
 	return append(append([]string{}, selectorLanes...), autoAUTOPYUSD.Lane)

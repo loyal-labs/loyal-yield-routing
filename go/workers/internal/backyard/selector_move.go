@@ -31,7 +31,7 @@ func observeSelectorMove(ctx context.Context, rpc *chain.Client, client *jupiter
 	if equity == 0 {
 		return empty, budgetHold("selector_move_has_no_entry_cash")
 	}
-	destination, err := observeSelectorDestinationForecast(ctx, rpc, client, m, lane, equity, o.Snapshot.Slot, false, nil)
+	destination, err := observeSelectorDestinationForecast(ctx, rpc, client, m, o.policies, lane, equity, o.Snapshot.Slot, false, nil)
 	if err != nil {
 		return empty, err
 	}
@@ -61,7 +61,7 @@ func composeSelectorMove(ctx context.Context, rpc *chain.Client, o Observation, 
 // composeSelectorMoveWithLane is the identical quote composition with the
 // destination lane authority parameterized: the reviewed manifest's
 // funded-selection path composes its candidate lane's quote through the same
-// validated autoPolicy binding that observed it. Every debt-price identity,
+// manifest that observed it. Every debt-price identity,
 // equity bound and recipe-evidence check is shared verbatim; the public form
 // above keeps the installed selector-lane gate.
 func composeSelectorMoveWithLane(ctx context.Context, rpc *chain.Client, o Observation, source selectorSourceQuote, destination selectorDestinationQuote, laneAllowed func(string) bool) (MoveQuote, error) {

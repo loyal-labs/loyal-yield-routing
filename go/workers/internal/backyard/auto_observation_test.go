@@ -127,9 +127,9 @@ func kaminoObligationImage(t *testing.T, route RuntimeRoute, slot int64, collate
 // runs last and must adjust batch bytes only.
 func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccount)) (RouteManifest, RuntimeRoute, []ConfirmedAccount) {
 	t.Helper()
-	readiness := newAutoReadinessFixture(t)
-	readiness.manifest.RuntimeActivation.SelectedLane = autoAUTOPYUSD.Lane
-	route, err := readiness.manifest.activeRuntimeRoute()
+	manifest := embeddedTestManifest(t)
+	manifest.RuntimeActivation.SelectedLane = autoAUTOPYUSD.Lane
+	route, err := manifest.activeRuntimeRoute()
 	if err != nil || route.Lane != autoAUTOPYUSD.Lane {
 		t.Fatalf("candidate manifest did not select the AUTO route: %v, %v", route, err)
 	}
@@ -175,11 +175,10 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 		debtSupplyVault,
 		{Address: route.DebtFeeReceiver, Owner: "11111111111111111111111111111111", Lamports: 1},
 	}
-	accounts = readiness.accounts(t, route, accounts...)
 	if mutate != nil {
 		mutate(accounts)
 	}
-	return readiness.manifest, route, accounts
+	return manifest, route, accounts
 }
 
 // autoObservationForAccounts runs the production confirmed-route observer over
@@ -273,8 +272,8 @@ func TestAutoCandidateObservationReportsOwnedPYUSDPosition(t *testing.T) {
 	if observation.Snapshot.MinimumCollateralDepositRaw <= 0 {
 		t.Fatalf("deposit rounding bound was not decoded from the AUTO reserve: %+v", observation.Snapshot)
 	}
-	if !observation.Snapshot.MonitorsArmed || !observation.Snapshot.PolicyReady || !observation.Snapshot.ExitBuildable {
-		t.Fatalf("candidate policy readiness did not arm the route: %+v", observation.Snapshot)
+	if !observation.Snapshot.MonitorsArmed {
+		t.Fatalf("the candidate observation did not arm the route: %+v", observation.Snapshot)
 	}
 	if observation.Snapshot.BorrowUtilizationBlocked || observation.Snapshot.CapacityRaw != 0 || observation.Snapshot.TicketLastConsumedSequenceRaw != 4 {
 		t.Fatalf("unexpected book facts on the healthy candidate batch: %+v", observation.Snapshot)
@@ -306,7 +305,7 @@ func TestAutoCandidateObservationValuesFlatPositionWithoutLiability(t *testing.T
 	if snapshot.StrategyNAVRaw != 6 || snapshot.TotalVaultNAVRaw != 17 {
 		t.Fatalf("cash-only NAV drifted: %+v", snapshot)
 	}
-	if !snapshot.MonitorsArmed || !snapshot.PolicyReady || !snapshot.ExitBuildable || !snapshot.Fresh {
+	if !snapshot.MonitorsArmed || !snapshot.Fresh {
 		t.Fatalf("flat candidate batch did not arm: %+v", snapshot)
 	}
 }
@@ -338,41 +337,6 @@ func TestAutoCandidateObservationPricesAbovePegDebtThroughReservePrice(t *testin
 	}
 	if snapshot.LTVBPS != 2_380 || snapshot.PayoffDebtRaw < int64(autoFixtureDebtRaw)+1 {
 		t.Fatalf("above-peg LTV or payoff bound drifted: %+v", snapshot)
-	}
-}
-
-// TestAutoCandidateObservationKeepsLiabilityWhenPolicyIsNotReady proves the
-// missing-or-wrong policy result can never look like a flat position: the
-// readiness gate drops to false while every position fact survives intact.
-func TestAutoCandidateObservationKeepsLiabilityWhenPolicyIsNotReady(t *testing.T) {
-	for name, breakPolicy := range map[string]func(accounts []ConfirmedAccount){
-		"missing": func(accounts []ConfirmedAccount) {
-			// Handled by removal below; nothing to mutate in place.
-		},
-		"drifted": func(accounts []ConfirmedAccount) {
-			accountAt(accounts, autoFixturePolicy).Data[100] ^= 0x40
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			manifest, _, accounts := autoObservationBatch(t, 77, breakPolicy)
-			if name == "missing" {
-				accounts = removeConfirmedAccount(accounts, autoFixturePolicy)
-			}
-			observation, _, err := autoObservationForAccounts(manifest, 77, accounts)(context.Background())
-			if err != nil {
-				t.Fatalf("%s policy broke the observation instead of its readiness: %v", name, err)
-			}
-			snapshot := observation.Snapshot
-			if snapshot.PolicyReady || snapshot.ExitBuildable {
-				t.Fatalf("%s policy still reported the candidate ready: %+v", name, snapshot)
-			}
-			if !snapshot.HasPosition || snapshot.PositionDebtRaw != int64(autoFixtureDebtRaw) || snapshot.PositionDebtValueRaw != 7_000_000 {
-				t.Fatalf("%s policy dropped the AUTO liability from the book: %+v", name, snapshot)
-			}
-			if snapshot.StrategyNAVRaw != 32_000_010 || !snapshot.MonitorsArmed || !snapshot.ObligationPresent {
-				t.Fatalf("%s policy disturbed the coherent book: %+v", name, snapshot)
-			}
-		})
 	}
 }
 

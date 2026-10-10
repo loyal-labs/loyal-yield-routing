@@ -12,12 +12,11 @@ import (
 )
 
 // A terminal hold is an audit-only journal record with no operation epoch, so
-// its durable identity must track the manifest/policy binding it was decided
-// under. Executable identities keep the epoch namespace and are never bound
-// here, and the epoch-free base identity of both hold actions stays stable.
-func TestHoldAuditIdentityBindsManifestAndCatalog(t *testing.T) {
+// its durable identity must track the manifest it was decided under.
+// Executable identities keep the epoch namespace and are never bound here,
+// and the epoch-free base identity of both hold actions stays stable.
+func TestHoldAuditIdentityBindsManifest(t *testing.T) {
 	manifestA, manifestB := strings.Repeat("a", 64), strings.Repeat("b", 64)
-	catalogA, catalogB := strings.Repeat("1", 64), strings.Repeat("2", 64)
 	hold := Decision{Action: Hold, IdempotencyKey: "obs:HOLD:0:no_eligible_action"}
 
 	epochless, err := durableDecisionIdempotencyKey("route", "", hold)
@@ -27,18 +26,15 @@ func TestHoldAuditIdentityBindsManifestAndCatalog(t *testing.T) {
 	if epochless != "route:obs:HOLD:0:no_eligible_action" {
 		t.Fatalf("hold base identity changed shape: %s", epochless)
 	}
-	boundA := holdBoundIdempotencyKey(epochless, manifestA, catalogA)
-	if boundA != holdBoundIdempotencyKey(epochless, manifestA, catalogA) {
+	boundA := holdBoundIdempotencyKey(epochless, manifestA)
+	if boundA != holdBoundIdempotencyKey(epochless, manifestA) {
 		t.Fatal("same-binding hold retries are not deterministic")
 	}
-	if !strings.Contains(boundA, ":hold-binding:"+manifestA+":"+catalogA) {
-		t.Fatalf("hold identity is not manifest+catalog bound: %s", boundA)
+	if !strings.HasSuffix(boundA, ":hold-binding:"+manifestA) {
+		t.Fatalf("hold identity is not manifest bound: %s", boundA)
 	}
-	if holdBoundIdempotencyKey(epochless, manifestB, catalogA) == boundA {
+	if holdBoundIdempotencyKey(epochless, manifestB) == boundA {
 		t.Fatal("a manifest rollover reused the previous binding's hold identity")
-	}
-	if holdBoundIdempotencyKey(epochless, manifestA, catalogB) == boundA {
-		t.Fatal("a policy catalog rollover reused the previous binding's hold identity")
 	}
 	if boundA == epochless {
 		t.Fatal("a bound hold identity can rematch a historical unbound row")
@@ -163,7 +159,7 @@ func TestHoldReleaseIdentityAcrossManifestRolloverAgainstDatabase(t *testing.T) 
 	}
 
 	manifestA, manifestB, manifestC := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
-	catalogA, catalogB := strings.Repeat("1", 64), strings.Repeat("2", 64)
+	catalogA := strings.Repeat("1", 64)
 	hold := Decision{Action: Hold, Reason: "no_eligible_action", AmountRaw: 0,
 		IdempotencyKey: fmt.Sprintf("%s:%s:%d:%s", "obs1", Hold, 0, "no_eligible_action"), StrategyKey: RouteID}
 
@@ -175,7 +171,7 @@ func TestHoldReleaseIdentityAcrossManifestRolloverAgainstDatabase(t *testing.T) 
 	}
 
 	// The next tick rolls the manifest and decides the identical hold again.
-	rolled, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 501), hold, manifestB, catalogA)
+	rolled, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 501), hold, manifestB)
 	if err != nil {
 		t.Fatalf("hold after manifest rollover collided with history: %v", err)
 	}
@@ -183,7 +179,7 @@ func TestHoldReleaseIdentityAcrossManifestRolloverAgainstDatabase(t *testing.T) 
 		t.Fatalf("rollover did not start a fresh hold identity: rows=%d", count)
 	}
 	rolledKey, _ := holdReleaseRowIdentity(t, ctx, db, rolled.OperationID)
-	if rolledKey != legacyKey+":hold-binding:"+manifestB+":"+catalogA {
+	if rolledKey != legacyKey+":hold-binding:"+manifestB {
 		t.Fatalf("rollover hold identity is not bound to the new manifest: %s", rolledKey)
 	}
 	legacyKeyCheck, legacyEffects := holdReleaseRowIdentity(t, ctx, db, hex.EncodeToString(func() []byte { d := sha256.Sum256([]byte(legacyKey)); return d[:] }()))
@@ -192,7 +188,7 @@ func TestHoldReleaseIdentityAcrossManifestRolloverAgainstDatabase(t *testing.T) 
 	}
 
 	// Same-binding retries dedupe deterministically, at any later slot.
-	retry, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 502), hold, manifestB, catalogA)
+	retry, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 502), hold, manifestB)
 	if err != nil || retry.OperationID != rolled.OperationID {
 		t.Fatalf("same-binding hold retry did not dedupe: %+v %v", retry, err)
 	}
@@ -200,23 +196,16 @@ func TestHoldReleaseIdentityAcrossManifestRolloverAgainstDatabase(t *testing.T) 
 		t.Fatalf("same-binding retry inserted a duplicate: rows=%d", count)
 	}
 
-	// A further manifest rollover, then a policy catalog rollover, each start
-	// their own identity and dedupe within the binding.
-	next, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 503), hold, manifestC, catalogA)
+	// A further manifest rollover starts its own identity and dedupes within
+	// the binding.
+	next, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 503), hold, manifestC)
 	if err != nil || next.OperationID == rolled.OperationID {
 		t.Fatalf("second manifest rollover did not advance hold identity: %+v %v", next, err)
 	}
-	if retry, err = db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 504), hold, manifestC, catalogA); err != nil || retry.OperationID != next.OperationID {
+	if retry, err = db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 504), hold, manifestC); err != nil || retry.OperationID != next.OperationID {
 		t.Fatalf("second binding retry did not dedupe: %+v %v", retry, err)
 	}
-	catalogRolled, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 505), hold, manifestC, catalogB)
-	if err != nil || catalogRolled.OperationID == next.OperationID {
-		t.Fatalf("policy catalog rollover did not advance hold identity: %+v %v", catalogRolled, err)
-	}
-	if _, err = db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 506), hold, manifestC, catalogB); err != nil {
-		t.Fatalf("catalog-binding retry did not dedupe: %v", err)
-	}
-	if count := holdReleaseCountRows(t, ctx, db, routeKey); count != 4 {
+	if count := holdReleaseCountRows(t, ctx, db, routeKey); count != 3 {
 		t.Fatalf("binding rollovers produced unexpected journal shape: rows=%d", count)
 	}
 
@@ -225,11 +214,11 @@ func TestHoldReleaseIdentityAcrossManifestRolloverAgainstDatabase(t *testing.T) 
 	drift.Reason = "different_reason"
 	holdReleaseRequireError(t,
 		func() error {
-			_, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 507), drift, manifestB, catalogA)
+			_, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 507), drift, manifestB)
 			return err
 		}(),
 		"idempotency identity has different decision evidence")
-	if count := holdReleaseCountRows(t, ctx, db, routeKey); count != 4 {
+	if count := holdReleaseCountRows(t, ctx, db, routeKey); count != 3 {
 		t.Fatalf("rejected drift wrote a journal row: rows=%d", count)
 	}
 
@@ -237,30 +226,30 @@ func TestHoldReleaseIdentityAcrossManifestRolloverAgainstDatabase(t *testing.T) 
 	// deduping within an epoch, and a binding conflict still rejected.
 	executable := Decision{Action: VoltrAllocateToSquads, Reason: "eligible_voltr_idle", AmountRaw: 1000,
 		IdempotencyKey: fmt.Sprintf("%s:%s:%d:%s", "obs1", VoltrAllocateToSquads, 1000, "eligible_voltr_idle"), StrategyKey: RouteID}
-	first, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 510), executable, manifestB, catalogA)
+	first, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 510), executable, manifestB)
 	if err != nil || first.Status != Decided {
 		t.Fatalf("executable decision failed: %+v %v", first, err)
 	}
-	if again, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 511), executable, manifestB, catalogA); err != nil || again.OperationID != first.OperationID {
+	if again, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 511), executable, manifestB); err != nil || again.OperationID != first.OperationID {
 		t.Fatalf("executable retry within an epoch did not dedupe: %+v %v", again, err)
 	}
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'reconciled', confirmed_slot = 510 WHERE operation_id = $1`, first.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	advanced, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 512), executable, manifestB, catalogA)
+	advanced, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 512), executable, manifestB)
 	if err != nil || advanced.OperationID == first.OperationID {
 		t.Fatalf("a genuinely later epoch did not advance executable identity: %+v %v", advanced, err)
 	}
-	if again, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 513), executable, manifestB, catalogA); err != nil || again.OperationID != advanced.OperationID {
+	if again, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 513), executable, manifestB); err != nil || again.OperationID != advanced.OperationID {
 		t.Fatalf("executable retry under the new epoch did not dedupe: %+v %v", again, err)
 	}
 	holdReleaseRequireError(t,
 		func() error {
-			_, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 514), executable, manifestC, catalogA)
+			_, err := db.RecordDecision(ctx, routeKey, holdReleaseObservation("obs1", 514), executable, manifestC)
 			return err
 		}(),
 		"idempotency identity has different decision evidence")
-	if count := holdReleaseCountRows(t, ctx, db, routeKey); count != 6 {
+	if count := holdReleaseCountRows(t, ctx, db, routeKey); count != 5 {
 		t.Fatalf("executable conflict or retry mutated the journal: rows=%d", count)
 	}
 }
@@ -292,28 +281,27 @@ func TestLatchedManualRecoveryIdentityIgnoresBindingRolloverAgainstDatabase(t *t
 	}
 
 	manifestA, manifestB := strings.Repeat("a", 64), strings.Repeat("b", 64)
-	catalogA, catalogB := strings.Repeat("1", 64), strings.Repeat("2", 64)
 	manual := Decision{Action: HoldManualRecovery, Reason: "custody_mismatch", AmountRaw: 0,
 		IdempotencyKey: fmt.Sprintf("%s:%s", "obs2", "custody_mismatch"), StrategyKey: RouteID}
 
-	originalRecord, err := db.RecordManualRecovery(ctx, routeKey, holdReleaseObservation("obs2", 600), manual, manifestA, catalogA)
+	originalRecord, err := db.RecordManualRecovery(ctx, routeKey, holdReleaseObservation("obs2", 600), manual, manifestA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Full manifest+catalog rollover while the route stays latched: the
+	// Manifest rollover while the route stays latched: the
 	// re-record re-anchors the journal row instead of failing the tick.
-	afterRollover, err := db.RecordManualRecovery(ctx, routeKey, holdReleaseObservation("obs2", 601), manual, manifestB, catalogB)
+	afterRollover, err := db.RecordManualRecovery(ctx, routeKey, holdReleaseObservation("obs2", 601), manual, manifestB)
 	if err != nil {
 		t.Fatalf("latched re-record collided with the pre-rollover stop: %v", err)
 	}
 	if afterRollover.OperationID == originalRecord.OperationID {
 		t.Fatal("the rollover re-record reused the previous binding's identity")
 	}
-	if key, _ := holdReleaseRowIdentity(t, ctx, db, afterRollover.OperationID); key != routeKey+":"+manual.IdempotencyKey+":hold-binding:"+manifestB+":"+catalogB {
+	if key, _ := holdReleaseRowIdentity(t, ctx, db, afterRollover.OperationID); key != routeKey+":"+manual.IdempotencyKey+":hold-binding:"+manifestB {
 		t.Fatalf("re-anchored stop identity is not bound to the new binding: %s", key)
 	}
 	// Retries under the new binding dedupe to the re-anchored row.
-	if retry, err := db.RecordManualRecovery(ctx, routeKey, holdReleaseObservation("obs2", 602), manual, manifestB, catalogB); err != nil || retry.OperationID != afterRollover.OperationID {
+	if retry, err := db.RecordManualRecovery(ctx, routeKey, holdReleaseObservation("obs2", 602), manual, manifestB); err != nil || retry.OperationID != afterRollover.OperationID {
 		t.Fatalf("same-binding latched retry did not dedupe: %+v %v", retry, err)
 	}
 	if count := holdReleaseCountRows(t, ctx, db, routeKey); count != 2 {
@@ -329,7 +317,7 @@ func TestLatchedManualRecoveryIdentityIgnoresBindingRolloverAgainstDatabase(t *t
 		t.Fatalf("the physical latch was mutated by the rebinding: %+v", latch)
 	}
 	// The generation-gated re-record still passes the unchanged fence.
-	if gated, err := db.RecordManualRecoveryAtGeneration(ctx, routeKey, holdReleaseObservation("obs2", 603), manual, manifestB, catalogB, 0); err != nil || gated.OperationID != afterRollover.OperationID {
+	if gated, err := db.RecordManualRecoveryAtGeneration(ctx, routeKey, holdReleaseObservation("obs2", 603), manual, manifestB, 0); err != nil || gated.OperationID != afterRollover.OperationID {
 		t.Fatalf("generation-gated re-record failed across a binding rollover: %+v %v", gated, err)
 	}
 	if count := holdReleaseCountRows(t, ctx, db, routeKey); count != 2 {

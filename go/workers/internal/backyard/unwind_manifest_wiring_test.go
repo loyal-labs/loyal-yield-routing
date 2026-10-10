@@ -17,7 +17,7 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	defer cancel()
 	defer db.Close()
 	key := fmt.Sprintf("selector-auto-unwind-%d", time.Now().UnixNano())
-	manifest := autoInitializerFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	embedded, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -66,16 +66,11 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	if err = applyUnwindIntentWithLane(&s, got, selectorLane); err == nil {
 		t.Fatal("embedded apply accepted the candidate source")
 	}
-	if err = applyUnwindIntentWithLane(&s, got, manifest.selectorEntryLaneAllowed); err != nil || !s.Unwind {
+	if err = applyUnwindIntentWithLane(&s, got, selectorOrAutoLane); err != nil || !s.Unwind {
 		t.Fatalf("manifest apply did not arm the unwind: %v", err)
 	}
-	// Planning read, both binding states: the explicit absent fixture (the
-	// shipped pre-install state) refuses the candidate unwind, the reviewed
-	// manifest decodes it exactly, and the embedded manifest — which carries
-	// the installed binding after the release — decodes it identically.
-	if _, err := restarted.readRoutePlanningStateOnManifest(ctx, autoAbsentBindingManifest(t), key, false); err == nil {
-		t.Fatal("absent binding planning read accepted the candidate unwind")
-	}
+	// Planning read: the reviewed manifest decodes the candidate unwind
+	// exactly, and the embedded manifest decodes it identically.
 	planning, err := restarted.readRoutePlanningStateOnManifest(ctx, manifest, key, false)
 	if err != nil || planning.unwind == nil || *planning.unwind != intent {
 		t.Fatalf("manifest planning read lost the candidate unwind: %+v %v", planning, err)

@@ -7,7 +7,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Used both immediately after the proposed payoff (cost-only poststate) and
@@ -30,7 +29,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	slot, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply}, s.Slot)
+	_, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply}, s.Slot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -77,19 +76,11 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	withdrawal, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, uint64(s.PositionCollateralRaw), blockhash, s.RouteLane)
+	withdrawal, err := manifest.kaminoPacketForRoute(post.policies, DeleverRouteStep, kaminoLegWithdraw, uint64(s.PositionCollateralRaw), blockhash, s.RouteLane)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
 	withdrawal.ObligationReserves = []string{route.Kamino.CollateralReserve}
-	_, policies, err := confirmedAccounts(ctx, rpc, []string{withdrawal.Policy}, slot)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	policy := accountAt(policies, withdrawal.Policy)
-	if policy.Owner != squads.ProgramID.String() || policy.Lamports == 0 || policy.Executable || sha256Bytes(policy.Data) != withdrawal.PolicyAccountDataSHA256 {
-		return phase3BridgeAdmission{}, budgetHold("payoff_withdrawal_policy_drift")
-	}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
 	if funding != nil {
 		if !afterPayoff || !isPayoffFundingAction(funding.Request.Action) || funding.Request.RouteLane != s.RouteLane ||

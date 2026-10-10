@@ -63,6 +63,10 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 		t.Fatal("probe slot unavailable")
 	}
 	addresses := map[string]bool{budgetClockAddress: true}
+	installed, err := observeInstalledPolicies(ctx, rpc, slot)
+	if err != nil {
+		t.Fatal("probe policies unavailable")
+	}
 	policies := map[string]string{}
 	rows := []any{}
 	amount := uint64(900_000) // 0.9 USDC, controlled local input only, not admission proof.
@@ -70,11 +74,12 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 		d := Decision{Action: action, AmountRaw: int64(amount), StrategyKey: ethenaUSDePYUSD.Lane}
 		transport := &jupiterProbeTransport{}
 		client, _ := jupiter.NewClient(jupiter.LiteBase, "", &http.Client{Timeout: 20 * time.Second, Transport: transport})
-		e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, d, amount, 0, slot)
+		e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, installed, d, amount, 0, slot)
 		if err != nil {
-			binding, _ := catalogJupiterBindingForRoute(action, ethenaUSDePYUSD.Lane)
+			bindingEdges, bindingLeg, _ := catalogEdge(action, ethenaUSDePYUSD.Lane)
+			binding := bindingEdges[bindingLeg]
 			data, _ := base64.StdEncoding.DecodeString(transport.lastInstruction.Data)
-			t.Logf("public layout diagnostic: bytes=%d expected=%d instructionData=%x binding=%+v", len(data), binding.FeeOffset+1, data, binding)
+			t.Logf("public layout diagnostic: bytes=%d expected=%d instructionData=%x binding=%+v", len(data), binding.feeAt()+1, data, binding)
 			// RPC transport errors can contain endpoint credentials. Keep only
 			// local Jupiter validation messages; never print the wrapped error.
 			boundary := regexp.MustCompile(`unsigned message does not fit the single-signer packet envelope|fresh Jupiter header does not match the manifest binding|HOLD: [a-z_]+|Jupiter (?:instruction does not match installed edge economics or layout|catalog account boundary [0-9]+ drifted|route requires unapproved companion instructions|message requires unsupported construction|packet is [0-9]+ bytes, exceeds [0-9]+|returned invalid HTTP [0-9]+ response)`).FindString(err.Error())
@@ -116,14 +121,19 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 		for _, table := range e.Request.LookupTables {
 			addresses[table.Address] = true
 		}
-		binding, err := catalogJupiterBindingForRoute(action, ethenaUSDePYUSD.Lane)
+		bindingEdges, bindingLeg, err := catalogEdge(action, ethenaUSDePYUSD.Lane)
 		if err != nil {
 			t.Fatal(err)
 		}
-		policies[e.Request.Policy] = e.Request.PolicyAccountDataSHA256
+		binding := bindingEdges[bindingLeg]
+		key, _, err := jupiterPolicyLeg(ethenaUSDePYUSD.Lane, action, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policies[e.Request.Policy] = key.String()
 		rows = append(rows, map[string]any{"action": action, "request": e.Request, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire),
-			"source": binding.SourceCustody, "destination": binding.DestinationCustody, "amountRaw": amount, "minimumOutputRaw": e.Request.MinimumOutputRaw,
-			"instructionDataBase64": e.Request.Instruction.Data, "amountOffset": binding.AmountOffset, "policyMaximumInputRaw": binding.MaxInputRaw})
+			"source": binding.from.custody.String(), "destination": binding.to.custody.String(), "amountRaw": amount, "minimumOutputRaw": e.Request.MinimumOutputRaw,
+			"instructionDataBase64": e.Request.Instruction.Data, "amountOffset": binding.amountAt()})
 		amount = e.Request.MinimumOutputRaw
 	}
 	keys := []string{}

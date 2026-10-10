@@ -3,7 +3,6 @@ package backyard
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"math"
@@ -15,14 +14,11 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// ObserveConfirmedRouteSnapshot extends the bridge snapshot with the fixed
-// PRIME/USDC position, PRIME custody, and exact installed policy bytes. A
-// manifest entry alone never makes a route ready: every referenced policy is
-// read at the same confirmed slot and matched by owner and data hash.
+// ObserveConfirmedRouteSnapshot extends the bridge snapshot with the route's
+// position and custody. It reads no policy: a build reads the policies it
+// executes through, and Squads checks them on chain.
 func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, manifest RouteManifest) (Observation, error) {
 	observation, _, err := observeConfirmedRouteSnapshotWithRPCAccounts(ctx, rpc, manifest)
 	return observation, err
@@ -221,7 +217,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if (errors.Is(reserveErr, errKaminoReserveStale) || usdcReferenceStale) && runtime.refreshValuation != nil {
 			captureAddresses := addresses
 			if manifest.selectorObservation {
-				captureAddresses = selectorValuationPolicyAddresses(manifest, route, selectorValuationAddresses(route, addresses))
+				captureAddresses = selectorValuationAddresses(route, addresses)
 			}
 			refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, route, captureAddresses, slot)
 			if refreshErr == nil {
@@ -358,7 +354,6 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if idle.Raw > math.MaxInt64 || strategy.Raw > math.MaxInt64 || squads.Raw > math.MaxInt64 {
 			return Observation{}, nil, fmt.Errorf("bridge custody exceeds signed decision range")
 		}
-		ready, exit := liveRuntimePolicyReadiness(manifest, route, accounts)
 		ltv, err := observedLTVBPS(position)
 		if err != nil {
 			return Observation{}, nil, err
@@ -441,15 +436,13 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 		base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
 		base.Snapshot.PolicyLimitRaw = int64(strategyTwoBridgeLegCapRaw)
-		base.Snapshot.PolicyReady = ready
-		base.Snapshot.ExitBuildable = exit
 		observedAt := runtime.now()
 		if err := applyRouteNAVSnapshot(&base.Snapshot, nav, observedAt); err != nil {
 			return Observation{}, nil, err
 		}
 		base.Snapshot.ObservationID = routeEconomicObservationID(
 			base.Snapshot.ObservationID, prime.Raw, position.CollateralDepositedRaw, position.DebtRaw,
-			ready, exit, position.BorrowUtilizationBlocked,
+			position.BorrowUtilizationBlocked,
 			nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, pairEntryUSDC,
 		)
 		if route.Kamino.DebtMint != bridgeUSDC || selectorLane(route.Lane) {
@@ -521,18 +514,6 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	}
 	addressSet[route.DebtFeeReceiver] = struct{}{}
 	if catalogJupiterRoute(route.Lane) {
-		pins, pinErr := catalogRoutePolicyPins(route, manifest)
-		// An absent or invalid AUTO binding fails AUTO readiness below without
-		// any legacy fallback, but it must not tear down the rest of the
-		// confirmed batch: the candidate route keeps observing its protocol
-		// and NAV identities while the readiness gate reports the hold.
-		// Installed catalog lanes keep the stricter abort on a broken graph.
-		if pinErr != nil && route.Lane != autoAUTOPYUSD.Lane {
-			return nil
-		}
-		for address := range pins {
-			addressSet[address] = struct{}{}
-		}
 		addressSet[route.CollateralLiquiditySupply] = struct{}{}
 		addressSet[route.DebtLiquiditySupply] = struct{}{}
 	}
@@ -543,76 +524,12 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
 		addressSet[address] = struct{}{}
 	}
-	for address := range manifest.runtimePolicyObservationSet() {
-		addressSet[address] = struct{}{}
-	}
-	for _, address := range route.PolicyAccounts {
-		addressSet[address] = struct{}{}
-	}
-	if route.BasicPolicy {
-		for _, address := range manifest.PolicyCatalog.PolicyAccounts {
-			addressSet[address] = struct{}{}
-		}
-	} else if route.Lane == SelectedRouteID {
-		for _, address := range mapleKaminoPolicyAccounts() {
-			addressSet[address] = struct{}{}
-		}
-	}
 	addresses := make([]string, 0, len(addressSet))
 	for address := range addressSet {
 		addresses = append(addresses, address)
 	}
 	sort.Strings(addresses)
 	return addresses
-}
-
-func liveRuntimePolicyReadiness(manifest RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount) (bool, bool) {
-	if catalogJupiterRoute(route.Lane) {
-		pins, err := catalogRoutePolicyPins(route, manifest)
-		if err != nil {
-			return false, false
-		}
-		for address, pin := range pins {
-			account := accountAt(accounts, address)
-			if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 ||
-				!maskedPolicyDigestMatches(account.Data, pin.mask, pin.digest) {
-				return false, false
-			}
-		}
-		return true, true
-	}
-	if route.Lane == RouteID {
-		return manifest.livePrimeUSDCPolicyReadiness(accounts)
-	}
-	if route.BasicPolicy {
-		families := []BasicPolicyFamily{BasicCollateralLifecycle, BasicDebtLifecycle, BasicSwapRoutesA, BasicSwapRoutesB}
-		ready := true
-		for _, family := range families {
-			binding, hash, err := manifest.basicPolicyBinding(family)
-			if err != nil {
-				return false, false
-			}
-			account := accountAt(accounts, binding.Policy)
-			if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
-				ready = false
-			}
-		}
-		return ready, ready
-	}
-	for action, address := range route.PolicyAccounts {
-		account := accountAt(accounts, address)
-		if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != route.PolicyHashes[action] {
-			return false, false
-		}
-	}
-	for address, hash := range mapleKaminoPolicyHashes() {
-		account := accountAt(accounts, address)
-		if account.Owner != squads.ProgramID.String() || account.Executable || account.Lamports == 0 || sha256Bytes(account.Data) != hash {
-			return false, false
-		}
-	}
-	complete := len(route.PolicyAccounts) == 4 && len(mapleKaminoPolicyHashes()) == 4
-	return complete, complete
 }
 
 // Market unavailability closes entry, but cannot invalidate independently
@@ -798,12 +715,12 @@ func topupDepositRoomUSDC(accounts []ConfirmedAccount, route RuntimeRoute) (uint
 func routeEconomicObservationID(
 	bridgeObservationID string,
 	primeRaw, collateralRaw, debtRaw uint64,
-	policyReady, exitBuildable, borrowUtilizationBlocked bool,
+	borrowUtilizationBlocked bool,
 	strategyNAVRaw, priorReportedNAVRaw, capacityRaw uint64,
 ) string {
 	stateHash := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s|prime:%d|collateral:%d|debt:%d|policy:%t|exit:%t|borrow-utilization-blocked:%t|strategy-nav:%d|reported-nav:%d|capacity:%d",
-		bridgeObservationID, primeRaw, collateralRaw, debtRaw, policyReady, exitBuildable,
+		"%s|prime:%d|collateral:%d|debt:%d|borrow-utilization-blocked:%t|strategy-nav:%d|reported-nav:%d|capacity:%d",
+		bridgeObservationID, primeRaw, collateralRaw, debtRaw,
 		borrowUtilizationBlocked, strategyNAVRaw, priorReportedNAVRaw, capacityRaw,
 	)))
 	return fmt.Sprintf("%x", stateHash[:])
@@ -881,128 +798,6 @@ func decodePinnedPrime(account ConfirmedAccount) (DecodedTokenCustody, error) {
 		return DecodedTokenCustody{}, fmt.Errorf("PRIME custody envelope drifted")
 	}
 	return DecodeTokenCustody(account.Owner, account.Data, mint, authority)
-}
-
-// runtimePolicyObservationSet lists the policy accounts whose presence the
-// runtime observation must request, regardless of digest.
-func (m RouteManifest) runtimePolicyObservationSet() map[string]string {
-	wanted, _ := m.requiredPrimeUSDCPolicyHashes()
-	return wanted
-}
-
-// requiredPrimeUSDCPolicyHashes maps each policy account to the digest its
-// bytes must hash to, plus the masked-byte spans that digest excludes. Only
-// the bridge policies carry a mask; the rest compare as the raw digest.
-func (m RouteManifest) requiredPrimeUSDCPolicyHashes() (map[string]string, map[string][][2]int64) {
-	wanted := map[string]string{}
-	masks := map[string][][2]int64{}
-	for _, binding := range m.RuntimeBindings.BridgePolicies {
-		if validSHA256(binding.NormalizedDigest) {
-			if prior, exists := wanted[binding.Account]; !exists || prior == binding.NormalizedDigest {
-				wanted[binding.Account] = binding.NormalizedDigest
-				masks[binding.Account] = binding.MaskedByteRanges
-			} else {
-				wanted[binding.Account] = ""
-			}
-		}
-	}
-	for _, binding := range m.RuntimeBindings.PrimeUSDC.Packets {
-		if _, err := decodeKey(binding.Policy); err == nil && validSHA256(binding.PolicyAccountDataSHA256) {
-			if prior, exists := wanted[binding.Policy]; !exists || prior == binding.PolicyAccountDataSHA256 {
-				wanted[binding.Policy] = binding.PolicyAccountDataSHA256
-			} else {
-				wanted[binding.Policy] = ""
-			}
-		}
-	}
-	for _, binding := range m.RuntimeBindings.PrimeUSDC.SwapPolicies {
-		if _, err := decodeKey(binding.Policy); err == nil && validSHA256(binding.PolicyAccountDataSHA256) {
-			if prior, exists := wanted[binding.Policy]; !exists || prior == binding.PolicyAccountDataSHA256 {
-				wanted[binding.Policy] = binding.PolicyAccountDataSHA256
-			} else {
-				wanted[binding.Policy] = ""
-			}
-		}
-	}
-	return wanted, masks
-}
-
-func (m RouteManifest) livePrimeUSDCPolicyReadiness(accounts []ConfirmedAccount) (bool, bool) {
-	wanted, masks := m.requiredPrimeUSDCPolicyHashes()
-	installed := map[string]bool{}
-	for address, hash := range wanted {
-		account := accountAt(accounts, address)
-		installed[address] = hash != "" && account.Address == address && account.Owner == squads.ProgramID.String() && !account.Executable && account.Lamports > 0 && maskedPolicyDigestMatches(account.Data, masks[address], hash)
-	}
-	kaminoReady := len(m.RuntimeBindings.PrimeUSDC.Packets) == 4
-	bridgeReady := len(m.RuntimeBindings.BridgePolicies) == 4
-	for _, binding := range m.RuntimeBindings.BridgePolicies {
-		if !installed[binding.Account] {
-			bridgeReady = false
-		}
-	}
-	seenLegs := map[kaminoPrimeUSDCLeg]bool{}
-	for _, binding := range m.RuntimeBindings.PrimeUSDC.Packets {
-		if !installed[binding.Policy] {
-			kaminoReady = false
-			continue
-		}
-		data, err := decodeManifestPacketData(binding.DataBase64)
-		if err != nil {
-			kaminoReady = false
-			continue
-		}
-		leg := manifestPacketLeg(data)
-		expectedAction := OpenPrimeUSDCStep
-		if leg == kaminoLegRepay || leg == kaminoLegWithdraw {
-			expectedAction = DeleverPrimeUSDCStep
-		}
-		if leg == 0 || seenLegs[leg] || binding.Action != expectedAction || binding.PolicyConstraintIndex != 0 {
-			kaminoReady = false
-		} else {
-			seenLegs[leg] = true
-		}
-	}
-	forward, reverse := false, false
-	if binding, err := m.jupiterPolicy(SwapUSDCToPrimeStep); err == nil {
-		forward = installed[binding.Policy]
-	}
-	if binding, err := m.jupiterPolicy(SwapPrimeToUSDCStep); err == nil {
-		reverse = installed[binding.Policy]
-	}
-	return bridgeReady && kaminoReady && forward, bridgeReady && kaminoReady && reverse
-}
-
-func decodeManifestPacketData(value string) ([]byte, error) {
-	// primeUSDCPacket performs the full account-vector validation at build time;
-	// readiness only needs the frozen discriminator to prove all four legs exist.
-	data, err := base64Strict(value)
-	if err != nil || len(data) != 16 {
-		return nil, fmt.Errorf("invalid manifest packet data")
-	}
-	return data, nil
-}
-
-func base64Strict(value string) ([]byte, error) {
-	return base64.StdEncoding.Strict().DecodeString(value)
-}
-
-func manifestPacketLeg(data []byte) kaminoPrimeUSDCLeg {
-	if len(data) < 8 {
-		return 0
-	}
-	switch {
-	case bytesEqual(data[:8], kamino.DepositV2Discriminator[:]):
-		return kaminoLegDeposit
-	case bytesEqual(data[:8], kamino.BorrowV2Discriminator[:]):
-		return kaminoLegBorrow
-	case bytesEqual(data[:8], kamino.RepayV2Discriminator[:]):
-		return kaminoLegRepay
-	case bytesEqual(data[:8], kamino.WithdrawV2Discriminator[:]):
-		return kaminoLegWithdraw
-	default:
-		return 0
-	}
 }
 
 func observedLTVBPS(position KaminoPosition) (int64, error) {

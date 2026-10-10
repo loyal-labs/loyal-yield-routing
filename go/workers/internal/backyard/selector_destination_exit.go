@@ -243,7 +243,7 @@ func selectorPayoffFundingSize(debtUpper, released, probeMinimumOutput uint64) (
 // rounding balance is manufactured. Receipts beyond the guarantee are
 // ResidualReceiptsRaw: an upper uncertainty bound, unproven now, left for a
 // refreshed continuation pass instead of being wired on today's evidence.
-func selectorDestinationExit(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, route RuntimeRoute, accounts []ConfirmedAccount, position KaminoPosition, slot, observationFloor int64, entryDeposit, redepositDeposit, initial, redeposit, borrow, fee, rounding uint64) (selectorDestinationPayoff, error) {
+func selectorDestinationExit(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, policies installedPolicies, route RuntimeRoute, accounts []ConfirmedAccount, position KaminoPosition, slot, observationFloor int64, entryDeposit, redepositDeposit, initial, redeposit, borrow, fee, rounding uint64) (selectorDestinationPayoff, error) {
 	var empty selectorDestinationPayoff
 	if initial <= 1 || redeposit <= 1 || initial-1 > math.MaxUint64-(redeposit-1) || borrow > math.MaxUint64-fee {
 		return empty, budgetHold("selector_destination_exit_amount_invalid")
@@ -266,7 +266,7 @@ func selectorDestinationExit(ctx context.Context, rpc *chain.Client, client *jup
 	}
 	released := allowance - 2*rounding
 	if route.Kamino.DebtMint == bridgeUSDC {
-		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(released), StrategyKey: route.Lane}, released, 0, observationFloor)
+		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(released), StrategyKey: route.Lane}, released, 0, observationFloor)
 		if err != nil {
 			return empty, err
 		}
@@ -306,7 +306,7 @@ func selectorDestinationExit(ctx context.Context, rpc *chain.Client, client *jup
 	// at the sized input: the guarantee is the second quote's own minimum
 	// output, and the guaranteed residue is that minimum minus the maximum
 	// repayment.
-	probe, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToDebtStep, AmountRaw: int64(released), StrategyKey: route.Lane}, released, 0, observationFloor)
+	probe, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapCollateralToDebtStep, AmountRaw: int64(released), StrategyKey: route.Lane}, released, 0, observationFloor)
 	if err != nil {
 		return empty, err
 	}
@@ -346,7 +346,7 @@ func selectorDestinationExit(ctx context.Context, rpc *chain.Client, client *jup
 	if fundingLiquidity > math.MaxInt64 {
 		return empty, budgetHold("selector_destination_payoff_amount_overflow")
 	}
-	funding, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToDebtStep, AmountRaw: int64(sized), StrategyKey: route.Lane}, fundingLiquidity, 0, observationFloor)
+	funding, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapCollateralToDebtStep, AmountRaw: int64(sized), StrategyKey: route.Lane}, fundingLiquidity, 0, observationFloor)
 	if err != nil {
 		return empty, err
 	}
@@ -400,7 +400,7 @@ func selectorDestinationExit(ctx context.Context, rpc *chain.Client, client *jup
 		// producer fails closed with a typed hold exactly when the normalized
 		// floor is zero; this caller propagates it instead of discarding the
 		// dust or fabricating proceeds for it.
-		converted, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(residue), StrategyKey: route.Lane}, residue, 0, observationFloor)
+		converted, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(residue), StrategyKey: route.Lane}, residue, 0, observationFloor)
 		if err != nil {
 			return empty, err
 		}
@@ -430,7 +430,7 @@ func selectorDestinationExit(ctx context.Context, rpc *chain.Client, client *jup
 		if err != nil {
 			return empty, err
 		}
-		exitReturn, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(fullReturn), StrategyKey: route.Lane}, custody, residueProceeds, observationFloor)
+		exitReturn, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(fullReturn), StrategyKey: route.Lane}, custody, residueProceeds, observationFloor)
 		if err != nil {
 			return empty, err
 		}

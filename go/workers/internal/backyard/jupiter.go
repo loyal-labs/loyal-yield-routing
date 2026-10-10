@@ -33,21 +33,20 @@ type JupiterSwapInstruction struct {
 }
 
 type JupiterSwapRequest struct {
-	Action                  Action
-	AmountRaw               uint64
-	QuotedOutputRaw         uint64
-	MinimumOutputRaw        uint64
-	Policy                  string
-	PolicyAccountDataSHA256 string
-	PolicyConstraintIndex   byte
-	Instruction             JupiterSwapInstruction
-	RecentBlockhash         string
-	LastValidBlockHeight    int64
-	RouteLane               string
-	LookupTables            []LookupTableSnapshot `json:",omitempty"`
-	FullPayoffFunding       bool                  `json:"fullPayoffFunding,omitempty"`
-	EntryReturnReserved     bool                  `json:"entryReturnReserved,omitempty"`
-	PositionReturnReserved  bool                  `json:"positionReturnReserved,omitempty"`
+	Action           Action
+	AmountRaw        uint64
+	QuotedOutputRaw  uint64
+	MinimumOutputRaw uint64
+	// Policy is the installed account of the swap's policy (jupiterPolicyLeg).
+	Policy                 string
+	Instruction            JupiterSwapInstruction
+	RecentBlockhash        string
+	LastValidBlockHeight   int64
+	RouteLane              string
+	LookupTables           []LookupTableSnapshot `json:",omitempty"`
+	FullPayoffFunding      bool                  `json:"fullPayoffFunding,omitempty"`
+	EntryReturnReserved    bool                  `json:"entryReturnReserved,omitempty"`
+	PositionReturnReserved bool                  `json:"positionReturnReserved,omitempty"`
 	// TopupReturnReserved marks an entry swap beside a funded debt-free
 	// position (plan B3). It is set only for the journaled top-up reason and
 	// always together with EntryReturnReserved.
@@ -68,8 +67,8 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 		lane = RouteID
 	}
 	if lane == autoAUTOPYUSD.Lane {
-		// AUTO edges resolve from the route's own reviewed identities; the
-		// historical catalog entry is never consulted for the candidate lane.
+		// AUTO edges resolve from the route's own reviewed identities, never
+		// from a catalog swap policy.
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			return "", "", "", "", err
@@ -77,8 +76,9 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 		return autoSwapEdge(route, action)
 	}
 	if catalogJupiterRoute(lane) {
-		b, err := catalogJupiterBindingForRoute(action, lane)
-		return b.SourceMint, b.DestinationMint, b.SourceCustody, b.DestinationCustody, err
+		edges, leg, err := catalogEdge(action, lane)
+		edge := edges[leg]
+		return edge.from.mint.String(), edge.to.mint.String(), edge.from.custody.String(), edge.to.custody.String(), err
 	}
 	if lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID && lane != "OnRe/ONyc/USDC" {
 		return "", "", "", "", fmt.Errorf("unregistered Jupiter lane")
@@ -118,16 +118,13 @@ func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string,
 	request := jupiter.QuoteRequest{InputMint: sourceMint, OutputMint: destinationMint, Amount: amount, SlippageBPS: jupiterMaxSlippageBPS, MaxAccounts: 32}
 	useSharedAccounts := true
 	if catalogJupiterRoute(lane) && lane != autoAUTOPYUSD.Lane {
-		// AUTO's dialect is fixed by its reviewed policy shape (legacy
-		// SharedAccountsRoute), not by the historical catalog entries.
-		binding, err := catalogJupiterBindingForRoute(action, lane)
+		// AUTO's dialect is its one policy's (legacy SharedAccountsRoute); a
+		// catalog edge's is the one its literal admits.
+		edges, leg, err := catalogEdge(action, lane)
 		if err != nil {
 			return jupiter.Quote{}, JupiterSwapInstruction{}, err
 		}
-		if binding.fixedPrefixV2() {
-			request.InstructionVersion = "V2"
-		}
-		useSharedAccounts = binding.DiscriminatorHex == hex.EncodeToString(jupiter.SharedAccountsRouteDiscriminator[:]) || binding.fixedPrefixV2()
+		useSharedAccounts = edges[leg].shared
 	}
 	if lane == SelectedRouteID {
 		// The selected RWA representative was reviewed against Manifest. Keep
@@ -328,20 +325,8 @@ func CompileJupiterMessage(request JupiterSwapRequest) ([]byte, error) {
 	return compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate))
 }
 
-// The production wrapper supplies the embedded reviewed manifest exactly once;
-// the manifest-aware helper below retains that value into AUTO policy
-// validation so a candidate binding never depends on a reload inside the
-// compiler or on request-supplied authorization.
 func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publicKey) ([]byte, error) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return nil, err
-	}
-	return manifest.compileJupiterMessage(request, delegate)
-}
-
-func (m RouteManifest) compileJupiterMessage(request JupiterSwapRequest, delegate publicKey) ([]byte, error) {
-	if request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 || !validSHA256(request.PolicyAccountDataSHA256) {
+	if request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Jupiter request")
 	}
 	blockhash, err := decodeKey(request.RecentBlockhash)
@@ -355,37 +340,20 @@ func (m RouteManifest) compileJupiterMessage(request JupiterSwapRequest, delegat
 	if err := jupiterValidateAutoRetainedMinimum(request); err != nil {
 		return nil, err
 	}
-	if request.RouteLane == autoAUTOPYUSD.Lane {
-		// Retention point: the reviewed AUTO binding supplied on m decides,
-		// never the request and never the catalog.
-		if err := m.requireAutoJupiterBinding(request); err != nil {
+	if request.RouteLane == RouteID || request.RouteLane == "" {
+		if err := validateInstalledJupiterHeader(request.Action, request.Instruction); err != nil {
 			return nil, err
 		}
-	} else if catalogJupiterRoute(request.RouteLane) {
-		b, err := catalogJupiterBindingForRoute(request.Action, request.RouteLane)
-		if err != nil || request.Policy != b.Policy || request.PolicyAccountDataSHA256 != b.PolicySHA256 || request.PolicyConstraintIndex != b.ConstraintIndex {
-			return nil, fmt.Errorf("Jupiter policy does not match catalog edge")
-		}
-	} else if request.RouteLane == PhaseOneLaneID || request.RouteLane == SelectedRouteID || request.RouteLane == "OnRe/ONyc/USDC" {
-		_, _, sourceCustody, destinationCustody, err := jupiterEdgeForRoute(request.Action, request.RouteLane)
-		if err != nil {
-			return nil, err
-		}
-		binding, index, err := resolveBasicSwapPolicy(sourceCustody, destinationCustody)
-		if err != nil || request.Policy != binding.Policy || request.PolicyConstraintIndex != index {
-			return nil, fmt.Errorf("Jupiter policy does not match the basic swap family")
-		}
-	} else if request.RouteLane != PhaseOneLaneID && request.RouteLane != SelectedRouteID && request.RouteLane != "OnRe/ONyc/USDC" && err == nil {
-		err = validateInstalledJupiterHeader(request.Action, request.Instruction)
-		if err != nil {
-			return nil, err
-		}
+	}
+	_, index, err := jupiterPolicyLeg(request.RouteLane, request.Action, inner.data)
+	if err != nil {
+		return nil, err
 	}
 	policy, err := decodeKey(request.Policy)
 	if err != nil || policy == (publicKey{}) {
-		return nil, fmt.Errorf("invalid Jupiter policy binding")
+		return nil, fmt.Errorf("Jupiter request names no installed policy")
 	}
-	outer, err := wrapSquadsJupiterPolicy(policy, delegate, delegate, request.PolicyConstraintIndex, inner)
+	outer, err := wrapSquadsJupiterPolicy(policy, delegate, delegate, index, inner)
 	if err != nil {
 		return nil, err
 	}
@@ -394,10 +362,9 @@ func (m RouteManifest) compileJupiterMessage(request JupiterSwapRequest, delegat
 	}
 	var message []byte
 	if request.RouteLane == autoAUTOPYUSD.Lane {
-		// AUTO arrives here only through requireAutoJupiterBinding above, so the
-		// reviewed lane carries the canonical ComputeBudget heap frame plus the
-		// canonical compute-unit frame ahead of its already-validated policy
-		// outer — the live default CU meter ran out mid-swap. The v0 path keeps
+		// The AUTO lane carries the canonical ComputeBudget heap frame plus the
+		// canonical compute-unit frame ahead of its policy outer — the live
+		// default CU meter ran out mid-swap. The v0 path keeps
 		// lookup snapshots and gains both instructions directly; the legacy path
 		// goes through the closed AUTO swap resource wrapper because
 		// compileLegacyMessage still admits exactly one payload instruction.
@@ -419,7 +386,7 @@ func (m RouteManifest) compileJupiterMessage(request JupiterSwapRequest, delegat
 }
 
 func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedJupiterTransaction, error) {
-	if len(executor) != ed25519.PrivateKeySize || request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 || !validSHA256(request.PolicyAccountDataSHA256) {
+	if len(executor) != ed25519.PrivateKeySize || request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 {
 		return SignedJupiterTransaction{}, fmt.Errorf("invalid Jupiter signing material")
 	}
 	feePayer := publicKeyFromBytes(executor.Public().(ed25519.PublicKey))

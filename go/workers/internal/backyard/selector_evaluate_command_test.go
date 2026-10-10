@@ -153,10 +153,10 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_route_states WHERE route_key = $1`, key); err != nil {
 		t.Fatal(err)
 	}
-	manifest := autoInitializerFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	// The release manifest carries the installed binding; the refusing scope
 	// below is the explicit absent fixture (the shipped pre-install state).
-	requireEmbeddedInstalledBinding(t)
+	embeddedTestManifest(t)
 	// Real candidate DB state.
 	state, err := json.Marshal(map[string]any{"generation": 2})
 	if err != nil {
@@ -177,17 +177,10 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 		observe: observe, evaluate: evaluate,
 	}
 
-	// Absent binding: the explicit absent fixture (the shipped pre-install
-	// state) refuses the candidate request before anything connects and the
-	// row is untouched. The embedded manifest's installed binding drives the
-	// same locked evaluation through the read-only dry-run below.
-	refusingDeps := reviewedDeps
-	refusingDeps.manifest = autoAbsentBindingManifest(t)
-	if err = runSelectorEvaluate(ctx, io.Discard, true, refusingDeps); err == nil || !strings.Contains(err.Error(), "invalid_pilot_canary_request") {
-		t.Fatalf("absent binding did not refuse the candidate request: %v", err)
-	}
+	// The embedded manifest drives the same locked evaluation through the
+	// read-only dry-run below.
 	installedDeps := reviewedDeps
-	installedDeps.manifest = requireEmbeddedInstalledBinding(t)
+	installedDeps.manifest = embeddedTestManifest(t)
 	if err = runSelectorEvaluate(ctx, io.Discard, false, installedDeps); err != nil {
 		t.Fatal("installed manifest failed the read-only canary evaluation:", err)
 	}

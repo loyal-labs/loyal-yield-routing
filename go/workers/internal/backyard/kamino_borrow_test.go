@@ -144,7 +144,7 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 	binary.LittleEndian.PutUint64(fee.Data[64:72], 5)
 	accounts = append(accounts, fee)
 	_, _, _, _, rpc, _ := debtResidueAdmissionFixture(t, 20_000, accounts...)
-	r, err := m.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 1000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 1000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}

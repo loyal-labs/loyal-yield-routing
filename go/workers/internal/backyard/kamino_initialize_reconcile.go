@@ -40,8 +40,8 @@ func validateInitializationEffects(e ExpectedEffects) error {
 
 // validateInitializationEffectsOnRoute is the manifest-aware form: identical
 // structural checks, but the embedded admission request is recompiled through
-// the manifest compiler, so an AUTO effect only validates when its request
-// matches the reviewed binding. Installed selector lanes keep the exact public
+// the manifest compiler, which admits the AUTO lane. Installed selector lanes
+// keep the exact public
 // path; reconcile.go keeps calling the public function unchanged.
 func (m RouteManifest) validateInitializationEffects(e ExpectedEffects) error {
 	if err := validateInitializationEffectsShape(e); err != nil {
@@ -57,8 +57,8 @@ func reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransacti
 
 // reconcileKaminoInitialization is the manifest-aware variant: the exact
 // installed reconciler body with only the three admission calls swapped to the
-// explicit reviewed manifest, so a candidate AUTO effect reconciles against the
-// same binding that compiled it. The public form above is unchanged.
+// explicit reviewed manifest, so a candidate AUTO effect reconciles through
+// the compiler that produced it. The public form above is unchanged.
 func (m RouteManifest) reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
 	return reconcileKaminoInitializationAdmission(e, receipt, m.validateInitializationEffects, m.compileKaminoInitializationMessage, m.validateInitializedKaminoObligation)
 }
@@ -148,8 +148,8 @@ func observeInitializerDecisionInstalled(d Decision, r KaminoInitializationReque
 // observeFinalizedKaminoInitialization is the manifest-aware variant: the same
 // receipt observer with the persisted-wire recompilation and the journal
 // decision validation resolved through the explicit reviewed manifest, so
-// recovery re-derives the candidate AUTO wire from the binding that produced
-// it. The public form above is unchanged.
+// recovery re-derives the candidate AUTO wire from its persisted request.
+// The public form above is unchanged.
 func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context, rpc *chain.Client, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
 	return observeFinalizedKaminoInitializationAdmission(ctx, rpc, r, op, m.compileKaminoInitializationMessage, m.validateInitializerDecision)
 }

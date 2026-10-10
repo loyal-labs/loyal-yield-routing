@@ -24,7 +24,6 @@ func initializationPlanningFixture(lane string) Observation {
 	s.Slot = 42
 	s.RouteLane = lane
 	s.StrategyKey = lane
-	s.InitializationPolicyReady = true
 	s.ObligationPresenceKnown = true
 	s.VoltrIdleRaw = 1_000_000
 	s.SelectorEntryEquityRaw = 1_000_000
@@ -41,9 +40,9 @@ func TestInitializationDecisionPreservesRecoveryWithdrawalAndEntryGuards(t *test
 			t.Fatalf("initializer not selected for %s: %+v", lane, d)
 		}
 		for _, mutate := range []func(*Snapshot){
-			func(s *Snapshot) { s.InitializationPolicyReady = false }, func(s *Snapshot) { s.ObligationPresenceKnown = false }, func(s *Snapshot) { s.ObligationPresent = true },
+			func(s *Snapshot) { s.ObligationPresenceKnown = false }, func(s *Snapshot) { s.ObligationPresent = true },
 			func(s *Snapshot) { s.Nonterminal = Signed }, func(s *Snapshot) { s.WithdrawalDemandRaw = 1 }, func(s *Snapshot) { s.Unwind = true }, func(s *Snapshot) { s.SelectorEntryPaused = true },
-			func(s *Snapshot) { s.SquadsIdleRaw = 1 }, func(s *Snapshot) { s.CollateralIdleRaw = 1 }, func(s *Snapshot) { s.PositionDebtRaw = 1 }, func(s *Snapshot) { s.CapacityRaw = 0 }, func(s *Snapshot) { s.PolicyReady = false }, func(s *Snapshot) { s.LiquidationThresholdBPS = TargetLTVBPS + 1500 },
+			func(s *Snapshot) { s.SquadsIdleRaw = 1 }, func(s *Snapshot) { s.CollateralIdleRaw = 1 }, func(s *Snapshot) { s.PositionDebtRaw = 1 }, func(s *Snapshot) { s.CapacityRaw = 0 }, func(s *Snapshot) { s.LiquidationThresholdBPS = TargetLTVBPS + 1500 },
 		} {
 			s := o.Snapshot
 			mutate(&s)
@@ -57,13 +56,7 @@ func TestInitializationDecisionPreservesRecoveryWithdrawalAndEntryGuards(t *test
 func initializationRuntimeRPC(t *testing.T) (*chain.Client, RouteManifest, KaminoInitializationRequest, map[string]ConfirmedAccount) {
 	t.Helper()
 	r, accounts := initializationPrestateFixture(t)
-	m := initializerManifestFixture(t)
-	policy, _ := policySetupAddress(r.PolicySeed)
-	for i, b := range m.RuntimeBindings.MultiplyInitializers {
-		if b.Lane == r.RouteLane {
-			m.RuntimeBindings.MultiplyInitializers[i] = KaminoInitializerBinding{r.RouteLane, r.PolicySeed, encodeBase58(policy[:]), r.PolicyAccountDataSHA256}
-		}
-	}
+	m := embeddedTestManifest(t)
 	rpc := budgetBuildRPC(t, 5000, 42)
 	base := rpcOf(rpc).Transport
 	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -89,7 +82,7 @@ func initializationRuntimeRPC(t *testing.T) (*chain.Client, RouteManifest, Kamin
 		case "getMultipleAccounts":
 			var addresses []string
 			json.Unmarshal(body.Params[0], &addresses)
-			if len(addresses) == 0 || addresses[0] != bridgeSettings {
+			if len(addresses) == 0 || addresses[0] != bridgeDelegate {
 				return base.RoundTrip(req)
 			}
 			values := make([]any, len(addresses))
@@ -110,10 +103,11 @@ func initializationRuntimeRPC(t *testing.T) (*chain.Client, RouteManifest, Kamin
 func TestInitializerPreparationMeasuresNativeFundingAndRefusesAccountRace(t *testing.T) {
 	rpc, m, template, accounts := initializationRuntimeRPC(t)
 	o := initializationPlanningFixture(template.RouteLane)
+	o.policies = testPolicies(t)
 	d := Decide(o.Snapshot)
 	observe := func(context.Context) (Observation, error) { return o, nil }
 	got, r, err := prepareKaminoInitialization(context.Background(), rpc, m, d, observe)
-	if err != nil || got != o || r.RentLamports != template.RentLamports || r.MaximumFeeLamports != 5000 {
+	if err != nil || !reflect.DeepEqual(got, o) || r.RentLamports != template.RentLamports || r.MaximumFeeLamports != 5000 {
 		t.Fatalf("unmeasured initialization: %+v %v", r, err)
 	}
 	route, _ := runtimeRoute(r.RouteLane)
@@ -146,7 +140,7 @@ func TestInitializerBindSendFenceAndExpiryRetirement(t *testing.T) {
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, d, m.SHA256, sha256Bytes([]byte("policies")))})
+	raw, _ := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, d, m.SHA256)})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects) VALUES($1,$2,'decided',$3,$4,$5)`, id, key, d.Action, d.StrategyKey, raw); err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +276,7 @@ func TestWorkerDispatchesInitializationOnlyAfterPersistedBind(t *testing.T) {
 			order = append(order, "prepare")
 			return o, KaminoInitializationRequest{RouteLane: SelectedRouteID}, nil
 		},
-		recordDecision: func(_ context.Context, _ string, _ Observation, got Decision, _, _ string) (DecisionRecord, error) {
+		recordDecision: func(_ context.Context, _ string, _ Observation, got Decision, _ string) (DecisionRecord, error) {
 			if got != d {
 				t.Fatal("decision changed")
 			}
@@ -331,12 +325,9 @@ func TestNonterminalAutoInitializerRestoresOnManifest(t *testing.T) {
 	if _, err := restorePersistedDecision(effects, d.Action, d.IdempotencyKey, d.StrategyKey); err == nil {
 		t.Fatal("embedded restore unexpectedly admits the candidate lane")
 	}
-	m := autoInitializerFixtureManifest(t)
+	m := embeddedTestManifest(t)
 	got, err := restorePersistedDecisionWith(effects, d.Action, d.IdempotencyKey, d.StrategyKey, m.validateDecision)
 	if err != nil || got != d {
 		t.Fatal("manifest restore refused its own AUTO initializer", got, err)
-	}
-	if _, err := restorePersistedDecisionWith(effects, d.Action, d.IdempotencyKey, d.StrategyKey, autoAbsentBindingManifest(t).validateDecision); err == nil {
-		t.Fatal("restore admitted AUTO without its reviewed binding")
 	}
 }

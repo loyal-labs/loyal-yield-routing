@@ -122,7 +122,7 @@ func TestAutoExecutionHeapInstructionRejectsDrift(t *testing.T) {
 		"short data":          {program: canonical.program, data: []byte{1, 0, 0, 1}},
 		"extra byte":          {program: canonical.program, data: []byte{1, 0, 0, 1, 0, 0}},
 		"wrong program":       {program: publicKey(squads.ProgramID), data: []byte{1, 0, 0, 1, 0}},
-		"with account":        {program: canonical.program, accounts: []accountMeta{meta(bridgeVault, false, false)}, data: []byte{1, 0, 0, 1, 0}},
+		"with account":        {program: canonical.program, accounts: []accountMeta{{key: mustKey(bridgeVault)}}, data: []byte{1, 0, 0, 1, 0}},
 	}
 	for name, drifted := range drifts {
 		if isAutoExecutionHeapInstruction(drifted) {
@@ -169,13 +169,13 @@ func TestLegacyPublicCompilerGatesArePreserved(t *testing.T) {
 // back: legacy envelope, canonical heap frame first, then the exact
 // refresh-plus-policy payload, still inside the 1232-byte signed packet.
 func TestAutoKaminoExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
-	manifest := autoFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	delegate := mustKey(bridgeDelegate)
-	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	compiled, err := manifest.compileKaminoMessage(request, delegate)
+	compiled, err := compileKaminoMessageForDelegate(request, delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestAutoKaminoExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 		t.Fatalf("AUTO Kamino packet %d exceeds %d", len(compiled)+65, solanaPacketBytes)
 	}
 	t.Logf("AUTO Kamino execution message = %d bytes (+65 signature = %d of %d packet bytes)", len(compiled), len(compiled)+65, solanaPacketBytes)
-	again, err := manifest.compileKaminoMessage(request, delegate)
+	again, err := compileKaminoMessageForDelegate(request, delegate)
 	if err != nil || !bytes.Equal(compiled, again) {
 		t.Fatal("AUTO Kamino compile is not deterministic")
 	}
@@ -219,10 +219,9 @@ func TestAutoKaminoExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 // both lead with the canonical heap frame, and the oversized edge stays
 // fail-closed without hints.
 func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
-	manifest := autoFixtureManifest(t)
 	delegate := mustKey(bridgeDelegate)
 	request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 0)
-	legacy, err := manifest.compileJupiterMessage(request, delegate)
+	legacy, err := compileJupiterMessageForDelegate(request, delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +236,7 @@ func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 	t.Logf("AUTO Jupiter legacy execution message = %d bytes (+65 signature = %d of %d packet bytes)", len(legacy), len(legacy)+65, solanaPacketBytes)
 
 	oversized := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-10)
-	if _, err := manifest.compileJupiterMessage(oversized, delegate); err == nil || !strings.Contains(err.Error(), "unsigned message does not fit") {
+	if _, err := compileJupiterMessageForDelegate(oversized, delegate); err == nil || !strings.Contains(err.Error(), "unsigned message does not fit") {
 		t.Fatalf("oversized hintless AUTO edge compiled: %v", err)
 	}
 	fillers := make([]string, 0, len(oversized.Instruction.Accounts))
@@ -250,7 +249,7 @@ func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 	table := autoFixtureLookupTable(t, fillers)
 	oversized.Instruction.LookupTableAddresses = []string{table.Address}
 	oversized.LookupTables = []LookupTableSnapshot{table}
-	v0, err := manifest.compileJupiterMessage(oversized, delegate)
+	v0, err := compileJupiterMessageForDelegate(oversized, delegate)
 	if err != nil || v0[0] != 0x80 || v0[1] != 1 {
 		t.Fatalf("AUTO v0 leg failed: %v", err)
 	}
@@ -296,8 +295,7 @@ func TestAutoInitializerExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T
 	// Squads instruction, no ComputeBudget key anywhere.
 	installed := request
 	installed.RouteLane = PhaseOneLaneID
-	installed.PolicySeed = 141
-	installed.PolicyAccountDataSHA256 = sha256Bytes([]byte("local candidate policy; hash does not enter wire"))
+	installed.Policy = testPolicyAccount(policyKey{lane: PhaseOneLaneID, action: InitializeKaminoObligation})
 	public, err := CompileKaminoInitializationMessage(installed)
 	if err != nil {
 		t.Fatal(err)
@@ -401,15 +399,15 @@ func signTestWire(t *testing.T, key []byte, message []byte) []byte {
 // every mutation — stripped, reordered, duplicated, non-canonical, or an
 // arbitrary compute instruction — fails closed.
 func TestAutoSignedWireValidatesThroughTheDecodeGate(t *testing.T) {
-	manifest := autoFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	delegateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{31}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(delegateKey.Public().(ed25519.PublicKey))
 
-	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, err := manifest.compileKaminoMessage(request, delegate)
+	message, err := compileKaminoMessageForDelegate(request, delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +480,7 @@ func TestAutoSignedWireValidatesThroughTheDecodeGate(t *testing.T) {
 	}
 
 	jupiter := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 0)
-	jupiterMessage, err := manifest.compileJupiterMessage(jupiter, delegate)
+	jupiterMessage, err := compileJupiterMessageForDelegate(jupiter, delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +508,7 @@ func TestAutoVersionedWireValidatesThroughTheDecodeGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), delegate, delegate, request.PolicyConstraintIndex, inner)
+	outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), delegate, delegate, autoSwapToCollateral, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,15 +581,15 @@ func signedTestBuildResult(t *testing.T, key ed25519.PrivateKey, message []byte)
 // unknown message version is rejected, and retained signature/hash checks still
 // fire on both routes.
 func TestAutoPersistedBuildResultValidationRoutesByWireVersion(t *testing.T) {
-	manifest := autoFixtureManifest(t)
+	manifest := embeddedTestManifest(t)
 	delegateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{33}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(delegateKey.Public().(ed25519.PublicKey))
 
-	request, err := manifest.kaminoPacketForRoute(OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyMessage, err := manifest.compileKaminoMessage(request, delegate)
+	legacyMessage, err := compileKaminoMessageForDelegate(request, delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -621,7 +619,7 @@ func TestAutoPersistedBuildResultValidationRoutesByWireVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer, err := wrapSquadsJupiterPolicy(mustKey(v0Request.Policy), delegate, delegate, v0Request.PolicyConstraintIndex, inner)
+	outer, err := wrapSquadsJupiterPolicy(mustKey(v0Request.Policy), delegate, delegate, autoSwapToCollateral, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
