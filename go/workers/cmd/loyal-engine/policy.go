@@ -16,31 +16,45 @@ import (
 )
 
 const policyUsage = `usage: loyal-engine policy apply|check klend --settings <settings> --reserve <reserve> [flags]
+       loyal-engine policy apply|check swap --settings <settings> --from <mint> --to <mint> --amount <raw> [flags]
        loyal-engine policy remove --settings <settings> --policies <a,b,...> [--send]
+       loyal-engine policy addresses --settings <settings> [--vault-index N] [--mint <mint> ...]
   apply: install the product's policy (simulates; --send lands it). Needs --delegate and
          credential POLICY_SETTINGS_SIGNER, the Settings' one signer, who pays.
   check: run each op (or --op N) through the installed policy (simulates; --send lands them in order).
          Needs credential POLICY_DELEGATE, the policy's delegate, who pays.
   remove: remove the policies in one settings transaction (simulates; --send lands it).
          Needs credential POLICY_SETTINGS_SIGNER.
-  All read credential SOLANA_RPC_URL.`
+  addresses: print the vault, its ATAs of the mints with balances, and the installed policies.
+  All read credential SOLANA_RPC_URL; swap reads JUPITER_API_KEY when it is set.`
 
 // runPolicy is the developer loop for a policy: apply it, check it, remove
-// it, against the real chain.
+// it, against the real chain, and the addresses it is about.
 func runPolicy(ctx context.Context, args []string, out io.Writer) error {
-	if len(args) < 1 || (args[0] != "remove" && (len(args) < 2 || args[1] != "klend")) {
+	if len(args) < 1 {
 		return errors.New(policyUsage)
 	}
-	act, rest := args[0], args[1:]
-	if act != "remove" {
-		rest = args[2:]
+	act, product, rest := args[0], "", args[1:]
+	switch act {
+	case "apply", "check":
+		if len(args) < 2 || (args[1] != "klend" && args[1] != "swap") {
+			return errors.New(policyUsage)
+		}
+		product, rest = args[1], args[2:]
+	case "remove", "addresses":
+	default:
+		return errors.New(policyUsage)
 	}
 	flags := flag.NewFlagSet("policy", flag.ContinueOnError)
 	flags.SetOutput(out)
 	settingsFlag := flags.String("settings", "", "Squads Settings account")
-	reserveFlag := flags.String("reserve", "", "KLend reserve")
+	reserveFlag := flags.String("reserve", "", "klend: KLend reserve")
+	fromFlag := flags.String("from", "", "swap: the mint the vault pays")
+	toFlag := flags.String("to", "", "swap: the mint the vault receives")
+	var mints publicKeys
+	flags.Var(&mints, "mint", "addresses: a mint whose vault ATA to print (repeatable)")
 	vaultIndex := flags.Uint("vault-index", 0, "smart account vault index")
-	amount := flags.Uint64("amount", 1_000_000, "deposit amount, raw liquidity units")
+	amount := flags.Uint64("amount", 1_000_000, "klend deposit or swap input amount, raw units")
 	delegateFlag := flags.String("delegate", "", "apply: the policy's delegated signer")
 	replaceFlag := flags.String("replace", "", "apply: comma-separated policies the new one replaces")
 	policiesFlag := flags.String("policies", "", "remove: comma-separated policies to remove")
@@ -64,7 +78,10 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if act == "remove" {
+	switch act {
+	case "addresses":
+		return policy.Addresses(ctx, c, out, settings, uint8(*vaultIndex), mints)
+	case "remove":
 		policies, err := publicKeyList("--policies", *policiesFlag)
 		if err != nil {
 			return err
@@ -75,9 +92,29 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 		}
 		return policy.Remove(ctx, c, out, settings, signer, policies, *send)
 	}
-	reserve, err := solana.PublicKeyFromBase58(*reserveFlag)
-	if err != nil {
-		return fmt.Errorf("--reserve: %w", err)
+	var build func(payer solana.PublicKey) policy.Build
+	switch product {
+	case "klend":
+		reserve, err := solana.PublicKeyFromBase58(*reserveFlag)
+		if err != nil {
+			return fmt.Errorf("--reserve: %w", err)
+		}
+		build = func(payer solana.PublicKey) policy.Build {
+			return policy.KLend(c, settings, uint8(*vaultIndex), reserve, payer, *amount)
+		}
+	case "swap":
+		from, err := solana.PublicKeyFromBase58(*fromFlag)
+		if err != nil {
+			return fmt.Errorf("--from: %w", err)
+		}
+		to, err := solana.PublicKeyFromBase58(*toFlag)
+		if err != nil {
+			return fmt.Errorf("--to: %w", err)
+		}
+		quotes := backyardJupiter(optionalCredential("JUPITER_API_KEY"))
+		build = func(payer solana.PublicKey) policy.Build {
+			return policy.Swap(c, quotes, settings, uint8(*vaultIndex), from, to, payer, *amount)
+		}
 	}
 	switch act {
 	case "apply":
@@ -93,17 +130,29 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		build := policy.KLend(c, settings, uint8(*vaultIndex), reserve, delegate, *amount)
-		return policy.Apply(ctx, c, out, settings, build, signer, delegate, replace, *send)
+		return policy.Apply(ctx, c, out, settings, build(delegate), signer, delegate, replace, *send)
 	case "check":
 		delegate, err := credentialKeypair("POLICY_DELEGATE")
 		if err != nil {
 			return err
 		}
-		build := policy.KLend(c, settings, uint8(*vaultIndex), reserve, delegate.PublicKey(), *amount)
-		return policy.Check(ctx, c, out, settings, build, delegate, *only, *send)
+		return policy.Check(ctx, c, out, settings, build(delegate.PublicKey()), delegate, *only, *send)
 	}
 	return errors.New(policyUsage)
+}
+
+// publicKeys is a repeatable public key flag.
+type publicKeys []solana.PublicKey
+
+func (p *publicKeys) String() string { return fmt.Sprint(*p) }
+
+func (p *publicKeys) Set(value string) error {
+	key, err := solana.PublicKeyFromBase58(value)
+	if err != nil {
+		return err
+	}
+	*p = append(*p, key)
+	return nil
 }
 
 // publicKeyList parses a comma-separated flag of public keys.
