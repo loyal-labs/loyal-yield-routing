@@ -120,6 +120,19 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 	return err
 }
 
+// Remove removes policies from settings in one settings transaction, signed
+// and paid by signer, the Settings' one signer. Without send it only
+// simulates.
+func Remove(ctx context.Context, c *chain.Client, out io.Writer, settings solana.PublicKey, signer solana.PrivateKey, policies []solana.PublicKey, send bool) error {
+	ix, err := squads.PolicyApply{Settings: settings, RentPayer: signer.PublicKey(), Signer: signer.PublicKey(), Replace: policies}.Instruction()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "remove %d policies from %s: %v\n", len(policies), settings, policies)
+	_, err = run(ctx, c, out, signer, []solana.Instruction{generic(ix)}, send)
+	return err
+}
+
 // Check sends each op of build's product (or only op number only, when it is
 // not negative) through its installed policy on settings, signed and paid by
 // delegate: simulated, and with send landed one by one, rebuilding the product
