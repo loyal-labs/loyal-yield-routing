@@ -805,6 +805,23 @@ func (d *Database) recordDecisionTx(
 
 const nonterminalStatusSQL = `'decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling'`
 
+// CountNonterminal counts the route's operations a restart would resume. It
+// is the release gate's read: it takes no route lease, so it runs beside the
+// live worker.
+func CountNonterminal(ctx context.Context, databaseURL, routeKey string) (int, error) {
+	database, err := OpenDatabase(ctx, databaseURL)
+	if err != nil {
+		return 0, err
+	}
+	defer database.Close()
+	var count int
+	if err := database.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.multiply_operations
+		WHERE route_key = $1 AND status IN (`+nonterminalStatusSQL+`)`, routeKey).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count nonterminal operations: %w", err)
+	}
+	return count, nil
+}
+
 func (d *Database) LoadNonterminal(ctx context.Context, routeKey string) (*PersistedOperation, error) {
 	return d.loadNonterminalWith(ctx, routeKey, Decision.Validate)
 }
