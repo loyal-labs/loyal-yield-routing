@@ -5,7 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/hex"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 var fixtureJupiterHTTP sync.Map // *jupiter.Client -> *http.Client
@@ -33,43 +34,46 @@ func fixtureHTTP(client *jupiter.Client) *http.Client {
 	return httpClient.(*http.Client)
 }
 
-func jupiterTestInstruction(action Action, amount, out uint64, v2 bool) JupiterSwapInstruction {
-	sourceMint, destinationMint, sourceATA, destinationATA, _ := jupiterEdgeForRoute(action, RouteID)
-	accounts := make([]jupiter.AccountMeta, 10)
-	for index := range accounts {
-		accounts[index] = jupiter.AccountMeta{Pubkey: bridgeTokenProgram}
+// jupiterTestInstruction is the PRIME/USDC route's swap of action in the
+// shape the swap API returns (v2TestInstruction).
+func jupiterTestInstruction(action Action, amount, out uint64) JupiterSwapInstruction {
+	return v2TestInstruction(RouteID, action, amount, out, 0)
+}
+
+// v2TestInstruction is lane's shared_accounts_route_v2 of action as the swap
+// API shapes it: the twelve fixed accounts through program authority 0, then
+// filler venue accounts, and one Manifest step at the worker's slippage bound.
+func v2TestInstruction(lane string, action Action, amount, out uint64, filler int) JupiterSwapInstruction {
+	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, lane)
+	if err != nil {
+		panic(err)
 	}
-	dataLength := 37
-	data := make([]byte, dataLength)
-	copy(data, jupiter.SharedAccountsRouteDiscriminator[:])
-	if action == SwapUSDCToPrimeStep {
-		copy(data[8:18], []byte{primeForwardPlanIDs[primeForwardPlanID1], 1, 0, 0, 0, 0x74, 0, 100, 0, 1}) // the first installed forward plan
+	program := func(mint string) solana.PublicKey {
+		a, err := routeSwapAssets()
+		if err != nil {
+			panic(err)
+		}
+		for _, asset := range []swapAsset{a.usdc, a.prime, a.usds, a.pyusd, a.auto, a.usde, a.syrup, a.onyc, a.usdg} {
+			if asset.mint.String() == mint {
+				return asset.program
+			}
+		}
+		return solana.TokenProgramID // the basic lanes' collaterals are classic
 	}
-	accounts[0] = jupiter.AccountMeta{Pubkey: bridgeTokenProgram}
-	accounts[2] = jupiter.AccountMeta{Pubkey: bridgeVault, IsSigner: true}
-	accounts[3] = jupiter.AccountMeta{Pubkey: sourceATA, IsWritable: true}
-	accounts[6] = jupiter.AccountMeta{Pubkey: destinationATA, IsWritable: true}
-	accounts[7] = jupiter.AccountMeta{Pubkey: sourceMint}
-	accounts[8] = jupiter.AccountMeta{Pubkey: destinationMint}
-	if v2 {
-		data = make([]byte, 47)
-		copy(data, jupiter.SharedAccountsRouteV2Discriminator[:])
-		accounts[1] = jupiter.AccountMeta{Pubkey: bridgeVault, IsSigner: true}
-		accounts[2] = jupiter.AccountMeta{Pubkey: sourceATA, IsWritable: true}
-		accounts[5] = jupiter.AccountMeta{Pubkey: destinationATA, IsWritable: true}
-		accounts[6] = jupiter.AccountMeta{Pubkey: sourceMint}
-		accounts[7] = jupiter.AccountMeta{Pubkey: destinationMint}
-		accounts[8] = jupiter.AccountMeta{Pubkey: bridgeTokenProgram}
-		accounts[9] = jupiter.AccountMeta{Pubkey: bridgeTokenProgram}
-		data[25], data[26], data[27] = 50, 0, 0
+	authorityAccount := func(mint string) string {
+		return jupiter.AuthorityTokenAccounts(1, solana.MustPublicKeyFromBase58(mint), program(mint))[0].String()
 	}
-	for index := 0; index < 8; index++ {
-		data[len(data)-19+index] = byte(amount >> (8 * index))
-		data[len(data)-11+index] = byte(out >> (8 * index))
+	accounts := []jupiter.AccountMeta{{Pubkey: jupiter.ProgramAuthority(0).String()}, {Pubkey: bridgeVault, IsSigner: true},
+		{Pubkey: sourceATA, IsWritable: true}, {Pubkey: authorityAccount(sourceMint), IsWritable: true},
+		{Pubkey: authorityAccount(destinationMint), IsWritable: true}, {Pubkey: destinationATA, IsWritable: true},
+		{Pubkey: sourceMint}, {Pubkey: destinationMint}, {Pubkey: program(sourceMint).String()}, {Pubkey: program(destinationMint).String()},
+		{Pubkey: jupiter.EventAuthority.String()}, {Pubkey: jupiter.ProgramID.String()}}
+	for index := range filler {
+		accounts = append(accounts, jupiter.AccountMeta{Pubkey: autoVenueKey(byte(index))})
 	}
-	if !v2 {
-		data[len(data)-3], data[len(data)-2], data[len(data)-1] = 50, 0, 0
-	}
+	data := append([]byte(nil), jupiter.SharedAccountsRouteV2Discriminator[:]...)
+	data = append(binary.LittleEndian.AppendUint64(binary.LittleEndian.AppendUint64(append(data, 0), amount), out), 50, 0, 0, 0, 0, 0)
+	data = append(data, 1, 0, 0, 0, 116, 0, 0x10, 0x27, 0, 1) // one step: Manifest, all 10,000 bps, token 0 into 1
 	return JupiterSwapInstruction{ProgramID: jupiter.ProgramID.String(), Accounts: accounts, Data: base64.StdEncoding.EncodeToString(data)}
 }
 
@@ -85,7 +89,7 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 	} {
 		request := JupiterSwapRequest{Action: test.action, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
 			Policy:      test.policy,
-			Instruction: jupiterTestInstruction(test.action, 1_000_000, 990_000, false), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 2}
+			Instruction: jupiterTestInstruction(test.action, 1_000_000, 990_000), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 2}
 		signed, err := buildAndSignJupiterTransactionForDelegate(request, key, delegate)
 		if err != nil {
 			t.Fatal(err)
@@ -107,37 +111,16 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 	}
 }
 
-func TestForwardJupiterPolicySelectsOnlyTheTwoInstalledRoutePlans(t *testing.T) {
-	for leg, prefix := range []string{"01010000007400640001", "02010000007400640001"} {
-		instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, false)
-		data, _ := base64.StdEncoding.DecodeString(instruction.Data)
-		decoded, _ := hex.DecodeString(prefix)
-		copy(data[8:18], decoded)
-		key, selected, err := jupiterPolicyLeg(RouteID, SwapUSDCToPrimeStep, data)
-		if err != nil || key != (policyKey{lane: RouteID, action: SwapUSDCToPrimeStep}) || selected != byte(leg) {
-			t.Fatalf("prefix %s selected %s/%d: %v", prefix, key, selected, err)
-		}
-	}
-	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, false)
-	data, _ := base64.StdEncoding.DecodeString(instruction.Data)
-	data[8] = 3
-	if _, _, err := jupiterPolicyLeg(RouteID, SwapUSDCToPrimeStep, data); err == nil {
-		t.Fatal("accepted an uninstalled forward route plan")
-	}
-}
-
 func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T) {
-	for _, v2 := range []bool{false, true} {
-		instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, v2)
-		if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err != nil {
-			t.Fatal(err)
-		}
-		instruction.Accounts[3].Pubkey = previousBackyardVault
-		if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err == nil {
-			t.Fatal("accepted drifted/prior custody")
-		}
+	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99)
+	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err != nil {
+		t.Fatal(err)
 	}
-	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, false)
+	instruction.Accounts[2].Pubkey = previousBackyardVault
+	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err == nil {
+		t.Fatal("accepted drifted/prior custody")
+	}
+	instruction = jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99)
 	data, _ := base64.StdEncoding.DecodeString(instruction.Data)
 	data[0] ^= 1
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
@@ -147,13 +130,13 @@ func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T
 }
 
 func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) {
-	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99, false)
+	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99)
 	companion := false
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var response string
 		switch r.URL.Path {
 		case "/quote":
-			if r.URL.Query().Get("maxAccounts") != "32" || r.URL.Query().Get("slippageBps") != "50" {
+			if r.URL.Query().Get("maxAccounts") != "16" || r.URL.Query().Get("slippageBps") != "50" || r.URL.Query().Get("instructionVersion") != "V2" {
 				t.Error("quote bounds drifted")
 			}
 			response = `{"inputMint":"` + bridgeUSDC + `","outputMint":"` + kaminoPrimeMint + `","inAmount":"100","outAmount":"99","otherAmountThreshold":"98","swapMode":"ExactIn","slippageBps":50,"platformFee":null,"routePlan":[{}]}`
@@ -191,7 +174,7 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 }
 
 func TestJupiterAcceptsCanonicalSystemProgramAccount(t *testing.T) {
-	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 95, false)
+	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 95)
 	instruction.Accounts = append(instruction.Accounts, jupiter.AccountMeta{
 		Pubkey: "11111111111111111111111111111111",
 	})

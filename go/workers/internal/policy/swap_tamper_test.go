@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,7 +45,7 @@ func TestSharedRouteV2TamperOnMainnet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	quotes, err := jupiter.NewClient(jupiter.LiteBase, "", &http.Client{Timeout: 20 * time.Second})
+	quotes, err := jupiter.NewClient(jupiter.KeyedBase, "", &http.Client{Timeout: 20 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,54 +80,8 @@ func TestSharedRouteV2TamperOnMainnet(t *testing.T) {
 		otherDestination, _ := spl.AssociatedTokenAddress(jupiter.ProgramAuthority(other), usdt, solana.TokenProgramID)
 		watch := []solana.PublicKey{userSource, userDestination, userOther, foreign, programSource, programDestination, otherSource, otherDestination}
 
-		// simulate runs a rewritten copy of the instruction; a route rewrite
-		// that finds nothing to rewrite fails the test.
-		type rewrite struct {
-			from solana.PublicKey
-			to   solana.PublicKey
-			sign bool
-		}
 		simulate := func(name string, route []rewrite, fixed func(metas []*solana.AccountMeta, data []byte)) {
-			metas := make([]*solana.AccountMeta, len(accounts))
-			for i, meta := range accounts {
-				copied := *meta
-				metas[i] = &copied
-			}
-			data := append([]byte(nil), returned...)
-			for _, r := range route {
-				found := 0
-				for i := 12; i < len(metas); i++ {
-					if metas[i].PublicKey == r.from {
-						metas[i].PublicKey, metas[i].IsSigner = r.to, metas[i].IsSigner || r.sign
-						found++
-					}
-				}
-				if found == 0 {
-					t.Fatalf("%s %s: no route account is %s", venue, name, r.from)
-				}
-			}
-			if fixed != nil {
-				fixed(metas, data)
-			}
-			time.Sleep(time.Second) // public RPC endpoints rate-limit bursts
-			out, err := Simulate(ctx, c, user, []solana.Instruction{solana.NewInstruction(jupiter.ProgramID, metas, data)}, watch)
-			if err != nil {
-				t.Fatalf("%s %s: %v", venue, name, err)
-			}
-			if name == "as returned" {
-				if out.Err != nil {
-					t.Fatalf("%s: the untampered swap failed: %v", venue, out.Err)
-				}
-				return
-			}
-			if out.Err == nil {
-				t.Errorf("%s %s: succeeded; balances %+v", venue, name, out.Watched)
-				return
-			}
-			t.Logf("%s %s: %v", venue, name, out.Err)
-		}
-		zeroQuote := func(_ []*solana.AccountMeta, data []byte) {
-			binary.LittleEndian.PutUint64(data[jupiter.V2QuotedOutOffset:], 0)
+			tamper(t, ctx, c, venue+" "+name, user, nil, accounts, returned, watch, route, fixed)
 		}
 		asUser := []rewrite{{authority, user, true}, {programSource, userOther, false}}
 
@@ -146,4 +102,175 @@ func TestSharedRouteV2TamperOnMainnet(t *testing.T) {
 			metas[0].PublicKey, data[jupiter.V2IDOffset] = jupiter.ProgramAuthority(other), other
 		})
 	}
+}
+
+// rewrite swaps every route account (from 12 on) that is from for to, and
+// makes it a signer when sign is set.
+type rewrite struct {
+	from, to solana.PublicKey
+	sign     bool
+}
+
+func zeroQuote(_ []*solana.AccountMeta, data []byte) {
+	binary.LittleEndian.PutUint64(data[jupiter.V2QuotedOutOffset:], 0)
+}
+
+// tamper simulates before plus a rewritten copy of the swap paid by payer. The
+// case named "as returned" must succeed; every other case must fail, and a
+// route rewrite that finds nothing to rewrite fails the test.
+func tamper(t *testing.T, ctx context.Context, c *chain.Client, name string, payer solana.PublicKey, before []solana.Instruction,
+	accounts []*solana.AccountMeta, returned []byte, watch []solana.PublicKey, route []rewrite, fixed func(metas []*solana.AccountMeta, data []byte)) {
+	t.Helper()
+	metas := make([]*solana.AccountMeta, len(accounts))
+	for i, meta := range accounts {
+		copied := *meta
+		metas[i] = &copied
+	}
+	data := append([]byte(nil), returned...)
+	for _, r := range route {
+		found := 0
+		for i := 12; i < len(metas); i++ {
+			if metas[i].PublicKey == r.from {
+				metas[i].PublicKey, metas[i].IsSigner = r.to, metas[i].IsSigner || r.sign
+				found++
+			}
+		}
+		if found == 0 {
+			t.Fatalf("%s: no route account is %s", name, r.from)
+		}
+	}
+	if fixed != nil {
+		fixed(metas, data)
+	}
+	time.Sleep(time.Second) // public RPC endpoints rate-limit bursts
+	out, err := Simulate(ctx, c, payer, append(append([]solana.Instruction(nil), before...), solana.NewInstruction(jupiter.ProgramID, metas, data)), watch)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	if strings.HasSuffix(name, "as returned") {
+		if out.Err != nil {
+			t.Fatalf("%s: the untampered swap failed: %v %v", name, out.Err, out.Logs)
+		}
+		t.Logf("%s: %+v", name, out.Watched)
+		return
+	}
+	if out.Err == nil {
+		t.Errorf("%s: succeeded; balances %+v", name, out.Watched)
+		return
+	}
+	t.Logf("%s: %v", name, out.Err)
+}
+
+// PYUSD is the one Backyard mint the swap API routes through the user's own
+// token account instead of a program authority's: the program-side slot of a
+// PYUSD input or output holds the user's PYUSD account, and the venue reads or
+// pays it there. The same claim holds for it on mainnet: no rewrite of the
+// route moves funds anywhere but the user's destination. The PYUSD holder is
+// a Whirlpool PDA with two funded PYUSD accounts; signatures are not checked
+// in simulation, so it stands in as the signing user.
+//
+// Cases, PYUSD into USDC (the user's PYUSD account is the program source):
+//   - foreign output: the venue's output account (the authority's USDC ATA) is
+//     another wallet's USDC account;
+//   - foreign program-side account: the route's reads of the user's PYUSD
+//     account, and with them the program source slot, are a foreign funded
+//     PYUSD account;
+//   - user's other account: the route's reads of the user's PYUSD account are
+//     its other funded PYUSD account, and, when the route names the program
+//     authority, also with every such slot the user, signing.
+//
+// USDC into PYUSD (the user's PYUSD account is the program destination):
+//   - foreign output: the route's writes to the user's PYUSD account are a
+//     foreign PYUSD account, with and without the program destination slot.
+//
+// It needs TEST_SOLANA_RPC_URL and calls the keyless Jupiter API.
+func TestSharedRouteV2PYUSDTamperOnMainnet(t *testing.T) {
+	endpoint := os.Getenv("TEST_SOLANA_RPC_URL")
+	if endpoint == "" {
+		t.Skip("TEST_SOLANA_RPC_URL is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	c, err := chain.New(endpoint, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quotes, err := jupiter.NewClient(jupiter.KeyedBase, "", &http.Client{Timeout: 20 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := solana.MustPublicKeyFromBase58
+	usdc, pyusd := key("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), key("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo")
+	payer := key("5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9")            // a wallet with SOL and USDC
+	holder := key("EYMwW3Y7k37G9e3Hfks7KCFv8r5Sict7fBCYLz3vvusQ")           // owns two funded PYUSD accounts
+	holderPYUSD := key("HupYrHwSbCU95VH2Q8SnpaWxwUhPPdqezAX4pvGssn3X")      // its larger one
+	holderOtherPYUSD := key("5XcTbEiGhRTHJtXLiNjXHFaBriu3S5HfZ3BU5paFRLbW") // its smaller one
+	foreignPYUSD := key("EeF6oBy6AQiBJoRx5xiRNxa6cmpQE3ayVagj28QFZuyg")     // another owner's funded PYUSD account
+	fetch := func(from, to, user solana.PublicKey) ([]*solana.AccountMeta, []byte) {
+		quote, err := quotes.Quote(ctx, jupiter.QuoteRequest{InputMint: from.String(), OutputMint: to.String(), Amount: 1_000_000,
+			SlippageBPS: SwapSlippageBPS, MaxAccounts: swapMaxAccounts, InstructionVersion: "V2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := quotes.SwapInstructions(ctx, quote, user, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ix, err := response.SwapInstruction.Decode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := ix.Data()
+		return ix.Accounts(), data
+	}
+
+	// PYUSD into USDC, from the holder's larger PYUSD account.
+	holderATA, _ := spl.AssociatedTokenAddress(holder, pyusd, solana.Token2022ProgramID)
+	holderUSDC, _ := spl.AssociatedTokenAddress(holder, usdc, solana.TokenProgramID)
+	foreignUSDC, _ := spl.AssociatedTokenAddress(payer, usdc, solana.TokenProgramID) // foreign to the holder
+	accounts, data := fetch(pyusd, usdc, holder)
+	if accounts[2].PublicKey != holderATA || accounts[3].PublicKey != holderATA {
+		t.Fatalf("the API no longer routes PYUSD through the user's own account: %s %s", accounts[2].PublicKey, accounts[3].PublicKey)
+	}
+	for _, meta := range accounts {
+		if meta.PublicKey == holderATA {
+			meta.PublicKey = holderPYUSD
+		}
+	}
+	authority, programDestination := accounts[0].PublicKey, accounts[4].PublicKey
+	before := []solana.Instruction{spl.CreateIdempotentATA(payer, holder, usdc, solana.TokenProgramID)}
+	watch := []solana.PublicKey{holderPYUSD, holderOtherPYUSD, foreignPYUSD, holderUSDC, foreignUSDC, programDestination}
+	run := func(name string, route []rewrite, fixed func([]*solana.AccountMeta, []byte)) {
+		tamper(t, ctx, c, "PYUSD->USDC "+name, payer, before, accounts, data, watch, route, fixed)
+	}
+	run("as returned", nil, nil)
+	run("foreign output", []rewrite{{programDestination, foreignUSDC, false}}, zeroQuote)
+	run("foreign program-side account, route only", []rewrite{{holderPYUSD, foreignPYUSD, false}}, zeroQuote)
+	run("foreign program-side account", []rewrite{{holderPYUSD, foreignPYUSD, false}}, func(metas []*solana.AccountMeta, data []byte) {
+		zeroQuote(metas, data)
+		metas[3].PublicKey = foreignPYUSD
+	})
+	run("user's other account as venue input", []rewrite{{holderPYUSD, holderOtherPYUSD, false}}, zeroQuote)
+	if slices.ContainsFunc(accounts[12:], func(m *solana.AccountMeta) bool { return m.PublicKey == authority }) {
+		run("user as venue authority, other account", []rewrite{{holderPYUSD, holderOtherPYUSD, false}, {authority, holder, true}}, zeroQuote)
+	}
+
+	// USDC into PYUSD, for the payer, which holds USDC.
+	payerPYUSD, _ := spl.AssociatedTokenAddress(payer, pyusd, solana.Token2022ProgramID)
+	payerUSDC, _ := spl.AssociatedTokenAddress(payer, usdc, solana.TokenProgramID)
+	accounts, data = fetch(usdc, pyusd, payer)
+	if accounts[4].PublicKey != payerPYUSD || accounts[5].PublicKey != payerPYUSD {
+		t.Fatalf("the API no longer routes PYUSD out through the user's own account: %s %s", accounts[4].PublicKey, accounts[5].PublicKey)
+	}
+	before = []solana.Instruction{spl.CreateIdempotentATA(payer, payer, pyusd, solana.Token2022ProgramID)}
+	watch = []solana.PublicKey{payerUSDC, payerPYUSD, foreignPYUSD}
+	run = func(name string, route []rewrite, fixed func([]*solana.AccountMeta, []byte)) {
+		tamper(t, ctx, c, "USDC->PYUSD "+name, payer, before, accounts, data, watch, route, fixed)
+	}
+	run("as returned", nil, nil)
+	run("foreign output, route only", []rewrite{{payerPYUSD, foreignPYUSD, false}}, zeroQuote)
+	run("foreign output", []rewrite{{payerPYUSD, foreignPYUSD, false}}, func(metas []*solana.AccountMeta, data []byte) {
+		zeroQuote(metas, data)
+		metas[4].PublicKey = foreignPYUSD
+	})
 }

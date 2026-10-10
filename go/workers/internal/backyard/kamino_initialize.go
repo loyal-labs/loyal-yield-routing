@@ -48,7 +48,7 @@ func CompileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, 
 }
 
 // compileKaminoInitializationMessage is the form that also admits the AUTO
-// lane, which initializes under its one policy's initializer leg. Installed
+// lane, which initializes under its KLend policy's initializer leg. Installed
 // selector lanes keep the exact public path above. Any other lane holds.
 func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, error) {
 	if selectorLane(r.RouteLane) {

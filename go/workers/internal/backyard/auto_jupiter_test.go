@@ -5,14 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -24,51 +22,41 @@ func autoVenueKey(index byte) string {
 	return encodeBase58(pattern)
 }
 
-// autoJupiterTestInstruction builds a legacy SharedAccountsRoute instruction on
-// one approved AUTO edge with the exact reviewed boundaries (0 classic token
-// program, 2 vault signer, 3 source custody, 6 destination custody, 7/8 mints,
-// 9 Jupiter platform-fee pin) plus `filler` venue accounts.
+// autoJupiterTestInstruction is a v2 swap on one approved AUTO edge
+// (v2TestInstruction) with filler venue accounts after its twelve fixed ones.
 func autoJupiterTestInstruction(t *testing.T, action Action, amount, out uint64, filler int) JupiterSwapInstruction {
 	t.Helper()
-	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, autoAUTOPYUSD.Lane)
+	return v2TestInstruction(autoAUTOPYUSD.Lane, action, amount, out, filler)
+}
+
+// autoSwapKey is the policy the AUTO lane swaps action through.
+func autoSwapKey(t *testing.T, action Action) policyKey {
+	t.Helper()
+	key, _, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts := make([]jupiter.AccountMeta, 10+filler)
-	for index := range accounts {
-		accounts[index] = jupiter.AccountMeta{Pubkey: autoVenueKey(byte(index))}
-	}
-	accounts[0] = jupiter.AccountMeta{Pubkey: classicTokenProgram}
-	accounts[2] = jupiter.AccountMeta{Pubkey: bridgeVault, IsSigner: true}
-	accounts[3] = jupiter.AccountMeta{Pubkey: sourceATA, IsWritable: true}
-	accounts[6] = jupiter.AccountMeta{Pubkey: destinationATA, IsWritable: true}
-	accounts[7] = jupiter.AccountMeta{Pubkey: sourceMint}
-	accounts[8] = jupiter.AccountMeta{Pubkey: destinationMint}
-	accounts[9] = jupiter.AccountMeta{Pubkey: jupiter.ProgramID.String()}
-	data := make([]byte, 37)
-	copy(data, jupiter.SharedAccountsRouteDiscriminator[:])
-	plan, err := hex.DecodeString("01010000007400640001")
+	return key
+}
+
+// autoSwapLeg is the constraint index the AUTO lane swaps action under.
+func autoSwapLeg(t *testing.T, action Action) byte {
+	t.Helper()
+	_, leg, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	copy(data[8:18], plan)
-	for index := 0; index < 8; index++ {
-		data[18+index] = byte(amount >> (8 * index))
-		data[26+index] = byte(out >> (8 * index))
-	}
-	data[34], data[35], data[36] = 50, 0, 0
-	return JupiterSwapInstruction{ProgramID: jupiter.ProgramID.String(), Accounts: accounts, Data: base64.StdEncoding.EncodeToString(data)}
+	return leg
 }
 
 // autoJupiterTestRequest is the swap request on one approved AUTO edge,
 // through the AUTO lane's installed policy.
 func autoJupiterTestRequest(t *testing.T, action Action, amount, out uint64, filler int) JupiterSwapRequest {
 	t.Helper()
-	// The honest enforceable minimum for the wire below (legacy dialect, data
-	// slippage 50): quoted output scaled by (10000-50)/10000, never the
+	// The honest enforceable minimum for the wire below (data slippage 50): quoted output scaled by (10000-50)/10000, never the
 	// advisory quoted output itself.
 	return JupiterSwapRequest{Action: action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: out * 9950 / 10000,
-		Policy:          testPolicyAccount(policyKey{lane: autoAUTOPYUSD.Lane}),
+		Policy:          testPolicyAccount(autoSwapKey(t, action)),
 		Instruction:     autoJupiterTestInstruction(t, action, amount, out, filler),
 		RecentBlockhash: bridgeSettings, LastValidBlockHeight: 99, RouteLane: autoAUTOPYUSD.Lane}
 }
@@ -101,13 +89,13 @@ func TestAutoOversizedSwapEdgeIsMeasuredAndUsesTheV0EscapeHatch(t *testing.T) {
 	// Measure where the legacy packet limit is crossed across the validator's
 	// full account range, then exercise the exact oversized edge.
 	crossed, crossedBytes, maxAccountsBytes := 0, 0, 0
-	for filler := 0; filler <= 64-10; filler++ {
+	for filler := 0; filler <= 64-12; filler++ {
 		request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, filler)
 		inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
 		if err != nil {
 			t.Fatal(err)
 		}
-		outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), delegate, delegate, autoSwapToCollateral, inner)
+		outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), delegate, delegate, autoSwapLeg(t, SwapStableToCollateralStep), inner)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -115,11 +103,11 @@ func TestAutoOversizedSwapEdgeIsMeasuredAndUsesTheV0EscapeHatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if filler == 22 { // Jupiter is quoted with maxAccounts=32
+		if filler == 20 { // Jupiter is quoted with maxAccounts=32
 			maxAccountsBytes = len(message) + 65
 		}
 		if crossed == 0 && len(message)+65 > solanaPacketBytes {
-			crossed, crossedBytes = 10+filler, len(message)+65
+			crossed, crossedBytes = 12+filler, len(message)+65
 		}
 	}
 	if crossed == 0 {
@@ -127,13 +115,13 @@ func TestAutoOversizedSwapEdgeIsMeasuredAndUsesTheV0EscapeHatch(t *testing.T) {
 	}
 	t.Logf("AUTO USDC->AUTO legacy packet: realistic Jupiter maxAccounts=32 quote = %d bytes (fits: %v); limit %d crossed at %d inner accounts (%d bytes)",
 		maxAccountsBytes, maxAccountsBytes <= solanaPacketBytes, solanaPacketBytes, crossed, crossedBytes)
-	request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-10)
+	request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-12)
 	if _, err := compileJupiterMessageForDelegate(request, delegate); err == nil || !strings.Contains(err.Error(), "unsigned message does not fit") {
 		t.Fatalf("oversized AUTO edge compiled without hints: %v", err)
 	}
 	fillers := make([]string, 0, len(request.Instruction.Accounts))
 	for index, account := range request.Instruction.Accounts {
-		if index < 10 {
+		if index < 12 {
 			continue // reviewed boundaries and authorities stay static
 		}
 		fillers = append(fillers, account.Pubkey)
@@ -220,8 +208,8 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := evidence.Request
-	if request.RouteLane != autoAUTOPYUSD.Lane || request.Policy != installedAutoPolicyKey {
-		t.Fatalf("quote evidence does not execute through the installed AUTO policy: %+v", request)
+	if request.RouteLane != autoAUTOPYUSD.Lane || request.Policy != testPolicyAccount(autoSwapKey(t, SwapStableToCollateralStep)) {
+		t.Fatalf("quote evidence does not execute through the installed AUTO swap policy: %+v", request)
 	}
 	if request.MinimumOutputRaw != 985_050 || request.QuotedOutputRaw != 990_000 {
 		t.Fatalf("quote economics drifted: %+v", request)
@@ -237,20 +225,21 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 	if _, err := compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate)); err != nil {
 		t.Fatalf("quote-path request did not compile through the installed policy: %v", err)
 	}
-	// The same decision without the AUTO policy installed holds by name.
+	// The same decision without its swap policy installed holds by name.
+	swapKey := autoSwapKey(t, SwapStableToCollateralStep)
 	uninstalled := installedPolicies{}
 	for key, view := range testPolicies(t) {
-		if key != (policyKey{lane: autoAUTOPYUSD.Lane}) {
+		if key != swapKey {
 			uninstalled[key] = view
 		}
 	}
 	_, err = prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, uninstalled, decision, 2_000_000, 0, 42)
-	assertBudgetHold(t, err, autoAUTOPYUSD.Lane+" policy not installed")
+	assertBudgetHold(t, err, swapKey.String()+" policy not installed")
 	// A foreign action on this lane is rejected before any quote is requested.
 	foreign := decision
 	foreign.Action = SwapUSDCToDebtStep
 	if _, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, testPolicies(t), foreign, 2_000_000, 0, 42); err == nil ||
-		!strings.Contains(err.Error(), "not an approved AUTO") {
+		!strings.Contains(err.Error(), "no catalog conversion on "+autoAUTOPYUSD.Lane) {
 		t.Fatalf("foreign AUTO pair quoted: %v", err)
 	}
 }
@@ -261,7 +250,7 @@ func TestAutoQuoteEvidencePreparesChainLookupTablesForOversizedEdges(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	instruction := autoJupiterTestInstruction(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-10)
+	instruction := autoJupiterTestInstruction(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-12)
 	table := autoFixtureLookupTable(t, nil)
 	for index := 10; index < len(instruction.Accounts); index++ {
 		table.Data = append(table.Data, mustDecodeKey(t, instruction.Accounts[index].Pubkey)...)

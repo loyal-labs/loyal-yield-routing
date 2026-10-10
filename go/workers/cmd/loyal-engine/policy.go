@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
@@ -17,12 +18,14 @@ import (
 
 const policyUsage = `usage: loyal-engine policy apply|check klend --settings <settings> --reserve <reserve> [flags]
        loyal-engine policy apply|check swap --settings <settings> --from <mint> --to <mint> --amount <raw> [flags]
+       loyal-engine policy apply backyard --settings <settings> --literal <name> [flags]
        loyal-engine policy remove --settings <settings> --policies <a,b,...> [--send]
        loyal-engine policy addresses --settings <settings> [--vault-index N] [--mint <mint> ...]
   apply: install the product's policy (simulates; --send lands it). Needs --delegate and
          credential POLICY_SETTINGS_SIGNER, the Settings' one signer, who pays.
   check: run each op (or --op N) through the installed policy (simulates; --send lands them in order).
          Needs credential POLICY_DELEGATE, the policy's delegate, who pays.
+         backyard: the Backyard policy the runtime holds as <name> (a hold's name), from its literal.
   remove: remove the policies in one settings transaction (simulates; --send lands it).
          Needs credential POLICY_SETTINGS_SIGNER.
   addresses: print the vault, its ATAs of the mints with balances, and the installed policies.
@@ -37,7 +40,7 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	act, product, rest := args[0], "", args[1:]
 	switch act {
 	case "apply", "check":
-		if len(args) < 2 || (args[1] != "klend" && args[1] != "swap") {
+		if len(args) < 2 || (args[1] != "klend" && args[1] != "swap" && (act != "apply" || args[1] != "backyard")) {
 			return errors.New(policyUsage)
 		}
 		product, rest = args[1], args[2:]
@@ -51,6 +54,7 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	reserveFlag := flags.String("reserve", "", "klend: KLend reserve")
 	fromFlag := flags.String("from", "", "swap: the mint the vault pays")
 	toFlag := flags.String("to", "", "swap: the mint the vault receives")
+	literalFlag := flags.String("literal", "", "backyard: the policy's name, as a hold gives it")
 	var mints publicKeys
 	flags.Var(&mints, "mint", "addresses: a mint whose vault ATA to print (repeatable)")
 	vaultIndex := flags.Uint("vault-index", 0, "smart account vault index")
@@ -118,6 +122,21 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 				return policy.SwapPolicy(c, settings, uint8(*vaultIndex), from, to, *amount)
 			}
 			return policy.Swap(c, backyardJupiter(optionalCredential("JUPITER_API_KEY")), settings, uint8(*vaultIndex), from, to, payer, *amount)
+		}
+	case "backyard":
+		literal, err := backyard.PolicyLiteral(*literalFlag)
+		if err != nil {
+			return err
+		}
+		if len(literal.SpendingLimits) > 0 {
+			return fmt.Errorf("%s has spending limits, which apply does not install", *literalFlag)
+		}
+		product := policy.Product{Name: *literalFlag, VaultIndex: literal.VaultIndex}
+		for i, constraint := range literal.Constraints {
+			product.Ops = append(product.Ops, policy.Op{Name: fmt.Sprintf("constraint %d", i), Allowed: constraint})
+		}
+		build = func(solana.PublicKey) policy.Build {
+			return func(context.Context, uint64) (policy.Product, error) { return product, nil }
 		}
 	}
 	switch act {

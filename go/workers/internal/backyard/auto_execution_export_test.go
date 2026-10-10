@@ -99,7 +99,7 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 	}
 	for _, item := range swaps {
 		jupiter := autoJupiterTestRequest(t, item.action, item.amount, item.out, 0)
-		_, index, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, item.action, nil)
+		_, index, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, item.action)
 		if err != nil {
 			t.Fatal(err)
 		}

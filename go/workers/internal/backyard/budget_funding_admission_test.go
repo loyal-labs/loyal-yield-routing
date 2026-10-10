@@ -60,7 +60,7 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 			}
 		}
 	}
-	data, err := os.ReadFile("../../../../docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json")
+	data, err := os.ReadFile(jupiterV2FixturePath)
 	if err != nil || json.Unmarshal(data, &headers) != nil {
 		t.Fatal("missing actual instruction headers", err)
 	}
@@ -97,19 +97,14 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 					action, out = SwapDebtToCollateralStep, amount*2000
 				}
 			}
-			bindingEdges, bindingLeg, err := catalogEdge(action, route.Lane)
-			if err != nil {
-				t.Fatal(err)
-			}
-			binding := bindingEdges[bindingLeg]
 			instruction = instructions[action]
 			wire, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-			if err != nil || len(wire) <= binding.feeAt() {
+			if err != nil || len(wire) < jupiter.V2RoutePlanOffset {
 				t.Fatal("missing edge wire", action, err)
 			}
-			binary.LittleEndian.PutUint64(wire[binding.amountAt():], amount)
-			binary.LittleEndian.PutUint64(wire[binding.amountAt()+8:], out)
-			binary.LittleEndian.PutUint16(wire[binding.slippageAt():], 50)
+			binary.LittleEndian.PutUint64(wire[jupiter.V2InAmountOffset:], amount)
+			binary.LittleEndian.PutUint64(wire[jupiter.V2QuotedOutOffset:], out)
+			binary.LittleEndian.PutUint16(wire[jupiter.V2SlippageOffset:], 50)
 			instruction.Data = base64.StdEncoding.EncodeToString(wire)
 			payload = jupiter.Quote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 9950 / 10000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else {
@@ -434,11 +429,9 @@ func TestFundingPayoffWindowIncludesInterveningSteps(t *testing.T) {
 	}
 	e.Request.QuotedOutputRaw = short.UpperDebtRaw - 1_000
 	e.Request.MinimumOutputRaw = e.Request.QuotedOutputRaw
-	bEdges, bLeg, _ := catalogEdge(e.Request.Action, e.Request.RouteLane)
-	b := bEdges[bLeg]
 	wire, _ := base64.StdEncoding.Strict().DecodeString(e.Request.Instruction.Data)
-	binary.LittleEndian.PutUint64(wire[b.amountAt()+8:], e.Request.QuotedOutputRaw)
-	binary.LittleEndian.PutUint16(wire[b.slippageAt():], 0)
+	binary.LittleEndian.PutUint64(wire[jupiter.V2QuotedOutOffset:], e.Request.QuotedOutputRaw)
+	binary.LittleEndian.PutUint16(wire[jupiter.V2SlippageOffset:], 0)
 	e.Request.Instruction.Data = base64.StdEncoding.EncodeToString(wire)
 	minimum := short.UpperDebtRaw
 	e.ExpectedEffects.Accounts[1].AfterRaw = minimum

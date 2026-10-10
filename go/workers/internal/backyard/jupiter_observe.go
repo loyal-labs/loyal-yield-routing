@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"math"
 	"time"
@@ -85,19 +84,12 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 }
 
 // jupiterTokenPrograms is the token program of the swap's source and
-// destination custody: the AUTO lane's route identities, a catalog edge's
-// assets, and the classic program for every USDC-only lane.
+// destination custody: a catalog edge's assets, and the classic program for
+// every USDC-only lane.
 func jupiterTokenPrograms(action Action, lane string) (string, string, error) {
 	switch {
-	case lane == autoAUTOPYUSD.Lane:
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			return "", "", err
-		}
-		return autoTokenPrograms(route, action)
 	case catalogJupiterRoute(lane):
-		edges, leg, err := catalogEdge(action, lane)
-		edge := edges[leg]
+		edge, err := catalogConversion(action, lane)
 		return edge.from.program.String(), edge.to.program.String(), err
 	default:
 		return bridgeTokenProgram, bridgeTokenProgram, nil
@@ -140,11 +132,7 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client 
 		// serialized loop request a fresh quote on its next bounded tick.
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 	}
-	data, err := base64.StdEncoding.Strict().DecodeString(instruction.Data)
-	if err != nil {
-		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
-	}
-	key, _, err := jupiterPolicyLeg(decision.StrategyKey, decision.Action, data)
+	key, _, err := jupiterPolicyLeg(decision.StrategyKey, decision.Action)
 	if err != nil {
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 	}

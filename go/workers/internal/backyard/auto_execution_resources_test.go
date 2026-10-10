@@ -235,13 +235,13 @@ func TestAutoJupiterExecutionMessageCarriesTheReviewedHeapFrame(t *testing.T) {
 	}
 	t.Logf("AUTO Jupiter legacy execution message = %d bytes (+65 signature = %d of %d packet bytes)", len(legacy), len(legacy)+65, solanaPacketBytes)
 
-	oversized := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-10)
+	oversized := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-12)
 	if _, err := compileJupiterMessageForDelegate(oversized, delegate); err == nil || !strings.Contains(err.Error(), "unsigned message does not fit") {
 		t.Fatalf("oversized hintless AUTO edge compiled: %v", err)
 	}
 	fillers := make([]string, 0, len(oversized.Instruction.Accounts))
 	for index, account := range oversized.Instruction.Accounts {
-		if index < 10 {
+		if index < 12 {
 			continue // reviewed boundaries and authorities stay static
 		}
 		fillers = append(fillers, account.Pubkey)
@@ -503,18 +503,18 @@ func TestAutoSignedWireValidatesThroughTheDecodeGate(t *testing.T) {
 func TestAutoVersionedWireValidatesThroughTheDecodeGate(t *testing.T) {
 	delegateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{32}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(delegateKey.Public().(ed25519.PublicKey))
-	request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-10)
+	request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-12)
 	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), delegate, delegate, autoSwapToCollateral, inner)
+	outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), delegate, delegate, autoSwapLeg(t, SwapStableToCollateralStep), inner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fillers := make([]string, 0, len(request.Instruction.Accounts))
 	for index, account := range request.Instruction.Accounts {
-		if index < 10 {
+		if index < 12 {
 			continue
 		}
 		fillers = append(fillers, account.Pubkey)
@@ -614,18 +614,18 @@ func TestAutoPersistedBuildResultValidationRoutesByWireVersion(t *testing.T) {
 		t.Fatal("stripped legacy heap passed the persisted gate")
 	}
 
-	v0Request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-10)
+	v0Request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-12)
 	inner, err := validateJupiterInstructionForRoute(v0Request.Instruction, v0Request.Action, v0Request.AmountRaw, v0Request.QuotedOutputRaw, v0Request.MinimumOutputRaw, v0Request.RouteLane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer, err := wrapSquadsJupiterPolicy(mustKey(v0Request.Policy), delegate, delegate, autoSwapToCollateral, inner)
+	outer, err := wrapSquadsJupiterPolicy(mustKey(v0Request.Policy), delegate, delegate, autoSwapLeg(t, SwapStableToCollateralStep), inner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fillers := make([]string, 0, len(v0Request.Instruction.Accounts))
 	for index, account := range v0Request.Instruction.Accounts {
-		if index < 10 {
+		if index < 12 {
 			continue
 		}
 		fillers = append(fillers, account.Pubkey)
