@@ -13,7 +13,6 @@ package policy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -172,7 +171,7 @@ func Check(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 			fmt.Fprintf(out, "%d %s: done\n", i, op.Name)
 			continue
 		}
-		inner, err := squadsInstruction(op.Inner)
+		inner, err := squads.InstructionOf(op.Inner)
 		if err != nil {
 			return err
 		}
@@ -197,9 +196,7 @@ func run(ctx context.Context, c *chain.Client, out io.Writer, payer solana.Priva
 	if err != nil {
 		return 0, err
 	}
-	tx, err := solana.NewTransaction(ixs, hash, solana.TransactionPayer(payer.PublicKey()), solana.TransactionV1Config(
-		solana.TransactionConfig{}.WithComputeUnitLimit(computeUnits).WithHeapSize(heapBytes).
-			WithLoadedAccountsDataSizeLimit(loadedAccountsBytes).WithPriorityFee(priorityFeeLamports)))
+	tx, err := transaction(ixs, hash, payer.PublicKey())
 	if err != nil {
 		return 0, err
 	}
@@ -250,6 +247,13 @@ func run(ctx context.Context, c *chain.Client, out io.Writer, payer solana.Priva
 	return receipt.Slot, nil
 }
 
+// transaction is the one v1 transaction shape every policy transaction uses.
+func transaction(ixs []solana.Instruction, hash solana.Hash, payer solana.PublicKey) (*solana.Transaction, error) {
+	return solana.NewTransaction(ixs, hash, solana.TransactionPayer(payer), solana.TransactionV1Config(
+		solana.TransactionConfig{}.WithComputeUnitLimit(computeUnits).WithHeapSize(heapBytes).
+			WithLoadedAccountsDataSizeLimit(loadedAccountsBytes).WithPriorityFee(priorityFeeLamports)))
+}
+
 func generic(ix squads.Instruction) solana.Instruction {
 	metas := make(solana.AccountMetaSlice, len(ix.Accounts))
 	for i := range ix.Accounts {
@@ -257,19 +261,4 @@ func generic(ix squads.Instruction) solana.Instruction {
 		metas[i] = &meta
 	}
 	return solana.NewInstruction(ix.ProgramID, metas, ix.Data)
-}
-
-func squadsInstruction(ix solana.Instruction) (squads.Instruction, error) {
-	data, err := ix.Data()
-	if err != nil {
-		return squads.Instruction{}, err
-	}
-	out := squads.Instruction{ProgramID: ix.ProgramID(), Data: data}
-	for _, meta := range ix.Accounts() {
-		if meta == nil {
-			return squads.Instruction{}, errors.New("instruction has a nil account")
-		}
-		out.Accounts = append(out.Accounts, *meta)
-	}
-	return out, nil
 }
