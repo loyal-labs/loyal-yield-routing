@@ -18,13 +18,17 @@ import (
 // deposit minted. The vault signs and pays rent for what it owns; payer funds
 // the vault's ATA and the obligation farm outside the policy, as the Earn
 // route does.
+//
+// Its deposit and withdrawal are constrained as Backyard's are: the vault, an
+// obligation it owns, the reserve and the vault's ATA are pinned, and KLend
+// checks the rest itself.
 func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve, payer solana.PublicKey, amount uint64) Build {
-	return func(ctx context.Context) (Product, error) {
+	return func(ctx context.Context, minSlot uint64) (Product, error) {
 		vault, _, err := squads.SmartAccountAddress(settings, vaultIndex)
 		if err != nil {
 			return Product{}, err
 		}
-		_, read, err := c.Accounts(ctx, []solana.PublicKey{reserve}, rpc.CommitmentConfirmed, 0)
+		_, read, err := c.Accounts(ctx, []solana.PublicKey{reserve}, rpc.CommitmentConfirmed, minSlot)
 		if err != nil {
 			return Product{}, err
 		}
@@ -49,13 +53,15 @@ func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve
 		if err != nil {
 			return Product{}, err
 		}
+		keys := []solana.PublicKey{metadata, obligation}
 		var farmUser solana.PublicKey
 		if !r.FarmCollateral.IsZero() {
 			if farmUser, err = kamino.ObligationFarmUserState(r.FarmCollateral, obligation); err != nil {
 				return Product{}, err
 			}
+			keys = append(keys, farmUser)
 		}
-		_, state, err := c.Accounts(ctx, []solana.PublicKey{metadata, obligation, farmUser}, rpc.CommitmentConfirmed, 0)
+		_, state, err := c.Accounts(ctx, keys, rpc.CommitmentConfirmed, minSlot)
 		if err != nil {
 			return Product{}, err
 		}
@@ -78,56 +84,53 @@ func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve
 			Reserve: reserve, LiquidityMint: r.LiquidityMint, LiquiditySupply: r.LiquiditySupply, CollateralMint: r.CollateralMint,
 			CollateralSupply: r.CollateralSupply, UserLiquidity: ata, LiquidityTokenProgram: r.LiquidityTokenProgram,
 			ObligationFarmUserState: farmUser, ReserveFarmState: r.FarmCollateral}
-		allowed := kamino.CollateralAllowed{Owner: one(vault), Obligation: one(obligation), LendingMarket: one(market),
-			LendingMarketAuthority: one(authority), Reserve: one(reserve), LiquidityMint: one(r.LiquidityMint),
-			LiquiditySupply: one(r.LiquiditySupply), CollateralMint: one(r.CollateralMint), CollateralSupply: one(r.CollateralSupply),
-			UserLiquidity: one(ata), LiquidityTokenProgram: one(r.LiquidityTokenProgram),
-			ObligationFarmUserState: one(farmUser), ReserveFarmState: one(r.FarmCollateral)}
-		if r.FarmCollateral.IsZero() {
-			allowed.ObligationFarmUserState, allowed.ReserveFarmState = one(kamino.ProgramID), one(kamino.ProgramID)
-		}
-		refresh := func(reserves ...solana.PublicKey) []solana.Instruction {
-			return []solana.Instruction{
-				kamino.RefreshReserve(kamino.RefreshReserveAccounts{Reserve: reserve, LendingMarket: market, Pyth: r.PythPrice,
-					SwitchboardPrice: r.SwitchboardPriceAggregator, SwitchboardTWAP: r.SwitchboardTWAPAggregator, Scope: r.ScopePriceFeed}),
-				kamino.RefreshObligation(market, obligation, reserves...),
-			}
+		allowed := kamino.CollateralAllowed{Owner: squads.Pin(vault), Obligation: kamino.OwnedObligation(vault), LendingMarket: squads.Any,
+			LendingMarketAuthority: squads.Any, Reserve: squads.Pin(reserve), LiquidityMint: squads.Any, LiquiditySupply: squads.Any,
+			CollateralMint: squads.Any, CollateralSupply: squads.Any, UserLiquidity: squads.Pin(ata), LiquidityTokenProgram: squads.Any,
+			ObligationFarmUserState: squads.Any, ReserveFarmState: squads.Any}
+		refresh := []solana.Instruction{
+			kamino.RefreshReserve(kamino.RefreshReserveAccounts{Reserve: reserve, LendingMarket: market, Pyth: r.PythPrice,
+				SwitchboardPrice: r.SwitchboardPriceAggregator, SwitchboardTWAP: r.SwitchboardTWAPAggregator, Scope: r.ScopePriceFeed}),
+			kamino.RefreshObligation(market, obligation, deposited...),
 		}
 		depositBefore := []solana.Instruction{spl.CreateIdempotentATA(payer, vault, r.LiquidityMint, r.LiquidityTokenProgram)}
 		if !farmUser.IsZero() && state[2] == nil {
-			depositBefore = append(depositBefore, kamino.InitObligationFarmsForReserve(kamino.InitObligationFarmsAccounts{
+			depositBefore = append(depositBefore, kamino.InitObligationFarmsForReserve(kamino.ObligationFarmsInitAccounts{
 				Payer: payer, Owner: vault, Obligation: obligation, LendingMarketAuthority: authority, Reserve: reserve,
 				ReserveFarmState: r.FarmCollateral, ObligationFarmUserState: farmUser, LendingMarket: market}, 0))
 		}
+		metadataInit := kamino.UserMetadataInitAccounts{Owner: vault, FeePayer: vault, UserMetadata: metadata}
+		obligationInit := kamino.ObligationInitAccounts{Owner: vault, FeePayer: vault, Obligation: obligation, LendingMarket: market,
+			OwnerUserMetadata: metadata}
 
 		return Product{Name: "klend:" + reserve.String(), VaultIndex: vaultIndex, Ops: []Op{
 			{
-				Name:    "init user metadata",
-				Allowed: kamino.InitUserMetadataAllowed(kamino.UserMetadataInit[[]solana.PublicKey]{Owner: one(vault), FeePayer: one(vault), UserMetadata: one(metadata)}, solana.PublicKey{}),
-				Inner:   kamino.InitUserMetadata(vault, vault, metadata, solana.PublicKey{}),
-				Done:    state[0] != nil,
+				Name: "init user metadata",
+				Allowed: kamino.InitUserMetadataAllowed(kamino.UserMetadataInitAllowed{Owner: squads.Pin(vault), FeePayer: squads.Pin(vault),
+					UserMetadata: squads.Pin(metadata)}, solana.PublicKey{}, squads.Pinned),
+				Inner: kamino.InitUserMetadata(metadataInit, solana.PublicKey{}),
+				Done:  state[0] != nil,
 			},
 			{
 				Name: "init obligation",
-				Allowed: kamino.InitObligationAllowed(kamino.ObligationInit[[]solana.PublicKey]{Owner: one(vault), FeePayer: one(vault), Obligation: one(obligation),
-					LendingMarket: one(market), Seed1: one(solana.PublicKey{}), Seed2: one(solana.PublicKey{}), OwnerUserMetadata: one(metadata)}, 0, 0),
-				Inner: kamino.InitObligation(vault, vault, obligation, market, solana.PublicKey{}, solana.PublicKey{}, metadata, 0, 0),
+				Allowed: kamino.InitObligationAllowed(kamino.ObligationInitAllowed{Owner: squads.Pin(vault), FeePayer: squads.Pin(vault),
+					Obligation: squads.Pin(obligation), LendingMarket: squads.Pin(market), Seed1: squads.Pin(solana.PublicKey{}),
+					Seed2: squads.Pin(solana.PublicKey{}), OwnerUserMetadata: squads.Pin(metadata)}, 0, 0, squads.Pinned),
+				Inner: kamino.InitObligation(obligationInit, 0, 0),
 				Done:  state[1] != nil,
 			},
 			{
 				Name:    fmt.Sprintf("deposit %d", amount),
-				Allowed: kamino.DepositV2Allowed(allowed),
+				Allowed: kamino.DepositV2Allowed(allowed, squads.Unpinned),
 				Inner:   kamino.DepositV2(collateral, amount),
-				Before:  append(depositBefore, refresh(deposited...)...),
+				Before:  append(depositBefore, refresh...),
 			},
 			{
 				Name:    fmt.Sprintf("withdraw %d collateral (the deposit)", minted),
-				Allowed: kamino.WithdrawV2Allowed(allowed),
+				Allowed: kamino.WithdrawV2Allowed(allowed, squads.Unpinned),
 				Inner:   kamino.WithdrawV2(collateral, minted),
-				Before:  refresh(deposited...),
+				Before:  refresh,
 			},
 		}}, nil
 	}
 }
-
-func one(key solana.PublicKey) []solana.PublicKey { return []solana.PublicKey{key} }

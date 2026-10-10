@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -97,19 +95,15 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	return errors.New(policyUsage)
 }
 
-// credentialKeypair reads a solana-keygen JSON keypair from a systemd
-// credential and checks its public half against its seed.
+// credentialKeypair reads a keypair from a systemd credential.
 func credentialKeypair(name string) (solana.PrivateKey, error) {
 	value, err := engine.Credential(name)
 	if err != nil {
 		return nil, err
 	}
-	var raw []byte
-	if err := json.Unmarshal([]byte(value), &raw); err != nil || len(raw) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("credential %s is not a keypair", name)
+	key, err := parseRetailKey(value)
+	if err != nil {
+		return nil, fmt.Errorf("credential %s: %w", name, err)
 	}
-	if !ed25519.NewKeyFromSeed(raw[:ed25519.SeedSize]).Equal(ed25519.PrivateKey(raw)) {
-		return nil, fmt.Errorf("credential %s public key does not match its seed", name)
-	}
-	return solana.PrivateKey(raw), nil
+	return solana.PrivateKey(key), nil
 }

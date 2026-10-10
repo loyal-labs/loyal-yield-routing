@@ -4,32 +4,64 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
+// Slot is what one account position of a constraint admits: any account, one
+// of Keys, or an account whose data matches Data. Owner, when set, also pins
+// the account's owner program. The zero Slot admits nothing a policy can say,
+// so Allow refuses it: a slot is free only when the literal says Any.
+type Slot struct {
+	Any   bool
+	Keys  []solana.PublicKey
+	Data  []DataConstraintView
+	Owner *solana.PublicKey
+}
+
+// Any is the slot that admits any account.
+var Any = Slot{Any: true}
+
+// Pin is the slot that admits only keys.
+func Pin(keys ...solana.PublicKey) Slot { return Slot{Keys: keys} }
+
+// Unpinned is Any for every key, for an instruction's program and sysvar
+// accounts when its own program checks them.
+func Unpinned(solana.PublicKey) Slot { return Any }
+
+// Pinned is Pin of the one key, for program and sysvar accounts a policy pins.
+func Pinned(key solana.PublicKey) Slot { return Pin(key) }
+
 // Allow is the constraint that admits one instruction: its program, its
-// leading data bytes, and for each account slot the keys it may hold (nil: any
-// key). Program packages call it with their instruction's own account order,
-// so a builder and the constraint that admits it cannot disagree.
-func Allow(program solana.PublicKey, data []byte, slots [][]solana.PublicKey) InstructionConstraintView {
+// leading data bytes, and what each account slot admits. Program packages call
+// it with their instruction's own account order, so a builder and the
+// constraint that admits it cannot disagree. A slot that is neither Any nor
+// constrained is a literal that forgot a field, and Allow panics on it.
+func Allow(program solana.PublicKey, data []byte, slots []Slot) InstructionConstraintView {
 	out := InstructionConstraintView{ProgramID: program, DataConstraints: []DataConstraintView{{
 		DataValue: DataValueView{Kind: 5, Bytes: append([]byte(nil), data...)}, Operator: OpEquals,
 	}}}
-	for index, keys := range slots {
-		if keys != nil {
-			out.AccountConstraints = append(out.AccountConstraints, AccountConstraintView{AccountIndex: uint8(index), Pubkeys: keys})
+	for index, slot := range slots {
+		switch {
+		case slot.Any:
+		case len(slot.Keys) > 0 && len(slot.Data) == 0:
+			out.AccountConstraints = append(out.AccountConstraints, AccountConstraintView{AccountIndex: uint8(index), Pubkeys: slot.Keys, Owner: slot.Owner})
+		case len(slot.Keys) == 0 && len(slot.Data) > 0:
+			out.AccountConstraints = append(out.AccountConstraints, AccountConstraintView{AccountIndex: uint8(index), AccountData: slot.Data, Owner: slot.Owner})
+		default:
+			panic(fmt.Sprintf("constraint for %s leaves account %d unset", program, index))
 		}
 	}
 	return out
 }
 
 // PolicyApply installs one policy and removes the policies it replaces in a
-// single execute_settings_transaction_sync: PolicyCreate at Seed, then one
-// PolicyRemove per replaced policy. Signer is the smart account's one signer;
-// RentPayer funds the new policy and receives nothing back.
+// single execute_settings_transaction_sync: PolicyCreate at Seed (none when
+// Constraints is empty), then one PolicyRemove per replaced policy. Signer is
+// the smart account's one signer; RentPayer funds the new policy.
 type PolicyApply struct {
 	Settings, RentPayer, Signer, Delegate solana.PublicKey
 	Seed                                  uint64
@@ -48,26 +80,32 @@ func (p PolicyApply) Policy() (solana.PublicKey, error) {
 // payer (w, s), system program, the Squads program, the signer (s), then the
 // new and replaced policies (w).
 func (p PolicyApply) Instruction() (Instruction, error) {
-	policy, err := p.Policy()
-	if err != nil {
-		return Instruction{}, err
+	creates := 0
+	if len(p.Constraints) > 0 {
+		creates = 1
 	}
-	if p.Seed == 0 || len(p.Constraints) == 0 {
-		return Instruction{}, errors.New("policy apply needs a seed and at least one constraint")
+	if creates+len(p.Replace) == 0 {
+		return Instruction{}, errors.New("policy apply creates and removes nothing")
 	}
 	data := append([]byte(nil), ExecuteSettingsTransactionSyncDiscriminator[:]...)
 	data = append(data, syncSignerCount)
-	data = binary.LittleEndian.AppendUint32(data, uint32(1+len(p.Replace)))
-	if data, err = appendLegacyPolicyCreate(data, p.Seed, p.VaultIndex, p.Constraints, p.Delegate); err != nil {
-		return Instruction{}, err
-	}
+	data = binary.LittleEndian.AppendUint32(data, uint32(creates+len(p.Replace)))
 	accounts := []solana.AccountMeta{
 		{PublicKey: p.Settings, IsWritable: true},
 		{PublicKey: p.RentPayer, IsWritable: true, IsSigner: true},
 		{PublicKey: solana.SystemProgramID},
 		{PublicKey: ProgramID},
 		{PublicKey: p.Signer, IsSigner: true},
-		{PublicKey: policy, IsWritable: true},
+	}
+	if creates == 1 {
+		policy, err := p.Policy()
+		if err != nil {
+			return Instruction{}, err
+		}
+		if data, err = appendLegacyPolicyCreate(data, p.Seed, p.VaultIndex, p.Constraints, p.Delegate); err != nil {
+			return Instruction{}, err
+		}
+		accounts = append(accounts, solana.AccountMeta{PublicKey: policy, IsWritable: true})
 	}
 	for _, old := range p.Replace {
 		data = append(append(data, 9), old[:]...) // SettingsAction::PolicyRemove
@@ -102,10 +140,7 @@ func Policies(ctx context.Context, c *chain.Client, settings solana.PublicKey) (
 	}
 	out := make([]Installed, 0, len(accounts))
 	for i := range accounts {
-		view, err := DecodeCanonicalPolicy(&accounts[i])
-		if err != nil {
-			view = nil
-		}
+		view, _ := DecodeCanonicalPolicy(&accounts[i])
 		out = append(out, Installed{Account: accounts[i].Key, View: view})
 	}
 	return out, nil

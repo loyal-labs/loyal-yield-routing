@@ -113,20 +113,18 @@ func BuildCanonicalSubscriptionPolicy(r CanonicalSubscriptionPolicyRequest) (fle
 	if err != nil {
 		return fleet.RouteInstruction{}, err
 	}
-	data, err := squads.EncodeLegacyPolicyCreate(r.PolicySeed, 1, policy.constraints, policy.delegate)
+	payer, _ := solana.PublicKeyFromBase58(r.Payer)
+	root, _ := solana.PublicKeyFromBase58(r.RootAuthority)
+	ix, err := squads.PolicyApply{Settings: policy.settings, RentPayer: payer, Signer: root, Delegate: policy.delegate,
+		Seed: r.PolicySeed, VaultIndex: 1, Constraints: policy.constraints}.Instruction()
 	if err != nil {
 		return fleet.RouteInstruction{}, err
 	}
-	payer, _ := solana.PublicKeyFromBase58(r.Payer)
-	root, _ := solana.PublicKeyFromBase58(r.RootAuthority)
-	return fleet.RouteInstruction{Step: "canonical_subscription_policy_create", Program: squads.ProgramID.String(), Data: data, Accounts: []fleet.InstructionAccount{
-		{Address: policy.settings.String(), Writable: true},
-		{Address: payer.String(), Signer: true, Writable: true},
-		{Address: solana.SystemProgramID.String()},
-		{Address: squads.ProgramID.String()},
-		{Address: root.String(), Signer: true},
-		{Address: policy.policy.String(), Writable: true},
-	}}, nil
+	out := fleet.RouteInstruction{Step: "canonical_subscription_policy_create", Program: squads.ProgramID.String(), Data: ix.Data}
+	for _, meta := range ix.Accounts {
+		out.Accounts = append(out.Accounts, fleet.InstructionAccount{Address: meta.PublicKey.String(), Signer: meta.IsSigner, Writable: meta.IsWritable})
+	}
+	return out, nil
 }
 
 // VerifyCanonicalSubscriptionPolicyAccount proves the current policy account

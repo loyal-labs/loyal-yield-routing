@@ -54,9 +54,9 @@ func (p Product) Constraints() []squads.InstructionConstraintView {
 	return out
 }
 
-// Build reads the chain state a product's ops need and returns them, so Check
-// can rebuild after each landed op.
-type Build func(ctx context.Context) (Product, error)
+// Build reads the chain state a product's ops need, at minSlot or later, and
+// returns them, so Check can rebuild from the state each landed op left.
+type Build func(ctx context.Context, minSlot uint64) (Product, error)
 
 // The transaction budget every policy transaction asks for. v1 carries it in
 // the message and an unset limit is zero, so each is explicit; the heap frame
@@ -69,10 +69,11 @@ const (
 )
 
 // Apply installs build's product policy on settings, delegated to delegate,
-// removing the replaced policies in the same settings transaction. signer is
-// the Settings' one signer and pays. Without send it only simulates.
+// removing the replaced policies in the same settings transaction; when the
+// policy is already installed it only removes them. signer is the Settings'
+// one signer and pays. Without send it only simulates.
 func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.PublicKey, build Build, signer solana.PrivateKey, delegate solana.PublicKey, replace []solana.PublicKey, send bool) error {
-	product, err := build(ctx)
+	product, err := build(ctx, 0)
 	if err != nil {
 		return err
 	}
@@ -83,7 +84,10 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 	}
 	if account, ok := squads.FindPolicy(installed, delegate, constraints); ok {
 		fmt.Fprintf(out, "%s is already installed on %s as %s\n", product.Name, settings, account)
-		return nil
+		if len(replace) == 0 {
+			return nil
+		}
+		constraints = nil
 	}
 	_, accounts, err := c.Accounts(ctx, []solana.PublicKey{settings}, rpc.CommitmentConfirmed, 0)
 	if err != nil {
@@ -103,8 +107,12 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "apply %s: %d constraints at seed %d -> %s, replacing %d\n", product.Name, len(constraints), apply.Seed, policy, len(replace))
-	if err := run(ctx, c, out, signer, []solana.Instruction{generic(ix)}, send); err != nil || !send {
+	if constraints == nil {
+		fmt.Fprintf(out, "apply %s: remove %v\n", product.Name, replace)
+	} else {
+		fmt.Fprintf(out, "apply %s: %d constraints at seed %d -> %s, remove %v\n", product.Name, len(constraints), apply.Seed, policy, replace)
+	}
+	if _, err := run(ctx, c, out, signer, []solana.Instruction{generic(ix)}, send); err != nil || !send || constraints == nil {
 		return err
 	}
 	if installed, err = squads.Policies(ctx, c, settings); err != nil {
@@ -120,9 +128,9 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 // Check sends each op of build's product (or only op number only, when it is
 // not negative) through its installed policy on settings, signed and paid by
 // delegate: simulated, and with send landed one by one, rebuilding the product
-// from chain after each. It stops at the first failure.
+// from the chain each landed op left. It stops at the first failure.
 func Check(ctx context.Context, c *chain.Client, out io.Writer, settings solana.PublicKey, build Build, delegate solana.PrivateKey, only int, send bool) error {
-	product, err := build(ctx)
+	product, err := build(ctx, 0)
 	if err != nil {
 		return err
 	}
@@ -134,16 +142,17 @@ func Check(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 	if !ok {
 		return fmt.Errorf("%s policy is not installed on %s", product.Name, settings)
 	}
+	var landed uint64
 	for i := range product.Ops {
-		if i > 0 && send {
-			if product, err = build(ctx); err != nil {
+		if only >= 0 && i != only {
+			continue
+		}
+		if landed > 0 {
+			if product, err = build(ctx, landed); err != nil {
 				return err
 			}
 		}
 		op := product.Ops[i]
-		if only >= 0 && i != only {
-			continue
-		}
 		if op.Done {
 			fmt.Fprintf(out, "%d %s: done\n", i, op.Name)
 			continue
@@ -158,7 +167,7 @@ func Check(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 			return err
 		}
 		fmt.Fprintf(out, "%d %s:\n", i, op.Name)
-		if err := run(ctx, c, out, delegate, append(append([]solana.Instruction(nil), op.Before...), generic(execute)), send); err != nil {
+		if landed, err = run(ctx, c, out, delegate, append(append([]solana.Instruction(nil), op.Before...), generic(execute)), send); err != nil {
 			return fmt.Errorf("%s: %w", op.Name, err)
 		}
 	}
@@ -166,18 +175,18 @@ func Check(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 }
 
 // run compiles one v1 transaction paid and signed by payer, simulates it with
-// signature checks, and with send lands it at confirmed and prints its token
-// deltas.
-func run(ctx context.Context, c *chain.Client, out io.Writer, payer solana.PrivateKey, ixs []solana.Instruction, send bool) error {
+// signature checks, and with send lands it at confirmed, prints its token
+// deltas and returns its slot.
+func run(ctx context.Context, c *chain.Client, out io.Writer, payer solana.PrivateKey, ixs []solana.Instruction, send bool) (uint64, error) {
 	hash, lastValid, _, err := c.Blockhash(ctx, rpc.CommitmentConfirmed, 0)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	tx, err := solana.NewTransaction(ixs, hash, solana.TransactionPayer(payer.PublicKey()), solana.TransactionV1Config(
 		solana.TransactionConfig{}.WithComputeUnitLimit(computeUnits).WithHeapSize(heapBytes).
 			WithLoadedAccountsDataSizeLimit(loadedAccountsBytes).WithPriorityFee(priorityFeeLamports)))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := tx.Sign(func(key solana.PublicKey) *solana.PrivateKey {
 		if key == payer.PublicKey() {
@@ -185,40 +194,37 @@ func run(ctx context.Context, c *chain.Client, out io.Writer, payer solana.Priva
 		}
 		return nil
 	}); err != nil {
-		return err
+		return 0, err
 	}
 	wire, err := tx.MarshalBinary()
 	if err != nil {
-		return err
-	}
-	if len(wire) > solana.MaxTransactionSizeV1 {
-		return fmt.Errorf("transaction is %d bytes, over the v1 limit %d", len(wire), solana.MaxTransactionSizeV1)
+		return 0, err
 	}
 	simulated, err := c.Simulate(ctx, wire, rpc.SimulateTransactionOpts{SigVerify: true, Commitment: rpc.CommitmentConfirmed})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	fmt.Fprintf(out, "  simulated: %d bytes, %d CU, slot %d\n", len(wire), simulated.Units, simulated.Slot)
 	if !send {
-		return nil
+		return 0, nil
 	}
 	signature := tx.Signatures[0]
 	fmt.Fprintf(out, "  sending %s\n", signature)
 	outcome, err := chain.Land(ctx, c, chain.Attempt{Wire: wire, Signature: signature.String(), LastValidBlockHeight: lastValid, Required: chain.Confirmed},
 		2*time.Second, func(context.Context) error { return nil })
 	if err != nil {
-		return err
+		return 0, err
 	}
 	switch outcome.Kind {
 	case chain.Landed:
 	case chain.Failed:
-		return fmt.Errorf("transaction %s failed on chain: %s", signature, outcome.Err)
+		return 0, fmt.Errorf("transaction %s failed on chain: %s", signature, outcome.Err)
 	default:
-		return fmt.Errorf("transaction %s expired unlanded", signature)
+		return 0, fmt.Errorf("transaction %s expired unlanded", signature)
 	}
 	receipt, err := c.Receipt(ctx, signature, rpc.CommitmentConfirmed)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	fmt.Fprintf(out, "  landed slot %d, fee %d lamports\n", receipt.Slot, receipt.Fee)
 	for account, post := range receipt.Post {
@@ -226,7 +232,7 @@ func run(ctx context.Context, c *chain.Client, out io.Writer, payer solana.Priva
 			fmt.Fprintf(out, "  %s %s: %d -> %d\n", account, post.Mint, pre.Amount, post.Amount)
 		}
 	}
-	return nil
+	return receipt.Slot, nil
 }
 
 func generic(ix squads.Instruction) solana.Instruction {

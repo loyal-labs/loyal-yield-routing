@@ -228,6 +228,9 @@ type Obligation struct {
 	ElevationGroup         uint8
 }
 
+// obligationOwnerOffset is where an obligation account holds its owner.
+const obligationOwnerOffset = 64
+
 // DecodeObligation decodes a funded, non-executable KLend obligation.
 func DecodeObligation(a *chain.Account) (Obligation, error) {
 	if err := envelope(a, ProgramID, ObligationSize, ObligationDiscriminator, "obligation"); err != nil {
@@ -235,7 +238,7 @@ func DecodeObligation(a *chain.Account) (Obligation, error) {
 	}
 	d := a.Data
 	o := Obligation{
-		LastUpdateSlot: u64(d, 16), LendingMarket: key(d, 32), Owner: key(d, 64),
+		LastUpdateSlot: u64(d, 16), LendingMarket: key(d, 32), Owner: key(d, obligationOwnerOffset),
 		UnhealthyBorrowValueSF: [16]byte(d[2256:2272]), ElevationGroup: d[2285],
 	}
 	for i := range o.Deposits {
