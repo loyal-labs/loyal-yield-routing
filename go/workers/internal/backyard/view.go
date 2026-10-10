@@ -330,7 +330,7 @@ func (v *View) sync(ctx context.Context) {
 // node's slot; an RPC read that must not predate the view takes S as its
 // minContextSlot and keeps its own context slot.
 func (v *View) slot(ctx context.Context) (int64, error) {
-	slot, _, _, err := v.read(ctx, nil, 0)
+	slot, _, err := v.read(ctx, nil, 0)
 	return slot, err
 }
 
@@ -338,11 +338,22 @@ func (v *View) slot(ctx context.Context) (int64, error) {
 // provider replays cannot resume, and a restart takes a new start-up read.
 var errViewReplayGap = errors.New("account view stream gap exceeds the provider replay window")
 
-// read returns addresses and the vault's open withdrawal receipts at S >=
-// minSlot, waiting for S to get there no longer than a live view's chain time
-// may trail. Only an optional address may be absent; an address outside the
-// view is an error, never an absence.
-func (v *View) read(ctx context.Context, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
+// read returns addresses at S >= minSlot, waiting for S to get there no
+// longer than a live view's chain time may trail. Only an optional address
+// may be absent; an address outside the view is an error, never an absence.
+func (v *View) read(ctx context.Context, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
+	slot, accounts, _, err := v.readAt(ctx, false, addresses, minSlot, optional...)
+	return slot, accounts, err
+}
+
+// readWithReceipts is read plus the vault's open withdrawal receipts. Only it
+// waits out a receipt handoff: until a discovered receipt is in the
+// by-address filter, its close could be missed.
+func (v *View) readWithReceipts(ctx context.Context, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
+	return v.readAt(ctx, true, addresses, minSlot, optional...)
+}
+
+func (v *View) readAt(ctx context.Context, withReceipts bool, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
 	if v == nil {
 		return 0, nil, nil, fmt.Errorf("account view is required")
 	}
@@ -372,7 +383,7 @@ func (v *View) read(ctx context.Context, addresses []string, minSlot int64, opti
 			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view is replaying"))
 		case clockAge > viewMaxClockAge:
 			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view chain time at slot %d is %s old", v.through, clockAge))
-		case v.pending > 0:
+		case withReceipts && v.pending > 0:
 			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view has a receipt filter change pending"))
 		}
 	}

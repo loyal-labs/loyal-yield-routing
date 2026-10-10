@@ -166,10 +166,10 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	sent := clock.slot()
 	time.Sleep(rpcLatency)
 	t.Logf("S=%d bound=S+%d simulated=S+%d sent=S+%d", s.Slot, bound-s.Slot, simulated-s.Slot, sent-s.Slot)
-	if ReportExpiredAtLanding(s.Slot, simulated) {
+	if simulated > s.Slot+adaptorMaxReportAgeSlots {
 		t.Fatalf("report expired in simulation at S+%d", simulated-s.Slot)
 	}
-	if ReportExpiredAtLanding(s.Slot, sent) {
+	if sent > s.Slot+adaptorMaxReportAgeSlots {
 		t.Fatalf("report expired at send S+%d", sent-s.Slot)
 	}
 }

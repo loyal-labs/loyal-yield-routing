@@ -217,26 +217,6 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 		return nil
 	}
 	assertBudgetHold(t, worker.Tick(context.Background()), "complete_position_exit_admission_unavailable")
-
-	loads := 0
-	reobserved := false
-	worker.runtime = tickRuntime{
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) {
-			loads++
-			if loads == 1 {
-				return &PersistedOperation{Operation: Operation{ID: "confirmed"}, Status: Reconciling}, nil
-			}
-			return nil, nil
-		},
-		advance: func(context.Context, PersistedOperation) error { return nil },
-		observe: func(context.Context) (Observation, error) { reobserved = true; return openObservation, nil },
-	}
-	if err := worker.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if !reobserved {
-		t.Fatal("reconciled confirmed mutation was not immediately reobserved")
-	}
 }
 
 func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {

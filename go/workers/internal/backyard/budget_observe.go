@@ -48,7 +48,7 @@ func ObserveBudgetTokenPrice(ctx context.Context, rpc *chain.Client, view *View,
 		return BudgetPrice{}, budgetHold("unbound_valuation_mint")
 	}
 	addresses := uniqueNonzero([]string{reserveAddress, reference.DebtReserve, debit.Mint, bridgeUSDC, budgetClockAddress})
-	slot, accounts, _, err := view.read(ctx, addresses, minimumSlot)
+	slot, accounts, err := view.read(ctx, addresses, minimumSlot)
 	if err != nil {
 		return BudgetPrice{}, err
 	}

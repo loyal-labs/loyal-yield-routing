@@ -115,7 +115,7 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 	rpc, reads := lookupRPC(t, r.LookupTables, nil, false)
 	legacy := r
 	legacy.LookupTables = nil
-	prepared, err := prepareJupiterLookupTables(context.Background(), rpc, legacy, r.LookupTables[0].ObservedSlot)
+	prepared, err := embeddedTestManifest(t).prepareJupiterLookupTables(context.Background(), rpc, legacy, r.LookupTables[0].ObservedSlot)
 	if err != nil || len(prepared.LookupTables) != len(r.LookupTables) || *reads != 1 {
 		t.Fatal("production preparation failed", err)
 	}
@@ -217,7 +217,7 @@ func TestFreshJupiterLookupHintsPreservePolicyAndPersistedMapping(t *testing.T) 
 	rpc, reads := lookupRPC(t, r.LookupTables, nil, false)
 	input := r
 	input.LookupTables = nil
-	prepared, err := prepareJupiterLookupTables(context.Background(), rpc, input, r.LookupTables[0].ObservedSlot)
+	prepared, err := embeddedTestManifest(t).prepareJupiterLookupTables(context.Background(), rpc, input, r.LookupTables[0].ObservedSlot)
 	if err != nil || *reads != 1 {
 		t.Fatal("fresh hint preparation failed", err)
 	}

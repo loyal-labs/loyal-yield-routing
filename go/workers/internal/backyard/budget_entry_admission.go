@@ -26,7 +26,7 @@ func validateEntrySwap(ctx context.Context, view *View, request JupiterSwapReque
 	if err != nil || source != bridgeSquadsATA || sourceMint != bridgeUSDC || destination != route.CollateralCustody {
 		return 0, budgetHold("entry_swap_custody_mismatch")
 	}
-	observed, accounts, _, err := view.read(ctx, []string{source, destination, route.DebtCustody, route.Kamino.Obligation}, slot)
+	observed, accounts, err := view.read(ctx, []string{source, destination, route.DebtCustody, route.Kamino.Obligation}, slot)
 	if err != nil {
 		return 0, budgetHold("entry_swap_state_unavailable")
 	}

@@ -68,17 +68,9 @@ func projectKaminoReleaseReserve(reserve decodedKaminoReserve, receipts, liquidi
 	return reserve, nil
 }
 
-// Keep the existing unwind LTV, but size against debt through all five steps
+// Keep the existing unwind LTV, but size against debt through the steps
 // before payoff. Convert the conservative liquidity allowance back to receipts
 // using the reserve's unrounded exchange rate, not a rounded position ratio.
-func decodeKaminoRepaymentRelease(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (KaminoReleaseBound, error) {
-	return decodeKaminoRepaymentReleaseWindow(accounts, route, slot, 5)
-}
-
-func decodeKaminoRepaymentReleaseWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64) (KaminoReleaseBound, error) {
-	return decodeKaminoRepaymentReleaseForMode(accounts, route, slot, steps, false)
-}
-
 func decodeKaminoRepaymentReleaseForMode(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64, pilot bool) (KaminoReleaseBound, error) {
 	return decodeKaminoRepaymentReleaseWithAllowance(accounts, route, slot, steps, pilot, pilotRepaymentLiquidityAllowance)
 }

@@ -59,7 +59,7 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 				rpc, reads := lookupRPC(t, tables, nil, false)
 				unprepared := request
 				unprepared.LookupTables = nil
-				prepared, err := prepareJupiterLookupTables(context.Background(), rpc, unprepared, tables[0].ObservedSlot)
+				prepared, err := embeddedTestManifest(t).prepareJupiterLookupTables(context.Background(), rpc, unprepared, tables[0].ObservedSlot)
 				if err != nil || *reads != 1 {
 					t.Fatal("Prime preparation did not load the hinted chain tables", err)
 				}

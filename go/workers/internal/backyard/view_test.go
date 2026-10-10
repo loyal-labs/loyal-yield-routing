@@ -355,11 +355,11 @@ func TestViewStreamPlansAtS(t *testing.T) {
 
 	short, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if _, _, _, err := view.read(short, nil, 85); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, _, err := view.read(short, nil, 85); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("planned from slot 80 after a landing at 85: %v", err)
 	}
 	connector.send(t, view, true, slotFrame(200), slotFrame(201))
-	if slot, _, _, err := view.read(context.Background(), nil, 85); err != nil || slot != 200 {
+	if slot, _, err := view.read(context.Background(), nil, 85); err != nil || slot != 200 {
 		t.Fatalf("view through %d: %v", slot, err)
 	}
 
@@ -384,7 +384,7 @@ func TestViewStreamPlansAtS(t *testing.T) {
 	_, subscription := connector.last()
 	subscription.fail <- errors.New("connection reset")
 	waitFor(t, func() bool {
-		_, _, _, _ = view.read(context.Background(), nil, 0)
+		_, _, _ = view.read(context.Background(), nil, 0)
 		return connector.opened() == 2
 	})
 	if request, _ := connector.last(); request.GetFromSlot() != 200-32 {
@@ -412,6 +412,9 @@ func TestViewReceiptDiscoveredThenClosed(t *testing.T) {
 	waitFor(t, func() bool { return connector.opened() == 2 })
 	if _, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("the view planned before the receipt handoff promoted: %v", err)
+	}
+	if _, _, err := view.read(context.Background(), []string{bridgeIdleATA}, 0); err != nil {
+		t.Fatalf("the receipt handoff held a read that takes no receipts: %v", err)
 	}
 	if request, _ := connector.last(); !slices.Contains(request.Accounts[viewAccountsFilter].Account, address) || request.GetFromSlot() > 82 {
 		t.Fatalf("handoff does not watch the receipt from its discovery slot: from %d", request.GetFromSlot())

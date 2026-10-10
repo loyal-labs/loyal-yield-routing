@@ -149,17 +149,16 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		result.Stage = "row_shape"
 		return result, errors.New("settle-manual-restore: operation does not match the reprocessable restore failure shape")
 	}
-	// The same refusal classification the automatic walk would have used; the
-	// settlement below re-derives it from the finalized receipt and requires
-	// the exact match again.
-	evidence, err := failedTransactionEvidence(ctx, rpc, operation.TransactionSignature)
+	// The same refusal classification the automatic walk uses, from the one
+	// finalized receipt the settlement below proves.
+	receipt, err := readFailureReceipt(ctx, rpc, operation.TransactionSignature)
 	if err != nil {
 		result.Stage = "read_receipt"
 		return result, sanitizedStage(result.Stage)
 	}
-	classification := ClassifyConfirmedReportFailure(evidence.Err, evidence.Logs)
+	classification := ClassifyConfirmedReportFailure(receipt.Meta.Err, receipt.Meta.LogMessages)
 	result.Classification = classification.Reason
-	result.LandingSlot = evidence.Slot
+	result.LandingSlot = receipt.Slot
 	if !classification.Retryable || classification.Reason != adaptorReportSlotRefusedReason {
 		result.Stage = "classification"
 		return result, errors.New("settle-manual-restore: failure receipt does not classify as " + adaptorReportSlotRefusedReason)
@@ -186,7 +185,7 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		if blocked {
 			return errors.New("route still has a nonterminal operation")
 		}
-		return db.settleFinalizedReportFailure(ctx, rpc, operation, adaptorReportSlotRefusedReason, true)
+		return db.settleFinalizedReportFailure(ctx, operation, receipt, adaptorReportSlotRefusedReason, true)
 	}()
 	releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	released, releaseErr := db.ReleaseRouteLease(releaseCtx)

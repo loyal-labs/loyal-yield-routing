@@ -29,7 +29,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	_, accounts, _, err := view.read(ctx, []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply}, s.Slot)
+	_, accounts, err := view.read(ctx, []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply}, s.Slot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}

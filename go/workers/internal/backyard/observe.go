@@ -32,7 +32,7 @@ func ObserveConfirmedBridgeSnapshot(ctx context.Context, view *View, operation P
 	if err := json.Unmarshal(operation.ExpectedEffects, &effects); err != nil {
 		return Observation{}, fmt.Errorf("decode the operation's decision slot: %w", err)
 	}
-	slot, accounts, receipts, err := view.read(ctx, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, effects.Decision.ObservationSlot)
+	slot, accounts, receipts, err := view.readWithReceipts(ctx, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, effects.Decision.ObservationSlot)
 	if err != nil {
 		return Observation{}, err
 	}

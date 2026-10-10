@@ -92,7 +92,7 @@ func observeKaminoInitializationPrestate(ctx context.Context, view *View, r Kami
 		addresses = append(addresses, encodeBase58(a.key[:]))
 	}
 	route, _ := runtimeRoute(r.RouteLane)
-	slot, accounts, _, err := view.read(ctx, addresses, minimumSlot, route.Kamino.Obligation)
+	slot, accounts, err := view.read(ctx, addresses, minimumSlot, route.Kamino.Obligation)
 	if err != nil {
 		return 0, budgetHold("initializer_prestate_unavailable")
 	}

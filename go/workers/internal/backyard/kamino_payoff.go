@@ -54,7 +54,7 @@ func observeKaminoPayoffWindowAccounts(ctx context.Context, view *View, route Ru
 		return KaminoPayoffBound{}, nil, budgetHold("payoff_observation_unavailable")
 	}
 	addresses := payoffWindowAddresses(route, additional...)
-	slot, accounts, _, err := view.read(ctx, addresses, minimumSlot)
+	slot, accounts, err := view.read(ctx, addresses, minimumSlot)
 	if err != nil {
 		return KaminoPayoffBound{}, nil, err
 	}

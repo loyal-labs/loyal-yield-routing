@@ -37,9 +37,18 @@ type finalizedFailureMeta struct {
 	LogMessages       []string          `json:"logMessages"`
 }
 
-// failureReceipt writes the cluster's receipt in getTransaction's own shape,
-// the form the settlement proof validates and persists.
-func failureReceipt(r chain.Receipt) (finalizedFailureReceipt, error) {
+// readFailureReceipt reads a failed signature's finalized receipt in
+// getTransaction's own shape, the form the settlement proof validates and
+// persists. A receipt the cluster does not have yet, or one without an error,
+// is an unavailable observation: the next tick lands the wire again.
+func readFailureReceipt(ctx context.Context, rpc *chain.Client, signature string) (finalizedFailureReceipt, error) {
+	r, err := finalizedReceipt(ctx, rpc, signature)
+	if err != nil {
+		return finalizedFailureReceipt{}, err
+	}
+	if r.Err == nil {
+		return finalizedFailureReceipt{}, confirmedObservationUnavailable(fmt.Errorf("finalized receipt of a failed signature has no error"))
+	}
 	errJSON, err := json.Marshal(r.Err)
 	if err != nil {
 		return finalizedFailureReceipt{}, err
@@ -186,16 +195,7 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 // explicit manual state for rows the previous binary's action gate forced
 // into manual recovery with the unclassified marker. Same receipt proof, one
 // guarded status transition per source state.
-func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *chain.Client, operation PersistedOperation, reason string, manualRecovery bool) error {
-	// A missing detailed receipt stays ambiguous even after finalized status.
-	read, err := finalizedReceipt(ctx, rpc, operation.TransactionSignature)
-	if err != nil {
-		return nil
-	}
-	receipt, err := failureReceipt(read)
-	if err != nil {
-		return nil
-	}
+func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation PersistedOperation, receipt finalizedFailureReceipt, reason string, manualRecovery bool) error {
 	if d == nil || d.pool == nil || operation.ID == "" {
 		return fmt.Errorf("invalid finalized failure settlement")
 	}
@@ -277,17 +277,7 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, rpc *chain.
 		return err
 	}
 	intent, err := Phase3IntentDigest(request, auth.BuildInput.Effects)
-	if err != nil || intent != auth.IntentSHA256 {
-		return budgetHold("failed_settlement_intent_changed")
-	}
-	classification := ClassifyConfirmedReportFailure(receipt.Meta.Err, receipt.Meta.LogMessages)
-	if !classification.Retryable && ReportExpiredAtLanding(int64(bridge.Report.ObservedSlot), receipt.Slot) {
-		classification = ConfirmedFailureClassification{Retryable: true, Reason: "report_expired_at_landing"}
-	}
-	if !classification.Retryable || classification.Reason != reason {
-		return budgetHold("failed_settlement_classification_changed")
-	}
-	if auth.SignedWireSHA256 != wireHash {
+	if err != nil || intent != auth.IntentSHA256 || auth.SignedWireSHA256 != wireHash {
 		return budgetHold("failed_settlement_intent_changed")
 	}
 	proof := finalizedFailureSettlement{Schema: "backyard-finalized-failure/v1", Signature: signature, SignedWireSHA256: wireHash, MessageSHA256: messageHash, Slot: receipt.Slot, Reason: reason, AtomicNoCapitalMovement: true, FeeLamports: *receipt.Meta.Fee, Receipt: receipt}

@@ -32,7 +32,6 @@ type Worker struct {
 	manifest     RouteManifest
 	runtime      tickRuntime
 	leaseHandoff startupLeaseHandoffRuntime
-	retryLog     tickRetryLog
 	// borrowBlockedLog reports a borrow-blocked hold at most once an hour.
 	borrowBlockedLog borrowBlockedLog
 }
@@ -439,19 +438,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 			}
 			return err
 		}
-		// Reconciling is the only state whose successful advance finalizes a
-		// confirmed mutation. Reobserve immediately before another decision can
-		// be created; the next poll will journal from this fresh state.
-		if operation.Status == Reconciling {
-			remaining, err := w.runtime.loadNonterminal(ctx, w.routeKey)
-			if err != nil {
-				return err
-			}
-			if remaining == nil {
-				healthObservation, err = w.runtime.observe(ctx)
-				return err
-			}
-		}
 		return nil
 	}
 	tickStart := time.Now()
@@ -811,33 +797,6 @@ func (r startupLeaseHandoffRuntime) acquire(ctx context.Context, leases routeLea
 	}
 }
 
-// isPureHold reports whether a tick ended in exactly the journaled
-// spending-limit hold and nothing else. The refusal is already recorded on
-// the operation row under squadsSpendingLimitReason and self-heals at the
-// limit's period boundary, so exiting the process would only restart into the
-// same refusal. A hold joined or wrapped together with any other fault - a
-// store rejection, a wire error - is a real fault: continuing would suppress
-// the accompanying error, so only a pure hold skips the leg.
-func isPureHold(err error) bool {
-	var hold *BudgetHold
-	if !errors.As(err, &hold) || hold.Reason != squadsSpendingLimitReason {
-		return false
-	}
-	switch unwrappable := err.(type) {
-	case interface{ Unwrap() []error }:
-		for _, member := range unwrappable.Unwrap() {
-			if !isPureHold(member) {
-				return false
-			}
-		}
-		return true
-	case interface{ Unwrap() error }:
-		return isPureHold(unwrappable.Unwrap())
-	default:
-		return true
-	}
-}
-
 // afterBroadcastError marks a tick error from advancing an operation whose
 // broadcast intent is already durable. Its holds are never pre-send retries.
 type afterBroadcastError struct{ err error }
@@ -855,8 +814,8 @@ func preBroadcastStatus(status OperationStatus) bool {
 // before anything was broadcast. The next tick re-observes the chain and
 // re-derives the whole leg, exactly what a process restart would do, without
 // the Render restart (13 tries, 10 restarts in the 09-26 AUTO entry; the
-// per-reason list it replaces grew with every move). Like isPureHold, a hold
-// joined with any other fault (a store or wire error) still stops the worker,
+// per-reason list it replaces grew with every move). A hold joined with any
+// other fault (a store or wire error) still stops the worker,
 // and so does any hold from an operation whose broadcast intent is recorded.
 func isPreSendHold(err error) bool {
 	var hold *BudgetHold
@@ -901,11 +860,11 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 				return leaseErr
 			default:
 			}
-			// Confirmed-observation gaps, pure journaled spending-limit holds
-			// and pre-send holds skip this tick's leg and retry on the next interval;
-			// anything else - including a hold joined with a store error -
-			// is a process fault and stops the worker.
-			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPureHold(err) && !isPreSendHold(err) {
+			// Confirmed-observation gaps and pre-send holds (the journaled
+			// spending-limit refusal among them) skip this tick's leg and retry
+			// on the next interval; anything else - including a hold joined
+			// with a store error - is a process fault and stops the worker.
+			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPreSendHold(err) {
 				// A SIGTERM cancellation is a normal stop, not an alert.
 				if ctx.Err() == nil {
 					backyardEvents.tickResult(err, true)
@@ -914,9 +873,6 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 			}
 		}
 		backyardEvents.tickResult(err, false)
-		if err != nil {
-			w.retryLog.note(time.Now(), err)
-		}
 		timer := time.NewTimer(w.interval)
 		select {
 		case err := <-leaseErrors:

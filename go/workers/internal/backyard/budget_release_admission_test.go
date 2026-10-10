@@ -22,7 +22,7 @@ func releaseAdmissionFixture(t *testing.T, output uint64) (Observation, Decision
 	if err != nil {
 		t.Fatal(err)
 	}
-	bound, err := decodeKaminoRepaymentRelease(full, route, observed.ObservedSlot)
+	bound, err := decodeKaminoRepaymentReleaseForMode(full, route, observed.ObservedSlot, 5, false)
 	if err != nil {
 		t.Fatal(err)
 	}

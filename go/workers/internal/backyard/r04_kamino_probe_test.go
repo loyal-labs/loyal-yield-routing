@@ -57,7 +57,7 @@ func TestExportPhase3KaminoReleaseProbe(t *testing.T) {
 		}
 		accounts = append(accounts, ConfirmedAccount{Address: row.Address, Owner: row.Owner, Lamports: row.Lamports, Data: data})
 	}
-	bound, err := decodeKaminoRepaymentRelease(accounts, route, state.Slot)
+	bound, err := decodeKaminoRepaymentReleaseForMode(accounts, route, state.Slot, 5, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestPhase3KaminoReleaseProbeMatchesProduction(t *testing.T) {
 		}
 		before, after := decode(probe.Before), decode(probe.After)
 		if i == 2 {
-			bound, err := decodeKaminoRepaymentRelease(before, route, report.Slot)
+			bound, err := decodeKaminoRepaymentReleaseForMode(before, route, report.Slot, 5, false)
 			if err != nil || !probe.Request.RepaymentRelease || probe.Request.AmountRaw != bound.ReceiptRaw || probe.ActualReleasedRaw != bound.LiquidityRaw || probe.RemainingReceiptRaw != bound.RemainingReceiptRaw {
 				t.Fatal("actual deployed release differs from production sizing", bound, err)
 			}
