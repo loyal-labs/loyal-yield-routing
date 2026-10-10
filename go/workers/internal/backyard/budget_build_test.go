@@ -41,9 +41,9 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 	mint := func(address string, decimals byte) ConfirmedAccount {
 		data := make([]byte, 82)
 		data[44], data[45] = decimals, 1
-		return ConfirmedAccount{Address: address, Owner: classicTokenProgram, Data: data}
+		return ConfirmedAccount{Address: address, Owner: classicTokenProgram, Lamports: 1, Data: data}
 	}
-	clock := ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Data: make([]byte, 40)}
+	clock := ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 40)}
 	binary.LittleEndian.PutUint64(clock.Data[32:40], 1000)
 	accounts := map[string]ConfirmedAccount{}
 	for _, a := range []ConfirmedAccount{usdc, sol, mint(bridgeUSDC, 6), mint(budgetWrappedSOLMint, 9), clock} {
@@ -82,10 +82,10 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 			}
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": fee}
 		case "getProgramAccounts":
-			if !squadsProgramAccounts(body.Params) {
-				t.Fatal("unexpected program account read")
+			result = map[string]any{"context": map[string]int{"slot": 42}, "value": []any{}} // no withdrawal receipts
+			if squadsProgramAccounts(body.Params) {
+				result = capturedPolicyProgramAccounts(42)
 			}
-			result = capturedPolicyProgramAccounts(42)
 		case "getEpochInfo":
 			result = finalizedEpoch(10) // A signed HOLD at this height is not expired in the DB fixture.
 		case "getMinimumBalanceForRentExemption":
@@ -105,7 +105,8 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 			for _, address := range addresses {
 				a, ok := accounts[address]
 				if !ok {
-					t.Fatalf("unexpected valuation account %s", address)
+					values = append(values, nil)
+					continue
 				}
 				values = append(values, map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}})
 			}
@@ -120,6 +121,12 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 		return response(string(encoded)), nil
 	})
 	return rpc
+}
+
+// budgetView is the view of budgetBuildRPC's valuation accounts.
+func budgetView(t *testing.T) *View {
+	t.Helper()
+	return fixtureView(t, budgetBuildRPC(t, 5000, 42))
 }
 
 func TestProductionBridgeRequiresBindBeforeSigner(t *testing.T) {
@@ -137,7 +144,7 @@ func TestProductionBridgeRequiresBindBeforeSigner(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := bridgeTestRequest(tc.action, tc.amount)
-			err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, tc.fee, 42), "negative-probe", BridgeExecutionEvidence{request, effects}, Credentials{})
+			err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, tc.fee, 42), budgetView(t), "negative-probe", BridgeExecutionEvidence{request, effects}, Credentials{})
 			if err == nil || err.Error() != "database is not configured" {
 				t.Fatalf("unconfigured builder reached signer: %v", err)
 			}
@@ -151,14 +158,14 @@ func TestKnownBuildCostRejectsStaleObservationAndDoesNotGrantAdmission(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	cost, err := observePhase3KnownBuildCost(context.Background(), budgetBuildRPC(t, 5_000, 42), request, effects)
+	cost, err := observePhase3KnownBuildCost(context.Background(), budgetBuildRPC(t, 5_000, 42), budgetView(t), request, effects)
 	if err != nil || cost.TotalMicros <= 0 || cost.PrincipalMicros != 0 {
 		t.Fatalf("unexpected measured report cost: %+v %v", cost, err)
 	}
-	_, err = observePhase3KnownBuildCost(context.Background(), budgetBuildRPC(t, 5_000, 75), request, effects)
+	_, err = observePhase3KnownBuildCost(context.Background(), budgetBuildRPC(t, 5_000, 75), budgetView(t), request, effects)
 	assertBudgetHold(t, err, "fee_message_or_slot_mismatch")
 	// Passing known-cost measurement cannot replace the bind.
-	err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), "unbound", BridgeExecutionEvidence{request, effects}, Credentials{})
+	err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), budgetView(t), "unbound", BridgeExecutionEvidence{request, effects}, Credentials{})
 	if err == nil {
 		t.Fatal("unbound production build passed")
 	}
@@ -172,7 +179,7 @@ func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
 			{Address: source.Address, Owner: classicTokenProgram, Mint: source.Mint, Authority: source.Authority, BeforeRaw: 2_000_000, AfterRaw: 1_000_000},
 			{Address: destination.Address, Owner: classicTokenProgram, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: 0, AfterRaw: 1_000_000},
 		}}
-		err := BuildSimulateAndPersistKamino(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), "negative-kamino", KaminoExecutionEvidence{request, effects}, Credentials{})
+		err := BuildSimulateAndPersistKamino(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), budgetView(t), "negative-kamino", KaminoExecutionEvidence{request, effects}, Credentials{})
 		if err == nil || err.Error() != "database is not configured" {
 			t.Fatalf("unconfigured builder reached signer: %v", err)
 		}
@@ -186,83 +193,27 @@ func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
 			{Address: bridgeSquadsATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeVault, BeforeRaw: 1_000_000, AfterRaw: 0},
 			{Address: kaminoPrimeCustody, Owner: classicTokenProgram, Mint: kaminoPrimeMint, Authority: bridgeVault, BeforeRaw: 0, AfterRaw: minimum, MinimumAfterRaw: &minimum},
 		}}
-		err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), "negative-jupiter", JupiterExecutionEvidence{request, effects}, Credentials{})
+		err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), budgetView(t), "negative-jupiter", JupiterExecutionEvidence{request, effects}, Credentials{})
 		if err == nil || err.Error() != "database is not configured" {
 			t.Fatalf("unconfigured builder reached signer: %v", err)
 		}
 	})
 }
 
-func TestKnownBuildCostReadsIndependentValuationsTogether(t *testing.T) {
-	_, _, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
-	rpc := budgetBuildRPC(t, 5_000, 42)
-	base := rpcOf(rpc).Transport
-	var started atomic.Int32
-	ready := make(chan struct{})
-	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			return nil, err
-		}
-		request.Body = io.NopCloser(bytes.NewReader(body))
-		var call struct {
-			Method string            `json:"method"`
-			Params []json.RawMessage `json:"params"`
-		}
-		if err := json.Unmarshal(body, &call); err != nil {
-			return nil, err
-		}
-		if call.Method == "getFeeForMessage" || call.Method == "getMultipleAccounts" {
-			var options struct {
-				MinimumSlot int64 `json:"minContextSlot"`
-			}
-			if err := json.Unmarshal(call.Params[1], &options); err != nil {
-				return nil, err
-			}
-			if options.MinimumSlot != 42 {
-				return nil, fmt.Errorf("unexpected minimum slot %d", options.MinimumSlot)
-			}
-			if started.Add(1) == 3 {
-				close(ready)
-			}
-			select {
-			case <-ready:
-			case <-request.Context().Done():
-				return nil, request.Context().Err()
-			}
-		}
-		return base.RoundTrip(request)
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	cost, err := observePhase3KnownBuildCost(ctx, rpc, evidence.Request, evidence.ExpectedEffects)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if started.Load() != 3 || cost.PrincipalMicros != 100_000 || cost.ValidThroughSlot != 74 {
-		t.Fatalf("incomplete concurrent build measurement: reads=%d cost=%+v", started.Load(), cost)
-	}
-}
-
 func TestKnownBuildCostConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
 	for _, tc := range []struct {
-		name                                   string
-		feeSlot, tokenSlot, solSlot, finalSlot int64
-		nullFee                                bool
-		hold                                   string
+		name                         string
+		feeSlot, viewSlot, finalSlot int64
+		nullFee                      bool
+		hold                         string
 	}{
-		{"oldest fee bounds validity", 42, 70, 70, 74, false, ""},
-		{"oldest token bounds validity", 70, 42, 70, 74, false, ""},
-		{"oldest native bounds validity", 70, 70, 42, 74, false, ""},
-		{"future fee rejected", 70, 42, 42, 60, false, "fee_message_or_slot_mismatch"},
-		{"future token rejected", 42, 70, 42, 60, false, "missing_stale_or_mismatched_usdc_valuation"},
-		{"future native rejected", 42, 42, 70, 60, false, "missing_stale_or_mismatched_usdc_valuation"},
-		{"expired fee rejected", 42, 70, 70, 75, false, "fee_message_or_slot_mismatch"},
-		{"expired token rejected", 70, 42, 70, 75, false, "missing_stale_or_mismatched_usdc_valuation"},
-		{"expired native rejected", 70, 70, 42, 75, false, "missing_stale_or_mismatched_usdc_valuation"},
-		{"null fee rejected", 42, 42, 42, 42, true, "network_fee_unavailable"},
-		{"token read below floor rejected", 42, 41, 42, 42, false, "build_token_valuation_unavailable"},
-		{"native read below floor rejected", 42, 42, 41, 42, false, "build_native_valuation_unavailable"},
+		{"oldest fee bounds validity", 42, 70, 74, false, ""},
+		{"oldest valuation bounds validity", 70, 42, 74, false, ""},
+		{"future fee rejected", 70, 42, 60, false, "fee_message_or_slot_mismatch"},
+		{"future valuation rejected", 42, 70, 60, false, "missing_stale_or_mismatched_usdc_valuation"},
+		{"expired fee rejected", 42, 70, 75, false, "fee_message_or_slot_mismatch"},
+		{"expired valuation rejected", 70, 42, 75, false, "missing_stale_or_mismatched_usdc_valuation"},
+		{"null fee rejected", 42, 42, 42, true, "network_fee_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
@@ -294,21 +245,11 @@ func TestKnownBuildCostConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
 					return nil, err
 				}
 				result := payload["result"].(map[string]any)
-				slot := tc.tokenSlot
+				slot := tc.viewSlot
 				if call.Method == "getFeeForMessage" {
 					slot = tc.feeSlot
 					if tc.nullFee {
 						result["value"] = nil
-					}
-				} else {
-					var addresses []string
-					if err := json.Unmarshal(call.Params[0], &addresses); err != nil {
-						return nil, err
-					}
-					for _, address := range addresses {
-						if address == budgetSOLReserve {
-							slot = tc.solSlot
-						}
 					}
 				}
 				result["context"].(map[string]any)["slot"] = slot
@@ -318,7 +259,7 @@ func TestKnownBuildCostConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
 				}
 				return response(string(encoded)), nil
 			})
-			cost, err := observePhase3KnownBuildCost(context.Background(), rpc, evidence.Request, evidence.ExpectedEffects)
+			cost, err := observePhase3KnownBuildCost(context.Background(), rpc, fixtureView(t, rpc), evidence.Request, evidence.ExpectedEffects)
 			if tc.hold != "" {
 				assertBudgetHold(t, err, tc.hold)
 				return
@@ -326,7 +267,7 @@ func TestKnownBuildCostConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if cost.ValidThroughSlot != 74 || cost.ObservationSlot != tc.finalSlot || cost.Fee.Slot != tc.feeSlot || cost.TokenPrice == nil || cost.TokenPrice.ObservedSlot != tc.tokenSlot || cost.NativePrice.ObservedSlot != tc.solSlot {
+			if cost.ValidThroughSlot != 74 || cost.ObservationSlot != tc.finalSlot || cost.Fee.Slot != tc.feeSlot || cost.TokenPrice == nil || cost.TokenPrice.ObservedSlot != tc.viewSlot || cost.NativePrice.ObservedSlot != tc.viewSlot {
 				t.Fatalf("lost independently observed validity: %+v", cost)
 			}
 		})

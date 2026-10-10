@@ -209,15 +209,15 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	// (out=in/100000 on the equity leg), so its whole-move bound cost reaches
 	// its own equity: compose must refuse exactly that economic outcome for the
 	// first ladder size.
-	source, err := observeSelectorSource(context.Background(), rpc, client, m, o)
+	source, err := observeSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, m, o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	destination, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 10_000_000, o.Snapshot.Slot, true, nil)
+	destination, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 10_000_000, o.Snapshot.Slot, true, nil)
 	if err != nil {
 		t.Fatal("largest destination quote", err)
 	}
-	_, err = composeSelectorMove(context.Background(), rpc, o, source, destination)
+	_, err = composeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), o, source, destination)
 	var hold *BudgetHold
 	if !errors.As(err, &hold) || hold.Reason != "selector_move_cost_exceeds_equity" {
 		t.Fatal("largest refusal is not the economic cost outcome", err)
@@ -225,7 +225,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	// The ladder continues past that refused largest size and stops at the
 	// smaller profitable 1M quote.
 	legs = nil
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 10_000_000)
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, 10_000_000)
 	if err != nil || len(quotes) != 1 {
 		t.Fatal("smaller profitable size not probed after economic failure", err, quotes, observed)
 	}
@@ -248,7 +248,7 @@ func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) 
 	policy.MinimumBenefitRaw = 1_000_000_000_000
 	var legs []uint64
 	fixtureHTTP(client).Transport = quoteLegsTransport(t, fixtureHTTP(client).Transport, &legs, math.MaxUint64, 1)
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 10_000_000)
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, 10_000_000)
 	if err != nil || len(quotes) != 1 {
 		t.Fatal("bound-valid diagnostic quote dropped", err, quotes, observed)
 	}
@@ -266,7 +266,7 @@ func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) 
 
 func TestRecipeExpectedCostExcludesMarginWhileBoundKeepsFloor(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestLiveSelectorLadderStopsAfterQuoteWindowBudget(t *testing.T) {
 	// past the ladder budget: only the largest size is priced, so no smaller
 	// quote can arrive with too few slots left to allocate.
 	o.ObservedAt = time.Now().UTC().Add(-selectorLadderBudget - time.Second)
-	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, client, m, o, []LaneEconomics{market}, policy, 10_000_000)
+	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, 10_000_000)
 	if err != nil || len(quotes) != 0 || len(legs) != 1 || legs[0] != 10_000_000 {
 		t.Fatal("ladder priced smaller sizes after its budget", err, quotes, legs)
 	}

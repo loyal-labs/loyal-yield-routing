@@ -25,6 +25,7 @@ func BuildSimulateAndPersistBridge(
 	ctx context.Context,
 	database *Database,
 	rpc *chain.Client,
+	view *View,
 	operationID string,
 	evidence BridgeExecutionEvidence,
 	credentials Credentials,
@@ -45,7 +46,7 @@ func BuildSimulateAndPersistBridge(
 	if err := database.requireBoundIntent(ctx, operationID, evidence.Request, encodedEffects); err != nil {
 		return err
 	}
-	if err := validateBuildPrestate(ctx, rpc, evidence.Request, evidence.ExpectedEffects); err != nil {
+	if err := validateBuildPrestate(ctx, rpc, view, evidence.Request, evidence.ExpectedEffects); err != nil {
 		return err
 	}
 	signer, err := credentials.signer()

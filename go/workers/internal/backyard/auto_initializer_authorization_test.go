@@ -3,7 +3,6 @@ package backyard
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -42,9 +41,8 @@ func autoInitializerAuthorizationFixture(t *testing.T) autoInitializerRecoveryFi
 
 // autoInitializerAuthorizationRPC composes the shared budget-build transport
 // (slot, message-fee, native-price and rent-exemption reads) with the shared
-// candidate AUTO prestate account set from autoInitializerPrestateAccounts:
-// the initializer prestate batch is served from those accounts with the target
-// obligation absent, and every other read delegates to the base transport.
+// candidate AUTO prestate account set from autoInitializerPrestateAccounts,
+// which fills the account reads with the target obligation absent.
 // The rent sysvar prices the fixture request's exact rent. sendTransaction is
 // counted and refused, and the signature lands once it was attempted;
 // simulateTransaction is refused outright: no signer exists in these tests.
@@ -56,7 +54,7 @@ func autoInitializerAuthorizationRPC(t *testing.T, f autoInitializerRecoveryFixt
 	binary.LittleEndian.PutUint64(rent.Data, f.request.RentLamports/(kamino.ObligationSize+128))
 	accounts[rentAddress] = rent
 	rpc := budgetBuildRPC(t, 5000, 42)
-	base := rpcOf(rpc).Transport
+	base := fillAccounts(rpcOf(rpc).Transport, accounts)
 	sends := 0
 	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		raw, err := io.ReadAll(req.Body)
@@ -87,20 +85,6 @@ func autoInitializerAuthorizationRPC(t *testing.T, f autoInitializerRecoveryFixt
 			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":[` + status + `]}}`), nil
 		case "simulateTransaction":
 			t.Fatalf("authorization must not simulate: no signer exists in this chain")
-		case "getMultipleAccounts":
-			var addresses []string
-			if err = json.Unmarshal(body.Params[0], &addresses); err == nil && len(addresses) > 0 && addresses[0] == bridgeDelegate {
-				values := make([]any, len(addresses))
-				for i, address := range addresses {
-					if a, ok := accounts[address]; ok {
-						values[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": a.Executable,
-							"data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}
-					}
-				}
-				encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID,
-					"result": map[string]any{"context": map[string]any{"slot": 42}, "value": values}})
-				return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(encoded)), Header: make(http.Header)}, nil
-			}
 		}
 		return base.RoundTrip(req)
 	})
@@ -163,7 +147,7 @@ func TestAutoInitializerBuildGateThroughReviewedManifest(t *testing.T) {
 
 	// The candidate passes every gate and stops only at the absent signer.
 	id := newOp(true)
-	err := BuildSimulateAndPersistKaminoInitialization(ctx, db, rpc, id, f.manifest, f.request, Credentials{})
+	err := BuildSimulateAndPersistKaminoInitialization(ctx, db, rpc, fixtureView(t, rpc), id, f.manifest, f.request, Credentials{})
 	if err == nil || err.Error() != "Backyard signing capability is not configured" {
 		t.Fatalf("candidate build did not reach the signer boundary: %v", err)
 	}
@@ -181,7 +165,7 @@ func TestAutoInitializerBuildGateThroughReviewedManifest(t *testing.T) {
 
 	// No bind, no signer.
 	unbound := newOp(false)
-	assertBudgetHold(t, BuildSimulateAndPersistKaminoInitialization(ctx, db, rpc, unbound, f.manifest, f.request, Credentials{}), "operation_not_bound")
+	assertBudgetHold(t, BuildSimulateAndPersistKaminoInitialization(ctx, db, rpc, fixtureView(t, rpc), unbound, f.manifest, f.request, Credentials{}), "operation_not_bound")
 	if status := operationStatus(t, ctx, db, unbound); status != "decided" {
 		t.Fatalf("unbound refusal transitioned the journal: %s", status)
 	}
@@ -190,7 +174,7 @@ func TestAutoInitializerBuildGateThroughReviewedManifest(t *testing.T) {
 	// comparison even runs, and the journal row keeps its bound build input.
 	drifted := f.request
 	drifted.Policy = testPolicyAccount(policyKey{family: BasicDebtLifecycle})
-	if _, err := f.manifest.validateRequestPrestate(ctx, rpc, drifted, f.effects); err == nil {
+	if _, err := f.manifest.validateRequestPrestate(ctx, rpc, fixtureView(t, rpc), drifted, f.effects); err == nil {
 		t.Fatal("drifted initializer request passed the prestate gate")
 	}
 	if auth := loadAutoInitializerAuth(t, ctx, db, id); auth.BuildInput == nil {

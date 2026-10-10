@@ -10,7 +10,7 @@ import (
 
 // This uses the same delegate, bind, simulation and durable-wire pipeline as
 // the ordinary Kamino legs. A compiler alone never authorizes it.
-func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *Database, rpc *chain.Client, operationID string, manifest RouteManifest, request KaminoInitializationRequest, credentials Credentials) error {
+func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *Database, rpc *chain.Client, view *View, operationID string, manifest RouteManifest, request KaminoInitializationRequest, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("initializer runtime dependencies are required")
 	}
@@ -28,7 +28,7 @@ func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *
 	if err = database.requireBoundIntent(ctx, operationID, request, encoded); err != nil {
 		return err
 	}
-	if _, err = manifest.validateRequestPrestate(ctx, rpc, request, effects); err != nil {
+	if _, err = manifest.validateRequestPrestate(ctx, rpc, view, request, effects); err != nil {
 		return err
 	}
 	signer, err := credentials.signer()

@@ -52,7 +52,7 @@ func TestDebtResidueSwapAdmissionKeepsPositionAndReservesItsReturn(t *testing.T)
 		t.Fatal(err)
 	}
 	request, effects := evidence.Request, evidence.ExpectedEffects
-	residue, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, client, m, o, swap, request, effects)
+	residue, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, swap, request, effects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestDebtResidueSwapAdmissionKeepsPositionAndReservesItsReturn(t *testing.T)
 	} {
 		bad, badDecision := o, swap
 		mutate(&bad, &badDecision)
-		if _, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, client, m, bad, badDecision, request, effects); err == nil {
+		if _, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, bad, badDecision, request, effects); err == nil {
 			t.Fatalf("%s admitted beside a position", name)
 		}
 	}

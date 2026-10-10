@@ -77,7 +77,7 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 		return id, key, observation, decision
 	}
 	bind := func(id string, observation Observation, decision Decision) error {
-		return db.bindOperation(ctx, rpc, f.manifest, id, observation, decision, f.request, f.effects)
+		return db.bindOperation(ctx, rpc, fixtureView(t, rpc), f.manifest, id, observation, decision, f.request, f.effects)
 	}
 	expectBindHold := func(id string, observation Observation, decision Decision, reason string) {
 		t.Helper()
@@ -104,7 +104,7 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 	if auth.IntentSHA256 != digest || auth.BuildInput == nil || auth.SignedWireSHA256 != "" {
 		t.Fatalf("bind drift: intent=%s buildInput=%v", auth.IntentSHA256, auth.BuildInput != nil)
 	}
-	if err = BuildSimulateAndPersistKaminoInitialization(ctx, db, rpc, id, f.manifest, f.request, Credentials{}); err == nil || err.Error() != "Backyard signing capability is not configured" {
+	if err = BuildSimulateAndPersistKaminoInitialization(ctx, db, rpc, fixtureView(t, rpc), id, f.manifest, f.request, Credentials{}); err == nil || err.Error() != "Backyard signing capability is not configured" {
 		t.Fatalf("bound candidate build did not reach the signer boundary: %v", err)
 	}
 	if status := operationStatus(t, ctx, db, id); status != "decided" {

@@ -148,8 +148,8 @@ func phase3BridgeTemplates(policies installedPolicies, s Snapshot, decision Deci
 // inputs, including the construction snapshot, must still be fresh together.
 // Existing bridge builders contain no account creation or protocol fee debit;
 // preparation verifies the existing custodies, adaptor, ticket and policies.
-func observePhase3BridgeAdmission(ctx context.Context, rpc *chain.Client, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (phase3BridgeAdmission, error) {
-	return observePhase3BridgeAdmissionWindow(ctx, rpc, observation, decision, evidence, min(observationLagSlots(), adaptorMaxReportAgeSlots))
+func observePhase3BridgeAdmission(ctx context.Context, rpc *chain.Client, view *View, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (phase3BridgeAdmission, error) {
+	return observePhase3BridgeAdmissionWindow(ctx, rpc, view, observation, decision, evidence, min(observationLagSlots(), adaptorMaxReportAgeSlots))
 }
 
 // observePhase3BridgeTemplateAdmission prices a follow-up NAV report that is
@@ -158,11 +158,11 @@ func observePhase3BridgeAdmission(ctx context.Context, rpc *chain.Client, observ
 // the current (Kamino) wire; the ordinary observation window does. Capping it
 // at 32 slots (2fc768f) made every AUTO repayment expire before send, since
 // that tick takes ~14 s (live 2026-09-28 13:33-13:39).
-func observePhase3BridgeTemplateAdmission(ctx context.Context, rpc *chain.Client, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (phase3BridgeAdmission, error) {
-	return observePhase3BridgeAdmissionWindow(ctx, rpc, observation, decision, evidence, observationLagSlots())
+func observePhase3BridgeTemplateAdmission(ctx context.Context, rpc *chain.Client, view *View, observation Observation, decision Decision, evidence BridgeExecutionEvidence) (phase3BridgeAdmission, error) {
+	return observePhase3BridgeAdmissionWindow(ctx, rpc, view, observation, decision, evidence, observationLagSlots())
 }
 
-func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, observation Observation, decision Decision, evidence BridgeExecutionEvidence, windowSlots int64) (phase3BridgeAdmission, error) {
+func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, view *View, observation Observation, decision Decision, evidence BridgeExecutionEvidence, windowSlots int64) (phase3BridgeAdmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	plan := phase3BridgeAdmission{Snapshot: observation.Snapshot, Decision: decision}
@@ -222,13 +222,13 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 		reads.Add(1)
 		go func() {
 			defer reads.Done()
-			token, tokenErr = ObserveBudgetTokenPrice(ctx, rpc, RouteID, debits[firstDebit], minimumSlot)
+			token, tokenErr = ObserveBudgetTokenPrice(ctx, rpc, view, RouteID, debits[firstDebit], minimumSlot)
 		}()
 	}
 	reads.Add(1)
 	go func() {
 		defer reads.Done()
-		sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, minimumSlot)
+		sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, view, minimumSlot)
 	}()
 	reads.Wait()
 	for _, feeErr := range feeErrors {

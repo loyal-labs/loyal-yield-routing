@@ -13,7 +13,7 @@ import (
 // envelope. It never adds exit spending or makes a new destination choice.
 // Renewal authority resolves through the explicit reviewed manifest, the same
 // way the commit, decode and merge paths already do.
-func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client, manifest RouteManifest, observe func(context.Context) (Observation, error)) error {
+func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, observe func(context.Context) (Observation, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var version int64
@@ -43,7 +43,7 @@ func (d *Database) refreshSelectorUnwind(ctx context.Context, rpc *chain.Client,
 	if forecast.policies, err = observeInstalledPolicies(ctx, rpc, o.Snapshot.Slot); err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}
-	source, err := observeSelectorSource(ctx, rpc, productionJupiter, manifest, forecast)
+	source, err := observeSelectorSource(ctx, rpc, view, productionJupiter, manifest, forecast)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 	}

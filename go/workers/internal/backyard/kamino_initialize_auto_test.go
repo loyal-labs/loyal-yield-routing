@@ -3,16 +3,13 @@ package backyard
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
-	"io"
+	"maps"
 	"math"
-	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -98,38 +95,9 @@ func token2022DebtMintImage(variant string) []byte {
 	return data
 }
 
-func autoInitializerTransport(t *testing.T, accounts map[string]ConfirmedAccount) *chain.Client {
+func autoInitializerView(t *testing.T, accounts map[string]ConfirmedAccount) *View {
 	t.Helper()
-	rpc := newFakeChain(t, nil)
-	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		var body struct {
-			Method string
-			Params []json.RawMessage
-			ID     any
-		}
-		_ = json.NewDecoder(req.Body).Decode(&body)
-		if body.Method != "getMultipleAccounts" {
-			t.Fatal("unexpected RPC method", body.Method)
-		}
-		var addresses []string
-		var config map[string]any
-		_ = json.Unmarshal(body.Params[0], &addresses)
-		_ = json.Unmarshal(body.Params[1], &config)
-		if config["commitment"] != "confirmed" || config["minContextSlot"] != float64(77) {
-			t.Fatal("unanchored prestate")
-		}
-		values := make([]any, len(addresses))
-		for i, address := range addresses {
-			if a, ok := accounts[address]; ok {
-				values[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": a.Executable,
-					"data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}
-			}
-		}
-		encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID,
-			"result": map[string]any{"context": map[string]any{"slot": 78}, "value": values}})
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
-	})
-	return rpc
+	return accountView(t, 78, slices.Collect(maps.Values(accounts)))
 }
 
 // autoInitializerFundedObligation returns the fixture accounts with the AUTO
@@ -248,7 +216,7 @@ func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
 			case "rent_changed":
 				change("SysvarRent111111111111111111111111111111111", func(a *ConfirmedAccount) { binary.LittleEndian.PutUint64(a.Data, 5081) })
 			}
-			slot, err := manifest.validateKaminoInitializationPrestate(context.Background(), autoInitializerTransport(t, accounts), r, 77)
+			slot, err := manifest.validateKaminoInitializationPrestate(context.Background(), autoInitializerView(t, accounts), r, 77)
 			// An extensionless 82-byte Token-2022 mint is admitted by the same
 			// reviewed parser the execution path uses; only real drift holds.
 			pass := drift == "" || drift == "classic_extensionless_debt"
@@ -264,12 +232,7 @@ func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
 			// The public prestate still refuses the candidate lane outright —
 			// no manifest, no admission — with the installed typed hold, so
 			// retry-vs-fatal handling never changes per lane.
-			public := newFakeChain(t, nil)
-			rpcOf(public).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
-				t.Fatal("public prestate reached RPC for the candidate lane")
-				return nil, nil
-			})
-			_, publicErr := validateKaminoInitializationPrestate(context.Background(), public, r, 77)
+			_, publicErr := validateKaminoInitializationPrestate(context.Background(), autoInitializerView(t, accounts), r, 77)
 			assertBudgetHold(t, publicErr, "initializer_prestate_unavailable")
 		})
 	}
@@ -282,7 +245,7 @@ func TestAutoInitializerReentryForecastIsBounded(t *testing.T) {
 	const collateralRaw, debtRaw = uint64(2_000_000), uint64(1_000_000)
 	// The exact observed funded lane at the exact exit bound is admitted.
 	slot, err := manifest.validateKaminoReentryForecastPrestate(context.Background(),
-		autoInitializerTransport(t, autoInitializerFundedObligation(t, r, collateralRaw, debtRaw)), r, 77,
+		autoInitializerView(t, autoInitializerFundedObligation(t, r, collateralRaw, debtRaw)), r, 77,
 		selectorExitBound{MaxCollateralRaw: int64(collateralRaw), MaxDebtRaw: int64(debtRaw)})
 	if err != nil || slot != 78 {
 		t.Fatalf("exact observed reentry position: slot=%d err=%v", slot, err)
@@ -290,13 +253,13 @@ func TestAutoInitializerReentryForecastIsBounded(t *testing.T) {
 	// A position above either bound is not the observed lane.
 	assertBudgetHold(t, holdFor(func() error {
 		_, err := manifest.validateKaminoReentryForecastPrestate(context.Background(),
-			autoInitializerTransport(t, autoInitializerFundedObligation(t, r, collateralRaw+1, debtRaw)), r, 77,
+			autoInitializerView(t, autoInitializerFundedObligation(t, r, collateralRaw+1, debtRaw)), r, 77,
 			selectorExitBound{MaxCollateralRaw: int64(collateralRaw), MaxDebtRaw: int64(debtRaw)})
 		return err
 	}), "initializer_reentry_obligation_unobserved")
 	assertBudgetHold(t, holdFor(func() error {
 		_, err := manifest.validateKaminoReentryForecastPrestate(context.Background(),
-			autoInitializerTransport(t, autoInitializerFundedObligation(t, r, collateralRaw, debtRaw+1)), r, 77,
+			autoInitializerView(t, autoInitializerFundedObligation(t, r, collateralRaw, debtRaw+1)), r, 77,
 			selectorExitBound{MaxCollateralRaw: int64(collateralRaw), MaxDebtRaw: int64(debtRaw)})
 		return err
 	}), "initializer_reentry_obligation_unobserved")

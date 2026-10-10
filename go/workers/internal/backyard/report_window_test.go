@@ -144,7 +144,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	clock := &slotClock{start: time.Now(), origin: s.Slot + 2, slotTime: slotTime}
 	rpcOf(rpc).Transport = clock.rpc(rpcOf(rpc).Transport, rpcLatency)
 	fixtureHTTP(client).Transport = clock.jupiter(fixtureHTTP(client).Transport, jupiterLatency)
-	if err = db.bindOperation(ctx, rpc, m, id, o, d, nav, effects); err != nil {
+	if err = db.bindOperation(ctx, rpc, fixtureView(t, rpc), m, id, o, d, nav, effects); err != nil {
 		t.Fatalf("bind at slot S+%d: %v", clock.slot()-s.Slot, err)
 	}
 	bound := clock.slot()
@@ -155,7 +155,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	if err = db.requireBoundIntent(ctx, id, nav, encoded); err != nil {
 		t.Fatalf("bind was not persisted: %v", err)
 	}
-	if _, err = m.validateRequestPrestate(ctx, rpc, nav, effects); err != nil {
+	if _, err = m.validateRequestPrestate(ctx, rpc, fixtureView(t, rpc), nav, effects); err != nil {
 		t.Fatalf("build gate at slot S+%d: %v", clock.slot()-s.Slot, err)
 	}
 	// Sign locally and simulate (a heavier round trip), then the landing

@@ -64,7 +64,7 @@ func TestAutoSourceFullCandidateTrace(t *testing.T) {
 			return 0, 0
 		}
 	}, nil)
-	q, err := observeAutoSelectorSource(context.Background(), rpc, client, manifest, observation)
+	q, err := observeAutoSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestAutoSourceReleaseFundedFullReturnTrace(t *testing.T) {
 	manifest, route, observation, accounts, release, upper := autoSourceReleaseFixture(t, nil)
 	rpc := autoPayoffRPC(t, 58, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...))
 	client := autoJupiterTransport(t, route, autoCollateralSellQuote(t, route, nil), nil)
-	q, err := observeAutoSelectorSource(context.Background(), rpc, client, manifest, observation)
+	q, err := observeAutoSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestAutoSourceReleaseZeroResidueDropsConversion(t *testing.T) {
 		}
 		return 0, 0, false
 	}), nil)
-	q, err := observeAutoSelectorSource(context.Background(), rpc, client, manifest, observation)
+	q, err := observeAutoSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestAutoSourceReleaseUnavailableResidueQuoteHolds(t *testing.T) {
 	debts := 0
 	inner := fixtureHTTP(client).Transport
 	fixtureHTTP(client).Transport = countingFailTransport{inner: inner, route: route, hits: &debts, failAt: 2}
-	_, err := observeAutoSelectorSource(context.Background(), rpc, client, manifest, observation)
+	_, err := observeAutoSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation)
 	if err == nil || !strings.Contains(err.Error(), "selector_source_residue_quote_unavailable") {
 		t.Fatal("an unavailable residue requote was not a fail-closed hold", err)
 	}
@@ -425,7 +425,7 @@ func TestAutoSourceReleaseStaleChainTimeHolds(t *testing.T) {
 	manifest, route, observation, accounts, _, _ := autoSourceReleaseFixture(t, nil)
 	rpc := autoPayoffRPC(t, 58+64, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...))
 	client := autoJupiterTransport(t, route, autoCollateralSellQuote(t, route, nil), nil)
-	_, err := observeAutoSelectorSource(context.Background(), rpc, client, manifest, observation)
+	_, err := observeAutoSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation)
 	assertBudgetHold(t, err, "invalid_payoff_clock")
 }
 
@@ -443,7 +443,7 @@ func TestAutoSourceReleaseAbovePegDebtTraces(t *testing.T) {
 	}
 	rpc := autoPayoffRPC(t, 58, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...))
 	client := autoJupiterTransport(t, route, autoCollateralSellQuote(t, route, nil), nil)
-	q, err := observeAutoSelectorSource(context.Background(), rpc, client, manifest, observation)
+	q, err := observeAutoSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,6 +492,6 @@ func TestAutoSourcePreexistingIdleDebtIsRefused(t *testing.T) {
 	observation.Snapshot.ReportSnapshotDigest = sha256Bytes([]byte("auto-source-shared-debt"))
 	rpc := autoPayoffRPC(t, slot, append(append([]ConfirmedAccount(nil), accounts...), autoPayoffMints(t, route)...))
 	client := autoJupiterTransport(t, route, autoCollateralSellQuote(t, route, nil), nil)
-	_, err = observeAutoSelectorSource(context.Background(), rpc, client, manifest, observation)
+	_, err = observeAutoSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, manifest, observation)
 	assertBudgetHold(t, err, "selector_source_unavailable")
 }

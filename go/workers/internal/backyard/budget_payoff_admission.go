@@ -12,11 +12,11 @@ import (
 // Used both immediately after the proposed payoff (cost-only poststate) and
 // for the actual NAV following a reconciled payoff. Templates never become the
 // next current instruction: withdrawal is prepared and bound again later.
-func pricePhase3PositionReturn(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool) (phase3BridgeAdmission, error) {
-	return pricePhase3PositionReturnAfterFunding(ctx, rpc, client, manifest, post, decision, request, effects, afterPayoff, nil, nil)
+func pricePhase3PositionReturn(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool) (phase3BridgeAdmission, error) {
+	return pricePhase3PositionReturnAfterFunding(ctx, rpc, view, client, manifest, post, decision, request, effects, afterPayoff, nil, nil)
 }
 
-func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence, release *KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence, release *KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	s := post.Snapshot
 	if rpc == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" ||
 		s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
@@ -29,7 +29,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
-	_, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply}, s.Slot)
+	_, accounts, _, err := view.read(ctx, []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply}, s.Slot)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
 	}
@@ -93,7 +93,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 			return phase3BridgeAdmission{}, budgetHold("invalid_funding_return_projection")
 		}
 		// Only this cost template sees post-swap empty collateral. Check the
-		// actual pre-swap custody first; never mutate RPC data or a current wire.
+		// actual pre-swap custody first; never mutate view data or a current wire.
 		accounts = append([]ConfirmedAccount(nil), accounts...)
 		for i, account := range accounts {
 			if account.Address == route.CollateralCustody {
@@ -118,7 +118,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	if topup, ok := request.(JupiterSwapRequest); ok && topup.TopupReturnReserved {
 		// Plan B3: this cost template sees the swapped collateral beside the
 		// position. The actual custody is checked empty first, as the entry
-		// swap requires; RPC data and the current wire are never changed.
+		// swap requires; view data and the current wire are never changed.
 		if funding != nil || release != nil || !afterPayoff {
 			return phase3BridgeAdmission{}, budgetHold("invalid_topup_return_projection")
 		}
@@ -144,10 +144,10 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	var tail phase3BridgeAdmission
 	var current ValuedTransactionCost
 	if err = concurrentReads(ctx, func(ctx context.Context) (err error) {
-		tail, err = observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, post, tailDecision, KaminoExecutionEvidence{withdrawal, withdrawalEffects})
+		tail, err = observePhase3WithdrawalAdmission(ctx, rpc, view, client, manifest, post, tailDecision, KaminoExecutionEvidence{withdrawal, withdrawalEffects})
 		return err
 	}, func(ctx context.Context) (err error) {
-		current, err = manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+		current, err = manifest.observePhase3KnownBuildCost(ctx, rpc, view, request, effects)
 		return err
 	}); err != nil {
 		return tail, err

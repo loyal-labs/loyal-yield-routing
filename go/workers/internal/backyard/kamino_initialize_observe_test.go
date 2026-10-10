@@ -3,13 +3,14 @@ package backyard
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -43,7 +44,7 @@ func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, m
 	accounts[route.Kamino.Market] = marketFixture(t, route.Kamino.Market)
 	for _, mint := range []string{route.Kamino.CollateralMint, bridgeUSDC} {
 		a := ConfirmedAccount{Address: mint, Owner: classicTokenProgram, Lamports: 1, Data: make([]byte, 82)}
-		a.Data[45] = 1
+		a.Data[44], a.Data[45] = 6, 1
 		accounts[mint] = a
 	}
 	rent := ConfirmedAccount{Address: rentAddress, Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 17)}
@@ -53,10 +54,10 @@ func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, m
 	return r, accounts
 }
 
-// Exercise the actual RPC null-account contract and the native funding gate.
+// Exercise the view's absent-account contract and the native funding gate.
 // Only the exact target obligation may be absent; all prerequisites must exist.
 func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testing.T) {
-	for _, drift := range []string{"", "target_exists", "vault_funding", "delegate_funding", "metadata_owner", "metadata_referrer", "metadata_vault", "market_emergency", "mint_program", "mint_uninitialized", "rent_changed", "rent_nan", "old_slot"} {
+	for _, drift := range []string{"", "target_exists", "vault_funding", "delegate_funding", "metadata_owner", "metadata_referrer", "metadata_vault", "market_emergency", "mint_program", "mint_uninitialized", "rent_changed", "rent_nan"} {
 		t.Run(drift, func(t *testing.T) {
 			r, accounts := initializationPrestateFixture(t)
 			inner, _ := kaminoMultiplyInitializer(r.RouteLane)
@@ -70,7 +71,7 @@ func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testin
 			}
 			switch drift {
 			case "target_exists":
-				accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Lamports: 1}
+				accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1}
 			case "vault_funding":
 				change(bridgeVault, func(a *ConfirmedAccount) { a.Lamports-- })
 			case "delegate_funding":
@@ -92,38 +93,7 @@ func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testin
 			case "rent_nan":
 				change(rentAddress, func(a *ConfirmedAccount) { binary.LittleEndian.PutUint64(a.Data[8:16], math.Float64bits(math.NaN())) })
 			}
-			rpc := newFakeChain(t, nil)
-			rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				var body struct {
-					Method string
-					Params []json.RawMessage
-					ID     any
-				}
-				_ = json.NewDecoder(req.Body).Decode(&body)
-				if body.Method != "getMultipleAccounts" {
-					t.Fatal("unexpected RPC method", body.Method)
-				}
-				var addresses []string
-				var config map[string]any
-				_ = json.Unmarshal(body.Params[0], &addresses)
-				_ = json.Unmarshal(body.Params[1], &config)
-				if config["commitment"] != "confirmed" || config["minContextSlot"] != float64(77) {
-					t.Fatal("unanchored prestate")
-				}
-				values := make([]any, len(addresses))
-				for i, address := range addresses {
-					if a, ok := accounts[address]; ok {
-						values[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": a.Executable, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}
-					}
-				}
-				slot := 78
-				if drift == "old_slot" {
-					slot = 76
-				}
-				encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": map[string]any{"context": map[string]any{"slot": slot}, "value": values}})
-				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
-			})
-			slot, err := validateKaminoInitializationPrestate(context.Background(), rpc, r, 77)
+			slot, err := validateKaminoInitializationPrestate(context.Background(), accountView(t, 78, slices.Collect(maps.Values(accounts))), r, 77)
 			if (err == nil) != (drift == "") || (err == nil && slot != 78) {
 				t.Fatalf("drift=%s slot=%d err=%v", drift, slot, err)
 			}
@@ -163,10 +133,6 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 		switch body.Method {
 		case "getSlot":
 			result = 77
-		case "getMultipleAccounts":
-			var addresses []string
-			_ = json.Unmarshal(body.Params[0], &addresses)
-			result = map[string]any{"context": map[string]any{"slot": 78}, "value": make([]any, len(addresses))}
 		default:
 			t.Fatal("unexpected RPC", body.Method)
 		}
@@ -180,14 +146,14 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = m.validateRequestPrestate(context.Background(), rpc, request, effects)
+	_, err = m.validateRequestPrestate(context.Background(), rpc, accountView(t, 78, nil), request, effects)
 	assertBudgetHold(t, err, "initializer_prestate_unavailable")
 	op.SignedWireSHA256 = sha256Bytes([]byte("other"))
 	_, _, err = m.validateSignedIdentity(auth, op)
 	assertBudgetHold(t, err, "persisted_signature_or_expiry_mismatch")
 }
 
-// Fresh later fee and oracle data must not extend the earlier policy/rent read.
+// A fresher fee must not extend the earlier policy/rent read.
 func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 	for _, finalSlot := range []int64{60, 74, 75} {
 		t.Run(fmt.Sprint(finalSlot), func(t *testing.T) {
@@ -197,21 +163,15 @@ func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 			rent := accounts["SysvarRent111111111111111111111111111111111"]
 			binary.LittleEndian.PutUint64(rent.Data, 1000)
 			e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
-			rpc := budgetBuildRPC(t, 5000, finalSlot)
-			base := rpcOf(rpc).Transport
+			view := initializationView(t, accounts)
+			rpc := newFakeChain(t, nil)
 			slotReads := 0
 			rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				raw, err := io.ReadAll(req.Body)
-				if err != nil {
-					return nil, err
-				}
-				req.Body = io.NopCloser(bytes.NewReader(raw))
 				var body struct {
 					Method string
-					Params []json.RawMessage
 					ID     any
 				}
-				_ = json.Unmarshal(raw, &body)
+				_ = json.NewDecoder(req.Body).Decode(&body)
 				var result any
 				switch body.Method {
 				case "getSlot":
@@ -222,49 +182,13 @@ func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 					}
 				case "getFeeForMessage":
 					result = map[string]any{"context": map[string]any{"slot": 60}, "value": 5000}
-				case "getMultipleAccounts":
-					var addresses []string
-					_ = json.Unmarshal(body.Params[0], &addresses)
-					if len(addresses) > 0 && addresses[0] == bridgeDelegate {
-						values := make([]any, len(addresses))
-						for i, address := range addresses {
-							if a, ok := accounts[address]; ok {
-								values[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}
-							}
-						}
-						result = map[string]any{"context": map[string]any{"slot": 42}, "value": values}
-					} else {
-						response, err := base.RoundTrip(req)
-						if err != nil {
-							return nil, err
-						}
-						defer response.Body.Close()
-						var envelope map[string]any
-						if json.NewDecoder(response.Body).Decode(&envelope) != nil {
-							t.Fatal("base response")
-						}
-						out := envelope["result"].(map[string]any)
-						out["context"] = map[string]any{"slot": 60}
-						// Keep the reserve update fresh in the later valuation batch.
-						values := out["value"].([]any)
-						for i, address := range addresses {
-							if address == budgetSOLReserve {
-								a := values[i].(map[string]any)
-								d := a["data"].([]any)
-								data, _ := base64.StdEncoding.DecodeString(d[0].(string))
-								binary.LittleEndian.PutUint64(data[16:24], 60)
-								d[0] = base64.StdEncoding.EncodeToString(data)
-							}
-						}
-						result = out
-					}
 				default:
 					t.Fatal("unexpected build RPC", body.Method)
 				}
 				encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": result})
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
 			})
-			cost, err := observePhase3KnownBuildCost(context.Background(), rpc, r, e)
+			cost, err := observePhase3KnownBuildCost(context.Background(), rpc, view, r, e)
 			if finalSlot == 75 {
 				assertBudgetHold(t, err, "initializer_prestate_expired")
 				return

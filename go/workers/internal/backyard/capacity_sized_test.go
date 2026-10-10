@@ -265,7 +265,7 @@ func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
 		t.Fatal(err)
 	}
 	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
-	if _, err = validateBorrowRequest(context.Background(), rpc, r, effects, 42); err != nil {
+	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err != nil {
 		t.Fatal(err)
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{61}, ed25519.SeedSize))
@@ -279,11 +279,11 @@ func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
 		t.Fatal(err)
 	}
 	binary.LittleEndian.PutUint64(debt[kaminoOutsideBorrowLimitOffset:], 9_000_000)
-	if _, err = validateBorrowRequest(context.Background(), rpc, r, effects, 42); err == nil {
+	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err == nil {
 		t.Fatal("shrinking room passed persisted-input final gate")
 	}
 	binary.LittleEndian.PutUint64(debt[kaminoOutsideBorrowLimitOffset:], 1_000_000_000_000)
-	if _, err = validateBorrowRequest(context.Background(), rpc, r, effects, 42); err != nil {
+	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err != nil {
 		t.Fatal(err)
 	}
 	// Another depositor fills the collateral reserve without changing its
@@ -300,11 +300,11 @@ func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
 	if originalBacking != filledBacking {
 		t.Fatal("fixture changed normalized collateral backing")
 	}
-	if _, err = validateBorrowRequest(context.Background(), rpc, r, effects, 42); err == nil {
+	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err == nil {
 		t.Fatal("full collateral reserve passed production final borrow validator")
 	}
 	binary.LittleEndian.PutUint64(collateral[kaminoReserveConfigOffset+160:], originalLimit+originalLiquidity)
-	if _, err = validateBorrowRequest(context.Background(), rpc, r, effects, 42); err != nil {
+	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err != nil {
 		t.Fatal("expanded collateral capacity refused", err)
 	}
 	after, err := compileKaminoMessageForDelegate(r, delegate)

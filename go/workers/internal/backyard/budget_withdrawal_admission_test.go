@@ -116,7 +116,7 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 
 func TestWithdrawalAdmissionPricesCompleteCrossProtocolReturn(t *testing.T) {
 	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
-	plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence)
+	plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, o, d, evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestWithdrawalPricingRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 	} {
 		o, d, evidence, manifest, _, _ := withdrawalAdmissionFixture(t, 100_000)
 		mutate(&o, &evidence)
-		_, err := observePhase3WithdrawalAdmission(context.Background(), nil, nil, manifest, o, d, evidence)
+		_, err := observePhase3WithdrawalAdmission(context.Background(), nil, nil, nil, manifest, o, d, evidence)
 		assertBudgetHold(t, err, "complete_position_exit_admission_unavailable")
 	}
 	for _, value := range []uint64{0, math.MaxUint64} {
@@ -161,19 +161,19 @@ func TestWithdrawalPricingRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 				o.policies[key] = view
 			}
 		}
-		_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence)
+		_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, o, d, evidence)
 		assertBudgetHold(t, err, "REPORT_NAV policy not installed")
 	})
 	t.Run("stale construction snapshot", func(t *testing.T) {
 		o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
 		o.Snapshot.Slot = 1
-		_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence)
+		_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, o, d, evidence)
 		assertBudgetHold(t, err, "stale_bridge_admission_snapshot")
 	})
 	t.Run("unavailable quote", func(t *testing.T) {
 		o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
 		fixtureHTTP(client).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) { return response(`{"error":"no route"}`), nil })
-		_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, manifest, o, d, evidence)
+		_, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), client, manifest, o, d, evidence)
 		assertBudgetHold(t, err, "withdrawal_exit_quote_unavailable")
 	})
 }
@@ -181,7 +181,7 @@ func TestWithdrawalPricingRejectsUnsafeOrIncompleteReturn(t *testing.T) {
 func TestWithdrawalReturnContinuesThroughNAVSwapAndBridge(t *testing.T) {
 	ctx := context.Background()
 	o, d, evidence, manifest, rpc, client := withdrawalAdmissionFixture(t, 100_000)
-	if _, err := observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, o, d, evidence); err != nil {
+	if _, err := observePhase3WithdrawalAdmission(ctx, rpc, fixtureView(t, rpc), client, manifest, o, d, evidence); err != nil {
 		t.Fatal(err)
 	}
 	// Controlled poststates are bookkeeping witnesses, not claims that any
@@ -197,7 +197,7 @@ func TestWithdrawalReturnContinuesThroughNAVSwapAndBridge(t *testing.T) {
 	}
 	reportEffects.Kind, reportEffects.ReturnData = "bridge", expectedAdaptorReturnData(100_000)
 	d = Decision{Action: ReportNAV, StrategyKey: o.Snapshot.RouteLane}
-	plan, err := observePhase3CollateralReturnAdmission(ctx, rpc, client, manifest, o, d, report, reportEffects)
+	plan, err := observePhase3CollateralReturnAdmission(ctx, rpc, fixtureView(t, rpc), client, manifest, o, d, report, reportEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestWithdrawalReturnContinuesThroughNAVSwapAndBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	d = Decision{Action: SwapCollateralToStableStep, StrategyKey: o.Snapshot.RouteLane, AmountRaw: 100_000_000}
-	if _, err = observePhase3CollateralReturnAdmission(ctx, rpc, nil, manifest, o, d, swapRequest, swapEffects); err != nil {
+	if _, err = observePhase3CollateralReturnAdmission(ctx, rpc, fixtureView(t, rpc), nil, manifest, o, d, swapRequest, swapEffects); err != nil {
 		t.Fatal(err)
 	}
 	o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.SquadsIdleRaw = 0, 0, 100_000
@@ -231,7 +231,7 @@ func TestWithdrawalReturnContinuesThroughNAVSwapAndBridge(t *testing.T) {
 	}
 	for _, step := range steps {
 		d.Action, d.AmountRaw = step.Request.Action, int64(step.Request.AmountRaw)
-		if _, err = observePhase3BridgeAdmission(ctx, rpc, o, d, step); err != nil {
+		if _, err = observePhase3BridgeAdmission(ctx, rpc, fixtureView(t, rpc), o, d, step); err != nil {
 			t.Fatal(err)
 		}
 		for _, effect := range step.ExpectedEffects.Accounts {

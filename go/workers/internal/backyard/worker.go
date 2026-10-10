@@ -306,13 +306,13 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			return o, err
 		},
 		refreshUnwind: func(ctx context.Context) error {
-			return database.refreshSelectorUnwind(ctx, rpc, manifest, state.observe)
+			return database.refreshSelectorUnwind(ctx, rpc, view, manifest, state.observe)
 		},
 		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision) (Observation, KaminoInitializationRequest, error) {
-			return prepareKaminoInitialization(ctx, rpc, m, d, state.observe)
+			return prepareKaminoInitialization(ctx, rpc, view, m, d, state.observe)
 		},
 		buildInitialization: func(ctx context.Context, id string, r KaminoInitializationRequest) error {
-			return BuildSimulateAndPersistKaminoInitialization(ctx, database, rpc, id, manifest, r, credentials)
+			return BuildSimulateAndPersistKaminoInitialization(ctx, database, rpc, view, id, manifest, r, credentials)
 		},
 		completeUnwind: func(ctx context.Context, observation Observation) (bool, error) {
 			if !observation.Snapshot.Unwind || !unwindComplete(observation.Snapshot) {
@@ -345,7 +345,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			if err != nil {
 				return Observation{}, KaminoExecutionEvidence{}, err
 			}
-			return prepareKaminoFromTickObservation(ctx, rpc, manifest, decision, observation)
+			return prepareKaminoFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
 		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, JupiterExecutionEvidence, error) {
 			manifest, err := manifestForUnwind(ctx, database, manifest)
@@ -365,16 +365,16 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		},
 		recordBudgetHold: database.RecordPhase3BudgetHold,
 		bind: func(ctx context.Context, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
-			return database.bindOperation(ctx, rpc, manifest, operationID, observation, decision, request, effects)
+			return database.bindOperation(ctx, rpc, view, manifest, operationID, observation, decision, request, effects)
 		},
 		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
-			return BuildSimulateAndPersistBridge(ctx, database, rpc, operationID, evidence, credentials)
+			return BuildSimulateAndPersistBridge(ctx, database, rpc, view, operationID, evidence, credentials)
 		},
 		buildKamino: func(ctx context.Context, operationID string, evidence KaminoExecutionEvidence) error {
-			return BuildSimulateAndPersistKamino(ctx, database, rpc, operationID, evidence, credentials)
+			return BuildSimulateAndPersistKamino(ctx, database, rpc, view, operationID, evidence, credentials)
 		},
 		buildJupiter: func(ctx context.Context, operationID string, evidence JupiterExecutionEvidence) error {
-			return BuildSimulateAndPersistJupiter(ctx, database, rpc, operationID, evidence, credentials)
+			return BuildSimulateAndPersistJupiter(ctx, database, rpc, view, operationID, evidence, credentials)
 		},
 	}
 }

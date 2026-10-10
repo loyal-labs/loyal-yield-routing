@@ -39,7 +39,7 @@ func snapshotInitializationReady(s Snapshot, laneAllowed func(string) bool) bool
 }
 
 // This prepares only an empty account before allocating user principal.
-func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observe func(context.Context) (Observation, error)) (Observation, KaminoInitializationRequest, error) {
+func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observe func(context.Context) (Observation, error)) (Observation, KaminoInitializationRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	// The decision is validated through the same manifest authority that
@@ -85,7 +85,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifes
 		return o, r, err
 	}
 	r.MaximumFeeLamports = fee.Lamports
-	if _, err = manifest.validateKaminoInitializationPrestate(ctx, rpc, r, max(o.Snapshot.Slot, fee.Slot)); err != nil {
+	if _, err = manifest.validateKaminoInitializationPrestate(ctx, view, r, max(o.Snapshot.Slot, fee.Slot)); err != nil {
 		return o, r, err
 	}
 	return o, r, nil

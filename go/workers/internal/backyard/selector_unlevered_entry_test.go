@@ -51,7 +51,7 @@ func selectorRecipeActions(t *testing.T, q selectorDestinationQuote) []Action {
 // borrow, no leverage swap, no redeposit.
 func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 // Maple never takes the 1x path even when blocked.
 func TestUnblockedOrNonLeverageLaneKeepsTheLeveragedEntry(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, nil)
-	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, client, m, capturedTestPolicies(), onreONycUSDC, 100_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 100_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestUnblockedOrNonLeverageLaneKeepsTheLeveragedEntry(t *testing.T) {
 		t.Fatalf("unblocked OnRe lost its leveraged entry: %+v", q)
 	}
 	m, rpc, client, _ = selectorDestinationFixtureForLane(t, SelectedRouteID, blockDebtUtilization(t, SelectedRouteID))
-	if _, err = observeSelectorDestinationForecastAuthorized(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, true, nil); err == nil {
+	if _, err = observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, true, nil); err == nil {
 		t.Fatal("blocked Maple priced an entry")
 	}
 	assertBudgetHold(t, err, "selector_destination_capacity_unavailable")
@@ -242,7 +242,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 // by the real compiler from the priced recipe, passes the persisted-wire gate.
 func TestUnleveredEntryRecipeWiresPassThePersistedWireGate(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

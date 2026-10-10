@@ -142,16 +142,16 @@ func TestUSDCEntryConsumesWorkingCashAndValidatesSharedSourceOnce(t *testing.T) 
 		t.Fatal(err)
 	}
 	e.Request.EntryReturnReserved = true
-	if _, err = validateEntrySwap(context.Background(), rpc, e.Request, e.ExpectedEffects, 42); err != nil {
+	if _, err = validateEntrySwap(context.Background(), fixtureView(t, rpc), e.Request, e.ExpectedEffects, 42); err != nil {
 		t.Fatal(err)
 	}
 	partial := e.Request
 	partial.AmountRaw = 10_000
-	if _, err = validateEntrySwap(context.Background(), rpc, partial, e.ExpectedEffects, 42); err == nil {
+	if _, err = validateEntrySwap(context.Background(), fixtureView(t, rpc), partial, e.ExpectedEffects, 42); err == nil {
 		t.Fatal("partial working-cash swap accepted")
 	}
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 12_000)
-	if _, err = validateEntrySwap(context.Background(), rpc, e.Request, e.ExpectedEffects, 42); err == nil {
+	if _, err = validateEntrySwap(context.Background(), fixtureView(t, rpc), e.Request, e.ExpectedEffects, 42); err == nil {
 		t.Fatal("changed shared source was accepted")
 	}
 }
@@ -275,7 +275,7 @@ func TestUSDCCanaryAllocationPricesCompleteBridgeReturn(t *testing.T) {
 	}
 	o, _, e := bridgeAdmissionFixture(t, d.Action, d.AmountRaw, s.VoltrIdleRaw, 0, 0)
 	o.Snapshot.RouteLane, o.Snapshot.StrategyKey = s.RouteLane, s.StrategyKey
-	plan, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5000, 42), o, d, e)
+	plan, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5000, 42), budgetView(t), o, d, e)
 	if err != nil {
 		t.Fatal(err)
 	}

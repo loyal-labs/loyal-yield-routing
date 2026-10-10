@@ -85,7 +85,7 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 
 func TestDebtFreeReturnPricesBothCollateralAndDebtResidue(t *testing.T) {
 	o, d, e, m, rpc, client := debtResidueAdmissionFixture(t, 20_000)
-	plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, m, o, d, e)
+	plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestDebtFreeReturnPricesBothCollateralAndDebtResidue(t *testing.T) {
 			}
 		}
 	}
-	_, err = observePhase3CollateralReturnAdmission(context.Background(), rpc, nil, m, post, Decision{Action: SwapDebtToUSDCStep, AmountRaw: 10_000, StrategyKey: o.Snapshot.RouteLane}, r, prospectiveEffects)
+	_, err = observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), nil, m, post, Decision{Action: SwapDebtToUSDCStep, AmountRaw: 10_000, StrategyKey: o.Snapshot.RouteLane}, r, prospectiveEffects)
 	assertBudgetHold(t, err, "collateral_return_custody_mismatch")
 	collateralUpper, err := withdrawalUSDCExitEstimate(quotes[0].QuotedOutputRaw)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	effects.Kind, effects.ReturnData = "bridge", expectedAdaptorReturnData(120_000)
-	plan, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, client, m, o, d, report, effects)
+	plan, err := observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, report, effects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.Action, d.AmountRaw = SwapDebtToUSDCStep, 10_000
-	plan, err = observePhase3CollateralReturnAdmission(context.Background(), rpc, nil, m, o, d, request, swapEffects)
+	plan, err = observePhase3CollateralReturnAdmission(context.Background(), rpc, fixtureView(t, rpc), nil, m, o, d, request, swapEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap(t *testing.T) {
 	for _, mutate := range []func(*Observation){func(o *Observation) { o.Snapshot.PositionDebtRaw = 1 }, func(o *Observation) { o.Snapshot.DebtIdleRaw++ }, func(o *Observation) { o.Snapshot.CollateralIdleRaw = 1; o.Snapshot.PrimeIdleRaw = 1 }} {
 		bad := o
 		mutate(&bad)
-		if _, err := observePhase3CollateralReturnAdmission(context.Background(), nil, nil, m, bad, d, request, swapEffects); err == nil {
+		if _, err := observePhase3CollateralReturnAdmission(context.Background(), nil, nil, nil, m, bad, d, request, swapEffects); err == nil {
 			t.Fatal("incomplete or mismatched return admitted")
 		}
 	}

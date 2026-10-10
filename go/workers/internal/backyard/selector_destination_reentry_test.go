@@ -3,7 +3,6 @@ package backyard
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -28,11 +27,13 @@ func reentryRPCResult(id any, result any) *http.Response {
 	return response(string(encoded))
 }
 
-// reentryPrestateTransport answers the obligation-recreation rent read and the
-// initializer prestate batch — which carries the funded obligation this exit is
-// forecast to close — on top of the controlled destination fixture transport.
+// reentryPrestateTransport answers the obligation-recreation rent read and
+// adds the initializer prestate accounts the controlled destination fixture
+// lacks to its account reads; the funded obligation this exit is forecast to
+// close is the fixture's own.
 func reentryPrestateTransport(t *testing.T, base http.RoundTripper, rent uint64, prestate map[string]ConfirmedAccount) http.RoundTripper {
 	t.Helper()
+	filled := fillAccounts(base, prestate)
 	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		raw, err := io.ReadAll(req.Body)
 		if err != nil {
@@ -40,30 +41,16 @@ func reentryPrestateTransport(t *testing.T, base http.RoundTripper, rent uint64,
 		}
 		req.Body = io.NopCloser(bytes.NewReader(raw))
 		var body struct {
-			Method string            `json:"method"`
-			Params []json.RawMessage `json:"params"`
-			ID     any               `json:"id"`
+			Method string `json:"method"`
+			ID     any    `json:"id"`
 		}
 		if err := json.Unmarshal(raw, &body); err != nil {
 			return nil, err
 		}
-		switch body.Method {
-		case "getMinimumBalanceForRentExemption":
+		if body.Method == "getMinimumBalanceForRentExemption" {
 			return reentryRPCResult(body.ID, rent), nil
-		case "getMultipleAccounts":
-			var addresses []string
-			_ = json.Unmarshal(body.Params[0], &addresses)
-			if len(addresses) > 2 && addresses[0] == bridgeDelegate { // the initializer prestate, not the native funding read
-				values := make([]any, len(addresses))
-				for i, address := range addresses {
-					if a, ok := prestate[address]; ok {
-						values[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": a.Executable, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}
-					}
-				}
-				return reentryRPCResult(body.ID, map[string]any{"context": map[string]int{"slot": 42}, "value": values}), nil
-			}
 		}
-		return base.RoundTrip(req)
+		return filled.RoundTrip(req)
 	})
 }
 
@@ -83,7 +70,7 @@ func reentryFundedFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiter.
 	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "reentry", RouteKind: RouteKind, RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 90_000_000,
 		HasPosition: true, ObligationPresent: true, ObligationPresenceKnown: true, PositionCollateralRaw: 15_000_000, PositionCollateralValueRaw: 15_000_000, PositionDebtRaw: 5_000_000, PositionDebtValueRaw: 5_000_000, StrategyNAVRaw: 10_000_000, TotalVaultNAVRaw: 100_000_000, ReportSnapshotDigest: sha256Bytes([]byte("reentry-nav"))}
 	o := reentryObservation(s)
-	source, err := observeSelectorSource(context.Background(), rpc, client, m, o)
+	source, err := observeSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, m, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +81,13 @@ func reentryFundedFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiter.
 	if request.RouteLane != route.Lane {
 		t.Fatalf("initializer fixture lane %s does not match destination lane", request.RouteLane)
 	}
-	prestate[route.Kamino.Obligation] = accountAt(accounts, route.Kamino.Obligation)
 	rpcOf(rpc).Transport = reentryPrestateTransport(t, rpcOf(rpc).Transport, request.RentLamports, prestate)
 	return m, rpc, client, accounts, o, source, request.RentLamports
 }
 
 func TestSelectorReentryForecastIncludesObligationRecreation(t *testing.T) {
 	m, rpc, client, _, o, source, rent := reentryFundedFixture(t)
-	q, err := observeSelectorReentryDestinationSize(context.Background(), rpc, client, m, o, source, 10_000_000, true)
+	q, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, o, source, 10_000_000, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +114,7 @@ func TestSelectorReentryForecastIncludesObligationRecreation(t *testing.T) {
 		t.Fatal("reentry payoff unquoted", q.PayoffUpperRaw, q.PayoffSwap.Request.MinimumOutputRaw)
 	}
 	// The ordinary flat destination wrapper keeps refusing the funded lane.
-	_, err = observeSelectorDestinationForecast(context.Background(), rpc, client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
+	_, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, false, nil)
 	assertBudgetHold(t, err, "selector_destination_not_flat")
 }
 
@@ -137,13 +123,13 @@ func TestSelectorReentryRejectsMissingSourceBoundAndUnrelatedQuote(t *testing.T)
 	route, _ := runtimeRoute(SelectedRouteID)
 	idle := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle", RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 10_000_000}
 	o := reentryObservation(idle)
-	source, err := observeSelectorSource(context.Background(), rpc, client, m, o)
+	source, err := observeSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, m, o)
 	if err != nil || source.ExitBound != nil {
 		t.Fatal("idle source unexpectedly bound", err, source.ExitBound)
 	}
 	// An unbound idle source cannot forecast reentry, and its observation is
 	// not a completed funded one either.
-	_, err = observeSelectorReentryDestinationSize(context.Background(), rpc, client, m, o, source, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, o, source, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_destination_unavailable")
 
 	fundedM, fundedRPC, fundedClient, _, fundedO, fundedSource, _ := reentryFundedFixture(t)
@@ -151,11 +137,11 @@ func TestSelectorReentryRejectsMissingSourceBoundAndUnrelatedQuote(t *testing.T)
 	// A completed funded observation with a boundless source is still rejected.
 	boundless := fundedSource
 	boundless.ExitBound = nil
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, boundless, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, boundless, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_exit_bound_unavailable")
 	unrelated := fundedO
 	unrelated.Snapshot.ObservationID = "changed"
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, unrelated, fundedSource, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, unrelated, fundedSource, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_exit_bound_unavailable")
 	other := PhaseOneLaneID
 	if other == SelectedRouteID {
@@ -163,7 +149,7 @@ func TestSelectorReentryRejectsMissingSourceBoundAndUnrelatedQuote(t *testing.T)
 	}
 	switched := fundedO
 	switched.Snapshot.RouteLane, switched.Snapshot.StrategyKey = other, other
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, switched, fundedSource, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, switched, fundedSource, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_destination_unavailable")
 	// Only a completed funded observation — obligation, position, NAV — may
 	// forecast reentry of its own position.
@@ -176,17 +162,17 @@ func TestSelectorReentryRejectsMissingSourceBoundAndUnrelatedQuote(t *testing.T)
 	} {
 		incomplete := fundedO
 		mutate(&incomplete.Snapshot)
-		_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, incomplete, fundedSource, 1_000_000, true)
+		_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, incomplete, fundedSource, 1_000_000, true)
 		assertBudgetHold(t, err, "selector_reentry_destination_unavailable")
 	}
 	// The source bound must describe exactly the observation's position.
 	mismatched := fundedSource
 	mismatched.ExitBound = &selectorExitBound{MaxCollateralRaw: 14_999_999, MaxDebtRaw: 5_000_000}
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, mismatched, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, mismatched, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_exit_bound_unavailable")
 	shortDebt := fundedSource
 	shortDebt.ExitBound = &selectorExitBound{MaxCollateralRaw: 15_000_000, MaxDebtRaw: 4_999_999}
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, shortDebt, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, shortDebt, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_exit_bound_unavailable")
 }
 
@@ -198,63 +184,62 @@ func TestSelectorReentryRejectsFlatDestinationAndDriftedBound(t *testing.T) {
 	source := selectorSourceQuote{Lane: route.Lane, ObservationID: "flat", MinimumIdleRaw: 2_000_000,
 		Recipe: selectorRecipe{ValidThroughSlot: 74, EvidenceID: sha256Bytes([]byte("flat"))}, ExitBound: &selectorExitBound{}}
 	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "flat", RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 2_000_000}
-	_, err := observeSelectorReentryDestinationSize(context.Background(), rpc, client, m, reentryObservation(s), source, 1_000_000, true)
+	_, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, reentryObservation(s), source, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_destination_unavailable")
 
 	fundedM, fundedRPC, fundedClient, fundedAccounts, fundedO, fundedSource, _ := reentryFundedFixture(t)
 	fundedRoute, _ := runtimeRoute(SelectedRouteID)
 	ctx := context.Background()
 	// Source price fence: reentry equity cannot exceed the exit's minimum cash.
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, fundedSource, fundedSource.MinimumIdleRaw+1, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, fundedSource, fundedSource.MinimumIdleRaw+1, true)
 	assertBudgetHold(t, err, "selector_reentry_equity_unavailable")
 	// Approved tranche cap fence.
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, fundedSource, 100_000_000_001, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, fundedSource, 100_000_000_001, true)
 	assertBudgetHold(t, err, "selector_reentry_equity_unavailable")
 	// Observation freshness fence.
 	stale := fundedO
 	stale.ObservedAt = time.Now().UTC().Add(-time.Minute)
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, stale, fundedSource, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, stale, fundedSource, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_destination_unavailable")
 	// Source recipe slot window fence.
 	expired := fundedSource
 	expired.Recipe.ValidThroughSlot = fundedO.Snapshot.Slot - 1
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, expired, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, expired, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_exit_bound_unavailable")
 	// Collateral left the bound position.
 	obligation := accountAt(fundedAccounts, fundedRoute.Kamino.Obligation)
 	binary.LittleEndian.PutUint64(obligation.Data[96+32:96+40], 14_999_999)
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, fundedSource, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, fundedSource, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_position_drifted")
 	// Collateral custody residue beyond the idle amount the exit swaps back.
 	binary.LittleEndian.PutUint64(obligation.Data[96+32:96+40], 15_000_000)
 	binary.LittleEndian.PutUint64(accountAt(fundedAccounts, fundedRoute.CollateralCustody).Data[64:72], 1_000)
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, fundedSource, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, fundedSource, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_position_drifted")
 	// Debt beyond the payoff upper the exit reservation covers.
 	binary.LittleEndian.PutUint64(accountAt(fundedAccounts, fundedRoute.CollateralCustody).Data[64:72], 0)
 	binary.LittleEndian.PutUint64(obligation.Data[1208+88:1208+96], 50_000_000)
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, fundedSource, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, fundedSource, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_position_drifted")
 	// A position that went flat underneath the bound no longer matches it.
 	binary.LittleEndian.PutUint64(obligation.Data[96+32:96+40], 0)
-	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fundedClient, fundedM, fundedO, fundedSource, 1_000_000, true)
+	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, fundedO, fundedSource, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_position_drifted")
 }
 
 func TestSelectorReentryForecastPrestateRejectsInvalidBoundsAndUnreviewedLanes(t *testing.T) {
 	request, _ := initializationPrestateFixture(t)
-	rpc := budgetBuildRPC(t, 5000, 42)
-	_, err := validateKaminoReentryForecastPrestate(context.Background(), rpc, request, 42, selectorExitBound{MaxCollateralRaw: -1, MaxDebtRaw: 5_000_000})
+	_, err := validateKaminoReentryForecastPrestate(context.Background(), nil, request, 42, selectorExitBound{MaxCollateralRaw: -1, MaxDebtRaw: 5_000_000})
 	assertBudgetHold(t, err, "initializer_reentry_bound_invalid")
-	_, err = validateKaminoReentryForecastPrestate(context.Background(), rpc, request, 42, selectorExitBound{MaxCollateralRaw: 15_000_000, MaxDebtRaw: -1})
+	_, err = validateKaminoReentryForecastPrestate(context.Background(), nil, request, 42, selectorExitBound{MaxCollateralRaw: 15_000_000, MaxDebtRaw: -1})
 	assertBudgetHold(t, err, "initializer_reentry_bound_invalid")
 	unreviewed := request
 	unreviewed.RouteLane = "Not/ALane/USDC"
-	_, err = validateKaminoReentryForecastPrestate(context.Background(), rpc, unreviewed, 42, selectorExitBound{MaxCollateralRaw: 15_000_000, MaxDebtRaw: 5_000_000})
+	_, err = validateKaminoReentryForecastPrestate(context.Background(), nil, unreviewed, 42, selectorExitBound{MaxCollateralRaw: 15_000_000, MaxDebtRaw: 5_000_000})
 	assertBudgetHold(t, err, "initializer_prestate_unavailable")
 	// The execution admission wrapper keeps demanding obligation absence even
 	// against the same funded fixture the forecast wrapper accepts.
 	_, fundedRPC, _, _, _, _, _ := reentryFundedFixture(t)
-	_, err = validateKaminoInitializationPrestate(context.Background(), fundedRPC, request, 42)
+	_, err = validateKaminoInitializationPrestate(context.Background(), fixtureView(t, fundedRPC), request, 42)
 	assertBudgetHold(t, err, "initializer_obligation_already_present")
 }

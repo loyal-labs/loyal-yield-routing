@@ -88,15 +88,15 @@ func composeSelectorExpectedExpense(source, destination selectorRecipe) (int64, 
 // Price every compiled message, including repeated NAV reports. Share only
 // observed prices within this bounded sample; fees still bind exact messages.
 // The production build/send path keeps its actual custody/prestate validators.
-func priceSelectorRecipe(ctx context.Context, rpc *chain.Client, lane string, inputs []*phase3BuildInput, minimumSlot int64) (selectorRecipe, error) {
-	return priceSelectorRecipeWithFloor(ctx, rpc, lane, inputs, minimumSlot, minimumSlot)
+func priceSelectorRecipe(ctx context.Context, rpc *chain.Client, view *View, lane string, inputs []*phase3BuildInput, minimumSlot int64) (selectorRecipe, error) {
+	return priceSelectorRecipeWithFloor(ctx, rpc, view, lane, inputs, minimumSlot, minimumSlot)
 }
 
 // Keep the sample start fixed while later prerequisites advance the minimum
 // slot accepted for fees/prices and final collection. The public entry keeps
 // the plain selector-lane gate, so the persisted-build path stays closed to
 // the AUTO lane.
-func priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
+func priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, view *View, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
 	if !selectorLane(lane) {
 		return selectorRecipe{Inputs: inputs}, budgetHold("invalid_selector_recipe")
 	}
@@ -104,7 +104,7 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, lane s
 	if err != nil {
 		return selectorRecipe{Inputs: inputs}, err
 	}
-	return manifest.priceSelectorRecipeWithFloor(ctx, rpc, lane, inputs, minimumSlot, observationFloor)
+	return manifest.priceSelectorRecipeWithFloor(ctx, rpc, view, lane, inputs, minimumSlot, observationFloor)
 }
 
 // The manifest-aware internal form prices retained recipe inputs against the
@@ -112,7 +112,7 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, lane s
 // identical cost machinery. Beyond the reviewed selector lanes it admits
 // exactly the AUTO lane, and this enables no live selection: AUTO stays out
 // of selectorLanes/selectorEntryLane.
-func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
+func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, view *View, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
 	out := selectorRecipe{Inputs: inputs}
 	if rpc == nil || !selectorOrAutoLane(lane) || len(inputs) == 0 || len(inputs) > maxSelectorRecipeSteps || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > observationLagSlots() {
 		return out, budgetHold("invalid_selector_recipe")
@@ -195,9 +195,9 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 			steps[i].fee, err = observeMessageFee(ctx, rpc, steps[i].message, floor)
 		case i < len(steps)+len(keys):
 			j := i - len(steps)
-			tokenPrices[j], err = ObserveBudgetTokenPrice(ctx, rpc, lane, sources[keys[j]], floor)
+			tokenPrices[j], err = ObserveBudgetTokenPrice(ctx, rpc, view, lane, sources[keys[j]], floor)
 		default:
-			sol, err = ObserveNativeSOLBudgetPrice(ctx, rpc, floor)
+			sol, err = ObserveNativeSOLBudgetPrice(ctx, rpc, view, floor)
 		}
 		return err
 	}); err != nil {

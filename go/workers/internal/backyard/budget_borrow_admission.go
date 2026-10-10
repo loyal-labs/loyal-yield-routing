@@ -12,7 +12,7 @@ import (
 // The simulation's poststate is used only for complete exit costing. Each
 // producer validates its own current transition before entering this function;
 // no projected account replaces a current build, RPC read or send prestate.
-func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, projection phase3KaminoProjection) (phase3BridgeAdmission, error) {
+func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, current ValuedTransactionCost, projection phase3KaminoProjection) (phase3BridgeAdmission, error) {
 	s := o.Snapshot
 	route, err := runtimeRoute(s.RouteLane)
 	if err != nil {
@@ -203,21 +203,21 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	// feed nothing back into it: read them all at once.
 	var payoffCost ValuedTransactionCost
 	var tail phase3BridgeAdmission
-	reads := exitLegCostReads(rpc, m, cycles)
+	reads := exitLegCostReads(rpc, view, m, cycles)
 	if release != nil {
 		reads = append(reads, func(ctx context.Context) (err error) {
-			releaseCost, err = observePhase3KnownBuildCost(ctx, rpc, release.Request, release.ExpectedEffects)
+			releaseCost, err = observePhase3KnownBuildCost(ctx, rpc, view, release.Request, release.ExpectedEffects)
 			return err
 		}, func(ctx context.Context) (err error) {
-			fundingCost, err = m.observePhase3KnownBuildCost(ctx, rpc, funding.Request, funding.ExpectedEffects)
+			fundingCost, err = m.observePhase3KnownBuildCost(ctx, rpc, view, funding.Request, funding.ExpectedEffects)
 			return err
 		})
 	}
 	reads = append(reads, func(ctx context.Context) (err error) {
-		payoffCost, err = observePhase3KnownBuildCost(ctx, rpc, payoff, payoffEffects)
+		payoffCost, err = observePhase3KnownBuildCost(ctx, rpc, view, payoff, payoffEffects)
 		return err
 	}, func(ctx context.Context) (err error) {
-		tail, err = observePhase3WithdrawalAdmission(ctx, rpc, client, m, post, Decision{Action: DeleverRouteStep, StrategyKey: s.RouteLane}, KaminoExecutionEvidence{withdrawal, withdrawalEffects})
+		tail, err = observePhase3WithdrawalAdmission(ctx, rpc, view, client, m, post, Decision{Action: DeleverRouteStep, StrategyKey: s.RouteLane}, KaminoExecutionEvidence{withdrawal, withdrawalEffects})
 		return err
 	})
 	if err := concurrentReads(ctx, reads...); err != nil {

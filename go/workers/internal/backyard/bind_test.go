@@ -274,12 +274,12 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 	// The bind binds only the decision the row records.
 	other := observation
 	other.Snapshot.ObservationID = "obs-other"
-	assertBudgetHold(t, db.bindOperation(ctx, slotRPC, manifest, op, other, decision, request, effects), "bind_journal_mismatch")
-	if err = db.bindOperation(ctx, slotRPC, manifest, op, observation, decision, request, effects); err != nil {
+	assertBudgetHold(t, db.bindOperation(ctx, slotRPC, nil, manifest, op, other, decision, request, effects), "bind_journal_mismatch")
+	if err = db.bindOperation(ctx, slotRPC, nil, manifest, op, observation, decision, request, effects); err != nil {
 		t.Fatal(err)
 	}
 	// A bound row is never bound again, and the builder signs only its intent.
-	assertBudgetHold(t, db.bindOperation(ctx, slotRPC, manifest, op, observation, decision, request, effects), "bind_journal_mismatch")
+	assertBudgetHold(t, db.bindOperation(ctx, slotRPC, nil, manifest, op, observation, decision, request, effects), "bind_journal_mismatch")
 	if err = db.requireBoundIntent(ctx, op, request, encoded); err != nil {
 		t.Fatal(err)
 	}

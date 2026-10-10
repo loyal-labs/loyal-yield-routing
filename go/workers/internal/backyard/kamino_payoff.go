@@ -28,12 +28,12 @@ type KaminoPayoffBound struct {
 	AccountsSHA256     string `json:"accountsSha256"`
 }
 
-func observeKaminoPayoffBound(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	return observeKaminoPayoffWindow(ctx, rpc, route, minimumSlot, 1)
+func observeKaminoPayoffBound(ctx context.Context, view *View, route RuntimeRoute, minimumSlot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	return observeKaminoPayoffWindow(ctx, view, route, minimumSlot, 1)
 }
 
-func observeKaminoPayoffWindow(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot, steps int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	return observeKaminoPayoffWindowAccounts(ctx, rpc, route, minimumSlot, steps)
+func observeKaminoPayoffWindow(ctx context.Context, view *View, route RuntimeRoute, minimumSlot, steps int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	return observeKaminoPayoffWindowAccounts(ctx, view, route, minimumSlot, steps)
 }
 
 // payoffWindowAddresses pins the payoff window capture set: obligation, both
@@ -48,13 +48,13 @@ func payoffWindowAddresses(route RuntimeRoute, additional ...string) []string {
 	return append(addresses, additional...)
 }
 
-// Funding custody and debt must be captured in the same RPC account batch.
-func observeKaminoPayoffWindowAccounts(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	if rpc == nil || minimumSlot <= 0 {
+// Funding custody and debt must be captured in the same view read.
+func observeKaminoPayoffWindowAccounts(ctx context.Context, view *View, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	if view == nil || minimumSlot <= 0 {
 		return KaminoPayoffBound{}, nil, budgetHold("payoff_observation_unavailable")
 	}
 	addresses := payoffWindowAddresses(route, additional...)
-	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
+	slot, accounts, _, err := view.read(ctx, addresses, minimumSlot)
 	if err != nil {
 		return KaminoPayoffBound{}, nil, err
 	}
@@ -74,8 +74,8 @@ func observeKaminoPayoffWindowAccounts(ctx context.Context, rpc *chain.Client, r
 // Custody, policy and Clock bytes are read-only to those refreshes. When the
 // simulation is unavailable the raw capture stands and the caller's exact
 // comparison stays the fail-closed backstop.
-func observeKaminoPayoffWindowOnSnapshotBasis(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, rpc, route, minimumSlot, steps, additional...)
+func observeKaminoPayoffWindowOnSnapshotBasis(ctx context.Context, rpc *chain.Client, view *View, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, minimumSlot, steps, additional...)
 	if err != nil || rpc == nil || minimumSlot <= 0 {
 		return bound, accounts, err
 	}
@@ -219,7 +219,7 @@ func upperKaminoCompoundedDebtSF(debtSF *big.Int, annualBPS, elapsed, unitsPerYe
 // The manifest-aware form keeps every payoff-window, funding and custody check
 // unchanged and only lets the candidate AUTO source path measure its request
 // through the SAME reviewed manifest that produced it.
-func (m RouteManifest) validateFullPayoffRequest(ctx context.Context, rpc *chain.Client, request KaminoPrimeUSDCRequest, effects ExpectedEffects, minimumSlot int64) (KaminoPayoffBound, error) {
+func (m RouteManifest) validateFullPayoffRequest(ctx context.Context, view *View, request KaminoPrimeUSDCRequest, effects ExpectedEffects, minimumSlot int64) (KaminoPayoffBound, error) {
 	if _, err := m.measureExecutableDebit(request, effects); err != nil {
 		return KaminoPayoffBound{}, err
 	}
@@ -227,7 +227,7 @@ func (m RouteManifest) validateFullPayoffRequest(ctx context.Context, rpc *chain
 	if err != nil {
 		return KaminoPayoffBound{}, err
 	}
-	bound, _, err := observeKaminoPayoffBound(ctx, rpc, route, minimumSlot)
+	bound, _, err := observeKaminoPayoffBound(ctx, view, route, minimumSlot)
 	if err != nil {
 		return bound, err
 	}
@@ -259,6 +259,6 @@ func sameAccruingDebt(b KaminoPayoffBound, snapshotDebtRaw int64) bool {
 // refreshed-reserve simulation gave a wire below the send-time upper bound
 // (live 2026-09-24: 99,495,971 < 99,495,984, full_payoff_request_underfunded).
 // The raw observed debt only rises, so the effect minimum stays valid.
-func observeRawFullPayoff(ctx context.Context, rpc *chain.Client, route RuntimeRoute, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	return observeKaminoPayoffWindowAccounts(ctx, rpc, route, slot, 3)
+func observeRawFullPayoff(ctx context.Context, view *View, route RuntimeRoute, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	return observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 3)
 }

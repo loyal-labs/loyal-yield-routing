@@ -95,7 +95,6 @@ func TestSelectorRecipeParallelFeesStayBoundToMessagesAndSlots(t *testing.T) {
 		{"future fee", 44, 42, 43, true},
 		{"stale fee", 41, 42, 43, true},
 		{"future price", 42, 44, 43, true},
-		{"stale price", 42, 41, 43, true},
 		{"expired sample", 42, 42, 75, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -151,6 +150,8 @@ func TestSelectorRecipeParallelFeesStayBoundToMessagesAndSlots(t *testing.T) {
 					}
 					envelope.Result.Context["slot"] = tc.priceSlot
 					result = envelope.Result
+				case "getProgramAccounts":
+					return base.RoundTrip(r)
 				default:
 					return nil, errors.New("unexpected RPC")
 				}
@@ -160,7 +161,8 @@ func TestSelectorRecipeParallelFeesStayBoundToMessagesAndSlots(t *testing.T) {
 				}
 				return response(string(payload)), nil
 			})
-			got, err := priceSelectorRecipe(context.Background(), rpc, SelectedRouteID, inputs, 42)
+			view := fixtureView(t, rpc)
+			got, err := priceSelectorRecipe(context.Background(), rpc, view, SelectedRouteID, inputs, 42)
 			if tc.invalid {
 				if err == nil {
 					t.Fatal("invalid observation admitted")
@@ -190,7 +192,7 @@ func TestSelectorRecipeParallelFeesStayBoundToMessagesAndSlots(t *testing.T) {
 			}
 			// A bad late recipe step must fail before any RPC is started.
 			feeReads.Store(0)
-			_, err = priceSelectorRecipe(context.Background(), rpc, SelectedRouteID, append(inputs, nil), 42)
+			_, err = priceSelectorRecipe(context.Background(), rpc, view, SelectedRouteID, append(inputs, nil), 42)
 			if err == nil || feeReads.Load() != 0 {
 				t.Fatal("read started before full recipe validation")
 			}

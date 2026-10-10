@@ -34,7 +34,7 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, mint := range []string{route.Kamino.CollateralMint, bridgeUSDC} {
-			price, err := ObserveBudgetTokenPrice(ctx, rpc, lane, ExecutableDebit{Source: route.CollateralCustody, Mint: mint, TokenProgram: classicTokenProgram, Raw: 1}, slot)
+			price, err := ObserveBudgetTokenPrice(ctx, rpc, fixtureView(t, rpc), lane, ExecutableDebit{Source: route.CollateralCustody, Mint: mint, TokenProgram: classicTokenProgram, Raw: 1}, slot)
 			if err != nil {
 				var hold *BudgetHold
 				if errors.As(err, &hold) {
@@ -72,7 +72,7 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("READ_ONLY_MESSAGE_FEE %s", encoded)
-	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, fee.Slot)
+	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, fixtureView(t, rpc), fee.Slot)
 	if err != nil {
 		var hold *BudgetHold
 		if errors.As(err, &hold) {

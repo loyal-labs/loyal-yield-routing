@@ -217,7 +217,7 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 
 // prepareKaminoFromTickObservation builds from the tick's own view batch, as
 // the bridge does; it reads only the policies it executes through, at its slot.
-func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
+func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
 	if rpc == nil || observation.routeBatch == nil || (decision.Action != OpenPrimeUSDCStep && decision.Action != DeleverPrimeUSDCStep &&
 		decision.Action != OpenRouteStep && decision.Action != DeleverRouteStep) {
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
@@ -241,7 +241,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, ma
 	// Release and full-payoff sizing read raw reserves (see the helpers).
 	releaseAccounts := accounts
 	if repaymentRelease {
-		bound, raw, err := manifest.observeRawRepaymentRelease(ctx, rpc, route, observation.Snapshot.Slot)
+		bound, raw, err := manifest.observeRawRepaymentRelease(ctx, view, route, observation.Snapshot.Slot)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
@@ -296,7 +296,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, ma
 	}
 	fullPayoff := leg == kaminoLegRepay && decision.Action == DeleverRouteStep && decision.AmountRaw > 0 && uint64(decision.AmountRaw) >= position.DebtRaw
 	if fullPayoff {
-		bound, raw, err := observeRawFullPayoff(ctx, rpc, route, observation.Snapshot.Slot)
+		bound, raw, err := observeRawFullPayoff(ctx, view, route, observation.Snapshot.Slot)
 		if err != nil {
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}

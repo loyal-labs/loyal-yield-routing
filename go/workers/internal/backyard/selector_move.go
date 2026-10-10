@@ -13,14 +13,14 @@ import (
 // A complete move includes the existing source exit and destination entry.
 // Its evidence authorizes no transaction; runtime still reserves and rebuilds
 // each leg against actual balances. A destination is reselected after unwind.
-func observeSelectorMove(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, lane string, requestedEquity, idleBuffer uint64) (MoveQuote, error) {
+func observeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, lane string, requestedEquity, idleBuffer uint64) (MoveQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var empty MoveQuote
 	if o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) || requestedEquity == 0 || requestedEquity > strategyTwoBridgeLegCapRaw {
 		return empty, budgetHold("invalid_selector_move")
 	}
-	source, err := observeSelectorSource(ctx, rpc, client, m, o)
+	source, err := observeSelectorSource(ctx, rpc, view, client, m, o)
 	if err != nil {
 		return empty, err
 	}
@@ -31,11 +31,11 @@ func observeSelectorMove(ctx context.Context, rpc *chain.Client, client *jupiter
 	if equity == 0 {
 		return empty, budgetHold("selector_move_has_no_entry_cash")
 	}
-	destination, err := observeSelectorDestinationForecast(ctx, rpc, client, m, o.policies, lane, equity, o.Snapshot.Slot, false, nil)
+	destination, err := observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, lane, equity, o.Snapshot.Slot, false, nil)
 	if err != nil {
 		return empty, err
 	}
-	return composeSelectorMove(ctx, rpc, o, source, destination)
+	return composeSelectorMove(ctx, rpc, view, o, source, destination)
 }
 
 // copyDebtPrice deep-copies observed price evidence so a composed quote owns
@@ -54,8 +54,8 @@ func copyDebtPrice(p *BudgetPrice) *BudgetPrice {
 	return &copied
 }
 
-func composeSelectorMove(ctx context.Context, rpc *chain.Client, o Observation, source selectorSourceQuote, destination selectorDestinationQuote) (MoveQuote, error) {
-	return composeSelectorMoveWithLane(ctx, rpc, o, source, destination, selectorLane)
+func composeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, o Observation, source selectorSourceQuote, destination selectorDestinationQuote) (MoveQuote, error) {
+	return composeSelectorMoveWithLane(ctx, rpc, view, o, source, destination, selectorLane)
 }
 
 // composeSelectorMoveWithLane is the identical quote composition with the
@@ -64,7 +64,7 @@ func composeSelectorMove(ctx context.Context, rpc *chain.Client, o Observation, 
 // manifest that observed it. Every debt-price identity,
 // equity bound and recipe-evidence check is shared verbatim; the public form
 // above keeps the installed selector-lane gate.
-func composeSelectorMoveWithLane(ctx context.Context, rpc *chain.Client, o Observation, source selectorSourceQuote, destination selectorDestinationQuote, laneAllowed func(string) bool) (MoveQuote, error) {
+func composeSelectorMoveWithLane(ctx context.Context, rpc *chain.Client, view *View, o Observation, source selectorSourceQuote, destination selectorDestinationQuote, laneAllowed func(string) bool) (MoveQuote, error) {
 	s := o.Snapshot
 	validThrough := min(source.Recipe.ValidThroughSlot, destination.Recipe.ValidThroughSlot)
 	if destination.DebtPrice != nil {
@@ -145,7 +145,7 @@ func composeSelectorMoveWithLane(ctx context.Context, rpc *chain.Client, o Obser
 	if source.Recipe.NetworkLamports > math.MaxUint64-destination.Recipe.NetworkLamports || source.Recipe.SetupLamports > math.MaxUint64-destination.Recipe.SetupLamports {
 		return q, budgetHold("selector_move_native_overflow")
 	}
-	slot, accounts, err := confirmedAccounts(ctx, rpc, []string{bridgeDelegate, bridgeVault}, floor)
+	slot, accounts, _, err := view.read(ctx, []string{bridgeDelegate, bridgeVault}, floor)
 	if err != nil {
 		return q, err
 	}

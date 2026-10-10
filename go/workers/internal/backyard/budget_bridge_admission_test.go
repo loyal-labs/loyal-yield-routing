@@ -35,7 +35,7 @@ func bridgeAdmissionFixture(t *testing.T, action Action, amount, idle, strategy,
 
 func TestBridgeAdmissionMeasuresCompleteCashReturnWithoutSigner(t *testing.T) {
 	o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
-	plan, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), o, d, evidence)
+	plan, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), budgetView(t), o, d, evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,28 +59,28 @@ func TestBridgeAdmissionRejectsUnpricedExposureAndPartialSweep(t *testing.T) {
 	t.Run("position needs complete exit", func(t *testing.T) {
 		o, d, evidence := bridgeAdmissionFixture(t, ReportNAV, 0, 0, 0, 0)
 		o.Snapshot.PositionDebtRaw = 1
-		_, err := observePhase3BridgeAdmission(context.Background(), nil, o, d, evidence)
+		_, err := observePhase3BridgeAdmission(context.Background(), nil, nil, o, d, evidence)
 		assertBudgetHold(t, err, "complete_position_exit_admission_unavailable")
 	})
 	t.Run("partial restore", func(t *testing.T) {
 		o, d, evidence := bridgeAdmissionFixture(t, VoltrRestoreIdle, 1, 0, 100_000, 0)
-		_, err := observePhase3BridgeAdmission(context.Background(), nil, o, d, evidence)
+		_, err := observePhase3BridgeAdmission(context.Background(), nil, nil, o, d, evidence)
 		assertBudgetHold(t, err, "bridge_admission_requires_full_custody_exit")
 	})
 	t.Run("custody effect mismatch", func(t *testing.T) {
 		o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 1, 2, 0, 0)
 		evidence.ExpectedEffects.Accounts[0].BeforeRaw++
-		_, err := observePhase3BridgeAdmission(context.Background(), nil, o, d, evidence)
+		_, err := observePhase3BridgeAdmission(context.Background(), nil, nil, o, d, evidence)
 		assertBudgetHold(t, err, "bridge_admission_intent_mismatch")
 	})
 	t.Run("stale snapshot", func(t *testing.T) {
 		o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 1, 2, 0, 0)
-		_, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 75), o, d, evidence)
+		_, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 75), budgetView(t), o, d, evidence)
 		assertBudgetHold(t, err, "stale_bridge_admission_snapshot")
 	})
 	t.Run("existing bridge custody cannot be new allocation", func(t *testing.T) {
 		o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 1, 2, 1, 0)
-		_, err := observePhase3BridgeAdmission(context.Background(), nil, o, d, evidence)
+		_, err := observePhase3BridgeAdmission(context.Background(), nil, nil, o, d, evidence)
 		assertBudgetHold(t, err, "bridge_allocation_requires_empty_strategy_custody")
 	})
 }
@@ -120,6 +120,7 @@ func TestBridgeAdmissionStageTemplatesReportDrainedSquadsNAV(t *testing.T) {
 func TestBridgeAdmissionReadsIndependentValuationsTogether(t *testing.T) {
 	o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
 	rpc := budgetBuildRPC(t, 5_000, 42)
+	view := fixtureView(t, rpc)
 	base := rpcOf(rpc).Transport
 	var started atomic.Int32
 	ready := make(chan struct{})
@@ -136,7 +137,7 @@ func TestBridgeAdmissionReadsIndependentValuationsTogether(t *testing.T) {
 		if err := json.Unmarshal(body, &call); err != nil {
 			return nil, err
 		}
-		if call.Method == "getFeeForMessage" || call.Method == "getMultipleAccounts" {
+		if call.Method == "getFeeForMessage" {
 			var options struct {
 				MinimumSlot int64 `json:"minContextSlot"`
 			}
@@ -146,7 +147,7 @@ func TestBridgeAdmissionReadsIndependentValuationsTogether(t *testing.T) {
 			if options.MinimumSlot != 42 {
 				return nil, fmt.Errorf("unexpected minimum slot %d", options.MinimumSlot)
 			}
-			if started.Add(1) == 8 {
+			if started.Add(1) == 6 {
 				close(ready)
 			}
 			select {
@@ -159,11 +160,11 @@ func TestBridgeAdmissionReadsIndependentValuationsTogether(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	plan, err := observePhase3BridgeAdmission(ctx, rpc, o, d, evidence)
+	plan, err := observePhase3BridgeAdmission(ctx, rpc, view, o, d, evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if started.Load() != 8 || len(plan.Exit) != 5 || plan.ValidThroughSlot != 74 {
+	if started.Load() != 6 || len(plan.Exit) != 5 || plan.ValidThroughSlot != 74 {
 		t.Fatalf("incomplete concurrent admission: reads=%d exits=%d validity=%d", started.Load(), len(plan.Exit), plan.ValidThroughSlot)
 	}
 }
@@ -224,7 +225,7 @@ func TestBridgeAdmissionConcurrentReadsKeepEveryFreshnessBound(t *testing.T) {
 				}
 				return response(string(encoded)), nil
 			})
-			plan, err := observePhase3BridgeAdmission(context.Background(), rpc, o, d, evidence)
+			plan, err := observePhase3BridgeAdmission(context.Background(), rpc, fixtureView(t, rpc), o, d, evidence)
 			if tc.hold != "" {
 				assertBudgetHold(t, err, tc.hold)
 				return
@@ -254,11 +255,11 @@ func TestReportTemplateAdmissionUsesObservationWindow(t *testing.T) {
 	observationLag.Store(49)
 	t.Cleanup(func() { observationLag.Store(0) })
 	o, d, evidence := bridgeAdmissionFixture(t, ReportNAV, 0, 200_000, 0, 0)
-	real, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), o, d, evidence)
+	real, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), budgetView(t), o, d, evidence)
 	if err != nil {
 		t.Fatal(err)
 	}
-	template, err := observePhase3BridgeTemplateAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), o, d, evidence)
+	template, err := observePhase3BridgeTemplateAdmission(context.Background(), budgetBuildRPC(t, 5_000, 42), budgetView(t), o, d, evidence)
 	if err != nil {
 		t.Fatal(err)
 	}

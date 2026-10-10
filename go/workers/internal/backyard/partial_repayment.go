@@ -11,7 +11,7 @@ import (
 // taken at bind: the repay leg is the planner's exact partial step, its
 // custody prestate is current, and its simulated poststate leaves debt on the
 // obligation.
-func observePartialRepaymentProjection(ctx context.Context, rpc *chain.Client, m RouteManifest, s Snapshot, d Decision, r KaminoPrimeUSDCRequest, e ExpectedEffects) (phase3KaminoProjection, error) {
+func observePartialRepaymentProjection(ctx context.Context, rpc *chain.Client, view *View, m RouteManifest, s Snapshot, d Decision, r KaminoPrimeUSDCRequest, e ExpectedEffects) (phase3KaminoProjection, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
@@ -22,7 +22,7 @@ func observePartialRepaymentProjection(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return phase3KaminoProjection{}, err
 	}
-	before, accounts, err := observeKaminoPayoffWindow(ctx, rpc, route, s.Slot, 1)
+	before, accounts, err := observeKaminoPayoffWindow(ctx, view, route, s.Slot, 1)
 	if err != nil {
 		return phase3KaminoProjection{}, err
 	}

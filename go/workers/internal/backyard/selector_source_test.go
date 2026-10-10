@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *testing.T) {
@@ -10,11 +11,11 @@ func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *te
 	o.Snapshot.RouteLane, o.Snapshot.StrategyKey = SelectedRouteID, SelectedRouteID
 	d.StrategyKey = SelectedRouteID
 	rpc := budgetBuildRPC(t, 5000, 42)
-	plan, err := observePhase3BridgeAdmission(context.Background(), rpc, o, d, e)
+	plan, err := observePhase3BridgeAdmission(context.Background(), rpc, fixtureView(t, rpc), o, d, e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	q, err := priceSelectorSourcePlan(context.Background(), rpc, plan, 42)
+	q, err := priceSelectorSourcePlan(context.Background(), rpc, fixtureView(t, rpc), plan, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,12 +34,12 @@ func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *te
 	}
 	// NAV copies can share bytes. They are still separately executed messages.
 	plan.Exit = append(plan.Exit, plan.Exit[len(plan.Exit)-1])
-	repeated, err := priceSelectorSourcePlan(context.Background(), rpc, plan, 42)
+	repeated, err := priceSelectorSourcePlan(context.Background(), rpc, fixtureView(t, rpc), plan, 42)
 	if err != nil || repeated.Recipe.NetworkLamports != 30_000 {
 		t.Fatal("repeated report deduplicated", repeated, err)
 	}
 	plan.Exit[0].Template = nil
-	_, err = priceSelectorSourcePlan(context.Background(), rpc, plan, 42)
+	_, err = priceSelectorSourcePlan(context.Background(), rpc, fixtureView(t, rpc), plan, 42)
 	assertBudgetHold(t, err, "selector_source_template_missing")
 }
 
@@ -46,7 +47,7 @@ func TestSelectorSourcePricesFundedPositionAndUsesMinimumResidue(t *testing.T) {
 	o, m, rpc, client, _ := usdcReturnFixture(t)
 	o.Snapshot.WithdrawalDemandRaw = 0
 	o.Snapshot.ReportSnapshotDigest = sha256Bytes([]byte("controlled-source-nav"))
-	q, err := observeSelectorSource(context.Background(), rpc, client, m, o)
+	q, err := observeSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, m, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,14 +83,14 @@ func TestSelectorSourcePricesFundedPositionAndUsesMinimumResidue(t *testing.T) {
 func TestSelectorSourceIdleNeedsNoExitAndPendingWorkPrecedesEconomics(t *testing.T) {
 	m, rpc, client, _ := selectorDestinationFixture(t)
 	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 10_000_000}
-	q, err := observeSelectorSource(context.Background(), rpc, client, m, tickObservation(s))
+	q, err := observeSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, m, tickObservation(s))
 	if err != nil || q.MinimumIdleRaw != 10_000_000 || q.Recipe.CostRaw != 0 || len(q.Recipe.Inputs) != 0 {
 		t.Fatal(q, err)
 	}
 	for _, change := range []func(*Snapshot){func(s *Snapshot) { s.Nonterminal = Signed }, func(s *Snapshot) { s.WithdrawalDemandRaw = 1 }, func(s *Snapshot) { s.Unwind = true }, func(s *Snapshot) { s.ManualReason = "recovery" }} {
 		changed := s
 		change(&changed)
-		_, err = observeSelectorSource(context.Background(), rpc, client, m, tickObservation(changed))
+		_, err = observeSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, m, tickObservation(changed))
 		assertBudgetHold(t, err, "selector_source_unavailable")
 	}
 }
@@ -105,7 +106,7 @@ func TestSelectorSourcePricesFullTenUSDCLoopWithRepaymentRelease(t *testing.T) {
 	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "full-loop", RouteKind: RouteKind, RouteLane: route.Lane, StrategyKey: route.Lane, VoltrIdleRaw: 90_000_000,
 		HasPosition: true, PositionCollateralRaw: 15_000_000, PositionCollateralValueRaw: 15_000_000, PositionDebtRaw: 5_000_000, PositionDebtValueRaw: 5_000_000, StrategyNAVRaw: 10_000_000, TotalVaultNAVRaw: 100_000_000, ReportSnapshotDigest: sha256Bytes([]byte("full-loop-nav"))}
 	before := hashConfirmedAccounts(accounts)
-	q, err := observeSelectorSource(context.Background(), rpc, client, m, tickObservation(s))
+	q, err := observeSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, m, tickObservation(s))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,15 +145,19 @@ func TestSelectorSourceRetainedObservationCannotMoveBackwards(t *testing.T) {
 	o.Snapshot.RouteLane, o.Snapshot.StrategyKey = SelectedRouteID, SelectedRouteID
 	d.StrategyKey = SelectedRouteID
 	rpc := budgetBuildRPC(t, 5000, 42)
-	plan, err := observePhase3BridgeAdmission(context.Background(), rpc, o, d, e)
+	view := fixtureView(t, rpc)
+	plan, err := observePhase3BridgeAdmission(context.Background(), rpc, view, o, d, e)
 	if err != nil {
 		t.Fatal(err)
 	}
 	plan.Exit[0].Cost.ObservationSlot = 70
-	if _, err = priceSelectorSourcePlan(context.Background(), rpc, plan, 42); err == nil {
+	// A view behind the retained sample does not answer within the deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err = priceSelectorSourcePlan(ctx, rpc, view, plan, 42); err == nil {
 		t.Fatal("later retained sample forgotten during repricing")
 	}
 	plan.Exit[0].Cost.ObservationSlot = 75
-	_, err = priceSelectorSourcePlan(context.Background(), rpc, plan, 42)
+	_, err = priceSelectorSourcePlan(context.Background(), rpc, view, plan, 42)
 	assertBudgetHold(t, err, "selector_recipe_observation_expired")
 }

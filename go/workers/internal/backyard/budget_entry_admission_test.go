@@ -33,7 +33,7 @@ func entrySwapAdmissionFixture(t *testing.T) (Observation, Decision, JupiterExec
 // changed custody or a changed output bound.
 func TestEntrySwapPrestateRefusesUnaccountedPositionAndCustodyDrift(t *testing.T) {
 	_, _, e, _, rpc, _, _ := entrySwapAdmissionFixture(t)
-	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
+	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
 	for _, variant := range []string{"position", "collateral", "debt", "source", "output"} {
@@ -51,7 +51,7 @@ func TestEntrySwapPrestateRefusesUnaccountedPositionAndCustodyDrift(t *testing.T
 			case "output":
 				e.ExpectedEffects.Accounts[1].AfterRaw++
 			}
-			if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err == nil {
+			if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err == nil {
 				t.Fatal("changed entry passed the build and send prestate")
 			}
 		})

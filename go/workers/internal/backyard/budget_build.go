@@ -19,15 +19,15 @@ import (
 // manifest-aware form below serves only the internal candidate AUTO source
 // path, whose retained legs compile against the SAME reviewed manifest that
 // produced them.
-func observePhase3KnownBuildCost(ctx context.Context, rpc *chain.Client, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
+func observePhase3KnownBuildCost(ctx context.Context, rpc *chain.Client, view *View, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return ValuedTransactionCost{}, err
 	}
-	return manifest.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+	return manifest.observePhase3KnownBuildCost(ctx, rpc, view, request, effects)
 }
 
-func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *chain.Client, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
+func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *chain.Client, view *View, request any, effects ExpectedEffects) (ValuedTransactionCost, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	debit, err := m.measureExecutableDebit(request, effects)
@@ -58,7 +58,7 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	if rpc == nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}
-	slot, err := m.validateRequestPrestate(ctx, rpc, request, effects)
+	slot, err := m.validateRequestPrestate(ctx, rpc, view, request, effects)
 	if err != nil {
 		return ValuedTransactionCost{}, err
 	}
@@ -74,10 +74,13 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	var reads sync.WaitGroup
 	reads.Add(2)
 	go func() { defer reads.Done(); fee, feeErr = observeMessageFee(ctx, rpc, message, slot) }()
-	go func() { defer reads.Done(); sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, slot) }()
+	go func() { defer reads.Done(); sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, view, slot) }()
 	if debit.Raw > 0 {
 		reads.Add(1)
-		go func() { defer reads.Done(); token, tokenErr = ObserveBudgetTokenPrice(ctx, rpc, lane, debit, slot) }()
+		go func() {
+			defer reads.Done()
+			token, tokenErr = ObserveBudgetTokenPrice(ctx, rpc, view, lane, debit, slot)
+		}()
 	}
 	reads.Wait()
 	if feeErr != nil {
@@ -154,13 +157,13 @@ func concurrentReads(ctx context.Context, steps ...func(context.Context) error) 
 }
 
 // exitLegCostReads reads each cost-only leg's cost from its own template.
-func exitLegCostReads(rpc *chain.Client, m RouteManifest, legs []phase3BridgeExitCost) []func(context.Context) error {
+func exitLegCostReads(rpc *chain.Client, view *View, m RouteManifest, legs []phase3BridgeExitCost) []func(context.Context) error {
 	reads := make([]func(context.Context) error, len(legs))
 	for i := range legs {
 		reads[i] = func(ctx context.Context) error {
 			request, effects, _, err := legs[i].Template.decodeWithManifest(m)
 			if err == nil {
-				legs[i].Cost, err = m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
+				legs[i].Cost, err = m.observePhase3KnownBuildCost(ctx, rpc, view, request, effects)
 			}
 			return err
 		}

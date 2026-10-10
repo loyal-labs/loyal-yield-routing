@@ -135,7 +135,7 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 
 func TestUSDCFundingAdmissionPricesReturnWithoutDoubleCountingSpentCash(t *testing.T) {
 	o, d, e, m, rpc, client, accounts := fundingAdmissionFixtureForSource(t, 20_000, SwapUSDCToDebtStep)
-	plan, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	plan, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestUSDCFundingAdmissionPricesReturnWithoutDoubleCountingSpentCash(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, nd, nav, ne)
+	before, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, nd, nav, ne)
 	if err != nil || len(before.Exit) != 14 || before.Exit[0].Action != SwapUSDCToDebtStep || before.Payoff.ThroughUnix != 1240 {
 		t.Fatal("NAV before USDC funding lost its funding graph", err)
 	}
@@ -193,7 +193,7 @@ func TestUSDCFundingAdmissionPricesReturnWithoutDoubleCountingSpentCash(t *testi
 	// preserved for return, not swapped a second time merely because it exists.
 	o.Snapshot.DebtIdleRaw = 20_900
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 20_900)
-	after, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, nd, nav, ne)
+	after, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, nd, nav, ne)
 	if err != nil || len(after.Exit) != 12 || after.Exit[0].Action != DeleverRouteStep {
 		t.Fatal("funded NAV attempted a redundant USDC conversion", err)
 	}
@@ -208,23 +208,23 @@ func TestUSDCFundingRejectsChangedCashAndUnderfunding(t *testing.T) {
 	o, d, e, m, rpc, client, accounts := fundingAdmissionFixtureForSource(t, 20_000, SwapUSDCToDebtStep)
 	// The persisted funding swap passes the build and send prestate against
 	// its own custody, and refuses changed custody.
-	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
+	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 19_999)
-	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects), "funding_custody_changed")
-	_, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects), "funding_custody_changed")
+	_, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	assertBudgetHold(t, err, "funding_custody_changed")
 	o, d, e, m, rpc, client, accounts = fundingAdmissionFixtureForSource(t, 20_000, SwapUSDCToDebtStep)
 	putScaledFraction(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(30_000), 60))
 	o.Snapshot.PositionDebtRaw = 30_000
-	_, err = observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	_, err = observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
 }
 
 func TestFundingAdmissionPricesPayoffReturnAndBothNAVContinuations(t *testing.T) {
 	o, d, e, m, rpc, client, accounts := fundingAdmissionFixture(t, 20_000)
-	plan, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	plan, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestFundingAdmissionPricesPayoffReturnAndBothNAVContinuations(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, nd, nav, ne)
+	before, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, nd, nav, ne)
 	if err != nil || len(before.Exit) != 14 || before.Exit[0].Action != SwapCollateralToDebtStep || before.Payoff.ThroughUnix != 1240 {
 		t.Fatal("NAV before funding stalls", err)
 	}
@@ -261,7 +261,7 @@ func TestFundingAdmissionPricesPayoffReturnAndBothNAVContinuations(t *testing.T)
 	o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.DebtIdleRaw = 0, 0, 20_900
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.CollateralCustody).Data[64:72], 0)
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 20_900)
-	after, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, nd, nav, ne)
+	after, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, nd, nav, ne)
 	if err != nil || len(after.Exit) != 12 || after.Exit[0].Action != DeleverRouteStep || after.Payoff.ThroughUnix != 1120 {
 		t.Fatal("NAV after funding stalls", err)
 	}
@@ -275,21 +275,21 @@ func TestFundingAdmissionRejectsUnderfundingAndFinalSendDrift(t *testing.T) {
 	minimum := uint64(o.Snapshot.DebtIdleRaw) + e.Request.MinimumOutputRaw
 	e.ExpectedEffects.Accounts[1].AfterRaw = minimum
 	e.ExpectedEffects.Accounts[1].MinimumAfterRaw = &minimum
-	_, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	_, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
 	_, _, e, _, rpc, _, accounts = fundingAdmissionFixture(t, 20_000)
-	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
+	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}
 	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 999)
-	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err == nil {
+	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err == nil {
 		t.Fatal("changed signed funding custody passed the send prestate")
 	}
 	o, d, e, m, rpc, client, accounts = fundingAdmissionFixture(t, 20_000)
 	// Increase actual observed debt so the executable minimum cannot repay.
 	putScaledFraction(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(30_000), 60))
 	o.Snapshot.PositionDebtRaw = 30_000
-	_, err = observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+	_, err = observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 	assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
 }
 
@@ -397,14 +397,14 @@ func TestFundingAdmissionBindsDebtComparisonToSnapshotReserveBasis(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, decision(o), nav, ne)
+	plan, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, decision(o), nav, ne)
 	if err != nil || len(plan.Exit) != 14 || plan.Exit[0].Action != SwapCollateralToDebtStep || plan.Payoff == nil || plan.Payoff.ObservedDebtRaw != 1_001 {
 		t.Fatal("refreshed-basis snapshot refused for accrued reserve basis alone", len(plan.Exit), plan.Payoff, err)
 	}
 	// A genuinely mutated obligation principal must still fail the exact
 	// comparison even through the coherent refreshed bank.
 	*mutated = true
-	_, err = observePhase3FundingAdmission(context.Background(), rpc, client, m, o, decision(o), nav, ne)
+	_, err = observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, decision(o), nav, ne)
 	assertBudgetHold(t, err, "funding_debt_snapshot_changed")
 
 	// A confirmed raw snapshot keeps the raw window: no simulation, no basis
@@ -415,7 +415,7 @@ func TestFundingAdmissionBindsDebtComparisonToSnapshotReserveBasis(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err = observePhase3FundingAdmission(context.Background(), rpc, client, m, o, decision(o), nav, ne)
+	plan, err = observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, decision(o), nav, ne)
 	if err != nil || plan.Payoff == nil || plan.Payoff.ObservedDebtRaw != 1_000 {
 		t.Fatal("confirmed raw snapshot lost its raw payoff basis", plan.Payoff, err)
 	}
@@ -447,9 +447,9 @@ func TestFundingPayoffWindowIncludesInterveningSteps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := validatePayoffFunding(context.Background(), rpc, embedded, e.Request, e.ExpectedEffects, 42, 1, false); err != nil {
+	if _, _, err := validatePayoffFunding(context.Background(), rpc, fixtureView(t, rpc), embedded, e.Request, e.ExpectedEffects, 42, 1, false); err != nil {
 		t.Fatal("immediate payoff should be funded", err)
 	}
-	_, _, err = validatePayoffFunding(context.Background(), rpc, embedded, e.Request, e.ExpectedEffects, 42, 4, false)
+	_, _, err = validatePayoffFunding(context.Background(), rpc, fixtureView(t, rpc), embedded, e.Request, e.ExpectedEffects, 42, 4, false)
 	assertBudgetHold(t, err, "funding_quote_cannot_cover_full_payoff")
 }

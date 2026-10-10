@@ -127,7 +127,7 @@ func TestRefreshSelectorUnwindResolvesAutoIntentThroughManifest(t *testing.T) {
 	observe := func(context.Context) (Observation, error) {
 		return Observation{}, errors.New("sentinel: past the refresh gate")
 	}
-	if err = db.refreshSelectorUnwind(ctx, nil, reviewed, observe); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if err = db.refreshSelectorUnwind(ctx, nil, nil, reviewed, observe); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("reviewed refresh did not reach the observation: %v", err)
 	}
 }

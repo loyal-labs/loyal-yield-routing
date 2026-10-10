@@ -43,7 +43,7 @@ func TestFundingContinuationPreservesFundedAndUSDCResiduePaths(t *testing.T) {
 			o.Snapshot.DebtIdleRaw = 2_000
 			binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 2_000)
 		}
-		plan, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
+		plan, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, e.Request, e.ExpectedEffects)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +79,7 @@ func TestFundingContinuationPreservesFundedAndUSDCResiduePaths(t *testing.T) {
 			if decision.Action != SwapUSDCToDebtStep {
 				t.Fatal(decision)
 			}
-			if _, err := observePhase3FundingAdmission(context.Background(), rpc, client, m, o, decision, r, effects); err != nil {
+			if _, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, decision, r, effects); err != nil {
 				t.Fatal("actual USDC funding rejected collateral remainder", err)
 			}
 		}
