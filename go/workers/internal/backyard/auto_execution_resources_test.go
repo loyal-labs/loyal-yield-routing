@@ -508,7 +508,7 @@ func TestAutoVersionedWireValidatesThroughTheDecodeGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), delegate, delegate, autoSwapToCollateral, inner)
+	outer, err := wrapSquadsJupiterPolicy(mustKey(request.Policy), delegate, delegate, autoSwapLeg(t, SwapStableToCollateralStep), inner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -619,7 +619,7 @@ func TestAutoPersistedBuildResultValidationRoutesByWireVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer, err := wrapSquadsJupiterPolicy(mustKey(v0Request.Policy), delegate, delegate, autoSwapToCollateral, inner)
+	outer, err := wrapSquadsJupiterPolicy(mustKey(v0Request.Policy), delegate, delegate, autoSwapLeg(t, SwapStableToCollateralStep), inner)
 	if err != nil {
 		t.Fatal(err)
 	}

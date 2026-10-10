@@ -34,9 +34,8 @@ func acceptsJupiterLookupHints(lane string, action Action) bool {
 		// The AUTO lane keeps the same v0 escape hatch as the basic lanes:
 		// hints come only from the fresh quote, are resolved from chain, and
 		// are pinned to the persisted request identities. Eligibility is an
-		// AUTO swap edge, so oversized packets stay constructible under its
-		// one policy.
-		_, _, err := jupiterPolicyLeg(lane, action)
+		// approved AUTO swap edge.
+		_, _, _, _, err := jupiterEdgeForRoute(action, lane)
 		return err == nil
 	}
 	if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {

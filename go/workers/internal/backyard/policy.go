@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
@@ -28,14 +29,14 @@ func vaultPolicy(constraints ...squads.InstructionConstraintView) squads.Policy 
 // policyKey is what the runtime looks a Backyard policy up by: the route lane
 // it serves (empty when lanes share it) and, within that, the action it
 // executes, the leg of a split KLend policy, or the basic family. A catalog
-// swap policy serves the two conversions of its edges, in constraint order,
-// whatever lane asks for them.
+// swap policy serves the conversions of its edges, named in constraint order
+// (swapsName), whatever lane asks for them.
 type policyKey struct {
 	lane   string
 	action Action
 	leg    kaminoPrimeUSDCLeg
 	family BasicPolicyFamily
-	swaps  [2]conversion
+	swaps  string
 }
 
 // conversion is one swap a policy admits: the from symbol into the to symbol.
@@ -90,7 +91,7 @@ func backyardPolicies() (map[policyKey]squads.Policy, error) {
 		return nil, err
 	}
 	for _, edges := range catalog {
-		add(policyKey{swaps: [2]conversion{edges[0].conversion(), edges[1].conversion()}}, swapPolicy(edges[:]...), nil)
+		add(policyKey{swaps: swapsName(edges)}, swapPolicy(edges...), nil)
 	}
 	for action, policy := range bridgePolicies() {
 		add(policyKey{action: action}, policy, nil)
@@ -123,8 +124,8 @@ func (l kaminoPrimeUSDCLeg) String() string {
 
 func (k policyKey) String() string {
 	switch {
-	case k.swaps != [2]conversion{}:
-		return fmt.Sprintf("%s->%s/%s->%s swap", k.swaps[0].from, k.swaps[0].to, k.swaps[1].from, k.swaps[1].to)
+	case k.swaps != "":
+		return k.swaps + " swap"
 	case k.family != "":
 		return string(k.family)
 	case k.leg != 0:
@@ -190,7 +191,7 @@ func (p installedPolicies) account(key policyKey) (string, error) {
 var bridgePolicyKeys = []policyKey{{action: VoltrAllocateToSquads}, {action: StageSquadsToVoltr}, {action: VoltrRestoreIdle}, {action: ReportNAV}}
 
 // kaminoPolicyLeg is the policy a route executes leg through and the leg's
-// constraint there: the AUTO lane's one policy, a basic family, or the
+// constraint there: the AUTO lane's KLend policy, a basic family, or the
 // route's split policy for the leg.
 func kaminoPolicyLeg(route RuntimeRoute, leg kaminoPrimeUSDCLeg) (policyKey, byte) {
 	switch {
@@ -222,16 +223,9 @@ func jupiterPolicyLeg(lane string, action Action) (policyKey, byte, error) {
 		lane = RouteID
 	}
 	switch {
-	case lane == autoAUTOPYUSD.Lane:
-		leg, ok := map[Action]byte{SwapStableToCollateralStep: autoSwapToCollateral, SwapDebtToCollateralStep: autoSwapToCollateral,
-			SwapCollateralToStableStep: autoSwapFromCollateral, SwapCollateralToDebtStep: autoSwapFromCollateral, SwapDebtToUSDCStep: autoSwapDebtToUSDC}[action]
-		if !ok {
-			return policyKey{}, 0, fmt.Errorf("action %s is not an AUTO swap", action)
-		}
-		return policyKey{lane: lane}, leg, nil
 	case catalogJupiterRoute(lane):
 		edges, leg, err := catalogEdge(action, lane)
-		return policyKey{swaps: [2]conversion{edges[0].conversion(), edges[1].conversion()}}, leg, err
+		return policyKey{swaps: swapsName(edges)}, leg, err
 	case selectorLane(lane):
 		_, _, source, _, err := jupiterEdgeForRoute(action, lane)
 		if err != nil {
@@ -251,25 +245,21 @@ func jupiterPolicyLeg(lane string, action Action) (policyKey, byte, error) {
 	}
 }
 
-// The AUTO lane's legs, in the order of its one Squads policy: a leg's value
-// is the constraint index it executes under.
+// The AUTO lane's KLend legs, in the order of its policy: a leg's value is the
+// constraint index it executes under. Its swaps are catalog conversions.
 const (
 	autoDeposit = iota
 	autoWithdraw
 	autoBorrow
 	autoRepay
-	autoSwapToCollateral   // USDC or the debt into the collateral
-	autoSwapFromCollateral // the collateral into USDC or the debt
-	autoSwapDebtToUSDC
 	autoInitialize
 	autoLegs
 )
 
-// autoPolicy is the AUTO lane's policy. The KLend legs pin the vault, an
+// autoPolicy is the AUTO lane's KLend policy. The KLend legs pin the vault, an
 // obligation it owns, and the reserve (or market) and custody they move; the
-// swaps pin the vault's custodies of their direction and no fee (vaultSwap);
-// the initializer pins every account of the lane's one obligation. KLend and
-// Jupiter check the rest themselves.
+// initializer pins every account of the lane's one obligation. KLend checks
+// the rest itself.
 func autoPolicy(route RuntimeRoute) (squads.Policy, error) {
 	var out [autoLegs]squads.InstructionConstraintView
 	collateralLeg := vaultCollateral(pinned(route.Kamino.CollateralReserve), pinned(route.CollateralCustody))
@@ -278,10 +268,6 @@ func autoPolicy(route RuntimeRoute) (squads.Policy, error) {
 	out[autoWithdraw] = kamino.WithdrawV2Allowed(collateralLeg, squads.Unpinned)
 	out[autoBorrow] = kamino.BorrowV2Allowed(debtLeg, squads.Unpinned)
 	out[autoRepay] = kamino.RepayV2Allowed(debtLeg, squads.Unpinned)
-	usdc, collateral, debt := usdcAsset(), collateralAsset(route), debtAsset(route)
-	out[autoSwapToCollateral] = vaultSwap([]swapAsset{usdc, debt}, []swapAsset{collateral})
-	out[autoSwapFromCollateral] = vaultSwap([]swapAsset{collateral}, []swapAsset{usdc, debt})
-	out[autoSwapDebtToUSDC] = vaultSwap([]swapAsset{debt}, []swapAsset{usdc})
 	var err error
 	out[autoInitialize], err = obligationInitAllowed(route)
 	return vaultPolicy(out[:]...), err
@@ -422,14 +408,15 @@ func primeUSDCSwapPolicy() (squads.Policy, error) {
 	return swapPolicy(swaps[:]...), nil
 }
 
-// catalogSwapEdges are the two-edge Jupiter policies the catalog lanes swap
-// through, each its edges in constraint order.
-func catalogSwapEdges() ([][2]swapEdge, error) {
+// catalogSwapEdges are the Jupiter policies the catalog lanes, AUTO among
+// them, swap through, each its edges in constraint order. Each policy's create
+// fits one transaction.
+func catalogSwapEdges() ([][]swapEdge, error) {
 	a, err := routeSwapAssets()
 	if err != nil {
 		return nil, err
 	}
-	return [][2]swapEdge{
+	return [][]swapEdge{
 		{{a.usdc, a.onyc}, {a.usdc, a.prime}},
 		{{a.usdc, a.usde}, {a.usds, a.onyc}},
 		{{a.prime, a.usdc}, {a.prime, a.usds}},
@@ -443,15 +430,16 @@ func catalogSwapEdges() ([][2]swapEdge, error) {
 		{{a.usde, a.usdc}, {a.usde, a.usds}},
 		{{a.usdc, a.usds}, {a.usdg, a.pyusd}},
 		{{a.usds, a.usdc}, {a.pyusd, a.usdg}},
+		{{a.usdc, a.auto}, {a.auto, a.usdc}, {a.auto, a.pyusd}},
 	}, nil
 }
 
 // catalogSwap is the catalog policy's edges with the edge that swaps the from
 // symbol into the to symbol, and that edge's constraint index.
-func catalogSwap(from, to string) ([2]swapEdge, byte, error) {
+func catalogSwap(from, to string) ([]swapEdge, byte, error) {
 	policies, err := catalogSwapEdges()
 	if err != nil {
-		return [2]swapEdge{}, 0, err
+		return nil, 0, err
 	}
 	for _, policy := range policies {
 		for index, edge := range policy {
@@ -460,7 +448,17 @@ func catalogSwap(from, to string) ([2]swapEdge, byte, error) {
 			}
 		}
 	}
-	return [2]swapEdge{}, 0, fmt.Errorf("no catalog swap policy swaps %s into %s", from, to)
+	return nil, 0, fmt.Errorf("no catalog swap policy swaps %s into %s", from, to)
+}
+
+// swapsName names a catalog swap policy by its conversions in constraint
+// order, as "USDC->ONyc/USDC->PRIME".
+func swapsName(edges []swapEdge) string {
+	names := make([]string, len(edges))
+	for i, edge := range edges {
+		names[i] = edge.from.symbol + "->" + edge.to.symbol
+	}
+	return strings.Join(names, "/")
 }
 
 // swapAsset is one token a swap policy moves: the vault's custody of it, its
@@ -474,7 +472,8 @@ type swapAsset struct {
 // authority's token account: every V2 shared-accounts answer with PYUSD in or
 // out (8 edges, testdata/jupiter-v2-swap-instructions.json) puts the vault's
 // own PYUSD account in that slot, while USDG, with the same Token-2022
-// extensions, goes through the authority's.
+// extensions, goes through the authority's. Jupiter still keeps the output in
+// the destination (policy's TestSharedRouteV2PYUSDTamperOnMainnet).
 const pyusdMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 
 // programAccounts are the accounts a shared route may move a through on

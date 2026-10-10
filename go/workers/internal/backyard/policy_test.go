@@ -49,6 +49,27 @@ func TestPolicyLiteralsAreTheInstalledAccounts(t *testing.T) {
 	}
 }
 
+// No two literals are equal, and no literal decodes from two captured
+// accounts: while a replaced policy is still installed beside its successors
+// (an apply removes it only in its last create), each literal still finds one
+// account.
+func TestNoLiteralMatchesTwoAccounts(t *testing.T) {
+	literals, err := backyardPolicies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, literal := range literals {
+		for other, policy := range literals {
+			if key != other && literal.Equal(policy) {
+				t.Errorf("%s and %s are the same policy", key, other)
+			}
+		}
+		if _, matches := squads.FindPolicy(capturedInstalled(t), solanaKey(bridgeSettings), solanaKey(bridgeDelegate), literal); matches > 1 {
+			t.Errorf("%s matches %d captured accounts", key, matches)
+		}
+	}
+}
+
 // A literal installed on no account, or on two, holds by name, and nothing
 // else stands in for it.
 func TestUninstalledLiteralHoldsByName(t *testing.T) {
