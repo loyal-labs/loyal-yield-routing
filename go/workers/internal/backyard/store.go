@@ -1380,7 +1380,7 @@ func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest R
 	// Shared broadcast-intent custody seam (doc 26 §4): the fresh send proof
 	// is re-validated under THIS transaction's route lock against the
 	// PERSISTED built effects before broadcast intent can be recorded.
-	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, slot, custody); err != nil {
+	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, custody); err != nil {
 		return err
 	}
 	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound, slot, originRisk); err != nil {

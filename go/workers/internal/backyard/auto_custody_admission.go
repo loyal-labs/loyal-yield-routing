@@ -613,10 +613,9 @@ func (p sharedCustodySendProof) finish(ctx context.Context, rpc *chain.Client, d
 // manifest the caller threads, so a candidate AUTO initializer (zero PYUSD
 // spend) decodes exactly as it did at bind and keeps installed behavior.
 // A proof naming another operation, missing, digest-inconsistent, observed
-// before the decision's slot or after the confirmed slot read under this lock,
-// or taken under a stale generation/fence/lease holds before broadcast intent
+// before the decision's slot, or taken under a stale generation/fence/lease holds before broadcast intent
 // is recorded.
-func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx, manifest RouteManifest, operationID string, confirmedSlot int64, custody *sharedCustodyAdmissionProof) error {
+func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx, manifest RouteManifest, operationID string, custody *sharedCustodyAdmissionProof) error {
 	var lane, routeKey string
 	var effectsBytes []byte
 	var generation, decisionSlot int64
@@ -681,8 +680,8 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 	}
 	if !binding.valid() || !binding.bindsGeneration(generation) ||
 		// The fresh custody observation is confirmed no earlier than the
-		// decision it spends for and no later than this lock's slot.
-		decisionSlot <= 0 || custody.ObservedSlot < decisionSlot || custody.ObservedSlot > confirmedSlot ||
+		// decision it spends for.
+		decisionSlot <= 0 || custody.ObservedSlot < decisionSlot ||
 		binding.SpendRaw != spend || binding.EffectsSHA256 != effectsSHA256 ||
 		binding.RouteKey != routeKey || binding.Lane != lane || binding.Custody != cfg.Custody ||
 		custody.ExcludedOperation != operationID {

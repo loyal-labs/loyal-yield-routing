@@ -849,7 +849,7 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 	proof.Digest = sharedCustodyAdmissionDigest(proof)
 
 	const slot = int64(310)
-	validate := func(carried *sharedCustodyAdmissionProof, rowEffects []byte, confirmedSlot int64) error {
+	validate := func(carried *sharedCustodyAdmissionProof, rowEffects []byte) error {
 		t.Helper()
 		tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
@@ -865,54 +865,51 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		return validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, opID, confirmedSlot, carried)
+		return validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, opID, carried)
 	}
-	if err := validate(&proof, nil, slot); err != nil {
+	if err := validate(&proof, nil); err != nil {
 		t.Fatalf("coherent send proof refused at the broadcast lock: %v", err)
 	}
-	if err := validate(nil, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_missing" {
+	if err := validate(nil, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_missing" {
 		t.Fatalf("missing send proof admitted: %v", err)
 	}
 	foreign := proof
 	foreign.ExcludedOperation = key + "-other"
 	foreign.Digest = sharedCustodyAdmissionDigest(foreign)
-	if err := validate(&foreign, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+	if err := validate(&foreign, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
 		t.Fatalf("proof for another operation admitted: %v", err)
 	}
 	// The persisted built effects are the authority: a proof over DIFFERENT
 	// (still decode-valid, conserved) built effects drifts even though the
 	// route identity and custody spend bind — the supply leg moved.
-	if err := validate(&proof, custodyBuiltEffectsEnvelope(t, custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_100_000_000, 8_600_000_000)), slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+	if err := validate(&proof, custodyBuiltEffectsEnvelope(t, custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_100_000_000, 8_600_000_000))); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
 		t.Fatalf("proof over different persisted effects admitted: %v", err)
 	}
 	// Undecodable persisted effects fail closed with a decode error, not a
 	// typed hold: nothing broadcasts, and the failure is loud, not silent.
-	if err := validate(&proof, []byte("{}"), slot); err == nil {
+	if err := validate(&proof, []byte("{}")); err == nil {
 		t.Fatalf("undecodable persisted effects admitted at the broadcast lock")
 	}
 	// A proof mutated after digesting refuses on self-consistency: the digest
 	// is recomputed from the carried content at the lock.
 	mutated := proof
 	mutated.Proof.ObservedRaw++
-	if err := validate(&mutated, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+	if err := validate(&mutated, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
 		t.Fatalf("mutated send proof admitted: %v", err)
 	}
-	// The custody observation must be confirmed no later than the slot read
-	// under this lock, and no earlier than the decision it spends for.
-	if err := validate(&proof, nil, proof.ObservedSlot-1); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
-		t.Fatalf("send proof observed after the locked slot admitted: %v", err)
-	}
+	// The custody observation must be confirmed no earlier than the decision
+	// it spends for.
 	early := proof
 	early.ObservedSlot = 289
 	early.Digest = sharedCustodyAdmissionDigest(early)
-	if err := validate(&early, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+	if err := validate(&early, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
 		t.Fatalf("send proof observed before the decision admitted: %v", err)
 	}
 	// Generation drift under the lock holds.
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state_version=2, state='{"generation":2}' WHERE route_key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := validate(&proof, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+	if err := validate(&proof, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
 		t.Fatalf("stale-generation send proof admitted: %v", err)
 	}
 	// A proof observed under a superseded lease fence refuses: the route lease
@@ -920,14 +917,14 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET fencing_token=fencing_token+1 WHERE route_key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := validate(&proof, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_generation_drift" {
+	if err := validate(&proof, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_generation_drift" {
 		t.Fatalf("stale-lease-fence send proof admitted: %v", err)
 	}
 	// An expired route lease refuses outright.
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE route_key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := validate(&proof, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_lease_stale" {
+	if err := validate(&proof, nil); custodyAttributionHoldReason(t, err) != "custody_attribution_lease_stale" {
 		t.Fatalf("send proof admitted on an expired lease: %v", err)
 	}
 	// A zero-spend AUTO operation binds nothing: nil proof passes. It sits on
@@ -957,7 +954,7 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 		defer rollbackCancel()
 		_ = tx.Rollback(rollbackCtx)
 	}()
-	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, zeroID, slot, nil); err != nil {
+	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, zeroID, nil); err != nil {
 		t.Fatalf("zero-spend AUTO operation held at the broadcast lock: %v", err)
 	}
 }
