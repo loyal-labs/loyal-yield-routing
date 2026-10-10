@@ -20,7 +20,7 @@ import (
 const policyUsage = `usage: loyal-engine policy apply|check klend --settings <settings> --reserve <reserve> [flags]
   apply: install the product's policy (simulates; --send lands it). Needs --delegate and
          credential POLICY_SETTINGS_SIGNER, the Settings' one signer, who pays.
-  check: run each op through the installed policy (simulates; --send lands them in order).
+  check: run each op (or --op N) through the installed policy (simulates; --send lands them in order).
          Needs credential POLICY_DELEGATE, the policy's delegate, who pays.
   Both read credential SOLANA_RPC_URL.`
 
@@ -39,6 +39,7 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	amount := flags.Uint64("amount", 1_000_000, "deposit amount, raw liquidity units")
 	delegateFlag := flags.String("delegate", "", "apply: the policy's delegated signer")
 	replaceFlag := flags.String("replace", "", "apply: comma-separated policies the new one replaces")
+	only := flags.Int("op", -1, "check: run only this op, by its policy position")
 	send := flags.Bool("send", false, "land the transactions instead of only simulating")
 	if err := flags.Parse(args[2:]); err != nil {
 		return err
@@ -91,7 +92,7 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 		build := policy.KLend(c, settings, uint8(*vaultIndex), reserve, delegate.PublicKey(), *amount)
-		return policy.Check(ctx, c, out, settings, build, delegate, *send)
+		return policy.Check(ctx, c, out, settings, build, delegate, *only, *send)
 	}
 	return errors.New(policyUsage)
 }

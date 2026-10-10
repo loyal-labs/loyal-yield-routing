@@ -117,11 +117,11 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 	return nil
 }
 
-// Check sends each op of build's product through its installed policy on
-// settings, signed and paid by delegate: simulated, and with send landed one
-// by one, rebuilding the product from chain after each. It stops at the first
-// failure.
-func Check(ctx context.Context, c *chain.Client, out io.Writer, settings solana.PublicKey, build Build, delegate solana.PrivateKey, send bool) error {
+// Check sends each op of build's product (or only op number only, when it is
+// not negative) through its installed policy on settings, signed and paid by
+// delegate: simulated, and with send landed one by one, rebuilding the product
+// from chain after each. It stops at the first failure.
+func Check(ctx context.Context, c *chain.Client, out io.Writer, settings solana.PublicKey, build Build, delegate solana.PrivateKey, only int, send bool) error {
 	product, err := build(ctx)
 	if err != nil {
 		return err
@@ -141,6 +141,9 @@ func Check(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 			}
 		}
 		op := product.Ops[i]
+		if only >= 0 && i != only {
+			continue
+		}
 		if op.Done {
 			fmt.Fprintf(out, "%d %s: done\n", i, op.Name)
 			continue
