@@ -78,7 +78,7 @@ func selectorValuationAddresses(route RuntimeRoute, addresses []string) []string
 		protected[address] = true
 	}
 	discard := map[string]bool{}
-	for _, lane := range selectorLanes {
+	for _, lane := range earnLaneIDs(true) {
 		other, err := runtimeRoute(lane)
 		if err != nil {
 			return addresses

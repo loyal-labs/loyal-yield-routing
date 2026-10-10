@@ -216,52 +216,42 @@ func TestAutoInitializerEntryAuthorizesBindAndSend(t *testing.T) {
 	expectBindHold(allocatedID, allocatedObservation, allocatedDecision, "selector_entry_already_allocated")
 }
 
-// The lane authority itself: the embedded manifest admits the candidate AUTO
-// entry, every installed lane keeps its prior behavior — Maple still funded,
-// deferred installed lanes still deferred — and the public embedded decode
-// stays a compile-time closure that no manifest widens.
-func TestSelectorEntryManifestLaneAuthorityKeepsInstalledClosure(t *testing.T) {
+// The entry lane authority is the earnLanes registry, one authority for every
+// caller: the AUTO entry validates and decodes like Maple, Prime/PRIME/USDC is
+// enterable again (owner 2026-10-10, reversing B4), the exit-only Ethena lane
+// is held but never entered, and an unknown lane is refused.
+func TestSelectorEntryLaneAuthorityIsTheRegistry(t *testing.T) {
 	t.Parallel()
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 	entry := autoSelectorEntryFixture(time.Now().UTC(), 3_000_000, &price)
-	if err := entry.validate(); err == nil {
-		t.Fatal("embedded entry validation admitted the candidate AUTO lane")
+	if err := entry.validate(); err != nil {
+		t.Fatalf("registry refused the AUTO entry: %v", err)
 	}
 	encoded, err := json.Marshal(entry)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An invalid stored entry decodes to "no entry" (paused), never an
-	// authorized one, and never an error that stops the worker.
-	if decoded, err := decodeSelectorEntry(encoded); err != nil || decoded != nil {
-		t.Fatal("embedded public decode admitted the candidate AUTO entry")
+	if decoded, err := decodeSelectorEntry(encoded); err != nil || decoded == nil {
+		t.Fatal("durable decode dropped the AUTO entry", err)
 	}
-	if err = embeddedTestManifest(t).validateSelectorEntry(entry); err != nil {
-		t.Fatalf("installed manifest lane authority refused the candidate AUTO entry: %v", err)
-	}
-	if !selectorOrAutoLane(autoAUTOPYUSD.Lane) {
-		t.Fatal("installed manifest did not resolve the AUTO lane authority")
-	}
-
-	candidate := autoInitializerAuthorizationFixture(t).manifest
-	if err = candidate.validateSelectorEntry(entry); err != nil {
-		t.Fatalf("reviewed binding did not admit the candidate entry: %v", err)
-	}
-	// Installed behavior is unchanged through the candidate manifest too.
 	maple := selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 3_000_000)
-	if err = maple.validate(); err != nil || candidate.validateSelectorEntry(maple) != nil {
-		t.Fatalf("installed Maple entry drifted: %v / %v", maple.validate(), candidate.validateSelectorEntry(maple))
+	if err = maple.validate(); err != nil {
+		t.Fatalf("Maple entry refused: %v", err)
 	}
-	if !selectorEntryLane(SelectedRouteID) || !selectorEntryFundingLane(SelectedRouteID) {
-		t.Fatal("installed Maple rollout scope drifted")
+	for _, lane := range []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PhaseOneLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane} {
+		if !earnActiveLane(lane) || !earnHeldLane(lane) {
+			t.Fatal("registry lane is not enterable", lane)
+		}
 	}
-	if selectorEntryFundingLane(PhaseOneLaneID) {
-		t.Fatal("deferred installed lane became funded")
+	if earnActiveLane(ethenaUSDePYUSD.Lane) || !earnHeldLane(ethenaUSDePYUSD.Lane) {
+		t.Fatal("Ethena must be held (exitable) but never entered")
 	}
-	if !selectorEntryFundingLane(autoAUTOPYUSD.Lane) {
-		t.Fatal("the AUTO lane is not funded")
+	ethena := entry
+	ethena.Lane, ethena.Quote.DestinationLane = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
+	if ethena.validate() == nil {
+		t.Fatal("an exit-only lane entry validated")
 	}
-	if selectorEntryFundingLane("Ethena/USDe/PYUSD") {
-		t.Fatal("unbound foreign lane admitted")
+	if earnHeldLane("unknown/asset/debt") || earnHeldLane(RouteID) {
+		t.Fatal("a lane outside the registry admitted")
 	}
 }

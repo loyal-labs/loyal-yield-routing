@@ -116,7 +116,6 @@ func TestAutoNonParSelectionUsesObservedPriceBounds(t *testing.T) {
 	route, price09, _ := autoDebtPriceFixture(t, 900_000)
 	_, price11, _ := autoDebtPriceFixture(t, 1_100_000)
 	coll10 := autoCollateralPriceFixture(t, 1_000_000)
-	allowed, funding := selectorOrAutoLane, selectorEntryFundingLane
 	validThrough := int64(42 + budgetMaxObservationLagSlots)
 
 	upper09, proceeds := nonParBounds(t, &price09, &coll10, route, validThrough)
@@ -138,7 +137,7 @@ func TestAutoNonParSelectionUsesObservedPriceBounds(t *testing.T) {
 	// At 1.1x the priced liability exceeds this equity: the candidate is held
 	// with no economics and no persistence, though raw parity would admit it.
 	in := nonParReviewFixture(t, &price11, &coll10, band)
-	rejected := selectOpportunityWithLanes(in, SelectorState{}, allowed, funding)
+	rejected := SelectOpportunity(in, SelectorState{})
 	if rejected.Action != "KEEP" || rejected.Reason != "no_worthwhile_executable_move" {
 		t.Fatal("rejected borrow changed the top-level hold", rejected)
 	}
@@ -152,7 +151,7 @@ func TestAutoNonParSelectionUsesObservedPriceBounds(t *testing.T) {
 	// The same equity at 0.9x: the observed upper bound fits, the candidate is
 	// priced, profitable, and opens its persistence window.
 	in = nonParReviewFixture(t, &price09, &coll10, band)
-	admitted := selectOpportunityWithLanes(in, SelectorState{}, allowed, funding)
+	admitted := SelectOpportunity(in, SelectorState{})
 	if admitted.Action != "KEEP" || admitted.Reason != "advantage_not_yet_persistent" {
 		t.Fatal("discounted borrow did not start persistence", admitted)
 	}
@@ -174,7 +173,7 @@ func TestAutoNonParSelectionUsesObservedPriceBounds(t *testing.T) {
 	run := func(debt *BudgetPrice, collateral *BudgetPrice) (float64, float64) {
 		t.Helper()
 		in := nonParReviewFixture(t, debt, collateral, bigEquity)
-		result := selectOpportunityWithLanes(in, SelectorState{}, allowed, funding)
+		result := SelectOpportunity(in, SelectorState{})
 		if result.Action != "KEEP" || result.Reason != "advantage_not_yet_persistent" {
 			t.Fatal("admitted equity did not start persistence", result)
 		}
@@ -219,7 +218,6 @@ func TestAutoNonParStalePricesNeverSampleNorSelect(t *testing.T) {
 	t.Parallel()
 	route, price09, _ := autoDebtPriceFixture(t, 900_000)
 	coll10 := autoCollateralPriceFixture(t, 1_000_000)
-	allowed, funding := selectorOrAutoLane, selectorEntryFundingLane
 	upper09, _ := nonParBounds(t, &price09, &coll10, route, 42+budgetMaxObservationLagSlots)
 	equity := upper09 + 1_000_000
 
@@ -236,7 +234,7 @@ func TestAutoNonParStalePricesNeverSampleNorSelect(t *testing.T) {
 		"stale_collateral_price":  {&price09, &staleAsset},
 	} {
 		in := nonParReviewFixture(t, tc.debt, tc.collateral, equity)
-		result := selectOpportunityWithLanes(in, SelectorState{}, allowed, funding)
+		result := SelectOpportunity(in, SelectorState{})
 		if result.Action != "KEEP" || result.Reason != "no_worthwhile_executable_move" {
 			t.Fatalf("%s changed the top-level hold: %+v", name, result)
 		}
@@ -257,14 +255,14 @@ func TestAutoNonParStalePricesNeverSampleNorSelect(t *testing.T) {
 	// nothing), so tick 3 restarts from scratch and must hold for the full
 	// persistence again before any entry.
 	in := nonParReviewFixture(t, &price09, &coll10, equity)
-	first := selectOpportunityWithLanes(in, SelectorState{}, allowed, funding)
+	first := SelectOpportunity(in, SelectorState{})
 	if first.Reason != "advantage_not_yet_persistent" || len(first.State.Advantages) != 1 {
 		t.Fatal("healthy tick 1 did not open the window", first)
 	}
 	advanceSelectorFixture(&in, time.Minute)
 	// Tick 2's evidence goes stale; the input is discarded after this tick.
 	in.Quotes[0].DebtPrice = copyDebtPrice(&staleDebt)
-	blocked := selectOpportunityWithLanes(in, first.State, allowed, funding)
+	blocked := SelectOpportunity(in, first.State)
 	if c := nonParCandidate(t, blocked); c.BlockedReason != "bounded_borrow_unavailable" || len(blocked.State.Advantages) != 0 {
 		t.Fatal("stale tick kept economics or persistence", blocked, blocked.State)
 	}
@@ -272,7 +270,7 @@ func TestAutoNonParStalePricesNeverSampleNorSelect(t *testing.T) {
 	// scratch and must hold the full persistence before any entry.
 	fresh := nonParReviewFixture(t, &price09, &coll10, equity)
 	advanceSelectorFixture(&fresh, 2*time.Minute)
-	third := selectOpportunityWithLanes(fresh, blocked.State, allowed, funding)
+	third := SelectOpportunity(fresh, blocked.State)
 	if third.Action != "KEEP" || third.Reason != "advantage_not_yet_persistent" {
 		t.Fatal("selection crossed persistence after a stale gap", third)
 	}
@@ -280,7 +278,7 @@ func TestAutoNonParStalePricesNeverSampleNorSelect(t *testing.T) {
 		t.Fatal("window did not restart after the stale gap", third.State)
 	}
 	advanceSelectorFixture(&fresh, time.Minute)
-	if entered := selectOpportunityWithLanes(fresh, third.State, allowed, funding); entered.Action != "ENTER" || entered.DestinationLane != testAutoLane || entered.SelectedQuote == nil {
+	if entered := SelectOpportunity(fresh, third.State); entered.Action != "ENTER" || entered.DestinationLane != testAutoLane || entered.SelectedQuote == nil {
 		t.Fatal("healthy persistence after the stale gap did not select", entered)
 	}
 }
@@ -298,7 +296,7 @@ func TestAutoNonParWithdrawalPriorityPrecedesCandidates(t *testing.T) {
 	upper09, _ := nonParBounds(t, &price09, &coll10, route, 42+budgetMaxObservationLagSlots)
 	in := nonParReviewFixture(t, &price09, &coll10, upper09+1_000_000)
 	in.Snapshot.WithdrawalDemandRaw = 1
-	result := selectOpportunityWithLanes(in, SelectorState{}, selectorOrAutoLane, selectorEntryFundingLane)
+	result := SelectOpportunity(in, SelectorState{})
 	if result.Action != "KEEP" || result.Reason != "withdrawal_unwind_or_accounting_first" {
 		t.Fatal("withdrawal demand did not hold the selection", result)
 	}

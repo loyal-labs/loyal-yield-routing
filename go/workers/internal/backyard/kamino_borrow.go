@@ -93,7 +93,7 @@ func validateBorrowRequest(ctx context.Context, view *View, r KaminoPrimeUSDCReq
 	if err != nil {
 		return 0, err
 	}
-	if leverageLane(route.Lane) {
+	if earnActiveLane(route.Lane) {
 		if err := validateCapacityBorrow(accounts, route, r.AmountRaw); err != nil {
 			return 0, err
 		}

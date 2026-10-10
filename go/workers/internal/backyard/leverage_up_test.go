@@ -15,7 +15,6 @@ import (
 // leverage_up sized to the target, and the entry quote is never used.
 func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
 	t.Parallel()
-	m := embeddedTestManifest(t)
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
 		entry := selectorEntryFixture(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), lane, 1_000_000_000)
 		entry.Quote.BorrowReceiveRaw, entry.AllocationOperationID = 189_873_681, "alloc-0926"
@@ -24,7 +23,7 @@ func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
 		s.RouteLane, s.StrategyKey = lane, lane
 		s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 1_676_000_000, 1_676_000_000
 		if lane == onreONycUSDC {
-			if err := applySelectorEntryWithLane(&s, &entry, time.Now().UTC(), selectorOrAutoLane); err != nil {
+			if err := applySelectorEntry(&s, &entry, time.Now().UTC()); err != nil {
 				t.Fatal(lane, err)
 			}
 		} else {
@@ -35,12 +34,12 @@ func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
 		if s.SelectorEntryPaused || s.SelectorBorrowRaw != 189_873_681 {
 			t.Fatalf("%s: fixture is not the live shape: paused=%t borrow=%d", lane, s.SelectorEntryPaused, s.SelectorBorrowRaw)
 		}
-		if got := m.DecideOnManifest(s); got.Action != Hold || got.Reason != "leverage_target_required" {
+		if got := Decide(s); got.Action != Hold || got.Reason != "leverage_target_required" {
 			t.Fatalf("%s: no target must hold, got %+v", lane, got)
 		}
 		s.LeverageTargetLevel = 1.5
 		armLeverageCapacityFixture(&s)
-		got := m.DecideOnManifest(s)
+		got := Decide(s)
 		if got.Action != OpenRouteStep || got.Reason != leverageUpReason || got.AmountRaw != 837_162_000 {
 			t.Fatalf("%s: target 1.5x must borrow through leverage_up, got %+v", lane, got)
 		}
@@ -117,10 +116,10 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 			}
 		}
 	}
-	maple := leverageSnapshot(1.5)
-	maple.RouteLane, maple.StrategyKey, maple.LeverageTargetLevel = SelectedRouteID, SelectedRouteID, 1.75
-	if got := Decide(maple); got.Reason == leverageUpReason {
-		t.Fatalf("Maple levered up: %+v", got)
+	exitOnly := leverageSnapshot(1.5)
+	exitOnly.RouteLane, exitOnly.StrategyKey, exitOnly.LeverageTargetLevel = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane, 1.75
+	if got := Decide(exitOnly); got.Reason == leverageUpReason {
+		t.Fatalf("exit-only Ethena levered up: %+v", got)
 	}
 }
 
@@ -233,8 +232,11 @@ func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
 	}{
 		{autoAUTOPYUSD.Lane, embeddedTestManifest(t), true},
 		{onreONycUSDC, embeddedTestManifest(t), true},
-		{SelectedRouteID, embeddedTestManifest(t), false},
-		{PhaseOneLaneID, embeddedTestManifest(t), false},
+		{SelectedRouteID, embeddedTestManifest(t), true},
+		{PhaseOneLaneID, embeddedTestManifest(t), true},
+		{primePRIMEPYUSD.Lane, embeddedTestManifest(t), true},
+		{primePRIMEUSDS.Lane, embeddedTestManifest(t), true},
+		{ethenaUSDePYUSD.Lane, embeddedTestManifest(t), false},
 	} {
 		route, err := runtimeRoute(c.lane)
 		if err != nil {
@@ -259,7 +261,7 @@ func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
 				t.Errorf("%s %s: PersistSigned gate refused: %v", c.lane, name, err)
 			}
 			if !want && err == nil {
-				t.Errorf("%s %s: gate accepted a topology outside AUTO/OnRe", c.lane, name)
+				t.Errorf("%s %s: gate accepted a leverage_up topology on an exit-only lane", c.lane, name)
 			}
 		}
 	}

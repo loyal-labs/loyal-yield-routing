@@ -39,14 +39,14 @@ func TestDownMove175To15IsOneSizedCycle(t *testing.T) {
 			t.Fatalf("%s after the move: %+v", lane, got)
 		}
 	}
-	// Inert while live levels stop at 1.5x; Maple never.
+	// Inert while live levels stop at 1.5x; the exit-only lane never.
 	s := leverageSnapshot(1.75)
 	s.LeverageTargetLevel = 1.5
 	if _, _, _, ok := leverageDownPartialStep(s); ok != leverageDownPartialEnabled {
 		t.Fatal("down-partial gate")
 	}
-	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
+	s.RouteLane, s.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
 	if _, _, _, ok := leverageDownPartialStepAt(s, true); ok {
-		t.Fatal("Maple de-levered")
+		t.Fatal("exit-only Ethena de-levered")
 	}
 }

@@ -152,7 +152,7 @@ func TestSelectorValuationCaptureRetainsNAVAndOwnership(t *testing.T) {
 	m := readyWorkerManifest(t)
 	m.selectorObservation = true
 	all := routeFixedAddresses(m)
-	for _, lane := range selectorLanes {
+	for _, lane := range earnLaneIDs(true) {
 		route, _ := runtimeRoute(lane)
 		selected := selectorValuationAddresses(route, all)
 		kept := map[string]bool{}
@@ -164,7 +164,7 @@ func TestSelectorValuationCaptureRetainsNAVAndOwnership(t *testing.T) {
 				t.Fatal("lost active NAV", lane, address)
 			}
 		}
-		for _, otherLane := range selectorLanes {
+		for _, otherLane := range earnLaneIDs(true) {
 			other, _ := runtimeRoute(otherLane)
 			if !kept[other.Kamino.Obligation] || !kept[other.CollateralCustody] {
 				t.Fatal("lost lane ownership", lane, otherLane)

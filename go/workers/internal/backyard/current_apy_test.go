@@ -28,7 +28,7 @@ func TestCurrentAPYMatchesTheLeverageWatchFigure(t *testing.T) {
 	// The exact figure the watch summary prints for this lane at 1.75x.
 	armLeverageCapacityFixture(&s)
 	var watch leverageWatch
-	lines := watch.observe([]LaneEconomics{m}, autoAUTOPYUSD.Lane, 1_207_050_000, true, func(string) bool { return true }, s)
+	lines := watch.observe([]LaneEconomics{m}, autoAUTOPYUSD.Lane, 1_207_050_000, true, s)
 	want := fmt.Sprintf("1.75x=%.2f", float64(got.APYBPS)/100)
 	found := false
 	for _, line := range lines {
@@ -185,7 +185,7 @@ func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
 	onre := auto
 	onre.Lane, onre.NativeAPY = onreONycUSDC, .1102
 	var watch leverageWatch
-	lines := watch.observe([]LaneEconomics{onre, auto}, autoAUTOPYUSD.Lane, 1_207_050_000, true, func(l string) bool { return l == onreONycUSDC })
+	lines := watch.observe([]LaneEconomics{onre, auto}, autoAUTOPYUSD.Lane, 1_207_050_000, true)
 	summary := lines[len(lines)-1]
 	if len(watch.summary) != 2 {
 		t.Fatalf("summary lanes %d", len(watch.summary))
@@ -212,7 +212,7 @@ func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
 		}
 	}
 	// A non-summary observe clears it: nothing is stored between summaries.
-	watch.observe([]LaneEconomics{auto}, autoAUTOPYUSD.Lane, 1_207_050_000, false, func(string) bool { return false })
+	watch.observe([]LaneEconomics{auto}, autoAUTOPYUSD.Lane, 1_207_050_000, false)
 	if watch.summary != nil {
 		t.Fatal("stale summary kept")
 	}

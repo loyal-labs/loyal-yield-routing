@@ -264,17 +264,19 @@ func TestUnsupportedExitsRefuseBeforeAnyWrite(t *testing.T) {
 			t.Fatal("unsupported AUTO edge changed authority or operations")
 		}
 	})
-	t.Run("unsupported_ethena_confirmation", func(t *testing.T) {
+	t.Run("confirmation_outside_registry", func(t *testing.T) {
 		ctx, db, key := prepareDebtClearDatabase(t)
 		manifest := embeddedTestManifest(t)
-		intent := UnwindIntent{SourceLane: ethenaUSDePYUSD.Lane, Reason: "withdrawal_shortfall", ObservationID: "unsupported-ethena", MaxCollateralRaw: 100_000_000, MaxDebtRaw: 2_000, EvidenceID: sha256Bytes([]byte("unsupported-ethena")), CreatedAt: time.Now().UTC()}
+		// Ethena is exit-only and so a valid unwind source; a lane outside the
+		// registry is refused at lane authority.
+		intent := UnwindIntent{SourceLane: RouteID, Reason: "withdrawal_shortfall", ObservationID: "unsupported-ethena", MaxCollateralRaw: 100_000_000, MaxDebtRaw: 2_000, EvidenceID: sha256Bytes([]byte("unsupported-ethena")), CreatedAt: time.Now().UTC()}
 		confirmation := DebtClearConfirmation{RequestID: sha256Bytes([]byte(key)), ConfirmedBy: "privileged-test-operator", ConfirmationRecord: sha256Bytes([]byte(key + "-confirmation")), AcknowledgeUnavailableReborrow: true, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}
 		var before, after string
 		if err := db.pool.QueryRow(ctx, `SELECT state::text FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&before); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.commitUnwindIntentWithConfirmation(ctx, key, &intent, manifest, confirmation); err == nil || err.Error() != "invalid_unwind_intent" {
-			t.Fatalf("unsupported Ethena confirmation did not fail at lane authority: %v", err)
+			t.Fatalf("confirmation outside the registry did not fail at lane authority: %v", err)
 		}
 		var operations int
 		if err := db.pool.QueryRow(ctx, `SELECT state::text,(SELECT count(*) FROM loyal_yield.multiply_operations WHERE route_key=$1) FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&after, &operations); err != nil {

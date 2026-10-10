@@ -8,7 +8,7 @@ import (
 
 func TestMultiplyInitializerPinnedTopology(t *testing.T) {
 	t.Parallel()
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		ix, err := kaminoMultiplyInitializer(lane)
 		if err != nil {
 			t.Fatal(err)
@@ -35,20 +35,62 @@ func TestMultiplyInitializerPinnedTopology(t *testing.T) {
 	}
 }
 
+// Every registry lane either creates its obligation through an installed
+// initializer policy literal or names an obligation that already exists on
+// chain (owner KLend, verified 2026-10-10); the registry's initializer flag is
+// exactly the set of lanes with an initializer literal.
+func TestEveryRegistryLaneHasAnInitializerPolicyOrAnExistingObligation(t *testing.T) {
+	t.Parallel()
+	literals, err := backyardPolicies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := map[string]string{
+		primePRIMEPYUSD.Lane: "GAnakFSJAhNMrH3B8PRLxHcEtWVL21xyALRiWx3baS5t",
+		primePRIMEUSDS.Lane:  "6aqRhAxxjxdoAzgsEMrCCKCEEYMoLDLRKTu5t8nRuyYu",
+		ethenaUSDePYUSD.Lane: "5CDZVkkC9wH3FTo4xy679qorb4xMt5cHf2nhsRcTUsQr",
+	}
+	for _, lane := range earnLaneIDs(true) {
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, split := literals[policyKey{lane: lane, action: InitializeKaminoObligation}]
+		auto := lane == autoAUTOPYUSD.Lane
+		if earnInitializerLane(lane) != (split || auto) {
+			t.Fatal("registry initializer flag differs from the installed literals", lane)
+		}
+		if earnInitializerLane(lane) {
+			if _, err := kaminoRouteInitializer(route); err != nil {
+				t.Fatal("initializer lane cannot derive its obligation", lane, err)
+			}
+			continue
+		}
+		if opened[lane] == "" || opened[lane] != route.Kamino.Obligation {
+			t.Fatal("lane has neither an initializer policy nor a verified existing obligation", lane)
+		}
+	}
+}
+
 // The initializer and capacity offsets match what the Kamino klend SDK built
 // and laid out (testdata/sdk-vectors.json).
 func TestMultiplyInitializerAndCapacitySDKParity(t *testing.T) {
 	t.Parallel()
 	vectors := sdkVectors(t).KaminoInitializer
-	if len(vectors.Instructions) != len(selectorLanes) {
-		t.Fatal("SDK initializer vectors do not cover every selector lane")
+	if len(vectors.Instructions) != len(basicLaneIDs()) {
+		t.Fatal("SDK initializer vectors do not cover every basic lane")
 	}
-	for i, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		ix, err := kaminoMultiplyInitializer(lane)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := vectors.Instructions[i]
+		want := vectors.Instructions[0]
+		for _, vector := range vectors.Instructions {
+			if vector.Lane == lane {
+				want = vector
+			}
+		}
 		if want.Lane != lane || encodeBase58(ix.program[:]) != want.Program || base64.StdEncoding.EncodeToString(ix.data) != want.Data || len(ix.accounts) != len(want.Accounts) {
 			t.Fatal("initializer differs from SDK", lane)
 		}

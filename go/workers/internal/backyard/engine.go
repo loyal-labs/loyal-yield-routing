@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -105,10 +104,8 @@ func (e *Engine) Run(ctx context.Context) error {
 	backyardEvents = newEvents(e.runtime.Logger, e.runtime.Facts)
 	productionJupiter = e.runtime.Jupiter
 	if e.runtime.Selector != SelectorOff {
-		// The feed's route inventory is scoped to the SAME reviewed manifest
-		// the selector evaluates (worker.manifest): installed lanes plus the
-		// the candidate AUTO route.
-		feed, err := NewEconomicFeedOnManifest(ctx, e.runtime.TimescaleURL, e.worker.manifest)
+		// The feed observes every active registry lane.
+		feed, err := NewEconomicFeed(ctx, e.runtime.TimescaleURL)
 		if err != nil {
 			return err
 		}
@@ -133,11 +130,10 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 	feedCtx, cancelFeed := context.WithCancel(ctx)
 	feedDone := make(chan struct{})
 	shadowIdentity := newProgramIdentityWatcher(viewProgramIdentity(view)).observe
-	// Sample diagnostics are change-only: each line prints when its fixed
-	// sanitized shape changes and stays silent while that shape persists,
-	// so neither a persistent outage nor a stable hold floods the log on
-	// the sample cadence.
-	lastSampleAction, lastSampleReason, lastSampleCandidates := "", "", ""
+	// Sample diagnostics print when their sanitized shape changes (the held
+	// sample also hourly), so neither a persistent outage nor a stable hold
+	// floods the log on the sample cadence.
+	lastSampleKey, lastSamplePrint := "", time.Time{}
 	lastEvaluateFailure := ""
 	levWatch, levWatchSummary := &leverageWatch{}, time.Time{}
 	levDecisionLog := &leverageDecisionLog{}
@@ -170,7 +166,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			}
 			lastEvaluateFailure = ""
 			// B2 watch-only: log lines, never a decision input.
-			for _, line := range levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(levWatchSummary) >= time.Hour, selectorEntryFundingLane, observed.Snapshot) {
+			for _, line := range levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(levWatchSummary) >= time.Hour, observed.Snapshot) {
 				_, _ = fmt.Fprintln(out, line)
 			}
 			if time.Since(levWatchSummary) >= time.Hour {
@@ -201,27 +197,17 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" {
 				worker.notifySelectorCommit(result.Action)
 				_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector action=%s source=%s destination=%s\n", result.Action, result.SourceLane, result.DestinationLane)
-				lastSampleAction, lastSampleReason, lastSampleCandidates = "", "", ""
+				lastSampleKey = ""
 				return
 			}
-			// Change-only held-sample diagnostics: the action, its fixed
-			// selector reason, and each considered candidate's lane and
-			// blocked reason in pure-selector order, capped at four. A
-			// candidate's blocked reason is the selector's own fixed
-			// vocabulary — never a rate, evidence ID, or raw error — so
-			// a newly deferred source or a silently missing candidate
-			// lane is actually visible in the log.
-			candidates := make([]string, 0, 4)
-			for i, c := range result.Candidates {
-				if i == 4 {
-					break
-				}
-				candidates = append(candidates, c.Lane+":"+c.BlockedReason)
-			}
-			candidateDetail := strings.Join(candidates, ",")
-			if result.Action != lastSampleAction || result.Reason != lastSampleReason || candidateDetail != lastSampleCandidates {
-				lastSampleAction, lastSampleReason, lastSampleCandidates = result.Action, result.Reason, candidateDetail
-				_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s\n", result.Action, result.Reason, result.SourceLane, candidateDetail)
+			// Held-sample diagnostics list every candidate with its numbers;
+			// they print when the sample's shape changes (action, reason, and
+			// each candidate's reason, borrow state and leverage) and hourly,
+			// so a reserve that opens shows the same tick.
+			key, line := selectorSampleLine(result)
+			if key != lastSampleKey || time.Since(lastSamplePrint) >= time.Hour {
+				lastSampleKey, lastSamplePrint = key, time.Now()
+				_, _ = fmt.Fprintln(out, line)
 			}
 		})
 	}()

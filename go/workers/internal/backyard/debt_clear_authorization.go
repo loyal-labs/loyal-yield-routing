@@ -66,7 +66,7 @@ type debtClearRouteState struct {
 
 func newDebtClearAuthority(m RouteManifest, routeKey, id string, intent UnwindIntent) (debtClearAuthority, error) {
 	route, err := runtimeRoute(intent.SourceLane)
-	if err != nil || m.validateUnwindIntent(intent) != nil || !sha256Pattern.MatchString(m.SHA256) || intent.MaxDebtRaw <= 0 {
+	if err != nil || intent.validate() != nil || !sha256Pattern.MatchString(m.SHA256) || intent.MaxDebtRaw <= 0 {
 		return debtClearAuthority{}, budgetHold("debt_clear_scope_unavailable")
 	}
 	return debtClearAuthority{ID: id, RouteKey: routeKey, ManifestSHA256: m.SHA256, Vault: bridgeVault, Obligation: route.Kamino.Obligation, DebtMint: route.Kamino.DebtMint, DebtReserve: route.Kamino.DebtReserve, Origin: intent}, nil
@@ -230,7 +230,7 @@ func verifyDebtClearEmergency(m RouteManifest, o Observation, decision Decision,
 	if err != nil || proof == nil {
 		return proof, err
 	}
-	if !decisionsEqual(m.DecideOnManifest(o.Snapshot), decision) {
+	if !decisionsEqual(Decide(o.Snapshot), decision) {
 		return nil, budgetHold("debt_clear_emergency_action_invalid")
 	}
 	switch decision.Action {
@@ -266,7 +266,7 @@ func verifyDebtClearRiskBatch(m RouteManifest, o Observation, operationID string
 	if err != nil {
 		return nil, err
 	}
-	selected, err := observedSelectorRouteForManifest(b.Accounts, s.RouteLane, m)
+	selected, err := observedSelectorRoute(b.Accounts, s.RouteLane)
 	if err != nil || selected.Lane != s.RouteLane {
 		return nil, budgetHold("debt_clear_emergency_scope_changed")
 	}

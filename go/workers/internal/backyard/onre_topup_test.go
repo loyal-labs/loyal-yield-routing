@@ -44,7 +44,7 @@ func TestOnReTopupSequenceOnTheUSDCPath(t *testing.T) {
 	check(room, VoltrAllocateToSquads, topupAllocationReason, 400_000_000)
 }
 
-func TestOnReTopupKeepsSafetyPriorityAndOtherLanesUnchanged(t *testing.T) {
+func TestTopupKeepsSafetyPriorityAndFollowsTheRegistry(t *testing.T) {
 	t.Parallel()
 	s := onreTopupSnapshot()
 	for name, mutate := range map[string]func(*Snapshot){
@@ -68,17 +68,18 @@ func TestOnReTopupKeepsSafetyPriorityAndOtherLanesUnchanged(t *testing.T) {
 			t.Fatalf("%s: top-up selected: %+v", name, got)
 		}
 	}
-	// Maple keeps its installed behaviour: cash beside a position is still
-	// the manual-recovery hold, never a top-up.
+	// Every active registry lane tops up a debt-free position the same way
+	// (B3 follows the registry): Maple swaps its Squads cash and allocates
+	// later Voltr idle exactly like OnRe.
 	maple := s
 	maple.RouteLane, maple.StrategyKey = SelectedRouteID, SelectedRouteID
 	maple.VoltrIdleRaw, maple.SquadsIdleRaw = 0, 1_000_000
-	if got := Decide(maple); got.Action != HoldManualRecovery || got.Reason != "entry_tranche_contains_unassigned_cash" {
-		t.Fatalf("Maple changed: %+v", got)
+	if got := Decide(maple); got.Reason != topupSwapReason {
+		t.Fatalf("Maple did not top up its Squads cash: %+v", got)
 	}
 	maple.SquadsIdleRaw, maple.VoltrIdleRaw = 0, 1_295_000_000
-	if got := Decide(maple); got.Reason == topupAllocationReason {
-		t.Fatalf("Maple got a top-up allocation: %+v", got)
+	if got := Decide(maple); got.Reason != topupAllocationReason {
+		t.Fatalf("Maple did not top up its Voltr idle: %+v", got)
 	}
 }
 

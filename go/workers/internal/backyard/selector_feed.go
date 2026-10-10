@@ -106,9 +106,14 @@ func fetchNativeYields(ctx context.Context, client *http.Client, endpoint string
 	if err != nil {
 		return nil, fmt.Errorf("kamino_stats_endpoint_invalid")
 	}
+	// Lanes can share a collateral reserve (the Prime lanes); ask once.
 	reserves := make([]string, 0, len(routes))
+	seen := map[string]bool{}
 	for _, r := range routes {
-		reserves = append(reserves, r.Kamino.CollateralReserve)
+		if !seen[r.Kamino.CollateralReserve] {
+			seen[r.Kamino.CollateralReserve] = true
+			reserves = append(reserves, r.Kamino.CollateralReserve)
+		}
 	}
 	if len(reserves) == 0 || len(reserves) > 100 {
 		return nil, fmt.Errorf("kamino_stats_batch_invalid")
@@ -174,11 +179,9 @@ func readVerifiedEconomics(ctx context.Context, pool *pgxpool.Pool, routes []Run
 	return out, nil
 }
 
-// combineEconomicsWithLane is the shared combine core with the lane authority
-// parameterized. Every identity, freshness, rate, debt and curve check is
-// unchanged; only WHICH lanes may contribute evidence moves, and the caller
-// owns that authority (the feed supplies its manifest-scoped set).
-func combineEconomicsWithLane(routes []RuntimeRoute, reserves map[string]verifiedEconomicReserve, yields map[string]nativeYield, now time.Time, p SelectorPolicy, laneAllowed func(string) bool) []LaneEconomics {
+// combineEconomics joins each route's verified reserves and native yield into
+// its lane economics; only active registry lanes contribute.
+func combineEconomics(routes []RuntimeRoute, reserves map[string]verifiedEconomicReserve, yields map[string]nativeYield, now time.Time, p SelectorPolicy) []LaneEconomics {
 	out := make([]LaneEconomics, 0, len(routes))
 	valid := func(r verifiedEconomicReserve, reserve, mint, market string) bool {
 		return r.Reserve == reserve && r.Mint == mint && r.Market == market && r.Commitment == "confirmed" && r.Slot > 0 && sha256Pattern.MatchString(r.Hash) && r.Schema != nil && *r.Schema == 2 && r.Status != nil && r.Emergency != nil && freshAt(now, r.ObservedAt, p.MarketMaxAge)
@@ -190,8 +193,8 @@ func combineEconomicsWithLane(routes []RuntimeRoute, reserves map[string]verifie
 			continue
 		}
 		// loyal-kamino-codec emits reserve supply and borrowed amounts in raw
-		// token units. Every installed debt lane is USDC, and the candidate
-		// AUTO debt lane is PYUSD — both 6-decimal assets, so no conversion.
+		// debt-mint units. They only ever meet other raw amounts of the same
+		// reserve (utilization) or the priced quote's raw debt, never USDC.
 		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: c.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: *c.SupplyAPY, CurrentBorrowAPY: *d.BorrowAPY, BorrowCurve: d.Curve, HostBorrowBPS: *d.HostBPS, DebtSupplyRaw: *d.SupplyRaw, DebtBorrowRaw: *d.BorrowRaw}
 		if d.ObservedAt.Before(e.ObservedAt) {
 			e.ObservedAt = d.ObservedAt
@@ -213,7 +216,7 @@ func combineEconomicsWithLane(routes []RuntimeRoute, reserves map[string]verifie
 			continue
 		}
 		e.CurrentBorrowAPY = math.Expm1(apr)
-		if e.validateWithLane(now, p, laneAllowed) == nil {
+		if e.validate(now, p) == nil {
 			out = append(out, e)
 		}
 	}
@@ -224,22 +227,16 @@ func combineEconomicsWithLane(routes []RuntimeRoute, reserves map[string]verifie
 // or SQL, and failed refreshes do not make stale entries fresh. Safety and
 // withdrawal decisions can run while enrichment is down.
 type EconomicFeed struct {
-	pool   *pgxpool.Pool
-	client *http.Client
-	routes []RuntimeRoute
-	// candidateLane is non-empty ONLY for the manifest-scoped feed. It is the
-	// feed's manifest authority: the candidate route's evidence passes the
-	// shared content checks with THIS lane allowed — never a global allowlist
-	// change.
-	candidateLane string
-	mu            sync.RWMutex
-	latest        []LaneEconomics
-	failure       string
+	pool    *pgxpool.Pool
+	client  *http.Client
+	routes  []RuntimeRoute
+	mu      sync.RWMutex
+	latest  []LaneEconomics
+	failure string
 }
 
-// NewEconomicFeed is the preserved embedded constructor: the route inventory
-// is exactly the installed selector lanes. The read-only session params and
-// timeouts are shared with the manifest-scoped constructor below.
+// NewEconomicFeed observes every active registry lane: the selector scores
+// exactly the lanes it may enter.
 func NewEconomicFeed(ctx context.Context, databaseURL string) (*EconomicFeed, error) {
 	if databaseURL == "" {
 		return nil, fmt.Errorf("TIMESCALEDB_URL is required for economic observations")
@@ -257,30 +254,26 @@ func NewEconomicFeed(ctx context.Context, databaseURL string) (*EconomicFeed, er
 	if err != nil {
 		return nil, fmt.Errorf("economic database unavailable")
 	}
-	routes := make([]RuntimeRoute, 0, len(selectorLanes))
-	for _, lane := range selectorLanes {
-		if !selectorScoredLane(lane) {
-			continue
-		}
-		r, _ := runtimeRoute(lane)
-		routes = append(routes, r)
+	routes, err := earnFeedRoutes()
+	if err != nil {
+		pool.Close()
+		return nil, err
 	}
 	return &EconomicFeed{pool: pool, client: &http.Client{Timeout: 5 * time.Second}, routes: routes}, nil
 }
 
-// NewEconomicFeedOnManifest scopes the route inventory to the SAME reviewed
-// manifest the worker's selector evaluates against, so the feed can never
-// observe a lane the selector's manifest does not bind and cannot miss one it
-// does. Installed lanes keep the embedded constructor's exact inventory; the
-// AUTO route is appended last, after every installed lane.
-func NewEconomicFeedOnManifest(ctx context.Context, databaseURL string, manifest RouteManifest) (*EconomicFeed, error) {
-	feed, err := NewEconomicFeed(ctx, databaseURL)
-	if err != nil {
-		return nil, err
+// earnFeedRoutes are the active registry lanes' routes, in registry order.
+func earnFeedRoutes() ([]RuntimeRoute, error) {
+	lanes := earnLaneIDs(false)
+	routes := make([]RuntimeRoute, 0, len(lanes))
+	for _, lane := range lanes {
+		r, err := runtimeRoute(lane)
+		if err != nil {
+			return nil, err
+		}
+		routes = append(routes, r)
 	}
-	feed.routes = append(feed.routes, autoAUTOPYUSD)
-	feed.candidateLane = autoAUTOPYUSD.Lane
-	return feed, nil
+	return routes, nil
 }
 func (f *EconomicFeed) Close() { f.pool.Close() }
 func (f *EconomicFeed) Refresh(ctx context.Context) error {
@@ -299,14 +292,7 @@ func (f *EconomicFeed) Refresh(ctx context.Context) error {
 		f.failure = err.Error()
 		return err
 	}
-	// Manifest authority stays with the feed: installed lanes pass through the
-	// selectorLane set, and the candidate lane is allowed ONLY because this
-	// feed's own manifest-scoped constructor added it. The candidate lane is
-	// never written into a global allowlist.
-	laneAllowed := func(lane string) bool {
-		return selectorLane(lane) || (f.candidateLane != "" && lane == f.candidateLane)
-	}
-	f.latest = combineEconomicsWithLane(f.routes, reserves, yields, now, p, laneAllowed)
+	f.latest = combineEconomics(f.routes, reserves, yields, now, p)
 	f.failure = ""
 	if len(f.latest) != len(f.routes) {
 		f.failure = "economic_evidence_incomplete"

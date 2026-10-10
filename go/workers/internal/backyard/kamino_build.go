@@ -113,9 +113,6 @@ func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate pu
 	if err != nil {
 		return nil, err
 	}
-	if lane == autoAUTOPYUSD.Lane {
-		return compileReviewedKaminoMessage(request, delegate, route)
-	}
 	return compileResolvedKaminoMessage(request, delegate, route)
 }
 
@@ -123,16 +120,14 @@ func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate pu
 // shared byte builder. Keeping resolution outside permits offline SDK/SBF parity
 // tests without registering candidate routes or changing production authority.
 func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
-	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff || !selectorLane(request.RouteLane)) {
+	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff || !earnHeldLane(request.RouteLane)) {
 		return nil, budgetHold("invalid_pilot_repayment_release")
 	}
 	return compileReviewedKaminoMessage(request, delegate, route)
 }
 
-// compileReviewedKaminoMessage is the checked byte builder behind both
-// entries: installed selector lanes pass the public pilot gate above, the AUTO
-// lane comes straight here. The pilot release still must be a withdrawal-only
-// repayment release in both cases.
+// compileReviewedKaminoMessage is the checked byte builder. The pilot release
+// must be a withdrawal-only repayment release.
 func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
 	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff) {
 		return nil, budgetHold("invalid_pilot_repayment_release")

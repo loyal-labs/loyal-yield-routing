@@ -181,7 +181,7 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	observation.Snapshot.CapitalMutated = journal.MutationAfterReport
 	if observation.planning != nil {
 		planning := observation.planning
-		if err := applyUnwindIntentWithLane(&observation.Snapshot, planning.unwind, selectorOrAutoLane); err != nil {
+		if err := applyUnwindIntent(&observation.Snapshot, planning.unwind); err != nil {
 			observation.Snapshot.ManualReason = err.Error()
 		}
 		observation.Snapshot.SelectorEntryPaused = planning.paused
@@ -189,30 +189,16 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		if err := applyPartialWithdrawal(&observation.Snapshot, planning.partialWithdrawal); err != nil {
 			return err
 		}
-		return p.manifest.applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
+		return applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
 	}
-	// The manifest-aware reader is preferred exactly as the entry read below:
-	// a recorded candidate-source unwind survives restart through the
-	// reviewed manifest's lane authority. The plain reader stays for legacy
-	// test interfaces and keeps its installed closure.
 	if reader, ok := p.journal.(interface {
-		LoadUnwindIntentOnManifest(context.Context, RouteManifest, string) (*UnwindIntent, error)
-	}); ok {
-		intent, err := reader.LoadUnwindIntentOnManifest(ctx, p.manifest, p.routeKey)
-		if err != nil {
-			return err
-		}
-		if err := applyUnwindIntentWithLane(&observation.Snapshot, intent, selectorOrAutoLane); err != nil {
-			observation.Snapshot.ManualReason = err.Error()
-		}
-	} else if reader, ok := p.journal.(interface {
 		LoadUnwindIntent(context.Context, string) (*UnwindIntent, error)
 	}); ok {
 		intent, err := reader.LoadUnwindIntent(ctx, p.routeKey)
 		if err != nil {
 			return err
 		}
-		if err := applyUnwindIntentWithLane(&observation.Snapshot, intent, selectorOrAutoLane); err != nil {
+		if err := applyUnwindIntent(&observation.Snapshot, intent); err != nil {
 			observation.Snapshot.ManualReason = err.Error()
 		}
 	}
@@ -251,16 +237,6 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		observation.Snapshot.SelectorEntryPaused = paused
 	}
 	if reader, ok := p.journal.(interface {
-		LoadSelectorEntryOnManifest(context.Context, RouteManifest, string) (*SelectorEntry, error)
-	}); ok {
-		entry, err := reader.LoadSelectorEntryOnManifest(ctx, p.manifest, p.routeKey)
-		if err != nil {
-			return err
-		}
-		if err = p.manifest.applySelectorEntry(&observation.Snapshot, entry, time.Now().UTC()); err != nil {
-			return err
-		}
-	} else if reader, ok := p.journal.(interface {
 		LoadSelectorEntry(context.Context, string) (*SelectorEntry, error)
 	}); ok {
 		entry, err := reader.LoadSelectorEntry(ctx, p.routeKey)
@@ -317,17 +293,17 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			if !observation.Snapshot.Unwind || !unwindComplete(observation.Snapshot) {
 				return false, nil
 			}
-			intent, err := database.LoadUnwindIntentOnManifest(ctx, manifest, productionRouteKey)
+			intent, err := database.LoadUnwindIntent(ctx, productionRouteKey)
 			if err != nil {
 				return false, err
 			}
 			if intent == nil {
 				return false, fmt.Errorf("unwind disappeared before completion")
 			}
-			return true, database.CompleteUnwindIntentOnManifest(ctx, manifest, productionRouteKey, *intent, observation.Snapshot)
+			return true, database.CompleteUnwindIntent(ctx, productionRouteKey, *intent, observation.Snapshot)
 		},
 		loadNonterminal: func(ctx context.Context, routeKey string) (*PersistedOperation, error) {
-			return database.LoadNonterminalOnManifest(ctx, routeKey, manifest)
+			return database.LoadNonterminal(ctx, routeKey)
 		},
 		advance: func(ctx context.Context, operation PersistedOperation) error {
 			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, view, operation)
@@ -456,7 +432,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 			return nil
 		}
 	}
-	decision := w.manifest.DecideOnManifest(observation.Snapshot)
+	decision := Decide(observation.Snapshot)
 	healthDecision = decision
 	w.borrowBlockedLog.note(time.Now(), decision)
 	if decision.Action == Hold && decision.Reason == "unwind_requires_fresh_admission" && w.runtime.refreshUnwind != nil {
@@ -477,7 +453,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	if decision.Action == HoldManualRecovery && observation.Snapshot.ManualReason != "" {
 		decision.Reason = observation.Snapshot.ManualReason
 	}
-	if err := w.manifest.validateDecision(decision); err != nil {
+	if err := decision.Validate(); err != nil {
 		return err
 	}
 	healthDecision = decision
@@ -511,7 +487,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	// prepared wire, so it runs while preparation re-observes the chain.
 	var prefetchedCustody custodyProofFinisher
 	if w.runtime.prefetchCustodyProof != nil && custodyProofPrefetchAction(decision, observation.Snapshot) {
-		prefetchedCustody = w.runtime.prefetchCustodyProof(ctx, w.manifest, autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, w.routeKey))
+		if route, err := runtimeRoute(decision.StrategyKey); err == nil {
+			prefetchedCustody = w.runtime.prefetchCustodyProof(ctx, w.manifest, autoSharedPYUSDAttributionConfig(route, w.routeKey))
+		}
 	}
 	switch executionDecision {
 	case InitializeKaminoObligation:
@@ -545,9 +523,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	if err != nil {
 		return err
 	}
-	decision = w.manifest.DecideOnManifest(observation.Snapshot)
+	decision = Decide(observation.Snapshot)
 	healthDecision = decision
-	if err := w.manifest.validateDecision(decision); err != nil {
+	if err := decision.Validate(); err != nil {
 		return err
 	}
 	// Drift is a new state: nothing is recorded yet, so retry the leg on the

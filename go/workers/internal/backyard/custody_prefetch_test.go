@@ -81,7 +81,8 @@ func TestPreDecisionSeamUsesThePrefetchedProof(t *testing.T) {
 	if prefetchedCalls != 1 || serialCalls != 0 || observation.carriedCustodyOwnershipProof() == nil {
 		t.Fatalf("prefetched proof not used: prefetched=%d serial=%d", prefetchedCalls, serialCalls)
 	}
-	// Only AUTO actions that can debit the PYUSD custody prefetch.
+	// Only actions that can debit a shared PYUSD custody prefetch: AUTO,
+	// Prime/PRIME/PYUSD and Ethena share one; USDS and USDC lanes do not.
 	s := Snapshot{DebtIdleRaw: 1}
 	for _, c := range []struct {
 		d    Decision
@@ -92,7 +93,10 @@ func TestPreDecisionSeamUsesThePrefetchedProof(t *testing.T) {
 		{Decision{Action: SwapDebtToCollateralStep, StrategyKey: autoAUTOPYUSD.Lane}, true},
 		{Decision{Action: ReportNAV, StrategyKey: autoAUTOPYUSD.Lane}, false},
 		{Decision{Action: SwapStableToCollateralStep, StrategyKey: autoAUTOPYUSD.Lane}, false},
-		{Decision{Action: SwapDebtToUSDCStep, StrategyKey: "Ethena/USDe/PYUSD"}, false},
+		{Decision{Action: SwapDebtToUSDCStep, StrategyKey: ethenaUSDePYUSD.Lane}, true},
+		{Decision{Action: DeleverRouteStep, StrategyKey: primePRIMEPYUSD.Lane}, true},
+		{Decision{Action: DeleverRouteStep, StrategyKey: primePRIMEUSDS.Lane}, false},
+		{Decision{Action: DeleverRouteStep, StrategyKey: onreONycUSDC}, false},
 	} {
 		if custodyProofPrefetchAction(c.d, s) != c.want {
 			t.Fatalf("prefetch choice for %+v", c.d)

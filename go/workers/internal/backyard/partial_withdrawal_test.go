@@ -169,16 +169,17 @@ func TestPartialWithdrawalExclusionsNeverAuthorizeFullExit(t *testing.T) {
 	if d := Decide(s); d.Reason != "withdrawal_covered" && d.Reason != "withdrawal_covered_nav_due" {
 		t.Fatalf("covered: %+v", d)
 	}
-	// Explicit unwind keeps its separately gated full chain; unsupported Maple holds.
+	// Explicit unwind keeps its separately gated full chain; the exit-only lane
+	// never goes partial.
 	s = livePartialSnapshot()
 	s.Unwind = true
 	if d := Decide(s); d.Reason == partialReleaseReason {
 		t.Fatal("unwind went partial")
 	}
 	s = livePartialSnapshot()
-	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
+	s.RouteLane, s.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
 	if d := Decide(s); d.Reason == partialReleaseReason {
-		t.Fatal("Maple went partial")
+		t.Fatal("exit-only Ethena went partial")
 	}
 	// Hard LTV preempts.
 	s = livePartialSnapshot()

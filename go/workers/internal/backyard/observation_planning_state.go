@@ -72,11 +72,11 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	if out.generation <= 0 {
 		return nil, fmt.Errorf("invalid planning generation")
 	}
-	out.entry, err = manifest.decodeSelectorEntry(entry)
+	out.entry, err = decodeSelectorEntry(entry)
 	if err != nil {
 		return nil, err
 	}
-	out.unwind, err = manifest.decodeUnwindIntent(unwind)
+	out.unwind, err = decodeUnwindIntent(unwind)
 	if err != nil {
 		return nil, err
 	}

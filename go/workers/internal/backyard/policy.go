@@ -64,7 +64,10 @@ func backyardPolicies() (map[policyKey]squads.Policy, error) {
 		policy, err := basicPolicy(family)
 		add(policyKey{family: family}, policy, err)
 	}
-	for _, lane := range selectorLanes {
+	for _, lane := range earnLaneIDs(true) {
+		if !basicLane(lane) {
+			continue
+		}
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			return nil, err
@@ -222,7 +225,7 @@ func jupiterPolicyLeg(lane string, action Action) (policyKey, byte, error) {
 	case catalogJupiterRoute(lane):
 		edges, leg, err := catalogEdge(action, lane)
 		return policyKey{swaps: swapsName(edges)}, leg, err
-	case selectorLane(lane):
+	case basicLane(lane):
 		_, _, source, _, err := jupiterEdgeForRoute(action, lane)
 		if err != nil {
 			return policyKey{}, 0, err

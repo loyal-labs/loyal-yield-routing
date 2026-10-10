@@ -17,7 +17,7 @@ func selectorEntryFixture(now time.Time, lane string, amount int64) SelectorEntr
 func TestSelectorEntryExpiryAndCapacityPreserveLifecycle(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		entry := selectorEntryFixture(now, lane, 3_000_000)
 		original := base()
 		original.Slot = 42
@@ -545,7 +545,7 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	fresh := in.Snapshot
 	fresh.PositionDebtRaw = intent.MaxDebtRaw + 10
 	fresh.ObservationID = "new-source-after-downtime"
-	if err = applyUnwindIntentWithLane(&fresh, intent, selectorLane); err != nil || !fresh.UnwindRefreshRequired {
+	if err = applyUnwindIntent(&fresh, intent); err != nil || !fresh.UnwindRefreshRequired {
 		t.Fatal(err)
 	}
 	o := tickObservation(fresh)
@@ -571,7 +571,7 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	if err != nil || renewed == nil || renewed.MaxDebtRaw != source.ExitBound.MaxDebtRaw || renewed.SourceLane != intent.SourceLane || renewed.Reason != intent.Reason {
 		t.Fatal("renewal lost identity", err, renewed)
 	}
-	if err = applyUnwindIntentWithLane(&fresh, renewed, selectorLane); err != nil || fresh.UnwindRefreshRequired || !fresh.Unwind {
+	if err = applyUnwindIntent(&fresh, renewed); err != nil || fresh.UnwindRefreshRequired || !fresh.Unwind {
 		t.Fatal("renewed unwind did not resume", err)
 	}
 	if err = restarted.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version); err != nil {

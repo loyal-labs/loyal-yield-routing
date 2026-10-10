@@ -4,7 +4,7 @@ import "testing"
 
 func TestPilotPlannerSizesOneTrancheAndPreservesExitPriority(t *testing.T) {
 	t.Parallel()
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		s := base()
 		s.RouteLane = lane
 		s.StrategyKey = lane
@@ -58,7 +58,7 @@ func TestPilotWithdrawalPreservesFullExitAmount(t *testing.T) {
 // entry the age-only report still runs.
 func TestAdmittedEntryAllocatesBeforeAgeOnlyReport(t *testing.T) {
 	t.Parallel()
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		s := base()
 		s.RouteLane, s.StrategyKey = lane, lane
 		s.SelectorEntryEquityRaw, s.VoltrIdleRaw = 200_000_000, 256_387_976

@@ -17,15 +17,21 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
+// partialRepaymentFixture is the hard-LTV partial repay on Maple.
 func partialRepaymentFixture(t *testing.T, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
 	t.Helper()
-	return partialRepaymentFixtureForLane(t, SelectedRouteID, variant)
+	return partialRepaymentFixtureForMode(t, SelectedRouteID, variant, false)
 }
 
 // partialRepaymentFixtureForLane: on a B2 leverage lane the same position is
 // an exit cycle (unwinding at the release ceiling, below hard LTV), so the
 // decision is exit_partial_repay instead of hard_ltv_partial_repay.
 func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
+	t.Helper()
+	return partialRepaymentFixtureForMode(t, lane, variant, earnActiveLane(lane))
+}
+
+func partialRepaymentFixtureForMode(t *testing.T, lane, variant string, exitCycle bool) (Observation, Decision, KaminoExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client) {
 	t.Helper()
 	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, lane)
 	route, _ := runtimeRoute(o.Snapshot.RouteLane)
@@ -42,7 +48,7 @@ func partialRepaymentFixtureForLane(t *testing.T, lane, variant string) (Observa
 	o.Snapshot.PayoffDebtRaw = 1006
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], cash)
 	want := "hard_ltv_partial_repay"
-	if leverageLane(lane) {
+	if exitCycle {
 		o.Snapshot.LTVBPS, o.Snapshot.Unwind = 5500, true
 		o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.CollateralIdleValueRaw = 0, 0, 0
 		want = exitPartialRepayReason
@@ -230,13 +236,18 @@ func TestExitPartialRepayProjectionOnLeverageLane(t *testing.T) {
 			t.Fatalf("%s: changed projection bound", variant)
 		}
 	}
-	// A full repayment is never an exit cycle; Maple keeps only hard LTV.
+	// A full repayment is never an exit cycle.
 	full := d
 	full.AmountRaw = o.Snapshot.PositionDebtRaw
 	if _, err := observePartialRepaymentProjection(context.Background(), rpc, fixtureView(t, rpc), m, o.Snapshot, full, e.Request, e.ExpectedEffects); err == nil {
 		t.Fatal("whole-debt repay bound as a cycle")
 	}
-	if partialRepaymentLane(SelectedRouteID, exitPartialRepayReason) || !partialRepaymentLane(autoAUTOPYUSD.Lane, exitPartialRepayReason) || partialRepaymentLane(autoAUTOPYUSD.Lane, "hard_ltv_partial_repay") {
+	// Every active registry lane runs the exit cycle (Maple included since
+	// the registry made it a B2 leverage lane); the hard-LTV partial repay
+	// stays on the basic-policy lanes, and the exit-only Ethena lane runs no
+	// cycle.
+	if !partialRepaymentLane(SelectedRouteID, exitPartialRepayReason) || !partialRepaymentLane(autoAUTOPYUSD.Lane, exitPartialRepayReason) || partialRepaymentLane(autoAUTOPYUSD.Lane, "hard_ltv_partial_repay") ||
+		partialRepaymentLane(ethenaUSDePYUSD.Lane, exitPartialRepayReason) || !partialRepaymentLane(SelectedRouteID, "hard_ltv_partial_repay") {
 		t.Fatal("partial-repay lane scope")
 	}
 }

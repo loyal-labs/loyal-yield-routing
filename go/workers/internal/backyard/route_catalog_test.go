@@ -17,12 +17,24 @@ func TestCatalogKaminoConstructionMatchesRetainedAUTOAndEthena(t *testing.T) {
 func TestCatalogKaminoConstructionMatchesRetainedPrimeSiblings(t *testing.T) {
 	t.Parallel()
 	testCatalogKaminoConstruction(t, []string{"Prime/PRIME/PYUSD", "Prime/PRIME/USDS"})
-	// Catalog support does not make a sibling a funded lane.
+	// Owner 2026-10-10: both Prime siblings are funded registry lanes.
 	for _, lane := range []string{"Prime/PRIME/PYUSD", "Prime/PRIME/USDS"} {
-		if fundedLane(lane) {
-			t.Fatal("sibling construction authorized an extra funded lane")
+		if !earnActiveLane(lane) || !earnHeldLane(lane) {
+			t.Fatal("Prime sibling is not a funded registry lane", lane)
 		}
 	}
+}
+
+// basicLaneIDs are the registry lanes the basic policy families serve, in
+// registry order.
+func basicLaneIDs() []string {
+	var out []string
+	for _, lane := range earnLaneIDs(true) {
+		if basicLane(lane) {
+			out = append(out, lane)
+		}
+	}
+	return out
 }
 
 func testCatalogKaminoConstruction(t *testing.T, lanes []string) {

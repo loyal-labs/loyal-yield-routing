@@ -106,13 +106,18 @@ func expectedEffectsSHA256(effects ExpectedEffects) (string, error) {
 }
 
 // autoSharedCustodySpend resolves the shared-custody gate for one operation:
-// only the candidate AUTO-PYUSD lane's POSITIVE custody debit applies. Every
-// other lane — and any AUTO zero-spend operation — keeps installed behavior.
+// a POSITIVE debit of a debt custody another registry lane shares (PYUSD:
+// AUTO, Prime/PRIME/PYUSD, Ethena) needs the ownership proof. Every other
+// lane — and any zero-spend operation — needs none.
 func autoSharedCustodySpend(lane, routeKey string, effects ExpectedEffects) (sharedCustodyAttributionConfig, uint64, bool) {
-	if lane != autoAUTOPYUSD.Lane {
+	if !sharedDebtCustodyLane(lane) {
 		return sharedCustodyAttributionConfig{}, 0, false
 	}
-	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, routeKey)
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return sharedCustodyAttributionConfig{}, 0, false
+	}
+	cfg := autoSharedPYUSDAttributionConfig(route, routeKey)
 	spend := sharedCustodySpendRaw(effects, cfg)
 	return cfg, spend, spend > 0
 }
@@ -295,10 +300,10 @@ func finishPrefetchedOwnershipProof(ctx context.Context, cfg, got sharedCustodyA
 
 type custodyProofFinisher func(context.Context, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
 
-// custodyProofPrefetchAction lists the AUTO actions that can debit the shared
-// PYUSD custody; only these pay for an early journal read.
+// custodyProofPrefetchAction lists the actions that can debit a shared debt
+// custody; only these pay for an early journal read.
 func custodyProofPrefetchAction(d Decision, s Snapshot) bool {
-	if d.StrategyKey != autoAUTOPYUSD.Lane || s.DebtIdleRaw <= 0 {
+	if !sharedDebtCustodyLane(d.StrategyKey) || s.DebtIdleRaw <= 0 {
 		return false
 	}
 	switch d.Action {
@@ -487,13 +492,13 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 		WHERE op.operation_id=$1 FOR UPDATE OF route`, operationID).Scan(&lane, &routeKey, &effectsBytes, &generation, &leaseOwner, &fencing, &leaseLive); err != nil {
 		return err
 	}
-	// Lane applicability first: an installed (non-candidate) lane never
+	// Lane applicability first: a lane without a shared debt custody never
 	// decodes persisted effects here — its signed quote-expiry recovery keeps
 	// the exact pre-custody behavior, and an unexpected carried proof is
-	// refused rather than ignored. Only a candidate AUTO lane reaches the
+	// refused rather than ignored. Only a shared-custody lane reaches the
 	// effects decode below, where the persisted built effects are required to
 	// decode and bind.
-	if lane != autoAUTOPYUSD.Lane {
+	if !sharedDebtCustodyLane(lane) {
 		if custody != nil {
 			return budgetHold("custody_attribution_proof_drift")
 		}

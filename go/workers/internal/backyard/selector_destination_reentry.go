@@ -31,12 +31,9 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 	s := o.Snapshot
 	out := selectorDestinationQuote{Lane: s.RouteLane, EquityRaw: maximum}
 	// Reentry prices a NEW funded allocation for the route lane, so the lane
-	// must carry this manifest's funding authority — installed entry lanes
-	// plus the candidate AUTO lane — not
-	// merely the broader decode/source-evidence authority that keeps deferred
-	// installed lanes observable.
+	// must be an active registry lane, not merely an exit-only held one.
 	if rpc == nil || client == nil || o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) ||
-		!s.Fresh || !selectorEntryFundingLane(s.RouteLane) || s.RouteLane != s.StrategyKey ||
+		!s.Fresh || !earnActiveLane(s.RouteLane) || s.RouteLane != s.StrategyKey ||
 		s.ObservationID == "" || s.DebtIdleRaw != 0 || s.CollateralIdleRaw < 0 || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return out, budgetHold("selector_reentry_destination_unavailable")
 	}
@@ -60,14 +57,6 @@ func observeSelectorReentryDestinationSize(ctx context.Context, rpc *chain.Clien
 		return out, budgetHold("selector_reentry_equity_unavailable")
 	}
 	reentry := selectorReentryForecast{bound: *source.ExitBound, collateralIdle: uint64(s.CollateralIdleRaw)}
-	// Installed lanes keep the public wrapper's selectorLane gate unchanged.
-	// The candidate AUTO route lane dispatches to the shared authorized body
-	// only after this function's funding predicate and exact source-exit
-	// validation above both passed: the authorized form runs the identical
-	// entry graph with this forecast's clampCapacity and reentry contract.
-	if s.RouteLane == autoAUTOPYUSD.Lane {
-		return observeSelectorDestinationForecastAuthorized(ctx, rpc, view, client, m, o.policies, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
-	}
 	return observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, s.RouteLane, maximum, s.Slot, clampCapacity, &reentry)
 }
 

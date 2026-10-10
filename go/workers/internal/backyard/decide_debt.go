@@ -14,7 +14,6 @@ const (
 	topupDepositReason    = "topup_collateral_deposit"
 )
 
-// onreONycUSDC is the one USDC-debt lane with the plan B3 top-up (B4).
 const onreONycUSDC = "OnRe/ONyc/USDC"
 
 // A top-up allocation below this is not worth its fees; the cash waits in
@@ -26,7 +25,7 @@ const topupMinimumRaw int64 = 10_000_000
 // debt custody is not bridge cash (AUTO/PYUSD). On OnRe the debt is Squads
 // USDC, so Squads cash beside debt is borrowed cash the leverage loop swaps.
 func debtTopupLane(lane string) bool {
-	return leverageLane(lane) && !sharedUSDCDebt(lane)
+	return earnActiveLane(lane) && !sharedUSDCDebt(lane)
 }
 
 // laneSwap reads the edge table the builder signs from, so the planner never
@@ -330,7 +329,7 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		return d(OpenRouteStep, "collateral_ready", s.CollateralIdleRaw)
 	}
 	if s.PositionCollateralRaw > 0 {
-		if leverageLane(s.RouteLane) {
+		if earnActiveLane(s.RouteLane) {
 			action, reason, amount := leverageDebtFreeStep(s)
 			return d(action, reason, amount)
 		}

@@ -232,7 +232,7 @@ func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
 		held[address] = true
 	}
 	manifests := []RouteManifest{readyWorkerManifest(t)}
-	for _, lane := range append(selectorObservationLanes(manifests[0]), autoAUTOPYUSD.Lane) {
+	for _, lane := range earnLaneIDs(true) {
 		manifest := manifests[0]
 		manifest.selectorObservation, manifest.observationLane = true, lane
 		manifests = append(manifests, manifest)

@@ -50,31 +50,20 @@ func applyProgramIdentityObservation(observation *Observation, identity programI
 	observation.Snapshot.AdaptorProgramDeploySlot = identity.AdaptorProgramDeploySlot
 }
 
-// A full K-Lend withdrawal closes its obligation account. Prefer the selected
-// Phase 2 obligation when both route families are observed so terminal custody
-// swaps can continue after the close; retain the Phase 1 fallback for its own
-// zero-position lifecycle.
+// A full K-Lend withdrawal closes its obligation account, so every registry
+// lane's obligation (the legacy PRIME/USDC route shares Prime/PRIME/USDC's)
+// is optional in a read: a closed one must not block terminal custody swaps.
+// Registry order puts the selected Phase 2 obligation first.
 func optionalLifecycleObligations(addresses []string) []string {
-	selected := mapleSyrupUSDCUSDC.Kamino.Obligation
-	optional := make([]string, 0, 2)
-	for _, candidate := range addresses {
-		if candidate == selected {
-			optional = append(optional, selected)
-			break
-		}
+	present := map[string]bool{}
+	for _, address := range addresses {
+		present[address] = true
 	}
-	for _, candidate := range addresses {
-		if candidate == kaminoPrimeUSDCObligation {
-			optional = append(optional, kaminoPrimeUSDCObligation)
-			break
-		}
-	}
-	for _, obligation := range []string{"4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei", autoAUTOPYUSD.Kamino.Obligation, ethenaUSDePYUSD.Kamino.Obligation, primePRIMEPYUSD.Kamino.Obligation, primePRIMEUSDS.Kamino.Obligation} {
-		for _, candidate := range addresses {
-			if candidate == obligation {
-				optional = append(optional, obligation)
-				break
-			}
+	var optional []string
+	for _, lane := range earnLaneIDs(true) {
+		route, err := runtimeRoute(lane)
+		if err == nil && present[route.Kamino.Obligation] {
+			optional = append(optional, route.Kamino.Obligation)
 		}
 	}
 	return optional
@@ -121,7 +110,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	}
 	cutoverDrain := false
 	if manifest.selectorObservation {
-		route, err = observedSelectorRouteForManifest(accounts, selectedRoute.Lane, manifest)
+		route, err = observedSelectorRoute(accounts, selectedRoute.Lane)
 		if err != nil {
 			return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
 		}
@@ -174,7 +163,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture breaks the strategy receipt"))
 			}
 			if manifest.selectorObservation {
-				freshRoute, routeErr := observedSelectorRouteForManifest(refreshedAccounts, selectedRoute.Lane, manifest)
+				freshRoute, routeErr := observedSelectorRoute(refreshedAccounts, selectedRoute.Lane)
 				if routeErr != nil || freshRoute.Lane != route.Lane {
 					return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture moved the selector route"))
 				}
@@ -298,9 +287,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw)}}
 	base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
 	base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
-	if (route.Kamino.DebtMint != bridgeUSDC || selectorLane(route.Lane)) && prime.Raw > 0 && !cutoverDrain && demand == 0 {
+	if (route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane)) && prime.Raw > 0 && !cutoverDrain && demand == 0 {
 		minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
-		if err != nil && !selectorLane(route.Lane) {
+		if err != nil && !basicLane(route.Lane) {
 			return Observation{}, nil, err
 		}
 		// A missing pilot entry bound must not suppress accounting or a
@@ -325,7 +314,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	base.Snapshot.ObligationPresenceKnown = true
 	base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 	base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
-	if positionReturnRoute(route.Lane) && position.DebtRaw > 0 {
+	if earnHeldLane(route.Lane) && position.DebtRaw > 0 {
 		// Include NAV -> release -> NAV -> funding -> NAV -> payoff in
 		// planning. Each actual wire still has its own short freshness gate.
 		bound, err := decodeKaminoPayoffWindow(accounts, route, slot, 6)
@@ -354,16 +343,16 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		return Observation{}, nil, err
 	}
 	// B2 1x entry: while the lane's debt reserve blocks borrowing, an
-	// AUTO/OnRe entry is a debt-free deposit, bounded by collateral
+	// A B2 lane entry is a debt-free deposit, bounded by collateral
 	// deposit room instead of the (zero) leveraged pair capacity. Never on
 	// the cash-only fallback, which has no reserve prices (entry closed).
 	// The observation ID keeps the pair capacity, so price-driven room
 	// changes do not churn it.
 	pairEntryUSDC := entryUSDC
-	if entryUSDC == 0 && leverageLane(route.Lane) && position.BorrowUtilizationBlocked && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
+	if entryUSDC == 0 && earnActiveLane(route.Lane) && position.BorrowUtilizationBlocked && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
 		entryUSDC = room
 	}
-	if leverageLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
+	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
 		entryUSDC = room
 		applyBorrowCapacity(&base.Snapshot, position, accounts, route)
 	}
@@ -381,7 +370,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		position.BorrowUtilizationBlocked,
 		nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, pairEntryUSDC,
 	)
-	if route.Kamino.DebtMint != bridgeUSDC || selectorLane(route.Lane) {
+	if route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane) {
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d|idle-collateral-value:%d|position-debt-value:%d|minimum-deposit:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw, base.Snapshot.CollateralIdleValueRaw, base.Snapshot.PositionDebtValueRaw, base.Snapshot.MinimumCollateralDepositRaw)))
 		base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 	}
@@ -422,7 +411,7 @@ func routeFixedAddresses(manifest RouteManifest) []string {
 	}
 	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
 	if manifest.selectorObservation {
-		for _, lane := range selectorObservationLanes(manifest) {
+		for _, lane := range earnLaneIDs(true) {
 			other, _ := runtimeRoute(lane)
 			for _, address := range pinnedRouteNAVAddressesForRoute(other) {
 				addressSet[address] = struct{}{}
@@ -574,11 +563,11 @@ func observeKaminoFromFixedAccounts(slot int64, accounts []ConfirmedAccount, con
 // USDC, so normalize at observed prices and floor rather than assume a peg.
 // The caller has already validated this same batch's NAV/refresh dependencies.
 func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
-	if leverageLane(route.Lane) && position.LiquidationThresholdBPS > 0 {
+	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 {
 		return topupDepositRoomUSDC(accounts, route)
 	}
 	if route.Kamino.DebtMint == bridgeUSDC {
-		if selectorLane(route.Lane) {
+		if basicLane(route.Lane) {
 			return kaminoPairEntryCapacity(position, accounts, route)
 		}
 		return position.EntryCapacityRaw, nil

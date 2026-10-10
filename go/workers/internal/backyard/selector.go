@@ -13,37 +13,6 @@ import (
 // The current executor deposits equity, borrows 50% once, then redeposits it.
 const singlePassLeverage = 1 + float64(TargetLTVBPS)/10_000
 
-// selectorLanes are the lanes the selector values and exits; they are the
-// lanes the basic policy families serve.
-var selectorLanes = []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"}
-
-func selectorLane(lane string) bool {
-	for _, allowed := range selectorLanes {
-		if lane == allowed {
-			return true
-		}
-	}
-	return false
-}
-
-// selectorScoredLane is the economic feed's scope. Prime/PRIME/USDC was
-// dropped from the plan (B4, 2026-09-28): the selector no longer scores or
-// picks it. It stays a selectorLane, so an unexpected Prime exposure is still
-// observed, valued and exited, and its recovery code is unchanged.
-func selectorScoredLane(lane string) bool {
-	return selectorLane(lane) && lane != PhaseOneLaneID
-}
-
-// selectorEntryLane is the reviewed new-entry scope: Maple (syrupUSDC/USDC)
-// and, since B4 (2026-09-28, approved), OnRe (ONyc/USDC). It is narrower than
-// selectorLane, which keeps the dropped Prime/PRIME/USDC lane observable,
-// validatable, and exitable. Entry into OnRe uses the unchanged selector rule
-// (minimum benefit, persistence, horizon); widening further is a reviewed
-// change.
-func selectorEntryLane(lane string) bool {
-	return lane == SelectedRouteID || lane == onreONycUSDC
-}
-
 // Capacity distinguishes unknown, a closed entry, and an explicitly unlimited
 // limit. It is equity capacity for the exact pair and execution recipe, not a
 // reserve's aggregate available liquidity or the collateral's borrow limit.
@@ -92,13 +61,10 @@ func freshAt(now, at time.Time, age time.Duration) bool {
 	return !at.IsZero() && !at.After(now) && now.Sub(at) <= age
 }
 
-// validateWithLane is the identical economics validation with the lane
-// authority parameterized, so the reviewed manifest's funded-selection path
-// admits its candidate lane's evidence through the same manifest that prices
-// and admits it. Every rate, freshness and debt check is
-// shared verbatim.
-func (e LaneEconomics) validateWithLane(now time.Time, p SelectorPolicy, laneAllowed func(string) bool) error {
-	if !laneAllowed(e.Lane) || e.EvidenceID == "" || !freshAt(now, e.ObservedAt, p.MarketMaxAge) || !freshAt(now, e.NativeObservedAt, p.NativeMaxAge) {
+// validate checks one scored lane's economics: an active registry lane with
+// fresh, finite rates and a coherent debt market.
+func (e LaneEconomics) validate(now time.Time, p SelectorPolicy) error {
+	if !earnActiveLane(e.Lane) || e.EvidenceID == "" || !freshAt(now, e.ObservedAt, p.MarketMaxAge) || !freshAt(now, e.NativeObservedAt, p.NativeMaxAge) {
 		return fmt.Errorf("economic_evidence_unavailable")
 	}
 	for _, rate := range []float64{e.NativeAPY, e.SupplyAPY, e.CurrentBorrowAPY} {
@@ -212,11 +178,14 @@ type MoveQuote struct {
 	// intersects the quote's exactly like the debt price's.
 	CollateralAssetPrice   *BudgetPrice `json:"collateralAssetPrice,omitempty"`
 	RedepositCollateralRaw uint64       `json:"redepositCollateralRaw,omitempty"`
-	SourceLane             string       `json:"sourceLane"`
-	DestinationLane        string       `json:"destinationLane"`
-	ObservationID          string       `json:"observationId"`
-	EquityRaw              int64        `json:"equityRaw"`
-	CostRaw                int64        `json:"costRaw"`
+	// DebtRoomUSDCRaw is the destination debt reserve's borrow room valued in
+	// USDC at the quote's debt price lower bound: display only, never sizing.
+	DebtRoomUSDCRaw *uint64 `json:"debtRoomUsdcRaw,omitempty"`
+	SourceLane      string  `json:"sourceLane"`
+	DestinationLane string  `json:"destinationLane"`
+	ObservationID   string  `json:"observationId"`
+	EquityRaw       int64   `json:"equityRaw"`
+	CostRaw         int64   `json:"costRaw"`
 	// ExpectedCostRaw is the forecast economic expense at central observed
 	// prices; nil on quotes predating the forecast. The selector's equity
 	// bound keeps the conservative CostRaw upper exposure bound.
@@ -289,6 +258,14 @@ type CandidateForecast struct {
 	BenefitRaw    float64 `json:"benefitRaw"`
 	BorrowAPR     float64 `json:"borrowApr"`
 	BlockedReason string  `json:"blockedReason,omitempty"`
+	// Display only, from the executable quote: its leverage, the position's
+	// annual net APY after the performance fee at that leverage (move costs
+	// excluded), whether the debt reserve blocks borrowing, and the reserve's
+	// borrow room in USDC (nil when the quote could not value it).
+	Leverage        float64 `json:"leverage,omitempty"`
+	NetAPY          float64 `json:"netApy,omitempty"`
+	BorrowBlocked   bool    `json:"borrowBlocked,omitempty"`
+	DebtRoomUSDCRaw *uint64 `json:"debtRoomUsdcRaw,omitempty"`
 }
 type SelectorResult struct {
 	Action          string              `json:"action"`
@@ -315,7 +292,7 @@ func selectorTrancheInProgress(s Snapshot) bool {
 	if !hasWorkingCapital(s) {
 		return false
 	}
-	unborrowed := s.PositionDebtRaw <= 0 && !(s.HasPosition && s.PositionCollateralRaw > 0 && (s.LeverageTargetLevel == 1 || s.BorrowUtilizationBlocked || (leverageLane(s.RouteLane) && s.BorrowCapacityKnown && leverageBorrowReceive(s, leverageUpLevel(s)) < leverageMinimumBorrowRaw)))
+	unborrowed := s.PositionDebtRaw <= 0 && !(s.HasPosition && s.PositionCollateralRaw > 0 && (s.LeverageTargetLevel == 1 || s.BorrowUtilizationBlocked || (earnActiveLane(s.RouteLane) && s.BorrowCapacityKnown && leverageBorrowReceive(s, leverageUpLevel(s)) < leverageMinimumBorrowRaw)))
 	// A pending B2 up move (target above the position, borrowing open) is
 	// unfinished work too, so the selector never switches in its middle.
 	_, _, _, downPartial := leverageDownPartialStep(s)
@@ -328,26 +305,14 @@ func selectorTrancheInProgress(s Snapshot) bool {
 // compete as a SWITCH destination instead of staying a keep-only baseline.
 // Later deposits otherwise strand: with the funded lane unquotable, extra idle
 // cash can never buy a strictly larger position in the reviewed lane it sits
-// beside. It binds to the reviewed Maple entry lane only, and only for a
+// beside. It binds to an active registry lane only, and only for a
 // positively funded, settled one-pass position (collateral, debt and NAV all
 // present) whose tranche loop has completed. Eligibility gates pricing only —
 // capacity, the complete exit+entry quote, persistence and net-benefit
 // admission below are unchanged, and a same-lane move still commits the full
 // debt unwind before its fresh entry.
 func sameLaneReinvestmentEligible(s Snapshot, p SelectorPolicy) bool {
-	return sameLaneReinvestmentEligibleWithLane(s, p, selectorEntryLane)
-}
-
-// sameLaneReinvestmentEligibleWithLane is the identical eligibility check with
-// the current-lane entry authority parameterized: installed selector lanes
-// under the public wrapper, and on the manifest path also the candidate lane
-// as the funded production source, so an existing AUTO allocation can reenter
-// or grow exactly like an installed one. Eligibility gates pricing only —
-// capacity, the complete exit+entry quote, persistence and net-benefit
-// admission below are unchanged, and a same-lane move still commits the full
-// debt unwind before its fresh entry.
-func sameLaneReinvestmentEligibleWithLane(s Snapshot, p SelectorPolicy, laneAllowed func(string) bool) bool {
-	if !laneAllowed(s.RouteLane) || s.VoltrIdleRaw <= p.IdleBufferRaw {
+	if !earnActiveLane(s.RouteLane) || s.VoltrIdleRaw <= p.IdleBufferRaw {
 		return false
 	}
 	if !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 0 || s.StrategyNAVRaw <= 0 {
@@ -398,6 +363,50 @@ func pilotQuoteEconomics(quote MoveQuote, m LaneEconomics, invested, years float
 	return pilotForecastEconomics(e, invested, m, years, quote.selectorEconomicCostRaw()), ""
 }
 
+// selectorSampleLine is the held-sample diagnostic: every candidate with its
+// executable leverage, net APY after the performance fee, borrow open or
+// blocked with the debt reserve's borrow room in USDC, its benefit in USDC and
+// its refusal reason ("-" when unpriced). key is the line's shape without the
+// drifting numbers, for change-only printing.
+func selectorSampleLine(result SelectorResult) (key, line string) {
+	usd := func(raw float64) string { return fmt.Sprintf("$%.2f", raw/1e6) }
+	keys := []string{result.Action, result.Reason, result.SourceLane}
+	parts := make([]string, 0, len(result.Candidates))
+	for _, c := range result.Candidates {
+		lev, net, borrow, room, benefit, reason := "-", "-", "-", "-", "-", c.BlockedReason
+		if c.CostsKnown {
+			lev, net, benefit = fmt.Sprintf("%.2fx", c.Leverage), fmt.Sprintf("%.2f%%", c.NetAPY*100), usd(c.BenefitRaw)
+			borrow = "open"
+			if c.BorrowBlocked {
+				borrow = "blocked"
+			}
+		}
+		if c.DebtRoomUSDCRaw != nil {
+			room = usd(float64(*c.DebtRoomUSDCRaw))
+		}
+		if reason == "" {
+			reason = "-"
+		}
+		roomOpen := c.DebtRoomUSDCRaw != nil && *c.DebtRoomUSDCRaw > 0
+		keys = append(keys, fmt.Sprintf("%s:%s:%s:%s:%t", c.Lane, reason, borrow, lev, roomOpen))
+		parts = append(parts, fmt.Sprintf("%s(lev=%s net=%s borrow=%s room=%s benefit=%s reason=%s)", c.Lane, lev, net, borrow, room, benefit, reason))
+	}
+	return strings.Join(keys, "|"), fmt.Sprintf("backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s", result.Action, result.Reason, result.SourceLane, strings.Join(parts, " "))
+}
+
+// quoteLeverageAndNetAPY is a quote's executable leverage and the position's
+// annual net APY at it after the performance fee, move costs excluded:
+// display only.
+func quoteLeverageAndNetAPY(e pilotEconomics, invested float64, m LaneEconomics) (float64, float64) {
+	equity := invested + e.Proceeds - e.Debt
+	if invested <= 0 || equity <= 0 {
+		return 0, 0
+	}
+	collateral := invested + e.Proceeds
+	gross := (collateral*math.Expm1(math.Log1p(m.NativeAPY)+math.Log1p(m.SupplyAPY)) - e.Debt*math.Expm1(e.APR)) / equity
+	return collateral / equity, performanceFeeForecast(gross)
+}
+
 // All candidate collateral is supplied. A nonnegative asset exponential minus
 // a nonnegative borrow exponential has its minimum at an endpoint when the
 // initial collateral equity is positive. Reject the other case economically.
@@ -423,21 +432,10 @@ func pilotForecastEconomics(e pilotEconomics, invested float64, m LaneEconomics,
 
 // SelectOpportunity never creates a transaction. The serialized worker must
 // apply fresh policy/exit admission before committing an unwind or entry.
+// The source lane may be any registry lane (exit-only ones included, so a held
+// position keeps its economics and can unwind); markets are the active
+// registry lanes the selector scores.
 func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult {
-	return selectOpportunityWithLanes(in, previous, selectorLane, selectorEntryLane)
-}
-
-// selectOpportunityWithLanes is the identical pure selection with two lane
-// authorities parameterized. laneAllowed is the source-observation and market
-// evidence authority: installed selector lanes under the public wrapper, and
-// on the manifest path the candidate lane is also admitted as the funded
-// production source, so an existing AUTO allocation keeps its current
-// economics and can unwind safely. fundingAllowed is the new-funding
-// authority for same-lane reinvestment: the installed selectorEntryLane set
-// under the public wrapper, plus only the reviewed candidate lane on the
-// manifest path — deferred lanes stay keep-only baselines. Every persistence,
-// capacity, quote and benefit rule is shared verbatim.
-func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAllowed func(string) bool, fundingAllowed func(string) bool) SelectorResult {
 	s, p := in.Snapshot, in.Policy
 	out := SelectorResult{Action: "KEEP", Reason: "no_worthwhile_move", SourceLane: s.RouteLane}
 	hold := func(reason string) SelectorResult { out.Reason = reason; out.State = SelectorState{}; return out }
@@ -465,11 +463,8 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 	out.EquityRaw = equity
 	// Pilot execution deploys one bounded tranche. Forecast the same amount;
 	// idle vault principal must not earn the destination's modeled yield.
-	// The source route lane is entry authority too: installed selector lanes
-	// under the public wrapper, and on the manifest path also the candidate
-	// lane as the funded production source. An unauthorized source keeps the
-	// installed hold.
-	if !laneAllowed(s.RouteLane) {
+	// A source outside the registry holds.
+	if !earnHeldLane(s.RouteLane) {
 		return hold("pilot_lane_unavailable")
 	}
 	allocation := min(equity, int64(strategyTwoBridgeLegCapRaw))
@@ -485,7 +480,7 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 	var keepGrossGain float64
 	if exposed {
 		m, ok := markets[s.RouteLane]
-		if !ok || m.validateWithLane(in.Now, p, laneAllowed) != nil {
+		if !ok || m.validate(in.Now, p) != nil {
 			return hold("current_lane_economics_unavailable")
 		}
 		keepGrossGain = forecastGain(float64(s.PositionCollateralValueRaw)+float64(s.CollateralIdleValueRaw), float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw), m, math.Log1p(m.CurrentBorrowAPY), years)
@@ -509,49 +504,31 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 	for _, lane := range lanes {
 		m := markets[lane]
 		c := CandidateForecast{Lane: lane}
-		if err := m.validateWithLane(in.Now, p, laneAllowed); err != nil {
+		if err := m.validate(in.Now, p); err != nil {
 			c.BlockedReason = err.Error()
 			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
-		if exposed && lane == s.RouteLane && !sameLaneReinvestmentEligibleWithLane(s, p, fundingAllowed) {
+		if exposed && lane == s.RouteLane && !sameLaneReinvestmentEligible(s, p) {
 			c.BlockedReason = "current_position_is_keep_baseline"
 			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
-		// Economic persistence is independent of an entry-capacity opening or a
-		// transient quote outage. Each lane must retain an economic advantage;
-		// actual capacity, full cost and admission are checked on this tick below.
-		// Positive pair capacity determines the feasible size. During an entry
-		// closure, assess at available debt liquidity without claiming entry is
-		// possible. Idle remainder contributes zero to the whole-vault forecast.
+		// Persistence is sampled only from an executable quote's priced benefit
+		// below: the quote alone sees this tick's borrow capacity, utilization
+		// block and full move cost. A cost-free market-level forecast would
+		// accrue persistence for a lane nobody can enter (a debt reserve above
+		// its utilization block). A transient quote or evidence outage carries
+		// the lane's windows unchanged (carryAdvantageWindows); MaxSampleGap
+		// still bounds how long.
 		//
-		// The feed's debt room and the gross display forecast compare RAW debt
-		// units with a USDC allocation — exact only for USDC-debt lanes, so the
-		// feed-level window sample and gross display stay USDC-debt-only. A
-		// non-USDC debt lane carries no feed-level price; its persistence is
-		// sampled from the priced per-quote evidence below — the bound debt
-		// price entry admission itself requires — at the same MinimumBenefit
-		// threshold and the identical window hysteresis. No feed price oracle
-		// is added and no raw-unit parity is assumed.
+		// The gross display forecast compares RAW debt units with a USDC
+		// allocation — exact only for USDC-debt lanes, so it stays USDC-only.
 		route, routeErr := runtimeRoute(lane)
 		unpricedDebt := routeErr != nil || route.Kamino.DebtMint != bridgeUSDC
 		amount, known := m.EntryCapacity.amount(allocation)
-		economicAmount := math.Min(float64(allocation), (m.DebtSupplyRaw-m.DebtBorrowRaw)/(singlePassLeverage-1))
-		if known && amount > 0 {
-			economicAmount = math.Min(economicAmount, float64(amount))
-		}
-		fullDebt := economicAmount * (singlePassLeverage - 1)
-		fullAPR, fullErr := projectedBorrowAPR(m, fullDebt)
-		if fullErr == nil && !unpricedDebt {
-			feed := pilotForecastEconomics(pilotEconomics{Debt: fullDebt, Proceeds: fullDebt, APR: fullAPR}, economicAmount, m, years, 0)
-			gain, ok := selectorFeeReservedGain(s, p.Horizon, feed, float64(s.TotalVaultNAVRaw)-economicAmount)
-			if ok && gain-out.KeepGainRaw > float64(p.MinimumBenefitRaw)+float64(equity)*float64(p.UncertaintyBPS)/10_000 {
-				sampleAdvantageWindow(&out, previous, lane, in.Now, p)
-			}
-		}
 		displayAmount := amount
 		if !known {
 			displayAmount = allocation
@@ -620,7 +597,9 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		}
 		quotes[lane] = *quote
 		c.CostsKnown = true
-		c.InvestedRaw = amount - quote.CostRaw
+		// CostRaw is the worst-case execution bound (swap minima, recipe
+		// limits); the capital a move actually loses is its expected expense.
+		c.InvestedRaw = amount - quote.selectorEconomicCostRaw()
 		c.IdleRaw = s.TotalVaultNAVRaw - amount
 		// A same-lane move only pays for its full exit+entry round trip when the
 		// net reinvestment is strictly larger than the funded position it unwinds.
@@ -641,6 +620,8 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 			continue
 		}
 		c.BorrowAPR = economics.APR
+		c.Leverage, c.NetAPY = quoteLeverageAndNetAPY(economics, float64(c.InvestedRaw), m)
+		c.BorrowBlocked, c.DebtRoomUSDCRaw = quote.Unlevered, quote.DebtRoomUSDCRaw
 		var feeKnown bool
 		c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))
 		// Candidate pays the repeated-fee reserve; KEEP gets the upper return
@@ -653,18 +634,16 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 		} else if !finite(c.GainRaw) || !finite(c.BenefitRaw) {
 			c.BlockedReason = "invalid_candidate_forecast"
 		}
-		// A non-USDC debt lane's persistence sample comes from the priced quote
-		// economics above — its only USDC-denominated signal, the same bound
-		// debt and collateral prices entry admission requires. A full or
-		// unavailable market never reaches a priced quote here and so never
-		// accumulates persistence; an unprofitable tick drops the window
-		// exactly as the feed-level path does.
-		// A 1x quote persists in its own window, sampled from its own priced
-		// benefit: a leveraged feed-level advantage never counts toward it.
-		if quote.Unlevered && c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
-			sampleAdvantageWindow(&out, previous, unleveredAdvantageKey(lane), in.Now, p)
-		} else if unpricedDebt && c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
-			sampleAdvantageWindow(&out, previous, lane, in.Now, p)
+		// Every lane's persistence sample is its executable quote's priced
+		// benefit, at the same MinimumBenefit threshold; an unprofitable tick
+		// drops the window. A 1x quote persists in its own window: a leveraged
+		// advantage never counts toward it, nor the reverse.
+		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
+			key := lane
+			if quote.Unlevered {
+				key = unleveredAdvantageKey(lane)
+			}
+			sampleAdvantageWindow(&out, previous, key, in.Now, p)
 		}
 		out.Candidates = append(out.Candidates, c)
 		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) && (best < 0 || c.BenefitRaw > out.Candidates[best].BenefitRaw) {
@@ -715,11 +694,6 @@ func selectOpportunityWithLanes(in SelectorInput, previous SelectorState, laneAl
 	return out
 }
 
-// sampleAdvantageWindow records one persistence sample for lane with the
-// installed hysteresis: a fresh window starts at now, and a prior window keeps
-// its Since while the last sample stayed inside MaxSampleGap. The USDC-debt
-// feed-level forecast and the non-USDC priced per-quote forecast share it, so
-// both persistence signals carry identical window semantics.
 // selectorAvailabilityReasons are candidate refusals that say nothing about
 // the lane's economics: the quote, move cost or evidence was not available
 // this sample (RPC fee read, timeout, feed gap). Such a sample carries the
@@ -757,6 +731,9 @@ func carryAdvantageWindows(out *SelectorResult, previous SelectorState, lane, re
 // unleveredAdvantageKey is the persistence window of a lane's 1x entry.
 func unleveredAdvantageKey(lane string) string { return lane + "|1x" }
 
+// sampleAdvantageWindow records one persistence sample for lane with the
+// installed hysteresis: a fresh window starts at now, and a prior window keeps
+// its Since while the last sample stayed inside MaxSampleGap.
 func sampleAdvantageWindow(out *SelectorResult, previous SelectorState, lane string, now time.Time, p SelectorPolicy) {
 	window := AdvantageWindow{Since: now, LastSample: now}
 	old, ok := previous.Advantages[lane]
@@ -768,7 +745,7 @@ func sampleAdvantageWindow(out *SelectorResult, previous SelectorState, lane str
 
 func (q MoveQuote) validBorrow() bool {
 	if q.Unlevered {
-		return q.EquityRaw > 0 && q.BorrowReceiveRaw == 0 && q.BorrowFeeRaw == 0 && leverageLane(q.DestinationLane)
+		return q.EquityRaw > 0 && q.BorrowReceiveRaw == 0 && q.BorrowFeeRaw == 0 && earnActiveLane(q.DestinationLane)
 	}
 	if q.EquityRaw <= 0 || q.BorrowReceiveRaw <= 0 {
 		return false

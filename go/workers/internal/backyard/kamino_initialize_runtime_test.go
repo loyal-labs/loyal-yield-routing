@@ -34,7 +34,7 @@ func initializationPlanningFixture(lane string) Observation {
 }
 func TestInitializationDecisionPreservesRecoveryWithdrawalAndEntryGuards(t *testing.T) {
 	t.Parallel()
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		o := initializationPlanningFixture(lane)
 		d := Decide(o.Snapshot)
 		if d.Action != InitializeKaminoObligation || d.Validate() != nil {
@@ -305,19 +305,21 @@ func TestWorkerDispatchesInitializationOnlyAfterPersistedBind(t *testing.T) {
 	}
 }
 
-// A signed AUTO initializer must reload after a restart through the manifest
-// that admitted it; the embedded validator refuses the candidate lane and
-// left the live route unable to finish its own initializer (2026-09-24).
-func TestNonterminalAutoInitializerRestoresOnManifest(t *testing.T) {
+// A signed AUTO initializer must reload after a restart (live 2026-09-24 the
+// then-embedded validator refused it); a lane without an initializer policy
+// never restores an initializer decision.
+func TestNonterminalAutoInitializerRestores(t *testing.T) {
 	t.Parallel()
 	d := Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: autoAUTOPYUSD.Lane, IdempotencyKey: "obs:initialize:AUTO/AUTO/PYUSD"}
 	effects := []byte(`{"decision":{"reason":"multiply_obligation_missing","amountRaw":0,"strategyKey":"AUTO/AUTO/PYUSD"}}`)
-	if _, err := restorePersistedDecision(effects, d.Action, d.IdempotencyKey, d.StrategyKey); err == nil {
-		t.Fatal("embedded restore unexpectedly admits the candidate lane")
-	}
-	m := embeddedTestManifest(t)
-	got, err := restorePersistedDecisionWith(effects, d.Action, d.IdempotencyKey, d.StrategyKey, m.validateDecision)
+	got, err := restorePersistedDecision(effects, d.Action, d.IdempotencyKey, d.StrategyKey)
 	if err != nil || got != d {
-		t.Fatal("manifest restore refused its own AUTO initializer", got, err)
+		t.Fatal("restore refused the AUTO initializer", got, err)
+	}
+	sibling := d
+	sibling.StrategyKey = primePRIMEPYUSD.Lane
+	siblingEffects := []byte(`{"decision":{"reason":"multiply_obligation_missing","amountRaw":0,"strategyKey":"Prime/PRIME/PYUSD"}}`)
+	if _, err := restorePersistedDecision(siblingEffects, sibling.Action, sibling.IdempotencyKey, sibling.StrategyKey); err == nil {
+		t.Fatal("a lane without an initializer policy restored an initializer decision")
 	}
 }

@@ -35,22 +35,23 @@ func autoCanaryFixture(t *testing.T) SelectorInput {
 	return autoCanaryFixtureAt(t, 1_100_000)
 }
 
-// TestPilotCanaryRequestValidateOnManifest pins the request lane authority of
-// doc 31: the candidate AUTO request is admitted through the manifest scope,
-// the embedded wrapper keeps refusing it, and every ID, equity and expiry
-// negative is identical under both scopes.
-func TestPilotCanaryRequestValidateOnManifest(t *testing.T) {
+// TestPilotCanaryRequestValidateOnRegistry pins the request lane authority:
+// every active registry lane (AUTO included) is admitted, the exit-only
+// Ethena lane is refused, and every ID, equity and expiry negative holds.
+func TestPilotCanaryRequestValidateOnRegistry(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Add(time.Minute)
 	request := pilotCanaryEntryRequest{ID: sha256Bytes([]byte("auto-one-acceptance")), Lane: autoAUTOPYUSD.Lane, EquityRaw: 1_000, ExpiresAt: now.Add(5 * time.Minute)}
-	if err := request.validateOnManifest(now, embeddedTestManifest(t)); err != nil {
-		t.Fatal("manifest scope refused the candidate request:", err)
+	if err := request.validate(now); err != nil {
+		t.Fatal("registry refused the AUTO request:", err)
 	}
-	if err := request.validate(now); err == nil {
-		t.Fatal("embedded wrapper accepted the candidate lane")
+	ethena := request
+	ethena.Lane = ethenaUSDePYUSD.Lane
+	if err := ethena.validate(now); err == nil {
+		t.Fatal("exit-only lane accepted as a canary destination")
 	}
 	installed := pilotCanaryFixture()
-	if err := installed.canaryRequest.validateOnManifest(now, embeddedTestManifest(t)); err != nil {
+	if err := installed.canaryRequest.validate(now); err != nil {
 		t.Fatal("installed lane request refused under manifest scope:", err)
 	}
 	for name, change := range map[string]func(*pilotCanaryEntryRequest){
@@ -62,27 +63,20 @@ func TestPilotCanaryRequestValidateOnManifest(t *testing.T) {
 	} {
 		bad := request
 		change(&bad)
-		if err := bad.validateOnManifest(now, embeddedTestManifest(t)); err == nil {
+		if err := bad.validate(now); err == nil {
 			t.Fatalf("manifest scope relaxed the %s negative", name)
 		}
 	}
 }
 
-// TestPilotCanaryReadOnManifest pins the parser: identical environment
-// variable, unknown-field, trailing-value and size rejections, with only the
-// lane authority moving to the manifest scope.
-func TestPilotCanaryReadOnManifest(t *testing.T) {
+// TestPilotCanaryReadOnRegistry pins the parser: environment variable,
+// unknown-field, trailing-value and size rejections, with the registry lane
+// authority.
+func TestPilotCanaryReadOnRegistry(t *testing.T) {
 	now := time.Now().UTC()
 	valid := `{"id":"` + sha256Bytes([]byte("auto-one-acceptance")) + `","lane":"` + autoAUTOPYUSD.Lane + `","equityRaw":1000000,"expiresAt":"` + now.Add(10*time.Minute).UTC().Format(time.RFC3339Nano) + `"}`
 	t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", valid)
-	if got, err := readPilotCanaryEntryRequest(now); err == nil || got != nil {
-		t.Fatal("embedded wrapper accepted the candidate request")
-	}
-	embedded := embeddedTestManifest(t)
-	if got, err := readPilotCanaryEntryRequestOnManifest(now, embedded); err != nil || got == nil || got.Lane != autoAUTOPYUSD.Lane || got.ID != sha256Bytes([]byte("auto-one-acceptance")) {
-		t.Fatalf("installed manifest refused a well-formed candidate request: %+v %v", got, err)
-	}
-	got, err := readPilotCanaryEntryRequestOnManifest(now, embeddedTestManifest(t))
+	got, err := readPilotCanaryEntryRequest(now)
 	if err != nil || got == nil || got.Lane != autoAUTOPYUSD.Lane || got.EquityRaw != 1_000_000 || got.ID != sha256Bytes([]byte("auto-one-acceptance")) {
 		t.Fatalf("valid binding refused a well-formed candidate request: %+v %v", got, err)
 	}
@@ -92,37 +86,31 @@ func TestPilotCanaryReadOnManifest(t *testing.T) {
 		"oversized":     `{"note":"` + strings.Repeat("x", 600) + `"}`,
 	} {
 		t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", raw)
-		if got, err := readPilotCanaryEntryRequestOnManifest(now, embeddedTestManifest(t)); err == nil || got != nil {
+		if got, err := readPilotCanaryEntryRequest(now); err == nil || got != nil {
 			t.Fatalf("manifest scope relaxed the %s rejection", name)
 		}
 	}
 	t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", "")
-	if got, err := readPilotCanaryEntryRequestOnManifest(now, embeddedTestManifest(t)); got != nil || err != nil {
+	if got, err := readPilotCanaryEntryRequest(now); got != nil || err != nil {
 		t.Fatal("absent environment variable must stay a nil request")
 	}
 }
 
-// TestPilotCanarySelectOnManifest pins the forced-acceptance call: the
-// manifest scope validates BOTH the request and the constructed SelectorEntry
-// against the explicit manifest, the public wrapper keeps refusing the
-// candidate lane, and consumed-ID, capacity and receipt semantics are the
-// exact installed ones.
-func TestPilotCanarySelectOnManifest(t *testing.T) {
+// TestPilotCanarySelectOnRegistry pins the forced-acceptance call: BOTH the
+// request and the constructed SelectorEntry validate against the registry, and
+// consumed-ID, capacity and receipt semantics are unchanged.
+func TestPilotCanarySelectOnRegistry(t *testing.T) {
 	t.Parallel()
 	in := autoCanaryFixture(t)
 	result := SelectorResult{Candidates: []CandidateForecast{{Lane: autoAUTOPYUSD.Lane, CostsKnown: true}}}
-	if _, _, err := selectPilotCanaryEntry(in, result, nil); err == nil {
-		t.Fatal("public wrapper accepted the candidate acceptance request")
-	}
-	embedded := embeddedTestManifest(t)
-	installedAccepted, installedReceipt, err := selectPilotCanaryEntryOnManifest(in, result, nil, embedded)
+	installedAccepted, installedReceipt, err := selectPilotCanaryEntry(in, result, nil)
 	if err != nil || installedAccepted.Action != "CANARY_ENTER" || installedReceipt == nil {
 		t.Fatalf("installed manifest refused the canary acceptance: %+v %v %v", installedAccepted, installedReceipt, err)
 	}
 	if installedReceipt.Request != *in.canaryRequest || installedReceipt.QuoteEvidenceID != in.Quotes[0].EvidenceID {
 		t.Fatalf("installed receipt identity drifted: %+v", installedReceipt)
 	}
-	accepted, receipt, err := selectPilotCanaryEntryOnManifest(in, result, nil, embeddedTestManifest(t))
+	accepted, receipt, err := selectPilotCanaryEntry(in, result, nil)
 	if err != nil || accepted.Action != "CANARY_ENTER" || accepted.SelectedQuote == nil || receipt == nil {
 		t.Fatalf("complete binding refused the canary acceptance: %+v %v %v", accepted, receipt, err)
 	}
@@ -131,35 +119,35 @@ func TestPilotCanarySelectOnManifest(t *testing.T) {
 	// borrow above equity, and a stale price each refuse the constructed entry.
 	missing := autoCanaryFixtureAt(t, 1_100_000)
 	missing.Quotes[0].DebtPrice = nil
-	if _, _, err := selectPilotCanaryEntryOnManifest(missing, result, nil, embeddedTestManifest(t)); err == nil || err.Error() != "invalid_selector_entry" {
+	if _, _, err := selectPilotCanaryEntry(missing, result, nil); err == nil || err.Error() != "invalid_selector_entry" {
 		t.Fatalf("missing debt price did not refuse the entry exactly: %v", err)
 	}
 	depegged := autoCanaryFixtureAt(t, 3_000_000)
-	if _, _, err := selectPilotCanaryEntryOnManifest(depegged, result, nil, embeddedTestManifest(t)); err == nil || err.Error() != "invalid_selector_entry" {
+	if _, _, err := selectPilotCanaryEntry(depegged, result, nil); err == nil || err.Error() != "invalid_selector_entry" {
 		t.Fatalf("depegged debt price did not refuse the entry exactly: %v", err)
 	}
 	stale := autoCanaryFixtureAt(t, 1_100_000)
 	stalePrice := copyDebtPrice(stale.Quotes[0].DebtPrice)
 	stalePrice.ObservedSlot = stale.Quotes[0].SampleSlot - 1
 	stale.Quotes[0].DebtPrice = stalePrice
-	if _, _, err := selectPilotCanaryEntryOnManifest(stale, result, nil, embeddedTestManifest(t)); err == nil || err.Error() != "invalid_selector_entry" {
+	if _, _, err := selectPilotCanaryEntry(stale, result, nil); err == nil || err.Error() != "invalid_selector_entry" {
 		t.Fatalf("stale debt price did not refuse the entry exactly: %v", err)
 	}
 	if receipt.Request != *in.canaryRequest || receipt.QuoteEvidenceID != in.Quotes[0].EvidenceID || receipt.AcceptedAt != in.Now {
 		t.Fatalf("receipt identity drifted: %+v", receipt)
 	}
 	history := map[string]pilotCanaryEntryReceipt{receipt.Request.ID: *receipt}
-	replayed, again, err := selectPilotCanaryEntryOnManifest(in, result, history, embeddedTestManifest(t))
+	replayed, again, err := selectPilotCanaryEntry(in, result, history)
 	if err != nil || again != nil || replayed.Action != "KEEP" || replayed.Reason != "operator_canary_already_consumed" {
 		t.Fatalf("consumed-ID check drifted under manifest scope: %+v %v %v", replayed, again, err)
 	}
 	reused := in
 	reused.canaryRequest = &pilotCanaryEntryRequest{ID: receipt.Request.ID, Lane: autoAUTOPYUSD.Lane, EquityRaw: 999, ExpiresAt: in.Now.Add(10 * time.Minute)}
-	if _, _, err = selectPilotCanaryEntryOnManifest(reused, result, history, embeddedTestManifest(t)); err == nil {
+	if _, _, err = selectPilotCanaryEntry(reused, result, history); err == nil {
 		t.Fatal("reused request ID with different content accepted")
 	}
 	full := pilotCanaryRetainedHistory(t, pilotCanaryReceiptCapacity, in)
-	held, blocked, err := selectPilotCanaryEntryOnManifest(in, result, full, embeddedTestManifest(t))
+	held, blocked, err := selectPilotCanaryEntry(in, result, full)
 	if err == nil || blocked != nil || held.Reason != "operator_canary_waiting" {
 		t.Fatalf("capacity hold drifted under manifest scope: %+v %v %v", held, blocked, err)
 	}

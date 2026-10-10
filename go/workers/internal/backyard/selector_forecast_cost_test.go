@@ -146,10 +146,11 @@ func TestMoveQuoteEconomicCostFallsBackAndBindsEvidence(t *testing.T) {
 		return math.NaN()
 	}
 	older, newer := gain(withBound), gain(withExpected)
-	// Continuous dilution makes the shadow-only expense wedge slightly below
-	// the old flat 280,000 proxy; it still uses expected, not bound, expense.
-	if newer-older < 279_000 || newer-older > 280_000 {
-		t.Fatal("selector comparison ignored the forecast expense", older, newer)
+	// The 350,000 expense wedge after fee dilution (~280,000), plus the yield
+	// on the 350,000 the expected cost no longer withholds from the invested
+	// capital: CostRaw is an execution bound, not lost capital.
+	if newer-older < 281_000 || newer-older > 284_000 {
+		t.Fatal("selector comparison ignored the forecast expense", older, newer, newer-older)
 	}
 }
 

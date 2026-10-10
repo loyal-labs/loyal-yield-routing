@@ -57,7 +57,7 @@ func TestDepositRemainderDoesNotRestartEntryLoop(t *testing.T) {
 
 func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
 	t.Parallel()
-	for _, lane := range selectorLanes {
+	for _, lane := range basicLaneIDs() {
 		t.Run(lane, func(t *testing.T) {
 			s := base()
 			s.RouteLane, s.StrategyKey = lane, lane
@@ -70,7 +70,7 @@ func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
 			}
 			s.PostMutationNAVRequired = false
 			want := "prime_collateral_requires_borrow"
-			if leverageLane(lane) {
+			if earnActiveLane(lane) {
 				if got := Decide(s); got.Action != Hold || got.Reason != "leverage_target_required" {
 					t.Fatal("B2: a debt-free position without a target borrowed", got)
 				}

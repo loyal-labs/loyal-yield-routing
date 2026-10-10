@@ -9,21 +9,22 @@ import (
 func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixture(t)
-	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle-move", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 100_000_000}
+	// $100: Maple is a B2 lane (registry), whose sub-minimum borrow prices 1x.
+	s := Snapshot{Fresh: true, Slot: 42, ObservationID: "idle-move", RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, VoltrIdleRaw: 1_000_000_000}
 	o := tickObservation(s)
 	o.ObservedAt = time.Now().UTC()
-	q, err := observeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), client, m, o, SelectedRouteID, 10_000_000, 0)
+	q, err := observeSelectorMove(context.Background(), rpc, fixtureView(t, rpc), client, m, o, SelectedRouteID, 100_000_000, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if q.EquityRaw != 10_000_000 || q.MinimumIdleRaw != 100_000_000 || q.BorrowReceiveRaw == 0 || q.CostRaw <= 0 || !sha256Pattern.MatchString(q.EvidenceID) || !q.currentAtSlot(42) {
+	if q.EquityRaw != 100_000_000 || q.MinimumIdleRaw != 1_000_000_000 || q.BorrowReceiveRaw == 0 || q.CostRaw <= 0 || !sha256Pattern.MatchString(q.EvidenceID) || !q.currentAtSlot(42) {
 		t.Fatal("incomplete move", q)
 	}
 	source, err := observeSelectorSource(context.Background(), rpc, fixtureView(t, rpc), client, m, o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	destination, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 10_000_000, 42, false, nil)
+	destination, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 100_000_000, 42, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +37,7 @@ func TestSelectorMovePricesIdleEntryAndRejectsWholeRecipeNativeShortfall(t *test
 	}
 	// Refuse a destination that exceeds the guaranteed source return.
 	source.Recipe.NetworkLamports = 0
-	source.MinimumIdleRaw = 9_999_999
+	source.MinimumIdleRaw = 99_999_999
 	_, err = composeSelectorMove(context.Background(), fixtureView(t, rpc), o, source, destination)
 	assertBudgetHold(t, err, "invalid_selector_move")
 }

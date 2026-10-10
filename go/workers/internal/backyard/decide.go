@@ -61,14 +61,6 @@ func Decide(s Snapshot) Decision {
 	return decideSnapshot(s, initializationSnapshotReady)
 }
 
-// DecideOnManifest is the identical shared decision logic with one seam made
-// explicit: the initializer readiness check resolves the candidate AUTO lane
-// through the manifest's lane authority instead of the installed lane list.
-// Every other rule, ordering and hold is byte-identical.
-func (m RouteManifest) DecideOnManifest(s Snapshot) Decision {
-	return decideSnapshot(s, m.initializationSnapshotReady)
-}
-
 func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if hold, blocked := custodyDiscipline(s); blocked {
 		return hold
@@ -158,7 +150,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 			return decision(HoldManualRecovery, "invalid_hard_ltv", 0)
 		}
 		if s.LTVBPS >= hard {
-			if selectorLane(s.RouteLane) {
+			if earnHeldLane(s.RouteLane) {
 				payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
 				if s.PositionDebtRaw > 0 && debtCashRaw(s) >= payoff {
 					return decision(DeleverRouteStep, "hard_ltv_repay", s.PositionDebtRaw)
@@ -243,7 +235,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		// Fully flatten Kamino before any Squads USDC is staged to Voltr. The
 		// single-loop borrowed PRIME is the repayment buffer.
 		if s.PositionDebtRaw > 0 {
-			if selectorLane(s.RouteLane) {
+			if earnHeldLane(s.RouteLane) {
 				if debtCashRaw(s) >= max(s.PositionDebtRaw, s.PayoffDebtRaw) {
 					return decision(DeleverRouteStep, "withdrawal_repay_debt", s.PositionDebtRaw)
 				}
@@ -289,7 +281,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 			return decision(Hold, "unwind_complete", 0)
 		}
 		if s.SquadsIdleRaw >= remaining {
-			if selectorLane(s.RouteLane) {
+			if earnHeldLane(s.RouteLane) {
 				remaining = s.SquadsIdleRaw
 			} // Existing bridge admission returns full custody.
 			return decision(StageSquadsToVoltr, "withdrawal_demand", remaining)
@@ -320,17 +312,18 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if action, reason, amount, ok := leverageDownPartialStep(s); ok {
 		return decision(action, reason, amount)
 	}
-	// Plan B3 top-up beside a funded debt-free OnRe position (B4). The USDC
-	// debt cash is Squads cash, so there is no separate residue leg. Every
-	// withdrawal, hard-LTV, unwind and report rule above has already run.
-	if s.RouteLane == onreONycUSDC {
+	// Plan B3 top-up beside a funded debt-free position on an active registry
+	// lane. The USDC debt cash is Squads cash, so there is no separate residue
+	// leg. Every withdrawal, hard-LTV, unwind and report rule above has
+	// already run.
+	if earnActiveLane(s.RouteLane) {
 		if next, ok := topupStep(s, hard, decision); ok {
 			return next
 		}
 	}
 	// Returning flat working cash is an exit. It does not need a usable
 	// entry market, an obligation account, or an entry LTV threshold.
-	if selectorLane(s.RouteLane) && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.CollateralIdleRaw == 0 && s.SquadsIdleRaw > 0 &&
+	if earnHeldLane(s.RouteLane) && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.CollateralIdleRaw == 0 && s.SquadsIdleRaw > 0 &&
 		(s.CapacityRaw < s.SquadsIdleRaw || s.PolicyLimitRaw < s.SquadsIdleRaw || s.MaxTargetLTVEntryRaw < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
 		return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
 	}
@@ -350,12 +343,12 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if hold, absent := obligationPrerequisiteHold(s, initializationReady); absent {
 		return hold
 	}
-	if s.VoltrIdleRaw > 0 && !selectorLane(s.RouteLane) {
+	if s.VoltrIdleRaw > 0 && !earnHeldLane(s.RouteLane) {
 		return decision(VoltrAllocateToSquads, "eligible_voltr_idle", s.VoltrIdleRaw)
 	}
 	// Keep undeployed capital in Voltr. Squads cash is working cash for one
 	// complete tranche, so a later deposit cannot be mistaken for borrowed cash.
-	if selectorLane(s.RouteLane) && s.VoltrIdleRaw > 0 && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.SquadsIdleRaw == 0 && s.CollateralIdleRaw == 0 {
+	if earnHeldLane(s.RouteLane) && s.VoltrIdleRaw > 0 && !s.HasPosition && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.SquadsIdleRaw == 0 && s.CollateralIdleRaw == 0 {
 		if s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
 			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
 		}
@@ -370,7 +363,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		return decision(HoldManualRecovery, "invalid_entry_ltv", 0)
 	}
 	depositReady := s.CollateralIdleRaw > 0
-	if selectorLane(s.RouteLane) && depositReady {
+	if earnHeldLane(s.RouteLane) && depositReady {
 		if s.MinimumCollateralDepositRaw <= 0 {
 			return decision(Hold, "deposit_rounding_window_unavailable", 0)
 		}
@@ -388,14 +381,14 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		}
 		return decision(Hold, "single_loop_position_ready", 0)
 	}
-	if selectorLane(s.RouteLane) && s.SquadsIdleRaw > 0 && (s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) {
+	if earnHeldLane(s.RouteLane) && s.SquadsIdleRaw > 0 && (s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) {
 		return decision(HoldManualRecovery, "entry_tranche_contains_unassigned_cash", 0)
 	}
 	// PRIME is the collateral asset. Fresh USDC is converted before the only
 	// collateral deposit.
 	if s.SquadsIdleRaw > 0 {
 		if s.CapacityRaw <= 0 || s.PolicyLimitRaw <= 0 || s.MaxTargetLTVEntryRaw <= 0 {
-			if selectorLane(s.RouteLane) {
+			if earnHeldLane(s.RouteLane) {
 				return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
 			}
 			return decision(Hold, "insufficient_reviewed_entry_capacity", 0)
@@ -404,7 +397,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		amount = min(amount, s.PolicyLimitRaw)
 		amount = min(amount, s.CapacityRaw)
 		amount = min(amount, s.MaxTargetLTVEntryRaw)
-		if selectorLane(s.RouteLane) && amount != s.SquadsIdleRaw {
+		if earnHeldLane(s.RouteLane) && amount != s.SquadsIdleRaw {
 			return decision(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
 		}
 		return decision(SwapStableToCollateralStep, "usdc_requires_prime_collateral", amount)
@@ -415,7 +408,7 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.BorrowUtilizationBlocked {
 		return decision(Hold, "debt_reserve_utilization_blocks_borrow", 0)
 	}
-	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && leverageLane(s.RouteLane) {
+	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && earnActiveLane(s.RouteLane) {
 		action, reason, amount := leverageDebtFreeStep(s)
 		return decision(action, reason, amount)
 	}

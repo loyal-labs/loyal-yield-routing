@@ -361,15 +361,12 @@ func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
 	if projection.Action != "ENTER" || projection.SelectedQuote == nil {
 		t.Fatal("fixture lacks a selected diagnostic quote", projection)
 	}
-	manifest := readyWorkerManifest(t)
 	for _, canary := range []bool{false, true} {
 		if canary {
 			in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("unarmed-canary")), Lane: in.Markets[0].Lane, EquityRaw: 10_000_000, ExpiresAt: in.Now.Add(time.Minute)}
 		}
-		for _, m := range []*RouteManifest{nil, &manifest} {
-			_, err := (&Database{}).recordSelectorEvaluationWithLanes(context.Background(), productionRouteKey, m, in, in.Snapshot.Slot, 1)
-			assertBudgetHold(t, err, "selector_fee_evidence_unavailable")
-		}
+		_, err := (&Database{}).RecordSelectorEvaluation(context.Background(), productionRouteKey, in, in.Snapshot.Slot, 1)
+		assertBudgetHold(t, err, "selector_fee_evidence_unavailable")
 	}
 }
 
@@ -437,9 +434,9 @@ func TestPerformanceFeeArmedAdmissionFixturesHaveProvableCandidates(t *testing.T
 			in.Markets[0].NativeAPY = 2
 		}
 		armFeeAuthorityFixture(t, &in.Snapshot)
-		first := selectOpportunityWithLanes(in, SelectorState{}, selectorOrAutoLane, selectorEntryFundingLane)
+		first := SelectOpportunity(in, SelectorState{})
 		advanceSelectorFixture(&in, time.Minute)
-		got := selectOpportunityWithLanes(in, first.State, selectorOrAutoLane, selectorEntryFundingLane)
+		got := SelectOpportunity(in, first.State)
 		want := "ENTER"
 		if funded {
 			want = "SWITCH"

@@ -354,7 +354,7 @@ func debtClearRiskFixture(t *testing.T) (Observation, Decision, KaminoExecutionE
 	for _, address := range []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve} {
 		binary.LittleEndian.PutUint64(accountAt(accounts, address).Data[264:272], 1000)
 	}
-	for _, lane := range selectorObservationLanes(m) {
+	for _, lane := range earnLaneIDs(true) {
 		other, _ := runtimeRoute(lane)
 		if other.Kamino.Obligation != route.Kamino.Obligation {
 			accounts = append(accounts, ConfirmedAccount{Address: other.Kamino.Obligation})
@@ -454,7 +454,7 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 	if err := db.commitUnwindIntentWithConfirmation(ctx, key, &old, m, c); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyUnwindIntentWithLane(&o.Snapshot, &old, selectorOrAutoLane); err != nil {
+	if err := applyUnwindIntent(&o.Snapshot, &old); err != nil {
 		t.Fatal("amount growth became global integrity failure", err)
 	}
 	if !o.Snapshot.UnwindRefreshRequired || Decide(o.Snapshot).Reason != "hard_ltv_repay" {
@@ -539,12 +539,12 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='failed' WHERE operation_id=$1`, next); err != nil {
 		t.Fatal(err)
 	}
-	unwind, err := db.LoadUnwindIntentOnManifest(ctx, m, key)
+	unwind, err := db.LoadUnwindIntent(ctx, key)
 	if err != nil || unwind == nil {
 		t.Fatal(err)
 	}
 	flat := Snapshot{Fresh: true, RouteLane: o.Snapshot.RouteLane}
-	if err = db.CompleteUnwindIntentOnManifest(ctx, m, key, *unwind, flat); err != nil {
+	if err = db.CompleteUnwindIntent(ctx, key, *unwind, flat); err != nil {
 		t.Fatal(err)
 	}
 	var retained bool

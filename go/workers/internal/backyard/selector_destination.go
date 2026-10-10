@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"math/big"
 	"time"
@@ -70,8 +69,10 @@ type selectorDestinationQuote struct {
 	// price's lower bound — an asset-side estimate, never a liability: the
 	// debt price upper stays on the liability side only. nil on USDC-debt
 	// lanes keeps legacy USDC parity byte-identical.
-	CollateralAssetUSDCRaw *uint64        `json:"collateralAssetUsdcRaw,omitempty"`
-	Recipe                 selectorRecipe `json:"recipe"`
+	CollateralAssetUSDCRaw *uint64 `json:"collateralAssetUsdcRaw,omitempty"`
+	// DebtRoomUSDCRaw is the debt reserve's borrow room in USDC (display only).
+	DebtRoomUSDCRaw *uint64        `json:"debtRoomUsdcRaw,omitempty"`
+	Recipe          selectorRecipe `json:"recipe"`
 }
 
 // selectorDestinationDebtPrice observes a non-USDC debt lane's price through
@@ -243,55 +244,16 @@ func validateSelectorDestinationCommon(route RuntimeRoute, slot int64, accounts 
 	return collateralCustody, nil
 }
 
-// observeSelectorDestinationCandidate is the narrow internal reviewed-manifest
-// candidate entry point for the AUTO lane. It prices the exact same entry
-// graph as the public selector path — every size, capacity, account,
-// freshness and economics check unchanged. The public
-// observeSelectorDestination gate above stays strictly selectorLane; adding
-// AUTO to the reviewed lane set remains a coordinator-owned admission decision.
-func observeSelectorDestinationCandidate(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, equity uint64, sampleSlot int64) (selectorDestinationQuote, error) {
-	return observeSelectorDestinationForecastAuthorized(ctx, rpc, view, client, m, policies, autoAUTOPYUSD.Lane, equity, sampleSlot, false, nil)
-}
-
-// observeSelectorDestinationCandidateReentry is the narrow candidate reentry
-// forecast: the identical shared body and checks behind the entry above,
-// carrying the validated source exit bound so the funded same-lane position's
-// bounded recreation can be priced from that supplied bound. The bound's own
-// exit economics stay the source quote's and are not re-proved here — this is
-// not a proved complete unwind. It exists solely for that forecast — the
-// public reentry wrapper keeps refusing AUTO, and the execution prestate
-// stays strictly absent-only.
-func observeSelectorDestinationCandidateReentry(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, equity uint64, sampleSlot int64, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
-	if reentry == nil {
-		return selectorDestinationQuote{Lane: autoAUTOPYUSD.Lane, EquityRaw: equity}, budgetHold("invalid_selector_destination")
-	}
-	return observeSelectorDestinationForecastAuthorized(ctx, rpc, view, client, m, policies, autoAUTOPYUSD.Lane, equity, sampleSlot, false, reentry)
-}
-
-// observeSelectorDestinationForecast prices the real one-pass entry graph from
-// a flat destination, or — with reentry set — the same graph as the recreated
-// position after the bound source exit closes the funded one. Future balances
-// stay explicit scalars; no invented account image reaches an RPC simulation
-// or execution admission. Its gate is unchanged: strictly the reviewed
-// selector lane set, exactly as before the candidate entry existed.
+// observeSelectorDestinationForecast prices the real one-pass entry graph into
+// an active registry lane from a flat destination, or — with reentry set —
+// the same graph as the recreated position after the bound source exit closes
+// the funded one. Future balances stay explicit scalars; no invented account
+// image reaches an RPC simulation or execution admission.
 func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
-	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
-	if !selectorLane(lane) {
-		return out, budgetHold("invalid_selector_destination")
-	}
-	return observeSelectorDestinationForecastAuthorized(ctx, rpc, view, client, m, policies, lane, equity, sampleSlot, clampCapacity, reentry)
-}
-
-// observeSelectorDestinationForecastAuthorized is the shared body behind the
-// unchanged wrapper above: the identical entry graph, entered either through a
-// reviewed selector lane or — solely through the explicit candidate entry —
-// through the manifest-bound AUTO authorization. No other path reaches it
-// with a non-selector lane.
-func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, lane string, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out := selectorDestinationQuote{Lane: lane, EquityRaw: equity}
-	if rpc == nil || client == nil || !selectorOrAutoLane(lane) || equity == 0 || equity > strategyTwoBridgeLegCapRaw || sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
+	if rpc == nil || client == nil || !earnActiveLane(lane) || equity == 0 || equity > strategyTwoBridgeLegCapRaw || sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return out, budgetHold("invalid_selector_destination")
 	}
 	route, _ := runtimeRoute(lane)
@@ -307,14 +269,15 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 	if err != nil {
 		return out, err
 	}
-	if !selectorOrAutoLane(route.Lane) {
-		return out, fmt.Errorf("pair_capacity_lane_unreviewed")
-	}
-	capacity, err := kaminoPairEntryCapacityAuthorized(position, accounts, route)
+	capacity, err := kaminoPairEntryCapacity(position, accounts, route)
 	if err != nil {
 		return out, err
 	}
-	// AUTO/OnRe retain collateral equity independently of additional debt room.
+	debtRoom, err := kaminoAdditionalDebtRoom(accounts, route)
+	if err != nil {
+		return out, err
+	}
+	// B2 lanes retain collateral equity independently of additional debt room.
 	unlevered := false
 	// Pair capacity is DEBT-denominated. A non-USDC debt lane converts it
 	// downwards at the established budget price observation before the result
@@ -331,6 +294,17 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 				return out, budgetHold("selector_destination_capacity_unpriced")
 			}
 			capacity = uint64(bounded)
+		}
+	}
+	// Display only: the reserve's borrow room in USDC. A non-USDC room is
+	// valued only when this quote observed the debt price.
+	switch {
+	case debtRoom == 0 || route.Kamino.DebtMint == bridgeUSDC:
+		out.DebtRoomUSDCRaw = &debtRoom
+	case out.DebtPrice != nil:
+		if value, err := out.DebtPrice.valueLower(debtRoom, route.Kamino.DebtMint, route.DebtTokenProgram, out.DebtPrice.ObservedSlot); err == nil && value >= 0 {
+			room := uint64(value)
+			out.DebtRoomUSDCRaw = &room
 		}
 	}
 	if clampCapacity {
@@ -468,7 +442,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 		return appendInput(r, e)
 	}
 	var borrow, fee uint64
-	if leverageLane(route.Lane) {
+	if earnActiveLane(route.Lane) {
 		// Explicit future collateral, not a fabricated observed account image.
 		funded := position
 		funded.CollateralDepositedRaw, funded.RedeemablePrimeRaw, funded.DebtRaw = 1, minimum-1, 0
@@ -562,7 +536,7 @@ func observeSelectorDestinationForecastAuthorized(ctx context.Context, rpc *chai
 		if leverage.Request.MinimumOutputRaw <= rounding+1 {
 			return out, budgetHold("selector_destination_below_deposit_minimum")
 		}
-		if leverageLane(route.Lane) {
+		if earnActiveLane(route.Lane) {
 			reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 			if err != nil {
 				return out, err

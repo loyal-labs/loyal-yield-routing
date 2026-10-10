@@ -40,7 +40,7 @@ func phase3BridgeTemplates(policies installedPolicies, s Snapshot, decision Deci
 	r := evidence.Request
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.HasAmbiguousSubmission || s.Nonterminal != "" || s.CutoverDrain ||
-		s.StrategyKey != s.RouteLane || decision.StrategyKey != s.RouteLane || !fundedLane(s.RouteLane) {
+		s.StrategyKey != s.RouteLane || decision.StrategyKey != s.RouteLane || !earnHeldLane(s.RouteLane) {
 		return nil, budgetHold("bridge_admission_snapshot_unavailable")
 	}
 	if _, err := runtimeRoute(s.RouteLane); err != nil {

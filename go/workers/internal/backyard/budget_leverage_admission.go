@@ -16,11 +16,7 @@ func validateLeverageSwap(ctx context.Context, view *View, r JupiterSwapRequest,
 	if err != nil {
 		return KaminoPayoffBound{}, nil, err
 	}
-	var additional []string
-	if route.Lane == autoAUTOPYUSD.Lane {
-		additional = append(additional, route.Kamino.Market)
-	}
-	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 3, additional...)
+	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 3)
 	if err != nil {
 		return bound, nil, err
 	}

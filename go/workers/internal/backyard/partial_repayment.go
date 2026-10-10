@@ -15,7 +15,7 @@ func observePartialRepaymentProjection(ctx context.Context, rpc *chain.Client, v
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
-	if err != nil || rpc == nil || !partialRepaymentLane(s.RouteLane, d.Reason) || !s.Fresh || s.Slot <= 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteKind != RouteKind || s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 1 || d.Action != DeleverRouteStep || r.Action != d.Action || !partialRepaymentReason(d.Reason) || !decisionsEqual(m.DecideOnManifest(s), d) || d.AmountRaw <= 0 || r.AmountRaw != partialRepaymentWireRaw(s, d) || r.AmountRaw == 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || uint64(debtCashRaw(s)) < r.AmountRaw || leg != kaminoLegRepay || r.FullPayoff || r.RepaymentRelease {
+	if err != nil || rpc == nil || !partialRepaymentLane(s.RouteLane, d.Reason) || !s.Fresh || s.Slot <= 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteKind != RouteKind || s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 1 || d.Action != DeleverRouteStep || r.Action != d.Action || !partialRepaymentReason(d.Reason) || !decisionsEqual(Decide(s), d) || d.AmountRaw <= 0 || r.AmountRaw != partialRepaymentWireRaw(s, d) || r.AmountRaw == 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || uint64(debtCashRaw(s)) < r.AmountRaw || leg != kaminoLegRepay || r.FullPayoff || r.RepaymentRelease {
 		return phase3KaminoProjection{}, budgetHold("partial_repayment_proof_unavailable")
 	}
 	route, err := runtimeRoute(r.RouteLane)
@@ -57,7 +57,7 @@ func observePartialRepaymentProjection(ctx context.Context, rpc *chain.Client, v
 func validatePartialRepaymentProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, s Snapshot, p phase3KaminoProjection) (KaminoPayoffBound, error) {
 	message, err := CompileKaminoMessage(r)
 	_, leg, legErr := kaminoPrimeUSDCInstruction(r)
-	if err != nil || legErr != nil || leg != kaminoLegRepay || r.Action != DeleverRouteStep || r.FullPayoff || r.RepaymentRelease || !(selectorLane(r.RouteLane) || leverageLane(r.RouteLane)) || r.RouteLane != s.RouteLane || p.MessageSHA256 != sha256Bytes(message) || p.UnitsConsumed == 0 || p.Slot < s.Slot || p.Slot-s.Slot > observationLagSlots() || r.AmountRaw == 0 || s.PositionDebtRaw <= 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || e.Repayment == nil || e.Repayment.MinimumDebitRaw != r.AmountRaw || e.Repayment.MaximumDebitRaw != r.AmountRaw {
+	if err != nil || legErr != nil || leg != kaminoLegRepay || r.Action != DeleverRouteStep || r.FullPayoff || r.RepaymentRelease || !earnHeldLane(r.RouteLane) || r.RouteLane != s.RouteLane || p.MessageSHA256 != sha256Bytes(message) || p.UnitsConsumed == 0 || p.Slot < s.Slot || p.Slot-s.Slot > observationLagSlots() || r.AmountRaw == 0 || s.PositionDebtRaw <= 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || e.Repayment == nil || e.Repayment.MinimumDebitRaw != r.AmountRaw || e.Repayment.MaximumDebitRaw != r.AmountRaw {
 		return KaminoPayoffBound{}, budgetHold("partial_repayment_projection_identity_mismatch")
 	}
 	if _, err = MeasureExecutableDebit(r, e); err != nil {
@@ -103,13 +103,13 @@ func partialRepaymentReason(reason string) bool {
 	return reason == "hard_ltv_partial_repay" || reason == exitPartialRepayReason
 }
 
-// hard_ltv_partial_repay keeps its installed selector-lane scope; the exit
-// cycle runs on the B2 leverage lanes (AUTO and OnRe).
+// hard_ltv_partial_repay keeps its basic-policy lane scope; the exit cycle
+// runs on every active (B2 leverage) registry lane.
 func partialRepaymentLane(lane, reason string) bool {
 	if reason == exitPartialRepayReason {
-		return leverageLane(lane)
+		return earnActiveLane(lane)
 	}
-	return selectorLane(lane)
+	return basicLane(lane)
 }
 
 // partialRepaymentWireRaw: hard_ltv_partial_repay carries its exact amount;

@@ -145,7 +145,7 @@ func TestSelectorReentryRejectsMissingSourceBoundAndUnrelatedQuote(t *testing.T)
 	unrelated.Snapshot.ObservationID = "changed"
 	_, err = observeSelectorReentryDestinationSize(ctx, fundedRPC, fixtureView(t, fundedRPC), fundedClient, fundedM, unrelated, fundedSource, 1_000_000, true)
 	assertBudgetHold(t, err, "selector_reentry_exit_bound_unavailable")
-	other := PhaseOneLaneID
+	other := ethenaUSDePYUSD.Lane
 	if other == SelectedRouteID {
 		t.Fatal("fixture lanes collide")
 	}

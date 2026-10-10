@@ -110,7 +110,7 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 			}
 			deposit = true
 		}
-		if r.RepaymentRelease && (r.FullPayoff || r.Action != DeleverRouteStep || leg != kaminoLegWithdraw || !positionReturnRoute(lane)) {
+		if r.RepaymentRelease && (r.FullPayoff || r.Action != DeleverRouteStep || leg != kaminoLegWithdraw || !earnHeldLane(lane)) {
 			return ExecutableDebit{}, budgetHold("invalid_repayment_release_intent")
 		}
 		if r.FullPayoff && (leg != kaminoLegRepay || effects.Repayment == nil) {

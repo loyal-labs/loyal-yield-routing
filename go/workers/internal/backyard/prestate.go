@@ -34,11 +34,11 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 		return 0, budgetHold("prestate_unavailable")
 	}
 	if r, ok := request.(KaminoInitializationRequest); ok {
-		// Installed lanes keep the exact public absent-only prestate path —
+		// Basic lanes keep the exact public absent-only prestate path —
 		// including validated expiry recovery — with no manifest identity
-		// re-checks. Only the candidate AUTO lane revalidates through the
+		// re-checks. Other initializer lanes revalidate through the
 		// manifest-aware prestate.
-		if r.RouteLane == autoAUTOPYUSD.Lane {
+		if !basicLane(r.RouteLane) {
 			return m.validateKaminoInitializationPrestate(ctx, view, r, slot)
 		}
 		return validateKaminoInitializationPrestate(ctx, view, r, slot)

@@ -24,22 +24,9 @@ type pilotCanaryEntryReceipt struct {
 	QuoteEvidenceID string                  `json:"quoteEvidenceId"`
 }
 
-// readPilotCanaryEntryRequest is the preserved embedded wrapper: the request
-// lane authority stays exactly the installed selectorEntryLane set.
+// readPilotCanaryEntryRequest reads the operator acceptance request: an active
+// registry lane, a bounded equity and a short expiry.
 func readPilotCanaryEntryRequest(now time.Time) (*pilotCanaryEntryRequest, error) {
-	return readPilotCanaryEntryRequestWithLane(now, selectorEntryLane)
-}
-
-// readPilotCanaryEntryRequestOnManifest scopes the request lane authority to
-// the explicit reviewed manifest: the installed selectorEntryLane members plus
-// the candidate AUTO lane (doc 31: new-entry candidate authority is selectorEntryFundingLane). The read shape is byte-identical — same environment variable, same
-// unknown-field and trailing-value rejection, same 512-byte bound, same
-// invalid-request hold.
-func readPilotCanaryEntryRequestOnManifest(now time.Time, manifest RouteManifest) (*pilotCanaryEntryRequest, error) {
-	return readPilotCanaryEntryRequestWithLane(now, selectorEntryFundingLane)
-}
-
-func readPilotCanaryEntryRequestWithLane(now time.Time, laneAllowed func(string) bool) (*pilotCanaryEntryRequest, error) {
 	raw := os.Getenv("BACKYARD_RWA_PILOT_CANARY_ENTRY")
 	if raw == "" {
 		return nil, nil
@@ -52,34 +39,21 @@ func readPilotCanaryEntryRequestWithLane(now time.Time, laneAllowed func(string)
 	}
 	// Reject trailing values as well as overlong/unbounded configuration.
 	var trailing any
-	if len(raw) > 512 || decoder.Decode(&trailing) != io.EOF || request.validateWithLane(now, laneAllowed) != nil {
+	if len(raw) > 512 || decoder.Decode(&trailing) != io.EOF || request.validate(now) != nil {
 		return nil, budgetHold("invalid_pilot_canary_request")
 	}
 	return &request, nil
 }
 
-// validateWithLane is the shared request check with the lane authority
-// parameterized. Canary acceptance is entry authority too: a deferred lane
-// must not become an operator-requested destination. Failing here ends this
-// selector sample and retains the prior durable selector authority; it does
-// not enable ordinary switching on this tick. ID shape, equity bounds and the
-// expiry window are the exact installed checks for every caller.
-func (r pilotCanaryEntryRequest) validateWithLane(now time.Time, laneAllowed func(string) bool) error {
-	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !laneAllowed(r.Lane) || r.EquityRaw <= 0 || uint64(r.EquityRaw) > strategyTwoBridgeLegCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) {
+// validate is the request check. Canary acceptance is entry authority too:
+// an exit-only lane must not become an operator-requested destination.
+// Failing here ends this selector sample and retains the prior durable
+// selector authority; it does not enable ordinary switching on this tick.
+func (r pilotCanaryEntryRequest) validate(now time.Time) error {
+	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !earnActiveLane(r.Lane) || r.EquityRaw <= 0 || uint64(r.EquityRaw) > strategyTwoBridgeLegCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) {
 		return budgetHold("invalid_pilot_canary_request")
 	}
 	return nil
-}
-
-func (r pilotCanaryEntryRequest) validate(now time.Time) error {
-	return r.validateWithLane(now, selectorEntryLane)
-}
-
-// validateOnManifest resolves the request lane authority through the explicit
-// reviewed manifest with the doc 31 new-entry candidate scope
-// (selectorEntryFundingLane).
-func (r pilotCanaryEntryRequest) validateOnManifest(now time.Time, manifest RouteManifest) error {
-	return r.validateWithLane(now, selectorEntryFundingLane)
 }
 
 // pilotCanaryReceiptCapacity bounds the number of retained canary receipts.
@@ -88,33 +62,12 @@ func (r pilotCanaryEntryRequest) validateOnManifest(now time.Time, manifest Rout
 // Raised 16 -> 32 on 2026-09-25 after the Maple/AUTO rotation used all 16.
 const pilotCanaryReceiptCapacity = 32
 
-// selectPilotCanaryEntry is the preserved embedded wrapper: both lane
-// authorities stay the installed embedded sets — selectorEntryLane for the
-// operator request, selectorLane for the built entry.
 func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, error) {
-	return selectPilotCanaryEntryWithManifest(input, result, history, nil)
-}
-
-// selectPilotCanaryEntryOnManifest is the manifest-scoped forced-acceptance
-// call for evaluateSelector: the same request identity, retained-history,
-// capacity and expiry semantics, with the request and entry lane authorities
-// resolved through the explicit reviewed manifest.
-func selectPilotCanaryEntryOnManifest(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt, manifest RouteManifest) (SelectorResult, *pilotCanaryEntryReceipt, error) {
-	return selectPilotCanaryEntryWithManifest(input, result, history, &manifest)
-}
-
-func selectPilotCanaryEntryWithManifest(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt, manifest *RouteManifest) (SelectorResult, *pilotCanaryEntryReceipt, error) {
 	request := input.canaryRequest
 	if request == nil {
 		return result, nil, nil
 	}
-	requestValid := func() error { return request.validate(input.Now) }
-	entryValid := func(e SelectorEntry) error { return e.validate() }
-	if manifest != nil {
-		requestValid = func() error { return request.validateOnManifest(input.Now, *manifest) }
-		entryValid = manifest.validateSelectorEntry
-	}
-	if err := requestValid(); err != nil {
+	if err := request.validate(input.Now); err != nil {
 		return result, nil, err
 	}
 	// Always suppress economic switching while an acceptance request is installed.
@@ -161,7 +114,7 @@ func selectPilotCanaryEntryWithManifest(input SelectorInput, result SelectorResu
 		return result, nil, nil
 	}
 	entry := SelectorEntry{Lane: request.Lane, EquityRaw: request.EquityRaw, ObservationID: s.ObservationID, Quote: *chosen, AcceptedAt: input.Now, ExpiresAt: chosen.ObservedAt.Add(min(input.Policy.QuoteMaxAge, 30*time.Second))}
-	if err := entryValid(entry); err != nil {
+	if err := entry.validate(); err != nil {
 		return result, nil, err
 	}
 	result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ENTER", "operator_acceptance_not_economic_recommendation", request.Lane, request.EquityRaw, chosen

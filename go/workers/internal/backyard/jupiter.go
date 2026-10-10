@@ -84,10 +84,10 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 		edge, err := catalogConversion(action, lane)
 		return edge.from.mint.String(), edge.to.mint.String(), edge.from.custody.String(), edge.to.custody.String(), err
 	}
-	if lane != RouteID && lane != PhaseOneLaneID && lane != SelectedRouteID && lane != "OnRe/ONyc/USDC" {
+	if lane != RouteID && !basicLane(lane) {
 		return "", "", "", "", fmt.Errorf("unregistered Jupiter lane")
 	}
-	if lane == PhaseOneLaneID || lane == SelectedRouteID || lane == "OnRe/ONyc/USDC" {
+	if basicLane(lane) {
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			return "", "", "", "", err

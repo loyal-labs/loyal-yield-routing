@@ -14,7 +14,7 @@ func TestExpiredUnwindDebtRequiresReadmissionWithoutBlockingRisk(t *testing.T) {
 	s.PositionDebtRaw, s.PositionDebtValueRaw = 51, 51
 	s.PayoffDebtRaw, s.LTVBPS = 52, 3400
 	intent := UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: s.ObservationID, MaxCollateralRaw: 150, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: selectorFixture().Now}
-	if err := applyUnwindIntentWithLane(&s, &intent, selectorLane); err != nil || !s.Unwind || !s.UnwindRefreshRequired || s.ManualReason != "" {
+	if err := applyUnwindIntent(&s, &intent); err != nil || !s.Unwind || !s.UnwindRefreshRequired || s.ManualReason != "" {
 		t.Fatal("interest created permanent latch", err, s)
 	}
 	if d := Decide(s); d.Action != Hold || d.Reason != "unwind_requires_fresh_admission" {
@@ -25,7 +25,7 @@ func TestExpiredUnwindDebtRequiresReadmissionWithoutBlockingRisk(t *testing.T) {
 		t.Fatal("renewal blocked risk reduction", d)
 	}
 	s.PositionCollateralRaw++
-	if err := applyUnwindIntentWithLane(&s, &intent, selectorLane); err != nil || !s.UnwindRefreshRequired {
+	if err := applyUnwindIntent(&s, &intent); err != nil || !s.UnwindRefreshRequired {
 		t.Fatal("collateral envelope growth became integrity latch", err)
 	}
 	if d := Decide(s); d.Action != DeleverRouteStep || d.Reason != "hard_ltv_repay" {

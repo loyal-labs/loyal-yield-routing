@@ -2,10 +2,6 @@ package backyard
 
 import "fmt"
 
-func catalogJupiterRoute(lane string) bool {
-	return lane == "AUTO/AUTO/PYUSD" || lane == "Ethena/USDe/PYUSD" || lane == "Prime/PRIME/PYUSD" || lane == "Prime/PRIME/USDS"
-}
-
 // catalogEdge is the catalog swap policy a catalog lane swaps action through:
 // its edges, in constraint order, and the leg of the edge that converts the
 // action's from asset into its to asset.

@@ -53,7 +53,7 @@ func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *chain.Client
 func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 	t.Parallel()
 	o, m, rpc, client, _, route := leverage175Fixture(t)
-	_, rows, err := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows, err := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route), 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 	t.Parallel()
 	o, m, rpc, client, _, route := leverage175Fixture(t)
-	_, rows, err := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows, err := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route), 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 	o15, m15, rpc15, client15, accounts15, _ := leverage175Fixture(t)
 	putScaledFraction(accountAt(accounts15, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(33_333_333), 60))
 	o15.Snapshot.PositionDebtRaw, o15.Snapshot.PositionDebtValueRaw, o15.Snapshot.LTVBPS = 33_333_333, 33_333_333, 3333
-	_, rows15, _ := confirmedAccounts(context.Background(), rpc15, payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows15, _ := confirmedAccounts(context.Background(), rpc15, payoffWindowAddresses(route), 42)
 	if need, err := leverageExitNeedsCycles(context.Background(), rpc15, client15, m15, testPolicies(t), route, o15.Snapshot, rows15); err != nil || need {
 		t.Fatalf("1.5x needs cycles: %v %v", need, err)
 	}
@@ -202,7 +202,7 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 	o, m, rpc, _, accounts, route := leverage175Fixture(t)
 	putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(33_333_333), 60))
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.LTVBPS = 33_333_333, 33_333_333, 3333
-	_, rows, _ := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows, _ := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route), 42)
 	d := Decision{Action: ReportNAV, StrategyKey: route.Lane, Reason: "nav_due"}
 	if _, err, ok := priceLeverageExitFromCurrent(context.Background(), rpc, fixtureView(t, rpc), broken, m, o, d, BridgeBuildRequest{}, ExpectedEffects{}, route, rows); ok || err != nil {
 		t.Fatalf("1.5x NAV left the installed path: ok=%t err=%v", ok, err)
@@ -219,7 +219,7 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 		t.Fatal("1.75x skipped the cycle check")
 	}
 	o175, _, rpc175, _, _, _ := leverage175Fixture(t)
-	_, rows175, _ := confirmedAccounts(context.Background(), rpc175, payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows175, _ := confirmedAccounts(context.Background(), rpc175, payoffWindowAddresses(route), 42)
 	if !leverageExitAccountsMayNeedCycles(rows175, route, o175.Snapshot) {
 		t.Fatal("1.75x accounts skipped the cycle check")
 	}
@@ -231,7 +231,7 @@ func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
 	t.Parallel()
 	o, m, rpc, client, _, route := leverage175Fixture(t)
 	o.Snapshot.LeverageTargetLevel = 1.5
-	_, rows, _ := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route, route.Kamino.Market), 42)
+	_, rows, _ := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route), 42)
 	bound, err := m.decodeKaminoRepaymentReleaseForMode(rows, route, 42, 5, true)
 	if err != nil {
 		t.Fatal(err)
@@ -338,7 +338,7 @@ func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Obs
 	s.VoltrStrategyIdleRaw, s.StagedAmountRaw, s.StagedAmountKnown, s.StageTransient = 11_000_000, 11_000_000, true, true
 	s.CollateralIdleRaw, s.PrimeIdleRaw, s.DebtIdleRaw, s.SquadsIdleRaw = 0, 0, 0, 0
 	s.StrategyNAVRaw, s.TotalVaultNAVRaw = s.PositionCollateralValueRaw-debt, s.PositionCollateralValueRaw-debt
-	d := m.DecideOnManifest(*s)
+	d := Decide(*s)
 	if d.Action != VoltrRestoreIdle || d.Reason != "withdrawal_staged" {
 		t.Fatalf("restore decision: %+v", d)
 	}

@@ -130,7 +130,7 @@ func observeSelectorSource(ctx context.Context, rpc *chain.Client, view *View, c
 }
 
 // observeAutoSelectorSource is the internal candidate source producer for the
-// AUTO lane. It runs the identical coherence gates and the identical finite
+// catalog (non-USDC debt) lanes. It runs the identical coherence gates and the identical finite
 // producer chain through an explicit reviewed manifest: public production
 // gates stay unchanged, the live selector routes every AUTO source quote —
 // idle and funded — through this entry over the durable planning observation
@@ -139,14 +139,14 @@ func observeAutoSelectorSource(ctx context.Context, rpc *chain.Client, view *Vie
 	return observeReviewedSelectorSource(ctx, rpc, view, client, m, o, true)
 }
 
-// selectorSourceLaneAuthorized keeps the public selector-lane gate untouched
-// and admits exactly one candidate lane: the AUTO lane through an explicit
-// manifest whose activation selects that lane.
+// selectorSourceLaneAuthorized admits a basic registry lane through the plain
+// producer, and a catalog registry lane (non-USDC debt) only through the
+// candidate producer over a manifest whose activation selects that lane.
 func selectorSourceLaneAuthorized(m RouteManifest, lane string, candidate bool) bool {
-	if selectorLane(lane) {
+	if basicLane(lane) {
 		return true
 	}
-	if !candidate || lane != autoAUTOPYUSD.Lane {
+	if !candidate || !catalogJupiterRoute(lane) {
 		return false
 	}
 	active, err := m.activeRuntimeRoute()
@@ -215,8 +215,8 @@ func observeReviewedSelectorSource(ctx context.Context, rpc *chain.Client, view 
 }
 
 // priceSelectorSourcePlan stays the persisted-build compatibility form: it
-// prices embedded-manifest selector lanes exactly as every persisted plan
-// always has, and still refuses the candidate AUTO lane outright.
+// prices basic registry lanes exactly as every persisted plan always has; a
+// catalog (non-USDC debt) source prices only through the candidate producer.
 func priceSelectorSourcePlan(ctx context.Context, rpc *chain.Client, view *View, plan phase3BridgeAdmission, observationFloor int64) (selectorSourceQuote, error) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {

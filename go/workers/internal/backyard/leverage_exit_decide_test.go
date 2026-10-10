@@ -72,7 +72,7 @@ func TestExitCycleDecisionsOnEveryExitPath(t *testing.T) {
 
 // 1.5x keeps its installed exit: after the release the idle collateral pays
 // off the debt, so no cycle leg is ever chosen; Maple never cycles.
-func TestExitCycleNeverChangesA15xOrMapleExit(t *testing.T) {
+func TestExitCycleNeverChangesA15xExitAndMapleCycles(t *testing.T) {
 	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC, SelectedRouteID} {
 		s := leverageSnapshot(1.5)
@@ -84,9 +84,10 @@ func TestExitCycleNeverChangesA15xOrMapleExit(t *testing.T) {
 			t.Fatalf("%s 1.5x exit changed: %+v", lane, got)
 		}
 		if lane == SelectedRouteID {
+			// Maple is a B2 leverage lane (registry): it cycles like OnRe.
 			s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 100, 100, 100
-			if got := Decide(s); got.Reason == exitCycleSwapReason || got.Reason == exitPartialRepayReason {
-				t.Fatalf("Maple cycled: %+v", got)
+			if got := Decide(s); got.Reason != exitCycleSwapReason {
+				t.Fatalf("Maple did not cycle: %+v", got)
 			}
 		}
 	}

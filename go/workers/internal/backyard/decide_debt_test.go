@@ -79,7 +79,7 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 			check(OpenRouteStep, 90000000)
 			s.CollateralIdleRaw, s.PositionCollateralRaw, s.HasPosition = 0, 90000000, true
 			s.PositionCollateralValueRaw = 90_000_000
-			if leverageLane(lane) {
+			if earnActiveLane(lane) {
 				check(Hold, 0) // B2: leverage_target_required
 				s.LeverageTargetLevel = 1.5000000
 				armLeverageCapacityFixture(&s)

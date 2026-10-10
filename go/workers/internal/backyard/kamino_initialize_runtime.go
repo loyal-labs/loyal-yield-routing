@@ -9,24 +9,15 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
+// initializationSnapshotReady reports a flat, entry-authorized lane whose
+// obligation is known absent and is created through an installed initializer
+// policy. A lane whose obligation pre-exists has no initializer: its absence
+// holds.
 func initializationSnapshotReady(s Snapshot) bool {
-	return snapshotInitializationReady(s, selectorLane)
-}
-
-// initializationSnapshotReadyOnManifest is the identical initializer snapshot
-// readiness with the lane authority explicit: the manifest admits the
-// candidate AUTO lane, and every
-// freshness, flat-state, pause, unwind, withdrawal, capacity and LTV
-// condition is shared verbatim with the installed form.
-func (m RouteManifest) initializationSnapshotReady(s Snapshot) bool {
-	return snapshotInitializationReady(s, selectorOrAutoLane)
-}
-
-func snapshotInitializationReady(s Snapshot, laneAllowed func(string) bool) bool {
 	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
 	}
-	if !laneAllowed(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
+	if !earnInitializerLane(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
 		return false
 	}
 	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || s.StrategyNAVRaw != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
@@ -42,18 +33,14 @@ func snapshotInitializationReady(s Snapshot, laneAllowed func(string) bool) bool
 func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observe func(context.Context) (Observation, error)) (Observation, KaminoInitializationRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	// The decision is validated through the same manifest authority that
-	// produced it: the embedded form keeps every installed lane and refuses the
-	// candidate outright, while the manifest form admits the AUTO lane exactly
-	// as DecideOnManifest does.
-	if rpc == nil || observe == nil || decision.Action != InitializeKaminoObligation || manifest.validateDecision(decision) != nil {
+	if rpc == nil || observe == nil || decision.Action != InitializeKaminoObligation || decision.Validate() != nil {
 		return Observation{}, KaminoInitializationRequest{}, budgetHold("invalid_initializer_preparation")
 	}
 	o, err := observe(ctx)
 	if err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
-	if !decisionsEqual(manifest.DecideOnManifest(o.Snapshot), decision) || !manifest.initializationSnapshotReady(o.Snapshot) {
+	if !decisionsEqual(Decide(o.Snapshot), decision) || !initializationSnapshotReady(o.Snapshot) {
 		return o, KaminoInitializationRequest{}, budgetHold("initializer_decision_changed")
 	}
 	if err = manifest.validateBindings(); err != nil {

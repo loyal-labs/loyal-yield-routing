@@ -107,17 +107,6 @@ var mapleSyrupUSDCUSDC = RuntimeRoute{
 	ObligationDebtFarm:        mapleObligationDebtFarm,
 }
 
-// fundedLane reports the lanes the funded program runs. Their bridge legs
-// need every bridge policy and the report ticket, and their entry swaps return
-// to the position. Retained Prime sibling evidence does not fund a lane.
-func fundedLane(lane string) bool {
-	switch lane {
-	case "OnRe/ONyc/USDC", "OnRe/ONyc/USDG", "OnRe/ONyc/USDS", "AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD", "Prime/PRIME/USDC", SelectedRouteID:
-		return true
-	}
-	return false
-}
-
 func runtimeRoute(lane string) (RuntimeRoute, error) {
 	switch lane {
 	case RouteID:
@@ -202,13 +191,6 @@ func decisionsEqual(left, right Decision) bool {
 	leftAction, leftErr := fixedRouteAction(left.Action, left.StrategyKey)
 	rightAction, rightErr := fixedRouteAction(right.Action, right.StrategyKey)
 	return leftErr == nil && rightErr == nil && leftAction == rightAction
-}
-
-// The basic USDC lanes and catalog debt lanes share the same bounded position
-// return recipe. This does not change Jupiter wire dialects or installed policy
-// authority; each builder still resolves its own exact route binding.
-func positionReturnRoute(lane string) bool {
-	return catalogJupiterRoute(lane) || selectorLane(lane)
 }
 
 func sharedUSDCDebt(lane string) bool {

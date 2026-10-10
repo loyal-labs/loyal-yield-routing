@@ -5,26 +5,33 @@ import (
 	"time"
 )
 
-// B4: OnRe is an entry lane under the unchanged selector rule; Prime is not.
-// The live quote collector quotes only selectorEntryFundingLane destinations
-// (others get lane_entry_deferred), so the funding scope is the fence.
-func TestOnReIsAnEntryLaneUnderTheUnchangedSelectorRule(t *testing.T) {
+// Every active registry lane is an entry lane under the unchanged selector
+// rule (owner 2026-10-10: Prime/PRIME/USDC and the Prime siblings again, AUTO
+// without a manifest gate); the exit-only Ethena lane is not.
+func TestEveryActiveRegistryLaneEntersUnderTheUnchangedSelectorRule(t *testing.T) {
 	t.Parallel()
-	if !selectorEntryLane(onreONycUSDC) || !selectorEntryLane(SelectedRouteID) || selectorEntryLane(PhaseOneLaneID) || selectorEntryLane(autoAUTOPYUSD.Lane) {
-		t.Fatal("entry lanes must be exactly Maple and OnRe (AUTO stays manifest-gated)")
+	want := []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PhaseOneLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane}
+	got := earnLaneIDs(false)
+	if len(got) != len(want) {
+		t.Fatalf("active registry %v, want %v", got, want)
 	}
-	if !selectorEntryFundingLane(onreONycUSDC) || selectorEntryFundingLane(PhaseOneLaneID) {
-		t.Fatal("funding scope does not follow the entry lanes")
+	for i := range want {
+		if got[i] != want[i] || !earnActiveLane(want[i]) {
+			t.Fatalf("active registry %v, want %v", got, want)
+		}
+	}
+	if earnActiveLane(ethenaUSDePYUSD.Lane) {
+		t.Fatal("exit-only Ethena is an entry lane")
 	}
 	// The unchanged rule: an OnRe advantage must persist for the policy's
 	// persistence window before the selector enters.
 	in := selectorFixture() // Maple source, OnRe destination market
-	first := selectOpportunityWithLanes(in, SelectorState{}, selectorLane, selectorEntryLane)
+	first := SelectOpportunity(in, SelectorState{})
 	if first.Action != "KEEP" || first.Reason != "advantage_not_yet_persistent" {
 		t.Fatalf("OnRe entered before its advantage persisted: %+v", first)
 	}
 	advanceSelectorFixture(&in, in.Policy.Persistence+time.Second)
-	entered := selectOpportunityWithLanes(in, first.State, selectorLane, selectorEntryLane)
+	entered := SelectOpportunity(in, first.State)
 	if entered.Action != "ENTER" || entered.DestinationLane != onreONycUSDC {
 		t.Fatalf("persistent OnRe advantage did not enter: %+v", entered)
 	}
@@ -35,7 +42,11 @@ func TestOnReIsAnEntryLaneUnderTheUnchangedSelectorRule(t *testing.T) {
 		t.Fatal("funded OnRe position cannot reinvest in its own lane")
 	}
 	same.Snapshot.RouteLane, same.Snapshot.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
+	if !sameLaneReinvestmentEligible(same.Snapshot, same.Policy) {
+		t.Fatal("Prime/PRIME/USDC may not reinvest")
+	}
+	same.Snapshot.RouteLane, same.Snapshot.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
 	if sameLaneReinvestmentEligible(same.Snapshot, same.Policy) {
-		t.Fatal("dropped Prime lane may reinvest")
+		t.Fatal("exit-only Ethena may reinvest")
 	}
 }

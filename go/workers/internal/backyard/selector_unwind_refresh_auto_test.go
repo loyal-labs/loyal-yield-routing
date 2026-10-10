@@ -32,14 +32,14 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	intent := UnwindIntent{SourceLane: autoAUTOPYUSD.Lane, Reason: "economic_rotation", ObservationID: "auto-source", MaxCollateralRaw: 200, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("auto-exit")), CreatedAt: time.Now().UTC()}
-	if err = db.CommitUnwindIntentOnManifest(ctx, reviewed, key, intent); err != nil {
+	if err = db.CommitUnwindIntent(ctx, key, intent); err != nil {
 		t.Fatal(err)
 	}
 	var version int64
 	if err = db.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	previous, err := db.LoadUnwindIntentOnManifest(ctx, reviewed, key)
+	previous, err := db.LoadUnwindIntent(ctx, key)
 	if err != nil || previous == nil || *previous != intent {
 		t.Fatalf("restart lost the candidate intent: %+v %v", previous, err)
 	}
@@ -50,7 +50,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	fresh.PositionCollateralRaw, fresh.PositionCollateralValueRaw = 150, 150
 	fresh.PositionDebtRaw, fresh.PositionDebtValueRaw = previous.MaxDebtRaw+10, previous.MaxDebtRaw+10
 	fresh.PayoffDebtRaw, fresh.LTVBPS = fresh.PositionDebtRaw+1, 3400
-	if err = applyUnwindIntentWithLane(&fresh, previous, selectorOrAutoLane); err != nil || !fresh.Unwind || !fresh.UnwindRefreshRequired {
+	if err = applyUnwindIntent(&fresh, previous); err != nil || !fresh.Unwind || !fresh.UnwindRefreshRequired {
 		t.Fatal("interest did not require readmission", err, fresh)
 	}
 	o := tickObservation(fresh)
@@ -62,7 +62,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	if err = db.renewSelectorUnwindOnManifest(ctx, reviewed, key, version, *previous, o, source, fresh.Slot); err != nil {
 		t.Fatal(err)
 	}
-	renewed, err := db.LoadUnwindIntentOnManifest(ctx, reviewed, key)
+	renewed, err := db.LoadUnwindIntent(ctx, key)
 	if err != nil || renewed == nil {
 		t.Fatalf("renewed intent unavailable: %+v %v", renewed, err)
 	}
@@ -79,7 +79,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	fresh2.PositionDebtRaw = renewed.MaxDebtRaw + 5
 	fresh2.PositionDebtValueRaw = fresh2.PositionDebtRaw
 	fresh2.PayoffDebtRaw = fresh2.PositionDebtRaw + 1
-	if err = applyUnwindIntentWithLane(&fresh2, renewed, selectorOrAutoLane); err != nil || !fresh2.UnwindRefreshRequired {
+	if err = applyUnwindIntent(&fresh2, renewed); err != nil || !fresh2.UnwindRefreshRequired {
 		t.Fatal("renewed envelope did not re-latch", err)
 	}
 	o2 := tickObservation(fresh2)
@@ -88,14 +88,14 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	if err = db.renewSelectorUnwind(ctx, key, version+1, *renewed, o2, source2, fresh2.Slot); err != nil {
 		t.Fatal(err)
 	}
-	regenerated, err := db.LoadUnwindIntentOnManifest(ctx, reviewed, key)
+	regenerated, err := db.LoadUnwindIntent(ctx, key)
 	if err != nil || regenerated == nil || regenerated.MaxDebtRaw != source2.ExitBound.MaxDebtRaw || regenerated.EvidenceID != source2.Recipe.EvidenceID {
 		t.Fatalf("wrapper renewal lost the fresh bound: %+v %v", regenerated, err)
 	}
 
 	// Installed lanes keep renewing through the manifest-parameterized check.
 	maple := UnwindIntent{SourceLane: SelectedRouteID, Reason: "economic_rotation", ObservationID: "maple", MaxCollateralRaw: 1, MaxDebtRaw: 1, EvidenceID: sha256Bytes([]byte("maple-exit")), CreatedAt: time.Now().UTC()}
-	if reviewed.validateUnwindIntent(maple) != nil {
+	if maple.validate() != nil {
 		t.Fatal("installed lane renewal authority changed")
 	}
 }

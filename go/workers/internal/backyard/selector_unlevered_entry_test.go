@@ -52,7 +52,7 @@ func selectorRecipeActions(t *testing.T, q selectorDestinationQuote) []Action {
 func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,12 +77,12 @@ func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 	}
 }
 
-// (c) Not blocked: the same lane keeps the leveraged entry exactly, and
-// Maple never takes the 1x path even when blocked.
-func TestUnblockedOrNonLeverageLaneKeepsTheLeveragedEntry(t *testing.T) {
+// (c) Not blocked: the same lane keeps the leveraged entry exactly; blocked
+// Maple, a B2 lane since the registry, takes the 1x path like OnRe.
+func TestUnblockedLaneKeepsTheLeveragedEntryAndBlockedMapleTakes1x(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, nil)
-	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 100_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 100_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,10 +90,10 @@ func TestUnblockedOrNonLeverageLaneKeepsTheLeveragedEntry(t *testing.T) {
 		t.Fatalf("unblocked OnRe lost its leveraged entry: %+v", q)
 	}
 	m, rpc, client, _ = selectorDestinationFixtureForLane(t, SelectedRouteID, blockDebtUtilization(t, SelectedRouteID))
-	if _, err = observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, true, nil); err == nil {
-		t.Fatal("blocked Maple priced an entry")
+	q, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), SelectedRouteID, 1_000_000, 42, true, nil)
+	if err != nil || !q.Unlevered || q.BorrowReceiveRaw != 0 {
+		t.Fatalf("blocked Maple did not price the 1x entry: %+v %v", q, err)
 	}
-	assertBudgetHold(t, err, "selector_destination_capacity_unavailable")
 }
 
 // Live shape 2026-09-29: funded debt-free AUTO at 1x (~$1,677, borrowing
@@ -117,8 +117,7 @@ func unleveredSwitchFixtureAt(cost int64, onreAPY float64) SelectorInput {
 }
 
 func selectUnlevered(in SelectorInput, previous SelectorState) SelectorResult {
-	allowed := func(l string) bool { return selectorLane(l) || l == autoAUTOPYUSD.Lane }
-	return selectOpportunityWithLanes(in, previous, allowed, allowed)
+	return SelectOpportunity(in, previous)
 }
 
 func onreCandidate(t *testing.T, r SelectorResult) CandidateForecast {
@@ -196,7 +195,7 @@ func TestUnleveredQuoteShape(t *testing.T) {
 	for name, bad := range map[string]func(*MoveQuote){
 		"borrow":    func(q *MoveQuote) { q.BorrowReceiveRaw = 1 },
 		"fee":       func(q *MoveQuote) { q.BorrowFeeRaw = 1 },
-		"maple":     func(q *MoveQuote) { q.DestinationLane = SelectedRouteID },
+		"exit-only": func(q *MoveQuote) { q.DestinationLane = ethenaUSDePYUSD.Lane },
 		"no equity": func(q *MoveQuote) { q.EquityRaw = 0 },
 	} {
 		c := q
@@ -232,7 +231,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 0
 	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.StrategyNAVRaw = true, 1_670_000_000, 1_670_000_000, 1_670_000_000
 	check(Hold, "debt_reserve_utilization_blocks_borrow")
-	if selectorTrancheInProgress(s) || sameLaneReinvestmentEligibleWithLane(s, DefaultSelectorPolicy(), selectorEntryLane) {
+	if selectorTrancheInProgress(s) || sameLaneReinvestmentEligible(s, DefaultSelectorPolicy()) {
 		t.Fatal("1x position looks unfinished or re-enterable")
 	}
 	s.LeverageTargetLevel = 1
@@ -248,7 +247,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 func TestUnleveredEntryRecipeWiresPassThePersistedWireGate(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecastAuthorized(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), onreONycUSDC, 1_000_000, 42, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

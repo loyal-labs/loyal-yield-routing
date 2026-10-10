@@ -124,7 +124,7 @@ func (d *Database) RecordCurrentAPY(ctx context.Context, routeKey string, value 
 // publishCurrentAPY is the selector-loop hook: compute, throttle, write.
 // Every failure only logs; it never reaches a tick or a money path.
 func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYThrottle, observed Observation, markets []LaneEconomics, write func(context.Context, CurrentAPY, int64) error, logf func(string, ...any)) {
-	if observed.planning == nil || !leverageLane(observed.Snapshot.RouteLane) && !selectorLane(observed.Snapshot.RouteLane) {
+	if observed.planning == nil || !earnHeldLane(observed.Snapshot.RouteLane) {
 		return
 	}
 	value, ok := currentPositionAPY(observed.Snapshot, markets)

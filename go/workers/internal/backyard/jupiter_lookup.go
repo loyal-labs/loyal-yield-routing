@@ -29,18 +29,10 @@ func basicSwapLaneEdge(action Action) bool {
 	return false
 }
 
+// acceptsJupiterLookupHints: every registry lane keeps the same v0 escape
+// hatch for its approved swap edges: hints come only from the fresh quote, are
+// resolved from chain, and are pinned to the persisted request identities.
 func acceptsJupiterLookupHints(lane string, action Action) bool {
-	if lane == autoAUTOPYUSD.Lane {
-		// The AUTO lane keeps the same v0 escape hatch as the basic lanes:
-		// hints come only from the fresh quote, are resolved from chain, and
-		// are pinned to the persisted request identities. Eligibility is an
-		// approved AUTO swap edge.
-		_, _, _, _, err := jupiterEdgeForRoute(action, lane)
-		return err == nil
-	}
-	if lane == "Ethena/USDe/PYUSD" && action == SwapCollateralToDebtStep {
-		return true
-	}
 	if !catalogJupiterRoute(lane) {
 		// The basic policy lanes swap through the same validated inner
 		// instruction wrapped in the same Squads execute. Their oversized legacy
@@ -51,7 +43,7 @@ func acceptsJupiterLookupHints(lane string, action Action) bool {
 		return err == nil && route.BasicPolicy && basicSwapLaneEdge(action)
 	}
 	_, _, err := catalogEdge(action, lane)
-	return err == nil && (lane == primePRIMEPYUSD.Lane || lane == primePRIMEUSDS.Lane)
+	return err == nil
 }
 
 func validateJupiterLookupCandidates(addresses []string) error {

@@ -80,7 +80,7 @@ func decodeKaminoRepaymentReleaseForMode(accounts []ConfirmedAccount, route Runt
 // reviewed AUTO pilot release reuses the identical body with the manifest-aware
 // allowance resolver. No gate, bound or receipt conversion changes.
 func (m RouteManifest) decodeKaminoRepaymentReleaseForMode(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64, pilot bool) (KaminoReleaseBound, error) {
-	return decodeKaminoRepaymentReleaseWithAllowance(accounts, route, slot, steps, pilot, m.pilotRepaymentLiquidityAllowance)
+	return decodeKaminoRepaymentReleaseWithAllowance(accounts, route, slot, steps, pilot, pilotRepaymentLiquidityAllowance)
 }
 
 func decodeKaminoRepaymentReleaseWithAllowance(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64, pilot bool,
@@ -157,14 +157,7 @@ func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, view
 	if err != nil {
 		return result, nil, err
 	}
-	// The pilot risk model reads the lending market, which the payoff window
-	// captures only for installed selector lanes; the reviewed candidate lane
-	// rides the same window request so the recheck keeps one coherent slot.
-	payoffAdditional := []string(nil)
-	if request.PilotRepaymentRelease && route.Lane == autoAUTOPYUSD.Lane {
-		payoffAdditional = append(payoffAdditional, route.Kamino.Market)
-	}
-	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 5, payoffAdditional...)
+	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 5)
 	if err != nil {
 		return result, nil, err
 	}
@@ -208,29 +201,17 @@ func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, view
 // the protocol max LTV and the unchanged worker hard stop. It also respects
 // the market cap using current reserve prices, never cached obligation values.
 // Inputs have already passed envelope, topology, refresh and payoff validation.
+// Every registry lane (exit-only ones included) may release this way.
 func pilotRepaymentLiquidityAllowance(accounts []ConfirmedAccount, route RuntimeRoute, position KaminoPosition, liquidationPct byte) (uint64, error) {
-	if !selectorLane(route.Lane) || route.Kamino.DebtMint != bridgeUSDC {
+	if !earnHeldLane(route.Lane) {
 		return 0, budgetHold("pilot_release_lane_unreviewed")
 	}
 	return pilotRepaymentLiquidityAllowanceChecked(accounts, route, position, liquidationPct)
 }
 
-// The manifest-aware form admits exactly one more lane: the AUTO lane's
-// release, through the SAME checked risk arithmetic the installed pilot lanes
-// use. Every public gate and the installed-lane behavior stay byte-identical.
-func (m RouteManifest) pilotRepaymentLiquidityAllowance(accounts []ConfirmedAccount, route RuntimeRoute, position KaminoPosition, liquidationPct byte) (uint64, error) {
-	if selectorLane(route.Lane) && route.Kamino.DebtMint == bridgeUSDC {
-		return pilotRepaymentLiquidityAllowance(accounts, route, position, liquidationPct)
-	}
-	if route.Lane != autoAUTOPYUSD.Lane {
-		return 0, budgetHold("pilot_release_lane_unreviewed")
-	}
-	return pilotRepaymentLiquidityAllowanceChecked(accounts, route, position, liquidationPct)
-}
-
-// pilotRepaymentLiquidityAllowanceChecked is the lane-independent core shared
-// by both forms above: market risk model, LTV ceiling, and the existing
-// rounded and ForValues allowance arithmetic with its receipt bounds.
+// pilotRepaymentLiquidityAllowanceChecked is the lane-independent core: market
+// risk model, LTV ceiling, and the existing rounded and ForValues allowance
+// arithmetic with its receipt bounds.
 func pilotRepaymentLiquidityAllowanceChecked(accounts []ConfirmedAccount, route RuntimeRoute, position KaminoPosition, liquidationPct byte) (uint64, error) {
 	market := accountAt(accounts, route.Kamino.Market)
 	if emergency, err := decodeKaminoMarketEmergency(market, route.Kamino); err != nil {
@@ -330,11 +311,7 @@ const kaminoMinRemainingValueOffset = 3224
 // longer than the five-step re-check leaves headroom for the slots between
 // build and send.
 func (m RouteManifest) observeRawRepaymentRelease(ctx context.Context, view *View, route RuntimeRoute, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
-	var additional []string
-	if route.Lane == autoAUTOPYUSD.Lane {
-		additional = append(additional, route.Kamino.Market)
-	}
-	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 6, additional...)
+	observed, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 6)
 	if err != nil {
 		return KaminoReleaseBound{}, nil, err
 	}

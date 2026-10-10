@@ -93,13 +93,8 @@ func priceSelectorRecipe(ctx context.Context, rpc *chain.Client, view *View, lan
 }
 
 // Keep the sample start fixed while later prerequisites advance the minimum
-// slot accepted for fees/prices and final collection. The public entry keeps
-// the plain selector-lane gate, so the persisted-build path stays closed to
-// the AUTO lane.
+// slot accepted for fees/prices and final collection.
 func priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, view *View, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
-	if !selectorLane(lane) {
-		return selectorRecipe{Inputs: inputs}, budgetHold("invalid_selector_recipe")
-	}
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		return selectorRecipe{Inputs: inputs}, err
@@ -107,14 +102,12 @@ func priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, view *
 	return manifest.priceSelectorRecipeWithFloor(ctx, rpc, view, lane, inputs, minimumSlot, observationFloor)
 }
 
-// The manifest-aware internal form prices retained recipe inputs against the
-// SAME manifest that produced them, so AUTO payoff legs can enter the
-// identical cost machinery. Beyond the reviewed selector lanes it admits
-// exactly the AUTO lane, and this enables no live selection: AUTO stays out
-// of selectorLanes/selectorEntryLane.
+// The manifest-aware form prices retained recipe inputs against the SAME
+// manifest that produced them, for any registry lane: source exits of held
+// lanes and entries into active ones.
 func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, view *View, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
 	out := selectorRecipe{Inputs: inputs}
-	if rpc == nil || !selectorOrAutoLane(lane) || len(inputs) == 0 || len(inputs) > maxSelectorRecipeSteps || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > observationLagSlots() {
+	if rpc == nil || !earnHeldLane(lane) || len(inputs) == 0 || len(inputs) > maxSelectorRecipeSteps || minimumSlot <= 0 || minimumSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || observationFloor < minimumSlot || observationFloor-minimumSlot > observationLagSlots() {
 		return out, budgetHold("invalid_selector_recipe")
 	}
 	type step struct {

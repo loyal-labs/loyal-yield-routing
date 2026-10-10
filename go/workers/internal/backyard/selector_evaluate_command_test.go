@@ -68,7 +68,7 @@ func canaryEvaluateClosure(key string, manifest RouteManifest, input SelectorInp
 		if err := db.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version); err != nil {
 			return SelectorResult{}, err
 		}
-		return db.recordSelectorEvaluationWithLanes(ctx, key, &manifest, in, in.Snapshot.Slot, version)
+		return db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, version)
 	}
 }
 

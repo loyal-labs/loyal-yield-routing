@@ -69,7 +69,6 @@ func TestSelectorAdmissionGuardBehavior(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 100*time.Second)
 	defer cancel()
 	defer db.Close()
-	manifest := embeddedTestManifest(t)
 	input := canaryFixtureInput(t)
 	key := productionRouteKey
 
@@ -82,7 +81,7 @@ func TestSelectorAdmissionGuardBehavior(t *testing.T) {
 	}
 	admit := func(t *testing.T, version int64) (SelectorResult, error) {
 		t.Helper()
-		return db.recordSelectorEvaluationWithLanes(ctx, key, &manifest, input, input.Snapshot.Slot, version)
+		return db.RecordSelectorEvaluation(ctx, key, input, input.Snapshot.Slot, version)
 	}
 	expectHold := func(t *testing.T, want string, mutate func(t *testing.T)) {
 		t.Helper()
@@ -260,7 +259,6 @@ func TestSelectorAdmissionGuardRoundTripMeasurement(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 100*time.Second)
 	defer cancel()
 	defer db.Close()
-	manifest := embeddedTestManifest(t)
 	input := canaryFixtureInput(t)
 	key := productionRouteKey
 	const perRead = 15 * time.Millisecond
@@ -311,7 +309,7 @@ func TestSelectorAdmissionGuardRoundTripMeasurement(t *testing.T) {
 	}
 	afterReads := reads.Load()
 	after := time.Now()
-	result, err := delayed.recordSelectorEvaluationWithLanes(ctx, key, &manifest, input, input.Snapshot.Slot, 2)
+	result, err := delayed.RecordSelectorEvaluation(ctx, key, input, input.Snapshot.Slot, 2)
 	newElapsed, newTotalReads := time.Since(after), reads.Load()-afterReads
 	if err != nil || result.Action != "CANARY_ENTER" {
 		t.Fatalf("admission over delayed transport failed: %v action %s", err, result.Action)
@@ -380,7 +378,7 @@ func TestSelectorAdmissionGuardRoundTripMeasurement(t *testing.T) {
 		t.Fatal(err)
 	}
 	local := time.Now()
-	if _, err := db.recordSelectorEvaluationWithLanes(ctx, key, &manifest, input, input.Snapshot.Slot, 2); err != nil {
+	if _, err := db.RecordSelectorEvaluation(ctx, key, input, input.Snapshot.Slot, 2); err != nil {
 		t.Fatalf("local admission failed: %v", err)
 	}
 	localElapsed := time.Since(local)

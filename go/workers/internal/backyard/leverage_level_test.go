@@ -68,10 +68,11 @@ func TestOneXByChoiceIsAFinishedPosition(t *testing.T) {
 			t.Fatalf("%s: idle cash beside a 1x position not in progress", lane)
 		}
 	}
-	maple := base()
-	maple.RouteLane, maple.StrategyKey = SelectedRouteID, SelectedRouteID
-	maple.HasPosition, maple.PositionCollateralRaw = true, 100
-	if got := Decide(maple); got.Action != OpenRouteStep {
-		t.Fatalf("Maple changed: %+v", got)
+	// The legacy PRIME/USDC route is outside the registry: no B2 level.
+	legacy := base()
+	legacy.RouteLane, legacy.StrategyKey = RouteID, RouteID
+	legacy.HasPosition, legacy.PositionCollateralRaw = true, 100
+	if got := Decide(legacy); got.Action != OpenPrimeUSDCStep {
+		t.Fatalf("legacy route changed: %+v", got)
 	}
 }

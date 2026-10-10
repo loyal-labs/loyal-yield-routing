@@ -69,17 +69,14 @@ func fundedAutoSourceFixture(t *testing.T, debtPrice, collateralPrice BudgetPric
 // The candidate AUTO lane must select through ordinary priced persistence: no
 // operator canary, no parity assumption. The first profitable sample opens the
 // window, a later sample inside MaxSampleGap at Persistence selects, and a gap
-// beyond MaxSampleGap restarts the hysteresis. The public embedded wrapper
-// keeps the installed Maple-only closure on the identical input.
+// beyond MaxSampleGap restarts the hysteresis. AUTO is a registry lane, so
+// there is no separate embedded closure to compare against.
 func TestAutoCandidateOrdinarySelectionAcrossSamples(t *testing.T) {
 	t.Parallel()
 	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
 	in := fundedAutoFixture(t, debtPrice, collateralPrice)
-	if public := SelectOpportunity(in, SelectorState{}); public.Reason != "no_worthwhile_executable_move" || len(public.State.Advantages) != 0 {
-		t.Fatal("embedded wrapper changed on candidate input", public)
-	}
-	result := selectOpportunityWithLanes(in, SelectorState{}, selectorOrAutoLane, selectorEntryFundingLane)
+	result := SelectOpportunity(in, SelectorState{})
 	if result.Action != "KEEP" || result.Reason != "advantage_not_yet_persistent" {
 		t.Fatal("first profitable sample must hold for persistence", result)
 	}
@@ -93,14 +90,14 @@ func TestAutoCandidateOrdinarySelectionAcrossSamples(t *testing.T) {
 		}
 	}
 	advanceSelectorFixture(&in, time.Minute)
-	result = selectOpportunityWithLanes(in, result.State, selectorOrAutoLane, selectorEntryFundingLane)
+	result = SelectOpportunity(in, result.State)
 	if result.Action != "ENTER" || result.Reason != "persistent_net_benefit" || result.DestinationLane != testAutoLane || result.SelectedQuote == nil {
 		t.Fatal("priced persistence did not select the candidate", result)
 	}
 	// Hysteresis: a gap beyond MaxSampleGap restarts the window instead of
 	// carrying stale persistence into an entry.
 	advanceSelectorFixture(&in, in.Policy.MaxSampleGap+time.Minute)
-	result = selectOpportunityWithLanes(in, result.State, selectorOrAutoLane, selectorEntryFundingLane)
+	result = SelectOpportunity(in, result.State)
 	if result.Action != "KEEP" || result.Reason != "advantage_not_yet_persistent" {
 		t.Fatal("stale window survived a MaxSampleGap breach", result)
 	}
@@ -129,7 +126,7 @@ func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			in := fundedAutoFixture(t, debtPrice, collateralPrice)
 			tc.mutate(&in)
-			result := selectOpportunityWithLanes(in, SelectorState{}, selectorOrAutoLane, selectorEntryFundingLane)
+			result := SelectOpportunity(in, SelectorState{})
 			if result.Action != "KEEP" || result.Reason != "no_worthwhile_executable_move" {
 				t.Fatal("held market reached selection", result)
 			}
@@ -150,7 +147,7 @@ func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testin
 	in := fundedAutoFixture(t, debtPrice, collateralPrice)
 	// The installed state: the embedded manifest's complete installed binding
 	// opens the same persistence window the reviewed initializer fixture does.
-	installedResult := selectOpportunityWithLanes(in, SelectorState{}, selectorOrAutoLane, selectorEntryFundingLane)
+	installedResult := SelectOpportunity(in, SelectorState{})
 	if installedResult.Action != "KEEP" || installedResult.Reason != "advantage_not_yet_persistent" || len(installedResult.State.Advantages) != 1 {
 		t.Fatal("installed binding did not open the candidate persistence window", installedResult)
 	}
@@ -162,18 +159,18 @@ func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testin
 // A funded AUTO allocation must not strand the selector: the candidate lane as
 // production source keeps its keep-gain baseline, holds the same-lane
 // reinvestment baseline closed, and can select a safe unwind to a better
-// installed lane. The public embedded wrapper still refuses the candidate
-// source outright.
+// installed lane. A source outside the registry is still refused outright.
 func TestAutoSourceKeepsEconomicsAndSelectsSafeUnwind(t *testing.T) {
 	t.Parallel()
 	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
 	in := fundedAutoSourceFixture(t, debtPrice, collateralPrice)
-	if public := SelectOpportunity(in, SelectorState{}); public.Reason != "pilot_lane_unavailable" {
-		t.Fatal("embedded wrapper admitted a candidate source", public)
+	foreign := in
+	foreign.Snapshot.RouteLane = RouteID
+	if public := SelectOpportunity(foreign, SelectorState{}); public.Reason != "pilot_lane_unavailable" {
+		t.Fatal("a source outside the registry was admitted", public)
 	}
-	allowed, funding := selectorOrAutoLane, selectorEntryFundingLane
-	result := selectOpportunityWithLanes(in, SelectorState{}, allowed, funding)
+	result := SelectOpportunity(in, SelectorState{})
 	if result.Reason == "pilot_lane_unavailable" || result.KeepGainRaw <= 0 {
 		t.Fatal("AUTO source lost its current economics", result)
 	}
@@ -186,16 +183,14 @@ func TestAutoSourceKeepsEconomicsAndSelectsSafeUnwind(t *testing.T) {
 		t.Fatal("destination persistence not started from AUTO source", result)
 	}
 	advanceSelectorFixture(&in, time.Minute)
-	result = selectOpportunityWithLanes(in, result.State, allowed, funding)
+	result = SelectOpportunity(in, result.State)
 	if result.Action != "SWITCH" || result.DestinationLane != "OnRe/ONyc/USDC" || result.SelectedQuote == nil || result.SelectedQuote.SourceExit == nil {
 		t.Fatal("AUTO source could not select its safe unwind", result)
 	}
 }
 
-// selectorEntryFundingLane is the rollout authority table: installed lanes
-// always; the candidate AUTO lane only while THIS manifest's binding resolves,
-// with the initializer onboarding path requiring the complete initialize
-// constraint. Seed/address drift keeps every candidate path closed.
+// The funding authority is the active registry: Maple and AUTO fund, an
+// unknown lane never does.
 func TestSelectorEntryFundingLaneAuthority(t *testing.T) {
 	t.Parallel()
 	manifest := embeddedTestManifest(t)
@@ -210,27 +205,25 @@ func TestSelectorEntryFundingLaneAuthority(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := selectorEntryFundingLane(SelectedRouteID); got != tc.maple {
+			if got := earnActiveLane(SelectedRouteID); got != tc.maple {
 				t.Fatal("installed lane funding changed", got)
 			}
-			if got := selectorEntryFundingLane(testAutoLane); got != tc.autoFund {
+			if got := earnActiveLane(testAutoLane); got != tc.autoFund {
 				t.Fatal("candidate funding authority", got)
 			}
-			if got := selectorEntryFundingLane(testAutoLane); got != tc.autoInitial {
+			if got := earnInitializerLane(testAutoLane); got != tc.autoInitial {
 				t.Fatal("candidate initializer authority", got)
 			}
-			if got := selectorEntryFundingLane("Unreviewed/Lane"); got {
+			if got := earnActiveLane("Unreviewed/Lane"); got {
 				t.Fatal("unknown lane admitted", got)
 			}
 		})
 	}
 }
 
-// The locked production path persists an ordinary candidate entry: priced
-// persistence from the route state selects ENTER under the fully reviewed
-// manifest binding. The authority is the reviewed binding itself, not the
-// manifest pointer: a non-nil manifest without the autoPolicy binding keeps
-// the same input closed, as does the embedded public path. A closed KEEP
+// The locked production path persists an ordinary AUTO entry: priced
+// persistence from the route state selects ENTER through the registry. The
+// same input aimed at the exit-only Ethena lane stays closed. A closed KEEP
 // persistence still records its diagnostic selector result (the existing
 // recordSelectorEvaluation contract), so the closed assertions pin exactly
 // what that contract guarantees: no entry, unchanged pause, canary history
@@ -241,24 +234,22 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 	defer db.Close()
 	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
-	manifest := embeddedTestManifest(t)
-	installed := embeddedTestManifest(t)
 	cases := []struct {
 		name      string
-		manifest  *RouteManifest
+		lane      string
 		wantEntry bool
 	}{
-		{"manifest", &manifest, true},
-		{"installed", &installed, true},
-		{"embedded", nil, false},
+		{"registry", testAutoLane, true},
+		{"exit_only", ethenaUSDePYUSD.Lane, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			key := fmt.Sprintf("auto-entry-%s-%d", tc.name, time.Now().UnixNano())
 			in := fundedAutoFixture(t, debtPrice, collateralPrice)
+			in.Markets[0].Lane, in.Quotes[0].DestinationLane = tc.lane, tc.lane
 			in.Markets[0].NativeAPY = 2 // synthetic fee-reserved winner; rate is not live evidence
 			armFeeAuthorityFixture(t, &in.Snapshot)
-			history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{testAutoLane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
+			history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{tc.lane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
 			state := map[string]any{"generation": 2, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
 			raw, _ := json.Marshal(state)
 			if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
@@ -268,7 +259,7 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 				t.Fatal(err)
 			}
 			advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-			result, err := db.recordSelectorEvaluationWithLanes(ctx, key, tc.manifest, in, in.Snapshot.Slot, 2)
+			result, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 2)
 			if tc.wantEntry && (err != nil || result.Action != "ENTER" || result.DestinationLane != testAutoLane) {
 				t.Fatal("locked candidate entry did not persist its selection", err, result)
 			}
@@ -306,12 +297,8 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 				if string(persisted.Generation) != "2" {
 					t.Fatal("closed KEEP moved the planning generation", string(persisted.Generation))
 				}
-				if tc.manifest != nil {
-					if entry, err := db.LoadSelectorEntryOnManifest(ctx, *tc.manifest, key); err != nil || entry != nil {
-						t.Fatal("closed manifest path persisted a candidate entry", err, entry)
-					}
-				} else if entry, err := db.LoadSelectorEntry(ctx, key); err != nil || entry != nil {
-					t.Fatal("closed embedded path persisted an entry", err, entry)
+				if entry, err := db.LoadSelectorEntry(ctx, key); err != nil || entry != nil {
+					t.Fatal("closed path persisted an entry", err, entry)
 				}
 				if _, err = db.ReleaseRouteLease(ctx); err != nil {
 					t.Fatal(err)
@@ -329,12 +316,9 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer restarted.Close()
-			entry, err := restarted.LoadSelectorEntryOnManifest(ctx, *tc.manifest, key)
+			entry, err := restarted.LoadSelectorEntry(ctx, key)
 			if err != nil || entry == nil || entry.Lane != testAutoLane || entry.EquityRaw != 10_000_000 {
-				t.Fatal("restart lost the candidate entry through its manifest", err, entry)
-			}
-			if closed, err := restarted.LoadSelectorEntry(ctx, key); err != nil || closed != nil {
-				t.Fatal("closed decoder must treat an unauthorized stored entry as absent", err, closed)
+				t.Fatal("restart lost the AUTO entry", err, entry)
 			}
 			if _, err = db.ReleaseRouteLease(ctx); err != nil {
 				t.Fatal(err)
@@ -345,15 +329,13 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 
 // The recorded candidate-source unwind is the anti-strand proof: a funded AUTO
 // position can record its bounded economic rotation under the reviewed
-// manifest, the intent decodes and re-decodes through that manifest across a
-// restart, and the embedded decode stays closed.
+// manifest, and the intent decodes across a restart.
 func TestLockedManifestSelectorRecordsCandidateSourceUnwind(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
 	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
-	manifest := embeddedTestManifest(t)
 	key := fmt.Sprintf("auto-unwind-%d", time.Now().UnixNano())
 	in := fundedAutoSourceFixture(t, debtPrice, collateralPrice)
 	in.Snapshot.VoltrIdleRaw = in.Snapshot.TotalVaultNAVRaw - in.Snapshot.StrategyNAVRaw
@@ -369,7 +351,7 @@ func TestLockedManifestSelectorRecordsCandidateSourceUnwind(t *testing.T) {
 		t.Fatal(err)
 	}
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	result, err := db.recordSelectorEvaluationWithLanes(ctx, key, &manifest, in, in.Snapshot.Slot, 2)
+	result, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 2)
 	if err != nil || result.Action != "SWITCH" || result.DestinationLane != "OnRe/ONyc/USDC" {
 		t.Fatal("candidate-source unwind not recorded", err, result)
 	}
@@ -378,12 +360,9 @@ func TestLockedManifestSelectorRecordsCandidateSourceUnwind(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	intent, err := restarted.LoadUnwindIntentOnManifest(ctx, manifest, key)
+	intent, err := restarted.LoadUnwindIntent(ctx, key)
 	if err != nil || intent == nil || intent.SourceLane != testAutoLane {
 		t.Fatal("restart lost the candidate-source unwind", err, intent)
-	}
-	if _, err = restarted.LoadUnwindIntent(ctx, key); err == nil {
-		t.Fatal("embedded decode admitted a candidate-source unwind")
 	}
 	var version int64
 	if err = restarted.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version); err != nil {

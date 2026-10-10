@@ -53,7 +53,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		// price the remaining position; this cost-only helper grants no
 		// permission to execute that exit.
 		topup := r.Action == VoltrAllocateToSquads && d.Reason == topupAllocationReason
-		if (r.Action != ReportNAV && r.Action != StageSquadsToVoltr && r.Action != VoltrRestoreIdle && !topup) || !leverageLane(s.RouteLane) {
+		if (r.Action != ReportNAV && r.Action != StageSquadsToVoltr && r.Action != VoltrRestoreIdle && !topup) || !earnActiveLane(s.RouteLane) {
 			return phase3BridgeAdmission{}, budgetHold("invalid_projected_return_request")
 		}
 		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
@@ -77,7 +77,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	var cycles []phase3BridgeExitCost
 	var firstPayoff *KaminoPayoffBound
 	windowSteps := int64(7)
-	if cash < bound.UpperDebtRaw && leverageLane(s.RouteLane) && leverageExitAccountsMayNeedCycles(accounts, route, s) {
+	if cash < bound.UpperDebtRaw && earnActiveLane(s.RouteLane) && leverageExitAccountsMayNeedCycles(accounts, route, s) {
 		var cycleCash uint64
 		cycles, accounts, cycleCash, windowSteps, firstPayoff, err = priceLeverageExitCycles(ctx, rpc, client, m, o.policies, route, s, accounts, projection.Slot, blockhash, cash)
 		if err != nil {

@@ -63,19 +63,19 @@ func TestUnwindIntentCommitExecuteRequiresDatabaseConfig(t *testing.T) {
 	assertBudgetHold(t, err, "invalid_unwind_intent_config")
 }
 
-// The candidate AUTO source is refused by the installed embedded manifest and
-// admitted only through a reviewed binding — the same closure the commit and
-// every other entry point share.
-func TestUnwindIntentCandidateAuthorityMatchesEmbeddedManifest(t *testing.T) {
+// The unwind source authority is the registry: every held lane, the
+// exit-only Ethena lane included, may be unwound; a lane outside it may not.
+func TestUnwindIntentSourceAuthorityIsTheRegistry(t *testing.T) {
 	t.Parallel()
-	embedded := embeddedTestManifest(t)
-	reviewed := embeddedTestManifest(t)
-	intent := unwindIntentFromRequest(unwindIntentCommandRequest(autoAUTOPYUSD.Lane), time.Now().UTC())
-	if err := embedded.validateUnwindIntent(intent); err != nil {
-		t.Fatal("installed manifest refused the candidate unwind source:", err)
+	for _, lane := range earnLaneIDs(true) {
+		intent := unwindIntentFromRequest(unwindIntentCommandRequest(lane), time.Now().UTC())
+		if err := intent.validate(); err != nil {
+			t.Fatal("registry lane cannot be unwound:", lane, err)
+		}
 	}
-	if err := reviewed.validateUnwindIntent(intent); err != nil {
-		t.Fatal("reviewed manifest refused the candidate unwind source:", err)
+	intent := unwindIntentFromRequest(unwindIntentCommandRequest(RouteID), time.Now().UTC())
+	if intent.validate() == nil {
+		t.Fatal("a lane outside the registry validated as an unwind source")
 	}
 }
 
@@ -108,7 +108,7 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 	if committed.DryRun {
 		t.Fatal("candidate execute reported itself as a dry-run")
 	}
-	stored, err := db.LoadUnwindIntentOnManifest(ctx, reviewed, key)
+	stored, err := db.LoadUnwindIntent(ctx, key)
 	if err != nil || stored == nil || !sameUnwindIntent(*stored, committed.Intent) {
 		t.Fatalf("candidate execute lost the committed intent: %+v %v", stored, err)
 	}
@@ -136,8 +136,7 @@ func TestUnwindIntentCommitCoreCommitsCandidateUnderReviewedManifest(t *testing.
 	if err != nil || public.Intent.SourceLane != autoAUTOPYUSD.Lane {
 		t.Fatalf("installed binding refused the AUTO unwind: %+v %v", public, err)
 	}
-	embedded := embeddedTestManifest(t)
-	stored, err = db.LoadUnwindIntentOnManifest(ctx, embedded, productionRouteKey)
+	stored, err = db.LoadUnwindIntent(ctx, productionRouteKey)
 	if err != nil || stored == nil || !sameUnwindIntent(*stored, public.Intent) {
 		t.Fatalf("public execute lost the committed intent: %+v %v", stored, err)
 	}
@@ -177,11 +176,7 @@ func TestUnwindIntentCommitExecuteCommitsUnderOwnLease(t *testing.T) {
 	if result.DryRun {
 		t.Fatal("execute reported itself as a dry-run")
 	}
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	committed, err := db.LoadUnwindIntentOnManifest(ctx, manifest, productionRouteKey)
+	committed, err := db.LoadUnwindIntent(ctx, productionRouteKey)
 	if err != nil || committed == nil || !sameUnwindIntent(*committed, result.Intent) {
 		t.Fatalf("execute lost the committed intent: %+v %v", committed, err)
 	}

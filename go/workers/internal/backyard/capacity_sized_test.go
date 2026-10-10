@@ -28,12 +28,12 @@ func TestCapacitySizedEntryRetainsCollateralRoom(t *testing.T) {
 		binary.LittleEndian.PutUint64(a.Data[kaminoOutsideBorrowLimitOffset:], 200_000_000_000)
 	}
 	binary.LittleEndian.PutUint64(accounts[1].Data[224:], 10_000_000_000)
-	got, err := kaminoPairEntryCapacityAuthorized(position, accounts, route)
+	got, err := kaminoPairEntryCapacity(position, accounts, route)
 	if err != nil || got < 100_000_000_000 {
 		t.Fatalf("equity clipped by borrowing: %d %v", got, err)
 	}
 	binary.LittleEndian.PutUint64(accounts[1].Data[224:], 0)
-	zero, err := kaminoPairEntryCapacityAuthorized(position, accounts, route)
+	zero, err := kaminoPairEntryCapacity(position, accounts, route)
 	if err != nil || zero != got {
 		t.Fatalf("zero debt room changed equity: %d %v", zero, err)
 	}
@@ -378,6 +378,18 @@ func TestCapacitySizedDebtRoomBoundaries(t *testing.T) {
 			binary.LittleEndian.PutUint64(a[1].Data[kaminoOutsideBorrowLimitOffset:], 100)
 		}, 100, false},
 		{"elevation", func(a []ConfirmedAccount) { a[2].Data[kaminoObligationElevationGroupOffset] = 1 }, 0, false},
+		// Moved from the deleted one-pass pair-capacity table: the same
+		// protocol caps now bound the B2 borrow.
+		{"outside_limit_closed", func(a []ConfirmedAccount) {
+			binary.LittleEndian.PutUint64(a[1].Data[kaminoOutsideBorrowLimitOffset:], 0)
+		}, 0, false},
+		{"borrow_limit", func(a []ConfirmedAccount) {
+			binary.LittleEndian.PutUint64(a[1].Data[kaminoReserveConfigOffset+168:], 50)
+		}, 50, false},
+		// One fixed-point ulp below the 10% boundary: strict.
+		{"utilization_boundary", func(a []ConfirmedAccount) { a[1].Data[kaminoReserveConfigOffset+645] = 10 }, 99, false},
+		{"cross_collateral_disabled", func(a []ConfirmedAccount) { a[0].Data[kaminoDisableCrossCollateralOffset] = 1 }, 0, false},
+		{"referrer", func(a []ConfirmedAccount) { a[2].Data[2288] = 1 }, 0, false},
 		{"weighted_debt", func(a []ConfirmedAccount) { binary.LittleEndian.PutUint64(a[1].Data[kaminoBorrowFactorOffset:], 200) }, 0, false},
 		{"unknown_clock", func(a []ConfirmedAccount) { a[3].Data = nil }, 0, true},
 		{"stale_oracle", func(a []ConfirmedAccount) {
