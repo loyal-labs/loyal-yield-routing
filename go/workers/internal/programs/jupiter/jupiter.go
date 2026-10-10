@@ -1,7 +1,7 @@
 // Package jupiter holds the Jupiter v6 aggregator facts the workers use, each
 // defined once: the program ID, the route instruction discriminators, the
-// shared_accounts_route_v2 account order its decoder and policy constraint
-// read, the decoder for the legacy shared_accounts_route arguments, and the one
+// shared_accounts_route_v2 account order its policy constraint reads, the
+// decoder for the legacy shared_accounts_route arguments, and the one
 // swap/v1 HTTP client that quotes and fetches swap instructions.
 //
 // The swap API is swap/v1 at LiteBase or KeyedBase, and neither needs a key
@@ -9,13 +9,14 @@
 // the API returns only when /quote asks for instructionVersion=V2 and
 // /swap-instructions passes useSharedAccounts; otherwise it returns the legacy
 // shared_accounts_route, whose amounts follow its variable-length route plan
-// where no fixed offset reaches them.
+// where no fixed offset reaches them. The v2 constraint keeps a swap's output
+// in the owner's destination account; it does not bound the swap's price
+// (SharedAccountsRouteV2Allowed).
 package jupiter
 
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -150,19 +151,16 @@ func Bounds(inAmountAt, maxIn uint64, maxSlippageBPS uint16) []squads.DataConstr
 }
 
 // shared_accounts_route_v2's arguments, each at a fixed offset ahead of its
-// variable-length route plan: id u8, in_amount u64, quoted_out_amount u64,
-// slippage_bps u16, platform_fee_bps u16, positive_slippage_bps u16, then
-// route_plan Vec<RoutePlanStepV2>. The platform fee and the positive-slippage
-// fee are the 4 bytes at V2FeesOffset; while both are zero the route takes no
-// fee account, and its remaining accounts start with the first venue's.
+// variable-length route plan: id u8 @8, in_amount u64 @9, quoted_out_amount
+// u64 @17, slippage_bps u16 @25, platform_fee_bps u16 @27,
+// positive_slippage_bps u16 @29, then route_plan Vec<RoutePlanStepV2> @31.
+// The platform fee and the positive-slippage fee are the 4 bytes at
+// V2FeesOffset; while both are zero the route takes no fee account.
 const (
 	V2IDOffset        = 8
-	V2InAmountOffset  = 9
 	V2QuotedOutOffset = 17
-	V2SlippageOffset  = 25
 	V2FeesOffset      = 27
 	V2FeesLen         = 4
-	V2RoutePlanOffset = 31
 )
 
 // ProgramAuthorities is how many program authorities shared routes run
@@ -194,10 +192,7 @@ type SharedRouteV2[T any] struct {
 	SourceMint, DestinationMint, SourceTokenProgram, DestinationTokenProgram       T
 }
 
-type (
-	SharedRouteV2Accounts = SharedRouteV2[solana.PublicKey]
-	SharedRouteV2Allowed  = SharedRouteV2[squads.Slot]
-)
+type SharedRouteV2Allowed = SharedRouteV2[squads.Slot]
 
 func sharedRouteV2Slots[T any](a SharedRouteV2[T], fixed func(solana.PublicKey) T) []squads.AccountSlot[T] {
 	return []squads.AccountSlot[T]{
@@ -208,63 +203,22 @@ func sharedRouteV2Slots[T any](a SharedRouteV2[T], fixed func(solana.PublicKey) 
 	}
 }
 
-// SharedAccountsRouteV2 is shared_accounts_route_v2's fixed arguments.
-type SharedAccountsRouteV2 struct {
-	ID                                               uint8
-	InAmount, QuotedOutAmount                        uint64
-	SlippageBPS, PlatformFeeBPS, PositiveSlippageBPS uint16
-	Steps                                            uint32 // route_plan length
-}
-
-// DecodeSharedAccountsRouteV2 reads a shared_accounts_route_v2 instruction, as
-// the swap API returns it, through its account order: the fixed accounts with
-// their flags, and the fixed arguments.
-func DecodeSharedAccountsRouteV2(ix solana.Instruction) (SharedRouteV2Accounts, SharedAccountsRouteV2, error) {
-	data, err := ix.Data()
-	if err != nil {
-		return SharedRouteV2Accounts{}, SharedAccountsRouteV2{}, err
-	}
-	if ix.ProgramID() != ProgramID || len(data) < V2RoutePlanOffset+4 || [8]byte(data[:8]) != SharedAccountsRouteV2Discriminator {
-		return SharedRouteV2Accounts{}, SharedAccountsRouteV2{}, errors.New("not a Jupiter shared_accounts_route_v2")
-	}
-	var a SharedRouteV2Accounts
-	fixed := map[*solana.PublicKey]bool{}
-	slots := sharedRouteV2Slots(SharedRouteV2[*solana.PublicKey]{&a.ProgramAuthority, &a.User, &a.Source, &a.ProgramSource,
-		&a.ProgramDestination, &a.Destination, &a.SourceMint, &a.DestinationMint, &a.SourceTokenProgram, &a.DestinationTokenProgram},
-		func(key solana.PublicKey) *solana.PublicKey { fixed[&key] = true; return &key })
-	accounts := ix.Accounts()
-	if len(accounts) < len(slots) {
-		return SharedRouteV2Accounts{}, SharedAccountsRouteV2{}, errors.New("shared_accounts_route_v2 lacks its fixed accounts")
-	}
-	for i, slot := range slots {
-		meta := accounts[i]
-		if meta == nil || meta.IsSigner != slot.Signer || meta.IsWritable != slot.Writable || fixed[slot.Key] && *slot.Key != meta.PublicKey {
-			return SharedRouteV2Accounts{}, SharedAccountsRouteV2{}, fmt.Errorf("shared_accounts_route_v2 account %d is not what its order says", i)
-		}
-		*slot.Key = meta.PublicKey
-	}
-	return a, SharedAccountsRouteV2{
-		ID:                  data[V2IDOffset],
-		InAmount:            binary.LittleEndian.Uint64(data[V2InAmountOffset:]),
-		QuotedOutAmount:     binary.LittleEndian.Uint64(data[V2QuotedOutOffset:]),
-		SlippageBPS:         binary.LittleEndian.Uint16(data[V2SlippageOffset:]),
-		PlatformFeeBPS:      binary.LittleEndian.Uint16(data[V2FeesOffset:]),
-		PositiveSlippageBPS: binary.LittleEndian.Uint16(data[V2FeesOffset+2:]),
-		Steps:               binary.LittleEndian.Uint32(data[V2RoutePlanOffset:]),
-	}, nil
-}
-
 // SharedAccountsRouteV2Allowed admits shared_accounts_route_v2 over the
-// allowed accounts with slippage_bps at most maxSlippageBPS and no platform or
-// positive-slippage fee, so no fee account; any id, in_amount,
-// quoted_out_amount and route plan. The route's own accounts are free:
-// Jupiter itself requires each venue's token accounts to be the program
-// authority's (a foreign output fails InvalidOutputTokenAccount, a foreign
-// authority RequireKeysEqViolated), so output reaches only Destination.
-func SharedAccountsRouteV2Allowed(a SharedRouteV2Allowed, maxSlippageBPS uint16) squads.InstructionConstraintView {
+// allowed accounts with no platform or positive-slippage fee: a fee pays the
+// account at 12, which no slot pins, so the fee bytes must be zero.
+//
+// What it guarantees: output reaches only Destination, since Jupiter itself
+// rejects a route whose venue token accounts or venue authority are not its
+// program authority's (InvalidOutputTokenAccount, RequireKeysEqViolated;
+// mainnet tamper simulation, policy's TestSharedRouteV2TamperOnMainnet).
+// What it does not: the price. id, in_amount, quoted_out_amount, slippage_bps
+// and the route accounts are free by the owner's no-limits choice for swaps,
+// and the delegate writes quoted_out as well as slippage, so a holder of the
+// delegate key can sell the whole Source balance at any price through a pool
+// it controls.
+func SharedAccountsRouteV2Allowed(a SharedRouteV2Allowed) squads.InstructionConstraintView {
 	return squads.Allow(ProgramID, []squads.DataConstraintView{
 		squads.DataBytes(0, SharedAccountsRouteV2Discriminator[:]),
-		squads.DataU16(V2SlippageOffset, squads.OpLessThanOrEqualTo, maxSlippageBPS),
 		squads.DataBytes(V2FeesOffset, make([]byte, V2FeesLen)),
 	}, squads.Slots(ProgramID, sharedRouteV2Slots(a, squads.Pinned)))
 }

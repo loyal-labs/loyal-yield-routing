@@ -111,9 +111,13 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("--to: %w", err)
 		}
-		quotes := backyardJupiter(optionalCredential("JUPITER_API_KEY"))
+		// apply installs the policy, which needs no quote; only check asks
+		// Jupiter for the swap instruction.
 		build = func(payer solana.PublicKey) policy.Build {
-			return policy.Swap(c, quotes, settings, uint8(*vaultIndex), from, to, payer, *amount)
+			if act == "apply" {
+				return policy.SwapPolicy(c, settings, uint8(*vaultIndex), from, to, *amount)
+			}
+			return policy.Swap(c, backyardJupiter(optionalCredential("JUPITER_API_KEY")), settings, uint8(*vaultIndex), from, to, payer, *amount)
 		}
 	}
 	switch act {

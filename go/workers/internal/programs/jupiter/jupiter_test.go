@@ -13,8 +13,8 @@ import (
 
 // The v2 swap constraint admits a real swap of the canary vault's USDC into
 // its USDT, exactly as /swap-instructions returned it (instructionVersion=V2,
-// useSharedAccounts), and nothing that sends the output elsewhere, takes a fee,
-// pays from another mint or exceeds the slippage bound.
+// useSharedAccounts), and nothing that sends the output elsewhere, takes a fee
+// or pays from another mint.
 func TestSharedAccountsRouteV2AllowedAdmitsTheAPIsSwap(t *testing.T) {
 	raw, err := os.ReadFile("testdata/swap_instructions_v2_usdc_usdt.json")
 	if err != nil {
@@ -28,9 +28,6 @@ func TestSharedAccountsRouteV2AllowedAdmitsTheAPIsSwap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := DecodeSharedAccountsRouteV2(ix); err != nil {
-		t.Fatal(err)
-	}
 	returned, err := squads.InstructionOf(ix)
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +39,7 @@ func TestSharedAccountsRouteV2AllowedAdmitsTheAPIsSwap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	constraint := SharedAccountsRouteV2Allowed(allowed, 50)
+	constraint := SharedAccountsRouteV2Allowed(allowed)
 	foreign := solana.MustPublicKeyFromBase58("6abgRZvHXZFjsr517KLdbqjQArCtzQXK6bSs9yZjMXqK") // another wallet's USDT account
 
 	cases := []struct {
@@ -55,7 +52,6 @@ func TestSharedAccountsRouteV2AllowedAdmitsTheAPIsSwap(t *testing.T) {
 		{"platform fee set", func(ix *squads.Instruction) { binary.LittleEndian.PutUint16(ix.Data[V2FeesOffset:], 10) }, false},
 		{"positive slippage fee set", func(ix *squads.Instruction) { binary.LittleEndian.PutUint16(ix.Data[V2FeesOffset+2:], 10) }, false},
 		{"source mint changed", func(ix *squads.Instruction) { ix.Accounts[6].PublicKey = usdt }, false},
-		{"slippage above the bound", func(ix *squads.Instruction) { binary.LittleEndian.PutUint16(ix.Data[V2SlippageOffset:], 51) }, false},
 	}
 	for _, tc := range cases {
 		ix := squads.Instruction{ProgramID: returned.ProgramID, Accounts: slices.Clone(returned.Accounts), Data: slices.Clone(returned.Data)}
