@@ -5,10 +5,6 @@ edition = "2021"
 description = "Rust SDK for building Loyal delegated Squads actions"
 
 [[bin]]
-name = "compile-voltr-kamino-policy"
-path = "src/bin/compile_voltr_kamino_policy.rs"
-
-[[bin]]
 name = "compile-voltr-kamino-runtime-policy"
 path = "src/bin/compile_voltr_kamino_runtime_policy.rs"
 

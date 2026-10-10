@@ -9,11 +9,10 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"io"
 	"os"
-	"time"
 )
 
 func run() error {
-	kind := flag.String("kind", "", "fleet, fleet-wave, voltr or backyard saved decision")
+	kind := flag.String("kind", "", "fleet, fleet-wave or backyard saved decision")
 	path := flag.String("snapshot", "", "saved input JSON; no database or RPC")
 	flag.Parse()
 	if *path == "" {
@@ -65,42 +64,6 @@ func decide(kind string, input io.Reader) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-	case "voltr":
-		// One Backyard Voltr planning call on a saved confirmed observation and
-		// market epoch. OptimizerEpochRowID is the loyal_yield.optimizer_epochs
-		// id the durable opportunity references, so the key equals the row's
-		// idempotency_key.
-		var in struct {
-			Observation         fleet.VoltrObservation
-			Epoch               fleet.ImmutableMarketEpoch
-			OptimizerEpochRowID int64
-			VaultID             int64
-			LastOptimization    *time.Time
-			EvaluatedAt         time.Time
-		}
-		if err := decode.Decode(&in); err != nil {
-			return nil, err
-		}
-		if in.EvaluatedAt.IsZero() || in.OptimizerEpochRowID <= 0 || in.VaultID <= 0 {
-			return nil, errors.New("voltr requires evaluatedAt, a positive optimizerEpochRowId and vaultId")
-		}
-		route, err := fleet.LoadVoltrRoute()
-		if err != nil {
-			return nil, err
-		}
-		opportunity, err := fleet.PlanVoltr(route, in.Observation, in.Epoch, in.VaultID, in.LastOptimization, in.EvaluatedAt)
-		if err != nil {
-			return nil, err
-		}
-		out := struct {
-			Opportunity    *fleet.VoltrOpportunity
-			OpportunityKey *string
-		}{Opportunity: opportunity}
-		if opportunity != nil {
-			key := fleet.VoltrOpportunityKey(route.Cluster, in.OptimizerEpochRowID, *opportunity)
-			out.OpportunityKey = &key
-		}
-		result = out
 	case "backyard":
 		var in backyard.Snapshot
 		if err := decode.Decode(&in); err != nil {

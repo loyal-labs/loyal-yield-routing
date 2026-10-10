@@ -27,9 +27,6 @@ type Config struct {
 	JupiterBuildURL, JupiterAPIKey     string
 	EnabledStableMints                 []string
 	FusedExecute                       bool
-	// VoltrVaultID is the managed vault of the Backyard Voltr route
-	// (BACKYARD_VOLTR_FLEET_VAULT_ID); zero leaves Voltr planning off.
-	VoltrVaultID int64
 }
 
 func (c Config) Validate() error {

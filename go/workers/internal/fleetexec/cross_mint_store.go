@@ -1481,17 +1481,6 @@ const crossMintPolicyPayerSQL = `SELECT EXISTS (
       AND $3 = ANY(policy.delegated_signers)
       AND (
           (
-              opportunity.execution_plan->>'kind' = 'voltr_kamino'
-              AND opportunity.execution_plan->>'guardian' = $3
-              AND NULLIF($4::jsonb->>'routeBundleSha256', '') =
-                  opportunity.execution_plan->>'route_bundle_sha256'
-              AND NULLIF($4::jsonb->>'lookupTable', '') IS NOT NULL
-              AND NULLIF(
-                  $4::jsonb->>'lookupTableOrderedAddressesSha256', ''
-              ) IS NOT NULL
-              AND ($4::jsonb->>'lookupTableAddressCount')::BIGINT > 0
-          )
-          OR (
               EXISTS (
                   SELECT 1 FROM loyal_yield.rebalance_decisions decision
                   WHERE decision.id = opportunity.decision_id
