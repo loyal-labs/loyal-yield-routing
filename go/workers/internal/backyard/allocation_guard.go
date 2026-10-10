@@ -30,11 +30,13 @@ func evaluateAllocationDailyLimit(sentRaw, nextRaw uint64) error {
 	return nil
 }
 
-// allocationCountedStatuses are the operation states that prove a broadcast
-// happened: everything from the broadcast intent onward, including failed
+// allocationCountedStatuses are the operation states that can follow a
+// broadcast: everything from the broadcast intent onward, including failed
 // landings and manual_recovery rows (a refused wire still consumed the attempt
 // window, and a parked row was broadcast and was never proven to have failed
-// before broadcast). Only pre-broadcast states are excluded.
+// before broadcast). Only pre-broadcast states are excluded. A row also fails
+// when admission refuses it before signing, so the window counts only rows
+// with the signed wire every broadcast persists first.
 var allocationCountedStatuses = []string{
 	string(BroadcastIntent), string(Submitted), string(Confirmed),
 	string(Reconciling), string(Reconciled), string(ManualRecovery), string(Failed),
@@ -43,7 +45,7 @@ var allocationCountedStatuses = []string{
 const allocationSentWindowSQL = `SELECT COALESCE(SUM((expected_effects->'decision'->>'amountRaw')::bigint), 0)::bigint
 FROM loyal_yield.multiply_operations
 WHERE route_key = $1 AND action = 'VOLTR_ALLOCATE_TO_SQUADS'
-  AND status = ANY($2) AND COALESCE(broadcast_intent_at, created_at) >= $3`
+  AND status = ANY($2) AND signed_wire IS NOT NULL AND COALESCE(broadcast_intent_at, created_at) >= $3`
 
 // AllocationSentRawTrailingWindow sums the allocation amounts this worker's
 // journal recorded as sent inside the trailing daily window. The window is
