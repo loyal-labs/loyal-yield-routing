@@ -28,11 +28,11 @@ var Any = Slot{Any: true}
 // Pin is the slot that admits only keys.
 func Pin(keys ...solana.PublicKey) Slot { return Slot{Keys: keys} }
 
-// Unpinned is Any for every key, for an instruction's program and sysvar
-// accounts when its own program checks them.
+// Unpinned is Any for every key: a fixed slot the policy leaves to the
+// instruction's own program.
 func Unpinned(solana.PublicKey) Slot { return Any }
 
-// Pinned is Pin of the one key, for program and sysvar accounts a policy pins.
+// Pinned is Pin of the one key: a fixed slot the policy pins.
 func Pinned(key solana.PublicKey) Slot { return Pin(key) }
 
 // Allow is the constraint that admits one instruction: its program, its

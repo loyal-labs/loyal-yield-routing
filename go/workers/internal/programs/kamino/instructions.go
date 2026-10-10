@@ -14,10 +14,11 @@ import (
 // An instruction a smart account sends through a Squads policy has its account
 // order written once, as a slot list over the slot type: a key per slot for
 // the instruction, a squads.Slot per slot for its policy constraint. The
-// builder and its *Allowed constraint read the same list. *Allowed takes fixed,
-// which says whether the policy pins the instruction's program and sysvar
-// accounts (squads.Pinned) or leaves them to KLend's own checks
-// (squads.Unpinned).
+// builder and its *Allowed constraint read the same list. The lifecycle
+// constraints (deposit, withdraw, borrow, repay) leave the slots KLend fills
+// itself free: programs, sysvars, the deposit's collateral placeholder and the
+// borrow's referrer, which KLend checks against the obligation. The init
+// constraints pin every slot, so a delegate cannot set a referrer.
 
 // RefreshReserveAccounts are refresh_reserve's accounts; the oracles are
 // optional.
@@ -83,8 +84,8 @@ func DepositV2(a CollateralAccounts, liquidityAmount uint64) *solana.GenericInst
 }
 
 // DepositV2Allowed admits DepositV2 over the allowed accounts, any amount.
-func DepositV2Allowed(a CollateralAllowed, fixed func(solana.PublicKey) squads.Slot) squads.InstructionConstraintView {
-	return allow(DepositV2Discriminator[:], depositV2Slots(a, fixed))
+func DepositV2Allowed(a CollateralAllowed) squads.InstructionConstraintView {
+	return allow(DepositV2Discriminator[:], depositV2Slots(a, squads.Unpinned))
 }
 
 // WithdrawV2 is withdraw_obligation_collateral_and_redeem_reserve_collateral_v2.
@@ -93,8 +94,8 @@ func WithdrawV2(a CollateralAccounts, collateralAmount uint64) *solana.GenericIn
 }
 
 // WithdrawV2Allowed admits WithdrawV2 over the allowed accounts, any amount.
-func WithdrawV2Allowed(a CollateralAllowed, fixed func(solana.PublicKey) squads.Slot) squads.InstructionConstraintView {
-	return allow(WithdrawV2Discriminator[:], withdrawV2Slots(a, fixed))
+func WithdrawV2Allowed(a CollateralAllowed) squads.InstructionConstraintView {
+	return allow(WithdrawV2Discriminator[:], withdrawV2Slots(a, squads.Unpinned))
 }
 
 // Liquidity is the account set of the v2 borrow and repayment, which move
@@ -138,8 +139,8 @@ func BorrowV2(a LiquidityAccounts, liquidityAmount uint64) *solana.GenericInstru
 }
 
 // BorrowV2Allowed admits BorrowV2 over the allowed accounts, any amount.
-func BorrowV2Allowed(a LiquidityAllowed, fixed func(solana.PublicKey) squads.Slot) squads.InstructionConstraintView {
-	return allow(BorrowV2Discriminator[:], borrowV2Slots(a, fixed))
+func BorrowV2Allowed(a LiquidityAllowed) squads.InstructionConstraintView {
+	return allow(BorrowV2Discriminator[:], borrowV2Slots(a, squads.Unpinned))
 }
 
 // RepayV2 is repay_obligation_liquidity_v2.
@@ -148,8 +149,8 @@ func RepayV2(a LiquidityAccounts, liquidityAmount uint64) *solana.GenericInstruc
 }
 
 // RepayV2Allowed admits RepayV2 over the allowed accounts, any amount.
-func RepayV2Allowed(a LiquidityAllowed, fixed func(solana.PublicKey) squads.Slot) squads.InstructionConstraintView {
-	return allow(RepayV2Discriminator[:], repayV2Slots(a, fixed))
+func RepayV2Allowed(a LiquidityAllowed) squads.InstructionConstraintView {
+	return allow(RepayV2Discriminator[:], repayV2Slots(a, squads.Unpinned))
 }
 
 // OwnedObligation is the slot that admits any KLend obligation owned by owner,
@@ -187,30 +188,24 @@ func InitObligation(a ObligationInitAccounts, tag, id uint8) *solana.GenericInst
 
 // InitObligationAllowed admits InitObligation of the (tag, id) obligation
 // over the allowed accounts.
-func InitObligationAllowed(a ObligationInitAllowed, tag, id uint8, fixed func(solana.PublicKey) squads.Slot) squads.InstructionConstraintView {
-	return allow(append(InitObligationDiscriminator[:], tag, id), initObligationSlots(a, fixed))
+func InitObligationAllowed(a ObligationInitAllowed, tag, id uint8) squads.InstructionConstraintView {
+	return allow(append(InitObligationDiscriminator[:], tag, id), initObligationSlots(a, squads.Pinned))
 }
 
-// ObligationFarmsInit is init_obligation_farms_for_reserve's account set.
-type ObligationFarmsInit[T any] struct {
-	Payer, Owner, Obligation, LendingMarketAuthority, Reserve T
-	ReserveFarmState, ObligationFarmUserState, LendingMarket  T
-}
-
-type ObligationFarmsInitAccounts = ObligationFarmsInit[solana.PublicKey]
-
-func initObligationFarmsSlots[T any](a ObligationFarmsInit[T], fixed func(solana.PublicKey) T) []slot[T] {
-	return []slot[T]{
-		signerWritableSlot(a.Payer), readonlySlot(a.Owner), writableSlot(a.Obligation), readonlySlot(a.LendingMarketAuthority),
-		writableSlot(a.Reserve), writableSlot(a.ReserveFarmState), writableSlot(a.ObligationFarmUserState), readonlySlot(a.LendingMarket),
-		readonlySlot(fixed(FarmsProgramID)), readonlySlot(fixed(solana.SysVarRentPubkey)), readonlySlot(fixed(solana.SystemProgramID)),
-	}
+// ObligationFarmsInitAccounts is init_obligation_farms_for_reserve's account
+// set.
+type ObligationFarmsInitAccounts struct {
+	Payer, Owner, Obligation, LendingMarketAuthority, Reserve solana.PublicKey
+	ReserveFarmState, ObligationFarmUserState, LendingMarket  solana.PublicKey
 }
 
 // InitObligationFarmsForReserve creates the obligation's farm user state for
 // the reserve farm of mode (0 collateral, 1 debt).
 func InitObligationFarmsForReserve(a ObligationFarmsInitAccounts, mode uint8) *solana.GenericInstruction {
-	return instruction(InitObligationFarmsForReserveDiscriminator, []byte{mode}, metas(initObligationFarmsSlots(a, same))...)
+	return instruction(InitObligationFarmsForReserveDiscriminator, []byte{mode},
+		signerWritable(a.Payer), readonly(a.Owner), writable(a.Obligation), readonly(a.LendingMarketAuthority),
+		writable(a.Reserve), writable(a.ReserveFarmState), writable(a.ObligationFarmUserState), readonly(a.LendingMarket),
+		readonly(FarmsProgramID), readonly(solana.SysVarRentPubkey), readonly(solana.SystemProgramID))
 }
 
 // UserMetadataInit is init_user_metadata's account set; it has no referrer.
@@ -237,8 +232,8 @@ func InitUserMetadata(a UserMetadataInitAccounts, userLookupTable solana.PublicK
 
 // InitUserMetadataAllowed admits InitUserMetadata over the allowed accounts
 // with the given user lookup table.
-func InitUserMetadataAllowed(a UserMetadataInitAllowed, userLookupTable solana.PublicKey, fixed func(solana.PublicKey) squads.Slot) squads.InstructionConstraintView {
-	return allow(append(InitUserMetadataDiscriminator[:], userLookupTable[:]...), initUserMetadataSlots(a, fixed))
+func InitUserMetadataAllowed(a UserMetadataInitAllowed, userLookupTable solana.PublicKey) squads.InstructionConstraintView {
+	return allow(append(InitUserMetadataDiscriminator[:], userLookupTable[:]...), initUserMetadataSlots(a, squads.Pinned))
 }
 
 func instruction(discriminator [8]byte, args []byte, accounts ...*solana.AccountMeta) *solana.GenericInstruction {
@@ -292,20 +287,10 @@ func metas(slots []slot[solana.PublicKey]) []*solana.AccountMeta {
 	return out
 }
 
-// allow is the constraint over slots. An optional slot pinned to the zero key
-// admits KLend's program id, which the builder passes for an absent account.
 func allow(data []byte, slots []slot[squads.Slot]) squads.InstructionConstraintView {
 	out := make([]squads.Slot, len(slots))
 	for i, s := range slots {
 		out[i] = s.key
-		if s.optional && len(s.key.Keys) > 0 {
-			out[i].Keys = make([]solana.PublicKey, len(s.key.Keys))
-			for j, key := range s.key.Keys {
-				if out[i].Keys[j] = key; key.IsZero() {
-					out[i].Keys[j] = ProgramID
-				}
-			}
-		}
 	}
 	return squads.Allow(ProgramID, data, out)
 }

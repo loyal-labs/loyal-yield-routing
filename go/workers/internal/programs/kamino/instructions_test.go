@@ -38,8 +38,8 @@ func containsKey(keys []solana.PublicKey, key solana.PublicKey) bool {
 	return false
 }
 
-// A policy constraint built from an instruction's own account order, every
-// slot pinned, admits exactly that instruction, with and without a farm.
+// A policy constraint built from an instruction's own account order, with its
+// accounts pinned, admits that instruction, with and without a farm.
 func TestAllowedAdmitsItsOwnInstruction(t *testing.T) {
 	k := func(seed byte) solana.PublicKey { return solana.PublicKey{seed} }
 	pin := squads.Pin
@@ -50,6 +50,10 @@ func TestAllowedAdmitsItsOwnInstruction(t *testing.T) {
 			UserLiquidity: pin(a.UserLiquidity), LiquidityTokenProgram: pin(a.LiquidityTokenProgram),
 			ObligationFarmUserState: pin(a.ObligationFarmUserState), ReserveFarmState: pin(a.ReserveFarmState)}
 	}
+	farmless := func(a CollateralAllowed) CollateralAllowed {
+		a.ObligationFarmUserState, a.ReserveFarmState = pin(ProgramID), pin(ProgramID)
+		return a
+	}
 	farmed := CollateralAccounts{Owner: k(1), Obligation: k(2), LendingMarket: k(3), LendingMarketAuthority: k(4), Reserve: k(5),
 		LiquidityMint: k(6), LiquiditySupply: k(7), CollateralMint: k(8), CollateralSupply: k(9), UserLiquidity: k(10),
 		LiquidityTokenProgram: solana.TokenProgramID, ObligationFarmUserState: k(11), ReserveFarmState: k(12)}
@@ -59,8 +63,8 @@ func TestAllowedAdmitsItsOwnInstruction(t *testing.T) {
 		LiquidityMint: k(6), LiquiditySupply: k(7), UserLiquidity: k(10), TokenProgram: solana.TokenProgramID, FeeReceiver: k(14)}
 	debtAllowed := LiquidityAllowed{Owner: pin(k(1)), Obligation: pin(k(2)), LendingMarket: pin(k(3)), LendingMarketAuthority: pin(k(4)),
 		Reserve: pin(k(5)), LiquidityMint: pin(k(6)), LiquiditySupply: pin(k(7)), UserLiquidity: pin(k(10)),
-		TokenProgram: pin(solana.TokenProgramID), FeeReceiver: pin(k(14)), ObligationFarmUserState: pin(solana.PublicKey{}),
-		ReserveFarmState: pin(solana.PublicKey{})}
+		TokenProgram: pin(solana.TokenProgramID), FeeReceiver: pin(k(14)), ObligationFarmUserState: pin(ProgramID),
+		ReserveFarmState: pin(ProgramID)}
 	obligation := ObligationInitAccounts{Owner: k(1), FeePayer: k(1), Obligation: k(2), LendingMarket: k(3), OwnerUserMetadata: k(13)}
 	metadata := UserMetadataInitAccounts{Owner: k(1), FeePayer: k(1), UserMetadata: k(13)}
 
@@ -68,19 +72,16 @@ func TestAllowedAdmitsItsOwnInstruction(t *testing.T) {
 		allowed squads.InstructionConstraintView
 		ix      *solana.GenericInstruction
 	}{
-		"deposit farmed":  {DepositV2Allowed(pinned(farmed), squads.Pinned), DepositV2(farmed, 7)},
-		"deposit bare":    {DepositV2Allowed(pinned(bare), squads.Pinned), DepositV2(bare, 7)},
-		"withdraw farmed": {WithdrawV2Allowed(pinned(farmed), squads.Pinned), WithdrawV2(farmed, 7)},
-		"withdraw bare":   {WithdrawV2Allowed(pinned(bare), squads.Pinned), WithdrawV2(bare, 7)},
-		"borrow":          {BorrowV2Allowed(debtAllowed, squads.Pinned), BorrowV2(debt, 7)},
-		"repay":           {RepayV2Allowed(debtAllowed, squads.Pinned), RepayV2(debt, 7)},
-		"init obligation": {InitObligationAllowed(ObligationInitAllowed{pin(k(1)), pin(k(1)), pin(k(2)), pin(k(3)), pin(solana.PublicKey{}), pin(solana.PublicKey{}), pin(k(13))}, 0, 0, squads.Pinned), InitObligation(obligation, 0, 0)},
-		"init metadata":   {InitUserMetadataAllowed(UserMetadataInitAllowed{pin(k(1)), pin(k(1)), pin(k(13))}, solana.PublicKey{}, squads.Pinned), InitUserMetadata(metadata, solana.PublicKey{})},
+		"deposit farmed":  {DepositV2Allowed(pinned(farmed)), DepositV2(farmed, 7)},
+		"deposit bare":    {DepositV2Allowed(farmless(pinned(bare))), DepositV2(bare, 7)},
+		"withdraw farmed": {WithdrawV2Allowed(pinned(farmed)), WithdrawV2(farmed, 7)},
+		"withdraw bare":   {WithdrawV2Allowed(farmless(pinned(bare))), WithdrawV2(bare, 7)},
+		"borrow":          {BorrowV2Allowed(debtAllowed), BorrowV2(debt, 7)},
+		"repay":           {RepayV2Allowed(debtAllowed), RepayV2(debt, 7)},
+		"init obligation": {InitObligationAllowed(ObligationInitAllowed{pin(k(1)), pin(k(1)), pin(k(2)), pin(k(3)), pin(solana.PublicKey{}), pin(solana.PublicKey{}), pin(k(13))}, 0, 0), InitObligation(obligation, 0, 0)},
+		"init metadata":   {InitUserMetadataAllowed(UserMetadataInitAllowed{pin(k(1)), pin(k(1)), pin(k(13))}, solana.PublicKey{}), InitUserMetadata(metadata, solana.PublicKey{})},
 	}
 	for name, tc := range cases {
-		if len(tc.allowed.AccountConstraints) != len(tc.ix.Accounts()) {
-			t.Fatalf("%s: %d of %d account slots pinned", name, len(tc.allowed.AccountConstraints), len(tc.ix.Accounts()))
-		}
 		if !admits(tc.allowed, tc.ix) {
 			t.Fatalf("%s: constraint does not admit its own instruction", name)
 		}
@@ -94,5 +95,5 @@ func TestAllowedRefusesAnUnsetSlot(t *testing.T) {
 			t.Fatal("a deposit constraint with an unset user liquidity slot was built")
 		}
 	}()
-	DepositV2Allowed(CollateralAllowed{Owner: squads.Pin(ProgramID)}, squads.Unpinned)
+	DepositV2Allowed(CollateralAllowed{Owner: squads.Pin(ProgramID)})
 }

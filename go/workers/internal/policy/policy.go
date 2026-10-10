@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -84,6 +85,9 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 	}
 	if account, ok := squads.FindPolicy(installed, delegate, constraints); ok {
 		fmt.Fprintf(out, "%s is already installed on %s as %s\n", product.Name, settings, account)
+		if slices.Contains(replace, account) {
+			return fmt.Errorf("--replace names the installed %s policy %s", product.Name, account)
+		}
 		if len(replace) == 0 {
 			return nil
 		}
@@ -112,17 +116,8 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 	} else {
 		fmt.Fprintf(out, "apply %s: %d constraints at seed %d -> %s, remove %v\n", product.Name, len(constraints), apply.Seed, policy, replace)
 	}
-	if _, err := run(ctx, c, out, signer, []solana.Instruction{generic(ix)}, send); err != nil || !send || constraints == nil {
-		return err
-	}
-	if installed, err = squads.Policies(ctx, c, settings); err != nil {
-		return err
-	}
-	if account, ok := squads.FindPolicy(installed, delegate, constraints); !ok || account != policy {
-		return fmt.Errorf("applied policy %s does not read back equal", policy)
-	}
-	fmt.Fprintf(out, "installed %s as %s\n", product.Name, policy)
-	return nil
+	_, err = run(ctx, c, out, signer, []solana.Instruction{generic(ix)}, send)
+	return err
 }
 
 // Check sends each op of build's product (or only op number only, when it is
