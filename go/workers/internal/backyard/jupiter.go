@@ -352,13 +352,6 @@ func (m RouteManifest) compileJupiterMessage(request JupiterSwapRequest, delegat
 	if err != nil {
 		return nil, err
 	}
-	sourceMint, _, _, _, err := jupiterEdgeForRoute(request.Action, request.RouteLane)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkPositionLegCap(sourceMint, request.AmountRaw); err != nil {
-		return nil, err
-	}
 	if err := jupiterValidateAutoRetainedMinimum(request); err != nil {
 		return nil, err
 	}

@@ -374,13 +374,6 @@ func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route Runtim
 	if request.PolicyConstraintIndex != kaminoConstraintIndexForRoute(route, leg) {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet uses the wrong fixed lane constraint index")
 	}
-	legMint := route.Kamino.CollateralMint
-	if leg == kaminoLegBorrow || leg == kaminoLegRepay {
-		legMint = route.Kamino.DebtMint
-	}
-	if err := checkPositionLegCap(legMint, request.AmountRaw); err != nil {
-		return compiledInstruction{}, 0, err
-	}
 	if route.BasicPolicy {
 		family := basicPolicyFamilyForKaminoLeg(leg)
 		binding, err := basicPolicyBinding(family)

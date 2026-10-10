@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
@@ -680,11 +679,6 @@ func (m RouteManifest) kaminoPacketForRoute(action Action, leg kaminoPrimeUSDCLe
 	}
 	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: policy, PolicyAccountDataSHA256: policyHash, PolicyConstraintIndex: constraintIndex, Accounts: sets[index], Data: data, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
 	if _, observedLeg, err := kaminoRouteInstruction(request, lane); err != nil || observedLeg != leg {
-		// A leg over its mint cap keeps its own hold reason.
-		var hold *BudgetHold
-		if errors.As(err, &hold) {
-			return KaminoPrimeUSDCRequest{}, err
-		}
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
 	return request, nil

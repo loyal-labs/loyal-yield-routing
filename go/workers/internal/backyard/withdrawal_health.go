@@ -31,7 +31,7 @@ func withdrawalIntervention(reason string) bool {
 	switch reason {
 	case "withdrawal_full_exit_unproven", "debt_clear_confirmation_required",
 		"debt_clear_confirmation_requires_new_bounds", "debt_clear_receipt_history_full",
-		"squads_spending_limit_exceeded", "position_leg_cap_exceeded", "repayment_release_exceeds_safe_size",
+		"squads_spending_limit_exceeded", "repayment_release_exceeds_safe_size",
 		"leverage_exit_cycles_exceeded", "funding_slippage_exceeds_policy":
 		return true
 	}

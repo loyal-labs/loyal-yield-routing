@@ -308,7 +308,7 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 
 	// A pre-send hold fails only a never-submitted row and keeps its reason.
 	holdID := op + "-hold"
-	hold := &BudgetHold{Reason: "position_leg_cap_exceeded", Details: map[string]string{"amountRaw": "1"}}
+	hold := &BudgetHold{Reason: "squads_spending_limit_exceeded", Details: map[string]string{"amountRaw": "1"}}
 	assertBudgetHold(t, db.RecordPhase3BudgetHold(ctx, op, hold), "budget_hold_requires_never_submitted_operation")
 
 	// Only the live lease sends: after a restart takes the route, the old
@@ -352,7 +352,7 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	var retained BudgetHold
-	if json.Unmarshal(holdJSON, &retained) != nil || status != "failed" || reason != "phase3_budget_hold:position_leg_cap_exceeded" || retained.Details["amountRaw"] != "1" {
+	if json.Unmarshal(holdJSON, &retained) != nil || status != "failed" || reason != "phase3_budget_hold:squads_spending_limit_exceeded" || retained.Details["amountRaw"] != "1" {
 		t.Fatalf("pre-send hold was not retained: %s %s %s", status, reason, holdJSON)
 	}
 
