@@ -1266,11 +1266,6 @@ func (d *Database) transition(ctx context.Context, operationID string, from, to 
 	if result.RowsAffected() != 1 {
 		return fmt.Errorf("transition %s -> %s lost serialization", from, to)
 	}
-	if to == Failed {
-		if err := d.releasePhase3UnspentTx(ctx, tx, operationID); err != nil {
-			return err
-		}
-	}
 	return tx.Commit(ctx)
 }
 
@@ -1352,7 +1347,7 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
 		return err
 	}
-	if err := d.bindPhase3WireTx(ctx, tx, operationID, build.SignedWireSHA256); err != nil {
+	if err := bindSignedWireTx(ctx, tx, operationID, build.SignedWireSHA256); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistSignedUpdate, operationID, build.MessageSHA256, build.SignedWire,
@@ -1366,19 +1361,10 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 	return tx.Commit(ctx)
 }
 
-func (d *Database) markBroadcastIntent(ctx context.Context, operationID string, rpc *chain.Client, intent, wireHash string, cost ValuedTransactionCost) error {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
-	return d.markBroadcastIntentOnManifest(ctx, manifest, operationID, rpc, intent, wireHash, cost, nil)
-}
-
-// markBroadcastIntentOnManifest is the exact locked broadcast-intent body with
-// the final-send fence resolved through the explicit reviewed manifest; the
-// lease, freshness recheck and transition stay byte-identical. The public form
-// above loads the embedded manifest once and is unchanged.
-func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, rpc *chain.Client, intent, wireHash string, cost ValuedTransactionCost, custody *sharedCustodyAdmissionProof, originRisk ...*debtClearRiskProof) error {
+// markBroadcastIntentOnManifest records broadcast intent under the operation
+// lock, after the custody, debt-clear and selector-entry fences pass against
+// a confirmed slot read under that lock.
+func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, rpc *chain.Client, request any, bound phase3OperationAuthorization, custody *sharedCustodyAdmissionProof, originRisk *debtClearRiskProof) error {
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -1387,23 +1373,17 @@ func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest R
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
 		return err
 	}
-	// Recheck freshness after acquiring the journal lock, not before waiting
-	// for it. A slow lock or RPC never extends an earlier price's validity.
 	slot, err := confirmedSlot(ctx, rpc)
 	if err != nil {
-		return budgetHold("send_valuation_slot_unavailable")
-	}
-	if slot < cost.ObservationSlot || slot > cost.ValidThroughSlot {
-		return budgetHold("send_valuation_expired")
+		return budgetHold("send_slot_unavailable")
 	}
 	// Shared broadcast-intent custody seam (doc 26 §4): the fresh send proof
 	// is re-validated under THIS transaction's route lock against the
-	// PERSISTED built effects (decoded under the same reviewed manifest)
-	// before broadcast intent can be recorded.
-	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, cost, custody); err != nil {
+	// PERSISTED built effects before broadcast intent can be recorded.
+	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, slot, custody); err != nil {
 		return err
 	}
-	if err := d.authorizePhase3SendTxOnManifest(ctx, manifest, tx, operationID, intent, wireHash, cost, slot, originRisk...); err != nil {
+	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound, slot, originRisk); err != nil {
 		return err
 	}
 	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)
@@ -1461,7 +1441,7 @@ func (d *Database) MarkReconciled(ctx context.Context, operationID string, recon
 }
 
 // markReconciledOnManifest is the shared locked-settlement body: identical
-// lease, identity and reservation SQL in one transaction, with the journal
+// lease and identity SQL in one transaction, with the journal
 // decode and reconciliation resolved through the explicit reviewed manifest.
 // The public wrapper above loads the embedded reviewed manifest.
 func (d *Database) markReconciledOnManifest(ctx context.Context, manifest RouteManifest, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
@@ -1506,9 +1486,6 @@ func (d *Database) markReconciledOnManifest(ctx context.Context, manifest RouteM
 	}
 	if result.RowsAffected() != 1 {
 		return fmt.Errorf("finalized reconciliation lost serialization")
-	}
-	if err = d.settlePhase3ReservationTx(ctx, tx, operationID); err != nil {
-		return err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return err

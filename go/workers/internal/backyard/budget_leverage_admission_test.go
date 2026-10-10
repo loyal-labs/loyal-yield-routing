@@ -111,24 +111,17 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 	return o, d, e, m, rpc, client, accounts
 }
 
-func TestLeverageSwapAdmissionRejectsUnsafePoststateFundingAndIntent(t *testing.T) {
-	for _, variant := range []string{"source", "output", "position", "reserve", "clock", "failed"} {
-		t.Run(variant, func(t *testing.T) {
-			o, d, e, m, rpc, client, _ := leverageAdmissionFixture(t, 20_000, variant)
-			_, err := legacyAdmissionCostCheck(observePhase3LeverageSwapAdmission(context.Background(), rpc, client, m, o, d, e))
-			if err == nil {
-				t.Fatal("unsafe leverage admitted")
-			}
-		})
+// The build and final-send prestate of a leverage swap: the persisted swap
+// passes against its own custody; a changed debt buffer refuses, and a request
+// that also claims entry-return authority is refused by the effect graph.
+func TestLeverageSwapPrestateBindsCustodyAndIntent(t *testing.T) {
+	_, _, e, _, rpc, _, accounts := leverageAdmissionFixture(t, 20_000, "")
+	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
+		t.Fatal(err)
 	}
-	o, d, e, m, rpc, client, _ := leverageAdmissionFixture(t, 20_000, "")
-	e.Request.PositionReturnReserved = false
-	_, err := observePhase3LeverageSwapAdmission(context.Background(), rpc, client, m, o, d, e)
-	assertBudgetHold(t, err, "leverage_swap_intent_mismatch")
-	e.Request.PositionReturnReserved, e.Request.EntryReturnReserved = true, true
-	_, err = MeasureExecutableDebit(e.Request, e.ExpectedEffects)
+	binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 999)
+	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects), "leverage_swap_custody_changed")
+	e.Request.EntryReturnReserved = true
+	_, err := MeasureExecutableDebit(e.Request, e.ExpectedEffects)
 	assertBudgetHold(t, err, "invalid_position_return_intent")
-	e.Request.EntryReturnReserved, o.Snapshot.CutoverDrain = false, true
-	_, err = observePhase3LeverageSwapAdmission(context.Background(), rpc, client, m, o, d, e)
-	assertBudgetHold(t, err, "complete_leverage_swap_return_unavailable")
 }

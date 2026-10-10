@@ -9,18 +9,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// UnwindIntent is bounded work, not a second ledger. BudgetScope/Family point
-// to the existing durable exit reservation. Current balances determine each
-// next step; the destination is deliberately not promised during an unwind.
+// UnwindIntent is bounded work: the source position's collateral and debt it
+// may clear. Current balances determine each next step; the destination is
+// deliberately not promised during an unwind.
 type UnwindIntent struct {
 	SourceLane       string    `json:"sourceLane"`
 	Reason           string    `json:"reason"`
 	ObservationID    string    `json:"observationId"`
 	MaxCollateralRaw int64     `json:"maxCollateralRaw"`
 	MaxDebtRaw       int64     `json:"maxDebtRaw"`
-	CostBoundRaw     int64     `json:"costBoundRaw"`
-	BudgetScope      string    `json:"budgetScope"`
-	BudgetFamily     string    `json:"budgetFamily"`
 	EvidenceID       string    `json:"evidenceId"`
 	CreatedAt        time.Time `json:"createdAt"`
 }
@@ -33,10 +30,10 @@ func (i UnwindIntent) validate() error {
 // lane authority parameterized: the installed embedded manifest admits only
 // selectorLane members, while an explicit reviewed manifest also admits its
 // candidate lane as the funded production source through the same validated
-// binding that recorded the position. Reason, bounds, budget-family identity
-// and evidence shape stay the exact installed checks for every caller.
+// binding that recorded the position. Reason, bounds and evidence shape stay
+// the exact installed checks for every caller.
 func validateUnwindIntent(i UnwindIntent, laneAllowed func(string) bool) error {
-	if !laneAllowed(i.SourceLane) || (i.Reason != "economic_rotation" && i.Reason != "withdrawal_shortfall" && i.Reason != "hard_ltv_reduction") || i.ObservationID == "" || i.MaxCollateralRaw < 0 || i.MaxDebtRaw < 0 || i.CostBoundRaw <= 0 || i.BudgetScope == "" || i.BudgetFamily == "" || i.BudgetFamily != phase3BudgetFamilyForLane(i.SourceLane) || !sha256Pattern.MatchString(i.EvidenceID) || i.CreatedAt.IsZero() {
+	if !laneAllowed(i.SourceLane) || (i.Reason != "economic_rotation" && i.Reason != "withdrawal_shortfall" && i.Reason != "hard_ltv_reduction") || i.ObservationID == "" || i.MaxCollateralRaw < 0 || i.MaxDebtRaw < 0 || !sha256Pattern.MatchString(i.EvidenceID) || i.CreatedAt.IsZero() {
 		return fmt.Errorf("invalid_unwind_intent")
 	}
 	return nil
@@ -121,9 +118,8 @@ func (m RouteManifest) decodeUnwindIntent(raw []byte) (*UnwindIntent, error) {
 	return decodeUnwindIntentWithLane(raw, m.selectorEntryLaneAllowed)
 }
 
-// CommitUnwindIntent can only refer to an already funded exit in the existing
-// budget. It never creates spending room or loosens a closed campaign. The same
-// route lease/lock and no-nonterminal fence serialize it with RecordDecision.
+// CommitUnwindIntent records bounded exit work. The same route lease/lock and
+// no-nonterminal fence serialize it with RecordDecision.
 func (d *Database) CommitUnwindIntent(ctx context.Context, routeKey string, intent UnwindIntent) error {
 	return d.commitUnwindIntentWithLane(ctx, routeKey, intent, selectorLane)
 }
@@ -131,8 +127,8 @@ func (d *Database) CommitUnwindIntent(ctx context.Context, routeKey string, inte
 // CommitUnwindIntentOnManifest is the identical durable commit with the
 // source lane authority resolved through the explicit reviewed manifest, so
 // the production worker can drive a recorded candidate-source unwind through
-// the same validated binding that recorded it. Every fence, existing exit
-// reservation and identity check is shared verbatim.
+// the same validated binding that recorded it. Every fence and identity check
+// is shared verbatim.
 func (d *Database) CommitUnwindIntentOnManifest(ctx context.Context, manifest RouteManifest, routeKey string, intent UnwindIntent) error {
 	return d.commitUnwindIntentWithLane(ctx, routeKey, intent, manifest.selectorEntryLaneAllowed)
 }
@@ -168,13 +164,9 @@ func (d *Database) commitUnwindIntent(ctx context.Context, routeKey string, comm
 		return err
 	}
 	var state struct {
-		Budget Phase3Budget  `json:"phase3"`
 		Unwind *UnwindIntent `json:"selectorUnwind"`
 	}
 	if err = json.Unmarshal(raw, &state); err != nil {
-		return err
-	}
-	if err = state.Budget.validate(); err != nil {
 		return err
 	}
 	if state.Unwind != nil && confirmation == nil {
@@ -182,9 +174,6 @@ func (d *Database) commitUnwindIntent(ctx context.Context, routeKey string, comm
 			return budgetHold("another_unwind_is_committed")
 		}
 		return tx.Commit(ctx)
-	}
-	if state.Budget.GoalID != intent.BudgetScope || state.Budget.Closed || len(state.Budget.Reservations) != 0 || state.Budget.Families[intent.BudgetFamily].ExitMicros < intent.CostBoundRaw {
-		return budgetHold("unwind_requires_existing_exit_reservation")
 	}
 	var blocked bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key=$1 AND status IN ('decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling'))`, routeKey).Scan(&blocked); err != nil {

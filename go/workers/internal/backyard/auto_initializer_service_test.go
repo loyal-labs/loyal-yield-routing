@@ -264,26 +264,15 @@ func openInitializerAutoScopeServiceDatabase(t *testing.T, name string, timeout 
 	return ctx, cancel, db
 }
 
-// seedAutoInitializerPilotRoute activates a real pilot budget on a test-owned
-// route key with a persisted candidate selector entry — and deliberately no
-// operation row and no reservation: both must come from the real producer and
-// the real measured admission below.
+// seedAutoInitializerPilotRoute seeds a test-owned route key with a persisted
+// candidate selector entry — and deliberately no operation row: it must come
+// from the real producer and the real bind below.
 func seedAutoInitializerPilotRoute(t *testing.T, ctx context.Context, db *Database, key string, price *BudgetPrice, equity int64) {
 	t.Helper()
-	prior := emptyTestBudget()
-	authority := pilotTestAuthority(prior)
-	activated, err := activatePilotBudget(prior, authority)
-	if err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":2}',2)`, key); err != nil {
 		t.Fatal(err)
 	}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.AcquireRouteLease(ctx, key, "auto-initializer-service", 5*time.Minute); err != nil {
+	if _, err := db.AcquireRouteLease(ctx, key, "auto-initializer-service", 5*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	storeTestSelectorEntry(t, ctx, db, key, autoSelectorEntryFixture(time.Now().UTC(), equity, price))
@@ -489,8 +478,8 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 // confirmed AUTO batch, journal and identity enrichment over the real
 // database) produces the exact initializer decision from the persisted
 // candidate entry, records it durably through the real expanded scope
-// constraint, prepares the measured request, and the real measured admission
-// — never a seeded row — creates the bounded AUTO reservation and allocates
+// constraint, prepares the measured request, and the real bind
+// — never a seeded row — records its intent against
 // the persisted entry, with the service tick stopping at the reported build
 // boundary (doc21/doc22 and the recovery suite cover the downstream build,
 // send and recovery stages on their own fixtures). Every public embedded
@@ -729,7 +718,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	}
 
 	// Real service tick — productionTickRuntime's remaining closures exactly as
-	// installed: observe -> decide -> record -> prepare -> measured admission,
+	// installed: observe -> decide -> record -> prepare -> bind,
 	// stopping only at the reported signer boundary.
 	w := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: rt}
 	if err = w.Tick(ctx); err == nil || err.Error() != buildGatePending.Error() {
@@ -764,24 +753,19 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatalf("producer did not journal the candidate decision: %s %s %s", status, action, lane)
 	}
 
-	// The reservation exists because the actual measured admission created it.
-	var encodedBudget, encodedAuth []byte
-	if err = db.pool.QueryRow(ctx, `SELECT s.state->'phase3',o.expected_effects->'phase3' FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, id).Scan(&encodedBudget, &encodedAuth); err != nil {
+	// The bind recorded exactly the prepared initializer request.
+	var encodedAuth []byte
+	if err = db.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&encodedAuth); err != nil {
 		t.Fatal(err)
 	}
-	var budget Phase3Budget
 	var auth phase3OperationAuthorization
-	if json.Unmarshal(encodedBudget, &budget) != nil || json.Unmarshal(encodedAuth, &auth) != nil {
-		t.Fatal("admission state decode")
+	if json.Unmarshal(encodedAuth, &auth) != nil || auth.BuildInput == nil || auth.BuildInput.Kind != "kamino-initialize" {
+		t.Fatalf("bind lost the initializer request: %s", encodedAuth)
 	}
-	cost := auth.BridgeAdmission.CurrentCost
-	reservation := budget.Reservations[id]
-	if budget.Pilot == nil || reservation.Family != "AUTO" || reservation.Recovery || reservation.ExitAfterMicros != 0 ||
-		reservation.UpperMicros != cost.TotalMicros || reservation.ExecutionCostUpperMicros != cost.NetworkFeeMicros ||
-		cost.SetupLamports == 0 || auth.PilotAuthorityID != pilotBudgetAuthorityID {
-		t.Fatalf("measured admission lost its bounds: %+v cost=%+v", reservation, cost)
+	if err = db.requireBoundIntent(ctx, id, r, auth.BuildInput.Effects); err != nil {
+		t.Fatal("bound intent is not the prepared request", err)
 	}
-	// The initializer is the account-setup leg: admission refuses a second
+	// The initializer is the account-setup leg: the bind refuses a second
 	// allocation but never binds allocationOperationId — that bind belongs to
 	// the funding operation (selector_entry.go:465-487) — so the actual
 	// recorded entry keeps the candidate lane, unallocated.
@@ -790,14 +774,12 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatal(err)
 	}
 	if entryLane != autoAUTOPYUSD.Lane || allocationID != "" {
-		t.Fatalf("initializer admission drifted the persisted entry: lane=%q allocation=%q", entryLane, allocationID)
+		t.Fatalf("initializer bind drifted the persisted entry: lane=%q allocation=%q", entryLane, allocationID)
 	}
-	// Admission is idempotent through the existing authorization.
-	if err = db.admitKaminoInitialization(ctx, rpc, manifest, id, o, d, r); err != nil {
-		t.Fatal("admission replay", err)
-	}
+	// A bound row is never bound again.
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, id, o, d, r, kaminoInitializationEffects(r)), "bind_journal_mismatch")
 
-	// Installed-closure and hold regressions on the producer and admission.
+	// Installed-closure and hold regressions on the producer and bind.
 	for _, closure := range []struct {
 		name string
 		mut  func(*Snapshot)
@@ -828,9 +810,9 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatalf("installed manifest did not resolve its own initializer request: %+v %v", installedRequest, installedErr)
 	}
 
-	// An expired entry refuses the measured admission itself, leaving no
-	// reservation behind. The initializer ignores only the quote's slot window
-	// (it moves no principal), never the entry's own wall-clock expiry.
+	// An expired entry refuses the bind itself, leaving the row unbound. The
+	// initializer ignores only the quote's slot window (it moves no
+	// principal), never the entry's own wall-clock expiry.
 	expiredKey := "auto-init-expired-" + time.Now().Format("150405.000000000")
 	seedAutoInitializerPilotRoute(t, ctx, db, expiredKey, &price, candidateEquity)
 	slotExpired := autoSelectorEntryFixture(time.Now().UTC().Add(-time.Minute), candidateEquity, &price)
@@ -839,12 +821,12 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertBudgetHold(t, db.admitKaminoInitialization(ctx, rpc, manifest, expiredRecord.OperationID, o, d, r), "selector_entry_quote_expired")
-	var expiredReservations int
-	if err = db.pool.QueryRow(ctx, `SELECT COALESCE((SELECT count(*)::int FROM jsonb_object_keys(state->'phase3'->'reservations')),0) FROM loyal_yield.multiply_route_states WHERE route_key=$1`, expiredKey).Scan(&expiredReservations); err != nil {
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, expiredRecord.OperationID, o, d, r, kaminoInitializationEffects(r)), "selector_entry_quote_expired")
+	var bound bool
+	if err = db.pool.QueryRow(ctx, `SELECT expected_effects ? 'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, expiredRecord.OperationID).Scan(&bound); err != nil {
 		t.Fatal(err)
 	}
-	if expiredReservations != 0 {
-		t.Fatalf("refused admission left a reservation behind: %d", expiredReservations)
+	if bound {
+		t.Fatal("refused bind left a bound record behind")
 	}
 }

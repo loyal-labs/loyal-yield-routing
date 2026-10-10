@@ -374,6 +374,13 @@ func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route Runtim
 	if request.PolicyConstraintIndex != kaminoConstraintIndexForRoute(route, leg) {
 		return compiledInstruction{}, 0, fmt.Errorf("Kamino packet uses the wrong fixed lane constraint index")
 	}
+	legMint := route.Kamino.CollateralMint
+	if leg == kaminoLegBorrow || leg == kaminoLegRepay {
+		legMint = route.Kamino.DebtMint
+	}
+	if err := checkPositionLegCap(legMint, request.AmountRaw); err != nil {
+		return compiledInstruction{}, 0, err
+	}
 	if route.BasicPolicy {
 		family := basicPolicyFamilyForKaminoLeg(leg)
 		binding, err := basicPolicyBinding(family)
@@ -582,7 +589,10 @@ func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc 
 	if _, err := DecodeExpectedEffects(effects); err != nil {
 		return err
 	}
-	if err := authorizePhase3ProductionBuild(ctx, database, rpc, operationID, evidence.Request, evidence.ExpectedEffects, effects); err != nil {
+	if err := database.requireBoundIntent(ctx, operationID, evidence.Request, effects); err != nil {
+		return err
+	}
+	if err := validateBuildPrestate(ctx, rpc, evidence.Request, evidence.ExpectedEffects); err != nil {
 		return err
 	}
 	signer, err := credentials.signer()

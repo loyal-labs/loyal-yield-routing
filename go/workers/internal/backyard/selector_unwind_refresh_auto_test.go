@@ -13,8 +13,8 @@ import (
 // row through renewal for the committed candidate AUTO source: absent and
 // malformed bindings reject exactly like the installed closure, the reviewed
 // manifest renews, and the legacy embedded wrapper renews the same intent
-// through the installed binding. Locked evidence, reservation, lease, latch
-// and version checks stay byte-identical.
+// through the installed binding. Locked evidence, lease, latch and version
+// checks stay byte-identical.
 func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
@@ -27,16 +27,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	malformed := autoInitializerFixtureManifest(t)
 	malformed.RuntimeBindings.AutoPolicy = &malformedBinding
 
-	// The same activated pilot budget the wiring test seeds, with the funded
-	// AUTO exit reservation the renewal must keep respecting.
-	prior := emptyTestBudget()
-	authority := pilotTestAuthority(prior)
-	activated, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	activated.Families["AUTO"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
+	state, err := json.Marshal(map[string]any{"generation": 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +37,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	if _, err = db.AcquireRouteLease(ctx, key, "renew-auto", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	intent := UnwindIntent{SourceLane: autoAUTOPYUSD.Lane, Reason: "economic_rotation", ObservationID: "auto-source", MaxCollateralRaw: 200, MaxDebtRaw: 50, CostBoundRaw: 2_000_000, BudgetScope: Phase3GoalID, BudgetFamily: phase3BudgetFamilyForLane(autoAUTOPYUSD.Lane), EvidenceID: sha256Bytes([]byte("auto-exit")), CreatedAt: time.Now().UTC()}
+	intent := UnwindIntent{SourceLane: autoAUTOPYUSD.Lane, Reason: "economic_rotation", ObservationID: "auto-source", MaxCollateralRaw: 200, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("auto-exit")), CreatedAt: time.Now().UTC()}
 	if err = db.CommitUnwindIntentOnManifest(ctx, reviewed, key, intent); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +61,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	}
 	o := tickObservation(fresh)
 	o.ObservedAt = time.Now().UTC()
-	source := selectorSourceQuote{Lane: fresh.RouteLane, ObservationID: fresh.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: fresh.PositionCollateralRaw, MaxDebtRaw: fresh.PositionDebtRaw + 1000, GrossMicros: intent.CostBoundRaw}, Recipe: selectorRecipe{Costs: []ValuedTransactionCost{{ObservationSlot: fresh.Slot, TotalMicros: intent.CostBoundRaw}}, EvidenceID: sha256Bytes([]byte("auto-renewal")), ValidThroughSlot: fresh.Slot + 32}}
+	source := selectorSourceQuote{Lane: fresh.RouteLane, ObservationID: fresh.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: fresh.PositionCollateralRaw, MaxDebtRaw: fresh.PositionDebtRaw + 1000}, Recipe: selectorRecipe{Costs: []ValuedTransactionCost{{ObservationSlot: fresh.Slot, TotalMicros: 2_000_000}}, EvidenceID: sha256Bytes([]byte("auto-renewal")), ValidThroughSlot: fresh.Slot + 32}}
 
 	// Absent and malformed bindings keep the installed closure: renewal is a
 	// hold before any evidence is consulted.
@@ -78,7 +69,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	assertBudgetHold(t, db.renewSelectorUnwindOnManifest(ctx, malformed, key, version, *previous, o, source, fresh.Slot), "unwind_refresh_evidence_unavailable")
 
 	// The reviewed binding renews in place: only the fresh observation,
-	// evidence and bounds move; identity, scope, family and reservation stay.
+	// evidence and bounds move; the source and reason stay.
 	if err = db.renewSelectorUnwindOnManifest(ctx, reviewed, key, version, *previous, o, source, fresh.Slot); err != nil {
 		t.Fatal(err)
 	}
@@ -86,10 +77,10 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	if err != nil || renewed == nil {
 		t.Fatalf("renewed intent unavailable: %+v %v", renewed, err)
 	}
-	if renewed.MaxDebtRaw != source.ExitBound.MaxDebtRaw || renewed.MaxCollateralRaw != source.ExitBound.MaxCollateralRaw || renewed.CostBoundRaw != source.ExitBound.GrossMicros || renewed.EvidenceID != source.Recipe.EvidenceID {
+	if renewed.MaxDebtRaw != source.ExitBound.MaxDebtRaw || renewed.MaxCollateralRaw != source.ExitBound.MaxCollateralRaw || renewed.EvidenceID != source.Recipe.EvidenceID {
 		t.Fatalf("renewal did not adopt the fresh exit bound: %+v", renewed)
 	}
-	if renewed.SourceLane != intent.SourceLane || renewed.Reason != intent.Reason || renewed.BudgetScope != intent.BudgetScope || renewed.BudgetFamily != intent.BudgetFamily {
+	if renewed.SourceLane != intent.SourceLane || renewed.Reason != intent.Reason {
 		t.Fatalf("renewal lost intent identity: %+v", renewed)
 	}
 
@@ -104,7 +95,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 	}
 	o2 := tickObservation(fresh2)
 	o2.ObservedAt = time.Now().UTC()
-	source2 := selectorSourceQuote{Lane: fresh2.RouteLane, ObservationID: fresh2.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: fresh2.PositionCollateralRaw, MaxDebtRaw: fresh2.PositionDebtRaw + 1000, GrossMicros: intent.CostBoundRaw}, Recipe: selectorRecipe{Costs: []ValuedTransactionCost{{ObservationSlot: fresh2.Slot, TotalMicros: intent.CostBoundRaw}}, EvidenceID: sha256Bytes([]byte("auto-renewal-2")), ValidThroughSlot: fresh2.Slot + 32}}
+	source2 := selectorSourceQuote{Lane: fresh2.RouteLane, ObservationID: fresh2.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: fresh2.PositionCollateralRaw, MaxDebtRaw: fresh2.PositionDebtRaw + 1000}, Recipe: selectorRecipe{Costs: []ValuedTransactionCost{{ObservationSlot: fresh2.Slot, TotalMicros: 2_000_000}}, EvidenceID: sha256Bytes([]byte("auto-renewal-2")), ValidThroughSlot: fresh2.Slot + 32}}
 	if err = db.renewSelectorUnwind(ctx, key, version+1, *renewed, o2, source2, fresh2.Slot); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +106,7 @@ func TestAutoUnwindRenewalResolvesThroughReviewedManifest(t *testing.T) {
 
 	// Installed lanes keep renewing through the manifest-parameterized check
 	// regardless of the AUTO binding state.
-	maple := UnwindIntent{SourceLane: SelectedRouteID, Reason: "economic_rotation", ObservationID: "maple", MaxCollateralRaw: 1, MaxDebtRaw: 1, CostBoundRaw: 1, BudgetScope: Phase3GoalID, BudgetFamily: phase3BudgetFamilyForLane(SelectedRouteID), EvidenceID: sha256Bytes([]byte("maple-exit")), CreatedAt: time.Now().UTC()}
+	maple := UnwindIntent{SourceLane: SelectedRouteID, Reason: "economic_rotation", ObservationID: "maple", MaxCollateralRaw: 1, MaxDebtRaw: 1, EvidenceID: sha256Bytes([]byte("maple-exit")), CreatedAt: time.Now().UTC()}
 	if reviewed.validateUnwindIntent(maple) != nil || absent.validateUnwindIntent(maple) != nil {
 		t.Fatal("installed lane renewal authority changed")
 	}
@@ -137,12 +128,10 @@ func TestRefreshSelectorUnwindResolvesAutoIntentThroughManifest(t *testing.T) {
 
 	resetManualRecoveryProductionRoute(t, ctx, db, "refresh-auto-a")
 	// Restore the production row to a valid persistent fixture even on
-	// failure: a valid empty phase3 budget with generation aligned to
-	// state_version and no lease held. The reset helper's bare
-	// {"generation":1,"cycle":1} state carries no phase3, and this test's
-	// candidate unwind must never leak into later suite tests.
+	// failure: generation aligned to state_version and no lease held. This
+	// test's candidate unwind must never leak into later suite tests.
 	defer restoreProductionRouteFixture(t, ctx, db)
-	intent := UnwindIntent{SourceLane: autoAUTOPYUSD.Lane, Reason: "hard_ltv_reduction", ObservationID: "refresh-source", MaxCollateralRaw: 100, MaxDebtRaw: 50, CostBoundRaw: 2_000_000, BudgetScope: Phase3GoalID, BudgetFamily: phase3BudgetFamilyForLane(autoAUTOPYUSD.Lane), EvidenceID: sha256Bytes([]byte("auto-exit")), CreatedAt: time.Now().UTC()}
+	intent := UnwindIntent{SourceLane: autoAUTOPYUSD.Lane, Reason: "hard_ltv_reduction", ObservationID: "refresh-source", MaxCollateralRaw: 100, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("auto-exit")), CreatedAt: time.Now().UTC()}
 	raw, err := json.Marshal(map[string]any{"generation": 1, "cycle": 1, "selectorUnwind": intent})
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +165,7 @@ func restoreProductionRouteFixture(t *testing.T, ctx context.Context, db *Databa
 	if err := db.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, productionRouteKey).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	state, err := json.Marshal(map[string]any{"generation": version, "cycle": 1, "phase3": emptyTestBudget()})
+	state, err := json.Marshal(map[string]any{"generation": version, "cycle": 1})
 	if err != nil {
 		t.Fatal(err)
 	}

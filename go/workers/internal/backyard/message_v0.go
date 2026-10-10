@@ -33,7 +33,7 @@ func decodeMessageLookupTable(s LookupTableSnapshot) (messageLookupTable, error)
 		return messageLookupTable{}, fmt.Errorf("invalid lookup table account")
 	}
 	// Deactivating tables may still be usable on chain, but are not suitable for
-	// preparing a new reserved exit. Newly extended addresses warm up next slot.
+	// preparing a new exit. Newly extended addresses warm up next slot.
 	if binary.LittleEndian.Uint32(data[:4]) != 1 || binary.LittleEndian.Uint64(data[4:12]) != math.MaxUint64 ||
 		binary.LittleEndian.Uint64(data[12:20]) >= uint64(s.ObservedSlot) || data[21] > 1 || int(data[20]) > (len(data)-56)/32 {
 		return messageLookupTable{}, fmt.Errorf("lookup table is inactive, immature or malformed")

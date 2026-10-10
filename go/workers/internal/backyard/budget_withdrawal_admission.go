@@ -78,7 +78,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *chain.Client, cl
 	plan := phase3BridgeAdmission{Snapshot: s, Decision: decision}
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey ||
-		s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane || phase3BudgetFamilyForLane(s.RouteLane) == "" ||
+		s.RouteLane != decision.StrategyKey || s.RouteLane != r.RouteLane || !fundedLane(s.RouteLane) ||
 		decision.Action != DeleverRouteStep || r.Action != decision.Action || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
 		s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.DebtIdleRaw < 0 ||
 		s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || r.AmountRaw != uint64(s.PositionCollateralRaw) {
@@ -127,7 +127,7 @@ func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *chain.Clie
 		s.WithdrawalDemandRaw == 0 && !s.Unwind && !s.CutoverDrain
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
-		phase3BudgetFamilyForLane(s.RouteLane) == "" || (!residue && (s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
+		!fundedLane(s.RouteLane) || (!residue && (s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
 		s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0)) || s.DebtIdleRaw < 0 || s.CollateralIdleRaw < 0 ||
 		(s.CollateralIdleRaw == 0 && s.DebtIdleRaw == 0) ||
 		s.PrimeIdleRaw != s.CollateralIdleRaw || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
@@ -227,7 +227,6 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client 
 		return plan, err
 	}
 	var swaps []JupiterExecutionEvidence
-	var estimates []uint64
 	var upperUSDC uint64
 	for _, action := range conversions {
 		amount := collateralRaw
@@ -253,7 +252,6 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client 
 		}
 		upperUSDC += estimate
 		swaps = append(swaps, swap)
-		estimates = append(estimates, estimate)
 	}
 	post := observation
 	post.Snapshot.HasPosition = false
@@ -329,12 +327,6 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client 
 		if err != nil {
 			return plan, err
 		}
-		quoted := phase3QuotedExit{Input: swapInput, QuotedOutputRaw: swap.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: estimates[i], ProofLevel: "UNSIGNED_PROSPECTIVE_QUOTE_COST_ESTIMATE_NOT_EXECUTION_OR_OUTPUT_GUARANTEE"}
-		if i == 0 {
-			plan.QuotedExit = &quoted
-		} else {
-			plan.AdditionalQuotedExits = append(plan.AdditionalQuotedExits, quoted)
-		}
 		if currentSwap == nil || currentSwap.Request.Action != swap.Request.Action {
 			plan.Exit = append(plan.Exit, phase3BridgeExitCost{Action: swap.Request.Action, Amount: swap.Request.AmountRaw, Cost: swapCost, Template: swapInput})
 		}
@@ -353,30 +345,4 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client 
 		return plan, budgetHold("stale_withdrawal_exit_admission")
 	}
 	return plan, nil
-}
-
-func (d *Database) admitPhase3CollateralReturn(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
-	plan, err := observePhase3CollateralReturnAdmission(ctx, rpc, client, manifest, observation, decision, request, effects)
-	if err != nil {
-		return err
-	}
-	return d.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
-}
-
-func (d *Database) admitPhase3Withdrawal(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
-	var plan phase3BridgeAdmission
-	var err error
-	if evidence.Request.RepaymentRelease {
-		plan, err = observePhase3FundingAdmission(ctx, rpc, client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects)
-	} else if evidence.Request.FullPayoff {
-		plan, err = observePhase3PayoffAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
-	} else if partialRepaymentReason(decision.Reason) {
-		plan, err = observePhase3PartialRepaymentAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
-	} else {
-		plan, err = observePhase3WithdrawalAdmission(ctx, rpc, client, manifest, observation, decision, evidence)
-	}
-	if err != nil {
-		return err
-	}
-	return d.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
 }

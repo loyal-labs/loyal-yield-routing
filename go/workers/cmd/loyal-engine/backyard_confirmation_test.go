@@ -8,7 +8,7 @@ import (
 )
 
 func TestUnwindExecutionRequiresExplicitConfirmationFile(t *testing.T) {
-	args := []string{"--lane", "OnRe/ONyc/USDC", "--reason", "economic_rotation", "--observation-id", "observed", "--max-collateral-raw", "100", "--max-debt-raw", "50", "--cost-bound-raw", "1", "--evidence-id", strings.Repeat("a", 64)}
+	args := []string{"--lane", "OnRe/ONyc/USDC", "--reason", "economic_rotation", "--observation-id", "observed", "--max-collateral-raw", "100", "--max-debt-raw", "50", "--evidence-id", strings.Repeat("a", 64)}
 	if _, execute, err := parseUnwindIntentFlags(args); err != nil || execute {
 		t.Fatalf("unconfirmed dry-run must remain available: %v", err)
 	}

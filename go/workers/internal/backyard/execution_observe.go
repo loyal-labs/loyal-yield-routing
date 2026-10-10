@@ -90,7 +90,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
 	ticketRequired := decision.Action != StageSquadsToVoltr
-	if phase3BudgetFamilyForLane(route.Lane) != "" {
+	if fundedLane(route.Lane) {
 		// Reserve the entire bridge exit, including a report after staging.
 		// Every required policy and the existing ticket must be present in
 		// this same confirmed snapshot; admission cannot authorize setup.

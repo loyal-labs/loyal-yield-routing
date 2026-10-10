@@ -27,7 +27,7 @@ func TestTickAcceptsAccruedWholeDebtRepaymentAndRetriesOtherDrift(t *testing.T) 
 			recorded = d
 			return DecisionRecord{OperationID: "repay", Status: Decided}, nil
 		},
-		admitKamino: func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error { return nil },
+		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },
 		buildKamino: func(_ context.Context, _ string, e KaminoExecutionEvidence) error {
 			wire = e.Request.AmountRaw
 			return nil

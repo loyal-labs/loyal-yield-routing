@@ -99,13 +99,12 @@ func (c *slotClock) jupiter(next http.RoundTripper, latency time.Duration) http.
 
 // Live 2026-10: the serial B2 exit pricer spent ~25 of the adaptor's 32
 // report slots, so most hourly REPORT_NAVs reached simulation or send stale.
-// This drives the real production bridge admission (exit pricing and the
-// locked persist) and the real build gate on a chain clock where an RPC round
-// trip costs 1/4 slot and a Jupiter round trip 7/8 slot (100/350 ms at 400 ms
-// slots), then simulates and sends. Keep real-scale durations so host CPU and
-// race instrumentation overhead are not magnified into simulated chain slots.
-// The report must still be inside its age limit, and the send inside the
-// admitted valuation window.
+// This drives the real bind (the locked persist) and the real build gate on a
+// chain clock where an RPC round trip costs 1/4 slot and a Jupiter round trip
+// 7/8 slot (100/350 ms at 400 ms slots), then simulates and sends. Keep
+// real-scale durations so host CPU and race instrumentation overhead are not
+// magnified into simulated chain slots. The report must still be inside its
+// age limit when it simulates and sends.
 func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 60*time.Second)
 	defer cancel()
@@ -127,15 +126,7 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 
 	key := fmt.Sprintf("report-window-%d", time.Now().UnixNano())
 	id := key + "-op"
-	// An activated pilot route whose OnRe family already reserves its exit.
-	prior := emptyTestBudget()
-	authority := pilotTestAuthority(prior)
-	budget, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	budget.Families["OnRe"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 50_000_000}
-	state := mustJSON(t, map[string]any{"generation": 2, "phase3": budget})
+	state := mustJSON(t, map[string]any{"generation": 2})
 	envelope, _ := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, d, m.SHA256, *m.PolicyCatalog.SHA256)})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2::jsonb,2)`, key, string(state)); err != nil {
 		t.Fatal(err)
@@ -149,28 +140,23 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 
 	const slotTime, rpcLatency, jupiterLatency = 400 * time.Millisecond, 100 * time.Millisecond, 350 * time.Millisecond
 	// Observation, preparation, custody proof and decision record already
-	// spent two slots of the tick when admission starts.
+	// spent two slots of the tick when bind starts.
 	clock := &slotClock{start: time.Now(), origin: s.Slot + 2, slotTime: slotTime}
 	rpcOf(rpc).Transport = clock.rpc(rpcOf(rpc).Transport, rpcLatency)
 	fixtureHTTP(client).Transport = clock.jupiter(fixtureHTTP(client).Transport, jupiterLatency)
-	// productionTickRuntime's admitBridge sends this report (debt on a
-	// position-return lane) to admitPhase3Funding with the production Jupiter
-	// client; the fixture's Jupiter double stands in for it here.
-	if err = db.admitPhase3Funding(ctx, rpc, client, m, id, o, d, nav, effects); err != nil {
-		t.Fatalf("admission at slot S+%d: %v", clock.slot()-s.Slot, err)
+	if err = db.bindOperation(ctx, rpc, m, id, o, d, nav, effects); err != nil {
+		t.Fatalf("bind at slot S+%d: %v", clock.slot()-s.Slot, err)
 	}
-	admitted := clock.slot()
+	bound := clock.slot()
 	encoded, err := jsonMarshalExpectedEffects(effects)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = m.authorizePhase3ProductionBuild(ctx, db, rpc, id, nav, effects, encoded); err != nil {
-		t.Fatalf("build gate at slot S+%d: %v", clock.slot()-s.Slot, err)
+	if err = db.requireBoundIntent(ctx, id, nav, encoded); err != nil {
+		t.Fatalf("bind was not persisted: %v", err)
 	}
-	var auth phase3OperationAuthorization
-	var raw []byte
-	if err = db.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&raw); err != nil || json.Unmarshal(raw, &auth) != nil || auth.BridgeAdmission == nil {
-		t.Fatalf("admission was not persisted: %v", err)
+	if _, err = m.validateRequestPrestate(ctx, rpc, nav, effects); err != nil {
+		t.Fatalf("build gate at slot S+%d: %v", clock.slot()-s.Slot, err)
 	}
 	// Sign locally and simulate (a heavier round trip), then the send fence's
 	// slot read and the broadcast itself.
@@ -184,14 +170,11 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(rpcLatency)
-	t.Logf("S=%d admitted=S+%d simulated=S+%d sent=S+%d valid_through=S+%d", s.Slot, admitted-s.Slot, simulated-s.Slot, sent-s.Slot, auth.BridgeAdmission.ValidThroughSlot-s.Slot)
+	t.Logf("S=%d bound=S+%d simulated=S+%d sent=S+%d", s.Slot, bound-s.Slot, simulated-s.Slot, sent-s.Slot)
 	if ReportExpiredAtLanding(s.Slot, simulated) {
 		t.Fatalf("report expired in simulation at S+%d", simulated-s.Slot)
 	}
 	if stale, reason := EvaluateReportSendFreshness(s.Slot, sent); stale {
 		t.Fatalf("send fence refused the report: %s at S+%d", reason, sent-s.Slot)
-	}
-	if sent > auth.BridgeAdmission.ValidThroughSlot {
-		t.Fatalf("send_valuation_expired: sent at S+%d past the admitted S+%d", sent-s.Slot, auth.BridgeAdmission.ValidThroughSlot-s.Slot)
 	}
 }

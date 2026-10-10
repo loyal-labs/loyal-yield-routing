@@ -141,23 +141,6 @@ func (p BudgetPrice) valueLower(raw uint64, mint, program string, slot int64) (i
 	return int64(value), nil
 }
 
-// valueMid values a realized amount at the observed market price itself. Each
-// bound is the ceiling or floor of that price times 1±margin (or the price
-// itself, unmargined), so upper+lower is exactly twice it; the factor of two
-// cancels between the token and USDC sums.
-func (p BudgetPrice) valueMid(raw uint64, mint, program string, slot int64, liability bool) (int64, error) {
-	if _, err := p.valueLower(0, mint, program, slot); err != nil {
-		return 0, err
-	}
-	token := new(big.Int).Add(littleInt(p.TokenUpperSF[:]), littleInt(p.Credit.TokenLowerSF[:]))
-	usdc := new(big.Int).Add(littleInt(p.USDCLowerSF[:]), littleInt(p.Credit.USDCUpperSF[:]))
-	value, err := valueBetweenPrices(raw, p.Decimals, 6, token, usdc, liability)
-	if err != nil || value > math.MaxInt64 {
-		return 0, budgetHold("invalid_mid_valuation")
-	}
-	return int64(value), nil
-}
-
 const nativeSOLBudgetAsset = "native:SOL"
 
 type ValuedTransactionCost struct {

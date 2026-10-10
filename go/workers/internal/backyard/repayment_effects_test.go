@@ -114,16 +114,6 @@ func TestBoundedKaminoRepaymentReservesWireMaximumAndRejectsWeakenedEffects(t *t
 	if err != nil || persistedDebit != debit {
 		t.Fatal("persisted repayment repricing lost the maximum or custody identity", persistedDebit, err)
 	}
-	// Non-pegged valuation and network fees remain part of the gross cap. A
-	// 1000-unit predicted transfer fits; the executable 1010-unit limit does not.
-	priced, err := ValueDebitMicros(debit.Raw, 6, 990_000_000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reservation := testReservation()
-	reservation.UpperMicros = priced + 1_000
-	budget := emptyTestBudget()
-	assertBudgetHold(t, budget.Admit(reservation), "transaction_cap_exceeded")
 	for _, mutate := range []func(*ExpectedEffects){
 		func(e *ExpectedEffects) { e.Repayment.MinimumDebitRaw = 0 },
 		func(e *ExpectedEffects) { e.Repayment.MinimumDebitRaw = 1_011 },

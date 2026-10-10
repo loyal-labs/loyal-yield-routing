@@ -54,7 +54,7 @@ const (
 	// failureReceiptRetryWindow bounds how long a settled failure keeps its
 	// ambiguous submission state while its receipt is unreadable. A lagging or
 	// pruned RPC may recover later. Past this window recheck finalized status,
-	// but never release a reservation without the complete failure receipt.
+	// but never terminate the row without the complete failure receipt.
 	failureReceiptRetryWindow        = 15 * time.Minute
 	failureReceiptUnavailableReason  = "failure_receipt_unavailable"
 	unclassifiedTransactionErrReason = "confirmed_transaction_error"
@@ -296,8 +296,8 @@ type TerminalTransition struct {
 }
 
 // RefuseStaleReportSend is the pre-broadcast fence for a persisted signed
-// wire. It runs before broadcast intent is recorded, so a refused wire keeps
-// its reservation and terminates in `failed` without ever being submitted.
+// wire. It runs before broadcast intent is recorded, so a refused wire
+// terminates in `failed` without ever being submitted.
 func (d *Database) RefuseStaleReportSend(ctx context.Context, rpc *chain.Client, operationID string, from OperationStatus) (TerminalTransition, error) {
 	if rpc == nil {
 		return TerminalTransition{}, fmt.Errorf("RPC client is required")
@@ -321,7 +321,7 @@ func (d *Database) RefuseStaleReportSend(ctx context.Context, rpc *chain.Client,
 
 // MarkReportStaleFailed terminates a never-broadcast wire whose report can no
 // longer land inside the adaptor's age window. Nothing was submitted, so the
-// terminal failure releases the one-nonterminal slot and the reservation.
+// terminal failure releases the one-nonterminal slot.
 func (d *Database) MarkReportStaleFailed(ctx context.Context, operationID string, from OperationStatus) error {
 	if from != Signed && from != Built && from != Simulated {
 		return fmt.Errorf("report staleness fence requires a never-broadcast source")
@@ -405,8 +405,8 @@ func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *chain.Clien
 			if !status.Finalized {
 				return nil
 			}
-			// Status alone cannot measure the paid fee or prove the exact wire's
-			// atomic rollback. Retain the reservation until its receipt returns.
+			// Status alone cannot prove the exact wire's atomic rollback. Keep
+			// the row until its receipt returns.
 			return nil
 		}
 		if status.Settled {

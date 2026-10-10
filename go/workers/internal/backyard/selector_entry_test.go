@@ -145,18 +145,11 @@ func TestSelectorEntryEnrichesPreparationAndRefusesCorruptState(t *testing.T) {
 	}
 }
 
-func TestSelectorEvaluationDurabilityFencesAndBudgetContinuity(t *testing.T) {
+func TestSelectorEvaluationDurabilityFences(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
 	key := fmt.Sprintf("selector-entry-%d", time.Now().UnixNano())
-	prior := emptyTestBudget()
-	prior.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000}
-	a := pilotTestAuthority(prior)
-	budget, err := activatePilotBudget(prior, a)
-	if err != nil {
-		t.Fatal(err)
-	}
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
 	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000
@@ -175,17 +168,17 @@ func TestSelectorEvaluationDurabilityFencesAndBudgetContinuity(t *testing.T) {
 	in.Quotes = append([]MoveQuote{other}, in.Quotes...)
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{in.Markets[0].Lane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
-	state := map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
+	state := map[string]any{"generation": 2, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
 	raw, _ := json.Marshal(state)
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.AcquireRouteLease(ctx, key, "entry-a", time.Minute); err != nil {
+	if _, err := db.AcquireRouteLease(ctx, key, "entry-a", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	refresh := func() { advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now)) }
 	refresh()
-	_, err = db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 1)
+	_, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 1)
 	assertBudgetHold(t, err, "selector_state_changed_during_quote")
 	// An unresolved signed transaction prevents selection and preserves the quote history.
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES($1,$2,'signed','OPEN_ROUTE_STEP','{}')`, key+"-pending", key); err != nil {
@@ -247,20 +240,13 @@ func TestSelectorEvaluationDurabilityFencesAndBudgetContinuity(t *testing.T) {
 	if err != nil || entry == nil || entry.Lane != in.Markets[0].Lane || entry.EquityRaw != in.Quotes[1].EquityRaw || entry.Quote.EvidenceID != in.Quotes[1].EvidenceID {
 		t.Fatal("restart lost exact entry", err, entry)
 	}
-	var saved []byte
 	var version int64
 	var paused bool
-	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3',state_version,(state->>'selectorEntryPaused')::boolean FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&saved, &version, &paused); err != nil {
+	if err = restarted.pool.QueryRow(ctx, `SELECT state_version,(state->>'selectorEntryPaused')::boolean FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version, &paused); err != nil {
 		t.Fatal(err)
 	}
-	var after Phase3Budget
-	if json.Unmarshal(saved, &after) != nil {
-		t.Fatal("budget decode")
-	}
-	beforeJSON, _ := json.Marshal(budget)
-	afterJSON, _ := json.Marshal(after)
-	if !bytes.Equal(beforeJSON, afterJSON) || version != 3 || paused {
-		t.Fatal("choice changed budget or failed generation/unpause", version, paused)
+	if version != 3 || paused {
+		t.Fatal("choice failed generation/unpause", version, paused)
 	}
 	refresh()
 	_, err = db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 3)
@@ -301,7 +287,7 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.ReleaseRouteLease(ctx)
-	budget := Phase3Budget{Pilot: &pilotBudgetAuthority{}}
+	manifest := requireEmbeddedInstalledBinding(t)
 	request := BridgeBuildRequest{Action: VoltrAllocateToSquads, AmountRaw: 1_000_000}
 	for _, tc := range []struct {
 		id                string
@@ -309,7 +295,7 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 		want              string
 	}{
 		{key + "-first", false, false, "selector_entry_allocation_not_bound"},
-		{key + "-first", true, false, ""}, // failed surrounding admission rolls back consumption
+		{key + "-first", true, false, ""}, // a failed surrounding bind rolls back consumption
 		{key + "-second", true, true, ""},
 		{key + "-second", true, false, ""},  // same-operation retry
 		{key + "-second", false, false, ""}, // build/send of that attempt
@@ -323,7 +309,7 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 			_ = tx.Rollback(ctx)
 			t.Fatal(err)
 		}
-		err = db.authorizeSelectorEntryTx(ctx, tx, tc.id, budget, request, ExpectedEffects{}, 42, tc.admission)
+		err = db.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, tc.id, request, ExpectedEffects{}, 42, tc.admission)
 		if tc.want != "" {
 			assertBudgetHold(t, err, tc.want)
 		} else if err != nil {
@@ -351,7 +337,7 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 		if err = db.lockOperationLease(ctx, tx, key+"-second"); err != nil {
 			t.Fatal(err)
 		}
-		err = db.authorizeSelectorEntryTx(ctx, tx, key+"-second", budget, request, ExpectedEffects{}, entry.Quote.ValidThroughSlot+1, admission)
+		err = db.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, key+"-second", request, ExpectedEffects{}, entry.Quote.ValidThroughSlot+1, admission)
 		_ = tx.Rollback(ctx)
 		assertBudgetHold(t, err, "selector_entry_quote_expired")
 	}
@@ -405,6 +391,7 @@ func TestSelectorBorrowAuthorizationPersistsAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.ReleaseRouteLease(ctx)
+	manifest := requireEmbeddedInstalledBinding(t)
 	for _, tc := range []struct {
 		amount uint64
 		fee    uint64
@@ -438,7 +425,7 @@ func TestSelectorBorrowAuthorizationPersistsAcrossRestart(t *testing.T) {
 			if err = restarted.lockOperationLease(ctx, tx, key+"-borrow"); err != nil {
 				t.Fatal(err)
 			}
-			err = restarted.authorizeSelectorEntryTx(ctx, tx, key+"-borrow", Phase3Budget{Pilot: &pilotBudgetAuthority{}}, r, effects, 1000, admission)
+			err = restarted.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, key+"-borrow", r, effects, 1000, admission)
 			_ = tx.Rollback(ctx)
 			if tc.want != "" {
 				assertBudgetHold(t, err, tc.want)
@@ -454,15 +441,6 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	defer cancel()
 	defer db.Close()
 	key := fmt.Sprintf("selector-switch-%d", time.Now().UnixNano())
-	prior := emptyTestBudget()
-	a := pilotTestAuthority(prior)
-	budget, err := activatePilotBudget(prior, a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	family := budget.Families["Maple"]
-	family.ExitMicros = 10_000_000
-	budget.Families["Maple"] = family
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
 	s := &in.Snapshot
@@ -480,18 +458,18 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	q := &in.Quotes[0]
 	q.EquityRaw, q.BorrowReceiveRaw, q.MinimumIdleRaw = 10_000_000, 5_000_000, 99_900_000
 	q.EvidenceID = sha256Bytes([]byte("complete-switch-recipe"))
-	q.SourceExit = &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: 5_001_000, GrossMicros: 10_000_000}
+	q.SourceExit = &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: 5_001_000}
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	history := SelectorResult{State: SelectorState{SourceLane: s.RouteLane, Advantages: map[string]AdvantageWindow{in.Markets[0].Lane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
 	entry := selectorEntryFixture(in.Now, s.RouteLane, 10_000_000)
-	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"result": history}, "selectorEntry": entry})
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
+	raw, _ := json.Marshal(map[string]any{"generation": 2, "selector": map[string]any{"result": history}, "selectorEntry": entry})
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.AcquireRouteLease(ctx, key, "switch-a", time.Minute); err != nil {
+	if _, err := db.AcquireRouteLease(ctx, key, "switch-a", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"missing", "underfunded", "holdings_changed", "version_changed"} {
+	for _, kind := range []string{"missing", "holdings_changed", "version_changed"} {
 		bad := in
 		bad.Quotes = append([]MoveQuote(nil), in.Quotes...)
 		bound := *q.SourceExit
@@ -500,20 +478,18 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 		switch kind {
 		case "missing":
 			bad.Quotes[0].SourceExit = nil
-		case "underfunded":
-			bound.GrossMicros++
 		case "holdings_changed":
 			bound.MaxDebtRaw = s.PositionDebtRaw - 1
 		case "version_changed":
 			expected--
 		}
 		advanceSelectorFixture(&bad, time.Now().UTC().Sub(bad.Now))
-		if _, err = db.RecordSelectorEvaluation(ctx, key, bad, s.Slot, expected); err == nil {
+		if _, err := db.RecordSelectorEvaluation(ctx, key, bad, s.Slot, expected); err == nil {
 			t.Fatal("accepted invalid switch", kind)
 		}
 		var got []byte
 		var version int64
-		if err = db.pool.QueryRow(ctx, `SELECT state,state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&got, &version); err != nil {
+		if err := db.pool.QueryRow(ctx, `SELECT state,state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&got, &version); err != nil {
 			t.Fatal(err)
 		}
 		var before, after any
@@ -539,32 +515,29 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	}
 	defer restarted.Close()
 	intent, err := restarted.LoadUnwindIntent(ctx, key)
-	if err != nil || intent == nil || intent.MaxDebtRaw != q.SourceExit.MaxDebtRaw || intent.CostBoundRaw != q.SourceExit.GrossMicros || intent.ObservationID != s.ObservationID || intent.EvidenceID != q.EvidenceID {
+	if err != nil || intent == nil || intent.MaxDebtRaw != q.SourceExit.MaxDebtRaw || intent.ObservationID != s.ObservationID || intent.EvidenceID != q.EvidenceID {
 		t.Fatal("lost unwind after restart", err, intent)
 	}
 	savedEntry, err := restarted.LoadSelectorEntry(ctx, key)
 	if err != nil || savedEntry != nil {
 		t.Fatal("switch retained entry", err)
 	}
-	var storedBudget, storedResult []byte
+	var storedResult []byte
 	var version int64
 	var paused bool
-	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3',state->'selector'->'result',state_version,(state->>'selectorEntryPaused')::boolean FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&storedBudget, &storedResult, &version, &paused); err != nil {
+	if err = restarted.pool.QueryRow(ctx, `SELECT state->'selector'->'result',state_version,(state->>'selectorEntryPaused')::boolean FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&storedResult, &version, &paused); err != nil {
 		t.Fatal(err)
 	}
-	var after Phase3Budget
 	var savedResult SelectorResult
-	if json.Unmarshal(storedBudget, &after) != nil || json.Unmarshal(storedResult, &savedResult) != nil {
+	if json.Unmarshal(storedResult, &savedResult) != nil {
 		t.Fatal("decode")
 	}
-	beforeJSON, _ := json.Marshal(budget)
-	afterJSON, _ := json.Marshal(after)
-	if version != 3 || !paused || savedResult.Action != "SWITCH" || !bytes.Equal(beforeJSON, afterJSON) {
-		t.Fatal("switch changed spending or omitted atomic state", version, paused, savedResult.Action)
+	if version != 3 || !paused || savedResult.Action != "SWITCH" {
+		t.Fatal("switch omitted atomic state", version, paused, savedResult.Action)
 	}
 
 	// Restart after ordinary interest exceeds the original payoff window.
-	// Renewal retains the same source and reservation; it creates no operation.
+	// Renewal retains the same source; it creates no operation.
 	if _, err = restarted.AcquireRouteLease(ctx, key, "switch-restarted", time.Minute); err != nil {
 		t.Fatal(err)
 	}
@@ -576,9 +549,9 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	}
 	o := tickObservation(fresh)
 	o.ObservedAt = time.Now().UTC()
-	source := selectorSourceQuote{Lane: fresh.RouteLane, ObservationID: fresh.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: fresh.PositionCollateralRaw, MaxDebtRaw: fresh.PositionDebtRaw + 1000, GrossMicros: intent.CostBoundRaw}, Recipe: selectorRecipe{Costs: []ValuedTransactionCost{{ObservationSlot: fresh.Slot, TotalMicros: intent.CostBoundRaw}}, EvidenceID: sha256Bytes([]byte("fresh-full-exit")), ValidThroughSlot: fresh.Slot + 32}}
+	source := selectorSourceQuote{Lane: fresh.RouteLane, ObservationID: fresh.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: fresh.PositionCollateralRaw, MaxDebtRaw: fresh.PositionDebtRaw + 1000}, Recipe: selectorRecipe{Costs: []ValuedTransactionCost{{ObservationSlot: fresh.Slot, TotalMicros: 10_000_000}}, EvidenceID: sha256Bytes([]byte("fresh-full-exit")), ValidThroughSlot: fresh.Slot + 32}}
 	lagging := source
-	lagging.Recipe.Costs = []ValuedTransactionCost{{ObservationSlot: fresh.Slot + 1, TotalMicros: intent.CostBoundRaw}}
+	lagging.Recipe.Costs = []ValuedTransactionCost{{ObservationSlot: fresh.Slot + 1, TotalMicros: 10_000_000}}
 	assertBudgetHold(t, restarted.renewSelectorUnwind(ctx, key, 3, *intent, o, lagging, fresh.Slot), "unwind_refresh_evidence_unavailable")
 	empty := source
 	empty.Recipe.Costs = nil
@@ -586,11 +559,6 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 	if err = restarted.renewSelectorUnwind(ctx, key, 2, *intent, o, source, fresh.Slot); err == nil {
 		t.Fatal("renewed stale route version")
 	}
-	unfunded := source
-	bound := *source.ExitBound
-	bound.GrossMicros++
-	unfunded.ExitBound = &bound
-	assertBudgetHold(t, restarted.renewSelectorUnwind(ctx, key, 3, *intent, o, unfunded, fresh.Slot), "unwind_requires_existing_exit_reservation")
 	if _, err = restarted.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES($1,$2,'signed','OPEN_ROUTE_STEP','{}')`, key+"-pending", key); err != nil {
 		t.Fatal(err)
 	}
@@ -602,54 +570,41 @@ func TestSelectorSwitchCommitsUnwindWithEvaluationAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	renewed, err := restarted.LoadUnwindIntent(ctx, key)
-	if err != nil || renewed == nil || renewed.MaxDebtRaw != source.ExitBound.MaxDebtRaw || renewed.BudgetScope != intent.BudgetScope || renewed.Reason != intent.Reason {
+	if err != nil || renewed == nil || renewed.MaxDebtRaw != source.ExitBound.MaxDebtRaw || renewed.SourceLane != intent.SourceLane || renewed.Reason != intent.Reason {
 		t.Fatal("renewal lost identity", err, renewed)
 	}
 	if err = applyUnwindIntentWithLane(&fresh, renewed, selectorLane); err != nil || fresh.UnwindRefreshRequired || !fresh.Unwind {
 		t.Fatal("renewed unwind did not resume", err)
 	}
-	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&storedBudget, &version); err != nil {
+	if err = restarted.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if json.Unmarshal(storedBudget, &after) != nil {
-		t.Fatal("budget decode")
-	}
-	afterJSON, _ = json.Marshal(after)
-	if version != 4 || !bytes.Equal(beforeJSON, afterJSON) {
-		t.Fatal("renewal changed budget", version)
+	if version != 4 {
+		t.Fatal("renewal did not bump generation", version)
 	}
 }
 
-// A same-lane SWITCH must behave exactly like a cross-lane one: it spends only
-// the already-reserved source exit, persists no entry, and reenters the lane
-// solely through a fresh flat evaluation after the unwind has reconciled.
-func TestSelectorSameLaneSwitchReusesExitReservationAndEntersOnlyAfterFlat(t *testing.T) {
+// A same-lane SWITCH must behave exactly like a cross-lane one: it persists no
+// entry and reenters the lane solely through a fresh flat evaluation after the
+// unwind has reconciled.
+func TestSelectorSameLaneSwitchEntersOnlyAfterFlat(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
 	key := fmt.Sprintf("selector-same-lane-%d", time.Now().UnixNano())
-	prior := emptyTestBudget()
-	a := pilotTestAuthority(prior)
-	budget, err := activatePilotBudget(prior, a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	family := budget.Families["Maple"]
-	family.ExitMicros = 10_000_000
-	budget.Families["Maple"] = family
 	in := sameLaneSelectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
 	s := &in.Snapshot
 	q := &in.Quotes[0]
 	q.EvidenceID = sha256Bytes([]byte("complete-same-lane-recipe"))
-	q.SourceExit = &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: 5_001_000, GrossMicros: 10_000_000}
+	q.SourceExit = &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: 5_001_000}
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	entry := selectorEntryFixture(in.Now, s.RouteLane, 10_000_000)
-	raw, _ := json.Marshal(map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"result": SelectorResult{State: sameLaneSelectorHistory(in)}}, "selectorEntry": entry})
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
+	raw, _ := json.Marshal(map[string]any{"generation": 2, "selector": map[string]any{"result": SelectorResult{State: sameLaneSelectorHistory(in)}}, "selectorEntry": entry})
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.AcquireRouteLease(ctx, key, "same-lane-a", time.Minute); err != nil {
+	if _, err := db.AcquireRouteLease(ctx, key, "same-lane-a", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	refresh := func(in *SelectorInput) { advanceSelectorFixture(in, time.Now().UTC().Sub(in.Now)) }
@@ -658,35 +613,28 @@ func TestSelectorSameLaneSwitchReusesExitReservationAndEntersOnlyAfterFlat(t *te
 		t.Fatal("same-lane switch failed", err, result)
 	}
 	intent, err := db.LoadUnwindIntent(ctx, key)
-	if err != nil || intent == nil || intent.SourceLane != s.RouteLane || intent.MaxDebtRaw != q.SourceExit.MaxDebtRaw || intent.CostBoundRaw != q.SourceExit.GrossMicros || intent.ObservationID != s.ObservationID || intent.EvidenceID != q.EvidenceID {
+	if err != nil || intent == nil || intent.SourceLane != s.RouteLane || intent.MaxDebtRaw != q.SourceExit.MaxDebtRaw || intent.ObservationID != s.ObservationID || intent.EvidenceID != q.EvidenceID {
 		t.Fatal("same-lane switch lost the source exit binding", err, intent)
 	}
 	if savedEntry, err := db.LoadSelectorEntry(ctx, key); err != nil || savedEntry != nil {
 		t.Fatal("same-lane switch retained an entry", err)
 	}
-	var storedBudget []byte
 	var version int64
 	var paused bool
-	if err = db.pool.QueryRow(ctx, `SELECT state->'phase3',state_version,(state->>'selectorEntryPaused')::boolean FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&storedBudget, &version, &paused); err != nil {
+	if err = db.pool.QueryRow(ctx, `SELECT state_version,(state->>'selectorEntryPaused')::boolean FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version, &paused); err != nil {
 		t.Fatal(err)
 	}
-	var after Phase3Budget
-	if json.Unmarshal(storedBudget, &after) != nil {
-		t.Fatal("budget decode")
-	}
-	beforeJSON, _ := json.Marshal(budget)
-	afterJSON, _ := json.Marshal(after)
-	if version != 3 || !paused || !bytes.Equal(beforeJSON, afterJSON) {
-		t.Fatal("same-lane switch created spending or omitted atomic state", version, paused)
+	if version != 3 || !paused {
+		t.Fatal("same-lane switch omitted atomic state", version, paused)
 	}
 	// While the committed unwind is pending, no further economics may act.
 	refresh(&in)
 	if _, err = db.RecordSelectorEvaluation(ctx, key, in, s.Slot, 3); err == nil {
 		t.Fatal("pending unwind admitted another evaluation")
 	}
-	// Simulate the executed, reconciled unwind: reservation settled and the
-	// intent cleared, with the same route version.
-	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(state,'{selectorUnwind}','null',true),'{phase3,families,Maple,exitMicros}','0',true) WHERE route_key=$1`, key); err != nil {
+	// Simulate the executed, reconciled unwind: the intent cleared, with the
+	// same route version.
+	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{selectorUnwind}','null',true) WHERE route_key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
 	flatIn := sameLaneSelectorFixture()

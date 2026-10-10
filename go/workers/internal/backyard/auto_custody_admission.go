@@ -1,6 +1,6 @@
 package backyard
 
-// Admission-phase binding of the durable shared-custody attribution proof
+// Binding of the durable shared-custody attribution proof
 // (auto_custody_attribution.go) to the exact lifecycle phase, observation,
 // lease and generation a spend decision is made under.
 //
@@ -17,33 +17,22 @@ package backyard
 //     probe (zero-spend operations such as ReportNAV skip even at a positive
 //     balance; a positive spend is always probed, including at zero observed
 //     balance, and then refused). The proof CARRIES Generation +
-//     LeaseOwner/LeaseFencing + Digest; A's locked admission persistence
-//     (persistPhase3ExitAdmissionOnManifest) validates
-//     proof.BindsGeneration(generation, fence) under the route lock it
-//     already holds and may record proof.Digest with the persisted
-//     authorization. THAT RECORDING IS A'S CONSUMER WIRING — not implemented
-//     by B; until it exists the carried proof is not durably recorded.
-//  2. BUILD (authorizePhase3ProductionBuild callers): the row is still
-//     'decided' — recordDecisionTx stores only the decision evidence
-//     (expectedEffects is explicitly null and DecodeExpectedEffects refuses
-//     the state), and MarkBuilt runs only AFTER the build gate. There is
-//     therefore NO built-effects custody walk at build. The build binds to
-//     the ACTUAL PERSISTED phase3 admission request/intent through the
-//     existing production gate authorizePhase3BuildOnManifest
-//     (auth.IntentSHA256 == Phase3IntentDigest(request, effects), hold
-//     "unreserved_build_intent") — i.e. exactly the inputs whose prepared
-//     effects were proofed in phase 1 and admitted under the carried
-//     generation/lease. B adds no separate build-phase gate.
-//  3. PRE-BROADCAST SEND (Signed branch, immediately before
-//     RevalueAndMarkBroadcastIntentOnManifest): by now MarkBuilt has
-//     persisted the built expected effects and PersistSignedUpdate the wire,
-//     digest AND signature. ObserveSharedCustodySendProof re-runs the FULL
-//     custody walk and excludes exactly the current signed operation, whose
-//     persisted row must carry the claimed wire identity, the pinned
-//     delegate signature, persisted effects equal to the caller's decoded
-//     built effects, and a positive shared-custody debit. Decided/built/
-//     simulated rows are NEVER excludable — a fresh proof for them happened
-//     in phase 1 before the row existed.
+//     LeaseOwner/LeaseFencing + Digest.
+//  2. BIND (bindOperation, right after RecordDecision): under the route lock
+//     bindSharedCustodyAdmissionProofOnManifest re-validates
+//     proof.BindsGeneration(generation, fence) and the exact prepared effects,
+//     and the binding is recorded with the operation's intent. The build
+//     uses that same in-memory evidence in the same tick; a crash before the
+//     wire is signed fails the operation, it is never rebuilt.
+//  3. PRE-BROADCAST SEND (Signed branch, CheckAndMarkBroadcastIntentOnManifest):
+//     by now MarkBuilt has persisted the built expected effects and
+//     PersistSignedUpdate the wire, digest AND signature.
+//     ObserveSharedCustodySendProof re-runs the FULL custody walk and excludes
+//     exactly the current signed operation, whose persisted row must carry the
+//     claimed wire identity, the pinned delegate signature, persisted effects
+//     equal to the caller's decoded built effects, and a positive
+//     shared-custody debit. Decided/built/simulated rows are NEVER excludable
+//     — a fresh proof for them happened in phase 1 before the row existed.
 //
 // MANIFEST: pass the SAME explicit reviewed manifest the calling lifecycle
 // already threads. Both proofs run the planning read through
@@ -57,9 +46,9 @@ package backyard
 // planning state and the journal. What they guarantee: the route lease was
 // current for THIS database at proof time; the proof is deterministic over
 // persisted rows (restart-identical); and Generation + lease fence are
-// CARRIED so the locked persistence validates BindsGeneration against the
-// lock it actually holds. The phase-1 → phase-3 window is bounded by the
-// send re-proof.
+// CARRIED so the locked bind validates BindsGeneration against the lock it
+// actually holds. The phase-1 → phase-3 window is bounded by the send
+// re-proof.
 
 import (
 	"context"
@@ -74,9 +63,7 @@ import (
 )
 
 // sharedCustodyProofBinding is the durable, comparable form of a proof: what
-// the shared locked admission persists into the per-operation phase3
-// authorization and what the build and broadcast-intent fences re-require.
-// All fields are comparable, so drift checks are exact equality.
+// the bind persists into the per-operation phase3 record.
 type sharedCustodyProofBinding struct {
 	RouteKey      string `json:"routeKey"`
 	Lane          string `json:"lane"`
@@ -136,7 +123,7 @@ func autoSharedCustodySpend(lane, routeKey string, effects ExpectedEffects) (sha
 }
 
 // sharedCustodyAdmissionProof is the durable result carried to the locked
-// admission persistence and validated again at the send fence. SpendRaw == 0
+// bind and taken again at the send fence. SpendRaw == 0
 // means the operation spends no shared custody and NO proof was taken (all
 // other fields are zero).
 type sharedCustodyAdmissionProof struct {
@@ -148,8 +135,8 @@ type sharedCustodyAdmissionProof struct {
 	ObservedSlot int64
 	SpendRaw     uint64
 	// Generation and the lease fence are the planning-state values observed
-	// at proof time, for BindsGeneration validation at the locked admission
-	// persistence. They are NOT claimed atomic with the journal snapshot or
+	// at proof time, for BindsGeneration validation at the locked bind. They
+	// are NOT claimed atomic with the journal snapshot or
 	// the RPC observation.
 	Generation   int64
 	LeaseOwner   string
@@ -159,8 +146,8 @@ type sharedCustodyAdmissionProof struct {
 	// for the pre-decision ownership proof (nothing exists to exclude).
 	ExcludedOperation string
 	// EffectsSHA256 binds this proof to the EXACT expected effects it was
-	// taken over (deterministic store encoding), so the locked admission and
-	// the build fence can refuse a proof taken over different effects.
+	// taken over (deterministic store encoding), so the locked bind and the
+	// send fence can refuse a proof taken over different effects.
 	EffectsSHA256 string
 	// Digest binds this proof (chain, observation bound, spend, fence, and
 	// exclusion) for audit at the locked persistence.
@@ -168,8 +155,8 @@ type sharedCustodyAdmissionProof struct {
 }
 
 // BindsGeneration reports whether this proof was taken under the named
-// generation and lease fencing token. A mismatch at the locked admission
-// persistence or the send fence refuses the operation: the proof describes a
+// generation and lease fencing token. A mismatch at the locked bind or the
+// send fence refuses the operation: the proof describes a
 // decision made under a different lock.
 func (p sharedCustodyAdmissionProof) BindsGeneration(generation int64, fencingToken int64) bool {
 	return p.SpendRaw > 0 && p.Generation == generation && p.LeaseFencing == fencingToken && p.LeaseFencing != 0
@@ -328,7 +315,7 @@ func (d *Database) readSharedCustodyJournal(ctx context.Context, manifest RouteM
 // and returns the finisher that binds it to the prepared spend and the
 // prepared observation. The proof is the same strict proof: a journal change
 // after the read fails the balance/tip binding here or the generation check
-// under the admission lock.
+// under the bind lock.
 func (d *Database) prefetchSharedCustodyOwnershipProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, rpc *chain.Client) custodyProofFinisher {
 	var inputs sharedCustodyProofInputs
 	var readErr error
@@ -478,23 +465,15 @@ func sharedCustodyAdmissionDigest(p sharedCustodyAdmissionProof) string {
 	return sha256Bytes([]byte(b.String()))
 }
 
-// bindSharedCustodyAdmissionProofOnManifest is the FIRST-admission half of
-// the shared locked-admission seam (doc 26 §2): for a POSITIVE prepared
-// AUTO-PYUSD spend it requires the strict pre-decision proof carried on the
-// admission's own observation, re-validates it against the CURRENT route lock
-// row (generation/fence under FOR UPDATE), and returns the durable binding to
-// persist beside the phase3 authorization. The returned binding still carries
-// the PRE-admission generation the proof was observed under; the admission
-// write itself (persistPhase3ExitAdmissionOnManifest) records the ADMITTED
-// generation on the persisted copy, so the build fence compares against the
-// post-admission route state. Every other lane and any AUTO zero-spend
-// operation returns a zero binding and preserves installed behavior; a
-// missing or drifted proof for a real spend holds — there is no
-// alternate-caller bypass because every measured admission terminates in
-// persistPhase3ExitAdmissionOnManifest. A retry (the row is already decided)
-// never reaches this function: see
-// validatePersistedSharedCustodyBindingOnManifest for its reachable
-// semantics.
+// bindSharedCustodyAdmissionProofOnManifest is the bind seam (doc 26 §2):
+// for a POSITIVE prepared AUTO-PYUSD spend it requires the strict
+// pre-decision proof carried on the bind's own observation, re-validates it
+// against the CURRENT route lock row (generation/fence under FOR UPDATE), and
+// returns the durable binding to persist beside the operation's intent. Every
+// other lane and any AUTO zero-spend operation returns a zero binding and
+// preserves installed behavior; a missing or drifted proof for a real spend
+// holds — every operation passes through bindOperation before it is built, so
+// there is no alternate-caller bypass. A bound row is never bound again.
 func bindSharedCustodyAdmissionProofOnManifest(ctx context.Context, tx pgx.Tx, routeKey, lane string, observation Observation, effects ExpectedEffects) (sharedCustodyProofBinding, error) {
 	cfg, _, applies := autoSharedCustodySpend(lane, routeKey, effects)
 	if !applies {
@@ -525,8 +504,8 @@ func bindSharedCustodyAdmissionProofOnManifest(ctx context.Context, tx pgx.Tx, r
 	if sharedCustodyAdmissionDigest(*proof) != proof.Digest {
 		return sharedCustodyProofBinding{}, budgetHold("custody_attribution_proof_drift")
 	}
-	// The proof must be over the exact prepared effects admitted here and the
-	// admission's own observation — never merely a positive balance.
+	// The proof must be over the exact prepared effects bound here and the
+	// bind's own observation — never merely a positive balance.
 	effectsSHA256, err := expectedEffectsSHA256(effects)
 	if err != nil {
 		return sharedCustodyProofBinding{}, err
@@ -540,86 +519,6 @@ func bindSharedCustodyAdmissionProofOnManifest(ctx context.Context, tx pgx.Tx, r
 		return sharedCustodyProofBinding{}, budgetHold("custody_attribution_proof_drift")
 	}
 	return binding, nil
-}
-
-// validatePersistedSharedCustodyBindingOnManifest is the RETRY half of the
-// shared locked-admission seam (doc 26 §2). Once the decided row exists NO
-// fresh ownership proof is obtainable: ObserveSharedCustodyOwnershipProof
-// refuses every nonterminal row, and it must keep doing so — weakening it to
-// exclude the row's own history would let a proof be fabricated after the
-// decision. So a retry admission cannot re-bind a carried proof; instead it
-// re-validates the EXACT binding the first measured admission persisted —
-// same effects digest, spend, custody identity, and lease owner/fence — under
-// the CURRENT route lock row. The journal evidence recheck above already
-// pinned the observation identity, so history is not dropped: this only
-// re-arms the persisted history against the live lock. A binding from an
-// earlier generation (an unrelated route-state change since admission) holds
-// with custody_attribution_generation_drift; a dead lease holds with
-// custody_attribution_lease_stale; a mismatched re-derivation of the same
-// intent holds with custody_attribution_proof_drift.
-func validatePersistedSharedCustodyBindingOnManifest(ctx context.Context, tx pgx.Tx, routeKey, lane string, effects ExpectedEffects, persisted *sharedCustodyProofBinding) error {
-	cfg, spend, applies := autoSharedCustodySpend(lane, routeKey, effects)
-	if !applies {
-		return nil
-	}
-	if persisted == nil {
-		return budgetHold("custody_attribution_proof_missing")
-	}
-	binding := *persisted
-	var generation int64
-	var owner string
-	var fencing int64
-	var leaseLive bool
-	if err := tx.QueryRow(ctx, `SELECT state_version, COALESCE(lease_owner,''), fencing_token, (lease_expires_at>clock_timestamp()) IS TRUE
-		FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, routeKey).Scan(&generation, &owner, &fencing, &leaseLive); err != nil {
-		return err
-	}
-	if !leaseLive {
-		return budgetHold("custody_attribution_lease_stale")
-	}
-	if binding.LeaseOwner != owner || binding.LeaseFencing != fencing {
-		return budgetHold("custody_attribution_generation_drift")
-	}
-	effectsSHA256, err := expectedEffectsSHA256(effects)
-	if err != nil {
-		return err
-	}
-	if !binding.valid() || binding.SpendRaw != spend || binding.EffectsSHA256 != effectsSHA256 ||
-		binding.RouteKey != cfg.RouteKey || binding.Lane != cfg.Lane || binding.Custody != cfg.Custody {
-		return budgetHold("custody_attribution_proof_drift")
-	}
-	if !binding.bindsGeneration(generation) {
-		return budgetHold("custody_attribution_generation_drift")
-	}
-	return nil
-}
-
-// requireSharedCustodyBuildBinding is the build-authorization seam (doc 26
-// §3): an AUTO-PYUSD spend cannot be built unless the persisted admission
-// binding is present, valid, bound to the EXACT effects being built, and to
-// the CURRENT route generation. There are no built effects in the row yet, so
-// this works purely from the in-memory build input and the persisted
-// authorization — MarkBuilt still runs only after this gate. A missing legacy
-// proof on a real AUTO spend holds.
-func requireSharedCustodyBuildBinding(lane, routeKey string, auth phase3OperationAuthorization, decoded ExpectedEffects, generation int64) error {
-	cfg, spend, applies := autoSharedCustodySpend(lane, routeKey, decoded)
-	if !applies {
-		return nil
-	}
-	if auth.CustodyProof == nil {
-		return budgetHold("custody_attribution_proof_missing")
-	}
-	binding := *auth.CustodyProof
-	effectsSHA256, err := expectedEffectsSHA256(decoded)
-	if err != nil {
-		return err
-	}
-	if !binding.valid() || !binding.bindsGeneration(generation) ||
-		binding.SpendRaw != spend || binding.EffectsSHA256 != effectsSHA256 ||
-		binding.RouteKey != cfg.RouteKey || binding.Lane != cfg.Lane || binding.Custody != cfg.Custody {
-		return budgetHold("custody_attribution_proof_drift")
-	}
-	return nil
 }
 
 // observeConfirmedSharedCustodyRaw is the fresh confirmed custody observation
@@ -712,14 +611,15 @@ func (p sharedCustodySendProof) finish(ctx context.Context, rpc *chain.Client, d
 // route row lock (FOR UPDATE) and the PERSISTED built effects — not the
 // caller's decode. The persisted effects decode under the SAME reviewed
 // manifest the caller threads, so a candidate AUTO initializer (zero PYUSD
-// spend) decodes exactly as it did at admission and keeps installed behavior.
+// spend) decodes exactly as it did at bind and keeps installed behavior.
 // A proof naming another operation, missing, digest-inconsistent, observed
-// outside the valuation's cost window, or taken under a stale
-// generation/fence/lease holds before broadcast intent is recorded.
-func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx, manifest RouteManifest, operationID string, cost ValuedTransactionCost, custody *sharedCustodyAdmissionProof) error {
+// before the decision's slot or after the confirmed slot read under this lock,
+// or taken under a stale generation/fence/lease holds before broadcast intent
+// is recorded.
+func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx, manifest RouteManifest, operationID string, confirmedSlot int64, custody *sharedCustodyAdmissionProof) error {
 	var lane, routeKey string
 	var effectsBytes []byte
-	var generation int64
+	var generation, decisionSlot int64
 	var leaseOwner string
 	var fencing int64
 	var leaseLive bool
@@ -728,9 +628,10 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 	// below still works there, while a positive spend still requires the
 	// lease checks that follow.
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(op.strategy_key,''), op.route_key, op.expected_effects, route.state_version,
-			COALESCE(route.lease_owner,''), route.fencing_token, (route.lease_expires_at>clock_timestamp()) IS TRUE
+			COALESCE(route.lease_owner,''), route.fencing_token, (route.lease_expires_at>clock_timestamp()) IS TRUE,
+			COALESCE((op.expected_effects->'decision'->>'observationSlot')::bigint,0)
 		FROM loyal_yield.multiply_operations op JOIN loyal_yield.multiply_route_states route ON route.route_key=op.route_key
-		WHERE op.operation_id=$1 FOR UPDATE OF route`, operationID).Scan(&lane, &routeKey, &effectsBytes, &generation, &leaseOwner, &fencing, &leaseLive); err != nil {
+		WHERE op.operation_id=$1 FOR UPDATE OF route`, operationID).Scan(&lane, &routeKey, &effectsBytes, &generation, &leaseOwner, &fencing, &leaseLive, &decisionSlot); err != nil {
 		return err
 	}
 	// Lane applicability first: an installed (non-candidate) lane never
@@ -779,10 +680,9 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 		return budgetHold("custody_attribution_generation_drift")
 	}
 	if !binding.valid() || !binding.bindsGeneration(generation) ||
-		// The fresh custody observation must sit inside the SAME valuation
-		// window the broadcast cost was priced in, alongside the existing
-		// confirmed-slot freshness check above this call.
-		custody.ObservedSlot < cost.ObservationSlot || custody.ObservedSlot > cost.ValidThroughSlot ||
+		// The fresh custody observation is confirmed no earlier than the
+		// decision it spends for and no later than this lock's slot.
+		decisionSlot <= 0 || custody.ObservedSlot < decisionSlot || custody.ObservedSlot > confirmedSlot ||
 		binding.SpendRaw != spend || binding.EffectsSHA256 != effectsSHA256 ||
 		binding.RouteKey != routeKey || binding.Lane != lane || binding.Custody != cfg.Custody ||
 		custody.ExcludedOperation != operationID {
@@ -795,7 +695,7 @@ func validateSharedCustodySendProofOnBroadcastTx(ctx context.Context, tx pgx.Tx,
 // (doc 26 §1): for a prepared POSITIVE AUTO-PYUSD spend it runs the strict
 // ownership proof under the current route lease and carries it as
 // per-operation local data on the observation that goes to RecordDecision and
-// the locked admission. Zero-spend and non-AUTO lanes preserve installed
+// the locked bind. Zero-spend and non-AUTO lanes preserve installed
 // behavior exactly; the proof is never a mutable global.
 func (w *Worker) observePreDecisionCustodyOwnershipProof(ctx context.Context, observation *Observation, decision Decision, effects ExpectedEffects, prefetched custodyProofFinisher) error {
 	cfg, _, applies := autoSharedCustodySpend(decision.StrategyKey, w.routeKey, effects)

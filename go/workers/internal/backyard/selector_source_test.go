@@ -28,27 +28,8 @@ func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *te
 	if q.Recipe.CostRaw != network {
 		t.Fatal("returned principal charged", q.Recipe.CostRaw, network)
 	}
-	// Settle the actual report in the budget model, then prove that unchanged
-	// source pricing fits exactly its remaining reservation, without requiring
-	// another already-completed report fee. This is accounting, not chain proof.
-	prior := emptyTestBudget()
-	budget, err := activatePilotBudget(prior, pilotTestAuthority(prior))
-	if err != nil {
-		t.Fatal(err)
-	}
-	intent, err := Phase3IntentDigest(e.Request, plan.Input.Effects)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := BudgetReservation{OperationID: "source-nav", Family: "Maple", IntentSHA256: intent, UpperMicros: plan.CurrentCost.TotalMicros, ExecutionCostUpperMicros: plan.CurrentCost.NetworkFeeMicros, ExitAfterMicros: plan.ExitAfterMicros}
-	if err = budget.Admit(r); err != nil {
-		t.Fatal(err)
-	}
-	if err = budget.Settle(r.OperationID, intent, r.UpperMicros, r.ExecutionCostUpperMicros); err != nil {
-		t.Fatal(err)
-	}
-	if Decide(plan.Snapshot).Action == ReportNAV || q.ExitBound == nil || q.ExitBound.GrossMicros != budget.Families["Maple"].ExitMicros {
-		t.Fatal("settled NAV charged again against exit reservation", q.ExitBound, budget.Families["Maple"])
+	if Decide(plan.Snapshot).Action == ReportNAV || q.ExitBound == nil {
+		t.Fatal("source pricing lost its exit bound or repeats the report", q.ExitBound)
 	}
 	// NAV copies can share bytes. They are still separately executed messages.
 	plan.Exit = append(plan.Exit, plan.Exit[len(plan.Exit)-1])
@@ -150,8 +131,8 @@ func TestSelectorSourcePricesFullTenUSDCLoopWithRepaymentRelease(t *testing.T) {
 			}
 		}
 	}
-	if q.ExitBound == nil || q.ExitBound.MaxCollateralRaw != s.PositionCollateralRaw || q.ExitBound.MaxDebtRaw < s.PositionDebtRaw || q.ExitBound.GrossMicros <= q.Recipe.CostRaw {
-		t.Fatal("source exit did not retain receipts, payoff ceiling and gross reservation", q.ExitBound)
+	if q.ExitBound == nil || q.ExitBound.MaxCollateralRaw != s.PositionCollateralRaw || q.ExitBound.MaxDebtRaw < s.PositionDebtRaw || q.Recipe.CostRaw <= 0 {
+		t.Fatal("source exit did not retain receipts, payoff ceiling and its priced cost", q.ExitBound)
 	}
 	if swaps != 2 || withdrawals != 2 || payoffs != 1 {
 		t.Fatal("release/funding/payoff/full-return incomplete", swaps, withdrawals, payoffs)

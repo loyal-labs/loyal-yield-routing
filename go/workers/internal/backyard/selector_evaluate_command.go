@@ -170,39 +170,36 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 // to this command. Membership is the only thing the failure diagnostic echoes;
 // any other reason collapses to the generic code.
 var selectorEvaluateAdmissionHoldCodes = map[string]bool{
-	"duplicate_move_quote":                      true,
-	"invalid_pilot_canary_request":              true,
-	"invalid_selector_route_state":              true,
-	"pilot_canary_history_full":                 true,
-	"pilot_canary_request_id_reused":            true,
-	"selector_entry_allocation_bind_failed":     true,
-	"selector_entry_allocation_not_bound":       true,
-	"selector_entry_already_allocated":          true,
-	"selector_entry_authority_mismatch":         true,
-	"selector_entry_borrow_fee_exceeded":        true,
-	"selector_entry_borrow_mismatch":            true,
-	"selector_entry_borrow_unavailable":         true,
-	"selector_entry_cash_changed":               true,
-	"selector_entry_has_outstanding_exit":       true,
-	"selector_entry_lane_deferred":              true,
-	"selector_entry_quote_expired":              true,
-	"selector_entry_quote_missing":              true,
-	"selector_entry_requires_reconciled_idle":   true,
-	"selector_evaluation_not_current":           true,
-	"selector_finish_current_work_first":        true,
-	"selector_fee_evidence_unavailable":         true,
-	"selector_manual_recovery_active":           true,
-	"selector_requires_active_pilot":            true,
-	"selector_resolve_capital_recovery_first":   true,
-	"selector_state_changed_during_quote":       true,
-	"selector_unwind_quote_missing":             true,
-	"unwind_requires_existing_exit_reservation": true,
+	"duplicate_move_quote":                    true,
+	"invalid_pilot_canary_request":            true,
+	"invalid_selector_route_state":            true,
+	"pilot_canary_history_full":               true,
+	"pilot_canary_request_id_reused":          true,
+	"selector_entry_allocation_bind_failed":   true,
+	"selector_entry_allocation_not_bound":     true,
+	"selector_entry_already_allocated":        true,
+	"selector_entry_authority_mismatch":       true,
+	"selector_entry_borrow_fee_exceeded":      true,
+	"selector_entry_borrow_mismatch":          true,
+	"selector_entry_borrow_unavailable":       true,
+	"selector_entry_cash_changed":             true,
+	"selector_entry_lane_deferred":            true,
+	"selector_entry_quote_expired":            true,
+	"selector_entry_quote_missing":            true,
+	"selector_entry_requires_reconciled_idle": true,
+	"selector_evaluation_not_current":         true,
+	"selector_finish_current_work_first":      true,
+	"selector_fee_evidence_unavailable":       true,
+	"selector_manual_recovery_active":         true,
+	"selector_resolve_capital_recovery_first": true,
+	"selector_state_changed_during_quote":     true,
+	"selector_unwind_quote_missing":           true,
 }
 
 // sanitizedSelectorEvaluateFailure maps one evaluator error to a single fixed
 // diagnostic code. Raw SQL, network and configuration errors can carry DSNs or
 // server messages, and a hold reason is echoed only when it is one of the
-// locked admission's own codes — nothing arbitrary ever reaches the output.
+// locked evaluation's own codes — nothing arbitrary ever reaches the output.
 func sanitizedSelectorEvaluateFailure(err error) string {
 	var hold *BudgetHold
 	if errors.As(err, &hold) {

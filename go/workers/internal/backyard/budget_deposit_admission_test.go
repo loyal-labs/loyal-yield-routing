@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -162,106 +161,4 @@ func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit 
 		return response(string(payload)), nil
 	})
 	return o, d, KaminoExecutionEvidence{r, effects}, m, rpc, client, accounts
-}
-
-func TestDepositAdmissionReservesWithdrawalResidueAndCompleteBridgeReturn(t *testing.T) {
-	o, d, e, m, rpc, client, accounts := depositAdmissionFixture(t, "")
-	plan, err := observePhase3DepositAdmission(context.Background(), rpc, client, m, o, d, e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var actions []Action
-	var total int64
-	for _, step := range plan.Exit {
-		actions = append(actions, step.Action)
-		total += step.Cost.TotalMicros
-	}
-	want := []Action{ReportNAV, DeleverRouteStep, ReportNAV, SwapCollateralToStableStep, ReportNAV, StageSquadsToVoltr, ReportNAV, VoltrRestoreIdle, ReportNAV}
-	if !reflect.DeepEqual(actions, want) || total != plan.ExitAfterMicros || plan.DepositProjection == nil || plan.PayoffWithdrawal == nil || plan.Snapshot != o.Snapshot {
-		t.Fatal("incomplete deposit reserve")
-	}
-	current, effects, _, err := plan.Input.decode()
-	if err != nil || !reflect.DeepEqual(current, e.Request) || !reflect.DeepEqual(effects, e.ExpectedEffects) {
-		t.Fatal("simulation replaced current instruction", err)
-	}
-	withdraw, we, _, err := plan.PayoffWithdrawal.decode()
-	if err != nil || withdraw.(KaminoPrimeUSDCRequest).AmountRaw != 909_090 || we.Accounts[1].BeforeRaw != 19_000_001 {
-		t.Fatal("withdrawal lost actual receipt count or residue", err)
-	}
-	reverse, _, _, err := plan.QuotedExit.Input.decode()
-	if err != nil || reverse.(JupiterSwapRequest).AmountRaw != we.Accounts[1].AfterRaw || plan.Exit[5].Amount != plan.QuotedExit.EstimatedUpperOutputRaw || plan.Exit[7].Amount != plan.Exit[5].Amount {
-		t.Fatal("return did not price full withdrawal plus residue", err)
-	}
-	if binary.LittleEndian.Uint64(accountAt(accounts, ethenaUSDePYUSD.CollateralCustody).Data[64:72]) != 20_000_000 {
-		t.Fatal("projection mutated live inputs")
-	}
-	assertBudgetHold(t, (&Database{}).admitPhase3Deposit(context.Background(), rpc, client, m, "missing", o, d, e), "bridge_admission_database_unavailable")
-	// The final-send path uses the exact persisted deposit, rechecks custody
-	// and empty position, and never signs or broadcasts in this test.
-	_, _, message, err := plan.Input.decode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
-	intent, _ := Phase3IntentDigest(e.Request, plan.Input.Effects)
-	op := PersistedOperation{Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
-	auth := phase3OperationAuthorization{GoalID: Phase3GoalID, BuildInput: plan.Input, IntentSHA256: intent, SignedWireSHA256: op.SignedWireSHA256, BridgeAdmission: &plan}
-	if _, err := revaluePhase3SignedInput(context.Background(), rpc, auth, op); err != nil {
-		t.Fatal(err)
-	}
-	for _, change := range []struct {
-		address  string
-		offset   int
-		original uint64
-	}{
-		{ethenaUSDePYUSD.DebtCustody, 64, 0},
-		{ethenaUSDePYUSD.Kamino.Obligation, 128, 0},
-	} {
-		data := accountAt(accounts, change.address).Data
-		binary.LittleEndian.PutUint64(data[change.offset:], change.original+1)
-		if _, err := revaluePhase3SignedInput(context.Background(), rpc, auth, op); err == nil {
-			t.Fatal("final-send accepted changed deposit prestate", change.address)
-		}
-		binary.LittleEndian.PutUint64(data[change.offset:], change.original)
-	}
-	// Reobserve an actual deposit poststate for NAV; never promote a template.
-	postAccounts := append(append([]ConfirmedAccount(nil), accounts...), plan.DepositProjection.Accounts...)
-	_, _, _, _, postRPC, _ := withdrawalAdmissionFixture(t, 20_000, postAccounts...)
-	post := o
-	post.Snapshot.HasPosition = true
-	post.Snapshot.PositionCollateralRaw = 909_090
-	post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw = 19_000_001, 19_000_001
-	nav := bridgeTestRequest(ReportNAV, 0)
-	nav.Report.Sequence, nav.Report.ObservedSlot = 42, 42
-	nd := Decision{Action: ReportNAV, StrategyKey: o.Snapshot.RouteLane}
-	ne, _, _, err := bridgeExpectedEffects(nd, 0, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	continuation, err := pricePhase3PositionReturn(context.Background(), postRPC, client, m, post, nd, nav, ne, false)
-	if err != nil || len(continuation.Exit) != 8 {
-		t.Fatal("post-deposit NAV lost return", err)
-	}
-	quoted, _, _, err := continuation.QuotedExit.Input.decode()
-	if err != nil || quoted.(JupiterSwapRequest).AmountRaw != reverse.(JupiterSwapRequest).AmountRaw {
-		t.Fatal("post-deposit residue omitted", err)
-	}
-}
-
-func TestDepositAdmissionRejectsFailedProjectionAndChangedCustody(t *testing.T) {
-	for _, variant := range []string{"failed", "missing", "stale", "clock", "conservation", "position", "debt"} {
-		t.Run(variant, func(t *testing.T) {
-			o, d, e, m, rpc, client, accounts := depositAdmissionFixture(t, variant)
-			switch variant {
-			case "position":
-				binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[128:136], 1)
-			case "debt":
-				binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 1)
-			}
-			if _, err := observePhase3DepositAdmission(context.Background(), rpc, client, m, o, d, e); err == nil {
-				t.Fatal("unsafe deposit admitted")
-			}
-		})
-	}
 }

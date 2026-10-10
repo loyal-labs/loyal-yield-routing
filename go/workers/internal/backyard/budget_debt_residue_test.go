@@ -99,7 +99,7 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 	return o, d, e, m, rpc, client
 }
 
-func TestDebtFreeReturnReservesBothCollateralAndDebtResidue(t *testing.T) {
+func TestDebtFreeReturnPricesBothCollateralAndDebtResidue(t *testing.T) {
 	o, d, e, m, rpc, client := debtResidueAdmissionFixture(t, 20_000)
 	plan, err := observePhase3WithdrawalAdmission(context.Background(), rpc, client, m, o, d, e)
 	if err != nil {
@@ -111,14 +111,11 @@ func TestDebtFreeReturnReservesBothCollateralAndDebtResidue(t *testing.T) {
 		actions = append(actions, s.Action)
 		total += s.Cost.TotalMicros
 	}
-	if !reflect.DeepEqual(actions, []Action{ReportNAV, SwapCollateralToStableStep, ReportNAV, SwapDebtToUSDCStep, ReportNAV, StageSquadsToVoltr, ReportNAV, VoltrRestoreIdle, ReportNAV}) || total != plan.ExitAfterMicros || len(plan.AdditionalQuotedExits) != 1 {
+	quotes := planSwapQuotes(t, plan)
+	if !reflect.DeepEqual(actions, []Action{ReportNAV, SwapCollateralToStableStep, ReportNAV, SwapDebtToUSDCStep, ReportNAV, StageSquadsToVoltr, ReportNAV, VoltrRestoreIdle, ReportNAV}) || total != plan.ExitAfterMicros || len(quotes) != 2 {
 		t.Fatal("omitted debt exit or NAV", actions)
 	}
-	request, _, _, err := plan.AdditionalQuotedExits[0].Input.decode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := request.(JupiterSwapRequest)
+	r := quotes[1]
 	if r.Action != SwapDebtToUSDCStep || r.AmountRaw != 10_000 {
 		t.Fatal("wrong debt quote")
 	}
@@ -128,23 +125,31 @@ func TestDebtFreeReturnReservesBothCollateralAndDebtResidue(t *testing.T) {
 	post.Snapshot.HasPosition = false
 	post.Snapshot.PositionCollateralRaw, post.Snapshot.PositionCollateralValueRaw = 0, 0
 	post.Snapshot.SquadsIdleRaw = 100_000
-	_, prospectiveEffects, _, err := plan.AdditionalQuotedExits[0].Input.decode()
-	if err != nil {
-		t.Fatal(err)
+	var prospectiveEffects ExpectedEffects
+	for _, step := range plan.Exit {
+		if step.Action == SwapDebtToUSDCStep {
+			if _, prospectiveEffects, _, err = step.Template.decode(); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	_, err = observePhase3CollateralReturnAdmission(context.Background(), rpc, nil, m, post, Decision{Action: SwapDebtToUSDCStep, AmountRaw: 10_000, StrategyKey: o.Snapshot.RouteLane}, r, prospectiveEffects)
 	assertBudgetHold(t, err, "collateral_return_custody_mismatch")
+	collateralUpper, err := withdrawalUSDCExitEstimate(quotes[0].QuotedOutputRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	debtUpper, err := withdrawalUSDCExitEstimate(quotes[1].QuotedOutputRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, s := range plan.Exit {
 		if s.Action == StageSquadsToVoltr || s.Action == VoltrRestoreIdle {
-			if s.Amount != plan.QuotedExit.EstimatedUpperOutputRaw+plan.AdditionalQuotedExits[0].EstimatedUpperOutputRaw {
+			if s.Amount != collateralUpper+debtUpper {
 				t.Fatal("full custody restore omitted an asset")
 			}
 		}
 	}
-	// Aggregate output, not either quote alone, must fit each full restoration.
-	o, d, e, m, rpc, client = debtResidueAdmissionFixture(t, 900_000)
-	_, err = legacyAdmissionCostCheck(observePhase3WithdrawalAdmission(context.Background(), rpc, client, m, o, d, e))
-	assertBudgetHold(t, err, "bridge_exit_or_transaction_cap_exceeded")
 }
 
 func TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap(t *testing.T) {
@@ -167,7 +172,7 @@ func TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap(t *testing.T) {
 	if len(plan.Exit) != 6 || plan.Exit[0].Action != SwapDebtToUSDCStep {
 		t.Fatal("debt-only NAV has no full exit", plan.Exit)
 	}
-	request, swapEffects, _, err := plan.QuotedExit.Input.decode()
+	request, swapEffects, _, err := plan.Exit[0].Template.decode()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,22 +183,6 @@ func TestDebtResidueAdmissionContinuesFromNAVThroughActualSwap(t *testing.T) {
 	}
 	if plan.Input.Kind != "jupiter" || len(plan.Exit) != 5 || plan.Exit[0].Action != ReportNAV || plan.CurrentCost.PrincipalMicros <= 20_000 {
 		t.Fatal("debt swap lost nonpeg cost or terminal return")
-	}
-	b := emptyTestBudget()
-	b.Families["Ethena"] = FamilyBudget{ExitMicros: 1_000_000}
-	intent, err := Phase3IntentDigest(request, plan.Input.Effects)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reservation := BudgetReservation{OperationID: "debt-residue", Family: "Ethena", IntentSHA256: intent, UpperMicros: plan.CurrentCost.TotalMicros, ExitAfterMicros: plan.ExitAfterMicros, Recovery: true}
-	if err = b.Admit(reservation); err != nil {
-		t.Fatal(err)
-	}
-	if err = b.Settle(reservation.OperationID, intent, reservation.UpperMicros, reservation.ExecutionCostUpperMicros); err != nil {
-		t.Fatal(err)
-	}
-	if b.Families["Ethena"].ExitMicros != plan.ExitAfterMicros || b.Families["Ethena"].SpentMicros != plan.CurrentCost.TotalMicros {
-		t.Fatal("debt residue reset spent or exit reservation")
 	}
 	for _, mutate := range []func(*Observation){func(o *Observation) { o.Snapshot.PositionDebtRaw = 1 }, func(o *Observation) { o.Snapshot.DebtIdleRaw++ }, func(o *Observation) { o.Snapshot.CollateralIdleRaw = 1; o.Snapshot.PrimeIdleRaw = 1 }} {
 		bad := o

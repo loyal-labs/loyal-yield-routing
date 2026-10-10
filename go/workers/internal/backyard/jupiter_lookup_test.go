@@ -167,13 +167,20 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 		"prefix-shortened":     {func(s *LookupTableSnapshot) { s.Data = s.Data[:len(s.Data)-32] }, "lookup_mapping_changed", false},
 		"deactivated":          {func(s *LookupTableSnapshot) { s.Data[4] = 0 }, "lookup_account_invalid", false},
 		"wrong-owner":          {func(s *LookupTableSnapshot) { s.Owner = bridgeTokenProgram }, "lookup_account_invalid", false},
-		"active-append":        {func(s *LookupTableSnapshot) { s.Data = append(s.Data, make([]byte, 32)...) }, "network_fee_unavailable", true},
-		"unchanged":            {nil, "network_fee_unavailable", true},
+		"active-append":        {func(s *LookupTableSnapshot) { s.Data = append(s.Data, make([]byte, 32)...) }, "", true},
+		"unchanged":            {nil, "", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rpc, reads := lookupRPC(t, r.LookupTables, tc.mutate, tc.allowFee)
-			err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, rpc, "lookup-negative", JupiterExecutionEvidence{Request: r, ExpectedEffects: effects}, Credentials{})
-			assertBudgetHold(t, err, tc.reason)
+			// The builder's prestate gate re-reads the tables before any signer.
+			err := validateBuildPrestate(context.Background(), rpc, r, effects)
+			if tc.reason == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				assertBudgetHold(t, err, tc.reason)
+			}
 			if *reads != 1 {
 				t.Fatal("builder did not refresh lookup tables")
 			}
@@ -192,9 +199,21 @@ func TestJupiterLookupPreparationAndFinalSendRejectChangedAccounts(t *testing.T)
 			wire := append(make([]byte, 65), original...)
 			wire[0] = 1 // unsigned local fixture, not signer proof
 			op := PersistedOperation{Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
-			auth := phase3OperationAuthorization{GoalID: Phase3GoalID, IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
-			_, err = revaluePhase3SignedInput(context.Background(), rpc, auth, op)
-			assertBudgetHold(t, err, tc.reason)
+			auth := phase3OperationAuthorization{IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
+			// The final send re-proves the persisted wire, then re-reads its tables.
+			m := requireEmbeddedInstalledBinding(t)
+			request, requestEffects, err := m.validateSignedIdentity(auth, op)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = m.validateRequestPrestate(context.Background(), rpc, request, requestEffects)
+			if tc.reason == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				assertBudgetHold(t, err, tc.reason)
+			}
 			if *reads != 2 || !bytes.Equal(original, op.SignedWire[65:]) {
 				t.Fatal("final send failed fresh lookup check or changed wire")
 			}

@@ -178,8 +178,8 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 			}
 		}
 		if decision.Reason == leverageDownPartialReleaseReason {
-			// The 1.75x -> 1.5x release never funds a payoff; it is admitted
-			// only with the complete exit priced from its poststate above.
+			// The 1.75x -> 1.5x release never funds a payoff; its complete
+			// exit is priced from its poststate above.
 			return phase3BridgeAdmission{}, budgetHold("leverage_down_partial_release_requires_cycle_pricing")
 		}
 		route, _ := runtimeRoute(s.RouteLane)
@@ -229,8 +229,8 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 		}
 		if uint64(debtCashRaw(s)) < future.UpperDebtRaw && amount == 0 {
 			// NAV -> release -> NAV -> funding -> NAV -> payoff. This is a
-			// future cost template; the release will be rebuilt and admitted
-			// from actual custody after NAV, never signed from this projection.
+			// future cost template; the release will be rebuilt from actual
+			// custody after NAV, never signed from this projection.
 			releaseBound, rows, err = manifest.observeRawRepaymentRelease(ctx, rpc, route, s.Slot)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
@@ -347,7 +347,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 	}
 	payoff.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 	// Cost-only future wire deliberately has no FullPayoff assertion. Actual
-	// repayment must be rebuilt from observed custody and re-admitted as such.
+	// repayment must be rebuilt from observed custody.
 	payoffEffects, err := boundedKaminoRepaymentEffects(projected, source, destination, bound.ObservedDebtRaw, bound.UpperDebtRaw)
 	if err != nil {
 		return phase3BridgeAdmission{}, err
@@ -403,7 +403,6 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 			if err != nil {
 				return plan, err
 			}
-			plan.FundingRelease = input
 			prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: cost, Template: input})
 			plan.ValidThroughSlot = min(plan.ValidThroughSlot, cost.ValidThroughSlot)
 		}
@@ -433,7 +432,6 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 		if err != nil {
 			return plan, err
 		}
-		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - uint64(debtCashRaw(s)), ProofLevel: "COST_ONLY_FUNDING_AND_RESIDUE_ESTIMATE_NOT_EXECUTION"}
 		if !currentSwap {
 			prefix = append(prefix, phase3BridgeExitCost{Action: funding.Request.Action, Amount: funding.Request.AmountRaw, Cost: cost, Template: input})
 		}
@@ -459,12 +457,4 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, clien
 		return plan, budgetHold("stale_funding_exit_admission")
 	}
 	return plan, nil
-}
-
-func (d *Database) admitPhase3Funding(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
-	plan, err := observePhase3FundingAdmission(ctx, rpc, client, manifest, observation, decision, request, effects)
-	if err != nil {
-		return err
-	}
-	return d.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
 }

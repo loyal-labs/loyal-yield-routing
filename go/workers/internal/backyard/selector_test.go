@@ -216,7 +216,7 @@ func TestCommittedUnwindDoesNotRewriteWithdrawalOrTrustFlatIntent(t *testing.T) 
 	s.StrategyKey = s.RouteLane
 	s.PositionCollateralRaw = 100
 	s.HasPosition = true
-	intent := UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: "admitted", MaxCollateralRaw: 100, MaxDebtRaw: 50, CostBoundRaw: 100, BudgetScope: Phase3GoalID, BudgetFamily: "Maple", EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: time.Now().UTC()}
+	intent := UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: "admitted", MaxCollateralRaw: 100, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: time.Now().UTC()}
 	if err := applyUnwindIntentWithLane(&s, &intent, selectorLane); err != nil {
 		t.Fatal(err)
 	}

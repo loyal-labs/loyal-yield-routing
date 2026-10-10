@@ -9,9 +9,6 @@ import (
 )
 
 // UnwindIntentCommitRequest is the operator input for the bounded exit proof.
-// BudgetScope and BudgetFamily are derived from the fixed production budget
-// goal and the source lane, so the command cannot promise a different budget
-// identity than the one the commit itself enforces.
 type UnwindIntentCommitRequest struct {
 	Confirmation     *DebtClearConfirmation
 	Lane             string
@@ -19,7 +16,6 @@ type UnwindIntentCommitRequest struct {
 	ObservationID    string
 	MaxCollateralRaw int64
 	MaxDebtRaw       int64
-	CostBoundRaw     int64
 	EvidenceID       string
 }
 
@@ -43,9 +39,6 @@ func unwindIntentFromRequest(req UnwindIntentCommitRequest, now time.Time) Unwin
 		ObservationID:    req.ObservationID,
 		MaxCollateralRaw: req.MaxCollateralRaw,
 		MaxDebtRaw:       req.MaxDebtRaw,
-		CostBoundRaw:     req.CostBoundRaw,
-		BudgetScope:      Phase3GoalID,
-		BudgetFamily:     phase3BudgetFamilyForLane(req.Lane),
 		EvidenceID:       req.EvidenceID,
 		CreatedAt:        now,
 	}
@@ -57,8 +50,7 @@ func unwindIntentFromRequest(req UnwindIntentCommitRequest, now time.Time) Unwin
 // manifest's source-lane authority and prints what execute would commit; it
 // opens no database connection. Execute acquires its own short route lease and
 // commits through CommitUnwindIntentOnManifest, so every fence stays shared
-// verbatim: an already funded exit reservation, no nonterminal transaction, no
-// unresolved capital recovery, and the reviewed binding's lane authority —
+// verbatim: no nonterminal transaction, no unresolved capital recovery, and the reviewed binding's lane authority —
 // which admits the candidate AUTO source only while the installed manifest
 // carries it.
 func RunUnwindIntentCommit(ctx context.Context, databaseURL string, req UnwindIntentCommitRequest, execute bool) (UnwindIntentCommitResult, error) {

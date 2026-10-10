@@ -82,33 +82,26 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 	defer cancel()
 	defer db.Close()
 	key := fmt.Sprintf("pilot-canary-%d", time.Now().UnixNano())
-	prior := emptyTestBudget()
-	prior.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000}
-	authority := pilotTestAuthority(prior)
-	budget, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := map[string]any{"generation": 2, "phase3": budget, "selectorEntryPaused": true}
+	state := map[string]any{"generation": 2, "selectorEntryPaused": true}
 	raw, _ := json.Marshal(state)
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.AcquireRouteLease(ctx, key, "canary-a", time.Minute); err != nil {
+	if _, err := db.AcquireRouteLease(ctx, key, "canary-a", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	in := pilotCanaryFixture()
 	armFeeAuthorityFixture(t, &in.Snapshot)
-	if _, err = db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 1); err == nil {
+	if _, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 1); err == nil {
 		t.Fatal("lost generation admitted")
 	}
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES($1,$2,'signed','OPEN_ROUTE_STEP','{}')`, key+"-pending", key); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES($1,$2,'signed','OPEN_ROUTE_STEP','{}')`, key+"-pending", key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 2); err == nil {
+	if _, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 2); err == nil {
 		t.Fatal("pending operation admitted")
 	}
-	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled' WHERE operation_id=$1`, key+"-pending"); err != nil {
+	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled' WHERE operation_id=$1`, key+"-pending"); err != nil {
 		t.Fatal(err)
 	}
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
@@ -132,19 +125,13 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 	if err != nil || result.Action != "KEEP" || result.Reason != "operator_canary_already_consumed" {
 		t.Fatal("restart replay", result, err)
 	}
-	var savedBudget, history []byte
+	var history []byte
 	var version int64
-	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3',state->'pilotCanaryEntries',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&savedBudget, &history, &version); err != nil {
+	if err = restarted.pool.QueryRow(ctx, `SELECT state->'pilotCanaryEntries',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&history, &version); err != nil {
 		t.Fatal(err)
 	}
-	var decoded Phase3Budget
-	if json.Unmarshal(savedBudget, &decoded) != nil {
-		t.Fatal("budget")
-	}
-	before, _ := json.Marshal(budget)
-	after, _ := json.Marshal(decoded)
-	if !bytes.Equal(before, after) || version != 3 {
-		t.Fatal("canary changed spending history or replayed generation")
+	if version != 3 {
+		t.Fatal("canary replayed generation")
 	}
 	var receipts map[string]pilotCanaryEntryReceipt
 	if json.Unmarshal(history, &receipts) != nil || len(receipts) != 1 || receipts[in.canaryRequest.ID].QuoteEvidenceID != in.Quotes[0].EvidenceID {

@@ -256,7 +256,7 @@ func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, cli
 		inputs = append(inputs, step.Template)
 		costs = append(costs, step.Cost)
 	}
-	// Project minimum proceeds independently from reservation upper balances.
+	// Project minimum proceeds independently from upper balances.
 	// The funding tail's optimistic residue and Stage/Restore amounts are NOT
 	// cash. Guaranteed USDC and raw route-debt funding are separate pools; the
 	// pool helper decides where each bound leg's minimum output lands.
@@ -359,25 +359,7 @@ func priceReviewedSelectorSourcePlan(ctx context.Context, rpc *chain.Client, cli
 		return out, err
 	}
 	out.Recipe.ValidThroughSlot = min(out.Recipe.ValidThroughSlot, plan.ValidThroughSlot)
-	for i, cost := range out.Recipe.Costs {
-		// The producer starts from a cost-only NAV anchor. When NAV is already
-		// settled, that extra report is conservative economic expense, not a
-		// remaining exit debit in the durable reservation.
-		anchorOnly := false
-		if i == 0 && Decide(s).Action != ReportNAV {
-			request, _, _, decodeErr := inputs[i].decodeWithManifest(m)
-			if decodeErr != nil {
-				return out, decodeErr
-			}
-			r, ok := request.(BridgeBuildRequest)
-			anchorOnly = ok && r.Action == ReportNAV
-		}
-		if !anchorOnly {
-			out.ExitBound.GrossMicros, err = budgetSum(out.ExitBound.GrossMicros, cost.TotalMicros)
-			if err != nil {
-				return out, err
-			}
-		}
+	for _, cost := range out.Recipe.Costs {
 		observationFloor = max(observationFloor, cost.ObservationSlot)
 	}
 	slot, err := confirmedSlot(ctx, rpc)

@@ -4,49 +4,15 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// A funded full payoff uses a finite interest-window request. Reserve the
-// largest possible debt residue (source balance minus minimum repayment), then
-// full collateral withdrawal, both conversions, and the complete bridge return.
-// Partial repayment/release-for-funding and new borrowing are different graphs.
-func observePhase3PayoffAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, observation Observation, decision Decision, evidence KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	s, request := observation.Snapshot, evidence.Request
-	if decision.Action != DeleverRouteStep || request.Action != decision.Action || !request.FullPayoff ||
-		request.RouteLane != s.RouteLane || decision.StrategyKey != s.RouteLane || s.PositionDebtRaw <= 0 ||
-		s.PositionDebtValueRaw <= 0 || debtCashRaw(s) < 0 || uint64(debtCashRaw(s)) < request.AmountRaw ||
-		decision.AmountRaw != s.PositionDebtRaw || evidence.ExpectedEffects.Repayment == nil {
-		return phase3BridgeAdmission{}, budgetHold("complete_funded_payoff_admission_unavailable")
-	}
-	bound, err := validateFullPayoffRequest(ctx, rpc, request, evidence.ExpectedEffects, s.Slot)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	if !sameAccruingDebt(bound, s.PositionDebtRaw) || evidence.ExpectedEffects.Accounts[0].BeforeRaw != uint64(debtCashRaw(s)) {
-		return phase3BridgeAdmission{}, budgetHold("payoff_admission_snapshot_changed")
-	}
-	post := observation
-	post.Snapshot.PositionDebtRaw, post.Snapshot.PositionDebtValueRaw = 0, 0
-	setDebtCashRaw(&post.Snapshot, debtCashRaw(s)-int64(evidence.ExpectedEffects.Repayment.MinimumDebitRaw))
-	plan, err := pricePhase3PositionReturn(ctx, rpc, client, manifest, post, decision, request, evidence.ExpectedEffects, true)
-	if err != nil {
-		return plan, err
-	}
-	plan.Snapshot, plan.Payoff = s, &bound
-	plan.ValidThroughSlot = min(plan.ValidThroughSlot, bound.ThroughSlot)
-	return plan, nil
-}
-
 // Used both immediately after the proposed payoff (cost-only poststate) and
 // for the actual NAV following a reconciled payoff. Templates never become the
-// next current instruction: withdrawal is prepared and admitted again later.
+// next current instruction: withdrawal is prepared and bound again later.
 func pricePhase3PositionReturn(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool) (phase3BridgeAdmission, error) {
 	return pricePhase3PositionReturnAfterFunding(ctx, rpc, client, manifest, post, decision, request, effects, afterPayoff, nil, nil)
 }
@@ -205,7 +171,6 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	}
 	plan := tail
 	plan.Snapshot, plan.Decision, plan.Input, plan.CurrentCost = s, decision, input, current
-	plan.PayoffWithdrawal = tail.Input
 	plan.Exit = nil
 	if afterPayoff {
 		if len(tail.Exit) == 0 || tail.Exit[0].Action != ReportNAV {
@@ -224,16 +189,4 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	}
 	plan.ValidThroughSlot = min(tail.ValidThroughSlot, current.ValidThroughSlot)
 	return plan, nil
-}
-
-func (d *Database) admitPhase3PositionReturnNAV(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
-	if decision.Action != ReportNAV || evidence.Request.Action != ReportNAV || decision.AmountRaw != 0 || evidence.Request.AmountRaw != 0 ||
-		evidence.Request.Report.ObservedSlot != uint64(observation.Snapshot.Slot) || evidence.Request.Report.Sequence != uint64(observation.Snapshot.Slot) {
-		return budgetHold("post_payoff_nav_intent_mismatch")
-	}
-	plan, err := pricePhase3PositionReturn(ctx, rpc, client, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects, false)
-	if err != nil {
-		return err
-	}
-	return d.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
 }

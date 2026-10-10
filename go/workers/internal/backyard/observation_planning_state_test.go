@@ -13,13 +13,7 @@ import (
 
 func planningPilotState(t *testing.T) map[string]any {
 	t.Helper()
-	prior := emptyTestBudget()
-	authority := pilotTestAuthority(prior)
-	budget, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return map[string]any{"generation": 2, "phase3": budget}
+	return map[string]any{"generation": 2}
 }
 
 func TestRoutePlanningStateSharesValidatedAuthorityAndSelectors(t *testing.T) {
@@ -29,7 +23,7 @@ func TestRoutePlanningStateSharesValidatedAuthorityAndSelectors(t *testing.T) {
 	key := fmt.Sprintf("planning-state-%d", time.Now().UnixNano())
 	state := planningPilotState(t)
 	entry := selectorEntryFixture(time.Now().UTC(), mapleSyrupUSDCUSDC.Lane, 1_000_000)
-	unwind := UnwindIntent{SourceLane: mapleSyrupUSDCUSDC.Lane, Reason: "economic_rotation", ObservationID: "source", MaxCollateralRaw: 100, MaxDebtRaw: 50, CostBoundRaw: 100, BudgetScope: Phase3GoalID, BudgetFamily: "Maple", EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: time.Now().UTC()}
+	unwind := UnwindIntent{SourceLane: mapleSyrupUSDCUSDC.Lane, Reason: "economic_rotation", ObservationID: "source", MaxCollateralRaw: 100, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: time.Now().UTC()}
 	state["selectorEntry"], state["selectorUnwind"], state["selectorEntryPaused"] = entry, unwind, true
 	raw, _ := json.Marshal(state)
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {

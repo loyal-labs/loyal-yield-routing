@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"encoding/binary"
 	"testing"
 )
 
@@ -81,71 +80,22 @@ func TestOnReTopupKeepsSafetyPriorityAndOtherLanesUnchanged(t *testing.T) {
 	}
 }
 
-// The three top-up admissions accept a funded debt-free OnRe position through
-// the lane's real Jupiter exports and the shared-cash USDC custody.
-func TestOnReTopupAdmissionsAcceptTheDebtFreePosition(t *testing.T) {
+// The OnRe top-up swap of Squads USDC beside the debt-free position passes
+// its build/send prestate on the lane's real Jupiter exports and the
+// shared-cash USDC custody.
+func TestOnReTopupSwapPrestateAcceptsTheDebtFreePosition(t *testing.T) {
 	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, onreONycUSDC)
 	route, _ := runtimeRoute(onreONycUSDC)
 	clear(accountAt(accounts, route.Kamino.Obligation).Data[1208:1408])
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.PayoffDebtRaw, o.Snapshot.DebtIdleRaw = 0, 0, 0, 0
 	ctx := context.Background()
-
-	// Leg: swap Squads USDC to ONyc beside the position.
 	swap := Decision{Action: SwapStableToCollateralStep, StrategyKey: onreONycUSDC, AmountRaw: 11_000, Reason: topupSwapReason}
 	e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, swap, 11_000, 0, 42)
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.Request.EntryReturnReserved, e.Request.TopupReturnReserved = true, true
-	plan, err := observePhase3EntrySwapAdmission(ctx, rpc, client, m, o, swap, e)
-	if err != nil {
+	if _, err := m.validateRequestPrestate(ctx, rpc, e.Request, e.ExpectedEffects); err != nil {
 		t.Fatalf("OnRe top-up swap refused: %v", err)
-	}
-	if len(plan.Exit) < 4 || plan.Exit[0].Action != ReportNAV || plan.Exit[1].Action != DeleverRouteStep {
-		t.Fatalf("OnRe top-up swap lacks the position return: %+v", plan.Exit)
-	}
-	// Leg: allocate idle Voltr cash into (empty) Squads.
-	o.Snapshot.SquadsIdleRaw, o.Snapshot.VoltrIdleRaw = 0, 50_000
-	alloc := Decision{Action: VoltrAllocateToSquads, AmountRaw: 40_000, StrategyKey: onreONycUSDC, Reason: topupAllocationReason, IdempotencyKey: "onre-topup"}
-	effects, _, _, err := bridgeExpectedEffects(alloc, 50_000, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	effects.Kind, effects.ReturnData = "bridge", expectedAdaptorReturnData(40_000)
-	request := bridgeTestRequest(VoltrAllocateToSquads, 40_000)
-	request.Report.Sequence, request.Report.ObservedSlot = 42, 42
-	if _, err := observePhase3TopupAllocationAdmission(ctx, rpc, client, m, o, alloc, BridgeExecutionEvidence{Request: request, ExpectedEffects: effects}); err != nil {
-		t.Fatalf("OnRe top-up allocation refused: %v", err)
-	}
-}
-
-// The deposit admission and its final-send prestate check accept the funded
-// debt-free OnRe obligation only with the journaled top-up reason.
-func TestOnReTopupDepositPrestate(t *testing.T) {
-	_, _, rpc, _, accounts := usdcReturnFixtureForLane(t, onreONycUSDC)
-	route, _ := runtimeRoute(onreONycUSDC)
-	obligation := accountAt(accounts, route.Kamino.Obligation)
-	clear(obligation.Data[1208:1408])
-	// At the deposit leg the swap has consumed all Squads cash, which is
-	// also OnRe's debt custody.
-	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 0)
-	position, err := decodeKaminoObligation(obligation, route.Kamino)
-	if err != nil || position.collateralDepositedRaw == 0 || position.debtRaw != 0 {
-		t.Fatalf("fixture is not a funded debt-free obligation: %v %+v", err, position)
-	}
-	ctx := context.Background()
-	if _, err := validateInitialDepositPrestate(ctx, rpc, route, 42, position.collateralDepositedRaw); err != nil {
-		t.Fatalf("top-up deposit prestate refused: %v", err)
-	}
-	if _, err := validateInitialDepositPrestate(ctx, rpc, route, 42, 0); err == nil {
-		t.Fatal("initial-deposit prestate accepted a funded obligation")
-	}
-	if _, err := validateInitialDepositPrestate(ctx, rpc, route, 42, position.collateralDepositedRaw+1); err == nil {
-		t.Fatal("top-up deposit prestate accepted a changed position")
-	}
-	// Squads cash left beside the deposit (it would be debt cash) refuses.
-	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 1)
-	if _, err := validateInitialDepositPrestate(ctx, rpc, route, 42, position.collateralDepositedRaw); err == nil {
-		t.Fatal("deposit accepted with Squads cash beside it")
 	}
 }

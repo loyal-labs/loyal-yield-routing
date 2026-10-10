@@ -87,15 +87,6 @@ func TestPhase3BorrowFeesMatchProduction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		prePosition, err := decodeKaminoObligation(accountAt(before, route.Kamino.Obligation), route.Kamino)
-		if err != nil {
-			t.Fatal(err)
-		}
-		preCollateral := binary.LittleEndian.Uint64(accountAt(before, route.CollateralCustody).Data[64:72])
-		bound, err := validateBorrowProjection(request, effects, Snapshot{PositionCollateralRaw: int64(prePosition.collateralDepositedRaw), CollateralIdleRaw: int64(preCollateral)}, phase3KaminoProjection{Slot: result.Slot, MessageSHA256: sha256Bytes(message), UnitsConsumed: probe.ComputeUnits, Accounts: after})
-		if err != nil || bound.ObservedDebtRaw != probe.ActualDebitRaw || bound.UpperDebtRaw < bound.ObservedDebtRaw {
-			t.Fatal("actual borrowed state failed return projection", err)
-		}
 		debit, err := MeasureExecutableDebit(request, effects)
 		if err != nil || debit.Raw != probe.ActualDebitRaw || debit.Raw != request.AmountRaw+probe.FeeRaw || probe.ReceivedRaw != request.AmountRaw {
 			t.Fatal("borrow fee omitted from cap debit", err)
@@ -168,21 +159,13 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 	if err != nil || cost.PrincipalMicros <= 2000 {
 		t.Fatal("gross debit not valued", err, cost)
 	}
-	encoded, _ := jsonMarshalExpectedEffects(e)
-	input, _ := encodePhase3BuildInput(r, encoded)
-	_, _, message, _ := input.decode()
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
-	intent, _ := Phase3IntentDigest(r, encoded)
-	op := PersistedOperation{Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
-	auth := phase3OperationAuthorization{GoalID: Phase3GoalID, BuildInput: input, IntentSHA256: intent, SignedWireSHA256: op.SignedWireSHA256}
-	if _, err := revaluePhase3SignedInput(context.Background(), rpc, auth, op); err != nil {
+	if _, err := m.validateRequestPrestate(context.Background(), rpc, r, e); err != nil {
 		t.Fatal(err)
 	}
 	// The shared fee receiver's balance moves with other borrowers' fees:
 	// only this borrow's fee delta is bound (live 2026-09-29).
 	binary.LittleEndian.PutUint64(fee.Data[64:72], 6)
-	if _, err := revaluePhase3SignedInput(context.Background(), rpc, auth, op); err != nil {
+	if _, err := m.validateRequestPrestate(context.Background(), rpc, r, e); err != nil {
 		t.Fatal("shared fee receiver balance move refused the borrow", err)
 	}
 	binary.LittleEndian.PutUint64(fee.Data[64:72], 5)
@@ -208,28 +191,6 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 			t.Fatal("malformed borrow admitted", variant)
 		}
 	}
-	// At the controlled $2/PYUSD price, the receive amount is below $1 but
-	// its origination fee crosses the cap. Reject through the real builder
-	// before database admission or any signer access.
-	over, err := m.kaminoPacketForRoute(OpenRouteStep, kaminoLegBorrow, 489_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary.LittleEndian.PutUint64(reserve.Data[kaminoReserveConfigOffset+40:], 0)
-	withoutFee, err := kaminoBorrowEffects(accounts, route, over.AmountRaw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	control, err := observePhase3KnownBuildCost(context.Background(), rpc, over, withoutFee)
-	if err != nil || control.TotalMicros >= Phase3TransactionCapMicros {
-		t.Fatal("zero-origination-fee control is not below cap including price margins and network fee", err, control.TotalMicros)
-	}
-	binary.LittleEndian.PutUint64(reserve.Data[kaminoReserveConfigOffset+40:], 1<<52)
-	overEffects, err := kaminoBorrowEffects(accounts, route, over.AmountRaw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertKnownCostExceedsLegacyBudget(t, rpc, over, overEffects)
 	// Minimum, nearest-integer (including half-up), and zero fee semantics.
 	for _, tc := range []struct{ rate, receive, want uint64 }{{0, 1, 0}, {1, 2, 1}, {1 << 52, 1000, 4}, {1 << 51, 1280, 3}} {
 		binary.LittleEndian.PutUint64(reserve.Data[kaminoReserveConfigOffset+40:], tc.rate)

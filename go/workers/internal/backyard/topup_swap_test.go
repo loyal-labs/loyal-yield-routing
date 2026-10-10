@@ -96,67 +96,17 @@ func autoDebtTopupSwapFixture(t *testing.T, variant string) (Observation, Decisi
 	return o, d, e, m, rpc, client
 }
 
-// Beside debt the top-up swap reserves the complete projected return from
-// its simulated poststate: the swapped AUTO funds the release/payoff and
-// the Squads cash it spent is not staged a second time.
-func TestTopupSwapAdmissionBesideDebtReservesProjectedReturn(t *testing.T) {
-	o, d, e, m, rpc, client := autoDebtTopupSwapFixture(t, "")
-	plan, err := observePhase3EntrySwapAdmission(context.Background(), rpc, client, m, o, d, e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var total int64
-	for _, step := range plan.Exit {
-		total += step.Cost.TotalMicros
-	}
-	if plan.Payoff == nil || plan.PayoffRepayment == nil || plan.PayoffWithdrawal == nil || plan.BorrowRelease == nil || plan.QuotedExit == nil || total != plan.ExitAfterMicros || plan.Snapshot != o.Snapshot {
-		t.Fatal("top-up swap beside debt lacks the complete projected return")
-	}
-	_, _, message, err := plan.Input.decodeWithManifest(m)
-	want, wantErr := CompileJupiterMessage(e.Request)
-	if err != nil || wantErr != nil || !bytes.Equal(message, want) {
-		t.Fatal("exit pricing replaced the current swap", err, wantErr)
-	}
-	_, releaseEffects, _, err := plan.BorrowRelease.decodeWithManifest(m)
-	if err != nil || releaseEffects.Accounts[1].BeforeRaw != e.Request.QuotedOutputRaw {
-		t.Fatal("exit lost the simulated swap proceeds", err)
-	}
-	proceeds := plan.QuotedExit.EstimatedUpperOutputRaw
-	for _, quoted := range plan.AdditionalQuotedExits {
-		proceeds += quoted.EstimatedUpperOutputRaw
-	}
-	staged := false
-	for _, step := range plan.Exit {
-		staged = staged || (step.Action == StageSquadsToVoltr && step.Amount == proceeds)
-	}
-	if !staged {
-		t.Fatal("return staged the spent Squads cash again or lost proceeds")
-	}
-	// Build/send revalidation accepts the debt-bearing obligation for this
-	// flagged top-up on AUTO only.
-	if _, err := m.observePhase3KnownBuildCost(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
-		t.Fatal("final-send revaluation refused the top-up swap beside debt", err)
+// Beside debt, build and send re-read the debt-bearing obligation for the
+// flagged top-up swap on AUTO only.
+func TestTopupSwapBesideDebtPrestateAcceptsOnlyTheFlaggedTopup(t *testing.T) {
+	_, _, e, m, rpc, _ := autoDebtTopupSwapFixture(t, "")
+	if _, err := m.validateRequestPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
+		t.Fatal("prestate refused the top-up swap beside debt", err)
 	}
 	flat := e
 	flat.Request.TopupReturnReserved = false
-	if _, err := m.observePhase3KnownBuildCost(context.Background(), rpc, flat.Request, flat.ExpectedEffects); err == nil {
+	if _, err := m.validateRequestPrestate(context.Background(), rpc, flat.Request, flat.ExpectedEffects); err == nil {
 		t.Fatal("unflagged entry swap accepted a debt-bearing obligation")
-	}
-	for variant, reason := range map[string]string{"source": "leverage_projection_custody_mismatch", "output": "leverage_projection_custody_mismatch", "position": "leverage_projection_position_changed"} {
-		o, d, e, m, rpc, client := autoDebtTopupSwapFixture(t, variant)
-		_, err := observePhase3EntrySwapAdmission(context.Background(), rpc, client, m, o, d, e)
-		assertBudgetHold(t, err, reason)
-	}
-	for name, mutate := range map[string]func(*Observation){
-		"debt idle":     func(o *Observation) { o.Snapshot.DebtIdleRaw = 1 },
-		"unvalued debt": func(o *Observation) { o.Snapshot.PositionDebtValueRaw = 0 },
-		"partial":       func(o *Observation) { o.Snapshot.SquadsIdleRaw++ },
-	} {
-		bad := o
-		mutate(&bad)
-		if _, err := observePhase3EntrySwapAdmission(context.Background(), rpc, client, m, bad, d, e); err == nil {
-			t.Fatalf("%s: unsafe top-up swap beside debt admitted", name)
-		}
 	}
 }
 
@@ -182,50 +132,16 @@ func TestTopupSwapDecisionBesideDebtFreePosition(t *testing.T) {
 	}
 }
 
-func TestTopupSwapAdmissionReservesPositionReturn(t *testing.T) {
-	o, d, e, m, rpc, client, _ := topupSwapAdmissionFixture(t)
-	plan, err := observePhase3EntrySwapAdmission(context.Background(), rpc, client, m, o, d, e)
-	if err != nil {
-		t.Fatal(err)
+// Build and send accept the flagged top-up swap beside the debt-free
+// position; a flat entry swap may not carry it.
+func TestTopupSwapPrestateAcceptsTheFlaggedPosition(t *testing.T) {
+	_, _, e, _, rpc, _, _ := topupSwapAdmissionFixture(t)
+	if err := validateBuildPrestate(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
+		t.Fatal("prestate refused the top-up swap", err)
 	}
-	var actions []Action
-	var total int64
-	for _, step := range plan.Exit {
-		actions = append(actions, step.Action)
-		total += step.Cost.TotalMicros
-	}
-	if len(actions) < 4 || actions[0] != ReportNAV || actions[1] != DeleverRouteStep || total != plan.ExitAfterMicros || plan.Snapshot != o.Snapshot {
-		t.Fatalf("top-up swap lacks the complete position return: %v", actions)
-	}
-	withdraw, effects, _, err := plan.PayoffWithdrawal.decode()
-	upper, _ := withdrawalUSDCExitEstimate(e.Request.QuotedOutputRaw)
-	if err != nil || withdraw.(KaminoPrimeUSDCRequest).AmountRaw != uint64(o.Snapshot.PositionCollateralRaw) || effects.Accounts[1].BeforeRaw != upper {
-		t.Fatal("return omits the position or the swapped collateral", err)
-	}
-	if _, err := observePhase3KnownBuildCost(context.Background(), rpc, e.Request, e.ExpectedEffects); err != nil {
-		t.Fatal("final-send revaluation refused the top-up swap", err)
-	}
-	// The flag, the journaled reason and the position must agree.
-	for name, mutate := range map[string]func(*Observation, *Decision, *JupiterExecutionEvidence){
-		"no flag": func(_ *Observation, _ *Decision, e *JupiterExecutionEvidence) { e.Request.TopupReturnReserved = false },
-		"reason":  func(_ *Observation, d *Decision, _ *JupiterExecutionEvidence) { d.Reason = "usdc_requires_collateral" },
-		"debt":    func(o *Observation, _ *Decision, _ *JupiterExecutionEvidence) { o.Snapshot.PositionDebtRaw = 1 },
-		"demand":  func(o *Observation, _ *Decision, _ *JupiterExecutionEvidence) { o.Snapshot.WithdrawalDemandRaw = 1 },
-		"partial": func(o *Observation, _ *Decision, _ *JupiterExecutionEvidence) { o.Snapshot.SquadsIdleRaw++ },
-		"flat": func(o *Observation, _ *Decision, _ *JupiterExecutionEvidence) {
-			o.Snapshot.HasPosition, o.Snapshot.PositionCollateralRaw = false, 0
-		},
-	} {
-		bo, bd, be := o, d, e
-		mutate(&bo, &bd, &be)
-		if _, err := observePhase3EntrySwapAdmission(context.Background(), rpc, client, m, bo, bd, be); err == nil {
-			t.Fatalf("%s: unsafe top-up swap admitted", name)
-		}
-	}
-	// A flat entry swap may not carry the top-up flag.
 	flat := e
 	flat.Request.TopupReturnReserved = false
-	if _, err := observePhase3KnownBuildCost(context.Background(), rpc, flat.Request, flat.ExpectedEffects); err == nil {
+	if err := validateBuildPrestate(context.Background(), rpc, flat.Request, flat.ExpectedEffects); err == nil {
 		t.Fatal("entry swap without the top-up flag accepted a funded obligation")
 	}
 }

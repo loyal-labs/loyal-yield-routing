@@ -352,6 +352,13 @@ func (m RouteManifest) compileJupiterMessage(request JupiterSwapRequest, delegat
 	if err != nil {
 		return nil, err
 	}
+	sourceMint, _, _, _, err := jupiterEdgeForRoute(request.Action, request.RouteLane)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkPositionLegCap(sourceMint, request.AmountRaw); err != nil {
+		return nil, err
+	}
 	if err := jupiterValidateAutoRetainedMinimum(request); err != nil {
 		return nil, err
 	}
@@ -472,10 +479,13 @@ func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc
 		return err
 	}
 	buildStart := time.Now()
-	if err := authorizePhase3ProductionBuild(ctx, database, rpc, operationID, evidence.Request, evidence.ExpectedEffects, effects); err != nil {
+	if err := database.requireBoundIntent(ctx, operationID, evidence.Request, effects); err != nil {
 		return err
 	}
-	logStage("jupiter_build_authorize", buildStart)
+	if err := validateBuildPrestate(ctx, rpc, evidence.Request, evidence.ExpectedEffects); err != nil {
+		return err
+	}
+	logStage("jupiter_build_prestate", buildStart)
 	signer, err := credentials.signer()
 	if err != nil {
 		return err

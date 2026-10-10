@@ -156,48 +156,6 @@ func leverageUpCapFee(p KaminoPosition, receive uint64, fee func(uint64) (uint64
 	return receive, nil
 }
 
-// leverageUpProjectionWithinCaps checks the simulated post-borrow position:
-// instant LTV <= 50%, and <= 45% once the received debt is redeposited as
-// collateral after a 1% swap loss.
-func leverageUpProjectionWithinCaps(p phase3KaminoProjection, route RuntimeRoute, receive uint64) error {
-	o, err := decodeKaminoObligation(accountAt(p.Accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil {
-		return err
-	}
-	collateral, err := decodeKaminoReserve(accountAt(p.Accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
-	if err != nil {
-		return err
-	}
-	debt, err := decodeKaminoReserve(accountAt(p.Accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
-	if err != nil {
-		return err
-	}
-	redeemable, err := collateral.redeemLiquidityRaw(o.collateralDepositedRaw)
-	if err != nil {
-		return err
-	}
-	position := KaminoPosition{CollateralDepositedRaw: o.collateralDepositedRaw, RedeemablePrimeRaw: redeemable, DebtRaw: o.debtRaw,
-		CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF}
-	instant, err := observedLTVBPS(position)
-	if err != nil || instant > TargetLTVBPS {
-		return budgetHold("leverage_up_instant_ltv_above_50")
-	}
-	// Received debt as collateral units at 99%: receive*pD*10^cd / (pC*10^dd).
-	extra := new(big.Int).Mul(new(big.Int).SetUint64(receive), littleInt(debt.marketPriceSF[:]))
-	extra.Mul(extra, big.NewInt(10_000-leverageSwapLossBPS))
-	extra.Mul(extra, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(collateral.mintDecimals)), nil))
-	extra.Quo(extra, new(big.Int).Mul(new(big.Int).Mul(littleInt(collateral.marketPriceSF[:]), big.NewInt(10_000)), new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(debt.mintDecimals)), nil)))
-	if !extra.IsUint64() {
-		return budgetHold("leverage_up_projection_overflow")
-	}
-	position.RedeemablePrimeRaw += extra.Uint64()
-	after, err := observedLTVBPS(position)
-	if err != nil || after > leverageMaxLTVBPS {
-		return budgetHold("leverage_up_loop_ltv_above_45")
-	}
-	return nil
-}
-
 // borrowDebtMatches compares a re-read obligation debt with the snapshot's:
 // exact for a debt-free position (installed behaviour), within 0.1% + 1 raw
 // of accrual otherwise.
@@ -237,8 +195,7 @@ func leverageLoopInProgress(s Snapshot) bool {
 
 // B2 down move to 1x: a stored 1x target below a leveraged AUTO/OnRe
 // position repays it in full through the existing release -> funding swap ->
-// full payoff legs (the withdrawal-shaped chain, priced and admitted the same
-// way), under its own reasons. Leftover debt/USDC cash then returns to the
+// full payoff legs (the withdrawal-shaped chain), under its own reasons. Leftover debt/USDC cash then returns to the
 // position through the plan B3 residue and top-up legs.
 const (
 	leverageDownReleaseReason = "leverage_down_release"

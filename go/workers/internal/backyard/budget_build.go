@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -37,7 +36,6 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	}
 	var message []byte
 	var setupLamports uint64
-	var initializerPrestateSlot int64
 	lane := RouteID
 	switch r := request.(type) {
 	case BridgeBuildRequest:
@@ -60,73 +58,13 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	if rpc == nil {
 		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
 	}
-	slot, err := confirmedSlot(ctx, rpc)
+	slot, err := m.validateRequestPrestate(ctx, rpc, request, effects)
 	if err != nil {
-		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
+		return ValuedTransactionCost{}, err
 	}
-	if r, ok := request.(KaminoInitializationRequest); ok {
-		// Installed lanes keep the exact public absent-only prestate path —
-		// including validated expiry recovery — with no manifest identity
-		// re-checks. Only the candidate AUTO lane revalidates through the
-		// reviewed binding's manifest-aware prestate.
-		if r.RouteLane == autoAUTOPYUSD.Lane {
-			slot, err = m.validateKaminoInitializationPrestate(ctx, rpc, r, slot)
-		} else {
-			slot, err = validateKaminoInitializationPrestate(ctx, rpc, r, slot)
-		}
+	var initializerPrestateSlot int64
+	if _, ok := request.(KaminoInitializationRequest); ok {
 		initializerPrestateSlot = slot
-		if err != nil {
-			return ValuedTransactionCost{}, err
-		}
-	}
-	if r, ok := request.(KaminoPrimeUSDCRequest); ok && r.FullPayoff {
-		bound, err := m.validateFullPayoffRequest(ctx, rpc, r, effects, slot)
-		if err != nil {
-			return ValuedTransactionCost{}, err
-		}
-		slot = max(slot, bound.ObservedSlot)
-	}
-	if r, ok := request.(KaminoPrimeUSDCRequest); ok && effects.Kind == "kamino-borrow" {
-		observed, err := validateBorrowRequest(ctx, rpc, r, effects, slot)
-		if err != nil {
-			return ValuedTransactionCost{}, err
-		}
-		slot = max(slot, observed)
-	}
-	if r, ok := request.(KaminoPrimeUSDCRequest); ok && r.RepaymentRelease {
-		bound, _, err := m.validateRepaymentReleaseRequest(ctx, rpc, r, effects, slot)
-		if err != nil {
-			return ValuedTransactionCost{}, err
-		}
-		slot = max(slot, bound.Payoff.ObservedSlot)
-	}
-	if r, ok := request.(JupiterSwapRequest); ok {
-		if r.PositionReturnReserved {
-			bound, _, err := validateLeverageSwap(ctx, rpc, r, effects, slot)
-			if err != nil {
-				return ValuedTransactionCost{}, err
-			}
-			slot = max(slot, bound.ObservedSlot)
-		}
-		if r.EntryReturnReserved {
-			observed, err := validateEntrySwap(ctx, rpc, r, effects, slot)
-			if err != nil {
-				return ValuedTransactionCost{}, err
-			}
-			slot = max(slot, observed)
-		}
-		if r.FullPayoffFunding {
-			// Build/send revalidation stays on the raw fail-closed capture.
-			bound, _, err := validatePayoffFunding(ctx, rpc, m, r, effects, slot, 3, false)
-			if err != nil {
-				return ValuedTransactionCost{}, err
-			}
-			slot = max(slot, bound.ObservedSlot)
-		}
-		slot, err = revalidateJupiterLookupTables(ctx, rpc, r, slot)
-		if err != nil {
-			return ValuedTransactionCost{}, err
-		}
 	}
 	// Prices and the exact-message fee are independent reads. Preserve each
 	// source slot and expiry, then validate all three against one final slot.
@@ -228,36 +166,4 @@ func exitLegCostReads(rpc *chain.Client, m RouteManifest, legs []phase3BridgeExi
 		}
 	}
 	return reads
-}
-
-// Every production builder uses this gate before signer access. Passing it
-// does not create a reservation or authorize a missing setup/exit plan.
-func authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc *chain.Client, operationID string, request any, effects ExpectedEffects, encodedEffects []byte) error {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
-	return manifest.authorizePhase3ProductionBuild(ctx, database, rpc, operationID, request, effects, encodedEffects)
-}
-
-// authorizePhase3ProductionBuild is the manifest-aware form: the exact
-// production gate with the fresh cost/prestate observation and the locked
-// build authorization resolved through the explicit reviewed manifest. The
-// public form above loads the embedded manifest once and is unchanged.
-func (m RouteManifest) authorizePhase3ProductionBuild(ctx context.Context, database *Database, rpc *chain.Client, operationID string, request any, effects ExpectedEffects, encodedEffects []byte) error {
-	cost, err := m.observePhase3KnownBuildCost(ctx, rpc, request, effects)
-	if err != nil {
-		return err
-	}
-	return database.authorizePhase3BuildOnManifest(ctx, m, rpc, operationID, request, encodedEffects, cost)
-}
-
-// sanitizedHoldCause keeps a nested hold's reason, or a generic cause for
-// transport errors (raw errors may carry RPC URLs).
-func sanitizedHoldCause(err error) string {
-	var hold *BudgetHold
-	if errors.As(err, &hold) {
-		return hold.Reason
-	}
-	return "rpc_read_failed"
 }

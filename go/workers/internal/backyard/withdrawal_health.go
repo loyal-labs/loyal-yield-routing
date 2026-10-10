@@ -30,11 +30,8 @@ type WithdrawalHealth struct {
 func withdrawalIntervention(reason string) bool {
 	switch reason {
 	case "withdrawal_full_exit_unproven", "debt_clear_confirmation_required",
-		"debt_clear_confirmation_requires_new_bounds", "debt_clear_cost_bound_exceeded",
-		"debt_clear_receipt_history_full", "transaction_cap_exceeded", "family_cap_exceeded",
-		"goal_cap_exceeded", "persisted_budget_exceeds_cap", "pilot_entry_execution_cost_cap_exhausted",
-		"squads_spending_limit_exceeded",
-		"bridge_exit_or_transaction_cap_exceeded", "repayment_release_exceeds_safe_size",
+		"debt_clear_confirmation_requires_new_bounds", "debt_clear_receipt_history_full",
+		"squads_spending_limit_exceeded", "position_leg_cap_exceeded", "repayment_release_exceeds_safe_size",
 		"leverage_exit_cycles_exceeded", "funding_slippage_exceeds_policy":
 		return true
 	}

@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -247,28 +246,11 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		}
 	})
 
-	// The send fence runs the real signed path: reservation, build input, wire
+	// The send fence runs the real signed path: bound build input, wire
 	// binding, then refusal. A refused wire must terminate without ever being
 	// revalued, submitted, or kept advancing on a later tick.
 	t.Run("the stale signed fence refuses without revaluation or send", func(t *testing.T) {
 		routeKey := fmt.Sprintf("failure-lifecycle-stale-%d", time.Now().UnixNano())
-		budget := emptyTestBudget()
-		budget.Families["OnRe"] = FamilyBudget{ExitMicros: 4_000_000}
-		state, err := json.Marshal(map[string]any{"generation": 1, "phase3": budget})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,$2::jsonb)`, routeKey, string(state)); err != nil {
-			t.Fatal(err)
-		}
-		id := routeKey + "-op"
-		if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects,strategy_key)
-			VALUES($1,$2,'decided','{}','OnRe/ONyc/USDC')`, id, routeKey); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.AcquireRouteLease(ctx, routeKey, "failure-lifecycle-writer", time.Minute); err != nil {
-			t.Fatal(err)
-		}
 		request := bridgeTestRequest(ReportNAV, 0)
 		request.LastValidBlockHeight = 10
 		request.Report.ObservedSlot, request.Report.Sequence = 42, 42
@@ -280,36 +262,14 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		reservation := testReservation()
-		reservation.Recovery = true
-		reservation.OperationID = id
-		reservation.IntentSHA256, err = Phase3IntentDigest(request, effects)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := db.ReservePhase3(ctx, reservation); err != nil {
-			t.Fatal(err)
-		}
-		if err := db.AuthorizePhase3Build(ctx, id, request, effects); err != nil {
-			t.Fatal(err)
-		}
+		id := seedBoundOperation(t, ctx, db, routeKey, "failure-lifecycle-writer", ReportNAV, "OnRe/ONyc/USDC", request, effects)
 		message, err := CompileBridgeMessage(request)
 		if err != nil {
 			t.Fatal(err)
 		}
 		wire := append(make([]byte, 65), message...)
 		wire[0] = 1
-		tx, err := db.pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := db.bindPhase3WireTx(ctx, tx, id, sha256Bytes(wire)); err != nil {
-			_ = tx.Rollback(ctx)
-			t.Fatal(err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
+		bindTestWire(t, ctx, db, id, sha256Bytes(wire))
 		if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2 WHERE operation_id=$1`, id, wire); err != nil {
 			t.Fatal(err)
 		}
@@ -344,15 +304,6 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		}
 		if status != "failed" || reason != "report_stale" || submitted {
 			t.Fatalf("a refused wire crossed the broadcast boundary: status=%s reason=%q submitted=%t", status, reason, submitted)
-		}
-		var persisted []byte
-		if err := db.pool.QueryRow(ctx, `SELECT state->'phase3' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&persisted); err != nil {
-			t.Fatal(err)
-		}
-		var released Phase3Budget
-		if json.Unmarshal(persisted, &released) != nil || len(released.Reservations) != 0 ||
-			released.Families["OnRe"].ExitMicros != 4_000_000 || released.Families["OnRe"].SpentMicros != 0 {
-			t.Fatalf("a refused wire did not release its unspent reservation: %s", persisted)
 		}
 	})
 }

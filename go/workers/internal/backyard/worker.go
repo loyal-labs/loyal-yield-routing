@@ -46,7 +46,6 @@ type tickRuntime struct {
 	withdrawalHealth                 func(context.Context, WithdrawalHealth) error
 	observeWithdrawalHealth          func(context.Context) (Observation, error)
 	prepareInitialization            func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
-	admitInitialization              func(context.Context, string, Observation, Decision, KaminoInitializationRequest) error
 	buildInitialization              func(context.Context, string, KaminoInitializationRequest) error
 	refreshUnwind                    func(context.Context) error
 	completeUnwind                   func(context.Context, Observation) (bool, error)
@@ -61,13 +60,12 @@ type tickRuntime struct {
 	prepareKamino                    func(context.Context, RouteManifest, Decision) (Observation, KaminoExecutionEvidence, error)
 	prepareJupiter                   func(context.Context, RouteManifest, Decision) (Observation, JupiterExecutionEvidence, error)
 	recordDecision                   func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error)
-	admitBridge                      func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error
-	admitKamino                      func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error
-	admitJupiter                     func(context.Context, string, Observation, Decision, JupiterExecutionEvidence) error
-	buildBridge                      func(context.Context, string, BridgeExecutionEvidence) error
-	buildKamino                      func(context.Context, string, KaminoExecutionEvidence) error
-	buildJupiter                     func(context.Context, string, JupiterExecutionEvidence) error
-	custodyOwnershipProof            func(context.Context, RouteManifest, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
+	// bind persists the decided operation's integrity record before build.
+	bind                  func(context.Context, string, Observation, Decision, any, ExpectedEffects) error
+	buildBridge           func(context.Context, string, BridgeExecutionEvidence) error
+	buildKamino           func(context.Context, string, KaminoExecutionEvidence) error
+	buildJupiter          func(context.Context, string, JupiterExecutionEvidence) error
+	custodyOwnershipProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
 	// prefetchCustodyProof starts the pre-decision custody journal read while
 	// the spend is prepared; nil keeps the serial custodyOwnershipProof.
 	prefetchCustodyProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig) custodyProofFinisher
@@ -323,9 +321,6 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision) (Observation, KaminoInitializationRequest, error) {
 			return prepareKaminoInitialization(ctx, rpc, m, d, state.observe)
 		},
-		admitInitialization: func(ctx context.Context, id string, o Observation, d Decision, r KaminoInitializationRequest) error {
-			return database.admitKaminoInitialization(ctx, rpc, manifest, id, o, d, r)
-		},
 		buildInitialization: func(ctx context.Context, id string, r KaminoInitializationRequest) error {
 			return BuildSimulateAndPersistKaminoInitialization(ctx, database, rpc, id, manifest, r, credentials)
 		},
@@ -379,70 +374,8 @@ func productionTickRuntime(database *Database, rpc *chain.Client, manifest Route
 			return database.ObserveSharedCustodyOwnershipProofWithRPC(ctx, manifest, cfg, expected, observedRaw, observedSlot, rpc)
 		},
 		recordBudgetHold: database.RecordPhase3BudgetHold,
-		admitBridge: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence BridgeExecutionEvidence) error {
-			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiter, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
-				if err != nil {
-					return err
-				}
-				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
-			}
-			if evidence.Request.Action == VoltrAllocateToSquads && decision.Reason == topupAllocationReason {
-				return database.admitPhase3TopupAllocation(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
-			}
-			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionDebtRaw > 0 && positionReturnRoute(observation.Snapshot.RouteLane) {
-				return database.admitPhase3Funding(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
-			}
-			if evidence.Request.Action == ReportNAV && observation.Snapshot.PositionCollateralRaw > 0 && observation.Snapshot.PositionDebtRaw == 0 {
-				return database.admitPhase3PositionReturnNAV(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
-			}
-			if observation.Snapshot.CollateralIdleRaw > 0 || observation.Snapshot.DebtIdleRaw > 0 {
-				return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
-			}
-			return database.admitPhase3Bridge(ctx, rpc, operationID, observation, decision, evidence)
-		},
-		admitKamino: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence KaminoExecutionEvidence) error {
-			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiter, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
-				if err != nil {
-					return err
-				}
-				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
-			}
-			_, leg, err := kaminoPrimeUSDCInstruction(evidence.Request)
-			if err != nil {
-				return err
-			}
-			if leg == kaminoLegDeposit && evidence.Request.Action == OpenRouteStep {
-				return database.admitPhase3Deposit(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
-			}
-			if leg == kaminoLegBorrow && evidence.Request.Action == OpenRouteStep {
-				return database.admitPhase3Borrow(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
-			}
-			return database.admitPhase3Withdrawal(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
-		},
-		admitJupiter: func(ctx context.Context, operationID string, observation Observation, decision Decision, evidence JupiterExecutionEvidence) error {
-			if plan, err, ok := admitPartialWithdrawalLeg(ctx, rpc, productionJupiter, manifest, observation, decision, evidence.Request, evidence.ExpectedEffects); ok {
-				if err != nil {
-					return err
-				}
-				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
-			}
-			if evidence.Request.Action == SwapDebtToCollateralStep {
-				return database.admitPhase3LeverageSwap(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
-			}
-			if evidence.Request.Action == SwapCollateralToDebtStep && decision.Reason == exitCycleSwapReason {
-				plan, err := observePhase3ExitCycleSwapAdmission(ctx, rpc, productionJupiter, manifest, observation, decision, evidence)
-				if err != nil {
-					return err
-				}
-				return database.persistPhase3ExitAdmission(ctx, rpc, operationID, observation, decision, plan)
-			}
-			if evidence.Request.Action == SwapStableToCollateralStep {
-				return database.admitPhase3EntrySwap(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence)
-			}
-			if evidence.Request.FullPayoffFunding {
-				return database.admitPhase3Funding(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
-			}
-			return database.admitPhase3CollateralReturn(ctx, rpc, productionJupiter, manifest, operationID, observation, decision, evidence.Request, evidence.ExpectedEffects)
+		bind: func(ctx context.Context, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
+			return database.bindOperation(ctx, rpc, manifest, operationID, observation, decision, request, effects)
 		},
 		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
 			return BuildSimulateAndPersistBridge(ctx, database, rpc, operationID, evidence, credentials)
@@ -658,8 +591,8 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	// Strict pre-decision shared-custody ownership proof (doc 26): a prepared
 	// AUTO-PYUSD spend is proofed against the prepared evidence's exact
 	// effects BEFORE the row exists, and the proof rides this observation into
-	// RecordDecision and the locked measured admission. Zero-spend and other
-	// lanes are untouched.
+	// RecordDecision and the locked bind. Zero-spend and other lanes are
+	// untouched.
 	switch executionDecision {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, bridgeEvidence.ExpectedEffects, prefetchedCustody)
@@ -680,47 +613,37 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	if record.Status != Decided || record.OperationID == "" {
 		return fmt.Errorf("actionable decision was not durably recorded as decided")
 	}
+	var request any
+	var effects ExpectedEffects
 	switch executionDecision {
 	case InitializeKaminoObligation:
-		if w.runtime.admitInitialization == nil || w.runtime.buildInitialization == nil {
-			err = budgetHold("initializer_admission_unavailable")
-		} else {
-			err = w.runtime.admitInitialization(ctx, record.OperationID, observation, decision, initializationRequest)
-			if err == nil {
-				err = w.runtime.buildInitialization(ctx, record.OperationID, initializationRequest)
-			}
-		}
+		request, effects = initializationRequest, kaminoInitializationEffects(initializationRequest)
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		if w.runtime.admitBridge == nil {
-			err = budgetHold("bridge_admission_unavailable")
-		} else {
-			err = w.runtime.admitBridge(ctx, record.OperationID, observation, decision, bridgeEvidence)
-			if err == nil {
-				err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
-			}
-		}
+		request, effects = bridgeEvidence.Request, bridgeEvidence.ExpectedEffects
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		if w.runtime.admitKamino == nil {
-			err = budgetHold("position_admission_unavailable")
-		} else {
-			err = w.runtime.admitKamino(ctx, record.OperationID, observation, decision, kaminoEvidence)
-			logStage("admit", tickStart)
-			if err == nil {
-				err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
-			}
-		}
+		request, effects = kaminoEvidence.Request, kaminoEvidence.ExpectedEffects
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		if w.runtime.admitJupiter == nil {
-			err = budgetHold("swap_admission_unavailable")
-		} else {
-			err = w.runtime.admitJupiter(ctx, record.OperationID, observation, decision, jupiterEvidence)
-			logStage("admit", tickStart)
-			if err == nil {
-				err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
-			}
-		}
+		request, effects = jupiterEvidence.Request, jupiterEvidence.ExpectedEffects
 	default:
 		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
+	}
+	if w.runtime.bind == nil {
+		err = budgetHold("bind_unavailable")
+	} else {
+		err = w.runtime.bind(ctx, record.OperationID, observation, decision, request, effects)
+	}
+	logStage("bind", tickStart)
+	if err == nil {
+		switch executionDecision {
+		case InitializeKaminoObligation:
+			err = w.runtime.buildInitialization(ctx, record.OperationID, initializationRequest)
+		case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
+			err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
+		case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
+			err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
+		default:
+			err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
+		}
 	}
 	logStage("build_sign", tickStart)
 	if err != nil {
@@ -756,7 +679,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	return nil
 }
 
-// journalTickError journals an admission hold for the tick's operation once.
+// journalTickError journals a pre-send hold for the tick's operation once.
 // A hold already recorded durably by its own send path - the pre-broadcast
 // spending-limit refusal - must not be journaled again: the operation row is
 // already failed, so the store would reject the transition, and joining that
@@ -950,7 +873,7 @@ func preBroadcastStatus(status OperationStatus) bool {
 	return status == Decided || status == Built || status == Simulated || status == Signed
 }
 
-// isPreSendHold reports a tick error made only of admission holds raised
+// isPreSendHold reports a tick error made only of holds raised
 // before anything was broadcast. The next tick re-observes the chain and
 // re-derives the whole leg, exactly what a process restart would do, without
 // the Render restart (13 tries, 10 restarts in the 09-26 AUTO entry; the

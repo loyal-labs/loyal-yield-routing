@@ -139,7 +139,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [selector-evaluate [--execute] | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [selector-evaluate [--execute] | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
@@ -235,9 +235,9 @@ func parseSettleManualRestoreFlags(args []string) (backyard.ManualRestoreReproce
 // stay with the shared unwind-intent validation.
 func parseUnwindIntentFlags(args []string) (backyard.UnwindIntentCommitRequest, bool, error) {
 	request, execute := backyard.UnwindIntentCommitRequest{}, false
-	usage := `usage: loyal-engine backyard commit-unwind-intent --lane <lane> --reason <economic_rotation|withdrawal_shortfall|hard_ltv_reduction> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --cost-bound-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute]`
+	usage := `usage: loyal-engine backyard commit-unwind-intent --lane <lane> --reason <economic_rotation|withdrawal_shortfall|hard_ltv_reduction> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute]`
 	texts := map[string]*string{"--lane": &request.Lane, "--reason": &request.Reason, "--observation-id": &request.ObservationID, "--evidence-id": &request.EvidenceID}
-	numbers := map[string]*int64{"--max-collateral-raw": &request.MaxCollateralRaw, "--max-debt-raw": &request.MaxDebtRaw, "--cost-bound-raw": &request.CostBoundRaw}
+	numbers := map[string]*int64{"--max-collateral-raw": &request.MaxCollateralRaw, "--max-debt-raw": &request.MaxDebtRaw}
 	seen := make(map[string]bool)
 	for index := 0; index < len(args); index++ {
 		arg := args[index]

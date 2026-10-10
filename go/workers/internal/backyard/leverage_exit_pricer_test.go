@@ -5,13 +5,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"math/big"
-	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
@@ -137,7 +134,7 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 			}
 		}
 	}
-	if cycleRepays < 1 || swaps < 2 || plan.ExitAfterMicros <= 0 || plan.Payoff == nil || plan.Payoff.ObservedDebtRaw != 42_857_142 || plan.BorrowRelease == nil || plan.PayoffRepayment == nil || plan.PayoffWithdrawal == nil {
+	if cycleRepays < 1 || swaps < 2 || plan.ExitAfterMicros <= 0 || plan.Payoff == nil || plan.Payoff.ObservedDebtRaw != 42_857_142 || plan.PayoffRepayment == nil {
 		t.Fatalf("multi-cycle exit incomplete: %v payoff %+v", actions, plan.Payoff)
 	}
 	var total int64
@@ -258,64 +255,6 @@ func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
 	}
 }
 
-// Partial withdrawal: the leveraged release leg is admitted with the
-// complete exit of the remaining position priced from its poststate; the
-// debt-free position prices its withdraw -> swap -> return tail.
-func TestPartialWithdrawalReleaseAdmission(t *testing.T) {
-	for _, level := range []string{"1.5x", "1x"} {
-		o, m, rpc, client, accounts, route := leverage175Fixture(t)
-		debt := uint64(33_333_333)
-		if level == "1x" {
-			debt = 0
-		}
-		putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(debt), 60))
-		o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.LTVBPS = int64(debt), int64(debt), int64(debt*10_000/100_000_000)
-		o.Snapshot.LeverageTargetLevel = 1.5
-		if debt == 0 {
-			o.Snapshot.LeverageTargetLevel = 1
-		}
-		// $10 of the fixture's $66.67 (1.5x) / $100 (1x) equity; the
-		// remainder stays above the $50 minimum.
-		o.Snapshot.WithdrawalDemandRaw, o.Snapshot.VoltrIdleRaw, o.Snapshot.PayoffDebtRaw = 10_000_000, 0, int64(debt)+100
-		// The fixture's snapshot equity (value units): C $100 - D.
-		o.Snapshot.StrategyNAVRaw, o.Snapshot.TotalVaultNAVRaw = 100_000_000-int64(debt), 100_000_000-int64(debt)
-		o.Snapshot.CollateralIdleValueRaw = 0
-		d := Decide(o.Snapshot)
-		if d.Reason != partialReleaseReason {
-			t.Fatalf("%s: %+v", level, d)
-		}
-		r, err := m.kaminoPacketForRoute(DeleverRouteStep, kaminoLegWithdraw, uint64(d.AmountRaw), LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.ObligationReserves = []string{route.Kamino.CollateralReserve}
-		if debt > 0 {
-			r.ObligationReserves = append(r.ObligationReserves, route.Kamino.DebtReserve)
-			r.RepaymentRelease, r.PilotRepaymentRelease = true, true
-		}
-		reserve, _ := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
-		liquidity, _ := reserve.redeemLiquidityRaw(uint64(d.AmountRaw))
-		source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
-		effects, err := exactKaminoTokenEffects(accounts, source, destination, liquidity)
-		if err != nil {
-			t.Fatal(err)
-		}
-		plan, err, ok := admitPartialWithdrawalLeg(context.Background(), rpc, client, m, o, d, r, effects)
-		if !ok || err != nil || plan.ExitAfterMicros <= 0 || plan.PayoffWithdrawal == nil || len(plan.Exit) == 0 {
-			t.Fatalf("%s: ok=%t err=%v", level, ok, err)
-		}
-		if debt > 0 && plan.PayoffRepayment == nil {
-			t.Fatalf("%s: remaining debt payoff not priced", level)
-		}
-		// A changed decision is refused.
-		bad := d
-		bad.AmountRaw++
-		if _, err, ok := admitPartialWithdrawalLeg(context.Background(), rpc, client, m, o, bad, r, effects); !ok || err == nil {
-			t.Fatalf("%s: drifted decision admitted", level)
-		}
-	}
-}
-
 // Every Kamino wire of a partial withdrawal is an existing topology: the
 // leveraged release ({collateral, debt}), the debt-free withdraw
 // ({collateral}) and the partial repay ({collateral, debt}), compiled by the
@@ -343,32 +282,6 @@ func TestPartialWithdrawalKaminoWiresPassThePersistedWireGate(t *testing.T) {
 				t.Fatalf("%s leg %d %v: %v", lane, c.leg, c.reserves, err)
 			}
 		}
-	}
-}
-
-// The collateral->USDC swap leg of a partial withdrawal (after the release)
-// is admitted with the remaining position's complete exit priced.
-func TestPartialWithdrawalSwapLegAdmission(t *testing.T) {
-	o, m, rpc, client, accounts, route := leverage175Fixture(t)
-	debt := uint64(33_333_333)
-	putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(debt), 60))
-	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Obligation).Data[128:136], 85_000_000_000)
-	binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 15_000_000_000)
-	o.Snapshot.PositionCollateralRaw, o.Snapshot.PositionCollateralValueRaw = 85_000_000_000, 85_000_000
-	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.PayoffDebtRaw, o.Snapshot.LTVBPS = int64(debt), int64(debt), int64(debt)+100, 3921
-	o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.CollateralIdleValueRaw = 15_000_000_000, 15_000_000_000, 15_000_000
-	o.Snapshot.LeverageTargetLevel, o.Snapshot.WithdrawalDemandRaw = 1.5, 10_000_000
-	d := Decide(o.Snapshot)
-	if d.Reason != partialSwapToUSDCReason || d.Action != SwapCollateralToStableStep {
-		t.Fatalf("decision %+v", d)
-	}
-	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, d, uint64(d.AmountRaw), 0, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err, ok := admitPartialWithdrawalLeg(context.Background(), rpc, client, m, o, d, e.Request, e.ExpectedEffects)
-	if !ok || err != nil || plan.ExitAfterMicros <= 0 || plan.PayoffRepayment == nil {
-		t.Fatalf("ok=%t err=%v", ok, err)
 	}
 }
 
@@ -435,228 +348,17 @@ func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Obs
 	return o, d, BridgeExecutionEvidence{r, effects}, m, rpc, client, accounts
 }
 
-// A partial stage is not pooled liquidity until the separately admitted restore.
-// Exercise both the retained debt and retained debt-free collateral paths.
-func TestPartialWithdrawalRestorePreservesPositionAndAdmission(t *testing.T) {
+// A partial stage is not pooled liquidity: the cash-only return templates stay
+// closed while a position (with or without debt) is retained.
+func TestPartialWithdrawalRestoreKeepsCashOnlyTemplatesClosed(t *testing.T) {
 	for _, tc := range []struct {
 		lane string
 		debt int64
 	}{{onreONycUSDC, 33_333_333}, {onreONycUSDC, 0}, {autoAUTOPYUSD.Lane, int64(autoFixtureDebtRaw)}} {
 		t.Run(fmt.Sprintf("%s/%d", tc.lane, tc.debt), func(t *testing.T) {
-			debt := tc.debt
-			o, d, evidence, m, rpc, client, accounts := partialWithdrawalRestoreFixture(t, tc.lane, debt)
-			route, _ := runtimeRoute(o.Snapshot.RouteLane)
-			s, r, effects := &o.Snapshot, evidence.Request, evidence.ExpectedEffects
-			before := append([]byte(nil), accountAt(accounts, route.Kamino.Obligation).Data...)
-			plan, err, ok := admitPartialWithdrawalLeg(context.Background(), rpc, client, m, o, d, r, effects)
-			if !ok || err != nil {
-				t.Fatalf("restore not admitted: recognized=%t err=%v", ok, err)
-			}
-			current, currentEffects, _, err := plan.Input.decodeWithManifest(m)
-			if err != nil || current != r || !reflect.DeepEqual(currentEffects, effects) || plan.Snapshot != *s {
-				t.Fatalf("current restore or snapshot changed: %v", err)
-			}
-			if plan.ExitAfterMicros <= 0 || plan.PayoffWithdrawal == nil || (debt > 0 && plan.PayoffRepayment == nil) {
-				t.Fatal("remaining position exit reserve was dropped")
-			}
-			if plan.ValidThroughSlot > s.Slot+adaptorMaxReportAgeSlots {
-				t.Fatal("restore extended the adaptor report window")
-			}
-			if !bytes.Equal(before, accountAt(accounts, route.Kamino.Obligation).Data) {
-				t.Fatal("restore mutated position accounts")
-			}
-			for _, e := range currentEffects.Accounts {
-				switch e.Address {
-				case bridgeStrategyATA:
-					if e.BeforeRaw != uint64(s.StagedAmountRaw) || e.AfterRaw != 0 {
-						t.Fatal("restore did not sweep exact staged custody")
-					}
-				case bridgeIdleATA:
-					if e.AfterRaw-e.BeforeRaw != uint64(s.StagedAmountRaw) {
-						t.Fatal("restore did not fund pooled idle")
-					}
-				case bridgeSquadsATA:
-					if e.BeforeRaw != e.AfterRaw {
-						t.Fatal("restore changed Squads cash")
-					}
-				default:
-					t.Fatalf("restore touched position account %s", e.Address)
-				}
-			}
-			// Run the production dispatcher, not a test copy of its branches.
-			// All HTTP is controlled; a missing database stops before persistence.
-			productionJupiter = client
-			t.Cleanup(func() { productionJupiter = nil })
-			runtime := productionTickRuntime(&Database{}, rpc, m, Credentials{})
-			assertBudgetHold(t, runtime.admitBridge(context.Background(), "restore", o, d, BridgeExecutionEvidence{r, effects}), "bridge_admission_database_unavailable")
-			// The cash-only guard remains closed to retained exposure.
-			_, err = phase3BridgeTemplates(*s, d, BridgeExecutionEvidence{r, effects})
+			o, d, evidence, _, _, _, _ := partialWithdrawalRestoreFixture(t, tc.lane, tc.debt)
+			_, err := phase3BridgeTemplates(o.Snapshot, d, evidence)
 			assertBudgetHold(t, err, "complete_position_exit_admission_unavailable")
-			badRequest := r
-			badRequest.Report.NAVAfterRaw = 0
-			_, err, _ = admitPartialWithdrawalLeg(context.Background(), nil, nil, m, o, d, badRequest, effects)
-			assertBudgetHold(t, err, "partial_withdrawal_restore_mismatch")
-			badRequest = r
-			badRequest.AmountRaw--
-			_, err, _ = admitPartialWithdrawalLeg(context.Background(), nil, nil, m, o, d, badRequest, effects)
-			assertBudgetHold(t, err, "partial_withdrawal_restore_mismatch")
-			badEffects := effects
-			badEffects.Accounts = append([]ExpectedAccountEffect(nil), effects.Accounts...)
-			badEffects.Accounts[0].AfterRaw++
-			_, err, _ = admitPartialWithdrawalLeg(context.Background(), nil, nil, m, o, d, r, badEffects)
-			assertBudgetHold(t, err, "partial_withdrawal_restore_mismatch")
-			for name, mutate := range map[string]func(*Observation){
-				"unknown stage":    func(o *Observation) { o.Snapshot.StagedAmountKnown = false },
-				"mismatched stage": func(o *Observation) { o.Snapshot.StagedAmountRaw-- },
-				"missing origin":   func(o *Observation) { o.Snapshot.PartialWithdrawalOperationID = "" },
-			} {
-				t.Run(name, func(t *testing.T) {
-					bad := o
-					mutate(&bad)
-					_, err, ok := admitPartialWithdrawalLeg(context.Background(), nil, nil, m, bad, d, r, effects)
-					if !ok || err == nil {
-						t.Fatal("unproven staged restore accepted")
-					}
-				})
-			}
-		})
-	}
-}
-
-// The real production admission must preserve the position's reserve and bind
-// only the restore wire. Fixture rows represent already reconciled local history;
-// no signer, chain simulation, or transaction submission is involved.
-func TestPartialWithdrawalRestoreProductionAdmissionDB(t *testing.T) {
-	for _, tc := range []struct {
-		lane string
-		debt int64
-	}{{onreONycUSDC, 33_333_333}, {onreONycUSDC, 0}, {autoAUTOPYUSD.Lane, int64(autoFixtureDebtRaw)}} {
-		t.Run(fmt.Sprintf("%s/%d", tc.lane, tc.debt), func(t *testing.T) {
-			debt := tc.debt
-			ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 60*time.Second)
-			defer cancel()
-			defer db.Close()
-			o, d, evidence, m, rpc, client, accounts := partialWithdrawalRestoreFixture(t, tc.lane, debt)
-			key := fmt.Sprintf("partial-restore-%d", time.Now().UnixNano())
-			id, originID := key+"-restore", sha256Bytes([]byte(key+"-release"))
-			o.Snapshot.PartialWithdrawalOperationID = originID
-			d = m.DecideOnManifest(o.Snapshot)
-			partial := partialWithdrawalState{Lane: d.StrategyKey, OperationID: originID, Generation: 1, LTVBPS: o.Snapshot.PartialWithdrawalLTVBPS}
-			stateValue := planningPilotState(t)
-			budget := stateValue["phase3"].(Phase3Budget)
-			family := phase3BudgetFamilyForLane(d.StrategyKey)
-			beforeReserve := int64(1_000_000_000)
-			row := budget.Families[family]
-			row.ExitMicros = beforeReserve
-			budget.Families[family] = row
-			stateValue["phase3"], stateValue["partialWithdrawal"] = budget, partial
-			state, _ := json.Marshal(stateValue)
-			if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2::jsonb,2)`, key, string(state)); err != nil {
-				t.Fatal(err)
-			}
-			defer db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key)
-			defer db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_operations WHERE route_key=$1`, key)
-			if _, err := db.AcquireRouteLease(ctx, key, "partial-restore-test", time.Minute); err != nil {
-				t.Fatal(err)
-			}
-			insert := func(id string, action Action, reason, status string, slot int64, amount int64) {
-				t.Helper()
-				decision := d
-				decision.Action, decision.Reason, decision.AmountRaw = action, reason, amount
-				observed := o
-				if status == "reconciled" {
-					observed.Snapshot.Slot = slot
-				}
-				values := map[string]any{"decision": newDecisionEvidence(observed, decision, m.SHA256, *m.PolicyCatalog.SHA256), "partialWithdrawal": partial}
-				if action == ReportNAV {
-					values["expectedEffects"] = ExpectedEffects{ReturnData: expectedAdaptorReturnData(uint64(o.Snapshot.PriorReportedNAVRaw))}
-				}
-				envelope, _ := json.Marshal(values)
-				if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,confirmed_slot,expected_effects) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)`, id, key, status, action, d.StrategyKey, slot, string(envelope)); err != nil {
-					t.Fatal(err)
-				}
-			}
-			insert(originID, DeleverRouteStep, partialReleaseReason, "reconciled", 39, 11_000_000)
-			insert(key+"-nav", ReportNAV, "post_mutation_nav_due", "reconciled", 40, 0)
-			insert(key+"-stage", StageSquadsToVoltr, partialStageReason, "reconciled", 41, d.AmountRaw)
-			origin, err := db.LoadPartialWithdrawal(ctx, key)
-			if err != nil || origin == nil || *origin != partial {
-				t.Fatalf("invalid partial origin: %v", err)
-			}
-			journal, err := db.ReconciledBridgeJournal(ctx, key)
-			if err != nil || !journal.StagedAmountKnown || !journal.StageAfterTicket || journal.StagedAmountRaw != d.AmountRaw {
-				t.Fatalf("invalid stage provenance: %+v %v", journal, err)
-			}
-			o.Snapshot.StagedAmountKnown, o.Snapshot.StagedAmountRaw, o.Snapshot.StageTransient = journal.StagedAmountKnown, journal.StagedAmountRaw, journal.StageAfterTicket
-			insert(id, d.Action, d.Reason, "decided", 0, d.AmountRaw)
-			productionJupiter = client
-			t.Cleanup(func() { productionJupiter = nil })
-			runtime := productionTickRuntime(db, rpc, m, Credentials{})
-			readState := func() (string, string) {
-				t.Helper()
-				var state, operation string
-				if err := db.pool.QueryRow(ctx, `SELECT s.state::text,o.expected_effects::text FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, id).Scan(&state, &operation); err != nil {
-					t.Fatal(err)
-				}
-				return state, operation
-			}
-			// A valid snapshot cannot substitute for the durable origin binding.
-			if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=expected_effects-'partialWithdrawal' WHERE operation_id=$1`, id); err != nil {
-				t.Fatal(err)
-			}
-			beforeState, beforeOperation := readState()
-			assertBudgetHold(t, runtime.admitBridge(ctx, id, o, d, evidence), "partial_withdrawal_state_changed")
-			if afterState, afterOperation := readState(); beforeState != afterState || beforeOperation != afterOperation {
-				t.Fatal("bad provenance mutated admission or budget")
-			}
-			encodedPartial, _ := json.Marshal(partial)
-			if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=jsonb_set(expected_effects,'{partialWithdrawal}',$2::jsonb) WHERE operation_id=$1`, id, string(encodedPartial)); err != nil {
-				t.Fatal(err)
-			}
-			beforeState, beforeOperation = readState()
-			for _, known := range []bool{false, true} {
-				bad := o
-				bad.Snapshot.StagedAmountKnown = known
-				if known {
-					bad.Snapshot.StagedAmountRaw--
-				}
-				assertBudgetHold(t, runtime.admitBridge(ctx, id, bad, d, evidence), "partial_withdrawal_decision_changed")
-			}
-			if afterState, afterOperation := readState(); beforeState != afterState || beforeOperation != afterOperation {
-				t.Fatal("bad stage mutated admission or budget")
-			}
-			route, _ := runtimeRoute(d.StrategyKey)
-			positionBefore := append([]byte(nil), accountAt(accounts, route.Kamino.Obligation).Data...)
-			if err = runtime.admitBridge(ctx, id, o, d, evidence); err != nil {
-				t.Fatal(err)
-			}
-			var rawAuth, rawBudget []byte
-			var hasWire, hasSend, hasDebtClear bool
-			if err = db.pool.QueryRow(ctx, `SELECT o.expected_effects->'phase3',s.state->'phase3',o.signed_wire IS NOT NULL,o.broadcast_intent_at IS NOT NULL,s.state ? 'debtClearAuthority' FROM loyal_yield.multiply_operations o JOIN loyal_yield.multiply_route_states s USING(route_key) WHERE operation_id=$1`, id).Scan(&rawAuth, &rawBudget, &hasWire, &hasSend, &hasDebtClear); err != nil {
-				t.Fatal(err)
-			}
-			var auth phase3OperationAuthorization
-			var afterBudget Phase3Budget
-			if json.Unmarshal(rawAuth, &auth) != nil || json.Unmarshal(rawBudget, &afterBudget) != nil || auth.BridgeAdmission == nil || auth.BuildInput == nil {
-				t.Fatal("missing durable admission")
-			}
-			current, effects, _, err := auth.BuildInput.decodeWithManifest(m)
-			if err != nil || current != evidence.Request || !reflect.DeepEqual(effects, evidence.ExpectedEffects) || auth.DebtClear != nil || hasWire || hasSend || hasDebtClear {
-				t.Fatalf("admission changed current restore or granted debt-clear/send authority: %v", err)
-			}
-			plan, reservation := auth.BridgeAdmission, afterBudget.Reservations[id]
-			if plan.Snapshot != o.Snapshot || plan.ExitAfterMicros <= 0 || plan.PayoffWithdrawal == nil || (debt > 0 && plan.PayoffRepayment == nil) || !bytes.Equal(positionBefore, accountAt(accounts, route.Kamino.Obligation).Data) {
-				t.Fatal("remaining position or its reserved return changed")
-			}
-			if !reservation.Recovery || reservation.ExitBeforeMicros != beforeReserve || reservation.ExitAfterMicros != max(plan.ExitAfterMicros, beforeReserve-plan.CurrentCost.TotalMicros) || afterBudget.Families[family].ExitMicros != reservation.ExitAfterMicros {
-				t.Fatal("remaining-position reserve was not retained")
-			}
-			if afterBudget.deploymentLimits() != budget.deploymentLimits() || afterBudget.Pilot == nil || *afterBudget.Pilot != *budget.Pilot {
-				t.Fatal("restore widened limits or changed pilot authority")
-			}
-			if evidence.Request.Report.NAVAfterRaw == 0 || evidence.Request.Report.NAVAfterRaw != uint64(o.Snapshot.StrategyNAVRaw) {
-				t.Fatal("retained position NAV lost")
-			}
 		})
 	}
 }

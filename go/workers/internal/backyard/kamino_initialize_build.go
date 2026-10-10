@@ -8,8 +8,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// This uses the same delegate, reservation, simulation and durable-wire
-// pipeline as the ordinary Kamino legs. A compiler alone never authorizes it.
+// This uses the same delegate, bind, simulation and durable-wire pipeline as
+// the ordinary Kamino legs. A compiler alone never authorizes it.
 func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *Database, rpc *chain.Client, operationID string, manifest RouteManifest, request KaminoInitializationRequest, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("initializer runtime dependencies are required")
@@ -20,12 +20,15 @@ func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *
 	if err := manifest.validateInitializationRequest(request); err != nil {
 		return err
 	}
-	effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &request}
+	effects := kaminoInitializationEffects(request)
 	encoded, err := jsonMarshalExpectedEffects(effects)
 	if err != nil {
 		return err
 	}
-	if err = manifest.authorizePhase3ProductionBuild(ctx, database, rpc, operationID, request, effects, encoded); err != nil {
+	if err = database.requireBoundIntent(ctx, operationID, request, encoded); err != nil {
+		return err
+	}
+	if _, err = manifest.validateRequestPrestate(ctx, rpc, request, effects); err != nil {
 		return err
 	}
 	signer, err := credentials.signer()
@@ -55,4 +58,10 @@ func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *
 		return err
 	}
 	return database.PersistSigned(ctx, operationID, build)
+}
+
+// kaminoInitializationEffects is the initializer's whole effect graph: it
+// creates the obligation and moves no token.
+func kaminoInitializationEffects(r KaminoInitializationRequest) ExpectedEffects {
+	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
 }

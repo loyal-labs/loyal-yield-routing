@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -23,12 +22,6 @@ type routePlanningState struct {
 	// leverage is the durable B2 option-1 level target (nil = none stored).
 	leverage          *LeverageTarget
 	partialWithdrawal *partialWithdrawalState
-	// remainingExecutionCost is advisory quote-sizing headroom under the
-	// reviewed $500 bounded execution-cost stop: the cap less booked spend and
-	// every outstanding reservation's cost bound. The binding check stays at
-	// reservation time under the record lock; this only shapes the sized quote
-	// ladder. A route without a budget carries the full ceiling.
-	remainingExecutionCost int64
 }
 
 func (d *Database) readRoutePlanningState(ctx context.Context, routeKey string, execution bool) (*routePlanningState, error) {
@@ -43,7 +36,7 @@ func (d *Database) readRoutePlanningState(ctx context.Context, routeKey string, 
 // the durable entry and unwind decodes resolved through the explicit reviewed
 // manifest: the candidate AUTO entry and a recorded candidate-source unwind
 // are decoded only while that manifest's reviewed binding resolves, and every
-// lease, generation and budget check is shared verbatim.
+// lease and generation check is shared verbatim.
 func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifest RouteManifest, routeKey string, execution bool) (*routePlanningState, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return nil, fmt.Errorf("planning state database is not configured")
@@ -59,14 +52,13 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 		out.lease = &lease
 		owner, fence = lease.Owner, lease.FencingToken
 	}
-	var budget, entry, unwind, leverage, partial []byte
+	var entry, unwind, leverage, partial []byte
 	err := d.pool.QueryRow(ctx, `SELECT state_version,
-		COALESCE(state->'phase3','null'::jsonb),
 		state->'selectorEntry',state->'selectorUnwind',COALESCE((state->>'selectorEntryPaused')::boolean,false),
 		COALESCE(state->'leverageTarget','null'::jsonb),state->'partialWithdrawal'
 		FROM loyal_yield.multiply_route_states WHERE route_key=$1
 		AND ($2='' OR (lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()))`,
-		routeKey, owner, fence).Scan(&out.generation, &budget, &entry, &unwind, &out.paused, &leverage, &partial)
+		routeKey, owner, fence).Scan(&out.generation, &entry, &unwind, &out.paused, &leverage, &partial)
 	if errors.Is(err, pgx.ErrNoRows) && execution {
 		d.setLease(nil)
 		return nil, ErrRouteLeaseLost
@@ -76,12 +68,6 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	}
 	if out.generation <= 0 {
 		return nil, fmt.Errorf("invalid planning generation")
-	}
-	out.remainingExecutionCost = int64(PilotEntryExecutionCostCapMicros)
-	if string(budget) != "null" {
-		if out.remainingExecutionCost, err = pilotRemainingExecutionCost(budget); err != nil {
-			return nil, err
-		}
 	}
 	out.entry, err = manifest.decodeSelectorEntry(entry)
 	if err != nil {
@@ -105,34 +91,6 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 		return nil, budgetHold("invalid_partial_withdrawal_generation")
 	}
 	return out, nil
-}
-
-// pilotRemainingExecutionCost derives the advisory remaining bounded
-// entry-cost budget from a validated durable pilot budget: the reviewed
-// ceiling less booked execution-cost spend and every outstanding
-// reservation's cost bound. The budget is only read here, never mutated.
-func pilotRemainingExecutionCost(raw []byte) (int64, error) {
-	var pilot Phase3Budget
-	if json.Unmarshal(raw, &pilot) != nil || pilot.validate() != nil {
-		return 0, budgetHold("invalid_durable_budget")
-	}
-	spent, err := pilot.executionCostSpent()
-	if err != nil {
-		return 0, err
-	}
-	var sumErr error
-	for _, reservation := range pilot.Reservations {
-		if spent, sumErr = budgetSum(spent, reservation.ExecutionCostUpperMicros); sumErr != nil {
-			return 0, sumErr
-		}
-	}
-	remaining := int64(PilotEntryExecutionCostCapMicros) - spent
-	if remaining < 0 {
-		// Exhausted headroom is a fact, never an unknown: production sizing
-		// must fail closed instead of disabling the budget trigger.
-		remaining = 0
-	}
-	return remaining, nil
 }
 
 func (p *routePlanningState) observationManifest(manifest RouteManifest) RouteManifest {

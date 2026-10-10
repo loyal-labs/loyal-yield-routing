@@ -106,7 +106,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			}
 			return nil
 		},
-		admitBridge: func(_ context.Context, id string, got Observation, d Decision, _ BridgeExecutionEvidence) error {
+		bind: func(_ context.Context, id string, got Observation, d Decision, _ any, _ ExpectedEffects) error {
 			order = append(order, "admit")
 			if id != "operation" || got != observation || d != decision {
 				t.Fatal("admission lost the recorded decision")
@@ -123,7 +123,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 	// The same real dispatch path must preserve a typed admission rejection,
 	// not turn it into generic restart recovery or a successful build.
 	rejected := &BudgetHold{Reason: "transaction_cap_exceeded"}
-	worker.runtime.admitBridge = func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return rejected }
+	worker.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return rejected }
 	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
 		t.Fatal("admission rejection reached construction/signing")
 		return nil
@@ -230,7 +230,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 			}
 			return nil
 		},
-		admitKamino: func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
 			order = append(order, "admit-kamino")
 			return nil
 		},
@@ -241,7 +241,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 	if got := strings.Join(order, ","); got != "prepare-kamino,record,admit-kamino,build-kamino" {
 		t.Fatalf("wrong Kamino dispatch order: %s", got)
 	}
-	worker.runtime.admitKamino = func(context.Context, string, Observation, Decision, KaminoExecutionEvidence) error {
+	worker.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
 		return budgetHold("complete_position_exit_admission_unavailable")
 	}
 	worker.runtime.buildKamino = func(context.Context, string, KaminoExecutionEvidence) error {
@@ -454,7 +454,7 @@ func TestLeasedWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			cancel()
 			return nil
 		},
-		admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
+		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },
 	}}
 	config := Config{PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond}
 	err := worker.Run(ctx, leasing, "worker:backyard:test:sha-"+strings.Repeat("f", 40), config)
@@ -707,7 +707,7 @@ func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 				recordDecision: func(context.Context, string, Observation, Decision, string, string) (DecisionRecord, error) {
 					return DecisionRecord{OperationID: "report-op", Status: Decided}, nil
 				},
-				admitBridge: func(context.Context, string, Observation, Decision, BridgeExecutionEvidence) error { return nil },
+				bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },
 				buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
 					persisted = &PersistedOperation{Operation: Operation{ID: "report-op"}, Status: after, SignedWire: []byte{1, 2, 3}}
 					return nil

@@ -11,9 +11,7 @@ import (
 // on the disposable database through the exact production wiring: a
 // candidate-source unwind intent commits, survives restart, merges into the
 // snapshot and completes only under the reviewed manifest, while every
-// embedded entry point keeps its installed installed-lane closure. The same
-// activated pilot budget pins the manifest-authorized tranche-cap stamp
-// end to end.
+// embedded entry point keeps its installed-lane closure.
 func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
@@ -24,18 +22,7 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A real activated pilot budget with an AUTO exit reservation: the same
-	// seeding sequence the pilot entry tests use. The exit family joins after
-	// activation — a pilot transition cannot clear an exit reserve it never
-	// carried, so the activated budget is the one that books it.
-	prior := emptyTestBudget()
-	authority := pilotTestAuthority(prior)
-	activated, err := activatePilotBudget(prior, authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	activated.Families["AUTO"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, err := json.Marshal(map[string]any{"generation": 2, "phase3": activated})
+	state, err := json.Marshal(map[string]any{"generation": 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,14 +32,13 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 	if _, err = db.AcquireRouteLease(ctx, key, "unwind-a", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	family := phase3BudgetFamilyForLane(autoAUTOPYUSD.Lane)
-	intent := UnwindIntent{SourceLane: autoAUTOPYUSD.Lane, Reason: "hard_ltv_reduction", ObservationID: "source", MaxCollateralRaw: 100, MaxDebtRaw: 50, CostBoundRaw: 2_000_000, BudgetScope: Phase3GoalID, BudgetFamily: family, EvidenceID: sha256Bytes([]byte("auto-exit")), CreatedAt: time.Now().UTC()}
+	intent := UnwindIntent{SourceLane: autoAUTOPYUSD.Lane, Reason: "hard_ltv_reduction", ObservationID: "source", MaxCollateralRaw: 100, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("auto-exit")), CreatedAt: time.Now().UTC()}
 	// Installed closure: the embedded commit refuses the candidate source.
 	if err = db.CommitUnwindIntent(ctx, key, intent); err == nil {
 		t.Fatal("embedded commit accepted the candidate source")
 	}
 	if err = db.CommitUnwindIntentOnManifest(ctx, manifest, key, intent); err != nil {
-		t.Fatal("manifest commit refused a funded candidate unwind:", err)
+		t.Fatal("manifest commit refused a candidate unwind:", err)
 	}
 	if _, err = db.ReleaseRouteLease(ctx); err != nil {
 		t.Fatal(err)
@@ -108,7 +94,7 @@ func TestCandidateUnwindManifestReloadApplyCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !merged.Snapshot.Unwind {
-		t.Fatalf("merge lost the pilot unwind facts: %+v", merged.Snapshot)
+		t.Fatalf("merge lost the unwind facts: %+v", merged.Snapshot)
 	}
 	// Completion: the embedded completion keeps refusing, a pending
 	// transaction blocks, and the manifest completion clears the intent.

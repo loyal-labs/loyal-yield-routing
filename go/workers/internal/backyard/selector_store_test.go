@@ -10,21 +10,19 @@ import (
 	"time"
 )
 
-func TestSelectorUnwindDurabilityAndBudgetContinuity(t *testing.T) {
+func TestSelectorUnwindDurability(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
 	defer db.Close()
 	key := fmt.Sprintf("selector-intent-%d", time.Now().UnixNano())
-	budget := emptyTestBudget()
-	budget.Families["Maple"] = FamilyBudget{SpentMicros: 7_000_000, ExitMicros: 3_000_000}
-	state, _ := json.Marshal(map[string]any{"generation": 1, "phase3": budget, "selectorEntry": selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 1_000_000)})
+	state, _ := json.Marshal(map[string]any{"generation": 1, "selectorEntry": selectorEntryFixture(time.Now().UTC(), SelectedRouteID, 1_000_000)})
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,$2)`, key, state); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.AcquireRouteLease(ctx, key, "selector-a", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	intent := UnwindIntent{SourceLane: SelectedRouteID, Reason: "economic_rotation", ObservationID: "source", MaxCollateralRaw: 100, MaxDebtRaw: 50, CostBoundRaw: 2_000_000, BudgetScope: Phase3GoalID, BudgetFamily: "Maple", EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: time.Now().UTC()}
+	intent := UnwindIntent{SourceLane: SelectedRouteID, Reason: "economic_rotation", ObservationID: "source", MaxCollateralRaw: 100, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: time.Now().UTC()}
 	if err := db.CommitUnwindIntent(ctx, key, intent); err != nil {
 		t.Fatal(err)
 	}
@@ -70,19 +68,12 @@ func TestSelectorUnwindDurabilityAndBudgetContinuity(t *testing.T) {
 	if entry, err := restarted.LoadSelectorEntry(ctx, key); err != nil || entry != nil {
 		t.Fatal("unwind completion retained old destination choice", err)
 	}
-	var storedBudget []byte
 	var version, generation int64
-	if err = restarted.pool.QueryRow(ctx, `SELECT state->'phase3',state_version,(state->>'generation')::bigint FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&storedBudget, &version, &generation); err != nil {
+	if err = restarted.pool.QueryRow(ctx, `SELECT state_version,(state->>'generation')::bigint FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version, &generation); err != nil {
 		t.Fatal(err)
 	}
-	var after Phase3Budget
-	if err = json.Unmarshal(storedBudget, &after); err != nil {
-		t.Fatal(err)
-	}
-	beforeJSON, _ := json.Marshal(budget)
-	afterJSON, _ := json.Marshal(after)
-	if !bytes.Equal(beforeJSON, afterJSON) || version != generation {
-		t.Fatal("intent changed budget or generation")
+	if version != generation {
+		t.Fatal("intent changed generation")
 	}
 }
 
@@ -132,37 +123,5 @@ func TestIncidentResolutionMigrationPreservesFailureAndBindsDisposition(t *testi
 	var blocked bool
 	if err = tx.QueryRow(ctx, UnresolvedCapitalRecoverySQL, route).Scan(&blocked); err != nil || !blocked {
 		t.Fatal("copied disposition bypassed recovery", err)
-	}
-}
-func TestDeploymentLimitsCannotResetOrIncreaseBudget(t *testing.T) {
-	b := emptyTestBudget()
-	b.Families["OnRe"] = FamilyBudget{SpentMicros: 4_000_000}
-	limits := DeploymentLimits{500_000, 10_000_000, 30_000_000}
-	if err := b.ConstrainLimits(limits); err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := json.Marshal(b)
-	var restarted Phase3Budget
-	if err := json.Unmarshal(encoded, &restarted); err != nil {
-		t.Fatal(err)
-	}
-	if restarted.Families["OnRe"] != b.Families["OnRe"] || restarted.GoalID != Phase3GoalID {
-		t.Fatal("limits reset budget")
-	}
-	if err := restarted.ConstrainLimits(legacyDeploymentLimits()); err == nil {
-		t.Fatal("limits increased")
-	}
-	restarted.Families["OnRe"] = FamilyBudget{SpentMicros: 4_000_000, ExitMicros: 2_000_000}
-	before, _ := json.Marshal(restarted)
-	if err := restarted.ConstrainLimits(DeploymentLimits{100_000, 5_000_000, 20_000_000}); err == nil {
-		t.Fatal("limits consumed reserved exit")
-	}
-	after, _ := json.Marshal(restarted)
-	if !bytes.Equal(before, after) {
-		t.Fatal("rejection mutated budget")
-	}
-	reservation := BudgetReservation{OperationID: "too-large", Family: "OnRe", IntentSHA256: sha256Bytes([]byte("intent")), UpperMicros: 600_000, ExitAfterMicros: 2_000_000}
-	if err := restarted.Admit(reservation); err == nil {
-		t.Fatal("new deployment cap ignored")
 	}
 }

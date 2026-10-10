@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -147,6 +148,34 @@ const (
 
 	strategyTwoBridgeLegCapRaw uint64 = 200_000_000_000
 )
+
+// positionLegCapRaw bounds every Kamino and Jupiter leg to 200,000 whole
+// tokens of the mint it moves, the same way strategyTwoBridgeLegCapRaw bounds
+// the bridge legs. The Squads policies those legs run under (141-144, 149-151,
+// 156) embed no spending limit; only bridge policies 152-155 carry one (daily
+// USDC). Mint decimals are fixed on chain: USDC, PYUSD, USDS, PRIME, syrupUSDC
+// and AUTO have 6, ONyc and USDe have 9 (mint accounts recorded in
+// docs/evidence/backyard-rwa-go/phase3/setup-feasibility-2026-09-04.json).
+var positionLegCapRaw = map[string]uint64{
+	bridgeUSDC: 200_000_000_000,
+	"2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": 200_000_000_000,     // PYUSD
+	"USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA":  200_000_000_000,     // USDS
+	"3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7": 200_000_000_000,     // PRIME
+	"AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj": 200_000_000_000,     // syrupUSDC
+	"GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm": 200_000_000_000,     // AUTO
+	"5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5": 200_000_000_000_000, // ONyc
+	"DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT": 200_000_000_000_000, // USDe
+}
+
+// checkPositionLegCap refuses a leg moving more than its mint's cap, or a mint
+// without one.
+func checkPositionLegCap(mint string, amountRaw uint64) error {
+	cap, ok := positionLegCapRaw[mint]
+	if !ok || amountRaw > cap {
+		return &BudgetHold{Reason: "position_leg_cap_exceeded", Details: map[string]string{"mint": mint, "amountRaw": strconv.FormatUint(amountRaw, 10)}}
+	}
+	return nil
+}
 
 // BuildAndSignBridgeTransaction builds exactly one policy-wrapped bridge
 // operation. Capital/NAV payloads contain the atomic ArmReport -> Voltr pair;

@@ -4,140 +4,11 @@ import (
 	"context"
 	"encoding/binary"
 	"math"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
-
-func validateInitialBorrowPrestate(ctx context.Context, rpc *chain.Client, route RuntimeRoute, s Snapshot, slot int64) (int64, error) {
-	observed, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.Obligation, route.CollateralCustody, route.DebtCustody}, slot)
-	if err != nil {
-		return 0, err
-	}
-	o, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil || s.PositionDebtRaw < 0 || !borrowDebtMatches(o.debtRaw, uint64(s.PositionDebtRaw)) || s.PositionCollateralRaw <= 0 || o.collateralDepositedRaw != uint64(s.PositionCollateralRaw) {
-		return 0, budgetHold("borrow_prestate_changed")
-	}
-	for _, row := range []struct {
-		address, mint string
-		raw           int64
-	}{{route.CollateralCustody, route.Kamino.CollateralMint, s.CollateralIdleRaw}, {route.DebtCustody, route.Kamino.DebtMint, debtCashRaw(s)}} {
-		a := accountAt(accounts, row.address)
-		mint, _ := decodeBase58PublicKey(row.mint)
-		owner, _ := decodeBase58PublicKey(bridgeVault)
-		cash, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
-		if err != nil || a.Executable || a.Lamports == 0 || row.raw < 0 || cash.Raw != uint64(row.raw) {
-			return 0, budgetHold("borrow_prestate_changed")
-		}
-	}
-	return observed, nil
-}
-
-func validateBorrowProjection(r KaminoPrimeUSDCRequest, e ExpectedEffects, s Snapshot, p phase3KaminoProjection) (KaminoPayoffBound, error) {
-	message, err := CompileKaminoMessage(r)
-	if err != nil || p.MessageSHA256 != sha256Bytes(message) || p.UnitsConsumed == 0 {
-		return KaminoPayoffBound{}, budgetHold("borrow_projection_identity_mismatch")
-	}
-	debit, err := MeasureExecutableDebit(r, e)
-	if err != nil {
-		return KaminoPayoffBound{}, err
-	}
-	route, err := runtimeRoute(r.RouteLane)
-	if err != nil {
-		return KaminoPayoffBound{}, err
-	}
-	for _, effect := range e.Accounts {
-		a := accountAt(p.Accounts, effect.Address)
-		mint, _ := decodeBase58PublicKey(effect.Mint)
-		owner, _ := decodeBase58PublicKey(effect.Authority)
-		cash, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
-		if err != nil || a.Executable || a.Lamports == 0 || a.Owner != effect.Owner || cash.Raw != effect.AfterRaw {
-			return KaminoPayoffBound{}, budgetHold("borrow_projection_custody_mismatch")
-		}
-	}
-	// A B2 leverage_up borrow adds to existing debt; every other borrow
-	// starts debt-free and must match the debit exactly.
-	prior := uint64(max(s.PositionDebtRaw, 0))
-	o, err := decodeKaminoObligation(accountAt(p.Accounts, route.Kamino.Obligation), route.Kamino)
-	if err != nil || s.PositionCollateralRaw <= 0 || o.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || o.debtRaw < debit.Raw || !borrowDebtMatches(o.debtRaw-debit.Raw, prior) {
-		return KaminoPayoffBound{}, budgetHold("borrow_projection_position_mismatch")
-	}
-	bound, err := decodeKaminoPayoffWindow(p.Accounts, route, p.Slot, 3)
-	if err != nil || bound.ObservedDebtRaw < debit.Raw || !borrowDebtMatches(bound.ObservedDebtRaw-debit.Raw, prior) {
-		return bound, budgetHold("borrow_projection_debt_mismatch")
-	}
-	if _, err := decodeKaminoReserve(accountAt(p.Accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino); err != nil {
-		return bound, err
-	}
-	clock := binary.LittleEndian.Uint64(accountAt(p.Accounts, budgetClockAddress).Data[:8])
-	for _, address := range []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve, route.Kamino.Obligation} {
-		if binary.LittleEndian.Uint64(accountAt(p.Accounts, address).Data[16:24]) != clock {
-			return bound, budgetHold("borrow_projection_refresh_mismatch")
-		}
-	}
-	a := accountAt(p.Accounts, route.CollateralCustody)
-	mint, _ := decodeBase58PublicKey(route.Kamino.CollateralMint)
-	owner, _ := decodeBase58PublicKey(bridgeVault)
-	col, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
-	if err != nil || a.Executable || a.Lamports == 0 || s.CollateralIdleRaw < 0 || col.Raw != uint64(s.CollateralIdleRaw) {
-		return bound, budgetHold("borrow_projection_collateral_changed")
-	}
-	return bound, nil
-}
-
-// Borrow admission prices the immediate complete unwind, not permission for a
-// later leverage loop. Simulated accounts remain cost inputs; only r is current.
-func observePhase3BorrowAdmission(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, o Observation, d Decision, e KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	s, r := o.Snapshot, e.Request
-	// B2 leverage_up may borrow beside existing debt (1.5x -> 1.75x); every
-	// other borrow keeps the debt-free precondition.
-	leverageUp := d.Reason == leverageUpReason && leverageLane(s.RouteLane) && !s.Unwind && s.WithdrawalDemandRaw == 0
-	if rpc == nil || client == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.CutoverDrain ||
-		(d.Reason == leverageUpReason && !leverageUp) || (!leverageUp && (s.PositionDebtRaw != 0 || s.PositionDebtValueRaw != 0)) ||
-		s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !positionReturnRoute(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtRaw < 0 || s.PositionDebtValueRaw < 0 || debtCashRaw(s) != 0 || s.CollateralIdleRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 || s.VoltrStrategyIdleRaw != 0 || d.Action != OpenRouteStep || r.Action != d.Action || d.AmountRaw <= 0 || e.ExpectedEffects.Kind != "kamino-borrow" {
-		return phase3BridgeAdmission{}, budgetHold("complete_initial_borrow_return_unavailable")
-	}
-	if leverageUp && (uint64(d.AmountRaw) != r.AmountRaw || r.AmountRaw != leverageBorrowReceive(s, leverageUpLevel(s))) {
-		return phase3BridgeAdmission{}, budgetHold("borrow_fixed_amount_mismatch")
-	}
-	current, err := observePhase3KnownBuildCost(ctx, rpc, r, e.ExpectedEffects)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	route, err := runtimeRoute(s.RouteLane)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	slot, err := validateInitialBorrowPrestate(ctx, rpc, route, s, max(s.Slot, current.ObservationSlot))
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	projection, err := simulateKaminoEntryProjection(ctx, rpc, r, slot)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	_, err = validateBorrowProjection(r, e.ExpectedEffects, s, projection)
-	if err != nil {
-		return phase3BridgeAdmission{}, err
-	}
-	if leverageUp {
-		if err = leverageUpProjectionWithinCaps(projection, route, r.AmountRaw); err != nil {
-			return phase3BridgeAdmission{}, err
-		}
-	}
-	if e.ExpectedEffects.Accounts[1].BeforeRaw != 0 {
-		return phase3BridgeAdmission{}, budgetHold("borrow_cash_snapshot_changed")
-	}
-	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, client, m, o, d, r, e.ExpectedEffects, current, projection)
-	if err == nil {
-		plan.BorrowProjection = &projection
-	}
-	return plan, err
-}
 
 // The simulation's poststate is used only for complete exit costing. Each
 // producer validates its own current transition before entering this function;
@@ -382,12 +253,10 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	if err != nil {
 		return plan, err
 	}
-	plan.Payoff, plan.PayoffWithdrawal = &bound, tail.Input
-	plan.ExitCycles = int((windowSteps - 7) / 3)
+	plan.Payoff = &bound
 	if len(cycles) > 0 {
-		// Build/send revalidation compares the CURRENT position's payoff
-		// window and first release: bind the first cycle's, not the final
-		// post-cycle one.
+		// The exit bound is the CURRENT position's payoff window: the first
+		// cycle's, not the final post-cycle one.
 		plan.Payoff = firstPayoff
 	}
 	plan.PayoffRepayment, err = exitLegInput(payoff, payoffEffects)
@@ -411,25 +280,6 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		if err != nil {
 			return plan, err
 		}
-		if len(cycles) == 0 {
-			plan.BorrowRelease = releaseInput
-		} else {
-			// The build/send release recheck binds the FIRST cycle release
-			// (a cycle that starts from debt cash has none: then the final
-			// release, sized over the full window, is bound instead).
-			plan.BorrowRelease = releaseInput
-			for _, step := range cycles {
-				if req, _, _, err := step.Template.decode(); err == nil {
-					if k, ok := req.(KaminoPrimeUSDCRequest); ok {
-						if _, leg, _ := kaminoPrimeUSDCInstruction(k); leg == kaminoLegWithdraw {
-							plan.BorrowRelease = step.Template
-							break
-						}
-					}
-				}
-			}
-		}
-		plan.FundingSwap = &phase3QuotedExit{Input: input, QuotedOutputRaw: funding.Request.QuotedOutputRaw, EstimatedUpperOutputRaw: upperCash - cash, ProofLevel: "COST_ONLY_BORROW_RETURN_NOT_EXECUTED_FUNDING"}
 		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost, Template: releaseInput}, nav, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: fundingCost, Template: input}, nav)
 	}
 	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost, Template: plan.PayoffRepayment}, nav, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: withdrawal.AmountRaw, Cost: tail.CurrentCost, Template: tail.Input})
@@ -447,46 +297,4 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		return plan, budgetHold("stale_borrow_exit_admission")
 	}
 	return plan, nil
-}
-
-func (d *Database) admitPhase3Borrow(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, id string, o Observation, decision Decision, e KaminoExecutionEvidence) error {
-	plan, err := observePhase3BorrowAdmission(ctx, rpc, client, m, o, decision, e)
-	if err != nil {
-		return err
-	}
-	return d.persistPhase3ExitAdmission(ctx, rpc, id, o, decision, plan)
-}
-
-func validateBorrowAdmissionPrestate(ctx context.Context, rpc *chain.Client, r KaminoPrimeUSDCRequest, p *phase3BridgeAdmission, slot int64) (int64, error) {
-	_, leg, err := kaminoPrimeUSDCInstruction(r)
-	if err != nil || r.Action != OpenRouteStep || leg != kaminoLegBorrow || p == nil || p.Payoff == nil || p.BorrowProjection == nil || p.Snapshot.RouteLane != r.RouteLane {
-		return 0, budgetHold("borrow_projection_identity_mismatch")
-	}
-	route, err := runtimeRoute(r.RouteLane)
-	if err != nil {
-		return 0, err
-	}
-	observed, err := validateInitialBorrowPrestate(ctx, rpc, route, p.Snapshot, slot)
-	if err != nil {
-		return 0, err
-	}
-	fresh, accounts, err := confirmedAccounts(ctx, rpc, []string{route.Kamino.DebtReserve, budgetClockAddress}, observed)
-	if err != nil {
-		return 0, err
-	}
-	reserve := accountAt(accounts, route.Kamino.DebtReserve)
-	if _, err = decodeKaminoReserve(reserve, route.Kamino.DebtMint, route.Kamino); err != nil {
-		return 0, err
-	}
-	config := reserve.Data[kaminoReserveConfigOffset:]
-	rate, err := kaminoMaximumBorrowRate(config)
-	clock := accountAt(accounts, budgetClockAddress)
-	if err != nil || config[9] != p.Payoff.InterestBasis || config[7] != 0 || !allZero(config[920:936]) || rate > p.Payoff.MaximumRateBPS || clock.Owner != "Sysvar1111111111111111111111111111111111111" || clock.Executable || len(clock.Data) != 40 {
-		return 0, budgetHold("borrow_return_interest_window_changed")
-	}
-	now := int64(binary.LittleEndian.Uint64(clock.Data[32:40]))
-	if now < p.Payoff.ChainUnix || now > p.Payoff.ChainUnix+kaminoPayoffWindowSeconds {
-		return 0, budgetHold("borrow_return_interest_window_changed")
-	}
-	return fresh, nil
 }

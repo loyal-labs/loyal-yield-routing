@@ -3,7 +3,6 @@ package backyard
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"testing"
 	"time"
 )
@@ -58,7 +57,7 @@ func fundedAutoSourceFixture(t *testing.T, debtPrice, collateralPrice BudgetPric
 	in.Markets = []LaneEconomics{source, destination}
 	quote := MoveQuote{
 		MinimumIdleRaw: 100_000_000, BorrowReceiveRaw: 5_000_000,
-		SourceExit: &selectorExitBound{MaxCollateralRaw: 4_000_000, MaxDebtRaw: 1_000_000, GrossMicros: 30_000},
+		SourceExit: &selectorExitBound{MaxCollateralRaw: 4_000_000, MaxDebtRaw: 1_000_000},
 		SourceLane: testAutoLane, DestinationLane: destination.Lane, ObservationID: s.ObservationID,
 		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
 		EvidenceID: sha256Bytes([]byte("auto-source-unwind")), SampleSlot: s.Slot, ValidThroughSlot: s.Slot + budgetMaxObservationLagSlots,
@@ -269,8 +268,8 @@ func TestSelectorEntryFundingLaneAuthority(t *testing.T) {
 // the same input closed, as does the embedded public path. A closed KEEP
 // persistence still records its diagnostic selector result (the existing
 // recordSelectorEvaluation contract), so the closed assertions pin exactly
-// what that contract guarantees: no entry, unchanged pause, budget, canary
-// history and planning generation, and no state_version bump.
+// what that contract guarantees: no entry, unchanged pause, canary history
+// and planning generation, and no state_version bump.
 func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
@@ -296,27 +295,16 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			key := fmt.Sprintf("auto-entry-%s-%d", tc.name, time.Now().UnixNano())
-			prior := emptyTestBudget()
-			prior.Families["Maple"] = FamilyBudget{SpentMicros: 1_000_000}
-			a := pilotTestAuthority(prior)
-			budget, err := activatePilotBudget(prior, a)
-			if err != nil {
-				t.Fatal(err)
-			}
-			budgetJSON, err := json.Marshal(budget)
-			if err != nil {
-				t.Fatal(err)
-			}
 			in := fundedAutoFixture(t, debtPrice, collateralPrice)
 			in.Markets[0].NativeAPY = 2 // synthetic fee-reserved winner; rate is not live evidence
 			armFeeAuthorityFixture(t, &in.Snapshot)
 			history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{testAutoLane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
-			state := map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
+			state := map[string]any{"generation": 2, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
 			raw, _ := json.Marshal(state)
-			if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
+			if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = db.AcquireRouteLease(ctx, key, "auto-entry-a", time.Minute); err != nil {
+			if _, err := db.AcquireRouteLease(ctx, key, "auto-entry-a", time.Minute); err != nil {
 				t.Fatal(err)
 			}
 			advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
@@ -342,7 +330,6 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 				}
 				var persisted struct {
 					Generation json.RawMessage `json:"generation"`
-					Phase3     json.RawMessage `json:"phase3"`
 					Entry      json.RawMessage `json:"selectorEntry"`
 					Unwind     json.RawMessage `json:"selectorUnwind"`
 					Canaries   json.RawMessage `json:"pilotCanaryEntries"`
@@ -355,18 +342,6 @@ func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
 				}
 				if len(persisted.Unwind) != 0 || len(persisted.Canaries) != 0 {
 					t.Fatal("closed KEEP wrote unwind or canary history", string(persisted.Unwind), string(persisted.Canaries))
-				}
-				// The stored jsonb text is PostgreSQL's normalized rendering, so
-				// the unchanged-budget check compares the decoded value, not bytes.
-				var storedBudget, expectedBudget any
-				if err = json.Unmarshal(persisted.Phase3, &storedBudget); err != nil {
-					t.Fatal(err)
-				}
-				if err = json.Unmarshal(budgetJSON, &expectedBudget); err != nil {
-					t.Fatal(err)
-				}
-				if !reflect.DeepEqual(storedBudget, expectedBudget) {
-					t.Fatal("closed KEEP moved the budget", string(persisted.Phase3))
 				}
 				if string(persisted.Generation) != "2" {
 					t.Fatal("closed KEEP moved the planning generation", string(persisted.Generation))
@@ -420,27 +395,17 @@ func TestLockedManifestSelectorRecordsCandidateSourceUnwind(t *testing.T) {
 	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
 	manifest := autoInitializerFixtureManifest(t)
 	key := fmt.Sprintf("auto-unwind-%d", time.Now().UnixNano())
-	prior := emptyTestBudget()
-	a := pilotTestAuthority(prior)
-	budget, err := activatePilotBudget(prior, a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The AUTO exit reservation the recorded unwind consumes is seeded AFTER
-	// activation (mirroring the transition semantics), not on the pre-activation
-	// budget a pilot transition would reject.
-	budget.Families["AUTO"] = FamilyBudget{ExitMicros: 1_000_000}
 	in := fundedAutoSourceFixture(t, debtPrice, collateralPrice)
 	in.Snapshot.VoltrIdleRaw = in.Snapshot.TotalVaultNAVRaw - in.Snapshot.StrategyNAVRaw
 	in.Markets[1].NativeAPY = 2 // synthetic fee-reserved winner for persistence ownership
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{"OnRe/ONyc/USDC": {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
-	state := map[string]any{"generation": 2, "phase3": budget, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": false}
+	state := map[string]any{"generation": 2, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": false}
 	raw, _ := json.Marshal(state)
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.AcquireRouteLease(ctx, key, "auto-unwind-a", time.Minute); err != nil {
+	if _, err := db.AcquireRouteLease(ctx, key, "auto-unwind-a", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
@@ -454,7 +419,7 @@ func TestLockedManifestSelectorRecordsCandidateSourceUnwind(t *testing.T) {
 	}
 	defer restarted.Close()
 	intent, err := restarted.LoadUnwindIntentOnManifest(ctx, manifest, key)
-	if err != nil || intent == nil || intent.SourceLane != testAutoLane || intent.BudgetFamily != "AUTO" {
+	if err != nil || intent == nil || intent.SourceLane != testAutoLane {
 		t.Fatal("restart lost the candidate-source unwind", err, intent)
 	}
 	if _, err = restarted.LoadUnwindIntent(ctx, key); err == nil {

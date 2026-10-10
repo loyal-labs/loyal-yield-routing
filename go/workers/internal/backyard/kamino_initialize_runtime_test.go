@@ -126,7 +126,10 @@ func TestInitializerPreparationMeasuresNativeFundingAndRefusesAccountRace(t *tes
 	assertBudgetHold(t, err, "initializer_decision_changed")
 }
 
-func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing.T) {
+// The initializer binds its exact measured request, a second bind of the same
+// operation is refused, and the send fence keeps the selector-entry expiry
+// rule until the absent wire is retired.
+func TestInitializerBindSendFenceAndExpiryRetirement(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
@@ -139,13 +142,7 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	prior := emptyTestBudget()
-	a := pilotTestAuthority(prior)
-	b, err := activatePilotBudget(prior, a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, _ := json.Marshal(map[string]any{"generation": 2, "selectorEntry": selectorEntryFixture(time.Now().UTC(), template.RouteLane, o.Snapshot.SelectorEntryEquityRaw), "phase3": b})
+	state, _ := json.Marshal(map[string]any{"generation": 2, "selectorEntry": selectorEntryFixture(time.Now().UTC(), template.RouteLane, o.Snapshot.SelectorEntryEquityRaw)})
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, state); err != nil {
 		t.Fatal(err)
 	}
@@ -157,27 +154,23 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 		t.Fatal(err)
 	}
 	defer db.ReleaseRouteLease(ctx)
-	if err = db.admitKaminoInitialization(ctx, rpc, m, id, o, d, r); err != nil {
+	if err = db.bindOperation(ctx, rpc, m, id, o, d, r, kaminoInitializationEffects(r)); err != nil {
 		t.Fatal(err)
 	}
-	var encodedBudget, encodedAuth []byte
-	if err = db.pool.QueryRow(ctx, `SELECT s.state->'phase3',o.expected_effects->'phase3' FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE operation_id=$1`, id).Scan(&encodedBudget, &encodedAuth); err != nil {
+	var encodedAuth []byte
+	if err = db.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&encodedAuth); err != nil {
 		t.Fatal(err)
 	}
 	var auth phase3OperationAuthorization
-	if json.Unmarshal(encodedBudget, &b) != nil || json.Unmarshal(encodedAuth, &auth) != nil {
+	if json.Unmarshal(encodedAuth, &auth) != nil || auth.BuildInput == nil {
 		t.Fatal("decode")
 	}
-	reservation := b.Reservations[id]
-	cost := auth.BridgeAdmission.CurrentCost
-	if reservation.Recovery || reservation.ExitAfterMicros != 0 || reservation.ExecutionCostUpperMicros != cost.NetworkFeeMicros || reservation.UpperMicros != cost.TotalMicros || cost.SetupLamports != r.RentLamports || cost.SetupLamportsMicros == 0 {
-		t.Fatal("initializer omitted rent/expense or consumed exit")
+	if bound, _, _, err := auth.BuildInput.decodeWithManifest(m); err != nil || bound != r {
+		t.Fatal("bind changed the measured initializer", err)
 	}
-	if err = db.admitKaminoInitialization(ctx, rpc, m, id, o, d, r); err != nil {
-		t.Fatal("retry", err)
-	}
-	if err = authorizePhase3ProductionBuild(ctx, db, rpc, id, r, ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}, auth.BuildInput.Effects); err != nil {
-		t.Fatal("pre-signing authorization", err)
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, m, id, o, d, r, kaminoInitializationEffects(r)), "bind_journal_mismatch")
+	if err = db.requireBoundIntent(ctx, id, r, auth.BuildInput.Effects); err != nil {
+		t.Fatal("pre-signing gate", err)
 	}
 	// Local unsigned wire fixture tests recovery only. No signer or send RPC
 	// exists in this transport. Quote expiry must retain it until expiry and
@@ -195,20 +188,23 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 		t.Fatal(err)
 	}
 	op := PersistedOperation{Operation: Operation{ID: id, Decision: d}, Status: Signed, SignedWire: wire, SignedWireSHA256: hash, TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
+	if err = db.pool.QueryRow(ctx, `SELECT expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&op.ExpectedEffects); err != nil {
+		t.Fatal(err)
+	}
 	// The initializer moves no principal: a quote past its slot window still
 	// authorizes it until the entry's own expiry (2026-09-25). Only the send
 	// fence is exercised here; the wall-clock expiry below still refuses.
 	slotExpired := selectorEntryFixture(time.Now().UTC(), r.RouteLane, o.Snapshot.SelectorEntryEquityRaw)
 	slotExpired.Quote.SampleSlot, slotExpired.Quote.ValidThroughSlot = 9, 41
 	storeTestSelectorEntry(t, ctx, db, key, slotExpired)
-	if err = db.RevalueAndMarkBroadcastIntent(ctx, rpc, op); err != nil && strings.Contains(err.Error(), "selector_entry_quote_expired") {
+	if err = db.CheckAndMarkBroadcastIntentOnManifest(ctx, m, rpc, op); err != nil && strings.Contains(err.Error(), "selector_entry_quote_expired") {
 		t.Fatal("slot-late initializer refused before entry expiry", err)
 	}
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',broadcast_intent_at=NULL WHERE operation_id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	storeTestSelectorEntry(t, ctx, db, key, selectorEntryFixture(time.Now().UTC().Add(-time.Minute), r.RouteLane, o.Snapshot.SelectorEntryEquityRaw))
-	err = db.RevalueAndMarkBroadcastIntent(ctx, rpc, op)
+	err = db.CheckAndMarkBroadcastIntentOnManifest(ctx, m, rpc, op)
 	var validated *validatedSignedBudgetHold
 	if !errors.As(err, &validated) {
 		t.Fatal("quote expiry lost validated signed recovery", err)
@@ -267,16 +263,15 @@ func TestInitializerProductionAdmissionReservesMeasuredRentAndExpense(t *testing
 		t.Fatal("expired absent wire not retired", err)
 	}
 	var storedWire []byte
-	if err = db.pool.QueryRow(ctx, `SELECT o.status,o.signed_wire,s.state->'phase3' FROM loyal_yield.multiply_operations o JOIN loyal_yield.multiply_route_states s USING(route_key) WHERE operation_id=$1`, id).Scan(&status, &storedWire, &encodedBudget); err != nil {
+	if err = db.pool.QueryRow(ctx, `SELECT status,signed_wire FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status, &storedWire); err != nil {
 		t.Fatal(err)
 	}
-	b = Phase3Budget{} // JSON unmarshalling reuses existing maps; read the stored state afresh.
-	if json.Unmarshal(encodedBudget, &b) != nil || status != "failed" || !absenceRead || !bytes.Equal(storedWire, wire) || len(b.Reservations) != 0 || b.Families["Maple"].SpentMicros != 0 {
-		t.Fatalf("expiry retirement: status=%s absence=%t wireEqual=%t reservations=%d spent=%d", status, absenceRead, bytes.Equal(storedWire, wire), len(b.Reservations), b.Families["Maple"].SpentMicros)
+	if status != "failed" || !absenceRead || !bytes.Equal(storedWire, wire) {
+		t.Fatalf("expiry retirement: status=%s absence=%t wireEqual=%t", status, absenceRead, bytes.Equal(storedWire, wire))
 	}
 }
 
-func TestWorkerDispatchesInitializationOnlyAfterPersistedAdmission(t *testing.T) {
+func TestWorkerDispatchesInitializationOnlyAfterPersistedBind(t *testing.T) {
 	o := initializationPlanningFixture(SelectedRouteID)
 	d := Decide(o.Snapshot)
 	m := readyWorkerManifest(t)
@@ -294,8 +289,11 @@ func TestWorkerDispatchesInitializationOnlyAfterPersistedAdmission(t *testing.T)
 			order = append(order, "record")
 			return DecisionRecord{OperationID: "init", Status: Decided}, nil
 		},
-		admitInitialization: func(context.Context, string, Observation, Decision, KaminoInitializationRequest) error {
-			order = append(order, "admit")
+		bind: func(_ context.Context, _ string, _ Observation, _ Decision, request any, _ ExpectedEffects) error {
+			if _, ok := request.(KaminoInitializationRequest); !ok {
+				t.Fatal("bind received another request")
+			}
+			order = append(order, "bind")
 			return nil
 		},
 		buildInitialization: func(context.Context, string, KaminoInitializationRequest) error {
@@ -306,21 +304,21 @@ func TestWorkerDispatchesInitializationOnlyAfterPersistedAdmission(t *testing.T)
 	if err := w.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(order, []string{"prepare", "record", "admit", "build"}) {
+	if !reflect.DeepEqual(order, []string{"prepare", "record", "bind", "build"}) {
 		t.Fatal(order)
 	}
-	w.runtime.admitInitialization = func(context.Context, string, Observation, Decision, KaminoInitializationRequest) error {
+	w.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
 		return budgetHold("initializer_native_funding_unavailable")
 	}
 	w.runtime.buildInitialization = func(context.Context, string, KaminoInitializationRequest) error {
-		t.Fatal("unadmitted native creation reached signer")
+		t.Fatal("unbound native creation reached signer")
 		return nil
 	}
 	journaled := false
 	w.runtime.recordBudgetHold = func(context.Context, string, *BudgetHold) error { journaled = true; return nil }
 	assertBudgetHold(t, w.Tick(context.Background()), "initializer_native_funding_unavailable")
 	if !journaled {
-		t.Fatal("admission hold not recorded")
+		t.Fatal("bind hold not recorded")
 	}
 }
 

@@ -630,48 +630,6 @@ func custodyBuiltEffectsEnvelope(t *testing.T, effects ExpectedEffects) []byte {
 	return envelope
 }
 
-// The build fence (doc 26 §3) at its exact boundary: a positive AUTO-PYUSD
-// spend requires the persisted binding bound to the exact effects and the
-// current generation; missing legacy proofs hold; non-AUTO lanes and
-// zero-spend AUTO operations are untouched.
-func TestSharedCustodyBuildBindingRequiresPersistedProof(t *testing.T) {
-	cfg := custodyAttributionConfig()
-	routeKey := "route"
-	effects := custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000)
-	proof := custodyAdmissionProofFixture(t, cfg, routeKey, effects, 3_100_000_000, 300, 1, 7, "worker")
-	binding := sharedCustodyProofBindingFrom(proof)
-	auth := phase3OperationAuthorization{CustodyProof: &binding}
-	if err := requireSharedCustodyBuildBinding(cfg.Lane, routeKey, auth, effects, 1); err != nil {
-		t.Fatalf("coherent persisted binding refused: %v", err)
-	}
-	drifted := func(name string, mutate func(*sharedCustodyProofBinding)) {
-		t.Helper()
-		b := sharedCustodyProofBindingFrom(proof)
-		mutate(&b)
-		if err := requireSharedCustodyBuildBinding(cfg.Lane, routeKey, phase3OperationAuthorization{CustodyProof: &b}, effects, 1); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
-			t.Fatalf("%s: %v", name, err)
-		}
-	}
-	drifted("wrong spend", func(b *sharedCustodyProofBinding) { b.SpendRaw = 1 })
-	drifted("wrong effects digest", func(b *sharedCustodyProofBinding) { b.EffectsSHA256 = strings.Repeat("a", 64) })
-	drifted("stale generation", func(b *sharedCustodyProofBinding) { b.Generation = 2 })
-	drifted("unfenced", func(b *sharedCustodyProofBinding) { b.LeaseFencing = 0 })
-	drifted("foreign custody", func(b *sharedCustodyProofBinding) { b.Custody = "other" })
-	drifted("no digest", func(b *sharedCustodyProofBinding) { b.Digest = "" })
-	// A missing legacy proof on a real AUTO spend holds.
-	if err := requireSharedCustodyBuildBinding(cfg.Lane, routeKey, phase3OperationAuthorization{}, effects, 1); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_missing" {
-		t.Fatalf("missing proof accepted: %v", err)
-	}
-	// The same spend on a different lane is untouched.
-	if err := requireSharedCustodyBuildBinding("Ethena/ETH/PYUSD", routeKey, phase3OperationAuthorization{}, effects, 1); err != nil {
-		t.Fatalf("non-AUTO lane held: %v", err)
-	}
-	// Zero-spend AUTO operations bind nothing.
-	if err := requireSharedCustodyBuildBinding(cfg.Lane, routeKey, phase3OperationAuthorization{}, custodyAttributionFundingExpected(10_000_000_000, 8_000_000_000, nil), 1); err != nil {
-		t.Fatalf("zero-spend AUTO operation held: %v", err)
-	}
-}
-
 // The Worker pre-decision seam (doc 26 §1): the strict proof is taken only
 // for a prepared positive AUTO-PYUSD spend, carried as per-operation local
 // data on the observation, and a missing proof producer holds fail-closed.
@@ -881,7 +839,7 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 	opID := key + "-op"
 	envelope := custodyBuiltEffectsEnvelope(t, effects)
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects)
-		VALUES($1,$2,'signed',$3,$4,$5::jsonb)`, opID, key, string(DeleverRouteStep), cfg.Lane, envelope); err != nil {
+		VALUES($1,$2,'signed',$3,$4,$5::jsonb || '{"decision":{"observationSlot":290}}'::jsonb)`, opID, key, string(DeleverRouteStep), cfg.Lane, envelope); err != nil {
 		t.Fatal(err)
 	}
 	proof := custodyAdmissionProofFixture(t, cfg, key, effects, 3_100_000_000, 300, 1, lease.FencingToken, "sendlock-worker")
@@ -890,8 +848,8 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 	// the signed operation, as ObserveSharedCustodySendProof does.
 	proof.Digest = sharedCustodyAdmissionDigest(proof)
 
-	cost := ValuedTransactionCost{ObservationSlot: 300, ValidThroughSlot: 400}
-	validate := func(carried *sharedCustodyAdmissionProof, rowEffects []byte, validationCost ValuedTransactionCost) error {
+	const slot = int64(310)
+	validate := func(carried *sharedCustodyAdmissionProof, rowEffects []byte, confirmedSlot int64) error {
 		t.Helper()
 		tx, err := db.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
@@ -903,54 +861,58 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 			_ = tx.Rollback(rollbackCtx)
 		}()
 		if rowEffects != nil {
-			if _, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=$2::jsonb WHERE operation_id=$1`, opID, rowEffects); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=$2::jsonb || '{"decision":{"observationSlot":290}}'::jsonb WHERE operation_id=$1`, opID, rowEffects); err != nil {
 				t.Fatal(err)
 			}
 		}
-		return validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, opID, validationCost, carried)
+		return validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, opID, confirmedSlot, carried)
 	}
-	if err := validate(&proof, nil, cost); err != nil {
+	if err := validate(&proof, nil, slot); err != nil {
 		t.Fatalf("coherent send proof refused at the broadcast lock: %v", err)
 	}
-	if err := validate(nil, nil, cost); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_missing" {
+	if err := validate(nil, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_missing" {
 		t.Fatalf("missing send proof admitted: %v", err)
 	}
 	foreign := proof
 	foreign.ExcludedOperation = key + "-other"
 	foreign.Digest = sharedCustodyAdmissionDigest(foreign)
-	if err := validate(&foreign, nil, cost); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+	if err := validate(&foreign, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
 		t.Fatalf("proof for another operation admitted: %v", err)
 	}
 	// The persisted built effects are the authority: a proof over DIFFERENT
 	// (still decode-valid, conserved) built effects drifts even though the
 	// route identity and custody spend bind — the supply leg moved.
-	if err := validate(&proof, custodyBuiltEffectsEnvelope(t, custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_100_000_000, 8_600_000_000)), cost); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+	if err := validate(&proof, custodyBuiltEffectsEnvelope(t, custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_100_000_000, 8_600_000_000)), slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
 		t.Fatalf("proof over different persisted effects admitted: %v", err)
 	}
 	// Undecodable persisted effects fail closed with a decode error, not a
 	// typed hold: nothing broadcasts, and the failure is loud, not silent.
-	if err := validate(&proof, []byte("{}"), cost); err == nil {
+	if err := validate(&proof, []byte("{}"), slot); err == nil {
 		t.Fatalf("undecodable persisted effects admitted at the broadcast lock")
 	}
 	// A proof mutated after digesting refuses on self-consistency: the digest
 	// is recomputed from the carried content at the lock.
 	mutated := proof
 	mutated.Proof.ObservedRaw++
-	if err := validate(&mutated, nil, cost); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+	if err := validate(&mutated, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
 		t.Fatalf("mutated send proof admitted: %v", err)
 	}
-	// The custody observation must sit inside the SAME valuation window the
-	// broadcast cost was priced in.
-	staleWindow := cost
-	staleWindow.ObservationSlot = proof.ObservedSlot + 1
-	if err := validate(&proof, nil, staleWindow); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
-		t.Fatalf("send proof observed outside the cost window admitted: %v", err)
+	// The custody observation must be confirmed no later than the slot read
+	// under this lock, and no earlier than the decision it spends for.
+	if err := validate(&proof, nil, proof.ObservedSlot-1); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+		t.Fatalf("send proof observed after the locked slot admitted: %v", err)
+	}
+	early := proof
+	early.ObservedSlot = 289
+	early.Digest = sharedCustodyAdmissionDigest(early)
+	if err := validate(&early, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+		t.Fatalf("send proof observed before the decision admitted: %v", err)
 	}
 	// Generation drift under the lock holds.
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state_version=2, state='{"generation":2}' WHERE route_key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := validate(&proof, nil, cost); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
+	if err := validate(&proof, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
 		t.Fatalf("stale-generation send proof admitted: %v", err)
 	}
 	// A proof observed under a superseded lease fence refuses: the route lease
@@ -958,14 +920,14 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET fencing_token=fencing_token+1 WHERE route_key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := validate(&proof, nil, cost); custodyAttributionHoldReason(t, err) != "custody_attribution_generation_drift" {
+	if err := validate(&proof, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_generation_drift" {
 		t.Fatalf("stale-lease-fence send proof admitted: %v", err)
 	}
 	// An expired route lease refuses outright.
 	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE route_key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := validate(&proof, nil, cost); custodyAttributionHoldReason(t, err) != "custody_attribution_lease_stale" {
+	if err := validate(&proof, nil, slot); custodyAttributionHoldReason(t, err) != "custody_attribution_lease_stale" {
 		t.Fatalf("send proof admitted on an expired lease: %v", err)
 	}
 	// A zero-spend AUTO operation binds nothing: nil proof passes. It sits on
@@ -995,33 +957,17 @@ func TestSharedCustodySendProofAtBroadcastLock(t *testing.T) {
 		defer rollbackCancel()
 		_ = tx.Rollback(rollbackCtx)
 	}()
-	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, zeroID, cost, nil); err != nil {
+	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, zeroID, slot, nil); err != nil {
 		t.Fatalf("zero-spend AUTO operation held at the broadcast lock: %v", err)
 	}
 }
 
-// The measured locked admission -> build boundary (doc 26 §2/§3) exercised as
-// the production chain: the REAL kamino repay request compiled by the reviewed
-// candidate manifest, the REAL locked measured admission
-// (persistPhase3ExitAdmissionOnManifest) creating the bounded AUTO reservation
-// and persisting the custody binding under the ADMITTED generation, the REAL
-// retry admission, and the REAL build authorization
-// (authorizePhase3BuildOnManifest) passing at that post-admission generation.
-// The composed fixture parts are the decided operation row with its journal
-// evidence and the admission plan envelope (costs) — exactly how the seeded
-// initializer authorization tests compose their rows; budget admission,
-// generation, custody binding, build and retry logic are the production
-// implementations with no test-only budget generation.
-// TestSharedCustodyPersistedBindingAuthorizesRetryAndRestartedBuild exercises
-// the REAL SQL boundaries — ObserveSharedCustodyOwnershipProof,
-// persistPhase3ExitAdmissionOnManifest, authorizePhase3BuildOnManifest,
-// writePhase3BudgetTx — against the disposable database. The plan envelope
-// (cost micros, message digest, slot window, blockhash) and the carried
-// pre-decision ownership proof are FIXTURE-VALUED: they are not outputs of a
-// measured RPC producer, and no fixture composes budget state — reservations,
-// bindings, and generations are read back from the persisted rows the
-// production code wrote.
-func TestSharedCustodyPersistedBindingAuthorizesRetryAndRestartedBuild(t *testing.T) {
+// The bind (doc 26 §2) against real PostgreSQL: the REAL kamino repay request
+// compiled by the reviewed candidate manifest and the REAL bindOperation
+// persisting the carried pre-decision proof under the route lock it holds.
+// Once the decided row exists no fresh ownership proof is obtainable and no
+// second bind is possible; a missing or stale-generation proof holds.
+func TestBindPersistsTheCarriedCustodyProof(t *testing.T) {
 	url := os.Getenv("PHASE3_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("requires isolated PHASE3_TEST_DATABASE_URL")
@@ -1041,11 +987,12 @@ func TestSharedCustodyPersistedBindingAuthorizesRetryAndRestartedBuild(t *testin
 	}
 	custodyAttributionSchema(ctx, t, db)
 	manifest := autoInitializerFixtureManifest(t)
-	key := fmt.Sprintf("auto-measured-%d", time.Now().UnixNano())
+	key := fmt.Sprintf("auto-bind-%d", time.Now().UnixNano())
+	routes := []string{key, key + "-missing", key + "-drift"}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		for _, routeKey := range []string{key, key + "-legacy"} {
+		for _, routeKey := range routes {
 			if _, err := db.pool.Exec(cleanupCtx, `DELETE FROM loyal_yield.multiply_operations WHERE route_key = $1`, routeKey); err != nil {
 				t.Errorf("cleanup operations for %s: %v", routeKey, err)
 			}
@@ -1055,273 +1002,76 @@ func TestSharedCustodyPersistedBindingAuthorizesRetryAndRestartedBuild(t *testin
 		}
 		db.Close()
 	})
-
-	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, key)
 	effects := custodyAttributionRepayExpected(3_100_000_000, 600_000_000, 6_000_000_000, 8_500_000_000)
-	rawEffects, err := jsonMarshalExpectedEffects(effects)
-	if err != nil {
-		t.Fatal(err)
-	}
 	request, err := manifest.kaminoPacketForRoute(DeleverRouteStep, kaminoLegRepay, 2_500_000_000,
-		LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, cfg.Lane)
+		LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision := Decision{Action: DeleverRouteStep, StrategyKey: cfg.Lane, AmountRaw: 2_500_000_000,
-		Reason: "auto-measured-repay", IdempotencyKey: "auto-measured"}
-
-	// seedDecision seeds one decided candidate-AUTO operation with a journal
-	// evidence row exactly as RecordDecision persists it, plus the AUTO family
-	// exit reserve the recovery admission draws from, and returns the
-	// operation id, lease and the observation the evidence was recorded for.
+	decision := Decision{Action: DeleverRouteStep, StrategyKey: autoAUTOPYUSD.Lane, AmountRaw: 2_500_000_000,
+		Reason: "auto-bind-repay", IdempotencyKey: "auto-bind"}
+	// seed records one decided candidate-AUTO operation exactly as
+	// RecordDecision persists it and carries a proof taken under its lease.
 	seed := func(routeKey string) (string, RouteLease, Observation) {
 		t.Helper()
-		budget := emptyTestBudget()
-		budget.Families["AUTO"] = FamilyBudget{ExitMicros: 900_000}
-		budgetBytes, err := json.Marshal(budget)
-		if err != nil {
+		if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, routeKey); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2::jsonb,$3)`,
-			routeKey, fmt.Sprintf(`{"generation":1,"phase3":%s}`, budgetBytes), 1); err != nil {
-			t.Fatal(err)
-		}
-		lease, err := db.AcquireRouteLease(ctx, routeKey, "measured-worker", time.Minute)
+		lease, err := db.AcquireRouteLease(ctx, routeKey, "bind-worker", time.Minute)
 		if err != nil {
 			t.Fatal(err)
 		}
 		observation := tickObservation(Snapshot{ObservationID: routeKey + "-obs", Slot: 42, Fresh: true,
-			RouteKind: RouteKind, RouteLane: cfg.Lane, StrategyKey: cfg.Lane, DebtIdleRaw: 3_100_000_000})
-		evidence := newDecisionEvidence(observation, decision, sha256Bytes([]byte("manifest")), sha256Bytes([]byte("catalog")))
-		evidenceBytes, err := json.Marshal(evidence)
+			RouteKind: RouteKind, RouteLane: autoAUTOPYUSD.Lane, StrategyKey: autoAUTOPYUSD.Lane, DebtIdleRaw: 3_100_000_000})
+		evidence, err := json.Marshal(newDecisionEvidence(observation, decision, sha256Bytes([]byte("manifest")), sha256Bytes([]byte("catalog"))))
 		if err != nil {
 			t.Fatal(err)
 		}
 		id := routeKey + "-op"
 		if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects)
-			VALUES($1,$2,'decided',$3,$4,$5::jsonb)`, id, routeKey, string(DeleverRouteStep), cfg.Lane,
-			fmt.Sprintf(`{"decision":%s}`, evidenceBytes)); err != nil {
+			VALUES($1,$2,'decided',$3,$4,$5::jsonb)`, id, routeKey, string(DeleverRouteStep), autoAUTOPYUSD.Lane,
+			fmt.Sprintf(`{"decision":%s}`, evidence)); err != nil {
 			t.Fatal(err)
 		}
+		proof := custodyAdmissionProofFixture(t, autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, routeKey), routeKey, effects, 3_100_000_000, 42, 1, lease.FencingToken, "bind-worker")
+		observation.custodyProof = &proof
 		return id, lease, observation
-	}
-	planFor := func(observation Snapshot) phase3BridgeAdmission {
-		input, err := encodePhase3BuildInput(request, rawEffects)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return phase3BridgeAdmission{
-			Snapshot: observation, Decision: decision, Input: input,
-			CurrentCost: ValuedTransactionCost{TotalMicros: 400_000, MessageSHA256: sha256Bytes([]byte("measured")),
-				ObservationSlot: 42, ValidThroughSlot: 74},
-			ValidThroughSlot: 74,
-		}
-	}
-	stateVersion := func() int64 {
-		t.Helper()
-		var version int64
-		if err := db.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version); err != nil {
-			t.Fatal(err)
-		}
-		return version
-	}
-	persistedAuth := func(t *testing.T, id string) phase3OperationAuthorization {
-		t.Helper()
-		var authBytes []byte
-		if err := db.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&authBytes); err != nil {
-			t.Fatal(err)
-		}
-		var auth phase3OperationAuthorization
-		if json.Unmarshal(authBytes, &auth) != nil {
-			t.Fatal("undecodable persisted authorization")
-		}
-		return auth
 	}
 	rpc := budgetBuildRPC(t, 5_000, 42)
 
-	// Measured admission: the carried pre-decision proof is consumed by the
-	// shared locked admission, which creates the bounded AUTO reservation and
-	// persists the binding under the ADMITTED generation (pre-admission 1 ->
-	// admitted 2 through writePhase3BudgetTx's single increment).
 	id, lease, observation := seed(key)
-	carried := custodyAdmissionProofFixture(t, cfg, key, effects, 3_100_000_000, 42, 1, lease.FencingToken, "measured-worker")
-	observation.custodyProof = &carried
-	if err := db.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, id, observation, decision, planFor(observation.Snapshot)); err != nil {
-		t.Fatalf("measured AUTO admission refused with carried proof: %v", err)
+	if err := db.bindOperation(ctx, rpc, manifest, id, observation, decision, request, effects); err != nil {
+		t.Fatalf("bind refused the carried proof: %v", err)
 	}
-	if version := stateVersion(); version != 2 {
-		t.Fatalf("admission did not advance the generation to the admitted state: %d", version)
-	}
-	auth := persistedAuth(t, id)
-	if auth.CustodyProof == nil {
-		t.Fatalf("measured admission persisted no custody binding")
-	}
-	binding := *auth.CustodyProof
-	if !binding.bindsGeneration(2) || binding.Generation != 2 || binding.LeaseFencing != lease.FencingToken ||
-		binding.LeaseOwner != "measured-worker" ||
-		binding.SpendRaw != 2_500_000_000 || binding.RouteKey != key || binding.Lane != cfg.Lane {
-		t.Fatalf("persisted binding is not the admitted-generation binding: %+v", binding)
-	}
-	var budgetBytes []byte
-	if err := db.pool.QueryRow(ctx, `SELECT state->'phase3' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&budgetBytes); err != nil {
+	var authBytes []byte
+	var version int64
+	if err := db.pool.QueryRow(ctx, `SELECT o.expected_effects->'phase3',s.state_version FROM loyal_yield.multiply_operations o JOIN loyal_yield.multiply_route_states s USING(route_key) WHERE o.operation_id=$1`, id).Scan(&authBytes, &version); err != nil {
 		t.Fatal(err)
 	}
-	var budget Phase3Budget
-	if json.Unmarshal(budgetBytes, &budget) != nil {
-		t.Fatal("undecodable persisted budget")
+	var auth phase3OperationAuthorization
+	if json.Unmarshal(authBytes, &auth) != nil || auth.CustodyProof == nil {
+		t.Fatalf("bind persisted no custody binding: %s", authBytes)
 	}
-	reserved, ok := budget.Reservations[id]
-	if !ok || reserved.Family != "AUTO" || reserved.UpperMicros != 400_000 || !reserved.Recovery {
-		t.Fatalf("measured admission did not create the bounded AUTO reservation: %+v", reserved)
+	if binding := *auth.CustodyProof; binding.Generation != 1 || binding.LeaseFencing != lease.FencingToken || binding.LeaseOwner != "bind-worker" ||
+		binding.SpendRaw != 2_500_000_000 || binding.RouteKey != key || binding.Lane != autoAUTOPYUSD.Lane || version != 1 {
+		t.Fatalf("persisted binding is not the bound proof, or the bind consumed a generation: %+v version=%d", binding, version)
 	}
+	// Once the decided row exists the production ownership-proof API refuses
+	// the route, and the row cannot be bound a second time with any proof.
+	if _, err := db.ObserveSharedCustodyOwnershipProof(ctx, manifest, autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, key), effects, 3_100_000_000, 42); custodyAttributionHoldReason(t, err) != "custody_attribution_unresolved_operation" {
+		t.Fatalf("ownership proof observed while the decided row exists: %v", err)
+	}
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, id, observation, decision, request, effects), "bind_journal_mismatch")
 
-	// REACHABILITY (real API, not fixture): once the decided row exists the
-	// production ownership-proof API refuses the route outright and must keep
-	// doing so — so a fresh carried proof at the admitted generation is NOT
-	// obtainable for a retry. The retry's only honest input is the binding the
-	// first measured admission persisted.
-	if _, err := db.ObserveSharedCustodyOwnershipProof(ctx, manifest, cfg, effects, 3_100_000_000, 42); custodyAttributionHoldReason(t, err) != "custody_attribution_unresolved_operation" {
-		t.Fatalf("ownership proof observed while the decided row exists (a retry can never obtain one): %v", err)
-	}
+	// A real AUTO spend without its carried proof holds.
+	missingID, _, missing := seed(key + "-missing")
+	missing.custodyProof = nil
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, missingID, missing, decision, request, effects), "custody_attribution_proof_missing")
 
-	// The reachable retry carries NO proof: the admission re-validates the
-	// PERSISTED admitted binding under the current lease and generation,
-	// consumes no generation, and does not replenish the reservation.
-	retryObservation := observation
-	retryObservation.custodyProof = nil
-	if err := db.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, id, retryObservation, decision, planFor(retryObservation.Snapshot)); err != nil {
-		t.Fatalf("retry admission over the persisted admitted binding refused: %v", err)
-	}
-	if version := stateVersion(); version != 2 {
-		t.Fatalf("retry incremented the generation: %d", version)
-	}
-	if retried := persistedAuth(t, id).CustodyProof; retried == nil || !retried.bindsGeneration(2) {
-		t.Fatalf("retry did not preserve the admitted binding: %+v", retried)
-	}
-
-	// Build authorization passes at the post-admission generation from the
-	// PERSISTED binding alone, with no built effects in the row, and the
-	// build's own write advances the persisted binding with it (admitted 2 ->
-	// post-build 3).
-	buildCost := ValuedTransactionCost{TotalMicros: 400_000, MessageSHA256: sha256Bytes([]byte("measured")),
-		ObservationSlot: 42, ValidThroughSlot: 74}
-	if err := db.authorizePhase3BuildOnManifest(ctx, manifest, rpc, id, request, rawEffects, buildCost); err != nil {
-		t.Fatalf("build authorization refused with persisted admitted binding: %v", err)
-	}
-	if version := stateVersion(); version != 3 {
-		t.Fatalf("build did not advance the generation through its own write: %d", version)
-	}
-	if built := persistedAuth(t, id).CustodyProof; built == nil || built.Generation != 3 {
-		t.Fatalf("build did not advance the persisted binding to its own post-write generation: %+v", built)
-	}
-
-	// A REPEATED build authorization under the SAME live lease — the
-	// crash-after-build, before-MarkBuilt tick retry inside one worker
-	// process — re-validates the binding at the CURRENT generation and
-	// consumes the next one. This is the retry the un-advanced binding used
-	// to brick with custody_attribution_proof_drift. It is NOT a process
-	// restart; the restart case follows below.
-	if err := db.authorizePhase3BuildOnManifest(ctx, manifest, rpc, id, request, rawEffects, buildCost); err != nil {
-		t.Fatalf("repeated build authorization refused under the live lease: %v", err)
-	}
-	if version := stateVersion(); version != 4 {
-		t.Fatalf("repeated build did not advance the generation through its own write: %d", version)
-	}
-	if rebuilt := persistedAuth(t, id).CustodyProof; rebuilt == nil || rebuilt.Generation != 4 {
-		t.Fatalf("repeated build did not advance the persisted binding: %+v", rebuilt)
-	}
-
-	// PROCESS RESTART, not a repeat call: a new Database handle holds no
-	// lease and must re-acquire one, and a re-acquire always issues a NEW
-	// fencing token (leases are never re-entrant, same owner included).
-	// Expire the old lease exactly as its TTL would and re-acquire it from
-	// the restarted handle.
-	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states
-		SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE route_key=$1`, key); err != nil {
+	// A proof taken under an earlier route generation holds.
+	driftID, _, drift := seed(key + "-drift")
+	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state_version=2, state='{"generation":2}' WHERE route_key=$1`, key+"-drift"); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := OpenDatabase(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(restarted.Close)
-	restartLease, err := restarted.AcquireRouteLease(ctx, key, "measured-worker", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if restartLease.FencingToken == lease.FencingToken {
-		t.Fatalf("restart re-acquired the lease without re-fencing: %d", restartLease.FencingToken)
-	}
-
-	// SEMANTIC LIMITATION, fail-closed by design: the admission retry under
-	// the re-acquired lease refuses. The persisted binding carries the lease
-	// identity it was admitted under (owner + old fencing token) and the
-	// retry validator compares that identity against the current lock.
-	// Same-worker retries recover; a restart cannot re-pass ADMISSION for an
-	// already-admitted AUTO custody operation and must take the
-	// terminal/manual path instead. Deliberately NOT relaxed here: the
-	// coordinator rejected renewing stale custody authority (doc 28's generic
-	// writePhase3BudgetTx restamping), and rebinding the lease identity in
-	// the validator would be the same move in a different place.
-	if err := restarted.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, id, retryObservation, decision, planFor(retryObservation.Snapshot)); custodyAttributionHoldReason(t, err) != "custody_attribution_generation_drift" {
-		t.Fatalf("admission retry under the re-acquired lease did not hold on the stale lease binding: %v", err)
-	}
-	if version := stateVersion(); version != 4 {
-		t.Fatalf("refused restart retry mutated the route state: %d", version)
-	}
-
-	// The BUILD seam is generation-scoped, not fence-scoped: the gate
-	// re-validates the binding content and generation currency (still equal
-	// after the restart), the write guard enforces the NEW lease, and the
-	// narrow authorized advance stamps the binding through its own write. An
-	// already-admitted operation therefore stays buildable across a genuine
-	// process restart with a re-acquired lease.
-	if err := restarted.authorizePhase3BuildOnManifest(ctx, manifest, rpc, id, request, rawEffects, buildCost); err != nil {
-		t.Fatalf("build authorization under the re-acquired lease refused: %v", err)
-	}
-	if version := stateVersion(); version != 5 {
-		t.Fatalf("restart build did not advance the generation through its own write: %d", version)
-	}
-	if rebuilt := persistedAuth(t, id).CustodyProof; rebuilt == nil || rebuilt.Generation != 5 {
-		t.Fatalf("restart build did not advance the persisted binding: %+v", rebuilt)
-	}
-
-	// Drift refusal for an UNRELATED route-state change, under the CURRENT
-	// (restarted) lease: a foreign generation increment leaves the persisted
-	// binding behind the route lock. The build gate is generation-bound, so
-	// its refusal attributes cleanly to the unrelated bump; the retry
-	// admission holds on the lease-identity check regardless (limitation
-	// above), so the BUILD refusal is the clean drift signal here.
-	if _, err := restarted.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states
-		SET state_version=state_version+1, state=jsonb_set(state,'{generation}',to_jsonb((state->>'generation')::bigint+1))
-		WHERE route_key=$1`, key); err != nil {
-		t.Fatal(err)
-	}
-	if err := restarted.authorizePhase3BuildOnManifest(ctx, manifest, rpc, id, request, rawEffects, buildCost); custodyAttributionHoldReason(t, err) != "custody_attribution_proof_drift" {
-		t.Fatalf("build authorized over unrelated route-state drift: %v", err)
-	}
-	if err := restarted.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, id, retryObservation, decision, planFor(retryObservation.Snapshot)); custodyAttributionHoldReason(t, err) != "custody_attribution_generation_drift" {
-		t.Fatalf("retry admission authorized over drifted route state: %v", err)
-	}
-
-	// A LEGACY AUTO authorization (admitted before this feature, custody
-	// binding absent from the persisted phase3 authorization) must hold at
-	// build — the missing legacy proof is the documented backward-compat
-	// refusal, produced here by stripping exactly that field from a real
-	// admitted row, never by fabricating budget state.
-	legacyID, legacyLease, legacyObservation := seed(key + "-legacy")
-	legacyProof := custodyAdmissionProofFixture(t, autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, key+"-legacy"), key+"-legacy",
-		effects, 3_100_000_000, 42, 1, legacyLease.FencingToken, "measured-worker")
-	legacyObservation.custodyProof = &legacyProof
-	if err := db.persistPhase3ExitAdmissionOnManifest(ctx, rpc, manifest, legacyID, legacyObservation, decision, planFor(legacyObservation.Snapshot)); err != nil {
-		t.Fatalf("legacy-route measured admission refused: %v", err)
-	}
-	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations
-		SET expected_effects=jsonb_set(expected_effects,'{phase3}',(expected_effects->'phase3') - 'custodyProof')
-		WHERE operation_id=$1`, legacyID); err != nil {
-		t.Fatal(err)
-	}
-	// assertBudgetHold enforces exactly the missing-legacy-proof hold.
-	assertBudgetHold(t, db.authorizePhase3BuildOnManifest(ctx, manifest, rpc, legacyID, request, rawEffects, buildCost),
-		"custody_attribution_proof_missing")
+	assertBudgetHold(t, db.bindOperation(ctx, rpc, manifest, driftID, drift, decision, request, effects), "custody_attribution_generation_drift")
 }

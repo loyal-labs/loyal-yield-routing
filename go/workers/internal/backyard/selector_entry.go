@@ -12,8 +12,8 @@ import (
 )
 
 // A selected entry pins the next lane and the exact economically quoted equity.
-// It owns no balance or spending counter. Every transaction still requires the
-// existing durable budget admission, fresh construction and reconciliation.
+// It owns no balance or spending counter. Every transaction still requires
+// bind, fresh construction and reconciliation.
 type SelectorEntry struct {
 	Lane          string    `json:"lane"`
 	EquityRaw     int64     `json:"equityRaw"`
@@ -47,8 +47,8 @@ func validateSelectorEntry(e SelectorEntry, laneAllowed func(string) bool) error
 }
 
 // validateSelectorEntryOnManifest resolves the entry lane authority through
-// the explicit reviewed manifest. It serves only the internal pilot
-// authorization chain (locked build and final-send fences); every public
+// the explicit reviewed manifest. It serves only the internal
+// authorization chain (locked bind and final-send fences); every public
 // decode keeps the installed embedded check above.
 func (m RouteManifest) validateSelectorEntry(e SelectorEntry) error {
 	return validateSelectorEntry(e, m.selectorEntryLaneAllowed)
@@ -221,8 +221,8 @@ func (m RouteManifest) applySelectorEntry(s *Snapshot, entry *SelectorEntry, now
 // expectedVersion must be read before collecting the account observation and
 // quotes; completing an intervening operation invalidates the entire sample.
 // ENTER opens only a flat, reconciled lane. SWITCH commits the bounded source
-// unwind in this same transaction, using only existing reserved exit spending.
-// Neither action writes an executable transaction.
+// unwind in this same transaction. Neither action writes an executable
+// transaction.
 func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string, input SelectorInput, confirmedSlot, expectedVersion int64) (SelectorResult, error) {
 	return d.recordSelectorEvaluationWithLanes(ctx, routeKey, nil, input, confirmedSlot, expectedVersion)
 }
@@ -234,7 +234,7 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 // validated autoPolicy binding that priced it, and the entry itself is
 // validated through that manifest's initializer-constraint authority. A nil
 // manifest keeps the installed embedded selector-lane behavior exactly. Every
-// lock, fence, budget and recovery precondition is shared verbatim.
+// lock, fence and recovery precondition is shared verbatim.
 func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeKey string, manifest *RouteManifest, input SelectorInput, confirmedSlot, expectedVersion int64) (SelectorResult, error) {
 	laneAllowed := selectorLane
 	fundingAllowed := selectorEntryLane
@@ -287,7 +287,6 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 		return result, budgetHold("selector_state_changed_during_quote")
 	}
 	var state struct {
-		Budget        Phase3Budget                       `json:"phase3"`
 		Unwind        *UnwindIntent                      `json:"selectorUnwind"`
 		CanaryHistory map[string]pilotCanaryEntryReceipt `json:"pilotCanaryEntries"`
 		Entry         *SelectorEntry                     `json:"selectorEntry"`
@@ -298,13 +297,7 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 	if json.Unmarshal(raw, &state) != nil {
 		return result, budgetHold("invalid_selector_route_state")
 	}
-	if err = state.Budget.validate(); err != nil {
-		return result, err
-	}
-	if state.Budget.Pilot == nil || state.Budget.Closed {
-		return result, budgetHold("selector_requires_active_pilot")
-	}
-	if state.Unwind != nil || len(state.Budget.Reservations) != 0 {
+	if state.Unwind != nil {
 		return result, budgetHold("selector_finish_current_work_first")
 	}
 	// The two operation-table guard checks ride ONE SELECT whose columns wrap
@@ -366,11 +359,6 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 		if !unwindComplete(s) || s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.VoltrIdleRaw <= 0 {
 			return result, budgetHold("selector_entry_requires_reconciled_idle")
 		}
-		for _, family := range state.Budget.Families {
-			if family.ExitMicros != 0 {
-				return result, budgetHold("selector_entry_has_outstanding_exit")
-			}
-		}
 		q := result.SelectedQuote
 		if q == nil {
 			return result, budgetHold("selector_entry_quote_missing")
@@ -392,12 +380,9 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 		if q == nil || q.SourceExit == nil || q.SourceLane != s.RouteLane || q.ObservationID != s.ObservationID || !sha256Pattern.MatchString(q.EvidenceID) || q.SourceExit.MaxCollateralRaw != s.PositionCollateralRaw || q.SourceExit.MaxDebtRaw < s.PositionDebtRaw || s.PositionDebtRaw < 0 || s.PositionCollateralRaw < 0 {
 			return result, budgetHold("selector_unwind_quote_missing")
 		}
-		unwind = &UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: s.ObservationID, MaxCollateralRaw: q.SourceExit.MaxCollateralRaw, MaxDebtRaw: q.SourceExit.MaxDebtRaw, CostBoundRaw: q.SourceExit.GrossMicros, BudgetScope: state.Budget.GoalID, BudgetFamily: phase3BudgetFamilyForLane(s.RouteLane), EvidenceID: q.EvidenceID, CreatedAt: now}
+		unwind = &UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: s.ObservationID, MaxCollateralRaw: q.SourceExit.MaxCollateralRaw, MaxDebtRaw: q.SourceExit.MaxDebtRaw, EvidenceID: q.EvidenceID, CreatedAt: now}
 		if err = unwindValid(*unwind); err != nil {
 			return result, err
-		}
-		if state.Budget.Families[unwind.BudgetFamily].ExitMicros < unwind.CostBoundRaw {
-			return result, budgetHold("unwind_requires_existing_exit_reservation")
 		}
 	}
 	encoded, err := json.Marshal(map[string]any{"mode": "live", "observationId": input.Snapshot.ObservationID, "slot": input.Snapshot.Slot, "result": result})
@@ -456,29 +441,15 @@ func (d *Database) recordSelectorEvaluationWithLanes(ctx context.Context, routeK
 	return result, tx.Commit(ctx)
 }
 
-// Called under the existing operation/route lock at admission, build and send.
-// Expiry only closes a new allocation or account setup; completion and exits
-// never depend on a still-current economic forecast.
-func (d *Database) authorizeSelectorEntryTx(ctx context.Context, tx pgx.Tx, operationID string, budget Phase3Budget, request any, effects ExpectedEffects, slot int64, admission bool) error {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
-	return d.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, operationID, budget, request, effects, slot, admission)
-}
-
-// authorizeSelectorEntryTxOnManifest is the exact locked selector-entry fence
-// with only the entry validation and the rollout-scope lane resolved through
-// the explicit reviewed manifest: a candidate AUTO entry is admitted solely
-// while its reviewed initializer binding resolves, and installed lanes keep
-// the public behavior above. Pause, unwind, journal-lane, equity, borrow,
-// quote-currentness, allocation-binding and authority checks are byte-identical.
-func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manifest RouteManifest, tx pgx.Tx, operationID string, budget Phase3Budget, request any, effects ExpectedEffects, slot int64, admission bool) error {
+// authorizeSelectorEntryTxOnManifest is the locked selector-entry fence, run
+// at bind (admission binds the allocation) and at send. Expiry only closes a
+// new allocation or account setup; completion and exits never depend on a
+// still-current economic forecast. Entry validation and the rollout-scope lane
+// resolve through the explicit reviewed manifest: a candidate AUTO entry is
+// admitted solely while its reviewed initializer binding resolves.
+func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manifest RouteManifest, tx pgx.Tx, operationID string, request any, effects ExpectedEffects, slot int64, admission bool) error {
 	if err := d.authorizePartialWithdrawalTx(ctx, tx, operationID); err != nil {
 		return err
-	}
-	if budget.Pilot == nil {
-		return nil
 	}
 	var amount uint64
 	var requestedLane string
@@ -510,15 +481,14 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 		return err
 	}
 	// B2: a leverage_up borrow adds to the current lane under its stored
-	// level target, not a selector entry. Sizing, both LTV caps and the
-	// complete return are bound by its own measured admission.
+	// level target, not a selector entry. Sizing and both LTV caps are
+	// bound by the planner, the build-time loop-LTV rule and klend.
 	if bypass, err := leverageUpBypassesEntryFence(request, reason, unwinding, lane, leverageTarget, operationID); err != nil || bypass {
 		return err
 	}
 	// Plan B3: a top-up allocation adds to the current loop instead of opening
 	// a lane, so no selector entry authorizes it. Only this journaled reason
-	// on an allocation, outside an unwind, skips the entry fence; its own
-	// measured admission bound the position, sizing and complete return.
+	// on an allocation, outside an unwind, skips the entry fence.
 	if topupAllocationBypassesEntryFence(request, reason, unwinding) {
 		return nil
 	}
@@ -573,7 +543,7 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 	}
 	if admission && entry.AllocationOperationID == "" {
 		// The caller holds the route row lock. This association commits with
-		// measured admission or rolls back with it; it has no spending counter.
+		// the bind or rolls back with it; it has no spending counter.
 		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states s SET state=jsonb_set(state,'{selectorEntry,allocationOperationId}',to_jsonb($1::text),true) FROM loyal_yield.multiply_operations o WHERE o.operation_id=$1 AND s.route_key=o.route_key`, operationID)
 		if err != nil {
 			return err
