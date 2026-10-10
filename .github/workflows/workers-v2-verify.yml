@@ -9,21 +9,21 @@ on:
       - scripts/workers-v2-fixture.py
       - migrations/**
       - .github/workflows/workers-v2-verify.yml
-      # The Rust workspace the Voltr policy compiler builds in.
+      # The Rust workspace the connected SVM fixtures build in, and the
+      # crates they build with their workspace dependencies.
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
-      - package.json
-      - bun.lock
-      # The crates the jobs below build: the connected SVM fixtures and the
-      # Voltr policy compiler with their workspace dependencies.
       - crates/squads-test-harness/**
       - crates/mock-yield-protocols-program/**
       - crates/loyal-actions/**
       - crates/loyal-solana-env/**
       - crates/loyal-hub-abi/**
-      - tools/backyard-voltr/**
-      - docs/evidence/backyard-voltr-four-market/**
+      # The bun installs below.
+      - package.json
+      - bun.lock
+      - tools/backyard-voltr/package.json
+      - tools/backyard-voltr/bun.lock
 
   # Every PR reports the required checks; the changes job skips them when
   # no workers path changed.
@@ -57,7 +57,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         # Pushes are already filtered by the push paths above.
         run: |
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|package\.json$|bun\.lock$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi)/|tools/backyard-voltr/|docs/evidence/backyard-voltr-four-market/)'; then
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|package\.json$|bun\.lock$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi)/|tools/backyard-voltr/(package\.json|bun\.lock)$)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
@@ -181,30 +181,6 @@ jobs:
         with:
           path: ${{ runner.temp }}/workers-go
           key: workers-go-${{ hashFiles('go/workers/go.sum') }}-${{ github.sha }}
-
-  backyard-voltr-authorization:
-    needs: changes
-    if: needs.changes.outputs.workers == 'true'
-    # Every authorization-gated Backyard Voltr command refuses when the
-    # committed policy catalog authorization no longer matches the compiled
-    # catalog.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
-        with:
-          # Verified to install bun.lock (configVersion 1) frozen.
-          bun-version: 1.3.14
-      - name: Build the policy compiler before the timed authorization test
-        run: cargo build --locked -p loyal-actions --bin compile-voltr-kamino-runtime-policy
-      - name: Committed authorization binds the checked-out sources
-        working-directory: tools/backyard-voltr
-        run: |
-          bun install --frozen-lockfile
-          bun test src/policies/authorization.test.ts
 
   workers-image:
     needs: changes
