@@ -82,8 +82,9 @@ func hastraEdgeForRoute(action Action, lane string) (hastraEdge, error) {
 // HastraConversionRequest is one Hastra conversion of the vault's own
 // custody, executed through the Hastra policy. A stake conversion's output is
 // the program's formula at the stake price it reads when it executes; the
-// request carries the price it was quoted at, and is built and sent only
-// while that price is still the program's (validateHastraPrice).
+// request carries the price it was quoted at, and is signed only while that
+// price is still the program's and lands before going stale
+// (validateHastraPrice).
 type HastraConversionRequest struct {
 	Action    Action
 	AmountRaw uint64
@@ -262,9 +263,11 @@ func landable(price hastra.StakePrice, now int64) bool {
 }
 
 // validateHastraPrice re-reads the stake price a stake conversion was
-// quoted at, at build and again at send: the program's price is still the
-// quoted one (a newer push changes what the conversion pays) and it lands
-// before going stale. Either change holds the conversion; it never errors.
+// quoted at, before it is signed (validateRequestPrestate): the program's
+// price is still the quoted one (a newer push changes what the conversion
+// pays) and stays fresh for the signed wire's whole lifetime
+// (hastraPriceLandingSeconds), which is what makes the final send, which
+// reads no chain, safe. Either change holds the conversion; it never errors.
 // It returns the view slot of the read.
 func validateHastraPrice(ctx context.Context, view *View, r HastraConversionRequest, slot int64) (int64, error) {
 	leg, ok := hastraConversionLeg(r.Action, r.RouteLane)
