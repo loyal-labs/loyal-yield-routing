@@ -242,3 +242,96 @@ func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
 		t.Fatalf("capture snapshot misaligned: %+v", accounts)
 	}
 }
+
+// Two held AUTO lanes share their collateral reserve, so their valuation
+// refresh is five RefreshReserves (AUTO, PYUSD, wYLDS and the two USDC
+// reference reserves). 2026-10-11: the legacy encoder capped every message at
+// four, so the first tranche into AUTO/AUTO/wYLDS held on kamino_stale after
+// its release landed.
+func TestTwoAUTOLaneValuationRefreshSimulatesEveryReserve(t *testing.T) {
+	t.Parallel()
+	routes := []RuntimeRoute{autoAUTOWYLDS, autoAUTOPYUSD}
+	addresses, err := overflowRoomAddresses(autoAUTOWYLDS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserves := map[publicKey]bool{}
+	for _, route := range routes {
+		for _, reserve := range []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve} {
+			reserves[mustKey(reserve)] = true
+		}
+	}
+	reference, err := pinnedKaminoObservationConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserves[mustKey(reference.CollateralReserve)], reserves[mustKey(reference.DebtReserve)] = true, true
+	client := newFakeChain(t, nil)
+	rpcOf(client).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || payload.Method != "simulateTransaction" {
+			t.Fatalf("unexpected RPC request %q: %v", payload.Method, err)
+		}
+		var wire string
+		if err := json.Unmarshal(payload.Params[0], &wire); err != nil {
+			t.Fatalf("decode wire param: %v", err)
+		}
+		raw, err := base64.StdEncoding.DecodeString(wire)
+		if err != nil {
+			t.Fatalf("decode wire: %v", err)
+		}
+		body := raw[1+64:]
+		offset := 3
+		keyCount, err := decodeShortVec(body, &offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys := make([]publicKey, keyCount)
+		for i := range keys {
+			copy(keys[i][:], body[offset+32*i:])
+		}
+		offset += 32*keyCount + 32
+		count, err := decodeShortVec(body, &offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refreshed := map[publicKey]bool{}
+		for i := 0; i < count; i++ {
+			program := keys[body[offset]]
+			offset++
+			accounts, _ := decodeShortVec(body, &offset)
+			first := keys[body[offset]]
+			offset += accounts
+			size, _ := decodeShortVec(body, &offset)
+			if program != publicKey(kamino.ProgramID) || !bytesEqual(body[offset:offset+size], kamino.RefreshReserveDiscriminator[:]) {
+				t.Fatalf("instruction %d is not a reserve refresh", i)
+			}
+			offset += size
+			refreshed[first] = true
+		}
+		if count != len(reserves) || len(refreshed) != len(reserves) {
+			t.Fatalf("refreshed %d reserves in %d instructions, want each of %d once", len(refreshed), count, len(reserves))
+		}
+		for reserve := range reserves {
+			if !refreshed[reserve] {
+				t.Fatalf("reserve %s was not refreshed", encodeBase58(reserve[:]))
+			}
+		}
+		populated := `{"owner":"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD","lamports":9,"data":["AQ==","base64"],"executable":false}`
+		result := `{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":{"err":null,"accounts":[`
+		for i := range addresses {
+			if i > 0 {
+				result += ","
+			}
+			result += populated
+		}
+		return response(result + `]}}}`), nil
+	})
+	slot, accounts, err := simulateRouteValuationRefresh(context.Background(), client, routes, addresses, 41)
+	if err != nil || slot != 43 || len(accounts) != len(addresses) {
+		t.Fatalf("two-lane refresh: slot=%d accounts=%d err=%v", slot, len(accounts), err)
+	}
+}
