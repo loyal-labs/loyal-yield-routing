@@ -251,6 +251,8 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case JupiterSwapRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	case HastraConversionRequest:
+		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	}
 	navPolicy, err := observation.policies.account(policyKey{action: ReportNAV})
 	if err != nil {

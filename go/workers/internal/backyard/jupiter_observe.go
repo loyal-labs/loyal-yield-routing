@@ -72,15 +72,27 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 		evidence.Request.EntryReturnReserved = true
 		evidence.Request.TopupReturnReserved = decision.Reason == topupSwapReason
 	}
-	if err == nil && decision.Action == SwapDebtToCollateralStep && earnHeldLane(decision.StrategyKey) {
+	if err == nil && positionReturnConversion(decision) {
 		evidence.Request.PositionReturnReserved = true
 	}
-	funding := (decision.Action == SwapCollateralToDebtStep && (decision.Reason == "withdrawal_swap_repayment_buffer" || decision.Reason == "hard_ltv_buffer_swap" || decision.Reason == leverageDownSwapReason)) ||
-		(decision.Action == SwapUSDCToDebtStep && decision.Reason == "withdrawal_usdc_repayment_buffer")
-	if err == nil && funding && observation.Snapshot.PositionDebtRaw > 0 && earnHeldLane(decision.StrategyKey) {
+	if err == nil && payoffFundingConversion(decision, observation.Snapshot) {
 		evidence.Request.FullPayoffFunding = true
 	}
 	return observation, evidence, err
+}
+
+// positionReturnConversion reports a leverage conversion: borrowed debt into
+// collateral on a held lane, whatever venue converts it.
+func positionReturnConversion(decision Decision) bool {
+	return decision.Action == SwapDebtToCollateralStep && earnHeldLane(decision.StrategyKey)
+}
+
+// payoffFundingConversion reports a conversion into debt that funds a payoff
+// of a held lane's position, whatever venue converts it.
+func payoffFundingConversion(decision Decision, s Snapshot) bool {
+	funding := (decision.Action == SwapCollateralToDebtStep && (decision.Reason == "withdrawal_swap_repayment_buffer" || decision.Reason == "hard_ltv_buffer_swap" || decision.Reason == leverageDownSwapReason)) ||
+		(decision.Action == SwapUSDCToDebtStep && decision.Reason == "withdrawal_usdc_repayment_buffer")
+	return funding && s.PositionDebtRaw > 0 && earnHeldLane(decision.StrategyKey)
 }
 
 // jupiterTokenPrograms is the token program of the swap's source and
@@ -144,7 +156,7 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client 
 	if err != nil || destinationRaw > math.MaxUint64-minimum {
 		return JupiterExecutionEvidence{}, fmt.Errorf("Jupiter destination threshold overflows")
 	}
-	if decision.StrategyKey == autoAUTOPYUSD.Lane {
+	if autoCollateralLane(decision.StrategyKey) {
 		// Retention keeps min(JSON threshold, enforceable wire floor): the
 		// legacy AUTO wire cannot guarantee more than its quoted output scaled
 		// by its own slippage, so funding is never sized off an advisory

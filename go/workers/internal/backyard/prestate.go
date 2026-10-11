@@ -20,8 +20,9 @@ func validateBuildPrestate(ctx context.Context, rpc *chain.Client, view *View, r
 // against, at build and again at send: the effect graph matches the request,
 // the initializer's obligation is still absent, a full payoff still covers the
 // debt, a borrow still fits capacity and the loop LTV, a repayment release and
-// the leverage, entry and funding swaps still see their custody, and the
-// lookup tables are unchanged. It returns the view slot of those reads.
+// the leverage, entry and funding swaps still see their custody, the lookup
+// tables are unchanged, and a Hastra conversion's quoted stake price is still
+// the program's and lands fresh. It returns the view slot of those reads.
 func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.Client, view *View, request any, effects ExpectedEffects) (int64, error) {
 	if _, err := m.measureExecutableDebit(request, effects); err != nil {
 		return 0, err
@@ -88,6 +89,27 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 		}
 		if err := revalidateJupiterLookupTables(ctx, rpc, r, slot); err != nil {
 			return 0, err
+		}
+	}
+	if r, ok := request.(HastraConversionRequest); ok {
+		observed, err := validateHastraPrice(ctx, view, r, slot)
+		if err != nil {
+			return 0, err
+		}
+		slot = max(slot, observed)
+		if r.PositionReturnReserved {
+			bound, _, err := validateLeverageConversion(ctx, view, r, r.intent(), effects, slot)
+			if err != nil {
+				return 0, err
+			}
+			slot = max(slot, bound.ObservedSlot)
+		}
+		if r.FullPayoffFunding {
+			bound, _, err := validateHastraPayoffFunding(ctx, rpc, view, m, r, effects, slot, 3, false)
+			if err != nil {
+				return 0, err
+			}
+			slot = max(slot, bound.ObservedSlot)
 		}
 	}
 	return slot, nil

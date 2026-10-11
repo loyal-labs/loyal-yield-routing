@@ -49,6 +49,9 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	case JupiterSwapRequest:
 		message, err = compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate))
 		lane = r.RouteLane
+	case HastraConversionRequest:
+		message, err = compileHastraMessageForDelegate(r, mustKey(bridgeDelegate))
+		lane = r.RouteLane
 	default:
 		return ValuedTransactionCost{}, budgetHold("unmapped_economic_action")
 	}

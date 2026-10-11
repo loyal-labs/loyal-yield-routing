@@ -16,7 +16,7 @@ func pricePhase3PositionReturn(ctx context.Context, rpc *chain.Client, view *Vie
 	return pricePhase3PositionReturnAfterFunding(ctx, rpc, view, client, manifest, post, decision, request, effects, afterPayoff, nil, nil)
 }
 
-func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *JupiterExecutionEvidence, release *KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
+func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, post Observation, decision Decision, request any, effects ExpectedEffects, afterPayoff bool, funding *conversionEvidence, release *KaminoExecutionEvidence) (phase3BridgeAdmission, error) {
 	s := post.Snapshot
 	if rpc == nil || !s.Fresh || s.Slot <= 0 || s.RouteKind != RouteKind || s.ManualReason != "" ||
 		s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
@@ -82,13 +82,15 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	}
 	withdrawal.ObligationReserves = []string{route.Kamino.CollateralReserve}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
+	var fundingIntent conversionIntent
 	if funding != nil {
-		if !afterPayoff || !isPayoffFundingAction(funding.Request.Action) || funding.Request.RouteLane != s.RouteLane ||
-			(funding.Request.Action == SwapUSDCToDebtStep && (release != nil || s.SquadsIdleRaw != 0)) {
+		fundingIntent = funding.intent()
+		if !afterPayoff || !isPayoffFundingAction(fundingIntent.Action) || fundingIntent.RouteLane != s.RouteLane ||
+			(fundingIntent.Action == SwapUSDCToDebtStep && (release != nil || s.SquadsIdleRaw != 0)) {
 			return phase3BridgeAdmission{}, budgetHold("invalid_funding_return_projection")
 		}
 	}
-	if funding != nil && funding.Request.Action == SwapCollateralToDebtStep {
+	if funding != nil && fundingIntent.Action == SwapCollateralToDebtStep {
 		if s.CollateralIdleRaw != 0 {
 			return phase3BridgeAdmission{}, budgetHold("invalid_funding_return_projection")
 		}
@@ -100,10 +102,10 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 				mint, _ := decodeBase58PublicKey(route.Kamino.CollateralMint)
 				authority, _ := decodeBase58PublicKey(bridgeVault)
 				custody, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
-				expectedBefore := funding.Request.AmountRaw
+				expectedBefore := fundingIntent.AmountRaw
 				if release != nil {
 					expectedBefore = release.ExpectedEffects.Accounts[1].BeforeRaw
-					if release.ExpectedEffects.Accounts[1].AfterRaw != funding.Request.AmountRaw {
+					if release.ExpectedEffects.Accounts[1].AfterRaw != fundingIntent.AmountRaw {
 						return phase3BridgeAdmission{}, budgetHold("release_funding_amount_changed")
 					}
 				}

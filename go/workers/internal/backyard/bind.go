@@ -49,6 +49,8 @@ func encodePhase3BuildInput(request any, effects []byte) (*phase3BuildInput, err
 		input.Kind = "kamino-initialize"
 	case JupiterSwapRequest:
 		input.Kind = "jupiter"
+	case HastraConversionRequest:
+		input.Kind = "hastra"
 	default:
 		return nil, budgetHold("unmapped_economic_action")
 	}
@@ -71,7 +73,7 @@ func (input *phase3BuildInput) decode() (any, ExpectedEffects, []byte, error) {
 }
 
 // decodeWithManifest is the manifest-aware form of decode. Kamino,
-// initializer and Jupiter requests compile via the manifest-bound compilers
+// initializer, Jupiter and Hastra requests compile via the manifest-bound compilers
 // with the fixed bridge delegate; the delegate is never request-supplied.
 // Bridge compilation alone is manifest-independent.
 func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, ExpectedEffects, []byte, error) {
@@ -91,6 +93,8 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 		target = &KaminoInitializationRequest{}
 	case "jupiter":
 		target = &JupiterSwapRequest{}
+	case "hastra":
+		target = &HastraConversionRequest{}
 	default:
 		return nil, ExpectedEffects{}, nil, budgetHold("invalid_persisted_build_input")
 	}
@@ -115,6 +119,9 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 	case *JupiterSwapRequest:
 		request = *r
 		message, err = compileJupiterMessageForDelegate(*r, mustKey(bridgeDelegate))
+	case *HastraConversionRequest:
+		request = *r
+		message, err = compileHastraMessageForDelegate(*r, mustKey(bridgeDelegate))
 	}
 	if err != nil {
 		return nil, ExpectedEffects{}, nil, budgetHoldFrom(err, "persisted_build_no_longer_compiles")
@@ -339,6 +346,8 @@ func (m RouteManifest) validateSignedIdentity(auth phase3OperationAuthorization,
 		}
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case JupiterSwapRequest:
+		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	case HastraConversionRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	}
 	if operation.SignedWireSHA256 != auth.SignedWireSHA256 || operation.RecentBlockhash != blockhash || operation.LastValidBlockHeight != height || operation.TransactionSignature != encodeBase58(wire[1:65]) {

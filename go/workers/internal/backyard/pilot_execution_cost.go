@@ -49,6 +49,8 @@ func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedE
 		message, err = m.compileKaminoInitializationMessage(r)
 	case JupiterSwapRequest:
 		message, err = compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate))
+	case HastraConversionRequest:
+		message, err = compileHastraMessageForDelegate(r, mustKey(bridgeDelegate))
 	}
 	if err != nil {
 		return out, err
@@ -85,15 +87,22 @@ func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedE
 		if cost.SetupLamports != 0 || (effects.Kind != "bridge" && effects.Kind != "") || !effects.Conserved {
 			return out, budgetHold("unsupported_bridge_execution_cost")
 		}
-	case JupiterSwapRequest:
+	case JupiterSwapRequest, HastraConversionRequest:
+		var minimum uint64
+		switch r := r.(type) {
+		case JupiterSwapRequest:
+			minimum = r.MinimumOutputRaw
+		case HastraConversionRequest:
+			minimum = r.OutputRaw
+		}
 		if cost.SetupLamports != 0 || effects.Kind != "cross-mint-swap" || len(effects.Accounts) != 2 || credit == nil {
 			return out, budgetHold("missing_swap_execution_cost_bound")
 		}
 		destination := effects.Accounts[1]
-		if destination.AfterRaw < destination.BeforeRaw || destination.MinimumAfterRaw == nil || *destination.MinimumAfterRaw < destination.BeforeRaw || *destination.MinimumAfterRaw-destination.BeforeRaw != r.MinimumOutputRaw || destination.AfterRaw-destination.BeforeRaw != r.MinimumOutputRaw {
+		if destination.AfterRaw < destination.BeforeRaw || destination.MinimumAfterRaw == nil || *destination.MinimumAfterRaw < destination.BeforeRaw || *destination.MinimumAfterRaw-destination.BeforeRaw != minimum || destination.AfterRaw-destination.BeforeRaw != minimum {
 			return out, budgetHold("swap_minimum_credit_mismatch")
 		}
-		lower, err := credit.valueLower(r.MinimumOutputRaw, destination.Mint, destination.Owner, cost.ObservationSlot)
+		lower, err := credit.valueLower(minimum, destination.Mint, destination.Owner, cost.ObservationSlot)
 		if err != nil {
 			return out, err
 		}

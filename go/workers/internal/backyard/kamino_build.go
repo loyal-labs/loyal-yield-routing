@@ -161,7 +161,7 @@ func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 	// refresh-plus-policy payload, so the eight-constraint policy parses and
 	// executes on the deployed Squads ELF.
 	var message []byte
-	if route.Lane == autoAUTOPYUSD.Lane {
+	if autoRoute(route.Lane) {
 		message, err = compileAutoKaminoLegacyMessage(delegate, blockhash, instructions)
 	} else {
 		message, err = compileKaminoLegacyMessage(delegate, blockhash, instructions)
