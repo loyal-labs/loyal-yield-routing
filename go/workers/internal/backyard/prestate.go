@@ -51,7 +51,7 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 		slot = max(slot, bound.ObservedSlot)
 	}
 	if r, ok := request.(KaminoPrimeUSDCRequest); ok && effects.Kind == "kamino-borrow" {
-		observed, err := validateBorrowRequest(ctx, view, r, effects, slot)
+		observed, err := validateBorrowRequest(ctx, rpc, view, r, effects, slot)
 		if err != nil {
 			return 0, err
 		}

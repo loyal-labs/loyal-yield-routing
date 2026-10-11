@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"math"
 	"math/big"
 	"time"
@@ -159,22 +158,18 @@ func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, vie
 	if err != nil {
 		return 0, nil, empty, err
 	}
-	position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
-	if errors.Is(err, errKaminoReserveStale) {
-		// Idle reserves only advance through the permissionless refresh the
-		// production prefix already carries, so re-observe against its closed
-		// unsigned simulation — never a broadcast — over the full original
-		// batch. bridgeDelegate's captured lamports differ by the simulated
-		// fee; this snapshot is unsigned evidence, and every freshness,
-		// ownership, capacity and funding check below still runs fail-closed
-		// on it as-is.
-		simulatedSlot, simulatedAccounts, refreshErr := simulateBudgetReserveRefreshOptional(ctx, rpc, route.Lane, uniqueNonzero(addresses), optional, slot)
-		if refreshErr != nil {
-			return 0, nil, empty, refreshErr
-		}
-		slot, accounts = simulatedSlot, simulatedAccounts
+	// Idle reserves only advance through the permissionless refresh the
+	// production prefix already carries, so a stale read is re-observed
+	// against its closed unsigned simulation — never a broadcast — over the
+	// full original batch. bridgeDelegate's captured lamports differ by the
+	// simulated fee; this snapshot is unsigned evidence, and every freshness,
+	// ownership, capacity and funding check below still runs fail-closed on
+	// it as-is.
+	var position KaminoPosition
+	slot, accounts, err = judgeAsRefreshed(ctx, rpc, route.Lane, uniqueNonzero(addresses), optional, slot, accounts, func(slot int64, accounts []ConfirmedAccount) (err error) {
 		position, err = observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
-	}
+		return err
+	})
 	if err != nil {
 		return 0, nil, empty, err
 	}

@@ -4,14 +4,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 func TestCapacitySizedEntryRetainsCollateralRoom(t *testing.T) {
@@ -236,7 +243,12 @@ func TestCapacitySizedFinalBorrowGateRejectsShrinkingRoom(t *testing.T) {
 		t.Run(fmt.Sprintf("existing_debt_%d", debt), func(t *testing.T) { capacityFinalBorrowGate(t, debt) })
 	}
 }
-func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
+
+// capacityBorrowGateFixture is a borrow request whose raw reserves are
+// refreshed at slot 42, the clock's slot, with room, fee receiver and prices
+// that pass the final borrow gate.
+func capacityBorrowGateFixture(t *testing.T, sourceDebt uint64) ([]ConfirmedAccount, RuntimeRoute, KaminoPrimeUSDCRequest, ExpectedEffects) {
+	t.Helper()
 	_, m, _, _, accounts, route := leverage175Fixture(t)
 	putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(sourceDebt), 60))
 	debt := accountAt(accounts, route.Kamino.DebtReserve).Data
@@ -269,8 +281,15 @@ func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return accounts, route, r, effects
+}
+
+func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
+	accounts, route, r, effects := capacityBorrowGateFixture(t, sourceDebt)
+	debt := accountAt(accounts, route.Kamino.DebtReserve).Data
+	collateral := accountAt(accounts, route.Kamino.CollateralReserve).Data
 	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
-	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err != nil {
+	if _, err := validateBorrowRequest(context.Background(), rpc, fixtureView(t, rpc), r, effects, 42); err != nil {
 		t.Fatal(err)
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{61}, ed25519.SeedSize))
@@ -284,11 +303,11 @@ func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
 		t.Fatal(err)
 	}
 	binary.LittleEndian.PutUint64(debt[kaminoOutsideBorrowLimitOffset:], 9_000_000)
-	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err == nil {
+	if _, err = validateBorrowRequest(context.Background(), rpc, fixtureView(t, rpc), r, effects, 42); err == nil {
 		t.Fatal("shrinking room passed persisted-input final gate")
 	}
 	binary.LittleEndian.PutUint64(debt[kaminoOutsideBorrowLimitOffset:], 1_000_000_000_000)
-	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err != nil {
+	if _, err = validateBorrowRequest(context.Background(), rpc, fixtureView(t, rpc), r, effects, 42); err != nil {
 		t.Fatal(err)
 	}
 	// Another depositor fills the collateral reserve without changing its
@@ -305,11 +324,11 @@ func capacityFinalBorrowGate(t *testing.T, sourceDebt uint64) {
 	if originalBacking != filledBacking {
 		t.Fatal("fixture changed normalized collateral backing")
 	}
-	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err == nil {
+	if _, err = validateBorrowRequest(context.Background(), rpc, fixtureView(t, rpc), r, effects, 42); err == nil {
 		t.Fatal("full collateral reserve passed production final borrow validator")
 	}
 	binary.LittleEndian.PutUint64(collateral[kaminoReserveConfigOffset+160:], originalLimit+originalLiquidity)
-	if _, err = validateBorrowRequest(context.Background(), fixtureView(t, rpc), r, effects, 42); err != nil {
+	if _, err = validateBorrowRequest(context.Background(), rpc, fixtureView(t, rpc), r, effects, 42); err != nil {
 		t.Fatal("expanded collateral capacity refused", err)
 	}
 	after, err := compileKaminoMessageForDelegate(r, delegate)
@@ -417,4 +436,142 @@ func TestCapacitySizedDebtRoomBoundaries(t *testing.T) {
 			t.Fatalf("fee-inclusive room overflow: %d %d %v", room, receive, err)
 		}
 	}
+}
+
+// The borrow transaction refreshes its reserves before it borrows, so the
+// pre-send gate judges the refreshed state, not a raw reserve nobody
+// refreshed (2026-10-11: a reserve ~2,000 slots stale crashed the worker 595
+// times as a worker_fault). A health verdict on the refreshed state, or a
+// refresh Kamino rejects, is a pre-send hold.
+func TestBorrowGateJudgesTheRefreshedReserves(t *testing.T) {
+	t.Parallel()
+	const stale, refreshed = int64(2042), int64(2043)
+	setup := func(t *testing.T, refresh func(map[string]ConfirmedAccount), simulationErr string) (*chain.Client, KaminoPrimeUSDCRequest, ExpectedEffects, *atomic.Int64) {
+		t.Helper()
+		accounts, route, r, effects := capacityBorrowGateFixture(t, 0)
+		// Raw: the clock moved on and nobody refreshed the reserves since 42.
+		for _, account := range accounts {
+			if account.Address == budgetClockAddress {
+				binary.LittleEndian.PutUint64(account.Data[:8], uint64(stale))
+			}
+		}
+		// The closed refresh simulation's bank: both reserves refreshed in the
+		// simulated slot, everything else as read.
+		captured := map[string]ConfirmedAccount{}
+		for _, account := range accounts {
+			account.Data = append([]byte(nil), account.Data...)
+			captured[account.Address] = account
+		}
+		for _, reserve := range []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve} {
+			binary.LittleEndian.PutUint64(captured[reserve].Data[16:24], uint64(refreshed))
+		}
+		binary.LittleEndian.PutUint64(captured[budgetClockAddress].Data[:8], uint64(refreshed))
+		if refresh != nil {
+			refresh(captured)
+		}
+		client := budgetBuildRPCWithAccounts(t, 5000, stale, accounts)
+		node := rpcOf(client)
+		raw := node.Transport
+		var simulations atomic.Int64
+		node.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload struct {
+				Method string            `json:"method"`
+				Params []json.RawMessage `json:"params"`
+			}
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Method != "simulateTransaction" {
+				request.Body = io.NopCloser(bytes.NewReader(body))
+				return raw.RoundTrip(request)
+			}
+			simulations.Add(1)
+			if simulationErr != "" {
+				return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":` + fmt.Sprint(refreshed) + `},"value":{"err":` + simulationErr + `,"accounts":null}}}`), nil
+			}
+			var config struct {
+				Accounts struct {
+					Addresses []string `json:"addresses"`
+				} `json:"accounts"`
+			}
+			if err := json.Unmarshal(payload.Params[1], &config); err != nil {
+				t.Fatal(err)
+			}
+			values := make([]any, 0, len(config.Accounts.Addresses))
+			for _, address := range config.Accounts.Addresses {
+				a, ok := captured[address]
+				if !ok {
+					values = append(values, nil)
+					continue
+				}
+				values = append(values, map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}})
+			}
+			encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"context": map[string]int64{"slot": refreshed}, "value": map[string]any{"err": nil, "accounts": values}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return response(string(encoded)), nil
+		})
+		return client, r, effects, &simulations
+	}
+	gate := func(client *chain.Client, r KaminoPrimeUSDCRequest, effects ExpectedEffects) (int64, error) {
+		return validateBorrowRequest(context.Background(), client, fixtureView(t, client), r, effects, stale)
+	}
+
+	t.Run("stale raw reserve, fresh refreshed capture", func(t *testing.T) {
+		t.Parallel()
+		client, r, effects, simulations := setup(t, nil, "")
+		slot, err := gate(client, r, effects)
+		if err != nil || slot != refreshed || simulations.Load() != 1 {
+			t.Fatalf("stale raw reserve with a fresh refresh did not pass on the refreshed bank: slot=%d simulations=%d err=%v", slot, simulations.Load(), err)
+		}
+	})
+	route, err := runtimeRoute(onreONycUSDC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, reason, simulationErr string
+		refresh                     func(map[string]ConfirmedAccount)
+	}{
+		{name: "paused after refresh", reason: "reserve_paused", refresh: func(c map[string]ConfirmedAccount) {
+			c[route.Kamino.DebtReserve].Data[kaminoReserveStatusOffset] = 1
+		}},
+		{name: "emergency after refresh", reason: "reserve_paused", refresh: func(c map[string]ConfirmedAccount) {
+			c[route.Kamino.CollateralReserve].Data[kaminoReserveEmergencyModeOffset] = 1
+		}},
+		{name: "oracle stale after refresh", reason: "kamino_stale", refresh: func(c map[string]ConfirmedAccount) {
+			binary.LittleEndian.PutUint64(c[budgetClockAddress].Data[32:], 1000+uint64(kaminoOracleMaxAgeSecs)+1)
+		}},
+		{name: "reserve still stale after refresh", reason: "kamino_stale", refresh: func(c map[string]ConfirmedAccount) {
+			binary.LittleEndian.PutUint64(c[route.Kamino.DebtReserve].Data[16:24], 42)
+		}},
+		{name: "refresh rejected by Kamino", reason: "price_refresh_simulation_failed", simulationErr: `{"InstructionError":[0,{"Custom":6009}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client, r, effects, _ := setup(t, tc.refresh, tc.simulationErr)
+			_, err := gate(client, r, effects)
+			var hold *BudgetHold
+			if !errors.As(err, &hold) || hold.Reason != tc.reason || !isPreSendHold(err) {
+				t.Fatalf("reserve health at pre-send is not a %s hold: %v", tc.reason, err)
+			}
+		})
+	}
+	// A fresh raw reserve that is paused holds without any simulation.
+	t.Run("paused fresh raw reserve", func(t *testing.T) {
+		t.Parallel()
+		accounts, route, r, effects := capacityBorrowGateFixture(t, 0)
+		accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveStatusOffset] = 1
+		client := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
+		_, err := validateBorrowRequest(context.Background(), client, fixtureView(t, client), r, effects, 42)
+		var hold *BudgetHold
+		if !errors.As(err, &hold) || hold.Reason != "reserve_paused" || !isPreSendHold(err) {
+			t.Fatalf("paused reserve at pre-send is not a reserve_paused hold: %v", err)
+		}
+	})
 }

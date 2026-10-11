@@ -979,7 +979,7 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 	candidates, err := tx.Query(ctx, `SELECT operation_id, COALESCE(action,''), COALESCE(last_valid_block_height,0),
 		signed_wire IS NOT NULL, COALESCE(signed_wire,''), COALESCE(signed_wire_sha256,''),
 		COALESCE(transaction_signature,''), COALESCE(message_sha256,''), COALESCE(recent_blockhash,''),
-		COALESCE(simulation_slot,0), expected_effects->'phase3'->'buildInput'
+		COALESCE(simulation_slot,0)
 		FROM loyal_yield.multiply_operations
 		WHERE route_key=$1 AND status NOT IN `+sharedCustodyUnresolvedStatuses+` AND status <> 'reconciled'
 		AND NOT (status='failed' AND signed_wire IS NULL AND COALESCE(signed_wire_sha256,'')=''

@@ -490,7 +490,7 @@ func validateKaminoRefresh(o decodedKaminoObligation, reserves ...decodedKaminoR
 		}
 		for _, r := range reserves {
 			if r.refreshedSlot < o.refreshedSlot {
-				return fmt.Errorf("Kamino reserve valuation predates the obligation")
+				return fmt.Errorf("Kamino reserve valuation predates the obligation: %w", errKaminoReserveStale)
 			}
 		}
 	}
