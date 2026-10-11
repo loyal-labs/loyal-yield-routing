@@ -216,7 +216,8 @@ func TestBorrowAPYIncludesHostFixedInterest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if borrow != 1_052 || supply != 0 {
+	// Legacy basis: a 10% host rate accrues 1.25x per KLend's slot year.
+	if borrow != 1_331 || supply != 0 {
 		t.Fatalf("host fixed interest: borrow=%d supply=%d", borrow, supply)
 	}
 	for index := 0; index < 11; index++ {
