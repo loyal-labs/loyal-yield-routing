@@ -36,6 +36,7 @@ func TestPlanFleetCapacityAwareWave(t *testing.T) {
 		testTarget: {ReserveIdentity: ReserveIdentity{testTarget, testALT, USDCMint}, Slot: 100, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
 		testPolicy: {ReserveIdentity: ReserveIdentity{testPolicy, testVault, USDCMint}, Slot: 100, SupplyAPYBPS: 500, TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
 	}}
+	ampleCapacity(snapshot)
 	vaults := make([]FleetVault, 3)
 	for i := range vaults {
 		p := VaultPosition{VaultID: int64(i + 1), SnapshotID: int64(i + 10), VaultPubkey: testVault, PolicyAccount: testPolicy, SourceReserve: testSource, Market: testMarket, Mint: USDCMint, AmountRaw: 9_000_000_000, SourceCollateralAmountRaw: 9_000_000_000, SourceAmountSemantics: amountSemanticsRedeemableLiquidity}
@@ -296,6 +297,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	snapshot := MarketSnapshot{Slot: 1000, ObservedAt: now, Hash: "revalidation-" + suffix, Reserves: map[string]ReserveState{source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)}, target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)}}}
+	ampleCapacity(snapshot)
 	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 	decision := Plan(snapshot, position, source.Address, target.Address)
 	if !decision.Eligible {
@@ -313,12 +315,13 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err != nil || lease == nil {
 		t.Fatalf("claim: %+v %v", lease, err)
 	}
+	ampleRaw := int64(1_000_000_000_000_000)
 	wireHash := strings.Repeat("f", 64)
 	prepared := &RoutePreparation{RouteFingerprint: strings.Repeat("1", 64), RequirementsFingerprint: strings.Repeat("2", 64), ExecutionPlan: json.RawMessage(`{"message_base64":"AQ==","unsigned_wire_base64":"Ag==","simulation":{"succeeded":true}}`), Transaction: PreparedTransaction{Message: []byte{1}, UnsignedWire: []byte{2}, WireSHA256: wireHash, PacketBytes: 1, FeeLamports: 1, ComputeLimit: 1}, Simulation: SimulationEvidence{Slot: 1001, Succeeded: true, UnitsConsumed: 1, WireSHA256: wireHash}}
 	if err := preserveCanonicalPlan(lease.ExecutionPlan, prepared, "prepared_transaction"); err != nil {
 		t.Fatal(err)
 	}
-	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey, "source-reserve:" + source.Address}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: 100, ObservedTargetAPYBPS: 900, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000}
+	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey, "source-reserve:" + source.Address}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: 100, ObservedTargetAPYBPS: 900, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000, SourceAvailableLiquidityRaw: &ampleRaw, TargetDepositRoomRaw: &ampleRaw}
 	if err = store.commitRevalidation(ctx, *lease, commit, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +433,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err != nil || finalLease == nil {
 		t.Fatalf("ready recovery claim: %+v %v", finalLease, err)
 	}
-	if err = store.commitRevalidation(ctx, *finalLease, RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: finalLease.IdempotencyKey}, nil); err != nil {
+	if err = store.commitRevalidation(ctx, *finalLease, RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: finalLease.IdempotencyKey, SourceAvailableLiquidityRaw: &ampleRaw, TargetDepositRoomRaw: &ampleRaw}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Go must claim the cross-mint lane only when explicitly enabled. This is

@@ -159,6 +159,20 @@
   },
   {
     "labels": {
+      "alertname": "LoyalFleetCapitalStranded",
+      "reserve": "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
+      "severity": "warning"
+    },
+    "annotations": {
+      "action": "Read the latest kamino_fleet_capacity log line for this reserve (held and movable capital, best destination, its room) and the fleet_opportunity_replanned and fleet_opportunity_deferred events. Find why the published moves do not land; do not raise limits or split holdings to clear it.",
+      "impact": "Users in this reserve earn less than an eligible destination pays while that destination has room; no funds are at risk.",
+      "recovery": "Confirm moves from this reserve land and its movable capital reads 0 on a fresh cycle. The series vanishing or a restart is not recovery.",
+      "summary": "Earn capital in reserve AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z has had a better reserve with room for 6h",
+      "trigger": "Some capital in this reserve had an eligible move to a better same-mint reserve with room on every planning cycle for 6 hours."
+    }
+  },
+  {
+    "labels": {
       "alertname": "LoyalWorkerDown",
       "severity": "page",
       "unit": "loyal-backyard.service"

@@ -20,9 +20,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/prometheus/client_golang/prometheus"
 	solana "github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -212,7 +214,7 @@ func (b *ConnectedBank) Revalidator(owner string, fused bool) (*Revalidator, err
 	if err != nil {
 		return nil, err
 	}
-	r, err := NewRevalidator(b.Store, client, RevalidatorConfig{Owner: owner, FusedExecute: fused, DelegatedSigner: encodeBase58(b.Signer.Public().(ed25519.PublicKey)), LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: b.buildURL})
+	r, err := NewRevalidator(b.Store, client, RevalidatorConfig{Owner: owner, FusedExecute: fused, DelegatedSigner: encodeBase58(b.Signer.Public().(ed25519.PublicKey)), LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: b.buildURL, Metrics: engine.NewFacts(prometheus.NewRegistry())})
 	if err != nil {
 		return nil, err
 	}
@@ -595,6 +597,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	}
 	now := time.Now().UTC()
 	snapshot := MarketSnapshot{Cluster: cluster, Slot: 1000, ObservedAt: now, Reserves: states}
+	ampleCapacity(snapshot)
 	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 	snapshot.Hash, snapshot.ExpiresAt = epoch.Fingerprint, epoch.ExpiresAt
 	snapshot.MintExpiresAt = map[string]time.Time{USDCMint: epoch.OptimizerEnvelopeExpiresAt(), USDTMint: epoch.OptimizerEnvelopeExpiresAt()}

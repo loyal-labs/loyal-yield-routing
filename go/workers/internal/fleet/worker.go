@@ -27,6 +27,7 @@ type Worker struct {
 	revalidator       *Revalidator
 	lastConfirmedSlot int64
 	facts             *engine.Facts
+	capacity          capacityLog
 }
 
 func NewWorker(config Config, store *Store, client *chain.Client, facts *engine.Facts) (*Worker, error) {
@@ -224,13 +225,17 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	positions := make(map[int64]VaultPosition, len(vaults))
+	type holding struct {
+		vault   int64
+		reserve string
+	}
+	positions := make(map[holding]VaultPosition, len(vaults))
 	for _, v := range vaults {
-		positions[v.Position.VaultID] = v.Position
+		positions[holding{v.Position.VaultID, v.Position.SourceReserve}] = v.Position
 	}
 	published := 0
 	for _, opportunity := range fleetPlan.Opportunities {
-		result, err := w.store.Publish(ctx, w.config.Cluster, epoch, positions[opportunity.Decision.VaultID], opportunity.Decision)
+		result, err := w.store.Publish(ctx, w.config.Cluster, epoch, positions[holding{opportunity.Decision.VaultID, opportunity.Decision.SourceReserve}], opportunity.Decision)
 		if err != nil {
 			return fmt.Errorf("publish fleet opportunity: %w", err)
 		}
@@ -245,6 +250,14 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		return err
 	}
 	w.lastConfirmedSlot = slot
+	// Every routable reserve is set each cycle, zero included, so capital
+	// that stops being movable reads 0 rather than its last value.
+	for address := range snapshot.Reserves {
+		w.facts.FleetMovableCapital(address, float64(fleetPlan.Movable[address])/1e6)
+	}
+	if report := capacityReport(epoch, snapshot, vaults, fleetPlan); w.capacity.due(time.Now(), report) {
+		logEvent(map[string]any{"event": "kamino_fleet_capacity", "cluster": w.config.Cluster, "slot": slot, "reserves": report})
+	}
 	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "observationDifferenceCount": observationDifferences, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
 	return nil
 }
@@ -271,12 +284,21 @@ func marketSnapshotFromEpoch(epoch ImmutableMarketEpoch, addresses ...string) (M
 		if lifetime < 0 {
 			lifetime = 0
 		}
-		result.Reserves[address] = ReserveState{
+		state := ReserveState{
 			ReserveIdentity: ReserveIdentity{Address: reserve.Reserve, Market: *reserve.Market, Mint: reserve.LiquidityMint},
 			Slot:            reserve.Slot, ObservedAt: reserve.ObservedAt, LastUpdateSlot: reserve.ReserveLastUpdateSlot, LastUpdateStale: reserve.ReserveLastUpdateStale,
 			EconomicSlotLag: reserve.EconomicSlotLag, SupplyAPYBPS: reserve.SupplyAPYBPS,
 			TotalSupplyUSDMicros: reserve.TotalSupplyUSDMicros, EconomicLifetimeMillis: lifetime, DataHash: reserve.AccountDataHash,
 		}
+		if available, ok := parseAvailableLiquidity(reserve.AvailableAmountRaw); ok {
+			state.AvailableLiquidityRaw = &available
+		}
+		if reserve.DepositLimitRaw != nil {
+			if limit, ok := parseDepositLimit(*reserve.DepositLimitRaw); ok {
+				state.DepositLimitRaw = &limit
+			}
+		}
+		result.Reserves[address] = state
 		if reserve.ObservedAt.After(result.ObservedAt) {
 			result.ObservedAt = reserve.ObservedAt
 		}

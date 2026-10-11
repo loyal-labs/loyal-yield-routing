@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"encoding/binary"
+	"math"
 	"testing"
 	"time"
 
@@ -31,6 +32,8 @@ func reserveFixture(identity ReserveIdentity, available, borrowed uint64) chain.
 	binary.LittleEndian.PutUint64(data[272:280], 6)
 	config := data[4856:]
 	config[14] = 10
+	// A deposit limit that never binds; capacity tests set their own.
+	binary.LittleEndian.PutUint64(config[160:168], math.MaxUint64)
 	for index := 0; index < 11; index++ {
 		offset := 64 + index*8
 		binary.LittleEndian.PutUint32(config[offset:offset+4], uint32(index*1_000))

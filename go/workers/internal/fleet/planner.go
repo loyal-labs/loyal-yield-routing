@@ -157,12 +157,44 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if priority < 1 {
 		priority = 1
 	}
+	// The whole holding must fit both reserves this cycle. These checks come
+	// after the economics so a capacity reason always names a move worth
+	// making; the vault is planned again next cycle.
+	if reason := moveFitsReserves(source, target, position); reason != "" {
+		return ineligible(reason)
+	}
 	decision.Eligible, decision.Reason = true, "eligible"
 	decision.SourceAPYBPS, decision.TargetAPYBPS, decision.EdgeBPS = sourceAPY, targetAPY, edge
 	decision.AnnualYieldGainUSDMicros, decision.ExpectedNetGainUSDMicros = annual, net
 	decision.EconomicPriority, decision.EstimatedCostLamports = priority, feeCap
 	decision.TargetCapacityUSDMicros = capacity
 	return decision
+}
+
+// moveFitsReserves checks a whole holding against what the two reserves can
+// take now: the source must pay it out of available liquidity left after the
+// committed outflows (DB in-flight plus this wave), and the target's deposit
+// limit must have room for it after the committed inflows. Unknown evidence
+// is its own reason, never zero or unlimited. The execution re-reads both
+// reserves from the chain, so a stale fit ends as a re-plan, not a failed
+// transaction.
+func moveFitsReserves(source, target ReserveState, position VaultPosition) string {
+	if source.AvailableLiquidityRaw == nil {
+		return "source_liquidity_unknown"
+	}
+	withdrawable, ok := sumInt64(*source.AvailableLiquidityRaw, -position.SourceCommittedOutflowUSDMicros)
+	if !ok || withdrawable < position.AmountRaw {
+		return "source_liquidity_exhausted"
+	}
+	room, known := target.DepositRoomRaw()
+	if !known {
+		return "target_deposit_limit_unknown"
+	}
+	room, ok = sumInt64(room, -position.TargetCommittedInflowUSDMicros)
+	if !ok || room < position.AmountRaw {
+		return "target_deposit_limit"
+	}
+	return ""
 }
 
 // capacityAdjustedTargetAPY mirrors the Rust planner's four conservative

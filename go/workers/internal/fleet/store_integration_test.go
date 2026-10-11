@@ -59,6 +59,7 @@ func TestLoadMigratedFleetBuildsFinalizedCrossMintPolicyBindings(t *testing.T) {
 		source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)},
 		target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)},
 	}}
+	ampleCapacity(snapshot)
 	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 	fleet, err := store.LoadMigratedFleet(ctx, cluster, epoch, FleetLoadOptions{DelegatedSigner: authority, EnableCrossMint: true, CrossMintMaxValueLossBPS: 50})
 	if err != nil {
@@ -172,6 +173,7 @@ func TestStoreIntegrationDurableHandoffWithoutPlannerMigration(t *testing.T) {
 	snapshot := MarketSnapshot{Slot: 100, ObservedAt: now, Hash: "snapshot-" + suffix, Reserves: map[string]ReserveState{
 		source.Address: {ReserveIdentity: source, Slot: 100, LastUpdateSlot: 100, SupplyAPYBPS: 200, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)},
 		target.Address: {ReserveIdentity: target, Slot: 100, LastUpdateSlot: 100, SupplyAPYBPS: 700, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)}}}
+	ampleCapacity(snapshot)
 	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 	decision := Plan(snapshot, position, source.Address, target.Address)
 	if !decision.Eligible {

@@ -59,6 +59,19 @@ func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
 // collateral against 2e12 liquidity, into a target with no obligation.
 func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint, *Revalidator) {
 	t.Helper()
+	r, lease := fixtureFreshRoute(t, collateralSupply, nil)
+	fresh, err := r.loadFreshRoute(context.Background(), lease)
+	if err != nil {
+		t.Fatalf("fresh read refused a route whose target obligation the route creates: %v", err)
+	}
+	return fresh, r
+}
+
+// fixtureFreshRoute serves that chain over RPC and returns a revalidator
+// reading it with the route's lease. mutate, when set, edits the source and
+// target reserve accounts before they are served.
+func fixtureFreshRoute(t *testing.T, collateralSupply uint64, mutate func(source, target *chain.Account)) (*Revalidator, RevalidationLease) {
+	t.Helper()
 	vault := testIdentity(4)
 	source := ReserveIdentity{Address: testIdentity(1), Market: testIdentity(40), Mint: USDCMint}
 	target := ReserveIdentity{Address: testIdentity(2), Market: testIdentity(41), Mint: USDCMint}
@@ -80,6 +93,11 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 		if i == 0 {
 			sourcePosition = decoded
 		}
+	}
+	if mutate != nil {
+		sourceAccount, targetAccount := held[source.Address], held[target.Address]
+		mutate(&sourceAccount, &targetAccount)
+		held[source.Address], held[target.Address] = sourceAccount, targetAccount
 	}
 	obligation := fixtureAccount(sourcePosition.Obligation, kamino.ProgramID.String(), 1, make([]byte, kamino.ObligationSize))
 	copy(obligation.Data, kamino.ObligationDiscriminator[:])
@@ -130,11 +148,7 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 	t.Cleanup(server.Close)
 	r := &Revalidator{rpc: testChain(t, server.URL), slotDuration: 400 * time.Millisecond, signer: testIdentity(6)}
 	lease := RevalidationLease{VaultPubkey: vault, SourceReserve: source.Address, TargetReserve: target.Address, LiquidityMint: USDCMint, PolicyAccount: policy, LiquidityAmountRaw: amount, PrincipalUSDMicros: int64(amount)}
-	fresh, err := r.loadFreshRoute(context.Background(), lease)
-	if err != nil {
-		t.Fatalf("fresh read refused a route whose target obligation the route creates: %v", err)
-	}
-	return fresh, r
+	return r, lease
 }
 
 // A setup route pays rent, so it never goes to a fee-only payer (b1ad5b1a).
