@@ -6,7 +6,6 @@ package multiply
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -23,9 +22,11 @@ import (
 
 // ObservationReader is the consumer-defined chain read surface; *chain.Client
 // is the production binding and tests bind fixtures. Missing accounts are nil
-// entries in the same order.
+// entries in the same order. SlotsPerSecond is the chain's measured slot
+// rate, which Legacy-basis reserve rates need.
 type ObservationReader interface {
 	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
+	SlotsPerSecond(ctx context.Context) (float64, error)
 }
 
 // StrategyObservation is one decoded obligation/reserve pair.
@@ -201,11 +202,11 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 		if err != nil {
 			return nil, err
 		}
-		collateralAPY, err := reserveAPYBPS(collateralReserve, true)
+		collateralAPY, err := reserveAPYBPS(ctx, reader, collateralReserve, true)
 		if err != nil {
 			return nil, err
 		}
-		debtAPY, err := reserveAPYBPS(debtReserve, false)
+		debtAPY, err := reserveAPYBPS(ctx, reader, debtReserve, false)
 		if err != nil {
 			return nil, err
 		}
@@ -566,92 +567,32 @@ func allZero(data []byte) bool {
 	return true
 }
 
-// APY: 500ms slot clock, matching the codec call site in observe.rs.
-const (
-	slotsPerSecond = 2.0
-	secondsPerYear = 365.25 * 24 * 60 * 60
-	slotDurationMS = 500.0
-)
-
-// reserveAPYBPS ports the pinned loyal-kamino-codec curve calculation. Host
-// fixed interest belongs to borrowing APR, not supplier income.
-func reserveAPYBPS(decoded *decodedReserve, supply bool) (uint64, error) {
-	reserve := decoded.reserve
-	available := float64(reserve.AvailableAmount)
-	borrowed := scaledFractionToFloat(reserve.BorrowedAmountSF)
-	protocolFees := scaledFractionToFloat(reserve.AccumulatedProtocolFeesSF)
-	referrerFees := scaledFractionToFloat(reserve.AccumulatedReferrerFeesSF)
-	pendingFees := scaledFractionToFloat(reserve.PendingReferrerFeesSF)
-	total := math.Max(0, available+borrowed-protocolFees-referrerFees-pendingFees)
-	if total <= 0 || math.IsInf(total, 0) || math.IsNaN(total) {
-		return 0, errors.New("reserve utilization is invalid")
+// reserveAPYBPS is the reserve's supply or borrow APY, kamino.Reserve.Rates,
+// in bps. A Legacy-basis reserve needs the measured slot rate; without it the
+// observation is unavailable and the next tick retries.
+func reserveAPYBPS(ctx context.Context, reader ObservationReader, decoded *decodedReserve, supply bool) (uint64, error) {
+	var slotsPerSecond float64
+	var rateErr error
+	if decoded.reserve.NeedsSlotRate() {
+		slotsPerSecond, rateErr = reader.SlotsPerSecond(ctx)
 	}
-	utilization := borrowed / total
-	if !finiteFloat(utilization) || utilization < 0 || utilization > 1.01 {
-		return 0, errors.New("reserve utilization is invalid")
+	rates, err := decoded.reserve.Rates(slotsPerSecond)
+	if errors.Is(err, kamino.ErrSlotRateUnavailable) && rateErr != nil {
+		return 0, fmt.Errorf("%w: %w", err, rateErr)
 	}
-	curveAPR := borrowCurveAPR(reserve.BorrowRateCurve, utilization) * (1000.0 / slotsPerSecond / slotDurationMS)
-	ratio := 0.0
+	if err != nil {
+		return 0, err
+	}
+	apy := rates.BorrowAPY
 	if supply {
-		takeRate := reserve.ProtocolTakeRatePct
-		if takeRate > 100 {
-			return 0, errors.New("reserve take rate is invalid")
-		}
-		ratio = utilization * curveAPR * (1 - float64(takeRate)/100)
-	} else {
-		ratio = curveAPR + float64(reserve.HostFixedInterestRateBPS)/10_000*(1000.0/slotsPerSecond/slotDurationMS)
-	}
-	if !finiteFloat(ratio) || ratio < 0 || ratio > float64(math.MaxUint64)/10_000.0 {
-		return 0, errors.New("reserve APY is outside the supported range")
-	}
-	apy := 0.0
-	if ratio > 0 {
-		periods := secondsPerYear * 1000.0 / slotDurationMS
-		apy = math.Pow(1+ratio/periods, periods) - 1
-	}
-	if !finiteFloat(apy) || apy < 0 || apy > float64(math.MaxUint64)/10_000.0 {
-		return 0, errors.New("reserve APY is outside the supported range")
+		apy = rates.SupplyAPY
 	}
 	bps := math.Round(apy * 10_000)
-	if bps >= math.Ldexp(1, 64) {
-		return 0, errors.New("reserve APY bps exceeds u64")
+	if !(bps >= 0 && bps < math.Ldexp(1, 64)) {
+		return 0, errors.New("reserve APY is outside the supported range")
 	}
 	return uint64(bps), nil
 }
-
-func borrowCurveAPR(curve [11]kamino.CurvePoint, utilization float64) float64 {
-	type point struct{ utilization, rate float64 }
-	points := make([]point, 0, len(curve))
-	for _, value := range curve {
-		points = append(points, point{utilization: float64(value.UtilizationRateBPS) / 10_000, rate: float64(value.BorrowRateBPS) / 10_000})
-	}
-	sort.SliceStable(points, func(i, j int) bool { return points[i].utilization < points[j].utilization })
-	if len(points) == 0 {
-		return 0
-	}
-	if utilization <= points[0].utilization {
-		return points[0].rate
-	}
-	for index := 1; index < len(points); index++ {
-		floor, ceiling := points[index-1], points[index]
-		if utilization <= ceiling.utilization {
-			width := ceiling.utilization - floor.utilization
-			if width <= math.Nextafter(1, 2)-1 {
-				return ceiling.rate
-			}
-			return floor.rate + (ceiling.rate-floor.rate)*(utilization-floor.utilization)/width
-		}
-	}
-	return points[len(points)-1].rate
-}
-
-func scaledFractionToFloat(value [16]byte) float64 {
-	high := binary.LittleEndian.Uint64(value[8:16])
-	low := binary.LittleEndian.Uint64(value[:8])
-	return float64(high)*16 + float64(low)/float64(fractionOneSF)
-}
-
-func finiteFloat(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
 // CollateralToLiquidityRaw mirrors collateral_to_liquidity_raw.
 func CollateralToLiquidityRaw(position *StrategyObservation, collateralRaw uint64) (uint64, error) {

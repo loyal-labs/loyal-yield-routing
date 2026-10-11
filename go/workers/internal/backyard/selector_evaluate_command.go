@@ -28,7 +28,6 @@ var ErrSelectorEvaluationCommittedReleaseUnconfirmed = errors.New("selector_eval
 type selectorEvaluateFeed interface {
 	Refresh(context.Context) error
 	Snapshot() ([]LaneEconomics, string)
-	Close()
 }
 
 // selectorEvaluateDeps carries the command's only injection points. Production
@@ -46,8 +45,8 @@ type selectorEvaluateDeps struct {
 
 // RunSelectorEvaluate is the one-shot entry seam. The production selector
 // evaluation (evaluateSelector) has exactly one caller in Run — the continuous
-// live sample loop, which additionally requires the TimescaleDB economic
-// feed. This command performs the SAME evaluation once:
+// live sample loop, which refreshes the economic feed from Backyard's account
+// view. This command performs the SAME evaluation once:
 //
 //   - default (dry-run): the read-only shadow path — production readers, no
 //     lease, no database writes (the SQL connection itself rejects writes) —
@@ -84,7 +83,7 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 		manifest:    manifest,
 		databaseURL: config.DatabaseURL,
 		newFeed: func(ctx context.Context, manifest RouteManifest) (selectorEvaluateFeed, error) {
-			return NewEconomicFeed(ctx, config.TimescaleURL)
+			return NewEconomicFeed(view)
 		},
 		observe: func(ctx context.Context, db *Database, manifest RouteManifest) (Observation, error) {
 			return observeSelectorShadow(ctx, db, rpc, view, manifest, newProgramIdentityWatcher(viewProgramIdentity(view)).observe)
@@ -139,7 +138,6 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_feed_unavailable")
 	}
-	defer feed.Close()
 	feedErr := feed.Refresh(ctx)
 	observation, err := deps.observe(ctx, database, deps.manifest)
 	if err != nil {
@@ -249,7 +247,6 @@ func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEv
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_feed_unavailable")
 	}
-	defer feed.Close()
 	// Unique owner: AcquireRouteLease never treats an unexpired lease as
 	// re-entrant even for identical owner text, and the release below clears
 	// exactly this owner/fencing pair.

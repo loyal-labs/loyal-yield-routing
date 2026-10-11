@@ -58,7 +58,7 @@ func TestDecodeReserveMatchesKlendLayout(t *testing.T) {
 	binary.LittleEndian.PutUint64(data[6704:], 12)
 	observedAt := time.Unix(1_700_000_000, 0).UTC()
 	marketString, mintString := market.String(), mint.String()
-	snapshot, err := Decode(Target{Reserve: solana.NewWallet().PublicKey().String(), Market: &marketString, LiquidityMint: &mintString}, 200, observedAt, &chain.Account{Owner: klend.ProgramID, Lamports: 1, Data: data}, 400)
+	snapshot, err := Decode(Target{Reserve: solana.NewWallet().PublicKey().String(), Market: &marketString, LiquidityMint: &mintString}, 200, observedAt, &chain.Account{Owner: klend.ProgramID, Lamports: 1, Data: data}, 2.5)
 	if err != nil {
 		t.Fatalf("decode fixture reserve: %v", err)
 	}

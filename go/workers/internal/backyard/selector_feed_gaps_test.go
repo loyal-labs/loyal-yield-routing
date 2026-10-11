@@ -15,13 +15,10 @@ func leveredTestMarket(lane string) LaneEconomics {
 	return leverageMarket(lane, 0.20, math.Log1p(0.05))
 }
 
-func feedReserveFixture(reserve, mint, market string, now time.Time, price float64) verifiedEconomicReserve {
-	f := func(v float64) *float64 { return &v }
-	i := func(v int) *int { return &v }
-	b := false
-	return verifiedEconomicReserve{Reserve: reserve, Market: market, Mint: mint, ObservedAt: now.Add(-time.Second), Slot: 1, Hash: strings.Repeat("a", 64), Commitment: "confirmed",
-		SupplyAPY: f(0.01), BorrowAPY: f(0.05), BorrowAPR: f(0.05), SupplyRaw: f(1e12), BorrowRaw: f(5e11), Status: i(0), Emergency: &b,
-		Curve: []BorrowCurvePoint{{0, 463}, {8000, 517}, {9000, 517}, {9500, 568}, {10_000, 738}, {10_000, 738}}, HostBPS: f(0), Schema: i(2), PriceUSD: f(price), Decimals: i(6)}
+func feedReserveFixture(reserve, mint, market string, now time.Time, price float64) reserveEconomics {
+	return reserveEconomics{Reserve: reserve, Market: market, Mint: mint, ObservedAt: now.Add(-time.Second), Slot: 1, Hash: strings.Repeat("a", 64),
+		SupplyAPY: 0.01, SupplyRaw: 1e12, BorrowRaw: 5e11,
+		Curve: []BorrowCurvePoint{{0, 463}, {8000, 517}, {9000, 517}, {9500, 568}, {10_000, 738}, {10_000, 738}}, PriceUSD: price, Decimals: 6}
 }
 
 // Prime/PRIME/USDS: the USDS reserve is fully borrowed and its accumulated
@@ -32,7 +29,7 @@ func TestFeedScoresLaneWhoseDebtReserveBorrowedExceedsSupply(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	usds, pyusd := primePRIMEUSDS, primePRIMEPYUSD
-	reserves := map[string]verifiedEconomicReserve{
+	reserves := map[string]reserveEconomics{
 		kaminoDebtReserve:              feedReserveFixture(kaminoDebtReserve, bridgeUSDC, kaminoMarket, now, 0.9999),
 		usds.Kamino.CollateralReserve:  feedReserveFixture(usds.Kamino.CollateralReserve, usds.Kamino.CollateralMint, usds.Kamino.Market, now, 1.05),
 		usds.Kamino.DebtReserve:        feedReserveFixture(usds.Kamino.DebtReserve, usds.Kamino.DebtMint, usds.Kamino.Market, now, 1),
@@ -41,7 +38,7 @@ func TestFeedScoresLaneWhoseDebtReserveBorrowedExceedsSupply(t *testing.T) {
 	}
 	over := reserves[usds.Kamino.DebtReserve]
 	supply, borrowed := 926_393_022_185.062, 926_398_351_359.7037
-	over.SupplyRaw, over.BorrowRaw = &supply, &borrowed
+	over.SupplyRaw, over.BorrowRaw = supply, borrowed
 	reserves[usds.Kamino.DebtReserve] = over
 	yields := map[string]nativeYield{usds.Lane: {0.05, now.Add(-time.Minute), "y"}, pyusd.Lane: {0.05, now.Add(-time.Minute), "y"}}
 	got := map[string]LaneEconomics{}

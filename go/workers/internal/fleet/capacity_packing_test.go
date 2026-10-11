@@ -343,6 +343,8 @@ func TestExecutionCapacityFailureReplansInsteadOfRetrying(t *testing.T) {
 			// the planned amount, but nothing can be paid out.
 			binary.LittleEndian.PutUint64(source.Data[224:232], 0)
 			putScaledInteger(source.Data[232:248], 2_000_000_000_000)
+			// TrueApr: the plain curve at full utilization stays a priced APY.
+			source.Data[reserveConfig+9] = 1
 		}, "source_liquidity_exhausted"},
 		{"target deposit limit reached", func(_, target *chain.Account) {
 			binary.LittleEndian.PutUint64(target.Data[reserveConfig+160:reserveConfig+168], 2_000_000_000_000)

@@ -31,7 +31,6 @@ import (
 
 type retailConfig struct {
 	databaseURL, timescaleURL, rpcURL, timescaleSchema string
-	slotDuration                                       time.Duration
 	delegate, feePayer                                 ed25519.PrivateKey
 	feeOnly                                            []ed25519.PrivateKey
 	crossMintEnabled                                   bool
@@ -114,10 +113,6 @@ func loadRetailConfig() (retailConfig, error) {
 	rpc, err := url.Parse(cfg.rpcURL)
 	if err != nil || rpc.Host == "" || (rpc.Scheme != "http" && rpc.Scheme != "https") {
 		return cfg, errors.New("RETAIL_SOLANA_RPC_URL must be an absolute HTTP or HTTPS URL")
-	}
-	cfg.slotDuration, err = time.ParseDuration(os.Getenv("RETAIL_SLOT_DURATION"))
-	if err != nil || cfg.slotDuration <= 0 || cfg.slotDuration > 10*time.Second {
-		return cfg, errors.New("RETAIL_SLOT_DURATION must be positive and at most ten seconds")
 	}
 	for _, field := range []struct {
 		name string
@@ -238,7 +233,7 @@ func parseRetailKey(material string) (ed25519.PrivateKey, error) {
 }
 
 func (c retailConfig) fleetConfig() fleet.Config {
-	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", PollInterval: time.Second, SlotDuration: c.slotDuration, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey}
+	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", PollInterval: time.Second, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey}
 }
 
 // The outer diagnostic retains error identity for cancellation and inspection
@@ -402,13 +397,13 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}
 	// Compilation/verification remains available for recovery with rollout off.
 	// Only the planner and D controller receive fresh cross-mint enablement.
-	revalidator, err := fleet.NewRevalidator(cStore, cluster, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, SlotDuration: cfg.slotDuration, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys(), Metrics: facts})
+	revalidator, err := fleet.NewRevalidator(cStore, cluster, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys(), Metrics: facts})
 	if err != nil {
 		return retailError("fused fleet preparation", err)
 	}
 	// Fused preparation belongs to the executor. C.SetRevalidator would run the
 	// incompatible durable Cycle path and must never be installed here.
-	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts, OnHealth: laneHealth(facts, engine.FamilyFleet, "executor")}, dStore, cluster, cluster, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
+	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, Facts: facts, OnHealth: laneHealth(facts, engine.FamilyFleet, "executor")}, dStore, cluster, cluster, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
 	if err != nil {
 		return retailError("fleet executor", err)
 	}

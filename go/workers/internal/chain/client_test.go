@@ -355,6 +355,71 @@ func TestSlotSamplesSumOnlyUsableSamples(t *testing.T) {
 	}
 }
 
+// The measured slot rate is slots over seconds of the performance samples,
+// read once a sample period; no usable sample is an error, never a guess.
+func TestSlotsPerSecondMeasuresOncePerSamplePeriod(t *testing.T) {
+	calls := 0
+	client := serve(t, func(request) (int, any) {
+		calls++
+		return http.StatusOK, result([]any{
+			map[string]any{"slot": 2, "numSlots": 276, "numTransactions": 1, "samplePeriodSecs": 60},
+			map[string]any{"slot": 1, "numSlots": 270, "numTransactions": 1, "samplePeriodSecs": 60},
+		})
+	})
+	for range 2 {
+		if rate, err := client.SlotsPerSecond(context.Background()); err != nil || rate != 546.0/120 {
+			t.Fatalf("slot rate %v, %v", rate, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("samples read %d times within one period", calls)
+	}
+	emptyCalls := 0
+	empty := serve(t, func(request) (int, any) { emptyCalls++; return http.StatusOK, result([]any{}) })
+	for range 2 {
+		if _, err := empty.SlotsPerSecond(context.Background()); err == nil {
+			t.Fatal("no samples gave a slot rate")
+		}
+	}
+	if emptyCalls != 1 {
+		t.Fatalf("a failed read was repeated %d times within one period", emptyCalls)
+	}
+}
+
+// waiting is the read in flight, if any.
+func (r *slotRate) waiting() chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reading
+}
+
+// One read is in flight at a time and no caller waits on it past its own
+// context; a caller's cancellation is not remembered as the cluster's answer.
+func TestSlotsPerSecondWaitersRespectTheirContext(t *testing.T) {
+	release := make(chan struct{})
+	client := serve(t, func(request) (int, any) {
+		<-release
+		return http.StatusOK, result([]any{map[string]any{"slot": 1, "numSlots": 270, "numTransactions": 1, "samplePeriodSecs": 60}})
+	})
+	first := make(chan error, 1)
+	go func() { _, err := client.SlotsPerSecond(context.Background()); first <- err }()
+	for client.slotRate.waiting() == nil {
+		time.Sleep(time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := client.SlotsPerSecond(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiter behind a hung read = %v, want its own deadline", err)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if rate, err := client.SlotsPerSecond(context.Background()); err != nil || rate != 4.5 {
+		t.Fatalf("slot rate after the read = %v, %v", rate, err)
+	}
+}
+
 // A pooled endpoint's lagging node answers -32016: the client asks once and
 // says ErrBehind, and the caller's next call reads from a caught-up node.
 func TestLaggingNodeIsNotYetAndNeverAskedAgain(t *testing.T) {

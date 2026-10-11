@@ -69,40 +69,32 @@ func TestNativeYieldHTTPBoundaries(t *testing.T) {
 		t.Fatal("oversized response accepted")
 	}
 }
-func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
+func TestReserveFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	t.Parallel()
 	r, now, body := nativeFixture(t)
 	native, _ := parseNativeYields([]byte(body), []RuntimeRoute{r}, now, 2*time.Hour)
 	f := selectorFixture().Markets[0]
-	zero := 0
-	no := false
-	schema := 2
 	supply := 1_000_000_000_000.0
 	borrow := 500_000_000_000.0
-	c := verifiedEconomicReserve{Reserve: r.Kamino.CollateralReserve, Market: r.Kamino.Market, Mint: r.Kamino.CollateralMint, ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), Commitment: "confirmed", Schema: &schema, Status: &zero, Emergency: &no, SupplyAPY: &f.SupplyAPY}
+	c := reserveEconomics{Reserve: r.Kamino.CollateralReserve, Market: r.Kamino.Market, Mint: r.Kamino.CollateralMint, ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), SupplyAPY: f.SupplyAPY}
 	d := c
 	d.Reserve = r.Kamino.DebtReserve
 	d.Mint = bridgeUSDC
-	d.BorrowAPY = &f.CurrentBorrowAPY
-	d.SupplyRaw = &supply
-	d.BorrowRaw = &borrow
-	d.HostBPS = &f.HostBorrowBPS
+	d.SupplyRaw = supply
+	d.BorrowRaw = borrow
+	d.HostBPS = f.HostBorrowBPS
 	// Real collector padding from the September 16 read-only response.
 	if err := json.Unmarshal([]byte(`[{"utilization_rate_bps":0,"borrow_rate_bps":0},{"utilization_rate_bps":9000,"borrow_rate_bps":364},{"utilization_rate_bps":10000,"borrow_rate_bps":1075},{"utilization_rate_bps":10000,"borrow_rate_bps":1075}]`), &d.Curve); err != nil {
 		t.Fatal(err)
 	}
-	// The collector's annualized fields run ~2x the on-chain accrual
-	// (2026-09-26); borrowing must price off the plain curve regardless.
-	inflated := 0.25
-	d.BorrowAPR, d.BorrowAPY = &inflated, &inflated
-	rows := map[string]verifiedEconomicReserve{c.Reserve: c, d.Reserve: d}
+	rows := map[string]reserveEconomics{c.Reserve: c, d.Reserve: d}
 	got := combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())
 	if len(got) != 1 || got[0].EntryCapacity.Known || got[0].DebtSupplyRaw != supply || got[0].DebtBorrowRaw != borrow {
 		t.Fatalf("feed: %+v", got)
 	}
 	curveAPR := (364.0*5000/9000 + f.HostBorrowBPS) / 10_000 // 50% utilization
 	if apr, err := projectedBorrowAPR(got[0], 0); err != nil || math.Abs(apr-curveAPR) > 1e-12 || math.Abs(got[0].CurrentBorrowAPY-math.Expm1(curveAPR)) > 1e-12 {
-		t.Fatalf("borrow priced off the inflated stored rate: curve %v got %v / %v %v", curveAPR, apr, got[0].CurrentBorrowAPY, err)
+		t.Fatalf("borrow not priced off the plain curve: curve %v got %v / %v %v", curveAPR, apr, got[0].CurrentBorrowAPY, err)
 	}
 	projected := got[0]
 	projected.BorrowCurve = []BorrowCurvePoint{{0, 0}, {10000, 1000}}
@@ -150,14 +142,13 @@ func TestSelectorObservesPriorCustodyAndHoldsEveryExposedLane(t *testing.T) {
 // TestEconomicFeedInventoryIsTheActiveRegistry pins the feed inventory: every
 // active registry lane in registry order — Prime/PRIME/USDC included again
 // (owner 2026-10-10, reversing B4) and both Prime siblings — and never the
-// exit-only Ethena lane. pgxpool connects lazily, so no database is needed.
+// exit-only Ethena lane.
 func TestEconomicFeedInventoryIsTheActiveRegistry(t *testing.T) {
 	t.Parallel()
-	feed, err := NewEconomicFeed(context.Background(), "postgresql://backyard_feed@/economic_feed_shape_test")
+	feed, err := NewEconomicFeed(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer feed.Close()
 	want := []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PhaseOneLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane}
 	if len(feed.routes) != len(want) {
 		t.Fatalf("feed inventory size %d, want %d", len(feed.routes), len(want))
@@ -192,19 +183,16 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	if err != nil || len(native) != 1 {
 		t.Fatalf("candidate native evidence refused: %v", err)
 	}
-	zero, no, schema := 0, false, 2
 	supply, borrow, host := 1_000_000_000_000.0, 500_000_000_000.0, 300.0
-	supplyAPY, borrowAPY := 0.0004, 0.079
-	rows := map[string]verifiedEconomicReserve{}
-	collateral := verifiedEconomicReserve{Reserve: auto.Kamino.CollateralReserve, Market: auto.Kamino.Market, Mint: auto.Kamino.CollateralMint,
-		ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), Commitment: "confirmed", Schema: &schema, Status: &zero, Emergency: &no, SupplyAPY: &supplyAPY}
+	rows := map[string]reserveEconomics{}
+	collateral := reserveEconomics{Reserve: auto.Kamino.CollateralReserve, Market: auto.Kamino.Market, Mint: auto.Kamino.CollateralMint,
+		ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), SupplyAPY: 0.0004}
 	debt := collateral
 	debt.Reserve = auto.Kamino.DebtReserve
 	debt.Mint = auto.Kamino.DebtMint
-	debt.BorrowAPY = &borrowAPY
-	debt.SupplyRaw = &supply
-	debt.BorrowRaw = &borrow
-	debt.HostBPS = &host
+	debt.SupplyRaw = supply
+	debt.BorrowRaw = borrow
+	debt.HostBPS = host
 	if err := json.Unmarshal([]byte(`[{"utilization_rate_bps":0,"borrow_rate_bps":0},{"utilization_rate_bps":9000,"borrow_rate_bps":364},{"utilization_rate_bps":10000,"borrow_rate_bps":1075}]`), &debt.Curve); err != nil {
 		t.Fatal(err)
 	}

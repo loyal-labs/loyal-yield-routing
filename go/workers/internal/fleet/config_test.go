@@ -8,7 +8,7 @@ import (
 func TestConfigAcceptsVerifiedMainnetPublish(t *testing.T) {
 	config := Config{
 		DatabaseURL: "postgres://example", TimescaleURL: "postgres://evidence", TimescaleSchema: "kamino", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
-		PollInterval: time.Second, SlotDuration: 314 * time.Millisecond,
+		PollInterval: time.Second,
 	}
 	if err := config.Validate(); err != nil {
 		t.Fatalf("mainnet publication was rejected after the replacement gate passed: %v", err)
@@ -18,7 +18,7 @@ func TestConfigAcceptsVerifiedMainnetPublish(t *testing.T) {
 func TestConfigRequiresCrossMintSignerAndMultipleSupportedMints(t *testing.T) {
 	config := Config{
 		DatabaseURL: "postgres://example", TimescaleURL: "postgres://evidence", TimescaleSchema: "kamino", RPCURL: "https://rpc.example", Cluster: "mainnet-beta",
-		PollInterval: time.Second, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50,
+		PollInterval: time.Second, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50,
 		EnabledStableMints: []string{USDCMint},
 	}
 	if err := config.Validate(); err == nil {

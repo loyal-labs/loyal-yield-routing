@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	bin "github.com/gagliardetto/binary"
@@ -47,8 +48,22 @@ var unavailableCodes = map[int]bool{-32603: true, -32004: true, -32005: true, -3
 const maxAccountsPerCall = 100
 
 type Client struct {
-	rpc *rpc.Client
+	rpc      *rpc.Client
+	slotRate slotRate
 }
+
+// slotRate is the last slot-rate read, when it completed, and the read in
+// flight, if any.
+type slotRate struct {
+	mu        sync.Mutex
+	perSecond float64
+	err       error
+	at        time.Time
+	reading   chan struct{} // closed when the read in flight completes
+}
+
+// SlotSamplePeriod is how often the cluster takes a performance sample.
+const SlotSamplePeriod = 60 * time.Second
 
 func New(endpoint string, timeout time.Duration) (*Client, error) {
 	if endpoint == "" || timeout <= 0 {
@@ -480,6 +495,54 @@ func (c *Client) FinalizedBlockHeightAt(ctx context.Context, slot uint64) (uint6
 		return 0, errors.New("getBlock: no block height")
 	}
 	return *out.BlockHeight, nil
+}
+
+// SlotsPerSecond is the cluster's measured slot rate: the slots over the
+// seconds of its last five performance samples. A new sample lands once a
+// period, so a completed read, failed or not, answers until one has passed.
+// One read is in flight at a time; other callers wait for it or their ctx.
+func (c *Client) SlotsPerSecond(ctx context.Context) (float64, error) {
+	r := &c.slotRate
+	for {
+		r.mu.Lock()
+		if !r.at.IsZero() && time.Since(r.at) < SlotSamplePeriod {
+			defer r.mu.Unlock()
+			return r.perSecond, r.err
+		}
+		if wait := r.reading; wait != nil {
+			r.mu.Unlock()
+			select {
+			case <-wait:
+				continue
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}
+		done := make(chan struct{})
+		r.reading = done
+		r.mu.Unlock()
+		perSecond, err := c.measureSlotRate(ctx)
+		r.mu.Lock()
+		// A caller's own cancellation is not the cluster's answer.
+		if ctx.Err() == nil {
+			r.perSecond, r.err, r.at = perSecond, err, time.Now()
+		}
+		r.reading = nil
+		r.mu.Unlock()
+		close(done)
+		return perSecond, err
+	}
+}
+
+func (c *Client) measureSlotRate(ctx context.Context) (float64, error) {
+	slots, seconds, err := c.SlotSamples(ctx, 5)
+	if err != nil {
+		return 0, err
+	}
+	if slots == 0 || seconds == 0 {
+		return 0, errors.New("getRecentPerformanceSamples: no usable sample")
+	}
+	return float64(slots) / float64(seconds), nil
 }
 
 // SlotSamples sums the cluster's last n performance samples (one a minute)

@@ -77,16 +77,13 @@ func refreshObservationLagSlots(ctx context.Context, c *chain.Client) {
 	}
 }
 
-// recentSlotMillis averages the chain's last five 60 s performance samples.
+// recentSlotMillis is the chain's measured slot time.
 func recentSlotMillis(ctx context.Context, c *chain.Client) (float64, error) {
-	slots, secs, err := c.SlotSamples(ctx, 5)
+	slotsPerSecond, err := c.SlotsPerSecond(ctx)
 	if err != nil {
 		return 0, err
 	}
-	if slots == 0 {
-		return 0, fmt.Errorf("no usable performance samples")
-	}
-	return float64(secs) * 1000 / float64(slots), nil
+	return 1000 / slotsPerSecond, nil
 }
 
 // BudgetPrice is an observation, not an assumed stablecoin peg. The producer

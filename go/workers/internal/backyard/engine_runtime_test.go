@@ -200,16 +200,15 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 		mutate func(*EngineConfig)
 		want   string
 	}{
-		"missing database":      {func(c *EngineConfig) { c.Database = nil }, ""},
-		"missing rpc":           {func(c *EngineConfig) { c.RPC = nil }, ""},
-		"missing view":          {func(c *EngineConfig) { c.View = nil }, ""},
-		"missing credentials":   {func(c *EngineConfig) { c.Credentials = Credentials{} }, ""},
-		"truncated capability":  {func(c *EngineConfig) { c.Credentials = Credentials{PolicyKey: unpinned[:ed25519.SeedSize]} }, ""},
-		"selector without feed": {func(c *EngineConfig) { c.Selector = SelectorLive }, "Timescale economic feed"},
-		"unknown selector":      {func(c *EngineConfig) { c.Selector = "both" }, "unknown Backyard selector mode"},
-		"caller lease owner":    {func(c *EngineConfig) { c.Owner = "developer-laptop" }, "platform-neutral lease owner"},
-		"retail lease owner":    {func(c *EngineConfig) { c.Owner = "worker:retail:backyard-eu-1:sha-" + commit }, "platform-neutral lease owner"},
-		"invalid lease config":  {func(c *EngineConfig) { c.Config = Config{PollInterval: 0} }, ""},
+		"missing database":     {func(c *EngineConfig) { c.Database = nil }, ""},
+		"missing rpc":          {func(c *EngineConfig) { c.RPC = nil }, ""},
+		"missing view":         {func(c *EngineConfig) { c.View = nil }, ""},
+		"missing credentials":  {func(c *EngineConfig) { c.Credentials = Credentials{} }, ""},
+		"truncated capability": {func(c *EngineConfig) { c.Credentials = Credentials{PolicyKey: unpinned[:ed25519.SeedSize]} }, ""},
+		"unknown selector":     {func(c *EngineConfig) { c.Selector = "both" }, "unknown Backyard selector mode"},
+		"caller lease owner":   {func(c *EngineConfig) { c.Owner = "developer-laptop" }, "platform-neutral lease owner"},
+		"retail lease owner":   {func(c *EngineConfig) { c.Owner = "worker:retail:backyard-eu-1:sha-" + commit }, "platform-neutral lease owner"},
+		"invalid lease config": {func(c *EngineConfig) { c.Config = Config{PollInterval: 0} }, ""},
 	} {
 		config := base
 		tc.mutate(&config)

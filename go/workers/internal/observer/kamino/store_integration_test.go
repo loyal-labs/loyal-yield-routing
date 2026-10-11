@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestStorePersistsAndVerifiesAgainstRealSchema(t *testing.T) {
+func TestStorePersistsAndDeduplicatesAgainstRealSchema(t *testing.T) {
 	databaseURL := os.Getenv("TEST_TIMESCALE_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_TIMESCALE_DATABASE_URL is required")
@@ -43,46 +43,6 @@ func TestStorePersistsAndVerifiesAgainstRealSchema(t *testing.T) {
 	}
 	if duplicate.Inserted || duplicate.EventID != stream.EventID {
 		t.Fatalf("stream duplicate = %+v, first = %+v", duplicate, stream)
-	}
-	record.Source = "http_confirmed_refresh"
-	verification := Verification{Reserve: reserve, AccountHash: record.AccountHash, VerifiedSlot: 100, VerifiedAt: observed, Commitment: "confirmed", Source: record.Source, StateValid: true}
-	classified, err := store.VerifyStates(ctx, []Verification{verification})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(classified.Matched) != 0 || len(classified.Deferred) != 0 {
-		t.Fatalf("first HTTP state was prematurely classified: %+v", classified)
-	}
-	http, err := store.Insert(ctx, record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !http.Inserted || !http.CurrentStateAdmitted || !http.VerificationAdmitted {
-		t.Fatalf("confirmed HTTP record not fully admitted: %+v", http)
-	}
-	classified, err = store.VerifyStates(ctx, []Verification{verification})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, matched := classified.Matched[reserve]; !matched {
-		t.Fatalf("persisted HTTP state did not match on exact reread: %+v", classified)
-	}
-	var verified bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM kamino.latest_verified_reserve_updates WHERE reserve=$1)`, reserve).Scan(&verified); err != nil {
-		t.Fatal(err)
-	}
-	if !verified {
-		t.Fatal("admitted reserve is absent from latest_verified_reserve_updates")
-	}
-	if err := store.RecordMalformed(ctx, reserve, 200, observed.Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	classified, err = store.VerifyStates(ctx, []Verification{verification})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, deferred := classified.Deferred[reserve]; !deferred {
-		t.Fatalf("stale HTTP proof crossed invalid stream floor: %+v", classified)
 	}
 }
 

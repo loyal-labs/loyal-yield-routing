@@ -276,6 +276,11 @@ func (f *multiplySVMFixture) serveRPC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "fixture request invalid", 400)
 		return
 	}
+	if q.Method == "getRecentPerformanceSamples" {
+		// The measured slot rate: one 60 s sample at testSlotsPerSecond.
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": q.ID, "result": []any{map[string]any{"slot": 1, "numSlots": testSlotsPerSecond * 60, "numTransactions": 0, "samplePeriodSecs": 60}}})
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if q.Method == "sendTransaction" {

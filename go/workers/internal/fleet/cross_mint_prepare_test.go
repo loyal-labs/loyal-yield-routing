@@ -22,6 +22,10 @@ type crossMintPrepareTransport func(*http.Request) (*http.Response, error)
 
 func (f crossMintPrepareTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// testPerformanceSamples is one 60 s sample at a mainnet-like 4.6 slots a
+// second, the measured slot rate every fixture RPC serves.
+var testPerformanceSamples = []any{map[string]any{"slot": 1_000, "numSlots": 276, "numTransactions": 0, "samplePeriodSecs": 60}}
+
 func crossMintPrepareRPC(t *testing.T, call func(string, []json.RawMessage) any) *chain.Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,7 +37,11 @@ func crossMintPrepareRPC(t *testing.T, call func(string, []json.RawMessage) any)
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": call(request.Method, request.Params)})
+		result := any(testPerformanceSamples)
+		if request.Method != "getRecentPerformanceSamples" {
+			result = call(request.Method, request.Params)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 	}))
 	t.Cleanup(server.Close)
 	return testChain(t, server.URL)
@@ -228,7 +236,7 @@ func TestCrossMintSourceRecoveryDoesNotReadMissingTargetSetup(t *testing.T) {
 	amount, slot := int64(1200), int64(999)
 	q.Movement.CustodyObservedBalanceRaw, q.Movement.CustodyReconciledSlot = &amount, &slot
 	bank.accounts[plan.Bindings.Withdraw.PolicyAccount] = fixtureAccount(plan.Bindings.Withdraw.PolicyAccount, squads.ProgramID.String(), 1, []byte{1})
-	r := &Revalidator{slotDuration: 400 * time.Millisecond, rpc: crossMintPrepareRPC(t, func(method string, params []json.RawMessage) any {
+	r := &Revalidator{rpc: crossMintPrepareRPC(t, func(method string, params []json.RawMessage) any {
 		if method != "getMultipleAccounts" {
 			t.Fatalf("unexpected method %s", method)
 		}

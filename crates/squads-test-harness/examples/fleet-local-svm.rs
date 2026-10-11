@@ -122,6 +122,9 @@ impl LocalChain {
             "getEpochInfo" => Ok(json!({"absoluteSlot":self.slot,"blockHeight":self.slot})),
             // No contention in the deterministic local chain.
             "getRecentPrioritizationFees" => Ok(json!([{"slot":1000,"prioritizationFee":0}])),
+            // One 60 s sample at Solana's 400 ms target: the measured slot rate
+            // the Go workers price Legacy-basis Kamino reserves with.
+            "getRecentPerformanceSamples" => Ok(json!([{"slot":self.slot,"numSlots":150,"numTransactions":0,"numNonVoteTransactions":0,"samplePeriodSecs":60}])),
             // This controlled bank starts at slot 1000 and retains every
             // transaction submitted through this process. It does not import
             // historical ledger blocks or model mainnet pruning/consensus.

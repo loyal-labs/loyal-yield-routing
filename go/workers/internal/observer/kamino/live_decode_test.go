@@ -51,6 +51,10 @@ func TestLiveConfirmedKaminoAccountsDecode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	slotsPerSecond, err := client.SlotsPerSecond(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for index, account := range accounts {
 		target := targets[index]
 		if account == nil {
@@ -59,7 +63,7 @@ func TestLiveConfirmedKaminoAccountsDecode(t *testing.T) {
 		if account.Owner != klend.ProgramID {
 			t.Fatalf("reserve %s owner = %s", target.Reserve, account.Owner)
 		}
-		if _, err := Decode(target, slot, time.Now().UTC(), account, 400); err != nil {
+		if _, err := Decode(target, slot, time.Now().UTC(), account, slotsPerSecond); err != nil {
 			t.Fatalf("decode reserve %s: %v", target.Reserve, err)
 		}
 	}

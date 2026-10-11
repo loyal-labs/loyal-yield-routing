@@ -3,8 +3,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,7 +10,6 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/config"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
 )
 
 // The real RPC client has a much longer transport timeout than the pass. No SQL
@@ -68,22 +65,6 @@ func TestRuntimeStartupDeadlineStopsBlockedRPC(t *testing.T) {
 	}
 	if time.Since(started) > time.Second {
 		t.Fatal("startup used the transport timeout instead of its pass budget")
-	}
-	requireStoppedRuntimeRPC(t, stopped)
-}
-
-func TestRuntimeVerifyDeadlineCancelsActualRPC(t *testing.T) {
-	rpc, stopped := stalledRuntimeRPC(t, "getMultipleAccounts")
-	handler := kamino.NewHandler(nil, rpc, slog.New(slog.NewTextHandler(io.Discard, nil)), 400, false)
-	handler.SetTargets([]kamino.Target{{Reserve: "11111111111111111111111111111111"}})
-	handler.RequestSafetySweep()
-	runtime := &Runtime{cfg: config.Config{ProgressTimeout: 100 * time.Millisecond}, kamino: handler}
-	started := time.Now()
-	if ran, err := runtime.verifyPass(context.Background()); !ran || err == nil {
-		t.Fatalf("blocked verification was accepted: ran=%v err=%v", ran, err)
-	}
-	if time.Since(started) > time.Second {
-		t.Fatal("verification used the transport timeout instead of its pass budget")
 	}
 	requireStoppedRuntimeRPC(t, stopped)
 }

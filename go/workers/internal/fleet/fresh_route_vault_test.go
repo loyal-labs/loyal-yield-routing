@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -142,6 +141,8 @@ func fixtureFreshRoute(t *testing.T, collateralSupply uint64, mutate func(source
 		}
 		var result any
 		switch call.Method {
+		case "getRecentPerformanceSamples":
+			result = testPerformanceSamples
 		case "getMinimumBalanceForRentExemption":
 			var size int
 			_ = json.Unmarshal(call.Params[0], &size)
@@ -165,7 +166,7 @@ func fixtureFreshRoute(t *testing.T, collateralSupply uint64, mutate func(source
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 	}))
 	t.Cleanup(server.Close)
-	r := &Revalidator{rpc: testChain(t, server.URL), slotDuration: 400 * time.Millisecond, signer: testIdentity(6)}
+	r := &Revalidator{rpc: testChain(t, server.URL), signer: testIdentity(6)}
 	lease := RevalidationLease{VaultPubkey: vault, SourceReserve: source.Address, TargetReserve: target.Address, LiquidityMint: USDCMint, PolicyAccount: policy, LiquidityAmountRaw: amount, PrincipalUSDMicros: int64(amount)}
 	return r, lease
 }

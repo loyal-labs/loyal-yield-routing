@@ -7,6 +7,7 @@ import (
 	"math/big"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // This is an exit-cost estimate over a finite execution window, not a change
@@ -131,14 +132,15 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 		return bound, budgetHoldFrom(err, "payoff_debt_state_unavailable")
 	}
 	config := reserveAccount.Data[kaminoReserveConfigOffset:]
-	// Official current KLend layout: basis at config+9 (formerly SDK padding),
-	// LastUpdate timestamp at account+28, curve at config+64. Term-debt fields
-	// start at config+920; those and an early-repay penalty need another model.
-	// The 7.3.9 SDK does NOT decode the basis/timestamp: do not use its slot-only APR.
-	basis := config[9]
-	if basis > 1 || config[7] != 0 || !allZero(config[920:936]) {
+	// Official current KLend layout: LastUpdate timestamp at account+28, curve
+	// at config+64. An unknown basis, term debt or an early-repay penalty needs
+	// another model (kamino.Reserve.SupportedInterestTerms). The 7.3.9 SDK
+	// does NOT decode the basis/timestamp: do not use its slot-only APR.
+	terms, err := kamino.DecodeReserve(chainAccount(reserveAccount, reserveAccount.Address))
+	if err != nil || terms.SupportedInterestTerms() != nil {
 		return bound, budgetHold("unsupported_payoff_interest_terms")
 	}
+	basis := terms.InterestRateBasis
 	maximumRate, err := kaminoMaximumBorrowRate(config)
 	if err != nil {
 		return bound, err

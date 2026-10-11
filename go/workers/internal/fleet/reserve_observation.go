@@ -17,6 +17,10 @@ func (w *Worker) observeConfirmedReserveCatalog(ctx context.Context, addresses [
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	const attempts = 3
+	slotsPerSecond, err := w.rpc.SlotsPerSecond(ctx)
+	if err != nil {
+		return MarketSnapshot{}, fmt.Errorf("measured slot rate: %w", err)
+	}
 	for attempt := 1; attempt <= attempts; attempt++ {
 		slot, accounts, err := ReadAccounts(ctx, w.rpc, addresses, rpc.CommitmentConfirmed, minimumSlot)
 		if err != nil {
@@ -26,7 +30,7 @@ func (w *Worker) observeConfirmedReserveCatalog(ctx context.Context, addresses [
 		var mismatch *ReserveSlotOrderMismatch
 		nextMinimumSlot := slot
 		for i, account := range accounts {
-			state, err := DecodeKaminoSourceReserve(account, identities[addresses[i]], slot, w.config.SlotDuration)
+			state, err := DecodeKaminoSourceReserve(account, identities[addresses[i]], slot, slotsPerSecond)
 			if err != nil {
 				var order *ReserveSlotOrderMismatch
 				if !errors.As(err, &order) {

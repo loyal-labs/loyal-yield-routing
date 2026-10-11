@@ -50,7 +50,7 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := fleetexec.Config{Cluster: bank.Cluster, Owner: owner, LeaseTTL: 20 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, SlotDuration: 400 * time.Millisecond, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	config := fleetexec.Config{Cluster: bank.Cluster, Owner: owner, LeaseTTL: 20 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, Facts: engine.NewFacts(prometheus.NewRegistry())}
 	worker, err := fleetexec.NewWorker(config, store, land, land, fleetexec.DelegateSigner{FeePayer: bank.Signer})
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestConnectedCrossMintExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := fleetexec.Config{Cluster: bank.Cluster, Owner: owner, LeaseTTL: 20 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, SlotDuration: 400 * time.Millisecond, Facts: engine.NewFacts(prometheus.NewRegistry())}
+	config := fleetexec.Config{Cluster: bank.Cluster, Owner: owner, LeaseTTL: 20 * time.Second, BatchSize: 1, TickInterval: 20 * time.Millisecond, Facts: engine.NewFacts(prometheus.NewRegistry())}
 	controller, err := fleetexec.NewCrossMintController(store, adapters, fleetexec.DelegateSigner{FeePayer: bank.Signer}, client, bank.Cluster, owner, config.LeaseTTL, true)
 	if err != nil {
 		t.Fatal(err)

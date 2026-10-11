@@ -214,7 +214,7 @@ func (b *ConnectedBank) Revalidator(owner string, fused bool) (*Revalidator, err
 	if err != nil {
 		return nil, err
 	}
-	r, err := NewRevalidator(b.Store, client, RevalidatorConfig{Owner: owner, FusedExecute: fused, DelegatedSigner: encodeBase58(b.Signer.Public().(ed25519.PublicKey)), LeaseTTL: time.Minute, SlotDuration: 400 * time.Millisecond, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: b.buildURL, Metrics: engine.NewFacts(prometheus.NewRegistry())})
+	r, err := NewRevalidator(b.Store, client, RevalidatorConfig{Owner: owner, FusedExecute: fused, DelegatedSigner: encodeBase58(b.Signer.Public().(ed25519.PublicKey)), LeaseTTL: time.Minute, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: b.buildURL, Metrics: engine.NewFacts(prometheus.NewRegistry())})
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +295,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 			accounts[decoded.Obligation] = obligation
 		}
 		positions = append(positions, decoded.Position)
-		state, err := DecodeKaminoReserve(&account, identity, 1000, 400*time.Millisecond)
+		state, err := DecodeKaminoReserve(&account, identity, 1000, 2.5)
 		if err != nil {
 			t.Fatal(err)
 		}

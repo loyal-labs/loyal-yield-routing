@@ -15,8 +15,6 @@ func TestCatalogEnrichesExactReserveIdentity(t *testing.T) {
 		switch request.URL.Path {
 		case "/kamino-market/market/reserves/metrics":
 			fmt.Fprint(w, `[{"reserve":"reserve","liquidityToken":"USDC","liquidityTokenMint":"mint","supplyApy":"0.05","borrowApy":0.08,"totalSupplyUsd":"100","totalBorrowUsd":20}]`)
-		case "/slots/duration":
-			fmt.Fprint(w, `{"recentSlotDurationInMs":"412.5"}`)
 		default:
 			http.NotFound(w, request)
 		}
@@ -29,10 +27,6 @@ func TestCatalogEnrichesExactReserveIdentity(t *testing.T) {
 	}
 	if targets[0].APISupplyAPY == nil || *targets[0].APISupplyAPY != 0.05 || targets[0].Symbol == nil || *targets[0].Symbol != "USDC" {
 		t.Fatalf("enriched target = %+v", targets[0])
-	}
-	duration, err := client.SlotDuration(context.Background())
-	if err != nil || duration != 412.5 {
-		t.Fatalf("slot duration = %f, %v", duration, err)
 	}
 }
 

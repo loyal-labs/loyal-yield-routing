@@ -182,21 +182,17 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		if !tolerableObservationDifference(err) {
 			return fmt.Errorf("durable market evidence not converged: %w", err)
 		}
-		// Rust plans from this verified immutable database epoch and never
-		// re-reads reserve accounts over RPC, so it has no equivalent fence.
-		// A hash difference here only means the reserve account changed after
-		// Timescale captured it, which is the normal state of a busy reserve
-		// (D6q6 differed in 35% of shadow cycles on 2026-09-16); it cannot say
-		// which side is newer. Identity, slot, and expiry failures above stay
-		// fatal in every mode. Route-level freshness is enforced later by
-		// simulation against confirmed chain state before publication.
+		// A hash difference means the reserve changed after its stream row
+		// (D6q6 differed in 35% of shadow cycles on 2026-09-16). Identity,
+		// slot, and expiry failures above stay fatal in every mode.
 		observationDifferences = 1
-		logEvent(map[string]any{"event": "kamino_fleet_planner_observation_difference", "errorCategory": "cycle_failed", "planningEvidence": "durable_verified_epoch"})
+		logEvent(map[string]any{"event": "kamino_fleet_planner_observation_difference", "errorCategory": "cycle_failed", "planningEvidence": "durable_epoch"})
 	}
 	snapshot, err := marketSnapshotFromEpoch(epoch, addresses...)
 	if err != nil {
 		return err
 	}
+	planDirectReads(snapshot, direct)
 	snapshot.Cluster = w.config.Cluster
 	// Each opportunity is fenced by the minimum complete source/target mint
 	// lifetime. An epoch need not contain USDC when the migrated fleet only

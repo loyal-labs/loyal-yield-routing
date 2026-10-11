@@ -73,9 +73,9 @@ type MarketSnapshot struct {
 }
 
 // MarketEpochReserve is the retired Rust MarketEpochReserve contract plus the
-// reserve's deposit limit. The state identity comes from the retained Kamino
-// monitor's durable confirmed verification row; it is never synthesized from
-// a direct RPC read.
+// reserve's deposit limit. The state identity comes from the observer's latest
+// confirmed reserve_updates row; it is never synthesized from a direct RPC
+// read.
 type MarketEpochReserve struct {
 	StateEventID             int64     `json:"stateEventId"`
 	AccountDataHash          string    `json:"accountDataHash"`
@@ -162,6 +162,9 @@ type ImmutableMarketEpoch struct {
 	MaximumMarketSlot      *int64               `json:"maximumMarketSlot"`
 	MintCoverage           []MarketMintCoverage `json:"mintCoverage"`
 	Reserves               []MarketEpochReserve `json:"reserves"`
+	// StreamFrontierSlot is the newest slot among the reserves' latest stream
+	// rows; planning refuses the epoch once it trails the chain.
+	StreamFrontierSlot int64 `json:"-"`
 }
 
 func (e ImmutableMarketEpoch) MarshalJSON() ([]byte, error) {

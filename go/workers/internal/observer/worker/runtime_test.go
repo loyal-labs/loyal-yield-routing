@@ -1,12 +1,11 @@
 package worker
 
 import (
-	"errors"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	solanago "github.com/solana-foundation/solana-go/v2"
 )
@@ -115,24 +114,20 @@ func TestNewEarnBindingRecoveriesCoverEveryAddedAccount(t *testing.T) {
 	}
 }
 
-func TestPersistentVerificationErrorStartsAtThreshold(t *testing.T) {
-	cause := errors.New("rpc unavailable")
-	budget := kaminoVerificationFailureThreshold * 30 * time.Second
-	if err := persistentVerificationError(kaminoVerificationFailureThreshold-1, budget, budget, cause); err != nil {
-		t.Fatalf("transient failure became terminal: %v", err)
-	}
-	// Dirty batches retry every 100 ms, so a burst of fast failures inside
-	// the sweep budget is still a transient RPC outage.
-	if err := persistentVerificationError(50, time.Second, budget, cause); err != nil {
-		t.Fatalf("short failure burst became terminal: %v", err)
-	}
-	if err := persistentVerificationError(kaminoVerificationFailureThreshold, budget, budget, cause); err == nil || !errors.Is(err, cause) {
-		t.Fatalf("threshold failure = %v, want wrapped cause", err)
-	}
-}
-
 func TestSubtractNeverRequestsGenesis(t *testing.T) {
 	if got := subtract(10, 32); got != 1 {
 		t.Fatalf("saturated replay start = %d, want 1", got)
+	}
+}
+
+// A reserve new to the watched set, or back in it, is the one to seed.
+func TestAddedTargetsAreTheReservesNewToTheWatchedSet(t *testing.T) {
+	watched := []kamino.Target{{Reserve: "a"}, {Reserve: "b"}}
+	added := addedTargets(watched, []kamino.Target{{Reserve: "b"}, {Reserve: "c"}, {Reserve: "a"}})
+	if len(added) != 1 || added[0].Reserve != "c" {
+		t.Fatalf("added = %+v, want only c", added)
+	}
+	if again := addedTargets([]kamino.Target{{Reserve: "b"}}, watched); len(again) != 1 || again[0].Reserve != "a" {
+		t.Fatalf("re-entered = %+v, want a", again)
 	}
 }

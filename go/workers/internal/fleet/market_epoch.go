@@ -18,15 +18,14 @@ import (
 )
 
 const (
-	marketEpochFingerprintDomain          = "loyal-yield-market-epoch-envelope-v4"
-	maximumConfirmedVerificationAge       = 240 * time.Second
-	maximumSupportedCatalogAge            = 300 * time.Second
-	maximumReserveEconomicSlotLag   int64 = 1_500
-	reserveEconomicMillisPerSlot    int64 = 250
-	minimumUsableEpochLifetime            = 60 * time.Second
-	minimumReserveSupplyUSDMicros   int64 = 100_000_000_000
-	stablecoinPriceUSDMicros        int64 = 1_000_000
-	stablecoinDecimals              uint8 = 6
+	marketEpochFingerprintDomain        = "loyal-yield-market-epoch-envelope-v4"
+	maximumSupportedCatalogAge          = 300 * time.Second
+	maximumReserveEconomicSlotLag int64 = 1_500
+	reserveEconomicMillisPerSlot  int64 = 250
+	minimumUsableEpochLifetime          = 60 * time.Second
+	minimumReserveSupplyUSDMicros int64 = 100_000_000_000
+	stablecoinPriceUSDMicros      int64 = 1_000_000
+	stablecoinDecimals            uint8 = 6
 )
 
 type SupportedReserveCatalogRow struct {
@@ -40,15 +39,15 @@ type SupportedReserveCatalogRow struct {
 	FetchedAt     time.Time `json:"fetchedAt"`
 }
 
-type VerifiedSupportedReserveRow struct {
+// SupportedReserveStateRow is a reserve's latest confirmed row from the
+// observer's stream (or its startup seed) in kamino.reserve_updates.
+type SupportedReserveStateRow struct {
 	StateEventID             int64     `json:"stateEventId"`
 	AccountDataHash          string    `json:"accountDataHash"`
 	StateObservedAt          time.Time `json:"stateObservedAt"`
 	StateSlot                int64     `json:"stateSlot"`
-	VerifiedAt               time.Time `json:"verifiedAt"`
-	VerifiedSlot             int64     `json:"verifiedSlot"`
-	VerificationCommitment   string    `json:"verificationCommitment"`
-	VerificationSource       string    `json:"verificationSource"`
+	Source                   string    `json:"source"`
+	SourceCommitment         string    `json:"sourceCommitment"`
 	Reserve                  string    `json:"reserve"`
 	Market                   *string   `json:"market"`
 	MarketName               *string   `json:"marketName"`
@@ -79,9 +78,9 @@ type VerifiedSupportedReserveRow struct {
 }
 
 type SupportedReserveMarketSnapshot struct {
-	CapturedAt       time.Time                     `json:"capturedAt"`
-	Catalog          []SupportedReserveCatalogRow  `json:"catalog"`
-	VerifiedReserves []VerifiedSupportedReserveRow `json:"verifiedReserves"`
+	CapturedAt    time.Time                    `json:"capturedAt"`
+	Catalog       []SupportedReserveCatalogRow `json:"catalog"`
+	ReserveStates []SupportedReserveStateRow   `json:"reserveStates"`
 }
 
 type MarketEpochFixture struct {
@@ -89,9 +88,9 @@ type MarketEpochFixture struct {
 	EnabledMints []string `json:"enabledMints"`
 }
 
-// MarketEvidenceStore reads the same monitor-owned catalog and confirmed
-// verification view as the Rust planner. It is intentionally read-only: direct
-// RPC observations must not invent monitor state_event_id values.
+// MarketEvidenceStore reads the observer-owned catalog and each reserve's latest
+// confirmed stream row. It is intentionally read-only: direct RPC observations
+// must not invent monitor state_event_id values.
 type MarketEvidenceStore struct {
 	pool         *pgxpool.Pool
 	schema       string
@@ -166,33 +165,39 @@ ORDER BY liquidity_mint, market, reserve, fetched_at`, s.schema)
 		return result, err
 	}
 	rows.Close()
-	verifiedSQL := fmt.Sprintf(`
-SELECT event_id, account_data_hash, observed_at, slot, verified_at, verified_slot,
-       verification_commitment, verification_source, reserve, market, market_name,
-       liquidity_mint, symbol, mint_decimals, reserve_last_update_slot,
-       reserve_last_update_stale, reserve_price_status, available_amount, borrowed_amount,
-       total_supply_amount, market_price_usd, market_price_last_updated_ts, utilization,
-       borrow_apy, supply_apy, deposit_limit::text
-FROM %s.latest_verified_reserve_updates
-WHERE liquidity_mint=ANY($1)
-ORDER BY liquidity_mint, market, reserve`, s.schema)
-	rows, err = tx.Query(ctx, verifiedSQL, enabledMints)
+	// Latest by slot, not by arrival: a replay after a restart inserts older
+	// slots after the seed. The dedupe table's (reserve, slot) index walks
+	// each reserve's history newest first.
+	stateSQL := fmt.Sprintf(`
+SELECT state.event_id, state.account_data_hash, state.observed_at, state.slot, state.source,
+       state.source_commitment, state.reserve, state.market, state.market_name,
+       state.liquidity_mint, state.symbol, state.mint_decimals, state.reserve_last_update_slot,
+       state.reserve_last_update_stale, state.reserve_price_status, state.available_amount, state.borrowed_amount,
+       state.total_supply_amount, state.market_price_usd, state.market_price_last_updated_ts, state.utilization,
+       state.borrow_apy, state.supply_apy, NULLIF(state.snapshot->>'deposit_limit','')::NUMERIC(20,0)::text
+FROM (SELECT DISTINCT reserve FROM %[1]s.supported_reserves WHERE active AND liquidity_mint=ANY($1)) catalog
+CROSS JOIN LATERAL (
+ SELECT u.* FROM %[1]s.reserve_update_dedupe d
+ JOIN %[1]s.reserve_updates u ON u.event_id=d.event_id AND u.reserve=d.reserve AND u.slot=d.slot
+ WHERE d.reserve=catalog.reserve AND u.source IN ('laserstream_grpc','http_snapshot')
+ ORDER BY d.slot DESC, d.event_id DESC LIMIT 1
+) state`, s.schema)
+	rows, err = tx.Query(ctx, stateSQL, enabledMints)
 	if err != nil {
 		return result, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var row VerifiedSupportedReserveRow
+		var row SupportedReserveStateRow
 		if err := rows.Scan(&row.StateEventID, &row.AccountDataHash, &row.StateObservedAt, &row.StateSlot,
-			&row.VerifiedAt, &row.VerifiedSlot, &row.VerificationCommitment, &row.VerificationSource,
-			&row.Reserve, &row.Market, &row.MarketName, &row.LiquidityMint, &row.Symbol, &row.MintDecimals,
+			&row.Source, &row.SourceCommitment, &row.Reserve, &row.Market, &row.MarketName, &row.LiquidityMint, &row.Symbol, &row.MintDecimals,
 			&row.ReserveLastUpdateSlot, &row.ReserveLastUpdateStale, &row.ReservePriceStatus,
 			&row.AvailableAmount, &row.BorrowedAmount, &row.TotalSupplyAmount, &row.MarketPriceUSD,
 			&row.MarketPriceLastUpdatedTS, &row.Utilization, &row.BorrowAPY, &row.SupplyAPY, &row.DepositLimit); err != nil {
 			return result, err
 		}
 		row.captureFloatBits()
-		result.VerifiedReserves = append(result.VerifiedReserves, row)
+		result.ReserveStates = append(result.ReserveStates, row)
 	}
 	if err := rows.Err(); err != nil {
 		return result, err
@@ -242,13 +247,20 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 	for _, row := range catalog {
 		identityCounts[row.Reserve]++
 	}
-	verifiedByIdentity := make(map[string][]VerifiedSupportedReserveRow)
-	verifiedByReserve := make(map[string]bool)
-	for _, row := range snapshot.VerifiedReserves {
+	statesByIdentity := make(map[string][]SupportedReserveStateRow)
+	statesByReserve := make(map[string]bool)
+	// The stream frontier is the newest of these rows: every stream update to
+	// any of the reserves moves it, and the stream would have delivered any
+	// later change, so each latest row is current up to the frontier.
+	var frontier SupportedReserveStateRow
+	for _, row := range snapshot.ReserveStates {
 		row.restoreFloatBits()
-		verifiedByReserve[row.Reserve] = true
+		if row.StateSlot > frontier.StateSlot {
+			frontier = row
+		}
+		statesByReserve[row.Reserve] = true
 		if row.Market != nil {
-			verifiedByIdentity[marketIdentity(row.Reserve, *row.Market, row.LiquidityMint)] = append(verifiedByIdentity[marketIdentity(row.Reserve, *row.Market, row.LiquidityMint)], row)
+			statesByIdentity[marketIdentity(row.Reserve, *row.Market, row.LiquidityMint)] = append(statesByIdentity[marketIdentity(row.Reserve, *row.Market, row.LiquidityMint)], row)
 		}
 	}
 
@@ -274,7 +286,7 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 			coverage.Blockers = append(coverage.Blockers, blocker("missing_stable_valuation", nil, "enabled mint "+mint+" has no code-owned stable valuation"))
 		}
 		var candidates []MarketEpochReserve
-		var catalogExpiries, verificationExpiries, economicExpiries []time.Time
+		var catalogExpiries, economicExpiries []time.Time
 		for _, catalogRow := range mintCatalog {
 			reserveID := stringPointer(catalogRow.Reserve)
 			var hard []MarketMintBlocker
@@ -292,53 +304,47 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 			if identityCounts[catalogRow.Reserve] != 1 {
 				hard = append(hard, blocker("duplicate_catalog_reserve_identity", reserveID, "reserve identity appears more than once in the active safe enabled catalog"))
 			}
-			matches := verifiedByIdentity[marketIdentity(catalogRow.Reserve, catalogRow.Market, catalogRow.LiquidityMint)]
+			matches := statesByIdentity[marketIdentity(catalogRow.Reserve, catalogRow.Market, catalogRow.LiquidityMint)]
 			if len(matches) == 0 {
-				code := "missing_verified_reserve"
-				if verifiedByReserve[catalogRow.Reserve] {
-					code = "verified_identity_mismatch"
+				code := "missing_reserve_state"
+				if statesByReserve[catalogRow.Reserve] {
+					code = "reserve_state_identity_mismatch"
 				}
-				coverage.Blockers = append(coverage.Blockers, append(hard, blocker(code, reserveID, "catalog identity has no exact row in latest_verified_reserve_updates"))...)
+				coverage.Blockers = append(coverage.Blockers, append(hard, blocker(code, reserveID, "catalog identity has no exact latest confirmed row in reserve_updates"))...)
 				continue
 			}
 			if len(matches) != 1 {
-				coverage.Blockers = append(coverage.Blockers, append(hard, blocker("duplicate_verified_reserve_identity", reserveID, fmt.Sprintf("exact verified identity returned %d rows", len(matches))))...)
+				coverage.Blockers = append(coverage.Blockers, append(hard, blocker("duplicate_reserve_state_identity", reserveID, fmt.Sprintf("exact reserve identity returned %d rows", len(matches))))...)
 				continue
 			}
 			coverage.VerifiedReserveCount++
 			exact := matches[0]
-			verificationExpiry := exact.VerifiedAt.Add(maximumConfirmedVerificationAge)
 			refreshable := []MarketMintBlocker{}
-			targetEconomicExpiry := validateVerifiedReserve(exact, catalogRow, snapshot.CapturedAt, publicationMinimum, verificationExpiry, &hard, &refreshable)
+			economicExpiry, economicTarget := validateReserveState(exact, catalogRow, frontier.StateSlot, frontier.StateObservedAt, publicationMinimum, &hard, &refreshable)
 			coverage.Blockers = append(coverage.Blockers, refreshable...)
 			if len(hard) != 0 {
 				coverage.Blockers = append(coverage.Blockers, hard...)
 				continue
 			}
 			totalSupplyUSD := int64(math.Round(exact.TotalSupplyAmount))
-			targetEligible := targetEconomicExpiry != nil && totalSupplyUSD > minimumReserveSupplyUSDMicros && exact.SupplyAPY >= 0 && exact.SupplyAPY < .5
-			economicExpiry := verificationExpiry
-			if targetEconomicExpiry != nil {
-				economicExpiry = *targetEconomicExpiry
-			}
+			targetEligible := economicTarget && totalSupplyUSD > minimumReserveSupplyUSDMicros && exact.SupplyAPY >= 0 && exact.SupplyAPY < .5
 			catalogExpiries = append(catalogExpiries, catalogExpiry)
-			verificationExpiries = append(verificationExpiries, verificationExpiry)
-			if targetEconomicExpiry != nil {
+			if economicTarget {
 				economicExpiries = append(economicExpiries, economicExpiry)
 			}
 			candidates = append(candidates, MarketEpochReserve{
 				StateEventID: exact.StateEventID, AccountDataHash: exact.AccountDataHash,
 				StateObservedAt: exact.StateObservedAt.UTC(), StateSlot: exact.StateSlot,
-				VerificationCommitment: exact.VerificationCommitment, Reserve: exact.Reserve, Market: exact.Market,
+				VerificationCommitment: exact.SourceCommitment, Reserve: exact.Reserve, Market: exact.Market,
 				LiquidityMint: exact.LiquidityMint, MintDecimals: stablecoinDecimals,
 				MarketPriceUSDMicros: stablecoinPriceUSDMicros, ReserveLastUpdateSlot: exact.ReserveLastUpdateSlot,
-				EconomicSlotLag: exact.VerifiedSlot - exact.ReserveLastUpdateSlot, EconomicExpiresAt: economicExpiry.UTC(),
+				EconomicSlotLag: frontier.StateSlot - exact.ReserveLastUpdateSlot, EconomicExpiresAt: economicExpiry.UTC(),
 				ReserveLastUpdateStale: exact.ReserveLastUpdateStale, ReservePriceStatus: exact.ReservePriceStatus,
 				MarketPriceLastUpdatedTS: exact.MarketPriceLastUpdatedTS,
 				AvailableAmountRaw:       canonicalFloat(exact.AvailableAmount), BorrowedAmountRaw: canonicalFloat(exact.BorrowedAmount),
 				TotalSupplyAmountRaw: canonicalFloat(exact.TotalSupplyAmount), DepositLimitRaw: exact.DepositLimit,
 				UtilizationPPM: int64(math.Round(exact.Utilization * 1_000_000)),
-				BorrowAPYBPS:   int64(math.Round(exact.BorrowAPY * 10_000)), ObservedAt: exact.VerifiedAt.UTC(), Slot: exact.VerifiedSlot,
+				BorrowAPYBPS:   int64(math.Round(exact.BorrowAPY * 10_000)), ObservedAt: exact.StateObservedAt.UTC(), Slot: exact.StateSlot,
 				SupplyAPYBPS: int64(math.Round(exact.SupplyAPY * 10_000)), TotalSupplyUSDMicros: totalSupplyUSD,
 				TargetEligible: targetEligible,
 			})
@@ -356,9 +362,7 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 		coverage.Blockers = deduplicateBlockers(coverage.Blockers)
 		coverage.Complete = !mintWideBlocked && len(mintCatalog) != 0
 		catalogMinimum, hasCatalog := minimumTime(catalogExpiries)
-		verificationMinimum, hasVerification := minimumTime(verificationExpiries)
-		economicMinimum, hasEconomic := minimumTime(economicExpiries)
-		mintExpiry, hasMintExpiry := minimumTime(presentTimes(catalogMinimum, hasCatalog, verificationMinimum, hasVerification, economicMinimum, hasEconomic))
+		mintExpiry, hasMintExpiry := minimumTime(append(catalogExpiries, economicExpiries...))
 		if coverage.Complete && hasMintExpiry {
 			value := mintExpiry.UTC()
 			coverage.ExpiresAt = &value
@@ -393,6 +397,7 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 		OptimizerEpochID: positiveEpochID(fingerprint), Fingerprint: fingerprint, CatalogFingerprint: catalogFingerprint,
 		CapturedAt: snapshot.CapturedAt.UTC(), ExpiresAt: expiresAt.UTC(), CatalogExpiresAt: catalogExpiresAt.UTC(),
 		CatalogReserveCount: len(catalog), MintCoverage: coverages, Reserves: reserves,
+		StreamFrontierSlot: frontier.StateSlot,
 	}
 	for _, reserve := range reserves {
 		setTimeBounds(&epoch.OldestMarketObservedAt, &epoch.NewestMarketObservedAt, reserve.ObservedAt)
@@ -401,44 +406,39 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 	return epoch, nil
 }
 
-func validateVerifiedReserve(exact VerifiedSupportedReserveRow, catalog SupportedReserveCatalogRow, capturedAt, publicationMinimum, verificationExpiry time.Time, hard, refreshable *[]MarketMintBlocker) *time.Time {
+// validateReserveState returns the reserve's economic expiry and whether its
+// economics may serve as a target; a reserve that may not has no expiry. The economic lag runs from the reserve's
+// last refresh to the stream frontier, up to which its row is current.
+func validateReserveState(exact SupportedReserveStateRow, catalog SupportedReserveCatalogRow, frontierSlot int64, frontierObservedAt, publicationMinimum time.Time, hard, refreshable *[]MarketMintBlocker) (time.Time, bool) {
 	reserve := stringPointer(catalog.Reserve)
-	if exact.VerificationSource != "http_snapshot" && exact.VerificationSource != "http_confirmed_refresh" {
-		*hard = append(*hard, blocker("verification_source_mismatch", reserve, "verification source is "+exact.VerificationSource))
+	if exact.Source != "laserstream_grpc" && exact.Source != "http_snapshot" {
+		*hard = append(*hard, blocker("source_mismatch", reserve, "reserve state source is "+exact.Source))
 	}
-	if exact.VerificationCommitment != "confirmed" {
-		*hard = append(*hard, blocker("verification_commitment_mismatch", reserve, "verification commitment is "+exact.VerificationCommitment))
+	if exact.SourceCommitment != "confirmed" {
+		*hard = append(*hard, blocker("commitment_mismatch", reserve, "reserve state commitment is "+exact.SourceCommitment))
 	}
-	if exact.VerifiedAt.After(capturedAt) {
-		*hard = append(*hard, blocker("verification_in_future", reserve, "verified_at "+rustDisplayTime(exact.VerifiedAt)+" is in the future"))
-	} else if !verificationExpiry.After(capturedAt) {
-		*hard = append(*hard, blocker("verification_stale", reserve, "verification expired at "+rustDisplayTime(verificationExpiry)))
-	} else if !verificationExpiry.After(publicationMinimum) {
-		*hard = append(*hard, blocker("verification_insufficient_lifetime", reserve, fmt.Sprintf("verification expires at %s; remaining lifetime is below %d seconds", rustDisplayTime(verificationExpiry), int64(minimumUsableEpochLifetime/time.Second))))
-	}
-	if exact.StateEventID <= 0 || len(exact.AccountDataHash) != 64 || !isHex(exact.AccountDataHash) || exact.StateSlot < 0 || exact.VerifiedSlot < exact.StateSlot {
-		*hard = append(*hard, blocker("invalid_state_identity", reserve, fmt.Sprintf("invalid event/hash/state/verification coordinates event=%d state_slot=%d verified_slot=%d", exact.StateEventID, exact.StateSlot, exact.VerifiedSlot)))
+	if exact.StateEventID <= 0 || len(exact.AccountDataHash) != 64 || !isHex(exact.AccountDataHash) || exact.StateSlot < 0 || frontierSlot < exact.StateSlot {
+		*hard = append(*hard, blocker("invalid_state_identity", reserve, fmt.Sprintf("invalid event/hash/state/frontier coordinates event=%d state_slot=%d frontier_slot=%d", exact.StateEventID, exact.StateSlot, frontierSlot)))
 	}
 	if exact.MintDecimals != int32(stablecoinDecimals) {
-		*hard = append(*hard, blocker("mint_decimals_mismatch", reserve, fmt.Sprintf("verified mint decimals %d differ from code-owned %d", exact.MintDecimals, stablecoinDecimals)))
+		*hard = append(*hard, blocker("mint_decimals_mismatch", reserve, fmt.Sprintf("reserve mint decimals %d differ from code-owned %d", exact.MintDecimals, stablecoinDecimals)))
 	}
 	if exact.ReserveLastUpdateStale {
 		*refreshable = append(*refreshable, blocker("explicit_stale_economics", reserve, "reserve last_update.stale is set; admitted as refresh-before-withdraw source only"))
 	}
-	var targetExpiry *time.Time
-	if exact.ReserveLastUpdateSlot < 0 || exact.ReserveLastUpdateSlot > exact.StateSlot || exact.ReserveLastUpdateSlot > exact.VerifiedSlot {
-		*hard = append(*hard, blocker("invalid_economic_slot_order", reserve, fmt.Sprintf("last_update_slot=%d state_slot=%d verified_slot=%d", exact.ReserveLastUpdateSlot, exact.StateSlot, exact.VerifiedSlot)))
+	var expiry time.Time
+	if exact.ReserveLastUpdateSlot < 0 || exact.ReserveLastUpdateSlot > exact.StateSlot {
+		*hard = append(*hard, blocker("invalid_economic_slot_order", reserve, fmt.Sprintf("last_update_slot=%d state_slot=%d frontier_slot=%d", exact.ReserveLastUpdateSlot, exact.StateSlot, frontierSlot)))
 	} else {
-		lag := exact.VerifiedSlot - exact.ReserveLastUpdateSlot
+		lag := frontierSlot - exact.ReserveLastUpdateSlot
 		if lag > maximumReserveEconomicSlotLag {
 			*refreshable = append(*refreshable, blocker("economic_slot_lag_exceeded", reserve, fmt.Sprintf("economic slot lag %d exceeds %d; admitted as refresh-before-withdraw source only", lag, maximumReserveEconomicSlotLag)))
 		} else {
-			expiry := exact.VerifiedAt.Add(time.Duration((maximumReserveEconomicSlotLag-lag)*reserveEconomicMillisPerSlot) * time.Millisecond)
-			if !expiry.After(publicationMinimum) {
-				*refreshable = append(*refreshable, blocker("economic_insufficient_lifetime", reserve, fmt.Sprintf("economic evidence expires at %s; remaining lifetime is below %d seconds; admitted as refresh-before-withdraw source only", rustDisplayTime(expiry), int64(minimumUsableEpochLifetime/time.Second))))
+			lifetime := frontierObservedAt.UTC().Add(time.Duration((maximumReserveEconomicSlotLag-lag)*reserveEconomicMillisPerSlot) * time.Millisecond)
+			if !lifetime.After(publicationMinimum) {
+				*refreshable = append(*refreshable, blocker("economic_insufficient_lifetime", reserve, fmt.Sprintf("economic evidence expires at %s; remaining lifetime is below %d seconds; admitted as refresh-before-withdraw source only", rustDisplayTime(lifetime), int64(minimumUsableEpochLifetime/time.Second))))
 			} else if !exact.ReserveLastUpdateStale {
-				expiry = expiry.UTC()
-				targetExpiry = &expiry
+				expiry = lifetime
 			}
 		}
 	}
@@ -450,10 +450,10 @@ func validateVerifiedReserve(exact VerifiedSupportedReserveRow, catalog Supporte
 			*hard = append(*hard, blocker("invalid_economic_fields", reserve, "invalid deposit_limit="+*exact.DepositLimit))
 		}
 	}
-	return targetExpiry
+	return expiry, !expiry.IsZero()
 }
 
-func (r *VerifiedSupportedReserveRow) captureFloatBits() {
+func (r *SupportedReserveStateRow) captureFloatBits() {
 	r.AvailableAmountBits = math.Float64bits(r.AvailableAmount)
 	r.BorrowedAmountBits = math.Float64bits(r.BorrowedAmount)
 	r.TotalSupplyAmountBits = math.Float64bits(r.TotalSupplyAmount)
@@ -463,7 +463,7 @@ func (r *VerifiedSupportedReserveRow) captureFloatBits() {
 	r.SupplyAPYBits = math.Float64bits(r.SupplyAPY)
 }
 
-func (r *VerifiedSupportedReserveRow) restoreFloatBits() {
+func (r *SupportedReserveStateRow) restoreFloatBits() {
 	if r.AvailableAmountBits != 0 {
 		r.AvailableAmount = math.Float64frombits(r.AvailableAmountBits)
 	}
@@ -730,19 +730,6 @@ func minimumTime(values []time.Time) (time.Time, bool) {
 	}
 	return result, true
 }
-func presentTimes(a time.Time, hasA bool, b time.Time, hasB bool, c time.Time, hasC bool) []time.Time {
-	var values []time.Time
-	if hasA {
-		values = append(values, a)
-	}
-	if hasB {
-		values = append(values, b)
-	}
-	if hasC {
-		values = append(values, c)
-	}
-	return values
-}
 func setTimeBounds(minimum, maximum **time.Time, value time.Time) {
 	value = value.UTC()
 	if *minimum == nil || value.Before(**minimum) {
@@ -788,7 +775,7 @@ func deduplicateBlockers(values []MarketMintBlocker) []MarketMintBlocker {
 	return result
 }
 func blockerRank(code string) byte {
-	for index, value := range []string{"missing_catalog", "catalog_source_mismatch", "catalog_fetched_in_future", "catalog_stale", "catalog_insufficient_lifetime", "duplicate_catalog_reserve_identity", "duplicate_verified_reserve_identity", "missing_verified_reserve", "verified_identity_mismatch", "verification_source_mismatch", "verification_commitment_mismatch", "verification_in_future", "verification_stale", "verification_insufficient_lifetime", "invalid_state_identity", "missing_stable_valuation", "mint_decimals_mismatch", "explicit_stale_economics", "invalid_economic_slot_order", "economic_slot_lag_exceeded", "economic_insufficient_lifetime", "invalid_economic_fields", "no_eligible_target"} {
+	for index, value := range []string{"missing_catalog", "catalog_source_mismatch", "catalog_fetched_in_future", "catalog_stale", "catalog_insufficient_lifetime", "duplicate_catalog_reserve_identity", "duplicate_reserve_state_identity", "missing_reserve_state", "reserve_state_identity_mismatch", "source_mismatch", "commitment_mismatch", "invalid_state_identity", "missing_stable_valuation", "mint_decimals_mismatch", "explicit_stale_economics", "invalid_economic_slot_order", "economic_slot_lag_exceeded", "economic_insufficient_lifetime", "invalid_economic_fields", "no_eligible_target"} {
 		if code == value {
 			return byte(index)
 		}
@@ -798,7 +785,7 @@ func blockerRank(code string) byte {
 
 // VerifyDirectObservation binds the monitor-owned state identity to the direct
 // RPC bytes used by this process. A monitor lag or a changed account fails
-// closed and waits for a new confirmed verification row.
+// closed and waits for a newer confirmed row.
 func (e ImmutableMarketEpoch) DurableEvidence() ImmutableMarketEpoch {
 	result := e
 	if e.NewestMarketObservedAt != nil {
@@ -888,6 +875,19 @@ func coverageMints(coverages []MarketMintCoverage) []string {
 	return result
 }
 
+// planDirectReads plans each reserve whose direct read differs from its
+// stream row, at or after the row's slot, on the direct read: the chain at a
+// known slot. The stream row still lists the catalog and stays the published
+// epoch evidence, target eligibility included (sameMintTargets).
+func planDirectReads(snapshot, direct MarketSnapshot) {
+	for address, reserve := range direct.Reserves {
+		if held, ok := snapshot.Reserves[address]; ok && reserve.Slot >= held.Slot && !strings.EqualFold(held.DataHash, reserve.DataHash) {
+			reserve.ObservedAt = direct.ObservedAt
+			snapshot.Reserves[address] = reserve
+		}
+	}
+}
+
 // DirectObservationHashMismatch distinguishes a changing chain observation
 // from invalid identity, slot, or expiry evidence. It does not establish which
 // observation is newer: a hash difference alone cannot prove ordering.
@@ -900,6 +900,11 @@ func (e *DirectObservationHashMismatch) Error() string {
 }
 
 func (e ImmutableMarketEpoch) VerifyDirectObservation(snapshot MarketSnapshot, required ...string) error {
+	// Each reserve's latest row is current only while the observer's stream
+	// is live; a frontier that trails the chain means the rows may be stale.
+	if behind := snapshot.Slot - e.StreamFrontierSlot; behind > maximumReserveEconomicSlotLag {
+		return fmt.Errorf("Kamino stream frontier slot %d is %d slots behind confirmed slot %d", e.StreamFrontierSlot, behind, snapshot.Slot)
+	}
 	var mismatch *DirectObservationHashMismatch
 	for _, address := range required {
 		evidence, ok := e.Reserve(address)

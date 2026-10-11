@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"sort"
 	"strings"
 	"time"
 
@@ -13,10 +12,7 @@ import (
 	klend "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-const (
-	fractionBits   = 60
-	secondsPerYear = 365.25 * 24 * 60 * 60
-)
+const fractionBits = 60
 
 type Target struct {
 	Reserve           string   `json:"reserve"`
@@ -91,7 +87,9 @@ type Diff struct {
 	ChangedFields []string `json:"changed_fields"`
 }
 
-func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Account, slotDurationMS float64) (Snapshot, error) {
+// Decode reads a reserve's snapshot; slotsPerSecond is the chain's measured
+// slot rate its Legacy-basis rates need (kamino.Reserve.Rates).
+func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Account, slotsPerSecond float64) (Snapshot, error) {
 	reserve, err := klend.DecodeReserve(account)
 	if err != nil {
 		return Snapshot{}, err
@@ -111,21 +109,15 @@ func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Acc
 	referrerFees := scaledFraction(klend.U128(reserve.AccumulatedReferrerFeesSF))
 	pendingFees := scaledFraction(klend.U128(reserve.PendingReferrerFeesSF))
 	totalSupply := math.Max(0, available+borrowed-protocolFees-referrerFees-pendingFees)
-	utilization := 0.0
-	if totalSupply > 0 {
-		utilization = borrowed / totalSupply
+	rates, err := reserve.Rates(slotsPerSecond)
+	if err != nil {
+		return Snapshot{}, err
 	}
 	var curve [11]CurvePoint
 	for index, point := range reserve.BorrowRateCurve {
 		curve[index] = CurvePoint{point.UtilizationRateBPS, point.BorrowRateBPS}
 	}
-	curveAPR := borrowCurveAPR(curve, utilization) * (1000.0 / 2.0 / slotDurationMS)
 	hostBPS := reserve.HostFixedInterestRateBPS
-	hostAPR := float64(hostBPS) / 10000.0 * (1000.0 / 2.0 / slotDurationMS)
-	borrowAPR := curveAPR + hostAPR
-	supplyAPR := utilization * curveAPR * (1 - float64(reserve.ProtocolTakeRatePct)/100)
-	borrowAPY := aprToAPY(borrowAPR, slotDurationMS)
-	supplyAPY := aprToAPY(supplyAPR, slotDurationMS)
 	name := strings.TrimRight(string(reserve.Name[:]), "\x00")
 	symbol := target.Symbol
 	if symbol == nil && strings.TrimSpace(name) != "" {
@@ -144,7 +136,7 @@ func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Acc
 	}
 	snapshot := Snapshot{ObservationSchemaVersion: 2, ObservedAt: observedAt, Slot: slot, Reserve: target.Reserve, Market: &marketValue, Symbol: symbol, LiquidityMint: mint, MintDecimals: reserve.MintDecimals,
 		ReserveLastUpdateSlot: reserve.LastUpdateSlot, ReserveLastUpdateStale: reserve.LastUpdateStale, ReservePriceStatus: reserve.PriceStatus, AvailableAmount: available, BorrowedAmount: borrowed, BorrowedAmountSF: borrowedInt.String(), TotalSupplyAmount: totalSupply, MarketPriceUSD: price, MarketPriceLastUpdatedTS: reserve.MarketPriceLastUpdatedTS,
-		TotalSupplyUSDEstimate: totalSupply * price / mintFactor, TotalBorrowUSDEstimate: borrowed * price / mintFactor, Utilization: utilization, BorrowAPR: borrowAPR, SupplyAPR: supplyAPR, BorrowAPY: borrowAPY, SupplyAPY: supplyAPY,
+		TotalSupplyUSDEstimate: totalSupply * price / mintFactor, TotalBorrowUSDEstimate: borrowed * price / mintFactor, Utilization: rates.Utilization, BorrowAPR: rates.BorrowAPR, SupplyAPR: rates.SupplyAPR, BorrowAPY: rates.BorrowAPY, SupplyAPY: rates.SupplyAPY,
 		ProtocolTakeRatePct: reserve.ProtocolTakeRatePct, HostFixedInterestRateBPS: hostBPS, ReserveStatus: reserve.Status, EmergencyMode: reserve.EmergencyMode, LoanToValuePct: reserve.LoanToValuePct, LiquidationThresholdPct: reserve.LiquidationThresholdPct, BorrowFactorPct: reserve.BorrowFactorPct, DepositLimit: reserve.DepositLimit, BorrowLimit: reserve.BorrowLimit,
 		UtilizationLimitBlockBorrowingAbovePct: reserve.UtilizationLimitBlockBorrowingAbovePct, DisableUsageAsCollOutsideEmode: reserve.DisableUsageAsCollOutsideEmode, BorrowLimitOutsideElevationGroup: reserve.BorrowLimitOutsideElevationGroup, BorrowedAmountOutsideElevationGroup: reserve.BorrowedAmountOutsideElevationGroup, OriginationFeeSF: reserve.BorrowFeeSF, FlashLoanFeeSF: reserve.FlashLoanFeeSF, BorrowRateCurve: curve,
 		DepositWithdrawalCap: withdrawalCap(reserve.DepositWithdrawalCap), DebtWithdrawalCap: withdrawalCap(reserve.DebtWithdrawalCap)}
@@ -174,33 +166,6 @@ func Compare(previous, current Snapshot) Diff {
 func scaledFraction(value *big.Int) float64 {
 	result, _ := new(big.Rat).SetFrac(value, new(big.Int).Lsh(big.NewInt(1), fractionBits)).Float64()
 	return result
-}
-func borrowCurveAPR(points [11]CurvePoint, utilization float64) float64 {
-	values := append([]CurvePoint(nil), points[:]...)
-	sort.Slice(values, func(i, j int) bool { return values[i].UtilizationRateBPS < values[j].UtilizationRateBPS })
-	first := values[0]
-	if utilization <= float64(first.UtilizationRateBPS)/10000 {
-		return float64(first.BorrowRateBPS) / 10000
-	}
-	for index := 1; index < len(values); index++ {
-		floor, ceil := values[index-1], values[index]
-		floorU, ceilU := float64(floor.UtilizationRateBPS)/10000, float64(ceil.UtilizationRateBPS)/10000
-		if utilization <= ceilU {
-			if ceilU <= floorU {
-				return float64(ceil.BorrowRateBPS) / 10000
-			}
-			t := (utilization - floorU) / (ceilU - floorU)
-			return (float64(floor.BorrowRateBPS) + float64(int64(ceil.BorrowRateBPS)-int64(floor.BorrowRateBPS))*t) / 10000
-		}
-	}
-	return float64(values[len(values)-1].BorrowRateBPS) / 10000
-}
-func aprToAPY(apr, slotDurationMS float64) float64 {
-	if apr <= 0 {
-		return 0
-	}
-	periods := secondsPerYear * 1000 / slotDurationMS
-	return math.Pow(1+apr/periods, periods) - 1
 }
 func mintSymbol(mint string) string {
 	return map[string]string{"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": "PYUSD", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA": "USDS", "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH": "USDG", "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT": "USDE", "Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN": "SUSDE"}[mint]

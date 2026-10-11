@@ -31,7 +31,10 @@ func observationTestWorker(t *testing.T, batch func(int) (int64, []chain.Account
 			Method string            `json:"method"`
 			Params []json.RawMessage `json:"params"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Params) != 2 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Method == "getRecentPerformanceSamples" {
+			json.NewEncoder(w).Encode(map[string]any{"result": testPerformanceSamples})
+			return
+		} else if err != nil || len(req.Params) != 2 {
 			t.Error("invalid RPC request")
 			w.WriteHeader(400)
 			return
@@ -55,7 +58,7 @@ func observationTestWorker(t *testing.T, batch func(int) (int64, []chain.Account
 		json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"context": map[string]any{"slot": slot}, "value": values}})
 	}))
 	t.Cleanup(server.Close)
-	return &Worker{config: Config{SlotDuration: 400 * time.Millisecond}, rpc: testChain(t, server.URL)}, addresses, identities, &floors
+	return &Worker{rpc: testChain(t, server.URL)}, addresses, identities, &floors
 }
 
 func observationAccounts() []chain.Account {

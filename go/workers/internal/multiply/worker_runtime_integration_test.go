@@ -205,3 +205,11 @@ func TestWorkerCancellationReleasesLeaseAfterOwnedReadJoins(t *testing.T) {
 		t.Fatalf("cancelled observation fabricated an operation %v", err)
 	}
 }
+
+func (forbiddenObservationReader) SlotsPerSecond(context.Context) (float64, error) {
+	return testSlotsPerSecond, nil
+}
+
+func (blockingReader) SlotsPerSecond(context.Context) (float64, error) {
+	return testSlotsPerSecond, nil
+}

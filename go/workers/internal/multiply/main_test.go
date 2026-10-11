@@ -64,3 +64,8 @@ func (f *fakeChain) FinalizedBlockHeight(context.Context) (uint64, uint64, error
 func (f *fakeChain) SignatureState(context.Context, string) (chain.SignatureState, error) {
 	return chain.SignatureState{ContextSlot: f.slot}, nil
 }
+
+func (*fakeChain) SlotsPerSecond(context.Context) (float64, error) { return testSlotsPerSecond, nil }
+
+// testSlotsPerSecond is a mainnet-like measured slot rate.
+const testSlotsPerSecond = 4.6

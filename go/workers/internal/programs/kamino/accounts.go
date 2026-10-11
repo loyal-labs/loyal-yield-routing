@@ -60,6 +60,9 @@ type Reserve struct {
 	Status, ProtocolTakeRatePct, LoanToValuePct, LiquidationThresholdPct uint8
 	UtilizationLimitBlockBorrowingAbovePct                               uint8
 	HostFixedInterestRateBPS                                             uint16
+	InterestRateBasis                                                    uint8 // 0 Legacy (per slot), 1 TrueApr (per second)
+	EarlyRepayRemainingInterestPct                                       uint8
+	TermDebtConfig                                                       [16]byte
 	EmergencyMode, DisableUsageAsCollOutsideEmode                        bool
 	BorrowFeeSF, FlashLoanFeeSF, BorrowFactorPct                         uint64
 	DepositLimit, BorrowLimit, BorrowLimitOutsideElevationGroup          uint64
@@ -102,7 +105,8 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 
 		CollateralMint: key(c, 0), CollateralMintTotalSupply: u64(c, 32), CollateralSupply: key(c, 40),
 
-		Status: k[0], HostFixedInterestRateBPS: binary.LittleEndian.Uint16(k[2:4]), EmergencyMode: k[8] != 0,
+		Status: k[0], HostFixedInterestRateBPS: binary.LittleEndian.Uint16(k[2:4]), EmergencyMode: k[8] != 0, InterestRateBasis: k[9],
+		EarlyRepayRemainingInterestPct: k[7], TermDebtConfig: [16]byte(k[920:936]),
 		ProtocolTakeRatePct: k[14], LoanToValuePct: k[16], LiquidationThresholdPct: k[17],
 		BorrowFeeSF: u64(k, 40), FlashLoanFeeSF: u64(k, 48), BorrowFactorPct: u64(k, 152),
 		DepositLimit: u64(k, 160), BorrowLimit: u64(k, 168), Name: [32]byte(k[176:208]),

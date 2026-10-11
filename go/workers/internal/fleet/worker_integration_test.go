@@ -68,6 +68,8 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 		}
 		writer.Header().Set("content-type", "application/json")
 		switch call.Method {
+		case "getRecentPerformanceSamples":
+			json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": testPerformanceSamples})
 		case "getSlot":
 			json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": 1_000})
 		case "getMultipleAccounts":
@@ -99,18 +101,18 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
+	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", PollInterval: time.Second}
 	config.DelegatedSigner = delegatedSigner
 	registry := prometheus.NewRegistry()
 	worker, err := NewWorker(config, store, testChain(t, server.URL), engine.NewFacts(registry))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceState, err := DecodeKaminoSourceReserve(&sourceAccount, source, 1_000, config.SlotDuration)
+	sourceState, err := DecodeKaminoSourceReserve(&sourceAccount, source, 1_000, 2.5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	targetState, err := DecodeKaminoReserve(&targetAccount, target, 1_000, config.SlotDuration)
+	targetState, err := DecodeKaminoReserve(&targetAccount, target, 1_000, 2.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +122,7 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	// no routable reserves. Healthy USDC planning must continue independently.
 	epoch.CatalogReserveCount++
 	epoch.MintCoverage = append(epoch.MintCoverage, MarketMintCoverage{
-		Mint: USDTMint, CatalogReserveCount: 1, Blockers: []MarketMintBlocker{{Code: "missing_verified_reserve", Detail: "test blocked mint"}},
+		Mint: USDTMint, CatalogReserveCount: 1, Blockers: []MarketMintBlocker{{Code: "missing_reserve_state", Detail: "test blocked mint"}},
 	})
 	epoch.Fingerprint = epochFingerprint(epoch.Reserves, sortedUnique(coverageMints(epoch.MintCoverage)), epoch.CatalogFingerprint, epoch.MintCoverage)
 	epoch.OptimizerEpochID = positiveEpochID(epoch.Fingerprint)

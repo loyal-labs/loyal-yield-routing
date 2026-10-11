@@ -41,7 +41,7 @@ func configureRetailForTest(t *testing.T) {
 	t.Helper()
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
 	for name, value := range map[string]string{
-		"RETAIL_MODE": "active", "RETAIL_TIMESCALE_SCHEMA": "kamino", "RETAIL_SLOT_DURATION": "400ms", "RETAIL_CROSS_MINT_ENABLED": "false", "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER": "false",
+		"RETAIL_MODE": "active", "RETAIL_TIMESCALE_SCHEMA": "kamino", "RETAIL_CROSS_MINT_ENABLED": "false", "EARN_ROUTER_ENABLE_CROSS_MINT_JUPITER": "false",
 	} {
 		t.Setenv(name, value)
 	}
@@ -118,10 +118,10 @@ func TestRetailConfigurationIsScopedBoundedAndSecretSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.slotDuration != 400*time.Millisecond || cfg.fleetConfig().SlotDuration != cfg.slotDuration || !cfg.fleetConfig().FusedExecute {
-		t.Fatal("planner/executor clocks or fused preparation drifted")
+	if !cfg.fleetConfig().FusedExecute {
+		t.Fatal("fused preparation drifted")
 	}
-	cases := []struct{ name, value string }{{"RETAIL_SLOT_DURATION", "0s"}, {"RETAIL_SLOT_DURATION", "11s"}, {"RETAIL_TIMESCALE_SCHEMA", "kamino;test-secret"}, {"RETAIL_SOLANA_RPC_URL", "test-secret"}, {"RETAIL_DELEGATE_KEYPAIR", "test-secret"}, {"RETAIL_CROSS_MINT_ENABLED", "test-secret"}}
+	cases := []struct{ name, value string }{{"RETAIL_TIMESCALE_SCHEMA", "kamino;test-secret"}, {"RETAIL_SOLANA_RPC_URL", "test-secret"}, {"RETAIL_DELEGATE_KEYPAIR", "test-secret"}, {"RETAIL_CROSS_MINT_ENABLED", "test-secret"}}
 	for _, tc := range cases {
 		t.Run(tc.name+tc.value, func(t *testing.T) {
 			configureRetailForTest(t)

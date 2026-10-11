@@ -30,7 +30,7 @@ environment. The release identity is stamped at link time
 
 The engine selects `LOYAL_WORKER_SCOPE=retail` or `backyard`; each instance
 requires `LOYAL_WORKER_INSTANCE`. Retail requires
-explicit `RETAIL_MODE=active`, `RETAIL_TIMESCALE_SCHEMA`, `RETAIL_SLOT_DURATION`,
+explicit `RETAIL_MODE=active`, `RETAIL_TIMESCALE_SCHEMA`
 and the credentials
 `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`,
 `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR` and `RETAIL_FEE_PAYER_KEYPAIR`. The current Autodeposit
@@ -70,8 +70,8 @@ line ported from `origin/feat/voltr-rwa-selector`. It requires the credentials
 `BACKYARD_DATABASE_URL` (the direct, non-pooler DSN: it also holds the family
 lock), `BACKYARD_SOLANA_RPC_URL` and `BACKYARD_POLICY_KEYPAIR`; an optional
 `JUPITER_API_KEY` credential selects the keyed Jupiter API. The selector
-collector is off by default; `BACKYARD_RWA_SELECTOR_LIVE=1` enables it and then requires the
-`BACKYARD_TIMESCALE_DATABASE_URL` credential. `BACKYARD_RWA_PILOT_CANARY_ENTRY`
+collector is off by default; `BACKYARD_RWA_SELECTOR_LIVE=1` enables it; it reads lane reserves
+from Backyard's own account view. `BACKYARD_RWA_PILOT_CANARY_ENTRY`
 keeps its existing meaning. One-shot operator commands run as
 `loyal-engine backyard <command>` (for example `clear-hold --reason "<text>"`)
 with the same credentials.

@@ -136,7 +136,7 @@ func TestRealKLendCrossMintFirstSendRechecksExactOldWithdrawal(t *testing.T) {
 	}
 	fields["policy_bindings"], _ = json.Marshal(plan.Bindings)
 	q.Movement.ExecutionPlan, _ = json.Marshal(fields)
-	r := &Revalidator{signer: signer, slotDuration: 400 * time.Millisecond}
+	r := &Revalidator{signer: signer}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	route, err := BuildCrossMintLegs(KaminoSameMintRouteRequest{Vault: q.Movement.VaultPubkey, Source: bank.source.Position, Target: bank.target.Position, WithdrawCollateralAmount: 999, DepositLiquidityAmount: 999})
