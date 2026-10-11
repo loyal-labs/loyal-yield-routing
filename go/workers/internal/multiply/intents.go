@@ -31,7 +31,7 @@ func (s *Store) pendingIntents(ctx context.Context, settings, vault string) ([]I
         SELECT signature, instruction_index, kind, request_id, amount_raw::text, destination, slot, observed_at
         FROM loyal_yield.earn_max_intents
         WHERE settings=$1 AND vault=$2 AND status='pending'
-        ORDER BY slot, signature, instruction_index`, settings, vault)
+        ORDER BY slot, transaction_index, instruction_index`, settings, vault)
 	if err != nil {
 		return nil, err
 	}

@@ -195,3 +195,48 @@ func TestEarnMaxWithdrawMemoIsAppliedAndItsClaimReconciles(t *testing.T) {
 		t.Fatalf("claim not reconciled %v", err)
 	}
 }
+
+// A withdraw and its cancel land in one slot as separate transactions, the
+// cancel's signature sorting first: they apply in block order, withdraw then
+// cancel.
+func TestSameSlotIntentsApplyInBlockOrder(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	settings := solana.NewWallet().PublicKey()
+	route := seedEarnMaxRoute(t, pool, settings, 1_000_000)
+	app := streamApplication(t, pool)
+	located := func(update *pb.SubscribeUpdate, first byte, index uint64) *pb.SubscribeUpdate {
+		info := update.GetTransaction().GetTransaction()
+		info.Signature[0], info.Index = first, index
+		return update
+	}
+	destination := solana.NewWallet().PublicKey().String()
+	// A leading zero byte encodes as '1', which sorts before every other
+	// base58 leading character.
+	cancelUpdate := located(memoUpdate(950, settings, "loyal:earn-max:v2:cancel:same-slot-request"), 0, 7)
+	withdrawUpdate := located(memoUpdate(950, settings, "loyal:earn-max:v2:withdraw:same-slot-request:5:"+destination), 0xff, 3)
+	for _, update := range []*pb.SubscribeUpdate{cancelUpdate, withdrawUpdate} {
+		if err := app.HandlePolicyTransaction(ctx, update); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := multiply.NewStoreFromPool(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := store.LeaseRoute(ctx, route.RouteKey, "multiply-worker", time.Now().Add(time.Minute))
+	if err != nil || lease == nil {
+		t.Fatalf("lease %v %v", lease, err)
+	}
+	if moved, err := store.ApplyPendingIntents(ctx, lease, route, "1000000"); err != nil || !moved {
+		t.Fatalf("apply %v %v", moved, err)
+	}
+	if rows := intentRows(t, pool, settings); len(rows) != 2 || rows[0] != "withdraw:same-slot-request:5:applied" && rows[1] != "withdraw:same-slot-request:5:applied" ||
+		rows[0] != "cancel:same-slot-request:max:applied" && rows[1] != "cancel:same-slot-request:max:applied" {
+		t.Fatalf("decided intents %v", rows)
+	}
+	saved, err := store.LoadRouteState(ctx, route.RouteKey)
+	if err != nil || saved.State.Goal != multiply.GoalDeploy || saved.State.Withdrawal != nil {
+		t.Fatalf("route after withdraw then cancel: %v", err)
+	}
+}

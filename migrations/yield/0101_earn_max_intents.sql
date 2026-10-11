@@ -2,7 +2,10 @@
 -- routes, one row per memo instruction. The observer inserts each as pending;
 -- the multiply worker, which owns multiply_route_states, applies or refuses it
 -- under its route lease and records the decision. amount_raw NULL is a "max"
--- withdrawal, resolved from the route's equity when applied.
+-- withdrawal, resolved from the route's equity when applied. Intents apply
+-- in chain order: slot, transaction_index (the transaction's index in its
+-- block) and instruction_index. transaction_index is NULL only on the intents
+-- backfilled below, which applied before it was recorded.
 CREATE TABLE loyal_yield.earn_max_intents (
     signature TEXT NOT NULL,
     instruction_index INTEGER NOT NULL CHECK (instruction_index >= 0),
@@ -13,6 +16,7 @@ CREATE TABLE loyal_yield.earn_max_intents (
     amount_raw NUMERIC(20, 0) CHECK (amount_raw > 0),
     destination TEXT,
     slot BIGINT NOT NULL CHECK (slot > 0),
+    transaction_index BIGINT CHECK (transaction_index >= 0),
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'applied', 'refused')),
     refusal_reason TEXT,
     observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -21,11 +25,12 @@ CREATE TABLE loyal_yield.earn_max_intents (
     CHECK ((kind = 'withdraw') = (destination IS NOT NULL)),
     CHECK (kind = 'withdraw' OR amount_raw IS NULL),
     CHECK ((status = 'refused') = (refusal_reason IS NOT NULL)),
-    CHECK ((status = 'pending') = (decided_at IS NULL))
+    CHECK ((status = 'pending') = (decided_at IS NULL)),
+    CHECK (transaction_index IS NOT NULL OR status = 'applied')
 );
 
 CREATE INDEX earn_max_intents_pending_idx
-    ON loyal_yield.earn_max_intents (settings, slot, signature, instruction_index)
+    ON loyal_yield.earn_max_intents (settings, slot, transaction_index, instruction_index)
     WHERE status = 'pending';
 
 -- Intents applied before this table existed become applied rows, so a memo

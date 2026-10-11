@@ -11,8 +11,8 @@ import (
 func seedIntent(t *testing.T, store *Store, route *RouteState, signature, kind, requestID string, amount *string, destination *string, slot int64) {
 	t.Helper()
 	if _, err := store.Pool().Exec(context.Background(), `
-        INSERT INTO loyal_yield.earn_max_intents (signature, instruction_index, settings, vault, kind, request_id, amount_raw, destination, slot, observed_at)
-        VALUES ($1, 256, $2, $3, $4, $5, $6::numeric, $7, $8, now() - interval '1 minute')`,
+        INSERT INTO loyal_yield.earn_max_intents (signature, instruction_index, settings, vault, kind, request_id, amount_raw, destination, slot, transaction_index, observed_at)
+        VALUES ($1, 256, $2, $3, $4, $5, $6::numeric, $7, $8, 0, now() - interval '1 minute')`,
 		signature, route.Settings, route.Vault, kind, requestID, amount, destination, slot); err != nil {
 		t.Fatal(err)
 	}
@@ -193,5 +193,27 @@ func TestPendingCancelLeasesAClaimableRouteAndApplies(t *testing.T) {
 	}
 	if status, _ := intentDecision(t, store, signature); status != "applied" {
 		t.Fatalf("intent %s", status)
+	}
+}
+
+// A "max" withdrawal of a route with no equity has nothing to withdraw.
+func TestWorkerRefusesMaxWithdrawalWithoutEquity(t *testing.T) {
+	store := integrationStore(t)
+	route, topology := runtimeFixtureRoute(t, store)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	reader := emptyBankReader(topology)
+	reader.accounts[topology.ClaimCustody.String()] = observedToken(topology.ClaimCustody, USDCMint, topology.Vault, 0)
+	signature := fmt.Sprintf("max-empty-%d", time.Now().UnixNano())
+	seedIntent(t, store, route, signature, "withdraw", "request-max-empty", nil, text(fixtureKey(227).String()), 600)
+	if _, err := intentWorker(t, store, route, topology, reader).Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if status, reason := intentDecision(t, store, signature); status != "refused" || reason == nil || *reason != "nothing_to_withdraw" {
+		t.Fatalf("intent %s %v", status, reason)
+	}
+	saved, err := store.LoadRouteState(ctx, route.RouteKey)
+	if err != nil || saved.State.Goal != GoalIdle || saved.State.Withdrawal != nil {
+		t.Fatalf("route moved %v", err)
 	}
 }

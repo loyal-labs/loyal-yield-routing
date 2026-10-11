@@ -31,8 +31,10 @@ type Memo struct {
 // PolicyTransaction is one successful transaction's Squads and
 // Subscriptions instructions plus its Earn MAX memos.
 type PolicyTransaction struct {
-	Signature    string
-	Slot         uint64
+	Signature string
+	Slot      uint64
+	// Index is the transaction's position in its block.
+	Index        uint64
 	Signers      []solana.PublicKey
 	Instructions []squads.Instruction
 	Memos        []Memo
@@ -121,7 +123,7 @@ func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot
 			table.keys = append(table.keys, solana.PublicKeyFromBytes(key))
 		}
 	}
-	out := &PolicyTransaction{Signature: signature, Slot: slot, Signers: table.signers()}
+	out := &PolicyTransaction{Signature: signature, Slot: slot, Index: info.GetIndex(), Signers: table.signers()}
 	for outer, compiled := range message.GetInstructions() {
 		index := int(compiled.GetProgramIdIndex())
 		if index >= len(table.keys) {
@@ -290,9 +292,9 @@ func (s *Store) RecordEarnMaxIntent(ctx context.Context, settings, vault string,
 	}
 	_, err := s.pool.Exec(ctx, `
         INSERT INTO loyal_yield.earn_max_intents
-            (signature, instruction_index, settings, vault, kind, request_id, amount_raw, destination, slot)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::numeric, $8, $9)
+            (signature, instruction_index, settings, vault, kind, request_id, amount_raw, destination, slot, transaction_index)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::numeric, $8, $9, $10)
         ON CONFLICT DO NOTHING`,
-		transaction.Signature, int32(index), settings, vault, kind, requestID, amount, destination, int64(transaction.Slot))
+		transaction.Signature, int32(index), settings, vault, kind, requestID, amount, destination, int64(transaction.Slot), int64(transaction.Index))
 	return true, err
 }
