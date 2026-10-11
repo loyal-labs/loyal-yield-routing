@@ -178,7 +178,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 				if levDecisionLog.due(time.Now(), decision) {
 					_, _ = fmt.Fprintln(out, decision.logLine())
 				}
-				if decision.changesTarget(observed.Snapshot.LeverageTargetLevel) || decision.BorrowRaw != observed.Snapshot.LeverageApprovedBorrowRaw || decision.SourceDebtRaw != observed.Snapshot.LeverageSourceDebtRaw || observed.Snapshot.LeverageBorrowOperationID != "" {
+				if decision.storeChanges(observed.Snapshot) {
 					target := LeverageTarget{Lane: decision.Lane, Level: decision.Next, SpreadBPS: decision.SpreadBPS, DecidedAt: time.Now().UTC(), BorrowRaw: decision.BorrowRaw, SourceDebtRaw: decision.SourceDebtRaw}
 					if err := database.RecordLeverageTarget(ctx, productionRouteKey, target, observed.planning.generation); err != nil {
 						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: leverage target not stored: %s\n", sanitizedSelectorEvaluateFailure(err))

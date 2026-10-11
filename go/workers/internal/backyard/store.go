@@ -761,10 +761,13 @@ func (d *Database) recordDecisionTx(
 	if decision.Reason == leverageUpReason {
 		targets, err := decodeLeverageTargets(setupState["leverageTargets"])
 		target := leverageTargetFor(targets, decision.StrategyKey)
-		if err != nil || target == nil || target.Lane != decision.StrategyKey || target.OperationID != "" || target.BorrowRaw != uint64(decision.AmountRaw) {
+		// The decision borrows this tick's capacity-sized part of the
+		// approval; binding narrows the approval to exactly that amount, so
+		// the entry fence still matches one receive to one operation.
+		if err != nil || target == nil || target.Lane != decision.StrategyKey || target.OperationID != "" || decision.AmountRaw < leverageMinimumBorrowRaw || uint64(decision.AmountRaw) > target.BorrowRaw {
 			return DecisionRecord{}, budgetHoldFrom(err, "leverage_authorization_consumed_or_changed")
 		}
-		target.OperationID = operationID
+		target.BorrowRaw, target.OperationID = uint64(decision.AmountRaw), operationID
 		raw, err := json.Marshal(target)
 		if err != nil {
 			return DecisionRecord{}, err

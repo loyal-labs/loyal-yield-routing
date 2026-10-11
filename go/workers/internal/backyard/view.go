@@ -64,6 +64,13 @@ type View struct {
 	sessionCtx context.Context
 	replaying  bool
 	late       int
+
+	// The worker's room watches (leverage_room_watch.go): reserve address
+	// to watches, each watch's last open state by lane|reserve, and the
+	// callback every recomputation reports to.
+	roomWatches map[string][]roomWatch
+	roomOpen    map[string]bool
+	onRoom      func(roomUpdate)
 }
 
 type viewAccount struct {
@@ -275,6 +282,9 @@ func (v *View) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
 func (v *View) apply(write viewAccount) {
 	if held, ok := v.accounts[write.Address]; !ok || write.supersedes(held) {
 		v.accounts[write.Address] = write
+		if ws := v.roomWatches[write.Address]; len(ws) > 0 {
+			v.observeRoom(ws, write, true)
+		}
 	}
 }
 

@@ -72,6 +72,9 @@ type tickRuntime struct {
 	// the spend is prepared; nil keeps the serial custodyOwnershipProof.
 	prefetchCustodyProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig) custodyProofFinisher
 	recordBudgetHold     func(context.Context, string, *BudgetHold) error
+	// watchRoom hands the account view the reserves this tick waits on
+	// (leverage_room_watch.go); nil without a streaming view.
+	watchRoom func([]roomWatch, func(roomUpdate))
 }
 
 // productionJournal is the journal evidence the production observe path merges
@@ -296,6 +299,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		refreshUnwind: func(ctx context.Context) error {
 			return database.refreshSelectorUnwind(ctx, rpc, view, manifest, state.observe)
 		},
+		watchRoom: view.WatchRoom,
 		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision) (Observation, KaminoInitializationRequest, error) {
 			return prepareKaminoInitialization(ctx, rpc, view, m, d, state.observe)
 		},
@@ -442,6 +446,10 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	healthObservation = observation
 	backyardEvents.noteSnapshot(observation.Snapshot)
+	backyardEvents.leverageObserved(heldLaneLeverage(observation))
+	if w.runtime.watchRoom != nil {
+		w.runtime.watchRoom(leverageRoomWatches(observation), w.roomObserved)
+	}
 	if w.runtime.completeUnwind != nil {
 		completed, err := w.runtime.completeUnwind(ctx, observation)
 		if err != nil {

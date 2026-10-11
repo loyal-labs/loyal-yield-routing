@@ -19,6 +19,10 @@ import (
 //	loyal_fleet_capacity_replans_total{reason}           moves dropped at execution because they no longer fit
 //	loyal_fleet_simulation_failures_total{stage}         execution simulations that failed; the move retries
 //	loyal_fleet_movable_capital_usd{reserve}             capital in a reserve with an eligible move this cycle
+//	loyal_backyard_leverage_borrow_room_usd{lane}        a held lane's debt reserve borrow room, at its oracle price
+//	loyal_backyard_leverage_gap{lane}                    a held lane's stored leverage target minus its leverage
+//	loyal_backyard_leverage_up_landed_total{lane}        leverage_up borrows that landed
+//	loyal_backyard_leverage_reaction_seconds             first observed room to the leverage_up borrow landing
 type Facts struct {
 	withdrawalAttention *prometheus.GaugeVec
 	withdrawalObserved  *prometheus.GaugeVec
@@ -32,6 +36,10 @@ type Facts struct {
 	fleetReplans        *prometheus.CounterVec
 	fleetSimulations    *prometheus.CounterVec
 	fleetMovable        *prometheus.GaugeVec
+	leverageRoom        *prometheus.GaugeVec
+	leverageGap         *prometheus.GaugeVec
+	leverageLanded      *prometheus.CounterVec
+	leverageReaction    prometheus.Histogram
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -72,8 +80,22 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		fleetMovable: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_fleet_movable_capital_usd", Help: "Capital in a reserve whose move to a better reserve cleared every planner check this cycle.",
 		}, []string{"reserve"}),
+		leverageRoom: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_leverage_borrow_room_usd", Help: "A held Earn Max lane's debt reserve borrow room in USD at the reserve's oracle price, recomputed on every reserve update.",
+		}, []string{"lane"}),
+		leverageGap: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_leverage_gap", Help: "A held Earn Max lane's stored leverage target minus its actual leverage (0 at or above target).",
+		}, []string{"lane"}),
+		leverageLanded: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loyal_backyard_leverage_up_landed_total", Help: "Earn Max leverage_up borrows that landed and reconciled.",
+		}, []string{"lane"}),
+		leverageReaction: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: "loyal_backyard_leverage_reaction_seconds", Help: "From the first observed borrow room at or above the minimum, on a lane below its leverage target, to its leverage_up borrow landing.",
+			Buckets: []float64{1, 2, 5, 10, 15, 30, 60, 120, 300, 900, 3600},
+		}),
 	}
-	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable)
+	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
+		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction)
 	return f
 }
 
@@ -88,6 +110,36 @@ func (f *Facts) FleetSimulationFailed(stage string) { f.fleetSimulations.WithLab
 // cycle, zero included, so a reserve that stops being movable reads 0.
 func (f *Facts) FleetMovableCapital(reserve string, usd float64) {
 	f.fleetMovable.WithLabelValues(reserve).Set(usd)
+}
+
+// BackyardLeverageRoom sets a held lane's borrow room in USD.
+func (f *Facts) BackyardLeverageRoom(lane string, usd float64) {
+	f.leverageRoom.WithLabelValues(lane).Set(usd)
+}
+
+// BackyardLeverageGap sets a held lane's leverage gap; a lane without a
+// stored target has no gap series (not 0).
+func (f *Facts) BackyardLeverageGap(lane string, gap float64, targeted bool) {
+	if !targeted {
+		f.leverageGap.DeleteLabelValues(lane)
+		return
+	}
+	f.leverageGap.WithLabelValues(lane).Set(gap)
+}
+
+// BackyardLeverageLaneGone removes a lane that is no longer held.
+func (f *Facts) BackyardLeverageLaneGone(lane string) {
+	f.leverageGap.DeleteLabelValues(lane)
+	f.leverageRoom.DeleteLabelValues(lane)
+}
+
+// BackyardLeverageUpLanded counts a landed leverage_up borrow and, when the
+// room it used was observed opening, its reaction time.
+func (f *Facts) BackyardLeverageUpLanded(lane string, reaction time.Duration, known bool) {
+	f.leverageLanded.WithLabelValues(lane).Inc()
+	if known {
+		f.leverageReaction.Observe(reaction.Seconds())
+	}
 }
 
 // BackyardWithdrawalHealth is called only after the display state commits.

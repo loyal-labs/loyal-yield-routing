@@ -31,9 +31,6 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 	if err := validateKaminoOracleAge(clockUnixTimestamp(accounts), collateral, debt); err != nil {
 		return 0, err
 	}
-	if debtAccount.Data[kaminoReserveConfigOffset+7] != 0 || !allZero(debtAccount.Data[kaminoReserveConfigOffset+920:kaminoReserveConfigOffset+936]) {
-		return 0, nil
-	}
 	obligation := accountAt(accounts, route.Kamino.Obligation)
 	if obligation.Address != route.Kamino.Obligation {
 		return 0, fmt.Errorf("pair_capacity_obligation_missing")
@@ -46,7 +43,21 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 			return 0, nil
 		}
 	}
-	if collateralAccount.Data[kaminoDisableCrossCollateralOffset] != 0 {
+	if collateralAccount.Data[kaminoDisableCrossCollateralOffset] != 0 ||
+		collateralAccount.Data[kaminoReserveStatusOffset] != 0 || collateralAccount.Data[kaminoReserveEmergencyModeOffset] != 0 {
+		return 0, nil
+	}
+	return kaminoDebtReserveRoom(debtAccount, debt, clockUnixTimestamp(accounts))
+}
+
+// kaminoDebtReserveRoom is the debt reserve's own share of the additional
+// debt room: what any obligation could still borrow from it at chain time
+// now (borrowing disabled or unmodelled, queued liquidity, weighted debt,
+// the outside-elevation-group and borrow limits, the utilization limit, the
+// daily net-borrow cap, available liquidity, status). It reads one account,
+// so the account view can recompute it on every update of the reserve.
+func kaminoDebtReserveRoom(debtAccount ConfirmedAccount, debt decodedKaminoReserve, now int64) (uint64, error) {
+	if debtAccount.Data[kaminoReserveConfigOffset+7] != 0 || !allZero(debtAccount.Data[kaminoReserveConfigOffset+920:kaminoReserveConfigOffset+936]) {
 		return 0, nil
 	}
 	// Newer KLend consumes the first trailing padding u64 for queued collateral.
@@ -77,14 +88,13 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 	if err != nil {
 		return 0, err
 	}
-	daily, err := kaminoNetBorrowHeadroom(debtAccount.Data[kaminoDebtWithdrawalCapOffset:kaminoDebtWithdrawalCapOffset+32], clockUnixTimestamp(accounts))
+	daily, err := kaminoNetBorrowHeadroom(debtAccount.Data[kaminoDebtWithdrawalCapOffset:kaminoDebtWithdrawalCapOffset+32], now)
 	if err != nil {
 		return 0, err
 	}
 	available := binary.LittleEndian.Uint64(debtAccount.Data[224:232])
 	debtRoom := min(available, outsideLimit-outsideUsed, debt.borrowLimitRaw-debt.borrowedRaw, utilization, daily)
-	if collateralAccount.Data[kaminoReserveStatusOffset] != 0 || debtAccount.Data[kaminoReserveStatusOffset] != 0 ||
-		collateralAccount.Data[kaminoReserveEmergencyModeOffset] != 0 || debtAccount.Data[kaminoReserveEmergencyModeOffset] != 0 {
+	if debtAccount.Data[kaminoReserveStatusOffset] != 0 || debtAccount.Data[kaminoReserveEmergencyModeOffset] != 0 {
 		return 0, nil
 	}
 	return min(debtRoom, math.MaxInt64), nil
@@ -127,12 +137,17 @@ func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route Ru
 	if err != nil {
 		return 0, err
 	}
-	receive = min(receive, desired, depositRoom)
+	return leverageStepWithinRisk(p, accounts, route, min(receive, desired, depositRoom), rate)
+}
+
+// leverageStepWithinRisk caps a receive at the lane's protocol collateral LTV
+// (which can be stricter than pilot 50%) and at 50% instant LTV including the
+// borrow fee; zero below the minimum borrow.
+func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, receive, rate uint64) (uint64, error) {
 	half, err := p.targetLTVBorrowRaw()
 	if err != nil {
 		return 0, err
 	}
-	// The lane's own protocol collateral LTV can be stricter than pilot 50%.
 	ltv := uint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset])
 	protocol := new(big.Int).Mul(new(big.Int).SetUint64(half), new(big.Int).SetUint64(ltv))
 	protocol.Quo(protocol, big.NewInt(50))
@@ -145,6 +160,23 @@ func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route Ru
 		return 0, nil
 	}
 	return receive, nil
+}
+
+// desiredLeverageBorrow is the whole step to level the position wants, inside
+// its own risk limits but not bounded by the debt reserve's room or the
+// collateral reserve's deposit room. It is what an up move is priced at: no
+// executable borrow is larger, so none pays a higher rate. The worker borrows
+// this tick's capacity-sized part of it.
+func desiredLeverageBorrow(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, level int64) (uint64, error) {
+	rate := binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
+	if rate >= uint64(1)<<60 {
+		return 0, nil
+	}
+	desired, err := p.leverageUpBorrowRaw(level)
+	if err != nil {
+		return 0, nil
+	}
+	return leverageStepWithinRisk(p, accounts, route, desired, rate)
 }
 
 func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) {
@@ -160,6 +192,22 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 		return
 	}
 	b, err := capacitySizedBorrow(p, accounts, route, 175)
+	if err != nil {
+		return
+	}
+	wanted150, err := desiredLeverageBorrow(p, accounts, route, 150)
+	if err != nil {
+		return
+	}
+	wanted175, err := desiredLeverageBorrow(p, accounts, route, 175)
+	if err != nil {
+		return
+	}
+	debtReserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
+	if err != nil {
+		return
+	}
+	utilizationHeadroom, err := utilizationBorrowHeadroomRaw(debtReserve)
 	if err != nil {
 		return
 	}
@@ -179,6 +227,31 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 	s.BorrowFeeRate = binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
 	s.BorrowCapacityKnown, s.AdditionalDebtRoomRaw = true, room
 	s.LeverageBorrow150Raw, s.LeverageBorrow175Raw = a, b
+	s.LeverageDesired150Raw, s.LeverageDesired175Raw = wanted150, wanted175
+	s.BorrowUtilizationHeadroomRaw = utilizationHeadroom
+}
+
+// leverageRateDebtRaw is the extra debt an up move is rate-priced at: the
+// whole step, but never past the debt reserve's utilization borrow limit.
+// KLend refuses a borrow that would cross it, so every executable part of the
+// step borrows at or below the curve rate there.
+func leverageRateDebtRaw(s Snapshot, debtRaw uint64) uint64 {
+	return min(debtRaw, s.BorrowUtilizationHeadroomRaw)
+}
+
+// leverageDesiredRaw is the whole step to level (see desiredLeverageBorrow);
+// zero when capacity is unknown.
+func leverageDesiredRaw(s Snapshot, level float64) uint64 {
+	if !s.BorrowCapacityKnown {
+		return 0
+	}
+	if level == 1.5 {
+		return s.LeverageDesired150Raw
+	}
+	if level == 1.75 {
+		return s.LeverageDesired175Raw
+	}
+	return 0
 }
 
 func leverageBorrowCeiling(s Snapshot, level float64) uint64 {
@@ -260,12 +333,24 @@ func validateCapacityBorrow(accounts []ConfirmedAccount, route RuntimeRoute, rec
 	return nil
 }
 
+// leverageBorrowReceive is this tick's leverage_up borrow: the stored
+// approval, sized down to this tick's capacity (room, deposit room, risk), so
+// room that opens is used on the tick that sees it, not after the next
+// selector sample. Zero below the minimum borrow.
 func leverageBorrowReceive(s Snapshot, level float64) uint64 {
-	n := s.LeverageApprovedBorrowRaw
-	if s.LeverageBorrowOperationID != "" || n < leverageMinimumBorrowRaw || s.PositionDebtRaw < 0 || !borrowDebtMatches(uint64(s.PositionDebtRaw), s.LeverageSourceDebtRaw) || n > leverageBorrowCeiling(s, level) {
+	if !leverageApprovalLive(s) {
+		return 0
+	}
+	n := min(s.LeverageApprovedBorrowRaw, leverageBorrowCeiling(s, level))
+	if n < leverageMinimumBorrowRaw {
 		return 0
 	}
 	return n
+}
+
+// leverageApprovalLive: an unconsumed approval decided from this position's debt.
+func leverageApprovalLive(s Snapshot) bool {
+	return s.LeverageBorrowOperationID == "" && s.LeverageApprovedBorrowRaw >= leverageMinimumBorrowRaw && s.PositionDebtRaw >= 0 && borrowDebtMatches(uint64(s.PositionDebtRaw), s.LeverageSourceDebtRaw)
 }
 
 // Match ObserveBudgetTokenPrice: bridge USDC is par; non-USDC debt and

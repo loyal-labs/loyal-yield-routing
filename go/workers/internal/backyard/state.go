@@ -199,17 +199,25 @@ type Snapshot struct {
 	LeverageTargetLevel float64
 	// Same-batch exact receive ceilings for the next 1.5x/1.75x step.
 	// Zero known room holds borrowing, never targets repayment of existing debt.
-	LeverageBorrowOperationID    string
-	LeverageApprovedBorrowRaw    uint64
-	LeverageSourceDebtRaw        uint64
-	BorrowCapacityKnown          bool
-	AdditionalDebtRoomRaw        uint64
-	LeverageBorrow150Raw         uint64
-	BorrowDebtPriceSF            [16]byte
-	BorrowUSDCPriceSF            [16]byte
-	BorrowDebtDecimals           uint8
-	BorrowFeeRate                uint64
-	LeverageBorrow175Raw         uint64
+	LeverageBorrowOperationID string
+	LeverageApprovedBorrowRaw uint64
+	LeverageSourceDebtRaw     uint64
+	BorrowCapacityKnown       bool
+	AdditionalDebtRoomRaw     uint64
+	LeverageBorrow150Raw      uint64
+	BorrowDebtPriceSF         [16]byte
+	BorrowUSDCPriceSF         [16]byte
+	BorrowDebtDecimals        uint8
+	BorrowFeeRate             uint64
+	LeverageBorrow175Raw      uint64
+	// LeverageDesired150Raw/175Raw are the whole step to the level inside
+	// the position's risk limits, not bounded by reserve room: the size an
+	// up move is priced and approved at.
+	LeverageDesired150Raw uint64
+	LeverageDesired175Raw uint64
+	// BorrowUtilizationHeadroomRaw is the debt reserve's room to its
+	// utilization borrow limit (MaxUint64 without a limit).
+	BorrowUtilizationHeadroomRaw uint64
 	PartialWithdrawalLTVBPS      int64
 	PartialWithdrawalOperationID string
 	// TopupDepositRoomRaw is the collateral reserve's remaining deposit limit,
