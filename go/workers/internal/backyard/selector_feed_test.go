@@ -17,11 +17,18 @@ func nativeFixture(t *testing.T) (RuntimeRoute, time.Time, string) {
 	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
 	return r, now, `{"` + r.Kamino.CollateralReserve + `":{"token":"` + r.Kamino.CollateralMint + `","underlyingApy":{"current":"0.04965083163","sourceType":"yield-feed","sourceMint":"` + r.Kamino.CollateralMint + `","observedAt":"2026-09-15T23:00:13.804Z"},"borrowCaps":{"globalDebt":{"capacity":"0"}},"actualAvailableLiquidityUsd":"0"}}`
 }
-func TestNativeYieldAPIContractAndMissingValues(t *testing.T) {
+
+// realizedFixture is a lane's realized native yield, observed an hour ago.
+func realizedFixture(lane string, now time.Time, apy float64) map[string]nativeYield {
+	return map[string]nativeYield{lane: {APY: apy, ObservedAt: now.Add(-time.Hour), EvidenceID: "realized"}}
+}
+
+// The yield feed is display only, but what it reports is still read exactly.
+func TestFeedYieldAPIContractAndMissingValues(t *testing.T) {
 	t.Parallel()
 	r, now, body := nativeFixture(t)
-	got, err := parseNativeYields([]byte(body), []RuntimeRoute{r}, now, 2*time.Hour)
-	if err != nil || got[r.Lane].APY != .04965083163 {
+	got, err := parseFeedYields([]byte(body), []RuntimeRoute{r}, now, 2*time.Hour)
+	if err != nil || got[r.Lane] != .04965083163 {
 		t.Fatalf("official decimal string: %+v %v", got, err)
 	}
 	for _, changed := range []string{
@@ -32,18 +39,18 @@ func TestNativeYieldAPIContractAndMissingValues(t *testing.T) {
 		strings.Replace(body, "2026-09-15T23:00:13.804Z", "2026-09-16T01:00:00Z", 1),
 		strings.Replace(body, "2026-09-15T23:00:13.804Z", "2026-09-15T12:00:00Z", 1),
 	} {
-		parsed, _ := parseNativeYields([]byte(changed), []RuntimeRoute{r}, now, 2*time.Hour)
+		parsed, _ := parseFeedYields([]byte(changed), []RuntimeRoute{r}, now, 2*time.Hour)
 		if len(parsed) != 0 {
 			t.Fatal("invalid native evidence accepted")
 		}
 	}
 	zero := strings.Replace(body, `"current":"0.04965083163"`, `"current":"0"`, 1)
-	parsed, err := parseNativeYields([]byte(zero), []RuntimeRoute{r}, now, 2*time.Hour)
-	if err != nil || len(parsed) != 1 || parsed[r.Lane].APY != 0 {
+	parsed, err := parseFeedYields([]byte(zero), []RuntimeRoute{r}, now, 2*time.Hour)
+	if err != nil || len(parsed) != 1 || parsed[r.Lane] != 0 {
 		t.Fatal("known zero confused with absent yield")
 	}
 }
-func TestNativeYieldHTTPBoundaries(t *testing.T) {
+func TestFeedYieldHTTPBoundaries(t *testing.T) {
 	t.Parallel()
 	r, now, body := nativeFixture(t)
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -52,7 +59,7 @@ func TestNativeYieldHTTPBoundaries(t *testing.T) {
 		}
 		return response(body), nil
 	})}
-	got, err := fetchNativeYields(context.Background(), client, "https://kamino.invalid/reserves/batch/stats", []RuntimeRoute{r}, now, 2*time.Hour)
+	got, err := fetchFeedYields(context.Background(), client, "https://kamino.invalid/reserves/batch/stats", []RuntimeRoute{r}, now, 2*time.Hour)
 	if err != nil || len(got) != 1 {
 		t.Fatal(err)
 	}
@@ -60,19 +67,19 @@ func TestNativeYieldHTTPBoundaries(t *testing.T) {
 		client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("untrusted body"))}, nil
 		})
-		if _, err := fetchNativeYields(context.Background(), client, "https://kamino.invalid", []RuntimeRoute{r}, now, time.Hour); err == nil || strings.Contains(err.Error(), "untrusted") {
+		if _, err := fetchFeedYields(context.Background(), client, "https://kamino.invalid", []RuntimeRoute{r}, now, time.Hour); err == nil || strings.Contains(err.Error(), "untrusted") {
 			t.Fatal("HTTP failure not bounded")
 		}
 	}
 	client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) { return response(strings.Repeat("x", (2<<20)+1)), nil })
-	if _, err := fetchNativeYields(context.Background(), client, "https://kamino.invalid", []RuntimeRoute{r}, now, time.Hour); err == nil {
+	if _, err := fetchFeedYields(context.Background(), client, "https://kamino.invalid", []RuntimeRoute{r}, now, time.Hour); err == nil {
 		t.Fatal("oversized response accepted")
 	}
 }
 func TestReserveFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	t.Parallel()
-	r, now, body := nativeFixture(t)
-	native, _ := parseNativeYields([]byte(body), []RuntimeRoute{r}, now, 2*time.Hour)
+	r, now, _ := nativeFixture(t)
+	native := realizedFixture(r.Lane, now, 0.05)
 	f := selectorFixture().Markets[0]
 	supply := 1_000_000_000_000.0
 	borrow := 500_000_000_000.0
@@ -88,7 +95,7 @@ func TestReserveFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows := map[string]reserveEconomics{c.Reserve: c, d.Reserve: d}
-	got := combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())
+	got := combineEconomics([]RuntimeRoute{r}, rows, native, nil, now, DefaultSelectorPolicy())
 	if len(got) != 1 || got[0].EntryCapacity.Known || got[0].DebtSupplyRaw != supply || got[0].DebtBorrowRaw != borrow {
 		t.Fatalf("feed: %+v", got)
 	}
@@ -105,7 +112,7 @@ func TestReserveFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 
 	d.Mint = "wrong"
 	rows[d.Reserve] = d
-	if len(combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())) != 0 {
+	if len(combineEconomics([]RuntimeRoute{r}, rows, native, nil, now, DefaultSelectorPolicy())) != 0 {
 		t.Fatal("feed identity mismatch accepted")
 	}
 }
@@ -178,11 +185,7 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	t.Parallel()
 	auto := autoAUTOPYUSD
 	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
-	nativeBody := `{"` + auto.Kamino.CollateralReserve + `":{"token":"` + auto.Kamino.CollateralMint + `","underlyingApy":{"current":"0.0612","sourceType":"yield-feed","sourceMint":"` + auto.Kamino.CollateralMint + `","observedAt":"2026-09-15T23:00:13.804Z"}}}`
-	native, err := parseNativeYields([]byte(nativeBody), []RuntimeRoute{auto}, now, 2*time.Hour)
-	if err != nil || len(native) != 1 {
-		t.Fatalf("candidate native evidence refused: %v", err)
-	}
+	native := realizedFixture(auto.Lane, now, 0.0612)
 	supply, borrow, host := 1_000_000_000_000.0, 500_000_000_000.0, 300.0
 	rows := map[string]reserveEconomics{}
 	collateral := reserveEconomics{Reserve: auto.Kamino.CollateralReserve, Market: auto.Kamino.Market, Mint: auto.Kamino.CollateralMint,
@@ -198,14 +201,14 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	}
 	rows[collateral.Reserve] = collateral
 	rows[debt.Reserve] = debt
-	got := combineEconomics([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy())
+	got := combineEconomics([]RuntimeRoute{auto}, rows, native, nil, now, DefaultSelectorPolicy())
 	if len(got) != 1 || got[0].Lane != autoAUTOPYUSD.Lane || got[0].DebtBorrowRaw != borrow || got[0].DebtSupplyRaw != supply || got[0].HostBorrowBPS != host {
 		t.Fatalf("candidate route economics not produced from complete evidence: %+v", got)
 	}
 	// The exit-only Ethena lane is never scored, even from complete evidence.
 	ethena := auto
 	ethena.Lane = ethenaUSDePYUSD.Lane
-	if got := combineEconomics([]RuntimeRoute{ethena}, rows, map[string]nativeYield{ethena.Lane: native[auto.Lane]}, now, DefaultSelectorPolicy()); len(got) != 0 {
+	if got := combineEconomics([]RuntimeRoute{ethena}, rows, map[string]nativeYield{ethena.Lane: native[auto.Lane]}, nil, now, DefaultSelectorPolicy()); len(got) != 0 {
 		t.Fatalf("exit-only lane scored: %+v", got)
 	}
 	// The debt identity is the route's OWN debt mint: a USDC-minted debt row
@@ -213,7 +216,7 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	wrong := debt
 	wrong.Mint = bridgeUSDC
 	rows[debt.Reserve] = wrong
-	if len(combineEconomics([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy())) != 0 {
+	if len(combineEconomics([]RuntimeRoute{auto}, rows, native, nil, now, DefaultSelectorPolicy())) != 0 {
 		t.Fatal("candidate debt identity mismatch accepted")
 	}
 	rows[debt.Reserve] = debt
@@ -222,7 +225,7 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	broken := debt
 	broken.Curve = nil
 	rows[debt.Reserve] = broken
-	if len(combineEconomics([]RuntimeRoute{auto}, rows, native, now, DefaultSelectorPolicy())) != 0 {
+	if len(combineEconomics([]RuntimeRoute{auto}, rows, native, nil, now, DefaultSelectorPolicy())) != 0 {
 		t.Fatal("candidate content validation bypassed")
 	}
 }

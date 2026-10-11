@@ -42,7 +42,7 @@ func TestFeedScoresLaneWhoseDebtReserveBorrowedExceedsSupply(t *testing.T) {
 	reserves[usds.Kamino.DebtReserve] = over
 	yields := map[string]nativeYield{usds.Lane: {0.05, now.Add(-time.Minute), "y"}, pyusd.Lane: {0.05, now.Add(-time.Minute), "y"}}
 	got := map[string]LaneEconomics{}
-	for _, e := range combineEconomics([]RuntimeRoute{usds, pyusd}, reserves, yields, now, DefaultSelectorPolicy()) {
+	for _, e := range combineEconomics([]RuntimeRoute{usds, pyusd}, reserves, yields, nil, now, DefaultSelectorPolicy()) {
 		got[e.Lane] = e
 	}
 	e, ok := got[usds.Lane]
@@ -65,7 +65,7 @@ func TestFeedScoresLaneWhoseDebtReserveBorrowedExceedsSupply(t *testing.T) {
 	// Without a verified USDC reference the conversion stays unknown; the
 	// lane's 1x economics remain.
 	delete(reserves, kaminoDebtReserve)
-	for _, e := range combineEconomics([]RuntimeRoute{usds}, reserves, yields, now, DefaultSelectorPolicy()) {
+	for _, e := range combineEconomics([]RuntimeRoute{usds}, reserves, yields, nil, now, DefaultSelectorPolicy()) {
 		if e.DebtRawPerUSDCRaw != 0 {
 			t.Fatalf("conversion without a USDC reference: %+v", e)
 		}

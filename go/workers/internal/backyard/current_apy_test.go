@@ -181,9 +181,10 @@ func TestRecordCurrentAPYFencedWrite(t *testing.T) {
 func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
 	t.Parallel()
 	apr := 0.068
-	auto := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .0948, SupplyAPY: .002, BorrowCurve: []BorrowCurvePoint{{0, apr * 10_000}, {10_000, apr * 10_000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
+	feed := .1084
+	auto := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .0948, FeedNativeAPY: &feed, SupplyAPY: .002, BorrowCurve: []BorrowCurvePoint{{0, apr * 10_000}, {10_000, apr * 10_000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
 	onre := auto
-	onre.Lane, onre.NativeAPY = onreONycUSDC, .1102
+	onre.Lane, onre.NativeAPY, onre.FeedNativeAPY = onreONycUSDC, .1102, nil
 	var watch leverageWatch
 	lines := watch.observe([]LaneEconomics{onre, auto}, autoAUTOPYUSD.Lane, 1_207_050_000, true)
 	summary := lines[len(lines)-1]
@@ -206,7 +207,11 @@ func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
 		if lane.SpreadBPS != nil {
 			spread = fmt.Sprintf("%.2f", float64(*lane.SpreadBPS)/100)
 		}
-		rebuilt := fmt.Sprintf("%s(spread=%s enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", lane.Lane, spread, entry, strings.Join(parts, " "), lane.Levels[0], lane.Levels[1], lane.Levels[2])
+		native := fmt.Sprintf("native=%.2f%% feed=unavailable", float64(lane.NativeBPS)/100)
+		if lane.FeedNativeBPS != nil {
+			native = fmt.Sprintf("native=%.2f%% feed=%.2f%% gap=%+.2f", float64(lane.NativeBPS)/100, float64(*lane.FeedNativeBPS)/100, float64(lane.NativeBPS-*lane.FeedNativeBPS)/100)
+		}
+		rebuilt := fmt.Sprintf("%s(spread=%s %s enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", lane.Lane, spread, native, entry, strings.Join(parts, " "), lane.Levels[0], lane.Levels[1], lane.Levels[2])
 		if !strings.Contains(summary, rebuilt) {
 			t.Fatalf("stored lane %q not in the printed line %q", rebuilt, summary)
 		}

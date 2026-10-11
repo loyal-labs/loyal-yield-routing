@@ -1,0 +1,317 @@
+{
+ "reserve": "2erD9GTGcaQbLsVSQweg3HvMpfKxScmz95raWv8H4iPN",
+ "history": [
+  {
+   "timestamp": "2026-09-08T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9997744399999999994829713578781138494378"
+   }
+  },
+  {
+   "timestamp": "2026-09-09T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9998901099999999994918931101040016073966"
+   }
+  },
+  {
+   "timestamp": "2026-09-10T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9996500999999999997891464431631902698427"
+   }
+  },
+  {
+   "timestamp": "2026-09-11T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9995999999999999998182009797176306165056"
+   }
+  },
+  {
+   "timestamp": "2026-09-12T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9998350099999999997246735716771581792273"
+   }
+  },
+  {
+   "timestamp": "2026-09-13T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9997850399999999998490451957877667155117"
+   }
+  },
+  {
+   "timestamp": "2026-09-14T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9995699999999999993058330538531208731001"
+   }
+  },
+  {
+   "timestamp": "2026-09-15T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9997399999999999993180455071239975950448"
+   }
+  },
+  {
+   "timestamp": "2026-09-16T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9992150999999999992987054220350273681106"
+   }
+  },
+  {
+   "timestamp": "2026-09-17T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9991449999999999992753019206759290682385"
+   }
+  },
+  {
+   "timestamp": "2026-09-18T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9990699999999999997291055819914618041366"
+   }
+  },
+  {
+   "timestamp": "2026-09-19T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9996749999999999993643973184020978806075"
+   }
+  },
+  {
+   "timestamp": "2026-09-20T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9996252782414138992120311577593838592293"
+   }
+  },
+  {
+   "timestamp": "2026-09-21T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9996857511988049994205995929519303899724"
+   }
+  },
+  {
+   "timestamp": "2026-09-22T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9997299799999999998442734572279277927009"
+   }
+  },
+  {
+   "timestamp": "2026-09-23T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9997800241377750992896600301662601850694"
+   }
+  },
+  {
+   "timestamp": "2026-09-24T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9997980753819188997830180731796190229943"
+   }
+  },
+  {
+   "timestamp": "2026-09-25T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9996849899999999998836952563863178511383"
+   }
+  },
+  {
+   "timestamp": "2026-09-26T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9998349999999999997840616217104070528876"
+   }
+  },
+  {
+   "timestamp": "2026-09-27T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9997649999999999991667776200188200164121"
+   }
+  },
+  {
+   "timestamp": "2026-09-28T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9998052067245613997240050174752923339838"
+   }
+  },
+  {
+   "timestamp": "2026-09-29T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9995413299999999995684718534505464049289"
+   }
+  },
+  {
+   "timestamp": "2026-09-30T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9994599999999999994509947143228600907605"
+   }
+  },
+  {
+   "timestamp": "2026-10-01T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9993265299999999993346699866947346890811"
+   }
+  },
+  {
+   "timestamp": "2026-10-02T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9996510199999999995296162680347151763272"
+   }
+  },
+  {
+   "timestamp": "2026-10-03T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9998199999999999995278776587781521811849"
+   }
+  },
+  {
+   "timestamp": "2026-10-04T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9998330875340399994180562437406933895545"
+   }
+  },
+  {
+   "timestamp": "2026-10-05T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9998125199999999997146904462397287716158"
+   }
+  },
+  {
+   "timestamp": "2026-10-06T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9998799999999999996852517725187681207899"
+   }
+  },
+  {
+   "timestamp": "2026-10-07T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9997799999999999994229615829510748881148"
+   }
+  },
+  {
+   "timestamp": "2026-10-08T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9994171799999999996136357260922977729933"
+   }
+  },
+  {
+   "timestamp": "2026-10-09T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9991826676406038998390357619427959434688"
+   }
+  },
+  {
+   "timestamp": "2026-10-10T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9991062899999999993155830324553789978381"
+   }
+  },
+  {
+   "timestamp": "2026-10-10T21:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9990949999999999995778376948862842255039"
+   }
+  },
+  {
+   "timestamp": "2026-10-10T22:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9991195299999999996157229453785930672893"
+   }
+  },
+  {
+   "timestamp": "2026-10-10T23:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9990782599999999992468335818784908042289"
+   }
+  },
+  {
+   "timestamp": "2026-10-11T00:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9990782599999999992468335818784908042289"
+   }
+  },
+  {
+   "timestamp": "2026-10-11T01:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9990782599999999992468335818784908042289"
+   }
+  },
+  {
+   "timestamp": "2026-10-11T02:00:00.000Z",
+   "metrics": {
+    "symbol": "USDe",
+    "mintAddress": "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
+    "assetPriceUSD": "0.9990246299999999994231880684480984200491"
+   }
+  }
+ ]
+}

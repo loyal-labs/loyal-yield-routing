@@ -119,6 +119,10 @@ type leverageWatchLane struct {
 	Enterable  bool             `json:"enterable"`
 	APYBPS     map[string]int64 `json:"apyBps"`
 	Levels     []float64        `json:"levels"`
+	// NativeBPS is the realized native APY the lane is scored on;
+	// FeedNativeBPS is the yield feed's figure, display only.
+	NativeBPS     int64  `json:"nativeBps"`
+	FeedNativeBPS *int64 `json:"feedNativeBps,omitempty"`
 }
 
 // observe returns one line per virtual move and, when summary is set, one
@@ -152,7 +156,15 @@ func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equi
 		}
 		if summary {
 			lane := leverageWatchLane{Lane: m.Lane, APYBPS: map[string]int64{}, Enterable: earnActiveLane(m.Lane),
-				Levels: []float64{w.levels["1|"+m.Lane], w.levels["2|"+m.Lane], w.levels["3|"+m.Lane]}}
+				Levels:    []float64{w.levels["1|"+m.Lane], w.levels["2|"+m.Lane], w.levels["3|"+m.Lane]},
+				NativeBPS: int64(math.Round(m.NativeAPY * 10_000))}
+			native := nativeFeedText(float64(lane.NativeBPS)/10_000, nil)
+			if m.FeedNativeAPY != nil {
+				feed := int64(math.Round(*m.FeedNativeAPY * 10_000))
+				lane.FeedNativeBPS = &feed
+				printed := float64(feed) / 10_000
+				native = nativeFeedText(float64(lane.NativeBPS)/10_000, &printed)
+			}
 			parts := []string{}
 			for _, level := range leverageWatchLevels {
 				if apy, ok := leverageLevelAPY(m, level, equityRaw, source, observed...); ok {
@@ -172,7 +184,7 @@ func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equi
 				entry = "yes"
 			}
 			// The printed line and the stored summary are the same values.
-			lanes = append(lanes, fmt.Sprintf("%s(spread=%s enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", m.Lane, spreadText, entry, strings.Join(parts, " "),
+			lanes = append(lanes, fmt.Sprintf("%s(spread=%s %s enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", m.Lane, spreadText, native, entry, strings.Join(parts, " "),
 				lane.Levels[0], lane.Levels[1], lane.Levels[2]))
 			summaryLanes = append(summaryLanes, lane)
 		}

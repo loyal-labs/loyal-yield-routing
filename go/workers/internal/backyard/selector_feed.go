@@ -38,16 +38,21 @@ type reserveEconomics struct {
 	Decimals int
 }
 
+// nativeYield is a lane collateral's native yield: its realized market price
+// growth over realizedYieldWindow (parseRealizedYield), observed at the
+// newest history point.
 type nativeYield struct {
 	APY        float64   `json:"apy"`
 	ObservedAt time.Time `json:"observedAt"`
 	EvidenceID string    `json:"evidenceId"`
 }
 
-// The official API returns a dictionary keyed by reserve and string decimals.
-// Only verified native yield is consumed here; headline Multiply APY, aggregate
-// capacity, and unproven rewards never authorize entry.
-func parseNativeYields(body []byte, routes []RuntimeRoute, now time.Time, maxAge time.Duration) (map[string]nativeYield, error) {
+// parseFeedYields reads Kamino's yield feed (batch stats underlyingApy) per
+// lane: display and comparison only. The feed is not what holding the token
+// earns (AUTO 10.84% against 8.85% realized over 30 days on 2026-10-11; USDe
+// 4.75% while its price does not grow), so no decision reads it. The official
+// API returns a dictionary keyed by reserve and string decimals.
+func parseFeedYields(body []byte, routes []RuntimeRoute, now time.Time, maxAge time.Duration) (map[string]float64, error) {
 	var stats map[string]struct {
 		Token      string `json:"token"`
 		Underlying *struct {
@@ -60,7 +65,7 @@ func parseNativeYields(body []byte, routes []RuntimeRoute, now time.Time, maxAge
 	if err := json.Unmarshal(body, &stats); err != nil || stats == nil {
 		return nil, fmt.Errorf("kamino_stats_contract_invalid")
 	}
-	out := map[string]nativeYield{}
+	out := map[string]float64{}
 	for _, route := range routes {
 		row, ok := stats[route.Kamino.CollateralReserve]
 		if !ok || row.Token != route.Kamino.CollateralMint || row.Underlying == nil {
@@ -74,12 +79,12 @@ func parseNativeYields(body []byte, routes []RuntimeRoute, now time.Time, maxAge
 		if err != nil || !finite(rate) || rate <= -1 || rate > 10 {
 			continue
 		}
-		out[route.Lane] = nativeYield{rate, y.ObservedAt, sha256Bytes(body)}
+		out[route.Lane] = rate
 	}
 	return out, nil
 }
 
-func fetchNativeYields(ctx context.Context, client *http.Client, endpoint string, routes []RuntimeRoute, now time.Time, age time.Duration) (map[string]nativeYield, error) {
+func fetchFeedYields(ctx context.Context, client *http.Client, endpoint string, routes []RuntimeRoute, now time.Time, age time.Duration) (map[string]float64, error) {
 	if client == nil {
 		return nil, fmt.Errorf("kamino_stats_client_unavailable")
 	}
@@ -119,7 +124,7 @@ func fetchNativeYields(ctx context.Context, client *http.Client, endpoint string
 	if err != nil || len(body) > maxBody {
 		return nil, fmt.Errorf("kamino_stats_body_unavailable")
 	}
-	return parseNativeYields(body, routes, now, age)
+	return parseFeedYields(body, routes, now, age)
 }
 
 // readReserveEconomics reads every lane reserve from Backyard's account view,
@@ -196,9 +201,11 @@ func scaledFloat(value *big.Int) float64 {
 	return math.Ldexp(f, -60)
 }
 
-// combineEconomics joins each route's reserve rows and native yield into
-// its lane economics; only active registry lanes contribute.
-func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomics, yields map[string]nativeYield, now time.Time, p SelectorPolicy) []LaneEconomics {
+// combineEconomics joins each route's reserve rows and realized native yield
+// into its lane economics; only active registry lanes contribute. feed is the
+// yield feed's APY per lane, carried for display and comparison only; a lane
+// without a realized yield has no economics, whatever the feed says.
+func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomics, yields map[string]nativeYield, feed map[string]float64, now time.Time, p SelectorPolicy) []LaneEconomics {
 	out := make([]LaneEconomics, 0, len(routes))
 	valid := func(r reserveEconomics, reserve, mint, market string) bool {
 		return r.Reserve == reserve && r.Mint == mint && r.Market == market
@@ -219,6 +226,9 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomic
 		// or the priced quote's raw debt, never USDC. Both reserves are the
 		// view at one slot, so the lane is observed at their chain time.
 		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: d.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: c.SupplyAPY, BorrowCurve: d.Curve, HostBorrowBPS: d.HostBPS, DebtSupplyRaw: d.SupplyRaw, DebtBorrowRaw: d.BorrowRaw}
+		if rate, ok := feed[route.Lane]; ok {
+			e.FeedNativeAPY = &rate
+		}
 		// Every lane's debt reserve row carries its own price, so the projected
 		// utilization of a USDC-valued borrow is known for every non-USDC debt
 		// lane, not only the one the vault holds. Missing price evidence leaves
@@ -255,6 +265,10 @@ type EconomicFeed struct {
 	mu      sync.RWMutex
 	latest  []LaneEconomics
 	failure string
+	// realized is the last history read per collateral reserve; unavailable
+	// names each active lane left out of latest, with its reason.
+	realized    map[string]realizedReserve
+	unavailable string
 }
 
 // NewEconomicFeed observes every active registry lane: the selector scores
@@ -264,7 +278,7 @@ func NewEconomicFeed(view *View) (*EconomicFeed, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &EconomicFeed{view: view, client: &http.Client{Timeout: 5 * time.Second}, routes: routes}, nil
+	return &EconomicFeed{view: view, client: &http.Client{Timeout: 5 * time.Second}, routes: routes, realized: map[string]realizedReserve{}}, nil
 }
 
 // earnFeedRoutes are the active registry lanes' routes, in registry order.
@@ -285,23 +299,118 @@ func (f *EconomicFeed) Refresh(ctx context.Context) error {
 	defer cancel()
 	now := time.Now().UTC()
 	p := DefaultSelectorPolicy()
+	f.refreshRealized(ctx, now)
 	reserves, err := readReserveEconomics(ctx, f.view, f.routes, f.view.rpc.SlotsPerSecond)
-	var yields map[string]nativeYield
-	if err == nil {
-		yields, err = fetchNativeYields(ctx, f.client, kaminoStatsEndpoint, f.routes, now, p.NativeMaxAge)
-	}
+	// The feed's own APY is display only: when it is unreadable the lanes
+	// carry none and are priced exactly the same.
+	feed, _ := fetchFeedYields(ctx, f.client, kaminoStatsEndpoint, f.routes, now, p.NativeMaxAge)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err != nil {
 		f.failure = err.Error()
 		return err
 	}
-	f.latest = combineEconomics(f.routes, reserves, yields, now, p)
-	f.failure = ""
+	f.publish(reserves, feed, now, p)
+	return nil
+}
+
+// publish prices every lane from this refresh's reserves, the realized
+// yields held per collateral reserve and the feed's display APY. The caller
+// holds the write lock.
+func (f *EconomicFeed) publish(reserves map[string]reserveEconomics, feed map[string]float64, now time.Time, p SelectorPolicy) {
+	yields := map[string]nativeYield{}
+	for _, route := range f.routes {
+		if r := f.realized[route.Kamino.CollateralReserve]; !r.yield.ObservedAt.IsZero() {
+			yields[route.Lane] = r.yield
+		}
+	}
+	f.latest = combineEconomics(f.routes, reserves, yields, feed, now, p)
+	f.failure, f.unavailable = "", ""
 	if len(f.latest) != len(f.routes) {
 		f.failure = "economic_evidence_incomplete"
+		f.unavailable = f.unavailableLanes(now, p)
 	}
-	return nil
+}
+
+// refreshRealized reads each collateral reserve's price history that is
+// due, concurrently and outside the lock. A failed read keeps the last
+// measured yield, which ages out at NativeMaxAge; it never becomes fresh.
+func (f *EconomicFeed) refreshRealized(ctx context.Context, now time.Time) {
+	f.mu.RLock()
+	due := []RuntimeRoute{}
+	seen := map[string]bool{}
+	for _, route := range f.routes {
+		reserve := route.Kamino.CollateralReserve
+		if !seen[reserve] && f.realized[reserve].due(now) {
+			due = append(due, route)
+		}
+		seen[reserve] = true
+	}
+	f.mu.RUnlock()
+	type read struct {
+		reserve string
+		yield   nativeYield
+		err     error
+	}
+	reads := make(chan read, len(due))
+	var wg sync.WaitGroup
+	for _, route := range due {
+		wg.Add(1)
+		go func(route RuntimeRoute) {
+			defer wg.Done()
+			y, err := fetchRealizedYield(ctx, f.client, kaminoReserveHistoryEndpoint, route, now)
+			reads <- read{route.Kamino.CollateralReserve, y, err}
+		}(route)
+	}
+	wg.Wait()
+	close(reads)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for r := range reads {
+		held := f.realized[r.reserve]
+		held.attempted, held.reason = now, ""
+		if r.err != nil {
+			held.reason = r.err.Error()
+		} else {
+			held.yield = r.yield
+		}
+		f.realized[r.reserve] = held
+	}
+}
+
+// unavailableLanes names each active lane missing from latest with a closed
+// reason, in registry order: its realized yield's, or economic evidence.
+func (f *EconomicFeed) unavailableLanes(now time.Time, p SelectorPolicy) string {
+	priced := map[string]bool{}
+	for _, e := range f.latest {
+		priced[e.Lane] = true
+	}
+	var out []string
+	for _, route := range f.routes {
+		if priced[route.Lane] {
+			continue
+		}
+		reason := "economic_evidence_unavailable"
+		r := f.realized[route.Kamino.CollateralReserve]
+		switch {
+		case r.yield.ObservedAt.IsZero() && r.reason != "":
+			reason = r.reason
+		case r.yield.ObservedAt.IsZero():
+			reason = realizedYieldUnavailable("history_unread").Error()
+		case !freshAt(now, r.yield.ObservedAt, p.NativeMaxAge):
+			reason = realizedYieldUnavailable("history_stale").Error()
+		}
+		out = append(out, route.Lane+"="+reason)
+	}
+	return strings.Join(out, " ")
+}
+
+// UnavailableLanes is the last refresh's active lanes without economics, each
+// with its closed reason code ("" when every lane is priced). Safe to log.
+func (f *EconomicFeed) UnavailableLanes() string {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.unavailable
 }
 func (f *EconomicFeed) Snapshot() ([]LaneEconomics, string) {
 	f.mu.RLock()
