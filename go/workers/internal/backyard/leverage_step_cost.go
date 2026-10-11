@@ -2,6 +2,8 @@ package backyard
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
@@ -59,6 +61,45 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	return out, nil
 }
 
+// leverageCostStages is the closed set of pricing stages an outage names.
+// The cause in a log line or metric label is one of these, never raw RPC,
+// HTTP or URL text.
+var leverageCostStages = map[string]bool{"inputs": true, "policies": true, "blockhash": true, "entry_quote": true, "exit_quote": true, "price": true, "network_fee": true, "deadline": true}
+
+// leverageCostOutage is a step that could not be priced, at one stage.
+type leverageCostOutage struct {
+	stage string
+	err   error
+}
+
+func (e *leverageCostOutage) Error() string { return "leverage_cost_unavailable(" + e.stage + ")" }
+func (e *leverageCostOutage) Unwrap() error { return e.err }
+
+func costOutage(stage string, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		stage = "deadline"
+	}
+	return &leverageCostOutage{stage: stage, err: err}
+}
+
+// leverageCostOutageReason is the sanitized reason of a pricing failure:
+// leverage_cost_unavailable(<stage>) for a known stage, the bare reason
+// otherwise.
+func leverageCostOutageReason(err error) string {
+	var outage *leverageCostOutage
+	if errors.As(err, &outage) && leverageCostStages[outage.stage] {
+		return "leverage_cost_unavailable(" + outage.stage + ")"
+	}
+	return "leverage_cost_unavailable"
+}
+
+// leverageStepPriceTimeout is the step pricer's own deadline. It runs after
+// the selector's evaluation, which may use most of the 30 s sample deadline
+// on its quote ladders (selector_evaluate_timeout several times an hour), so
+// sharing that deadline starved the pricer (live 2026-10-11 04:58:55: an
+// approval revoked as leverage_cost_unavailable).
+const leverageStepPriceTimeout = 15 * time.Second
+
 // productionLeverageStepPricer quotes the working lane's step live: Jupiter
 // debt->collateral at the step's size and collateral->debt at the quoted
 // output, the reserves' and SOL's observed prices from the account view, the
@@ -66,11 +107,17 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 // transactions' fee (chain.MessageFee).
 func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, s Snapshot) leverageStepPricer {
 	return func(borrowRaw uint64) (leverageStepCost, error) {
+		ctx, cancel := context.WithTimeout(ctx, leverageStepPriceTimeout)
+		defer cancel()
 		legs, err := observeLeverageStepLegs(ctx, rpc, view, client, m, s, borrowRaw)
 		if err != nil {
-			return leverageStepCost{}, budgetHoldFrom(err, "leverage_cost_unavailable")
+			return leverageStepCost{}, err
 		}
-		return legs.cost()
+		c, err := legs.cost()
+		if err != nil {
+			return c, costOutage("inputs", err)
+		}
+		return c, nil
 	}
 }
 
@@ -78,31 +125,35 @@ func observeLeverageStepLegs(ctx context.Context, rpc *chain.Client, view *View,
 	var out leverageStepLegs
 	route, err := runtimeRoute(s.RouteLane)
 	if err != nil || rpc == nil || view == nil || client == nil || borrowRaw == 0 || s.Slot <= 0 {
-		return out, budgetHold("leverage_cost_unavailable")
+		return out, costOutage("inputs", budgetHold("leverage_cost_unavailable"))
 	}
 	fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, borrowRaw)
 	if err != nil {
-		return out, err
+		return out, costOutage("inputs", err)
 	}
 	var policies installedPolicies
 	var blockhash LatestBlockhash
 	if err := concurrentReads(ctx, func(ctx context.Context) (err error) {
-		policies, err = observeInstalledPolicies(ctx, rpc, s.Slot)
-		return err
+		if policies, err = observeInstalledPolicies(ctx, rpc, s.Slot); err != nil {
+			return costOutage("policies", err)
+		}
+		return nil
 	}, func(ctx context.Context) (err error) {
-		blockhash, err = latestBlockhash(ctx, rpc)
-		return err
+		if blockhash, err = latestBlockhash(ctx, rpc); err != nil {
+			return costOutage("blockhash", err)
+		}
+		return nil
 	}); err != nil {
 		return out, err
 	}
 	entry, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapDebtToCollateralStep, StrategyKey: route.Lane, AmountRaw: int64(borrowRaw)}, borrowRaw, 0, s.Slot)
 	if err != nil {
-		return out, err
+		return out, costOutage("entry_quote", err)
 	}
 	collateralRaw := entry.Request.QuotedOutputRaw
 	exit, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(collateralRaw)}, collateralRaw, 0, s.Slot)
 	if err != nil {
-		return out, err
+		return out, costOutage("exit_quote", err)
 	}
 	debt := ExecutableDebit{Source: route.DebtCustody, Mint: route.Kamino.DebtMint, TokenProgram: route.DebtTokenProgram, Raw: borrowRaw}
 	collateral := ExecutableDebit{Source: route.CollateralCustody, Mint: route.Kamino.CollateralMint, TokenProgram: route.CollateralTokenProgram, Raw: collateralRaw}
@@ -117,7 +168,7 @@ func observeLeverageStepLegs(ctx context.Context, rpc *chain.Client, view *View,
 		sol, err = ObserveNativeSOLBudgetPrice(ctx, rpc, view, s.Slot)
 		return err
 	}); err != nil {
-		return out, err
+		return out, costOutage("price", err)
 	}
 	slot := max(debtPrice.ObservedSlot, collateralPrice.ObservedSlot, sol.ObservedSlot)
 	central := func(p BudgetPrice, d ExecutableDebit, raw uint64) (int64, error) {
@@ -139,7 +190,7 @@ func observeLeverageStepLegs(ctx context.Context, rpc *chain.Client, view *View,
 		{&out.ExitOutMicros, debtPrice, debt, exit.Request.QuotedOutputRaw},
 	} {
 		if *v.into, err = central(v.price, v.debit, v.raw); err != nil {
-			return out, err
+			return out, costOutage("price", err)
 		}
 	}
 	// The six transactions' fees. Each Kamino leg refreshes both reserves of
@@ -152,29 +203,29 @@ func observeLeverageStepLegs(ctx context.Context, rpc *chain.Client, view *View,
 	}{{OpenRouteStep, kaminoLegBorrow, borrowRaw}, {OpenRouteStep, kaminoLegDeposit, entry.Request.MinimumOutputRaw}, {DeleverRouteStep, kaminoLegWithdraw, collateralRaw}, {DeleverRouteStep, kaminoLegRepay, exit.Request.MinimumOutputRaw}} {
 		r, err := m.kaminoPacketForRoute(policies, leg.action, leg.leg, leg.amount, blockhash, route.Lane)
 		if err != nil {
-			return out, err
+			return out, costOutage("network_fee", err)
 		}
 		r.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 		message, err := compileKaminoMessageForDelegate(r, mustKey(bridgeDelegate))
 		if err != nil {
-			return out, err
+			return out, costOutage("network_fee", err)
 		}
 		messages = append(messages, message)
 	}
 	for _, swap := range []JupiterSwapRequest{entry.Request, exit.Request} {
 		message, err := compileJupiterMessageForDelegate(swap, mustKey(bridgeDelegate))
 		if err != nil {
-			return out, err
+			return out, costOutage("network_fee", err)
 		}
 		messages = append(messages, message)
 	}
 	for _, message := range messages {
 		cost, err := ValueTransactionCost(message, ExecutableDebit{}, 0, BudgetPrice{}, sol, slot)
 		if err != nil {
-			return out, err
+			return out, costOutage("network_fee", err)
 		}
 		if out.NetworkMicros, err = budgetSum(out.NetworkMicros, cost.NetworkFeeMicros); err != nil {
-			return out, err
+			return out, costOutage("network_fee", err)
 		}
 	}
 	return out, nil
