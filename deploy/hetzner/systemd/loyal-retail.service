@@ -27,7 +27,6 @@ Environment=LOYAL_WORKER_SCOPE=retail
 Environment=LOYAL_WORKER_INSTANCE=primary
 Environment=LOYAL_METRICS_ADDRESS=127.0.0.1:9102
 Environment=RETAIL_MODE=active
-Environment=RETAIL_SLOT_DURATION=400ms
 Environment=RETAIL_TIMESCALE_SCHEMA=kamino
 # Non-secret host values: RETAIL_CROSS_MINT_ENABLED, RETAIL_LOOKUP_MODE and
 # RETAIL_FAMILIES: the families moved off their stopped Rust workers

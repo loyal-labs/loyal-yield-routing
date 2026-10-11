@@ -38,7 +38,7 @@ func TestReserveFeedPricesLanesOnlyFromCurrentViewReserves(t *testing.T) {
 	usdc := reserveFixture(t, kaminoDebtReserve, bridgeUSDC, slot, one, 100, 100)
 	putKey(t, debt.Data[32:64], route.Kamino.Market)
 	putKey(t, collateral.Data[32:64], route.Kamino.Market)
-	feed := func(chainTime time.Time, debt ConfirmedAccount) []LaneEconomics {
+	feed := func(chainTime time.Time, debt ConfirmedAccount, slotsPerSecond float64) []LaneEconomics {
 		t.Helper()
 		clock := ConfirmedAccount{Address: budgetClockAddress, Owner: budgetClockAddress, Lamports: 1, Data: make([]byte, 40)}
 		binary.LittleEndian.PutUint64(clock.Data[32:], uint64(chainTime.Unix()))
@@ -46,22 +46,28 @@ func TestReserveFeedPricesLanesOnlyFromCurrentViewReserves(t *testing.T) {
 		for _, account := range []ConfirmedAccount{clock, usdc, debt, collateral} {
 			view.accounts[account.Address] = viewAccount{ConfirmedAccount: account, slot: slot}
 		}
-		reserves, err := readReserveEconomics(context.Background(), view, []RuntimeRoute{route})
+		reserves, err := readReserveEconomics(context.Background(), view, []RuntimeRoute{route}, slotsPerSecond)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return combineEconomics([]RuntimeRoute{route}, reserves, native, now, DefaultSelectorPolicy())
 	}
 	chainTime := now.Add(-time.Second)
-	// Legacy basis: 1.25x the curve, 364 bps at 9000 interpolated to 20%.
-	supplyAPY := math.Expm1(364.0 * 2000 / 9000 / 10_000 * 0.2 * 1.25)
-	if got := feed(chainTime, debt); len(got) != 1 || !got[0].ObservedAt.Equal(chainTime) || got[0].DebtBorrowRaw != 50_000_000 || math.Abs(got[0].SupplyAPY-supplyAPY) > 1e-12 {
-		t.Fatalf("lane from current view reserves = %+v, want one lane observed at %s with supply APY %v", got, chainTime, supplyAPY)
+	// Legacy basis accrues the curve times the measured slot rate over 2: the
+	// 364 bps at 9000 interpolated to 20% utilization, on 20% borrowed.
+	for _, slotsPerSecond := range []float64{2.5, 4.6} {
+		supplyAPY := math.Expm1(364.0 * 2000 / 9000 / 10_000 * 0.2 * slotsPerSecond / 2)
+		if got := feed(chainTime, debt, slotsPerSecond); len(got) != 1 || !got[0].ObservedAt.Equal(chainTime) || got[0].DebtBorrowRaw != 50_000_000 || math.Abs(got[0].SupplyAPY-supplyAPY) > 1e-12 {
+			t.Fatalf("lane at %v slots/s = %+v, want one lane observed at %s with supply APY %v", slotsPerSecond, got, chainTime, supplyAPY)
+		}
 	}
-	if got := feed(chainTime, ConfirmedAccount{Address: debt.Address}); len(got) != 0 {
+	if got := feed(chainTime, debt, 0); len(got) != 0 {
+		t.Fatalf("Legacy lane priced without a measured slot rate: %+v", got)
+	}
+	if got := feed(chainTime, ConfirmedAccount{Address: debt.Address}, 4.6); len(got) != 0 {
 		t.Fatalf("lane priced without its debt reserve: %+v", got)
 	}
-	if got := feed(now.Add(-2*time.Minute), debt); len(got) != 0 {
+	if got := feed(now.Add(-2*time.Minute), debt, 4.6); len(got) != 0 {
 		t.Fatalf("lane priced from a view two minutes behind: %+v", got)
 	}
 }

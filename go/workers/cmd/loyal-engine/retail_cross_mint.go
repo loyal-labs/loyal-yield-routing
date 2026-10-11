@@ -24,7 +24,7 @@ func composeRetailCrossMint(ctx context.Context, cfg retailConfig, owner string,
 		return nil, err
 	}
 	controller.SetMarketEpochSource(market)
-	runtime, err := fleetexec.NewCrossMintRuntime(ctx, fleetexec.Config{Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, SlotDuration: cfg.slotDuration, Facts: facts}, store, controller, client, capabilities)
+	runtime, err := fleetexec.NewCrossMintRuntime(ctx, fleetexec.Config{Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, Facts: facts}, store, controller, client, capabilities)
 	if err != nil {
 		return nil, err
 	}

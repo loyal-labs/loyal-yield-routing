@@ -30,7 +30,7 @@ environment. The release identity is stamped at link time
 
 The engine selects `LOYAL_WORKER_SCOPE=retail` or `backyard`; each instance
 requires `LOYAL_WORKER_INSTANCE`. Retail requires
-explicit `RETAIL_MODE=active`, `RETAIL_TIMESCALE_SCHEMA`, `RETAIL_SLOT_DURATION`,
+explicit `RETAIL_MODE=active`, `RETAIL_TIMESCALE_SCHEMA`
 and the credentials
 `RETAIL_DATABASE_URL`, `RETAIL_TIMESCALE_DATABASE_URL`, `RETAIL_SOLANA_RPC_URL`,
 `RETAIL_JUPITER_API_KEY`, `RETAIL_DELEGATE_KEYPAIR` and `RETAIL_FEE_PAYER_KEYPAIR`. The current Autodeposit

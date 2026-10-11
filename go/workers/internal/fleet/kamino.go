@@ -30,18 +30,20 @@ func (e *ReserveSlotOrderMismatch) Error() string {
 	return fmt.Sprintf("reserve %s economic slot order is invalid: contextSlot=%d lastUpdateSlot=%d", e.Reserve, e.ContextSlot, e.LastUpdateSlot)
 }
 
-func DecodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
-	return decodeKaminoReserve(account, identity, contextSlot, slotDuration)
+// DecodeKaminoReserve reads a reserve at contextSlot; slotsPerSecond is the
+// chain's measured slot rate (chain.Client.SlotsPerSecond).
+func DecodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotsPerSecond float64) (ReserveState, error) {
+	return decodeKaminoReserve(account, identity, contextSlot, slotsPerSecond)
 }
 
 // DecodeKaminoSourceReserve names the source-only call site. Structurally valid
 // stale economics are decoded for both roles; Plan excludes them as targets,
 // while the route revalidator refreshes a stale source before withdraw.
-func DecodeKaminoSourceReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
-	return decodeKaminoReserve(account, identity, contextSlot, slotDuration)
+func DecodeKaminoSourceReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotsPerSecond float64) (ReserveState, error) {
+	return decodeKaminoReserve(account, identity, contextSlot, slotsPerSecond)
 }
 
-func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
+func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotsPerSecond float64) (ReserveState, error) {
 	reserve, err := kamino.DecodeReserve(account)
 	if err != nil || account.Key.String() != identity.Address {
 		return ReserveState{}, fmt.Errorf("reserve %s envelope or layout drifted", identity.Address)
@@ -49,8 +51,8 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 	if reserve.LendingMarket.String() != identity.Market || reserve.LiquidityMint.String() != identity.Mint {
 		return ReserveState{}, fmt.Errorf("reserve %s identity drifted", identity.Address)
 	}
-	if contextSlot <= 0 || slotDuration <= 0 {
-		return ReserveState{}, fmt.Errorf("confirmed context and slot duration are required")
+	if contextSlot <= 0 || !(slotsPerSecond > 0) || math.IsInf(slotsPerSecond, 0) {
+		return ReserveState{}, fmt.Errorf("confirmed context and the measured slot rate are required")
 	}
 	if reserve.LastUpdateSlot == 0 || reserve.LastUpdateSlot > math.MaxInt64 {
 		return ReserveState{}, fmt.Errorf("reserve %s has no bounded last update", identity.Address)
@@ -64,7 +66,7 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 	if remainingSlots < 0 {
 		remainingSlots = 0
 	}
-	economicLifetime := time.Duration(remainingSlots) * slotDuration
+	economicLifetime := time.Duration(float64(remainingSlots) / slotsPerSecond * float64(time.Second))
 	// KLend check_reserve_status_and_version allows Active (0) and Hidden
 	// (2); Hidden is not Obsolete (1). Reject unknown enum values rather than
 	// treating every nonzero status as inactive or admitting future statuses.
@@ -89,10 +91,7 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 		return ReserveState{}, fmt.Errorf("reserve %s utilization is invalid", identity.Address)
 	}
 
-	if reserve.ProtocolTakeRatePct > 100 {
-		return ReserveState{}, fmt.Errorf("reserve %s take rate is invalid", identity.Address)
-	}
-	rates, err := reserve.Rates()
+	rates, err := reserve.Rates(slotsPerSecond)
 	if err != nil {
 		return ReserveState{}, fmt.Errorf("reserve %s rates: %w", identity.Address, err)
 	}

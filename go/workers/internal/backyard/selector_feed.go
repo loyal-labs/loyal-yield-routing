@@ -123,9 +123,11 @@ func fetchNativeYields(ctx context.Context, client *http.Client, endpoint string
 }
 
 // readReserveEconomics reads every lane reserve from Backyard's account view,
-// which plans nothing while it is not live. A reserve absent from the chain or
-// not decodable leaves only its lanes out.
-func readReserveEconomics(ctx context.Context, view *View, routes []RuntimeRoute) (map[string]reserveEconomics, error) {
+// which plans nothing while it is not live. slotsPerSecond is the chain's
+// measured slot rate (chain.Client.SlotsPerSecond), zero when it could not be
+// read. A reserve absent from the chain, not decodable, or Legacy-basis
+// without a slot rate leaves only its lanes out.
+func readReserveEconomics(ctx context.Context, view *View, routes []RuntimeRoute, slotsPerSecond float64) (map[string]reserveEconomics, error) {
 	// The pinned USDC reserve is the USDC side of every non-USDC debt lane's
 	// price conversion, as in the live borrow capacity observation.
 	reserves := []string{kaminoDebtReserve}
@@ -140,9 +142,9 @@ func readReserveEconomics(ctx context.Context, view *View, routes []RuntimeRoute
 	observedAt := time.Unix(clockUnixTimestamp(accounts), 0).UTC()
 	out := map[string]reserveEconomics{}
 	for _, account := range accounts[1:] {
-		r, err := decodeReserveEconomics(account)
+		r, err := decodeReserveEconomics(account, slotsPerSecond)
 		if err != nil {
-			slog.Warn("backyard selector left out an undecodable lane reserve", "reserve", account.Address, "error", err)
+			slog.Warn("backyard selector left out a lane reserve it cannot price", "reserve", account.Address, "error", err)
 			continue
 		}
 		r.Slot, r.ObservedAt = slot, observedAt
@@ -151,7 +153,7 @@ func readReserveEconomics(ctx context.Context, view *View, routes []RuntimeRoute
 	return out, nil
 }
 
-func decodeReserveEconomics(account ConfirmedAccount) (reserveEconomics, error) {
+func decodeReserveEconomics(account ConfirmedAccount, slotsPerSecond float64) (reserveEconomics, error) {
 	reserve, err := kamino.DecodeReserve(chainAccount(account, account.Address))
 	if err != nil {
 		return reserveEconomics{}, err
@@ -160,13 +162,13 @@ func decodeReserveEconomics(account ConfirmedAccount) (reserveEconomics, error) 
 	if err != nil {
 		return reserveEconomics{}, err
 	}
-	rates, err := reserve.Rates()
+	rates, err := reserve.Rates(slotsPerSecond)
 	if err != nil {
 		return reserveEconomics{}, err
 	}
 	// The curve and host rate are scaled to what the reserve accrues, so a
 	// projected borrow prices as kamino.Reserve.Rates does.
-	accrual := reserve.AccrualPerCurve()
+	accrual, _ := reserve.AccrualPerCurve(slotsPerSecond)
 	r := reserveEconomics{Reserve: account.Address, Market: reserve.LendingMarket.String(), Mint: reserve.LiquidityMint.String(), Hash: sha256Bytes(account.Data),
 		SupplyAPY: rates.SupplyAPY, SupplyRaw: scaledFloat(total), BorrowRaw: scaledFloat(kamino.U128(reserve.BorrowedAmountSF)), HostBPS: float64(reserve.HostFixedInterestRateBPS) * accrual,
 		Status: reserve.Status, Emergency: reserve.EmergencyMode, PriceUSD: scaledFloat(kamino.U128(reserve.MarketPriceSF)), Decimals: int(reserve.MintDecimals)}
@@ -271,7 +273,9 @@ func (f *EconomicFeed) Refresh(ctx context.Context) error {
 	defer cancel()
 	now := time.Now().UTC()
 	p := DefaultSelectorPolicy()
-	reserves, err := readReserveEconomics(ctx, f.view, f.routes)
+	// An unread slot rate is zero: Legacy-basis lanes wait for the next refresh.
+	slotsPerSecond, _ := f.view.rpc.SlotsPerSecond(ctx)
+	reserves, err := readReserveEconomics(ctx, f.view, f.routes, slotsPerSecond)
 	var yields map[string]nativeYield
 	if err == nil {
 		yields, err = fetchNativeYields(ctx, f.client, kaminoStatsEndpoint, f.routes, now, p.NativeMaxAge)

@@ -78,7 +78,7 @@ func TestSameMintPostObservationKeepsResidualAndCoherentConversions(t *testing.T
 	f := mustSignedFixture(t)
 	c := sameMintPostContract{vault: f.FeePayer, source: f.SecondaryAccount, target: f.RecentBlockhash, mint: fleet.USDCMint, minimumSlot: 1000, sourceKind: "reserve_position"}
 	rpc := postFixture(t, c, 1001, 7, 11)
-	proof, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond)
+	proof, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 2.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,14 +87,14 @@ func TestSameMintPostObservationKeepsResidualAndCoherentConversions(t *testing.T
 	}
 	old := rpc
 	old.slot = 999
-	if _, err := observeSameMintPost(context.Background(), old, c, chain.Receipt{}, 400*time.Millisecond); err == nil {
+	if _, err := observeSameMintPost(context.Background(), old, c, chain.Receipt{}, 2.5); err == nil {
 		t.Fatal("old post-state accepted")
 	}
 	// Token account identity is part of custody, even with the expected amount.
 	a := rpc.accounts[proof.idleATA]
 	copy(a.Data[32:64], make([]byte, 32))
 	rpc.accounts[proof.idleATA] = a
-	if _, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond); err == nil {
+	if _, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 2.5); err == nil {
 		t.Fatal("external token authority accepted")
 	}
 }
@@ -120,7 +120,7 @@ func TestSameMintPostObservationProvesClosedSourceObligationAsZero(t *testing.T)
 		return rpc, source, target
 	}
 	rpc, _, target := closed()
-	proof, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond)
+	proof, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 2.5)
 	if err != nil {
 		t.Fatalf("closed source obligation blocked reconciliation: %v", err)
 	}
@@ -134,19 +134,19 @@ func TestSameMintPostObservationProvesClosedSourceObligationAsZero(t *testing.T)
 
 	rpc, _, _ = closed()
 	delete(rpc.accounts, proof.idleATA)
-	if p, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond); err != nil || p.idleAmount != 0 || p.idleATAExists {
+	if p, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 2.5); err != nil || p.idleAmount != 0 || p.idleATAExists {
 		t.Fatalf("absent liquidity ATA is not a zero balance: %+v %v", p, err)
 	}
 
 	rpc, _, target = closed()
 	delete(rpc.accounts, target)
-	if _, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond); err == nil {
+	if _, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 2.5); err == nil {
 		t.Fatal("absent target obligation accepted as a landed deposit")
 	}
 	for _, reserve := range []string{c.source, c.target} {
 		rpc, _, _ = closed()
 		delete(rpc.accounts, reserve)
-		if _, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 400*time.Millisecond); err == nil {
+		if _, err := observeSameMintPost(context.Background(), rpc, c, chain.Receipt{}, 2.5); err == nil {
 			t.Fatalf("absent reserve %s accepted", reserve)
 		}
 	}
@@ -219,7 +219,7 @@ func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *t
 				delete(post.accounts, obligation)
 				residual = 0
 			}
-			proof, err := observeSameMintPost(ctx, post, c, receipt, 400*time.Millisecond)
+			proof, err := observeSameMintPost(ctx, post, c, receipt, 2.5)
 			if err != nil {
 				t.Fatal(err)
 			}

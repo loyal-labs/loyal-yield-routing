@@ -302,7 +302,7 @@ func validateCrossMintPreparationRequest(q CrossMintPreparationRequest, signer, 
 // the strict Jupiter validator. It neither advances custody nor signs.
 func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPreparationRequest) (CrossMintLegPreparation, error) {
 	var out CrossMintLegPreparation
-	if r == nil || r.rpc == nil || !r.crossMintEnabled || r.computeLimit == 0 || r.slotDuration <= 0 {
+	if r == nil || r.rpc == nil || !r.crossMintEnabled || r.computeLimit == 0 {
 		return out, errors.New("cross-mint preparation runtime is not configured")
 	}
 	plan, err := validateCrossMintPreparationRequest(q, r.signer, r.owner, time.Now())
@@ -631,18 +631,22 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 	}
 	bank.source, bank.target, bank.active = positions[m.SourceReserve], positions[m.IntendedTargetReserve], positions[m.ActiveTargetReserve]
 	bank.sourceCollateral, bank.targetCollateral, bank.activeCollateral = collateral[m.SourceReserve], collateral[m.IntendedTargetReserve], collateral[m.ActiveTargetReserve]
+	slotsPerSecond, err := r.rpc.SlotsPerSecond(ctx)
+	if err != nil {
+		return bank, fmt.Errorf("measured slot rate: %w", err)
+	}
 	if q.Leg != "deposit" {
-		bank.sourceEconomics, err = DecodeKaminoReserve(bank.at(m.SourceReserve), ReserveIdentity{Address: m.SourceReserve, Market: bank.source.Position.Market, Mint: m.SourceMint}, bank.slot, r.slotDuration)
+		bank.sourceEconomics, err = DecodeKaminoReserve(bank.at(m.SourceReserve), ReserveIdentity{Address: m.SourceReserve, Market: bank.source.Position.Market, Mint: m.SourceMint}, bank.slot, slotsPerSecond)
 		if err != nil {
 			return bank, err
 		}
-		bank.targetEconomics, err = DecodeKaminoReserve(bank.at(m.IntendedTargetReserve), ReserveIdentity{Address: m.IntendedTargetReserve, Market: bank.target.Position.Market, Mint: m.TargetMint}, bank.slot, r.slotDuration)
+		bank.targetEconomics, err = DecodeKaminoReserve(bank.at(m.IntendedTargetReserve), ReserveIdentity{Address: m.IntendedTargetReserve, Market: bank.target.Position.Market, Mint: m.TargetMint}, bank.slot, slotsPerSecond)
 	} else {
 		p := bank.active
 		if q.Purpose == "recover_source" {
 			p = bank.source
 		}
-		_, err = DecodeKaminoReserve(bank.at(p.Position.Reserve), ReserveIdentity{Address: p.Position.Reserve, Market: p.Position.Market, Mint: p.Position.LiquidityMint}, bank.slot, r.slotDuration)
+		_, err = DecodeKaminoReserve(bank.at(p.Position.Reserve), ReserveIdentity{Address: p.Position.Reserve, Market: p.Position.Market, Mint: p.Position.LiquidityMint}, bank.slot, slotsPerSecond)
 	}
 	return bank, err
 }

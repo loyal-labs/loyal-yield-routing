@@ -328,6 +328,31 @@ func TestSlotSamplesSumOnlyUsableSamples(t *testing.T) {
 	}
 }
 
+// The measured slot rate is slots over seconds of the performance samples,
+// read once a sample period; no usable sample is an error, never a guess.
+func TestSlotsPerSecondMeasuresOncePerSamplePeriod(t *testing.T) {
+	calls := 0
+	client := serve(t, func(request) (int, any) {
+		calls++
+		return http.StatusOK, result([]any{
+			map[string]any{"slot": 2, "numSlots": 276, "numTransactions": 1, "samplePeriodSecs": 60},
+			map[string]any{"slot": 1, "numSlots": 270, "numTransactions": 1, "samplePeriodSecs": 60},
+		})
+	})
+	for range 2 {
+		if rate, err := client.SlotsPerSecond(context.Background()); err != nil || rate != 546.0/120 {
+			t.Fatalf("slot rate %v, %v", rate, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("samples read %d times within one period", calls)
+	}
+	empty := serve(t, func(request) (int, any) { return http.StatusOK, result([]any{}) })
+	if _, err := empty.SlotsPerSecond(context.Background()); err == nil {
+		t.Fatal("no samples gave a slot rate")
+	}
+}
+
 // A pooled endpoint's lagging node answers -32016 until it reaches the asked
 // slot: the read gets the caught-up answer, a broadcast is never sent twice,
 // and a node that stays behind is still unavailable.

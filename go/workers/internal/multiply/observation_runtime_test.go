@@ -193,3 +193,9 @@ func TestWithdrawalExactPayoutRequiresEnoughConfirmedLiquidity(t *testing.T) {
 		})
 	}
 }
+
+func (*bankObservationReader) SlotsPerSecond(context.Context) (float64, error) {
+	return testSlotsPerSecond, nil
+}
+
+func (behindReader) SlotsPerSecond(context.Context) (float64, error) { return testSlotsPerSecond, nil }

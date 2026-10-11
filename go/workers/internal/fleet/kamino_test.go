@@ -3,7 +3,6 @@ package fleet
 import (
 	"encoding/binary"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -47,7 +46,7 @@ func putScaledInteger(output []byte, value uint64) {
 func TestDecodeKaminoReserveMatchesFrozenLayout(t *testing.T) {
 	identity := ReserveIdentity{Address: testIdentity(3), Market: testIdentity(40), Mint: USDCMint}
 	account := reserveFixture(identity, 50_000_000_000_000, 50_000_000_000_000)
-	state, err := DecodeKaminoReserve(&account, identity, 1_000, 400*time.Millisecond)
+	state, err := DecodeKaminoReserve(&account, identity, 1_000, 2.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,8 +88,8 @@ func TestDecodeKaminoReserveStatusAdmission(t *testing.T) {
 			account := reserveFixture(identity, 50_000_000_000_000, 50_000_000_000_000)
 			account.Data[4856] = tc.status
 			account.Data[4856+8] = tc.emergency
-			for _, decode := range []func(*chain.Account, ReserveIdentity, int64, time.Duration) (ReserveState, error){DecodeKaminoReserve, DecodeKaminoSourceReserve} {
-				state, err := decode(&account, identity, 1_000, 400*time.Millisecond)
+			for _, decode := range []func(*chain.Account, ReserveIdentity, int64, float64) (ReserveState, error){DecodeKaminoReserve, DecodeKaminoSourceReserve} {
+				state, err := decode(&account, identity, 1_000, 2.5)
 				if (err == nil) != tc.allowed {
 					t.Fatalf("allowed=%v, error=%v", tc.allowed, err)
 				}
@@ -107,30 +106,30 @@ func TestDecodeKaminoReserveRejectsIdentityAndLayoutDrift(t *testing.T) {
 	account := reserveFixture(identity, 1_000_000, 1_000_000)
 	drifted := identity
 	drifted.Market = testIdentity(80)
-	if _, err := DecodeKaminoReserve(&account, drifted, 1_000, 400*time.Millisecond); err == nil {
+	if _, err := DecodeKaminoReserve(&account, drifted, 1_000, 2.5); err == nil {
 		t.Fatal("market drift was accepted")
 	}
 	account.Data[24] = 1
-	staleTarget, err := DecodeKaminoReserve(&account, identity, 1_000, 400*time.Millisecond)
+	staleTarget, err := DecodeKaminoReserve(&account, identity, 1_000, 2.5)
 	if err != nil || !staleTarget.LastUpdateStale {
 		t.Fatalf("structurally valid stale target evidence was not decoded: state=%+v err=%v", staleTarget, err)
 	}
-	staleSource, err := DecodeKaminoSourceReserve(&account, identity, 1_000, 400*time.Millisecond)
+	staleSource, err := DecodeKaminoSourceReserve(&account, identity, 1_000, 2.5)
 	if err != nil || !staleSource.LastUpdateStale {
 		t.Fatalf("explicitly stale source-only reserve was rejected: state=%+v err=%v", staleSource, err)
 	}
 	account = reserveFixture(identity, 1_000_000, 1_000_000)
 	binary.LittleEndian.PutUint64(account.Data[16:24], 1_001)
-	if _, err := DecodeKaminoReserve(&account, identity, 1_000, 400*time.Millisecond); err == nil {
+	if _, err := DecodeKaminoReserve(&account, identity, 1_000, 2.5); err == nil {
 		t.Fatal("future economic evidence was accepted")
 	}
 	binary.LittleEndian.PutUint64(account.Data[16:24], 1)
-	expiring, err := DecodeKaminoReserve(&account, identity, 2_400, 400*time.Millisecond)
+	expiring, err := DecodeKaminoReserve(&account, identity, 2_400, 2.5)
 	if err != nil || expiring.EconomicLifetimeMillis >= minimumPublicationLifetime.Milliseconds() {
 		t.Fatalf("expiring evidence was not preserved for planner exclusion: state=%+v err=%v", expiring, err)
 	}
 	account.Data = account.Data[:100]
-	if _, err := DecodeKaminoReserve(&account, identity, 1_000, 400*time.Millisecond); err == nil {
+	if _, err := DecodeKaminoReserve(&account, identity, 1_000, 2.5); err == nil {
 		t.Fatal("layout drift was accepted")
 	}
 }

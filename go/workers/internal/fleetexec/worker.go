@@ -20,11 +20,9 @@ var resendEvery = time.Second
 
 // Config is the explicit runtime configuration for one fleet executor.
 type Config struct {
-	// SlotDuration is the same observed/configured economic clock used by planning.
-	SlotDuration time.Duration
-	Cluster      string
-	Owner        string
-	LeaseTTL     time.Duration
+	Cluster  string
+	Owner    string
+	LeaseTTL time.Duration
 	// BatchSize bounds submissions claimed per tick.
 	BatchSize int
 	// TickInterval spaces recovery sweeps.
@@ -72,10 +70,7 @@ func NewWorker(config Config, store *Store, land chain.LandChain, receipts recei
 	}
 	worker := &Worker{config: config, store: store, chain: land, receipts: receipts, signer: signer}
 	if client, ok := receipts.(*chain.Client); ok {
-		if config.SlotDuration <= 0 || config.SlotDuration > 10*time.Second {
-			return nil, errors.New("real fleet reconciliation requires explicit slot duration")
-		}
-		worker.recovery = &sameMintRecovery{store: store, accounts: client, slotDuration: config.SlotDuration}
+		worker.recovery = &sameMintRecovery{store: store, accounts: client, slotRate: client.SlotsPerSecond}
 		worker.balances = client
 	}
 	return worker, nil

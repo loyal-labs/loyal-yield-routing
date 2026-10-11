@@ -1,9 +1,9 @@
 package fleetexec
 
 import (
+	"context"
 	"errors"
 	"math"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -16,9 +16,10 @@ import (
 // absent obligation proves zero collateral (Rust parity:
 // decode_kamino_obligation_summary(None) is exists=false, amount 0).
 type sameMintRecovery struct {
-	slotDuration time.Duration
-	store        *Store
-	accounts     fleet.AccountReader
+	// slotRate reads the chain's measured slot rate (chain.Client.SlotsPerSecond).
+	slotRate func(context.Context) (float64, error)
+	store    *Store
+	accounts fleet.AccountReader
 }
 
 func obligationCollateral(a *chain.Account, market, owner, reserve string) (int64, error) {

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -81,7 +82,10 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 		h.logger.Error("invalid Kamino stream owner skipped", "reserve", reserve, "slot", accountUpdate.GetSlot(), "owner", owner)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
 	}
-	snapshot, err := Decode(target, accountUpdate.GetSlot(), observedAt, &chain.Account{Key: solana.PublicKeyFromBytes(account.GetPubkey()), Owner: solana.PublicKeyFromBytes(account.GetOwner()), Lamports: account.GetLamports(), Data: account.GetData(), Executable: account.GetExecutable()})
+	snapshot, err := h.decode(ctx, target, accountUpdate.GetSlot(), observedAt, &chain.Account{Key: solana.PublicKeyFromBytes(account.GetPubkey()), Owner: solana.PublicKeyFromBytes(account.GetOwner()), Lamports: account.GetLamports(), Data: account.GetData(), Executable: account.GetExecutable()})
+	if errors.Is(err, klend.ErrSlotRateUnavailable) {
+		return HandleOutcome{}, err
+	}
 	if err != nil {
 		h.logger.Error("invalid Kamino stream data skipped", "reserve", reserve, "slot", accountUpdate.GetSlot(), "error", err)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
@@ -124,7 +128,10 @@ func (h *Handler) Seed(ctx context.Context, targets []Target) (uint64, error) {
 				h.logger.Error("confirmed Kamino seed account is missing or foreign", "reserve", target.Reserve)
 				continue
 			}
-			snapshot, err := Decode(target, slot, observedAt, account)
+			snapshot, err := h.decode(ctx, target, slot, observedAt, account)
+			if errors.Is(err, klend.ErrSlotRateUnavailable) {
+				return 0, err
+			}
 			if err != nil {
 				h.logger.Error("confirmed Kamino seed state was malformed", "reserve", target.Reserve, "error", err)
 				continue
@@ -135,6 +142,18 @@ func (h *Handler) Seed(ctx context.Context, targets []Target) (uint64, error) {
 		}
 	}
 	return minimum, nil
+}
+
+// decode is Decode at the chain's measured slot rate. A Legacy-basis reserve
+// whose rate cannot be read is an error its caller returns, so the update or
+// seed is retried, never skipped.
+func (h *Handler) decode(ctx context.Context, target Target, slot uint64, observedAt time.Time, account *chain.Account) (Snapshot, error) {
+	slotsPerSecond, rateErr := h.rpc.SlotsPerSecond(ctx)
+	snapshot, err := Decode(target, slot, observedAt, account, slotsPerSecond)
+	if errors.Is(err, klend.ErrSlotRateUnavailable) && rateErr != nil {
+		err = fmt.Errorf("%w: %w", err, rateErr)
+	}
+	return snapshot, err
 }
 
 // record inserts one confirmed reserve state with its diff against the newest

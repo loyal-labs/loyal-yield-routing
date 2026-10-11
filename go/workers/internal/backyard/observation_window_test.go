@@ -43,7 +43,11 @@ func TestObservationWindowScalesWithSlotTimeAndIsClamped(t *testing.T) {
 		t.Fatalf("slot time re-measured within a minute: %d calls", calls)
 	}
 	// An unreadable measurement keeps the last value for 10 minutes, then 32.
-	body = `{"jsonrpc":"2.0","id":1,"result":[]}`
+	// A fresh client: the first one holds its reading for a sample period.
+	client = newFakeChain(t, nil)
+	rpcOf(client).Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(`{"jsonrpc":"2.0","id":1,"result":[]}`), nil
+	})
 	observationLagChecked = time.Now().Add(-2 * time.Minute)
 	refreshObservationLagSlots(context.Background(), client)
 	if observationLagSlots() != 49 {

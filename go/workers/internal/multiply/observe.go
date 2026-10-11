@@ -22,9 +22,11 @@ import (
 
 // ObservationReader is the consumer-defined chain read surface; *chain.Client
 // is the production binding and tests bind fixtures. Missing accounts are nil
-// entries in the same order.
+// entries in the same order. SlotsPerSecond is the chain's measured slot
+// rate, which Legacy-basis reserve rates need.
 type ObservationReader interface {
 	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
+	SlotsPerSecond(ctx context.Context) (float64, error)
 }
 
 // StrategyObservation is one decoded obligation/reserve pair.
@@ -200,11 +202,11 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 		if err != nil {
 			return nil, err
 		}
-		collateralAPY, err := reserveAPYBPS(collateralReserve, true)
+		collateralAPY, err := reserveAPYBPS(ctx, reader, collateralReserve, true)
 		if err != nil {
 			return nil, err
 		}
-		debtAPY, err := reserveAPYBPS(debtReserve, false)
+		debtAPY, err := reserveAPYBPS(ctx, reader, debtReserve, false)
 		if err != nil {
 			return nil, err
 		}
@@ -566,9 +568,14 @@ func allZero(data []byte) bool {
 }
 
 // reserveAPYBPS is the reserve's supply or borrow APY, kamino.Reserve.Rates,
-// in bps.
-func reserveAPYBPS(decoded *decodedReserve, supply bool) (uint64, error) {
-	rates, err := decoded.reserve.Rates()
+// in bps. A Legacy-basis reserve needs the measured slot rate; without it the
+// observation is unavailable and the next tick retries.
+func reserveAPYBPS(ctx context.Context, reader ObservationReader, decoded *decodedReserve, supply bool) (uint64, error) {
+	slotsPerSecond, rateErr := reader.SlotsPerSecond(ctx)
+	rates, err := decoded.reserve.Rates(slotsPerSecond)
+	if errors.Is(err, kamino.ErrSlotRateUnavailable) && rateErr != nil {
+		return 0, fmt.Errorf("%w: %w", err, rateErr)
+	}
 	if err != nil {
 		return 0, err
 	}

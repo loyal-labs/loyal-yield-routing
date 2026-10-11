@@ -14,7 +14,6 @@ type Config struct {
 	RPCURL                             string
 	Cluster                            string
 	PollInterval                       time.Duration
-	SlotDuration                       time.Duration
 	RevalidatorEnabled                 bool
 	DelegatedSigner, RevalidationOwner string
 	RevalidationLeaseTTL               time.Duration
@@ -43,8 +42,8 @@ func (c Config) Validate() error {
 	if c.Cluster == "" || strings.TrimSpace(c.Cluster) != c.Cluster {
 		return fmt.Errorf("canonical cluster is required")
 	}
-	if c.PollInterval <= 0 || c.SlotDuration <= 0 {
-		return fmt.Errorf("poll and slot durations are invalid")
+	if c.PollInterval <= 0 {
+		return fmt.Errorf("poll interval is invalid")
 	}
 	enabledMintCount := len(c.EnabledStableMints)
 	if enabledMintCount == 0 {

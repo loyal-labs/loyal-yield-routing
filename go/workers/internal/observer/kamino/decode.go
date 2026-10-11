@@ -87,7 +87,9 @@ type Diff struct {
 	ChangedFields []string `json:"changed_fields"`
 }
 
-func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Account) (Snapshot, error) {
+// Decode reads a reserve's snapshot; slotsPerSecond is the chain's measured
+// slot rate its Legacy-basis rates need (kamino.Reserve.Rates).
+func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Account, slotsPerSecond float64) (Snapshot, error) {
 	reserve, err := klend.DecodeReserve(account)
 	if err != nil {
 		return Snapshot{}, err
@@ -107,7 +109,7 @@ func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Acc
 	referrerFees := scaledFraction(klend.U128(reserve.AccumulatedReferrerFeesSF))
 	pendingFees := scaledFraction(klend.U128(reserve.PendingReferrerFeesSF))
 	totalSupply := math.Max(0, available+borrowed-protocolFees-referrerFees-pendingFees)
-	rates, err := reserve.Rates()
+	rates, err := reserve.Rates(slotsPerSecond)
 	if err != nil {
 		return Snapshot{}, err
 	}

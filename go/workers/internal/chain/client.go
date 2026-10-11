@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -44,8 +45,19 @@ var unavailableCodes = map[int]bool{-32603: true, -32004: true, -32005: true, -3
 const maxAccountsPerCall = 100
 
 type Client struct {
-	rpc *rpc.Client
+	rpc      *rpc.Client
+	slotRate slotRate
 }
+
+// slotRate is the last measured slot rate and when it was read.
+type slotRate struct {
+	sync.Mutex
+	perSecond float64
+	at        time.Time
+}
+
+// slotSamplePeriod is how often the cluster takes a performance sample.
+const slotSamplePeriod = 60 * time.Second
 
 func New(endpoint string, timeout time.Duration) (*Client, error) {
 	if endpoint == "" || timeout <= 0 {
@@ -483,6 +495,26 @@ func (c *Client) FinalizedBlockHeightAt(ctx context.Context, slot uint64) (uint6
 		return 0, errors.New("getBlock: no block height")
 	}
 	return *out.BlockHeight, nil
+}
+
+// SlotsPerSecond is the cluster's measured slot rate: the slots over the
+// seconds of its last five performance samples. A new sample lands once a
+// period, so the samples are read again only after one has passed.
+func (c *Client) SlotsPerSecond(ctx context.Context) (float64, error) {
+	c.slotRate.Lock()
+	defer c.slotRate.Unlock()
+	if !c.slotRate.at.IsZero() && time.Since(c.slotRate.at) < slotSamplePeriod {
+		return c.slotRate.perSecond, nil
+	}
+	slots, seconds, err := c.SlotSamples(ctx, 5)
+	if err != nil {
+		return 0, err
+	}
+	if slots == 0 || seconds == 0 {
+		return 0, errors.New("getRecentPerformanceSamples: no usable sample")
+	}
+	c.slotRate.perSecond, c.slotRate.at = float64(slots)/float64(seconds), time.Now()
+	return c.slotRate.perSecond, nil
 }
 
 // SlotSamples sums the cluster's last n performance samples (one a minute)

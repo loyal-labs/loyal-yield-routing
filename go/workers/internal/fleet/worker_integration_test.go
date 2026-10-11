@@ -68,6 +68,8 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 		}
 		writer.Header().Set("content-type", "application/json")
 		switch call.Method {
+		case "getRecentPerformanceSamples":
+			json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": testPerformanceSamples})
 		case "getSlot":
 			json.NewEncoder(writer).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": 1_000})
 		case "getMultipleAccounts":
@@ -99,18 +101,18 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", PollInterval: time.Second, SlotDuration: 400 * time.Millisecond}
+	config := Config{DatabaseURL: databaseURL, TimescaleURL: databaseURL, TimescaleSchema: "kamino", RPCURL: server.URL, Cluster: "localnet", PollInterval: time.Second}
 	config.DelegatedSigner = delegatedSigner
 	registry := prometheus.NewRegistry()
 	worker, err := NewWorker(config, store, testChain(t, server.URL), engine.NewFacts(registry))
 	if err != nil {
 		t.Fatal(err)
 	}
-	sourceState, err := DecodeKaminoSourceReserve(&sourceAccount, source, 1_000, config.SlotDuration)
+	sourceState, err := DecodeKaminoSourceReserve(&sourceAccount, source, 1_000, 2.5)
 	if err != nil {
 		t.Fatal(err)
 	}
-	targetState, err := DecodeKaminoReserve(&targetAccount, target, 1_000, config.SlotDuration)
+	targetState, err := DecodeKaminoReserve(&targetAccount, target, 1_000, 2.5)
 	if err != nil {
 		t.Fatal(err)
 	}

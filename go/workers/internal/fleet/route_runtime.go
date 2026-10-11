@@ -41,7 +41,6 @@ type Revalidator struct {
 	signer                   string
 	leaseTTL                 time.Duration
 	computeLimit             uint64
-	slotDuration             time.Duration
 	fusedExecute             bool
 	crossMintEnabled         bool
 	crossMintMaxValueLossBPS uint16
@@ -54,7 +53,6 @@ type RevalidatorConfig struct {
 	Owner, DelegatedSigner   string
 	LeaseTTL                 time.Duration
 	ComputeLimit             uint64
-	SlotDuration             time.Duration
 	FusedExecute             bool
 	CrossMintEnabled         bool
 	CrossMintMaxValueLossBPS uint16
@@ -82,9 +80,6 @@ func newRevalidator(store revalidationStore, client *chain.Client, config Revali
 	if config.ComputeLimit > defaultComputeLimit {
 		return nil, errors.New("compute limit exceeds Solana maximum")
 	}
-	if config.SlotDuration <= 0 {
-		return nil, errors.New("Kamino slot duration is required")
-	}
 	var jupiter *JupiterBuildClient
 	if config.CrossMintEnabled {
 		if config.CrossMintMaxValueLossBPS == 0 || config.CrossMintMaxValueLossBPS > 1_000 || config.CrossMintMaxSlippageBPS == 0 || config.CrossMintMaxSlippageBPS > 1_000 {
@@ -96,7 +91,7 @@ func newRevalidator(store revalidationStore, client *chain.Client, config Revali
 			return nil, err
 		}
 	}
-	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...)}, nil
+	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...)}, nil
 }
 
 // Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
@@ -618,11 +613,15 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 			farmUsers++
 		}
 	}
-	sourceEconomics, err := DecodeKaminoReserve(accounts[0], ReserveIdentity{Address: lease.SourceReserve, Market: freshSource.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
+	slotsPerSecond, err := r.rpc.SlotsPerSecond(ctx)
+	if err != nil {
+		return f, fmt.Errorf("measured slot rate: %w", err)
+	}
+	sourceEconomics, err := DecodeKaminoReserve(accounts[0], ReserveIdentity{Address: lease.SourceReserve, Market: freshSource.Position.Market, Mint: lease.LiquidityMint}, slot, slotsPerSecond)
 	if err != nil {
 		return f, fmt.Errorf("decode fresh source economics: %w", err)
 	}
-	targetEconomics, err := DecodeKaminoReserve(accounts[1], ReserveIdentity{Address: lease.TargetReserve, Market: freshTarget.Position.Market, Mint: lease.LiquidityMint}, slot, r.slotDuration)
+	targetEconomics, err := DecodeKaminoReserve(accounts[1], ReserveIdentity{Address: lease.TargetReserve, Market: freshTarget.Position.Market, Mint: lease.LiquidityMint}, slot, slotsPerSecond)
 	if err != nil {
 		return f, fmt.Errorf("decode fresh target economics: %w", err)
 	}

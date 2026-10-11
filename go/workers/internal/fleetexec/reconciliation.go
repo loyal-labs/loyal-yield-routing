@@ -121,7 +121,11 @@ func (v *sameMintRecovery) reconcile(ctx context.Context, lease SubmissionLease,
 	if err != nil {
 		return err
 	}
-	proof, err := observeSameMintPost(ctx, v.accounts, c, receipt, v.slotDuration)
+	slotsPerSecond, err := v.slotRate(ctx)
+	if err != nil {
+		return fmt.Errorf("measured slot rate: %w", err)
+	}
+	proof, err := observeSameMintPost(ctx, v.accounts, c, receipt, slotsPerSecond)
 	if err != nil {
 		return err
 	}
@@ -153,7 +157,7 @@ func associatedCustodyAccount(owner, mint, program string) (string, error) {
 	return address.String(), err
 }
 
-func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c sameMintPostContract, receipt chain.Receipt, slotDuration time.Duration) (*sameMintPostProof, error) {
+func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c sameMintPostContract, receipt chain.Receipt, slotsPerSecond float64) (*sameMintPostProof, error) {
 	reserves := []string{c.target}
 	if c.sourceKind == "reserve_position" {
 		reserves = []string{c.source, c.target}
@@ -216,7 +220,7 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 		if market != p.market || obligation != p.obligation || collateral != p.collateralMint || token != program {
 			return nil, errors.New("reserve identity changed within post observation")
 		}
-		state, e := fleet.DecodeKaminoReserve(a, fleet.ReserveIdentity{Address: p.reserve, Market: p.market, Mint: p.mint}, slot, slotDuration)
+		state, e := fleet.DecodeKaminoReserve(a, fleet.ReserveIdentity{Address: p.reserve, Market: p.market, Mint: p.mint}, slot, slotsPerSecond)
 		if e != nil {
 			return nil, e
 		}

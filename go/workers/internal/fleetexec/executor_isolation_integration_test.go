@@ -129,7 +129,7 @@ func TestIneligibleOpportunityIsRecordedAndDoesNotFailTheTick(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	revalidator, err := fleet.NewRevalidator(routes, client, fleet.RevalidatorConfig{Owner: "owner-isolation", DelegatedSigner: signer, LeaseTTL: 30 * time.Second, SlotDuration: 400 * time.Millisecond, FusedExecute: true})
+	revalidator, err := fleet.NewRevalidator(routes, client, fleet.RevalidatorConfig{Owner: "owner-isolation", DelegatedSigner: signer, LeaseTTL: 30 * time.Second, FusedExecute: true})
 	if err != nil {
 		t.Fatal(err)
 	}

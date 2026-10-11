@@ -208,16 +208,17 @@ func TestBorrowAPYIncludesHostFixedInterest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	borrow, err := reserveAPYBPS(reserve, false)
+	borrow, err := reserveAPYBPS(context.Background(), shortReviewReader{}, reserve, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	supply, err := reserveAPYBPS(reserve, true)
+	supply, err := reserveAPYBPS(context.Background(), shortReviewReader{}, reserve, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Legacy basis: a 10% host rate accrues 1.25x per KLend's slot year.
-	if borrow != 1_331 || supply != 0 {
+	// Legacy basis: a 10% host rate accrues per KLend's 2-slots-a-second year,
+	// so at the measured slot rate it earns 10% x rate/2.
+	if want := uint64(math.Round(math.Expm1(0.10*testSlotsPerSecond/2) * 10_000)); borrow != want || supply != 0 {
 		t.Fatalf("host fixed interest: borrow=%d supply=%d", borrow, supply)
 	}
 	for index := 0; index < 11; index++ {
@@ -227,7 +228,7 @@ func TestBorrowAPYIncludesHostFixedInterest(t *testing.T) {
 	if reserve, err = decodeReserve(account, config); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reserveAPYBPS(reserve, false); err == nil {
+	if _, err := reserveAPYBPS(context.Background(), shortReviewReader{}, reserve, false); err == nil {
 		t.Fatal("compounded APY overflow accepted")
 	}
 }
@@ -281,4 +282,8 @@ func TestWorkerAcceptsExecutorPrivateKeyAndDepositRejectsWrap(t *testing.T) {
 	if state.Generation != before {
 		t.Fatal("invalid deposit mutated route generation")
 	}
+}
+
+func (shortReviewReader) SlotsPerSecond(context.Context) (float64, error) {
+	return testSlotsPerSecond, nil
 }
