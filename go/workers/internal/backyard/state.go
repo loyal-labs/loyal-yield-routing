@@ -88,6 +88,14 @@ type Snapshot struct {
 	// CrossLaneHardLTV marks a view moved off the working lane because
 	// another held lane reached its hard LTV: its risk is handled first.
 	CrossLaneHardLTV bool `json:",omitempty"`
+	// OtherLanesCustodyHeld: another held lane has collateral or debt cash in
+	// a custody of its own. Only the working lane may hold transient cash.
+	OtherLanesCustodyHeld bool `json:",omitempty"`
+	// Tranche move (selector_tranche.go). TrancheTargetIdleRaw is the Voltr
+	// idle this lane frees to as a tranche source; TrancheDestinationRaw is
+	// the E reserved for this lane as a tranche destination. Zero otherwise.
+	TrancheTargetIdleRaw  int64 `json:",omitempty"`
+	TrancheDestinationRaw int64 `json:",omitempty"`
 	// Unwind is an admitted full exit, independent of the user's claim amount.
 	Unwind bool
 	// Expired debt envelope needs fresh same-source exit admission, not a manual latch.
@@ -230,6 +238,12 @@ func withOtherLanesNAV(workingRaw uint64, s Snapshot) uint64 {
 	return workingRaw + uint64(s.OtherLanesNAVRaw)
 }
 
+// laneNAVRaw is the working lane's own share of StrategyNAVRaw: its
+// position, custodies and the Squads cash it works with.
+func laneNAVRaw(s Snapshot) int64 {
+	return s.StrategyNAVRaw - s.OtherLanesNAVRaw
+}
+
 // otherHeldLanes is every held lane except the working lane.
 func (s Snapshot) otherHeldLanes() []string {
 	var out []string
@@ -319,7 +333,9 @@ type Observation struct {
 	// proof for the CURRENT operation only (doc 26). Unexported: per-operation
 	// local data on the tick's own observation — never persisted in the
 	// decision JSON and never a mutable global.
-	custodyProof    *sharedCustodyAdmissionProof
+	custodyProof *sharedCustodyAdmissionProof
+	// heldFacts are the other held lanes' position values from this batch.
+	heldFacts       []heldLaneFact
 	ValuationSource string `json:",omitempty"`
 	ValuationSlot   int64  `json:",omitempty"`
 	Snapshot        Snapshot

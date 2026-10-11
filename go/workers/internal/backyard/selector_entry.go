@@ -165,6 +165,7 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	}
 	var state struct {
 		Unwind        *UnwindIntent                      `json:"selectorUnwind"`
+		Tranche       json.RawMessage                    `json:"tranche"`
 		CanaryHistory map[string]pilotCanaryEntryReceipt `json:"pilotCanaryEntries"`
 		Entry         *SelectorEntry                     `json:"selectorEntry"`
 		Selector      struct {
@@ -217,6 +218,12 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	}
 	input.Quotes = currentQuotes
 	result = SelectOpportunity(input, state.Selector.Result.State)
+	activeTranche, err := decodeTrancheIntent(state.Tranche)
+	if err != nil {
+		return result, err
+	}
+	var tranche *trancheIntent
+	result, tranche = applyTrancheSelection(input, result, state.Selector.Result.State.Tranches, activeTranche, version+1, now)
 	input.canaryPriorEntry = state.Entry
 	var canaryReceipt *pilotCanaryEntryReceipt
 	result, canaryReceipt, err = selectPilotCanaryEntry(input, result, state.CanaryHistory)
@@ -282,7 +289,21 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		}
 	}
 	nextVersion := version
-	if entry != nil || unwind != nil {
+	if tranche != nil || result.WorkingLane != "" {
+		// A tranche start makes its source the working lane; a rotation
+		// makes the worst-yielding held lane the next source. Neither moves
+		// money.
+		nextVersion++
+		updated["generation"], _ = json.Marshal(nextVersion)
+		if tranche != nil {
+			if updated["tranche"], err = json.Marshal(tranche); err != nil {
+				return result, err
+			}
+			updated["workingLane"], _ = json.Marshal(tranche.Source)
+		} else {
+			updated["workingLane"], _ = json.Marshal(result.WorkingLane)
+		}
+	} else if entry != nil || unwind != nil {
 		nextVersion++
 		updated["generation"], _ = json.Marshal(nextVersion)
 		if entry != nil {

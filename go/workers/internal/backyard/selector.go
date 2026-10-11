@@ -214,6 +214,10 @@ type MoveQuote struct {
 	// observations cannot extend older quote/reserve evidence past this window.
 	SampleSlot       int64 `json:"sampleSlot"`
 	ValidThroughSlot int64 `json:"validThroughSlot"`
+	// Tranche marks a partial move of EquityRaw out of the held source: its
+	// cost is the scaled partial exit plus the destination recipe, and its
+	// source keeps the rest of its position (SourceExit stays nil).
+	Tranche bool `json:"tranche,omitempty"`
 }
 
 // storedWindowValid checks a PERSISTED quote's own slot window against the
@@ -252,6 +256,12 @@ type SelectorInput struct {
 	Markets          []LaneEconomics
 	Quotes           []MoveQuote
 	Policy           SelectorPolicy
+	// trancheRefusals labels (source>destination) pairs the quote collector
+	// refused for an economic or capacity reason, never an outage.
+	trancheRefusals map[string]string
+	// heldFacts are the other held lanes' positions, for the worst-yield
+	// working-lane ordering.
+	heldFacts []heldLaneFact
 }
 
 // Only economic persistence lives here. A source exit is committed by the
@@ -264,6 +274,8 @@ type AdvantageWindow struct {
 type SelectorState struct {
 	SourceLane string                     `json:"sourceLane,omitempty"`
 	Advantages map[string]AdvantageWindow `json:"advantages,omitempty"`
+	// Tranches are the (source>destination) tranche persistence windows.
+	Tranches map[string]AdvantageWindow `json:"tranches,omitempty"`
 }
 
 type CandidateForecast struct {
@@ -294,9 +306,17 @@ type SelectorResult struct {
 	KeepGainRaw     float64             `json:"keepGainRaw"`
 	Candidates      []CandidateForecast `json:"candidates"`
 	State           SelectorState       `json:"state"`
-	// The exact quote selected for ENTER/SWITCH, copied from the validated
-	// candidate. Net equity alone cannot identify its gross input or costs.
+	// The exact quote selected for ENTER/SWITCH/TRANCHE, copied from the
+	// validated candidate. Net equity alone cannot identify its gross input
+	// or costs.
 	SelectedQuote *MoveQuote `json:"selectedQuote,omitempty"`
+	// HeldLanes and Tranches are the multi-lane view: every held lane and
+	// every (working source, destination, E) tranche candidate.
+	HeldLanes string             `json:"heldLanes,omitempty"`
+	Tranches  []TrancheCandidate `json:"tranches,omitempty"`
+	// WorkingLane is set when the sample moves the working lane to the
+	// worst-yielding held lane (no money moves).
+	WorkingLane string `json:"workingLane,omitempty"`
 }
 
 // A funded entry must finish before its temporary holdings become an economic
@@ -409,7 +429,9 @@ func selectorSampleLine(result SelectorResult) (key, line string) {
 		keys = append(keys, fmt.Sprintf("%s:%s:%s:%s:%t", c.Lane, reason, borrow, lev, roomOpen))
 		parts = append(parts, fmt.Sprintf("%s(lev=%s net=%s borrow=%s room=%s benefit=%s reason=%s)", c.Lane, lev, net, borrow, room, benefit, reason))
 	}
-	return strings.Join(keys, "|"), fmt.Sprintf("backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s", result.Action, result.Reason, result.SourceLane, strings.Join(parts, " "))
+	trancheKey, trancheLine := trancheSampleSuffix(result.HeldLanes, result.Tranches)
+	keys = append(keys, trancheKey)
+	return strings.Join(keys, "|"), fmt.Sprintf("backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s", result.Action, result.Reason, result.SourceLane, strings.Join(parts, " ")) + trancheLine
 }
 
 // quoteLeverageAndNetAPY is a quote's executable leverage and the position's

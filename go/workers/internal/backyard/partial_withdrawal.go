@@ -67,7 +67,7 @@ func partialWithdrawalTargetLTVBPS(s Snapshot) (int64, bool) {
 // when a partial path is not established. Callers hold withdrawal-only flows,
 // after hard LTV, recovery and the covered/staged checks.
 func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
-	if !earnActiveLane(s.RouteLane) || s.Unwind || s.CutoverDrain || (s.WithdrawalDemandRaw <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
+	if !earnActiveLane(s.RouteLane) || s.Unwind || s.CutoverDrain || (partialDemandRaw(s) <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
 		s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw < 0 || s.PositionDebtRaw < 0 {
 		return "", "", 0, false
 	}
@@ -95,7 +95,7 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 	if !sharedUSDCDebt(s.RouteLane) {
 		inflight += s.DebtIdleRaw
 	}
-	shortfall := s.WithdrawalDemandRaw - s.VoltrIdleRaw
+	shortfall := partialDemandRaw(s) - s.VoltrIdleRaw
 	if equity <= 0 || (shortfall <= 0 && !partialWithdrawalInFlight(s)) {
 		return "", "", 0, false
 	}
@@ -159,6 +159,13 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 		return "", "", 0, false
 	}
 	return DeleverRouteStep, partialReleaseReason, free, true
+}
+
+// partialDemandRaw is the Voltr idle a partial withdrawal frees to: the
+// pending withdrawal queue, or a tranche source's idle target, whichever is
+// larger. Both are freed by the same debt-preserving legs.
+func partialDemandRaw(s Snapshot) int64 {
+	return max(s.WithdrawalDemandRaw, s.TrancheTargetIdleRaw)
 }
 
 // partialWithdrawalReleaseReceipts converts the USDC target E into receipts
@@ -225,6 +232,13 @@ func partialWithdrawalRepayRaw(s Snapshot, target int64) int64 {
 // (1 - target LTV) of equity; the rounds shrink C and D proportionally. A
 // debt-free position frees everything in one release.
 func partialWithdrawalFitsRounds(s Snapshot, shortfall, total int64) bool {
+	return partialWithdrawalFitsRoundsWithin(s, shortfall, total, partialWithdrawalMaxRounds)
+}
+
+// partialWithdrawalFitsRoundsWithin is partialWithdrawalFitsRounds with an
+// explicit round budget (at most partialWithdrawalMaxRounds).
+func partialWithdrawalFitsRoundsWithin(s Snapshot, shortfall, total int64, rounds int) bool {
+	rounds = min(rounds, partialWithdrawalMaxRounds)
 	target, ok := partialWithdrawalTargetLTVBPS(s)
 	if !ok {
 		return false
@@ -242,7 +256,7 @@ func partialWithdrawalFitsRounds(s Snapshot, shortfall, total int64) bool {
 	}
 	remaining := float64(total)
 	freed := 0.0
-	for round := 0; round < partialWithdrawalMaxRounds; round++ {
+	for round := 0; round < rounds; round++ {
 		step := remaining * perRound
 		freed += step
 		remaining -= step

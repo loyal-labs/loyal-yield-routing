@@ -181,6 +181,14 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 			return d(action, reason, amount)
 		}
 	}
+	// Tranche source half: free E with the same debt-preserving partial
+	// legs, into Voltr idle reserved for the destination.
+	if trancheSourceHalf(s) {
+		if action, reason, amount, ok := partialWithdrawalStep(s); ok {
+			return d(action, reason, amount)
+		}
+		return d(Hold, trancheSourceHoldReason(s), 0)
+	}
 	if s.WithdrawalDemandRaw > 0 && !s.Unwind && !s.CutoverDrain && s.WithdrawalDemandRaw <= s.VoltrIdleRaw {
 		if s.CapitalMutated || s.LastReportAgeSeconds >= 60 {
 			if hold, blocked := custodyResidueHold(s); blocked {
