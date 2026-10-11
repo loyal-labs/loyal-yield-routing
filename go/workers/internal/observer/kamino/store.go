@@ -143,14 +143,18 @@ func (s *Store) Insert(ctx context.Context, record Record) (InsertOutcome, error
 	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, query, args...).Scan(&outcome.EventID)
 		if err == pgx.ErrNoRows {
-			outcome.Inserted = false
-			if err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT event_id FROM %s.reserve_update_dedupe WHERE dedupe_key=$1`, s.schema), dedupe).Scan(&outcome.EventID); err != nil {
-				return err
-			}
+			return nil
 		} else if err != nil {
 			return fmt.Errorf("insert Kamino reserve update: %w", err)
-		} else {
-			outcome.Inserted = true
+		}
+		outcome.Inserted = true
+		// reserve_current_states is each reserve's newest stored row: a later
+		// slot or a later arrival in the same slot replaces it; a replay never.
+		_, err = tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %[1]s.reserve_current_states AS current(reserve,state_event_id,account_data_hash,state_slot,state_observed_at,state_source)
+VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(reserve) DO UPDATE SET state_event_id=EXCLUDED.state_event_id,account_data_hash=EXCLUDED.account_data_hash,state_slot=EXCLUDED.state_slot,state_observed_at=EXCLUDED.state_observed_at,state_source=EXCLUDED.state_source,updated_at=now()
+WHERE (EXCLUDED.state_slot,EXCLUDED.state_event_id)>(current.state_slot,current.state_event_id)`, s.schema), record.Snapshot.Reserve, outcome.EventID, record.AccountHash, int64(record.Snapshot.Slot), record.Snapshot.ObservedAt, record.Source)
+		if err != nil {
+			return fmt.Errorf("advance Kamino current state: %w", err)
 		}
 		return nil
 	})

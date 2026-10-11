@@ -208,10 +208,11 @@ func TestImmutableMarketEpochRefusesStaleFlaggedTarget(t *testing.T) {
 	}
 }
 
-// The planner reads each reserve's latest confirmed stream row. A quiet
-// reserve's hour-old row stays admissible while the stream is live; an older
-// slot that arrived later (a replay after a restart) never replaces a newer
-// one; and the epoch is refused once the stream frontier trails the chain.
+// The planner reads the row reserve_current_states names for each reserve,
+// never an older or newer row of its history. A quiet reserve's hour-old row
+// stays admissible while the stream is live, a retired verifying observer's
+// http_confirmed_refresh row is read as confirmed state, and the epoch is
+// refused once the stream frontier trails the chain.
 func TestMarketEvidenceStoreReadsLatestStreamRows(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -229,7 +230,7 @@ CREATE SCHEMA %[1]s;
 CREATE TABLE %[1]s.supported_reserves(
  market text,liquidity_mint text,reserve text,market_name text,symbol text,risk_baskets text[],source text,fetched_at timestamptz,active boolean
 );
-CREATE TABLE %[1]s.reserve_update_dedupe(event_id bigint,reserve text,slot bigint);
+CREATE TABLE %[1]s.reserve_current_states(reserve text PRIMARY KEY,state_event_id bigint,state_observed_at timestamptz,state_slot bigint);
 CREATE TABLE %[1]s.reserve_updates(
  event_id bigint,account_data_hash text,observed_at timestamptz,slot bigint,source text,source_commitment text,
  reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
@@ -243,12 +244,14 @@ CREATE TABLE %[1]s.reserve_updates(
 	defer pool.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	eventID := 0
-	insert := func(name, source string, slot int64, observedAt time.Time) {
+	insert := func(name, source string, slot int64, observedAt time.Time, current bool) {
 		t.Helper()
 		eventID++
 		market, reserve := "market-"+name, "reserve-"+name
-		if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_update_dedupe VALUES($1,$2,$3)`, schema), eventID, reserve, slot); err != nil {
-			t.Fatal(err)
+		if current {
+			if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_current_states VALUES($1,$2,$3,$4)`, schema), reserve, eventID, observedAt, slot); err != nil {
+				t.Fatal(err)
+			}
 		}
 		// Reserve c's observation carries no deposit limit: unknown, not zero.
 		snapshot := `{"deposit_limit":3000000000000}`
@@ -264,10 +267,10 @@ CREATE TABLE %[1]s.reserve_updates(
 			t.Fatal(err)
 		}
 	}
-	insert("a", "http_snapshot", 2_000, now.Add(-time.Second))
-	insert("a", "laserstream_grpc", 1_900, now) // a replayed older slot arriving after the seed
-	insert("b", "laserstream_grpc", 2_100, now)
-	insert("c", "laserstream_grpc", 1_200, now.Add(-time.Hour)) // quiet for an hour
+	insert("a", "http_snapshot", 2_000, now.Add(-time.Second), true)
+	insert("a", "laserstream_grpc", 1_900, now, false) // a replayed older slot, never current
+	insert("b", "http_confirmed_refresh", 2_100, now, true)
+	insert("c", "laserstream_grpc", 1_200, now.Add(-time.Hour), true) // quiet for an hour
 	store, err := NewMarketEvidenceStoreFromPool(pool, schema)
 	if err != nil {
 		t.Fatal(err)

@@ -82,7 +82,7 @@ CREATE TABLE %[1]s.supported_reserves (
  risk_baskets TEXT[] NOT NULL DEFAULT '{}', source TEXT NOT NULL DEFAULT 'kamino-api', active BOOLEAN NOT NULL DEFAULT TRUE,
  fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
  PRIMARY KEY (market, liquidity_mint));
-CREATE TABLE %[1]s.reserve_update_dedupe(event_id bigint,reserve text,slot bigint);
+CREATE TABLE %[1]s.reserve_current_states(reserve text PRIMARY KEY,state_event_id bigint,state_observed_at timestamptz,state_slot bigint);
 CREATE TABLE %[1]s.reserve_updates(
  event_id bigint,account_data_hash text,observed_at timestamptz,slot bigint,
  source text,source_commitment text,reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
@@ -100,7 +100,7 @@ CREATE TABLE %[1]s.reserve_updates(
 	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.supported_reserves(market,liquidity_mint,reserve,market_name,symbol,risk_baskets,source,active,fetched_at) VALUES($1,$2,$3,'Main Market','USDC',ARRAY['safe','medium','aggressive'],'kamino-api',true,$4)`, schema), catalogTestMainMarket, catalogTestUSDC, catalogTestReserve, rustFetchedAt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_update_dedupe VALUES(1,$1,999)`, schema), catalogTestReserve); err != nil {
+	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_current_states VALUES($1,1,$2,999)`, schema), catalogTestReserve, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_updates VALUES(1,$1,$2,999,'laserstream_grpc','confirmed',$3,$4,'Main Market',$5,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008,'{"deposit_limit":3000000000000}')`, schema), strings.Repeat("a", 64), now, catalogTestReserve, catalogTestMainMarket, catalogTestUSDC); err != nil {
