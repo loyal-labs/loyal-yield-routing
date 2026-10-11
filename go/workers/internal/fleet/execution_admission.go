@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // ExecutionAdmission is the result of fresh read-only preparation followed by
@@ -56,6 +58,7 @@ type executionAdmissionStore interface {
 	CommitExecutionAdmission(context.Context, RevalidationLease, RevalidationCommit, *ExecutionAdmission) error
 	RecoverUnsignedExecutionAdmissions(context.Context, string, int) (int64, error)
 	DeferRevalidation(context.Context, RevalidationLease, string) (bool, error)
+	ReleaseRevalidationNotYet(context.Context, RevalidationLease) error
 	ReplanRevalidation(context.Context, RevalidationLease) (bool, error)
 }
 
@@ -116,6 +119,9 @@ func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*Ex
 	admission, stage, err := r.prepareExecution(ctx, store, cluster, *lease)
 	if err == nil {
 		return admission, true, nil
+	}
+	if errors.Is(err, chain.ErrBehind) {
+		return nil, true, store.ReleaseRevalidationNotYet(ctx, *lease)
 	}
 	reason := LogErrorText(err)
 	var replan *CapacityReplan

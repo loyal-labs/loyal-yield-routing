@@ -114,7 +114,7 @@ func transactionResult(t testing.TB, slot int64, wire []byte, meta map[string]an
 
 // A node that could not answer, a node behind the asked slot and a receipt the
 // cluster does not have yet end the tick as a wait. A required account the
-// cluster says is absent is a failure, and a null fee is a hold.
+// cluster says is absent is a failure.
 func TestChainAnswersMapToWaitFailureOrHold(t *testing.T) {
 	t.Parallel()
 	answer := func(status int, body string) *chain.Client {
@@ -129,10 +129,7 @@ func TestChainAnswersMapToWaitFailureOrHold(t *testing.T) {
 	}
 	ctx := context.Background()
 	waits := map[string]error{}
-	// A behind node is asked again a slot later, within the caller's deadline.
-	behindCtx, behindDone := context.WithTimeout(ctx, 250*time.Millisecond)
-	defer behindDone()
-	_, _, waits["behind"] = confirmedAccounts(behindCtx, answer(http.StatusOK, nodeError(-32016)), []string{bridgeVault}, 42)
+	_, _, waits["behind"] = confirmedAccounts(ctx, answer(http.StatusOK, nodeError(-32016)), []string{bridgeVault}, 42)
 	_, waits["unhealthy"] = signatureStatus(ctx, answer(http.StatusOK, nodeError(-32005)), testSignature)
 	_, waits["rate limited"] = signatureStatus(ctx, answer(http.StatusTooManyRequests, "Too Many Requests"), testSignature)
 	_, waits["not landed"] = finalizedTransaction(ctx, answer(http.StatusOK, `{"jsonrpc":"2.0","id":1,"result":null}`), testSignature)
@@ -149,10 +146,4 @@ func TestChainAnswersMapToWaitFailureOrHold(t *testing.T) {
 	if err != nil || slot != 43 || accounts[1].Address != bridgeStrategy || accounts[1].Owner != "" || accounts[1].Data != nil {
 		t.Fatalf("pinned optional absence: slot=%d accounts=%+v err=%v", slot, accounts, err)
 	}
-	message, err := CompileBridgeMessage(bridgeTestRequest(ReportNAV, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = observeMessageFee(ctx, answer(http.StatusOK, `{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":44},"value":null}}`), message, 42)
-	assertBudgetHold(t, err, "network_fee_unavailable")
 }

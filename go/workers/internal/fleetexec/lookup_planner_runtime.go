@@ -77,7 +77,12 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 		p.report(ctx.Err())
 		return false, ctx.Err()
 	}
-	defer func() { p.report(err) }()
+	defer func() {
+		if errors.Is(err, chain.ErrBehind) {
+			err = nil // Not yet: a later tick reads again.
+		}
+		p.report(err)
+	}()
 	_, _, bank, err := lookupBlockhash(ctx, p.chain)
 	if err != nil {
 		return false, err

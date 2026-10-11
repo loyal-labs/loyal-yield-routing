@@ -134,7 +134,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		// capture set; table contents cannot introduce an instruction or signer.
 		tables, lookupErr := observeJupiterLookupTables(ctx, c, []string{routeValuationLookupTable}, minimumSlot)
 		if lookupErr != nil {
-			return 0, nil, budgetHold("price_refresh_lookup_unavailable")
+			return 0, nil, budgetHoldFrom(lookupErr, "price_refresh_lookup_unavailable")
 		}
 		message, err = compileV0Message(feePayer, hash, instructions, tables, capture...)
 		if err != nil {
@@ -160,7 +160,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": string(transactionError)}}
 	}
 	if err != nil {
-		return 0, nil, budgetHold("price_refresh_simulation_unavailable")
+		return 0, nil, budgetHoldFrom(err, "price_refresh_simulation_unavailable")
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for i, a := range simulated.Accounts {

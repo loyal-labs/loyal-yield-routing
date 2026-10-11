@@ -34,7 +34,7 @@ func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedE
 	}
 	gross, err := budgetSum(cost.PrincipalMicros, cost.NetworkFeeMicros, cost.SetupLamportsMicros)
 	if err != nil || cost.NetworkFeeMicros <= 0 || cost.TotalMicros != gross || cost.Debit != debit {
-		return out, budgetHold("execution_cost_gross_identity_mismatch")
+		return out, budgetHoldFrom(err, "execution_cost_gross_identity_mismatch")
 	}
 	var message []byte
 	switch r := request.(type) {
@@ -57,7 +57,7 @@ func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedE
 	if cost.TokenPrice != nil {
 		token = *cost.TokenPrice
 	}
-	rebuilt, err := ValueTransactionCost(message, debit, cost.Fee, cost.SetupLamports, token, cost.NativePrice, cost.ObservationSlot)
+	rebuilt, err := ValueTransactionCost(message, debit, cost.SetupLamports, token, cost.NativePrice, cost.ObservationSlot)
 	if err != nil {
 		return out, err
 	}
@@ -146,7 +146,7 @@ func (m RouteManifest) classifyPilotExecutionCost(request any, effects ExpectedE
 	}
 	out.TotalMicros, err = budgetSum(out.NetworkMicros, out.ProtocolRoundingMicros, out.SwapLossMicros)
 	if err != nil || out.TotalMicros <= 0 || out.TotalMicros > cost.TotalMicros {
-		return out, budgetHold("invalid_execution_cost_bound")
+		return out, budgetHoldFrom(err, "invalid_execution_cost_bound")
 	}
 	return out, nil
 }

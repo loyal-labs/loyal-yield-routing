@@ -100,8 +100,8 @@ func TestPersistentReconciliationFailureBacksOffAndReportsStall(t *testing.T) {
 	}
 }
 
-// A claimed opportunity that cannot be admitted (here its fresh evidence is
-// unavailable; in production the atomic capacity economics turned
+// A claimed opportunity that cannot be admitted (here its fresh evidence
+// cannot be read: the fixture's reserve addresses are not base58; in production the atomic capacity economics turned
 // ineligible) is returned to revalidate with its reason, as Rust's
 // revalidate-lane Retry, and the tick completes. The next tick admits another
 // vault's opportunity rather than the failed one.
@@ -152,7 +152,7 @@ func TestIneligibleOpportunityIsRecordedAndDoesNotFailTheTick(t *testing.T) {
 		t.Fatalf("one opportunity's outcome failed the tick: %v", err)
 	}
 	state, attempts, owner, reason, later := opportunity(first)
-	if state != "revalidate" || attempts != 1 || owner != nil || reason == nil || !strings.Contains(*reason, "rpc error -32000") || !later {
+	if state != "revalidate" || attempts != 1 || owner != nil || reason == nil || !strings.Contains(*reason, "invalid base58") || !later {
 		t.Fatalf("failed opportunity not recorded: state=%s attempts=%d owner=%v reason=%v later=%v", state, attempts, owner, reason, later)
 	}
 	if _, attempts, _, _, _ := opportunity(second); attempts != 0 {
@@ -295,4 +295,37 @@ func failedCount(t *testing.T, registry *prometheus.Registry, code string) float
 		}
 	}
 	return 0
+}
+
+// A fused admission whose bank a lagging node cannot read yet goes back to
+// revalidate uncounted and with no recorded reason.
+func TestFusedAdmissionReleasesABehindClaimUncounted(t *testing.T) {
+	_, pool := integrationStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	cluster := "behind:" + suffix
+	key := ed25519.NewKeyFromSeed(rotateSeed(32, 0))
+	signer := base58.Encode(key[32:])
+	_, id := seedRevalidateOpportunity(t, ctx, pool, cluster, seedIsolationEpoch(t, ctx, pool, cluster, suffix), suffix, signer, 1_000_000)
+	routes, err := fleet.NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := routes.ClaimRevalidation(ctx, cluster, "owner-behind", 30*time.Second, true, false, signer)
+	if err != nil || lease == nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := routes.ReleaseRevalidationNotYet(ctx, *lease); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var attempts int
+	var owner, reason *string
+	var later bool
+	if err := pool.QueryRow(ctx, `SELECT opportunity_state,attempt_count,lease_owner,terminal_reason,available_at>clock_timestamp() FROM loyal_yield.rebalance_opportunities WHERE id=$1`, id).Scan(&state, &attempts, &owner, &reason, &later); err != nil {
+		t.Fatal(err)
+	}
+	if state != "revalidate" || attempts != 0 || owner != nil || reason != nil || !later {
+		t.Fatalf("behind claim not released uncounted: state=%s attempts=%d owner=%v reason=%v later=%v", state, attempts, owner, reason, later)
+	}
 }

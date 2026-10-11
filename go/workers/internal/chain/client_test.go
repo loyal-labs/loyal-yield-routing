@@ -88,10 +88,7 @@ func TestTransportFailuresKeepTheKeyOut(t *testing.T) {
 			client := serve(t, func(request) (int, any) {
 				return http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
 			})
-			// A behind node is asked again a slot later, within the caller's deadline.
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-			defer cancel()
-			_, err := client.Slot(ctx, rpc.CommitmentConfirmed)
+			_, err := client.Slot(context.Background(), rpc.CommitmentConfirmed)
 			if !errors.Is(err, ErrBehind) {
 				t.Fatalf("want ErrBehind, got %v", err)
 			}
@@ -239,20 +236,50 @@ func TestReceiptResolvesLoadedAddresses(t *testing.T) {
 	}
 }
 
-func TestFeeIsReadNoOlderThanTheAskedSlot(t *testing.T) {
-	var opts map[string]any
-	fee := any(5000)
-	client := serve(t, func(req request) (int, any) {
-		_ = json.Unmarshal(req.Params[1], &opts)
-		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": fee})
-	})
-	lamports, slot, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42)
-	if err != nil || lamports != 5000 || slot != 44 || opts["minContextSlot"] != float64(42) || opts["commitment"] != "confirmed" {
-		t.Fatalf("fee %d at %d, %v, options %v", lamports, slot, err, opts)
+// The fee is the cluster's formula over the message alone: 5000 lamports per
+// signature, precompile signatures included, plus ceil(price × limit / 1e6).
+func TestMessageFeeIsTheClusterFormula(t *testing.T) {
+	payer, cosigner := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
+	budget := func(data ...byte) solana.Instruction {
+		return solana.NewInstruction(solana.ComputeBudget, solana.AccountMetaSlice{}, data)
 	}
-	fee = nil
-	if _, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42); err == nil {
-		t.Fatal("a fee for an expired blockhash was accepted")
+	limit := budget(2, 0x40, 0x0d, 0x03, 0)                                                      // 200_000 units
+	price := budget(3, 0x41, 0x42, 0x0f, 0, 0, 0, 0, 0)                                          // 1_000_001 micro-lamports
+	precompile := solana.NewInstruction(ed25519Program, solana.AccountMetaSlice{}, []byte{1, 0}) // one signature
+	signed := solana.NewInstruction(solana.SystemProgramID, solana.AccountMetaSlice{solana.Meta(cosigner).SIGNER()}, []byte{0})
+	fee := func(instructions ...solana.Instruction) (uint64, error) {
+		tx, err := solana.NewTransaction(instructions, solana.Hash{1}, solana.TransactionPayer(payer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		message, err := tx.Message.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return MessageFee(message)
+	}
+	if got, err := fee(limit, price, precompile, signed); err != nil || got != 3*5000+200_001 {
+		t.Fatalf("fee %d: %v", got, err)
+	}
+	if got, err := fee(signed); err != nil || got != 2*5000 {
+		t.Fatalf("unprioritized fee %d: %v", got, err)
+	}
+	if _, err := fee(price, signed); err == nil {
+		t.Fatal("a unit price without a unit limit was priced")
+	}
+	if _, err := MessageFee([]byte{1}); err == nil {
+		t.Fatal("a malformed message was priced")
+	}
+	tx, err := solana.NewTransaction([]solana.Instruction{signed}, solana.Hash{1}, solana.TransactionPayer(payer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := tx.Message.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MessageFee(append(message, 0)); err == nil {
+		t.Fatal("a message with trailing bytes was priced")
 	}
 }
 
@@ -328,31 +355,21 @@ func TestSlotSamplesSumOnlyUsableSamples(t *testing.T) {
 	}
 }
 
-// A pooled endpoint's lagging node answers -32016 until it reaches the asked
-// slot: the read gets the caught-up answer, a broadcast is never sent twice,
-// and a node that stays behind is still unavailable.
-func TestLaggingNodeIsAskedAgainForReadsOnly(t *testing.T) {
-	behind := map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
-	calls, lag := 0, 2
-	client := serve(t, func(req request) (int, any) {
+// A pooled endpoint's lagging node answers -32016: the client asks once and
+// says ErrBehind, and the caller's next call reads from a caught-up node.
+func TestLaggingNodeIsNotYetAndNeverAskedAgain(t *testing.T) {
+	calls := 0
+	client := serve(t, func(request) (int, any) {
 		calls++
-		if req.Method == "sendTransaction" || calls <= lag {
-			return http.StatusOK, behind
+		if calls == 1 {
+			return http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
 		}
-		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": 5000})
+		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": map[string]any{"blockhash": solana.Hash{1}.String(), "lastValidBlockHeight": 90}})
 	})
-	lamports, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42)
-	if err != nil || lamports != 5000 || calls != lag+1 {
-		t.Fatalf("fee %d after %d calls: %v", lamports, calls, err)
+	if _, _, _, err := client.Blockhash(context.Background(), rpc.CommitmentConfirmed, 42); !errors.Is(err, ErrBehind) || calls != 1 {
+		t.Fatalf("behind node asked %d times: %v", calls, err)
 	}
-	calls = 0
-	if err := client.SendWire(context.Background(), []byte{1, 2, 3}, true); !errors.Is(err, ErrBehind) || calls != 1 {
-		t.Fatalf("broadcast sent %d times: %v", calls, err)
-	}
-	calls, lag = 0, 1_000
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, _, err := client.Fee(ctx, []byte{1}, rpc.CommitmentConfirmed, 42); !errors.Is(err, ErrBehind) {
-		t.Fatalf("a node that stays behind answered: %v", err)
+	if _, _, slot, err := client.Blockhash(context.Background(), rpc.CommitmentConfirmed, 42); err != nil || slot != 44 || calls != 2 {
+		t.Fatalf("next call: slot %d after %d calls: %v", slot, calls, err)
 	}
 }

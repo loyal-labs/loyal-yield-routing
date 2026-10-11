@@ -293,6 +293,12 @@ func (s *replanStore) CheckRevalidationLease(context.Context, RevalidationLease)
 func (s *replanStore) RefreshTargetCapacity(context.Context, string, string, string, int64, int64) error {
 	return nil
 }
+func (s *replanStore) TargetCapacitySlot(context.Context, string, string, string) (int64, error) {
+	return 0, nil
+}
+func (s *replanStore) ReleaseRevalidationNotYet(context.Context, RevalidationLease) error {
+	return errors.New("not reached")
+}
 func (s *replanStore) LoadReusableLookupTables(context.Context, string, int64, int64, []string) ([]LookupTable, error) {
 	return nil, errors.New("not reached")
 }

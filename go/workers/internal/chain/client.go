@@ -6,15 +6,17 @@ package chain
 
 import (
 	"context"
-	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/bits"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
 
+	bin "github.com/gagliardetto/binary"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 	"github.com/solana-foundation/solana-go/v2/rpc/jsonrpc"
@@ -28,7 +30,8 @@ var ErrUnavailable = errors.New("rpc unavailable")
 // body, or the JSON-RPC error providers send with it.
 var ErrRateLimited = fmt.Errorf("%w: rate limited", ErrUnavailable)
 
-// ErrBehind is a node that has not reached the requested minContextSlot yet.
+// ErrBehind is a node that has not reached the requested minContextSlot yet:
+// not yet, so the caller's next tick asks again.
 var ErrBehind = fmt.Errorf("%w: node behind the requested slot", ErrUnavailable)
 
 const (
@@ -53,35 +56,7 @@ func New(endpoint string, timeout time.Duration) (*Client, error) {
 	}
 	// The URL can carry a provider key; never forward it to a redirect target.
 	httpClient := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &Client{rpc: rpc.NewWithCustomRPCClient(caughtUp{jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: httpClient})})}, nil
-}
-
-// A pooled endpoint routes each call to any node, often a slot or two behind
-// the one that answered the previous call. -32016 is that node saying it has
-// not reached the requested minContextSlot yet, so the same read is
-// answerable a slot later: ask again then, within the caller's deadline, for
-// at most behindPatience. A broadcast is never sent twice.
-const (
-	slotDuration   = 400 * time.Millisecond
-	behindPatience = 4 * time.Second
-)
-
-type caughtUp struct{ rpc.JSONRPCClient }
-
-func (c caughtUp) CallForInto(ctx context.Context, out any, method string, params []any) error {
-	deadline := time.Now().Add(behindPatience)
-	for {
-		err := c.JSONRPCClient.CallForInto(ctx, out, method, params)
-		var rpcErr *jsonrpc.RPCError
-		if method == "sendTransaction" || !errors.As(err, &rpcErr) || rpcErr.Code != behindCode || time.Now().Add(slotDuration).After(deadline) {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return err
-		case <-time.After(slotDuration):
-		}
-	}
+	return &Client{rpc: rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: httpClient}))}, nil
 }
 
 // failed names the method and keeps only what the endpoint said: the JSON-RPC
@@ -178,19 +153,41 @@ func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType, m
 	return out.Value.Blockhash, out.Value.LastValidBlockHeight, out.Context.Slot, nil
 }
 
-// Fee is what the cluster charges for message (the compiled message bytes,
-// not the signed wire) at commitment, from a node at or past minContextSlot,
-// with the slot it was read at.
-func (c *Client) Fee(ctx context.Context, message []byte, commitment rpc.CommitmentType, minContextSlot uint64) (fee, slot uint64, err error) {
-	out, err := c.rpc.GetFeeForMessageWithOpts(ctx, base64.StdEncoding.EncodeToString(message), &rpc.GetFeeForMessageOpts{Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
-	if err != nil {
-		return 0, 0, failed("getFeeForMessage", err)
+// MessageFee is what the cluster charges for the compiled message: 5000 lamports
+// per signature, precompile signatures included, plus ceil(unit price × unit
+// limit / 1e6) from its ComputeBudget instructions.
+func MessageFee(message []byte) (uint64, error) {
+	var m solana.Message
+	decoder := bin.NewBinDecoder(message)
+	if err := m.UnmarshalWithDecoder(decoder); err != nil || decoder.HasRemaining() {
+		return 0, fmt.Errorf("message fee: invalid compiled message: %v", err)
 	}
-	if out == nil || out.Value == nil || out.Context.Slot < minContextSlot {
-		return 0, 0, errors.New("getFeeForMessage: no fee for this blockhash")
+	signatures, limit, price, limited := uint64(m.Header.NumRequiredSignatures), uint64(0), uint64(0), false
+	for _, ix := range m.Instructions {
+		if int(ix.ProgramIDIndex) >= len(m.AccountKeys) || len(ix.Data) == 0 {
+			continue
+		}
+		switch program := m.AccountKeys[ix.ProgramIDIndex]; {
+		case program == solana.ComputeBudget && ix.Data[0] == 2 && len(ix.Data) == 5:
+			limit, limited = min(uint64(binary.LittleEndian.Uint32(ix.Data[1:])), 1_400_000), true
+		case program == solana.ComputeBudget && ix.Data[0] == 3 && len(ix.Data) == 9:
+			price = binary.LittleEndian.Uint64(ix.Data[1:])
+		case program == ed25519Program || program == solana.Secp256k1ProgramID || program == secp256r1Program:
+			signatures += uint64(ix.Data[0])
+		}
 	}
-	return *out.Value, out.Context.Slot, nil
+	if price > 0 && !limited {
+		return 0, errors.New("message fee: a compute unit price needs an explicit unit limit")
+	}
+	hi, micro := bits.Mul64(price, limit)
+	micro, carry := bits.Add64(micro, 999_999, 0)
+	if hi != 0 || carry != 0 {
+		return 0, errors.New("message fee: prioritization fee overflows")
+	}
+	return signatures*5000 + micro/1_000_000, nil
 }
+
+var ed25519Program, secp256r1Program = solana.MustPublicKeyFromBase58("Ed25519SigVerify111111111111111111111111111"), solana.MustPublicKeyFromBase58("Secp256r1SigVerify1111111111111111111111111")
 
 // GenesisHash identifies the cluster.
 func (c *Client) GenesisHash(ctx context.Context) (solana.Hash, error) {

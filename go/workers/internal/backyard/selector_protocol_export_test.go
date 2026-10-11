@@ -32,11 +32,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal("selected route absent")
 	}
-	minimumSlot, err := finalizedSlot(ctx, rpc)
-	if err != nil {
-		t.Fatal("finalized slot unavailable")
-	}
-	slot, accounts, err := finalizedAccounts(ctx, rpc, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}, minimumSlot)
+	slot, accounts, err := finalizedAccounts(ctx, rpc, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}, 0)
 	if err != nil {
 		t.Fatal("reserve capture unavailable")
 	}

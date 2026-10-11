@@ -31,6 +31,10 @@ func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
 	if !in.TargetObligationMissing || in.VaultRentTopUpLamports != rent || in.Payer != r.signer || in.SourceFarmUserMissing || in.TargetFarmUserMissing || fresh.evidence.Anchors.TargetCollateralRaw != 0 {
 		t.Fatalf("setup facts not read from chain: %+v", in)
 	}
+	// The route is observed at its own read's context slot (the second read).
+	if fresh.evidence.Slot != 1001 || fresh.evidence.Anchors.MinimumSlot != 1001 {
+		t.Fatalf("observation slot %d, want the read's own 1001", fresh.evidence.Slot)
+	}
 	route, err := BuildSameMintRoute(in)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +64,7 @@ func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
 func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint, *Revalidator) {
 	t.Helper()
 	r, lease := fixtureFreshRoute(t, collateralSupply, nil)
-	fresh, err := r.loadFreshRoute(context.Background(), lease)
+	fresh, err := r.loadFreshRoute(context.Background(), lease, 0)
 	if err != nil {
 		t.Fatalf("fresh read refused a route whose target obligation the route creates: %v", err)
 	}
@@ -113,6 +117,9 @@ func fixtureFreshRoute(t *testing.T, collateralSupply uint64, mutate func(source
 	held[sourcePosition.Position.VaultLiquidityATA] = ata
 	policy := testIdentity(5)
 	held[policy] = fixtureAccount(policy, squads.ProgramID.String(), 1, []byte{1})
+	// A pooled endpoint whose nodes each answer at their own slot: the route
+	// never asks getSlot, and a lagging node refuses any minContextSlot floor.
+	bank := 999
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var call struct {
@@ -122,7 +129,18 @@ func fixtureFreshRoute(t *testing.T, collateralSupply uint64, mutate func(source
 		if err := json.Unmarshal(body, &call); err != nil {
 			t.Error(err)
 		}
-		var result any = int64(1000)
+		var floor struct {
+			MinContextSlot uint64 `json:"minContextSlot"`
+		}
+		if len(call.Params) > 1 {
+			_ = json.Unmarshal(call.Params[len(call.Params)-1], &floor)
+		}
+		if call.Method == "getSlot" || floor.MinContextSlot > 0 {
+			t.Errorf("%s read with a slot floor %d", call.Method, floor.MinContextSlot)
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}})
+			return
+		}
+		var result any
 		switch call.Method {
 		case "getMinimumBalanceForRentExemption":
 			var size int
@@ -141,7 +159,8 @@ func fixtureFreshRoute(t *testing.T, collateralSupply uint64, mutate func(source
 					values[i] = map[string]any{"owner": account.Owner, "lamports": account.Lamports, "executable": false, "data": []string{base64.StdEncoding.EncodeToString(account.Data), "base64"}}
 				}
 			}
-			result = map[string]any{"context": map[string]any{"slot": 1000}, "value": values}
+			bank++
+			result = map[string]any{"context": map[string]any{"slot": bank}, "value": values}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 	}))
@@ -154,7 +173,7 @@ func fixtureFreshRoute(t *testing.T, collateralSupply uint64, mutate func(source
 // A setup route pays rent, so it never goes to a fee-only payer (b1ad5b1a).
 func TestSetupRouteIsNeverFeeOnly(t *testing.T) {
 	r := &Revalidator{signer: testIdentity(6), feeOnlyPayers: []string{testIdentity(7)}}
-	if payer := r.feePayer(context.Background(), "localnet", RevalidationLease{}, 1, false); payer != r.signer {
+	if payer := r.feePayer(context.Background(), "localnet", RevalidationLease{}, false); payer != r.signer {
 		t.Fatalf("setup route paid by %s", payer)
 	}
 }

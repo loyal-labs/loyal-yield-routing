@@ -664,6 +664,11 @@ func (w *Worker) journalTickError(ctx context.Context, operationID string, err e
 	if !errors.As(err, &hold) || hold.alreadyJournaled || w.runtime.recordBudgetHold == nil {
 		return err
 	}
+	// An endpoint that could not answer says nothing about the operation: it
+	// stays decided and the next tick builds it again.
+	if errors.Is(hold, chain.ErrUnavailable) {
+		return confirmedObservationUnavailable(err)
+	}
 	if journalErr := w.runtime.recordBudgetHold(ctx, operationID, hold); journalErr != nil {
 		return errors.Join(err, journalErr)
 	}
@@ -830,6 +835,8 @@ func isPreSendHold(err error) bool {
 		return false
 	}
 	switch unwrappable := err.(type) {
+	case *BudgetHold:
+		return true
 	case interface{ Unwrap() []error }:
 		for _, member := range unwrappable.Unwrap() {
 			if !isPreSendHold(member) {

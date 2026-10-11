@@ -116,7 +116,7 @@ func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (i
 	}
 	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, p.TokenUpperSF, p.USDCLowerSF, true)
 	if err != nil || value > math.MaxInt64 {
-		return 0, budgetHold("invalid_usdc_valuation")
+		return 0, budgetHoldFrom(err, "invalid_usdc_valuation")
 	}
 	return int64(value), nil
 }
@@ -136,7 +136,7 @@ func (p BudgetPrice) valueLower(raw uint64, mint, program string, slot int64) (i
 	}
 	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, p.Credit.TokenLowerSF, p.Credit.USDCUpperSF, false)
 	if err != nil || value > math.MaxInt64 {
-		return 0, budgetHold("invalid_credit_valuation")
+		return 0, budgetHoldFrom(err, "invalid_credit_valuation")
 	}
 	return int64(value), nil
 }
@@ -164,15 +164,16 @@ type ValuedTransactionCost struct {
 // must supply its independently bounded amount, including zero only when no
 // account-creation/rent debit is possible. No protocol fee may be omitted:
 // fees taken from the token source belong in the measured executable debit.
-func ValueTransactionCost(message []byte, debit ExecutableDebit, fee MessageFeeObservation, setupLamports uint64, tokenPrice, solPrice BudgetPrice, slot int64) (ValuedTransactionCost, error) {
-	result := ValuedTransactionCost{MessageSHA256: sha256Bytes(message), ObservationSlot: slot, Debit: debit, Fee: fee, SetupLamports: setupLamports, NativePrice: solPrice}
+func ValueTransactionCost(message []byte, debit ExecutableDebit, setupLamports uint64, tokenPrice, solPrice BudgetPrice, slot int64) (ValuedTransactionCost, error) {
+	result := ValuedTransactionCost{MessageSHA256: sha256Bytes(message), ObservationSlot: slot, Debit: debit, SetupLamports: setupLamports, NativePrice: solPrice}
 	if _, err := checkedUnsignedMessage(message); err != nil {
 		return result, err
 	}
-	if fee.MessageSHA256 != result.MessageSHA256 || fee.Slot <= 0 || fee.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || fee.Slot > slot || slot-fee.Slot > observationLagSlots() || fee.Lamports == 0 {
-		return result, budgetHold("fee_message_or_slot_mismatch")
+	fee, err := chain.MessageFee(message)
+	if err != nil {
+		return result, budgetHoldFrom(err, "message_fee_unpriced")
 	}
-	var err error
+	result.Fee = MessageFeeObservation{MessageSHA256: result.MessageSHA256, Lamports: fee}
 	if debit.Raw > 0 {
 		result.TokenPrice = &tokenPrice
 		if debit.Source == "" {
@@ -186,7 +187,7 @@ func ValueTransactionCost(message []byte, debit ExecutableDebit, fee MessageFeeO
 	if solPrice.Decimals != 9 {
 		return result, budgetHold("native_sol_decimal_mismatch")
 	}
-	result.NetworkFeeMicros, err = solPrice.valueUpper(fee.Lamports, nativeSOLBudgetAsset, "11111111111111111111111111111111", slot)
+	result.NetworkFeeMicros, err = solPrice.valueUpper(fee, nativeSOLBudgetAsset, "11111111111111111111111111111111", slot)
 	if err != nil {
 		return result, err
 	}
@@ -198,7 +199,7 @@ func ValueTransactionCost(message []byte, debit ExecutableDebit, fee MessageFeeO
 	}
 	result.TotalMicros, err = budgetSum(result.PrincipalMicros, result.NetworkFeeMicros, result.SetupLamportsMicros)
 	// Validity is bounded by the oldest input, not the final observation.
-	result.ValidThroughSlot = min(fee.Slot+observationLagSlots(), solPrice.ValidThroughSlot)
+	result.ValidThroughSlot = solPrice.ValidThroughSlot
 	if debit.Raw > 0 {
 		result.ValidThroughSlot = min(result.ValidThroughSlot, tokenPrice.ValidThroughSlot)
 	}

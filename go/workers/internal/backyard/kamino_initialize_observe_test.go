@@ -5,15 +5,12 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"io"
 	"maps"
 	"math"
 	"net/http"
 	"slices"
-	"strings"
 	"testing"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -141,7 +138,8 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 	assertBudgetHold(t, err, "persisted_signature_or_expiry_mismatch")
 }
 
-// A fee read later than the view must not extend the policy/rent read.
+// The build prices rent and the exact message's fee without a fee read, and
+// keeps the policy/rent read's window.
 func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 	t.Parallel()
 	r, accounts := initializationPrestateFixture(t)
@@ -150,24 +148,11 @@ func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
 	rent := accounts["SysvarRent111111111111111111111111111111111"]
 	binary.LittleEndian.PutUint64(rent.Data, 1000)
 	e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
-	feeAt := func(slot int64) *chain.Client {
-		return newFakeChain(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			var body struct {
-				Method string
-				ID     any
-			}
-			_ = json.NewDecoder(req.Body).Decode(&body)
-			if body.Method != "getFeeForMessage" {
-				t.Fatal("unexpected build RPC", body.Method)
-			}
-			encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": map[string]any{"context": map[string]any{"slot": slot}, "value": 5000}})
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
-		}))
-	}
-	// A fee read 33 slots past the prestate read is past its window.
-	_, err := observePhase3KnownBuildCost(context.Background(), feeAt(42+33), initializationView(t, accounts), r, e)
-	assertBudgetHold(t, err, "initializer_prestate_expired")
-	cost, err := observePhase3KnownBuildCost(context.Background(), feeAt(60), initializationView(t, accounts), r, e)
+	noReads := newFakeChain(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatal("the build read the chain for its fee")
+		return nil, nil
+	}))
+	cost, err := observePhase3KnownBuildCost(context.Background(), noReads, initializationView(t, accounts), r, e)
 	if err != nil {
 		t.Fatal(err)
 	}

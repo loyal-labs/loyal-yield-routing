@@ -20,7 +20,11 @@ type BudgetHold struct {
 	// already failed, so the store would reject the transition and joining
 	// that rejection into the hold would mask it.
 	alreadyJournaled bool
+	cause            error
 }
+
+// Unwrap is the error the hold was taken on, if any.
+func (h *BudgetHold) Unwrap() error { return h.cause }
 
 func (h *BudgetHold) Error() string {
 	if len(h.Details) == 0 {
@@ -38,6 +42,9 @@ func (h *BudgetHold) Error() string {
 	return text
 }
 func budgetHold(reason string) error { return &BudgetHold{Reason: reason} }
+
+// budgetHoldFrom is the hold for reason taken on err.
+func budgetHoldFrom(err error, reason string) error { return &BudgetHold{Reason: reason, cause: err} }
 
 // journaledBudgetHold constructs a hold whose named reason is already durable
 // on the operation row.

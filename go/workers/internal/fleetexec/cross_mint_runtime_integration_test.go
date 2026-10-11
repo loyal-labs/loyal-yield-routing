@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -600,5 +601,82 @@ func TestCrossMintRuntimeDisabledRolloutCancelsOnlyUnsignedSourceCustodyAndSkips
 	var outcome *string
 	if err = pool.QueryRow(ctx, `SELECT d.terminal_outcome,r.reservation_state FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE d.id=$1`, b.DecisionID).Scan(&outcome, &state); err != nil || outcome != nil || state != "active" {
 		t.Fatalf("signed custody release: %v %s %v", outcome, state, err)
+	}
+}
+
+type unavailableAccounts struct{}
+
+func (unavailableAccounts) Accounts(context.Context, []sdk.PublicKey, rpc.CommitmentType, uint64) (uint64, []*chain.Account, error) {
+	return 0, nil, fmt.Errorf("getMultipleAccounts: %w", chain.ErrRateLimited)
+}
+
+// A leg whose finalized bank a lagging node cannot read yet is handed back
+// uncounted and the tick goes on; any other unavailability still fails the
+// tick and counts.
+func TestCrossMintRuntimeHandsBackOnlyABehindLeg(t *testing.T) {
+	ctx := context.Background()
+	r, pool, id := crossMintRuntimeFixture(t)
+	l := runtimeClaim(t, r, pool)
+	m, err := r.store.CrossMintMovement(ctx, *l.Submission.DecisionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.verifier.(*runtimeVerifier).evidence, err = r.store.crossMintFirstSendEvidence(ctx, l, m); err != nil {
+		t.Fatal(err)
+	}
+	status := r.status.(*runtimeStatus)
+	status.status, status.height = chain.SignatureState{Found: true, Commitment: chain.Finalized, Slot: 1010, ContextSlot: 1010}, 4000
+	if err = r.handle(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	pre, err := parseCrossMintAnchors(l.Submission.ExpectedBalanceAnchors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := sdk.TransactionFromBytes(l.Submission.SignedTransaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := append([]sdk.PublicKey(nil), tx.Message.AccountKeys...)
+	for _, address := range r.verifier.(*runtimeVerifier).evidence.SelectedALTs[0].Addresses {
+		keys = append(keys, sdk.MustPublicKeyFromBase58(address))
+	}
+	credit := sdk.MustPublicKeyFromBase58(pre.Credit.TokenAccount)
+	balance := func(amount uint64) map[sdk.PublicKey]chain.TokenBalance {
+		return map[sdk.PublicKey]chain.TokenBalance{credit: {Mint: sdk.MustPublicKeyFromBase58(m.SourceMint), Owner: sdk.MustPublicKeyFromBase58(m.VaultPubkey), Program: sdk.TokenProgramID, Amount: amount}}
+	}
+	status.receipt = &chain.Receipt{Slot: 1010, Wire: l.Submission.SignedTransaction, Keys: keys, Pre: balance(50), Post: balance(uint64(m.PlannedAmountRaw + 50))}
+	landed := chain.Signed{Signature: sdk.MustSignatureFromBase58(l.Submission.Signature), Slot: 1010}
+	r.history = addressHistory{pages: map[string][]chain.Signed{pre.Credit.TokenAccount: {landed}, pre.Position.Obligation: {landed}}}
+	c := sameMintPostContract{vault: m.VaultPubkey, source: m.SourceReserve, target: m.ActiveTargetReserve, mint: m.SourceMint, minimumSlot: 1010, sourceKind: "reserve_position"}
+	read := func() (state string, attempts int, owner, detail *string, later bool) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT submission_state,confirmation_attempt_count,confirmation_lease_owner,error_detail,confirmation_available_at>clock_timestamp() FROM loyal_yield.signed_route_submissions WHERE id=$1`, id).Scan(&state, &attempts, &owner, &detail, &later); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	due := func() {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET confirmation_available_at=clock_timestamp() WHERE id=$1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	due()
+	_, attempts, _, detail, _ := read()
+	r.accounts = postFixture(t, c, 1009, 1, 50) // behind the finalized receipt slot
+	if advanced, err := r.Tick(ctx); err != nil || advanced != 0 {
+		t.Fatalf("behind leg failed the tick: advanced=%d %v", advanced, err)
+	}
+	if s, a, owner, d, later := read(); s != string(StateReconciliationPending) || a != attempts || owner != nil || !reflect.DeepEqual(d, detail) || !later {
+		t.Fatalf("behind leg not handed back uncounted: state=%s attempts=%d/%d owner=%v detail=%v later=%v", s, a, attempts, owner, d, later)
+	}
+	due()
+	r.accounts = unavailableAccounts{}
+	if _, err := r.Tick(ctx); !errors.Is(err, chain.ErrRateLimited) {
+		t.Fatalf("an unavailable endpoint did not fail the tick: %v", err)
+	}
+	if _, a, _, _, _ := read(); a != attempts+1 {
+		t.Fatalf("an unavailable endpoint was not counted: attempts=%d", a)
 	}
 }

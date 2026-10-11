@@ -3,8 +3,11 @@ package autodeposit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 type runtimeControlReader func(context.Context, ControlTarget, int64) (ControlObservation, error)
@@ -159,5 +162,33 @@ func TestRuntimeControlKnownClosedDoesNotDemandCreatorHistory(t *testing.T) {
 	var pending bool
 	if err := s.pool.QueryRow(ctx, `SELECT t.chain_status,r.requested_slot>r.processed_slot FROM loyal_yield.balance_sweep_targets t JOIN loyal_yield.autodeposit_reconciliation_requests r ON r.target_id=t.id WHERE t.id=$1`, target.TargetID).Scan(&status, &pending); err != nil || status != "closed" || pending {
 		t.Fatalf("status=%s pending=%v error=%v", status, pending, err)
+	}
+}
+
+// A node behind the requested slot is not yet: the tick succeeds and the
+// request waits the base delay, its attempt uncounted and no error recorded.
+func TestControlBehindNodeReschedulesWithoutAnAttempt(t *testing.T) {
+	s := integrationStore(t)
+	ctx := context.Background()
+	target := seedRuntimeHealthyTarget(t, s, "runtime-behind")
+	enqueueReconciliationRequest(t, s, target.TargetID, 200)
+	reads := 0
+	r := &ControlReconciler{Store: s, Reader: runtimeControlReader(func(context.Context, ControlTarget, int64) (ControlObservation, error) {
+		reads++
+		return ControlObservation{}, fmt.Errorf("getMultipleAccounts: %w", chain.ErrBehind)
+	})}
+	read := func() (attempts int, owner, lastError *string, wait float64) {
+		t.Helper()
+		if err := s.pool.QueryRow(ctx, `SELECT attempt_count,claim_owner,last_error,EXTRACT(EPOCH FROM next_attempt_at-now())::float8 FROM loyal_yield.autodeposit_reconciliation_requests WHERE target_id=$1`, target.TargetID).Scan(&attempts, &owner, &lastError, &wait); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	before, _, _, _ := read()
+	if worked, err := r.Tick(ctx); !worked || err != nil || reads != 1 {
+		t.Fatalf("behind node failed the tick: worked=%v reads=%d err=%v", worked, reads, err)
+	}
+	if attempts, owner, lastError, wait := read(); attempts != before || owner != nil || lastError != nil || wait < 14 || wait > 15 {
+		t.Fatalf("behind node was counted or recorded: attempts=%d/%d owner=%v lastError=%v wait=%.1fs", attempts, before, owner, lastError, wait)
 	}
 }

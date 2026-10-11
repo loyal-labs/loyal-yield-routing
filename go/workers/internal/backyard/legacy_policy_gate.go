@@ -62,12 +62,7 @@ func AssertLegacyPoliciesRetired(ctx context.Context, client *chain.Client) ([]s
 	if genesisHash.String() != mainnetGenesisHash {
 		return nil, fmt.Errorf("legacy policy gate refuses non-mainnet genesis %q", genesisHash)
 	}
-	// The batch is pinned to a finalized slot.
-	slot, err := finalizedSlot(gateCtx, client)
-	if err != nil {
-		return nil, fmt.Errorf("legacy policy gate finalized slot: %w", err)
-	}
-	_, accounts, err := finalizedAccounts(gateCtx, client, addresses, slot, legacyAddresses...)
+	_, accounts, err := finalizedAccounts(gateCtx, client, addresses, 0, legacyAddresses...)
 	if err != nil {
 		return nil, fmt.Errorf("legacy policy gate read at finalized: %w", err)
 	}

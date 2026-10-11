@@ -121,7 +121,13 @@ func (r *CrossMintRuntime) Tick(ctx context.Context) (advanced int, err error) {
 		return 0, e
 	}
 	for _, l := range leases {
-		if e = r.handle(ctx, l); e != nil {
+		e = r.handle(ctx, l)
+		if errors.Is(e, chain.ErrBehind) { // Not yet: hand this leg back, go on to the others.
+			if e = r.store.releaseNotYet(ctx, l, 5*time.Second); e == nil {
+				continue
+			}
+		}
+		if e != nil {
 			return advanced, fmt.Errorf("cross-mint submission %d: %w", l.Submission.ID, e)
 		}
 		advanced++
@@ -305,8 +311,8 @@ func (s *Store) recordCrossMintResend(ctx context.Context, l SubmissionLease) er
 }
 
 func (r *CrossMintRuntime) hold(ctx context.Context, l SubmissionLease, reason string, cause error) error {
-	// A node that cannot answer says nothing about custody: the claim lapses
-	// and the next tick asks again.
+	// A node that cannot answer says nothing about custody: Tick hands the
+	// claim back and a later tick asks again.
 	if errors.Is(cause, chain.ErrUnavailable) {
 		return cause
 	}

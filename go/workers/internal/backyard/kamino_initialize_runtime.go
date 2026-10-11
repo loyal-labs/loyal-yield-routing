@@ -48,7 +48,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *V
 	}
 	rent, err := rpc.RentExempt(ctx, kamino.ObligationSize)
 	if err != nil {
-		return o, KaminoInitializationRequest{}, budgetHold("initializer_rent_unavailable")
+		return o, KaminoInitializationRequest{}, budgetHoldFrom(err, "initializer_rent_unavailable")
 	}
 	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
@@ -67,11 +67,10 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *V
 	if err != nil {
 		return o, r, err
 	}
-	fee, err := observeMessageFee(ctx, rpc, message, o.Snapshot.Slot)
+	r.MaximumFeeLamports, err = chain.MessageFee(message)
 	if err != nil {
-		return o, r, err
+		return o, r, budgetHoldFrom(err, "message_fee_unpriced")
 	}
-	r.MaximumFeeLamports = fee.Lamports
 	if _, err = manifest.validateKaminoInitializationPrestate(ctx, view, r, o.Snapshot.Slot); err != nil {
 		return o, r, err
 	}

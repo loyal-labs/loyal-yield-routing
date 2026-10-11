@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"math/big"
 	"testing"
-	"time"
 )
 
 func selectorRecipeInput(t *testing.T, request any, effects ExpectedEffects) *phase3BuildInput {
@@ -50,11 +49,15 @@ func TestSelectorRecipePricesRepeatedReportsWithoutChargingPrincipalOrRent(t *te
 	if got.CostRaw != network || gross <= 1_000_000 || got.ValidThroughSlot != 74 {
 		t.Fatal("gross movement mixed with execution expense", got.CostRaw, network, gross)
 	}
-	changed, err := priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 6000, 42), budgetView(t), init.Initialization.RouteLane, inputs[1:], 42)
+	changed, err := priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 5000, 42), budgetView(t), init.Initialization.RouteLane, inputs[1:], 42)
 	if err != nil || changed.CostRaw <= 0 || changed.EvidenceID == got.EvidenceID {
 		t.Fatal("fee evidence not bound", err)
 	}
-	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPC(t, init.Initialization.MaximumFeeLamports+1, 42), budgetView(t), init.Initialization.RouteLane, inputs, 42)
+	lowered := *init.Initialization
+	lowered.MaximumFeeLamports = 4999
+	loweredEffects := init
+	loweredEffects.Initialization = &lowered
+	_, err = priceSelectorRecipe(context.Background(), budgetBuildRPC(t, 5000, 42), budgetView(t), init.Initialization.RouteLane, append([]*phase3BuildInput{selectorRecipeInput(t, lowered, loweredEffects)}, inputs[1:]...), 42)
 	assertBudgetHold(t, err, "initializer_fee_changed")
 	staleRPC := budgetBuildRPC(t, 5000, 75)
 	_, err = priceSelectorRecipe(context.Background(), staleRPC, fixtureView(t, staleRPC), init.Initialization.RouteLane, inputs, 42)
@@ -116,13 +119,7 @@ func TestSelectorRecipePreservesPrerequisiteObservationFloor(t *testing.T) {
 	input := selectorRecipeInput(t, report.Request, report.ExpectedEffects)
 	rpc := budgetBuildRPC(t, 5000, 42)
 	view := fixtureView(t, rpc)
-	// A view behind the floor does not answer within the deadline.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := priceSelectorRecipeWithFloor(ctx, rpc, view, SelectedRouteID, []*phase3BuildInput{input}, 42, 60)
-	if err == nil {
-		t.Fatal("later prerequisite accepted with lagging fee/price/final slot")
-	}
-	_, err = priceSelectorRecipeWithFloor(context.Background(), rpc, view, SelectedRouteID, []*phase3BuildInput{input}, 42, 75)
+	// A prerequisite past the sample's window cannot be priced in it.
+	_, err := priceSelectorRecipeWithFloor(context.Background(), rpc, view, SelectedRouteID, []*phase3BuildInput{input}, 42, 75)
 	assertBudgetHold(t, err, "invalid_selector_recipe")
 }

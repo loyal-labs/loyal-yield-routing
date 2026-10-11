@@ -75,7 +75,7 @@ func TestFreshLookupTableRejectsCurrentSlotExtension(t *testing.T) {
 			}))
 			defer srv.Close()
 			r := &Revalidator{rpc: testChain(t, srv.URL)}
-			_, err := r.verifyLookupTables(context.Background(), []LookupTable{{Address: table, Addresses: []string{member}}}, 499)
+			_, err := r.verifyRouteLookupTables(context.Background(), []LookupTable{{Address: table, Addresses: []string{member}}}, 0, false)
 			if (err == nil) != (extended < 500) {
 				t.Fatalf("extended=%d error=%v", extended, err)
 			}

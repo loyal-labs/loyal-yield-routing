@@ -107,11 +107,11 @@ func composeSelectorMove(ctx context.Context, view *View, o Observation, source 
 	var err error
 	q.CostRaw, err = budgetSum(source.Recipe.CostRaw, destination.Recipe.CostRaw)
 	if err != nil || source.Recipe.CostRaw < 0 || destination.Recipe.CostRaw <= 0 || q.CostRaw >= q.EquityRaw || !q.validBorrow() {
-		return q, budgetHold("selector_move_cost_exceeds_equity")
+		return q, budgetHoldFrom(err, "selector_move_cost_exceeds_equity")
 	}
 	expected, err := composeSelectorExpectedExpense(source.Recipe, destination.Recipe)
 	if err != nil || expected < 0 {
-		return q, budgetHold("selector_move_expected_cost_invalid")
+		return q, budgetHoldFrom(err, "selector_move_expected_cost_invalid")
 	}
 	if expected > q.CostRaw {
 		expected = q.CostRaw

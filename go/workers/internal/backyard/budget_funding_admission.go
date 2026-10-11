@@ -79,7 +79,7 @@ func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRe
 		authority, _ := decodeBase58PublicKey(bridgeVault)
 		custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
 		if err != nil || a.Executable || a.Lamports == 0 || e.Address != identity.address || e.Mint != identity.mint || e.Owner != a.Owner || e.Authority != bridgeVault || e.BeforeRaw != custody.Raw {
-			return bound, nil, budgetHold("funding_custody_changed")
+			return bound, nil, budgetHoldFrom(err, "funding_custody_changed")
 		}
 	}
 	source, destination := effects.Accounts[0], effects.Accounts[1]
@@ -92,7 +92,7 @@ func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRe
 	}
 	args, err := jupiter.DecodeSharedAccountsRouteV2Args(wire)
 	if err != nil {
-		return bound, nil, budgetHold("funding_slippage_encoding_invalid")
+		return bound, nil, budgetHoldFrom(err, "funding_slippage_encoding_invalid")
 	}
 	slippage := args.SlippageBPS
 	if slippage > jupiterMaxSlippageBPS {
@@ -159,11 +159,11 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 		route, _ := runtimeRoute(s.RouteLane)
 		obligation, err := decodeKaminoObligation(accountAt(releaseAccounts, route.Kamino.Obligation), route.Kamino)
 		if err != nil || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw) {
-			return phase3BridgeAdmission{}, budgetHold("release_position_snapshot_changed")
+			return phase3BridgeAdmission{}, budgetHoldFrom(err, "release_position_snapshot_changed")
 		}
 		debit, err := manifest.measureExecutableDebit(r, effects)
 		if err != nil || debit.Raw > uint64(math.MaxInt64-s.CollateralIdleRaw) || effects.Accounts[1].BeforeRaw != uint64(s.CollateralIdleRaw) {
-			return phase3BridgeAdmission{}, budgetHold("release_custody_snapshot_changed")
+			return phase3BridgeAdmission{}, budgetHoldFrom(err, "release_custody_snapshot_changed")
 		}
 		release = &KaminoExecutionEvidence{r, effects}
 		steps = 5
@@ -233,7 +233,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 	if release != nil {
 		debit, err := manifest.measureExecutableDebit(release.Request, release.ExpectedEffects)
 		if err != nil || debit.Raw > uint64(math.MaxInt64-s.CollateralIdleRaw) || release.ExpectedEffects.Accounts[1].BeforeRaw != uint64(s.CollateralIdleRaw) || release.Request.AmountRaw >= uint64(s.PositionCollateralRaw) {
-			return phase3BridgeAdmission{}, budgetHold("release_custody_snapshot_changed")
+			return phase3BridgeAdmission{}, budgetHoldFrom(err, "release_custody_snapshot_changed")
 		}
 		s.PositionCollateralRaw -= int64(release.Request.AmountRaw)
 		s.CollateralIdleRaw += int64(debit.Raw)
@@ -280,7 +280,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 		}
 		upper, err := withdrawalUSDCExitEstimate(funding.Request.QuotedOutputRaw)
 		if err != nil || upper > math.MaxInt64-upperCash {
-			return phase3BridgeAdmission{}, budgetHold("funding_output_estimate_overflow")
+			return phase3BridgeAdmission{}, budgetHoldFrom(err, "funding_output_estimate_overflow")
 		}
 		upperCash += upper
 	}
@@ -294,7 +294,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 	authority, _ := decodeBase58PublicKey(bridgeVault)
 	custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
 	if err != nil || a.Executable || a.Lamports == 0 || custody.Raw != uint64(debtCashRaw(s)) {
-		return phase3BridgeAdmission{}, budgetHold("funding_debt_custody_changed")
+		return phase3BridgeAdmission{}, budgetHoldFrom(err, "funding_debt_custody_changed")
 	}
 	projected := append([]ConfirmedAccount(nil), accounts...)
 	for i, a := range projected {
@@ -404,7 +404,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 	plan.ExitAfterMicros = 0
 	slot, err := view.slot(ctx)
 	if err != nil {
-		return plan, budgetHold("stale_funding_exit_admission")
+		return plan, budgetHoldFrom(err, "stale_funding_exit_admission")
 	}
 	// The chain is at least at the newest slot any input was read at.
 	slot = max(slot, bound.ObservedSlot, plan.CurrentCost.ObservationSlot)

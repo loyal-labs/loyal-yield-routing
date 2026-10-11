@@ -762,7 +762,7 @@ func (d *Database) recordDecisionTx(
 		targets, err := decodeLeverageTargets(setupState["leverageTargets"])
 		target := leverageTargetFor(targets, decision.StrategyKey)
 		if err != nil || target == nil || target.Lane != decision.StrategyKey || target.OperationID != "" || target.BorrowRaw != uint64(decision.AmountRaw) {
-			return DecisionRecord{}, budgetHold("leverage_authorization_consumed_or_changed")
+			return DecisionRecord{}, budgetHoldFrom(err, "leverage_authorization_consumed_or_changed")
 		}
 		target.OperationID = operationID
 		raw, err := json.Marshal(target)

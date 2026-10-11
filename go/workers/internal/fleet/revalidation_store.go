@@ -237,6 +237,16 @@ WHERE o.id=$1 AND o.opportunity_state='leased' AND o.lease_kind='revalidate'
 	return tag.RowsAffected() == 1, nil
 }
 
+// ReleaseRevalidationNotYet hands a claim back for a later tick, uncounted and with no reason.
+func (s *Store) ReleaseRevalidationNotYet(ctx context.Context, lease RevalidationLease) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',available_at=clock_timestamp()+interval '2 seconds',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,attempt_count=attempt_count-1,updated_at=clock_timestamp()
+WHERE id=$1 AND opportunity_state='leased' AND lease_kind='revalidate' AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, lease.OpportunityID, lease.Owner, lease.FencingToken)
+	if err == nil && tag.RowsAffected() != 1 {
+		return errors.New("revalidation claim lost before its release")
+	}
+	return err
+}
+
 // ReplanRevalidation ends a claimed opportunity that no longer fits as stale
 // with terminal reason capacity_replan. It leaves the active states, so the
 // planner's committed frontier stops counting its principal and its vault is
@@ -335,6 +345,13 @@ func (s *Store) RefreshCapacityEpoch(ctx context.Context, cluster string, epoch 
 // RefreshTargetCapacity is the executor's admission observation, Rust
 // observe_target_capacity: its observation was just read for this route, so
 // one older than the durable frontier is an error.
+// TargetCapacitySlot is the durable slot RefreshTargetCapacity compares against.
+func (s *Store) TargetCapacitySlot(ctx context.Context, cluster, reserve, mint string) (int64, error) {
+	var slot int64
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(max(observed_slot),0) FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, cluster, reserve, mint).Scan(&slot)
+	return slot, err
+}
+
 func (s *Store) RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error {
 	return s.refreshTargetCapacity(ctx, cluster, reserve, mint, supply, slot, false)
 }
