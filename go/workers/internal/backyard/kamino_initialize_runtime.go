@@ -20,7 +20,7 @@ func initializationSnapshotReady(s Snapshot) bool {
 	if !earnInitializerLane(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
 		return false
 	}
-	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || s.StrategyNAVRaw != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
+	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || laneNAVRaw(s) != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
 		return false
 	}
 	if s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || s.Unwind || s.CutoverDrain || s.SelectorEntryPaused || s.WithdrawalDemandRaw != 0 {
@@ -48,7 +48,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *V
 	}
 	rent, err := rpc.RentExempt(ctx, kamino.ObligationSize)
 	if err != nil {
-		return o, KaminoInitializationRequest{}, budgetHold("initializer_rent_unavailable")
+		return o, KaminoInitializationRequest{}, budgetHoldFrom(err, "initializer_rent_unavailable")
 	}
 	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
@@ -67,11 +67,10 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *V
 	if err != nil {
 		return o, r, err
 	}
-	fee, err := observeMessageFee(ctx, rpc, message, o.Snapshot.Slot)
+	r.MaximumFeeLamports, err = chain.MessageFee(message)
 	if err != nil {
-		return o, r, err
+		return o, r, budgetHoldFrom(err, "message_fee_unpriced")
 	}
-	r.MaximumFeeLamports = fee.Lamports
 	if _, err = manifest.validateKaminoInitializationPrestate(ctx, view, r, o.Snapshot.Slot); err != nil {
 		return o, r, err
 	}

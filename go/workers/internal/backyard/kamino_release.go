@@ -116,7 +116,7 @@ func decodeKaminoRepaymentReleaseWithAllowance(accounts []ConfirmedAccount, rout
 		allowance, err = allowanceFor(accounts, route, position, collateral.liquidationThresholdPct)
 	}
 	if err != nil {
-		return result, budgetHold("no_safe_repayment_collateral_release")
+		return result, budgetHoldFrom(err, "no_safe_repayment_collateral_release")
 	}
 	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(collateral.collateralMintSupply), 60)
 	receipt := new(big.Int).Mul(new(big.Int).SetUint64(allowance), denominator)
@@ -126,7 +126,7 @@ func decodeKaminoRepaymentReleaseWithAllowance(accounts []ConfirmedAccount, rout
 	}
 	liquidity, err := collateral.redeemLiquidityRaw(receipt.Uint64())
 	if err != nil || liquidity == 0 || liquidity > allowance {
-		return result, budgetHold("invalid_repayment_release_liquidity")
+		return result, budgetHoldFrom(err, "invalid_repayment_release_liquidity")
 	}
 	return KaminoReleaseBound{Payoff: bound, ReceiptRaw: receipt.Uint64(), LiquidityRaw: liquidity, RemainingReceiptRaw: obligation.collateralDepositedRaw - receipt.Uint64()}, nil
 }
@@ -170,7 +170,7 @@ func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, view
 	debtAccount := accountAt(accounts, route.DebtCustody)
 	debtCustody, err := DecodeTokenCustody(debtAccount.Owner, debtAccount.Data, mint, authority)
 	if err != nil || debtAccount.Executable || debtAccount.Lamports == 0 || debtCustody.Raw != request.ReleaseDebtIdleRaw {
-		return result, nil, budgetHold("repayment_release_debt_cash_changed")
+		return result, nil, budgetHoldFrom(err, "repayment_release_debt_cash_changed")
 	}
 	if request.AmountRaw == 0 || request.AmountRaw > result.ReceiptRaw {
 		return result, nil, budgetHold("repayment_release_exceeds_safe_size")

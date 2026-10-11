@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,15 @@ func testImmutableMarketEpoch(t *testing.T, snapshot MarketSnapshot, identities 
 			t.Fatalf("missing test reserve %s", identity.Address)
 		}
 		market := identity.Market
+		available := float64(state.TotalSupplyUSDMicros)
+		if state.AvailableLiquidityRaw != nil {
+			available = float64(*state.AvailableLiquidityRaw)
+		}
+		var depositLimit *string
+		if state.DepositLimitRaw != nil {
+			text := strconv.FormatUint(*state.DepositLimitRaw, 10)
+			depositLimit = &text
+		}
 		catalog = append(catalog, SupportedReserveCatalogRow{
 			Market: identity.Market, LiquidityMint: identity.Mint, Reserve: identity.Address,
 			RiskBaskets: []string{"safe"}, Source: "kamino-api", FetchedAt: snapshot.ObservedAt,
@@ -31,8 +41,8 @@ func testImmutableMarketEpoch(t *testing.T, snapshot MarketSnapshot, identities 
 			Source: "laserstream_grpc", SourceCommitment: "confirmed",
 			Reserve: identity.Address, Market: &market, LiquidityMint: identity.Mint, MintDecimals: 6,
 			ReserveLastUpdateSlot: state.LastUpdateSlot, ReserveLastUpdateStale: state.LastUpdateStale,
-			AvailableAmount: float64(state.TotalSupplyUSDMicros), TotalSupplyAmount: float64(state.TotalSupplyUSDMicros),
-			MarketPriceUSD: 1, SupplyAPY: float64(state.SupplyAPYBPS) / 10_000,
+			AvailableAmount: available, TotalSupplyAmount: float64(state.TotalSupplyUSDMicros),
+			MarketPriceUSD: 1, SupplyAPY: float64(state.SupplyAPYBPS) / 10_000, DepositLimit: depositLimit,
 		})
 	}
 	supportedMints := make([]string, 0, len(identities))
@@ -61,6 +71,7 @@ func TestImmutableMarketEpochUsesDurableStateIdentityAndCanonicalFingerprint(t *
 		source.Address: {ReserveIdentity: source, Slot: 1_000, LastUpdateSlot: 999, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 2_000_000_000_000, DataHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		target.Address: {ReserveIdentity: target, Slot: 1_000, LastUpdateSlot: 999, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 3_000_000_000_000, DataHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 	}}
+	ampleCapacity(snapshot)
 	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 	if epoch.CatalogReserveCount != 2 || len(epoch.Reserves) != 2 || len(epoch.MintCoverage) != 1 || !epoch.MintCoverage[0].Complete {
 		t.Fatalf("incomplete epoch: %+v", epoch)
@@ -224,7 +235,7 @@ CREATE TABLE %[1]s.reserve_updates(
  reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
  reserve_last_update_slot bigint,reserve_last_update_stale boolean,reserve_price_status smallint,available_amount double precision,
  borrowed_amount double precision,total_supply_amount double precision,market_price_usd double precision,market_price_last_updated_ts bigint,
- utilization double precision,borrow_apy double precision,supply_apy double precision
+ utilization double precision,borrow_apy double precision,supply_apy double precision,snapshot jsonb
 )`, schema))
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +250,12 @@ CREATE TABLE %[1]s.reserve_updates(
 		if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_update_dedupe VALUES($1,$2,$3)`, schema), eventID, reserve, slot); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_updates VALUES($1,$2,$3,$4,$5,'confirmed',$6,$7,$8,$9,'USDC',6,$10,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008)`, schema), eventID, strings.Repeat(fmt.Sprintf("%x", eventID%16), 64), observedAt, slot, source, reserve, market, strings.ToUpper(name), USDCMint, slot-1); err != nil {
+		// Reserve c's observation carries no deposit limit: unknown, not zero.
+		snapshot := `{"deposit_limit":3000000000000}`
+		if name == "c" {
+			snapshot = `{}`
+		}
+		if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_updates VALUES($1,$2,$3,$4,$5,'confirmed',$6,$7,$8,$9,'USDC',6,$10,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008,$11::jsonb)`, schema), eventID, strings.Repeat(fmt.Sprintf("%x", eventID%16), 64), observedAt, slot, source, reserve, market, strings.ToUpper(name), USDCMint, slot-1, snapshot); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -270,6 +286,15 @@ CREATE TABLE %[1]s.reserve_updates(
 		want := map[string]int64{"reserve-a": 2_000, "reserve-b": 2_100, "reserve-c": 1_200}[reserve.Reserve]
 		if reserve.StateSlot != want || reserve.Slot != want {
 			t.Fatalf("reserve %s read slot %d/%d, want its latest row at %d", reserve.Reserve, reserve.StateSlot, reserve.Slot, want)
+		}
+	}
+	for _, reserve := range epoch.Reserves {
+		want := "3000000000000"
+		if reserve.Reserve == "reserve-c" {
+			want = ""
+		}
+		if pointerValue(reserve.DepositLimitRaw) != want || reserve.AvailableAmountRaw != "1800000000000" {
+			t.Fatalf("reserve %s capacity evidence: deposit limit %v available %s", reserve.Reserve, reserve.DepositLimitRaw, reserve.AvailableAmountRaw)
 		}
 	}
 	if err := epoch.VerifyDirectObservation(MarketSnapshot{Slot: epoch.StreamFrontierSlot + maximumReserveEconomicSlotLag}); err != nil {
@@ -316,8 +341,9 @@ func TestStreamIneligibleTargetIsConsistentlySkippedDespiteAFreshDirectRead(t *t
 	market := testIdentity(52)
 	source := ReserveIdentity{Address: testIdentity(51), Market: market, Mint: USDCMint}
 	target := ReserveIdentity{Address: testIdentity(53), Market: market, Mint: USDCMint}
+	depositLimit, depositLimitRaw := "4000000000000", uint64(4_000_000_000_000)
 	row := func(identity ReserveIdentity, event int64, hash string, apy float64, stale bool) SupportedReserveStateRow {
-		return SupportedReserveStateRow{StateEventID: event, AccountDataHash: strings.Repeat(hash, 64), StateObservedAt: now, StateSlot: 1_000,
+		return SupportedReserveStateRow{DepositLimit: &depositLimit, StateEventID: event, AccountDataHash: strings.Repeat(hash, 64), StateObservedAt: now, StateSlot: 1_000,
 			Source: "laserstream_grpc", SourceCommitment: "confirmed", Reserve: identity.Address, Market: &market, LiquidityMint: USDCMint, MintDecimals: 6,
 			ReserveLastUpdateSlot: 999, ReserveLastUpdateStale: stale, TotalSupplyAmount: 2_000_000_000_000, AvailableAmount: 2_000_000_000_000, MarketPriceUSD: 1, SupplyAPY: apy}
 	}
@@ -335,7 +361,7 @@ func TestStreamIneligibleTargetIsConsistentlySkippedDespiteAFreshDirectRead(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		fresh := ReserveState{ReserveIdentity: target, Slot: 1_010, LastUpdateSlot: 1_010, SupplyAPYBPS: 800, TotalSupplyUSDMicros: 2_000_000_000_000, EconomicLifetimeMillis: 300_000, DataHash: strings.Repeat("c", 64)}
+		fresh := ReserveState{ReserveIdentity: target, Slot: 1_010, LastUpdateSlot: 1_010, SupplyAPYBPS: 800, TotalSupplyUSDMicros: 2_000_000_000_000, EconomicLifetimeMillis: 300_000, DataHash: strings.Repeat("c", 64), DepositLimitRaw: &depositLimitRaw}
 		planDirectReads(snapshot, MarketSnapshot{Slot: 1_010, ObservedAt: now, Reserves: map[string]ReserveState{target.Address: fresh}})
 		allowed := sameMintTargets(epoch, USDCMint, []string{market})
 		result, err := PlanFleet(snapshot, []FleetVault{oracleVault(snapshot, 1, source.Address, 1_000_000_000, allowed...)})

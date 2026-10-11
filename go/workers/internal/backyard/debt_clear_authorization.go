@@ -61,13 +61,13 @@ type debtClearRouteState struct {
 	Authority *debtClearAuthority           `json:"debtClearAuthority"`
 	Receipts  map[string]debtClearAuthority `json:"debtClearReceipts"`
 	Unwind    *UnwindIntent                 `json:"selectorUnwind"`
-	Target    *LeverageTarget               `json:"leverageTarget"`
+	Targets   map[string]LeverageTarget     `json:"leverageTargets"`
 }
 
 func newDebtClearAuthority(m RouteManifest, routeKey, id string, intent UnwindIntent) (debtClearAuthority, error) {
 	route, err := runtimeRoute(intent.SourceLane)
 	if err != nil || intent.validate() != nil || !sha256Pattern.MatchString(m.SHA256) || intent.MaxDebtRaw <= 0 {
-		return debtClearAuthority{}, budgetHold("debt_clear_scope_unavailable")
+		return debtClearAuthority{}, budgetHoldFrom(err, "debt_clear_scope_unavailable")
 	}
 	return debtClearAuthority{ID: id, RouteKey: routeKey, ManifestSHA256: m.SHA256, Vault: bridgeVault, Obligation: route.Kamino.Obligation, DebtMint: route.Kamino.DebtMint, DebtReserve: route.Kamino.DebtReserve, Origin: intent}, nil
 }
@@ -75,7 +75,7 @@ func newDebtClearAuthority(m RouteManifest, routeKey, id string, intent UnwindIn
 func (a debtClearAuthority) validate(m RouteManifest, routeKey string, now time.Time) error {
 	expected, err := newDebtClearAuthority(m, routeKey, a.ID, a.Origin)
 	if err != nil || !sha256Pattern.MatchString(a.ID) || a.RouteKey != expected.RouteKey || a.ManifestSHA256 != expected.ManifestSHA256 || a.Vault != expected.Vault || a.Obligation != expected.Obligation || a.DebtMint != expected.DebtMint || a.DebtReserve != expected.DebtReserve {
-		return budgetHold("debt_clear_scope_changed")
+		return budgetHoldFrom(err, "debt_clear_scope_changed")
 	}
 	if a.Emergency != nil {
 		p := a.Emergency
@@ -204,7 +204,7 @@ func debtClearRequired(m RouteManifest, request any, effects ExpectedEffects, pl
 			}
 		}
 	}
-	if state.Unwind != nil || s.Unwind || s.CutoverDrain || s.LeverageTargetLevel == 1 || state.Target != nil && state.Target.Lane == s.RouteLane && state.Target.Level == 1 {
+	if state.Unwind != nil || s.Unwind || s.CutoverDrain || s.LeverageTargetLevel == 1 || leverageTargetFor(state.Targets, s.RouteLane) != nil && state.Targets[s.RouteLane].Level == 1 {
 		return true, nil
 	}
 	// Re-evaluate the actual partial planner branch, including its fallback
@@ -268,7 +268,7 @@ func verifyDebtClearRiskBatch(m RouteManifest, o Observation, operationID string
 	}
 	selected, err := observedSelectorRoute(b.Accounts, s.RouteLane)
 	if err != nil || selected.Lane != s.RouteLane {
-		return nil, budgetHold("debt_clear_emergency_scope_changed")
+		return nil, budgetHoldFrom(err, "debt_clear_emergency_scope_changed")
 	}
 	obligation, err := decodeKaminoObligation(accountAt(b.Accounts, route.Kamino.Obligation), route.Kamino)
 	if err != nil {
@@ -303,7 +303,7 @@ func verifyDebtClearRiskBatch(m RouteManifest, o Observation, operationID string
 	ltv, err := observedLTVBPS(KaminoPosition{DebtRaw: rawDebt, RedeemablePrimeRaw: redeemable, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF})
 	verifiedHard := min(int64(collateral.liquidationThresholdPct)*100-1500, int64(6000))
 	if err != nil || rawDebt != uint64(s.PositionDebtRaw) || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || ltv != s.LTVBPS || verifiedHard != hard || ltv < verifiedHard {
-		return nil, budgetHold("debt_clear_emergency_evidence_changed")
+		return nil, budgetHoldFrom(err, "debt_clear_emergency_evidence_changed")
 	}
 	return &debtClearRiskProof{OperationID: operationID, ObservationID: s.ObservationID, AccountsSHA256: hashConfirmedAccounts(b.Accounts), ValuationSource: o.ValuationSource, Slot: s.Slot, ObservedAt: o.ObservedAt, LTVBPS: ltv, HardLTVBPS: verifiedHard}, nil
 }
@@ -410,7 +410,7 @@ func debtClearAuthorityLiveTx(ctx context.Context, tx pgx.Tx, m RouteManifest, r
 	}
 	var originRaw []byte
 	if err := tx.QueryRow(ctx, `SELECT expected_effects->'phase3'->'debtClear' FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND route_key=$2 AND status='reconciled' AND confirmation_status='finalized' AND reconciled_effects IS NOT NULL`, a.Emergency.OperationID, routeKey).Scan(&originRaw); err != nil {
-		return budgetHold("debt_clear_emergency_origin_not_reconciled")
+		return budgetHoldFrom(err, "debt_clear_emergency_origin_not_reconciled")
 	}
 	var origin debtClearAuthority
 	if json.Unmarshal(originRaw, &origin) != nil || origin.ID != a.ID || origin.Emergency == nil || *origin.Emergency != *a.Emergency || !sameUnwindIntent(origin.Origin, a.Origin) {

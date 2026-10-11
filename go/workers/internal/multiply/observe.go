@@ -571,7 +571,11 @@ func allZero(data []byte) bool {
 // in bps. A Legacy-basis reserve needs the measured slot rate; without it the
 // observation is unavailable and the next tick retries.
 func reserveAPYBPS(ctx context.Context, reader ObservationReader, decoded *decodedReserve, supply bool) (uint64, error) {
-	slotsPerSecond, rateErr := reader.SlotsPerSecond(ctx)
+	var slotsPerSecond float64
+	var rateErr error
+	if decoded.reserve.NeedsSlotRate() {
+		slotsPerSecond, rateErr = reader.SlotsPerSecond(ctx)
+	}
 	rates, err := decoded.reserve.Rates(slotsPerSecond)
 	if errors.Is(err, kamino.ErrSlotRateUnavailable) && rateErr != nil {
 		return 0, fmt.Errorf("%w: %w", err, rateErr)

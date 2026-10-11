@@ -32,11 +32,11 @@ func withdrawalUSDCExitEstimate(quoted uint64) (uint64, error) {
 func observeDisarmedReportTicket(ctx context.Context, view *View, slot int64) (int64, error) {
 	observed, accounts, err := view.read(ctx, []string{reportTicketPDA}, slot)
 	if err != nil {
-		return 0, budgetHold("report_ticket_observation_unavailable")
+		return 0, budgetHoldFrom(err, "report_ticket_observation_unavailable")
 	}
 	ticket, err := decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
 	if err != nil || ticket.Armed {
-		return 0, budgetHold("withdrawal_exit_ticket_unavailable")
+		return 0, budgetHoldFrom(err, "withdrawal_exit_ticket_unavailable")
 	}
 	return observed, nil
 }
@@ -60,7 +60,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *chain.Client, vi
 	}
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
 	if err != nil || leg != kaminoLegWithdraw {
-		return plan, budgetHold("withdrawal_admission_intent_mismatch")
+		return plan, budgetHoldFrom(err, "withdrawal_admission_intent_mismatch")
 	}
 	debit, err := manifest.measureExecutableDebit(r, evidence.ExpectedEffects)
 	if err != nil {
@@ -165,7 +165,7 @@ func pricePhase3DebtResidueSwapReturn(ctx context.Context, rpc *chain.Client, vi
 	}
 	upper, err := withdrawalUSDCExitEstimate(r.QuotedOutputRaw)
 	if err != nil || upper > uint64(math.MaxInt64-s.SquadsIdleRaw) {
-		return phase3BridgeAdmission{}, budgetHold("withdrawal_exit_estimate_overflow")
+		return phase3BridgeAdmission{}, budgetHoldFrom(err, "withdrawal_exit_estimate_overflow")
 	}
 	post := observation
 	post.Snapshot.DebtIdleRaw = 0
@@ -217,12 +217,12 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 			d := Decision{Action: action, AmountRaw: int64(amount), StrategyKey: s.RouteLane}
 			swap, err = prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, d, amount, uint64(s.SquadsIdleRaw)+upperUSDC, policySlot)
 			if err != nil {
-				return plan, budgetHold("withdrawal_exit_quote_unavailable")
+				return plan, budgetHoldFrom(err, "withdrawal_exit_quote_unavailable")
 			}
 		}
 		estimate, err := withdrawalUSDCExitEstimate(swap.Request.QuotedOutputRaw)
 		if err != nil || estimate > uint64(math.MaxInt64-s.SquadsIdleRaw)-upperUSDC {
-			return plan, budgetHold("withdrawal_exit_estimate_overflow")
+			return plan, budgetHoldFrom(err, "withdrawal_exit_estimate_overflow")
 		}
 		upperUSDC += estimate
 		swaps = append(swaps, swap)
@@ -234,14 +234,14 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 	post.Snapshot.DebtIdleRaw = 0
 	post.Snapshot.CutoverDrain = false // cost-only bridge state, not a queue change
 	post.Snapshot.SquadsIdleRaw += int64(upperUSDC)
-	post.Snapshot.StrategyNAVRaw = post.Snapshot.SquadsIdleRaw
+	post.Snapshot.StrategyNAVRaw = int64(withOtherLanesNAV(uint64(post.Snapshot.SquadsIdleRaw), s))
 	tailDecision := Decision{Action: ReportNAV, StrategyKey: s.RouteLane}
 	tailEffects, _, _, err := bridgeExpectedEffects(tailDecision, uint64(s.VoltrIdleRaw), 0, uint64(post.Snapshot.SquadsIdleRaw))
 	if err != nil {
 		return plan, err
 	}
 	tailEffects.Kind = "bridge"
-	tailEffects.ReturnData = expectedAdaptorReturnData(uint64(post.Snapshot.SquadsIdleRaw))
+	tailEffects.ReturnData = expectedAdaptorReturnData(uint64(post.Snapshot.StrategyNAVRaw))
 	var blockhash string
 	var height int64
 	switch r := request.(type) {
@@ -257,7 +257,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 		return plan, err
 	}
 	tailRequest := BridgeBuildRequest{Action: ReportNAV, Policy: navPolicy, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
-		Report:          BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(post.Snapshot.SquadsIdleRaw), SnapshotDigest: s.ReportSnapshotDigest},
+		Report:          BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(post.Snapshot.StrategyNAVRaw), SnapshotDigest: s.ReportSnapshotDigest},
 		RecentBlockhash: blockhash, LastValidBlockHeight: height}
 	// The tail NAV, the current wire and every swap leg are priced by
 	// independent reads: run them at once.
@@ -318,7 +318,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 	plan.Exit = append(plan.Exit, tail.Exit...)
 	slot, err := view.slot(ctx)
 	if err != nil {
-		return plan, budgetHold("stale_withdrawal_exit_admission")
+		return plan, budgetHoldFrom(err, "stale_withdrawal_exit_admission")
 	}
 	// The chain is at least at the newest slot any input was read at.
 	slot = max(slot, observed)

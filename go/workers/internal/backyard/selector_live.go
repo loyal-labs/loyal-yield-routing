@@ -33,6 +33,34 @@ const selectorLadderBudget = 3 * time.Second
 // delay the canary's own quote. Those lanes keep their market economics and
 // are published as blocked without a quote.
 func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+	return collectSelectorQuotesWithSource(ctx, rpc, view, client, manifest, o, markets, policy, onlyLane, nil, canaryMaximum...)
+}
+
+// selectorQuoteCapture is what one sample's quote collection priced beyond
+// its whole-move quotes: the full-exit source quote, the policies it read,
+// and every destination recipe its ladders priced. Tranche quotes are
+// composed from these, so a tranche never prices a destination twice and
+// never runs after the sample's own deadline.
+type selectorQuoteCapture struct {
+	source       selectorSourceQuote
+	policies     installedPolicies
+	mu           sync.Mutex
+	destinations []selectorDestinationQuote
+}
+
+func (c *selectorQuoteCapture) addDestination(d selectorDestinationQuote) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.destinations = append(c.destinations, d)
+}
+
+// collectSelectorQuotesWithSource is collectSelectorQuotesForLane that also
+// hands back the priced full-exit source quote, which tranche pricing scales
+// to a partial exit instead of pricing the source a second time.
+func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, capture *selectorQuoteCapture, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
 	if err := policy.validate(); err != nil {
@@ -62,6 +90,9 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 		return out, nil, err
 	}
 	o.policies = policies
+	if capture != nil {
+		capture.policies = policies
+	}
 	// A catalog lane's source quote (non-USDC debt) comes from the candidate
 	// producer through the durable planning observation manifest: idle cash
 	// prices the OBSERVED_IDLE_NO_EXIT source there, and funded capital prices
@@ -79,6 +110,9 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 	source, err := observeSource(ctx, rpc, view, client, sourceManifest, o)
 	if err != nil {
 		return out, nil, err
+	}
+	if capture != nil {
+		capture.source = source
 	}
 	if source.MinimumIdleRaw <= uint64(policy.IdleBufferRaw) {
 		return out, nil, budgetHold("selector_move_has_no_entry_cash")
@@ -108,7 +142,7 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			price := func(size uint64) (MoveQuote, string, bool, error) {
+			price := func(size uint64) (MoveQuote, uint64, string, bool, error) {
 				// An eligible funded lane prices a forecast-only reentry against its
 				// own full source exit binding; every other lane prices the ordinary
 				// flat entry. Both yield the same complete move quote and neither
@@ -122,50 +156,59 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 				}
 				if err != nil {
 					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
-					return MoveQuote{}, "complete_entry_quote_unavailable", false, err
+					return MoveQuote{}, 0, "complete_entry_quote_unavailable", false, err
 				}
+				if !sameLane {
+					capture.addDestination(destination)
+				}
+				loss := destinationEntrySwapLoss(destination.Recipe)
 				q, err := composeSelectorMove(ctx, view, o, source, destination)
 				if err != nil {
 					// Cost beyond equity is an economic outcome smaller sizes can
 					// repair; every other refusal is terminal for this lane.
 					var hold *BudgetHold
 					if errors.As(err, &hold) && hold.Reason == "selector_move_cost_exceeds_equity" {
-						return MoveQuote{}, "selector_move_cost_exceeds_equity", true, err
+						return MoveQuote{}, loss, "selector_move_cost_exceeds_equity", true, err
 					}
-					return MoveQuote{}, "complete_move_quote_unavailable", false, err
+					return MoveQuote{}, loss, "complete_move_quote_unavailable", false, err
 				}
-				return q, "", false, nil
+				return q, loss, "", false, nil
 			}
 			// Biggest-first sizing ladder: when the largest tranche cannot clear
 			// the existing selector benefit under its expected expense, reprice
 			// at most two smaller exact sizes. Every leg stays inside the caller's
 			// existing collection deadline; no deadline is ever extended.
-			sizes := [3]uint64{maximum, maximum / 10, maximum / 100}
 			var collected []MoveQuote
 			// The largest size's refusal labels the lane when nothing collects:
 			// economic failures keep probing smaller sizes, while network,
 			// staleness and validation refusals stop the ladder immediately.
 			refusal := ""
-			for j, size := range sizes {
+			sufficient, smallerUnavailable := false, false
+			size := maximum
+			for j := 0; j < selectorLadderRungs; j++ {
 				if size == 0 || (j > 0 && (ctx.Err() != nil || time.Since(o.ObservedAt) > selectorLadderBudget)) {
 					break
 				}
-				q, unavailable, economic, err := price(size)
+				q, loss, unavailable, economic, err := price(size)
 				if err != nil {
 					if j == 0 {
 						refusal = unavailable
 					}
 					if !economic {
+						smallerUnavailable = j > 0
 						break
 					}
+					size /= 10
 					continue
 				}
 				collected = append(collected, q)
-				if j < len(sizes)-1 && selectorQuoteSizeSufficient(manifest, o, markets, out[i].Lane, policy, q) {
+				if j < selectorLadderRungs-1 && selectorQuoteSizeSufficient(manifest, o, markets, out[i].Lane, policy, q) {
+					sufficient = true
 					break
 				}
+				size = selectorNextLadderSize(size, loss)
 			}
-			if len(collected) > 0 {
+			if collected, refusal = selectorLadderOutcome(collected, sufficient, smallerUnavailable, refusal); len(collected) > 0 {
 				laddered[i] = collected
 				return
 			}
@@ -196,6 +239,49 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 		result = append(result, bestQuote)
 	}
 	return out, result, nil
+}
+
+// selectorLadderRungs is how many exact sizes one lane's ladder prices.
+const selectorLadderRungs = 3
+
+// selectorNextLadderSize is the next, smaller ladder size: a tenth of the
+// last one, unless the last rung's entry swap lost over a tenth of its size
+// to the venue's depth. Then the next rung is 90% of the value the venue
+// actually filled. Maple's reviewed venue (Manifest) fills about 33.6k
+// syrupUSDC (~$40k): a $100k rung pays ~$61k of swap loss there, and a
+// $10k rung would leave most of the fillable size unpriced.
+func selectorNextLadderSize(size, entrySwapLoss uint64) uint64 {
+	next := size / 10
+	if entrySwapLoss <= size/10 || entrySwapLoss >= size {
+		return next
+	}
+	if depth := (size - entrySwapLoss) / 10 * 9; depth > next {
+		return depth
+	}
+	return next
+}
+
+// destinationEntrySwapLoss is the entry swap's bound loss in a destination
+// recipe: the first swap that debits bridge USDC.
+func destinationEntrySwapLoss(recipe selectorRecipe) uint64 {
+	for _, cost := range recipe.Costs {
+		if cost.Debit.Mint == bridgeUSDC && cost.ExecutionCost != nil && cost.ExecutionCost.SwapLossMicros > 0 {
+			return uint64(cost.ExecutionCost.SwapLossMicros)
+		}
+	}
+	return 0
+}
+
+// selectorLadderOutcome publishes a lane's collected rungs, except when none
+// clears the benefit threshold and a smaller rung failed for availability:
+// that smaller rung could have been the profitable one, so the lane is an
+// availability gap (its persistence windows carry), never a larger rung's
+// economic refusal that drops them.
+func selectorLadderOutcome(collected []MoveQuote, sufficient, smallerUnavailable bool, refusal string) ([]MoveQuote, string) {
+	if len(collected) > 0 && !sufficient && smallerUnavailable {
+		return nil, "complete_entry_quote_unavailable"
+	}
+	return collected, refusal
 }
 
 // selectorQuoteSizeSufficient reports whether an already-collected quote
@@ -278,8 +364,31 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if request != nil {
 		maximum = []uint64{uint64(request.EquityRaw)}
 		onlyLane = request.Lane
+	} else if t := o.planning.tranche; t != nil && t.SourceFreed && o.Snapshot.RouteLane == t.Destination && !hasWorkingCapital(o.Snapshot) && o.Snapshot.VoltrIdleRaw > 0 {
+		// A tranche's destination half quotes only its flat destination, at
+		// most the reserved E.
+		maximum = []uint64{uint64(min(t.EquityRaw, o.Snapshot.VoltrIdleRaw))}
+		onlyLane = t.Destination
 	}
-	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, maximum...)
+	capture := &selectorQuoteCapture{}
+	enriched, quotes, quoteErr := collectSelectorQuotesWithSource(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, capture, maximum...)
+	var tranches trancheCollection
+	switch {
+	case onlyLane != "":
+		tranches.SetReason = "tranche_collection_paused_for_single_lane_quote"
+	case quoteErr != nil:
+		// The full-exit source quote every tranche scales was not priced.
+		tranches.SetReason = "selector_source_quote_unavailable"
+		var hold *BudgetHold
+		if errors.As(quoteErr, &hold) && selectorQuoteCollectionHoldCodes[hold.Reason] {
+			tranches.SetReason = hold.Reason
+		}
+	default:
+		priced := o
+		priced.policies = capture.policies
+		tranches = collectTrancheQuotes(ctx, rpc, view, productionJupiter, manifest, priced, markets, policy, capture)
+		quotes = append(quotes, tranches.Quotes...)
+	}
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
 		// can still maintain persistence, while pure selection cannot enter/switch.
@@ -302,6 +411,6 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}
-	result, err := d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot, version)
+	result, err := d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request, trancheRefusals: tranches.Refusals, trancheSetReason: tranches.SetReason, heldFacts: o.heldFacts}, slot, version)
 	return result, o, err
 }

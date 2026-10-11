@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"math"
 	"math/big"
 	"testing"
@@ -46,7 +47,12 @@ func TestReserveFeedPricesLanesOnlyFromCurrentViewReserves(t *testing.T) {
 		for _, account := range []ConfirmedAccount{clock, usdc, debt, collateral} {
 			view.accounts[account.Address] = viewAccount{ConfirmedAccount: account, slot: slot}
 		}
-		reserves, err := readReserveEconomics(context.Background(), view, []RuntimeRoute{route}, slotsPerSecond)
+		reserves, err := readReserveEconomics(context.Background(), view, []RuntimeRoute{route}, func(context.Context) (float64, error) {
+			if slotsPerSecond == 0 {
+				return 0, errors.New("no performance samples")
+			}
+			return slotsPerSecond, nil
+		})
 		if err != nil {
 			t.Fatal(err)
 		}

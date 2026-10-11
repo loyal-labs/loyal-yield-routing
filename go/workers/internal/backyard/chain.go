@@ -92,21 +92,13 @@ func publicKeys(addresses []string) ([]solana.PublicKey, error) {
 	return keys, nil
 }
 
-func finalizedSlot(ctx context.Context, c *chain.Client) (int64, error) {
-	slot, err := c.Slot(ctx, rpc.CommitmentFinalized)
-	if err != nil {
-		return 0, confirmedObservationUnavailable(err)
-	}
-	return int64(slot), nil
-}
-
 // readAccounts reads one account set at commitment, all at one slot no older
 // than minSlot; that slot is the only one a Snapshot built from it may use.
 // Only an optional address may be absent: it comes back with its address
 // alone.
 func readAccounts(ctx context.Context, c *chain.Client, commitment rpc.CommitmentType, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
-	if len(addresses) == 0 || minSlot <= 0 {
-		return 0, nil, fmt.Errorf("account addresses and minContextSlot are required")
+	if len(addresses) == 0 {
+		return 0, nil, fmt.Errorf("account addresses are required")
 	}
 	keys, err := publicKeys(addresses)
 	if err != nil {
@@ -155,25 +147,7 @@ func latestBlockhash(ctx context.Context, c *chain.Client) (LatestBlockhash, err
 
 type MessageFeeObservation struct {
 	MessageSHA256 string `json:"messageSha256"`
-	Slot          int64  `json:"slot"`
 	Lamports      uint64 `json:"lamports"`
-}
-
-// observeMessageFee asks the chain to price the exact unsigned message,
-// including its compute-budget instructions. Null (expired blockhash) or any
-// failed read is a HOLD, never a zero-fee assumption.
-func observeMessageFee(ctx context.Context, c *chain.Client, message []byte, minimumSlot int64) (MessageFeeObservation, error) {
-	if _, err := checkedUnsignedMessage(message); err != nil {
-		return MessageFeeObservation{}, err
-	}
-	if minimumSlot <= 0 {
-		return MessageFeeObservation{}, budgetHold("invalid_fee_observation_slot")
-	}
-	fee, slot, err := c.Fee(ctx, message, rpc.CommitmentConfirmed, uint64(minimumSlot))
-	if err != nil || fee == 0 {
-		return MessageFeeObservation{}, budgetHold("network_fee_unavailable")
-	}
-	return MessageFeeObservation{MessageSHA256: sha256Bytes(message), Slot: int64(slot), Lamports: fee}, nil
 }
 
 // simulateSigned verifies the exact signed bytes that would later be

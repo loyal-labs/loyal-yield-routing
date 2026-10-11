@@ -7,11 +7,9 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -33,8 +31,10 @@ type Memo struct {
 // PolicyTransaction is one successful transaction's Squads and
 // Subscriptions instructions plus its Earn MAX memos.
 type PolicyTransaction struct {
-	Signature    string
-	Slot         uint64
+	Signature string
+	Slot      uint64
+	// Index is the transaction's position in its block.
+	Index        uint64
 	Signers      []solana.PublicKey
 	Instructions []squads.Instruction
 	Memos        []Memo
@@ -123,7 +123,7 @@ func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot
 			table.keys = append(table.keys, solana.PublicKeyFromBytes(key))
 		}
 	}
-	out := &PolicyTransaction{Signature: signature, Slot: slot, Signers: table.signers()}
+	out := &PolicyTransaction{Signature: signature, Slot: slot, Index: info.GetIndex(), Signers: table.signers()}
 	for outer, compiled := range message.GetInstructions() {
 		index := int(compiled.GetProgramIdIndex())
 		if index >= len(table.keys) {
@@ -226,33 +226,17 @@ func parseEarnMaxIntent(data []byte) (*EarnMaxIntent, error) {
 	return nil, errors.New("malformed Earn MAX intent memo")
 }
 
-func intentInput(settings string, vaultIndex uint8, transaction *PolicyTransaction, memo Memo, intent *EarnMaxIntent) multiply.IntentInput {
-	return projectionIntent(EarnMaxIntentProjectionInput{Settings: settings, VaultIndex: vaultIndex, Signature: transaction.Signature,
-		InstructionIndex: memo.SourceIndex, Slot: transaction.Slot, ObservedAt: time.Now().UTC(), Intent: *intent})
-}
-
-// projectionIntent maps the serde projection input onto the multiply store.
-func projectionIntent(input EarnMaxIntentProjectionInput) multiply.IntentInput {
-	out := multiply.IntentInput{Settings: input.Settings, VaultIndex: input.VaultIndex, Signature: input.Signature,
-		InstructionIndex: input.InstructionIndex, Slot: input.Slot, ObservedAt: input.ObservedAt}
-	if withdraw := input.Intent.Withdraw; withdraw != nil {
-		out.Withdraw = &struct {
-			RequestID, DestinationAccount string
-			AmountRaw                     *uint64
-		}{withdraw.RequestID, withdraw.DestinationAccount, withdraw.AmountRaw}
-	} else if input.Intent.Cancel != nil {
-		out.CancelRequestID = &input.Intent.Cancel.RequestID
-	}
-	return out
-}
-
-// projectEarnMaxMemos is project_earn_max_memos: a memo projects only when
-// exactly one instruction account is the settings of a memo vault. Anyone can
-// write a memo, so a malformed one, or one naming no single vault, is logged
-// and skipped.
-func projectEarnMaxMemos(ctx context.Context, store *multiply.Store, logger *slog.Logger, transaction *PolicyTransaction) (int, error) {
-	applied := 0
+// projectEarnMaxMemos records the Earn MAX intents of our routes: a memo
+// counts only when exactly one instruction account is the settings of a memo
+// vault. Anyone can write a memo, so a malformed one, one naming no single
+// vault, or one for settings without an Earn MAX route is logged and skipped;
+// only a database error stops the stream. The multiply worker decides each
+// recorded intent.
+func projectEarnMaxMemos(ctx context.Context, store *Store, logger *slog.Logger, transaction *PolicyTransaction) error {
 	for _, memo := range transaction.Memos {
+		// The SPL Memo program fails unless every account it lists signed, and
+		// the vault PDA signs only through its Squads settings (the wallet or a
+		// policy), so the settings of the listed vault authorised this intent.
 		intent, err := parseEarnMaxIntent(memo.Data)
 		if err != nil {
 			logger.Info("skipped an Earn MAX memo", "event", "earn_max_memo_skipped", "reason", err.Error(), "signature", transaction.Signature)
@@ -276,11 +260,41 @@ func projectEarnMaxMemos(ctx context.Context, store *multiply.Store, logger *slo
 			continue
 		}
 		for match := range matches {
-			if _, err := store.ProjectIntent(ctx, intentInput(match[0].String(), 0, transaction, memo, intent)); err != nil {
-				return applied, err
+			ours, err := store.RecordEarnMaxIntent(ctx, match[0].String(), match[1].String(), transaction, memo.SourceIndex, intent)
+			if err != nil {
+				return err
 			}
-			applied++
+			if !ours {
+				logger.Info("skipped an Earn MAX memo", "event", "earn_max_memo_skipped", "reason", "the settings have no Earn MAX route", "signature", transaction.Signature)
+			}
 		}
 	}
-	return applied, nil
+	return nil
+}
+
+// RecordEarnMaxIntent inserts one memo intent of an Earn MAX route as
+// pending, once per chain location; false means the settings and vault have
+// no route.
+func (s *Store) RecordEarnMaxIntent(ctx context.Context, settings, vault string, transaction *PolicyTransaction, index uint16, intent *EarnMaxIntent) (bool, error) {
+	var ours bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_route_states WHERE settings = $1 AND vault = $2)`, settings, vault).Scan(&ours); err != nil || !ours {
+		return false, err
+	}
+	kind, requestID, amount, destination := "cancel", "", (*string)(nil), (*string)(nil)
+	if withdraw := intent.Withdraw; withdraw != nil {
+		kind, requestID, destination = "withdraw", withdraw.RequestID, &withdraw.DestinationAccount
+		if withdraw.AmountRaw != nil {
+			value := strconv.FormatUint(*withdraw.AmountRaw, 10)
+			amount = &value
+		}
+	} else {
+		requestID = intent.Cancel.RequestID
+	}
+	_, err := s.pool.Exec(ctx, `
+        INSERT INTO loyal_yield.earn_max_intents
+            (signature, instruction_index, settings, vault, kind, request_id, amount_raw, destination, slot, transaction_index)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::numeric, $8, $9, $10)
+        ON CONFLICT DO NOTHING`,
+		transaction.Signature, int32(index), settings, vault, kind, requestID, amount, destination, int64(transaction.Slot), int64(transaction.Index))
+	return true, err
 }

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // ExecutionAdmission is the result of fresh read-only preparation followed by
@@ -56,14 +58,52 @@ type executionAdmissionStore interface {
 	CommitExecutionAdmission(context.Context, RevalidationLease, RevalidationCommit, *ExecutionAdmission) error
 	RecoverUnsignedExecutionAdmissions(context.Context, string, int) (int64, error)
 	DeferRevalidation(context.Context, RevalidationLease, string) (bool, error)
+	ReleaseRevalidationNotYet(context.Context, RevalidationLease) error
+	ReplanRevalidation(context.Context, RevalidationLease) (bool, error)
 }
+
+// ExecutionMetrics counts the execution outcomes that are not failures of an
+// operation: a move re-planned because it no longer fits, and a simulation
+// that failed before admission (the opportunity retries).
+type ExecutionMetrics interface {
+	FleetCapacityReplan(reason string)
+	FleetSimulationFailed(stage string)
+}
+
+// CapacityReplan is a fresh, deterministic answer that the whole holding no
+// longer fits: the source cannot pay it, the target's deposit limit or 2%
+// frontier cannot take it, or its dilution-priced gain no longer clears the
+// threshold. Retrying the same move cannot change that answer, so the
+// opportunity ends and the planner sizes the vault again next cycle.
+type CapacityReplan struct {
+	Reason string // stable code, the metric label
+	Detail string
+}
+
+func (e *CapacityReplan) Error() string { return e.Detail }
+
+// reserveCapacityShortfall is nil when amount fits both fresh reserves after
+// the other admitted, not yet landed moves through them.
+func reserveCapacityShortfall(amount, sourceAvailable, sourceInflight, targetRoom, targetInflight int64) error {
+	if withdrawable, ok := sumInt64(sourceAvailable, -sourceInflight); !ok || withdrawable < amount {
+		return &CapacityReplan{Reason: "source_liquidity_exhausted", Detail: fmt.Sprintf("source pays %d after %d in flight; move needs %d", sourceAvailable, sourceInflight, amount)}
+	}
+	if room, ok := sumInt64(targetRoom, -targetInflight); !ok || room < amount {
+		return &CapacityReplan{Reason: "target_deposit_limit", Detail: fmt.Sprintf("target deposit room %d after %d in flight; move needs %d", targetRoom, targetInflight, amount)}
+	}
+	return nil
+}
+
+// simulationStages are the prepareSameMint stages that simulate the route.
+var simulationStages = map[string]bool{"baseline_simulation": true, "prepare_route": true}
 
 // PrepareExecution shares the actual policy, official builder, fee, simulation
 // and ALT preparation with revalidation. A waiting ALT request is durable work,
 // but yields no signable admission. Cross-mint legs use their separate custody
 // protocol and cannot be passed through this same-mint API. A claimed
-// opportunity that cannot be admitted is recorded on its own row, as Rust's
-// revalidate-lane Retry, and is not an error of the caller's tick.
+// opportunity that no longer fits ends as capacity_replan and frees its vault
+// for the next planning cycle; any other failure is recorded on its own row,
+// as Rust's revalidate-lane Retry. Neither is an error of the caller's tick.
 func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*ExecutionAdmission, bool, error) {
 	store, ok := r.store.(executionAdmissionStore)
 	if !ok || !r.fusedExecute {
@@ -76,42 +116,62 @@ func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*Ex
 	if err != nil || lease == nil {
 		return nil, false, err
 	}
-	admission, err := r.prepareExecution(ctx, store, cluster, *lease)
+	admission, stage, err := r.prepareExecution(ctx, store, cluster, *lease)
 	if err == nil {
 		return admission, true, nil
 	}
+	if errors.Is(err, chain.ErrBehind) {
+		return nil, true, store.ReleaseRevalidationNotYet(ctx, *lease)
+	}
 	reason := LogErrorText(err)
+	var replan *CapacityReplan
+	if errors.As(err, &replan) {
+		replanned, replanErr := store.ReplanRevalidation(ctx, *lease)
+		if replanErr != nil {
+			return nil, true, fmt.Errorf("re-plan opportunity %d after %s: %w", lease.OpportunityID, reason, replanErr)
+		}
+		if replanned {
+			r.metrics.FleetCapacityReplan(replan.Reason)
+		}
+		logEvent(map[string]any{"event": "fleet_opportunity_replanned", "opportunityId": lease.OpportunityID, "vaultId": lease.VaultID, "sourceReserve": lease.SourceReserve, "targetReserve": lease.TargetReserve, "principalUsdMicros": lease.PrincipalUSDMicros, "replanned": replanned, "capacityReason": replan.Reason, "reason": reason})
+		return nil, true, nil
+	}
+	if simulationStages[stage] {
+		r.metrics.FleetSimulationFailed(stage)
+	}
 	deferred, deferErr := store.DeferRevalidation(ctx, *lease, reason)
 	if deferErr != nil {
 		return nil, true, fmt.Errorf("defer opportunity %d after %s: %w", lease.OpportunityID, reason, deferErr)
 	}
-	logEvent(map[string]any{"event": "fleet_opportunity_deferred", "opportunityId": lease.OpportunityID, "vaultId": lease.VaultID, "targetReserve": lease.TargetReserve, "deferred": deferred, "reason": reason})
+	logEvent(map[string]any{"event": "fleet_opportunity_deferred", "opportunityId": lease.OpportunityID, "vaultId": lease.VaultID, "targetReserve": lease.TargetReserve, "deferred": deferred, "stage": stage, "reason": reason})
 	return nil, true, nil
 }
 
-func (r *Revalidator) prepareExecution(ctx context.Context, store executionAdmissionStore, cluster string, lease RevalidationLease) (*ExecutionAdmission, error) {
+// prepareExecution returns the failing prepareSameMint stage with its error.
+func (r *Revalidator) prepareExecution(ctx context.Context, store executionAdmissionStore, cluster string, lease RevalidationLease) (*ExecutionAdmission, string, error) {
 	ctx, cancel := context.WithDeadline(ctx, lease.ExpiresAt.Add(-5*time.Second))
 	defer cancel()
 	if lease.RouteKind != "same_mint" || !contains(lease.DelegatedSigners, r.signer) {
-		return nil, errors.New("same-mint execution policy identity changed")
+		return nil, "lease", errors.New("same-mint execution policy identity changed")
 	}
-	prepared, _, err := r.prepareSameMint(ctx, cluster, lease, func(e FreshRouteEvidence) error {
+	prepared, stage, err := r.prepareSameMint(ctx, cluster, lease, func(e FreshRouteEvidence) error {
 		if err := r.store.RefreshTargetCapacity(ctx, cluster, lease.TargetReserve, lease.LiquidityMint, e.TargetObservedSupplyUSDMicros, e.Slot); err != nil {
 			return err
 		}
 		return r.store.CheckRevalidationLease(ctx, lease)
 	})
 	if err != nil {
-		return nil, err
+		return nil, stage, err
 	}
 	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: &prepared.Preparation,
 		ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey,
 		FreshEconomics: true, ObservedSourceAPYBPS: prepared.Evidence.ObservedSourceAPYBPS,
 		ObservedTargetAPYBPS:          prepared.Evidence.ObservedTargetAPYBPS,
-		TargetObservedSupplyUSDMicros: prepared.Evidence.TargetObservedSupplyUSDMicros, TargetObservedSlot: prepared.Evidence.Slot}
+		TargetObservedSupplyUSDMicros: prepared.Evidence.TargetObservedSupplyUSDMicros, TargetObservedSlot: prepared.Evidence.Slot,
+		SourceAvailableLiquidityRaw: &prepared.Evidence.SourceAvailableLiquidityRaw, TargetDepositRoomRaw: &prepared.Evidence.TargetDepositRoomRaw}
 	if prepared.WaitingALT {
 		commit.Disposition, commit.MissingAddresses = "waiting_alt", prepared.Missing
-		return nil, r.store.CommitRevalidation(ctx, lease, commit)
+		return nil, "", r.store.CommitRevalidation(ctx, lease, commit)
 	}
 	// These are the retained Rust semantic lanes, distinct from the physical
 	// writable vector (which includes the shared fee payer and reserve accounts).
@@ -130,13 +190,13 @@ func (r *Revalidator) prepareExecution(ctx context.Context, store executionAdmis
 			}
 		}
 		if !found {
-			return nil, errors.New("compiled ALT has no verified database identity")
+			return nil, "lookup_tables", errors.New("compiled ALT has no verified database identity")
 		}
 	}
 	if err := store.CommitExecutionAdmission(ctx, lease, commit, admission); err != nil {
-		return nil, err
+		return nil, "admission", err
 	}
-	return admission, nil
+	return admission, "", nil
 }
 
 func (s *Store) CommitExecutionAdmission(ctx context.Context, lease RevalidationLease, commit RevalidationCommit, admission *ExecutionAdmission) error {

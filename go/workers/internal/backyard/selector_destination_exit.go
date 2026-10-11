@@ -86,7 +86,7 @@ func selectorProspectiveUpper(accounts []ConfirmedAccount, route RuntimeRoute, s
 func selectorCollateralPoolUpper(accounts []ConfirmedAccount, route RuntimeRoute, slot int64, windows int64) (uint64, error) {
 	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil || reserve.collateralMintSupply == 0 {
-		return 0, budgetHold("selector_destination_receipt_bound_unavailable")
+		return 0, budgetHoldFrom(err, "selector_destination_receipt_bound_unavailable")
 	}
 	pool := new(big.Int).Add(reserve.totalLiquiditySF, new(big.Int).Lsh(big.NewInt(2), 60))
 	return selectorProspectiveUpper(accounts, route, slot, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, pool, windows)
@@ -101,7 +101,7 @@ func selectorCollateralPoolUpper(accounts []ConfirmedAccount, route RuntimeRoute
 func selectorReceiptRounding(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (uint64, error) {
 	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil || reserve.collateralMintSupply == 0 {
-		return 0, budgetHold("selector_destination_receipt_bound_unavailable")
+		return 0, budgetHoldFrom(err, "selector_destination_receipt_bound_unavailable")
 	}
 	upper, err := selectorCollateralPoolUpper(accounts, route, slot, selectorReceiptWindows)
 	if err != nil {

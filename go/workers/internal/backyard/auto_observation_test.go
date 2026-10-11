@@ -490,7 +490,7 @@ func TestStaleUSDCReferenceTriesRefreshBeforeHealthHold(t *testing.T) {
 	_, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{
 		read: fixtureBatchRuntime(77, accounts),
 		now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
-		refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
+		refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 			refreshCalls++
 			return 0, nil, budgetHold("price_refresh_simulation_unavailable")
 		},

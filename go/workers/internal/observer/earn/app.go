@@ -82,7 +82,7 @@ func (a *Application) HandlePolicyTransaction(ctx context.Context, update *pb.Su
 				return err
 			}
 		}
-		if _, err := projectEarnMaxMemos(ctx, a.multiply, a.logger, decoded); err != nil {
+		if err := projectEarnMaxMemos(ctx, a.store, a.logger, decoded); err != nil {
 			return err
 		}
 		if err := a.recordRecurringDelegations(ctx, decoded); err != nil {

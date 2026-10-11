@@ -24,11 +24,11 @@ func validateEntrySwap(ctx context.Context, view *View, request JupiterSwapReque
 	}
 	sourceMint, destinationMint, source, destination, err := jupiterEdgeForRoute(request.Action, request.RouteLane)
 	if err != nil || source != bridgeSquadsATA || sourceMint != bridgeUSDC || destination != route.CollateralCustody {
-		return 0, budgetHold("entry_swap_custody_mismatch")
+		return 0, budgetHoldFrom(err, "entry_swap_custody_mismatch")
 	}
 	observed, accounts, err := view.read(ctx, []string{source, destination, route.DebtCustody, route.Kamino.Obligation}, slot)
 	if err != nil {
-		return 0, budgetHold("entry_swap_state_unavailable")
+		return 0, budgetHoldFrom(err, "entry_swap_state_unavailable")
 	}
 	obligation, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
 	// A top-up swap sits beside a funded position, debt-free or (AUTO) with
@@ -44,7 +44,7 @@ func validateEntrySwap(ctx context.Context, view *View, request JupiterSwapReque
 		authority, _ := decodeBase58PublicKey(bridgeVault)
 		custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
 		if err != nil || a.Executable || a.Lamports == 0 {
-			return 0, budgetHold("entry_swap_custody_changed")
+			return 0, budgetHoldFrom(err, "entry_swap_custody_changed")
 		}
 		if i == 2 {
 			if identity.address == source && identity.mint == sourceMint {

@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+	"github.com/prometheus/client_golang/prometheus"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -255,5 +257,83 @@ func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *t
 				}
 			}
 		})
+	}
+}
+
+// A node behind the confirmed bank is "not yet": the tick hands the landed
+// route back exactly as it was, uncounted and with no failure recorded, and
+// the first tick after the short reconciliation delay reconciles it from a
+// node that caught up.
+func TestReconciliationBehindNodeWaitsForTheNextTick(t *testing.T) {
+	store, pool := integrationStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	b := seedBaseline(t, ctx, pool, suffix)
+	wire, _ := integrationWire(t, 92)
+	input := fixturePersistInput(t, ctx, pool, b, wire)
+	vaultHash := sha256.Sum256([]byte(suffix + "vault"))
+	vault := sdk.PublicKey(vaultHash).String()
+	ata, _ := associatedCustodyAccount(vault, fleet.USDCMint, sdk.TokenProgramID.String())
+	plan, _ := json.Marshal(map[string]any{"route_kind": "same_mint", "source_kind": "idle_vault_usdc", "settings": "settings:" + suffix, "vault_index": 0, "idle_token_account": ata})
+	target := mustSignedFixture(t).RecentBlockhash
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.managed_vaults SET vault_pubkey=$2 WHERE id=(SELECT vault_id FROM loyal_yield.rebalance_opportunities WHERE id=$1)`, b.OpportunityID, vault); err != nil {
+		t.Fatal(err)
+	}
+	for table, row := range map[string]int64{"rebalance_opportunities": b.OpportunityID, "rebalance_decisions": b.DecisionID} {
+		if _, err := pool.Exec(ctx, `UPDATE loyal_yield.`+table+` SET source_reserve=NULL,target_reserve=$2,liquidity_mint=$3,execution_plan=$4 WHERE id=$1`, row, target, fleet.USDCMint, plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, _, err := store.PersistSignedRoute(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := claimOne(t, ctx, store, b.Cluster, "behind-node")
+	if err := store.ConfirmSameMint(ctx, lease, 1000); err != nil {
+		t.Fatal(err)
+	}
+	record, confirmed := lease.Submission, int64(1000)
+	record.State, record.ConfirmedSlot = StateReconciliationPending, &confirmed
+	c, err := store.loadPostContract(ctx, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := prometheus.NewRegistry()
+	worker, err := NewWorker(Config{Cluster: b.Cluster, Owner: "owner-behind", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second, Facts: engine.NewFacts(registry)}, store, &countingChain{}, &finalizedStatus{receipt: chain.Receipt{Slot: 1000, Wire: wire.SignedTransaction}}, DelegateSigner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		state, decision string
+		attempts        int
+		owner, detail   *string
+		available       time.Time
+	}
+	read := func() (r row) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT s.submission_state,d.status::text,s.confirmation_attempt_count,s.confirmation_lease_owner,s.error_detail,s.confirmation_available_at FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.id=$1`, id).Scan(&r.state, &r.decision, &r.attempts, &r.owner, &r.detail, &r.available); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	tick := func(node fixtureAccounts) row {
+		t.Helper()
+		worker.recovery = &sameMintRecovery{store: store, accounts: node, slotRate: func(context.Context) (float64, error) { return 4.6, nil }}
+		if err := worker.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		worker.wg.Wait()
+		return read()
+	}
+
+	before := read()
+	after := tick(postFixture(t, c, 999, 0, 11))
+	if after.state != string(StateReconciliationPending) || after.decision != "confirming" || after.attempts != before.attempts || after.owner != nil || after.detail != nil ||
+		after.available.Sub(time.Now()) > reconciliationMinRetry || failedCount(t, registry, "fleet_reconciliation_stalled") != 0 {
+		t.Fatalf("behind node changed the route: %+v (before %+v)", after, before)
+	}
+	time.Sleep(time.Until(after.available))
+	if got := tick(postFixture(t, c, 1001, 0, 11)); got.state != "reconciled" || got.decision != "confirmed" {
+		t.Fatalf("next tick did not reconcile: %+v", got)
 	}
 }

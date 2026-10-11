@@ -132,7 +132,7 @@ func projectLeverageExitCycle(accounts []ConfirmedAccount, route RuntimeRoute, l
 	out := append([]ConfirmedAccount(nil), accounts...)
 	obligation, err := decodeKaminoObligation(accountAt(out, route.Kamino.Obligation), route.Kamino)
 	if err != nil || obligation.collateralDepositedRaw <= limit.ReceiptRaw || debtRaw <= repayRaw {
-		return nil, budgetHold("leverage_exit_projection_unavailable")
+		return nil, budgetHoldFrom(err, "leverage_exit_projection_unavailable")
 	}
 	for i := range out {
 		switch out[i].Address {
@@ -297,7 +297,7 @@ func projectLeverageExitRelease(accounts []ConfirmedAccount, route RuntimeRoute,
 	out := append([]ConfirmedAccount(nil), accounts...)
 	obligation, err := decodeKaminoObligation(accountAt(out, route.Kamino.Obligation), route.Kamino)
 	if err != nil || obligation.collateralDepositedRaw <= release.ReceiptRaw || len(effects.Accounts) != 2 {
-		return nil, budgetHold("leverage_exit_projection_unavailable")
+		return nil, budgetHoldFrom(err, "leverage_exit_projection_unavailable")
 	}
 	for i := range out {
 		if out[i].Address == route.Kamino.Obligation || out[i].Address == route.Kamino.CollateralReserve {

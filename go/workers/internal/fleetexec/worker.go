@@ -194,6 +194,9 @@ func (w *Worker) handleLease(ctx context.Context, lease SubmissionLease) error {
 		return w.store.ConfirmSameMint(leaseCtx, lease, *lease.Submission.ConfirmedSlot)
 	case StateReconciliationPending:
 		err := w.reconcileFinalized(leaseCtx, lease)
+		if errors.Is(err, chain.ErrBehind) {
+			return w.store.releaseNotYet(ctx, lease, reconciliationMinRetry)
+		}
 		if err == nil || errors.Is(err, ErrStaleOwner) || ctx.Err() != nil {
 			return err
 		}

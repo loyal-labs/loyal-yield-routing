@@ -423,14 +423,16 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	if err != nil || selected.Lane != autoAUTOPYUSD.Lane {
 		t.Fatalf("candidate ownership was not selected: %q %v", selected.Lane, err)
 	}
-	// Combined candidate and Maple exposure holds instead of picking one.
+	// Combined candidate and Maple exposure is one held set; the preferred
+	// held lane works.
 	mapleRoute, err := runtimeRoute(SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	upsertConfirmedAccount(&accounts, kaminoObligationImage(t, mapleRoute, 77, autoFixtureDepositReceiptRaw, autoFixtureDebtRaw))
-	if _, err = observedSelectorRoute(accounts, SelectedRouteID); err == nil || !strings.Contains(err.Error(), "multiple_selector_lanes_have_exposure") {
-		t.Fatalf("combined candidate and Maple exposure did not hold: %v", err)
+	working, held, err := observedSelectorLanes(accounts, SelectedRouteID, "")
+	if err != nil || working.Lane != SelectedRouteID || strings.Join(held, ",") != SelectedRouteID+","+autoAUTOPYUSD.Lane {
+		t.Fatalf("combined candidate and Maple exposure: working %s held %v err %v", working.Lane, held, err)
 	}
 }
 

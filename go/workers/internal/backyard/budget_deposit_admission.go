@@ -49,7 +49,7 @@ func simulatePhase3EntryProjection(ctx context.Context, c *chain.Client, message
 		return projection, budgetHold("deposit_projection_failed")
 	}
 	if err != nil {
-		return projection, budgetHold("deposit_projection_unavailable")
+		return projection, budgetHoldFrom(err, "deposit_projection_unavailable")
 	}
 	slot := int64(simulated.Slot)
 	if slot-minimumSlot > observationLagSlots() || simulated.Units == 0 {

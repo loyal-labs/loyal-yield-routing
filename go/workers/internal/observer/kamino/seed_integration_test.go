@@ -22,13 +22,11 @@ import (
 )
 
 // confirmedAccountRPC serves getMultipleAccounts for one reserve from a
-// mutable confirmed state, as a Solana RPC node would, and one 60 s
-// performance sample of slotsPerMinute slots (none when zero).
+// mutable confirmed state, as a Solana RPC node would.
 type confirmedAccountRPC struct {
-	mu             sync.Mutex
-	slot           uint64
-	data           []byte
-	slotsPerMinute uint64
+	mu   sync.Mutex
+	slot uint64
+	data []byte
 }
 
 func (c *confirmedAccountRPC) set(slot uint64, data []byte) {
@@ -42,16 +40,8 @@ func (c *confirmedAccountRPC) ServeHTTP(w http.ResponseWriter, request *http.Req
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Method != "getMultipleAccounts" && body.Method != "getRecentPerformanceSamples" {
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Method != "getMultipleAccounts" {
 		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	if body.Method == "getRecentPerformanceSamples" {
-		samples := []any{}
-		if c.slotsPerMinute > 0 {
-			samples = append(samples, map[string]any{"slot": c.slot, "numSlots": c.slotsPerMinute, "numTransactions": 0, "samplePeriodSecs": 60})
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": body.ID, "result": samples})
 		return
 	}
 	c.mu.Lock()
@@ -103,7 +93,7 @@ func TestSeedAndStreamUpdatePersistConfirmedRows(t *testing.T) {
 	defer pool.Close()
 	market, mint, reserveKey := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
 	marketString, mintString, reserve := market.String(), mint.String(), reserveKey.String()
-	rpcState := &confirmedAccountRPC{slotsPerMinute: 276}
+	rpcState := &confirmedAccountRPC{}
 	server := httptest.NewServer(rpcState)
 	defer server.Close()
 	client, err := chain.New(server.URL, 5*time.Second)
@@ -112,6 +102,7 @@ func TestSeedAndStreamUpdatePersistConfirmedRows(t *testing.T) {
 	}
 	handler := NewHandler(NewStore(pool, "kamino"), client, slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 	handler.SetTargets([]Target{{Reserve: reserve, Market: &marketString, LiquidityMint: &mintString}})
+	handler.SetSlotRate(4.6)
 	latest := func(reserve string) (source, hash string, slot int64) {
 		t.Helper()
 		if err := pool.QueryRow(ctx, `SELECT source,account_data_hash,slot FROM kamino.reserve_updates WHERE reserve=$1 ORDER BY slot DESC LIMIT 1`, reserve).Scan(&source, &hash, &slot); err != nil {

@@ -31,6 +31,10 @@ type Handler struct {
 	mu        sync.RWMutex
 	targets   map[string]Target
 	snapshots map[string]snapshotRank
+	// slotsPerSecond is the chain's last measured slot rate, set by the
+	// runtime once a sample period; zero until one is read.
+	slotsPerSecond float64
+	skipped        map[string]bool // reserve and reason already logged
 }
 
 type HandleOutcome struct {
@@ -39,7 +43,7 @@ type HandleOutcome struct {
 }
 
 func NewHandler(store *Store, rpc *chain.Client, logger *slog.Logger, storeRaw bool) *Handler {
-	return &Handler{store: store, rpc: rpc, logger: logger, storeRaw: storeRaw, targets: make(map[string]Target), snapshots: make(map[string]snapshotRank)}
+	return &Handler{store: store, rpc: rpc, logger: logger, storeRaw: storeRaw, targets: make(map[string]Target), snapshots: make(map[string]snapshotRank), skipped: make(map[string]bool)}
 }
 func (h *Handler) SetTargets(targets []Target) {
 	h.mu.Lock()
@@ -82,13 +86,9 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 		h.logger.Error("invalid Kamino stream owner skipped", "reserve", reserve, "slot", accountUpdate.GetSlot(), "owner", owner)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
 	}
-	snapshot, err := h.decode(ctx, target, accountUpdate.GetSlot(), observedAt, &chain.Account{Key: solana.PublicKeyFromBytes(account.GetPubkey()), Owner: solana.PublicKeyFromBytes(account.GetOwner()), Lamports: account.GetLamports(), Data: account.GetData(), Executable: account.GetExecutable()})
-	if errors.Is(err, klend.ErrSlotRateUnavailable) {
-		return HandleOutcome{}, err
-	}
+	snapshot, err := h.decode(target, accountUpdate.GetSlot(), observedAt, &chain.Account{Key: solana.PublicKeyFromBytes(account.GetPubkey()), Owner: solana.PublicKeyFromBytes(account.GetOwner()), Lamports: account.GetLamports(), Data: account.GetData(), Executable: account.GetExecutable()})
 	if err != nil {
-		h.logger.Error("invalid Kamino stream data skipped", "reserve", reserve, "slot", accountUpdate.GetSlot(), "error", err)
-		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
+		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: h.skip(reserve, accountUpdate.GetSlot(), err)}, nil
 	}
 	outcome, err := h.record(ctx, target, snapshot, "laserstream_grpc", account.GetData(), accountUpdate.GetSlot(), account.GetWriteVersion(), observedAt)
 	if err != nil {
@@ -128,12 +128,9 @@ func (h *Handler) Seed(ctx context.Context, targets []Target) (uint64, error) {
 				h.logger.Error("confirmed Kamino seed account is missing or foreign", "reserve", target.Reserve)
 				continue
 			}
-			snapshot, err := h.decode(ctx, target, slot, observedAt, account)
-			if errors.Is(err, klend.ErrSlotRateUnavailable) {
-				return 0, err
-			}
+			snapshot, err := h.decode(target, slot, observedAt, account)
 			if err != nil {
-				h.logger.Error("confirmed Kamino seed state was malformed", "reserve", target.Reserve, "error", err)
+				h.skip(target.Reserve, slot, err)
 				continue
 			}
 			if _, err := h.record(ctx, target, snapshot, "http_snapshot", account.Data, slot, 0, observedAt); err != nil {
@@ -144,16 +141,42 @@ func (h *Handler) Seed(ctx context.Context, targets []Target) (uint64, error) {
 	return minimum, nil
 }
 
-// decode is Decode at the chain's measured slot rate. A Legacy-basis reserve
-// whose rate cannot be read is an error its caller returns, so the update or
-// seed is retried, never skipped.
-func (h *Handler) decode(ctx context.Context, target Target, slot uint64, observedAt time.Time, account *chain.Account) (Snapshot, error) {
-	slotsPerSecond, rateErr := h.rpc.SlotsPerSecond(ctx)
-	snapshot, err := Decode(target, slot, observedAt, account, slotsPerSecond)
-	if errors.Is(err, klend.ErrSlotRateUnavailable) && rateErr != nil {
-		err = fmt.Errorf("%w: %w", err, rateErr)
+// SetSlotRate gives the handler the chain's measured slot rate.
+func (h *Handler) SetSlotRate(slotsPerSecond float64) {
+	h.mu.Lock()
+	h.slotsPerSecond = slotsPerSecond
+	h.mu.Unlock()
+}
+
+// decode is Decode at the last measured slot rate.
+func (h *Handler) decode(target Target, slot uint64, observedAt time.Time, account *chain.Account) (Snapshot, error) {
+	h.mu.RLock()
+	slotsPerSecond := h.slotsPerSecond
+	h.mu.RUnlock()
+	return Decode(target, slot, observedAt, account, slotsPerSecond)
+}
+
+// skip drops a reserve row the observer cannot store and reports whether its
+// data was malformed. A row it cannot price yet (a Legacy-basis reserve before
+// any slot rate is measured) or at all (interest terms with no model) is
+// logged once per reserve and reason; malformed data, every time.
+func (h *Handler) skip(reserve string, slot uint64, err error) bool {
+	reason := "unsupported_interest_terms"
+	switch {
+	case errors.Is(err, klend.ErrSlotRateUnavailable):
+		reason = "slot_rate_unavailable"
+	case !errors.Is(err, klend.ErrUnsupportedInterestTerms):
+		h.logger.Error("invalid Kamino reserve data skipped", "reserve", reserve, "slot", slot, "error", err)
+		return true
 	}
-	return snapshot, err
+	h.mu.Lock()
+	first := !h.skipped[reserve+"\x00"+reason]
+	h.skipped[reserve+"\x00"+reason] = true
+	h.mu.Unlock()
+	if first {
+		h.logger.Warn("Kamino reserve rows skipped", "reserve", reserve, "reason", reason, "error", err)
+	}
+	return false
 }
 
 // record inserts one confirmed reserve state with its diff against the newest

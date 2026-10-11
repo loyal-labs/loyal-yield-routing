@@ -164,6 +164,23 @@ groups:
           action: "Inspect the persisted operation status, signature, last-valid block height and RPC health. Reconcile landed effects or verify finalized expiry and signature absence before replacing work. Keep ambiguous reservations; never blindly resend."
           recovery: "Confirm a journaled terminal outcome backed by chain evidence. A drop in the in-flight gauge alone is not proof of payment or safe retry."
 
+      # Earn capital that keeps an eligible move it never makes. The planner
+      # sets loyal_fleet_movable_capital_usd every cycle, zero included: the
+      # capital in a reserve whose whole-vault move to a better same-mint
+      # reserve cleared every check, room included. Moves that land take
+      # their vaults out of it within minutes; 6h without a zero means the
+      # moves are failing, re-planning or waiting on wave limits.
+      - alert: LoyalFleetCapitalStranded
+        expr: loyal_fleet_movable_capital_usd > 0
+        for: 6h
+        labels: {severity: warning}
+        annotations:
+          summary: "Earn capital in reserve {{ $labels.reserve }} has had a better reserve with room for 6h"
+          trigger: "Some capital in this reserve had an eligible move to a better same-mint reserve with room on every planning cycle for 6 hours."
+          impact: "Users in this reserve earn less than an eligible destination pays while that destination has room; no funds are at risk."
+          action: "Read the latest kamino_fleet_capacity log line for this reserve (held and movable capital, best destination, its room) and the fleet_opportunity_replanned and fleet_opportunity_deferred events. Find why the published moves do not land; do not raise limits or split holdings to clear it."
+          recovery: "Confirm moves from this reserve land and its movable capital reads 0 on a fresh cycle. The series vanishing or a restart is not recovery."
+
   - name: loyal-units
     rules:
       # A Go unit systemd runs (or is restarting) that does not serve /metrics.

@@ -16,6 +16,9 @@ import (
 //	loyal_lane_last_success_timestamp_seconds{family,lane} last tick a lane finished without error
 //	loyal_fee_payer_balance_lamports{payer}              lamports of a payer, read every pass
 //	loyal_autodeposit_oldest_due_lot_age_seconds         age of the oldest owned or blocked deposit
+//	loyal_fleet_capacity_replans_total{reason}           moves dropped at execution because they no longer fit
+//	loyal_fleet_simulation_failures_total{stage}         execution simulations that failed; the move retries
+//	loyal_fleet_movable_capital_usd{reserve}             capital in a reserve with an eligible move this cycle
 type Facts struct {
 	withdrawalAttention *prometheus.GaugeVec
 	withdrawalObserved  *prometheus.GaugeVec
@@ -26,6 +29,9 @@ type Facts struct {
 	lane                *prometheus.GaugeVec
 	payer               *prometheus.GaugeVec
 	oldestDue           prometheus.Gauge
+	fleetReplans        *prometheus.CounterVec
+	fleetSimulations    *prometheus.CounterVec
+	fleetMovable        *prometheus.GaugeVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -57,9 +63,31 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		oldestDue: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "loyal_autodeposit_oldest_due_lot_age_seconds", Help: "Age of the oldest Autodeposit claim or idle-blocked slot not yet deposited.",
 		}),
+		fleetReplans: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loyal_fleet_capacity_replans_total", Help: "Fleet moves dropped at execution because they no longer fit; the vault is planned again.",
+		}, []string{"reason"}),
+		fleetSimulations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loyal_fleet_simulation_failures_total", Help: "Fleet execution simulations that failed before admission; the move retries.",
+		}, []string{"stage"}),
+		fleetMovable: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_fleet_movable_capital_usd", Help: "Capital in a reserve whose move to a better reserve cleared every planner check this cycle.",
+		}, []string{"reserve"}),
 	}
-	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue)
+	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable)
 	return f
+}
+
+// FleetCapacityReplan counts a move the execution dropped because it no
+// longer fits; it is not a failed operation, so it is not in failed_total.
+func (f *Facts) FleetCapacityReplan(reason string) { f.fleetReplans.WithLabelValues(reason).Inc() }
+
+// FleetSimulationFailed counts an execution simulation that failed.
+func (f *Facts) FleetSimulationFailed(stage string) { f.fleetSimulations.WithLabelValues(stage).Inc() }
+
+// FleetMovableCapital sets every planned reserve's movable capital each
+// cycle, zero included, so a reserve that stops being movable reads 0.
+func (f *Facts) FleetMovableCapital(reserve string, usd float64) {
+	f.fleetMovable.WithLabelValues(reserve).Set(usd)
 }
 
 // BackyardWithdrawalHealth is called only after the display state commits.

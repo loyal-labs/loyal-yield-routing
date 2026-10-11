@@ -726,6 +726,9 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		confirmedSlot = *pull.Attempt.ConfirmedSlot
 	}
 	positionAmountRaw, observedSlot, err := c.chain.ConfirmedVaultPositionRaw(scope.ctx, plan, route, confirmedSlot)
+	if errors.Is(err, chain.ErrBehind) {
+		return ResultRecoveryPending, err // Not yet: the next pass finalizes from a node at the confirmed slot.
+	}
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}

@@ -29,7 +29,7 @@ func pilotCostFixture(t *testing.T, request any, effects ExpectedEffects) Valued
 	if r, ok := request.(KaminoInitializationRequest); ok {
 		rent = r.RentLamports
 	}
-	cost, err := ValueTransactionCost(message, debit, MessageFeeObservation{MessageSHA256: sha256Bytes(message), Slot: 42, Lamports: 5000}, rent, token, sol, 42)
+	cost, err := ValueTransactionCost(message, debit, rent, token, sol, 42)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -29,6 +29,7 @@ type revalidationStore interface {
 	ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady, crossMintEnabled bool, delegatedSigner ...string) (*RevalidationLease, error)
 	CheckRevalidationLease(ctx context.Context, lease RevalidationLease) error
 	RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error
+	TargetCapacitySlot(ctx context.Context, cluster, reserve, mint string) (int64, error)
 	LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error)
 	CommitRevalidation(ctx context.Context, lease RevalidationLease, input RevalidationCommit) error
 	EligibleFeePayerShards(ctx context.Context, cluster, policySigner string, mounted []string) ([]FeePayerShard, error)
@@ -47,6 +48,7 @@ type Revalidator struct {
 	crossMintMaxSlippageBPS  uint16
 	jupiter                  *JupiterBuildClient
 	feeOnlyPayers            []string
+	metrics                  ExecutionMetrics
 }
 
 type RevalidatorConfig struct {
@@ -61,6 +63,7 @@ type RevalidatorConfig struct {
 	JupiterAPIKey            string
 	// FeeOnlyPayers are the mounted fee-only keys (public); the registry says which are eligible.
 	FeeOnlyPayers []string
+	Metrics       ExecutionMetrics
 }
 
 func NewRevalidator(store *Store, client *chain.Client, config RevalidatorConfig) (*Revalidator, error) {
@@ -68,8 +71,8 @@ func NewRevalidator(store *Store, client *chain.Client, config RevalidatorConfig
 }
 
 func newRevalidator(store revalidationStore, client *chain.Client, config RevalidatorConfig) (*Revalidator, error) {
-	if store == nil || client == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second {
-		return nil, errors.New("store, RPC, owner, signer, and lease TTL are required")
+	if store == nil || client == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second || config.Metrics == nil {
+		return nil, errors.New("store, RPC, owner, signer, lease TTL and metrics are required")
 	}
 	if _, err := decodePublicKey(config.DelegatedSigner); err != nil {
 		return nil, fmt.Errorf("delegated signer: %w", err)
@@ -91,7 +94,7 @@ func newRevalidator(store revalidationStore, client *chain.Client, config Revali
 			return nil, err
 		}
 	}
-	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...)}, nil
+	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...), metrics: config.Metrics}, nil
 }
 
 // Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
@@ -157,7 +160,7 @@ type sameMintPreparation struct {
 // accounts is never mature: the payer funds rent, which a fee-only key never
 // does (b1ad5b1a). Admission rechecks the chosen shard's budget against a
 // fresh balance under its row lock.
-func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease RevalidationLease, slot int64, mature bool) string {
+func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease RevalidationLease, mature bool) string {
 	if !mature || len(r.feeOnlyPayers) == 0 {
 		return r.signer
 	}
@@ -172,7 +175,7 @@ func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease Revali
 		payers = append(payers, shard.Payer)
 	}
 	ranked := RankFeePayers(cluster, lease.VaultPubkey, payers)
-	_, accounts, err := ReadAccounts(ctx, r.rpc, ranked, rpc.CommitmentConfirmed, slot)
+	_, accounts, err := ReadAccounts(ctx, r.rpc, ranked, rpc.CommitmentConfirmed, 0)
 	if err != nil || slices.Contains(accounts, nil) {
 		return r.signer
 	}
@@ -190,7 +193,12 @@ func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease Revali
 // capacity refresh and lease check. The returned stage names the failing step.
 func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease RevalidationLease, afterEvidence func(FreshRouteEvidence) error) (sameMintPreparation, string, error) {
 	var out sameMintPreparation
-	fresh, err := r.loadFreshRoute(ctx, lease)
+	// The route's bank may not be older than the target's durable telemetry.
+	floor, err := r.store.TargetCapacitySlot(ctx, cluster, lease.TargetReserve, lease.LiquidityMint)
+	if err != nil {
+		return out, "load_fresh_route", err
+	}
+	fresh, err := r.loadFreshRoute(ctx, lease, floor)
 	if err != nil {
 		return out, "load_fresh_route", err
 	}
@@ -213,20 +221,19 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if err != nil {
 		return out, "lookup_tables", err
 	}
-	tables, err = r.verifyLookupTables(ctx, tables, evidence.Slot)
+	tables, err = r.verifyRouteLookupTables(ctx, tables, evidence.Slot, false)
 	if err != nil {
 		return out, "lookup_tables", err
 	}
 	out.Tables = tables
-	// Finalized, as Rust compiles every route; see finalizedBlockhash. The
-	// evidence slot is confirmed, so it cannot floor a finalized read.
+	// Finalized, as Rust compiles every route; see finalizedBlockhash.
 	hash, lastValidBlockHeight, _, err := r.rpc.Blockhash(ctx, rpc.CommitmentFinalized, 0)
 	if err != nil {
 		return out, "blockhash", err
 	}
 	blockhash := hash.String()
 	out.LastValidBlockHeight = int64(lastValidBlockHeight)
-	out.FeePayer = r.feePayer(ctx, cluster, lease, evidence.Slot, !input.setup())
+	out.FeePayer = r.feePayer(ctx, cluster, lease, !input.setup())
 	manifest, err := sameMintRouteALTManifest(input, policies.settings, lease.PolicyAccount, lease.SetupPolicyAccount, out.FeePayer, body)
 	if err != nil {
 		return out, "alt_manifest", err
@@ -258,7 +265,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "baseline_simulation", fmt.Errorf("measured compute requirement %d exceeds configured limit %d", compute, r.computeLimit)
 	}
 	out.Compute = compute
-	baselineFee, _, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentConfirmed, uint64(evidence.Slot))
+	baselineFee, err := chain.MessageFee(preview.Message)
 	if err != nil {
 		return out, "fee", err
 	}
@@ -288,7 +295,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if len(missing) > 0 {
 		return out, "budgeted_compile", fmt.Errorf("budgeted ALT compilation changed coverage: %v", missing)
 	}
-	fee, _, err := r.rpc.Fee(ctx, budgetPreview.Message, rpc.CommitmentConfirmed, uint64(evidence.Slot))
+	fee, err := chain.MessageFee(budgetPreview.Message)
 	if err != nil {
 		return out, "fee", err
 	}
@@ -519,13 +526,9 @@ func vaultRentTopUp(rent, vaultLamports uint64) (uint64, error) {
 	return rent - vaultLamports, nil
 }
 
-func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease) (freshSameMint, error) {
+func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease, floor int64) (freshSameMint, error) {
 	var f freshSameMint
-	minimum, err := r.rpc.Slot(ctx, rpc.CommitmentConfirmed)
-	if err != nil {
-		return f, err
-	}
-	_, preliminary, err := ReadAccounts(ctx, r.rpc, []string{lease.SourceReserve, lease.TargetReserve}, rpc.CommitmentConfirmed, int64(minimum))
+	_, preliminary, err := ReadAccounts(ctx, r.rpc, []string{lease.SourceReserve, lease.TargetReserve}, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return f, err
 	}
@@ -553,11 +556,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 			addresses = append(addresses, position.FarmUser)
 		}
 	}
-	minimum, err = r.rpc.Slot(ctx, rpc.CommitmentConfirmed)
-	if err != nil {
-		return f, err
-	}
-	slot, accounts, err := ReadAccounts(ctx, r.rpc, addresses, rpc.CommitmentConfirmed, int64(minimum))
+	slot, accounts, err := ReadAccounts(ctx, r.rpc, addresses, rpc.CommitmentConfirmed, floor)
 	if err != nil {
 		return f, err
 	}
@@ -639,6 +638,16 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if lease.LiquidityAmountRaw == 0 || lease.LiquidityAmountRaw > redeemable || lease.PrincipalUSDMicros <= 0 || uint64(lease.PrincipalUSDMicros) != lease.LiquidityAmountRaw {
 		return f, errors.New("planned same-mint deposit exceeds fresh collateral backing or stable principal differs")
 	}
+	// The whole redeemed holding must fit both reserves as the chain stands
+	// now, before anything is built or simulated: KLend pays withdrawals only
+	// from available liquidity and refuses deposits past the deposit limit.
+	targetRoom, roomKnown := targetEconomics.DepositRoomRaw()
+	if sourceEconomics.AvailableLiquidityRaw == nil || !roomKnown || redeemable > math.MaxInt64 {
+		return f, errors.New("fresh reserve capacity is unreadable")
+	}
+	if err := reserveCapacityShortfall(int64(redeemable), *sourceEconomics.AvailableLiquidityRaw, 0, targetRoom, 0); err != nil {
+		return f, err
+	}
 	var topUp uint64
 	if targetMissing {
 		rent, err := r.rpc.RentExempt(ctx, kamino.ObligationSize)
@@ -653,7 +662,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 			return f, err
 		}
 	}
-	f.evidence = FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey}
+	f.evidence = FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, SourceAvailableLiquidityRaw: *sourceEconomics.AvailableLiquidityRaw, TargetDepositRoomRaw: targetRoom, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey}
 	f.evidence.Anchors = ExecutionBalanceAnchors{SourceObligation: source.Obligation, TargetObligation: target.Obligation, VaultLiquidityATA: source.Position.VaultLiquidityATA, SourceReserve: lease.SourceReserve, TargetReserve: lease.TargetReserve, SourceMarket: source.Position.Market, TargetMarket: target.Position.Market, SourceCollateralMint: source.Position.CollateralMint, TargetCollateralMint: target.Position.CollateralMint, LiquidityTokenProgram: source.Position.LiquidityTokenProgram, Owner: lease.VaultPubkey, Mint: lease.LiquidityMint, SourceCollateralRaw: sourceCollateral, TargetCollateralRaw: targetCollateral, IdleLiquidityRaw: idle.Amount, MinimumSlot: slot}
 	f.input = KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: freshSource.Position, Target: freshTarget.Position, WithdrawCollateralAmount: sourceCollateral, DepositLiquidityAmount: redeemable,
 		TargetObligationMissing: targetMissing, SourceFarmUserMissing: missingFarmUser[0], TargetFarmUserMissing: missingFarmUser[1], Payer: r.signer, VaultRentTopUpLamports: topUp}
@@ -792,9 +801,6 @@ func requiredLookupTableAddresses(instructions []RouteInstruction) []string {
 	return canonicalStrings(required)
 }
 
-func (r *Revalidator) verifyLookupTables(ctx context.Context, tables []LookupTable, minimumSlot int64) ([]LookupTable, error) {
-	return r.verifyRouteLookupTables(ctx, tables, minimumSlot, false)
-}
 func (r *Revalidator) verifyFinalizedLookupTables(ctx context.Context, tables []LookupTable, minimumSlot int64) ([]LookupTable, error) {
 	return r.verifyRouteLookupTables(ctx, tables, minimumSlot, true)
 }

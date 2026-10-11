@@ -288,19 +288,23 @@ func (w *Worker) tickLeased(ctx context.Context, lease *Lease) (TickResult, erro
 	if !observed.ActiveStrategyIsCoherent() {
 		return TickResult{RouteKey: &stored.RouteKey, Condition: "awaiting_coherent_confirmed_observation"}, nil
 	}
-	if stored.State.Goal == GoalDeploy {
-		for _, position := range observed.Strategies {
-			if position.StrategyKey != SyrupUsdcUsdc && (position.CollateralDepositedRaw != 0 || position.DebtRaw != 0) {
-				return TickResult{RouteKey: &stored.RouteKey, Condition: "unsupported_deploy_active_strategy"}, nil
-			}
-		}
-	}
 	snapshot, err := snapshotInput(stored.State, observed)
 	if err != nil {
 		return TickResult{}, err
 	}
 	if _, err := w.store.RecordPositionSnapshot(ctx, snapshot); err != nil {
 		return TickResult{}, err
+	}
+	// The next tick plans the moved route and observes its new destination.
+	if moved, err := w.store.ApplyPendingIntents(ctx, lease, stored.State, snapshot.EquityUSD); err != nil || moved {
+		return TickResult{RouteKey: &stored.RouteKey, Condition: "earn_max_intents_applied"}, err
+	}
+	if stored.State.Goal == GoalDeploy {
+		for _, position := range observed.Strategies {
+			if position.StrategyKey != SyrupUsdcUsdc && (position.CollateralDepositedRaw != 0 || position.DebtRaw != 0) {
+				return TickResult{RouteKey: &stored.RouteKey, Condition: "unsupported_deploy_active_strategy"}, nil
+			}
+		}
 	}
 	decision := NextAction(stored.State, observed, topology)
 	switch decision.Kind {

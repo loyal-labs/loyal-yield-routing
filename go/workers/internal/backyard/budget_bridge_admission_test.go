@@ -3,14 +3,10 @@ package backyard
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"reflect"
-	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func bridgeAdmissionFixture(t *testing.T, action Action, amount, idle, strategy, squads int64) (Observation, Decision, BridgeExecutionEvidence) {
@@ -119,58 +115,32 @@ func TestBridgeAdmissionStageTemplatesReportDrainedSquadsNAV(t *testing.T) {
 	assertBudgetHold(t, err, "bridge_admission_intent_mismatch")
 }
 
-// Hold all eight independent valuation reads at a barrier. A serialized
-// implementation cannot finish; no timing threshold or live RPC is involved.
-func TestBridgeAdmissionReadsIndependentValuationsTogether(t *testing.T) {
+// The admission prices every exit message's fee without a chain read.
+func TestBridgeAdmissionPricesFeesWithoutReads(t *testing.T) {
 	t.Parallel()
 	o, d, evidence := bridgeAdmissionFixture(t, VoltrAllocateToSquads, 100_000, 200_000, 0, 0)
 	rpc := budgetBuildRPC(t, 5_000, 42)
 	view := fixtureView(t, rpc)
 	base := rpcOf(rpc).Transport
-	var started atomic.Int32
-	ready := make(chan struct{})
 	rpcOf(rpc).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			return nil, err
 		}
 		request.Body = io.NopCloser(bytes.NewReader(body))
-		var call struct {
-			Method string            `json:"method"`
-			Params []json.RawMessage `json:"params"`
-		}
-		if err := json.Unmarshal(body, &call); err != nil {
-			return nil, err
-		}
-		if call.Method == "getFeeForMessage" {
-			var options struct {
-				MinimumSlot int64 `json:"minContextSlot"`
-			}
-			if err := json.Unmarshal(call.Params[1], &options); err != nil {
-				return nil, err
-			}
-			if options.MinimumSlot != 42 {
-				return nil, fmt.Errorf("unexpected minimum slot %d", options.MinimumSlot)
-			}
-			if started.Add(1) == 6 {
-				close(ready)
-			}
-			select {
-			case <-ready:
-			case <-request.Context().Done():
-				return nil, request.Context().Err()
-			}
+		if bytes.Contains(body, []byte("getFeeForMessage")) {
+			t.Error("fee read from the chain")
 		}
 		return base.RoundTrip(request)
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	plan, err := observePhase3BridgeAdmission(ctx, rpc, view, o, d, evidence)
-	if err != nil {
-		t.Fatal(err)
+	plan, err := observePhase3BridgeAdmission(context.Background(), rpc, view, o, d, evidence)
+	if err != nil || len(plan.Exit) != 5 || plan.ValidThroughSlot != 74 {
+		t.Fatalf("incomplete admission: exits=%d validity=%d %v", len(plan.Exit), plan.ValidThroughSlot, err)
 	}
-	if started.Load() != 6 || len(plan.Exit) != 5 || plan.ValidThroughSlot != 74 {
-		t.Fatalf("incomplete concurrent admission: reads=%d exits=%d validity=%d", started.Load(), len(plan.Exit), plan.ValidThroughSlot)
+	for _, step := range plan.Exit {
+		if step.Cost.Fee.Lamports != 5000 {
+			t.Fatalf("exit fee %d, want one signature", step.Cost.Fee.Lamports)
+		}
 	}
 }
 

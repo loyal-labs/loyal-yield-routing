@@ -109,7 +109,7 @@ func TestReserveFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 		t.Fatal("feed identity mismatch accepted")
 	}
 }
-func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
+func TestSelectorObservesPriorCustodyAndHoldsEveryExposedLane(t *testing.T) {
 	t.Parallel()
 	accounts := []ConfirmedAccount{}
 	for _, lane := range earnLaneIDs(true) {
@@ -132,8 +132,10 @@ func TestSelectorObservesPriorCustodyAndRejectsMultipleExposures(t *testing.T) {
 			accounts[i] = tokenAccountFixture(t, other.CollateralCustody, other.Kamino.CollateralMint, bridgeVault, 1)
 		}
 	}
-	if _, err = observedSelectorRoute(accounts, SelectedRouteID); err == nil {
-		t.Fatal("two lanes silently reduced to one NAV")
+	// Two exposed lanes are one held set, never silently reduced to one.
+	working, held, err := observedSelectorLanes(accounts, SelectedRouteID, "")
+	if err != nil || working.Lane != SelectedRouteID || strings.Join(held, ",") != SelectedRouteID+","+source.Lane {
+		t.Fatalf("two exposed lanes: working %s held %v err %v", working.Lane, held, err)
 	}
 }
 

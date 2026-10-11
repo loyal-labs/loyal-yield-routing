@@ -111,6 +111,47 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 	}
 }
 
+// A build hold taken on an endpoint that could not answer is not journaled:
+// the decided operation stays decided, the run loop waits, and the next tick
+// builds it.
+func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
+	manifest := readyWorkerManifest(t)
+	observation := tickObservation(Snapshot{ObservationID: "allocate", Slot: 10, RouteKind: RouteKind, Fresh: true, VoltrIdleRaw: 7})
+	builds, journaled := 0, false
+	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
+		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
+		observe:         func(context.Context) (Observation, error) { return observation, nil },
+		prepareBridge: func(_ context.Context, _ RouteManifest, d Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
+			return observation, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: d.Action}}, nil
+		},
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+			return DecisionRecord{OperationID: "operation", Status: Decided}, nil
+		},
+		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },
+		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+			if builds++; builds == 1 {
+				return budgetHoldFrom(fmt.Errorf("simulateTransaction: %w", chain.ErrBehind), "deposit_projection_unavailable")
+			}
+			return nil
+		},
+		recordBudgetHold: func(context.Context, string, *BudgetHold) error { journaled = true; return nil },
+	}}
+	if err := worker.Tick(context.Background()); !errors.Is(err, errConfirmedObservationUnavailable) || journaled {
+		t.Fatalf("unavailable RPC failed the decided operation: journaled=%v %v", journaled, err)
+	}
+	if err := worker.Tick(context.Background()); err != nil || builds != 2 || journaled {
+		t.Fatalf("next tick did not build: builds=%d journaled=%v %v", builds, journaled, err)
+	}
+	// A hold on anything else is still journaled.
+	builds = 0
+	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
+		return budgetHoldFrom(errors.New("bad layout"), "execution_mint_layout_mismatch")
+	}
+	if err := worker.Tick(context.Background()); err == nil || !journaled {
+		t.Fatalf("a real hold was not journaled: %v", err)
+	}
+}
+
 func TestTickPreservesHoldJournalWhileManifestIsBlocked(t *testing.T) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {

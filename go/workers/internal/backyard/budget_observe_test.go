@@ -65,16 +65,7 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fee, err := observeMessageFee(ctx, rpc, message, slot)
-	if err != nil {
-		t.Fatal("exact-message fee unavailable")
-	}
-	encoded, err := json.Marshal(fee)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("READ_ONLY_MESSAGE_FEE %s", encoded)
-	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, view, fee.Slot)
+	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, view, slot)
 	if err != nil {
 		var hold *BudgetHold
 		if errors.As(err, &hold) {
@@ -82,11 +73,11 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 		}
 		t.Fatal("native SOL valuation unavailable")
 	}
-	cost, err := ValueTransactionCost(message, ExecutableDebit{}, fee, 0, BudgetPrice{}, sol, sol.ObservedSlot)
+	cost, err := ValueTransactionCost(message, ExecutableDebit{}, 0, BudgetPrice{}, sol, sol.ObservedSlot)
 	if err != nil {
 		t.Fatal("native SOL fee could not be normalized")
 	}
-	encoded, err = json.Marshal(struct {
+	encoded, err := json.Marshal(struct {
 		Price BudgetPrice           `json:"price"`
 		Cost  ValuedTransactionCost `json:"cost"`
 	}{sol, cost})

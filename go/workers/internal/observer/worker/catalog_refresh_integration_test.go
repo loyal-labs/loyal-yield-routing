@@ -88,7 +88,7 @@ CREATE TABLE %[1]s.reserve_updates(
  source text,source_commitment text,reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
  reserve_last_update_slot bigint,reserve_last_update_stale boolean,reserve_price_status smallint,available_amount double precision,
  borrowed_amount double precision,total_supply_amount double precision,market_price_usd double precision,market_price_last_updated_ts bigint,
- utilization double precision,borrow_apy double precision,supply_apy double precision)`, schema)); err != nil {
+ utilization double precision,borrow_apy double precision,supply_apy double precision,snapshot jsonb)`, schema)); err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
@@ -103,7 +103,7 @@ CREATE TABLE %[1]s.reserve_updates(
 	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_update_dedupe VALUES(1,$1,999)`, schema), catalogTestReserve); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_updates VALUES(1,$1,$2,999,'laserstream_grpc','confirmed',$3,$4,'Main Market',$5,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008)`, schema), strings.Repeat("a", 64), now, catalogTestReserve, catalogTestMainMarket, catalogTestUSDC); err != nil {
+	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_updates VALUES(1,$1,$2,999,'laserstream_grpc','confirmed',$3,$4,'Main Market',$5,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008,'{"deposit_limit":3000000000000}')`, schema), strings.Repeat("a", 64), now, catalogTestReserve, catalogTestMainMarket, catalogTestUSDC); err != nil {
 		t.Fatal(err)
 	}
 	planner, err := fleet.NewMarketEvidenceStoreFromPool(pool, schema)

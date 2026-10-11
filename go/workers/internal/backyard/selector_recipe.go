@@ -54,7 +54,7 @@ func selectorMidpointPriceValue(p BudgetPrice, raw uint64, mint, program string,
 	putScaledLittleSF(&usdcMid, new(big.Int).Quo(new(big.Int).Add(usdcLower, usdcUpper), big.NewInt(2)))
 	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, tokenMid, usdcMid, false)
 	if err != nil || value > math.MaxInt64 {
-		return 0, budgetHold("invalid_usdc_valuation")
+		return 0, budgetHoldFrom(err, "invalid_usdc_valuation")
 	}
 	return int64(value), nil
 }
@@ -115,7 +115,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 		effects ExpectedEffects
 		message []byte
 		debit   ExecutableDebit
-		fee     MessageFeeObservation
+		fee     uint64
 		rent    uint64
 	}
 	steps := make([]step, len(inputs))
@@ -168,28 +168,26 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 		if debit.Raw > 0 {
 			sources[key(debit)] = debit
 		}
-		steps[i] = step{request: request, effects: effects, message: message, debit: debit, rent: rent}
+		fee, err := chain.MessageFee(message)
+		if err != nil {
+			return out, budgetHoldFrom(err, "message_fee_unpriced")
+		}
+		steps[i] = step{request: request, effects: effects, message: message, debit: debit, fee: fee, rent: rent}
 	}
 	keys := make([]string, 0, len(sources))
 	for k := range sources {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	// Compile and validate the entire recipe before starting any read. All
-	// exact-message fees use the prerequisite floor and the view prices the
-	// sample slot; retain their individual slots and validate them at the
-	// newest one.
-	// Four reads per recipe bounds fanout even when all three lanes quote.
-	floor := slot
+	// Compile, price and validate the entire recipe before starting any read.
+	// The view prices the sample slot; retain each price's slot and validate
+	// them at the newest one.
 	tokenPrices := make([]BudgetPrice, len(keys))
 	var sol BudgetPrice
-	if err := selectorRecipeReads(len(steps)+len(keys)+1, func(i int) (err error) {
+	if err := selectorRecipeReads(len(keys)+1, func(i int) (err error) {
 		switch {
-		case i < len(steps):
-			steps[i].fee, err = observeMessageFee(ctx, rpc, steps[i].message, floor)
-		case i < len(steps)+len(keys):
-			j := i - len(steps)
-			tokenPrices[j], err = ObserveBudgetTokenPrice(ctx, rpc, view, lane, sources[keys[j]], minimumSlot)
+		case i < len(keys):
+			tokenPrices[i], err = ObserveBudgetTokenPrice(ctx, rpc, view, lane, sources[keys[i]], minimumSlot)
 		default:
 			sol, err = ObserveNativeSOLBudgetPrice(ctx, rpc, view, minimumSlot)
 		}
@@ -198,15 +196,14 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 		return out, err
 	}
 	for _, s := range steps {
-		if r, ok := s.request.(KaminoInitializationRequest); ok && s.fee.Lamports > r.MaximumFeeLamports {
+		if r, ok := s.request.(KaminoInitializationRequest); ok && s.fee > r.MaximumFeeLamports {
 			return out, budgetHold("initializer_fee_changed")
 		}
-		if s.rent > math.MaxUint64-out.SetupLamports || s.fee.Lamports > math.MaxUint64-out.NetworkLamports {
+		if s.rent > math.MaxUint64-out.SetupLamports || s.fee > math.MaxUint64-out.NetworkLamports {
 			return out, budgetHold("selector_recipe_native_overflow")
 		}
 		out.SetupLamports += s.rent
-		out.NetworkLamports += s.fee.Lamports
-		slot = max(slot, s.fee.Slot)
+		out.NetworkLamports += s.fee
 	}
 	for i, k := range keys {
 		prices[k] = tokenPrices[i]
@@ -222,7 +219,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 	}
 	expectedTotal := int64(0)
 	for _, s := range steps {
-		cost, err := ValueTransactionCost(s.message, s.debit, s.fee, s.rent, prices[key(s.debit)], sol, nowSlot)
+		cost, err := ValueTransactionCost(s.message, s.debit, s.rent, prices[key(s.debit)], sol, nowSlot)
 		if err != nil {
 			return out, err
 		}

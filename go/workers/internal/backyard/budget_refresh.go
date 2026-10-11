@@ -38,6 +38,28 @@ func budgetReserveRefreshInstructions(lane string) ([]compiledInstruction, error
 	return instructions, nil
 }
 
+// budgetReserveRefreshInstructionsForLanes is the same closed set over
+// several lanes, each reserve refreshed once: a multi-lane NAV values every
+// held lane from one refreshed bank.
+func budgetReserveRefreshInstructionsForLanes(lanes []string) ([]compiledInstruction, error) {
+	seen := map[publicKey]bool{}
+	var instructions []compiledInstruction
+	for _, lane := range lanes {
+		laneInstructions, err := budgetReserveRefreshInstructions(lane)
+		if err != nil {
+			return nil, err
+		}
+		for _, instruction := range laneInstructions {
+			reserve := instruction.accounts[0].key
+			if !seen[reserve] {
+				seen[reserve] = true
+				instructions = append(instructions, instruction)
+			}
+		}
+	}
+	return instructions, nil
+}
+
 // This price-only simulation has no signer or send boundary. Its instruction
 // set is closed over the same permissionless reserve refreshes already in the
 // production transaction prefix. Account overrides are not used.
@@ -56,7 +78,11 @@ func simulateBudgetReserveRefresh(ctx context.Context, c *chain.Client, lane str
 // for an optional address — instead of failing the whole capture; every other address must
 // still resolve, and the simulated snapshot remains unsigned evidence only.
 func simulateBudgetReserveRefreshOptional(ctx context.Context, c *chain.Client, lane string, addresses, optional []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
-	instructions, err := budgetReserveRefreshInstructions(lane)
+	return simulateLanesReserveRefreshOptional(ctx, c, []string{lane}, addresses, optional, minimumSlot)
+}
+
+func simulateLanesReserveRefreshOptional(ctx context.Context, c *chain.Client, lanes []string, addresses, optional []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+	instructions, err := budgetReserveRefreshInstructionsForLanes(lanes)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -108,7 +134,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		// capture set; table contents cannot introduce an instruction or signer.
 		tables, lookupErr := observeJupiterLookupTables(ctx, c, []string{routeValuationLookupTable}, minimumSlot)
 		if lookupErr != nil {
-			return 0, nil, budgetHold("price_refresh_lookup_unavailable")
+			return 0, nil, budgetHoldFrom(lookupErr, "price_refresh_lookup_unavailable")
 		}
 		message, err = compileV0Message(feePayer, hash, instructions, tables, capture...)
 		if err != nil {
@@ -134,7 +160,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": string(transactionError)}}
 	}
 	if err != nil {
-		return 0, nil, budgetHold("price_refresh_simulation_unavailable")
+		return 0, nil, budgetHoldFrom(err, "price_refresh_simulation_unavailable")
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for i, a := range simulated.Accounts {

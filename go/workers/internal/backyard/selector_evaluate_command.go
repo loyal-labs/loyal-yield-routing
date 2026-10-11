@@ -72,12 +72,12 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 	}
 	rpc, err := chain.New(config.RPCURL, 15*time.Second)
 	if err != nil {
-		return budgetHold("selector_evaluate_rpc_unavailable")
+		return budgetHoldFrom(err, "selector_evaluate_rpc_unavailable")
 	}
 	// A one-shot command plans from the view's start-up read alone.
 	view, err := OpenView(ctx, rpc, nil)
 	if err != nil {
-		return budgetHold("selector_evaluate_rpc_unavailable")
+		return budgetHoldFrom(err, "selector_evaluate_rpc_unavailable")
 	}
 	return runSelectorEvaluate(ctx, out, execute, selectorEvaluateDeps{
 		manifest:    manifest,
@@ -123,7 +123,7 @@ func runSelectorEvaluate(ctx context.Context, out io.Writer, execute bool, deps 
 func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) error {
 	cfg, err := pgxpool.ParseConfig(deps.databaseURL)
 	if err != nil {
-		return budgetHold("selector_evaluate_database_configuration_invalid")
+		return budgetHoldFrom(err, "selector_evaluate_database_configuration_invalid")
 	}
 	cfg.MaxConns = 2
 	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
@@ -131,17 +131,17 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	database := &Database{pool: pool}
 	if err != nil {
-		return budgetHold("selector_evaluate_journal_unavailable")
+		return budgetHoldFrom(err, "selector_evaluate_journal_unavailable")
 	}
 	defer database.Close()
 	feed, err := deps.newFeed(ctx, deps.manifest)
 	if err != nil {
-		return budgetHold("selector_evaluate_feed_unavailable")
+		return budgetHoldFrom(err, "selector_evaluate_feed_unavailable")
 	}
 	feedErr := feed.Refresh(ctx)
 	observation, err := deps.observe(ctx, database, deps.manifest)
 	if err != nil {
-		return budgetHold("selector_evaluate_observation_unavailable")
+		return budgetHoldFrom(err, "selector_evaluate_observation_unavailable")
 	}
 	markets, _ := feed.Snapshot()
 	selection := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{})
@@ -240,22 +240,22 @@ func sanitizedSelectorEvaluateFailure(err error) string {
 func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) (err error) {
 	database, err := OpenDatabase(ctx, deps.databaseURL)
 	if err != nil {
-		return budgetHold("selector_evaluate_database_unavailable")
+		return budgetHoldFrom(err, "selector_evaluate_database_unavailable")
 	}
 	defer database.Close()
 	feed, err := deps.newFeed(ctx, deps.manifest)
 	if err != nil {
-		return budgetHold("selector_evaluate_feed_unavailable")
+		return budgetHoldFrom(err, "selector_evaluate_feed_unavailable")
 	}
 	// Unique owner: AcquireRouteLease never treats an unexpired lease as
 	// re-entrant even for identical owner text, and the release below clears
 	// exactly this owner/fencing pair.
 	var nonce [16]byte
 	if _, err = rand.Read(nonce[:]); err != nil {
-		return budgetHold("selector_evaluate_owner_unavailable")
+		return budgetHoldFrom(err, "selector_evaluate_owner_unavailable")
 	}
 	if _, err = database.AcquireRouteLease(ctx, productionRouteKey, "selector-evaluate:"+hex.EncodeToString(nonce[:]), 45*time.Second); err != nil {
-		return budgetHold("selector_evaluate_lease_unavailable")
+		return budgetHoldFrom(err, "selector_evaluate_lease_unavailable")
 	}
 	committed := false
 	defer func() {

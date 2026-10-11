@@ -209,8 +209,10 @@ type FleetLoadOptions struct {
 	OptimizerEpochID         int64
 }
 
-// LoadMigratedFleet reads every active Kamino vault and its current source
-// position in one repeatable-read snapshot. Exact finalized Earn and Jupiter
+// LoadMigratedFleet reads every active Kamino vault and each reserve it holds
+// in one repeatable-read snapshot: one FleetVault per held reserve, largest
+// first. A vault with an open opportunity or decision is left out whole, so a
+// vault still moves one holding at a time. Exact finalized Earn and Jupiter
 // policy bindings are loaded in that same snapshot for cross-mint candidates.
 func (s *Store) LoadMigratedFleet(ctx context.Context, cluster string, epoch ImmutableMarketEpoch, optional ...FleetLoadOptions) ([]FleetVault, error) {
 	options := FleetLoadOptions{}
@@ -226,8 +228,7 @@ func (s *Store) LoadMigratedFleet(ctx context.Context, cluster string, epoch Imm
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `
-SELECT DISTINCT ON (vault.id)
-       vault.id, vault.settings, vault.vault_index, vault.vault_pubkey,
+SELECT vault.id, vault.settings, vault.vault_index, vault.vault_pubkey,
        policy.id, policy.policy_account, policy.kamino_markets,
        policy.authority, policy.delegated_signers,
        COALESCE((SELECT jsonb_agg(jsonb_build_object(

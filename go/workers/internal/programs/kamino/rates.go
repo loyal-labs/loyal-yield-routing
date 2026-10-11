@@ -10,7 +10,12 @@ import (
 // measured slot rate, and none was read.
 var ErrSlotRateUnavailable = errors.New("Kamino Legacy-basis rates need the measured slot rate")
 
+// ErrUnsupportedInterestTerms: the reserve's interest needs a model the
+// workers do not have.
+var ErrUnsupportedInterestTerms = errors.New("Kamino reserve interest terms are unsupported")
+
 const (
+	legacyBasis  = 0
 	trueAPRBasis = 1
 	// klendSlotsPerSecond is KLend's SLOTS_PER_SECOND, the slot count its
 	// SLOTS_PER_YEAR divides a Legacy-basis annual rate by.
@@ -22,10 +27,14 @@ const (
 // debt, or a protocol take above 100%.
 func (r Reserve) SupportedInterestTerms() error {
 	if r.InterestRateBasis > trueAPRBasis || r.EarlyRepayRemainingInterestPct != 0 || r.TermDebtConfig != [16]byte{} || r.ProtocolTakeRatePct > 100 {
-		return errors.New("Kamino reserve interest terms are unsupported")
+		return ErrUnsupportedInterestTerms
 	}
 	return nil
 }
+
+// NeedsSlotRate reports a Legacy-basis reserve: only its rates read the
+// measured slot rate.
+func (r Reserve) NeedsSlotRate() bool { return r.InterestRateBasis == legacyBasis }
 
 // AccrualPerCurve is the annual rate a reserve accrues per unit of its
 // configured curve rate. A TrueApr-basis reserve accrues the curve per second

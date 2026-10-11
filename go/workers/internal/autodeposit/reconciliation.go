@@ -114,6 +114,16 @@ WHERE target_id = $1
 	return nil
 }
 
+// RescheduleAutodepositReconciliationRequest hands the claim back for a later
+// pass without counting the attempt or recording an error.
+func (s *Store) RescheduleAutodepositReconciliationRequest(ctx context.Context, targetID int64, claimOwner string, retryAfterSeconds int64) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.autodeposit_reconciliation_requests SET claim_owner=NULL,claim_expires_at=NULL,attempt_count=attempt_count-1,next_attempt_at=NOW()+make_interval(secs=>$3::double precision),updated_at=NOW() WHERE target_id=$1 AND claim_owner=$2 AND claim_expires_at>NOW()`, targetID, claimOwner, retryAfterSeconds)
+	if err == nil && tag.RowsAffected() != 1 {
+		return fmt.Errorf("autodeposit reconciliation request %d lost claim before rescheduling", targetID)
+	}
+	return err
+}
+
 // AwaitAutodepositSetupReconciliationRequest parks an incomplete user setup
 // without burning retry budget: policy discovery can legitimately precede
 // recurring-delegation creation, so the request sleeps instead of failing.

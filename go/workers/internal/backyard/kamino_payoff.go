@@ -129,7 +129,7 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	}
 	debt, err := obligation.debtAtReserveRate(reserve)
 	if err != nil || debt == 0 || reserve.refreshedSlot <= 0 || reserve.refreshedSlot > int64(clockSlot) {
-		return bound, budgetHold("payoff_debt_state_unavailable")
+		return bound, budgetHoldFrom(err, "payoff_debt_state_unavailable")
 	}
 	config := reserveAccount.Data[kaminoReserveConfigOffset:]
 	// Official current KLend layout: LastUpdate timestamp at account+28, curve

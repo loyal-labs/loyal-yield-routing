@@ -508,6 +508,15 @@ WHERE id=$1
 	return nil
 }
 
+// releaseNotYet hands a claim back after delay, uncounted and with no error.
+func (s *Store) releaseNotYet(ctx context.Context, lease SubmissionLease, delay time.Duration) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET confirmation_available_at=clock_timestamp()+$4::interval,confirmation_attempt_count=confirmation_attempt_count-1,confirmation_lease_owner=NULL,confirmation_lease_expires_at=NULL,updated_at=clock_timestamp() WHERE id=$1 AND confirmation_lease_owner=$2 AND confirmation_fencing_token=$3 AND confirmation_lease_expires_at>clock_timestamp()`, lease.Submission.ID, lease.Owner, lease.FencingToken, formatInterval(delay))
+	if err == nil && tag.RowsAffected() != 1 {
+		return ErrStaleOwner
+	}
+	return err
+}
+
 // DeferSubmission is Rust's SignedRouteSubmissionAdvance::Deferred: the state
 // and its custody stay, the reason is recorded, the lease is released and the
 // next claim waits until delay has passed.

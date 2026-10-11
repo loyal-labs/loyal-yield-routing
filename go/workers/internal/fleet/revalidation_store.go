@@ -237,6 +237,37 @@ WHERE o.id=$1 AND o.opportunity_state='leased' AND o.lease_kind='revalidate'
 	return tag.RowsAffected() == 1, nil
 }
 
+// ReleaseRevalidationNotYet hands a claim back for a later tick, uncounted and with no reason.
+func (s *Store) ReleaseRevalidationNotYet(ctx context.Context, lease RevalidationLease) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',available_at=clock_timestamp()+interval '2 seconds',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,attempt_count=attempt_count-1,updated_at=clock_timestamp()
+WHERE id=$1 AND opportunity_state='leased' AND lease_kind='revalidate' AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, lease.OpportunityID, lease.Owner, lease.FencingToken)
+	if err == nil && tag.RowsAffected() != 1 {
+		return errors.New("revalidation claim lost before its release")
+	}
+	return err
+}
+
+// ReplanRevalidation ends a claimed opportunity that no longer fits as stale
+// with terminal reason capacity_replan. It leaves the active states, so the
+// planner's committed frontier stops counting its principal and its vault is
+// planned again next cycle; a revalidate lease holds no capacity reservation
+// or conflict lease yet, since only a committed admission takes them. It is
+// false when the lease is no longer this one.
+func (s *Store) ReplanRevalidation(ctx context.Context, lease RevalidationLease) (bool, error) {
+	if s == nil || s.pool == nil || lease.OpportunityID <= 0 {
+		return false, errors.New("invalid capacity re-plan")
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities o
+SET opportunity_state='stale',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,
+    terminal_reason='capacity_replan',updated_at=clock_timestamp()
+WHERE o.id=$1 AND o.opportunity_state='leased' AND o.lease_kind='revalidate'
+  AND o.lease_owner=$2 AND o.fencing_token=$3 AND o.decision_id IS NULL`, lease.OpportunityID, lease.Owner, lease.FencingToken)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (s *Store) LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error) {
 	requiredAddresses = canonicalStrings(requiredAddresses)
 	if s == nil || s.pool == nil || cluster == "" || vaultID <= 0 || minimumSlot <= 0 || len(requiredAddresses) == 0 {
@@ -314,6 +345,13 @@ func (s *Store) RefreshCapacityEpoch(ctx context.Context, cluster string, epoch 
 // RefreshTargetCapacity is the executor's admission observation, Rust
 // observe_target_capacity: its observation was just read for this route, so
 // one older than the durable frontier is an error.
+// TargetCapacitySlot is the durable slot RefreshTargetCapacity compares against.
+func (s *Store) TargetCapacitySlot(ctx context.Context, cluster, reserve, mint string) (int64, error) {
+	var slot int64
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(max(observed_slot),0) FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, cluster, reserve, mint).Scan(&slot)
+	return slot, err
+}
+
 func (s *Store) RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error {
 	return s.refreshTargetCapacity(ctx, cluster, reserve, mint, supply, slot, false)
 }
@@ -364,6 +402,29 @@ func (s *Store) refreshTargetCapacity(ctx context.Context, cluster, reserve, min
 	return tx.Commit(ctx)
 }
 
+// lockedReserveCapacityFits re-checks, inside the admission transaction, the
+// fresh chain capacity the route was built from against the moves admitted
+// but not yet landed: their reservations are still 'active', while a landed
+// move is already in the fresh reserve read. The source must pay this move
+// after the other admitted withdrawals from it, and the target's deposit
+// limit must take it after the other admitted deposits into it.
+func lockedReserveCapacityFits(ctx context.Context, tx pgx.Tx, lease RevalidationLease, input RevalidationCommit) error {
+	if input.SourceAvailableLiquidityRaw == nil || input.TargetDepositRoomRaw == nil {
+		return errors.New("fresh reserve capacity evidence is missing")
+	}
+	var inflightIn, inflightOut int64
+	if err := tx.QueryRow(ctx, `
+SELECT COALESCE(sum(reservation.principal_usd_micros) FILTER (WHERE reservation.target_reserve=$2),0)::bigint,
+       COALESCE(sum(reservation.principal_usd_micros) FILTER (WHERE opportunity.source_reserve=$3),0)::bigint
+FROM loyal_yield.target_capacity_reservations reservation
+JOIN loyal_yield.rebalance_opportunities opportunity ON opportunity.id=reservation.opportunity_id
+WHERE reservation.cluster=$1 AND reservation.reservation_state='active' AND reservation.opportunity_id<>$4
+  AND (reservation.target_reserve=$2 OR opportunity.source_reserve=$3)`, lease.Cluster, lease.TargetReserve, lease.SourceReserve, lease.OpportunityID).Scan(&inflightIn, &inflightOut); err != nil {
+		return fmt.Errorf("in-flight reserve capacity: %w", err)
+	}
+	return reserveCapacityShortfall(lease.PrincipalUSDMicros, *input.SourceAvailableLiquidityRaw, inflightOut, *input.TargetDepositRoomRaw, inflightIn)
+}
+
 type RevalidationCommit struct {
 	CrossMintControlGeneration    *int64
 	Disposition                   string
@@ -377,6 +438,9 @@ type RevalidationCommit struct {
 	ObservedTargetAPYBPS          int64
 	TargetObservedSupplyUSDMicros int64
 	TargetObservedSlot            int64
+	// Fresh chain capacity of the route's reserves (FreshRouteEvidence).
+	SourceAvailableLiquidityRaw *int64
+	TargetDepositRoomRaw        *int64
 }
 
 // CommitRevalidation performs every mutable fence and the queue transition in
@@ -447,8 +511,11 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(principal_usd_micros),0) FROM loyal_yield.target_capacity_reservations WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3 AND reservation_state<>'released'`, lease.Cluster, lease.TargetReserve, lease.LiquidityMint).Scan(&committed); err != nil {
 		return err
 	}
-	if lease.PrincipalUSDMicros <= 0 || max < lease.PrincipalUSDMicros || committed < 0 || committed > max-lease.PrincipalUSDMicros {
-		return errors.New("target capacity fence exhausted")
+	if lease.PrincipalUSDMicros <= 0 || committed < 0 {
+		return errors.New("invalid target capacity fence")
+	}
+	if max < lease.PrincipalUSDMicros || committed > max-lease.PrincipalUSDMicros {
+		return &CapacityReplan{Reason: "target_capacity_exhausted", Detail: "target capacity fence exhausted"}
 	}
 	keys := canonicalStrings(input.ConflictKeys)
 	for _, key := range keys {
@@ -511,6 +578,9 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 		economics, err := recomputeReservationEconomics(lease, economicsPlan, observedSupply, committed)
 		if err != nil {
 			return fmt.Errorf("atomic capacity economics: %w", err)
+		}
+		if err := lockedReserveCapacityFits(ctx, tx, lease, input); err != nil {
+			return err
 		}
 		if prep.Transaction.FeeLamports > uint64(economics.FeeCapLamports) {
 			return fmt.Errorf("compiled fee %d exceeds atomically recomputed cap %d", prep.Transaction.FeeLamports, economics.FeeCapLamports)
@@ -1065,7 +1135,7 @@ func recomputeReservationEconomics(lease RevalidationLease, executionPlan json.R
 	}
 	edge := projected - plan.SourceAPYBPS
 	if edge < 1 {
-		return reservationEconomics{}, errors.New("target capacity atomic economics became ineligible")
+		return reservationEconomics{}, &CapacityReplan{Reason: "target_capacity_economics", Detail: "target capacity atomic economics became ineligible"}
 	}
 	gross, ok := mulMulDivInt64(lease.PrincipalUSDMicros, edge, plan.HoldingHorizonSeconds, 10_000, secondsPerYear)
 	if !ok {
@@ -1085,11 +1155,11 @@ func recomputeReservationEconomics(lease RevalidationLease, executionPlan json.R
 	}
 	net := expected - guardedCost
 	if net < 100_000 {
-		return reservationEconomics{}, errors.New("target capacity atomic net gain became ineligible")
+		return reservationEconomics{}, &CapacityReplan{Reason: "target_capacity_economics", Detail: "target capacity atomic net gain became ineligible"}
 	}
 	feeCap, ok := mulDivInt64(net, 50_000, 1_000_000)
 	if !ok || feeCap < 5_000 {
-		return reservationEconomics{}, errors.New("target capacity atomic fee budget became ineligible")
+		return reservationEconomics{}, &CapacityReplan{Reason: "target_capacity_economics", Detail: "target capacity atomic fee budget became ineligible"}
 	}
 	if feeCap > 50_000 {
 		feeCap = 50_000

@@ -134,17 +134,6 @@ type EarnMaxCancelIntent struct {
 	RequestID string `json:"request_id"`
 }
 
-// EarnMaxIntentProjectionInput is one root-signed Earn MAX memo.
-type EarnMaxIntentProjectionInput struct {
-	Settings         string        `json:"settings"`
-	VaultIndex       uint8         `json:"vault_index"`
-	Signature        string        `json:"signature"`
-	InstructionIndex uint16        `json:"instruction_index"`
-	Slot             uint64        `json:"slot"`
-	ObservedAt       time.Time     `json:"observed_at"`
-	Intent           EarnMaxIntent `json:"intent"`
-}
-
 // EarnReserveMutation is one confirmed reserve position.
 type EarnReserveMutation struct {
 	Reserve          string          `json:"reserve"`

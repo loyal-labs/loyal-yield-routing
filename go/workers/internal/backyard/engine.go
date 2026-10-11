@@ -189,7 +189,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			publishCurrentAPY(ctx, time.Now(), apyThrottle, observed, markets, func(ctx context.Context, value CurrentAPY, version int64) error {
 				return database.RecordCurrentAPY(ctx, productionRouteKey, value, version)
 			}, func(format string, args ...any) { _, _ = fmt.Fprintf(out, format, args...) })
-			if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" {
+			if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" || result.Action == "TRANCHE" {
 				worker.notifySelectorCommit(result.Action)
 				_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector action=%s source=%s destination=%s\n", result.Action, result.SourceLane, result.DestinationLane)
 				lastSampleKey = ""

@@ -10,7 +10,8 @@ import (
 
 // LeverageTarget is the durable B2 option-1 level target for one lane. The
 // selector sample loop writes it; Decide reads it through the planning state.
-// A target for another lane, or none, keeps the installed behaviour.
+// Route state keeps one per lane under 'leverageTargets', keyed by lane; a
+// lane without one keeps the installed behaviour.
 type LeverageTarget struct {
 	Lane          string    `json:"lane"`
 	Level         float64   `json:"level"`
@@ -44,6 +45,39 @@ func decodeLeverageTarget(raw []byte) (*LeverageTarget, error) {
 	return &target, nil
 }
 
+// decodeLeverageTargets decodes route state 'leverageTargets': one valid
+// target per lane, each stored under its own lane.
+func decodeLeverageTargets(raw []byte) (map[string]LeverageTarget, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var targets map[string]LeverageTarget
+	if json.Unmarshal(raw, &targets) != nil {
+		return nil, budgetHold("invalid_durable_leverage_target")
+	}
+	for lane, target := range targets {
+		if target.Lane != lane || target.validate() != nil {
+			return nil, budgetHold("invalid_durable_leverage_target")
+		}
+	}
+	return targets, nil
+}
+
+// leverageTargetFor is the lane's stored target, nil when it has none.
+func leverageTargetFor(targets map[string]LeverageTarget, lane string) *LeverageTarget {
+	target, ok := targets[lane]
+	if !ok {
+		return nil
+	}
+	return &target
+}
+
+// setLeverageTargetSQL replaces one lane's entry in 'leverageTargets' ($lane
+// text, $target jsonb), keeping every other lane's target.
+func setLeverageTargetSQL(lane, target string) string {
+	return `jsonb_set(state,'{leverageTargets}',COALESCE(state->'leverageTargets','{}'::jsonb)||jsonb_build_object(` + lane + `::text,` + target + `::jsonb),true)`
+}
+
 // applyLeverageTarget stamps the stored target into the snapshot only for the
 // lane it was decided for.
 func applyLeverageTarget(s *Snapshot, target *LeverageTarget) {
@@ -57,14 +91,18 @@ func applyLeverageTarget(s *Snapshot, target *LeverageTarget) {
 	}
 }
 
-// LoadLeverageTarget reads the stored target for construction refreshes,
-// which merge durable state without a planning read.
-func (d *Database) LoadLeverageTarget(ctx context.Context, routeKey string) (*LeverageTarget, error) {
+// LoadLeverageTarget reads one lane's stored target for construction
+// refreshes, which merge durable state without a planning read.
+func (d *Database) LoadLeverageTarget(ctx context.Context, routeKey, lane string) (*LeverageTarget, error) {
 	var raw []byte
-	if err := d.pool.QueryRow(ctx, `SELECT COALESCE(state->'leverageTarget','null'::jsonb) FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&raw); err != nil {
+	if err := d.pool.QueryRow(ctx, `SELECT COALESCE(state->'leverageTargets','null'::jsonb) FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&raw); err != nil {
 		return nil, err
 	}
-	return decodeLeverageTarget(raw)
+	targets, err := decodeLeverageTargets(raw)
+	if err != nil {
+		return nil, err
+	}
+	return leverageTargetFor(targets, lane), nil
 }
 
 // RecordLeverageTarget stores a new target under the route fence and the
@@ -85,11 +123,11 @@ func (d *Database) RecordLeverageTarget(ctx context.Context, routeKey string, ta
 	if err != nil {
 		return err
 	}
-	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(state,'{leverageTarget}',$5::jsonb,true),'{generation}',to_jsonb(state_version+1),true),state_version=state_version+1,updated_at=clock_timestamp()
+	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(`+setLeverageTargetSQL("$6", "$5")+`,'{generation}',to_jsonb(state_version+1),true),state_version=state_version+1,updated_at=clock_timestamp()
 		WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()
 		AND COALESCE(state->'selectorUnwind','null'::jsonb)='null'::jsonb
 		AND NOT EXISTS(SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key=$1 AND status IN (`+nonterminalStatusSQL+`))`,
-		routeKey, lease.Owner, lease.FencingToken, expectedVersion, string(raw))
+		routeKey, lease.Owner, lease.FencingToken, expectedVersion, string(raw), target.Lane)
 	if err != nil {
 		return err
 	}

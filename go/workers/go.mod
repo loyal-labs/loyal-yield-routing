@@ -31,7 +31,7 @@ require (
 	github.com/blendle/zapdriver v1.3.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.18.0 // indirect
-	github.com/gagliardetto/binary v0.8.0 // indirect
+	github.com/gagliardetto/binary v0.8.0
 	github.com/gagliardetto/treeout v0.1.4 // indirect
 	github.com/helius-labs/laserstream-sdk/go v0.2.0
 	github.com/jackc/pgpassfile v1.0.0 // indirect
