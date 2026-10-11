@@ -103,6 +103,13 @@ type RouteNAVSnapshot struct {
 	LPSupplyRaw       uint64
 	SnapshotDigest    string
 	Report            BridgeReport
+	// OtherLanesNAVRaw is the value the other held lanes add to
+	// StrategyNAVRaw: their obligations and every custody of theirs the
+	// working lane does not share. Zero when one lane is held.
+	OtherLanesNAVRaw int64
+	// OtherLanesState is the other held lanes' economic state (lane,
+	// collateral, debt and counted custody raws), "" when one lane is held.
+	OtherLanesState string
 }
 
 func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
@@ -131,9 +138,64 @@ func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
 	return addresses
 }
 
+// heldLaneNAVAddresses are the accounts that value one non-working held
+// lane: its obligation, reserves, market and custodies.
+func heldLaneNAVAddresses(route RuntimeRoute) []string {
+	addresses := []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.Kamino.DebtReserve, route.Kamino.Market, route.CollateralCustody}
+	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
+		addresses = append(addresses, route.DebtCustody, kaminoDebtReserve)
+	}
+	return addresses
+}
+
+// pinnedRouteNAVAddressesForRoutes is the union NAV namespace: the working
+// lane's pinned accounts, then each other held lane's accounts not already
+// present. One route gives exactly pinnedRouteNAVAddressesForRoute.
+func pinnedRouteNAVAddressesForRoutes(routes []RuntimeRoute) []string {
+	if len(routes) == 0 {
+		return nil
+	}
+	addresses := pinnedRouteNAVAddressesForRoute(routes[0])
+	seen := make(map[string]bool, len(addresses))
+	for _, address := range addresses {
+		seen[address] = true
+	}
+	for _, route := range routes[1:] {
+		for _, address := range heldLaneNAVAddresses(route) {
+			if !seen[address] {
+				seen[address] = true
+				addresses = append(addresses, address)
+			}
+		}
+	}
+	return addresses
+}
+
+// navRoutes is the lane set one NAV values: the working lane first, then
+// every other held lane in registry order.
+func navRoutes(working RuntimeRoute, held []string) ([]RuntimeRoute, error) {
+	routes := []RuntimeRoute{working}
+	for _, lane := range held {
+		if lane == working.Lane {
+			continue
+		}
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			return nil, err
+		}
+		routes = append(routes, route)
+	}
+	return routes, nil
+}
+
 func selectRouteNAVAccountsForRoute(accounts []ConfirmedAccount, route RuntimeRoute) ([]ConfirmedAccount, error) {
-	selected := make([]ConfirmedAccount, 0, len(pinnedRouteNAVAddressesForRoute(route)))
-	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
+	return selectRouteNAVAccountsForRoutes(accounts, []RuntimeRoute{route})
+}
+
+func selectRouteNAVAccountsForRoutes(accounts []ConfirmedAccount, routes []RuntimeRoute) ([]ConfirmedAccount, error) {
+	pinned := pinnedRouteNAVAddressesForRoutes(routes)
+	selected := make([]ConfirmedAccount, 0, len(pinned))
+	for _, address := range pinned {
 		account := accountAt(accounts, address)
 		if account.Address == "" {
 			return nil, fmt.Errorf("NAV account %s is absent", address)
@@ -247,11 +309,13 @@ func valueBetweenPrices(raw uint64, tokenDecimals, debtDecimals uint8, tokenPric
 	return quotient.Uint64(), nil
 }
 
-func navInputFingerprintForRoute(slot int64, accounts []ConfirmedAccount, custodies RouteNAVCustodies, route RuntimeRoute) (string, error) {
+func navInputFingerprintForRoutes(slot int64, accounts []ConfirmedAccount, custodies RouteNAVCustodies, routes []RuntimeRoute) (string, error) {
+	route := routes[0]
+	pinned := pinnedRouteNAVAddressesForRoutes(routes)
 	if slot <= 0 {
 		return "", fmt.Errorf("NAV slot is invalid")
 	}
-	if len(accounts) != len(pinnedRouteNAVAddressesForRoute(route)) {
+	if len(accounts) != len(pinned) {
 		return "", fmt.Errorf("NAV account namespace contains unsupported custody")
 	}
 	byAddress := make(map[string]ConfirmedAccount, len(accounts))
@@ -268,11 +332,11 @@ func navInputFingerprintForRoute(slot int64, accounts []ConfirmedAccount, custod
 	if source != "" && (source != routeRefreshValuationSource || valuationSlot != slot) || source == "" && valuationSlot != 0 {
 		return "", fmt.Errorf("NAV valuation provenance is invalid")
 	}
-	parts := make([]string, 0, len(pinnedRouteNAVAddressesForRoute(route))+1)
+	parts := make([]string, 0, len(pinned)+1)
 	if source != "" {
 		parts = append(parts, fmt.Sprintf("valuation:%s:%d", source, valuationSlot))
 	}
-	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
+	for _, address := range pinned {
 		account, ok := byAddress[address]
 		if !ok {
 			return "", fmt.Errorf("NAV account %s is absent", address)
@@ -308,10 +372,33 @@ func ComputeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 }
 
 func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, route RuntimeRoute) (RouteNAVSnapshot, error) {
+	return computeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{route})
+}
+
+// ComputeRouteNAVForRoutes values the whole vault book over one coherent
+// batch: the working lane (routes[0], whose custodies the override may
+// replace) plus every other held lane. A custody shared by several lanes is
+// counted once; the Squads USDC ATA is always the bridge cash.
+func ComputeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, routes []RuntimeRoute) (RouteNAVSnapshot, error) {
+	return computeRouteNAVForRoutes(slot, accounts, manifest, override, routes)
+}
+
+func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, routes []RuntimeRoute) (RouteNAVSnapshot, error) {
+	if len(routes) == 0 {
+		return RouteNAVSnapshot{}, fmt.Errorf("NAV lane set is empty")
+	}
+	route := routes[0]
+	for i, other := range routes {
+		for _, earlier := range routes[:i] {
+			if other.Lane == earlier.Lane {
+				return RouteNAVSnapshot{}, fmt.Errorf("NAV lane set repeats a lane")
+			}
+		}
+	}
 	if slot <= 0 || !sha256Pattern.MatchString(manifest.SHA256) {
 		return RouteNAVSnapshot{}, fmt.Errorf("NAV manifest or slot is invalid")
 	}
-	if len(accounts) != len(pinnedRouteNAVAddressesForRoute(route)) {
+	if len(accounts) != len(pinnedRouteNAVAddressesForRoutes(routes)) {
 		return RouteNAVSnapshot{}, fmt.Errorf("NAV account namespace contains unsupported custody")
 	}
 	if _, err := decodeObservedAdaptorConfig(accountAt(accounts, bridgeStrategy)); err != nil {
@@ -434,7 +521,7 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 			return RouteNAVSnapshot{}, fmt.Errorf("NAV component exceeds signed range")
 		}
 	}
-	fingerprint, err := navInputFingerprintForRoute(slot, accounts, custodies, route)
+	fingerprint, err := navInputFingerprintForRoutes(slot, accounts, custodies, routes)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
@@ -451,6 +538,24 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 	}
 	if kaminoConfig.DebtMint != bridgeUSDC {
 		components = append(components, NAVComponent{Account: route.DebtCustody, Owner: bridgeVault, Raw: int64(debtIdleValue), Slot: slot, Known: true})
+	}
+	counted := map[string]bool{bridgeSquadsATA: true, route.CollateralCustody: true}
+	if kaminoConfig.DebtMint != bridgeUSDC {
+		counted[route.DebtCustody] = true
+	}
+	var otherNAV int64
+	otherState := make([]string, 0, len(routes)-1)
+	for _, other := range routes[1:] {
+		value, err := valueHeldLane(slot, accounts, other, counted)
+		if err != nil {
+			return RouteNAVSnapshot{}, fmt.Errorf("value held lane %s: %w", other.Lane, err)
+		}
+		components = append(components, value.components...)
+		if (value.netRaw > 0 && otherNAV > math.MaxInt64-value.netRaw) || (value.netRaw < 0 && otherNAV < math.MinInt64-value.netRaw) {
+			return RouteNAVSnapshot{}, fmt.Errorf("held lane NAV overflows")
+		}
+		otherNAV += value.netRaw
+		otherState = append(otherState, value.state)
 	}
 	nav, err := ComputeNAV(NAVSnapshotContext{
 		Slot: slot, ReceiptFingerprint: fingerprint,
@@ -473,7 +578,150 @@ func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest R
 		DebtIdleValueRaw:  debtIdleValue,
 		ObligationPresent: obligationAccount.Lamports != 0,
 		Receipt:           receipt, Voltr: vault, LPSupplyRaw: lpSupply,
-		SnapshotDigest: nav.SnapshotDigest,
-		Report:         BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
+		SnapshotDigest:   nav.SnapshotDigest,
+		Report:           BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
+		OtherLanesNAVRaw: otherNAV, OtherLanesState: strings.Join(otherState, "|"),
 	}, nil
+}
+
+// heldLaneValue is one non-working held lane's share of the vault NAV.
+type heldLaneValue struct {
+	components []NAVComponent
+	netRaw     int64
+	state      string
+}
+
+// valueHeldLane values one non-working held lane from the same batch: its
+// obligation, and each of its custodies no earlier lane has counted. A
+// custody shared with an earlier lane (PRIME, PYUSD, Squads USDC) is that
+// lane's component already and is never counted twice. A lane with no
+// position and no counted custody balance contributes nothing and needs no
+// market valuation; any exposure keeps the reserve health gate.
+func valueHeldLane(slot int64, accounts []ConfirmedAccount, route RuntimeRoute, counted map[string]bool) (heldLaneValue, error) {
+	config := route.Kamino
+	authority, err := decodeBase58PublicKey(bridgeVault)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	custody := func(address, mint, program string) (uint64, error) {
+		account := accountAt(accounts, address)
+		if account.Address != address || account.Owner != program || account.Executable || account.Lamports == 0 {
+			return 0, fmt.Errorf("held lane custody envelope drifted")
+		}
+		key, err := decodeBase58PublicKey(mint)
+		if err != nil {
+			return 0, err
+		}
+		decoded, err := DecodeTokenCustody(account.Owner, account.Data, key, authority)
+		return decoded.Raw, err
+	}
+	var collateralIdle, debtIdle uint64
+	countCollateral := !counted[route.CollateralCustody]
+	if countCollateral {
+		if collateralIdle, err = custody(route.CollateralCustody, config.CollateralMint, route.CollateralTokenProgram); err != nil {
+			return heldLaneValue{}, err
+		}
+	}
+	nonUSDC := config.DebtMint != bridgeUSDC
+	countDebt := nonUSDC && route.DebtCustody != "" && route.DebtCustody != bridgeSquadsATA && !counted[route.DebtCustody]
+	if countDebt {
+		if debtIdle, err = custody(route.DebtCustody, config.DebtMint, route.DebtTokenProgram); err != nil {
+			return heldLaneValue{}, err
+		}
+	}
+	counted[route.CollateralCustody] = true
+	if nonUSDC {
+		counted[route.DebtCustody] = true
+	}
+	obligationAccount := accountAt(accounts, config.Obligation)
+	if obligationAccount.Address != config.Obligation {
+		return heldLaneValue{}, fmt.Errorf("held lane obligation is absent")
+	}
+	obligation := decodedKaminoObligation{}
+	if obligationAccount.Lamports != 0 {
+		if obligation, err = decodeKaminoObligation(obligationAccount, config); err != nil {
+			return heldLaneValue{}, err
+		}
+	}
+	state := fmt.Sprintf("%s:%d:%d:%d:%d", route.Lane, obligation.collateralDepositedRaw, obligation.debtRaw, collateralIdle, debtIdle)
+	if !obligation.hasPosition && collateralIdle == 0 && debtIdle == 0 {
+		return heldLaneValue{state: state}, nil
+	}
+	collateralReserve, err := decodeKaminoReserve(accountAt(accounts, config.CollateralReserve), config.CollateralMint, config)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	debtReserve, err := decodeKaminoReserve(accountAt(accounts, config.DebtReserve), config.DebtMint, config)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	emergency, err := decodeKaminoMarketEmergency(accountAt(accounts, config.Market), config)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	if err := validateKaminoReserveHealth(slot, emergency, obligation, collateralReserve, debtReserve); err != nil {
+		return heldLaneValue{}, err
+	}
+	if collateralReserve.refreshedSlot > slot || debtReserve.refreshedSlot > slot || obligation.refreshedSlot > slot {
+		return heldLaneValue{}, fmt.Errorf("Kamino valuation claims a future refresh slot")
+	}
+	usdcReserve := debtReserve
+	if nonUSDC {
+		reference, err := pinnedKaminoObservationConfig()
+		if err != nil {
+			return heldLaneValue{}, err
+		}
+		if usdcReserve, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference); err != nil {
+			return heldLaneValue{}, fmt.Errorf("decode NAV USDC reference: %w", err)
+		}
+		if err := validateKaminoReserveHealth(slot, emergency, obligation, usdcReserve); err != nil {
+			return heldLaneValue{}, err
+		}
+		if usdcReserve.refreshedSlot > slot {
+			return heldLaneValue{}, fmt.Errorf("NAV USDC reference claims a future slot")
+		}
+	}
+	if usdcReserve.mintDecimals != 6 {
+		return heldLaneValue{}, fmt.Errorf("NAV USDC reference decimals drifted")
+	}
+	redeemable, err := collateralReserve.redeemLiquidityRaw(obligation.collateralDepositedRaw)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	collateralValue, err := valueBetweenTokenRaw(redeemable, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	debtRaw, err := obligation.debtAtReserveRate(debtReserve)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	debtValue, err := valueBetweenTokenRaw(debtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, true)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	collateralIdleValue, err := valueBetweenTokenRaw(collateralIdle, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	debtIdleValue, err := valueBetweenTokenRaw(debtIdle, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
+	if err != nil {
+		return heldLaneValue{}, err
+	}
+	for _, value := range []uint64{collateralValue, debtValue, collateralIdleValue, debtIdleValue} {
+		if value > math.MaxInt64/4 {
+			return heldLaneValue{}, fmt.Errorf("NAV component exceeds signed range")
+		}
+	}
+	out := heldLaneValue{state: state, netRaw: int64(collateralValue) + int64(collateralIdleValue) + int64(debtIdleValue) - int64(debtValue)}
+	out.components = append(out.components,
+		NAVComponent{Account: config.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(collateralValue), Slot: slot, Known: true},
+		NAVComponent{Account: config.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(debtValue), Slot: slot, Known: true, Liability: true})
+	if countCollateral {
+		out.components = append(out.components, NAVComponent{Account: route.CollateralCustody, Owner: bridgeVault, Raw: int64(collateralIdleValue), Slot: slot, Known: true})
+	}
+	if countDebt {
+		out.components = append(out.components, NAVComponent{Account: route.DebtCustody, Owner: bridgeVault, Raw: int64(debtIdleValue), Slot: slot, Known: true})
+	}
+	return out, nil
 }

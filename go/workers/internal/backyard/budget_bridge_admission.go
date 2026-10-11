@@ -82,7 +82,8 @@ func phase3BridgeTemplates(policies installedPolicies, s Snapshot, decision Deci
 		next := r
 		next.Action, next.AmountRaw, next.Policy = action, amount, policy
 		// Voltr tracks strategy custody separately, so reported NAV excludes it.
-		next.Report.NAVAfterRaw = afterSquads
+		// The other held lanes stay in the book beside this lane's cash.
+		next.Report.NAVAfterRaw = withOtherLanesNAV(afterSquads, s)
 		effects.Kind = "bridge"
 		if action != StageSquadsToVoltr {
 			effects.ReturnData = expectedAdaptorReturnData(next.Report.NAVAfterRaw)

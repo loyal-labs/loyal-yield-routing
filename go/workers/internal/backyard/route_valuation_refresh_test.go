@@ -42,7 +42,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 				return read(ctx, addresses, minSlot)
 			},
 			now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
-			refreshValuation: func(_ context.Context, _ RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
+			refreshValuation: func(_ context.Context, _ []RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
 				refreshCalls++
 				out := make([]ConfirmedAccount, len(addresses))
 				for i, address := range addresses {
@@ -154,7 +154,7 @@ func TestSelectorValuationCaptureRetainsNAVAndOwnership(t *testing.T) {
 	all := routeFixedAddresses(m)
 	for _, lane := range earnLaneIDs(true) {
 		route, _ := runtimeRoute(lane)
-		selected := selectorValuationAddresses(route, all)
+		selected := selectorValuationAddresses([]RuntimeRoute{route}, all)
 		kept := map[string]bool{}
 		for _, address := range selected {
 			kept[address] = true
@@ -213,7 +213,7 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
 			read: fixtureBatchRuntime(77, initial),
 			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
-			refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
+			refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 				return 0, nil, budgetHold(tc.reason)
 			},
 		})
@@ -252,7 +252,7 @@ func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
 			o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
 				read: fixtureBatchRuntime(77, initial),
 				now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
-				refreshValuation: func(_ context.Context, _ RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
+				refreshValuation: func(_ context.Context, _ []RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
 					slot := min + observationLagSlots() + 1
 					capture := make([]ConfirmedAccount, len(addresses))
 					for j, address := range addresses {
@@ -298,7 +298,7 @@ func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
 			read: fixtureBatchRuntime(77, initial),
 			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
-			refreshValuation: func(context.Context, RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
+			refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 				if rejected {
 					return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
 				}

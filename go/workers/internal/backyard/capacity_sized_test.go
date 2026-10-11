@@ -121,7 +121,7 @@ func runCapacityPartialRestart(t *testing.T, lane string) {
 			if _, err := db.RecordDecisionOnManifest(ctx, embeddedTestManifest(t), key, sparse, hold, strings.Repeat("a", 64)); err != nil {
 				t.Fatal("sparse safety hold refused", err)
 			}
-			if context, err := db.LoadPartialWithdrawal(ctx, key); err != nil || context == nil {
+			if context, err := db.LoadPartialWithdrawal(ctx, key, lane); err != nil || context == nil {
 				t.Fatal("sparse safety hold erased context", context, err)
 			}
 		}
@@ -138,7 +138,7 @@ func runCapacityPartialRestart(t *testing.T, lane string) {
 			if err = tx.Rollback(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if context, err := db.LoadPartialWithdrawal(ctx, key); err != nil || context != nil {
+			if context, err := db.LoadPartialWithdrawal(ctx, key, lane); err != nil || context != nil {
 				t.Fatal("rolled-back capture leaked", context, err)
 			}
 		}
@@ -146,7 +146,7 @@ func runCapacityPartialRestart(t *testing.T, lane string) {
 		if err != nil {
 			t.Fatalf("record %s: %v", d.Reason, err)
 		}
-		stored, err := db.LoadPartialWithdrawal(ctx, key)
+		stored, err := db.LoadPartialWithdrawal(ctx, key, lane)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,13 +172,13 @@ func runCapacityPartialRestart(t *testing.T, lane string) {
 					bad.Generation = 999
 				}
 				mutated, _ := json.Marshal(bad)
-				if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawal}',$2::jsonb) WHERE route_key=$1`, key, string(mutated)); err != nil {
+				if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawals}',jsonb_build_object($3::text,$2::jsonb)) WHERE route_key=$1`, key, string(mutated), lane); err != nil {
 					t.Fatal(err)
 				}
-				if _, err = db.LoadPartialWithdrawal(ctx, key); err == nil {
+				if _, err = db.LoadPartialWithdrawal(ctx, key, lane); err == nil {
 					t.Fatal("accepted", kind, "origin")
 				}
-				if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawal}',$2::jsonb) WHERE route_key=$1`, key, string(original)); err != nil {
+				if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawals}',jsonb_build_object($3::text,$2::jsonb)) WHERE route_key=$1`, key, string(original), lane); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -341,7 +341,7 @@ func TestCapacitySizedAuthorizationIsSingleUseBelowInterestTolerance(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored, err := db.LoadLeverageTarget(ctx, key)
+	stored, err := db.LoadLeverageTarget(ctx, key, onreONycUSDC)
 	if err != nil || stored.OperationID != first.OperationID {
 		t.Fatalf("authorization not bound: %+v %v", stored, err)
 	}

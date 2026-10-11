@@ -185,8 +185,8 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 			observation.Snapshot.ManualReason = err.Error()
 		}
 		observation.Snapshot.SelectorEntryPaused = planning.paused
-		applyLeverageTarget(&observation.Snapshot, planning.leverage)
-		if err := applyPartialWithdrawal(&observation.Snapshot, planning.partialWithdrawal); err != nil {
+		applyLeverageTarget(&observation.Snapshot, leverageTargetFor(planning.leverage, observation.Snapshot.RouteLane))
+		if err := applyPartialWithdrawal(&observation.Snapshot, partialWithdrawalFor(planning.partialWithdrawals, observation.Snapshot.RouteLane)); err != nil {
 			return err
 		}
 		return applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
@@ -207,9 +207,9 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	// stored target as the outer decision, or leverage_up never matches
 	// (live 2026-09-29: every tick 'prepared evidence does not match').
 	if reader, ok := p.journal.(interface {
-		LoadPartialWithdrawal(context.Context, string) (*partialWithdrawalState, error)
+		LoadPartialWithdrawal(context.Context, string, string) (*partialWithdrawalState, error)
 	}); ok {
-		partial, err := reader.LoadPartialWithdrawal(ctx, p.routeKey)
+		partial, err := reader.LoadPartialWithdrawal(ctx, p.routeKey, observation.Snapshot.RouteLane)
 		if err != nil {
 			return err
 		}
@@ -219,9 +219,9 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	}
 	observation.Snapshot.LeverageTargetLevel = 0
 	if reader, ok := p.journal.(interface {
-		LoadLeverageTarget(context.Context, string) (*LeverageTarget, error)
+		LoadLeverageTarget(context.Context, string, string) (*LeverageTarget, error)
 	}); ok {
-		target, err := reader.LoadLeverageTarget(ctx, p.routeKey)
+		target, err := reader.LoadLeverageTarget(ctx, p.routeKey, observation.Snapshot.RouteLane)
 		if err != nil {
 			return err
 		}

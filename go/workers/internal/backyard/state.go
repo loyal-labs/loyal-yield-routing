@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -78,6 +79,15 @@ type Snapshot struct {
 	PayoffDebtRaw int64
 	RouteLane     string
 	StrategyKey   string
+	// HeldLanes is every lane holding exposure in this batch, in registry
+	// order and comma separated ("" when none). RouteLane is the working
+	// lane: the one lane this per-lane view describes. OtherLanesNAVRaw is
+	// the part of StrategyNAVRaw the other held lanes carry.
+	HeldLanes        string `json:",omitempty"`
+	OtherLanesNAVRaw int64  `json:",omitempty"`
+	// CrossLaneHardLTV marks a view moved off the working lane because
+	// another held lane reached its hard LTV: its risk is handled first.
+	CrossLaneHardLTV bool `json:",omitempty"`
 	// Unwind is an admitted full exit, independent of the user's claim amount.
 	Unwind bool
 	// Expired debt envelope needs fresh same-source exit admission, not a manual latch.
@@ -201,6 +211,34 @@ type Snapshot struct {
 	CapitalMutated          bool
 	PostMutationNAVRequired bool
 	LastReportAgeSeconds    int64
+}
+
+// heldLanes is HeldLanes as a list.
+func (s Snapshot) heldLanes() []string {
+	if s.HeldLanes == "" {
+		return nil
+	}
+	return strings.Split(s.HeldLanes, ",")
+}
+
+// withOtherLanesNAV adds the other held lanes' value to a working-lane
+// poststate NAV: a move on the working lane leaves them in the book.
+func withOtherLanesNAV(workingRaw uint64, s Snapshot) uint64 {
+	if s.OtherLanesNAVRaw <= 0 {
+		return workingRaw
+	}
+	return workingRaw + uint64(s.OtherLanesNAVRaw)
+}
+
+// otherHeldLanes is every held lane except the working lane.
+func (s Snapshot) otherHeldLanes() []string {
+	var out []string
+	for _, lane := range s.heldLanes() {
+		if lane != s.RouteLane {
+			out = append(out, lane)
+		}
+	}
+	return out
 }
 
 type Decision struct {

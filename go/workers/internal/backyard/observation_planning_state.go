@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -19,9 +20,12 @@ type routePlanningState struct {
 	entry      *SelectorEntry
 	unwind     *UnwindIntent
 	paused     bool
-	// leverage is the durable B2 option-1 level target (nil = none stored).
-	leverage          *LeverageTarget
-	partialWithdrawal *partialWithdrawalState
+	// leverage is the durable B2 option-1 level target per lane.
+	leverage map[string]LeverageTarget
+	// partialWithdrawals is the admitted release sequence per lane.
+	partialWithdrawals map[string]partialWithdrawalState
+	// workingLane is the durable working lane, "" when none is recorded.
+	workingLane string
 	// landedSlot is the highest slot any of the route's operations landed at.
 	landedSlot int64
 }
@@ -57,11 +61,11 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	var entry, unwind, leverage, partial []byte
 	err := d.pool.QueryRow(ctx, `SELECT state_version,
 		state->'selectorEntry',state->'selectorUnwind',COALESCE((state->>'selectorEntryPaused')::boolean,false),
-		COALESCE(state->'leverageTarget','null'::jsonb),state->'partialWithdrawal',
+		COALESCE(state->'leverageTargets','null'::jsonb),state->'partialWithdrawals',COALESCE(state->>'workingLane',''),
 		(SELECT COALESCE(MAX(confirmed_slot),0) FROM loyal_yield.multiply_operations WHERE route_key=$1)
 		FROM loyal_yield.multiply_route_states WHERE route_key=$1
 		AND ($2='' OR (lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()))`,
-		routeKey, owner, fence).Scan(&out.generation, &entry, &unwind, &out.paused, &leverage, &partial, &out.landedSlot)
+		routeKey, owner, fence).Scan(&out.generation, &entry, &unwind, &out.paused, &leverage, &partial, &out.workingLane, &out.landedSlot)
 	if errors.Is(err, pgx.ErrNoRows) && execution {
 		d.setLease(nil)
 		return nil, ErrRouteLeaseLost
@@ -80,24 +84,35 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	if err != nil {
 		return nil, err
 	}
-	out.leverage, err = decodeLeverageTarget(leverage)
+	if out.workingLane != "" && !earnHeldLane(out.workingLane) {
+		return nil, budgetHold("invalid_durable_working_lane")
+	}
+	out.leverage, err = decodeLeverageTargets(leverage)
 	if err != nil {
 		return nil, err
 	}
-	if len(partial) > 0 && string(partial) != "null" {
-		if err = d.validatePartialWithdrawalOrigin(ctx, d.pool, routeKey, partial); err != nil {
+	out.partialWithdrawals, err = decodePartialWithdrawals(partial)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range out.partialWithdrawals {
+		if p.Generation > out.generation {
+			return nil, budgetHold("invalid_partial_withdrawal_generation")
+		}
+		raw, err := json.Marshal(p)
+		if err != nil {
 			return nil, err
 		}
-	}
-	out.partialWithdrawal, err = decodePartialWithdrawal(partial)
-	if err != nil || (out.partialWithdrawal != nil && out.partialWithdrawal.Generation > out.generation) {
-		return nil, budgetHold("invalid_partial_withdrawal_generation")
+		if err = d.validatePartialWithdrawalOrigin(ctx, d.pool, routeKey, raw); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
 
 func (p *routePlanningState) observationManifest(manifest RouteManifest) RouteManifest {
 	manifest.selectorObservation = true
+	manifest.workingLane = p.workingLane
 	if p.entry != nil {
 		manifest.observationLane = p.entry.Lane
 	}

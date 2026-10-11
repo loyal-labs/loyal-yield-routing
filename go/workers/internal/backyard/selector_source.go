@@ -436,7 +436,7 @@ func requoteAutoResidueContinuation(ctx context.Context, rpc *chain.Client, view
 		}
 		next := r
 		next.Action, next.AmountRaw = r.Action, amount
-		next.Report.NAVAfterRaw = afterSquads
+		next.Report.NAVAfterRaw = withOtherLanesNAV(afterSquads, s)
 		effects.Kind = "bridge"
 		if r.Action != StageSquadsToVoltr {
 			effects.ReturnData = expectedAdaptorReturnData(next.Report.NAVAfterRaw)
