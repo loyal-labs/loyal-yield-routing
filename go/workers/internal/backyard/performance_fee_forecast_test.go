@@ -263,7 +263,7 @@ func TestPerformanceFeeLeverageUPNeedsNoHWMBaseline(t *testing.T) {
 	armLeverageCapacityFixture(&s)
 	market := leverageMarket(s.RouteLane, .30, math.Log1p(.06))
 	market.CurrentBorrowAPY = .06
-	got, ok := decideLeverageTarget(s, keep, []LaneEconomics{market}, DefaultSelectorPolicy())
+	got, ok := decideLeverageTarget(s, keep, []LaneEconomics{market}, DefaultSelectorPolicy(), twentyBPSStepCost)
 	if keep.Reason != "fee_hwm_baseline_unavailable" {
 		t.Fatalf("fixture HWM is known: %+v", keep)
 	}
@@ -275,7 +275,7 @@ func TestPerformanceFeeLeverageUPNeedsNoHWMBaseline(t *testing.T) {
 		s.PositionCollateralValueRaw, s.PositionCollateralRaw, s.PositionDebtValueRaw = 1_500_000_000, 1_500_000_000, 500_000_000
 		s.VoltrHighWaterMarkKnown = !unknown
 		market.NativeAPY = .01
-		got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, DefaultSelectorPolicy())
+		got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, DefaultSelectorPolicy(), twentyBPSStepCost)
 		if !ok || got.Next != 1 {
 			t.Fatalf("bad/unknown HWM blocked DOWN: %+v ok=%t", got, ok)
 		}
@@ -294,14 +294,14 @@ func TestPerformanceFeeLeverageUPNeedsFeeReservedWholePositionEdge(t *testing.T)
 	armLeverageCapacityFixture(&s)
 	market := leverageMarket(s.RouteLane, .08, math.Log1p(.06))
 	market.CurrentBorrowAPY = .06
-	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)
+	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p, twentyBPSStepCost)
 	// A positive spread alone is insufficient: fees and movement costs
 	// consume this low-margin edge.
 	if !ok || got.Next != 1 || got.Reason != "up_move_not_worth_cost" || got.GainRaw > 0 || got.BorrowRaw != 0 {
 		t.Fatalf("gross-only leverage edge spent: %+v ok=%t", got, ok)
 	}
 	market.NativeAPY = .12
-	got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)
+	got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p, twentyBPSStepCost)
 	if !ok || got.Next != 1.5 || got.GainRaw <= 0 || got.BorrowRaw == 0 {
 		t.Fatalf("proved fee-reserved UP was not supported: %+v ok=%t", got, ok)
 	}
@@ -326,7 +326,7 @@ func TestLeverageUPNeedsOnlySpreadAndPositiveGain(t *testing.T) {
 	decide := func(s Snapshot, native float64) leverageDecision {
 		market := leverageMarket(s.RouteLane, native, math.Log1p(.06))
 		market.CurrentBorrowAPY = .06
-		got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p)
+		got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, p, twentyBPSStepCost)
 		if !ok {
 			t.Fatalf("no decision at native %.3f", native)
 		}
@@ -387,7 +387,7 @@ func TestPerformanceFeeUnarmedCannotProduceEconomicUP(t *testing.T) {
 	s.AdminPerformanceFeeBPS = approvedAdminPerformanceFeeBPS
 	m := leverageMarket(s.RouteLane, .60, math.Log1p(.06))
 	m.CurrentBorrowAPY = .06
-	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy())
+	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), twentyBPSStepCost)
 	if !ok || got.Next != got.Current || got.Reason != "fee_terms_unavailable" || got.BorrowRaw != 0 {
 		t.Fatalf("unarmed projection can raise durable target: %+v ok=%t", got, ok)
 	}

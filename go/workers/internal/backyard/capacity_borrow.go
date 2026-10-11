@@ -353,6 +353,16 @@ func leverageApprovalLive(s Snapshot) bool {
 	return s.LeverageBorrowOperationID == "" && s.LeverageApprovedBorrowRaw >= leverageMinimumBorrowRaw && s.PositionDebtRaw >= 0 && borrowDebtMatches(uint64(s.PositionDebtRaw), s.LeverageSourceDebtRaw)
 }
 
+// capacityBorrowCentralValue values debt raw in USDC at the snapshot's central
+// reserve prices, without capacityBorrowValue's margins: an expectation for
+// the income forecast, never a bound. liability rounds up.
+func capacityBorrowCentralValue(s Snapshot, amount uint64, liability bool) (uint64, error) {
+	if _, err := runtimeRoute(s.RouteLane); err != nil {
+		return 0, err
+	}
+	return valueBetweenTokenRaw(amount, s.BorrowDebtDecimals, 6, s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, liability)
+}
+
 // Match ObserveBudgetTokenPrice: bridge USDC is par; non-USDC debt and
 // reference prices use the existing budgetPriceMarginBPS interval on each
 // side. This is valuation evidence, not another transaction-expense charge.

@@ -153,7 +153,7 @@ func TestTrancheMovesEFromAUTOIntoOnReAndLeversOnRe(t *testing.T) {
 	armLeverageCapacityFixture(&funded)
 	armFeeAuthorityFixture(t, &funded)
 	applyTranche(&funded, &handed)
-	target, ok := decideLeverageTarget(funded, SelectorResult{Action: "KEEP"}, []LaneEconomics{leverageMarket(onreONycUSDC, 0.60, 0.05)}, policy)
+	target, ok := decideLeverageTarget(funded, SelectorResult{Action: "KEEP"}, []LaneEconomics{leverageMarket(onreONycUSDC, 0.60, 0.05)}, policy, twentyBPSStepCost)
 	if !ok || target.Lane != onreONycUSDC || target.Next <= 1 {
 		t.Fatalf("OnRe got no up target: %+v", target)
 	}
