@@ -113,7 +113,14 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 		return ReserveState{}, fmt.Errorf("reserve %s APY is outside the production bound", identity.Address)
 	}
 	hash := sha256.Sum256(account.Data)
+	var availableRaw *int64
+	if reserve.AvailableAmount <= math.MaxInt64 {
+		value := int64(reserve.AvailableAmount)
+		availableRaw = &value
+	}
+	depositLimit := reserve.DepositLimit
 	return ReserveState{
+		AvailableLiquidityRaw: availableRaw, DepositLimitRaw: &depositLimit,
 		ReserveIdentity: identity, Slot: contextSlot, LastUpdateSlot: lastUpdateSlot,
 		LastUpdateStale:        reserve.LastUpdateStale,
 		EconomicSlotLag:        lag,

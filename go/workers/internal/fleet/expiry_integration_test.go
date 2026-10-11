@@ -37,6 +37,7 @@ func TestExpiryIntegrationRecoveryAndOwnership(t *testing.T) {
 				source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)},
 				target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)},
 			}}
+			ampleCapacity(snapshot)
 			epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 			position, err := store.LoadVaultPosition(ctx, cluster, vaultID, source, target)
 			if err != nil {

@@ -7,11 +7,29 @@ import (
 	"time"
 )
 
+// ampleCapacity gives each fixture reserve that carries no capacity evidence a
+// fully liquid source side and a deposit limit that never binds, so a test
+// about something else is not decided by capacity.
+func ampleCapacity(snapshot MarketSnapshot) MarketSnapshot {
+	for address, reserve := range snapshot.Reserves {
+		if reserve.AvailableLiquidityRaw == nil {
+			available := reserve.TotalSupplyUSDMicros
+			reserve.AvailableLiquidityRaw = &available
+		}
+		if reserve.DepositLimitRaw == nil {
+			limit := uint64(math.MaxUint64)
+			reserve.DepositLimitRaw = &limit
+		}
+		snapshot.Reserves[address] = reserve
+	}
+	return snapshot
+}
+
 func eligibleFixture() (MarketSnapshot, VaultPosition) {
 	now := time.Now().UTC()
 	source := ReserveState{ReserveIdentity: ReserveIdentity{Address: "source", Market: "market", Mint: USDCMint}, Slot: 500, SupplyAPYBPS: 200, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: "a"}
 	target := ReserveState{ReserveIdentity: ReserveIdentity{Address: "target", Market: "market", Mint: USDCMint}, Slot: 500, SupplyAPYBPS: 700, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: "b"}
-	snapshot := MarketSnapshot{Slot: 500, ObservedAt: now, Hash: "snapshot", Reserves: map[string]ReserveState{"source": source, "target": target}}
+	snapshot := ampleCapacity(MarketSnapshot{Slot: 500, ObservedAt: now, Hash: "snapshot", Reserves: map[string]ReserveState{"source": source, "target": target}})
 	position := VaultPosition{VaultID: 1, SourceReserve: "source", Market: "market", Mint: USDCMint, AmountRaw: 1_000_000_000_000, SourceCollateralAmountRaw: 900_000_000_000, SourceAmountSemantics: amountSemanticsKaminoCollateralDeposited, SnapshotID: 7, ObservedSlot: 499, ObservedAt: now}
 	return snapshot, position
 }

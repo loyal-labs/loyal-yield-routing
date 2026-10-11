@@ -68,6 +68,7 @@ func seedUnsignedAdmission(t *testing.T, ctx context.Context, store *Store, clus
 		source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)},
 		target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)},
 	}}
+	ampleCapacity(snapshot)
 	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 	published, err := store.Publish(ctx, cluster, epoch, position, Plan(snapshot, position, source.Address, target.Address))
 	if err != nil || !published.Inserted {
@@ -86,7 +87,8 @@ VALUES($1,$2,$3,1000000000000000,1000,20000000000000,1) ON CONFLICT DO NOTHING`,
 	if err := preserveCanonicalPlan(lease.ExecutionPlan, prep, "prepared_transaction"); err != nil {
 		t.Fatal(err)
 	}
-	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: prep, ConflictKeys: []string{"vault:" + position.VaultPubkey, "source-reserve:" + source.Address}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: 100, ObservedTargetAPYBPS: 900, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000}
+	ampleRaw := int64(1_000_000_000_000_000)
+	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: prep, ConflictKeys: []string{"vault:" + position.VaultPubkey, "source-reserve:" + source.Address}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: 100, ObservedTargetAPYBPS: 900, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000, SourceAvailableLiquidityRaw: &ampleRaw, TargetDepositRoomRaw: &ampleRaw}
 	if err := store.commitRevalidation(ctx, *lease, commit, nil); err != nil {
 		t.Fatal(err)
 	}

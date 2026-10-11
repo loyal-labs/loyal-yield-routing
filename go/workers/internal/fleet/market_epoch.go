@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	marketEpochFingerprintDomain          = "loyal-yield-market-epoch-envelope-v3"
+	marketEpochFingerprintDomain          = "loyal-yield-market-epoch-envelope-v4"
 	maximumConfirmedVerificationAge       = 240 * time.Second
 	maximumSupportedCatalogAge            = 300 * time.Second
 	maximumReserveEconomicSlotLag   int64 = 1_500
@@ -66,13 +66,16 @@ type VerifiedSupportedReserveRow struct {
 	Utilization              float64   `json:"utilization"`
 	BorrowAPY                float64   `json:"borrowApy"`
 	SupplyAPY                float64   `json:"supplyApy"`
-	AvailableAmountBits      uint64    `json:"availableAmountBits,omitempty"`
-	BorrowedAmountBits       uint64    `json:"borrowedAmountBits,omitempty"`
-	TotalSupplyAmountBits    uint64    `json:"totalSupplyAmountBits,omitempty"`
-	MarketPriceUSDBits       uint64    `json:"marketPriceUsdBits,omitempty"`
-	UtilizationBits          uint64    `json:"utilizationBits,omitempty"`
-	BorrowAPYBits            uint64    `json:"borrowApyBits,omitempty"`
-	SupplyAPYBits            uint64    `json:"supplyApyBits,omitempty"`
+	// DepositLimit is the reserve config's deposit_limit as decimal text;
+	// nil when the observation did not decode it.
+	DepositLimit          *string `json:"depositLimit"`
+	AvailableAmountBits   uint64  `json:"availableAmountBits,omitempty"`
+	BorrowedAmountBits    uint64  `json:"borrowedAmountBits,omitempty"`
+	TotalSupplyAmountBits uint64  `json:"totalSupplyAmountBits,omitempty"`
+	MarketPriceUSDBits    uint64  `json:"marketPriceUsdBits,omitempty"`
+	UtilizationBits       uint64  `json:"utilizationBits,omitempty"`
+	BorrowAPYBits         uint64  `json:"borrowApyBits,omitempty"`
+	SupplyAPYBits         uint64  `json:"supplyApyBits,omitempty"`
 }
 
 type SupportedReserveMarketSnapshot struct {
@@ -169,7 +172,7 @@ SELECT event_id, account_data_hash, observed_at, slot, verified_at, verified_slo
        liquidity_mint, symbol, mint_decimals, reserve_last_update_slot,
        reserve_last_update_stale, reserve_price_status, available_amount, borrowed_amount,
        total_supply_amount, market_price_usd, market_price_last_updated_ts, utilization,
-       borrow_apy, supply_apy
+       borrow_apy, supply_apy, deposit_limit::text
 FROM %s.latest_verified_reserve_updates
 WHERE liquidity_mint=ANY($1)
 ORDER BY liquidity_mint, market, reserve`, s.schema)
@@ -185,7 +188,7 @@ ORDER BY liquidity_mint, market, reserve`, s.schema)
 			&row.Reserve, &row.Market, &row.MarketName, &row.LiquidityMint, &row.Symbol, &row.MintDecimals,
 			&row.ReserveLastUpdateSlot, &row.ReserveLastUpdateStale, &row.ReservePriceStatus,
 			&row.AvailableAmount, &row.BorrowedAmount, &row.TotalSupplyAmount, &row.MarketPriceUSD,
-			&row.MarketPriceLastUpdatedTS, &row.Utilization, &row.BorrowAPY, &row.SupplyAPY); err != nil {
+			&row.MarketPriceLastUpdatedTS, &row.Utilization, &row.BorrowAPY, &row.SupplyAPY, &row.DepositLimit); err != nil {
 			return result, err
 		}
 		row.captureFloatBits()
@@ -333,8 +336,9 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 				ReserveLastUpdateStale: exact.ReserveLastUpdateStale, ReservePriceStatus: exact.ReservePriceStatus,
 				MarketPriceLastUpdatedTS: exact.MarketPriceLastUpdatedTS,
 				AvailableAmountRaw:       canonicalFloat(exact.AvailableAmount), BorrowedAmountRaw: canonicalFloat(exact.BorrowedAmount),
-				TotalSupplyAmountRaw: canonicalFloat(exact.TotalSupplyAmount), UtilizationPPM: int64(math.Round(exact.Utilization * 1_000_000)),
-				BorrowAPYBPS: int64(math.Round(exact.BorrowAPY * 10_000)), ObservedAt: exact.VerifiedAt.UTC(), Slot: exact.VerifiedSlot,
+				TotalSupplyAmountRaw: canonicalFloat(exact.TotalSupplyAmount), DepositLimitRaw: exact.DepositLimit,
+				UtilizationPPM: int64(math.Round(exact.Utilization * 1_000_000)),
+				BorrowAPYBPS:   int64(math.Round(exact.BorrowAPY * 10_000)), ObservedAt: exact.VerifiedAt.UTC(), Slot: exact.VerifiedSlot,
 				SupplyAPYBPS: int64(math.Round(exact.SupplyAPY * 10_000)), TotalSupplyUSDMicros: totalSupplyUSD,
 				TargetEligible: targetEligible,
 			})
@@ -441,6 +445,11 @@ func validateVerifiedReserve(exact VerifiedSupportedReserveRow, catalog Supporte
 	if !finite(exact.AvailableAmount) || exact.AvailableAmount < 0 || !finite(exact.BorrowedAmount) || exact.BorrowedAmount < 0 || !finite(exact.TotalSupplyAmount) || exact.TotalSupplyAmount <= 0 || !finite(exact.MarketPriceUSD) || !finite(exact.Utilization) || exact.Utilization < 0 || exact.Utilization > 1.000001 || !finite(exact.BorrowAPY) || exact.BorrowAPY < 0 || !finite(exact.SupplyAPY) || exact.SupplyAPY < 0 || exact.SupplyAPY >= .5 {
 		*hard = append(*hard, blocker("invalid_economic_fields", reserve, fmt.Sprintf("invalid available=%s borrowed=%s total_supply=%s utilization=%s borrow_apy=%s supply_apy=%s", canonicalFloat(exact.AvailableAmount), canonicalFloat(exact.BorrowedAmount), canonicalFloat(exact.TotalSupplyAmount), canonicalFloat(exact.Utilization), canonicalFloat(exact.BorrowAPY), canonicalFloat(exact.SupplyAPY))))
 	}
+	if exact.DepositLimit != nil {
+		if _, ok := parseDepositLimit(*exact.DepositLimit); !ok {
+			*hard = append(*hard, blocker("invalid_economic_fields", reserve, "invalid deposit_limit="+*exact.DepositLimit))
+		}
+	}
 	return targetExpiry
 }
 
@@ -476,6 +485,26 @@ func (r *VerifiedSupportedReserveRow) restoreFloatBits() {
 	if r.SupplyAPYBits != 0 {
 		r.SupplyAPY = math.Float64frombits(r.SupplyAPYBits)
 	}
+}
+
+// parseDepositLimit reads a KLend deposit_limit: a canonical u64 decimal.
+func parseDepositLimit(text string) (uint64, bool) {
+	value, err := strconv.ParseUint(text, 10, 64)
+	if err != nil || strconv.FormatUint(value, 10) != text {
+		return 0, false
+	}
+	return value, true
+}
+
+// parseAvailableLiquidity reads the epoch's available_amount, a KLend u64
+// stored as a float. Only an integral value float64 holds exactly is evidence;
+// anything else is unknown, not rounded.
+func parseAvailableLiquidity(text string) (int64, bool) {
+	value, err := strconv.ParseFloat(text, 64)
+	if err != nil || !finite(value) || value < 0 || value > 1<<53 || value != math.Trunc(value) {
+		return 0, false
+	}
+	return int64(value), true
 }
 
 func catalogFingerprint(rows []SupportedReserveCatalogRow) string {
@@ -541,6 +570,9 @@ func epochFingerprint(reserves []MarketEpochReserve, enabledMints []string, cata
 		hashPart(h, []byte(reserve.AvailableAmountRaw))
 		hashPart(h, []byte(reserve.BorrowedAmountRaw))
 		hashPart(h, []byte(reserve.TotalSupplyAmountRaw))
+		// An absent limit hashes as the empty part; a present one is at
+		// least one digit, so the two never collide.
+		hashPart(h, []byte(pointerValue(reserve.DepositLimitRaw)))
 		hashPart(h, littleEndianInt64(reserve.UtilizationPPM))
 		hashPart(h, littleEndianInt64(reserve.BorrowAPYBPS))
 		hashPart(h, littleEndianInt64(reserve.ObservedAt.UnixMicro()))

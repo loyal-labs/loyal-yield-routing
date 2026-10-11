@@ -70,9 +70,10 @@ func TestWaveTenantLimitDoesNotBlockOtherTenants(t *testing.T) {
 }
 
 // dilutionRescoreFixture builds five same-mint reserves and three same-mint
-// reallocation candidates. v1 (A->B) is the initial root, but its 20e9 inflow
-// into B dilutes B's supplied yield, which raises v2 (B->C)'s priority above
-// v3 (D->E). Only a per-selection rescore of the remaining candidates sees it.
+// reallocation candidates. v1 (A->B) earns most per dollar and is the initial
+// root, but its 20e9 inflow into B dilutes B's supplied yield, which raises
+// v2 (B->C) above v3 (D->E). Only a per-selection rescore of the remaining
+// candidates sees it.
 func dilutionRescoreFixture() (MarketSnapshot, []FleetVault) {
 	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
 	reserves := map[string]ReserveState{}
@@ -80,7 +81,7 @@ func dilutionRescoreFixture() (MarketSnapshot, []FleetVault) {
 		key  string
 		apy  int64
 		hash string
-	}{{"A", 1000, "ha"}, {"B", 2000, "hb"}, {"C", 3000, "hc"}, {"D", 1000, "hd"}, {"E", 2010, "he"}} {
+	}{{"A", 900, "ha"}, {"B", 2000, "hb"}, {"C", 3000, "hc"}, {"D", 1000, "hd"}, {"E", 2010, "he"}} {
 		reserves[r.key] = ReserveState{
 			ReserveIdentity: ReserveIdentity{Address: r.key, Market: "market", Mint: USDCMint},
 			Slot:            500, SupplyAPYBPS: r.apy,
@@ -88,7 +89,7 @@ func dilutionRescoreFixture() (MarketSnapshot, []FleetVault) {
 			EconomicLifetimeMillis: 600_000, DataHash: r.hash,
 		}
 	}
-	snapshot := MarketSnapshot{Slot: 500, ObservedAt: now, Hash: "snapshot", Reserves: reserves}
+	snapshot := ampleCapacity(MarketSnapshot{Slot: 500, ObservedAt: now, Hash: "snapshot", Reserves: reserves})
 	vaults := []FleetVault{
 		{Position: dilutionPosition(1, "A", now), AllowedTargets: []string{"B"}},
 		{Position: dilutionPosition(2, "B", now), AllowedTargets: []string{"C"}},

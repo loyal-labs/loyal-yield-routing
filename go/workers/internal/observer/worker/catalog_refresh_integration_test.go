@@ -87,7 +87,7 @@ CREATE TABLE %[1]s.latest_verified_reserve_updates(
  verification_commitment text,verification_source text,reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
  reserve_last_update_slot bigint,reserve_last_update_stale boolean,reserve_price_status smallint,available_amount double precision,
  borrowed_amount double precision,total_supply_amount double precision,market_price_usd double precision,market_price_last_updated_ts bigint,
- utilization double precision,borrow_apy double precision,supply_apy double precision)`, schema)); err != nil {
+ utilization double precision,borrow_apy double precision,supply_apy double precision,deposit_limit numeric(20,0))`, schema)); err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
@@ -99,7 +99,7 @@ CREATE TABLE %[1]s.latest_verified_reserve_updates(
 	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.supported_reserves(market,liquidity_mint,reserve,market_name,symbol,risk_baskets,source,active,fetched_at) VALUES($1,$2,$3,'Main Market','USDC',ARRAY['safe','medium','aggressive'],'kamino-api',true,$4)`, schema), catalogTestMainMarket, catalogTestUSDC, catalogTestReserve, rustFetchedAt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.latest_verified_reserve_updates VALUES(1,$1,$2,999,$2,1000,'confirmed','http_confirmed_refresh',$3,$4,'Main Market',$5,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008)`, schema), strings.Repeat("a", 64), now, catalogTestReserve, catalogTestMainMarket, catalogTestUSDC); err != nil {
+	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.latest_verified_reserve_updates VALUES(1,$1,$2,999,$2,1000,'confirmed','http_confirmed_refresh',$3,$4,'Main Market',$5,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008,3000000000000)`, schema), strings.Repeat("a", 64), now, catalogTestReserve, catalogTestMainMarket, catalogTestUSDC); err != nil {
 		t.Fatal(err)
 	}
 	planner, err := fleet.NewMarketEvidenceStoreFromPool(pool, schema)

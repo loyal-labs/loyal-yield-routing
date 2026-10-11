@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,15 @@ func testImmutableMarketEpoch(t *testing.T, snapshot MarketSnapshot, identities 
 			t.Fatalf("missing test reserve %s", identity.Address)
 		}
 		market := identity.Market
+		available := float64(state.TotalSupplyUSDMicros)
+		if state.AvailableLiquidityRaw != nil {
+			available = float64(*state.AvailableLiquidityRaw)
+		}
+		var depositLimit *string
+		if state.DepositLimitRaw != nil {
+			text := strconv.FormatUint(*state.DepositLimitRaw, 10)
+			depositLimit = &text
+		}
 		catalog = append(catalog, SupportedReserveCatalogRow{
 			Market: identity.Market, LiquidityMint: identity.Mint, Reserve: identity.Address,
 			RiskBaskets: []string{"safe"}, Source: "kamino-api", FetchedAt: snapshot.ObservedAt,
@@ -32,8 +42,8 @@ func testImmutableMarketEpoch(t *testing.T, snapshot MarketSnapshot, identities 
 			VerificationCommitment: "confirmed", VerificationSource: "http_confirmed_refresh",
 			Reserve: identity.Address, Market: &market, LiquidityMint: identity.Mint, MintDecimals: 6,
 			ReserveLastUpdateSlot: state.LastUpdateSlot, ReserveLastUpdateStale: state.LastUpdateStale,
-			AvailableAmount: float64(state.TotalSupplyUSDMicros), TotalSupplyAmount: float64(state.TotalSupplyUSDMicros),
-			MarketPriceUSD: 1, SupplyAPY: float64(state.SupplyAPYBPS) / 10_000,
+			AvailableAmount: available, TotalSupplyAmount: float64(state.TotalSupplyUSDMicros),
+			MarketPriceUSD: 1, SupplyAPY: float64(state.SupplyAPYBPS) / 10_000, DepositLimit: depositLimit,
 		})
 	}
 	supportedMints := make([]string, 0, len(identities))
@@ -62,6 +72,7 @@ func TestImmutableMarketEpochUsesDurableStateIdentityAndCanonicalFingerprint(t *
 		source.Address: {ReserveIdentity: source, Slot: 1_000, LastUpdateSlot: 999, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 2_000_000_000_000, DataHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		target.Address: {ReserveIdentity: target, Slot: 1_000, LastUpdateSlot: 999, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 3_000_000_000_000, DataHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
 	}}
+	ampleCapacity(snapshot)
 	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 	if epoch.CatalogReserveCount != 2 || len(epoch.Reserves) != 2 || len(epoch.MintCoverage) != 1 || !epoch.MintCoverage[0].Complete {
 		t.Fatalf("incomplete epoch: %+v", epoch)
@@ -190,7 +201,7 @@ CREATE TABLE %s.latest_verified_reserve_updates(
  verification_commitment text,verification_source text,reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
  reserve_last_update_slot bigint,reserve_last_update_stale boolean,reserve_price_status smallint,available_amount double precision,
  borrowed_amount double precision,total_supply_amount double precision,market_price_usd double precision,market_price_last_updated_ts bigint,
- utilization double precision,borrow_apy double precision,supply_apy double precision
+ utilization double precision,borrow_apy double precision,supply_apy double precision,deposit_limit numeric(20,0)
 )`, schema, schema, schema))
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +214,12 @@ CREATE TABLE %s.latest_verified_reserve_updates(
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.latest_verified_reserve_updates VALUES($1,$2,$3,999,$3,1000,'confirmed','http_confirmed_refresh',$4,$5,$6,$7,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008)`, schema), index+1, strings.Repeat(name, 64), now, reserve, market, strings.ToUpper(name), USDCMint)
+		// Reserve c's observation carries no deposit limit: unknown, not zero.
+		var depositLimit any = "3000000000000"
+		if name == "c" {
+			depositLimit = nil
+		}
+		_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.latest_verified_reserve_updates VALUES($1,$2,$3,999,$3,1000,'confirmed','http_confirmed_refresh',$4,$5,$6,$7,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008,$8::numeric)`, schema), index+1, strings.Repeat(name, 64), now, reserve, market, strings.ToUpper(name), USDCMint, depositLimit)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -221,5 +237,14 @@ CREATE TABLE %s.latest_verified_reserve_updates(
 	}
 	if len(epoch.Reserves) != 3 || epoch.CatalogReserveCount != 3 || epoch.Reserves[0].StateEventID <= 0 {
 		t.Fatalf("monitor identities or complete catalog were not retained: %+v", epoch)
+	}
+	for _, reserve := range epoch.Reserves {
+		want := "3000000000000"
+		if reserve.Reserve == "reserve-c" {
+			want = ""
+		}
+		if pointerValue(reserve.DepositLimitRaw) != want || reserve.AvailableAmountRaw != "1800000000000" {
+			t.Fatalf("reserve %s capacity evidence: deposit limit %v available %s", reserve.Reserve, reserve.DepositLimitRaw, reserve.AvailableAmountRaw)
+		}
 	}
 }

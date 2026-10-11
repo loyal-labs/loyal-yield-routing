@@ -48,6 +48,7 @@ type Revalidator struct {
 	crossMintMaxSlippageBPS  uint16
 	jupiter                  *JupiterBuildClient
 	feeOnlyPayers            []string
+	metrics                  ExecutionMetrics
 }
 
 type RevalidatorConfig struct {
@@ -63,6 +64,7 @@ type RevalidatorConfig struct {
 	JupiterAPIKey            string
 	// FeeOnlyPayers are the mounted fee-only keys (public); the registry says which are eligible.
 	FeeOnlyPayers []string
+	Metrics       ExecutionMetrics
 }
 
 func NewRevalidator(store *Store, client *chain.Client, config RevalidatorConfig) (*Revalidator, error) {
@@ -70,8 +72,8 @@ func NewRevalidator(store *Store, client *chain.Client, config RevalidatorConfig
 }
 
 func newRevalidator(store revalidationStore, client *chain.Client, config RevalidatorConfig) (*Revalidator, error) {
-	if store == nil || client == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second {
-		return nil, errors.New("store, RPC, owner, signer, and lease TTL are required")
+	if store == nil || client == nil || config.Owner == "" || config.DelegatedSigner == "" || config.LeaseTTL < time.Second || config.Metrics == nil {
+		return nil, errors.New("store, RPC, owner, signer, lease TTL and metrics are required")
 	}
 	if _, err := decodePublicKey(config.DelegatedSigner); err != nil {
 		return nil, fmt.Errorf("delegated signer: %w", err)
@@ -96,7 +98,7 @@ func newRevalidator(store revalidationStore, client *chain.Client, config Revali
 			return nil, err
 		}
 	}
-	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...)}, nil
+	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, slotDuration: config.SlotDuration, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...), metrics: config.Metrics}, nil
 }
 
 // Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
@@ -640,6 +642,16 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if lease.LiquidityAmountRaw == 0 || lease.LiquidityAmountRaw > redeemable || lease.PrincipalUSDMicros <= 0 || uint64(lease.PrincipalUSDMicros) != lease.LiquidityAmountRaw {
 		return f, errors.New("planned same-mint deposit exceeds fresh collateral backing or stable principal differs")
 	}
+	// The whole redeemed holding must fit both reserves as the chain stands
+	// now, before anything is built or simulated: KLend pays withdrawals only
+	// from available liquidity and refuses deposits past the deposit limit.
+	targetRoom, roomKnown := targetEconomics.DepositRoomRaw()
+	if sourceEconomics.AvailableLiquidityRaw == nil || !roomKnown || redeemable > math.MaxInt64 {
+		return f, errors.New("fresh reserve capacity is unreadable")
+	}
+	if err := reserveCapacityShortfall(int64(redeemable), *sourceEconomics.AvailableLiquidityRaw, 0, targetRoom, 0); err != nil {
+		return f, err
+	}
 	var topUp uint64
 	if targetMissing {
 		rent, err := r.rpc.RentExempt(ctx, kamino.ObligationSize)
@@ -654,7 +666,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 			return f, err
 		}
 	}
-	f.evidence = FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey}
+	f.evidence = FreshRouteEvidence{ObservedAt: time.Now().UTC(), Slot: slot, ObservedSourceAPYBPS: sourceEconomics.SupplyAPYBPS, ObservedTargetAPYBPS: targetEconomics.SupplyAPYBPS, TargetObservedSupplyUSDMicros: targetEconomics.TotalSupplyUSDMicros, SourceAvailableLiquidityRaw: *sourceEconomics.AvailableLiquidityRaw, TargetDepositRoomRaw: targetRoom, OpportunityID: lease.OpportunityID, OpportunityKey: lease.IdempotencyKey, EpochID: lease.OptimizerEpochID, EpochFingerprint: lease.OptimizerEpochKey}
 	f.evidence.Anchors = ExecutionBalanceAnchors{SourceObligation: source.Obligation, TargetObligation: target.Obligation, VaultLiquidityATA: source.Position.VaultLiquidityATA, SourceReserve: lease.SourceReserve, TargetReserve: lease.TargetReserve, SourceMarket: source.Position.Market, TargetMarket: target.Position.Market, SourceCollateralMint: source.Position.CollateralMint, TargetCollateralMint: target.Position.CollateralMint, LiquidityTokenProgram: source.Position.LiquidityTokenProgram, Owner: lease.VaultPubkey, Mint: lease.LiquidityMint, SourceCollateralRaw: sourceCollateral, TargetCollateralRaw: targetCollateral, IdleLiquidityRaw: idle.Amount, MinimumSlot: slot}
 	f.input = KaminoSameMintRouteRequest{Vault: lease.VaultPubkey, Source: freshSource.Position, Target: freshTarget.Position, WithdrawCollateralAmount: sourceCollateral, DepositLiquidityAmount: redeemable,
 		TargetObligationMissing: targetMissing, SourceFarmUserMissing: missingFarmUser[0], TargetFarmUserMissing: missingFarmUser[1], Payer: r.signer, VaultRentTopUpLamports: topUp}
