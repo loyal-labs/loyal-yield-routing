@@ -350,6 +350,12 @@ func (s *Store) LeaseNextRoute(ctx context.Context, owner string, expiresAt time
                           WHERE snapshot.route_key = route.route_key
                             AND snapshot.observed_at > now() - interval '5 minutes'
                         ))
+                    OR EXISTS (
+                      SELECT 1 FROM loyal_yield.earn_max_intents intent
+                      WHERE intent.settings = route.settings
+                        AND intent.vault = route.vault
+                        AND intent.status = 'pending'
+                    )
                   )
                   AND NOT COALESCE((
                     route.state #>> '{withdrawal,status}' = 'requested'

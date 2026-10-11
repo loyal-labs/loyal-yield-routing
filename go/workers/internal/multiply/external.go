@@ -2,11 +2,7 @@ package multiply
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"strconv"
 	"time"
 
@@ -14,8 +10,8 @@ import (
 )
 
 // Externally observed Earn MAX facts, ported from loyal-yield-store
-// (admit_external_multiply_operation, project_earn_max_intent, the ready
-// branch of project_earn_max_policy_set) and fleet_orchestration/multiply.rs
+// (admit_external_multiply_operation, the ready branch of
+// project_earn_max_policy_set) and fleet_orchestration/multiply.rs
 // (roll_terminal_policy_seed_base, upgrade_terminal_three_policy_manifest).
 // The observer writes them; the Earn MAX worker owns everything it signs.
 
@@ -206,155 +202,4 @@ func (s *Store) AdmitExternalOperation(ctx context.Context, lease *Lease, route 
 	}
 	lease.Version = version
 	return true, nil
-}
-
-// IntentInput is one root-signed Earn MAX withdraw/cancel memo.
-type IntentInput struct {
-	Settings         string
-	VaultIndex       uint8
-	Signature        string
-	InstructionIndex uint16
-	Slot             uint64
-	ObservedAt       time.Time
-	// Withdraw is set for a withdraw memo; AmountRaw nil means "max".
-	Withdraw *struct {
-		RequestID, DestinationAccount string
-		AmountRaw                     *uint64
-	}
-	CancelRequestID *string
-}
-
-// ProjectIntent is project_earn_max_intent: the chain location is the
-// operation key, so replaying one memo is a no-op.
-func (s *Store) ProjectIntent(ctx context.Context, input IntentInput) (bool, error) {
-	if input.Settings == "" || input.Signature == "" || input.Slot == 0 {
-		return false, errors.New("Earn MAX intent identity is malformed")
-	}
-	if input.Slot > 1<<63-1 {
-		return false, errors.New("slot exceeds BIGINT")
-	}
-	idempotencyKey := fmt.Sprintf("%s:intent:%s:%d", EngineVersion, input.Signature, input.InstructionIndex)
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx)
-	var routeKey string
-	var raw []byte
-	var owner *string
-	var expires *time.Time
-	err = tx.QueryRow(ctx, `
-            SELECT route_key, state, lease_owner, lease_expires_at
-            FROM loyal_yield.multiply_route_states
-            WHERE settings=$1 AND vault_index=$2
-            FOR UPDATE`, input.Settings, int16(input.VaultIndex)).Scan(&routeKey, &raw, &owner, &expires)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, errors.New("Earn MAX intent route is not projected yet")
-	}
-	if err != nil {
-		return false, err
-	}
-	var duplicate bool
-	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM loyal_yield.multiply_operations WHERE idempotency_key=$1)", idempotencyKey).Scan(&duplicate); err != nil {
-		return false, err
-	}
-	if duplicate {
-		return false, nil
-	}
-	if leasedNow(owner, expires) {
-		return false, errors.New("Earn MAX intent route is actively leased; retry projection")
-	}
-	state := &RouteState{}
-	if err := jsonUnmarshalStrict(raw, state); err != nil {
-		return false, err
-	}
-	if input.Slot < state.ObservedSlot {
-		return false, errors.New("Earn MAX intent is older than the projected route")
-	}
-	var action MultiplyAction
-	var evidence map[string]any
-	switch {
-	case input.Withdraw != nil:
-		var amount uint64
-		if input.Withdraw.AmountRaw != nil {
-			amount = *input.Withdraw.AmountRaw
-		} else {
-			var equity *string
-			err := tx.QueryRow(ctx, `
-                            SELECT equity_usd_micros::text
-                            FROM loyal_yield.multiply_position_snapshots
-                            WHERE route_key=$1
-                            ORDER BY observed_slot DESC, id DESC
-                            LIMIT 1`, routeKey).Scan(&equity)
-			if errors.Is(err, pgx.ErrNoRows) || (err == nil && equity == nil) {
-				return false, errors.New("Earn MAX full withdrawal has no current equity")
-			}
-			if err != nil {
-				return false, err
-			}
-			if amount, err = strconv.ParseUint(*equity, 10, 64); err != nil {
-				return false, errors.New("Earn MAX full withdrawal equity does not fit u64")
-			}
-		}
-		if _, err := state.RequestWithdrawal(input.Withdraw.RequestID, input.Withdraw.DestinationAccount, amount, input.ObservedAt); err != nil {
-			return false, err
-		}
-		action = ActionRequestWithdrawal
-		evidence = map[string]any{"kind": "withdraw", "requestId": input.Withdraw.RequestID, "destinationAccount": input.Withdraw.DestinationAccount, "amountRaw": amount}
-	case input.CancelRequestID != nil:
-		if err := state.CancelWithdrawal(*input.CancelRequestID); err != nil {
-			return false, err
-		}
-		action = ActionCancelWithdrawal
-		evidence = map[string]any{"kind": "cancel", "requestId": *input.CancelRequestID}
-	default:
-		return false, errors.New("Earn MAX intent has no action")
-	}
-	state.ObservedSlot, state.ObservedAt = input.Slot, input.ObservedAt
-	if err := state.ValidatePersisted(); err != nil {
-		return false, err
-	}
-	evidenceBytes, err := json.Marshal(evidence)
-	if err != nil {
-		return false, err
-	}
-	reconciliation := sha256.Sum256(evidenceBytes)
-	operationDigest := sha256.Sum256([]byte(idempotencyKey))
-	encoded, err := jsonMarshal(state)
-	if err != nil {
-		return false, err
-	}
-	if state.Generation > 1<<63-1 || state.Cycle > 1<<63-1 {
-		return false, errors.New("Earn MAX generation exceeds BIGINT")
-	}
-	changed, err := tx.Exec(ctx, `
-            UPDATE loyal_yield.multiply_route_states
-            SET state=$2, state_version=$3, lease_owner=NULL,
-                lease_expires_at=NULL, updated_at=now()
-            WHERE route_key=$1`, routeKey, encoded, int64(state.Generation))
-	if err != nil {
-		return false, err
-	}
-	if changed.RowsAffected() != 1 {
-		return false, errors.New("Earn MAX intent route update missed")
-	}
-	effects, err := json.Marshal(map[string]any{"tokenDeltas": []any{}, "obligationDelta": nil, "intent": json.RawMessage(evidenceBytes)})
-	if err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec(ctx, `
-            INSERT INTO loyal_yield.multiply_operations (
-                operation_id, route_key, cycle, engine_version, action, status,
-                idempotency_key, expected_effects, transaction_signature,
-                source_instruction_index, confirmed_slot, reconciliation_sha256,
-                created_at, updated_at
-            ) VALUES (
-                $1, $2, $3, $4, $5, 'reconciled',
-                $6, $7, $8, $9, $10, $11, $12, $12
-            )`, "intent-"+hex.EncodeToString(operationDigest[:])[:32], routeKey, int64(state.Cycle), EngineVersion, string(action),
-		idempotencyKey, effects, input.Signature, int32(input.InstructionIndex), int64(input.Slot),
-		hex.EncodeToString(reconciliation[:]), input.ObservedAt); err != nil {
-		return false, err
-	}
-	return true, tx.Commit(ctx)
 }
