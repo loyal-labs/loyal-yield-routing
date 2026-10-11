@@ -81,6 +81,25 @@ func simulateBudgetReserveRefreshOptional(ctx context.Context, c *chain.Client, 
 	return simulateLanesReserveRefreshOptional(ctx, c, []string{lane}, addresses, optional, minimumSlot)
 }
 
+// judgeAsRefreshed runs judge on a raw read of addresses and, when that read
+// shows a stale reserve or oracle, once more on the closed unsigned refresh
+// simulation over the same addresses, returning the capture judged. Every
+// Kamino transaction refreshes the lane's reserves before it acts, so a stale
+// raw reserve says nothing about the state that transaction will see; only a
+// verdict on the refreshed capture stands. A refresh Kamino rejects, or a
+// capture that is unavailable, is the simulation's own hold.
+func judgeAsRefreshed(ctx context.Context, c *chain.Client, lane string, addresses, optional []string, slot int64, accounts []ConfirmedAccount, judge func(int64, []ConfirmedAccount) error) (int64, []ConfirmedAccount, error) {
+	err := judge(slot, accounts)
+	if !errors.Is(err, errKaminoReserveStale) && !errors.Is(err, errKaminoOracleStale) {
+		return slot, accounts, err
+	}
+	slot, accounts, err = simulateBudgetReserveRefreshOptional(ctx, c, lane, addresses, optional, slot)
+	if err != nil {
+		return 0, nil, err
+	}
+	return slot, accounts, judge(slot, accounts)
+}
+
 func simulateLanesReserveRefreshOptional(ctx context.Context, c *chain.Client, lanes []string, addresses, optional []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	instructions, err := budgetReserveRefreshInstructionsForLanes(lanes)
 	if err != nil {

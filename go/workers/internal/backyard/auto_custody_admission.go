@@ -165,7 +165,7 @@ func (p sharedCustodyAdmissionProof) BindsGeneration(generation int64, fencingTo
 // effects: the probe runs only when they positively debit the pinned
 // custody. Strict gates: any nonterminal row on the route holds. This
 // signature-stable form carries no RPC, so unknown terminal records can only
-// be classified by their exact NAV wire bytes — the historical-expiry
+// be classified by their own signed wire bytes — the historical-expiry
 // classification fails closed.
 func (d *Database) ObserveSharedCustodyOwnershipProof(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64) (sharedCustodyAdmissionProof, error) {
 	return d.ObserveSharedCustodyOwnershipProofWithRPC(ctx, manifest, cfg, expected, observedRaw, observedSlot, nil)

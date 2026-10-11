@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"math"
 	"math/big"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // Exact-receive borrowing adds the origination fee to both reserve debit and
@@ -81,7 +83,17 @@ func kaminoBorrowEffects(accounts []ConfirmedAccount, route RuntimeRoute, receiv
 // Fresh capacity and loop-risk validation runs at build and persisted-input
 // send. Fee and reserve custody are the receipt's: reconciliation checks our
 // custody exactly and conservation fixes the shared reserve accounts.
-func validateBorrowRequest(ctx context.Context, view *View, r KaminoPrimeUSDCRequest, e ExpectedEffects, slot int64) (int64, error) {
+//
+// The borrow transaction refreshes both reserves and the obligation before it
+// borrows, so the gate judges that state: a stale raw read is judged on the
+// closed refresh simulation (judgeAsRefreshed). That simulation refreshes the
+// reserves only. The obligation needs no refresh of its own here: the gate
+// reads its deposited collateral and its stored debt fraction accrued at the
+// refreshed debt reserve's cumulative rate, exactly what refresh_obligation
+// derives from those reserves, and refreshed reserves are never older than
+// the obligation. A health verdict on the refreshed state (paused, emergency,
+// still stale) is a pre-send hold, never a worker fault.
+func validateBorrowRequest(ctx context.Context, rpc *chain.Client, view *View, r KaminoPrimeUSDCRequest, e ExpectedEffects, slot int64) (int64, error) {
 	if _, err := MeasureExecutableDebit(r, e); err != nil {
 		return 0, err
 	}
@@ -89,14 +101,22 @@ func validateBorrowRequest(ctx context.Context, view *View, r KaminoPrimeUSDCReq
 	if err != nil {
 		return 0, err
 	}
-	observed, accounts, err := view.read(ctx, []string{route.Kamino.DebtReserve, route.Kamino.Obligation, route.DebtLiquiditySupply, route.DebtCustody, route.DebtFeeReceiver, route.Kamino.CollateralReserve, budgetClockAddress}, slot)
+	addresses := []string{route.Kamino.DebtReserve, route.Kamino.Obligation, route.DebtLiquiditySupply, route.DebtCustody, route.DebtFeeReceiver, route.Kamino.CollateralReserve, budgetClockAddress}
+	observed, accounts, err := view.read(ctx, addresses, slot)
 	if err != nil {
 		return 0, err
 	}
-	if earnActiveLane(route.Lane) {
-		if err := validateCapacityBorrow(accounts, route, r.AmountRaw); err != nil {
-			return 0, err
-		}
+	if !earnActiveLane(route.Lane) {
+		return observed, nil
+	}
+	observed, _, err = judgeAsRefreshed(ctx, rpc, route.Lane, addresses, nil, observed, accounts, func(_ int64, accounts []ConfirmedAccount) error {
+		return validateCapacityBorrow(accounts, route, r.AmountRaw)
+	})
+	if reason, health := kaminoHealthReason(err); health {
+		return 0, budgetHoldFrom(err, reason)
+	}
+	if err != nil {
+		return 0, err
 	}
 	return observed, nil
 }

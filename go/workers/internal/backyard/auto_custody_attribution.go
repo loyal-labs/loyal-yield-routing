@@ -29,8 +29,9 @@ package backyard
 // proves inert — presend rejections that never signed or broadcast, and
 // ordinary unsigned unbroadcast HOLD decision envelopes — with the surviving
 // bounded candidates classified only after the zero-origin is proven, by
-// exact NAV-report wire bytes or by a positive expiry strictly before the
-// origin's dynamically resolved finalized block height), and any reconciled
+// a signed legacy wire whose static keys exclude the custody or by a
+// positive expiry strictly before the origin's dynamically resolved
+// finalized block height), and any reconciled
 // record with a malformed ordering identity (NULL or nonpositive slot,
 // absent signature or digest). Every route record is
 // covered by exactly one of the four reads, so nothing can fall between
@@ -85,8 +86,9 @@ const (
 	// an origin is a bound_exhausted refusal, never a pass.
 	sharedCustodyAttributionWindowBound = 4096
 
-	// sharedCustodyUnknownScanBound caps the rows read before recognized
-	// inert NAV reports are dropped; the row bound applies to survivors.
+	// sharedCustodyUnknownScanBound caps the rows read before signed wires
+	// that exclude the custody are dropped; the row bound applies to
+	// survivors.
 	sharedCustodyUnknownScanBound = 4096
 
 	// The canonical reconciled evidence envelope, pinned to reconcile.go.
@@ -126,11 +128,10 @@ type custodyAttributionRow struct {
 // and only the decision envelope (no built effects, no phase3 build input)
 // could never have moved anything, so thousands of them cannot exhaust any
 // bound. Every surviving candidate is classified by the validator, strictly
-// AFTER the walk proves the zero-origin: a terminal signed NAV report is
-// recognized by its exact persisted bytes through the production wire
-// validator and the persisted build input's compiled ReportNAV message (which
-// must name no shared custody account), and every other candidate is excused
-// only by a POSITIVE blockhash expiry strictly before the origin slot's
+// AFTER the walk proves the zero-origin: a terminal signed wire is
+// recognized inert when the production wire validator admits it for the
+// pinned delegate and its legacy static account keys exclude the shared
+// custody, and every other candidate is excused only by a POSITIVE blockhash expiry strictly before the origin slot's
 // finalized block height, resolved dynamically through the caller-supplied
 // RPC client. Anything missing, unclassifiable, or unresolvable holds.
 type sharedCustodyAttributionEvidence struct {
@@ -164,9 +165,8 @@ type sharedCustodyAttributionEvidence struct {
 // custodyAttributionUnknownRow is the bounded read-only projection of one
 // route record in an unrecognized terminal/manual state, carrying every
 // column the two positive inertness classifications need: the full persisted
-// signed-wire evidence for the NAV recognition, and the blockhash expiry for
-// the historical-expiry excuse. BuildInput is the persisted phase3 build
-// input JSONB (nil when the record has none).
+// signed-wire evidence for the wire classification, and the blockhash expiry
+// for the historical-expiry excuse.
 type custodyAttributionUnknownRow struct {
 	OperationID          string
 	Action               string
@@ -178,22 +178,26 @@ type custodyAttributionUnknownRow struct {
 	MessageSHA256        string
 	RecentBlockhash      string
 	SimulationSlot       int64
-	BuildInput           []byte
 }
 
-// recognizedInertNAVReport positively proves one unknown terminal record
-// could never touch the shared custody. The persisted row must carry the
-// COMPLETE signed-wire evidence the production signing persistence writes,
-// the production validator must reconstruct and verify it against the pinned
-// delegate, the persisted phase3 build input must decode to a ReportNAV
-// bridge request (the compiler itself refuses any nonzero amount), the exact
-// message the compiler emits must be byte-identical to the signed wire's own
-// message, and the compiled message's account-key list must name no custody
-// account. A missing field, decode failure, digest drift, or custody match
-// is a refusal to recognize — never a pass — and leaves the record to the
-// expiry classification, which fails closed.
-func (r custodyAttributionUnknownRow) recognizedInertNAVReport(cfg sharedCustodyAttributionConfig) bool {
-	if r.Action != string(ReportNAV) || !r.SignedWirePresent || len(r.SignedWire) <= 65 || r.SignedWire[0] != 1 {
+// signedWireExcludesCustody positively proves one unknown terminal record
+// could never touch the shared custody, from its signed wire alone. The
+// persisted row must carry the COMPLETE signed-wire evidence the production
+// signing persistence writes, the production validator must verify it against
+// the pinned delegate, and the wire must be a legacy message whose static
+// account keys — for a legacy message, every account the transaction can
+// load, so no instruction or CPI can reach any other — do not include the
+// custody. That holds whatever the row's action or the compiler that built
+// it, so the classification is action-agnostic and never recompiles: a
+// report signed by an older compiler is judged by the bytes it signed
+// (2026-10-11: ~780 failed NAV reports no longer recompiled byte for byte
+// and overflowed the unknown bound). A v0 wire may load accounts through
+// lookup tables its static keys do not show, so it is never recognized; a
+// missing field, digest drift, or custody match is a refusal to recognize —
+// never a pass — and leaves the record to the expiry classification, which
+// fails closed.
+func (r custodyAttributionUnknownRow) signedWireExcludesCustody(cfg sharedCustodyAttributionConfig) bool {
+	if !r.SignedWirePresent {
 		return false
 	}
 	evidence := BuildResult{
@@ -204,37 +208,20 @@ func (r custodyAttributionUnknownRow) recognizedInertNAVReport(cfg sharedCustody
 	if evidence.validateForDelegate(cfg.Delegate) != nil {
 		return false
 	}
-	var input phase3BuildInput
-	if len(r.BuildInput) == 0 || json.Unmarshal(r.BuildInput, &input) != nil {
-		return false
-	}
-	decoded, _, _, err := input.decode()
-	if err != nil {
-		return false
-	}
-	bridge, ok := decoded.(BridgeBuildRequest)
-	if !ok || bridge.Action != ReportNAV || bridge.AmountRaw != 0 {
-		return false
-	}
-	// Compile for the same pinned delegate the wire was validated against
-	// (production cfg.Delegate is mustKey(bridgeDelegate), so unchanged there).
-	message, err := compileBridgeMessageForDelegate(bridge, cfg.Delegate)
-	if err != nil || !bytes.Equal(message, r.SignedWire[65:]) {
-		return false
-	}
 	custody, err := decodeKey(cfg.Custody)
 	if err != nil {
 		return false
 	}
-	touches, err := bridgeMessageNamesCustody(message, custody)
+	// The validator admitted exactly one signature (a one-byte shortvec and
+	// 64 signature bytes), so the message starts at byte 65.
+	touches, err := legacyMessageNamesCustody(r.SignedWire[65:], custody)
 	return err == nil && !touches
 }
 
-// bridgeMessageNamesCustody reports whether a compiled legacy bridge
-// message's static account-key list contains the pinned custody key. The
-// compiled ReportNAV message is always the legacy shape; any other shape is
-// a refusal, never a "no touch".
-func bridgeMessageNamesCustody(message []byte, custody publicKey) (bool, error) {
+// legacyMessageNamesCustody reports whether a legacy message's static
+// account-key list contains the pinned custody key. Any other shape,
+// including a v0 message, is a refusal, never a "no touch".
+func legacyMessageNamesCustody(message []byte, custody publicKey) (bool, error) {
 	if len(message) < 4 || message[0] != 1 || message[1] != 0 {
 		return false, budgetHold("custody_attribution_malformed_record")
 	}
@@ -255,8 +242,8 @@ func bridgeMessageNamesCustody(message []byte, custody publicKey) (bool, error) 
 
 // resolveSharedCustodyUnknownRecords excuses the bounded unknown candidates
 // only through the two positive classifications, evaluated strictly AFTER
-// the walk has proven the zero-origin: a terminal signed NAV report whose
-// exact persisted bytes cannot touch the shared custody, or — for every
+// the walk has proven the zero-origin: a terminal signed wire whose own
+// bytes cannot touch the shared custody, or — for every
 // other candidate — a POSITIVE blockhash expiry strictly before the origin
 // slot's finalized block height, resolved dynamically through the explicit
 // resolver. Such an expired wire, had it landed at all, landed before the
@@ -266,7 +253,7 @@ func bridgeMessageNamesCustody(message []byte, custody publicKey) (bool, error) 
 func resolveSharedCustodyUnknownRecords(ctx context.Context, rows []custodyAttributionUnknownRow, cfg sharedCustodyAttributionConfig, originSlot int64, originBlockHeight func(context.Context, int64) (int64, error)) error {
 	originHeight := int64(0)
 	for _, row := range rows {
-		if row.recognizedInertNAVReport(cfg) {
+		if row.signedWireExcludesCustody(cfg) {
 			continue
 		}
 		if row.LastValidBlockHeight <= 0 {
@@ -667,7 +654,7 @@ func custodyAttributionStep(row custodyAttributionRow, signature string, slot in
 // deferred, not waived: candidates the reader could not prove inert in SQL
 // are classified only AFTER the walk proves the zero-origin (proof ordering:
 // validated zero-origin first, unknown expiry compared against its block
-// height), by exact NAV-report wire bytes or by a positive expiry strictly
+// height), by a signed wire that excludes the custody or by a positive expiry strictly
 // before the origin's dynamically resolved finalized block height, and any
 // unclassifiable or unresolvable candidate holds. The walk then
 // strictness-checks EVERY row of the
@@ -863,8 +850,8 @@ func validateSharedCustodyAttributionResolved(ctx context.Context, observedRaw u
 	}
 	if originFound {
 		// PROOF ORDERING: the validated zero-origin exists FIRST; only now
-		// are the bounded unknown candidates compared against it — NAV wires
-		// by their exact bytes, everything else by a positive expiry strictly
+		// are the bounded unknown candidates compared against it — signed
+		// wires by their own bytes, everything else by a positive expiry strictly
 		// before the origin's finalized block height. A candidate that cannot
 		// be excused, and every failure to resolve the origin height, hold.
 		if err := resolveSharedCustodyUnknownRecords(ctx, evidence.UnknownRows, cfg, proof.Origin.Slot, originBlockHeight); err != nil {
@@ -992,7 +979,7 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 	candidates, err := tx.Query(ctx, `SELECT operation_id, COALESCE(action,''), COALESCE(last_valid_block_height,0),
 		signed_wire IS NOT NULL, COALESCE(signed_wire,''), COALESCE(signed_wire_sha256,''),
 		COALESCE(transaction_signature,''), COALESCE(message_sha256,''), COALESCE(recent_blockhash,''),
-		COALESCE(simulation_slot,0), expected_effects->'phase3'->'buildInput'
+		COALESCE(simulation_slot,0)
 		FROM loyal_yield.multiply_operations
 		WHERE route_key=$1 AND status NOT IN `+sharedCustodyUnresolvedStatuses+` AND status <> 'reconciled'
 		AND NOT (status='failed' AND signed_wire IS NULL AND COALESCE(signed_wire_sha256,'')=''
@@ -1017,15 +1004,15 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 		var row custodyAttributionUnknownRow
 		if err := candidates.Scan(&row.OperationID, &row.Action, &row.LastValidBlockHeight,
 			&row.SignedWirePresent, &row.SignedWire, &row.SignedWireSHA256, &row.TransactionSignature,
-			&row.MessageSHA256, &row.RecentBlockhash, &row.SimulationSlot, &row.BuildInput); err != nil {
+			&row.MessageSHA256, &row.RecentBlockhash, &row.SimulationSlot); err != nil {
 			candidates.Close()
 			return evidence, err
 		}
 		scanned++
-		// A NAV report whose exact signed bytes name no shared custody is
-		// excused by the validator anyway; counting it against the bound let
-		// ordinary failed reports alone overflow a funded route (2026-09-24).
-		if row.recognizedInertNAVReport(cfg) {
+		// A signed wire whose own bytes name no shared custody is excused by
+		// the validator anyway; counting it against the bound let ordinary
+		// failed reports alone overflow a funded route (2026-09-24).
+		if row.signedWireExcludesCustody(cfg) {
 			continue
 		}
 		evidence.UnknownRows = append(evidence.UnknownRows, row)
