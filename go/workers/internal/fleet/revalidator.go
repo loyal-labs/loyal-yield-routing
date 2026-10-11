@@ -29,8 +29,9 @@ const (
 	defaultComputeLimit = uint64(1_400_000)
 )
 
-// FleetVault is one migrated and currently unblocked policy/vault. Callers
-// must load this complete set in one repeatable-read snapshot.
+// FleetVault is one held reserve of a migrated and currently unblocked
+// policy/vault: a vault holding several reserves appears once per reserve.
+// Callers must load this complete set in one repeatable-read snapshot.
 type FleetVault struct {
 	Position                 VaultPosition
 	AllowedTargets           []string
@@ -49,11 +50,24 @@ type PlannedOpportunity struct {
 type FleetPlan struct {
 	Opportunities []PlannedOpportunity `json:"opportunities"`
 	Rejections    map[int64]string     `json:"rejections"`
+	// Movable is, per source reserve, the capital in holdings that had an
+	// eligible move against the committed frontier at the start of the wave:
+	// worth moving and fitting both reserves, whether or not this wave
+	// admitted it. Capital that stays movable is capital not moving.
+	Movable map[string]int64 `json:"movable"`
 }
 
-// PlanFleet evaluates all vault/target pairs, orders by Rust's durable
-// economic priority tie-breaks, and admits a wave while carrying forward the
-// selected inflow/outflow. No reserve can exceed its 2% frontier.
+// PlanFleet evaluates all holding/target pairs, packs whole holdings into
+// the reserves' room by net gain per dollar, and admits a wave while carrying
+// forward the selected inflow/outflow. No reserve can exceed its 2% frontier,
+// its deposit limit or its available liquidity, and a vault moves at most
+// one holding per wave.
+//
+// A vault's secondary holdings may only consolidate into its primary
+// (largest) reserve. The user's position records one current reserve, which a
+// rebalance never rewrites, and Autodeposit refuses a vault whose recorded
+// reserve is drained while two others hold its mint; consolidation only ever
+// removes a live reserve.
 func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) {
 	return PlanFleetWithLimits(snapshot, vaults, DefaultWaveLimits())
 }
@@ -80,9 +94,23 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		return FleetPlan{}, errors.New("complete reserve frontier is required")
 	}
 	if len(vaults) == 0 {
-		return FleetPlan{Opportunities: []PlannedOpportunity{}, Rejections: map[int64]string{}}, nil
+		return FleetPlan{Opportunities: []PlannedOpportunity{}, Rejections: map[int64]string{}, Movable: map[string]int64{}}, nil
 	}
-	seen := map[int64]bool{}
+	type holding struct {
+		vault   int64
+		reserve string
+	}
+	seen := map[holding]bool{}
+	// A vault's primary holding is its largest, ties to the lower reserve
+	// address: the order LoadMigratedFleet reads holdings in.
+	primary := map[int64]*FleetVault{}
+	for i := range vaults {
+		p := vaults[i].Position
+		if current, ok := primary[p.VaultID]; !ok || p.AmountRaw > current.Position.AmountRaw ||
+			p.AmountRaw == current.Position.AmountRaw && p.SourceReserve < current.Position.SourceReserve {
+			primary[p.VaultID] = &vaults[i]
+		}
+	}
 	eligibleVaults := map[int64]bool{}
 	baseInflow, baseOutflow := map[string]int64{}, map[string]int64{}
 	for _, vault := range vaults {
@@ -100,13 +128,27 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		}
 	}
 	candidates := make(waveCandidates, 0, capacity)
-	out := FleetPlan{Rejections: map[int64]string{}}
-	for sourceIndex := range vaults {
+	out := FleetPlan{Rejections: map[int64]string{}, Movable: map[string]int64{}}
+	// Visit holdings in their normalized identity so a vault's rejection
+	// reason, like the wave itself, never depends on loader order.
+	order := make([]int, len(vaults))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool {
+		a, b := vaults[order[i]].Position, vaults[order[j]].Position
+		if a.VaultID != b.VaultID {
+			return a.VaultID < b.VaultID
+		}
+		return a.SourceReserve < b.SourceReserve
+	})
+	for _, sourceIndex := range order {
 		vault := &vaults[sourceIndex]
-		if vault.Position.VaultID <= 0 || seen[vault.Position.VaultID] {
+		key := holding{vault.Position.VaultID, vault.Position.SourceReserve}
+		if vault.Position.VaultID <= 0 || seen[key] {
 			return FleetPlan{}, errors.New("fleet contains duplicate or invalid source")
 		}
-		seen[vault.Position.VaultID] = true
+		seen[key] = true
 		if vault.Position.BlockedReason != "" {
 			out.Rejections[vault.Position.VaultID] = vault.Position.BlockedReason
 			continue
@@ -117,6 +159,15 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		}
 		for target := range vault.CrossMintTargets {
 			allowed[target] = true
+		}
+		if main := primary[vault.Position.VaultID]; main != vault {
+			consolidation := allowed[main.Position.SourceReserve]
+			allowed = map[string]bool{}
+			if !consolidation {
+				out.Rejections[vault.Position.VaultID] = "secondary_holding_cannot_consolidate"
+				continue
+			}
+			allowed[main.Position.SourceReserve] = true
 		}
 		eligible := false
 		allowedTargets := make([]string, 0, len(allowed))
@@ -154,6 +205,11 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		}
 		if !eligible {
 			out.Rejections[vault.Position.VaultID] = "no_eligible_target"
+			continue
+		}
+		var ok bool
+		if out.Movable[vault.Position.SourceReserve], ok = sumInt64(out.Movable[vault.Position.SourceReserve], vault.Position.AmountRaw); !ok {
+			return FleetPlan{}, errors.New("movable capital overflow")
 		}
 	}
 	for id := range eligibleVaults {
@@ -458,10 +514,14 @@ type FreshRouteEvidence struct {
 	ObservedSourceAPYBPS          int64
 	ObservedTargetAPYBPS          int64
 	TargetObservedSupplyUSDMicros int64
-	OpportunityID                 int64
-	OpportunityKey                string
-	EpochID                       int64
-	EpochFingerprint              string
+	// Fresh capacity: what the source pays out now and the target's room
+	// below its deposit limit, raw units.
+	SourceAvailableLiquidityRaw int64
+	TargetDepositRoomRaw        int64
+	OpportunityID               int64
+	OpportunityKey              string
+	EpochID                     int64
+	EpochFingerprint            string
 }
 type DecodedSquadsPolicy struct {
 	Settings              string

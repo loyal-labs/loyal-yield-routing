@@ -541,7 +541,7 @@ func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []st
 				at, _ = source.BlockTime(ctx, uint64(price.Slot))
 				clocks[uint64(price.Slot)] = at
 			}
-			if at.Unix() <= 0 || at.After(now) || now.Sub(at) > 3*time.Hour {
+			if at.Unix() <= 0 || at.After(now) {
 				missing = append(missing, key)
 				continue
 			}

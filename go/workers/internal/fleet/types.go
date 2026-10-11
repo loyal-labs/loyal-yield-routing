@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"encoding/json"
+	"math"
 	"time"
 )
 
@@ -33,6 +34,31 @@ type ReserveState struct {
 	TotalSupplyUSDMicros   int64     `json:"totalSupplyUsdMicros"`
 	EconomicLifetimeMillis int64     `json:"economicLifetimeMillis"`
 	DataHash               string    `json:"dataHash"`
+	// Capacity evidence in the reserve's protocol raw units, which equal USD
+	// micros for the six-decimal Earn stablecoins at their code-owned $1
+	// valuation. AvailableLiquidityRaw is what KLend can pay out now;
+	// DepositLimitRaw is the reserve's total-supply ceiling (0 blocks deposits).
+	// nil is unknown evidence: never zero, never unlimited.
+	AvailableLiquidityRaw *int64  `json:"availableLiquidityRaw"`
+	DepositLimitRaw       *uint64 `json:"depositLimitRaw"`
+}
+
+// DepositRoomRaw is how much more KLend accepts before total supply reaches
+// the deposit limit: deposit_limit - total supply, at least 0. A limit beyond
+// int64 saturates, since no amount the fleet moves can reach it. known is
+// false when the limit was not observed.
+func (r ReserveState) DepositRoomRaw() (room int64, known bool) {
+	if r.DepositLimitRaw == nil || r.TotalSupplyUSDMicros < 0 {
+		return 0, false
+	}
+	limit, supply := *r.DepositLimitRaw, uint64(r.TotalSupplyUSDMicros)
+	if limit <= supply {
+		return 0, true
+	}
+	if limit-supply > math.MaxInt64 {
+		return math.MaxInt64, true
+	}
+	return int64(limit - supply), true
 }
 
 type MarketSnapshot struct {
@@ -46,10 +72,10 @@ type MarketSnapshot struct {
 	Reserves         map[string]ReserveState `json:"reserves"`
 }
 
-// MarketEpochReserve is byte-for-byte JSON compatible with the Rust
-// MarketEpochReserve contract. The state identity comes from the retained
-// Kamino monitor's durable confirmed verification row; it is never synthesized
-// from a direct RPC read.
+// MarketEpochReserve is the retired Rust MarketEpochReserve contract plus the
+// reserve's deposit limit. The state identity comes from the retained Kamino
+// monitor's durable confirmed verification row; it is never synthesized from
+// a direct RPC read.
 type MarketEpochReserve struct {
 	StateEventID             int64     `json:"stateEventId"`
 	AccountDataHash          string    `json:"accountDataHash"`
@@ -70,13 +96,16 @@ type MarketEpochReserve struct {
 	AvailableAmountRaw       string    `json:"availableAmountRaw"`
 	BorrowedAmountRaw        string    `json:"borrowedAmountRaw"`
 	TotalSupplyAmountRaw     string    `json:"totalSupplyAmountRaw"`
-	UtilizationPPM           int64     `json:"utilizationPpm"`
-	BorrowAPYBPS             int64     `json:"borrowApyBps"`
-	ObservedAt               time.Time `json:"observedAt"`
-	Slot                     int64     `json:"slot"`
-	SupplyAPYBPS             int64     `json:"supplyApyBps"`
-	TotalSupplyUSDMicros     int64     `json:"totalSupplyUsdMicros"`
-	TargetEligible           bool      `json:"targetEligible"`
+	// DepositLimitRaw is the reserve config's deposit_limit as a decimal
+	// integer, nil when the observation did not carry it.
+	DepositLimitRaw      *string   `json:"depositLimitRaw"`
+	UtilizationPPM       int64     `json:"utilizationPpm"`
+	BorrowAPYBPS         int64     `json:"borrowApyBps"`
+	ObservedAt           time.Time `json:"observedAt"`
+	Slot                 int64     `json:"slot"`
+	SupplyAPYBPS         int64     `json:"supplyApyBps"`
+	TotalSupplyUSDMicros int64     `json:"totalSupplyUsdMicros"`
+	TargetEligible       bool      `json:"targetEligible"`
 }
 
 func (r MarketEpochReserve) MarshalJSON() ([]byte, error) {

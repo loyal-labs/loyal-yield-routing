@@ -87,8 +87,9 @@ func oracleConflictSet(move oracleMove) map[string]bool {
 	return keys
 }
 
-// Compare the published ranking contract as a lexicographic key; negative wide
-// integers express descending dimensions without overflow or production Less.
+// Compare the published ranking contract's tie-breaks as a lexicographic key;
+// negative wide integers express descending dimensions without overflow or
+// production Less.
 func oracleRank(move oracleMove) ([]*big.Int, []string) {
 	d, p := move.d, move.source.Position
 	var numbers []*big.Int
@@ -100,6 +101,13 @@ func oracleRank(move oracleMove) ([]*big.Int, []string) {
 }
 
 func oracleRanksBefore(a, b oracleMove) bool {
+	// Net gain per dollar moved leads the ranking contract: compare the
+	// exact ratios by cross-multiplying wide integers.
+	left := new(big.Int).Mul(big.NewInt(a.d.ExpectedNetGainUSDMicros), big.NewInt(b.d.PrincipalUSDMicros))
+	right := new(big.Int).Mul(big.NewInt(b.d.ExpectedNetGainUSDMicros), big.NewInt(a.d.PrincipalUSDMicros))
+	if comparison := left.Cmp(right); comparison != 0 {
+		return comparison > 0
+	}
 	na, sa := oracleRank(a)
 	nb, sb := oracleRank(b)
 	for i := range na {
@@ -240,6 +248,7 @@ func oracleSnapshot() MarketSnapshot {
 
 func oracleReserve(snapshot *MarketSnapshot, address, mint string, apy, supply int64) {
 	snapshot.Reserves[address] = ReserveState{ReserveIdentity: ReserveIdentity{Address: address, Market: "oracle-market", Mint: mint}, Slot: snapshot.Slot, LastUpdateSlot: snapshot.Slot, SupplyAPYBPS: apy, TotalSupplyUSDMicros: supply, EconomicLifetimeMillis: 600_000, DataHash: "hash:" + address}
+	ampleCapacity(*snapshot)
 }
 
 func oracleVault(snapshot MarketSnapshot, id int64, source string, amount int64, targets ...string) FleetVault {
@@ -313,7 +322,7 @@ func TestWaveOracleGreedyEnumeratesFreshBestStep(t *testing.T) {
 
 func TestWaveOracleSourceDilutionChangesTheNextWinner(t *testing.T) {
 	snapshot := oracleSnapshot()
-	for address, apy := range map[string]int64{"a": 1000, "b": 2000, "c": 3000, "d": 1000, "e": 2010} {
+	for address, apy := range map[string]int64{"a": 900, "b": 2000, "c": 3000, "d": 1000, "e": 2010} {
 		oracleReserve(&snapshot, address, USDCMint, apy, 1_000_000_000_000)
 	}
 	vaults := []FleetVault{oracleVault(snapshot, 1, "a", 20_000_000_000, "b"), oracleVault(snapshot, 2, "b", 10_000_000_000, "c"), oracleVault(snapshot, 3, "d", 10_000_000_000, "e")}
@@ -350,7 +359,9 @@ func oracleCrossPolicy(v FleetVault) CrossMintPolicyBindings {
 func TestWaveOracleMixedMintsOwnedCapacityAndHiddenFeeAdmission(t *testing.T) {
 	snapshot := oracleSnapshot()
 	oracleReserve(&snapshot, "source-usdc", USDCMint, 100, 1_000_000_000_000)
-	oracleReserve(&snapshot, "source-usdt", USDTMint, 200, 1_000_000_000_000)
+	// USDT pays little enough that v2 earns more per dollar than v1's
+	// three-leg cross-mint edge and takes the USDT frontier first.
+	oracleReserve(&snapshot, "source-usdt", USDTMint, 100, 1_000_000_000_000)
 	oracleReserve(&snapshot, "target-usdc", USDCMint, 1800, 500_000_000_000)
 	oracleReserve(&snapshot, "target-usdt", USDTMint, 2200, 500_000_000_000)
 	vaults := []FleetVault{oracleVault(snapshot, 1, "source-usdc", 4_000_000_000, "target-usdc"), oracleVault(snapshot, 2, "source-usdt", 5_000_000_000, "target-usdt"), oracleVault(snapshot, 3, "source-usdc", 8_000_000_000, "target-usdt")}

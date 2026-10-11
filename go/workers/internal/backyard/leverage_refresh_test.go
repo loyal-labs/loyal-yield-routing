@@ -14,7 +14,7 @@ type stubLeverageJournal struct {
 	target *LeverageTarget
 }
 
-func (s *stubLeverageJournal) LoadLeverageTarget(context.Context, string) (*LeverageTarget, error) {
+func (s *stubLeverageJournal) LoadLeverageTarget(context.Context, string, string) (*LeverageTarget, error) {
 	return s.target, nil
 }
 
@@ -36,7 +36,7 @@ func TestConstructionRefreshKeepsTheStoredLeverageTarget(t *testing.T) {
 		t.Fatalf("refresh lost the stored target: %v", refreshed.Snapshot.LeverageTargetLevel)
 	}
 	// The outer (planning) observation and the refresh now decide the same.
-	outer := Observation{Snapshot: leverageSnapshot(1), planning: &routePlanningState{generation: 1, leverage: target}}
+	outer := Observation{Snapshot: leverageSnapshot(1), planning: &routePlanningState{generation: 1, leverage: map[string]LeverageTarget{target.Lane: *target}}}
 	outer.Snapshot.LeverageTargetLevel = 0
 	if err := state.mergeJournal(context.Background(), &outer); err != nil {
 		t.Fatal(err)

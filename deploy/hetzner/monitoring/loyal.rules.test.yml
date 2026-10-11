@@ -231,6 +231,30 @@ tests:
         trigger: Work is in flight with no landed/failed outcome in the rolling 3-minute window, sustained for another 3 minutes.
 - interval: 1m
   input_series:
+  - series: loyal_fleet_movable_capital_usd{reserve="AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",unit="loyal-retail.service"}
+    values: 500x420
+  - series: loyal_fleet_movable_capital_usd{reserve="D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",unit="loyal-retail.service"}
+    values: 500x200 0 500x219
+  - series: loyal_fleet_movable_capital_usd{reserve="9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu",unit="loyal-retail.service"}
+    values: 0x420
+  alert_rule_test:
+  - eval_time: 5h59m
+    alertname: LoyalFleetCapitalStranded
+  - eval_time: 6h1m
+    alertname: LoyalFleetCapitalStranded
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+        reserve: AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z
+        unit: loyal-retail.service
+      exp_annotations:
+        action: Read the latest kamino_fleet_capacity log line for this reserve (held and movable capital, best destination, its room) and the fleet_opportunity_replanned and fleet_opportunity_deferred events. Find why the published moves do not land; do not raise limits or split holdings to clear it.
+        impact: Users in this reserve earn less than an eligible destination pays while that destination has room; no funds are at risk.
+        recovery: Confirm moves from this reserve land and its movable capital reads 0 on a fresh cycle. The series vanishing or a restart is not recovery.
+        summary: Earn capital in reserve AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z has had a better reserve with room for 6h
+        trigger: Some capital in this reserve had an eligible move to a better same-mint reserve with room on every planning cycle for 6 hours.
+- interval: 1m
+  input_series:
   - series: up{job="loyal",instance="127.0.0.1:9102",unit="loyal-retail.service"}
     values: '0x5'
   - series: node_systemd_unit_state{name="loyal-retail.service",state="active"}

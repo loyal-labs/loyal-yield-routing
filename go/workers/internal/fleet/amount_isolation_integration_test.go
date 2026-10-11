@@ -39,6 +39,7 @@ func TestFleetMissingAmountDoesNotBlockHealthyVault(t *testing.T) {
 	for i, identity := range []ReserveIdentity{source, target} {
 		snapshot.Reserves[identity.Address] = ReserveState{ReserveIdentity: identity, Slot: 1000, LastUpdateSlot: 999, SupplyAPYBPS: int64(100 + i*800), TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 300_000, DataHash: fmt.Sprintf("%064x", i+1)}
 	}
+	ampleCapacity(snapshot)
 	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
 	for _, metadata := range []string{`{"amount_semantics":"kamino_obligation_collateral_deposited_amount"}`, `{"amount_semantics":"unknown"}`, `[]`} {
 		exec(`UPDATE loyal_yield.vault_reserve_positions_current SET planning_metadata=$2::jsonb WHERE vault_id=$1`, bad, metadata)

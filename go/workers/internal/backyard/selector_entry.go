@@ -165,6 +165,7 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	}
 	var state struct {
 		Unwind        *UnwindIntent                      `json:"selectorUnwind"`
+		Tranche       json.RawMessage                    `json:"tranche"`
 		CanaryHistory map[string]pilotCanaryEntryReceipt `json:"pilotCanaryEntries"`
 		Entry         *SelectorEntry                     `json:"selectorEntry"`
 		Selector      struct {
@@ -217,6 +218,12 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	}
 	input.Quotes = currentQuotes
 	result = SelectOpportunity(input, state.Selector.Result.State)
+	activeTranche, err := decodeTrancheIntent(state.Tranche)
+	if err != nil {
+		return result, err
+	}
+	var tranche *trancheIntent
+	result, tranche = applyTrancheSelection(input, result, state.Selector.Result.State.Tranches, activeTranche, version+1, now)
 	input.canaryPriorEntry = state.Entry
 	var canaryReceipt *pilotCanaryEntryReceipt
 	result, canaryReceipt, err = selectPilotCanaryEntry(input, result, state.CanaryHistory)
@@ -282,7 +289,21 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		}
 	}
 	nextVersion := version
-	if entry != nil || unwind != nil {
+	if tranche != nil || result.WorkingLane != "" {
+		// A tranche start makes its source the working lane; a rotation
+		// makes the worst-yielding held lane the next source. Neither moves
+		// money.
+		nextVersion++
+		updated["generation"], _ = json.Marshal(nextVersion)
+		if tranche != nil {
+			if updated["tranche"], err = json.Marshal(tranche); err != nil {
+				return result, err
+			}
+			updated["workingLane"], _ = json.Marshal(tranche.Source)
+		} else {
+			updated["workingLane"], _ = json.Marshal(result.WorkingLane)
+		}
+	} else if entry != nil || unwind != nil {
 		nextVersion++
 		updated["generation"], _ = json.Marshal(nextVersion)
 		if entry != nil {
@@ -345,7 +366,7 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 	var raw, leverageTarget []byte
 	var paused, unwinding bool
 	var lane, reason string
-	if err := tx.QueryRow(ctx, `SELECT s.state->'selectorEntry',COALESCE((s.state->>'selectorEntryPaused')::boolean,false),COALESCE(s.state->'selectorUnwind','null'::jsonb) <> 'null'::jsonb,COALESCE(o.strategy_key,''),COALESCE(o.expected_effects->'decision'->>'reason',''),COALESCE(s.state->'leverageTarget','null'::jsonb) FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, operationID).Scan(&raw, &paused, &unwinding, &lane, &reason, &leverageTarget); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT s.state->'selectorEntry',COALESCE((s.state->>'selectorEntryPaused')::boolean,false),COALESCE(s.state->'selectorUnwind','null'::jsonb) <> 'null'::jsonb,COALESCE(o.strategy_key,''),COALESCE(o.expected_effects->'decision'->>'reason',''),COALESCE(s.state->'leverageTargets'->o.strategy_key,'null'::jsonb) FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, operationID).Scan(&raw, &paused, &unwinding, &lane, &reason, &leverageTarget); err != nil {
 		return err
 	}
 	// B2: a leverage_up borrow adds to the current lane under its stored

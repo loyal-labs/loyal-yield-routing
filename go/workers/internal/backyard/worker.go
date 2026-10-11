@@ -42,11 +42,14 @@ type startupLeaseHandoffRuntime struct {
 }
 
 type tickRuntime struct {
-	withdrawalHealth                 func(context.Context, WithdrawalHealth) error
-	observeWithdrawalHealth          func(context.Context) (Observation, error)
-	prepareInitialization            func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
-	buildInitialization              func(context.Context, string, KaminoInitializationRequest) error
-	refreshUnwind                    func(context.Context) error
+	withdrawalHealth        func(context.Context, WithdrawalHealth) error
+	observeWithdrawalHealth func(context.Context) (Observation, error)
+	prepareInitialization   func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
+	buildInitialization     func(context.Context, string, KaminoInitializationRequest) error
+	refreshUnwind           func(context.Context) error
+	// advanceTranche applies one tranche transition (handoff, completion or
+	// abandonment) from a quiet observation; true ends the tick.
+	advanceTranche                   func(context.Context, Observation) (bool, error)
 	completeUnwind                   func(context.Context, Observation) (bool, error)
 	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
 	advance                          func(context.Context, PersistedOperation) error
@@ -185,8 +188,9 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 			observation.Snapshot.ManualReason = err.Error()
 		}
 		observation.Snapshot.SelectorEntryPaused = planning.paused
-		applyLeverageTarget(&observation.Snapshot, planning.leverage)
-		if err := applyPartialWithdrawal(&observation.Snapshot, planning.partialWithdrawal); err != nil {
+		applyLeverageTarget(&observation.Snapshot, leverageTargetFor(planning.leverage, observation.Snapshot.RouteLane))
+		applyTranche(&observation.Snapshot, planning.tranche)
+		if err := applyPartialWithdrawal(&observation.Snapshot, partialWithdrawalFor(planning.partialWithdrawals, observation.Snapshot.RouteLane)); err != nil {
 			return err
 		}
 		return applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
@@ -207,9 +211,9 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	// stored target as the outer decision, or leverage_up never matches
 	// (live 2026-09-29: every tick 'prepared evidence does not match').
 	if reader, ok := p.journal.(interface {
-		LoadPartialWithdrawal(context.Context, string) (*partialWithdrawalState, error)
+		LoadPartialWithdrawal(context.Context, string, string) (*partialWithdrawalState, error)
 	}); ok {
-		partial, err := reader.LoadPartialWithdrawal(ctx, p.routeKey)
+		partial, err := reader.LoadPartialWithdrawal(ctx, p.routeKey, observation.Snapshot.RouteLane)
 		if err != nil {
 			return err
 		}
@@ -217,11 +221,20 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 			return err
 		}
 	}
+	if reader, ok := p.journal.(interface {
+		LoadTranche(context.Context, string) (*trancheIntent, error)
+	}); ok {
+		tranche, err := reader.LoadTranche(ctx, p.routeKey)
+		if err != nil {
+			return err
+		}
+		applyTranche(&observation.Snapshot, tranche)
+	}
 	observation.Snapshot.LeverageTargetLevel = 0
 	if reader, ok := p.journal.(interface {
-		LoadLeverageTarget(context.Context, string) (*LeverageTarget, error)
+		LoadLeverageTarget(context.Context, string, string) (*LeverageTarget, error)
 	}); ok {
-		target, err := reader.LoadLeverageTarget(ctx, p.routeKey)
+		target, err := reader.LoadLeverageTarget(ctx, p.routeKey, observation.Snapshot.RouteLane)
 		if err != nil {
 			return err
 		}
@@ -288,6 +301,12 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		},
 		buildInitialization: func(ctx context.Context, id string, r KaminoInitializationRequest) error {
 			return BuildSimulateAndPersistKaminoInitialization(ctx, database, rpc, view, id, manifest, r, credentials)
+		},
+		advanceTranche: func(ctx context.Context, observation Observation) (bool, error) {
+			if observation.planning == nil || observation.planning.tranche == nil {
+				return false, nil
+			}
+			return database.AdvanceTranche(ctx, productionRouteKey, observation.Snapshot, time.Now().UTC())
 		},
 		completeUnwind: func(ctx context.Context, observation Observation) (bool, error) {
 			if !observation.Snapshot.Unwind || !unwindComplete(observation.Snapshot) {
@@ -429,6 +448,15 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 			return err
 		}
 		if completed {
+			return nil
+		}
+	}
+	if w.runtime.advanceTranche != nil {
+		advanced, err := w.runtime.advanceTranche(ctx, observation)
+		if err != nil {
+			return err
+		}
+		if advanced {
 			return nil
 		}
 	}
@@ -826,7 +854,7 @@ func isPreSendHold(err error) bool {
 // notifySelectorCommit requests another serialized tick; never execute a
 // transaction from the collector. A queued wake survives an active tick.
 func (w *Worker) notifySelectorCommit(action string) {
-	if action != "ENTER" && action != "CANARY_ENTER" && action != "SWITCH" {
+	if action != "ENTER" && action != "CANARY_ENTER" && action != "SWITCH" && action != "TRANCHE" {
 		return
 	}
 	select {

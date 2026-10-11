@@ -109,10 +109,6 @@ func TestIndependentPriceRefusesUnknownAndStaleEvidence(t *testing.T) {
 		}},
 		{"no-block-time", func(a *chain.Account, r *priceFixtureRPC) { r.clock = nil }},
 		{"future-time", func(a *chain.Account, r *priceFixtureRPC) { c := now.Add(time.Second).Unix(); r.clock = &c }},
-		{"old-time", func(a *chain.Account, r *priceFixtureRPC) {
-			c := now.Add(-3*time.Hour - time.Second).Unix()
-			r.clock = &c
-		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,6 +120,22 @@ func TestIndependentPriceRefusesUnknownAndStaleEvidence(t *testing.T) {
 				t.Fatalf("unknown admitted: %v %v %v", rows, missing, err)
 			}
 		})
+	}
+}
+
+// A quiet reserve last refreshed hours ago is not missing evidence: its
+// share price is recorded at its own block time and nothing is reported
+// missing, so the maintenance hour completes instead of retrying every minute.
+func TestQuietReserveSharePriceIsRecordedAtItsBlockTime(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 30, 0, 0, time.UTC)
+	clock := now.Add(-5 * time.Hour).Unix()
+	r := &priceFixtureRPC{slot: 1000, clock: &clock, accounts: map[string]*chain.Account{benchmarkReserve: reserveFixture()}}
+	rows, missing, err := ProbeSharePrices(context.Background(), r, []string{benchmarkReserve}, now)
+	if err != nil || len(missing) != 0 || len(rows) != 1 {
+		t.Fatalf("quiet reserve was not priced: rows=%+v missing=%v err=%v", rows, missing, err)
+	}
+	if at := time.Unix(clock, 0).UTC(); !rows[0].ObservedAt.Equal(at) || !rows[0].ObservedHour.Equal(at.Truncate(time.Hour)) || rows[0].Slot != 900 {
+		t.Fatalf("quiet reserve price = %+v, want its last update at %s", rows[0], at)
 	}
 }
 func TestIndependentPriceBoundedBatchAndTransportFailure(t *testing.T) {

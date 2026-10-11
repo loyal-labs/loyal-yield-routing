@@ -234,14 +234,14 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 	post.Snapshot.DebtIdleRaw = 0
 	post.Snapshot.CutoverDrain = false // cost-only bridge state, not a queue change
 	post.Snapshot.SquadsIdleRaw += int64(upperUSDC)
-	post.Snapshot.StrategyNAVRaw = post.Snapshot.SquadsIdleRaw
+	post.Snapshot.StrategyNAVRaw = int64(withOtherLanesNAV(uint64(post.Snapshot.SquadsIdleRaw), s))
 	tailDecision := Decision{Action: ReportNAV, StrategyKey: s.RouteLane}
 	tailEffects, _, _, err := bridgeExpectedEffects(tailDecision, uint64(s.VoltrIdleRaw), 0, uint64(post.Snapshot.SquadsIdleRaw))
 	if err != nil {
 		return plan, err
 	}
 	tailEffects.Kind = "bridge"
-	tailEffects.ReturnData = expectedAdaptorReturnData(uint64(post.Snapshot.SquadsIdleRaw))
+	tailEffects.ReturnData = expectedAdaptorReturnData(uint64(post.Snapshot.StrategyNAVRaw))
 	var blockhash string
 	var height int64
 	switch r := request.(type) {
@@ -257,7 +257,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 		return plan, err
 	}
 	tailRequest := BridgeBuildRequest{Action: ReportNAV, Policy: navPolicy, AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
-		Report:          BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(post.Snapshot.SquadsIdleRaw), SnapshotDigest: s.ReportSnapshotDigest},
+		Report:          BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(post.Snapshot.StrategyNAVRaw), SnapshotDigest: s.ReportSnapshotDigest},
 		RecentBlockhash: blockhash, LastValidBlockHeight: height}
 	// The tail NAV, the current wire and every swap leg are priced by
 	// independent reads: run them at once.
