@@ -13,13 +13,17 @@ const routeRefreshValuationSource = "unsigned-reserve-refresh-simulation"
 // permissionless reserve refreshes. Custody, obligation, receipt and policy
 // accounts are read-only to these instructions. The simulation fee payer is
 // excluded: its virtual fee must never become observed operational spending.
-func simulateRouteValuationRefresh(ctx context.Context, c *chain.Client, route RuntimeRoute, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+func simulateRouteValuationRefresh(ctx context.Context, c *chain.Client, routes []RuntimeRoute, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+	lanes := make([]string, 0, len(routes))
+	for _, route := range routes {
+		lanes = append(lanes, route.Lane)
+	}
 	for _, address := range addresses {
 		if address == bridgeDelegate {
 			return 0, nil, fmt.Errorf("valuation capture includes simulated fee payer")
 		}
 	}
-	instructions, err := budgetReserveRefreshInstructions(route.Lane)
+	instructions, err := budgetReserveRefreshInstructionsForLanes(lanes)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -32,7 +36,7 @@ func simulateRouteValuationRefresh(ctx context.Context, c *chain.Client, route R
 	}
 	optional := optionalLifecycleObligations(addresses)
 	optional = append(optional, bridgeStrategyReceipt)
-	slot, accounts, err := simulateBudgetReserveRefreshOptional(ctx, c, route.Lane, addresses, optional, minimumSlot)
+	slot, accounts, err := simulateLanesReserveRefreshOptional(ctx, c, lanes, addresses, optional, minimumSlot)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -63,19 +67,24 @@ func validateRouteValuationCapture(slot int64, accounts []ConfirmedAccount, addr
 	return nil
 }
 
-// selectorValuationAddresses retains active valuation/execution inputs and
-// every lane's ownership accounts. Unowned lanes' exclusive economic caches
-// cannot affect this NAV and need not consume simulation packet space.
-func selectorValuationAddresses(route RuntimeRoute, addresses []string) []string {
+// selectorValuationAddresses retains the valued lanes' (working plus held)
+// valuation/execution inputs and every lane's ownership accounts. Unowned
+// lanes' exclusive economic caches cannot affect this NAV and need not
+// consume simulation packet space.
+func selectorValuationAddresses(routes []RuntimeRoute, addresses []string) []string {
 	protected := map[string]bool{}
-	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
+	for _, address := range pinnedRouteNAVAddressesForRoutes(routes) {
 		protected[address] = true
 	}
 	economics := func(r RuntimeRoute) []string {
 		return []string{r.Kamino.Market, r.Kamino.CollateralReserve, r.Kamino.DebtReserve, r.CollateralLiquiditySupply, r.DebtLiquiditySupply, r.DebtFeeReceiver}
 	}
-	for _, address := range economics(route) {
-		protected[address] = true
+	valued := map[string]bool{}
+	for _, route := range routes {
+		valued[route.Lane] = true
+		for _, address := range economics(route) {
+			protected[address] = true
+		}
 	}
 	discard := map[string]bool{}
 	for _, lane := range earnLaneIDs(true) {
@@ -84,7 +93,10 @@ func selectorValuationAddresses(route RuntimeRoute, addresses []string) []string
 			return addresses
 		}
 		protected[other.Kamino.Obligation], protected[other.CollateralCustody] = true, true
-		if lane != route.Lane {
+		if other.DebtCustody != "" {
+			protected[other.DebtCustody] = true
+		}
+		if !valued[lane] {
 			for _, address := range economics(other) {
 				discard[address] = true
 			}

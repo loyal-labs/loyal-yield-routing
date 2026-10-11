@@ -41,6 +41,11 @@ func applyUnwindIntent(s *Snapshot, intent *UnwindIntent) error {
 		return err
 	}
 	if s.RouteLane != intent.SourceLane {
+		// Another held lane's hard-LTV protection runs first; the unwind
+		// resumes on its own lane once that risk is handled.
+		if s.CrossLaneHardLTV {
+			return nil
+		}
 		return fmt.Errorf("unwind_source_changed_before_reconciliation")
 	}
 	// Amount-envelope growth is a scoped admission hold, not an integrity

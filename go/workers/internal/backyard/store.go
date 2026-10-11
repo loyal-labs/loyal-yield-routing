@@ -26,7 +26,17 @@ const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_
 
 const RouteStateForUpdate = `SELECT state_version, state FROM loyal_yield.multiply_route_states WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() FOR UPDATE`
 
-const AcquireRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_owner = $2, lease_expires_at = clock_timestamp() + ($3 * interval '1 millisecond'), fencing_token = fencing_token + 1, updated_at = clock_timestamp() WHERE route_key = $1 AND (lease_owner IS NULL OR lease_expires_at <= clock_timestamp()) RETURNING fencing_token, lease_expires_at`
+// AcquireRouteLeaseSQL also moves the single-slot per-lane state written by
+// one-lane releases ('leverageTarget', 'partialWithdrawal') into its per-lane
+// map ('leverageTargets', 'partialWithdrawals'), keyed by the entry's own
+// lane, before this instance reads anything. Values, generations and the
+// state version are unchanged; every reader and writer uses the maps.
+const AcquireRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_owner = $2, lease_expires_at = clock_timestamp() + ($3 * interval '1 millisecond'), fencing_token = fencing_token + 1, updated_at = clock_timestamp(),
+	state = CASE WHEN state ? 'leverageTarget' OR state ? 'partialWithdrawal' THEN (state - 'leverageTarget' - 'partialWithdrawal')
+		|| CASE WHEN jsonb_typeof(state->'leverageTarget') = 'object' THEN jsonb_build_object('leverageTargets', COALESCE(state->'leverageTargets', '{}'::jsonb) || jsonb_build_object(state->'leverageTarget'->>'lane', state->'leverageTarget')) ELSE '{}'::jsonb END
+		|| CASE WHEN jsonb_typeof(state->'partialWithdrawal') = 'object' THEN jsonb_build_object('partialWithdrawals', COALESCE(state->'partialWithdrawals', '{}'::jsonb) || jsonb_build_object(state->'partialWithdrawal'->>'lane', state->'partialWithdrawal')) ELSE '{}'::jsonb END
+		ELSE state END
+	WHERE route_key = $1 AND (lease_owner IS NULL OR lease_expires_at <= clock_timestamp()) RETURNING fencing_token, lease_expires_at`
 
 const RefreshRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_expires_at = clock_timestamp() + ($4 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() RETURNING lease_expires_at`
 
@@ -722,10 +732,14 @@ func (d *Database) recordDecisionTx(
 	if active {
 		return DecisionRecord{}, fmt.Errorf("one nonterminal operation already exists")
 	}
-	partial, err := decodePartialWithdrawal(setupState["partialWithdrawal"])
+	partials, err := decodePartialWithdrawals(setupState["partialWithdrawals"])
 	if err != nil {
 		return DecisionRecord{}, err
 	}
+	// The per-lane view decides for its own lane: only that lane's release
+	// sequence binds this decision.
+	partialLane := observation.Snapshot.RouteLane
+	partial := partialWithdrawalFor(partials, partialLane)
 	if decision.Action != Hold && decision.Action != HoldManualRecovery && partial != nil && (partial.Generation > stateVersion || partial.Lane != observation.Snapshot.RouteLane || partial.OperationID != observation.Snapshot.PartialWithdrawalOperationID || partial.LTVBPS != observation.Snapshot.PartialWithdrawalLTVBPS) {
 		return DecisionRecord{}, budgetHold("partial_withdrawal_state_changed")
 	}
@@ -745,7 +759,8 @@ func (d *Database) recordDecisionTx(
 	idHash := sha256.Sum256([]byte(persistedIdempotencyKey))
 	operationID := hex.EncodeToString(idHash[:])
 	if decision.Reason == leverageUpReason {
-		target, err := decodeLeverageTarget(setupState["leverageTarget"])
+		targets, err := decodeLeverageTargets(setupState["leverageTargets"])
+		target := leverageTargetFor(targets, decision.StrategyKey)
 		if err != nil || target == nil || target.Lane != decision.StrategyKey || target.OperationID != "" || target.BorrowRaw != uint64(decision.AmountRaw) {
 			return DecisionRecord{}, budgetHold("leverage_authorization_consumed_or_changed")
 		}
@@ -754,7 +769,7 @@ func (d *Database) recordDecisionTx(
 		if err != nil {
 			return DecisionRecord{}, err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{leverageTarget}',$2::jsonb,true) WHERE route_key=$1`, routeKey, string(raw)); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=`+setLeverageTargetSQL("$3", "$2")+` WHERE route_key=$1`, routeKey, string(raw), target.Lane); err != nil {
 			return DecisionRecord{}, err
 		}
 	}
@@ -775,7 +790,7 @@ func (d *Database) recordDecisionTx(
 		if err != nil {
 			return DecisionRecord{}, err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawal}',$2::jsonb,true) WHERE route_key=$1`, routeKey, string(raw)); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawals}',COALESCE(state->'partialWithdrawals','{}'::jsonb)||jsonb_build_object($3::text,$2::jsonb),true) WHERE route_key=$1`, routeKey, string(raw), decision.StrategyKey); err != nil {
 			return DecisionRecord{}, err
 		}
 		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=expected_effects || jsonb_build_object('partialWithdrawal',$2::jsonb) WHERE operation_id=$1`, operationID, string(raw)); err != nil {
@@ -783,7 +798,7 @@ func (d *Database) recordDecisionTx(
 		}
 
 	} else if partial != nil && decision.Action != HoldManualRecovery && observation.Snapshot.PartialWithdrawalOperationID == partial.OperationID && partialWithdrawalTerminal(observation.Snapshot) {
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=state-'partialWithdrawal' WHERE route_key=$1`, routeKey); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawals}',COALESCE(state->'partialWithdrawals','{}'::jsonb)-$2::text,true) WHERE route_key=$1`, routeKey, partialLane); err != nil {
 			return DecisionRecord{}, err
 		}
 	}

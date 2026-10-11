@@ -61,7 +61,7 @@ type debtClearRouteState struct {
 	Authority *debtClearAuthority           `json:"debtClearAuthority"`
 	Receipts  map[string]debtClearAuthority `json:"debtClearReceipts"`
 	Unwind    *UnwindIntent                 `json:"selectorUnwind"`
-	Target    *LeverageTarget               `json:"leverageTarget"`
+	Targets   map[string]LeverageTarget     `json:"leverageTargets"`
 }
 
 func newDebtClearAuthority(m RouteManifest, routeKey, id string, intent UnwindIntent) (debtClearAuthority, error) {
@@ -204,7 +204,7 @@ func debtClearRequired(m RouteManifest, request any, effects ExpectedEffects, pl
 			}
 		}
 	}
-	if state.Unwind != nil || s.Unwind || s.CutoverDrain || s.LeverageTargetLevel == 1 || state.Target != nil && state.Target.Lane == s.RouteLane && state.Target.Level == 1 {
+	if state.Unwind != nil || s.Unwind || s.CutoverDrain || s.LeverageTargetLevel == 1 || leverageTargetFor(state.Targets, s.RouteLane) != nil && state.Targets[s.RouteLane].Level == 1 {
 		return true, nil
 	}
 	// Re-evaluate the actual partial planner branch, including its fallback
