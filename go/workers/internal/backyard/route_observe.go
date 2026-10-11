@@ -388,9 +388,6 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
 		entryUSDC = room
 		applyBorrowCapacity(&base.Snapshot, position, accounts, route)
-		if err := applyOverflowRoom(ctx, &base.Snapshot, slot, accounts, route, runtime.refreshValuation); err != nil {
-			fmt.Fprintf(os.Stderr, "backyard-rwa-worker: overflow room unknown lane=%s: %v\n", route.Lane, err)
-		}
 	}
 	if err := applyDebtTerm(&base.Snapshot, accounts, route); err != nil {
 		return Observation{}, nil, err
@@ -399,6 +396,11 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	base.Snapshot.CapacityRaw = int64(entryUSDC)
 	base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 	base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
+	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
+		if err := applyOverflowRoom(ctx, &base.Snapshot, slot, route, runtime.refreshValuation); err != nil {
+			fmt.Fprintf(os.Stderr, "backyard-rwa-worker: overflow room unknown lane=%s: %v\n", route.Lane, err)
+		}
+	}
 	base.Snapshot.PolicyLimitRaw = int64(strategyTwoBridgeLegCapRaw)
 	observedAt := runtime.now()
 	if err := applyRouteNAVSnapshot(&base.Snapshot, nav, observedAt); err != nil {
