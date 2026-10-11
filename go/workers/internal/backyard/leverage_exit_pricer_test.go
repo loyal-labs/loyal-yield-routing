@@ -57,11 +57,11 @@ func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	need, err := leverageExitNeedsCycles(context.Background(), rpc, client, m, testPolicies(t), route, o.Snapshot, rows)
+	need, err := leverageExitNeedsCycles(context.Background(), rpc, nil, client, m, testPolicies(t), route, o.Snapshot, rows)
 	if err != nil || !need {
 		t.Fatalf("1.75x needs cycles: %v %v", need, err)
 	}
-	legs, post, cash, steps, first, err := priceLeverageExitCycles(context.Background(), rpc, client, m, testPolicies(t), route, o.Snapshot, rows, 42, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 0)
+	legs, post, cash, steps, first, err := priceLeverageExitCycles(context.Background(), rpc, nil, client, m, testPolicies(t), route, o.Snapshot, rows, 42, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
 		t.Fatalf("projection %+v -> %+v", before, after)
 	}
 	s := o.Snapshot
-	need, err = leverageExitNeedsCycles(context.Background(), rpc, client, m, testPolicies(t), route, s, post)
+	need, err = leverageExitNeedsCycles(context.Background(), rpc, nil, client, m, testPolicies(t), route, s, post)
 	if err != nil || need {
 		t.Fatalf("post-cycle still needs cycles: %v %v", need, err)
 	}
@@ -151,7 +151,7 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 	putScaledFraction(accountAt(accounts15, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(big.NewInt(33_333_333), 60))
 	o15.Snapshot.PositionDebtRaw, o15.Snapshot.PositionDebtValueRaw, o15.Snapshot.LTVBPS = 33_333_333, 33_333_333, 3333
 	_, rows15, _ := confirmedAccounts(context.Background(), rpc15, payoffWindowAddresses(route), 42)
-	if need, err := leverageExitNeedsCycles(context.Background(), rpc15, client15, m15, testPolicies(t), route, o15.Snapshot, rows15); err != nil || need {
+	if need, err := leverageExitNeedsCycles(context.Background(), rpc15, nil, client15, m15, testPolicies(t), route, o15.Snapshot, rows15); err != nil || need {
 		t.Fatalf("1.5x needs cycles: %v %v", need, err)
 	}
 }
@@ -196,7 +196,7 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 	if leverageExitMayNeedCycles(live) {
 		t.Fatal("live 1.5x flagged for cycles")
 	}
-	if need, err := leverageExitNeedsCycles(context.Background(), nil, broken, RouteManifest{}, testPolicies(t), autoAUTOPYUSD, live, nil); need || err != nil {
+	if need, err := leverageExitNeedsCycles(context.Background(), nil, nil, broken, RouteManifest{}, testPolicies(t), autoAUTOPYUSD, live, nil); need || err != nil {
 		t.Fatalf("1.5x touched RPC/Jupiter: %v %v", need, err)
 	}
 	o, m, rpc, _, accounts, route := leverage175Fixture(t)

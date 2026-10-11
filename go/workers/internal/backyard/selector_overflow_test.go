@@ -141,7 +141,7 @@ func TestOverflowMovesAUTOIntoTheWYLDSLaneWhenPYUSDHasNoRoom(t *testing.T) {
 	borrowed := leverageSnapshot(1.5)
 	borrowed.RouteLane, borrowed.StrategyKey = autoAUTOWYLDSLane, autoAUTOWYLDSLane
 	borrowed.DebtIdleRaw = 100_000_000
-	if got := Decide(borrowed); got.Action != SwapDebtToCollateralStep || !hastraConversionAction(got.StrategyKey, got.Action) {
+	if got := Decide(borrowed); got.Action != SwapDebtToCollateralStep || !conversionVenueHastra(Decision{Action: got.Action, StrategyKey: got.StrategyKey}) {
 		t.Fatalf("borrowed wYLDS not staked through Hastra: %+v", got)
 	}
 }
@@ -225,7 +225,7 @@ func TestTermDeleverUnderOneDayWithoutRoom(t *testing.T) {
 	}
 	released := s
 	released.CollateralIdleRaw, released.CollateralIdleValueRaw = 900_000_000, 900_000_000
-	if got := Decide(released); got.Action != SwapCollateralToDebtStep || !hastraConversionAction(got.StrategyKey, got.Action) {
+	if got := Decide(released); got.Action != SwapCollateralToDebtStep || !conversionVenueHastra(Decision{Action: got.Action, StrategyKey: got.StrategyKey}) {
 		t.Fatalf("released AUTO did not redeem to wYLDS: %+v", got)
 	}
 	// With room, the same 12 hours keeps the lane alive instead.
@@ -371,7 +371,7 @@ func TestWYLDSLanePastHardLTVIsProtectedFirst(t *testing.T) {
 	}
 	s.MonitorsArmed = false
 	d := Decide(s)
-	if d.StrategyKey != autoAUTOWYLDSLane || d.Reason != "hard_ltv_buffer_swap" || d.Action != SwapCollateralToDebtStep || !hastraConversionAction(d.StrategyKey, d.Action) {
+	if d.StrategyKey != autoAUTOWYLDSLane || d.Reason != "hard_ltv_buffer_swap" || d.Action != SwapCollateralToDebtStep || !conversionVenueHastra(Decision{Action: d.Action, StrategyKey: d.StrategyKey}) {
 		t.Fatalf("risky wYLDS lane did not get the hard-LTV decision: %+v", d)
 	}
 }

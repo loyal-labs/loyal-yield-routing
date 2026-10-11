@@ -12,7 +12,7 @@ const (
 	topupSwapReason       = "topup_usdc_requires_collateral"
 	topupAllocationReason = "topup_voltr_idle"
 	topupDepositReason    = "topup_collateral_deposit"
-	// A wYLDS lane's payoff residue stakes to collateral (wyldsDebtLane).
+	// A wYLDS lane's payoff residue stakes to collateral (debtToUSDCConvertible).
 	debtResidueStakeReason = "debt_residue_to_collateral"
 )
 
@@ -33,8 +33,11 @@ func debtTopupLane(lane string) bool {
 // laneSwap reads the edge table the builder signs from, so the planner never
 // picks a swap the lane's policy lacks (AUTO and OnRe have no USDC->debt edge).
 func laneSwap(lane string, action Action) bool {
-	if wyldsDebtLane(lane) {
-		return hastraConversionAction(lane, action)
+	if _, hastra := hastraConversionLeg(action, lane); hastra {
+		return true
+	}
+	if action == SwapDebtToUSDCStep && !debtToUSDCConvertible(lane) {
+		return false
 	}
 	_, _, _, _, err := jupiterEdgeForRoute(action, lane)
 	return err == nil

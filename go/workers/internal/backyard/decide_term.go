@@ -2,10 +2,7 @@ package backyard
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math/big"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // Term debt (KLend v1.25, decoded in programs/kamino). A borrow on a term
@@ -40,46 +37,39 @@ const (
 	termMaturityUnknown int64 = -1
 )
 
-// observedDebtTermEnd reads a lane's borrow maturity from one batch: the
-// obligation's borrow slot on the lane's debt reserve and that reserve's
-// term. Zero when the obligation is absent, holds no borrow there, or the
-// reserve has no term; termMaturityUnknown when term debt has no borrow
-// time.
+// observedDebtTermEnd is a lane's borrow maturity from one batch: its
+// obligation's term end (wyldsTermEnd), or the debt reserve's market-wide
+// maturity when that is earlier. Zero when the obligation is absent, owes
+// nothing there, or the reserve has no term; termMaturityUnknown when term
+// debt has no borrow time.
 func observedDebtTermEnd(accounts []ConfirmedAccount, route RuntimeRoute) (int64, error) {
-	obligationAccount := accountAt(accounts, route.Kamino.Obligation)
-	if obligationAccount.Address != route.Kamino.Obligation || obligationAccount.Lamports == 0 {
+	account := accountAt(accounts, route.Kamino.Obligation)
+	if account.Address != route.Kamino.Obligation || account.Lamports == 0 {
 		return 0, nil
 	}
-	reserve, err := kamino.DecodeReserve(chainAccount(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtReserve))
+	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
 	if err != nil {
-		return 0, fmt.Errorf("decode term debt reserve: %w", err)
+		return 0, err
 	}
-	if reserve.DebtTermSeconds == 0 && reserve.DebtMaturityTimestamp == 0 {
+	terms := reserve.terms
+	if terms.DebtTermSeconds == 0 && terms.DebtMaturityTimestamp == 0 {
 		return 0, nil
 	}
-	obligation, err := kamino.DecodeObligation(chainAccount(obligationAccount, route.Kamino.Obligation))
+	obligation, err := decodeKaminoObligation(account, route.Kamino)
+	if err != nil || obligation.debtRaw == 0 {
+		return 0, err
+	}
+	end, ok, err := wyldsTermEnd(accounts, route)
 	if err != nil {
-		return 0, fmt.Errorf("decode term debt obligation: %w", err)
+		return 0, err
 	}
-	debtReserve := kaminoKey(route.Kamino.DebtReserve)
-	for _, borrow := range obligation.Borrows {
-		if borrow.Reserve != debtReserve || kamino.U128(borrow.BorrowedAmountSF).Sign() == 0 {
-			continue
-		}
-		end := int64(0)
-		if reserve.DebtTermSeconds != 0 {
-			slotEnd, ok := borrow.DebtTermEnd(reserve)
-			if !ok || slotEnd > 1<<62 {
-				return termMaturityUnknown, nil
-			}
-			end = int64(slotEnd)
-		}
-		if market := reserve.DebtMaturityTimestamp; market != 0 && market <= 1<<62 && (end == 0 || int64(market) < end) {
-			end = int64(market)
-		}
-		return end, nil
+	if terms.DebtTermSeconds != 0 && (!ok || end > 1<<62) {
+		return termMaturityUnknown, nil
 	}
-	return 0, nil
+	if market := terms.DebtMaturityTimestamp; market != 0 && market <= 1<<62 && (!ok || market < end) {
+		end = market
+	}
+	return int64(end), nil
 }
 
 // applyDebtTerm stamps the working lane's maturity and the batch's chain

@@ -3,7 +3,6 @@ package backyard
 import (
 	"context"
 	"encoding/binary"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"math"
 	"math/big"
 
@@ -57,8 +56,8 @@ func selectorProspectiveUpper(accounts []ConfirmedAccount, route RuntimeRoute, s
 		return 0, budgetHold("invalid_payoff_clock")
 	}
 	config := a.Data[kaminoReserveConfigOffset:]
-	terms, err := kamino.DecodeReserve(chainAccount(a, address))
-	if err != nil || terms.SupportedInterestTerms() != nil {
+	terms := reserve.terms
+	if !kaminoReserveTermOpen(reserve, now) {
 		return 0, budgetHold("unsupported_payoff_interest_terms")
 	}
 	// Term debt accrues on the same curve; the priced windows must end

@@ -7,7 +7,6 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 )
 
 // Overflow (owner decision 2026-10-11). AUTO/AUTO/PYUSD is Earn Max's AUTO
@@ -73,26 +72,13 @@ func selectorDestinationLane(lane string) bool {
 // set: it is entered only by an overflow tranche from its source.
 const overflowLaneBlockedReason = "overflow_lane_entered_by_overflow_only"
 
-// wyldsDebtLane: the lane borrows wYLDS. Hastra converts its debt to
-// collateral (stake deposit), collateral to debt (stake redeem) and USDC to
-// debt (mint deposit) instantly; debt to USDC is Hastra's admin-settled
-// redemption queue (43-82 min), which Backyard never uses, so a wYLDS
-// leftover stakes to collateral instead.
-func wyldsDebtLane(lane string) bool {
-	route, err := runtimeRoute(lane)
-	return err == nil && route.Kamino.DebtMint == hastra.WYLDSMint.String()
-}
-
 // debtToUSDCConvertible reports a lane whose debt leftovers may convert to
-// USDC; false on wYLDS debt.
+// USDC. A Hastra lane's wYLDS debt redeems to USDC only through Hastra's
+// admin-settled queue (hastraConversionLeg), which Backyard never uses, so
+// its leftovers stake to collateral instead.
 func debtToUSDCConvertible(lane string) bool {
-	return !wyldsDebtLane(lane)
-}
-
-// hastraConversionAction reports the conversions a wYLDS lane makes through
-// Hastra instead of Jupiter.
-func hastraConversionAction(lane string, action Action) bool {
-	return wyldsDebtLane(lane) && (action == SwapDebtToCollateralStep || action == SwapCollateralToDebtStep || action == SwapUSDCToDebtStep)
+	route, err := runtimeRoute(lane)
+	return err != nil || !hastraLane(route)
 }
 
 // overflowSourceLTVBPS is the LTV an overflow source releases to: the live

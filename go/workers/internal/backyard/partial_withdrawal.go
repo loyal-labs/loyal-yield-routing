@@ -25,7 +25,7 @@ const (
 	partialStageReason      = "withdrawal_partial_stage"
 	partialDebtToUSDCReason = "withdrawal_partial_debt_to_usdc"
 	// A wYLDS lane's leftover debt cash stakes to collateral instead
-	// (wyldsDebtLane); the collateral leg then converts it.
+	// (debtToUSDCConvertible); the collateral leg then converts it.
 	partialDebtToCollateralReason = "withdrawal_partial_debt_to_collateral"
 	// At most this many release rounds (each keeps LTV under the release
 	// ceiling); a shortfall under 90% of equity at 1.5x needs <= 6. More

@@ -18,7 +18,7 @@ import (
 // patched), the debt cash left, and the payoff window (7 + 3N steps) the
 // final release must be sized over. Zero cycles returns the inputs as-is.
 // The legs' costs are left to the caller's concurrent cost reads.
-func priceLeverageExitCycles(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, policies installedPolicies, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, *KaminoPayoffBound, error) {
+func priceLeverageExitCycles(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount, slot int64, blockhash LatestBlockhash, cash uint64) ([]phase3BridgeExitCost, []ConfirmedAccount, uint64, int64, *KaminoPayoffBound, error) {
 	accounts = append([]ConfirmedAccount(nil), accounts...)
 	var legs []phase3BridgeExitCost
 	idle := uint64(max(s.CollateralIdleRaw, 0))
@@ -32,7 +32,7 @@ func priceLeverageExitCycles(ctx context.Context, rpc *chain.Client, client *jup
 		}
 		// Does this release (plus idle) fund the full payoff? Probe-quote it.
 		buffer := idle + limit.LiquidityRaw
-		probe, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(buffer)}, buffer, cash, slot)
+		probe, err := prepareConversionQuoteEvidence(ctx, rpc, view, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(buffer)}, buffer, cash, slot)
 		if err != nil {
 			return nil, nil, 0, 0, nil, err
 		}
@@ -40,7 +40,7 @@ func priceLeverageExitCycles(ctx context.Context, rpc *chain.Client, client *jup
 			payoff := limit.Payoff
 			first = &payoff
 		}
-		if cash+probe.Request.MinimumOutputRaw >= limit.Payoff.UpperDebtRaw {
+		if cash+probe.intent().MinimumOutputRaw >= limit.Payoff.UpperDebtRaw {
 			return legs, accounts, cash, int64(7 + 3*cycles), first, nil
 		}
 		if cycles == leverageExitMaxCycles {
@@ -76,7 +76,7 @@ func priceLeverageExitCycles(ctx context.Context, rpc *chain.Client, client *jup
 			// probe already is its quote.
 			swap := probe
 			if idle != buffer {
-				if swap, err = prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(idle)}, idle, cash, slot); err != nil {
+				if swap, err = prepareConversionQuoteEvidence(ctx, rpc, view, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(idle)}, idle, cash, slot); err != nil {
 					return nil, nil, 0, 0, nil, err
 				}
 			}
@@ -84,8 +84,11 @@ func priceLeverageExitCycles(ctx context.Context, rpc *chain.Client, client *jup
 			if err != nil {
 				return nil, nil, 0, 0, nil, err
 			}
-			legs = append(legs, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: swap.Request.AmountRaw, Template: input})
-			cash += swap.Request.MinimumOutputRaw
+			legs = append(legs, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: swap.intent().AmountRaw, Template: input})
+			// A Hastra conversion carries no minimum: its quoted output is
+			// what it pays at the quoted price; the repay below is re-sized
+			// from the cash it actually paid (exitPartialRepayWireRaw).
+			cash += swap.intent().MinimumOutputRaw
 			idle = 0
 		}
 		// Partial repay of the guaranteed cash (never the whole debt).
@@ -208,7 +211,7 @@ func putLittleFraction(dst []byte, value *big.Int) error {
 // non-mutating step (a NAV report) from the observed accounts. ok=false:
 // one release still funds the payoff, so the installed path prices it.
 func priceLeverageExitFromCurrent(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, d Decision, request any, effects ExpectedEffects, route RuntimeRoute, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
-	need, err := leverageExitNeedsCycles(ctx, rpc, client, m, o.policies, route, o.Snapshot, accounts)
+	need, err := leverageExitNeedsCycles(ctx, rpc, view, client, m, o.policies, route, o.Snapshot, accounts)
 	if err != nil || !need {
 		return phase3BridgeAdmission{}, err, err != nil
 	}
@@ -237,7 +240,7 @@ func priceLeverageExitAfterRelease(ctx context.Context, rpc *chain.Client, view 
 	// The 1.75x -> 1.5x partial release always prices from its poststate:
 	// it is a de-levering step, never a payoff funding.
 	if d.Reason != leverageDownPartialReleaseReason {
-		need, err := leverageExitNeedsCycles(ctx, rpc, client, m, o.policies, route, o.Snapshot, accounts)
+		need, err := leverageExitNeedsCycles(ctx, rpc, view, client, m, o.policies, route, o.Snapshot, accounts)
 		if err != nil || !need {
 			return phase3BridgeAdmission{}, err, err != nil
 		}
@@ -266,7 +269,7 @@ func priceLeverageExitAfterRelease(ctx context.Context, rpc *chain.Client, view 
 
 // leverageExitNeedsCycles: one safe release plus idle collateral, swapped at
 // its quote minimum, cannot fund the full payoff.
-func leverageExitNeedsCycles(ctx context.Context, rpc *chain.Client, client *jupiter.Client, m RouteManifest, policies installedPolicies, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount) (bool, error) {
+func leverageExitNeedsCycles(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount) (bool, error) {
 	// Pure pre-check first (no RPC, no Jupiter): a position the value-level
 	// planner clears with zero cycles, even with a 3% margin on the debt,
 	// keeps the installed single-release path. Only 1.75x-like or borderline
@@ -285,11 +288,11 @@ func leverageExitNeedsCycles(ctx context.Context, rpc *chain.Client, client *jup
 	}
 	cash := uint64(max(debtCashRaw(s), 0))
 	buffer := uint64(max(s.CollateralIdleRaw, 0)) + limit.LiquidityRaw
-	probe, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(buffer)}, buffer, cash, slot)
+	probe, err := prepareConversionQuoteEvidence(ctx, rpc, view, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(buffer)}, buffer, cash, slot)
 	if err != nil {
 		return false, err
 	}
-	return cash+probe.Request.MinimumOutputRaw < limit.Payoff.UpperDebtRaw, nil
+	return cash+probe.intent().MinimumOutputRaw < limit.Payoff.UpperDebtRaw, nil
 }
 
 // projectLeverageExitRelease applies only a release to cost-only copies.
