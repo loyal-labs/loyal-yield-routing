@@ -59,7 +59,8 @@ func TestReserveRatesRefuseWhatTheyCannotPrice(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*Reserve){
 		"unknown basis":  func(r *Reserve) { r.InterestRateBasis = 2 },
-		"term debt":      func(r *Reserve) { r.TermDebtConfig[3] = 1 },
+		"debt term":      func(r *Reserve) { r.DebtTermSeconds = 2_592_000 },
+		"debt maturity":  func(r *Reserve) { r.DebtMaturityTimestamp = 1_800_000_000 },
 		"early repay":    func(r *Reserve) { r.EarlyRepayRemainingInterestPct = 5 },
 		"take above 100": func(r *Reserve) { r.ProtocolTakeRatePct = 101 },
 	} {
