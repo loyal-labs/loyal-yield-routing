@@ -11,6 +11,7 @@ package backyard
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1353,5 +1354,134 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 	_, err = db.observeSharedCustodyAttributionEvidence(ctx, lease, cfg, 0)
 	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_unknown_overflow" {
 		t.Fatalf("unrecognized rows beyond the bound did not hold: %s", reason)
+	}
+}
+
+// An unknown terminal record is judged inert by its signed wire alone: a
+// legacy wire the pinned delegate signed whose static keys exclude the
+// shared custody cannot move it, whatever its action label or whether the
+// current compiler would still emit those bytes. 2026-10-11: ~780 failed
+// NAV reports signed by an older compiler stopped recompiling byte for byte,
+// overflowed the unknown bound, and held a 49.7k PYUSD borrow in custody.
+// A wire naming the custody, a v0 wire (lookup tables can load accounts its
+// static keys do not show), or a wire that fails the production validator is
+// not recognized and falls to the expiry classification.
+func TestSignedWireExcludesCustodyJudgesTheSignedBytes(t *testing.T) {
+	t.Parallel()
+	manifest := embeddedTestManifest(t)
+	delegateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, ed25519.SeedSize))
+	delegate := publicKeyFromBytes(delegateKey.Public().(ed25519.PublicKey))
+	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, "auto-wire-inert")
+	cfg.Delegate = delegate
+	row := func(action Action, build BuildResult) custodyAttributionUnknownRow {
+		return custodyAttributionUnknownRow{
+			OperationID: string(action), Action: string(action), LastValidBlockHeight: build.LastValidBlockHeight,
+			SignedWirePresent: true, SignedWire: build.SignedWire, SignedWireSHA256: build.SignedWireSHA256,
+			TransactionSignature: build.TransactionSignature, MessageSHA256: build.MessageSHA256,
+			RecentBlockhash: build.RecentBlockhash, SimulationSlot: build.SimulationSlot,
+		}
+	}
+	kaminoWire := func(leg kaminoPrimeUSDCLeg) BuildResult {
+		t.Helper()
+		request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, leg, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		message, err := compileKaminoMessageForDelegate(request, delegate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		build := signedTestBuildResult(t, delegateKey, message)
+		if err := build.validateForDelegate(delegate); err != nil {
+			t.Fatalf("fixture wire rejected by the production validator: %v", err)
+		}
+		return build
+	}
+
+	nav, err := buildAndSignBridgeTransactionForDelegate(bridgeTestRequest(ReportNAV, 0), delegateKey, delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	navBuild := BuildResult{MessageSHA256: nav.messageSHA256, SignedWire: nav.signedWire, SignedWireSHA256: nav.signedWireSHA256,
+		TransactionSignature: nav.transactionSignature, RecentBlockhash: nav.recentBlockhash,
+		LastValidBlockHeight: nav.lastValidBlockHeight, SimulationSlot: 500}
+	if !row(ReportNAV, navBuild).signedWireExcludesCustody(cfg) {
+		t.Fatal("signed NAV report that names no custody was not recognized inert")
+	}
+	// A REPORT_NAV row whose wire no NAV build input compiles to (here a
+	// collateral deposit) and a non-NAV action are judged by the same bytes.
+	deposit := kaminoWire(kaminoLegDeposit)
+	for _, action := range []Action{ReportNAV, "VOLTR_RESTORE_IDLE"} {
+		if !row(action, deposit).signedWireExcludesCustody(cfg) {
+			t.Fatalf("%s row with a custody-free signed wire was not recognized inert", action)
+		}
+	}
+
+	// The borrow wire names the shared PYUSD custody: never inert.
+	borrow := kaminoWire(kaminoLegBorrow)
+	if row(ReportNAV, borrow).signedWireExcludesCustody(cfg) {
+		t.Fatal("signed wire naming the shared custody recognized inert")
+	}
+
+	// A v0 wire is refused even when its static keys exclude the custody.
+	v0Request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-12)
+	inner, err := validateJupiterInstructionForRoute(v0Request.Instruction, v0Request.Action, v0Request.AmountRaw, v0Request.QuotedOutputRaw, v0Request.MinimumOutputRaw, v0Request.RouteLane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := wrapSquadsJupiterPolicy(mustKey(v0Request.Policy), delegate, delegate, autoSwapLeg(t, SwapStableToCollateralStep), inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fillers []string
+	for index, account := range v0Request.Instruction.Accounts {
+		if index >= 12 {
+			fillers = append(fillers, account.Pubkey)
+		}
+	}
+	v0Message, err := compileV0Message(delegate, mustKey(bridgeSettings), withAutoExecutionHeap([]compiledInstruction{outer}), []LookupTableSnapshot{autoFixtureLookupTable(t, fillers)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	versioned := signedTestBuildResult(t, delegateKey, v0Message)
+	if err := versioned.validateForDelegate(delegate); err != nil {
+		t.Fatalf("v0 fixture rejected by the production validator: %v", err)
+	}
+	if row(SwapStableToCollateralStep, versioned).signedWireExcludesCustody(cfg) {
+		t.Fatal("v0 signed wire recognized inert")
+	}
+
+	// Malformed or unverifiable evidence is never inert.
+	malformed := map[string]custodyAttributionUnknownRow{}
+	absent := row(ReportNAV, navBuild)
+	absent.SignedWirePresent = false
+	malformed["absent wire"] = absent
+	truncated := row(ReportNAV, navBuild)
+	truncated.SignedWire = truncated.SignedWire[:70]
+	truncated.SignedWireSHA256 = sha256Bytes(truncated.SignedWire)
+	malformed["truncated wire"] = truncated
+	drifted := row(ReportNAV, navBuild)
+	drifted.MessageSHA256 = sha256Bytes([]byte("drifted"))
+	malformed["message digest drift"] = drifted
+	outsiderCfg := cfg
+	outsiderCfg.Delegate = publicKeyFromBytes(bytes.Repeat([]byte{9}, 32))
+	for name, candidate := range malformed {
+		if candidate.signedWireExcludesCustody(cfg) {
+			t.Fatalf("%s recognized inert", name)
+		}
+	}
+	if row(ReportNAV, navBuild).signedWireExcludesCustody(outsiderCfg) {
+		t.Fatal("wire signed by another delegate recognized inert")
+	}
+
+	// Through the resolver: the inert wire is excused even though its expiry
+	// is after the origin; the custody-naming wire then holds on its expiry.
+	origin := func(context.Context, int64) (int64, error) { return 50, nil }
+	if err := resolveSharedCustodyUnknownRecords(t.Context(), []custodyAttributionUnknownRow{row(ReportNAV, navBuild), row("VOLTR_RESTORE_IDLE", deposit)}, cfg, 1, origin); err != nil {
+		t.Fatalf("inert wires held the proof: %v", err)
+	}
+	err = resolveSharedCustodyUnknownRecords(t.Context(), []custodyAttributionUnknownRow{row(ReportNAV, navBuild), row(ReportNAV, borrow)}, cfg, 1, origin)
+	if reason := custodyAttributionHoldReason(t, err); reason != "custody_attribution_unknown_record" {
+		t.Fatalf("custody-naming wire after the origin not held: %s", reason)
 	}
 }
