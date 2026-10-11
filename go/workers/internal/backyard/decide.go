@@ -206,6 +206,15 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 			return decision(action, reason, amount)
 		}
 	}
+	// Tranche source half: free E with the same debt-preserving partial
+	// legs, into Voltr idle reserved for the destination. Top-ups below
+	// never run on a source, so the freed cash never returns to it.
+	if trancheSourceHalf(s) {
+		if action, reason, amount, ok := partialWithdrawalStep(s); ok {
+			return decision(action, reason, amount)
+		}
+		return decision(Hold, trancheSourceHoldReason(s), 0)
+	}
 	if s.WithdrawalDemandRaw > 0 || s.Unwind || s.CutoverDrain {
 		shortfall := s.WithdrawalDemandRaw - s.VoltrIdleRaw
 		if shortfall <= 0 && !s.Unwind && !s.CutoverDrain {

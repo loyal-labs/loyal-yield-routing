@@ -95,7 +95,7 @@ func partialWithdrawalInFlight(s Snapshot) bool {
 }
 
 func partialWithdrawalTerminal(s Snapshot) bool {
-	return s.PartialWithdrawalOperationID != "" && !partialWithdrawalInFlight(s) && s.Nonterminal == "" && s.WithdrawalDemandRaw <= s.VoltrIdleRaw &&
+	return s.PartialWithdrawalOperationID != "" && !partialWithdrawalInFlight(s) && s.Nonterminal == "" && partialDemandRaw(s) <= s.VoltrIdleRaw &&
 		(s.PositionDebtRaw == 0 || s.LTVBPS <= s.PartialWithdrawalLTVBPS+leverageUpNearBPS)
 }
 

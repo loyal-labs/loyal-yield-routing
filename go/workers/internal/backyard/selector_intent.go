@@ -56,7 +56,17 @@ func applyUnwindIntent(s *Snapshot, intent *UnwindIntent) error {
 	return nil
 }
 func unwindComplete(s Snapshot) bool {
-	return s.Fresh && s.ManualReason == "" && s.Nonterminal == "" && !s.HasAmbiguousSubmission && !s.HasPosition && s.PositionDebtRaw == 0 && s.PositionCollateralRaw == 0 && s.CollateralIdleRaw == 0 && s.PrimeIdleRaw == 0 && s.SquadsIdleRaw == 0 && s.DebtIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0 && s.StrategyNAVRaw == 0 && s.PriorReportedNAVRaw == 0 && !s.PostMutationNAVRequired && !s.CapitalMutated
+	return s.Fresh && s.ManualReason == "" && s.Nonterminal == "" && !s.HasAmbiguousSubmission && !s.HasPosition && s.PositionDebtRaw == 0 && s.PositionCollateralRaw == 0 && s.CollateralIdleRaw == 0 && s.PrimeIdleRaw == 0 && s.SquadsIdleRaw == 0 && s.DebtIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0 && laneBookFlat(s) && !s.PostMutationNAVRequired && !s.CapitalMutated
+}
+
+// laneBookFlat: the working lane carries no NAV. With no other held lane the
+// whole reported book is zero, as before; beside other held lanes only this
+// lane's own share must be (their value stays reported).
+func laneBookFlat(s Snapshot) bool {
+	if len(s.otherHeldLanes()) == 0 {
+		return s.StrategyNAVRaw == 0 && s.PriorReportedNAVRaw == 0
+	}
+	return laneNAVRaw(s) == 0
 }
 func (d *Database) LoadUnwindIntent(ctx context.Context, routeKey string) (*UnwindIntent, error) {
 	var raw []byte
@@ -163,7 +173,7 @@ func (d *Database) writeUnwindTx(ctx context.Context, tx pgx.Tx, routeKey string
 	if lease.RouteKey != routeKey {
 		return fmt.Errorf("unwind_route_lease_mismatch")
 	}
-	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(CASE WHEN $5::jsonb='null'::jsonb THEN jsonb_set(jsonb_set(jsonb_set(state,'{selectorEntryPaused}','true'::jsonb,true),'{selectorEntry}','null'::jsonb,true),'{debtClearAuthority}','null'::jsonb,true) ELSE state END,'{selectorUnwind}',$5::jsonb,true),'{generation}',to_jsonb(state_version+1),true),state_version=state_version+1,updated_at=clock_timestamp() WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()`, routeKey, lease.Owner, lease.FencingToken, version, string(encoded))
+	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(jsonb_set(CASE WHEN $5::jsonb='null'::jsonb THEN jsonb_set(jsonb_set(jsonb_set(state-'workingLane','{selectorEntryPaused}','true'::jsonb,true),'{selectorEntry}','null'::jsonb,true),'{debtClearAuthority}','null'::jsonb,true) ELSE state END,'{selectorUnwind}',$5::jsonb,true),'{generation}',to_jsonb(state_version+1),true),state_version=state_version+1,updated_at=clock_timestamp() WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()`, routeKey, lease.Owner, lease.FencingToken, version, string(encoded))
 	if err != nil {
 		return err
 	}

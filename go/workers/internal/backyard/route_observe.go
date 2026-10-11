@@ -332,6 +332,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	base.Snapshot.HeldLanes = strings.Join(held, ",")
 	base.Snapshot.OtherLanesNAVRaw = nav.OtherLanesNAVRaw
 	base.Snapshot.CrossLaneHardLTV = crossLaneHardLTV
+	base.Snapshot.OtherLanesCustodyHeld = nav.OtherLanesCustodyHeld
 	base.Snapshot.CutoverDrain = cutoverDrain
 	base.Snapshot.TicketLastConsumedSequenceRaw = int64(ticket.LastConsumedSequence)
 	base.Snapshot.HasPosition = position.HasPosition
@@ -421,6 +422,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if base.ValuationSource != "confirmed" {
 		base.Snapshot.ObservationID = sha256Bytes([]byte(fmt.Sprintf("%s|valuation:%s|liquidation:%d", base.Snapshot.ObservationID, base.ValuationSource, base.Snapshot.LiquidationThresholdBPS)))
 	}
+	base.heldFacts = nav.OtherLanes
 	base.routeBatch = &routeObservationBatch{Slot: slot, ObservationID: base.Snapshot.ObservationID, ManifestSHA256: manifest.SHA256, Accounts: accounts}
 	return base, accounts, nil
 }

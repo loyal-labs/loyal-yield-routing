@@ -69,3 +69,52 @@ func TestLeaseMovesSingleSlotLaneStateIntoPerLaneMaps(t *testing.T) {
 		t.Fatalf("a later lease changed the per-lane target: %+v %v", got, err)
 	}
 }
+
+// A tranche hands the working lane to its destination only under the route
+// lock, once the source's custodies are clear, and the planning read then
+// observes the destination with E reserved for it.
+func TestTrancheHandoffMovesTheWorkingLaneUnderTheRouteFence(t *testing.T) {
+	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
+	defer cancel()
+	defer db.Close()
+	key := fmt.Sprintf("tranche-%d", time.Now().UnixNano())
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	tranche := trancheIntent{Source: autoAUTOPYUSD.Lane, Destination: onreONycUSDC, EquityRaw: 3_000_000_000, TargetIdleRaw: 3_000_000_000,
+		Generation: 1, ObservationID: "o", EvidenceID: strings.Repeat("e", 64), CreatedAt: now}
+	raw, _ := json.Marshal(tranche)
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,jsonb_build_object('generation',1,'cycle',1,'tranche',$2::jsonb,'workingLane',$3::text))`, key, string(raw), autoAUTOPYUSD.Lane); err != nil {
+		t.Fatal(err)
+	}
+	defer db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key)
+	if _, err := db.AcquireRouteLease(ctx, key, "tranche", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	source := trancheAUTOSource()
+	applyTranche(&source, &tranche)
+	// Still freeing: nothing changes.
+	if advanced, err := db.AdvanceTranche(ctx, key, source, now); err != nil || advanced {
+		t.Fatalf("handoff while the source still frees E: %t %v", advanced, err)
+	}
+	freed := source
+	freed.PositionCollateralRaw -= 3_100_000_000
+	freed.PositionCollateralValueRaw -= 3_100_000_000
+	freed.VoltrIdleRaw = 3_100_000_000
+	freed.SquadsIdleRaw = 7 // working cash still in Squads custody
+	if advanced, err := db.AdvanceTranche(ctx, key, freed, now); err != nil || advanced {
+		t.Fatalf("handoff with Squads cash still on the source: %t %v", advanced, err)
+	}
+	freed.SquadsIdleRaw = 0
+	if advanced, err := db.AdvanceTranche(ctx, key, freed, now); err != nil || !advanced {
+		t.Fatalf("clear freed source did not hand over: %t %v", advanced, err)
+	}
+	planning, err := db.readRoutePlanningStateOnManifest(ctx, embeddedTestManifest(t), key, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planning.workingLane != onreONycUSDC || planning.tranche == nil || !planning.tranche.SourceFreed || planning.generation != 2 {
+		t.Fatalf("handoff not durable: working %q tranche %+v generation %d", planning.workingLane, planning.tranche, planning.generation)
+	}
+	if manifest := planning.observationManifest(embeddedTestManifest(t)); manifest.workingLane != onreONycUSDC {
+		t.Fatal("the next observation does not work on the destination")
+	}
+}
