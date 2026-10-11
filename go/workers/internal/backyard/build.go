@@ -371,12 +371,15 @@ func compileLegacyMessage(feePayer, blockhash publicKey, instructions []compiled
 // The bridge/signing boundary above still permits exactly one instruction, and
 // the installed Kamino compiler keeps its own exact-four gate with its own
 // serializer. The AUTO resource wrappers encode their canonical heap frame plus
-// one already-validated payload — two instructions, inside this bound.
+// one already-validated payload — two instructions. The price refresh
+// simulation carries one RefreshReserve per distinct reserve of every valued
+// lane (five for the two AUTO lanes), so the encoder's own bound is the
+// format's, as in compileV0Message; packet size is checkedUnsignedMessage's.
 // Optional capture keys ride along as read-only non-signing static accounts so
 // one unsigned simulation can return a full observed batch; merging through the
 // same table means an instruction's required privileges are never lowered.
 func encodeLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction, capture ...publicKey) ([]byte, error) {
-	if len(instructions) == 0 || len(instructions) > 4 {
+	if len(instructions) == 0 || len(instructions) > 255 {
 		return nil, fmt.Errorf("unsupported legacy instruction count")
 	}
 	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
