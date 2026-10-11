@@ -260,9 +260,10 @@ func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *t
 	}
 }
 
-// A node behind the confirmed bank is "not yet": the tick leaves the landed
-// route exactly as it was, with no failure recorded, and the first tick after
-// its lease lapses reconciles it from a node that caught up.
+// A node behind the confirmed bank is "not yet": the tick hands the landed
+// route back exactly as it was, uncounted and with no failure recorded, and
+// the first tick after the short reconciliation delay reconciles it from a
+// node that caught up.
 func TestReconciliationBehindNodeWaitsForTheNextTick(t *testing.T) {
 	store, pool := integrationStore(t)
 	ctx := context.Background()
@@ -291,41 +292,48 @@ func TestReconciliationBehindNodeWaitsForTheNextTick(t *testing.T) {
 	if err := store.ConfirmSameMint(ctx, lease, 1000); err != nil {
 		t.Fatal(err)
 	}
-	lease = claimOne(t, ctx, store, b.Cluster, "behind-node")
-	c, err := store.loadPostContract(ctx, lease.Submission)
+	record, confirmed := lease.Submission, int64(1000)
+	record.State, record.ConfirmedSlot = StateReconciliationPending, &confirmed
+	c, err := store.loadPostContract(ctx, record)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lapse := func() {
-		t.Helper()
-		if _, err := pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET confirmation_lease_expires_at=clock_timestamp() WHERE id=$1`, id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	lapse()
 	registry := prometheus.NewRegistry()
 	worker, err := NewWorker(Config{Cluster: b.Cluster, Owner: "owner-behind", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second, Facts: engine.NewFacts(registry)}, store, &countingChain{}, &finalizedStatus{receipt: chain.Receipt{Slot: 1000, Wire: wire.SignedTransaction}}, DelegateSigner{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tick := func(node fixtureAccounts) (state string, detail *string, decision string) {
+	type row struct {
+		state, decision string
+		attempts        int
+		owner, detail   *string
+		available       time.Time
+	}
+	read := func() (r row) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `SELECT s.submission_state,d.status::text,s.confirmation_attempt_count,s.confirmation_lease_owner,s.error_detail,s.confirmation_available_at FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.id=$1`, id).Scan(&r.state, &r.decision, &r.attempts, &r.owner, &r.detail, &r.available); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	tick := func(node fixtureAccounts) row {
 		t.Helper()
 		worker.recovery = &sameMintRecovery{store: store, accounts: node, slotDuration: 400 * time.Millisecond}
 		if err := worker.Tick(ctx); err != nil {
 			t.Fatal(err)
 		}
 		worker.wg.Wait()
-		if err := pool.QueryRow(ctx, `SELECT s.submission_state,s.error_detail,d.status::text FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.id=$1`, id).Scan(&state, &detail, &decision); err != nil {
-			t.Fatal(err)
-		}
-		return state, detail, decision
+		return read()
 	}
 
-	if state, detail, decision := tick(postFixture(t, c, 999, 0, 11)); state != string(StateReconciliationPending) || detail != nil || decision != "confirming" || failedCount(t, registry, "fleet_reconciliation_stalled") != 0 {
-		t.Fatalf("behind node changed the route: %s %v %s", state, detail, decision)
+	before := read()
+	after := tick(postFixture(t, c, 999, 0, 11))
+	if after.state != string(StateReconciliationPending) || after.decision != "confirming" || after.attempts != before.attempts || after.owner != nil || after.detail != nil ||
+		after.available.Sub(time.Now()) > reconciliationMinRetry || failedCount(t, registry, "fleet_reconciliation_stalled") != 0 {
+		t.Fatalf("behind node changed the route: %+v (before %+v)", after, before)
 	}
-	lapse()
-	if state, _, decision := tick(postFixture(t, c, 1001, 0, 11)); state != "reconciled" || decision != "confirmed" {
-		t.Fatalf("next tick did not reconcile: %s %s", state, decision)
+	time.Sleep(time.Until(after.available))
+	if got := tick(postFixture(t, c, 1001, 0, 11)); got.state != "reconciled" || got.decision != "confirmed" {
+		t.Fatalf("next tick did not reconcile: %+v", got)
 	}
 }

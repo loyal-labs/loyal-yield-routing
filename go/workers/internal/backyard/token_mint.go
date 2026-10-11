@@ -17,7 +17,7 @@ func validateExecutionMint(account ConfirmedAccount, program string, decimals ui
 	owner, _ := solana.PublicKeyFromBase58(account.Owner)
 	mint, err := spl.DecodeMint(&chain.Account{Owner: owner, Executable: account.Executable, Data: account.Data})
 	if err != nil {
-		return budgetHold("execution_mint_layout_mismatch")
+		return holdUnlessUnavailable(err, "execution_mint_layout_mismatch")
 	}
 	if account.Owner != program || decimals > 18 || mint.Decimals != decimals {
 		return budgetHold("execution_mint_metadata_mismatch")

@@ -7,11 +7,13 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 func signedWireFixture(t *testing.T, dual bool) *SignedOperation {
@@ -122,7 +124,7 @@ func TestVersionedDualSignerWireAndFeeCap(t *testing.T) {
 	seed[0] = 99
 	payer := ed25519.NewKeyFromSeed(seed)
 	tableKey, loaded := fixtureKey(61), fixtureKey(62)
-	fake := &fakeChain{genesis: solana.MustHashFromBase58(mainnetGenesisHash), blockhash: solana.Hash(fixtureKey(9)), lastValid: 100, slot: 77, fee: 20000,
+	fake := &fakeChain{genesis: solana.MustHashFromBase58(mainnetGenesisHash), blockhash: solana.Hash(fixtureKey(9)), lastValid: 100, slot: 77,
 		accounts: map[solana.PublicKey]*chain.Account{tableKey: lookupTableAccount(tableKey, loaded)}}
 	executor, err := NewExecutorWithFeePayer(fake, payer, key)
 	if err != nil {
@@ -148,9 +150,11 @@ func TestVersionedDualSignerWireAndFeeCap(t *testing.T) {
 	if _, err := PersistedTransaction(op); err != nil {
 		t.Fatal(err)
 	}
-	fake.fee = 20001
-	if _, _, err := executor.PrepareAndSign(context.Background(), built, fixtureKey(45), 0, []byte{0}, 0); err == nil {
-		t.Fatal("fee above Rust cap accepted")
+	// Two signatures are 10_000 lamports; a unit price lifts the message past the cap.
+	price := spl.SetComputeUnitPrice(10_001_000_000/uint64(computeUnitLimit) + 1)
+	built.PreInstructions = []Instruction{{ProgramID: price.ProgID, Data: price.DataBytes}}
+	if _, _, err := executor.PrepareAndSign(context.Background(), built, fixtureKey(45), 0, []byte{0}, 0); err == nil || !strings.Contains(err.Error(), "exceeds 20000") {
+		t.Fatalf("fee above Rust cap accepted: %v", err)
 	}
 }
 

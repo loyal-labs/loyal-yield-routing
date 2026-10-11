@@ -241,7 +241,7 @@ func bridgeMessageNamesCustody(message []byte, custody publicKey) (bool, error) 
 	offset := 3
 	count, err := decodeShortVec(message, &offset)
 	if err != nil || count <= 0 || count > 256 || len(message)-offset < count*32+32 {
-		return false, budgetHold("custody_attribution_malformed_record")
+		return false, holdUnlessUnavailable(err, "custody_attribution_malformed_record")
 	}
 	for index := 0; index < count; index++ {
 		var key publicKey
@@ -426,7 +426,7 @@ func reconstructReconciledEvidence(data []byte) ([]byte, error) {
 	decoder.UseNumber()
 	var evidence map[string]any
 	if err := decoder.Decode(&evidence); err != nil {
-		return nil, budgetHold("custody_attribution_malformed_record")
+		return nil, holdUnlessUnavailable(err, "custody_attribution_malformed_record")
 	}
 	// Strict EOF: any trailing value or garbage after the object is a
 	// different byte stream than the original single-object marshal.
@@ -472,7 +472,7 @@ func reconstructReconciledEvidence(data []byte) ([]byte, error) {
 	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
-		return nil, budgetHold("custody_attribution_malformed_record")
+		return nil, holdUnlessUnavailable(err, "custody_attribution_malformed_record")
 	}
 	return encoded, nil
 }
@@ -490,7 +490,7 @@ func parseReconciledCustodyEvidence(data []byte, cfg sharedCustodyAttributionCon
 		Accounts  []string `json:"accounts"`
 	}
 	if err := json.Unmarshal(data, &evidence); err != nil {
-		return "", 0, nil, budgetHold("custody_attribution_malformed_record")
+		return "", 0, nil, holdUnlessUnavailable(err, "custody_attribution_malformed_record")
 	}
 	if evidence.Schema != reconciledEffectsSchema || evidence.Source != reconciledEffectsSource ||
 		evidence.Signature == "" || evidence.Slot <= 0 {
@@ -512,19 +512,19 @@ func parseReconciledCustodyEvidence(data []byte, cfg sharedCustodyAttributionCon
 			return "", 0, nil, budgetHold("custody_attribution_malformed_record")
 		}
 		if _, err := decodeBase58PublicKey(effect.Mint); err != nil {
-			return "", 0, nil, budgetHold("custody_attribution_malformed_record")
+			return "", 0, nil, holdUnlessUnavailable(err, "custody_attribution_malformed_record")
 		}
 		if _, err := decodeBase58PublicKey(effect.Authority); err != nil {
-			return "", 0, nil, budgetHold("custody_attribution_malformed_record")
+			return "", 0, nil, holdUnlessUnavailable(err, "custody_attribution_malformed_record")
 		}
 		before, err := strconv.ParseUint(fields[4], 10, 64)
 		if err != nil {
-			return "", 0, nil, budgetHold("custody_attribution_malformed_record")
+			return "", 0, nil, holdUnlessUnavailable(err, "custody_attribution_malformed_record")
 		}
 		effect.BeforeRaw = before
 		after, err := strconv.ParseUint(fields[5], 10, 64)
 		if err != nil {
-			return "", 0, nil, budgetHold("custody_attribution_malformed_record")
+			return "", 0, nil, holdUnlessUnavailable(err, "custody_attribution_malformed_record")
 		}
 		effect.AfterRaw = after
 		if _, duplicate := seen[effect.Address]; duplicate {
@@ -909,7 +909,7 @@ func (d *Database) observeSharedCustodyAttributionEvidence(ctx context.Context, 
 	}
 	held, err := d.currentLease()
 	if err != nil {
-		return evidence, budgetHold("custody_attribution_lease_unavailable")
+		return evidence, holdUnlessUnavailable(err, "custody_attribution_lease_unavailable")
 	}
 	// The reader is scoped to this worker's own lease: a caller may not
 	// borrow an arbitrary or stale lease identity to widen the route scope.

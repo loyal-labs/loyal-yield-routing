@@ -149,7 +149,7 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 	t.Cleanup(server.Close)
 	r := &Revalidator{rpc: testChain(t, server.URL), slotDuration: 400 * time.Millisecond, signer: testIdentity(6)}
 	lease := RevalidationLease{VaultPubkey: vault, SourceReserve: source.Address, TargetReserve: target.Address, LiquidityMint: USDCMint, PolicyAccount: policy, LiquidityAmountRaw: amount, PrincipalUSDMicros: int64(amount)}
-	fresh, err := r.loadFreshRoute(context.Background(), lease)
+	fresh, err := r.loadFreshRoute(context.Background(), lease, 0)
 	if err != nil {
 		t.Fatalf("fresh read refused a route whose target obligation the route creates: %v", err)
 	}

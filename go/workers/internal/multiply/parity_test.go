@@ -524,7 +524,7 @@ func testExecutor(t *testing.T) (*Executor, *fakeChain, ed25519.PublicKey) {
 	key := testDelegateSeed()
 	fake := &fakeChain{
 		genesis: solana.MustHashFromBase58(mainnetGenesisHash), blockhash: solana.Hash(fixtureKey(9)),
-		lastValid: 331_900_000, slot: 331_895_401, fee: 5000,
+		lastValid: 331_900_000, slot: 331_895_401,
 	}
 	executor, err := NewExecutor(fake, key)
 	if err != nil {

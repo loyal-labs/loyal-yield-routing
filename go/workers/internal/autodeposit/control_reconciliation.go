@@ -236,10 +236,11 @@ func (r *ControlReconciler) Tick(ctx context.Context) (bool, error) {
 		// context and its own short bound; an expired lease remains recoverable.
 		retryCtx, retryCancel := context.WithTimeout(ctx, runtimeHealthTimeout)
 		defer retryCancel()
-		retryErr := r.Store.RetryAutodepositReconciliationRequest(retryCtx, request.TargetID, owner, "control reconciliation proof unavailable", ReconciliationRetryBackoffSeconds(15, request.AttemptCount))
 		if errors.Is(err, chain.ErrBehind) {
-			return true, retryErr // Not yet: the node has not reached the requested slot.
+			// Not yet: the node has not reached the requested slot.
+			return true, r.Store.RescheduleAutodepositReconciliationRequest(retryCtx, request.TargetID, owner, 15)
 		}
+		retryErr := r.Store.RetryAutodepositReconciliationRequest(retryCtx, request.TargetID, owner, "control reconciliation proof unavailable", ReconciliationRetryBackoffSeconds(15, request.AttemptCount))
 		return true, errors.Join(fmt.Errorf("control reconciliation target %d: %w", request.TargetID, err), retryErr)
 	}
 	return true, nil

@@ -100,8 +100,8 @@ func TestPersistentReconciliationFailureBacksOffAndReportsStall(t *testing.T) {
 	}
 }
 
-// A claimed opportunity that cannot be admitted (here its fresh evidence is
-// unavailable; in production the atomic capacity economics turned
+// A claimed opportunity that cannot be admitted (here its fresh evidence
+// cannot be read: the fixture's reserve addresses are not base58; in production the atomic capacity economics turned
 // ineligible) is returned to revalidate with its reason, as Rust's
 // revalidate-lane Retry, and the tick completes. The next tick admits another
 // vault's opportunity rather than the failed one.
@@ -152,7 +152,7 @@ func TestIneligibleOpportunityIsRecordedAndDoesNotFailTheTick(t *testing.T) {
 		t.Fatalf("one opportunity's outcome failed the tick: %v", err)
 	}
 	state, attempts, owner, reason, later := opportunity(first)
-	if state != "revalidate" || attempts != 1 || owner != nil || reason == nil || *reason == "" || !later {
+	if state != "revalidate" || attempts != 1 || owner != nil || reason == nil || !strings.Contains(*reason, "invalid base58") || !later {
 		t.Fatalf("failed opportunity not recorded: state=%s attempts=%d owner=%v reason=%v later=%v", state, attempts, owner, reason, later)
 	}
 	if _, attempts, _, _, _ := opportunity(second); attempts != 0 {

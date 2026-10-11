@@ -199,6 +199,9 @@ func (w *Worker) handleLease(ctx context.Context, lease SubmissionLease) error {
 		return w.store.ConfirmSameMint(leaseCtx, lease, *lease.Submission.ConfirmedSlot)
 	case StateReconciliationPending:
 		err := w.reconcileFinalized(leaseCtx, lease)
+		if errors.Is(err, chain.ErrBehind) {
+			return w.store.releaseNotYet(ctx, lease, reconciliationMinRetry)
+		}
 		if err == nil || errors.Is(err, ErrStaleOwner) || ctx.Err() != nil {
 			return err
 		}
@@ -275,11 +278,7 @@ func (w *Worker) reconcileFinalized(ctx context.Context, lease SubmissionLease) 
 	if w.recovery == nil {
 		return errors.New("same-mint chain observer is required; reservation retained")
 	}
-	err = w.recovery.reconcile(ctx, lease, receipt)
-	if errors.Is(err, chain.ErrBehind) {
-		return nil // The node has not reached the confirmed bank yet; the next claim reads again.
-	}
-	return err
+	return w.recovery.reconcile(ctx, lease, receipt)
 }
 
 // Rust's reconciliation schedule (fleet_orchestration/reconciliation.rs):

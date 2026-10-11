@@ -7,9 +7,11 @@ package chain
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/bits"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -151,19 +153,40 @@ func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType, m
 	return out.Value.Blockhash, out.Value.LastValidBlockHeight, out.Context.Slot, nil
 }
 
-// Fee is what the cluster charges for message (the compiled message bytes,
-// not the signed wire) at commitment, from a node at or past minContextSlot,
-// with the slot it was read at.
-func (c *Client) Fee(ctx context.Context, message []byte, commitment rpc.CommitmentType, minContextSlot uint64) (fee, slot uint64, err error) {
-	out, err := c.rpc.GetFeeForMessageWithOpts(ctx, base64.StdEncoding.EncodeToString(message), &rpc.GetFeeForMessageOpts{Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
-	if err != nil {
-		return 0, 0, failed("getFeeForMessage", err)
+// MessageFee is what the cluster charges for the compiled message: 5000 lamports
+// per signature, precompile signatures included, plus ceil(unit price × unit
+// limit / 1e6) from its ComputeBudget instructions.
+func MessageFee(message []byte) (uint64, error) {
+	var m solana.Message
+	if err := m.UnmarshalBase64(base64.StdEncoding.EncodeToString(message)); err != nil {
+		return 0, fmt.Errorf("message fee: %w", err)
 	}
-	if out == nil || out.Value == nil || out.Context.Slot < minContextSlot {
-		return 0, 0, errors.New("getFeeForMessage: no fee for this blockhash")
+	signatures, limit, price, limited := uint64(m.Header.NumRequiredSignatures), uint64(0), uint64(0), false
+	for _, ix := range m.Instructions {
+		if int(ix.ProgramIDIndex) >= len(m.AccountKeys) || len(ix.Data) == 0 {
+			continue
+		}
+		switch program := m.AccountKeys[ix.ProgramIDIndex]; {
+		case program == solana.ComputeBudget && ix.Data[0] == 2 && len(ix.Data) == 5:
+			limit, limited = min(uint64(binary.LittleEndian.Uint32(ix.Data[1:])), 1_400_000), true
+		case program == solana.ComputeBudget && ix.Data[0] == 3 && len(ix.Data) == 9:
+			price = binary.LittleEndian.Uint64(ix.Data[1:])
+		case program == ed25519Program || program == solana.Secp256k1ProgramID || program == secp256r1Program:
+			signatures += uint64(ix.Data[0])
+		}
 	}
-	return *out.Value, out.Context.Slot, nil
+	if price > 0 && !limited {
+		return 0, errors.New("message fee: a compute unit price needs an explicit unit limit")
+	}
+	hi, micro := bits.Mul64(price, limit)
+	micro, carry := bits.Add64(micro, 999_999, 0)
+	if hi != 0 || carry != 0 {
+		return 0, errors.New("message fee: prioritization fee overflows")
+	}
+	return signatures*5000 + micro/1_000_000, nil
 }
+
+var ed25519Program, secp256r1Program = solana.MustPublicKeyFromBase58("Ed25519SigVerify111111111111111111111111111"), solana.MustPublicKeyFromBase58("Secp256r1SigVerify1111111111111111111111111")
 
 // GenesisHash identifies the cluster.
 func (c *Client) GenesisHash(ctx context.Context) (solana.Hash, error) {

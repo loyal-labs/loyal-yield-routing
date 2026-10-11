@@ -264,7 +264,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 			}
 			wireAmount = uint64(decision.AmountRaw)
 			if effectAmount, err = reserve.redeemLiquidityRaw(wireAmount); err != nil || effectAmount == 0 {
-				return Observation{}, KaminoExecutionEvidence{}, budgetHold("leverage_down_partial_release_unavailable")
+				return Observation{}, KaminoExecutionEvidence{}, holdUnlessUnavailable(err, "leverage_down_partial_release_unavailable")
 			}
 		}
 	} else {
@@ -285,7 +285,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if leg == kaminoLegBorrow && decision.Reason == leverageUpReason {
 		capped, capErr := capacitySizedBorrow(position, accounts, route, int64(leverageUpLevel(observation.Snapshot)*100))
 		if capErr != nil || wireAmount > capped || wireAmount < leverageMinimumBorrowRaw {
-			return Observation{}, KaminoExecutionEvidence{}, budgetHold("borrow_capacity_shrank")
+			return Observation{}, KaminoExecutionEvidence{}, holdUnlessUnavailable(capErr, "borrow_capacity_shrank")
 		}
 		effectAmount = wireAmount
 	} else if leg == kaminoLegBorrow {

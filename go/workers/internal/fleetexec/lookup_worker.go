@@ -81,9 +81,6 @@ func (w *LookupWorker) Tick(parent context.Context) (worked bool, resultErr erro
 	}
 	defer func() { <-w.gate }()
 	worked, resultErr = w.tick(ctx)
-	if errors.Is(resultErr, chain.ErrBehind) {
-		resultErr = nil // Not yet: the operation's lease lapses and a later tick reads again.
-	}
 	if resultErr == nil {
 		var inflight int
 		if resultErr = w.store.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.lookup_table_families f ON f.id=o.family_id WHERE f.cluster=$1 AND o.transaction_signature IS NOT NULL AND o.operation_state NOT IN ('complete','permanent_failure','cancelled')`, w.config.Cluster).Scan(&inflight); resultErr == nil {
@@ -94,7 +91,7 @@ func (w *LookupWorker) Tick(parent context.Context) (worked bool, resultErr erro
 	return worked, resultErr
 }
 
-func (w *LookupWorker) tick(ctx context.Context) (bool, error) {
+func (w *LookupWorker) tick(ctx context.Context) (worked bool, err error) {
 	op, err := w.store.LeaseLookupOperation(ctx, w.config.Cluster, w.config.Owner, w.config.LeaseTTL, w.config.ReconcileOnly)
 	if err != nil {
 		return false, err
@@ -104,6 +101,11 @@ func (w *LookupWorker) tick(ctx context.Context) (bool, error) {
 		_, _, _, err = lookupBlockhash(ctx, w.chain)
 		return false, err
 	}
+	defer func() {
+		if errors.Is(err, chain.ErrBehind) {
+			err = w.store.releaseLookupNotYet(ctx, *op)
+		}
+	}()
 	if op.Signature != nil || op.MessageHash != nil || op.Blockhash != nil || op.LastValidBlockHeight != nil {
 		attempt, err := lookupAttemptOf(*op)
 		if err != nil {
@@ -168,7 +170,7 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 	if _, err = w.chain.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentFinalized, ReplaceRecentBlockhash: true}); err != nil {
 		return err
 	}
-	fee, _, err := w.chain.Fee(ctx, message, rpc.CommitmentFinalized, 0)
+	fee, err := chain.MessageFee(message)
 	if err != nil {
 		return err
 	}

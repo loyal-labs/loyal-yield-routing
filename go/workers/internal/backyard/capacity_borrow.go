@@ -255,7 +255,7 @@ func validateCapacityBorrow(accounts []ConfirmedAccount, route RuntimeRoute, rec
 	}
 	after, err := observedLTVBPS(position)
 	if err != nil || after > leverageMaxLTVBPS {
-		return budgetHold("borrow_loop_risk_capacity_shrank")
+		return holdUnlessUnavailable(err, "borrow_loop_risk_capacity_shrank")
 	}
 	return nil
 }

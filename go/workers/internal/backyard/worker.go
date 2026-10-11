@@ -354,6 +354,14 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 	}
 }
 
+// holdUnlessUnavailable holds for reason unless no endpoint could answer: then the tick waits.
+func holdUnlessUnavailable(err error, reason string) error {
+	if errors.Is(err, chain.ErrUnavailable) {
+		return confirmedObservationUnavailable(err)
+	}
+	return budgetHold(reason)
+}
+
 func confirmedObservationUnavailable(err error) error {
 	if err == nil || errors.Is(err, errConfirmedObservationUnavailable) {
 		return err

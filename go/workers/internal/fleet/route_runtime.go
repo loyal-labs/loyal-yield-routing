@@ -29,6 +29,7 @@ type revalidationStore interface {
 	ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady, crossMintEnabled bool, delegatedSigner ...string) (*RevalidationLease, error)
 	CheckRevalidationLease(ctx context.Context, lease RevalidationLease) error
 	RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error
+	TargetCapacitySlot(ctx context.Context, cluster, reserve, mint string) (int64, error)
 	LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error)
 	CommitRevalidation(ctx context.Context, lease RevalidationLease, input RevalidationCommit) error
 	EligibleFeePayerShards(ctx context.Context, cluster, policySigner string, mounted []string) ([]FeePayerShard, error)
@@ -195,7 +196,12 @@ func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease Revali
 // capacity refresh and lease check. The returned stage names the failing step.
 func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease RevalidationLease, afterEvidence func(FreshRouteEvidence) error) (sameMintPreparation, string, error) {
 	var out sameMintPreparation
-	fresh, err := r.loadFreshRoute(ctx, lease)
+	// The route's bank may not be older than the target's durable telemetry.
+	floor, err := r.store.TargetCapacitySlot(ctx, cluster, lease.TargetReserve, lease.LiquidityMint)
+	if err != nil {
+		return out, "load_fresh_route", err
+	}
+	fresh, err := r.loadFreshRoute(ctx, lease, floor)
 	if err != nil {
 		return out, "load_fresh_route", err
 	}
@@ -218,7 +224,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if err != nil {
 		return out, "lookup_tables", err
 	}
-	tables, err = r.verifyRouteLookupTables(ctx, tables, 0, false)
+	tables, err = r.verifyRouteLookupTables(ctx, tables, evidence.Slot, false)
 	if err != nil {
 		return out, "lookup_tables", err
 	}
@@ -250,7 +256,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		out.WaitingALT, out.Missing, out.Preparation = true, missing, preparation
 		return out, "", nil
 	}
-	baselineSimulation, err := SimulateExact(ctx, r.rpc, preview.UnsignedWire, rpc.CommitmentConfirmed, 0)
+	baselineSimulation, err := SimulateExact(ctx, r.rpc, preview.UnsignedWire, rpc.CommitmentConfirmed, evidence.Slot)
 	if err != nil {
 		return out, "baseline_simulation", fmt.Errorf("baseline exact simulation failed: %w", err)
 	}
@@ -262,7 +268,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "baseline_simulation", fmt.Errorf("measured compute requirement %d exceeds configured limit %d", compute, r.computeLimit)
 	}
 	out.Compute = compute
-	baselineFee, _, err := r.rpc.Fee(ctx, preview.Message, rpc.CommitmentConfirmed, 0)
+	baselineFee, err := chain.MessageFee(preview.Message)
 	if err != nil {
 		return out, "fee", err
 	}
@@ -292,7 +298,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if len(missing) > 0 {
 		return out, "budgeted_compile", fmt.Errorf("budgeted ALT compilation changed coverage: %v", missing)
 	}
-	fee, _, err := r.rpc.Fee(ctx, budgetPreview.Message, rpc.CommitmentConfirmed, 0)
+	fee, err := chain.MessageFee(budgetPreview.Message)
 	if err != nil {
 		return out, "fee", err
 	}
@@ -301,7 +307,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	}
 	out.Fee = fee
 	preparation, err := prepareRoute(out.Instructions, out.FeePayer, tables, blockhash, fee, compute, func(wire []byte) (SimulationEvidence, error) {
-		return SimulateExact(ctx, r.rpc, wire, rpc.CommitmentConfirmed, 0)
+		return SimulateExact(ctx, r.rpc, wire, rpc.CommitmentConfirmed, evidence.Slot)
 	}, "same_mint_kamino_v0")
 	if err != nil {
 		return out, "prepare_route", err
@@ -523,7 +529,7 @@ func vaultRentTopUp(rent, vaultLamports uint64) (uint64, error) {
 	return rent - vaultLamports, nil
 }
 
-func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease) (freshSameMint, error) {
+func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease, floor int64) (freshSameMint, error) {
 	var f freshSameMint
 	_, preliminary, err := ReadAccounts(ctx, r.rpc, []string{lease.SourceReserve, lease.TargetReserve}, rpc.CommitmentConfirmed, 0)
 	if err != nil {
@@ -553,7 +559,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 			addresses = append(addresses, position.FarmUser)
 		}
 	}
-	slot, accounts, err := ReadAccounts(ctx, r.rpc, addresses, rpc.CommitmentConfirmed, 0)
+	slot, accounts, err := ReadAccounts(ctx, r.rpc, addresses, rpc.CommitmentConfirmed, floor)
 	if err != nil {
 		return f, err
 	}

@@ -15,7 +15,7 @@ import (
 func validateKaminoInitializationPrestate(ctx context.Context, view *View, r KaminoInitializationRequest, minimumSlot int64) (int64, error) {
 	inner, err := kaminoMultiplyInitializer(r.RouteLane)
 	if err != nil {
-		return 0, budgetHold("initializer_prestate_unavailable")
+		return 0, holdUnlessUnavailable(err, "initializer_prestate_unavailable")
 	}
 	return observeKaminoInitializationPrestate(ctx, view, r, minimumSlot, selectorExitBound{}, false, inner)
 }
@@ -78,7 +78,7 @@ func validateKaminoReentryForecastPrestate(ctx context.Context, view *View, r Ka
 	}
 	inner, err := kaminoMultiplyInitializer(r.RouteLane)
 	if err != nil {
-		return 0, budgetHold("initializer_prestate_unavailable")
+		return 0, holdUnlessUnavailable(err, "initializer_prestate_unavailable")
 	}
 	return observeKaminoInitializationPrestate(ctx, view, r, minimumSlot, bound, true, inner)
 }
@@ -94,7 +94,7 @@ func observeKaminoInitializationPrestate(ctx context.Context, view *View, r Kami
 	route, _ := runtimeRoute(r.RouteLane)
 	slot, accounts, err := view.read(ctx, addresses, minimumSlot, route.Kamino.Obligation)
 	if err != nil {
-		return 0, budgetHold("initializer_prestate_unavailable")
+		return 0, holdUnlessUnavailable(err, "initializer_prestate_unavailable")
 	}
 	for _, a := range []struct {
 		address string
@@ -122,10 +122,10 @@ func observeKaminoInitializationPrestate(ctx context.Context, view *View, r Kami
 	}
 	metadata := accountAt(accounts, encodeBase58(inner.accounts[6].key[:]))
 	if decoded, err := kamino.DecodeUserMetadata(chainAccount(metadata, metadata.Address)); err != nil || !decoded.Referrer.IsZero() || decoded.Owner != kaminoKey(bridgeVault) {
-		return 0, budgetHold("initializer_metadata_unavailable")
+		return 0, holdUnlessUnavailable(err, "initializer_metadata_unavailable")
 	}
 	if emergency, err := decodeKaminoMarketEmergency(accountAt(accounts, route.Kamino.Market), route.Kamino); err != nil || emergency {
-		return 0, budgetHold("initializer_market_unavailable")
+		return 0, holdUnlessUnavailable(err, "initializer_market_unavailable")
 	}
 	// Each seed mint must exist under its route's own reviewed token program
 	// and pass the execution-mint parser every admitted leg uses (extension

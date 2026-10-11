@@ -24,7 +24,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	}
 	position, err := decodeKaminoObligation(accountAt(projection.Accounts, route.Kamino.Obligation), route.Kamino)
 	if err != nil || position.collateralDepositedRaw == 0 || position.collateralDepositedRaw > math.MaxInt64 {
-		return phase3BridgeAdmission{}, budgetHold("projected_return_position_unavailable")
+		return phase3BridgeAdmission{}, holdUnlessUnavailable(err, "projected_return_position_unavailable")
 	}
 	s.PositionCollateralRaw = int64(position.collateralDepositedRaw)
 	var cash uint64
@@ -34,7 +34,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		owner, _ := decodeBase58PublicKey(bridgeVault)
 		balance, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
 		if err != nil || a.Executable || a.Lamports == 0 || balance.Raw > math.MaxInt64 {
-			return phase3BridgeAdmission{}, budgetHold("projected_return_custody_unavailable")
+			return phase3BridgeAdmission{}, holdUnlessUnavailable(err, "projected_return_custody_unavailable")
 		}
 		if row.address == route.CollateralCustody {
 			s.CollateralIdleRaw, s.PrimeIdleRaw = int64(balance.Raw), int64(balance.Raw)
@@ -141,7 +141,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		funding = &quote
 		upper, err := withdrawalUSDCExitEstimate(quote.Request.QuotedOutputRaw)
 		if err != nil || upper > math.MaxInt64-cash {
-			return phase3BridgeAdmission{}, budgetHold("borrow_funding_output_overflow")
+			return phase3BridgeAdmission{}, holdUnlessUnavailable(err, "borrow_funding_output_overflow")
 		}
 		upperCash += upper
 		remaining = limit.RemainingReceiptRaw

@@ -314,6 +314,13 @@ func (s *Store) RefreshCapacityEpoch(ctx context.Context, cluster string, epoch 
 // RefreshTargetCapacity is the executor's admission observation, Rust
 // observe_target_capacity: its observation was just read for this route, so
 // one older than the durable frontier is an error.
+// TargetCapacitySlot is the durable slot RefreshTargetCapacity compares against.
+func (s *Store) TargetCapacitySlot(ctx context.Context, cluster, reserve, mint string) (int64, error) {
+	var slot int64
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(max(observed_slot),0) FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, cluster, reserve, mint).Scan(&slot)
+	return slot, err
+}
+
 func (s *Store) RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error {
 	return s.refreshTargetCapacity(ctx, cluster, reserve, mint, supply, slot, false)
 }

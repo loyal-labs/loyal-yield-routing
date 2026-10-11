@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -66,14 +67,12 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	if _, ok := request.(KaminoInitializationRequest); ok {
 		initializerPrestateSlot = slot
 	}
-	// Prices and the exact-message fee are independent reads. Preserve each
-	// source slot and expiry, then validate all three against one final slot.
-	var fee MessageFeeObservation
+	// The prices are independent reads. Preserve each source slot and
+	// expiry, then validate both against one final slot.
 	var token, sol BudgetPrice
-	var feeErr, tokenErr, solErr error
+	var tokenErr, solErr error
 	var reads sync.WaitGroup
-	reads.Add(2)
-	go func() { defer reads.Done(); fee, feeErr = observeMessageFee(ctx, rpc, message, slot) }()
+	reads.Add(1)
 	go func() { defer reads.Done(); sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, view, slot) }()
 	if debit.Raw > 0 {
 		reads.Add(1)
@@ -83,11 +82,8 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 		}()
 	}
 	reads.Wait()
-	if feeErr != nil {
-		return ValuedTransactionCost{}, feeErr
-	}
-	if r, ok := request.(KaminoInitializationRequest); ok && fee.Lamports > r.MaximumFeeLamports {
-		return ValuedTransactionCost{}, budgetHold("initializer_fee_changed")
+	if errors.Is(tokenErr, chain.ErrUnavailable) {
+		return ValuedTransactionCost{}, confirmedObservationUnavailable(tokenErr)
 	}
 	if tokenErr != nil {
 		// Keep the cause (RPC read, stale reserve price whose refresh
@@ -95,20 +91,23 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 		return ValuedTransactionCost{}, &BudgetHold{Reason: "build_token_valuation_unavailable", Details: map[string]string{"mint": debit.Mint, "cause": sanitizedHoldCause(tokenErr)}}
 	}
 	if solErr != nil {
-		return ValuedTransactionCost{}, budgetHold("build_native_valuation_unavailable")
+		return ValuedTransactionCost{}, holdUnlessUnavailable(solErr, "build_native_valuation_unavailable")
 	}
 	slot, err = view.slot(ctx)
 	if err != nil {
-		return ValuedTransactionCost{}, budgetHold("build_valuation_unavailable")
+		return ValuedTransactionCost{}, holdUnlessUnavailable(err, "build_valuation_unavailable")
 	}
 	// The chain is at least at the newest slot any input was read at.
-	slot = max(slot, fee.Slot, sol.ObservedSlot, token.ObservedSlot)
+	slot = max(slot, sol.ObservedSlot, token.ObservedSlot)
 	if initializerPrestateSlot > 0 && slot-initializerPrestateSlot > observationLagSlots() {
 		return ValuedTransactionCost{}, budgetHold("initializer_prestate_expired")
 	}
-	cost, err := ValueTransactionCost(message, debit, fee, setupLamports, token, sol, slot)
+	cost, err := ValueTransactionCost(message, debit, setupLamports, token, sol, slot)
 	if err != nil {
 		return cost, err
+	}
+	if r, ok := request.(KaminoInitializationRequest); ok && cost.Fee.Lamports > r.MaximumFeeLamports {
+		return ValuedTransactionCost{}, budgetHold("initializer_fee_changed")
 	}
 	if initializerPrestateSlot > 0 {
 		cost.ValidThroughSlot = min(cost.ValidThroughSlot, initializerPrestateSlot+observationLagSlots())

@@ -31,7 +31,7 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 	}
 	slot, err := view.slot(ctx)
 	if err != nil {
-		return 0, budgetHold("prestate_unavailable")
+		return 0, holdUnlessUnavailable(err, "prestate_unavailable")
 	}
 	if r, ok := request.(KaminoInitializationRequest); ok {
 		// Basic lanes keep the exact public absent-only prestate path —

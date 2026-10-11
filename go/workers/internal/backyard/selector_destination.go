@@ -109,7 +109,7 @@ func validateSelectorFarms(route RuntimeRoute, accounts []ConfirmedAccount) erro
 		}
 		derived, err := deriveKaminoObligationFarmUserState(pair[0], route.Kamino.Obligation)
 		if err != nil || derived != pair[1] {
-			return budgetHold("selector_farm_binding_invalid")
+			return holdUnlessUnavailable(err, "selector_farm_binding_invalid")
 		}
 		farm, user := accountAt(accounts, pair[0]), accountAt(accounts, pair[1])
 		if farm.Owner != kamino.FarmsProgramID.String() || farm.Executable || farm.Lamports == 0 || len(farm.Data) != 8336 || !bytes.Equal(farm.Data[:8], []byte{198, 102, 216, 74, 63, 66, 163, 190}) ||
@@ -190,7 +190,7 @@ func validateSelectorDestinationCommon(route RuntimeRoute, slot int64, accounts 
 	}
 	ticket, err := decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
 	if err != nil || ticket.Armed || ticket.LastConsumedSequence >= uint64(slot) {
-		return 0, budgetHold("selector_destination_ticket_unavailable")
+		return 0, holdUnlessUnavailable(err, "selector_destination_ticket_unavailable")
 	}
 	if err = validateSelectorFarms(route, accounts); err != nil {
 		return 0, err
@@ -239,7 +239,7 @@ func validateSelectorDestinationCommon(route RuntimeRoute, slot int64, accounts 
 		a := accountAt(accounts, b.address)
 		custody, err := DecodeTokenCustody(a.Owner, a.Data, mustKey(b.mint), mustKey(b.authority))
 		if err != nil || a.Owner != b.program || a.Executable || a.Lamports == 0 {
-			return 0, budgetHold("selector_destination_custody_unavailable")
+			return 0, holdUnlessUnavailable(err, "selector_destination_custody_unavailable")
 		}
 		if b.address == route.CollateralCustody {
 			collateralCustody = custody.Raw
@@ -299,7 +299,7 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 		if debtPrice != nil {
 			bounded, err := debtPrice.valueLower(capacity, route.Kamino.DebtMint, route.DebtTokenProgram, debtPrice.ObservedSlot)
 			if err != nil || bounded <= 0 {
-				return out, budgetHold("selector_destination_capacity_unpriced")
+				return out, holdUnlessUnavailable(err, "selector_destination_capacity_unpriced")
 			}
 			capacity = uint64(bounded)
 		}
@@ -363,11 +363,10 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 		if err != nil {
 			return out, err
 		}
-		fee, err := observeMessageFee(ctx, rpc, message, slot)
+		r.MaximumFeeLamports, err = chain.MessageFee(message)
 		if err != nil {
 			return out, err
 		}
-		r.MaximumFeeLamports = fee.Lamports
 		var initSlot int64
 		if reentry != nil && position.ObligationPresent {
 			// Forecast-only prestate: the initializer is priced against the
@@ -510,7 +509,7 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 		allowed := new(big.Int).Mul(new(big.Int).SetUint64(minimum-1), new(big.Int).SetUint64(uint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset])))
 		allowed.Quo(allowed, big.NewInt(100))
 		if err != nil || new(big.Int).SetUint64(debtValue).Cmp(allowed) > 0 {
-			return out, budgetHold("selector_destination_initial_borrow_unsafe")
+			return out, holdUnlessUnavailable(err, "selector_destination_initial_borrow_unsafe")
 		}
 		if err = deposit(swap.Request.MinimumOutputRaw, minimum, liquidity, nil); err != nil {
 			return out, err
@@ -565,7 +564,7 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 			total := new(big.Int).Add(new(big.Int).SetUint64(swap.Request.MinimumOutputRaw), new(big.Int).SetUint64(leverage.Request.MinimumOutputRaw))
 			total.Add(total, new(big.Int).SetUint64(used))
 			if err != nil || total.Cmp(new(big.Int).SetUint64(reserve.depositLimitRaw)) > 0 {
-				return out, budgetHold("selector_redeposit_capacity_unavailable")
+				return out, holdUnlessUnavailable(err, "selector_redeposit_capacity_unavailable")
 			}
 		}
 		redepositMinimum := leverage.Request.MinimumOutputRaw - rounding
@@ -603,7 +602,7 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 			}
 			asset, err := assetPrice.valueLower(deposited, route.Kamino.CollateralMint, route.CollateralTokenProgram, assetPrice.ObservedSlot)
 			if err != nil || asset <= 0 {
-				return out, budgetHold("selector_destination_collateral_asset_unpriced")
+				return out, holdUnlessUnavailable(err, "selector_destination_collateral_asset_unpriced")
 			}
 			assetRaw := uint64(asset)
 			out.CollateralAssetUSDCRaw = &assetRaw

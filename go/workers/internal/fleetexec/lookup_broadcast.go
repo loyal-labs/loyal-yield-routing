@@ -77,6 +77,15 @@ func (s *Store) deferLookupRecovery(ctx context.Context, operation LookupOperati
 	return nil
 }
 
+// releaseLookupNotYet hands a lease back for a later tick, uncounted and with no error.
+func (s *Store) releaseLookupNotYet(ctx context.Context, operation LookupOperation) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state=CASE WHEN operation_state='leased' THEN 'retry_wait' ELSE operation_state END,next_attempt_at=clock_timestamp()+interval '5 seconds',attempt_count=attempt_count-1,lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, operation.Intent.OperationID, operation.Lease.Owner, operation.Lease.FencingToken)
+	if err == nil && tag.RowsAffected() != 1 {
+		return ErrStaleOwner
+	}
+	return err
+}
+
 // markLookupDrift is Rust's NeedsManualReconcile: the packet's chain effect
 // does not match its intent, so it is neither retried nor applied.
 func (s *Store) markLookupDrift(ctx context.Context, operation LookupOperation, attempt LookupAttempt, reason string) error {

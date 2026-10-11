@@ -85,15 +85,15 @@ func runUnwindIntentCommitOnManifest(ctx context.Context, manifest RouteManifest
 	defer cancel()
 	db, err := OpenDatabase(ctx, databaseURL)
 	if err != nil {
-		return UnwindIntentCommitResult{}, budgetHold("unwind_intent_database_unavailable")
+		return UnwindIntentCommitResult{}, holdUnlessUnavailable(err, "unwind_intent_database_unavailable")
 	}
 	defer db.Close()
 	var nonce [16]byte
 	if _, err = rand.Read(nonce[:]); err != nil {
-		return UnwindIntentCommitResult{}, budgetHold("unwind_intent_owner_unavailable")
+		return UnwindIntentCommitResult{}, holdUnlessUnavailable(err, "unwind_intent_owner_unavailable")
 	}
 	if _, err = db.AcquireRouteLease(ctx, routeKey, "unwind-intent:"+hex.EncodeToString(nonce[:]), 45*time.Second); err != nil {
-		return UnwindIntentCommitResult{}, budgetHold("unwind_intent_lease_unavailable")
+		return UnwindIntentCommitResult{}, holdUnlessUnavailable(err, "unwind_intent_lease_unavailable")
 	}
 	defer func() {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

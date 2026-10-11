@@ -23,8 +23,8 @@ func TestTransactionValuationNormalizesUSDCAndNativeFees(t *testing.T) {
 	debit := ExecutableDebit{Source: "custody", Mint: "nine-decimal-collateral", TokenProgram: classicTokenProgram, Raw: 900_000_000}
 	price := budgetTestPrice(debit.Mint, debit.TokenProgram, 9, 1, 2)
 	sol := budgetTestPrice(nativeSOLBudgetAsset, "11111111111111111111111111111111", 9, 100, 2)
-	fee := MessageFeeObservation{MessageSHA256: sha256Bytes(message), Slot: 42, Lamports: 5000}
-	cost, err := ValueTransactionCost(message, debit, fee, 1000, price, sol, 42)
+	fee := MessageFeeObservation{MessageSHA256: sha256Bytes(message), Lamports: 5000}
+	cost, err := ValueTransactionCost(message, debit, 1000, price, sol, 42)
 	if err != nil || cost.PrincipalMicros != 450_000 || cost.NetworkFeeMicros != 250 || cost.SetupLamportsMicros != 50 || cost.TotalMicros != 450_300 {
 		t.Fatalf("wrong USDC-normalized cost: %+v %v", cost, err)
 	}
@@ -33,13 +33,10 @@ func TestTransactionValuationNormalizesUSDCAndNativeFees(t *testing.T) {
 	}
 	// Quoting in USDC is not the same as declaring a one-dollar stable peg.
 	price.USDCLowerSF = price.TokenUpperSF
-	cost, err = ValueTransactionCost(message, debit, fee, 0, price, sol, 42)
+	cost, err = ValueTransactionCost(message, debit, 0, price, sol, 42)
 	if err != nil || cost.PrincipalMicros != 900_000 {
 		t.Fatalf("USDC price change was ignored: %+v %v", cost, err)
 	}
-	fee.Slot = 1
-	_, err = ValueTransactionCost(message, debit, fee, 0, price, sol, 42)
-	assertBudgetHold(t, err, "fee_message_or_slot_mismatch")
 }
 
 func TestBudgetPriceRejectsStaleMismatchedAndOverflowInputs(t *testing.T) {

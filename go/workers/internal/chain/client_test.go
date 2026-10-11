@@ -236,20 +236,39 @@ func TestReceiptResolvesLoadedAddresses(t *testing.T) {
 	}
 }
 
-func TestFeeIsReadNoOlderThanTheAskedSlot(t *testing.T) {
-	var opts map[string]any
-	fee := any(5000)
-	client := serve(t, func(req request) (int, any) {
-		_ = json.Unmarshal(req.Params[1], &opts)
-		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": fee})
-	})
-	lamports, slot, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42)
-	if err != nil || lamports != 5000 || slot != 44 || opts["minContextSlot"] != float64(42) || opts["commitment"] != "confirmed" {
-		t.Fatalf("fee %d at %d, %v, options %v", lamports, slot, err, opts)
+// The fee is the cluster's formula over the message alone: 5000 lamports per
+// signature, precompile signatures included, plus ceil(price × limit / 1e6).
+func TestMessageFeeIsTheClusterFormula(t *testing.T) {
+	payer, cosigner := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
+	budget := func(data ...byte) solana.Instruction {
+		return solana.NewInstruction(solana.ComputeBudget, solana.AccountMetaSlice{}, data)
 	}
-	fee = nil
-	if _, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42); err == nil {
-		t.Fatal("a fee for an expired blockhash was accepted")
+	limit := budget(2, 0x40, 0x0d, 0x03, 0)                                                      // 200_000 units
+	price := budget(3, 0x41, 0x42, 0x0f, 0, 0, 0, 0, 0)                                          // 1_000_001 micro-lamports
+	precompile := solana.NewInstruction(ed25519Program, solana.AccountMetaSlice{}, []byte{1, 0}) // one signature
+	signed := solana.NewInstruction(solana.SystemProgramID, solana.AccountMetaSlice{solana.Meta(cosigner).SIGNER()}, []byte{0})
+	fee := func(instructions ...solana.Instruction) (uint64, error) {
+		tx, err := solana.NewTransaction(instructions, solana.Hash{1}, solana.TransactionPayer(payer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		message, err := tx.Message.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return MessageFee(message)
+	}
+	if got, err := fee(limit, price, precompile, signed); err != nil || got != 3*5000+200_001 {
+		t.Fatalf("fee %d: %v", got, err)
+	}
+	if got, err := fee(signed); err != nil || got != 2*5000 {
+		t.Fatalf("unprioritized fee %d: %v", got, err)
+	}
+	if _, err := fee(price, signed); err == nil {
+		t.Fatal("a unit price without a unit limit was priced")
+	}
+	if _, err := MessageFee([]byte{1}); err == nil {
+		t.Fatal("a malformed message was priced")
 	}
 }
 
@@ -334,12 +353,12 @@ func TestLaggingNodeIsNotYetAndNeverAskedAgain(t *testing.T) {
 		if calls == 1 {
 			return http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
 		}
-		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": 5000})
+		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": map[string]any{"blockhash": solana.Hash{1}.String(), "lastValidBlockHeight": 90}})
 	})
-	if _, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42); !errors.Is(err, ErrBehind) || calls != 1 {
+	if _, _, _, err := client.Blockhash(context.Background(), rpc.CommitmentConfirmed, 42); !errors.Is(err, ErrBehind) || calls != 1 {
 		t.Fatalf("behind node asked %d times: %v", calls, err)
 	}
-	if lamports, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42); err != nil || lamports != 5000 || calls != 2 {
-		t.Fatalf("next call: fee %d after %d calls: %v", lamports, calls, err)
+	if _, _, slot, err := client.Blockhash(context.Background(), rpc.CommitmentConfirmed, 42); err != nil || slot != 44 || calls != 2 {
+		t.Fatalf("next call: slot %d after %d calls: %v", slot, calls, err)
 	}
 }

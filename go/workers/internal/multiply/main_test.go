@@ -28,7 +28,7 @@ func testFacts() *engine.Facts { return engine.NewFacts(prometheus.NewRegistry()
 type fakeChain struct {
 	genesis, blockhash solana.Hash
 	lastValid, slot    uint64
-	fee, height        uint64
+	height             uint64
 	accounts           map[solana.PublicKey]*chain.Account
 	sent               [][]byte
 	receiptErr         error
@@ -44,9 +44,6 @@ func (f *fakeChain) Accounts(_ context.Context, keys []solana.PublicKey, _ rpc.C
 		accounts[i] = f.accounts[key]
 	}
 	return f.slot, accounts, nil
-}
-func (f *fakeChain) Fee(context.Context, []byte, rpc.CommitmentType, uint64) (uint64, uint64, error) {
-	return f.fee, f.slot, nil
 }
 func (f *fakeChain) Simulate(context.Context, []byte, rpc.SimulateTransactionOpts) (chain.Simulated, error) {
 	return chain.Simulated{Slot: f.slot}, nil

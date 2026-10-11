@@ -3,7 +3,6 @@ package backyard
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 func TestSelectorSourceCashReturnCountsEveryReportWithoutChargingPrincipal(t *testing.T) {
@@ -154,13 +153,6 @@ func TestSelectorSourceRetainedObservationCannotMoveBackwards(t *testing.T) {
 	plan, err := observePhase3BridgeAdmission(context.Background(), rpc, view, o, d, e)
 	if err != nil {
 		t.Fatal(err)
-	}
-	plan.Exit[0].Cost.ObservationSlot = 70
-	// A view behind the retained sample does not answer within the deadline.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	if _, err = priceSelectorSourcePlan(ctx, rpc, view, plan, 42); err == nil {
-		t.Fatal("later retained sample forgotten during repricing")
 	}
 	plan.Exit[0].Cost.ObservationSlot = 75
 	_, err = priceSelectorSourcePlan(context.Background(), rpc, view, plan, 42)

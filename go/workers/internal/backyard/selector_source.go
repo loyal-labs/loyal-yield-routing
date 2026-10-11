@@ -474,7 +474,7 @@ func requoteAutoResidueContinuation(ctx context.Context, rpc *chain.Client, view
 	rewrite := func(index int, remainder uint64) (uint64, error) {
 		swap, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapDebtToUSDCStep, AmountRaw: int64(remainder), StrategyKey: s.RouteLane}, remainder, pools.cash, plan.Exit[index].Cost.ObservationSlot)
 		if err != nil {
-			return 0, budgetHold("selector_source_residue_quote_unavailable")
+			return 0, holdUnlessUnavailable(err, "selector_source_residue_quote_unavailable")
 		}
 		cost, err := m.observePhase3KnownBuildCost(ctx, rpc, view, swap.Request, swap.ExpectedEffects)
 		if err != nil {

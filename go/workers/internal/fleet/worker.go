@@ -162,13 +162,16 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		return err
 	}
 	identities := make(map[string]ReserveIdentity, len(epoch.Reserves))
+	// The direct read must cover the durable epoch it is verified against.
+	var minimumSlot int64
 	for _, r := range epoch.Reserves {
+		minimumSlot = max(minimumSlot, r.StateSlot)
 		if r.Market == nil {
 			return fmt.Errorf("catalog reserve %s has no market", r.Reserve)
 		}
 		identities[r.Reserve] = ReserveIdentity{Address: r.Reserve, Market: *r.Market, Mint: r.LiquidityMint}
 	}
-	direct, err := w.observeConfirmedReserveCatalog(ctx, addresses, identities)
+	direct, err := w.observeConfirmedReserveCatalog(ctx, addresses, identities, minimumSlot)
 	if err != nil {
 		return fmt.Errorf("observe complete coherent reserve catalog: %w", err)
 	}

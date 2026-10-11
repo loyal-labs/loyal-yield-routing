@@ -44,7 +44,7 @@ func phase3BridgeTemplates(policies installedPolicies, s Snapshot, decision Deci
 		return nil, budgetHold("bridge_admission_snapshot_unavailable")
 	}
 	if _, err := runtimeRoute(s.RouteLane); err != nil {
-		return nil, budgetHold("bridge_admission_lane_unavailable")
+		return nil, holdUnlessUnavailable(err, "bridge_admission_lane_unavailable")
 	}
 	if s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
 		s.PrimeIdleRaw != 0 || s.CollateralIdleRaw != 0 || s.DebtIdleRaw != 0 ||
@@ -108,7 +108,7 @@ func phase3BridgeTemplates(policies installedPolicies, s Snapshot, decision Deci
 	}
 	actual, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)
 	if err != nil || !bytes.Equal(expected, actual) || first.Request != r {
-		return nil, budgetHold("bridge_admission_intent_mismatch")
+		return nil, holdUnlessUnavailable(err, "bridge_admission_intent_mismatch")
 	}
 	steps := []BridgeExecutionEvidence{evidence}
 	appendStep := func(action Action, amount uint64) error {
@@ -187,7 +187,6 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 	}
 	debits := make([]ExecutableDebit, len(steps))
 	messages := make([][]byte, len(steps))
-	fees := make([]MessageFeeObservation, len(steps))
 	firstDebit := -1
 	for i, step := range steps {
 		debits[i], err = MeasureExecutableDebit(step.Request, step.ExpectedEffects)
@@ -202,22 +201,13 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 			firstDebit = i
 		}
 	}
-	// These valuation reads have no dependency on one another. The closed
-	// cash-return graph has at most six fee messages and two prices. Give
-	// every read the same view floor, then validate every result against the
-	// newest slot any read saw; an earlier response never extends freshness.
+	// The two price reads have no dependency on one another. Give both the
+	// same view floor, then validate every result against the newest slot any
+	// read saw; an earlier response never extends freshness.
 	minimumSlot := max(slot, observation.Snapshot.Slot)
-	feeErrors := make([]error, len(steps))
 	var token, sol BudgetPrice
 	var tokenErr, solErr error
 	var reads sync.WaitGroup
-	for i := range steps {
-		reads.Add(1)
-		go func(i int) {
-			defer reads.Done()
-			fees[i], feeErrors[i] = observeMessageFee(ctx, rpc, messages[i], minimumSlot)
-		}(i)
-	}
 	if firstDebit >= 0 {
 		reads.Add(1)
 		go func() {
@@ -231,25 +221,17 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 		sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, view, minimumSlot)
 	}()
 	reads.Wait()
-	for _, feeErr := range feeErrors {
-		if feeErr != nil {
-			return plan, feeErr
-		}
-	}
 	if tokenErr != nil {
-		return plan, budgetHold("bridge_admission_token_valuation_unavailable")
+		return plan, holdUnlessUnavailable(tokenErr, "bridge_admission_token_valuation_unavailable")
 	}
 	if solErr != nil {
-		return plan, budgetHold("bridge_admission_native_valuation_unavailable")
+		return plan, holdUnlessUnavailable(solErr, "bridge_admission_native_valuation_unavailable")
 	}
 	slot, err = view.slot(ctx)
 	if err != nil {
 		return plan, err
 	}
 	slot = max(slot, sol.ObservedSlot, token.ObservedSlot)
-	for _, fee := range fees {
-		slot = max(slot, fee.Slot)
-	}
 	// Every bridge wire carries a report for this snapshot slot, and the adaptor
 	// refuses a report older than adaptorMaxReportAgeSlots (Custom 9): the wider
 	// A1 window must not apply here.
@@ -258,7 +240,7 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 		return plan, budgetHold("stale_bridge_admission_snapshot")
 	}
 	for i, step := range steps {
-		cost, err := ValueTransactionCost(messages[i], debits[i], fees[i], 0, token, sol, slot)
+		cost, err := ValueTransactionCost(messages[i], debits[i], 0, token, sol, slot)
 		if err != nil {
 			return plan, err
 		}

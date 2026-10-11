@@ -747,7 +747,7 @@ func (d *Database) recordDecisionTx(
 	if decision.Reason == leverageUpReason {
 		target, err := decodeLeverageTarget(setupState["leverageTarget"])
 		if err != nil || target == nil || target.Lane != decision.StrategyKey || target.OperationID != "" || target.BorrowRaw != uint64(decision.AmountRaw) {
-			return DecisionRecord{}, budgetHold("leverage_authorization_consumed_or_changed")
+			return DecisionRecord{}, holdUnlessUnavailable(err, "leverage_authorization_consumed_or_changed")
 		}
 		target.OperationID = operationID
 		raw, err := json.Marshal(target)
