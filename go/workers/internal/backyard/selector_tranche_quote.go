@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,102 +15,184 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-// collectTrancheQuotes prices (working source, destination, E) tranche
-// quotes: the source's priced full exit scaled to a partial exit of E, plus
-// the destination's exact recipe for E (a flat entry, or a top-up of a held
-// lane). E starts at the largest partial the source can free and follows
-// the depth-aware ladder. Refusals that say the destination has no room are
-// returned per pair; outages are not, so their windows carry.
-func collectTrancheQuotes(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, source selectorSourceQuote) ([]MoveQuote, map[string]string) {
+// trancheCollection is one sample's tranche quotes and why the rest are
+// missing: a reason per (source>destination) pair, or one for the whole set.
+type trancheCollection struct {
+	Quotes    []MoveQuote
+	Refusals  map[string]string
+	SetReason string
+}
+
+// Tranche collection reasons. Outages carry a pair's persistence window
+// (selectorAvailabilityReasons); a destination without room drops it.
+const (
+	trancheReasonPlanningUnavailable = "tranche_planning_unavailable"
+	trancheReasonInProgress          = "tranche_in_progress"
+	trancheReasonSourceQuote         = "tranche_source_quote_unavailable"
+	trancheReasonNoRungFitsSource    = "tranche_no_rung_within_source_partial"
+	trancheReasonDestinationQuote    = "tranche_destination_quote_unavailable"
+	trancheReasonMoveQuote           = "tranche_move_quote_unavailable"
+	trancheReasonDeadline            = "tranche_quote_deadline"
+	trancheReasonRoomClosed          = "tranche_destination_room_closed"
+	trancheReasonTopupUnsupported    = "tranche_destination_topup_unsupported"
+)
+
+// collectTrancheQuotes composes (working source, destination, E) tranche
+// quotes from what the sample's quote collection already priced: its
+// full-exit source quote scaled to a partial exit of E, plus every
+// destination recipe its ladders priced at a size the source can free. A
+// held destination is priced as a top-up of its own. Every early return and
+// every refused pair records its reason.
+func collectTrancheQuotes(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, capture *selectorQuoteCapture) trancheCollection {
 	s := o.Snapshot
-	refusals := map[string]string{}
-	if o.planning == nil || o.planning.tranche != nil || !earnActiveLane(s.RouteLane) || !trancheSourceSettled(s) ||
-		source.Lane != s.RouteLane || source.ObservationID != s.ObservationID || !sha256Pattern.MatchString(source.Recipe.EvidenceID) {
-		return nil, refusals
+	out := trancheCollection{Refusals: map[string]string{}}
+	maxE := int64(0)
+	switch {
+	case o.planning == nil:
+		out.SetReason = trancheReasonPlanningUnavailable
+	case o.planning.tranche != nil:
+		out.SetReason = trancheReasonInProgress
+	case !earnActiveLane(s.RouteLane):
+		out.SetReason = "tranche_source_full_exit_only"
+	case !trancheSourceSettled(s):
+		out.SetReason = "tranche_finish_current_work_first"
+	case capture == nil || capture.source.Lane != s.RouteLane || capture.source.ObservationID != s.ObservationID || !sha256Pattern.MatchString(capture.source.Recipe.EvidenceID):
+		out.SetReason = trancheReasonSourceQuote
+	default:
+		if maxE = min(trancheSourceMaxRaw(s), int64(strategyTwoBridgeLegCapRaw)); maxE < topupMinimumRaw {
+			out.SetReason = "tranche_source_partial_unproven"
+		}
 	}
-	maxE := min(trancheSourceMaxRaw(s), int64(strategyTwoBridgeLegCapRaw))
-	if maxE < topupMinimumRaw {
-		return nil, refusals
+	if out.SetReason != "" {
+		return out
 	}
-	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
-	defer cancel()
+	source := capture.source
 	held := s.heldLanes()
 	heldDebt := map[string]int64{}
 	for _, f := range o.heldFacts {
 		heldDebt[f.Lane] = f.DebtValueRaw
 	}
-	sorted := append([]LaneEconomics(nil), markets...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Lane < sorted[j].Lane })
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	var quotes []MoveQuote
-	for _, market := range sorted {
-		lane := market.Lane
+	capture.mu.Lock()
+	destinations := append([]selectorDestinationQuote(nil), capture.destinations...)
+	capture.mu.Unlock()
+	best := map[string]MoveQuote{}
+	bestBenefit := map[string]float64{}
+	keep := func(q MoveQuote) {
+		benefit := trancheQuoteBenefit(o, markets, policy, q)
+		if _, seen := best[q.DestinationLane]; !seen || benefit > bestBenefit[q.DestinationLane] {
+			best[q.DestinationLane], bestBenefit[q.DestinationLane] = q, benefit
+		}
+	}
+	refuse := func(lane, reason string) {
 		key := trancheWindowKey(s.RouteLane, lane)
-		if lane == s.RouteLane || !earnActiveLane(lane) || market.validate(time.Now().UTC(), policy) != nil || siblingLanes(s.RouteLane, lane) {
+		if _, priced := best[lane]; !priced && out.Refusals[key] == "" {
+			out.Refusals[key] = reason
+		}
+	}
+	// Flat destinations: every rung the whole-move ladders priced.
+	rungs := map[string]int{}
+	for _, d := range destinations {
+		if d.Lane == s.RouteLane || containsLane(held, d.Lane) {
 			continue
 		}
-		destinationHeld := containsLane(held, lane)
-		if destinationHeld && heldDebt[lane] > 0 && sharedUSDCDebt(lane) {
+		rungs[d.Lane]++
+		if d.EquityRaw == 0 || d.EquityRaw > uint64(maxE) {
+			continue
+		}
+		q, err := composeTrancheMove(ctx, view, o, source, d)
+		if err != nil {
+			var hold *BudgetHold
+			if errors.As(err, &hold) && hold.Reason == "selector_move_cost_exceeds_equity" {
+				refuse(d.Lane, "cost_exceeds_allocation")
+			} else {
+				refuse(d.Lane, trancheReasonMoveQuote)
+			}
+			continue
+		}
+		keep(q)
+	}
+	for lane, count := range rungs {
+		if count > 0 {
+			refuse(lane, trancheReasonNoRungFitsSource)
+		}
+	}
+	// Held destinations: the whole-move ladder never prices a held lane, so
+	// the top-up is priced here, in its own bounded window.
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	started := time.Now()
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, market := range markets {
+		lane := market.Lane
+		if lane == s.RouteLane || !containsLane(held, lane) || !earnActiveLane(lane) || market.validate(time.Now().UTC(), policy) != nil || siblingLanes(s.RouteLane, lane) {
+			continue
+		}
+		if heldDebt[lane] > 0 && sharedUSDCDebt(lane) {
 			// Squads cash beside USDC debt is borrowed cash, so a top-up
 			// cannot run there (topupStep): the lane takes no tranche.
-			refusals[key] = "tranche_destination_topup_unsupported"
+			refuse(lane, trancheReasonTopupUnsupported)
 			continue
 		}
 		wg.Add(1)
 		go func(market LaneEconomics) {
 			defer wg.Done()
-			var best *MoveQuote
-			bestBenefit := math.Inf(-1)
+			reason := ""
 			size := uint64(maxE)
 			for j := 0; j < selectorLadderRungs && size >= uint64(topupMinimumRaw); j++ {
-				if j > 0 && (ctx.Err() != nil || time.Since(o.ObservedAt) > selectorLadderBudget) {
+				if j > 0 && time.Since(started) > selectorLadderBudget {
 					break
 				}
-				var destination selectorDestinationQuote
-				var err error
-				if destinationHeld {
-					destination, err = observeSelectorTopupForecast(ctx, rpc, view, client, manifest, o.policies, market, size, s.Slot)
-				} else {
-					destination, err = observeSelectorDestinationForecast(ctx, rpc, view, client, manifest, o.policies, market, size, s.Slot, true, nil)
-				}
+				destination, err := observeSelectorTopupForecast(ctx, rpc, view, client, manifest, o.policies, market, size, s.Slot)
 				var hold *BudgetHold
+				switch {
+				case err == nil:
+				case ctx.Err() != nil:
+					reason = trancheReasonDeadline
+				case errors.As(err, &hold) && (hold.Reason == trancheReasonRoomClosed || hold.Reason == trancheReasonTopupUnsupported):
+					reason = hold.Reason
+				default:
+					reason = trancheReasonDestinationQuote
+				}
 				if err != nil {
-					if j == 0 && errors.As(err, &hold) && (hold.Reason == "selector_destination_capacity_unavailable" || hold.Reason == "tranche_destination_room_closed") {
-						mu.Lock()
-						refusals[key] = "tranche_destination_room_closed"
-						mu.Unlock()
-					}
 					break
 				}
 				q, err := composeTrancheMove(ctx, view, o, source, destination)
 				if err != nil {
 					if errors.As(err, &hold) && hold.Reason == "selector_move_cost_exceeds_equity" {
-						size /= 10
+						reason, size = "cost_exceeds_allocation", size/10
 						continue
 					}
+					reason = trancheReasonMoveQuote
 					break
 				}
-				benefit := trancheQuoteBenefit(o, markets, policy, q)
-				if best == nil || benefit > bestBenefit {
-					best, bestBenefit = &q, benefit
-				}
-				if benefit > float64(policy.MinimumBenefitRaw) || destination.EquityRaw < size {
-					// Profitable, or already clamped to the destination's room.
-					break
+				mu.Lock()
+				keep(q)
+				mu.Unlock()
+				if destination.EquityRaw < size {
+					break // already clamped to the destination's room
 				}
 				size = selectorNextLadderSize(size, destinationEntrySwapLoss(destination.Recipe))
 			}
-			if best != nil {
+			if reason != "" {
 				mu.Lock()
-				quotes = append(quotes, *best)
+				refuse(market.Lane, reason)
 				mu.Unlock()
 			}
 		}(market)
 	}
 	wg.Wait()
-	sort.Slice(quotes, func(i, j int) bool { return quotes[i].DestinationLane < quotes[j].DestinationLane })
-	return quotes, refusals
+	for _, q := range best {
+		out.Quotes = append(out.Quotes, q)
+	}
+	sort.Slice(out.Quotes, func(i, j int) bool { return out.Quotes[i].DestinationLane < out.Quotes[j].DestinationLane })
+	for key := range out.Refusals {
+		lane := strings.TrimPrefix(key, s.RouteLane+">")
+		if _, priced := best[lane]; priced {
+			delete(out.Refusals, key)
+		}
+	}
+	return out
 }
 
 // trancheQuoteBenefit evaluates one tranche quote through the pure selector.

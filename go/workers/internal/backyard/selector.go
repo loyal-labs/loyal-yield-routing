@@ -259,6 +259,10 @@ type SelectorInput struct {
 	// trancheRefusals labels (source>destination) pairs the quote collector
 	// refused for an economic or capacity reason, never an outage.
 	trancheRefusals map[string]string
+	// trancheSetReason labels every tranche pair when the collector priced
+	// none at all (no planning read, a source it could not scale, a paused
+	// collection); it never hides behind a generic missing-quote code.
+	trancheSetReason string
 	// heldFacts are the other held lanes' positions, for the worst-yield
 	// working-lane ordering.
 	heldFacts []heldLaneFact
@@ -615,7 +619,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 				continue
 			}
 			quoteAmount := min(amount, max(int64(0), int64(q.MinimumIdleRaw)-p.IdleBufferRaw))
-			if q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == quoteAmount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" {
+			if !q.Tranche && q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == quoteAmount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" {
 				if quote != nil {
 					return hold("duplicate_move_quote")
 				}
@@ -755,6 +759,14 @@ var selectorAvailabilityReasons = map[string]bool{
 	"selector_source_quote_unavailable":  true,
 	"selector_source_unavailable":        true,
 	"selector_live_snapshot_unavailable": true,
+	// Tranche collection outages: a pair that could not be priced this
+	// sample keeps its window; a destination without room never does.
+	trancheReasonPlanningUnavailable:                  true,
+	trancheReasonSourceQuote:                          true,
+	trancheReasonDestinationQuote:                     true,
+	trancheReasonMoveQuote:                            true,
+	trancheReasonDeadline:                             true,
+	"tranche_collection_paused_for_single_lane_quote": true,
 }
 
 // carryAdvantageWindows keeps the lane's leveraged and 1x windows exactly
