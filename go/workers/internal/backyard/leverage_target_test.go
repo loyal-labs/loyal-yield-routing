@@ -54,7 +54,7 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 		s := leverageSnapshot(tc.level)
 		s.TotalVaultNAVRaw, s.StrategyNAVRaw = 1_000_000_000, 1_000_000_000
 		armFeeAuthorityFixture(t, &s)
-		got, ok := decideLeverageTarget(s, keep, []LaneEconomics{leverageMarket(s.RouteLane, tc.yield, tc.apr)}, p)
+		got, ok := decideLeverageTarget(s, keep, []LaneEconomics{leverageMarket(s.RouteLane, tc.yield, tc.apr)}, p, twentyBPSStepCost)
 		if !ok || got.Current != min(tc.level, leverageMaxLiveLevel) || got.Next != tc.want || got.Reason != tc.wantReason {
 			t.Fatalf("%s: %+v ok=%t", tc.name, got, ok)
 		}
@@ -66,7 +66,7 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 	small.TotalVaultNAVRaw, small.StrategyNAVRaw = 2_000_000, 2_000_000
 	armFeeAuthorityFixture(t, &small)
 	armLeverageCapacityFixture(&small)
-	got, _ := decideLeverageTarget(small, keep, []LaneEconomics{leverageMarket(small.RouteLane, 0.12, math.Log1p(0.06))}, p)
+	got, _ := decideLeverageTarget(small, keep, []LaneEconomics{leverageMarket(small.RouteLane, 0.12, math.Log1p(0.06))}, p, twentyBPSStepCost)
 	if got.Next != 1 || got.BorrowRaw != 0 {
 		t.Fatalf("sub-minimum loan authorized: %+v", got)
 	}
@@ -80,7 +80,7 @@ func TestLeverageDecisionAndSelectorMovesExcludeEachOther(t *testing.T) {
 	markets := []LaneEconomics{leverageMarket(autoAUTOPYUSD.Lane, 0.12, math.Log1p(0.06))}
 	p := DefaultSelectorPolicy()
 	s := leverageSnapshot(1.5)
-	if _, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, markets, p); !ok {
+	if _, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, markets, p, twentyBPSStepCost); !ok {
 		t.Fatal("settled KEEP position gave no leverage decision")
 	}
 	for name, c := range map[string]struct {
@@ -99,7 +99,7 @@ func TestLeverageDecisionAndSelectorMovesExcludeEachOther(t *testing.T) {
 	} {
 		c2 := s
 		c.mutate(&c2)
-		if _, ok := decideLeverageTarget(c2, c.result, markets, p); ok {
+		if _, ok := decideLeverageTarget(c2, c.result, markets, p, twentyBPSStepCost); ok {
 			t.Fatalf("%s: leverage decision ran", name)
 		}
 	}
@@ -219,22 +219,22 @@ func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
 	if _, ok := leverageSpread(full, 1.5, 1_000_000_000, false); ok {
 		t.Fatal("fixture: spread(1.5x) should be unavailable")
 	}
-	if d, _ := decideLeverageTarget(s, keep, []LaneEconomics{full}, p); d.Next != s.LeverageTargetLevel || d.BorrowRaw != 0 {
+	if d, _ := decideLeverageTarget(s, keep, []LaneEconomics{full}, p, twentyBPSStepCost); d.Next != s.LeverageTargetLevel || d.BorrowRaw != 0 {
 		t.Fatalf("unavailable spread still decided: %+v", d)
 	}
 	// Stored 1.5x with a 2+ pt spread: the only change is the next step up.
-	d, ok := decideLeverageTarget(s, keep, []LaneEconomics{good}, p)
+	d, ok := decideLeverageTarget(s, keep, []LaneEconomics{good}, p, twentyBPSStepCost)
 	if !ok || (d.Next != 1.5 && d.Next != 1.75) || (d.Next == 1.5 && d.changesTarget(s.LeverageTargetLevel)) {
 		t.Fatalf("available again: %+v ok=%t changes=%t", d, ok, d.changesTarget(s.LeverageTargetLevel))
 	}
 	// A dip in gain below the up gate does not undo a stored target either:
 	// the rule steps from the stored level (down from 1.5x only below 0).
 	weak := leverageMarket(s.RouteLane, 0.10, math.Log1p(0.095))
-	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{weak}, p); !ok || d.changesTarget(1.5) {
+	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{weak}, p, twentyBPSStepCost); !ok || d.changesTarget(1.5) {
 		t.Fatalf("weak spread flipped the stored 1.5x: %+v", d)
 	}
 	neg := leverageMarket(s.RouteLane, 0.05, math.Log1p(0.06))
-	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{neg}, p); !ok || d.Next != 1 || !d.changesTarget(1.5) {
+	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{neg}, p, twentyBPSStepCost); !ok || d.Next != 1 || !d.changesTarget(1.5) {
 		t.Fatalf("negative spread did not step down: %+v", d)
 	}
 	if (leverageDecision{Current: 1.75, Next: 1.75}).changesTarget(1.75) {

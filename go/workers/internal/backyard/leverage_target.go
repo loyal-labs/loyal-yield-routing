@@ -149,6 +149,8 @@ type leverageDecision struct {
 	SourceDebtRaw uint64
 	// RoomRaw is the debt reserve's additional debt room this sample.
 	RoomRaw uint64
+	// Cost is the priced step's expected cost (CostRaw is its total).
+	Cost leverageStepCost
 }
 
 // decideLeverageTarget applies the option-1 rule to the funded lane. It runs
@@ -176,8 +178,17 @@ type leverageDecision struct {
 // $100k position that asymmetry alone outweighed any in-place borrow the
 // debt reserve could fund (live 2026-10-10: AUTO held 1.01x under a 1.75x
 // target while PYUSD had $3k-$5k of room for five hours).
-// Cost = moved notional x 2 x UncertaintyBPS + 3 fees of 10,000 raw.
-func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy) (leverageDecision, bool) {
+//
+// The cost is the step's expected cost (leverage_step_cost.go): the KLend
+// origination fee, the expected swap loss in and out at the step's size from
+// live quotes, and the six transactions' network fees, all at central
+// prices. It was 2 x UncertaintyBPS of the borrowed amount: a haircut that
+// bounds execution, not what capital loses, and at AUTO's realized spread
+// (~2.9 pts) it refused every up step whatever the room. Uncertainty stays
+// where it bounds execution: the swap minimums and the recipe limits. The
+// income forecast values the borrow and its proceeds at central prices too.
+// An unpriced step is leverage_cost_unavailable, never free.
+func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
 	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
 		selector.Action != "KEEP" || s.PartialWithdrawalOperationID != "" || s.Unwind || s.UnwindRefreshRequired || s.CutoverDrain || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
@@ -243,8 +254,8 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		return out, true
 	}
 	fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
-	proceeds, priceErr := capacityBorrowValue(s, raw, false)
-	liability, debtErr := capacityBorrowValue(s, raw+fee, true)
+	proceeds, priceErr := capacityBorrowCentralValue(s, raw, false)
+	liability, debtErr := capacityBorrowCentralValue(s, raw+fee, true)
 	rateDebt := float64(leverageRateDebtRaw(s, raw+fee))
 	apr, rateErr := projectedBorrowAPR(*market, rateDebt)
 	spread, allowed := leverageUpAllowed(*market, level, rateDebt)
@@ -254,15 +265,24 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	}
 	out.SpreadBPS = int64(spread * 10_000)
 	moved := float64(proceeds)
-	out.CostRaw = moved*2*float64(p.UncertaintyBPS)/10_000 + 3*10_000
 	if !s.MonitorsArmed || !approvedVoltrFeeTerms(s) {
 		out.Next, out.Reason = out.Current, "fee_terms_unavailable"
 		return out, true
 	}
-	if p.validate() != nil || s.CollateralIdleRaw > 0 || !finite(out.CostRaw) || out.CostRaw > 1<<53 || s.PositionDebtValueRaw < 0 || !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 {
+	if p.validate() != nil || s.CollateralIdleRaw > 0 || s.PositionDebtValueRaw < 0 || !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 {
 		out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
 		return out, true
 	}
+	if price == nil {
+		out.Next, out.Reason = out.Current, "leverage_cost_unavailable"
+		return out, true
+	}
+	stepCost, costErr := price(raw)
+	if costErr != nil || stepCost.TotalMicros <= 0 || stepCost.TotalMicros > 1<<53 {
+		out.Next, out.Reason = out.Current, "leverage_cost_unavailable"
+		return out, true
+	}
+	out.Cost, out.CostRaw = stepCost, float64(stepCost.TotalMicros)
 	years := p.Horizon.Hours() / (365.25 * 24)
 	collateral, debt := float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw)
 	keepGross := forecastGain(collateral, collateral, debt, *market, math.Log1p(market.CurrentBorrowAPY), years)
@@ -317,8 +337,8 @@ func (d leverageDecision) storeChanges(s Snapshot) bool {
 }
 
 func (d leverageDecision) logLine() string {
-	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f borrow=%d room=%d reason=%s",
-		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.BorrowRaw, d.RoomRaw, d.Reason)
+	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f (fee=%d in=%d out=%d network=%d) borrow=%d room=%d reason=%s",
+		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.Cost.BorrowFeeMicros, d.Cost.EntrySwapLossMicros, d.Cost.ExitSwapLossMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, d.Reason)
 }
 
 // leverageDecisionLog rate-limits the 'leverage decision' line: it prints
