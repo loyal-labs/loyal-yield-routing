@@ -24,8 +24,9 @@ func overflowRoomBatch(t *testing.T, slot int64) []ConfirmedAccount {
 }
 
 // Nobody but us borrows wYLDS, so its raw reserve sits far past the health
-// age (2026-10-11: ~9,500 slots, and every tick logged overflow_room_unknown
-// while PYUSD was shut). The room is judged on the overflow lane's own
+// age and the observation batch does not carry it (2026-10-11: every tick
+// logged overflow_room_unknown while PYUSD was shut, first as kamino_stale,
+// then as a missing account). The room is judged on the overflow lane's own
 // refresh simulation; a failed refresh leaves only this room unknown.
 func TestOverflowRoomIsJudgedOnTheOverflowLanesRefresh(t *testing.T) {
 	t.Parallel()
@@ -45,11 +46,11 @@ func TestOverflowRoomIsJudgedOnTheOverflowLanesRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Run("stale raw reserve, refreshed capture", func(t *testing.T) {
+	t.Run("room comes from the overflow lane's own refresh", func(t *testing.T) {
 		t.Parallel()
 		calls := 0
 		var s Snapshot
-		err := applyOverflowRoom(context.Background(), &s, slot, stale, autoAUTOPYUSD, func(_ context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
+		err := applyOverflowRoom(context.Background(), &s, slot, autoAUTOPYUSD, func(_ context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
 			calls++
 			if len(routes) != 1 || routes[0].Lane != autoAUTOWYLDS.Lane || minSlot != slot || len(addresses) != len(want) {
 				t.Fatalf("refresh was not the overflow lane's own: %v %v %d", routes, addresses, minSlot)
@@ -65,34 +66,41 @@ func TestOverflowRoomIsJudgedOnTheOverflowLanesRefresh(t *testing.T) {
 		}
 	})
 
-	t.Run("fresh raw reserve needs no refresh", func(t *testing.T) {
+	t.Run("a stale refreshed reserve leaves the room unknown", func(t *testing.T) {
 		t.Parallel()
-		var s Snapshot
-		err := applyOverflowRoom(context.Background(), &s, slot, fresh, autoAUTOPYUSD, func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
-			t.Fatal("a fresh reserve was refreshed")
-			return 0, nil, nil
+		s := Snapshot{OverflowRoomKnown: true, OverflowRoomRaw: 1}
+		err := applyOverflowRoom(context.Background(), &s, slot, autoAUTOPYUSD, func(_ context.Context, _ []RuntimeRoute, addresses []string, _ int64) (int64, []ConfirmedAccount, error) {
+			out := make([]ConfirmedAccount, 0, len(addresses))
+			for _, address := range addresses {
+				out = append(out, accountAt(stale, address))
+			}
+			return slot, out, nil
 		})
-		if err != nil || !s.OverflowRoomKnown || s.OverflowRoomRaw != wantRaw {
-			t.Fatalf("fresh room: %+v %v", s, err)
+		if !errors.Is(err, errKaminoReserveStale) || s.OverflowRoomKnown || s.OverflowRoomRaw != 0 {
+			t.Fatalf("stale capture: %+v %v", s, err)
 		}
 	})
 
-	t.Run("failed refresh leaves the room unknown with its cause", func(t *testing.T) {
+	t.Run("failed or absent refresh leaves the room unknown with its cause", func(t *testing.T) {
 		t.Parallel()
 		s := Snapshot{OverflowRoomKnown: true, OverflowRoomRaw: 1}
 		cause := budgetHold("price_refresh_simulation_unavailable")
-		err := applyOverflowRoom(context.Background(), &s, slot, stale, autoAUTOPYUSD, func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
+		err := applyOverflowRoom(context.Background(), &s, slot, autoAUTOPYUSD, func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 			return 0, nil, cause
 		})
 		if !errors.Is(err, cause) || s.OverflowRoomKnown || s.OverflowRoomRaw != 0 {
 			t.Fatalf("failed refresh: %+v %v", s, err)
+		}
+		s = Snapshot{OverflowRoomKnown: true}
+		if err := applyOverflowRoom(context.Background(), &s, slot, autoAUTOPYUSD, nil); err == nil || s.OverflowRoomKnown {
+			t.Fatalf("absent refresh: %+v %v", s, err)
 		}
 	})
 
 	t.Run("a lane without an overflow lane stamps nothing", func(t *testing.T) {
 		t.Parallel()
 		s := Snapshot{OverflowRoomKnown: true}
-		if err := applyOverflowRoom(context.Background(), &s, slot, fresh, autoAUTOWYLDS, nil); err != nil || s.OverflowRoomKnown {
+		if err := applyOverflowRoom(context.Background(), &s, slot, autoAUTOWYLDS, nil); err != nil || s.OverflowRoomKnown {
 			t.Fatalf("non-source lane: %+v %v", s, err)
 		}
 	})

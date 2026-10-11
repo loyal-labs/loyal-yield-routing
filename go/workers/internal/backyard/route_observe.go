@@ -388,7 +388,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
 		entryUSDC = room
 		applyBorrowCapacity(&base.Snapshot, position, accounts, route)
-		if err := applyOverflowRoom(ctx, &base.Snapshot, slot, accounts, route, runtime.refreshValuation); err != nil {
+		if err := applyOverflowRoom(ctx, &base.Snapshot, slot, route, runtime.refreshValuation); err != nil {
 			fmt.Fprintf(os.Stderr, "backyard-rwa-worker: overflow room unknown lane=%s: %v\n", route.Lane, err)
 		}
 	}

@@ -3,7 +3,6 @@ package backyard
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -261,14 +260,15 @@ func overflowInitializationReady(s Snapshot) bool {
 }
 
 // applyOverflowRoom stamps, on a lane with an overflow lane, that lane's
-// fee-inclusive receive room and its bridge USDC value. Nobody but us borrows
-// from the overflow lane's debt reserve, so its raw reserve is usually far
-// past the health age (2026-10-11: wYLDS 34GJ ~9,500 slots), while the
-// borrow that would use the room refreshes it first. A stale raw verdict is
-// therefore judged again on the overflow lane's own refresh simulation, kept
-// apart from the NAV capture so its failure only leaves this room unknown.
-// The returned error says why the room is unknown.
-func applyOverflowRoom(ctx context.Context, s *Snapshot, slot int64, accounts []ConfirmedAccount, route RuntimeRoute, refresh func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)) error {
+// fee-inclusive receive room and its bridge USDC value, judged on the
+// overflow lane's own refresh simulation. Nobody but us borrows from the
+// overflow lane's debt reserve, so its raw reserve is far past the health age
+// (2026-10-11: wYLDS 34GJ ~9,500 slots), and the observation batch, which
+// keeps only valued lanes' reserves, does not carry it at all; the borrow
+// that would use the room refreshes it first. The capture is kept apart from
+// the NAV capture, so its failure only leaves this room unknown, and the
+// returned error says why.
+func applyOverflowRoom(ctx context.Context, s *Snapshot, slot int64, route RuntimeRoute, refresh func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)) error {
 	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown = 0, 0, false
 	lane, ok := overflowLaneOf(route.Lane)
 	if !ok {
@@ -278,18 +278,18 @@ func applyOverflowRoom(ctx context.Context, s *Snapshot, slot int64, accounts []
 	if err != nil {
 		return err
 	}
-	receive, value, err := overflowRoom(accounts, overflow)
-	if (errors.Is(err, errKaminoReserveStale) || errors.Is(err, errKaminoOracleStale)) && refresh != nil {
-		addresses, addressErr := overflowRoomAddresses(overflow)
-		if addressErr != nil {
-			return addressErr
-		}
-		_, refreshed, refreshErr := refresh(ctx, []RuntimeRoute{overflow}, addresses, slot)
-		if refreshErr != nil {
-			return refreshErr
-		}
-		receive, value, err = overflowRoom(refreshed, overflow)
+	if refresh == nil {
+		return fmt.Errorf("no refresh simulation to judge the overflow room")
 	}
+	addresses, err := overflowRoomAddresses(overflow)
+	if err != nil {
+		return err
+	}
+	_, refreshed, err := refresh(ctx, []RuntimeRoute{overflow}, addresses, slot)
+	if err != nil {
+		return err
+	}
+	receive, value, err := overflowRoom(refreshed, overflow)
 	if err != nil {
 		return err
 	}
