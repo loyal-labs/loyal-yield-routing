@@ -1,7 +1,10 @@
 package backyard
 
 import (
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // earnLane is one Earn Max loop Backyard holds installed on-chain policies for.
@@ -16,6 +19,11 @@ type earnLane struct {
 	// (owner KLend, verified 2026-10-10) and no initializer policy is
 	// installed: a missing obligation holds.
 	initializer bool
+	// dormant: the lane is registered for execution (its runtime route,
+	// policy literals, journal scope and conversions) but sits outside every
+	// lane predicate: it is not scored, entered, observed or held until the
+	// decisions that use it turn it on.
+	dormant bool
 }
 
 // earnLanes is the one registry of Earn Max lanes. Every lane predicate —
@@ -36,11 +44,15 @@ var earnLanes = []earnLane{
 	// both its debt reserves sit at borrowLimit 0. Its installed policies stay
 	// installed so a held position stays observable and exitable.
 	{lane: "Ethena/USDe/PYUSD", exitOnly: true},
+	// AUTO's overflow lane (owner decision 2026-10-11): when AUTO/AUTO/PYUSD
+	// has no PYUSD borrow room, a tranche of its AUTO moves into this second
+	// obligation and levers with wYLDS, converted through Hastra.
+	{lane: autoAUTOWYLDSLane, initializer: true, dormant: true},
 }
 
 func findEarnLane(lane string) (earnLane, bool) {
 	for _, l := range earnLanes {
-		if l.lane == lane {
+		if l.lane == lane && !l.dormant {
 			return l, true
 		}
 	}
@@ -69,11 +81,11 @@ func earnInitializerLane(lane string) bool {
 }
 
 // earnLaneIDs lists the registry lanes in registry order; exit-only lanes
-// only when held is set.
+// only when held is set, dormant lanes never.
 func earnLaneIDs(held bool) []string {
 	out := make([]string, 0, len(earnLanes))
 	for _, l := range earnLanes {
-		if held || !l.exitOnly {
+		if !l.dormant && (held || !l.exitOnly) {
 			out = append(out, l.lane)
 		}
 	}
@@ -115,6 +127,35 @@ var autoAUTOPYUSD = RuntimeRoute{
 	DebtFeeReceiver:           "HFYjFt3AYazic97CdXwZctGGeAuarCud6h6baEStg8Nh",
 	CollateralTokenProgram:    classicTokenProgram, DebtTokenProgram: token2022Program,
 }
+
+// autoAUTOWYLDSLane is AUTO's overflow lane: AUTO collateral levered with
+// wYLDS term debt in AUTO's market, through its own obligation.
+const autoAUTOWYLDSLane = "AUTO/AUTO/wYLDS"
+
+// autoAUTOWYLDS shares AUTO/AUTO/PYUSD's market, collateral reserve and
+// collateral custody (the vault holds one AUTO account for both lanes) and
+// borrows wYLDS from reserve 34GJ…, a classic SPL Token mint with no farms.
+// Its obligation (tag 1, seeds AUTO and wYLDS), its debt custody (the vault's
+// wYLDS associated token account) and the reserve's liquidity supply and fee
+// vault are PDAs, derived here rather than written down.
+var autoAUTOWYLDS = func() RuntimeRoute {
+	r := autoAUTOPYUSD
+	r.Lane, r.DebtSymbol = autoAUTOWYLDSLane, "wYLDS"
+	r.Kamino.DebtReserve, r.Kamino.DebtMint = "34GJjXf7jGTdNL8Yw1HtqWSVvfX6JTsft3UsuFFUL7VU", hastra.WYLDSMint.String()
+	r.DebtTokenProgram = classicTokenProgram
+	vault, market, reserve := kaminoKey(bridgeVault), kaminoKey(r.Kamino.Market), kaminoKey(r.Kamino.DebtReserve)
+	derive := func(key solana.PublicKey, err error) string {
+		if err != nil {
+			panic(err)
+		}
+		return key.String()
+	}
+	r.Kamino.Obligation = derive(kamino.ObligationAddress(1, 0, vault, market, kaminoKey(r.Kamino.CollateralMint), hastra.WYLDSMint))
+	r.DebtCustody = derive(spl.AssociatedTokenAddress(vault, hastra.WYLDSMint, solana.TokenProgramID))
+	r.DebtLiquiditySupply = derive(kamino.ReserveLiquiditySupply(reserve))
+	r.DebtFeeReceiver = derive(kamino.ReserveFeeVault(reserve))
+	return r
+}()
 
 var ethenaUSDePYUSD = RuntimeRoute{
 	Lane: "Ethena/USDe/PYUSD", Protocol: "Ethena", CollateralSymbol: "USDe", DebtSymbol: "PYUSD",
