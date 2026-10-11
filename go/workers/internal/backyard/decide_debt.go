@@ -12,6 +12,8 @@ const (
 	topupSwapReason       = "topup_usdc_requires_collateral"
 	topupAllocationReason = "topup_voltr_idle"
 	topupDepositReason    = "topup_collateral_deposit"
+	// A wYLDS lane's payoff residue stakes to collateral (wyldsDebtLane).
+	debtResidueStakeReason = "debt_residue_to_collateral"
 )
 
 const onreONycUSDC = "OnRe/ONyc/USDC"
@@ -31,6 +33,9 @@ func debtTopupLane(lane string) bool {
 // laneSwap reads the edge table the builder signs from, so the planner never
 // picks a swap the lane's policy lacks (AUTO and OnRe have no USDC->debt edge).
 func laneSwap(lane string, action Action) bool {
+	if wyldsDebtLane(lane) {
+		return hastraConversionAction(lane, action)
+	}
 	_, _, _, _, err := jupiterEdgeForRoute(action, lane)
 	return err == nil
 }
@@ -49,9 +54,16 @@ func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (
 		return Decision{}, false
 	}
 	if s.DebtIdleRaw > 0 {
+		if !debtToUSDCConvertible(s.RouteLane) {
+			return d(SwapDebtToCollateralStep, debtResidueStakeReason, s.DebtIdleRaw), true
+		}
 		return d(SwapDebtToUSDCStep, debtResidueSwapReason, s.DebtIdleRaw), true
 	}
-	if s.SquadsIdleRaw > 0 {
+	// An overflow lane takes no new capital: top-ups go to its source lane,
+	// whose next overflow tranche moves them on. Its own residue and
+	// collateral still redeposit above and below.
+	_, overflow := overflowSourceOf(s.RouteLane)
+	if s.SquadsIdleRaw > 0 && !overflow {
 		if s.CollateralIdleRaw != 0 {
 			return d(Hold, "topup_cash_beside_collateral_residue", 0), true
 		}
@@ -68,7 +80,7 @@ func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (
 	// Top up before any borrow, so idle cash never waits for a full close and
 	// reopen, and a later borrow levers the whole collateral at once.
 	amount := min(s.VoltrIdleRaw-DefaultSelectorPolicy().IdleBufferRaw, s.TopupDepositRoomRaw, int64(strategyTwoBridgeLegCapRaw))
-	if amount < topupMinimumRaw {
+	if amount < topupMinimumRaw || overflow {
 		return Decision{}, false
 	}
 	return d(VoltrAllocateToSquads, topupAllocationReason, amount), true
@@ -160,6 +172,10 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	if s.UnwindRefreshRequired {
 		return d(Hold, "unwind_requires_fresh_admission", 0)
 	}
+	// Term debt with an unknowable maturity: nothing plans on it.
+	if termDebtUnknown(s) {
+		return d(Hold, "term_debt_maturity_unknown", 0)
+	}
 	// Finish a journal-explained stage even if deposits or claims have since
 	// changed demand. Reporting cannot reconcile cash still in this custody.
 	if s.VoltrStrategyIdleRaw > 0 {
@@ -188,6 +204,14 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 			return d(action, reason, amount)
 		}
 		return d(Hold, trancheSourceHoldReason(s), 0)
+	}
+	// Overflow source half: release E as collateral for the overflow lane,
+	// then hold it in the shared custody until the handoff.
+	if overflowSourceHalf(s) {
+		if action, reason, amount, ok := partialWithdrawalStep(s); ok {
+			return d(action, reason, amount)
+		}
+		return d(Hold, overflowSourceHoldReason(s), 0)
 	}
 	if s.WithdrawalDemandRaw > 0 && !s.Unwind && !s.CutoverDrain && s.WithdrawalDemandRaw <= s.VoltrIdleRaw {
 		if s.CapitalMutated || s.LastReportAgeSeconds >= 60 {
@@ -241,6 +265,9 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 			return d(SwapCollateralToStableStep, "withdrawal_convert_collateral_to_usdc", s.CollateralIdleRaw)
 		}
 		if s.DebtIdleRaw > 0 {
+			if !debtToUSDCConvertible(s.RouteLane) {
+				return d(SwapDebtToCollateralStep, "withdrawal_stake_debt_residue", s.DebtIdleRaw)
+			}
 			return d(SwapDebtToUSDCStep, "withdrawal_convert_debt_residue_to_usdc", s.DebtIdleRaw)
 		}
 		if s.SquadsIdleRaw > 0 {
@@ -302,13 +329,20 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		(s.CapacityRaw < s.SquadsIdleRaw || s.PolicyLimitRaw < s.SquadsIdleRaw || s.MaxTargetLTVEntryRaw < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
 		return d(StageSquadsToVoltr, "entry_capacity_changed_return_cash", s.SquadsIdleRaw)
 	}
+	// Term debt: borrow again before maturity (a leverage_up borrow due
+	// the same tick restarts the term itself).
+	if action, reason, amount, ok := termKeepAliveStep(s, hard); ok {
+		return d(action, reason, amount)
+	}
 	// B2: borrow only toward the stored level target (never an entry quote).
 	if action, reason, amount, ok := leverageBorrowStep(s, hard); ok {
 		return d(action, reason, amount)
 	}
 	// The pause blocks new entries; a B2 leveraged loop on its own lane still
-	// swaps and redeposits its borrowed cash (no entry authority is needed).
-	if s.SelectorEntryPaused && !leverageLoopInProgress(s) {
+	// swaps and redeposits its borrowed cash (no entry authority is needed),
+	// and an overflow lane takes over its source's freed collateral under
+	// the overflow tranche's authority.
+	if s.SelectorEntryPaused && !leverageLoopInProgress(s) && !overflowDestinationEntry(s) {
 		return d(Hold, "selector_entry_requires_fresh_admission", 0)
 	}
 	// Same prerequisite as the fixed lane: a deposit into a missing obligation

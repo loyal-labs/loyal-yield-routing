@@ -10,7 +10,7 @@ import (
 // without a manifest gate); the exit-only Ethena lane is not.
 func TestEveryActiveRegistryLaneEntersUnderTheUnchangedSelectorRule(t *testing.T) {
 	t.Parallel()
-	want := []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PhaseOneLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane}
+	want := []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PhaseOneLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, autoAUTOWYLDSLane}
 	got := earnLaneIDs(false)
 	if len(got) != len(want) {
 		t.Fatalf("active registry %v, want %v", got, want)
@@ -22,6 +22,13 @@ func TestEveryActiveRegistryLaneEntersUnderTheUnchangedSelectorRule(t *testing.T
 	}
 	if earnActiveLane(ethenaUSDePYUSD.Lane) {
 		t.Fatal("exit-only Ethena is an entry lane")
+	}
+	// AUTO's overflow lane is active (scored for its own leverage) but only
+	// an overflow tranche enters it.
+	for _, lane := range want {
+		if selectorDestinationLane(lane) == (lane == autoAUTOWYLDSLane) {
+			t.Fatal("selector destination set is not the registry without its overflow lane", lane)
+		}
 	}
 	// The unchanged rule: an OnRe advantage must persist for the policy's
 	// persistence window before the selector enters.

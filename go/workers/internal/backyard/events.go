@@ -422,6 +422,7 @@ func (e *events) leverageObserved(lanes []laneLeverage) {
 	for _, l := range lanes {
 		held[l.lane] = true
 		e.facts.BackyardLeverageGap(l.lane, l.gap, l.targeted)
+		e.facts.BackyardTermDebtDays(l.lane, l.termDays, l.termOwed)
 	}
 	e.mu.Lock()
 	previous := e.heldLanes

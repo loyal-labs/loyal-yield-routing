@@ -288,7 +288,12 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 			return Observation{}, KaminoExecutionEvidence{}, err
 		}
 	}
-	if leg == kaminoLegBorrow && decision.Reason == leverageUpReason {
+	if leg == kaminoLegBorrow && decision.Reason == termKeepAliveReason {
+		if err := validateTermKeepAliveBorrow(position, accounts, route, wireAmount); err != nil {
+			return Observation{}, KaminoExecutionEvidence{}, err
+		}
+		effectAmount = wireAmount
+	} else if leg == kaminoLegBorrow && decision.Reason == leverageUpReason {
 		capped, capErr := capacitySizedBorrow(position, accounts, route, int64(leverageUpLevel(observation.Snapshot)*100))
 		if capErr != nil || wireAmount > capped || wireAmount < leverageMinimumBorrowRaw {
 			return Observation{}, KaminoExecutionEvidence{}, budgetHoldFrom(capErr, "borrow_capacity_shrank")
@@ -373,6 +378,9 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 		}
 		if position.CollateralDepositedRaw > 0 && position.DebtRaw == 0 && decision.Reason == topupDepositReason {
 			return kaminoLegDeposit, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
+		}
+		if position.CollateralDepositedRaw > 0 && position.DebtRaw > 0 && decision.Reason == termKeepAliveReason {
+			return kaminoLegBorrow, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
 		}
 		if position.CollateralDepositedRaw > 0 && decision.Reason == leverageUpReason {
 			if decision.AmountRaw < leverageMinimumBorrowRaw {

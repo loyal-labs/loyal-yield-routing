@@ -24,6 +24,12 @@ type earnLane struct {
 	// lane predicate: it is not scored, entered, observed or held until the
 	// decisions that use it turn it on.
 	dormant bool
+	// overflowOf names the lane this one is the overflow of: it shares that
+	// lane's collateral reserve and custody, is never a selector or tranche
+	// destination, and is entered only by an overflow tranche from it when
+	// that lane's next leverage step finds no borrow room
+	// (selector_overflow.go).
+	overflowOf string
 }
 
 // earnLanes is the one registry of Earn Max lanes. Every lane predicate —
@@ -47,7 +53,7 @@ var earnLanes = []earnLane{
 	// AUTO's overflow lane (owner decision 2026-10-11): when AUTO/AUTO/PYUSD
 	// has no PYUSD borrow room, a tranche of its AUTO moves into this second
 	// obligation and levers with wYLDS, converted through Hastra.
-	{lane: autoAUTOWYLDSLane, initializer: true, dormant: true},
+	{lane: autoAUTOWYLDSLane, initializer: true, overflowOf: "AUTO/AUTO/PYUSD"},
 }
 
 func findEarnLane(lane string) (earnLane, bool) {

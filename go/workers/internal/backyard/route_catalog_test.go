@@ -187,9 +187,10 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 // AUTO/AUTO/wYLDS is AUTO's lane with wYLDS debt: its derived accounts are
 // the live reserve's (testdata/wylds-term-debt.json, slot 455559961), its
 // debt custody is the vault's wYLDS account, and it shares AUTO/PYUSD's
-// market, collateral reserve and collateral custody. Registered dormant, it
-// sits outside every lane predicate until its decisions turn it on.
-func TestAUTOWYLDSRouteIsTheLiveReserveAndDormant(t *testing.T) {
+// market, collateral reserve and collateral custody. It is AUTO/PYUSD's
+// overflow lane: active and held like any registry lane, entered only by
+// an overflow tranche.
+func TestAUTOWYLDSRouteIsTheLiveReserveAndAUTOsOverflow(t *testing.T) {
 	t.Parallel()
 	raw, err := os.ReadFile("../programs/kamino/testdata/wylds-term-debt.json")
 	if err != nil {
@@ -230,8 +231,12 @@ func TestAUTOWYLDSRouteIsTheLiveReserveAndDormant(t *testing.T) {
 	if err != nil || obligation.String() != route.Kamino.Obligation {
 		t.Fatal("wYLDS obligation is not the vault's tag-1 AUTO/wYLDS PDA", obligation, err)
 	}
-	if earnHeldLane(autoAUTOWYLDSLane) || earnActiveLane(autoAUTOWYLDSLane) || earnInitializerLane(autoAUTOWYLDSLane) ||
-		slices.Contains(earnLaneIDs(true), autoAUTOWYLDSLane) || catalogJupiterRoute(autoAUTOWYLDSLane) {
-		t.Fatal("dormant wYLDS lane reached a lane predicate")
+	if !earnHeldLane(autoAUTOWYLDSLane) || !earnActiveLane(autoAUTOWYLDSLane) || !earnInitializerLane(autoAUTOWYLDSLane) ||
+		!slices.Contains(earnLaneIDs(true), autoAUTOWYLDSLane) {
+		t.Fatal("wYLDS lane is not a registry lane")
+	}
+	if source, ok := overflowSourceOf(autoAUTOWYLDSLane); !ok || source != autoAUTOPYUSD.Lane || !overflowPair(autoAUTOPYUSD.Lane, autoAUTOWYLDSLane) ||
+		siblingLanes(autoAUTOPYUSD.Lane, autoAUTOWYLDSLane) || selectorDestinationLane(autoAUTOWYLDSLane) || !selectorDestinationLane(autoAUTOPYUSD.Lane) {
+		t.Fatal("wYLDS lane is not AUTO/PYUSD's overflow")
 	}
 }

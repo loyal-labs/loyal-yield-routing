@@ -24,6 +24,9 @@ const (
 	partialSwapToUSDCReason = "withdrawal_partial_swap_to_usdc"
 	partialStageReason      = "withdrawal_partial_stage"
 	partialDebtToUSDCReason = "withdrawal_partial_debt_to_usdc"
+	// A wYLDS lane's leftover debt cash stakes to collateral instead
+	// (wyldsDebtLane); the collateral leg then converts it.
+	partialDebtToCollateralReason = "withdrawal_partial_debt_to_collateral"
 	// At most this many release rounds (each keeps LTV under the release
 	// ceiling); a shortfall under 90% of equity at 1.5x needs <= 6. More
 	// requires review, not automatic full exit.
@@ -42,6 +45,10 @@ func partialWithdrawalTargetLTVBPS(s Snapshot) (int64, bool) {
 	}
 	if s.PartialWithdrawalOperationID != "" {
 		return s.PartialWithdrawalLTVBPS, true
+	}
+	// An overflow source releases to the overflow LTV (no repay).
+	if overflowSourceHalf(s) {
+		return overflowSourceLTVBPS, true
 	}
 	// Only capture with nothing in flight. Legacy in-flight positions keep
 	// their old discrete target; new releases persist this actual ratio.
@@ -67,6 +74,10 @@ func partialWithdrawalTargetLTVBPS(s Snapshot) (int64, bool) {
 // when a partial path is not established. Callers hold withdrawal-only flows,
 // after hard LTV, recovery and the covered/staged checks.
 func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
+	// An overflow source frees its E as collateral for the overflow lane.
+	if overflowSourceHalf(s) {
+		return overflowSourceStep(s)
+	}
 	if !earnActiveLane(s.RouteLane) || s.Unwind || s.CutoverDrain || (partialDemandRaw(s) <= 0 && !partialWithdrawalInFlight(s)) || !s.HasPosition ||
 		s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw < 0 || s.PositionDebtRaw < 0 {
 		return "", "", 0, false
@@ -138,6 +149,9 @@ func partialWithdrawalStep(s Snapshot) (Action, string, int64, bool) {
 		return SwapCollateralToStableStep, partialSwapToUSDCReason, s.CollateralIdleRaw, true
 	}
 	if !sharedUSDCDebt(s.RouteLane) && s.DebtIdleRaw > partialWithdrawalDustRaw {
+		if !debtToUSDCConvertible(s.RouteLane) {
+			return SwapDebtToCollateralStep, partialDebtToCollateralReason, s.DebtIdleRaw, true
+		}
 		// Leftover debt cash after the repay: convert, like the residue leg.
 		return SwapDebtToUSDCStep, partialDebtToUSDCReason, s.DebtIdleRaw, true
 	}
@@ -291,6 +305,9 @@ func partialWithdrawalDebtSwapRaw(s Snapshot, target int64) int64 {
 func partialWithdrawalWireAmount(s Snapshot, d Decision) (int64, bool) {
 	switch d.Reason {
 	case partialReleaseReason:
+		if overflowSourceHalf(s) {
+			return overflowReleaseReceipts(s, d.AmountRaw), true
+		}
 		return partialWithdrawalReleaseReceipts(s, d.AmountRaw), true
 	case partialSwapToDebtReason:
 		target, ok := partialWithdrawalTargetLTVBPS(s)

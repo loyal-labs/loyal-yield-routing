@@ -125,6 +125,11 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 	var wg sync.WaitGroup
 	for i := range out {
 		market := out[i]
+		if !selectorDestinationLane(market.Lane) {
+			out[i].EntryCapacity = Capacity{Known: true}
+			out[i].EntryBlockedReason = overflowLaneBlockedReason
+			continue
+		}
 		if onlyLane != "" && market.Lane != onlyLane {
 			if market.EntryBlockedReason == "" {
 				out[i].EntryCapacity = Capacity{Known: true}

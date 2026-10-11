@@ -564,7 +564,7 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		otherNAV += value.netRaw
 		otherState = append(otherState, value.state)
 		otherCustodyHeld = otherCustodyHeld || value.custodyHeld
-		otherLanes = append(otherLanes, heldLaneFact{Lane: other.Lane, CollateralValueRaw: value.collateralValueRaw, DebtValueRaw: value.debtValueRaw})
+		otherLanes = append(otherLanes, heldLaneFact{Lane: other.Lane, CollateralValueRaw: value.collateralValueRaw, DebtValueRaw: value.debtValueRaw, DebtTermEndUnix: value.debtTermEndUnix})
 	}
 	nav, err := ComputeNAV(NAVSnapshotContext{
 		Slot: slot, ReceiptFingerprint: fingerprint,
@@ -599,8 +599,10 @@ type heldLaneValue struct {
 	netRaw      int64
 	state       string
 	custodyHeld bool
-	// Per-lane facts for the selector's yield ordering.
+	// Per-lane facts for the selector's yield ordering, and its term debt
+	// maturity for the keep-alive.
 	collateralValueRaw, debtValueRaw int64
+	debtTermEndUnix                  int64
 }
 
 // valueHeldLane values one non-working held lane from the same batch: its
@@ -654,6 +656,10 @@ func valueHeldLane(slot int64, accounts []ConfirmedAccount, route RuntimeRoute, 
 		if obligation, err = decodeKaminoObligation(obligationAccount, config); err != nil {
 			return heldLaneValue{}, err
 		}
+	}
+	termEnd, err := observedDebtTermEnd(accounts, route)
+	if err != nil {
+		return heldLaneValue{}, err
 	}
 	state := fmt.Sprintf("%s:%d:%d:%d:%d", route.Lane, obligation.collateralDepositedRaw, obligation.debtRaw, collateralIdle, debtIdle)
 	custodyHeld := collateralIdle > 0 || debtIdle > 0
@@ -727,7 +733,7 @@ func valueHeldLane(slot int64, accounts []ConfirmedAccount, route RuntimeRoute, 
 		}
 	}
 	out := heldLaneValue{state: state, custodyHeld: custodyHeld, netRaw: int64(collateralValue) + int64(collateralIdleValue) + int64(debtIdleValue) - int64(debtValue),
-		collateralValueRaw: int64(collateralValue), debtValueRaw: int64(debtValue)}
+		collateralValueRaw: int64(collateralValue), debtValueRaw: int64(debtValue), debtTermEndUnix: termEnd}
 	out.components = append(out.components,
 		NAVComponent{Account: config.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(collateralValue), Slot: slot, Known: true},
 		NAVComponent{Account: config.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(debtValue), Slot: slot, Known: true, Liability: true})

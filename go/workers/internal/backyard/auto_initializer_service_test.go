@@ -423,7 +423,9 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 			t.Fatal(err)
 		}
 		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: laneRoute.Kamino.Obligation})
-		upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.CollateralCustody, laneRoute.Kamino.CollateralMint, bridgeVault, 0))
+		if accountAt(accounts, laneRoute.CollateralCustody).Address == "" { // AUTO's overflow lane shares its custody
+			upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.CollateralCustody, laneRoute.Kamino.CollateralMint, bridgeVault, 0))
+		}
 	}
 	// Candidate-only ownership selects the candidate lane even with a Maple
 	// preference.
@@ -487,7 +489,14 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// The installed lanes join the confirmed batch exactly as the production
 	// inventory requests them — present obligation envelopes, valid zero
 	// custody — so the manifest-scoped scan sees the same batch the transport
-	// serves.
+	// serves. An account a lane shares with one already in the batch (AUTO's
+	// overflow lane shares its collateral reserve, custody and market) keeps
+	// its image.
+	addAbsent := func(account ConfirmedAccount) {
+		if accountAt(accounts, account.Address).Address == "" {
+			upsertConfirmedAccount(&accounts, account)
+		}
+	}
 	for _, lane := range earnLaneIDs(true) {
 		if lane == autoAUTOPYUSD.Lane {
 			continue
@@ -497,7 +506,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 			t.Fatal(laneErr)
 		}
 		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: laneRoute.Kamino.Obligation})
-		upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.CollateralCustody, laneRoute.Kamino.CollateralMint, bridgeVault, 0))
+		addAbsent(tokenAccountFixture(t, laneRoute.CollateralCustody, laneRoute.Kamino.CollateralMint, bridgeVault, 0))
 	}
 	// The rest of the production fetch inventory: the inactive lanes' protocol
 	// internals. The inactive lanes stay flat, so their accounts ride the
@@ -511,11 +520,11 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		if laneErr != nil {
 			t.Fatal(laneErr)
 		}
-		upsertConfirmedAccount(&accounts, marketFixture(t, laneRoute.Kamino.Market))
-		upsertConfirmedAccount(&accounts, kaminoReserveImage(t, laneRoute.Kamino.Market, laneRoute.Kamino.CollateralReserve, laneRoute.Kamino.CollateralMint, observationSlot, peg, 1_000_000, 0, 1_000_000, 6))
-		upsertConfirmedAccount(&accounts, kaminoReserveImage(t, laneRoute.Kamino.Market, laneRoute.Kamino.DebtReserve, laneRoute.Kamino.DebtMint, observationSlot, peg, 1_000_000, 0, 1_000_000, 6))
-		upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.CollateralLiquiditySupply, laneRoute.Kamino.CollateralMint, laneRoute.Kamino.MarketAuthority, 1_000_000))
-		upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.DebtLiquiditySupply, laneRoute.Kamino.DebtMint, laneRoute.Kamino.MarketAuthority, 1_000_000))
+		addAbsent(marketFixture(t, laneRoute.Kamino.Market))
+		addAbsent(kaminoReserveImage(t, laneRoute.Kamino.Market, laneRoute.Kamino.CollateralReserve, laneRoute.Kamino.CollateralMint, observationSlot, peg, 1_000_000, 0, 1_000_000, 6))
+		addAbsent(kaminoReserveImage(t, laneRoute.Kamino.Market, laneRoute.Kamino.DebtReserve, laneRoute.Kamino.DebtMint, observationSlot, peg, 1_000_000, 0, 1_000_000, 6))
+		addAbsent(tokenAccountFixture(t, laneRoute.CollateralLiquiditySupply, laneRoute.Kamino.CollateralMint, laneRoute.Kamino.MarketAuthority, 1_000_000))
+		addAbsent(tokenAccountFixture(t, laneRoute.DebtLiquiditySupply, laneRoute.Kamino.DebtMint, laneRoute.Kamino.MarketAuthority, 1_000_000))
 		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: laneRoute.DebtFeeReceiver, Owner: "11111111111111111111111111111111", Lamports: 1})
 		// A debt custody no other lane in the batch shares (USDS) rides it
 		// flat; a shared one (PYUSD) keeps the AUTO fixture's balance.

@@ -132,6 +132,10 @@ type laneLeverage struct {
 	targeted        bool
 	target, current float64
 	gap             float64
+	// termDays is the lane's days to its term debt's maturity, when it owes
+	// term debt of known maturity.
+	termDays float64
+	termOwed bool
 }
 
 // heldLaneLeverage is every held lane with positive equity in one
@@ -139,12 +143,19 @@ type laneLeverage struct {
 // observed values.
 func heldLaneLeverage(o Observation) []laneLeverage {
 	values := map[string][2]int64{}
+	terms := map[string]int64{}
 	s := o.Snapshot
 	if s.HasPosition && s.PositionCollateralValueRaw > 0 {
 		values[s.RouteLane] = [2]int64{s.PositionCollateralValueRaw, s.PositionDebtValueRaw}
+		if s.PositionDebtRaw > 0 {
+			terms[s.RouteLane] = s.DebtTermEndUnix
+		}
 	}
 	for _, f := range o.heldFacts {
 		values[f.Lane] = [2]int64{f.CollateralValueRaw, f.DebtValueRaw}
+		if f.DebtValueRaw > 0 {
+			terms[f.Lane] = f.DebtTermEndUnix
+		}
 	}
 	var out []laneLeverage
 	for lane, v := range values {
@@ -153,6 +164,9 @@ func heldLaneLeverage(o Observation) []laneLeverage {
 			continue
 		}
 		l := laneLeverage{lane: lane, current: float64(v[0]) / float64(equity)}
+		if end := terms[lane]; end > 0 && s.ChainUnix > 0 {
+			l.termDays, l.termOwed = float64(end-s.ChainUnix)/86_400, true
+		}
 		if o.planning != nil {
 			if target, ok := o.planning.leverage[lane]; ok && target.Level > 0 {
 				l.targeted, l.target = true, min(target.Level, leverageMaxLiveLevel)

@@ -317,6 +317,11 @@ func validateCapacityBorrow(accounts []ConfirmedAccount, route RuntimeRoute, rec
 	if err != nil {
 		return err
 	}
+	// A term lane's keep-alive borrow (decide_term.go) keeps a position at
+	// its level, where the 1.75x step is zero; it has its own bound.
+	if receive > ceiling && validateTermKeepAliveBorrow(position, accounts, route, receive) == nil {
+		ceiling = receive
+	}
 	if receive > ceiling {
 		return budgetHold("borrow_redeposit_or_risk_capacity_shrank")
 	}

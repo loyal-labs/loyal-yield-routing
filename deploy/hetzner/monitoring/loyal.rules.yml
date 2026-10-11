@@ -201,6 +201,22 @@ groups:
           action: "Read the latest 'leverage decision' line (reason, gain, cost, borrow, room) and the HOLD reasons journaled for the lane (leverage_up_awaiting_approval, leverage_up_no_borrow_room). An approval refused as up_move_not_worth_cost is the cost model's answer, not a fault; anything else is why the borrow is not planned or does not land. Do not lower the target or raise limits to clear it."
           recovery: "Confirm a leverage_up borrow lands for the lane (backyard_leverage_up_landed) or the gap closes. The series vanishing or a restart is not recovery."
 
+      # Term debt (wYLDS, 30-day term): a held lane borrows again inside its
+      # last 3 days (keep-alive) and delevers fully under 1 day when it
+      # cannot. Under 2 days means neither keep-alive has landed yet; past
+      # maturity KLend refuses borrowing and the debt becomes liquidatable,
+      # ramping to the whole debt over 3 days.
+      - alert: LoyalBackyardTermDebtNearMaturity
+        expr: loyal_backyard_term_debt_days_to_maturity < 2
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Earn Max lane {{ $labels.lane }} term debt is under 2 days from maturity"
+          trigger: "The lane's term debt is under 2 days from maturity: its keep-alive borrow (inside 3 days) has not landed."
+          impact: "Past maturity KLend refuses new borrowing on the lane and its debt becomes liquidatable, ramping to the whole debt over 3 days."
+          action: "Read the HOLD reasons journaled for the lane (term_keepalive_no_room: the debt reserve has no room; a leverage_down chain under 1 day waits on debt_clear_confirmation_required) and the 'leverage decision' line's term_days. Confirm the full delever (docs/backyard-debt-clear-confirmation.md) if the reserve stays without room; do not extend or roll the term by hand."
+          recovery: "A keep-alive or leverage_up borrow lands and the lane's days to maturity read about 30, or the lane's debt is repaid and the series is gone."
+
   - name: loyal-units
     rules:
       # A Go unit systemd runs (or is restarting) that does not serve /metrics.

@@ -388,6 +388,10 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
 		entryUSDC = room
 		applyBorrowCapacity(&base.Snapshot, position, accounts, route)
+		applyOverflowRoom(&base.Snapshot, accounts, route)
+	}
+	if err := applyDebtTerm(&base.Snapshot, accounts, route); err != nil {
+		return Observation{}, nil, err
 	}
 	base.Snapshot.TopupDepositRoomRaw = int64(room)
 	base.Snapshot.CapacityRaw = int64(entryUSDC)

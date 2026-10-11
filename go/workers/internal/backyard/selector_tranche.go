@@ -24,7 +24,9 @@ type trancheIntent struct {
 	Destination string `json:"destination"`
 	EquityRaw   int64  `json:"equityRaw"`
 	// TargetIdleRaw is the Voltr idle the source half frees to: the idle
-	// observed when the tranche was chosen, plus E.
+	// observed when the tranche was chosen, plus E. An overflow tranche
+	// (selector_overflow.go) frees E as collateral into the custody its pair
+	// shares instead, and carries none.
 	TargetIdleRaw int64     `json:"targetIdleRaw"`
 	Generation    int64     `json:"generation"`
 	ObservationID string    `json:"observationId"`
@@ -45,12 +47,23 @@ const maxHeldLanes = 3
 const trancheDestinationMaxAge = 2 * time.Hour
 
 func (t trancheIntent) validate() error {
+	idle := t.TargetIdleRaw >= t.EquityRaw
+	if t.overflow() {
+		idle = t.TargetIdleRaw == 0
+	}
 	if !earnActiveLane(t.Source) || !earnActiveLane(t.Destination) || t.Source == t.Destination || siblingLanes(t.Source, t.Destination) ||
-		t.EquityRaw <= 0 || uint64(t.EquityRaw) > strategyTwoBridgeLegCapRaw || t.TargetIdleRaw < t.EquityRaw || t.Generation <= 0 ||
+		t.EquityRaw <= 0 || uint64(t.EquityRaw) > strategyTwoBridgeLegCapRaw || !idle || t.Generation <= 0 ||
 		t.ObservationID == "" || !sha256Pattern.MatchString(t.EvidenceID) || t.CreatedAt.IsZero() {
 		return fmt.Errorf("invalid_tranche_intent")
 	}
 	return nil
+}
+
+// overflow reports an overflow tranche: from a lane into its own overflow
+// lane.
+func (t trancheIntent) overflow() bool {
+	source, ok := overflowSourceOf(t.Destination)
+	return ok && source == t.Source
 }
 
 func decodeTrancheIntent(raw []byte) (*trancheIntent, error) {
@@ -67,11 +80,15 @@ func decodeTrancheIntent(raw []byte) (*trancheIntent, error) {
 // siblingLanes reports two lanes that share a collateral reserve or a
 // collateral custody (the Prime lanes share BUTND9 and the PRIME account).
 // Siblings are never held together, and moving between them keeps the
-// full-exit path: their custody balances cannot be told apart.
+// full-exit path: their custody balances cannot be told apart. A lane and
+// its overflow lane share collateral on purpose and are not siblings: an
+// idle balance in their shared custody belongs to the working lane
+// (observedSelectorHeldLanes), and only the overflow tranche moves
+// collateral between them.
 func siblingLanes(a, b string) bool {
 	ra, errA := runtimeRoute(a)
 	rb, errB := runtimeRoute(b)
-	if errA != nil || errB != nil || a == b {
+	if errA != nil || errB != nil || a == b || overflowPair(a, b) {
 		return false
 	}
 	return ra.Kamino.CollateralReserve == rb.Kamino.CollateralReserve || ra.CollateralCustody == rb.CollateralCustody
@@ -81,14 +98,18 @@ func siblingLanes(a, b string) bool {
 // idle target on the source lane, the reserved E on the destination lane.
 func applyTranche(s *Snapshot, t *trancheIntent) {
 	s.TrancheTargetIdleRaw, s.TrancheDestinationRaw = 0, 0
+	s.TrancheOverflowRaw, s.TrancheOverflowDestination = 0, false
 	if t == nil {
 		return
 	}
 	switch {
+	case !t.SourceFreed && s.RouteLane == t.Source && t.overflow():
+		s.TrancheOverflowRaw = t.EquityRaw
 	case !t.SourceFreed && s.RouteLane == t.Source:
 		s.TrancheTargetIdleRaw = t.TargetIdleRaw
 	case t.SourceFreed && s.RouteLane == t.Destination:
 		s.TrancheDestinationRaw = t.EquityRaw
+		s.TrancheOverflowDestination = t.overflow()
 	}
 }
 
@@ -162,6 +183,17 @@ func trancheTransition(t trancheIntent, s Snapshot, now time.Time) trancheStep {
 		if _, _, _, next := partialWithdrawalStep(s); next {
 			return trancheStay
 		}
+		if t.overflow() {
+			// The freed collateral moves with the handoff; nothing freed
+			// and nothing to release abandons.
+			if overflowSourceFreed(s) {
+				return trancheHandoff
+			}
+			if laneTransientClear(s, true) {
+				return trancheAbandon
+			}
+			return trancheStay
+		}
 		if !laneTransientClear(s, laneSharesCustody(t.Source, t.Destination)) {
 			return trancheStay
 		}
@@ -174,7 +206,9 @@ func trancheTransition(t trancheIntent, s Snapshot, now time.Time) trancheStep {
 		return trancheStay
 	}
 	if !s.HasPosition {
-		if now.Sub(t.CreatedAt) > trancheDestinationMaxAge && !hasWorkingCapital(s) {
+		// An overflow destination that never took its collateral over
+		// returns it: the source lane redeposits it as working lane.
+		if now.Sub(t.CreatedAt) > trancheDestinationMaxAge && (!hasWorkingCapital(s) || t.overflow() && s.PositionDebtRaw == 0 && s.DebtIdleRaw == 0 && s.SquadsIdleRaw == 0) {
 			return trancheAbandon
 		}
 		return trancheStay
