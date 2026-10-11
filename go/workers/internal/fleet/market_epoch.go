@@ -83,11 +83,6 @@ type SupportedReserveMarketSnapshot struct {
 	ReserveStates []SupportedReserveStateRow   `json:"reserveStates"`
 }
 
-type MarketEpochFixture struct {
-	SupportedReserveMarketSnapshot
-	EnabledMints []string `json:"enabledMints"`
-}
-
 // MarketEvidenceStore reads the observer-owned catalog and each reserve's latest
 // confirmed stream row. It is intentionally read-only: direct RPC observations
 // must not invent monitor state_event_id values.
@@ -165,9 +160,8 @@ ORDER BY liquidity_mint, market, reserve, fetched_at`, s.schema)
 		return result, err
 	}
 	rows.Close()
-	// Latest by slot, not by arrival: a replay after a restart inserts older
-	// slots after the seed. The dedupe table's (reserve, slot) index walks
-	// each reserve's history newest first.
+	// reserve_current_states names each reserve's newest stored row; its
+	// (reserve, observed_at, event_id) key reaches that row, never history.
 	stateSQL := fmt.Sprintf(`
 SELECT state.event_id, state.account_data_hash, state.observed_at, state.slot, state.source,
        state.source_commitment, state.reserve, state.market, state.market_name,
@@ -175,13 +169,9 @@ SELECT state.event_id, state.account_data_hash, state.observed_at, state.slot, s
        state.reserve_last_update_stale, state.reserve_price_status, state.available_amount, state.borrowed_amount,
        state.total_supply_amount, state.market_price_usd, state.market_price_last_updated_ts, state.utilization,
        state.borrow_apy, state.supply_apy, NULLIF(state.snapshot->>'deposit_limit','')::NUMERIC(20,0)::text
-FROM (SELECT DISTINCT reserve FROM %[1]s.supported_reserves WHERE active AND liquidity_mint=ANY($1)) catalog
-CROSS JOIN LATERAL (
- SELECT u.* FROM %[1]s.reserve_update_dedupe d
- JOIN %[1]s.reserve_updates u ON u.event_id=d.event_id AND u.reserve=d.reserve AND u.slot=d.slot
- WHERE d.reserve=catalog.reserve AND u.source IN ('laserstream_grpc','http_snapshot')
- ORDER BY d.slot DESC, d.event_id DESC LIMIT 1
-) state`, s.schema)
+FROM %[1]s.reserve_current_states current_state
+JOIN %[1]s.reserve_updates state ON state.reserve=current_state.reserve AND state.observed_at=current_state.state_observed_at AND state.event_id=current_state.state_event_id
+WHERE current_state.reserve IN (SELECT reserve FROM %[1]s.supported_reserves WHERE active AND liquidity_mint=ANY($1))`, s.schema)
 	rows, err = tx.Query(ctx, stateSQL, enabledMints)
 	if err != nil {
 		return result, err
@@ -411,7 +401,8 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 // last refresh to the stream frontier, up to which its row is current.
 func validateReserveState(exact SupportedReserveStateRow, catalog SupportedReserveCatalogRow, frontierSlot int64, frontierObservedAt, publicationMinimum time.Time, hard, refreshable *[]MarketMintBlocker) (time.Time, bool) {
 	reserve := stringPointer(catalog.Reserve)
-	if exact.Source != "laserstream_grpc" && exact.Source != "http_snapshot" {
+	// http_confirmed_refresh rows come from the retired verifying observer.
+	if exact.Source != "laserstream_grpc" && exact.Source != "http_snapshot" && exact.Source != "http_confirmed_refresh" {
 		*hard = append(*hard, blocker("source_mismatch", reserve, "reserve state source is "+exact.Source))
 	}
 	if exact.SourceCommitment != "confirmed" {
