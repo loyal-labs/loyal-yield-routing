@@ -50,8 +50,13 @@ func TestControllerSetupLandsStageAndReadsItBackBeforePull(t *testing.T) {
 	}
 	scope := executionScope{ctx: ctx, leaseToken: "lease-current"}
 	// Confirmation alone cannot release the setup until the decoded account is
-	// visible at the confirmed slot.
-	ready, err := controller.ensureDestinationSetup(scope, claim, plan)
+	// visible at the confirmed slot. A land window that ends before the
+	// confirmation is seen is "not yet": the next dispatch inspects the chain
+	// again and finds the same bytes landed, without sending them a third time.
+	ready, err := false, error(nil)
+	for dispatch := 0; dispatch < 5 && err == nil && !ready; dispatch++ {
+		ready, err = controller.ensureDestinationSetup(scope, claim, plan)
+	}
 	if err == nil || ready || chain.broadcasts != 2 {
 		t.Fatalf("missing readback ready=%v broadcasts=%d err=%v", ready, chain.broadcasts, err)
 	}
