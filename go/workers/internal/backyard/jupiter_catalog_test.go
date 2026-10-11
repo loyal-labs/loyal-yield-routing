@@ -165,3 +165,78 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 		})
 	}
 }
+
+// The worker dispatches the wYLDS lane's debt conversions to Hastra and its
+// collateral and USDC conversions to Jupiter, carrying each decided
+// conversion's identity unchanged through prepare, record, bind and build;
+// AUTO/AUTO/PYUSD keeps dispatching every conversion to Jupiter (above).
+// (Its decisions do not yet emit collateral into debt: laneSwap reads only
+// Jupiter edges; TestEveryHastraLegExecutesAtItsOwnConstraint builds it.)
+func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
+	activeWYLDSLane(t)
+	for action, venue := range map[Action]string{SwapStableToCollateralStep: "jupiter", SwapCollateralToStableStep: "jupiter",
+		SwapDebtToCollateralStep: "hastra"} {
+		t.Run(string(action), func(t *testing.T) {
+			s := base()
+			s.RouteLane = autoAUTOWYLDSLane
+			switch action {
+			case SwapStableToCollateralStep:
+				s.SquadsIdleRaw = 5
+			case SwapCollateralToStableStep:
+				s.CutoverDrain = true
+				s.CollateralIdleRaw = 5
+			case SwapDebtToCollateralStep:
+				s.HasPosition = true
+				s.PositionCollateralRaw = 10
+				s.PositionDebtRaw = 5
+				s.DebtIdleRaw = 5
+			}
+			o := tickObservation(s)
+			want := Decide(s)
+			if want.Action != action || want.StrategyKey != autoAUTOWYLDSLane {
+				t.Fatal(want)
+			}
+			var order []string
+			worker := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
+				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil }, observe: func(context.Context) (Observation, error) { return o, nil },
+				prepareJupiter: func(_ context.Context, _ RouteManifest, d Decision, _ Observation) (Observation, JupiterExecutionEvidence, error) {
+					order = append(order, "jupiter")
+					return o, JupiterExecutionEvidence{Request: JupiterSwapRequest{Action: d.Action, RouteLane: d.StrategyKey}}, nil
+				},
+				prepareHastra: func(_ context.Context, d Decision, _ Observation) (Observation, HastraExecutionEvidence, error) {
+					if d != want {
+						t.Fatal("conversion identity changed")
+					}
+					order = append(order, "hastra")
+					return o, HastraExecutionEvidence{Request: HastraConversionRequest{Action: d.Action, RouteLane: d.StrategyKey}}, nil
+				},
+				recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
+					order = append(order, "record")
+					return DecisionRecord{OperationID: "local-conversion", Status: Decided}, nil
+				},
+				bind: func(_ context.Context, _ string, _ Observation, _ Decision, request any, _ ExpectedEffects) error {
+					_, hastraRequest := request.(HastraConversionRequest)
+					if hastraRequest != (venue == "hastra") {
+						t.Fatalf("bound a %T", request)
+					}
+					order = append(order, "admit")
+					return nil
+				},
+				buildJupiter: func(_ context.Context, _ string, e JupiterExecutionEvidence) error {
+					order = append(order, "build-jupiter")
+					return nil
+				},
+				buildHastra: func(_ context.Context, id string, e HastraExecutionEvidence) error {
+					if id != "local-conversion" || e.Request.Action != action || e.Request.RouteLane != autoAUTOWYLDSLane {
+						return fmt.Errorf("dispatch drift")
+					}
+					order = append(order, "build-hastra")
+					return nil
+				},
+			}}
+			if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != venue+",record,admit,build-"+venue {
+				t.Fatal(order, err)
+			}
+		})
+	}
+}

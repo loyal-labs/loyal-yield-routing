@@ -21,6 +21,17 @@ func catalogEdge(action Action, lane string) ([]swapEdge, byte, error) {
 		// AUTO's recipe has no USDC into its debt: it repays from collateral.
 		delete(swaps, SwapUSDCToDebtStep)
 	}
+	if hastraLane(route) {
+		// A Hastra lane's debt converts only through Hastra
+		// (hastraConversionLeg), and never into USDC; its collateral and USDC
+		// stay on these edges.
+		for action := range swaps {
+			if _, hastra := hastraConversionLeg(action, lane); hastra {
+				delete(swaps, action)
+			}
+		}
+		delete(swaps, SwapDebtToUSDCStep)
+	}
 	swap, ok := swaps[action]
 	if !ok {
 		return nil, 0, fmt.Errorf("action %s is no catalog conversion on %s", action, lane)

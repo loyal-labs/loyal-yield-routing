@@ -23,25 +23,43 @@ func isPayoffFundingAction(action Action) bool {
 // funding swap measures through the manifest that produced it; existing
 // lanes resolve identically through either manifest.
 func validatePayoffFunding(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, request JupiterSwapRequest, effects ExpectedEffects, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	if !request.FullPayoffFunding || !isPayoffFundingAction(request.Action) {
-		return KaminoPayoffBound{}, nil, budgetHold("invalid_full_payoff_funding_intent")
-	}
-	if _, err := manifest.measureExecutableDebit(request, effects); err != nil {
-		return KaminoPayoffBound{}, nil, err
-	}
-	route, err := runtimeRoute(request.RouteLane)
-	if err != nil {
-		return KaminoPayoffBound{}, nil, err
-	}
-	var additional []string
-	if request.Action == SwapUSDCToDebtStep {
-		additional = []string{bridgeSquadsATA}
-	}
-	bound, accounts, err := observePayoffWindowOnSnapshotBasis(ctx, rpc, view, route, slot, steps, refreshedBasis, additional...)
+	bound, accounts, route, err := observePayoffFundingWindow(ctx, rpc, view, manifest, request, request.intent(), effects, slot, steps, refreshedBasis)
 	if err != nil {
 		return bound, nil, err
 	}
 	return validatePayoffFundingAccounts(manifest, request, effects, bound, accounts, route)
+}
+
+// validateHastraPayoffFunding is validatePayoffFunding for a Hastra
+// conversion into debt, whose least output is the program's own at the
+// quoted price (validateHastraPrice keeps it the program's).
+func validateHastraPayoffFunding(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, request HastraConversionRequest, effects ExpectedEffects, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	bound, accounts, route, err := observePayoffFundingWindow(ctx, rpc, view, manifest, request, request.intent(), effects, slot, steps, refreshedBasis)
+	if err != nil {
+		return bound, nil, err
+	}
+	return validateConversionFundingAccounts(manifest, conversionEvidence{request, effects}, bound, accounts, route)
+}
+
+// observePayoffFundingWindow checks a funding conversion's intent and reads
+// its lane's payoff window.
+func observePayoffFundingWindow(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, request any, r conversionIntent, effects ExpectedEffects, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, RuntimeRoute, error) {
+	if !r.FullPayoffFunding || !isPayoffFundingAction(r.Action) {
+		return KaminoPayoffBound{}, nil, RuntimeRoute{}, budgetHold("invalid_full_payoff_funding_intent")
+	}
+	if _, err := manifest.measureExecutableDebit(request, effects); err != nil {
+		return KaminoPayoffBound{}, nil, RuntimeRoute{}, err
+	}
+	route, err := runtimeRoute(r.RouteLane)
+	if err != nil {
+		return KaminoPayoffBound{}, nil, RuntimeRoute{}, err
+	}
+	var additional []string
+	if r.Action == SwapUSDCToDebtStep {
+		additional = []string{bridgeSquadsATA}
+	}
+	bound, accounts, err := observePayoffWindowOnSnapshotBasis(ctx, rpc, view, route, slot, steps, refreshedBasis, additional...)
+	return bound, accounts, route, err
 }
 
 // observePayoffWindowOnSnapshotBasis prices the payoff window on the same
@@ -72,17 +90,9 @@ func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRe
 	if err != nil {
 		return bound, nil, err
 	}
-	for i, identity := range []struct{ address, mint string }{{sourceATA, sourceMint}, {route.DebtCustody, route.Kamino.DebtMint}} {
-		e := effects.Accounts[i]
-		a := accountAt(accounts, identity.address)
-		mint, _ := decodeBase58PublicKey(identity.mint)
-		authority, _ := decodeBase58PublicKey(bridgeVault)
-		custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
-		if err != nil || a.Executable || a.Lamports == 0 || e.Address != identity.address || e.Mint != identity.mint || e.Owner != a.Owner || e.Authority != bridgeVault || e.BeforeRaw != custody.Raw {
-			return bound, nil, budgetHoldFrom(err, "funding_custody_changed")
-		}
+	if err := checkFundingCustodies(sourceATA, sourceMint, effects, accounts, route); err != nil {
+		return bound, nil, err
 	}
-	source, destination := effects.Accounts[0], effects.Accounts[1]
 	// The wire carries quoted output and slippage, not the JSON threshold.
 	// Derive its lower bound with wide arithmetic. Use a floor for funding even
 	// though Jupiter rounds its actual minimum up.
@@ -101,13 +111,45 @@ func validatePayoffFundingAccounts(manifest RouteManifest, request JupiterSwapRe
 	n := new(big.Int).Mul(new(big.Int).SetUint64(request.QuotedOutputRaw), new(big.Int).SetUint64(uint64(10_000-slippage)))
 	floor := new(big.Int).Quo(new(big.Int).Set(n), big.NewInt(10_000)).Uint64()
 	ceiling := n.Add(n, big.NewInt(9_999)).Quo(n, big.NewInt(10_000)).Uint64()
-	minimum := min(request.MinimumOutputRaw, floor)
-	if source.BeforeRaw != request.AmountRaw || source.AfterRaw != 0 || request.MinimumOutputRaw > math.MaxInt64 || request.MinimumOutputRaw > ceiling || destination.BeforeRaw > math.MaxInt64-request.MinimumOutputRaw ||
-		destination.MinimumAfterRaw == nil || *destination.MinimumAfterRaw != destination.BeforeRaw+request.MinimumOutputRaw ||
+	if request.MinimumOutputRaw > ceiling {
+		return bound, nil, budgetHold("funding_quote_cannot_cover_full_payoff")
+	}
+	return validateFundingCustody(request.intent(), sourceATA, sourceMint, min(request.MinimumOutputRaw, floor), effects, bound, accounts, route)
+}
+
+// validateFundingCustody admits a funding conversion of the whole source
+// custody whose least output (minimum, what its venue guarantees) covers the
+// payoff window's upper debt with the debt custody it lands in.
+func validateFundingCustody(r conversionIntent, sourceATA, sourceMint string, minimum uint64, effects ExpectedEffects, bound KaminoPayoffBound, accounts []ConfirmedAccount, route RuntimeRoute) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	if err := checkFundingCustodies(sourceATA, sourceMint, effects, accounts, route); err != nil {
+		return bound, nil, err
+	}
+	source, destination := effects.Accounts[0], effects.Accounts[1]
+	if source.BeforeRaw != r.AmountRaw || source.AfterRaw != 0 || r.MinimumOutputRaw > math.MaxInt64 || destination.BeforeRaw > math.MaxInt64-r.MinimumOutputRaw ||
+		destination.MinimumAfterRaw == nil || *destination.MinimumAfterRaw != destination.BeforeRaw+r.MinimumOutputRaw ||
 		destination.AfterRaw != *destination.MinimumAfterRaw || destination.BeforeRaw+minimum < bound.UpperDebtRaw {
 		return bound, nil, budgetHold("funding_quote_cannot_cover_full_payoff")
 	}
 	return bound, accounts, nil
+}
+
+// checkFundingCustodies checks a funding conversion's two effects are the
+// observed source and debt custodies.
+func checkFundingCustodies(sourceATA, sourceMint string, effects ExpectedEffects, accounts []ConfirmedAccount, route RuntimeRoute) error {
+	if len(effects.Accounts) != 2 {
+		return budgetHold("funding_custody_mismatch")
+	}
+	for i, identity := range []struct{ address, mint string }{{sourceATA, sourceMint}, {route.DebtCustody, route.Kamino.DebtMint}} {
+		e := effects.Accounts[i]
+		a := accountAt(accounts, identity.address)
+		mint, _ := decodeBase58PublicKey(identity.mint)
+		authority, _ := decodeBase58PublicKey(bridgeVault)
+		custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
+		if err != nil || a.Executable || a.Lamports == 0 || e.Address != identity.address || e.Mint != identity.mint || e.Owner != a.Owner || e.Authority != bridgeVault || e.BeforeRaw != custody.Raw {
+			return budgetHoldFrom(err, "funding_custody_changed")
+		}
+	}
+	return nil
 }
 
 // Covers the actual funding swap, its preceding NAV, and the NAV after funding.
@@ -127,7 +169,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 		s.CollateralIdleRaw < 0 || s.CollateralIdleValueRaw < 0 || s.PrimeIdleRaw != s.CollateralIdleRaw || debtCashRaw(s) < 0 || s.VoltrStrategyIdleRaw != 0 || s.SquadsIdleRaw < 0 || s.VoltrIdleRaw < 0 {
 		return phase3BridgeAdmission{}, budgetHold("complete_funding_return_unavailable")
 	}
-	var funding *JupiterExecutionEvidence
+	var funding *conversionEvidence
 	var release *KaminoExecutionEvidence
 	var releaseBound KaminoReleaseBound
 	var releaseAccounts []ConfirmedAccount
@@ -167,15 +209,17 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 		}
 		release = &KaminoExecutionEvidence{r, effects}
 		steps = 5
-	case JupiterSwapRequest:
+	case JupiterSwapRequest, HastraConversionRequest:
+		current := conversionEvidence{r, effects}
+		c := current.intent()
 		amount := s.CollateralIdleRaw
-		if r.Action == SwapUSDCToDebtStep {
+		if c.Action == SwapUSDCToDebtStep {
 			amount = s.SquadsIdleRaw
 		}
-		if !r.FullPayoffFunding || !isPayoffFundingAction(r.Action) || decision.Action != r.Action || r.RouteLane != s.RouteLane || amount <= 0 || decision.AmountRaw != amount || r.AmountRaw != uint64(amount) {
+		if !c.FullPayoffFunding || !isPayoffFundingAction(c.Action) || decision.Action != c.Action || c.RouteLane != s.RouteLane || amount <= 0 || decision.AmountRaw != amount || c.AmountRaw != uint64(amount) {
 			return phase3BridgeAdmission{}, budgetHold("funding_return_intent_mismatch")
 		}
-		funding, currentSwap, steps = &JupiterExecutionEvidence{r, effects}, true, 3
+		funding, currentSwap, steps = &current, true, 3
 	case BridgeBuildRequest:
 		if r.Action != ReportNAV || decision.Action != ReportNAV || r.AmountRaw != 0 || decision.AmountRaw != 0 || r.Report.ObservedSlot != uint64(s.Slot) || r.Report.Sequence != uint64(s.Slot) {
 			return phase3BridgeAdmission{}, budgetHold("funding_nav_intent_mismatch")
@@ -220,11 +264,11 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 			release, releaseAccounts, futureRelease, steps = &KaminoExecutionEvidence{req, e}, rows, true, 6
 		}
 		if amount > 0 {
-			quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, Decision{Action: action, AmountRaw: amount, StrategyKey: s.RouteLane}, uint64(amount), uint64(debtCashRaw(s)), s.Slot)
+			quote, err := prepareConversionQuoteEvidence(ctx, rpc, view, client, manifest, observation.policies, Decision{Action: action, AmountRaw: amount, StrategyKey: s.RouteLane}, uint64(amount), uint64(debtCashRaw(s)), s.Slot)
 			if err != nil {
 				return phase3BridgeAdmission{}, err
 			}
-			quote.Request.FullPayoffFunding = true
+			quote = quote.withFunding(true)
 			funding, steps = &quote, 4 // NAV -> swap -> NAV -> payoff
 		}
 	default:
@@ -241,11 +285,11 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 		// Cost-only metadata, not a reportable NAV.
 		remainingValue := new(big.Int).Mul(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(s.PositionCollateralRaw))
 		s.PositionCollateralValueRaw = remainingValue.Quo(remainingValue, big.NewInt(original.PositionCollateralRaw)).Int64()
-		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, Decision{Action: SwapCollateralToDebtStep, AmountRaw: s.CollateralIdleRaw, StrategyKey: s.RouteLane}, uint64(s.CollateralIdleRaw), uint64(debtCashRaw(s)), releaseBound.Payoff.ObservedSlot)
+		quote, err := prepareConversionQuoteEvidence(ctx, rpc, view, client, manifest, observation.policies, Decision{Action: SwapCollateralToDebtStep, AmountRaw: s.CollateralIdleRaw, StrategyKey: s.RouteLane}, uint64(s.CollateralIdleRaw), uint64(debtCashRaw(s)), releaseBound.Payoff.ObservedSlot)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
-		quote.Request.FullPayoffFunding = true
+		quote = quote.withFunding(true)
 		funding = &quote
 	}
 	route, _ := runtimeRoute(s.RouteLane)
@@ -261,9 +305,9 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 				binary.LittleEndian.PutUint64(accounts[i].Data[64:72], uint64(s.CollateralIdleRaw))
 			}
 		}
-		bound, accounts, err = validatePayoffFundingAccounts(manifest, funding.Request, funding.ExpectedEffects, bound, accounts, route)
+		bound, accounts, err = validateConversionFundingAccounts(manifest, *funding, bound, accounts, route)
 	} else if funding != nil {
-		bound, accounts, err = validatePayoffFunding(ctx, rpc, view, manifest, funding.Request, funding.ExpectedEffects, s.Slot, steps, refreshedBasis)
+		bound, accounts, err = validateConversionFunding(ctx, rpc, view, manifest, *funding, s.Slot, steps, refreshedBasis)
 	} else {
 		bound, accounts, err = observePayoffWindowOnSnapshotBasis(ctx, rpc, view, route, s.Slot, steps, refreshedBasis)
 	}
@@ -278,7 +322,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 		if funding.ExpectedEffects.Accounts[1].BeforeRaw != upperCash {
 			return phase3BridgeAdmission{}, budgetHold("funding_debt_custody_changed")
 		}
-		upper, err := withdrawalUSDCExitEstimate(funding.Request.QuotedOutputRaw)
+		upper, err := withdrawalUSDCExitEstimate(funding.quotedOutputRaw())
 		if err != nil || upper > math.MaxInt64-upperCash {
 			return phase3BridgeAdmission{}, budgetHoldFrom(err, "funding_output_estimate_overflow")
 		}
@@ -321,10 +365,10 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 	post := observation
 	post.Snapshot = s
 	post.Snapshot.PositionDebtRaw, post.Snapshot.PositionDebtValueRaw, post.Snapshot.PayoffDebtRaw = 0, 0, 0
-	if funding != nil && funding.Request.Action == SwapCollateralToDebtStep {
+	if funding != nil && funding.intent().Action == SwapCollateralToDebtStep {
 		post.Snapshot.CollateralIdleRaw, post.Snapshot.PrimeIdleRaw, post.Snapshot.CollateralIdleValueRaw = 0, 0, 0
 	}
-	if funding != nil && funding.Request.Action == SwapUSDCToDebtStep {
+	if funding != nil && funding.intent().Action == SwapUSDCToDebtStep {
 		// Current source custody was checked above. Only the cost-only tail sees
 		// USDC consumed by funding; the original snapshot/current wire stay intact.
 		post.Snapshot.SquadsIdleRaw = 0
@@ -373,11 +417,11 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 		}
 		cost := plan.CurrentCost
 		if !currentSwap {
-			costRequest := funding.Request
+			costRequest := *funding
 			if release != nil {
-				costRequest.FullPayoffFunding = false
+				costRequest = costRequest.withFunding(false)
 			} // future custody; never the persisted current wire
-			cost, err = manifest.observePhase3KnownBuildCost(ctx, rpc, view, costRequest, funding.ExpectedEffects)
+			cost, err = manifest.observePhase3KnownBuildCost(ctx, rpc, view, costRequest.Request, funding.ExpectedEffects)
 			if err != nil {
 				return plan, err
 			}
@@ -391,7 +435,7 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 			return plan, err
 		}
 		if !currentSwap {
-			prefix = append(prefix, phase3BridgeExitCost{Action: funding.Request.Action, Amount: funding.Request.AmountRaw, Cost: cost, Template: input})
+			prefix = append(prefix, phase3BridgeExitCost{Action: funding.intent().Action, Amount: funding.intent().AmountRaw, Cost: cost, Template: input})
 		}
 		prefix = append(prefix, phase3BridgeExitCost{Action: ReportNAV, Cost: plan.Exit[0].Cost, Template: plan.Exit[0].Template})
 		plan.ValidThroughSlot = min(plan.ValidThroughSlot, cost.ValidThroughSlot)

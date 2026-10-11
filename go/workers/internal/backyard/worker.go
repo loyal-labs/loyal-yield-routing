@@ -61,12 +61,14 @@ type tickRuntime struct {
 	prepareBridge                    func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
 	prepareKamino                    func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
 	prepareJupiter                   func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
+	prepareHastra                    func(context.Context, Decision, Observation) (Observation, HastraExecutionEvidence, error)
 	recordDecision                   func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
 	// bind persists the decided operation's integrity record before build.
 	bind                  func(context.Context, string, Observation, Decision, any, ExpectedEffects) error
 	buildBridge           func(context.Context, string, BridgeExecutionEvidence) error
 	buildKamino           func(context.Context, string, KaminoExecutionEvidence) error
 	buildJupiter          func(context.Context, string, JupiterExecutionEvidence) error
+	buildHastra           func(context.Context, string, HastraExecutionEvidence) error
 	custodyOwnershipProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
 	// prefetchCustodyProof starts the pre-decision custody journal read while
 	// the spend is prepared; nil keeps the serial custodyOwnershipProof.
@@ -352,6 +354,9 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			}
 			return prepareJupiterFromTickObservation(ctx, rpc, manifest, decision, productionJupiter, observation)
 		},
+		prepareHastra: func(ctx context.Context, decision Decision, observation Observation) (Observation, HastraExecutionEvidence, error) {
+			return prepareHastraFromTickObservation(ctx, rpc, view, decision, observation)
+		},
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
 		},
@@ -373,6 +378,9 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		},
 		buildJupiter: func(ctx context.Context, operationID string, evidence JupiterExecutionEvidence) error {
 			return BuildSimulateAndPersistJupiter(ctx, database, rpc, view, operationID, evidence, credentials)
+		},
+		buildHastra: func(ctx context.Context, operationID string, evidence HastraExecutionEvidence) error {
+			return BuildSimulateAndPersistHastra(ctx, database, rpc, view, operationID, evidence, credentials)
 		},
 	}
 }
@@ -512,6 +520,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	var bridgeEvidence BridgeExecutionEvidence
 	var kaminoEvidence KaminoExecutionEvidence
 	var jupiterEvidence JupiterExecutionEvidence
+	var hastraEvidence HastraExecutionEvidence
 	preparedDecision := decision
 	executionDecision, err := fixedRouteAction(decision.Action, decision.StrategyKey)
 	if err != nil {
@@ -519,6 +528,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	wireDecision := decision
 	wireDecision.Action = executionDecision
+	// A conversion executes through Hastra or Jupiter by its lane and action
+	// (hastraConversionLeg); every case below splits on it.
+	hastraConversion := conversionVenueHastra(wireDecision)
 	// The custody journal read of a PYUSD spend does not depend on the
 	// prepared wire, so it runs while preparation re-observes the chain.
 	var prefetchedCustody custodyProofFinisher
@@ -538,7 +550,14 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
 		observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision, observation)
+		if hastraConversion {
+			if w.runtime.prepareHastra == nil {
+				return budgetHold("hastra_preparation_unavailable")
+			}
+			observation, hastraEvidence, err = w.runtime.prepareHastra(ctx, wireDecision, observation)
+		} else {
+			observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision, observation)
+		}
 	default:
 		return fmt.Errorf("action %s is not dispatchable", decision.Action)
 	}
@@ -581,7 +600,11 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
 		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, kaminoEvidence.ExpectedEffects, prefetchedCustody)
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, jupiterEvidence.ExpectedEffects, prefetchedCustody)
+		effects := jupiterEvidence.ExpectedEffects
+		if hastraConversion {
+			effects = hastraEvidence.ExpectedEffects
+		}
+		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, effects, prefetchedCustody)
 	}
 	if err != nil {
 		return err
@@ -606,6 +629,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		request, effects = kaminoEvidence.Request, kaminoEvidence.ExpectedEffects
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
 		request, effects = jupiterEvidence.Request, jupiterEvidence.ExpectedEffects
+		if hastraConversion {
+			request, effects = hastraEvidence.Request, hastraEvidence.ExpectedEffects
+		}
 	default:
 		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
 	}
@@ -624,7 +650,15 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
 			err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
 		default:
-			err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
+			if hastraConversion {
+				if w.runtime.buildHastra == nil {
+					err = budgetHold("hastra_build_unavailable")
+				} else {
+					err = w.runtime.buildHastra(ctx, record.OperationID, hastraEvidence)
+				}
+			} else {
+				err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
+			}
 		}
 	}
 	logStage("build_sign", tickStart)

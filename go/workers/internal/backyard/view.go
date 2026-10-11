@@ -16,6 +16,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
@@ -144,6 +145,11 @@ func viewAddresses() []string {
 		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(route)...),
 			route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,
 			route.CollateralReceiptMint, route.CollateralReceiptSupply, route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm)
+		if hastraLane(route) {
+			// A Hastra conversion is quoted at, and revalidated against, the
+			// stake price (validateHastraPrice).
+			addresses = append(addresses, hastra.StakePriceConfig.String())
+		}
 	}
 	return uniqueNonzero(addresses)
 }
