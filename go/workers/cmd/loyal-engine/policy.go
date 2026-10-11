@@ -18,6 +18,8 @@ import (
 
 const policyUsage = `usage: loyal-engine policy apply|check klend --settings <settings> --reserve <reserve> [flags]
        loyal-engine policy apply|check swap --settings <settings> --from <mint> --to <mint> --amount <raw> [flags]
+       loyal-engine policy apply|check klend-loop --settings <settings> --collateral-reserve <reserve> --debt-reserve <reserve> [flags]
+       loyal-engine policy apply|check hastra --settings <settings> [flags]
        loyal-engine policy apply backyard --settings <settings> --literal <name> [flags]
        loyal-engine policy remove --settings <settings> --policies <a,b,...> [--send]
        loyal-engine policy addresses --settings <settings> [--vault-index N] [--mint <mint> ...]
@@ -26,6 +28,12 @@ const policyUsage = `usage: loyal-engine policy apply|check klend --settings <se
   check: run each op (or --op N) through the installed policy (simulates; --send lands them in order).
          Needs credential POLICY_DELEGATE, the policy's delegate, who pays.
          backyard: the Backyard policy the runtime holds as <name> (a hold's name), from its literal.
+  klend-loop: the vault's lane obligation (tag 1, seeds the two mints) on a collateral and a debt
+         reserve, ops 0 deposit, 1 withdraw, 2 borrow, 3 repay, 4 init obligation (Backyard's AUTO
+         lane order). Amounts are raw liquidity; --withdraw and --repay take 18446744073709551615
+         for all KLend allows or the whole debt.
+  hastra: ops 0 stake deposit (wYLDS->AUTO), 1 stake redeem (AUTO->wYLDS), 2 mint deposit
+         (USDC->wYLDS), between the vault's own ATAs.
   remove: remove the policies in one settings transaction (simulates; --send lands it).
          Needs credential POLICY_SETTINGS_SIGNER.
   addresses: print the vault, its ATAs of the mints with balances, and the installed policies.
@@ -40,7 +48,8 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	act, product, rest := args[0], "", args[1:]
 	switch act {
 	case "apply", "check":
-		if len(args) < 2 || (args[1] != "klend" && args[1] != "swap" && (act != "apply" || args[1] != "backyard")) {
+		if len(args) < 2 || (args[1] != "klend" && args[1] != "swap" && args[1] != "klend-loop" && args[1] != "hastra" &&
+			(act != "apply" || args[1] != "backyard")) {
 			return errors.New(policyUsage)
 		}
 		product, rest = args[1], args[2:]
@@ -55,6 +64,17 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	fromFlag := flags.String("from", "", "swap: the mint the vault pays")
 	toFlag := flags.String("to", "", "swap: the mint the vault receives")
 	literalFlag := flags.String("literal", "", "backyard: the policy's name, as a hold gives it")
+	collateralReserveFlag := flags.String("collateral-reserve", "", "klend-loop: the collateral reserve")
+	debtReserveFlag := flags.String("debt-reserve", "", "klend-loop: the debt reserve")
+	var loop policy.LoopAmounts
+	flags.Uint64Var(&loop.Deposit, "deposit", 1_000_000, "klend-loop: collateral liquidity to deposit, raw")
+	flags.Uint64Var(&loop.Withdraw, "withdraw", 1_000_000, "klend-loop: collateral liquidity to withdraw, raw")
+	flags.Uint64Var(&loop.Borrow, "borrow", 1_000_000, "klend-loop: debt to borrow, raw")
+	flags.Uint64Var(&loop.Repay, "repay", 1_000_000, "klend-loop: debt to repay, raw")
+	var conversions policy.HastraAmounts
+	flags.Uint64Var(&conversions.StakeDeposit, "stake-deposit", 1_000_000, "hastra: wYLDS to stake into AUTO, raw")
+	flags.Uint64Var(&conversions.StakeRedeem, "redeem", 1_000_000, "hastra: AUTO to redeem into wYLDS, raw")
+	flags.Uint64Var(&conversions.MintDeposit, "mint-deposit", 1_000_000, "hastra: USDC to mint into wYLDS, raw")
 	var mints publicKeys
 	flags.Var(&mints, "mint", "addresses: a mint whose vault ATA to print (repeatable)")
 	vaultIndex := flags.Uint("vault-index", 0, "smart account vault index")
@@ -105,6 +125,22 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 		}
 		build = func(payer solana.PublicKey) policy.Build {
 			return policy.KLend(c, settings, uint8(*vaultIndex), reserve, payer, *amount)
+		}
+	case "klend-loop":
+		collateralReserve, err := solana.PublicKeyFromBase58(*collateralReserveFlag)
+		if err != nil {
+			return fmt.Errorf("--collateral-reserve: %w", err)
+		}
+		debtReserve, err := solana.PublicKeyFromBase58(*debtReserveFlag)
+		if err != nil {
+			return fmt.Errorf("--debt-reserve: %w", err)
+		}
+		build = func(payer solana.PublicKey) policy.Build {
+			return policy.KLendLoop(c, settings, uint8(*vaultIndex), collateralReserve, debtReserve, payer, loop)
+		}
+	case "hastra":
+		build = func(payer solana.PublicKey) policy.Build {
+			return policy.Hastra(c, settings, uint8(*vaultIndex), payer, conversions)
 		}
 	case "swap":
 		from, err := solana.PublicKeyFromBase58(*fromFlag)
