@@ -875,7 +875,7 @@ func decodeLegacyInstruction(message []byte, offset int, keys []publicKey) (deco
 func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
 	lanes := []string{RouteID}
 	for _, lane := range earnLaneIDs(true) {
-		if lane != autoAUTOPYUSD.Lane {
+		if !autoRoute(lane) {
 			lanes = append(lanes, lane)
 		}
 	}
@@ -888,7 +888,11 @@ func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
 // stripped AUTO wire therefore still fails the installed four-instruction
 // gate, whose lane list never included the candidate route.
 func isExactAutoKaminoTransaction(instructions []decodedLegacyInstruction) bool {
-	return isExactKaminoTransactionForLanes(instructions, []string{autoAUTOPYUSD.Lane})
+	lanes := []string{autoAUTOPYUSD.Lane}
+	if earnHeldLane(autoAUTOWYLDS.Lane) {
+		lanes = append(lanes, autoAUTOWYLDS.Lane)
+	}
+	return isExactKaminoTransactionForLanes(instructions, lanes)
 }
 
 func isExactKaminoTransactionForLanes(instructions []decodedLegacyInstruction, lanes []string) bool {

@@ -214,8 +214,9 @@ const (
 	leverageDownRepayReason   = "leverage_down_repay"
 )
 
+// A term lane it cannot keep alive (decide_term.go) delevers the same way.
 func leverageDownPending(s Snapshot) bool {
-	return earnActiveLane(s.RouteLane) && s.LeverageTargetLevel == 1 && s.HasPosition && s.PositionDebtRaw > 0
+	return earnActiveLane(s.RouteLane) && (s.LeverageTargetLevel == 1 || termDeleverDue(s)) && s.HasPosition && s.PositionDebtRaw > 0
 }
 
 func leverageDownStep(s Snapshot) (Action, string, int64, bool) {

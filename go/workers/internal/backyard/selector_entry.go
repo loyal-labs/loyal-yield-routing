@@ -363,10 +363,19 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 	default:
 		return nil
 	}
-	var raw, leverageTarget []byte
+	var raw, leverageTarget, rawTranche []byte
 	var paused, unwinding bool
 	var lane, reason string
-	if err := tx.QueryRow(ctx, `SELECT s.state->'selectorEntry',COALESCE((s.state->>'selectorEntryPaused')::boolean,false),COALESCE(s.state->'selectorUnwind','null'::jsonb) <> 'null'::jsonb,COALESCE(o.strategy_key,''),COALESCE(o.expected_effects->'decision'->>'reason',''),COALESCE(s.state->'leverageTargets'->o.strategy_key,'null'::jsonb) FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, operationID).Scan(&raw, &paused, &unwinding, &lane, &reason, &leverageTarget); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT s.state->'selectorEntry',COALESCE((s.state->>'selectorEntryPaused')::boolean,false),COALESCE(s.state->'selectorUnwind','null'::jsonb) <> 'null'::jsonb,COALESCE(o.strategy_key,''),COALESCE(o.expected_effects->'decision'->>'reason',''),COALESCE(s.state->'leverageTargets'->o.strategy_key,'null'::jsonb),COALESCE(s.state->'tranche','null'::jsonb) FROM loyal_yield.multiply_route_states s JOIN loyal_yield.multiply_operations o USING(route_key) WHERE o.operation_id=$1`, operationID).Scan(&raw, &paused, &unwinding, &lane, &reason, &leverageTarget, &rawTranche); err != nil {
+		return err
+	}
+	// Term debt: a keep-alive borrow keeps the held lane's own position.
+	if bypass, err := termKeepAliveBypassesEntryFence(request, reason, unwinding, lane); err != nil || bypass {
+		return err
+	}
+	// Overflow: the overflow lane's initializer runs under the durable
+	// overflow tranche whose source has freed its collateral.
+	if bypass, err := overflowInitializerBypassesEntryFence(request, unwinding, lane, rawTranche); err != nil || bypass {
 		return err
 	}
 	// B2: a leverage_up borrow adds to the current lane under its stored

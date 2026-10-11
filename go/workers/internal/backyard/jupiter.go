@@ -249,12 +249,19 @@ func jupiterInstructionWireFloor(instruction JupiterSwapInstruction) (uint64, er
 	return floor.Div(floor, big.NewInt(10_000)).Uint64(), nil
 }
 
+// autoCollateralLane is the key of every AUTO special case: a lane whose
+// collateral is AUTO (AUTO/PYUSD and its wYLDS overflow lane), by its mint.
+func autoCollateralLane(lane string) bool {
+	route, err := runtimeRoute(lane)
+	return err == nil && route.Kamino.CollateralMint == autoAUTOPYUSD.Kamino.CollateralMint
+}
+
 // jupiterValidateAutoRetainedMinimum rejects a retained AUTO request whose
 // minimum output exceeds what its own wire can enforce, so caller-forged
 // evidence quoting an advisory JSON threshold cannot bypass the producer's
 // conservative retention. Other lanes keep their established semantics.
 func jupiterValidateAutoRetainedMinimum(request JupiterSwapRequest) error {
-	if request.RouteLane != autoAUTOPYUSD.Lane {
+	if !autoCollateralLane(request.RouteLane) {
 		return nil
 	}
 	floor, err := jupiterInstructionWireFloor(request.Instruction)
@@ -310,8 +317,8 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 		return nil, err
 	}
 	var message []byte
-	if request.RouteLane == autoAUTOPYUSD.Lane {
-		// The AUTO lane carries the canonical ComputeBudget heap frame plus the
+	if autoCollateralLane(request.RouteLane) {
+		// An AUTO lane carries the canonical ComputeBudget heap frame plus the
 		// canonical compute-unit frame ahead of its policy outer — the live
 		// default CU meter ran out mid-swap. The v0 path keeps
 		// lookup snapshots and gains both instructions directly; the legacy path

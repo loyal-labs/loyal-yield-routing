@@ -56,8 +56,17 @@ func selectorProspectiveUpper(accounts []ConfirmedAccount, route RuntimeRoute, s
 		return 0, budgetHold("invalid_payoff_clock")
 	}
 	config := a.Data[kaminoReserveConfigOffset:]
-	if config[9] > 1 || config[7] != 0 || !allZero(config[920:936]) {
+	terms := reserve.terms
+	if !kaminoReserveTermOpen(reserve, now) {
 		return 0, budgetHold("unsupported_payoff_interest_terms")
+	}
+	// Term debt accrues on the same curve; the priced windows must end
+	// before any borrow they include could mature (its own term, or the
+	// reserve's market-wide maturity).
+	horizon := uint64(windows * kaminoPayoffWindowSeconds)
+	if terms.DebtTermSeconds != 0 && terms.DebtTermSeconds <= horizon ||
+		terms.DebtMaturityTimestamp != 0 && terms.DebtMaturityTimestamp <= uint64(now)+horizon {
+		return 0, budgetHold("payoff_windows_reach_debt_maturity")
 	}
 	rate, err := kaminoMaximumBorrowRate(config)
 	if err != nil {
@@ -390,6 +399,9 @@ func selectorDestinationExit(ctx context.Context, rpc *chain.Client, client *jup
 	// below — each ledger runs in its own mint.
 	residueProceeds := uint64(0)
 	if residue := funding.Request.MinimumOutputRaw - debt; residue > 0 {
+		if !debtToUSDCConvertible(route.Lane) {
+			return empty, budgetHold("debt_to_usdc_unavailable")
+		}
 		if residue > math.MaxInt64 {
 			return empty, budgetHold("selector_destination_payoff_amount_overflow")
 		}

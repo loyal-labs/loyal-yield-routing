@@ -123,6 +123,8 @@ func runtimeRoute(lane string) (RuntimeRoute, error) {
 		return basicRuntimeRoute(lane)
 	case "AUTO/AUTO/PYUSD":
 		return autoAUTOPYUSD, nil
+	case autoAUTOWYLDSLane:
+		return autoAUTOWYLDS, nil
 	case "Ethena/USDe/PYUSD":
 		return ethenaUSDePYUSD, nil
 	case "Prime/PRIME/PYUSD":

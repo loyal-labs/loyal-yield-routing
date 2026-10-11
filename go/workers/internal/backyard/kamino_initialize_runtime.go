@@ -14,6 +14,11 @@ import (
 // policy. A lane whose obligation pre-exists has no initializer: its absence
 // holds.
 func initializationSnapshotReady(s Snapshot) bool {
+	// An overflow lane's obligation is created when its source's freed
+	// collateral waits for it, under the overflow tranche's authority.
+	if overflowInitializationReady(s) {
+		return true
+	}
 	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
 	}

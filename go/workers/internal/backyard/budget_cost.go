@@ -130,17 +130,8 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 			exactAmount = &r.AmountRaw
 		}
 	case JupiterSwapRequest:
-		if r.PositionReturnReserved && (r.Action != SwapDebtToCollateralStep || r.FullPayoffFunding || r.EntryReturnReserved) {
-			return ExecutableDebit{}, budgetHold("invalid_position_return_intent")
-		}
-		if r.EntryReturnReserved && (r.Action != SwapStableToCollateralStep || r.FullPayoffFunding) {
-			return ExecutableDebit{}, budgetHold("invalid_entry_return_intent")
-		}
-		if r.TopupReturnReserved && !r.EntryReturnReserved {
-			return ExecutableDebit{}, budgetHold("invalid_entry_return_intent")
-		}
-		if r.FullPayoffFunding && !isPayoffFundingAction(r.Action) {
-			return ExecutableDebit{}, budgetHold("funding_bounds_on_non_funding_swap")
+		if err := validateConversionReservation(r.intent()); err != nil {
+			return ExecutableDebit{}, err
 		}
 		if _, err = compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate)); err != nil {
 			return ExecutableDebit{}, err
@@ -150,6 +141,19 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 			return ExecutableDebit{}, err
 		}
 		source = kaminoCustodyBoundary{address, mint, bridgeVault}
+		exactAmount = &r.AmountRaw
+	case HastraConversionRequest:
+		if err := validateConversionReservation(r.intent()); err != nil {
+			return ExecutableDebit{}, err
+		}
+		if _, err = compileHastraMessageForDelegate(r, mustKey(bridgeDelegate)); err != nil {
+			return ExecutableDebit{}, err
+		}
+		edge, err := hastraEdgeForRoute(r.Action, r.RouteLane)
+		if err != nil {
+			return ExecutableDebit{}, err
+		}
+		source = kaminoCustodyBoundary{edge.source, edge.sourceMint, bridgeVault}
 		exactAmount = &r.AmountRaw
 	default:
 		return ExecutableDebit{}, budgetHold("unmapped_economic_action")
@@ -182,4 +186,22 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 		return debit, nil
 	}
 	return ExecutableDebit{}, budgetHold("economic_source_missing")
+}
+
+// validateConversionReservation checks a conversion's reservation flags
+// agree with its action, whichever venue converts it.
+func validateConversionReservation(r conversionIntent) error {
+	if r.PositionReturnReserved && (r.Action != SwapDebtToCollateralStep || r.FullPayoffFunding || r.EntryReturnReserved) {
+		return budgetHold("invalid_position_return_intent")
+	}
+	if r.EntryReturnReserved && (r.Action != SwapStableToCollateralStep || r.FullPayoffFunding) {
+		return budgetHold("invalid_entry_return_intent")
+	}
+	if r.TopupReturnReserved && !r.EntryReturnReserved {
+		return budgetHold("invalid_entry_return_intent")
+	}
+	if r.FullPayoffFunding && !isPayoffFundingAction(r.Action) {
+		return budgetHold("funding_bounds_on_non_funding_swap")
+	}
+	return nil
 }

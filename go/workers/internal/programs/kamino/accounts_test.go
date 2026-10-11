@@ -2,11 +2,15 @@ package kamino
 
 import (
 	"encoding/binary"
+	"encoding/json"
+	"errors"
 	"math"
 	"math/big"
+	"os"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func reserveAccount(available, collateralSupply uint64) *chain.Account {
@@ -77,5 +81,63 @@ func TestCollateralToLiquidityFloorsTheWideExchangeValue(t *testing.T) {
 	want := new(big.Int).Quo(big.NewInt(2*(1<<53+3)), big.NewInt(3)).Uint64()
 	if got, err := reserve.CollateralToLiquidity(2); err != nil || got != want {
 		t.Fatalf("exact raw: %d want %d %v", got, want, err)
+	}
+}
+
+// The term-debt fields read KLend v1.25.0's layout on live accounts
+// (testdata/wylds-term-debt.json, slot 455559961): the wYLDS reserve 34GJ…
+// has a 30-day debt term and no market-wide maturity or early-repay
+// penalty, and the Kamino Multiply obligation EsDb54… borrowed it at
+// 1791697379, the block time of its loop 2cbv4X… (slot 455539692), which
+// starts its term.
+func TestTermDebtFieldsReadLiveAccounts(t *testing.T) {
+	raw, err := os.ReadFile("testdata/wylds-term-debt.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Accounts map[string]struct {
+			Owner    solana.PublicKey
+			Lamports uint64
+			Data     []byte
+		}
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	account := func(address string) *chain.Account {
+		a := fixture.Accounts[address]
+		return &chain.Account{Key: solana.MustPublicKeyFromBase58(address), Owner: a.Owner, Lamports: a.Lamports, Data: a.Data}
+	}
+	reserve, err := DecodeReserve(account("34GJjXf7jGTdNL8Yw1HtqWSVvfX6JTsft3UsuFFUL7VU"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserve.DebtTermSeconds != 2_592_000 || reserve.DebtMaturityTimestamp != 0 || reserve.EarlyRepayRemainingInterestPct != 0 {
+		t.Fatalf("reserve term %d maturity %d early repay %d", reserve.DebtTermSeconds, reserve.DebtMaturityTimestamp, reserve.EarlyRepayRemainingInterestPct)
+	}
+	// Its 30-day term changes when the debt may grow and when it becomes
+	// liquidatable, not what it accrues: the reserve prices on its curve.
+	if err := reserve.SupportedInterestTerms(); err != nil {
+		t.Fatal("term debt is refused a price:", err)
+	}
+	early := reserve
+	early.EarlyRepayRemainingInterestPct = 1
+	if !errors.Is(early.SupportedInterestTerms(), ErrUnsupportedInterestTerms) {
+		t.Fatal("an early-repay penalty is priced as plain interest")
+	}
+	obligation, err := DecodeObligation(account("EsDb54VmT1DsgamjQtnWuZmoLAyrQCr6bsMu3AuZnies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	borrow := obligation.Borrows[0]
+	if borrow.Reserve.String() != "34GJjXf7jGTdNL8Yw1HtqWSVvfX6JTsft3UsuFFUL7VU" || borrow.LastBorrowedAtTimestamp != 1_791_697_379 || borrow.BorrowedAmountAtExpiration != 0 {
+		t.Fatalf("borrow slot %s last borrowed %d at expiration %d", borrow.Reserve, borrow.LastBorrowedAtTimestamp, borrow.BorrowedAmountAtExpiration)
+	}
+	if end, ok := borrow.DebtTermEnd(reserve); !ok || end != 1_791_697_379+2_592_000 {
+		t.Fatalf("term ends %d %t", end, ok)
+	}
+	if _, ok := borrow.DebtTermEnd(Reserve{}); ok {
+		t.Fatal("an open-term reserve has a term end")
 	}
 }

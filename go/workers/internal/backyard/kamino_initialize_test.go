@@ -56,7 +56,7 @@ func TestEveryRegistryLaneHasAnInitializerPolicyOrAnExistingObligation(t *testin
 			t.Fatal(err)
 		}
 		_, split := literals[policyKey{lane: lane, action: InitializeKaminoObligation}]
-		auto := lane == autoAUTOPYUSD.Lane
+		auto := autoRoute(lane) // init is a leg of the lane's one autoPolicy
 		if earnInitializerLane(lane) != (split || auto) {
 			t.Fatal("registry initializer flag differs from the installed literals", lane)
 		}

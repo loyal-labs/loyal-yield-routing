@@ -146,12 +146,14 @@ func observeLeverageStepLegs(ctx context.Context, rpc *chain.Client, view *View,
 	}); err != nil {
 		return out, err
 	}
-	entry, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapDebtToCollateralStep, StrategyKey: route.Lane, AmountRaw: int64(borrowRaw)}, borrowRaw, 0, s.Slot)
+	// Each conversion on its lane's venue: Jupiter, or Hastra's stake
+	// deposit and redeem for a wYLDS lane (no swap loss beyond its rounding).
+	entry, err := prepareConversionQuoteEvidence(ctx, rpc, view, client, m, policies, Decision{Action: SwapDebtToCollateralStep, StrategyKey: route.Lane, AmountRaw: int64(borrowRaw)}, borrowRaw, 0, s.Slot)
 	if err != nil {
 		return out, costOutage("entry_quote", err)
 	}
-	collateralRaw := entry.Request.QuotedOutputRaw
-	exit, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(collateralRaw)}, collateralRaw, 0, s.Slot)
+	collateralRaw := entry.quotedOutputRaw()
+	exit, err := prepareConversionQuoteEvidence(ctx, rpc, view, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(collateralRaw)}, collateralRaw, 0, s.Slot)
 	if err != nil {
 		return out, costOutage("exit_quote", err)
 	}
@@ -187,7 +189,7 @@ func observeLeverageStepLegs(ctx context.Context, rpc *chain.Client, view *View,
 		{&out.EntryInMicros, debtPrice, debt, borrowRaw},
 		{&out.EntryOutMicros, collateralPrice, collateral, collateralRaw},
 		{&out.ExitInMicros, collateralPrice, collateral, collateralRaw},
-		{&out.ExitOutMicros, debtPrice, debt, exit.Request.QuotedOutputRaw},
+		{&out.ExitOutMicros, debtPrice, debt, exit.quotedOutputRaw()},
 	} {
 		if *v.into, err = central(v.price, v.debit, v.raw); err != nil {
 			return out, costOutage("price", err)
@@ -200,7 +202,7 @@ func observeLeverageStepLegs(ctx context.Context, rpc *chain.Client, view *View,
 		action Action
 		leg    kaminoPrimeUSDCLeg
 		amount uint64
-	}{{OpenRouteStep, kaminoLegBorrow, borrowRaw}, {OpenRouteStep, kaminoLegDeposit, entry.Request.MinimumOutputRaw}, {DeleverRouteStep, kaminoLegWithdraw, collateralRaw}, {DeleverRouteStep, kaminoLegRepay, exit.Request.MinimumOutputRaw}} {
+	}{{OpenRouteStep, kaminoLegBorrow, borrowRaw}, {OpenRouteStep, kaminoLegDeposit, entry.intent().MinimumOutputRaw}, {DeleverRouteStep, kaminoLegWithdraw, collateralRaw}, {DeleverRouteStep, kaminoLegRepay, exit.intent().MinimumOutputRaw}} {
 		r, err := m.kaminoPacketForRoute(policies, leg.action, leg.leg, leg.amount, blockhash, route.Lane)
 		if err != nil {
 			return out, costOutage("network_fee", err)
@@ -212,8 +214,16 @@ func observeLeverageStepLegs(ctx context.Context, rpc *chain.Client, view *View,
 		}
 		messages = append(messages, message)
 	}
-	for _, swap := range []JupiterSwapRequest{entry.Request, exit.Request} {
-		message, err := compileJupiterMessageForDelegate(swap, mustKey(bridgeDelegate))
+	for _, conversion := range []conversionEvidence{entry, exit} {
+		var message []byte
+		switch r := conversion.Request.(type) {
+		case JupiterSwapRequest:
+			message, err = compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate))
+		case HastraConversionRequest:
+			message, err = compileHastraMessageForDelegate(r, mustKey(bridgeDelegate))
+		default:
+			err = budgetHold("leverage_cost_unavailable")
+		}
 		if err != nil {
 			return out, costOutage("network_fee", err)
 		}

@@ -32,6 +32,9 @@ type heldLaneFact struct {
 	Lane               string
 	CollateralValueRaw int64
 	DebtValueRaw       int64
+	// DebtTermEndUnix is the lane's term debt maturity (decide_term.go):
+	// zero without term debt, termMaturityUnknown when unknowable.
+	DebtTermEndUnix int64
 }
 
 type trancheSelection struct {
@@ -223,6 +226,10 @@ func selectTranche(in SelectorInput, previous map[string]AdvantageWindow) tranch
 		sourceReason = "tranche_source_full_exit_only"
 	case !trancheSourceSettled(s):
 		sourceReason = "tranche_finish_current_work_first"
+	case !selectorDestinationLane(s.RouteLane):
+		// An overflow lane's partial exit would leave wYLDS cash Hastra
+		// cannot redeem to USDC; capital leaves it through its source.
+		sourceReason = "tranche_source_overflow_lane"
 	case s.MonitorsArmed && !selectorFeeBaselineKnown(s):
 		sourceReason = "fee_hwm_baseline_unavailable"
 	}
@@ -270,6 +277,10 @@ func selectTranche(in SelectorInput, previous map[string]AdvantageWindow) tranch
 			continue
 		}
 		destinationHeld := containsLane(held, lane)
+		if !selectorDestinationLane(lane) {
+			block(overflowLaneBlockedReason)
+			continue
+		}
 		if siblingLanes(s.RouteLane, lane) {
 			block("tranche_sibling_uses_full_exit")
 			continue
@@ -492,6 +503,12 @@ func applyTrancheSelection(in SelectorInput, result SelectorResult, previous map
 	if result.Action != "KEEP" {
 		return result, nil
 	}
+	// A held lane near its term debt's maturity becomes the working lane,
+	// before any move: its keep-alive or delever runs there.
+	if lane := termDueHeldLane(s, in.heldFacts); lane != "" && workingLaneSettled(s) {
+		result.WorkingLane, result.Reason = lane, "working_lane_to_term_debt"
+		return result, nil
+	}
 	if selection.Chosen != nil && selection.Quote != nil {
 		c := selection.Chosen
 		tranche := &trancheIntent{Source: c.Source, Destination: c.Destination, EquityRaw: c.EquityRaw, TargetIdleRaw: s.VoltrIdleRaw + c.EquityRaw,
@@ -503,7 +520,15 @@ func applyTrancheSelection(in SelectorInput, result SelectorResult, previous map
 		result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "TRANCHE", selection.Reason, c.Destination, c.EquityRaw, selection.Quote
 		return result, tranche
 	}
-	if trancheSourceSettled(s) && len(s.otherHeldLanes()) > 0 {
+	// Overflow: the source's next leverage step has no room and its
+	// overflow lane's reserve has.
+	if tranche, reason := overflowTranche(in, generation, now); tranche != nil {
+		result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "TRANCHE", reason, tranche.Destination, tranche.EquityRaw, nil
+		return result, tranche
+	} else if reason != "" {
+		result.Overflow = reason
+	}
+	if trancheSourceSettled(s) && len(s.otherHeldLanes()) > 0 && !workingTermDue(s) {
 		if worst := worstYieldHeldLane(s, in.heldFacts, in.Markets, in.Now, in.Policy); worst != "" {
 			result.WorkingLane, result.Reason = worst, "working_lane_to_worst_yield"
 		}

@@ -56,6 +56,8 @@ func collectTrancheQuotes(ctx context.Context, rpc *chain.Client, view *View, cl
 		out.SetReason = "tranche_source_full_exit_only"
 	case !trancheSourceSettled(s):
 		out.SetReason = "tranche_finish_current_work_first"
+	case !selectorDestinationLane(s.RouteLane):
+		out.SetReason = "tranche_source_overflow_lane"
 	case capture == nil || capture.source.Lane != s.RouteLane || capture.source.ObservationID != s.ObservationID || !sha256Pattern.MatchString(capture.source.Recipe.EvidenceID):
 		out.SetReason = trancheReasonSourceQuote
 	default:
@@ -125,7 +127,7 @@ func collectTrancheQuotes(ctx context.Context, rpc *chain.Client, view *View, cl
 	var wg sync.WaitGroup
 	for _, market := range markets {
 		lane := market.Lane
-		if lane == s.RouteLane || !containsLane(held, lane) || !earnActiveLane(lane) || market.validate(time.Now().UTC(), policy) != nil || siblingLanes(s.RouteLane, lane) {
+		if lane == s.RouteLane || !containsLane(held, lane) || !selectorDestinationLane(lane) || market.validate(time.Now().UTC(), policy) != nil || siblingLanes(s.RouteLane, lane) {
 			continue
 		}
 		if heldDebt[lane] > 0 && sharedUSDCDebt(lane) {

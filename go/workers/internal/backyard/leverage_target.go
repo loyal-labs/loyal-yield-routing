@@ -152,6 +152,10 @@ type leverageDecision struct {
 	RoomRaw uint64
 	// Cost is the priced step's expected cost (CostRaw is its total).
 	Cost leverageStepCost
+	// TermDays is the lane's days to its term debt's maturity, when it owes
+	// term debt (decide_term.go).
+	TermDays  float64
+	TermKnown bool
 }
 
 // decideLeverageTarget applies the option-1 rule to the funded lane. It runs
@@ -191,6 +195,7 @@ type leverageDecision struct {
 // An unpriced step is leverage_cost_unavailable, never free.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
+	out.TermDays, out.TermKnown = termDays(s)
 	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
 		selector.Action != "KEEP" || s.PartialWithdrawalOperationID != "" || s.Unwind || s.UnwindRefreshRequired || s.CutoverDrain || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
 		s.SquadsIdleRaw != 0 || s.DebtIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 ||
@@ -359,8 +364,12 @@ func (d leverageDecision) storeChanges(s Snapshot) bool {
 }
 
 func (d leverageDecision) logLine() string {
-	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f (fee=%d in=%d out=%d network=%d) borrow=%d room=%d reason=%s",
-		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.Cost.BorrowFeeMicros, d.Cost.EntrySwapLossMicros, d.Cost.ExitSwapLossMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, d.Reason)
+	term := "-"
+	if d.TermKnown {
+		term = fmt.Sprintf("%.2f", d.TermDays)
+	}
+	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f (fee=%d in=%d out=%d network=%d) borrow=%d room=%d term_days=%s reason=%s",
+		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.Cost.BorrowFeeMicros, d.Cost.EntrySwapLossMicros, d.Cost.ExitSwapLossMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, term, d.Reason)
 }
 
 // leverageDecisionLog rate-limits the 'leverage decision' line: it prints

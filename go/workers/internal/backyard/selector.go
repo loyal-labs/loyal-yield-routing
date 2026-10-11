@@ -327,6 +327,9 @@ type SelectorResult struct {
 	// every (working source, destination, E) tranche candidate.
 	HeldLanes string             `json:"heldLanes,omitempty"`
 	Tranches  []TrancheCandidate `json:"tranches,omitempty"`
+	// Overflow is why the working lane started no overflow tranche this
+	// sample ("" when it has no overflow lane or started one).
+	Overflow string `json:"overflow,omitempty"`
 	// WorkingLane is set when the sample moves the working lane to the
 	// worst-yielding held lane (no money moves).
 	WorkingLane string `json:"workingLane,omitempty"`
@@ -444,7 +447,10 @@ func selectorSampleLine(result SelectorResult) (key, line string) {
 		parts = append(parts, fmt.Sprintf("%s(lev=%s net=%s %s borrow=%s room=%s benefit=%s reason=%s)", c.Lane, lev, net, nativeFeedText(c.NativeAPY, c.FeedNativeAPY), borrow, room, benefit, reason))
 	}
 	trancheKey, trancheLine := trancheSampleSuffix(result.HeldLanes, result.Tranches)
-	keys = append(keys, trancheKey)
+	keys = append(keys, trancheKey, result.Overflow)
+	if result.Overflow != "" {
+		trancheLine += " overflow=" + result.Overflow
+	}
 	return strings.Join(keys, "|"), fmt.Sprintf("backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s", result.Action, result.Reason, result.SourceLane, strings.Join(parts, " ")) + trancheLine
 }
 

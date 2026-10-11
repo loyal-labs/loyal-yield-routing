@@ -44,8 +44,10 @@ type Reserve struct {
 	PriceStatus     uint8
 	LendingMarket   solana.PublicKey
 	FarmCollateral  solana.PublicKey // zero when absent
+	FarmDebt        solana.PublicKey // zero when absent
 
 	LiquidityMint, LiquiditySupply, LiquidityTokenProgram   solana.PublicKey
+	FeeReceiver                                             solana.PublicKey // the liquidity fee vault a borrow pays its fee into
 	AvailableAmount, MarketPriceLastUpdatedTS, MintDecimals uint64
 	BorrowedAmountSF, MarketPriceSF                         [16]byte
 	AccumulatedProtocolFeesSF, AccumulatedReferrerFeesSF    [16]byte
@@ -62,15 +64,19 @@ type Reserve struct {
 	HostFixedInterestRateBPS                                             uint16
 	InterestRateBasis                                                    uint8 // 0 Legacy (per slot), 1 TrueApr (per second)
 	EarlyRepayRemainingInterestPct                                       uint8
-	TermDebtConfig                                                       [16]byte
-	EmergencyMode, DisableUsageAsCollOutsideEmode                        bool
-	BorrowFeeSF, FlashLoanFeeSF, BorrowFactorPct                         uint64
-	DepositLimit, BorrowLimit, BorrowLimitOutsideElevationGroup          uint64
-	BorrowRateCurve                                                      [11]CurvePoint
-	Name                                                                 [32]byte
-	ScopePriceFeed, SwitchboardPriceAggregator                           solana.PublicKey
-	SwitchboardTWAPAggregator, PythPrice                                 solana.PublicKey
-	DepositWithdrawalCap, DebtWithdrawalCap                              WithdrawalCap
+	// Term debt: a borrow must be repaid (or rolled over) within
+	// DebtTermSeconds of its slot's last borrow, and every borrow by
+	// DebtMaturityTimestamp, market-wide; zero is none. Past its end a borrow
+	// can borrow no more and becomes liquidatable.
+	DebtMaturityTimestamp, DebtTermSeconds                      uint64
+	EmergencyMode, DisableUsageAsCollOutsideEmode               bool
+	BorrowFeeSF, FlashLoanFeeSF, BorrowFactorPct                uint64
+	DepositLimit, BorrowLimit, BorrowLimitOutsideElevationGroup uint64
+	BorrowRateCurve                                             [11]CurvePoint
+	Name                                                        [32]byte
+	ScopePriceFeed, SwitchboardPriceAggregator                  solana.PublicKey
+	SwitchboardTWAPAggregator, PythPrice                        solana.PublicKey
+	DepositWithdrawalCap, DebtWithdrawalCap                     WithdrawalCap
 }
 
 // Reserve is the subset of a KLend Reserve the workers read.
@@ -95,9 +101,9 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 	l, c, k := d[reserveLiquidity:], d[reserveCollateral:], d[reserveConfig:]
 	r := Reserve{
 		LastUpdateSlot: u64(d, 16), LastUpdateStale: d[24] != 0, PriceStatus: d[25],
-		LendingMarket: key(d, 32), FarmCollateral: key(d, 64),
+		LendingMarket: key(d, 32), FarmCollateral: key(d, 64), FarmDebt: key(d, 96),
 
-		LiquidityMint: key(l, 0), LiquiditySupply: key(l, 32),
+		LiquidityMint: key(l, 0), LiquiditySupply: key(l, 32), FeeReceiver: key(l, 64),
 		AvailableAmount: u64(l, 96), BorrowedAmountSF: [16]byte(l[104:120]), MarketPriceSF: [16]byte(l[120:136]),
 		MarketPriceLastUpdatedTS: u64(l, 136), MintDecimals: u64(l, 144), CumulativeBorrowRateBSF: [32]byte(l[168:200]),
 		AccumulatedProtocolFeesSF: [16]byte(l[216:232]), AccumulatedReferrerFeesSF: [16]byte(l[232:248]),
@@ -106,11 +112,11 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 		CollateralMint: key(c, 0), CollateralMintTotalSupply: u64(c, 32), CollateralSupply: key(c, 40),
 
 		Status: k[0], HostFixedInterestRateBPS: binary.LittleEndian.Uint16(k[2:4]), EmergencyMode: k[8] != 0, InterestRateBasis: k[9],
-		EarlyRepayRemainingInterestPct: k[7], TermDebtConfig: [16]byte(k[920:936]),
+		EarlyRepayRemainingInterestPct: k[7], DebtMaturityTimestamp: u64(k, 920), DebtTermSeconds: u64(k, 928),
 		ProtocolTakeRatePct: k[14], LoanToValuePct: k[16], LiquidationThresholdPct: k[17],
 		BorrowFeeSF: u64(k, 40), FlashLoanFeeSF: u64(k, 48), BorrowFactorPct: u64(k, 152),
 		DepositLimit: u64(k, 160), BorrowLimit: u64(k, 168), Name: [32]byte(k[176:208]),
-		ScopePriceFeed: key(k, 256), SwitchboardPriceAggregator: key(k, 304), SwitchboardTWAPAggregator: key(k, 336), PythPrice: key(k, 368),
+		ScopePriceFeed: oracle(k, 256), SwitchboardPriceAggregator: oracle(k, 304), SwitchboardTWAPAggregator: oracle(k, 336), PythPrice: oracle(k, 368),
 		DepositWithdrawalCap: withdrawalCap(k[560:592]), DebtWithdrawalCap: withdrawalCap(k[592:624]),
 		DisableUsageAsCollOutsideEmode: k[644] != 0, UtilizationLimitBlockBorrowingAbovePct: k[645],
 		BorrowLimitOutsideElevationGroup: u64(k, 648),
@@ -216,10 +222,27 @@ type ObligationCollateral struct {
 }
 
 // ObligationLiquidity is one borrow slot; an empty slot has a zero reserve.
+// LastBorrowedAtTimestamp is the unix time of the slot's last borrow (or
+// same-reserve rollover), which starts its debt term again for the whole
+// slot; zero on a slot KLend has not tracked. BorrowedAmountAtExpiration is
+// the debt KLend captured once the term ended, zero before.
 type ObligationLiquidity struct {
-	Reserve                 solana.PublicKey
-	CumulativeBorrowRateBSF [32]byte
-	BorrowedAmountSF        [16]byte
+	Reserve                    solana.PublicKey
+	CumulativeBorrowRateBSF    [32]byte
+	LastBorrowedAtTimestamp    uint64
+	BorrowedAmountSF           [16]byte
+	BorrowedAmountAtExpiration uint64
+}
+
+// DebtTermEnd is the unix time the borrow's debt term in reserve ends, as
+// KLend's get_debt_term_end_timestamp: its last borrow plus the reserve's
+// debt term. It is absent when the reserve has no term or the slot no
+// borrow time. A borrow at or after it is refused (DebtReachedReserveDebtTerm).
+func (b ObligationLiquidity) DebtTermEnd(reserve Reserve) (uint64, bool) {
+	if reserve.DebtTermSeconds == 0 || b.LastBorrowedAtTimestamp == 0 {
+		return 0, false
+	}
+	return b.LastBorrowedAtTimestamp + reserve.DebtTermSeconds, true
 }
 
 // Obligation is the subset of a KLend Obligation the workers read.
@@ -251,7 +274,9 @@ func DecodeObligation(a *chain.Account) (Obligation, error) {
 	}
 	for i := range o.Borrows {
 		offset := 1208 + i*200
-		o.Borrows[i] = ObligationLiquidity{key(d, offset), [32]byte(d[offset+32 : offset+64]), [16]byte(d[offset+88 : offset+104])}
+		o.Borrows[i] = ObligationLiquidity{Reserve: key(d, offset), CumulativeBorrowRateBSF: [32]byte(d[offset+32 : offset+64]),
+			LastBorrowedAtTimestamp: u64(d, offset+80), BorrowedAmountSF: [16]byte(d[offset+88 : offset+104]),
+			BorrowedAmountAtExpiration: u64(d, offset+160)}
 	}
 	return o, nil
 }
@@ -344,6 +369,20 @@ func u64(data []byte, offset int) uint64 { return binary.LittleEndian.Uint64(dat
 
 func key(data []byte, offset int) solana.PublicKey {
 	return solana.PublicKeyFromBytes(data[offset : offset+32])
+}
+
+// nullOracle is KLend's NULL_PUBKEY, which a reserve's oracle configuration
+// holds, like the default key, for an oracle it does not use.
+var nullOracle = solana.MustPublicKeyFromBase58("nu11111111111111111111111111111111111111111")
+
+// oracle is the oracle account configured at offset, the zero key when
+// KLend's maybe_null_pk reads none there: refresh_reserve then takes no
+// account in its slot, and refuses one (InvalidPythPriceAccount and the like).
+func oracle(data []byte, offset int) solana.PublicKey {
+	if k := key(data, offset); k != nullOracle {
+		return k
+	}
+	return solana.PublicKey{}
 }
 
 func withdrawalCap(d []byte) WithdrawalCap {

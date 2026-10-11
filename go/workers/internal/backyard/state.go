@@ -96,6 +96,24 @@ type Snapshot struct {
 	// the E reserved for this lane as a tranche destination. Zero otherwise.
 	TrancheTargetIdleRaw  int64 `json:",omitempty"`
 	TrancheDestinationRaw int64 `json:",omitempty"`
+	// Overflow tranche (selector_overflow.go). TrancheOverflowRaw is the E
+	// (bridge USDC value) an overflow source frees as collateral into the
+	// custody it shares with its overflow lane; TrancheOverflowDestination
+	// marks the overflow lane's view while it takes that collateral over.
+	TrancheOverflowRaw         int64 `json:",omitempty"`
+	TrancheOverflowDestination bool  `json:",omitempty"`
+	// OverflowRoom* is, on a lane that has an overflow lane, that lane's
+	// debt reserve borrow room this batch (raw debt units, and its bridge
+	// USDC value, floored); unknown unless Known.
+	OverflowRoomRaw      uint64 `json:",omitempty"`
+	OverflowRoomValueRaw int64  `json:",omitempty"`
+	OverflowRoomKnown    bool   `json:",omitempty"`
+	// DebtTermEndUnix is the working lane's borrow maturity on a term debt
+	// reserve (KLend's last borrow plus the reserve's debt term, or the
+	// market-wide maturity when earlier); zero without term debt.
+	// ChainUnix is the batch's Clock time.
+	DebtTermEndUnix int64 `json:",omitempty"`
+	ChainUnix       int64 `json:",omitempty"`
 	// Unwind is an admitted full exit, independent of the user's claim amount.
 	Unwind bool
 	// Expired debt envelope needs fresh same-source exit admission, not a manual latch.

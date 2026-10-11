@@ -48,6 +48,8 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 	case JupiterSwapRequest:
 		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
+	case HastraConversionRequest:
+		blockhash = LatestBlockhash{Blockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 	case BridgeBuildRequest:
 		// NAV, admitted partial bridge legs and the plan B3 top-up allocation
 		// price the remaining position; this cost-only helper grants no
@@ -67,7 +69,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	}
 	accounts := append([]ConfirmedAccount(nil), projection.Accounts...)
 	var release *KaminoExecutionEvidence
-	var funding *JupiterExecutionEvidence
+	var funding *conversionEvidence
 	var releaseCost, fundingCost ValuedTransactionCost
 	upperCash := cash
 	// B2 1.75x: when one release cannot fund the payoff, price the exit
@@ -79,7 +81,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 	windowSteps := int64(7)
 	if cash < bound.UpperDebtRaw && earnActiveLane(s.RouteLane) && leverageExitAccountsMayNeedCycles(accounts, route, s) {
 		var cycleCash uint64
-		cycles, accounts, cycleCash, windowSteps, firstPayoff, err = priceLeverageExitCycles(ctx, rpc, client, m, o.policies, route, s, accounts, projection.Slot, blockhash, cash)
+		cycles, accounts, cycleCash, windowSteps, firstPayoff, err = priceLeverageExitCycles(ctx, rpc, view, client, m, o.policies, route, s, accounts, projection.Slot, blockhash, cash)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -120,7 +122,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		}
 		release = &KaminoExecutionEvidence{req, effects}
 		buffer := uint64(s.CollateralIdleRaw) + limit.LiquidityRaw
-		quote, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, o.policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: s.RouteLane, AmountRaw: int64(buffer)}, buffer, cash, projection.Slot)
+		quote, err := prepareConversionQuoteEvidence(ctx, rpc, view, client, m, o.policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: s.RouteLane, AmountRaw: int64(buffer)}, buffer, cash, projection.Slot)
 		if err != nil {
 			return phase3BridgeAdmission{}, err
 		}
@@ -133,13 +135,11 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 				binary.LittleEndian.PutUint64(projected[i].Data[64:72], buffer)
 			}
 		}
-		check := quote.Request
-		check.FullPayoffFunding = true
-		if _, _, err = validatePayoffFundingAccounts(m, check, quote.ExpectedEffects, bound, projected, route); err != nil {
+		if _, _, err = validateConversionFundingAccounts(m, quote.withFunding(true), bound, projected, route); err != nil {
 			return phase3BridgeAdmission{}, err
 		}
 		funding = &quote
-		upper, err := withdrawalUSDCExitEstimate(quote.Request.QuotedOutputRaw)
+		upper, err := withdrawalUSDCExitEstimate(quote.quotedOutputRaw())
 		if err != nil || upper > math.MaxInt64-cash {
 			return phase3BridgeAdmission{}, budgetHoldFrom(err, "borrow_funding_output_overflow")
 		}
@@ -259,7 +259,7 @@ func pricePhase3ProjectedPositionReturn(ctx context.Context, rpc *chain.Client, 
 		if err != nil {
 			return plan, err
 		}
-		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost, Template: releaseInput}, nav, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.Request.AmountRaw, Cost: fundingCost, Template: input}, nav)
+		prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: release.Request.AmountRaw, Cost: releaseCost, Template: releaseInput}, nav, phase3BridgeExitCost{Action: SwapCollateralToDebtStep, Amount: funding.intent().AmountRaw, Cost: fundingCost, Template: input}, nav)
 	}
 	prefix = append(prefix, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: payoff.AmountRaw, Cost: payoffCost, Template: plan.PayoffRepayment}, nav, phase3BridgeExitCost{Action: DeleverRouteStep, Amount: withdrawal.AmountRaw, Cost: tail.CurrentCost, Template: tail.Input})
 	plan.Exit = append(prefix, tail.Exit...)

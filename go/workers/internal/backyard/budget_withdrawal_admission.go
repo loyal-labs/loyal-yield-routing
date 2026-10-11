@@ -191,6 +191,9 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 		conversions = append(conversions, SwapCollateralToStableStep)
 	}
 	if s.DebtIdleRaw > 0 {
+		if !debtToUSDCConvertible(s.RouteLane) {
+			return plan, budgetHold("debt_to_usdc_unavailable")
+		}
 		conversions = append(conversions, SwapDebtToUSDCStep)
 	}
 	if len(conversions) == 0 {
@@ -250,6 +253,8 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 	case BridgeBuildRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case JupiterSwapRequest:
+		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	case HastraConversionRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	}
 	navPolicy, err := observation.policies.account(policyKey{action: ReportNAV})

@@ -133,8 +133,9 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	}
 	config := reserveAccount.Data[kaminoReserveConfigOffset:]
 	// Official current KLend layout: LastUpdate timestamp at account+28, curve
-	// at config+64. An unknown basis, term debt or an early-repay penalty needs
-	// another model (kamino.Reserve.SupportedInterestTerms). The 7.3.9 SDK
+	// at config+64. An unknown basis or an early-repay penalty needs another
+	// model (kamino.Reserve.SupportedInterestTerms); term debt accrues on the
+	// same curve. The 7.3.9 SDK
 	// does NOT decode the basis/timestamp: do not use its slot-only APR.
 	terms, err := kamino.DecodeReserve(chainAccount(reserveAccount, reserveAccount.Address))
 	if err != nil || terms.SupportedInterestTerms() != nil {

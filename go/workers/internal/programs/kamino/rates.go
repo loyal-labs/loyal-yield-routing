@@ -23,10 +23,13 @@ const (
 )
 
 // SupportedInterestTerms rejects a reserve whose interest needs a model the
-// workers do not have: an unknown rate basis, an early-repay penalty, term
-// debt, or a protocol take above 100%.
+// workers do not have: an unknown rate basis, an early-repay penalty, or a
+// protocol take above 100%. Term debt (DebtMaturityTimestamp,
+// DebtTermSeconds) accrues on the same curve as open-term debt: its term
+// decides only when an obligation may borrow and when its debt becomes
+// liquidatable (ObligationLiquidity.DebtTermEnd), not what it accrues.
 func (r Reserve) SupportedInterestTerms() error {
-	if r.InterestRateBasis > trueAPRBasis || r.EarlyRepayRemainingInterestPct != 0 || r.TermDebtConfig != [16]byte{} || r.ProtocolTakeRatePct > 100 {
+	if r.InterestRateBasis > trueAPRBasis || r.EarlyRepayRemainingInterestPct != 0 || r.ProtocolTakeRatePct > 100 {
 		return ErrUnsupportedInterestTerms
 	}
 	return nil

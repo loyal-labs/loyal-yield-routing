@@ -6,10 +6,17 @@ import (
 )
 
 func validateLeverageSwap(ctx context.Context, view *View, r JupiterSwapRequest, e ExpectedEffects, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
+	return validateLeverageConversion(ctx, view, r, r.intent(), e, slot)
+}
+
+// validateLeverageConversion admits a leverage conversion of the whole
+// borrowed debt buffer into collateral, through Jupiter or Hastra: request is
+// the venue's request, r what it converts.
+func validateLeverageConversion(ctx context.Context, view *View, request any, r conversionIntent, e ExpectedEffects, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
 	if !r.PositionReturnReserved || r.Action != SwapDebtToCollateralStep || r.EntryReturnReserved || r.FullPayoffFunding || len(e.Accounts) != 2 {
 		return KaminoPayoffBound{}, nil, budgetHold("leverage_swap_intent_mismatch")
 	}
-	if _, err := MeasureExecutableDebit(r, e); err != nil {
+	if _, err := MeasureExecutableDebit(request, e); err != nil {
 		return KaminoPayoffBound{}, nil, err
 	}
 	route, err := runtimeRoute(r.RouteLane)

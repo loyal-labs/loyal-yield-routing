@@ -188,6 +188,21 @@
   },
   {
     "labels": {
+      "alertname": "LoyalBackyardTermDebtNearMaturity",
+      "lane": "AUTO/AUTO/wYLDS",
+      "severity": "page",
+      "unit": "loyal-backyard.service"
+    },
+    "annotations": {
+      "summary": "Earn Max lane AUTO/AUTO/wYLDS term debt is under 2 days from maturity",
+      "trigger": "The lane's term debt is under 2 days from maturity: its keep-alive borrow (inside 3 days) has not landed.",
+      "impact": "Past maturity KLend refuses new borrowing on the lane and its debt becomes liquidatable, ramping to the whole debt over 3 days.",
+      "action": "Read the HOLD reasons journaled for the lane (term_keepalive_no_room: the debt reserve has no room; a leverage_down chain under 1 day waits on debt_clear_confirmation_required) and the 'leverage decision' line's term_days. Confirm the full delever (docs/backyard-debt-clear-confirmation.md) if the reserve stays without room; do not extend or roll the term by hand.",
+      "recovery": "A keep-alive or leverage_up borrow lands and the lane's days to maturity read about 30, or the lane's debt is repaid and the series is gone."
+    }
+  },
+  {
+    "labels": {
       "alertname": "LoyalWorkerDown",
       "severity": "page",
       "unit": "loyal-backyard.service"

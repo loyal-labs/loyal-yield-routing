@@ -24,6 +24,7 @@ import (
 //	loyal_backyard_leverage_up_landed_total{lane}        leverage_up borrows that landed
 //	loyal_backyard_leverage_reaction_seconds             first observed room to the leverage_up borrow landing
 //	loyal_backyard_leverage_decision_outages_total{reason} leverage samples that could not be decided, by sanitized cause
+//	loyal_backyard_term_debt_days_to_maturity{lane}      a held lane's days to its term debt's maturity
 type Facts struct {
 	withdrawalAttention *prometheus.GaugeVec
 	withdrawalObserved  *prometheus.GaugeVec
@@ -42,6 +43,7 @@ type Facts struct {
 	leverageLanded      *prometheus.CounterVec
 	leverageReaction    prometheus.Histogram
 	leverageOutages     *prometheus.CounterVec
+	termDebtDays        *prometheus.GaugeVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -98,9 +100,12 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		leverageOutages: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "loyal_backyard_leverage_decision_outages_total", Help: "Earn Max leverage samples that could not be decided (the stored target and approval carry), by sanitized cause.",
 		}, []string{"reason"}),
+		termDebtDays: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_term_debt_days_to_maturity", Help: "A held Earn Max lane's days from the chain clock to its term debt's maturity (negative once matured); no series without term debt.",
+		}, []string{"lane"}),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
-		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages)
+		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays)
 	return f
 }
 
@@ -137,10 +142,21 @@ func (f *Facts) BackyardLeverageOutage(reason string) {
 	f.leverageOutages.WithLabelValues(reason).Inc()
 }
 
+// BackyardTermDebtDays sets a held lane's days to its term debt's maturity;
+// a lane without term debt has no series.
+func (f *Facts) BackyardTermDebtDays(lane string, days float64, owed bool) {
+	if !owed {
+		f.termDebtDays.DeleteLabelValues(lane)
+		return
+	}
+	f.termDebtDays.WithLabelValues(lane).Set(days)
+}
+
 // BackyardLeverageLaneGone removes a lane that is no longer held.
 func (f *Facts) BackyardLeverageLaneGone(lane string) {
 	f.leverageGap.DeleteLabelValues(lane)
 	f.leverageRoom.DeleteLabelValues(lane)
+	f.termDebtDays.DeleteLabelValues(lane)
 }
 
 // BackyardLeverageUpLanded counts a landed leverage_up borrow and, when the
