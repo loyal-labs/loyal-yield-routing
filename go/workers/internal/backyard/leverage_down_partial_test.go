@@ -39,6 +39,21 @@ func TestDownMove175To15IsOneSizedCycle(t *testing.T) {
 			t.Fatalf("%s after the move: %+v", lane, got)
 		}
 	}
+	// An up move to 1.5x mid-way (borrowed, not yet staked) is not a down
+	// cycle: C 1000, D 500 borrowed into custody, LTV 50%. 2026-10-11 the
+	// first AUTO/wYLDS borrow was repaid here; it must swap and redeposit.
+	for _, lane := range []string{autoAUTOWYLDS.Lane, autoAUTOPYUSD.Lane, onreONycUSDC} {
+		s := leverageSnapshot(1.5)
+		s.RouteLane, s.StrategyKey, s.LeverageTargetLevel = lane, lane, 1.5
+		s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.LTVBPS = 1_000_000_000, 1_000_000_000, 5000
+		setDebtCash(&s, s.PositionDebtRaw)
+		if action, reason, _, ok := leverageDownPartialStepAt(s, true); ok {
+			t.Fatalf("%s up move read as a down cycle: %s %s", lane, action, reason)
+		}
+		if got := Decide(s); got.Action == DeleverRouteStep {
+			t.Fatalf("%s repaid the up move's borrow: %+v", lane, got)
+		}
+	}
 	// Inert while live levels stop at 1.5x; the exit-only lane never.
 	s := leverageSnapshot(1.75)
 	s.LeverageTargetLevel = 1.5

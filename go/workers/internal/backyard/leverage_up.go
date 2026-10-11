@@ -311,6 +311,15 @@ const leverageDownPartialReleaseReason = "leverage_down_partial_release"
 // 1.75x (a drifted 1.5x position is not de-levered by this path).
 const leverageDownPartialEnabled = leverageMaxLiveLevel > 1.5
 
+// allInLTVBPS is the position's LTV with its custody (idle collateral and
+// debt cash, valued at the obligation's debt price) counted as assets. The
+// caller has checked that the debt and its value are positive.
+func allInLTVBPS(s Snapshot, cash int64) int64 {
+	assets := float64(s.PositionCollateralValueRaw) + float64(max(s.CollateralIdleValueRaw, 0)) +
+		float64(cash)*float64(s.PositionDebtValueRaw)/float64(s.PositionDebtRaw)
+	return int64(float64(s.PositionDebtValueRaw) / assets * 10_000)
+}
+
 func leverageDownPartialStep(s Snapshot) (Action, string, int64, bool) {
 	return leverageDownPartialStepAt(s, leverageDownPartialEnabled)
 }
@@ -325,9 +334,14 @@ func leverageDownPartialStepAt(s Snapshot, enabled bool) (Action, string, int64,
 		return "", "", 0, false
 	}
 	// Finish a started cycle first: swap released collateral, repay cash.
-	// Only while the move is running: position still above the 1.5x band.
-	// (an unknown LTV never starts or continues the move).
-	if s.LTVBPS <= leverageLevelLTVBPS(1.5)+leverageUpNearBPS {
+	// Only while the move is running: position still above the 1.5x band
+	// (an unknown LTV never starts or continues the move), judged with the
+	// cycle's custody counted as assets. The obligation LTV alone reads an
+	// up move's borrow waiting to be staked as a cycle's repay cash
+	// (2026-10-11: the first AUTO/wYLDS 1x->1.5x borrow, D/C 50%, was repaid
+	// as exit_partial_repay); counted all in, that borrow sits at the band.
+	band := leverageLevelLTVBPS(1.5) + leverageUpNearBPS
+	if s.LTVBPS <= band || allInLTVBPS(s, cash) <= band {
 		return "", "", 0, false
 	}
 	if s.CollateralIdleRaw > 0 {
