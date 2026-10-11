@@ -456,3 +456,12 @@ func (e *events) leverageUpLanded(lane string, borrowedRaw int64, signature stri
 		e.facts.BackyardLeverageUpLanded(lane, reaction, known)
 	}
 }
+
+// leverageDecisionOutage counts a leverage sample that could not be decided,
+// by its sanitized cause (leverage_target.go outage()).
+func (e *events) leverageDecisionOutage(reason string) {
+	if e == nil || e.facts == nil {
+		return
+	}
+	e.facts.BackyardLeverageOutage(reason)
+}

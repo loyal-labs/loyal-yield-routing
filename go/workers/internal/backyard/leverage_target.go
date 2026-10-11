@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -259,7 +260,11 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	rateDebt := float64(leverageRateDebtRaw(s, raw+fee))
 	apr, rateErr := projectedBorrowAPR(*market, rateDebt)
 	spread, allowed := leverageUpAllowed(*market, level, rateDebt)
-	if err != nil || priceErr != nil || debtErr != nil || rateErr != nil || !allowed {
+	if err != nil || priceErr != nil || debtErr != nil || rateErr != nil {
+		out.Next, out.Reason = out.Current, "leverage_rate_unavailable"
+		return out, true
+	}
+	if !allowed {
 		out.Next = out.Current
 		return out, true
 	}
@@ -279,7 +284,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	}
 	stepCost, costErr := price(raw)
 	if costErr != nil || stepCost.TotalMicros <= 0 || stepCost.TotalMicros > 1<<53 {
-		out.Next, out.Reason = out.Current, "leverage_cost_unavailable"
+		out.Next, out.Reason = out.Current, leverageCostOutageReason(costErr)
 		return out, true
 	}
 	out.Cost, out.CostRaw = stepCost, float64(stepCost.TotalMicros)
@@ -318,6 +323,20 @@ func (d leverageDecision) changesTarget(stored float64) bool {
 	return d.Next != stored
 }
 
+// leverageOutageReasons are the decisions that are not decisions: the step
+// could not be evaluated (capacity, rate or cost unknown). They carry the
+// last stored target and approval, as the selector carries its persistence
+// windows through outages; only an economic refusal (spread_rule,
+// up_move_not_worth_cost), a level change or a risk or fee-terms change
+// revokes an approval.
+func (d leverageDecision) outage() bool {
+	switch d.Reason {
+	case "borrow_capacity_unknown", "leverage_rate_unavailable", "fee_forecast_unavailable", "leverage_cost_unavailable":
+		return true
+	}
+	return strings.HasPrefix(d.Reason, "leverage_cost_unavailable(")
+}
+
 // storeChanges reports whether d must be written over the stored target:
 // a new level, a consumed approval, an approval granted or revoked, one
 // decided from a different debt, or one whose size moved by more than a
@@ -325,6 +344,9 @@ func (d leverageDecision) changesTarget(stored float64) bool {
 // each time would bump the route generation every 15 s and refuse every
 // other fenced write.
 func (d leverageDecision) storeChanges(s Snapshot) bool {
+	if d.outage() {
+		return false
+	}
 	approved, stored := d.BorrowRaw >= leverageMinimumBorrowRaw, s.LeverageApprovedBorrowRaw >= leverageMinimumBorrowRaw
 	if d.changesTarget(s.LeverageTargetLevel) || s.LeverageBorrowOperationID != "" || approved != stored {
 		return true

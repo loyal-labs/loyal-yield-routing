@@ -182,9 +182,12 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			// B2 option 1: store the funded lane's level target. It
 			// never runs beside a selector move, unwind or open
 			// operation, and changes no money by itself.
-			if decision, ok := decideLeverageTarget(observed.Snapshot, result, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(ctx, rpc, view, productionJupiter, worker.manifest, observed.Snapshot)); ok && observed.planning != nil {
+			if decision, ok := decideLeverageTarget(observed.Snapshot, result, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(feedCtx, rpc, view, productionJupiter, worker.manifest, observed.Snapshot)); ok && observed.planning != nil {
 				if levDecisionLog.due(time.Now(), decision) {
 					_, _ = fmt.Fprintln(out, decision.logLine())
+				}
+				if decision.outage() {
+					backyardEvents.leverageDecisionOutage(decision.Reason)
 				}
 				if decision.storeChanges(observed.Snapshot) {
 					target := LeverageTarget{Lane: decision.Lane, Level: decision.Next, SpreadBPS: decision.SpreadBPS, DecidedAt: time.Now().UTC(), BorrowRaw: decision.BorrowRaw, SourceDebtRaw: decision.SourceDebtRaw}

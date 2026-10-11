@@ -23,6 +23,7 @@ import (
 //	loyal_backyard_leverage_gap{lane}                    a held lane's stored leverage target minus its leverage
 //	loyal_backyard_leverage_up_landed_total{lane}        leverage_up borrows that landed
 //	loyal_backyard_leverage_reaction_seconds             first observed room to the leverage_up borrow landing
+//	loyal_backyard_leverage_decision_outages_total{reason} leverage samples that could not be decided, by sanitized cause
 type Facts struct {
 	withdrawalAttention *prometheus.GaugeVec
 	withdrawalObserved  *prometheus.GaugeVec
@@ -40,6 +41,7 @@ type Facts struct {
 	leverageGap         *prometheus.GaugeVec
 	leverageLanded      *prometheus.CounterVec
 	leverageReaction    prometheus.Histogram
+	leverageOutages     *prometheus.CounterVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -93,9 +95,12 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 			Name: "loyal_backyard_leverage_reaction_seconds", Help: "From the first observed borrow room at or above the minimum, on a lane below its leverage target, to its leverage_up borrow landing.",
 			Buckets: []float64{1, 2, 5, 10, 15, 30, 60, 120, 300, 900, 3600},
 		}),
+		leverageOutages: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loyal_backyard_leverage_decision_outages_total", Help: "Earn Max leverage samples that could not be decided (the stored target and approval carry), by sanitized cause.",
+		}, []string{"reason"}),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
-		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction)
+		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages)
 	return f
 }
 
@@ -125,6 +130,11 @@ func (f *Facts) BackyardLeverageGap(lane string, gap float64, targeted bool) {
 		return
 	}
 	f.leverageGap.WithLabelValues(lane).Set(gap)
+}
+
+// BackyardLeverageOutage counts a leverage sample that could not be decided.
+func (f *Facts) BackyardLeverageOutage(reason string) {
+	f.leverageOutages.WithLabelValues(reason).Inc()
 }
 
 // BackyardLeverageLaneGone removes a lane that is no longer held.
