@@ -59,7 +59,7 @@ func TestLiveConfirmedKaminoAccountsDecode(t *testing.T) {
 		if account.Owner != klend.ProgramID {
 			t.Fatalf("reserve %s owner = %s", target.Reserve, account.Owner)
 		}
-		if _, err := Decode(target, slot, time.Now().UTC(), account, 400); err != nil {
+		if _, err := Decode(target, slot, time.Now().UTC(), account); err != nil {
 			t.Fatalf("decode reserve %s: %v", target.Reserve, err)
 		}
 	}

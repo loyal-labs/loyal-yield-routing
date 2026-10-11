@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"math/big"
 	"net/http"
@@ -24,8 +25,7 @@ type reserveEconomics struct {
 	Reserve, Market, Mint, Hash string
 	Slot                        int64
 	ObservedAt                  time.Time
-	// SupplyAPY is the plain curve at the observed utilization net of the
-	// protocol take: what suppliers accrue, priced as the debt side is.
+	// SupplyAPY is kamino.Reserve.Rates: what suppliers accrue.
 	SupplyAPY            float64
 	SupplyRaw, BorrowRaw float64 // raw liquidity units of the reserve's mint
 	Curve                []BorrowCurvePoint
@@ -140,10 +140,13 @@ func readReserveEconomics(ctx context.Context, view *View, routes []RuntimeRoute
 	observedAt := time.Unix(clockUnixTimestamp(accounts), 0).UTC()
 	out := map[string]reserveEconomics{}
 	for _, account := range accounts[1:] {
-		if r, err := decodeReserveEconomics(account); err == nil {
-			r.Slot, r.ObservedAt = slot, observedAt
-			out[r.Reserve] = r
+		r, err := decodeReserveEconomics(account)
+		if err != nil {
+			slog.Warn("backyard selector left out an undecodable lane reserve", "reserve", account.Address, "error", err)
+			continue
 		}
+		r.Slot, r.ObservedAt = slot, observedAt
+		out[r.Reserve] = r
 	}
 	return out, nil
 }
@@ -157,18 +160,18 @@ func decodeReserveEconomics(account ConfirmedAccount) (reserveEconomics, error) 
 	if err != nil {
 		return reserveEconomics{}, err
 	}
+	rates, err := reserve.Rates()
+	if err != nil {
+		return reserveEconomics{}, err
+	}
+	// The curve and host rate are scaled to what the reserve accrues, so a
+	// projected borrow prices as kamino.Reserve.Rates does.
+	accrual := reserve.AccrualPerCurve()
 	r := reserveEconomics{Reserve: account.Address, Market: reserve.LendingMarket.String(), Mint: reserve.LiquidityMint.String(), Hash: sha256Bytes(account.Data),
-		SupplyRaw: scaledFloat(total), BorrowRaw: scaledFloat(kamino.U128(reserve.BorrowedAmountSF)), HostBPS: float64(reserve.HostFixedInterestRateBPS),
+		SupplyAPY: rates.SupplyAPY, SupplyRaw: scaledFloat(total), BorrowRaw: scaledFloat(kamino.U128(reserve.BorrowedAmountSF)), HostBPS: float64(reserve.HostFixedInterestRateBPS) * accrual,
 		Status: reserve.Status, Emergency: reserve.EmergencyMode, PriceUSD: scaledFloat(kamino.U128(reserve.MarketPriceSF)), Decimals: int(reserve.MintDecimals)}
 	for _, point := range reserve.BorrowRateCurve {
-		r.Curve = append(r.Curve, BorrowCurvePoint{float64(point.UtilizationRateBPS), float64(point.BorrowRateBPS)})
-	}
-	if r.BorrowRaw > 0 {
-		apr, err := projectedBorrowAPR(LaneEconomics{BorrowCurve: r.Curve, DebtSupplyRaw: r.SupplyRaw, DebtBorrowRaw: r.BorrowRaw}, 0)
-		if err != nil {
-			return reserveEconomics{}, err
-		}
-		r.SupplyAPY = math.Expm1(min(r.BorrowRaw/r.SupplyRaw, 1) * apr * (1 - float64(reserve.ProtocolTakeRatePct)/100))
+		r.Curve = append(r.Curve, BorrowCurvePoint{float64(point.UtilizationRateBPS), float64(point.BorrowRateBPS) * accrual})
 	}
 	return r, nil
 }
@@ -214,10 +217,8 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomic
 		if c.Status != 0 || d.Status != 0 || c.Emergency || d.Emergency {
 			e.EntryBlockedReason = "reserve_inactive_or_emergency"
 		}
-		// The KLend curve (plus host rate) at the observed utilization IS the
-		// annual borrow APR: the on-chain cumulative borrow index grows at the
-		// plain curve (48 hourly samples: Maple USDC 3.70% on chain, 3.69%
-		// curve, 6.99% from loyal-kamino-codec's slot-duration annualization).
+		// The accrual-scaled curve (plus host rate) at the observed
+		// utilization is the annual borrow APR (kamino.Reserve.Rates).
 		apr, aprErr := projectedBorrowAPR(e, 0)
 		if aprErr != nil {
 			continue

@@ -844,11 +844,12 @@ func coverageMints(coverages []MarketMintCoverage) []string {
 }
 
 // planDirectReads plans each reserve whose direct read differs from its
-// stream row on the direct read: the chain at a known slot. The stream row
-// still lists the catalog and stays the published epoch evidence.
+// stream row, at or after the row's slot, on the direct read: the chain at a
+// known slot. The stream row still lists the catalog and stays the published
+// epoch evidence, target eligibility included (sameMintTargets).
 func planDirectReads(snapshot, direct MarketSnapshot) {
 	for address, reserve := range direct.Reserves {
-		if held, ok := snapshot.Reserves[address]; ok && !strings.EqualFold(held.DataHash, reserve.DataHash) {
+		if held, ok := snapshot.Reserves[address]; ok && reserve.Slot >= held.Slot && !strings.EqualFold(held.DataHash, reserve.DataHash) {
 			reserve.ObservedAt = direct.ObservedAt
 			snapshot.Reserves[address] = reserve
 		}

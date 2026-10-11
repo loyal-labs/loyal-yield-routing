@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
-	"sort"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -30,8 +29,6 @@ type ReserveSlotOrderMismatch struct {
 func (e *ReserveSlotOrderMismatch) Error() string {
 	return fmt.Sprintf("reserve %s economic slot order is invalid: contextSlot=%d lastUpdateSlot=%d", e.Reserve, e.ContextSlot, e.LastUpdateSlot)
 }
-
-type curvePoint struct{ utilization, rate float64 }
 
 func DecodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotDuration time.Duration) (ReserveState, error) {
 	return decodeKaminoReserve(account, identity, contextSlot, slotDuration)
@@ -92,23 +89,14 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 		return ReserveState{}, fmt.Errorf("reserve %s utilization is invalid", identity.Address)
 	}
 
-	takeRate := reserve.ProtocolTakeRatePct
-	if takeRate > 100 {
+	if reserve.ProtocolTakeRatePct > 100 {
 		return ReserveState{}, fmt.Errorf("reserve %s take rate is invalid", identity.Address)
 	}
-	points := make([]curvePoint, 0, len(reserve.BorrowRateCurve))
-	for _, point := range reserve.BorrowRateCurve {
-		points = append(points, curvePoint{utilization: float64(point.UtilizationRateBPS) / 10_000, rate: float64(point.BorrowRateBPS) / 10_000})
+	rates, err := reserve.Rates()
+	if err != nil {
+		return ReserveState{}, fmt.Errorf("reserve %s rates: %w", identity.Address, err)
 	}
-	sort.Slice(points, func(i, j int) bool { return points[i].utilization < points[j].utilization })
-	curveAPR := curveRate(points, utilization) * (1000 / 2 / float64(slotDuration.Milliseconds()))
-	// KLend's host fixed rate is borrower-only and does not accrue to suppliers.
-	supplyAPR := utilization * curveAPR * (1 - float64(takeRate)/100)
-	periods := 365.25 * 24 * 60 * 60 * 1000 / float64(slotDuration.Milliseconds())
-	supplyAPY := 0.0
-	if supplyAPR > 0 {
-		supplyAPY = math.Pow(1+supplyAPR/periods, periods) - 1
-	}
+	supplyAPY := rates.SupplyAPY
 	if !finite(supplyAPY) || supplyAPY < 0 || supplyAPY >= 0.5 {
 		return ReserveState{}, fmt.Errorf("reserve %s APY is outside the production bound", identity.Address)
 	}
@@ -128,26 +116,6 @@ func scaledFraction(value [16]byte) float64 {
 	low := binary.LittleEndian.Uint64(value[:8])
 	high := binary.LittleEndian.Uint64(value[8:16])
 	return float64(high)*16 + float64(low)/float64(uint64(1)<<60)
-}
-
-func curveRate(points []curvePoint, utilization float64) float64 {
-	if len(points) == 0 {
-		return 0
-	}
-	if utilization <= points[0].utilization {
-		return points[0].rate
-	}
-	for index := 1; index < len(points); index++ {
-		floor, ceiling := points[index-1], points[index]
-		if utilization <= ceiling.utilization {
-			width := ceiling.utilization - floor.utilization
-			if width <= math.SmallestNonzeroFloat64 {
-				return ceiling.rate
-			}
-			return floor.rate + (ceiling.rate-floor.rate)*(utilization-floor.utilization)/width
-		}
-	}
-	return points[len(points)-1].rate
 }
 
 func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }

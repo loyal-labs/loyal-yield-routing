@@ -23,14 +23,13 @@ type snapshotRank struct {
 	snapshot           Snapshot
 }
 type Handler struct {
-	store          *Store
-	rpc            *chain.Client
-	logger         *slog.Logger
-	slotDurationMS float64
-	storeRaw       bool
-	mu             sync.RWMutex
-	targets        map[string]Target
-	snapshots      map[string]snapshotRank
+	store     *Store
+	rpc       *chain.Client
+	logger    *slog.Logger
+	storeRaw  bool
+	mu        sync.RWMutex
+	targets   map[string]Target
+	snapshots map[string]snapshotRank
 }
 
 type HandleOutcome struct {
@@ -38,16 +37,8 @@ type HandleOutcome struct {
 	Inserted, Malformed bool
 }
 
-func NewHandler(store *Store, rpc *chain.Client, logger *slog.Logger, slotDurationMS float64, storeRaw bool) *Handler {
-	return &Handler{store: store, rpc: rpc, logger: logger, slotDurationMS: slotDurationMS, storeRaw: storeRaw, targets: make(map[string]Target), snapshots: make(map[string]snapshotRank)}
-}
-func (h *Handler) SetSlotDuration(value float64) {
-	if value <= 0 {
-		return
-	}
-	h.mu.Lock()
-	h.slotDurationMS = value
-	h.mu.Unlock()
+func NewHandler(store *Store, rpc *chain.Client, logger *slog.Logger, storeRaw bool) *Handler {
+	return &Handler{store: store, rpc: rpc, logger: logger, storeRaw: storeRaw, targets: make(map[string]Target), snapshots: make(map[string]snapshotRank)}
 }
 func (h *Handler) SetTargets(targets []Target) {
 	h.mu.Lock()
@@ -80,7 +71,6 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 	}
 	h.mu.RLock()
 	target, ok := h.targets[reserve]
-	slotDurationMS := h.slotDurationMS
 	h.mu.RUnlock()
 	if !ok {
 		return HandleOutcome{Slot: accountUpdate.GetSlot()}, fmt.Errorf("kamino update for unknown reserve %s", reserve)
@@ -91,7 +81,7 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 		h.logger.Error("invalid Kamino stream owner skipped", "reserve", reserve, "slot", accountUpdate.GetSlot(), "owner", owner)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
 	}
-	snapshot, err := Decode(target, accountUpdate.GetSlot(), observedAt, &chain.Account{Key: solana.PublicKeyFromBytes(account.GetPubkey()), Owner: solana.PublicKeyFromBytes(account.GetOwner()), Lamports: account.GetLamports(), Data: account.GetData(), Executable: account.GetExecutable()}, slotDurationMS)
+	snapshot, err := Decode(target, accountUpdate.GetSlot(), observedAt, &chain.Account{Key: solana.PublicKeyFromBytes(account.GetPubkey()), Owner: solana.PublicKeyFromBytes(account.GetOwner()), Lamports: account.GetLamports(), Data: account.GetData(), Executable: account.GetExecutable()})
 	if err != nil {
 		h.logger.Error("invalid Kamino stream data skipped", "reserve", reserve, "slot", accountUpdate.GetSlot(), "error", err)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
@@ -108,9 +98,6 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 // start-up, each added one when the watched set changes. It returns the
 // lowest slot read.
 func (h *Handler) Seed(ctx context.Context, targets []Target) (uint64, error) {
-	h.mu.RLock()
-	slotDurationMS := h.slotDurationMS
-	h.mu.RUnlock()
 	if len(targets) == 0 {
 		return 0, fmt.Errorf("kamino target catalog is empty")
 	}
@@ -137,7 +124,7 @@ func (h *Handler) Seed(ctx context.Context, targets []Target) (uint64, error) {
 				h.logger.Error("confirmed Kamino seed account is missing or foreign", "reserve", target.Reserve)
 				continue
 			}
-			snapshot, err := Decode(target, slot, observedAt, account, slotDurationMS)
+			snapshot, err := Decode(target, slot, observedAt, account)
 			if err != nil {
 				h.logger.Error("confirmed Kamino seed state was malformed", "reserve", target.Reserve, "error", err)
 				continue

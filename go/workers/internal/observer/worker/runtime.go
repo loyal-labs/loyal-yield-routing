@@ -69,7 +69,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, facts *eng
 	}
 	kaminoStore := kamino.NewStore(timescale, "kamino")
 	kaminoCatalog := kamino.NewCatalogClient(cfg.KaminoAPIBase, 30*time.Second)
-	kaminoHandler := kamino.NewHandler(kaminoStore, client, logger, 400, false)
+	kaminoHandler := kamino.NewHandler(kaminoStore, client, logger, false)
 	ataHandler := ata.NewHandler(timescale, client)
 	earnStore := earn.NewStore(neon)
 	earnHandler := earn.NewHandler(earnStore, cfg.Cluster)
@@ -333,11 +333,6 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 		return nil, nil, 0, fmt.Errorf("recover initial Earn MAX gaps: %w", gapErr)
 	} else if recovered > 0 {
 		r.logger.Info("enqueued Earn MAX RPC gap updates", "insertedJobs", recovered)
-	}
-	if slotDuration, durationErr := r.kaminoCatalog.SlotDuration(ctx); durationErr != nil {
-		r.logger.Warn("failed to refresh Kamino slot duration; using 400ms fallback", "error", durationErr)
-	} else {
-		r.kamino.SetSlotDuration(slotDuration)
 	}
 	kaminoSlot, err := r.kamino.Seed(ctx, targets)
 	if err != nil {

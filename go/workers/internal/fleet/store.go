@@ -355,12 +355,7 @@ ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options
 			fleet = append(fleet, FleetVault{Position: p})
 			continue
 		}
-		allowed := []string{}
-		for _, reserve := range epoch.Reserves {
-			if reserve.LiquidityMint == p.Mint && reserve.Market != nil && contains(markets, *reserve.Market) && reserve.TargetEligible {
-				allowed = append(allowed, reserve.Reserve)
-			}
-		}
+		allowed := sameMintTargets(epoch, p.Mint, markets)
 		crossTargets, err := crossMintTargets(epoch, p, authority, delegatedSigners, options, earnPolicyJSON, swapPolicyJSON)
 		if err != nil {
 			return nil, fmt.Errorf("vault %d cross-mint policy evidence: %w", p.VaultID, err)
@@ -469,6 +464,20 @@ type observedSwapPolicy struct {
 	MaxSlippageBPS             int64  `json:"max_slippage_bps"`
 	DailySourceMintSpendingCap int64  `json:"daily_source_mint_spending_cap"`
 	ManifestFingerprint        string `json:"manifest_fingerprint"`
+}
+
+// sameMintTargets are the epoch's target-eligible reserves of mint in markets.
+// Planning and Publish both read this one epoch flag, so a reserve the stream
+// evidence makes ineligible is never planned as a target, whatever its direct
+// read says.
+func sameMintTargets(epoch ImmutableMarketEpoch, mint string, markets []string) []string {
+	allowed := []string{}
+	for _, reserve := range epoch.Reserves {
+		if reserve.LiquidityMint == mint && reserve.Market != nil && contains(markets, *reserve.Market) && reserve.TargetEligible {
+			allowed = append(allowed, reserve.Reserve)
+		}
+	}
+	return allowed
 }
 
 func crossMintTargets(epoch ImmutableMarketEpoch, position VaultPosition, authority string, delegated []string, options FleetLoadOptions, earnRaw, swapRaw json.RawMessage) (map[string]CrossMintPolicyBindings, error) {

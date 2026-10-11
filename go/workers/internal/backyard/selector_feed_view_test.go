@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"encoding/binary"
+	"math"
 	"math/big"
 	"testing"
 	"time"
@@ -29,7 +30,11 @@ func TestReserveFeedPricesLanesOnlyFromCurrentViewReserves(t *testing.T) {
 		binary.LittleEndian.PutUint32(curve[i*8:], point[0])
 		binary.LittleEndian.PutUint32(curve[i*8+4:], point[1])
 	}
-	collateral := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, slot, one, 100, 100)
+	// Collateral is borrowed too: 20 of 100 on the same curve, so suppliers
+	// earn kamino.Reserve.Rates' supply APY.
+	collateral := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, slot, one, 80, 100)
+	putScaledFraction(collateral.Data[128+104:128+120], new(big.Int).Lsh(big.NewInt(20), 60))
+	copy(collateral.Data[4856+64:4856+64+88], debt.Data[4856+64:4856+64+88])
 	usdc := reserveFixture(t, kaminoDebtReserve, bridgeUSDC, slot, one, 100, 100)
 	putKey(t, debt.Data[32:64], route.Kamino.Market)
 	putKey(t, collateral.Data[32:64], route.Kamino.Market)
@@ -48,8 +53,10 @@ func TestReserveFeedPricesLanesOnlyFromCurrentViewReserves(t *testing.T) {
 		return combineEconomics([]RuntimeRoute{route}, reserves, native, now, DefaultSelectorPolicy())
 	}
 	chainTime := now.Add(-time.Second)
-	if got := feed(chainTime, debt); len(got) != 1 || !got[0].ObservedAt.Equal(chainTime) || got[0].DebtBorrowRaw != 50_000_000 {
-		t.Fatalf("lane from current view reserves = %+v, want one lane observed at %s", got, chainTime)
+	// Legacy basis: 1.25x the curve, 364 bps at 9000 interpolated to 20%.
+	supplyAPY := math.Expm1(364.0 * 2000 / 9000 / 10_000 * 0.2 * 1.25)
+	if got := feed(chainTime, debt); len(got) != 1 || !got[0].ObservedAt.Equal(chainTime) || got[0].DebtBorrowRaw != 50_000_000 || math.Abs(got[0].SupplyAPY-supplyAPY) > 1e-12 {
+		t.Fatalf("lane from current view reserves = %+v, want one lane observed at %s with supply APY %v", got, chainTime, supplyAPY)
 	}
 	if got := feed(chainTime, ConfirmedAccount{Address: debt.Address}); len(got) != 0 {
 		t.Fatalf("lane priced without its debt reserve: %+v", got)

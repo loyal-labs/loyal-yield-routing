@@ -280,8 +280,8 @@ CREATE TABLE %[1]s.reserve_updates(
 	}
 }
 
-// A direct read that differs from the stream row is the chain at a known
-// slot, so it is what gets planned; an agreeing read leaves the stream row.
+// A direct read that differs from the stream row at or after its slot is the
+// chain at a known slot, so it is what gets planned; an older one is not.
 func TestPlanningUsesTheDirectReadWhereItDiffersFromTheStreamRow(t *testing.T) {
 	now := time.Now().UTC()
 	source := ReserveIdentity{Address: testIdentity(41), Market: testIdentity(42), Mint: USDCMint}
@@ -296,12 +296,63 @@ func TestPlanningUsesTheDirectReadWhereItDiffersFromTheStreamRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	moved := ReserveState{ReserveIdentity: target, Slot: 1_010, LastUpdateSlot: 1_010, SupplyAPYBPS: 300, TotalSupplyUSDMicros: 3_100_000_000_000, DataHash: strings.Repeat("c", 64)}
-	direct := MarketSnapshot{Slot: 1_010, ObservedAt: now.Add(time.Second), Reserves: map[string]ReserveState{source.Address: stream.Reserves[source.Address], target.Address: moved}}
+	older := stream.Reserves[source.Address]
+	older.Slot, older.DataHash = 999, strings.Repeat("d", 64)
+	direct := MarketSnapshot{Slot: 1_010, ObservedAt: now.Add(time.Second), Reserves: map[string]ReserveState{source.Address: older, target.Address: moved}}
 	planDirectReads(planned, direct)
 	if got := planned.Reserves[target.Address]; got.DataHash != moved.DataHash || got.SupplyAPYBPS != 300 || got.Slot != 1_010 || !got.ObservedAt.Equal(direct.ObservedAt) {
 		t.Fatalf("planned target = %+v, want the direct read at slot 1010", got)
 	}
 	if got := planned.Reserves[source.Address]; got.Slot != 1_000 || !got.ObservedAt.Equal(now) {
-		t.Fatalf("agreeing source was replaced: %+v", got)
+		t.Fatalf("a direct read older than the stream row replaced it: %+v", got)
+	}
+}
+
+// A reserve the stream evidence makes target-ineligible is never planned as a
+// target even when its direct read is fresh: planning and Publish read the one
+// epoch flag, so the cycle skips it instead of failing at publication.
+func TestStreamIneligibleTargetIsConsistentlySkippedDespiteAFreshDirectRead(t *testing.T) {
+	now := time.Now().UTC()
+	market := testIdentity(52)
+	source := ReserveIdentity{Address: testIdentity(51), Market: market, Mint: USDCMint}
+	target := ReserveIdentity{Address: testIdentity(53), Market: market, Mint: USDCMint}
+	row := func(identity ReserveIdentity, event int64, hash string, apy float64, stale bool) SupportedReserveStateRow {
+		return SupportedReserveStateRow{StateEventID: event, AccountDataHash: strings.Repeat(hash, 64), StateObservedAt: now, StateSlot: 1_000,
+			Source: "laserstream_grpc", SourceCommitment: "confirmed", Reserve: identity.Address, Market: &market, LiquidityMint: USDCMint, MintDecimals: 6,
+			ReserveLastUpdateSlot: 999, ReserveLastUpdateStale: stale, TotalSupplyAmount: 2_000_000_000_000, AvailableAmount: 2_000_000_000_000, MarketPriceUSD: 1, SupplyAPY: apy}
+	}
+	plan := func(targetStale bool) (FleetPlan, []string) {
+		t.Helper()
+		catalog := []SupportedReserveCatalogRow{
+			{Market: market, LiquidityMint: USDCMint, Reserve: source.Address, Source: "kamino-api", FetchedAt: now},
+			{Market: market, LiquidityMint: USDCMint, Reserve: target.Address, Source: "kamino-api", FetchedAt: now},
+		}
+		epoch, err := BuildImmutableMarketEpoch(SupportedReserveMarketSnapshot{CapturedAt: now, Catalog: catalog, ReserveStates: []SupportedReserveStateRow{row(source, 1, "a", .02, false), row(target, 2, "b", .08, targetStale)}}, []string{USDCMint})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot, err := marketSnapshotFromEpoch(epoch, source.Address, target.Address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh := ReserveState{ReserveIdentity: target, Slot: 1_010, LastUpdateSlot: 1_010, SupplyAPYBPS: 800, TotalSupplyUSDMicros: 2_000_000_000_000, EconomicLifetimeMillis: 300_000, DataHash: strings.Repeat("c", 64)}
+		planDirectReads(snapshot, MarketSnapshot{Slot: 1_010, ObservedAt: now, Reserves: map[string]ReserveState{target.Address: fresh}})
+		allowed := sameMintTargets(epoch, USDCMint, []string{market})
+		result, err := PlanFleet(snapshot, []FleetVault{oracleVault(snapshot, 1, source.Address, 1_000_000_000, allowed...)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, opportunity := range result.Opportunities {
+			if evidence, ok := epoch.Reserve(opportunity.Decision.TargetReserve); !ok || !evidence.TargetEligible {
+				t.Fatalf("planned a target Publish refuses: %+v", opportunity.Decision)
+			}
+		}
+		return result, allowed
+	}
+	if result, allowed := plan(false); len(allowed) != 2 || len(result.Opportunities) != 1 || result.Opportunities[0].Decision.TargetReserve != target.Address {
+		t.Fatalf("eligible target was not planned: allowed=%v plan=%+v", allowed, result)
+	}
+	if result, allowed := plan(true); contains(allowed, target.Address) || len(result.Opportunities) != 0 {
+		t.Fatalf("stream-ineligible target was planned: allowed=%v plan=%+v", allowed, result)
 	}
 }

@@ -100,7 +100,7 @@ func TestSeedAndStreamUpdatePersistConfirmedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := NewHandler(NewStore(pool, "kamino"), client, slog.New(slog.NewTextHandler(io.Discard, nil)), 400, false)
+	handler := NewHandler(NewStore(pool, "kamino"), client, slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 	handler.SetTargets([]Target{{Reserve: reserve, Market: &marketString, LiquidityMint: &mintString}})
 	latest := func(reserve string) (source, hash string, slot int64) {
 		t.Helper()

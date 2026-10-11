@@ -56,12 +56,6 @@ type metricDTO struct {
 	TotalSupply optionalFloat `json:"totalSupplyUsd"`
 	TotalBorrow optionalFloat `json:"totalBorrowUsd"`
 }
-type slotDurationDTO struct {
-	Recent   optionalFloat `json:"recentSlotDurationInMs"`
-	Median   optionalFloat `json:"medianSlotDurationMs"`
-	Slot     optionalFloat `json:"slotDurationMs"`
-	Duration optionalFloat `json:"duration"`
-}
 
 func (c *CatalogClient) Enrich(ctx context.Context, targets []Target) ([]Target, error) {
 	markets := make(map[string][]metricDTO)
@@ -138,18 +132,6 @@ func sameIdentity(left, right *string) bool {
 	return (left == nil && right == nil) || (left != nil && right != nil && *left == *right)
 }
 
-func (c *CatalogClient) SlotDuration(ctx context.Context) (float64, error) {
-	var response slotDurationDTO
-	if err := c.get(ctx, c.baseURL+"/slots/duration", &response); err != nil {
-		return 0, err
-	}
-	for _, value := range []*float64{response.Recent.Value, response.Median.Value, response.Slot.Value, response.Duration.Value} {
-		if value != nil && *value > 0 {
-			return *value, nil
-		}
-	}
-	return 0, fmt.Errorf("kamino slot duration response had no positive duration")
-}
 func (c *CatalogClient) get(ctx context.Context, endpoint string, target any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
