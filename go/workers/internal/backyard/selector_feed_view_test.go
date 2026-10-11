@@ -16,11 +16,8 @@ import (
 // older than the market bound prices nothing.
 func TestReserveFeedPricesLanesOnlyFromCurrentViewReserves(t *testing.T) {
 	t.Parallel()
-	route, now, body := nativeFixture(t)
-	native, err := parseNativeYields([]byte(body), []RuntimeRoute{route}, now, 2*time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+	route, now, _ := nativeFixture(t)
+	native := realizedFixture(route.Lane, now, 0.05)
 	const slot = 500
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
 	debt := reserveFixture(t, route.Kamino.DebtReserve, route.Kamino.DebtMint, slot, one, 100_000_000, 100)
@@ -56,7 +53,7 @@ func TestReserveFeedPricesLanesOnlyFromCurrentViewReserves(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return combineEconomics([]RuntimeRoute{route}, reserves, native, now, DefaultSelectorPolicy())
+		return combineEconomics([]RuntimeRoute{route}, reserves, native, nil, now, DefaultSelectorPolicy())
 	}
 	chainTime := now.Add(-time.Second)
 	// Legacy basis accrues the curve times the measured slot rate over 2: the

@@ -39,13 +39,18 @@ type BorrowCurvePoint struct {
 
 // Economics uses effective annual rates for supply/native income and nominal
 // APR for the borrow curve, including the fixed host rate separately. Rewards
-// are omitted until eligibility and recurrence can be proven.
+// are omitted until eligibility and recurrence can be proven. NativeAPY is the
+// collateral's realized market price growth over the trailing 30 days
+// (parseRealizedYield); FeedNativeAPY is Kamino's yield feed for the same
+// token, display and comparison only (nil when the feed did not report it),
+// and no decision reads it.
 type LaneEconomics struct {
 	Lane             string             `json:"lane"`
 	EvidenceID       string             `json:"evidenceId"`
 	ObservedAt       time.Time          `json:"observedAt"`
 	NativeObservedAt time.Time          `json:"nativeObservedAt"`
 	NativeAPY        float64            `json:"nativeApy"`
+	FeedNativeAPY    *float64           `json:"feedNativeApy,omitempty"`
 	SupplyAPY        float64            `json:"supplyApy"`
 	CurrentBorrowAPY float64            `json:"currentBorrowApy"`
 	BorrowCurve      []BorrowCurvePoint `json:"borrowCurve"`
@@ -300,6 +305,10 @@ type CandidateForecast struct {
 	NetAPY          float64 `json:"netApy,omitempty"`
 	BorrowBlocked   bool    `json:"borrowBlocked,omitempty"`
 	DebtRoomUSDCRaw *uint64 `json:"debtRoomUsdcRaw,omitempty"`
+	// Display only: the lane's realized native APY the forecast used and
+	// the yield feed's figure for the same token.
+	NativeAPY     float64  `json:"nativeApy,omitempty"`
+	FeedNativeAPY *float64 `json:"feedNativeApy,omitempty"`
 }
 type SelectorResult struct {
 	Action          string              `json:"action"`
@@ -406,7 +415,8 @@ func pilotQuoteEconomics(quote MoveQuote, m LaneEconomics, invested, years float
 }
 
 // selectorSampleLine is the held-sample diagnostic: every candidate with its
-// executable leverage, net APY after the performance fee, borrow open or
+// executable leverage, net APY after the performance fee, realized native APY
+// beside the yield feed's and their gap, borrow open or
 // blocked with the debt reserve's borrow room in USDC, its benefit in USDC and
 // its refusal reason ("-" when unpriced). key is the line's shape without the
 // drifting numbers, for change-only printing.
@@ -431,11 +441,20 @@ func selectorSampleLine(result SelectorResult) (key, line string) {
 		}
 		roomOpen := c.DebtRoomUSDCRaw != nil && *c.DebtRoomUSDCRaw > 0
 		keys = append(keys, fmt.Sprintf("%s:%s:%s:%s:%t", c.Lane, reason, borrow, lev, roomOpen))
-		parts = append(parts, fmt.Sprintf("%s(lev=%s net=%s borrow=%s room=%s benefit=%s reason=%s)", c.Lane, lev, net, borrow, room, benefit, reason))
+		parts = append(parts, fmt.Sprintf("%s(lev=%s net=%s %s borrow=%s room=%s benefit=%s reason=%s)", c.Lane, lev, net, nativeFeedText(c.NativeAPY, c.FeedNativeAPY), borrow, room, benefit, reason))
 	}
 	trancheKey, trancheLine := trancheSampleSuffix(result.HeldLanes, result.Tranches)
 	keys = append(keys, trancheKey)
 	return strings.Join(keys, "|"), fmt.Sprintf("backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s", result.Action, result.Reason, result.SourceLane, strings.Join(parts, " ")) + trancheLine
+}
+
+// nativeFeedText prints a lane's realized native APY beside the yield feed's
+// and the gap (realized minus feed), in percent points.
+func nativeFeedText(native float64, feed *float64) string {
+	if feed == nil {
+		return fmt.Sprintf("native=%.2f%% feed=unavailable", native*100)
+	}
+	return fmt.Sprintf("native=%.2f%% feed=%.2f%% gap=%+.2f", native*100, *feed*100, (native-*feed)*100)
 }
 
 // quoteLeverageAndNetAPY is a quote's executable leverage and the position's
@@ -553,7 +572,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	quotes := make(map[string]MoveQuote)
 	for _, lane := range lanes {
 		m := markets[lane]
-		c := CandidateForecast{Lane: lane}
+		c := CandidateForecast{Lane: lane, NativeAPY: m.NativeAPY, FeedNativeAPY: m.FeedNativeAPY}
 		if err := m.validate(in.Now, p); err != nil {
 			c.BlockedReason = err.Error()
 			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)

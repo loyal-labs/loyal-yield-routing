@@ -136,20 +136,21 @@ func TestSelectorRanksPrimePYUSDWhenAUTOIsBlocked(t *testing.T) {
 // numbers but not a reserve opening.
 func TestSelectorSampleLineListsEveryCandidate(t *testing.T) {
 	t.Parallel()
-	room, closed := uint64(12_345_670_000), uint64(0)
+	room, closed, feed := uint64(12_345_670_000), uint64(0), .1084
 	result := SelectorResult{Action: "KEEP", Reason: "no_worthwhile_executable_move", SourceLane: autoAUTOPYUSD.Lane, Candidates: []CandidateForecast{
 		{Lane: SelectedRouteID, CostsKnown: true, Leverage: 1.5, NetAPY: .0512, BenefitRaw: 420_000, DebtRoomUSDCRaw: &room},
 		{Lane: onreONycUSDC, BlockedReason: "complete_entry_quote_unavailable"},
-		{Lane: autoAUTOPYUSD.Lane, CostsKnown: true, Leverage: 1, NetAPY: .07, BorrowBlocked: true, BenefitRaw: -1, DebtRoomUSDCRaw: &closed},
+		{Lane: autoAUTOPYUSD.Lane, CostsKnown: true, Leverage: 1, NetAPY: .07, BorrowBlocked: true, BenefitRaw: -1, DebtRoomUSDCRaw: &closed, NativeAPY: .0885, FeedNativeAPY: &feed},
 		{Lane: PhaseOneLaneID, BlockedReason: "entry_closed"},
 		{Lane: primePRIMEPYUSD.Lane, BlockedReason: "pair_capacity_unknown"},
 		{Lane: primePRIMEUSDS.Lane, BlockedReason: "economic_evidence_unavailable"},
 	}}
 	key, line := selectorSampleLine(result)
 	for _, want := range []string{
-		"Maple/syrupUSDC/USDC(lev=1.50x net=5.12% borrow=open room=$12345.67 benefit=$0.42 reason=-)",
-		"AUTO/AUTO/PYUSD(lev=1.00x net=7.00% borrow=blocked room=$0.00 benefit=$-0.00 reason=-)",
-		"OnRe/ONyc/USDC(lev=- net=- borrow=- room=- benefit=- reason=complete_entry_quote_unavailable)",
+		"Maple/syrupUSDC/USDC(lev=1.50x net=5.12% native=0.00% feed=unavailable borrow=open room=$12345.67 benefit=$0.42 reason=-)",
+		// The realized native APY the forecast used, the feed's, and the gap.
+		"AUTO/AUTO/PYUSD(lev=1.00x net=7.00% native=8.85% feed=10.84% gap=-1.99 borrow=blocked room=$0.00 benefit=$-0.00 reason=-)",
+		"OnRe/ONyc/USDC(lev=- net=- native=0.00% feed=unavailable borrow=- room=- benefit=- reason=complete_entry_quote_unavailable)",
 		"Prime/PRIME/USDS(", "Prime/PRIME/PYUSD(", "Prime/PRIME/USDC(",
 	} {
 		if !strings.Contains(line, want) {

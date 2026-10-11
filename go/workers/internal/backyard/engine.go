@@ -129,7 +129,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 	// sample also hourly), so neither a persistent outage nor a stable hold
 	// floods the log on the sample cadence.
 	lastSampleKey, lastSamplePrint := "", time.Time{}
-	lastEvaluateFailure := ""
+	lastEvaluateFailure, lastUnavailable := "", ""
 	levWatch, levWatchSummary := &leverageWatch{}, time.Time{}
 	levDecisionLog := &leverageDecisionLog{}
 	apyThrottle := &currentAPYThrottle{}
@@ -141,6 +141,14 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 		runSelectorSamples(feedCtx, selectorLiveSampleInterval, func(ctx context.Context) {
 			_ = feed.Refresh(ctx)
 			markets, _ := feed.Snapshot()
+			// A lane without economics (its realized yield unmeasurable) is
+			// not scored; say which and why, once per change.
+			if unavailable := feed.UnavailableLanes(); unavailable != lastUnavailable {
+				lastUnavailable = unavailable
+				if unavailable != "" {
+					_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector economics unavailable %s\n", unavailable)
+				}
+			}
 			result, observed, err := database.evaluateSelectorObserved(ctx, rpc, view, worker.manifest, markets, shadowIdentity, DefaultSelectorPolicy())
 			if err != nil {
 				// Closed-set sanitized code only: raw RPC/DB errors may
