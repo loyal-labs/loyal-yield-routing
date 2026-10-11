@@ -32,11 +32,11 @@ func withdrawalUSDCExitEstimate(quoted uint64) (uint64, error) {
 func observeDisarmedReportTicket(ctx context.Context, view *View, slot int64) (int64, error) {
 	observed, accounts, err := view.read(ctx, []string{reportTicketPDA}, slot)
 	if err != nil {
-		return 0, holdUnlessUnavailable(err, "report_ticket_observation_unavailable")
+		return 0, budgetHoldFrom(err, "report_ticket_observation_unavailable")
 	}
 	ticket, err := decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
 	if err != nil || ticket.Armed {
-		return 0, holdUnlessUnavailable(err, "withdrawal_exit_ticket_unavailable")
+		return 0, budgetHoldFrom(err, "withdrawal_exit_ticket_unavailable")
 	}
 	return observed, nil
 }
@@ -60,7 +60,7 @@ func observePhase3WithdrawalAdmission(ctx context.Context, rpc *chain.Client, vi
 	}
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
 	if err != nil || leg != kaminoLegWithdraw {
-		return plan, holdUnlessUnavailable(err, "withdrawal_admission_intent_mismatch")
+		return plan, budgetHoldFrom(err, "withdrawal_admission_intent_mismatch")
 	}
 	debit, err := manifest.measureExecutableDebit(r, evidence.ExpectedEffects)
 	if err != nil {
@@ -165,7 +165,7 @@ func pricePhase3DebtResidueSwapReturn(ctx context.Context, rpc *chain.Client, vi
 	}
 	upper, err := withdrawalUSDCExitEstimate(r.QuotedOutputRaw)
 	if err != nil || upper > uint64(math.MaxInt64-s.SquadsIdleRaw) {
-		return phase3BridgeAdmission{}, holdUnlessUnavailable(err, "withdrawal_exit_estimate_overflow")
+		return phase3BridgeAdmission{}, budgetHoldFrom(err, "withdrawal_exit_estimate_overflow")
 	}
 	post := observation
 	post.Snapshot.DebtIdleRaw = 0
@@ -217,12 +217,12 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 			d := Decision{Action: action, AmountRaw: int64(amount), StrategyKey: s.RouteLane}
 			swap, err = prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, d, amount, uint64(s.SquadsIdleRaw)+upperUSDC, policySlot)
 			if err != nil {
-				return plan, holdUnlessUnavailable(err, "withdrawal_exit_quote_unavailable")
+				return plan, budgetHoldFrom(err, "withdrawal_exit_quote_unavailable")
 			}
 		}
 		estimate, err := withdrawalUSDCExitEstimate(swap.Request.QuotedOutputRaw)
 		if err != nil || estimate > uint64(math.MaxInt64-s.SquadsIdleRaw)-upperUSDC {
-			return plan, holdUnlessUnavailable(err, "withdrawal_exit_estimate_overflow")
+			return plan, budgetHoldFrom(err, "withdrawal_exit_estimate_overflow")
 		}
 		upperUSDC += estimate
 		swaps = append(swaps, swap)
@@ -318,7 +318,7 @@ func pricePhase3CollateralReturn(ctx context.Context, rpc *chain.Client, view *V
 	plan.Exit = append(plan.Exit, tail.Exit...)
 	slot, err := view.slot(ctx)
 	if err != nil {
-		return plan, holdUnlessUnavailable(err, "stale_withdrawal_exit_admission")
+		return plan, budgetHoldFrom(err, "stale_withdrawal_exit_admission")
 	}
 	// The chain is at least at the newest slot any input was read at.
 	slot = max(slot, observed)

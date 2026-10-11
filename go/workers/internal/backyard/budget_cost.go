@@ -43,7 +43,7 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 		r, ok := request.(KaminoPrimeUSDCRequest)
 		_, leg, err := kaminoPrimeUSDCInstruction(r)
 		if !ok || err != nil || leg != kaminoLegBorrow {
-			return ExecutableDebit{}, holdUnlessUnavailable(err, "borrow_effects_on_non_borrow")
+			return ExecutableDebit{}, budgetHoldFrom(err, "borrow_effects_on_non_borrow")
 		}
 	}
 	encoded, err := jsonMarshalExpectedEffects(effects)

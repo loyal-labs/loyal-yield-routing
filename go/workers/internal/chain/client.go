@@ -6,7 +6,6 @@ package chain
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -17,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	bin "github.com/gagliardetto/binary"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 	"github.com/solana-foundation/solana-go/v2/rpc/jsonrpc"
@@ -158,8 +158,9 @@ func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType, m
 // limit / 1e6) from its ComputeBudget instructions.
 func MessageFee(message []byte) (uint64, error) {
 	var m solana.Message
-	if err := m.UnmarshalBase64(base64.StdEncoding.EncodeToString(message)); err != nil {
-		return 0, fmt.Errorf("message fee: %w", err)
+	decoder := bin.NewBinDecoder(message)
+	if err := m.UnmarshalWithDecoder(decoder); err != nil || decoder.HasRemaining() {
+		return 0, fmt.Errorf("message fee: invalid compiled message: %v", err)
 	}
 	signatures, limit, price, limited := uint64(m.Header.NumRequiredSignatures), uint64(0), uint64(0), false
 	for _, ix := range m.Instructions {

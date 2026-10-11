@@ -22,7 +22,7 @@ func validateLeverageSwap(ctx context.Context, view *View, r JupiterSwapRequest,
 	}
 	position, err := decodeKaminoObligation(accountAt(accounts, route.Kamino.Obligation), route.Kamino)
 	if err != nil || position.collateralDepositedRaw == 0 {
-		return bound, nil, holdUnlessUnavailable(err, "leverage_swap_position_changed")
+		return bound, nil, budgetHoldFrom(err, "leverage_swap_position_changed")
 	}
 	for i, row := range []struct{ address, mint string }{{route.DebtCustody, route.Kamino.DebtMint}, {route.CollateralCustody, route.Kamino.CollateralMint}} {
 		a := accountAt(accounts, row.address)
@@ -31,7 +31,7 @@ func validateLeverageSwap(ctx context.Context, view *View, r JupiterSwapRequest,
 		cash, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
 		effect := e.Accounts[i]
 		if err != nil || a.Executable || a.Lamports == 0 || effect.Address != row.address || effect.Mint != row.mint || effect.Owner != a.Owner || effect.Authority != bridgeVault || effect.BeforeRaw != cash.Raw {
-			return bound, nil, holdUnlessUnavailable(err, "leverage_swap_custody_changed")
+			return bound, nil, budgetHoldFrom(err, "leverage_swap_custody_changed")
 		}
 		if i == 0 {
 			if cash.Raw != r.AmountRaw || effect.AfterRaw != 0 {

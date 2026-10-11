@@ -270,6 +270,17 @@ func TestMessageFeeIsTheClusterFormula(t *testing.T) {
 	if _, err := MessageFee([]byte{1}); err == nil {
 		t.Fatal("a malformed message was priced")
 	}
+	tx, err := solana.NewTransaction([]solana.Instruction{signed}, solana.Hash{1}, solana.TransactionPayer(payer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := tx.Message.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MessageFee(append(message, 0)); err == nil {
+		t.Fatal("a message with trailing bytes was priced")
+	}
 }
 
 func TestSimulateReturnsTheAskedAccountsAsSimulated(t *testing.T) {

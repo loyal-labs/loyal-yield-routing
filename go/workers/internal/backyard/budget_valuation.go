@@ -116,7 +116,7 @@ func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (i
 	}
 	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, p.TokenUpperSF, p.USDCLowerSF, true)
 	if err != nil || value > math.MaxInt64 {
-		return 0, holdUnlessUnavailable(err, "invalid_usdc_valuation")
+		return 0, budgetHoldFrom(err, "invalid_usdc_valuation")
 	}
 	return int64(value), nil
 }
@@ -136,7 +136,7 @@ func (p BudgetPrice) valueLower(raw uint64, mint, program string, slot int64) (i
 	}
 	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, p.Credit.TokenLowerSF, p.Credit.USDCUpperSF, false)
 	if err != nil || value > math.MaxInt64 {
-		return 0, holdUnlessUnavailable(err, "invalid_credit_valuation")
+		return 0, budgetHoldFrom(err, "invalid_credit_valuation")
 	}
 	return int64(value), nil
 }
@@ -171,7 +171,7 @@ func ValueTransactionCost(message []byte, debit ExecutableDebit, setupLamports u
 	}
 	fee, err := chain.MessageFee(message)
 	if err != nil {
-		return result, err
+		return result, budgetHoldFrom(err, "message_fee_unpriced")
 	}
 	result.Fee = MessageFeeObservation{MessageSHA256: result.MessageSHA256, Lamports: fee}
 	if debit.Raw > 0 {

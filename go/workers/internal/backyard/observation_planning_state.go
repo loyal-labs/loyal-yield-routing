@@ -91,7 +91,7 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	}
 	out.partialWithdrawal, err = decodePartialWithdrawal(partial)
 	if err != nil || (out.partialWithdrawal != nil && out.partialWithdrawal.Generation > out.generation) {
-		return nil, holdUnlessUnavailable(err, "invalid_partial_withdrawal_generation")
+		return nil, budgetHoldFrom(err, "invalid_partial_withdrawal_generation")
 	}
 	return out, nil
 }

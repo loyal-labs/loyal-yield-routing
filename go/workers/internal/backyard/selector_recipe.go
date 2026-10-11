@@ -54,7 +54,7 @@ func selectorMidpointPriceValue(p BudgetPrice, raw uint64, mint, program string,
 	putScaledLittleSF(&usdcMid, new(big.Int).Quo(new(big.Int).Add(usdcLower, usdcUpper), big.NewInt(2)))
 	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, tokenMid, usdcMid, false)
 	if err != nil || value > math.MaxInt64 {
-		return 0, holdUnlessUnavailable(err, "invalid_usdc_valuation")
+		return 0, budgetHoldFrom(err, "invalid_usdc_valuation")
 	}
 	return int64(value), nil
 }
@@ -170,7 +170,7 @@ func (m RouteManifest) priceSelectorRecipeWithFloor(ctx context.Context, rpc *ch
 		}
 		fee, err := chain.MessageFee(message)
 		if err != nil {
-			return out, err
+			return out, budgetHoldFrom(err, "message_fee_unpriced")
 		}
 		steps[i] = step{request: request, effects: effects, message: message, debit: debit, fee: fee, rent: rent}
 	}

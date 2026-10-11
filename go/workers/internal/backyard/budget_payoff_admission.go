@@ -42,7 +42,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 		releasedReceipt = release.Request.AmountRaw
 	}
 	if err != nil || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw)+releasedReceipt || (!afterPayoff && obligation.debtRaw != 0) {
-		return phase3BridgeAdmission{}, holdUnlessUnavailable(err, "payoff_return_position_changed")
+		return phase3BridgeAdmission{}, budgetHoldFrom(err, "payoff_return_position_changed")
 	}
 	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil {
@@ -70,7 +70,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 	}
 	amount, err := reserve.redeemLiquidityRaw(uint64(s.PositionCollateralRaw))
 	if err != nil || amount == 0 || amount > math.MaxInt64 {
-		return phase3BridgeAdmission{}, holdUnlessUnavailable(err, "payoff_return_withdrawal_amount_unavailable")
+		return phase3BridgeAdmission{}, budgetHoldFrom(err, "payoff_return_withdrawal_amount_unavailable")
 	}
 	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
@@ -108,7 +108,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 					}
 				}
 				if err != nil || custody.Raw != expectedBefore {
-					return phase3BridgeAdmission{}, holdUnlessUnavailable(err, "funding_collateral_custody_changed")
+					return phase3BridgeAdmission{}, budgetHoldFrom(err, "funding_collateral_custody_changed")
 				}
 				accounts[i].Data = append([]byte(nil), account.Data...)
 				binary.LittleEndian.PutUint64(accounts[i].Data[64:72], 0)
@@ -129,7 +129,7 @@ func pricePhase3PositionReturnAfterFunding(ctx context.Context, rpc *chain.Clien
 				authority, _ := decodeBase58PublicKey(bridgeVault)
 				custody, err := DecodeTokenCustody(account.Owner, account.Data, mint, authority)
 				if err != nil || custody.Raw != 0 {
-					return phase3BridgeAdmission{}, holdUnlessUnavailable(err, "topup_collateral_custody_changed")
+					return phase3BridgeAdmission{}, budgetHoldFrom(err, "topup_collateral_custody_changed")
 				}
 				accounts[i].Data = append([]byte(nil), account.Data...)
 				binary.LittleEndian.PutUint64(accounts[i].Data[64:72], uint64(s.CollateralIdleRaw))

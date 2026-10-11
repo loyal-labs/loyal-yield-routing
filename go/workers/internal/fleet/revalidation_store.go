@@ -237,6 +237,16 @@ WHERE o.id=$1 AND o.opportunity_state='leased' AND o.lease_kind='revalidate'
 	return tag.RowsAffected() == 1, nil
 }
 
+// ReleaseRevalidationNotYet hands a claim back for a later tick, uncounted and with no reason.
+func (s *Store) ReleaseRevalidationNotYet(ctx context.Context, lease RevalidationLease) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',available_at=clock_timestamp()+interval '2 seconds',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,attempt_count=attempt_count-1,updated_at=clock_timestamp()
+WHERE id=$1 AND opportunity_state='leased' AND lease_kind='revalidate' AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, lease.OpportunityID, lease.Owner, lease.FencingToken)
+	if err == nil && tag.RowsAffected() != 1 {
+		return errors.New("revalidation claim lost before its release")
+	}
+	return err
+}
+
 func (s *Store) LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error) {
 	requiredAddresses = canonicalStrings(requiredAddresses)
 	if s == nil || s.pool == nil || cluster == "" || vaultID <= 0 || minimumSlot <= 0 || len(requiredAddresses) == 0 {

@@ -278,7 +278,7 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation P
 	}
 	intent, err := Phase3IntentDigest(request, auth.BuildInput.Effects)
 	if err != nil || intent != auth.IntentSHA256 || auth.SignedWireSHA256 != wireHash {
-		return holdUnlessUnavailable(err, "failed_settlement_intent_changed")
+		return budgetHoldFrom(err, "failed_settlement_intent_changed")
 	}
 	proof := finalizedFailureSettlement{Schema: "backyard-finalized-failure/v1", Signature: signature, SignedWireSHA256: wireHash, MessageSHA256: messageHash, Slot: receipt.Slot, Reason: reason, AtomicNoCapitalMovement: true, FeeLamports: *receipt.Meta.Fee, Receipt: receipt}
 	encoded, err := json.Marshal(proof)

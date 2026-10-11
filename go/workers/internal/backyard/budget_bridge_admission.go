@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -44,7 +43,7 @@ func phase3BridgeTemplates(policies installedPolicies, s Snapshot, decision Deci
 		return nil, budgetHold("bridge_admission_snapshot_unavailable")
 	}
 	if _, err := runtimeRoute(s.RouteLane); err != nil {
-		return nil, holdUnlessUnavailable(err, "bridge_admission_lane_unavailable")
+		return nil, budgetHoldFrom(err, "bridge_admission_lane_unavailable")
 	}
 	if s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||
 		s.PrimeIdleRaw != 0 || s.CollateralIdleRaw != 0 || s.DebtIdleRaw != 0 ||
@@ -108,7 +107,7 @@ func phase3BridgeTemplates(policies installedPolicies, s Snapshot, decision Deci
 	}
 	actual, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)
 	if err != nil || !bytes.Equal(expected, actual) || first.Request != r {
-		return nil, holdUnlessUnavailable(err, "bridge_admission_intent_mismatch")
+		return nil, budgetHoldFrom(err, "bridge_admission_intent_mismatch")
 	}
 	steps := []BridgeExecutionEvidence{evidence}
 	appendStep := func(action Action, amount uint64) error {
@@ -201,31 +200,19 @@ func observePhase3BridgeAdmissionWindow(ctx context.Context, rpc *chain.Client, 
 			firstDebit = i
 		}
 	}
-	// The two price reads have no dependency on one another. Give both the
-	// same view floor, then validate every result against the newest slot any
-	// read saw; an earlier response never extends freshness.
+	// Both prices read at the same view floor; every result is validated
+	// against the newest slot any read saw, so an earlier one never extends
+	// freshness.
 	minimumSlot := max(slot, observation.Snapshot.Slot)
-	var token, sol BudgetPrice
-	var tokenErr, solErr error
-	var reads sync.WaitGroup
+	var token BudgetPrice
 	if firstDebit >= 0 {
-		reads.Add(1)
-		go func() {
-			defer reads.Done()
-			token, tokenErr = ObserveBudgetTokenPrice(ctx, rpc, view, RouteID, debits[firstDebit], minimumSlot)
-		}()
+		if token, err = ObserveBudgetTokenPrice(ctx, rpc, view, RouteID, debits[firstDebit], minimumSlot); err != nil {
+			return plan, budgetHoldFrom(err, "bridge_admission_token_valuation_unavailable")
+		}
 	}
-	reads.Add(1)
-	go func() {
-		defer reads.Done()
-		sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, view, minimumSlot)
-	}()
-	reads.Wait()
-	if tokenErr != nil {
-		return plan, holdUnlessUnavailable(tokenErr, "bridge_admission_token_valuation_unavailable")
-	}
-	if solErr != nil {
-		return plan, holdUnlessUnavailable(solErr, "bridge_admission_native_valuation_unavailable")
+	sol, err := ObserveNativeSOLBudgetPrice(ctx, rpc, view, minimumSlot)
+	if err != nil {
+		return plan, budgetHoldFrom(err, "bridge_admission_native_valuation_unavailable")
 	}
 	slot, err = view.slot(ctx)
 	if err != nil {

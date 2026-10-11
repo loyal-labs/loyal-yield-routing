@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
@@ -67,35 +66,25 @@ func (m RouteManifest) observePhase3KnownBuildCost(ctx context.Context, rpc *cha
 	if _, ok := request.(KaminoInitializationRequest); ok {
 		initializerPrestateSlot = slot
 	}
-	// The prices are independent reads. Preserve each source slot and
-	// expiry, then validate both against one final slot.
-	var token, sol BudgetPrice
-	var tokenErr, solErr error
-	var reads sync.WaitGroup
-	reads.Add(1)
-	go func() { defer reads.Done(); sol, solErr = ObserveNativeSOLBudgetPrice(ctx, rpc, view, slot) }()
+	// Preserve each price's source slot and expiry, then validate both
+	// against one final slot.
+	sol, solErr := ObserveNativeSOLBudgetPrice(ctx, rpc, view, slot)
+	var token BudgetPrice
+	var tokenErr error
 	if debit.Raw > 0 {
-		reads.Add(1)
-		go func() {
-			defer reads.Done()
-			token, tokenErr = ObserveBudgetTokenPrice(ctx, rpc, view, lane, debit, slot)
-		}()
-	}
-	reads.Wait()
-	if errors.Is(tokenErr, chain.ErrUnavailable) {
-		return ValuedTransactionCost{}, confirmedObservationUnavailable(tokenErr)
+		token, tokenErr = ObserveBudgetTokenPrice(ctx, rpc, view, lane, debit, slot)
 	}
 	if tokenErr != nil {
 		// Keep the cause (RPC read, stale reserve price whose refresh
 		// simulation failed, unbound mint) visible in the hold's details.
-		return ValuedTransactionCost{}, &BudgetHold{Reason: "build_token_valuation_unavailable", Details: map[string]string{"mint": debit.Mint, "cause": sanitizedHoldCause(tokenErr)}}
+		return ValuedTransactionCost{}, &BudgetHold{Reason: "build_token_valuation_unavailable", Details: map[string]string{"mint": debit.Mint, "cause": sanitizedHoldCause(tokenErr)}, cause: tokenErr}
 	}
 	if solErr != nil {
-		return ValuedTransactionCost{}, holdUnlessUnavailable(solErr, "build_native_valuation_unavailable")
+		return ValuedTransactionCost{}, budgetHoldFrom(solErr, "build_native_valuation_unavailable")
 	}
 	slot, err = view.slot(ctx)
 	if err != nil {
-		return ValuedTransactionCost{}, holdUnlessUnavailable(err, "build_valuation_unavailable")
+		return ValuedTransactionCost{}, budgetHoldFrom(err, "build_valuation_unavailable")
 	}
 	// The chain is at least at the newest slot any input was read at.
 	slot = max(slot, sol.ObservedSlot, token.ObservedSlot)

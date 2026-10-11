@@ -16,7 +16,7 @@ func observePartialRepaymentProjection(ctx context.Context, rpc *chain.Client, v
 	defer cancel()
 	_, leg, err := kaminoPrimeUSDCInstruction(r)
 	if err != nil || rpc == nil || !partialRepaymentLane(s.RouteLane, d.Reason) || !s.Fresh || s.Slot <= 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteKind != RouteKind || s.RouteLane != s.StrategyKey || s.RouteLane != d.StrategyKey || s.RouteLane != r.RouteLane || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 1 || d.Action != DeleverRouteStep || r.Action != d.Action || !partialRepaymentReason(d.Reason) || !decisionsEqual(Decide(s), d) || d.AmountRaw <= 0 || r.AmountRaw != partialRepaymentWireRaw(s, d) || r.AmountRaw == 0 || r.AmountRaw >= uint64(s.PositionDebtRaw) || uint64(debtCashRaw(s)) < r.AmountRaw || leg != kaminoLegRepay || r.FullPayoff || r.RepaymentRelease {
-		return phase3KaminoProjection{}, holdUnlessUnavailable(err, "partial_repayment_proof_unavailable")
+		return phase3KaminoProjection{}, budgetHoldFrom(err, "partial_repayment_proof_unavailable")
 	}
 	route, err := runtimeRoute(r.RouteLane)
 	if err != nil {
@@ -35,7 +35,7 @@ func observePartialRepaymentProjection(ctx context.Context, rpc *chain.Client, v
 		owner, _ := decodeBase58PublicKey(effect.Authority)
 		c, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
 		if err != nil || a.Executable || a.Lamports == 0 || a.Owner != effect.Owner || c.Raw != effect.BeforeRaw {
-			return phase3KaminoProjection{}, holdUnlessUnavailable(err, "partial_repayment_prestate_changed")
+			return phase3KaminoProjection{}, budgetHoldFrom(err, "partial_repayment_prestate_changed")
 		}
 	}
 	message, err := CompileKaminoMessage(r)
@@ -76,19 +76,19 @@ func validatePartialRepaymentProjection(r KaminoPrimeUSDCRequest, e ExpectedEffe
 		owner, _ := decodeBase58PublicKey(effect.Authority)
 		c, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
 		if err != nil || a.Executable || a.Lamports == 0 || a.Owner != effect.Owner || c.Raw != effect.AfterRaw {
-			return KaminoPayoffBound{}, holdUnlessUnavailable(err, "partial_repayment_projection_custody_mismatch")
+			return KaminoPayoffBound{}, budgetHoldFrom(err, "partial_repayment_projection_custody_mismatch")
 		}
 	}
 	o, err := decodeKaminoObligation(accountAt(p.Accounts, route.Kamino.Obligation), route.Kamino)
 	if err != nil || s.PositionCollateralRaw <= 0 || o.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || o.debtRaw == 0 || o.debtRaw >= uint64(s.PositionDebtRaw) || o.debtRaw < uint64(s.PositionDebtRaw)-r.AmountRaw {
-		return KaminoPayoffBound{}, holdUnlessUnavailable(err, "partial_repayment_projection_position_mismatch")
+		return KaminoPayoffBound{}, budgetHoldFrom(err, "partial_repayment_projection_position_mismatch")
 	}
 	a := accountAt(p.Accounts, route.CollateralCustody)
 	mint, _ := decodeBase58PublicKey(route.Kamino.CollateralMint)
 	owner, _ := decodeBase58PublicKey(bridgeVault)
 	c, err := DecodeTokenCustody(a.Owner, a.Data, mint, owner)
 	if err != nil || a.Executable || a.Lamports == 0 || s.CollateralIdleRaw < 0 || c.Raw != uint64(s.CollateralIdleRaw) {
-		return KaminoPayoffBound{}, holdUnlessUnavailable(err, "partial_repayment_projection_collateral_changed")
+		return KaminoPayoffBound{}, budgetHoldFrom(err, "partial_repayment_projection_collateral_changed")
 	}
 	return decodeKaminoPayoffWindow(p.Accounts, route, p.Slot, 3)
 }

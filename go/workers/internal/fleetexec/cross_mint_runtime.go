@@ -122,7 +122,7 @@ func (r *CrossMintRuntime) Tick(ctx context.Context) (advanced int, err error) {
 	}
 	for _, l := range leases {
 		e = r.handle(ctx, l)
-		if errors.Is(e, chain.ErrUnavailable) { // Not yet: hand this leg back, go on to the others.
+		if errors.Is(e, chain.ErrBehind) { // Not yet: hand this leg back, go on to the others.
 			if e = r.store.releaseNotYet(ctx, l, 5*time.Second); e == nil {
 				continue
 			}

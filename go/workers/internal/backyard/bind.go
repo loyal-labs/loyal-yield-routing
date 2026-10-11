@@ -97,7 +97,7 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 	decoder := json.NewDecoder(bytes.NewReader(input.Request))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return nil, ExpectedEffects{}, nil, holdUnlessUnavailable(err, "invalid_persisted_build_input")
+		return nil, ExpectedEffects{}, nil, budgetHoldFrom(err, "invalid_persisted_build_input")
 	}
 	var request any
 	var message []byte
@@ -117,11 +117,11 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 		message, err = compileJupiterMessageForDelegate(*r, mustKey(bridgeDelegate))
 	}
 	if err != nil {
-		return nil, ExpectedEffects{}, nil, holdUnlessUnavailable(err, "persisted_build_no_longer_compiles")
+		return nil, ExpectedEffects{}, nil, budgetHoldFrom(err, "persisted_build_no_longer_compiles")
 	}
 	effects, err := decodeExpectedEffectsWithManifest(m, input.Effects)
 	if err != nil {
-		return nil, ExpectedEffects{}, nil, holdUnlessUnavailable(err, "invalid_persisted_build_effects")
+		return nil, ExpectedEffects{}, nil, budgetHoldFrom(err, "invalid_persisted_build_effects")
 	}
 	return request, effects, message, nil
 }
@@ -324,7 +324,7 @@ func (m RouteManifest) validateSignedIdentity(auth phase3OperationAuthorization,
 	}
 	digest, err := Phase3IntentDigest(request, auth.BuildInput.Effects)
 	if err != nil || digest != auth.IntentSHA256 || !bytes.Equal(message, wire[65:]) {
-		return nil, ExpectedEffects{}, holdUnlessUnavailable(err, "persisted_build_intent_mismatch")
+		return nil, ExpectedEffects{}, budgetHoldFrom(err, "persisted_build_intent_mismatch")
 	}
 	var blockhash string
 	var height int64

@@ -89,13 +89,13 @@ func observeJupiterLookupTables(ctx context.Context, rpc *chain.Client, addresse
 	}
 	slot, accounts, err := confirmedAccounts(ctx, rpc, addresses, minimumSlot)
 	if err != nil {
-		return nil, holdUnlessUnavailable(err, "lookup_observation_unavailable")
+		return nil, budgetHoldFrom(err, "lookup_observation_unavailable")
 	}
 	tables := make([]LookupTableSnapshot, len(accounts))
 	for i, a := range accounts {
 		tables[i] = LookupTableSnapshot{Address: a.Address, Owner: a.Owner, Lamports: a.Lamports, Executable: a.Executable, Data: a.Data, ObservedSlot: slot}
 		if _, err := decodeMessageLookupTable(tables[i]); err != nil {
-			return nil, holdUnlessUnavailable(err, "lookup_account_invalid")
+			return nil, budgetHoldFrom(err, "lookup_account_invalid")
 		}
 	}
 	return tables, nil
@@ -126,7 +126,7 @@ func (m RouteManifest) prepareJupiterLookupTables(ctx context.Context, rpc *chai
 // persisted message: its entire referenced prefix must still resolve identically.
 func revalidateJupiterLookupTables(ctx context.Context, rpc *chain.Client, r JupiterSwapRequest, minimumSlot int64) error {
 	if err := validateJupiterLookupIdentities(r); err != nil {
-		return holdUnlessUnavailable(err, "lookup_identity_invalid")
+		return budgetHoldFrom(err, "lookup_identity_invalid")
 	}
 	if len(r.LookupTables) == 0 {
 		return nil
