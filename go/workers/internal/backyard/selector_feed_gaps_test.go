@@ -15,11 +15,11 @@ func leveredTestMarket(lane string) LaneEconomics {
 	return leverageMarket(lane, 0.20, math.Log1p(0.05))
 }
 
-func feedReserveFixture(reserve, mint, market string, now time.Time, price float64) verifiedEconomicReserve {
+func feedReserveFixture(reserve, mint, market string, now time.Time, price float64) reserveEconomics {
 	f := func(v float64) *float64 { return &v }
 	i := func(v int) *int { return &v }
 	b := false
-	return verifiedEconomicReserve{Reserve: reserve, Market: market, Mint: mint, ObservedAt: now.Add(-time.Second), Slot: 1, Hash: strings.Repeat("a", 64), Commitment: "confirmed",
+	return reserveEconomics{Reserve: reserve, Market: market, Mint: mint, ObservedAt: now.Add(-time.Second), Slot: 1, Hash: strings.Repeat("a", 64), Commitment: "confirmed",
 		SupplyAPY: f(0.01), BorrowAPY: f(0.05), BorrowAPR: f(0.05), SupplyRaw: f(1e12), BorrowRaw: f(5e11), Status: i(0), Emergency: &b,
 		Curve: []BorrowCurvePoint{{0, 463}, {8000, 517}, {9000, 517}, {9500, 568}, {10_000, 738}, {10_000, 738}}, HostBPS: f(0), Schema: i(2), PriceUSD: f(price), Decimals: i(6)}
 }
@@ -32,7 +32,7 @@ func TestFeedScoresLaneWhoseDebtReserveBorrowedExceedsSupply(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	usds, pyusd := primePRIMEUSDS, primePRIMEPYUSD
-	reserves := map[string]verifiedEconomicReserve{
+	reserves := map[string]reserveEconomics{
 		kaminoDebtReserve:              feedReserveFixture(kaminoDebtReserve, bridgeUSDC, kaminoMarket, now, 0.9999),
 		usds.Kamino.CollateralReserve:  feedReserveFixture(usds.Kamino.CollateralReserve, usds.Kamino.CollateralMint, usds.Kamino.Market, now, 1.05),
 		usds.Kamino.DebtReserve:        feedReserveFixture(usds.Kamino.DebtReserve, usds.Kamino.DebtMint, usds.Kamino.Market, now, 1),

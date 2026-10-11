@@ -120,7 +120,7 @@ func TestWorkerIntegrationCutoverWithoutRustMonitorOrPlanner(t *testing.T) {
 	// no routable reserves. Healthy USDC planning must continue independently.
 	epoch.CatalogReserveCount++
 	epoch.MintCoverage = append(epoch.MintCoverage, MarketMintCoverage{
-		Mint: USDTMint, CatalogReserveCount: 1, Blockers: []MarketMintBlocker{{Code: "missing_verified_reserve", Detail: "test blocked mint"}},
+		Mint: USDTMint, CatalogReserveCount: 1, Blockers: []MarketMintBlocker{{Code: "missing_reserve_state", Detail: "test blocked mint"}},
 	})
 	epoch.Fingerprint = epochFingerprint(epoch.Reserves, sortedUnique(coverageMints(epoch.MintCoverage)), epoch.CatalogFingerprint, epoch.MintCoverage)
 	epoch.OptimizerEpochID = positiveEpochID(epoch.Fingerprint)

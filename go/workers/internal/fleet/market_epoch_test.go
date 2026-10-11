@@ -14,7 +14,7 @@ import (
 func testImmutableMarketEpoch(t *testing.T, snapshot MarketSnapshot, identities ...ReserveIdentity) ImmutableMarketEpoch {
 	t.Helper()
 	catalog := make([]SupportedReserveCatalogRow, 0, len(identities))
-	verified := make([]VerifiedSupportedReserveRow, 0, len(identities))
+	states := make([]SupportedReserveStateRow, 0, len(identities))
 	for index, identity := range identities {
 		state, ok := snapshot.Reserves[identity.Address]
 		if !ok {
@@ -25,11 +25,10 @@ func testImmutableMarketEpoch(t *testing.T, snapshot MarketSnapshot, identities 
 			Market: identity.Market, LiquidityMint: identity.Mint, Reserve: identity.Address,
 			RiskBaskets: []string{"safe"}, Source: "kamino-api", FetchedAt: snapshot.ObservedAt,
 		})
-		verified = append(verified, VerifiedSupportedReserveRow{
+		states = append(states, SupportedReserveStateRow{
 			StateEventID: int64(index + 1), AccountDataHash: state.DataHash,
 			StateObservedAt: snapshot.ObservedAt, StateSlot: state.Slot,
-			VerifiedAt: snapshot.ObservedAt, VerifiedSlot: state.Slot,
-			VerificationCommitment: "confirmed", VerificationSource: "http_confirmed_refresh",
+			Source: "laserstream_grpc", SourceCommitment: "confirmed",
 			Reserve: identity.Address, Market: &market, LiquidityMint: identity.Mint, MintDecimals: 6,
 			ReserveLastUpdateSlot: state.LastUpdateSlot, ReserveLastUpdateStale: state.LastUpdateStale,
 			AvailableAmount: float64(state.TotalSupplyUSDMicros), TotalSupplyAmount: float64(state.TotalSupplyUSDMicros),
@@ -43,7 +42,7 @@ func testImmutableMarketEpoch(t *testing.T, snapshot MarketSnapshot, identities 
 		}
 	}
 	epoch, err := BuildImmutableMarketEpoch(SupportedReserveMarketSnapshot{
-		CapturedAt: snapshot.ObservedAt, Catalog: catalog, VerifiedReserves: verified,
+		CapturedAt: snapshot.ObservedAt, Catalog: catalog, ReserveStates: states,
 	}, supportedMints)
 	if err != nil {
 		t.Fatal(err)
@@ -129,19 +128,19 @@ func TestImmutableMarketEpochKeepsHealthyMintRoutableWhenAnotherMintIsBlocked(t 
 		{Market: healthyTarget.Market, LiquidityMint: healthyTarget.Mint, Reserve: healthyTarget.Address, Source: "kamino-api", FetchedAt: now},
 		{Market: blocked.Market, LiquidityMint: blocked.Mint, Reserve: blocked.Address, Source: "kamino-api", FetchedAt: now},
 	}
-	verified := make([]VerifiedSupportedReserveRow, 0, 2)
+	states := make([]SupportedReserveStateRow, 0, 2)
 	for index, identity := range []ReserveIdentity{healthySource, healthyTarget} {
 		market := identity.Market
-		verified = append(verified, VerifiedSupportedReserveRow{
+		states = append(states, SupportedReserveStateRow{
 			StateEventID: int64(index + 1), AccountDataHash: strings.Repeat(fmt.Sprint(index+1), 64),
-			StateObservedAt: now, StateSlot: 1_000, VerifiedAt: now, VerifiedSlot: 1_000,
-			VerificationCommitment: "confirmed", VerificationSource: "http_confirmed_refresh",
+			StateObservedAt: now, StateSlot: 1_000,
+			Source: "laserstream_grpc", SourceCommitment: "confirmed",
 			Reserve: identity.Address, Market: &market, LiquidityMint: identity.Mint, MintDecimals: 6,
 			ReserveLastUpdateSlot: 999, TotalSupplyAmount: 2_000_000_000_000,
 			AvailableAmount: 2_000_000_000_000, MarketPriceUSD: 1, SupplyAPY: .08,
 		})
 	}
-	epoch, err := BuildImmutableMarketEpoch(SupportedReserveMarketSnapshot{CapturedAt: now, Catalog: catalog, VerifiedReserves: verified}, []string{USDCMint, USDTMint})
+	epoch, err := BuildImmutableMarketEpoch(SupportedReserveMarketSnapshot{CapturedAt: now, Catalog: catalog, ReserveStates: states}, []string{USDCMint, USDTMint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +156,7 @@ func TestImmutableMarketEpochKeepsHealthyMintRoutableWhenAnotherMintIsBlocked(t 
 	}
 	for _, coverage := range epoch.MintCoverage {
 		if coverage.Mint == USDTMint && coverage.Complete {
-			t.Fatal("mint with missing verified reserve was marked complete")
+			t.Fatal("mint with a missing reserve state was marked complete")
 		}
 		if coverage.Mint == USDCMint && !coverage.Complete {
 			t.Fatal("healthy mint was blocked by unrelated mint coverage")
@@ -165,7 +164,44 @@ func TestImmutableMarketEpochKeepsHealthyMintRoutableWhenAnotherMintIsBlocked(t 
 	}
 }
 
-func TestMarketEvidenceStoreLoadsRealMonitorIdentity(t *testing.T) {
+// A stale-flagged reserve stays a refresh-before-withdraw source; it never
+// becomes a target, so a mint whose only target is stale is incomplete.
+func TestImmutableMarketEpochRefusesStaleFlaggedTarget(t *testing.T) {
+	now := time.Now().UTC()
+	reserve := ReserveIdentity{Address: testIdentity(31), Market: testIdentity(32), Mint: USDCMint}
+	market := reserve.Market
+	epoch, err := BuildImmutableMarketEpoch(SupportedReserveMarketSnapshot{
+		CapturedAt: now,
+		Catalog:    []SupportedReserveCatalogRow{{Market: reserve.Market, LiquidityMint: reserve.Mint, Reserve: reserve.Address, Source: "kamino-api", FetchedAt: now}},
+		ReserveStates: []SupportedReserveStateRow{{
+			StateEventID: 1, AccountDataHash: strings.Repeat("a", 64), StateObservedAt: now, StateSlot: 1_000,
+			Source: "laserstream_grpc", SourceCommitment: "confirmed",
+			Reserve: reserve.Address, Market: &market, LiquidityMint: reserve.Mint, MintDecimals: 6,
+			ReserveLastUpdateSlot: 999, ReserveLastUpdateStale: true, TotalSupplyAmount: 2_000_000_000_000,
+			AvailableAmount: 2_000_000_000_000, MarketPriceUSD: 1, SupplyAPY: .08,
+		}},
+	}, []string{USDCMint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverage := epoch.MintCoverage[0]
+	if coverage.Complete || coverage.EligibleTargetReserveCount != 0 || len(epoch.Reserves) != 0 {
+		t.Fatalf("stale-flagged reserve was admitted as a target: %+v", epoch)
+	}
+	codes := map[string]bool{}
+	for _, blocker := range coverage.Blockers {
+		codes[blocker.Code] = true
+	}
+	if !codes["explicit_stale_economics"] || !codes["no_eligible_target"] {
+		t.Fatalf("blockers = %+v, want explicit_stale_economics and no_eligible_target", coverage.Blockers)
+	}
+}
+
+// The planner reads each reserve's latest confirmed stream row. A quiet
+// reserve's hour-old row stays admissible while the stream is live; an older
+// slot that arrived later (a replay after a restart) never replaces a newer
+// one; and the epoch is refused once the stream frontier trails the chain.
+func TestMarketEvidenceStoreReadsLatestStreamRows(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("FLEET_TEST_DATABASE_URL is not set")
@@ -177,37 +213,45 @@ func TestMarketEvidenceStoreLoadsRealMonitorIdentity(t *testing.T) {
 	}
 	defer pool.Close()
 	schema := fmt.Sprintf("kamino_epoch_%d", time.Now().UnixNano())
-	if !validSQLIdentifier(schema) {
-		t.Fatal("generated invalid schema")
-	}
 	_, err = pool.Exec(ctx, fmt.Sprintf(`
-CREATE SCHEMA %s;
-CREATE TABLE %s.supported_reserves(
+CREATE SCHEMA %[1]s;
+CREATE TABLE %[1]s.supported_reserves(
  market text,liquidity_mint text,reserve text,market_name text,symbol text,risk_baskets text[],source text,fetched_at timestamptz,active boolean
 );
-CREATE TABLE %s.latest_verified_reserve_updates(
- event_id bigint,account_data_hash text,observed_at timestamptz,slot bigint,verified_at timestamptz,verified_slot bigint,
- verification_commitment text,verification_source text,reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
+CREATE TABLE %[1]s.reserve_update_dedupe(event_id bigint,reserve text,slot bigint);
+CREATE TABLE %[1]s.reserve_updates(
+ event_id bigint,account_data_hash text,observed_at timestamptz,slot bigint,source text,source_commitment text,
+ reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
  reserve_last_update_slot bigint,reserve_last_update_stale boolean,reserve_price_status smallint,available_amount double precision,
  borrowed_amount double precision,total_supply_amount double precision,market_price_usd double precision,market_price_last_updated_ts bigint,
  utilization double precision,borrow_apy double precision,supply_apy double precision
-)`, schema, schema, schema))
+)`, schema))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	for index, name := range []string{"a", "b", "c"} {
+	eventID := 0
+	insert := func(name, source string, slot int64, observedAt time.Time) {
+		t.Helper()
+		eventID++
 		market, reserve := "market-"+name, "reserve-"+name
-		_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.supported_reserves VALUES($1,$2,$3,$4,'USDC',ARRAY['safe'],'kamino-api',$5,true)`, schema), market, USDCMint, reserve, strings.ToUpper(name), now)
-		if err != nil {
+		if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_update_dedupe VALUES($1,$2,$3)`, schema), eventID, reserve, slot); err != nil {
 			t.Fatal(err)
 		}
-		_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.latest_verified_reserve_updates VALUES($1,$2,$3,999,$3,1000,'confirmed','http_confirmed_refresh',$4,$5,$6,$7,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008)`, schema), index+1, strings.Repeat(name, 64), now, reserve, market, strings.ToUpper(name), USDCMint)
-		if err != nil {
+		if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_updates VALUES($1,$2,$3,$4,$5,'confirmed',$6,$7,$8,$9,'USDC',6,$10,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008)`, schema), eventID, strings.Repeat(fmt.Sprintf("%x", eventID%16), 64), observedAt, slot, source, reserve, market, strings.ToUpper(name), USDCMint, slot-1); err != nil {
 			t.Fatal(err)
 		}
 	}
+	for _, name := range []string{"a", "b", "c"} {
+		if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.supported_reserves VALUES($1,$2,$3,$4,'USDC',ARRAY['safe'],'kamino-api',$5,true)`, schema), "market-"+name, USDCMint, "reserve-"+name, strings.ToUpper(name), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("a", "http_snapshot", 2_000, now.Add(-time.Second))
+	insert("a", "laserstream_grpc", 1_900, now) // a replayed older slot arriving after the seed
+	insert("b", "laserstream_grpc", 2_100, now)
+	insert("c", "laserstream_grpc", 1_200, now.Add(-time.Hour)) // quiet for an hour
 	store, err := NewMarketEvidenceStoreFromPool(pool, schema)
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +263,19 @@ CREATE TABLE %s.latest_verified_reserve_updates(
 	if err := epoch.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if len(epoch.Reserves) != 3 || epoch.CatalogReserveCount != 3 || epoch.Reserves[0].StateEventID <= 0 {
-		t.Fatalf("monitor identities or complete catalog were not retained: %+v", epoch)
+	if len(epoch.Reserves) != 3 || epoch.StreamFrontierSlot != 2_100 {
+		t.Fatalf("stream rows were not all admitted: frontier=%d %+v", epoch.StreamFrontierSlot, epoch)
+	}
+	for _, reserve := range epoch.Reserves {
+		want := map[string]int64{"reserve-a": 2_000, "reserve-b": 2_100, "reserve-c": 1_200}[reserve.Reserve]
+		if reserve.StateSlot != want || reserve.Slot != want {
+			t.Fatalf("reserve %s read slot %d/%d, want its latest row at %d", reserve.Reserve, reserve.StateSlot, reserve.Slot, want)
+		}
+	}
+	if err := epoch.VerifyDirectObservation(MarketSnapshot{Slot: epoch.StreamFrontierSlot + maximumReserveEconomicSlotLag}); err != nil {
+		t.Fatalf("live stream frontier was refused: %v", err)
+	}
+	if err := epoch.VerifyDirectObservation(MarketSnapshot{Slot: epoch.StreamFrontierSlot + maximumReserveEconomicSlotLag + 1}); err == nil {
+		t.Fatal("a stream frontier trailing the chain was accepted")
 	}
 }

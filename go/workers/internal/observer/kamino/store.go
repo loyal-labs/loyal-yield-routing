@@ -12,8 +12,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-const floorLockSeed int64 = 5_499_540_200_513_621
-
 func earnMaxObservationTargets() []Target {
 	rows := [][3]string{
 		{"47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8", "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ", "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5"},
@@ -109,8 +107,8 @@ type Record struct {
 	ReceiveToDecodeMS                                  int64
 }
 type InsertOutcome struct {
-	EventID                                              int64
-	Inserted, CurrentStateAdmitted, VerificationAdmitted bool
+	EventID  int64
+	Inserted bool
 }
 
 func (s *Store) Insert(ctx context.Context, record Record) (InsertOutcome, error) {
@@ -154,25 +152,6 @@ func (s *Store) Insert(ctx context.Context, record Record) (InsertOutcome, error
 		} else {
 			outcome.Inserted = true
 		}
-		if strings.HasPrefix(record.Source, "http_") {
-			result, err := tx.Exec(ctx, s.upsertCurrentSQL(), record.Snapshot.Reserve, outcome.EventID, record.AccountHash, int64(record.Snapshot.Slot), record.Snapshot.ObservedAt, record.Source)
-			if err != nil {
-				return fmt.Errorf("advance Kamino current state: %w", err)
-			}
-			outcome.CurrentStateAdmitted = result.RowsAffected() > 0
-			if _, err = tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %[1]s.reserve_confirmed_verifications verification USING %[1]s.reserve_current_states state WHERE state.reserve=$1 AND verification.reserve=state.reserve AND (verification.state_event_id<>state.state_event_id OR verification.account_data_hash<>state.account_data_hash)`, s.schema), record.Snapshot.Reserve); err != nil {
-				return err
-			}
-			result, err = tx.Exec(ctx, s.upsertVerificationSQL(), record.Snapshot.Reserve, outcome.EventID, record.AccountHash, int64(record.Snapshot.Slot), record.ReceivedAt, record.SourceCommitment, record.Source)
-			if err != nil {
-				return fmt.Errorf("advance Kamino verification: %w", err)
-			}
-			outcome.VerificationAdmitted = result.RowsAffected() > 0
-		} else {
-			if _, err = tx.Exec(ctx, s.advanceFloorSQL(), record.Snapshot.Reserve, int64(record.Snapshot.Slot), record.AccountHash, true, record.Source, int16(1), record.Snapshot.ObservedAt); err != nil {
-				return fmt.Errorf("advance Kamino stream floor: %w", err)
-			}
-		}
 		return nil
 	})
 	if err != nil {
@@ -181,28 +160,11 @@ func (s *Store) Insert(ctx context.Context, record Record) (InsertOutcome, error
 	return outcome, nil
 }
 
-func (s *Store) RecordMalformed(ctx context.Context, reserve string, slot uint64, observedAt time.Time) error {
-	_, err := s.pool.Exec(ctx, s.advanceFloorSQL(), reserve, int64(slot), nil, false, "laserstream_grpc", int16(1), observedAt)
-	return err
-}
 func coalesce(first, second *string) *string {
 	if first != nil {
 		return first
 	}
 	return second
-}
-func (s *Store) tolerance() string {
-	return fmt.Sprintf(`%s.confirmed_verification_slot_tolerance()`, s.schema)
-}
-func (s *Store) upsertCurrentSQL() string {
-	return fmt.Sprintf(`INSERT INTO %[1]s.reserve_current_states AS current(reserve,state_event_id,account_data_hash,state_slot,state_observed_at,state_source)
-SELECT state.reserve,state.event_id,state.account_data_hash,state.slot,state.observed_at,state.source FROM %[1]s.reserve_updates state LEFT JOIN %[1]s.reserve_confirmed_observation_floors floor ON floor.reserve=state.reserve LEFT JOIN %[1]s.reserve_confirmed_verifications verification ON verification.reserve=state.reserve WHERE state.reserve=$1 AND state.event_id=$2 AND state.account_data_hash=$3 AND state.slot=$4 AND state.observed_at=$5 AND state.source IN('http_snapshot','http_confirmed_refresh') AND $6 IN('http_snapshot','http_confirmed_refresh') AND (floor.reserve IS NULL OR state.slot>floor.floor_slot OR (floor.state_valid AND floor.account_data_hash=state.account_data_hash) OR (floor.state_valid AND floor.floor_slot>state.slot AND floor.floor_slot-state.slot<=%[2]s)) AND (verification.reserve IS NULL OR state.slot>verification.verified_slot OR verification.account_data_hash=state.account_data_hash) ON CONFLICT(reserve) DO UPDATE SET state_event_id=EXCLUDED.state_event_id,account_data_hash=EXCLUDED.account_data_hash,state_slot=EXCLUDED.state_slot,state_observed_at=EXCLUDED.state_observed_at,state_source=EXCLUDED.state_source,updated_at=now() WHERE (EXCLUDED.state_slot,EXCLUDED.state_event_id)>(current.state_slot,current.state_event_id)`, s.schema, s.tolerance())
-}
-func (s *Store) upsertVerificationSQL() string {
-	return fmt.Sprintf(`INSERT INTO %[1]s.reserve_confirmed_verifications AS current(reserve,state_event_id,account_data_hash,verified_slot,verified_at,commitment,verification_source) SELECT $1,$2,$3,$4,$5,$6,$7 FROM %[1]s.reserve_current_states state LEFT JOIN %[1]s.reserve_confirmed_observation_floors floor ON floor.reserve=state.reserve WHERE state.reserve=$1 AND state.state_event_id=$2 AND state.account_data_hash=$3 AND state.state_slot<=$4 AND state.state_source IN('http_snapshot','http_confirmed_refresh') AND $7 IN('http_snapshot','http_confirmed_refresh') AND (floor.reserve IS NULL OR $4>floor.floor_slot OR (floor.state_valid AND floor.account_data_hash=state.account_data_hash) OR (floor.state_valid AND floor.floor_slot>$4 AND floor.floor_slot-$4<=%[2]s)) ON CONFLICT(reserve) DO UPDATE SET state_event_id=EXCLUDED.state_event_id,account_data_hash=EXCLUDED.account_data_hash,verified_slot=EXCLUDED.verified_slot,verified_at=EXCLUDED.verified_at,commitment=EXCLUDED.commitment,verification_source=EXCLUDED.verification_source,updated_at=now() WHERE (EXCLUDED.verified_slot,EXCLUDED.state_event_id)>(current.verified_slot,current.state_event_id)`, s.schema, s.tolerance())
-}
-func (s *Store) advanceFloorSQL() string {
-	return fmt.Sprintf(`WITH observation_lock AS MATERIALIZED(SELECT pg_advisory_xact_lock(hashtextextended($1,%d))), advanced AS(INSERT INTO %[2]s.reserve_confirmed_observation_floors AS current(reserve,floor_slot,account_data_hash,state_valid,source,source_rank,observed_at) SELECT $1,$2,$3,$4,$5,$6,$7 FROM observation_lock ON CONFLICT(reserve) DO UPDATE SET floor_slot=CASE WHEN EXCLUDED.floor_slot>current.floor_slot THEN EXCLUDED.floor_slot ELSE current.floor_slot END,account_data_hash=CASE WHEN EXCLUDED.floor_slot>current.floor_slot THEN EXCLUDED.account_data_hash WHEN EXCLUDED.source_rank>current.source_rank THEN EXCLUDED.account_data_hash WHEN current.state_valid AND EXCLUDED.state_valid AND current.account_data_hash=EXCLUDED.account_data_hash THEN current.account_data_hash ELSE NULL END,state_valid=CASE WHEN EXCLUDED.floor_slot>current.floor_slot THEN EXCLUDED.state_valid WHEN EXCLUDED.source_rank>current.source_rank THEN EXCLUDED.state_valid ELSE current.state_valid AND EXCLUDED.state_valid AND current.account_data_hash=EXCLUDED.account_data_hash END,source=CASE WHEN EXCLUDED.floor_slot>current.floor_slot OR EXCLUDED.source_rank>=current.source_rank THEN EXCLUDED.source ELSE current.source END,source_rank=CASE WHEN EXCLUDED.floor_slot>current.floor_slot THEN EXCLUDED.source_rank ELSE GREATEST(current.source_rank,EXCLUDED.source_rank) END,observation_id=EXCLUDED.observation_id,observed_at=GREATEST(current.observed_at,EXCLUDED.observed_at),updated_at=now() WHERE EXCLUDED.floor_slot>current.floor_slot OR (EXCLUDED.floor_slot=current.floor_slot AND EXCLUDED.source_rank>=current.source_rank) RETURNING reserve,floor_slot,account_data_hash,state_valid) DELETE FROM %[2]s.reserve_confirmed_verifications verification USING advanced floor,%[2]s.reserve_current_states state WHERE verification.reserve=floor.reserve AND state.reserve=floor.reserve AND verification.state_event_id=state.state_event_id AND verification.account_data_hash=state.account_data_hash AND verification.verified_slot<=floor.floor_slot AND (NOT floor.state_valid OR verification.verified_slot=floor.floor_slot OR floor.floor_slot-verification.verified_slot>%[3]s) AND (NOT floor.state_valid OR floor.account_data_hash<>state.account_data_hash)`, floorLockSeed, s.schema, s.tolerance())
 }
 
 // supportedReserveCatalogLockKey is loyal-kamino-data timescale.rs

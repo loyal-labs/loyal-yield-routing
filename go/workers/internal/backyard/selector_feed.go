@@ -17,24 +17,28 @@ import (
 
 const kaminoStatsEndpoint = "https://api.kamino.finance/reserves/batch/stats"
 
-// The verification view already owns the confirmed-state join. Join its exact
-// event for the two v2 fields not projected by that view; never use latest raw
-// events or API stats as a substitute for confirmed reserve evidence.
+// Each reserve's latest confirmed row from the observer's stream (or its
+// startup seed), latest by slot as the fleet market epoch reads it: a replay
+// after a restart inserts older slots after the seed. Never use API stats as a
+// substitute for confirmed reserve evidence.
 const selectorReserveSQL = `SELECT jsonb_build_object(
- 'reserve',v.reserve,'market',v.market,'mint',v.liquidity_mint,
- 'observedAt',v.verified_at,'slot',v.verified_slot,'hash',v.account_data_hash,
- 'commitment',v.verification_commitment,'supplyApy',v.supply_apy,'borrowApy',v.borrow_apy,
- 'debtSupplyRaw',v.total_supply_amount,'debtBorrowRaw',v.borrowed_amount,
- 'status',v.reserve_status,'emergency',v.emergency_mode,'curve',v.borrow_rate_curve,
+ 'reserve',s.reserve,'market',s.market,'mint',s.liquidity_mint,
+ 'observedAt',s.observed_at,'slot',s.slot,'hash',s.account_data_hash,
+ 'commitment',s.source_commitment,'supplyApy',s.supply_apy,'borrowApy',s.borrow_apy,
+ 'debtSupplyRaw',s.total_supply_amount,'debtBorrowRaw',s.borrowed_amount,
+ 'status',s.snapshot->'reserve_status','emergency',s.snapshot->'emergency_mode','curve',s.snapshot->'borrow_rate_curve',
  'hostBps',s.snapshot->'host_fixed_interest_rate_bps',
  'borrowApr',s.snapshot->'borrow_apr',
  'schema',s.snapshot->'observation_schema_version',
  'priceUsd',s.snapshot->'market_price_usd','decimals',s.snapshot->'mint_decimals')
- FROM kamino.latest_verified_reserve_updates v
- JOIN kamino.reserve_updates s ON s.event_id=v.event_id AND s.reserve=v.reserve AND s.account_data_hash=v.account_data_hash
- WHERE v.reserve=ANY($1::text[])`
+ FROM unnest($1::text[]) requested(reserve)
+ CROSS JOIN LATERAL (
+  SELECT u.* FROM kamino.reserve_update_dedupe d
+  JOIN kamino.reserve_updates u ON u.event_id=d.event_id AND u.reserve=d.reserve AND u.slot=d.slot
+  WHERE d.reserve=requested.reserve AND u.source IN ('laserstream_grpc','http_snapshot')
+  ORDER BY d.slot DESC, d.event_id DESC LIMIT 1) s`
 
-type verifiedEconomicReserve struct {
+type reserveEconomics struct {
 	Reserve    string    `json:"reserve"`
 	Market     string    `json:"market"`
 	Mint       string    `json:"mint"`
@@ -45,7 +49,7 @@ type verifiedEconomicReserve struct {
 	SupplyAPY  *float64  `json:"supplyApy"`
 	BorrowAPY  *float64  `json:"borrowApy"`
 	// BorrowAPR is the snapshot's own annualized borrow APR from the SAME
-	// verified event join. loyal-kamino-codec scales curve+host by
+	// row. loyal-kamino-codec scales curve+host by
 	// 500ms/actual slot_duration_ms before publishing it, so it is the
 	// annualization evidence the raw per-slot curve lacks.
 	BorrowAPR *float64           `json:"borrowApr"`
@@ -57,7 +61,7 @@ type verifiedEconomicReserve struct {
 	HostBPS   *float64           `json:"hostBps"`
 	Schema    *int               `json:"schema"`
 	// PriceUSD and Decimals are the reserve's own oracle price and liquidity
-	// mint decimals from the same verified event.
+	// mint decimals from the same row.
 	PriceUSD *float64 `json:"priceUsd"`
 	Decimals *int     `json:"decimals"`
 }
@@ -146,7 +150,7 @@ func fetchNativeYields(ctx context.Context, client *http.Client, endpoint string
 	return parseNativeYields(body, routes, now, age)
 }
 
-func readVerifiedEconomics(ctx context.Context, pool *pgxpool.Pool, routes []RuntimeRoute) (map[string]verifiedEconomicReserve, error) {
+func readReserveEconomics(ctx context.Context, pool *pgxpool.Pool, routes []RuntimeRoute) (map[string]reserveEconomics, error) {
 	// The pinned USDC reserve is the USDC side of every non-USDC debt lane's
 	// price conversion, as in the live borrow capacity observation.
 	ids := make([]string, 0, len(routes)*2+1)
@@ -156,45 +160,53 @@ func readVerifiedEconomics(ctx context.Context, pool *pgxpool.Pool, routes []Run
 	}
 	rows, err := pool.Query(ctx, selectorReserveSQL, ids)
 	if err != nil {
-		return nil, fmt.Errorf("verified_reserve_feed_unavailable")
+		return nil, fmt.Errorf("reserve_feed_unavailable")
 	}
 	defer rows.Close()
-	out := map[string]verifiedEconomicReserve{}
+	out := map[string]reserveEconomics{}
 	for rows.Next() {
 		var raw []byte
 		if err = rows.Scan(&raw); err != nil {
-			return nil, fmt.Errorf("verified_reserve_feed_invalid")
+			return nil, fmt.Errorf("reserve_feed_invalid")
 		}
-		var r verifiedEconomicReserve
+		var r reserveEconomics
 		if json.Unmarshal(raw, &r) != nil {
-			return nil, fmt.Errorf("verified_reserve_feed_invalid")
+			return nil, fmt.Errorf("reserve_feed_invalid")
 		}
 		if _, duplicate := out[r.Reserve]; duplicate {
-			return nil, fmt.Errorf("verified_reserve_feed_duplicate")
+			return nil, fmt.Errorf("reserve_feed_duplicate")
 		}
 		// Production boundary: every row must carry the snapshot's own
-		// annualized borrow APR (a completeness check on the verified event;
+		// annualized borrow APR (a completeness check on the row;
 		// combine prices borrowing off the plain curve, see there). Zero stays
 		// valid: collateral reserves that never borrow report zero.
 		if r.BorrowAPR == nil || !finite(*r.BorrowAPR) || *r.BorrowAPR < 0 {
-			return nil, fmt.Errorf("verified_reserve_annualization_invalid")
+			return nil, fmt.Errorf("reserve_annualization_invalid")
 		}
 		out[r.Reserve] = r
 	}
 	if rows.Err() != nil {
-		return nil, fmt.Errorf("verified_reserve_feed_interrupted")
+		return nil, fmt.Errorf("reserve_feed_interrupted")
 	}
 	return out, nil
 }
 
-// combineEconomics joins each route's verified reserves and native yield into
+// combineEconomics joins each route's reserve rows and native yield into
 // its lane economics; only active registry lanes contribute.
-func combineEconomics(routes []RuntimeRoute, reserves map[string]verifiedEconomicReserve, yields map[string]nativeYield, now time.Time, p SelectorPolicy) []LaneEconomics {
+func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomics, yields map[string]nativeYield, now time.Time, p SelectorPolicy) []LaneEconomics {
 	out := make([]LaneEconomics, 0, len(routes))
-	valid := func(r verifiedEconomicReserve, reserve, mint, market string) bool {
-		return r.Reserve == reserve && r.Mint == mint && r.Market == market && r.Commitment == "confirmed" && r.Slot > 0 && sha256Pattern.MatchString(r.Hash) && r.Schema != nil && *r.Schema == 2 && r.Status != nil && r.Emergency != nil && freshAt(now, r.ObservedAt, p.MarketMaxAge)
+	// A quiet reserve's row stays current while the stream is live, so the
+	// economics are as fresh as the stream frontier: the newest row read.
+	var frontier reserveEconomics
+	for _, r := range reserves {
+		if r.Slot > frontier.Slot {
+			frontier = r
+		}
 	}
-	priced := func(r verifiedEconomicReserve) bool {
+	valid := func(r reserveEconomics, reserve, mint, market string) bool {
+		return r.Reserve == reserve && r.Mint == mint && r.Market == market && r.Commitment == "confirmed" && r.Slot > 0 && sha256Pattern.MatchString(r.Hash) && r.Schema != nil && *r.Schema == 2 && r.Status != nil && r.Emergency != nil && freshAt(now, frontier.ObservedAt, p.MarketMaxAge)
+	}
+	priced := func(r reserveEconomics) bool {
 		return r.PriceUSD != nil && finite(*r.PriceUSD) && *r.PriceUSD > 0 && r.Decimals != nil && *r.Decimals >= 0 && *r.Decimals <= 18
 	}
 	usdc := reserves[kaminoDebtReserve]
@@ -208,19 +220,13 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]verifiedEconomi
 		// loyal-kamino-codec emits reserve supply and borrowed amounts in raw
 		// debt-mint units. They only ever meet other raw amounts of the same
 		// reserve (utilization) or the priced quote's raw debt, never USDC.
-		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: c.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: *c.SupplyAPY, CurrentBorrowAPY: *d.BorrowAPY, BorrowCurve: d.Curve, HostBorrowBPS: *d.HostBPS, DebtSupplyRaw: *d.SupplyRaw, DebtBorrowRaw: *d.BorrowRaw}
-		if d.ObservedAt.Before(e.ObservedAt) {
-			e.ObservedAt = d.ObservedAt
-		}
+		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: frontier.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: *c.SupplyAPY, CurrentBorrowAPY: *d.BorrowAPY, BorrowCurve: d.Curve, HostBorrowBPS: *d.HostBPS, DebtSupplyRaw: *d.SupplyRaw, DebtBorrowRaw: *d.BorrowRaw}
 		// Every lane's debt reserve row carries its own price, so the projected
 		// utilization of a USDC-valued borrow is known for every non-USDC debt
 		// lane, not only the one the vault holds. Missing price evidence leaves
 		// it unknown (0); USDC debt needs no conversion.
 		if route.Kamino.DebtMint != bridgeUSDC && usdcPriced && priced(d) {
 			e.DebtRawPerUSDCRaw = *usdc.PriceUSD / *d.PriceUSD * math.Pow10(*d.Decimals-6)
-			if usdc.ObservedAt.Before(e.ObservedAt) {
-				e.ObservedAt = usdc.ObservedAt
-			}
 		}
 		// Feed capacity is deliberately not pair admission. The action-time adapter
 		// supplies exact execution-size capacity after policies, caps and swaps pass.
@@ -304,7 +310,7 @@ func (f *EconomicFeed) Refresh(ctx context.Context) error {
 	defer cancel()
 	now := time.Now().UTC()
 	p := DefaultSelectorPolicy()
-	reserves, err := readVerifiedEconomics(ctx, f.pool, f.routes)
+	reserves, err := readReserveEconomics(ctx, f.pool, f.routes)
 	var yields map[string]nativeYield
 	if err == nil {
 		yields, err = fetchNativeYields(ctx, f.client, kaminoStatsEndpoint, f.routes, now, p.NativeMaxAge)

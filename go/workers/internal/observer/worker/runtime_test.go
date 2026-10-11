@@ -1,10 +1,8 @@
 package worker
 
 import (
-	"errors"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
@@ -112,22 +110,6 @@ func TestNewEarnBindingRecoveriesCoverEveryAddedAccount(t *testing.T) {
 	wantFilters := []string{watch.EarnPolicyAccounts, watch.EarnSubscriptionAuthorities}
 	if !slices.Equal(recoveries[0].filters, wantFilters) {
 		t.Fatalf("filters = %v, want %v", recoveries[0].filters, wantFilters)
-	}
-}
-
-func TestPersistentVerificationErrorStartsAtThreshold(t *testing.T) {
-	cause := errors.New("rpc unavailable")
-	budget := kaminoVerificationFailureThreshold * 30 * time.Second
-	if err := persistentVerificationError(kaminoVerificationFailureThreshold-1, budget, budget, cause); err != nil {
-		t.Fatalf("transient failure became terminal: %v", err)
-	}
-	// Dirty batches retry every 100 ms, so a burst of fast failures inside
-	// the sweep budget is still a transient RPC outage.
-	if err := persistentVerificationError(50, time.Second, budget, cause); err != nil {
-		t.Fatalf("short failure burst became terminal: %v", err)
-	}
-	if err := persistentVerificationError(kaminoVerificationFailureThreshold, budget, budget, cause); err == nil || !errors.Is(err, cause) {
-		t.Fatalf("threshold failure = %v, want wrapped cause", err)
 	}
 }
 

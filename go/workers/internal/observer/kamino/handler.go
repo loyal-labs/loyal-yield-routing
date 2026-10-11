@@ -31,7 +31,6 @@ type Handler struct {
 	mu             sync.RWMutex
 	targets        map[string]Target
 	snapshots      map[string]snapshotRank
-	schedule       *verificationSchedule
 }
 
 type HandleOutcome struct {
@@ -40,7 +39,7 @@ type HandleOutcome struct {
 }
 
 func NewHandler(store *Store, rpc *chain.Client, logger *slog.Logger, slotDurationMS float64, storeRaw bool) *Handler {
-	return &Handler{store: store, rpc: rpc, logger: logger, slotDurationMS: slotDurationMS, storeRaw: storeRaw, targets: make(map[string]Target), snapshots: make(map[string]snapshotRank), schedule: newVerificationSchedule()}
+	return &Handler{store: store, rpc: rpc, logger: logger, slotDurationMS: slotDurationMS, storeRaw: storeRaw, targets: make(map[string]Target), snapshots: make(map[string]snapshotRank)}
 }
 func (h *Handler) SetSlotDuration(value float64) {
 	if value <= 0 {
@@ -81,7 +80,6 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 	}
 	h.mu.RLock()
 	target, ok := h.targets[reserve]
-	previous, hasPrevious := h.snapshots[reserve]
 	slotDurationMS := h.slotDurationMS
 	h.mu.RUnlock()
 	if !ok {
@@ -90,23 +88,75 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 	observedAt := time.Now().UTC()
 	owner, ownerErr := bytesKey(account.GetOwner())
 	if ownerErr != nil || owner != klend.ProgramID.String() {
-		if err := h.store.RecordMalformed(ctx, reserve, accountUpdate.GetSlot(), observedAt); err != nil {
-			return HandleOutcome{}, err
-		}
-		h.schedule.markDirty(reserve)
-		h.logger.Error("invalid Kamino stream owner fenced", "reserve", reserve, "slot", accountUpdate.GetSlot(), "owner", owner)
+		h.logger.Error("invalid Kamino stream owner skipped", "reserve", reserve, "slot", accountUpdate.GetSlot(), "owner", owner)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
 	}
-	decodedAt := time.Now().UTC()
 	snapshot, err := Decode(target, accountUpdate.GetSlot(), observedAt, &chain.Account{Key: solana.PublicKeyFromBytes(account.GetPubkey()), Owner: solana.PublicKeyFromBytes(account.GetOwner()), Lamports: account.GetLamports(), Data: account.GetData(), Executable: account.GetExecutable()}, slotDurationMS)
 	if err != nil {
-		if floorErr := h.store.RecordMalformed(ctx, reserve, accountUpdate.GetSlot(), observedAt); floorErr != nil {
-			return HandleOutcome{}, fmt.Errorf("decode reserve: %v; record malformed floor: %w", err, floorErr)
-		}
-		h.schedule.markDirty(reserve)
-		h.logger.Error("invalid Kamino stream data fenced", "reserve", reserve, "slot", accountUpdate.GetSlot(), "error", err)
+		h.logger.Error("invalid Kamino stream data skipped", "reserve", reserve, "slot", accountUpdate.GetSlot(), "error", err)
 		return HandleOutcome{Slot: accountUpdate.GetSlot(), Malformed: true}, nil
 	}
+	outcome, err := h.record(ctx, target, snapshot, "laserstream_grpc", account.GetData(), accountUpdate.GetSlot(), account.GetWriteVersion(), observedAt)
+	if err != nil {
+		return HandleOutcome{}, err
+	}
+	return HandleOutcome{Slot: accountUpdate.GetSlot(), Inserted: outcome.Inserted}, nil
+}
+
+// Seed reads every target once at confirmed commitment and inserts it as an
+// http_snapshot row, the state the stream continues from. It returns the
+// lowest slot read.
+func (h *Handler) Seed(ctx context.Context) (uint64, error) {
+	targets := h.Targets()
+	h.mu.RLock()
+	slotDurationMS := h.slotDurationMS
+	h.mu.RUnlock()
+	if len(targets) == 0 {
+		return 0, fmt.Errorf("kamino target catalog is empty")
+	}
+	minimum := uint64(^uint64(0))
+	for start := 0; start < len(targets); start += 100 {
+		batch := targets[start:min(start+100, len(targets))]
+		addresses := make([]solana.PublicKey, len(batch))
+		for index, target := range batch {
+			address, err := solana.PublicKeyFromBase58(target.Reserve)
+			if err != nil {
+				return 0, fmt.Errorf("seed Kamino reserve %s: %w", target.Reserve, err)
+			}
+			addresses[index] = address
+		}
+		slot, accounts, err := h.rpc.Accounts(ctx, addresses, rpc.CommitmentConfirmed, 0)
+		if err != nil {
+			return 0, fmt.Errorf("seed Kamino accounts: %w", err)
+		}
+		minimum = min(minimum, slot)
+		observedAt := time.Now().UTC()
+		for index, account := range accounts {
+			target := batch[index]
+			if account == nil || account.Owner != klend.ProgramID {
+				h.logger.Error("confirmed Kamino seed account is missing or foreign", "reserve", target.Reserve)
+				continue
+			}
+			snapshot, err := Decode(target, slot, observedAt, account, slotDurationMS)
+			if err != nil {
+				h.logger.Error("confirmed Kamino seed state was malformed", "reserve", target.Reserve, "error", err)
+				continue
+			}
+			if _, err := h.record(ctx, target, snapshot, "http_snapshot", account.Data, slot, 0, observedAt); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return minimum, nil
+}
+
+// record inserts one confirmed reserve state with its diff against the newest
+// state this handler holds, then holds it when it is newer.
+func (h *Handler) record(ctx context.Context, target Target, snapshot Snapshot, source string, data []byte, slot, writeVersion uint64, receivedAt time.Time) (InsertOutcome, error) {
+	decodedAt := time.Now().UTC()
+	h.mu.RLock()
+	previous, hasPrevious := h.snapshots[target.Reserve]
+	h.mu.RUnlock()
 	var diff *Diff
 	summary := "initial_snapshot"
 	if hasPrevious {
@@ -118,210 +168,22 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 			summary = "none"
 		}
 	}
-	hash := accountHash(account.GetData())
 	var raw *string
 	if h.storeRaw {
-		value := base64.StdEncoding.EncodeToString(account.GetData())
+		value := base64.StdEncoding.EncodeToString(data)
 		raw = &value
 	}
-	outcome, err := h.store.Insert(ctx, Record{Target: target, Snapshot: snapshot, Diff: diff, DiffSummary: summary, Source: "laserstream_grpc", SourceCommitment: "confirmed", AccountHash: hash, RawBase64: raw, ReceivedAt: observedAt, DecodedAt: decodedAt, ReceiveToDecodeMS: decodedAt.Sub(observedAt).Milliseconds()})
+	outcome, err := h.store.Insert(ctx, Record{Target: target, Snapshot: snapshot, Diff: diff, DiffSummary: summary, Source: source, SourceCommitment: "confirmed", AccountHash: accountHash(data), RawBase64: raw, ReceivedAt: receivedAt, DecodedAt: decodedAt, ReceiveToDecodeMS: decodedAt.Sub(receivedAt).Milliseconds()})
 	if err != nil {
-		return HandleOutcome{}, err
+		return InsertOutcome{}, err
 	}
 	h.mu.Lock()
-	current, exists := h.snapshots[reserve]
-	if !exists || accountUpdate.GetSlot() > current.slot || (accountUpdate.GetSlot() == current.slot && account.GetWriteVersion() > current.writeVersion) {
-		h.snapshots[reserve] = snapshotRank{accountUpdate.GetSlot(), account.GetWriteVersion(), snapshot}
+	current, exists := h.snapshots[target.Reserve]
+	if !exists || slot > current.slot || (slot == current.slot && writeVersion >= current.writeVersion) {
+		h.snapshots[target.Reserve] = snapshotRank{slot, writeVersion, snapshot}
 	}
 	h.mu.Unlock()
-	// Rust marks every durably persisted stream state dirty so a confirmed
-	// read follows within one batch tick. That read inserts the
-	// http_confirmed_refresh state the planner's verified view requires;
-	// without it the stream floor evicts the reserve's verification.
-	h.schedule.markDirty(reserve)
-	return HandleOutcome{Slot: accountUpdate.GetSlot(), Inserted: outcome.Inserted}, nil
-}
-
-func (h *Handler) Seed(ctx context.Context) (uint64, error) {
-	return h.verify(ctx, "http_snapshot", h.Targets(), nil)
-}
-
-// RequestSafetySweep queues every watched reserve for a confirmed read. It is
-// Rust's confirmed_refresh_tick: only a sweep for quiet reserves, since every
-// stream write already queued its own reserve.
-func (h *Handler) RequestSafetySweep() {
-	targets := h.Targets()
-	reserves := make([]string, len(targets))
-	for index, target := range targets {
-		reserves[index] = target.Reserve
-	}
-	h.schedule.requestSafetySweep(reserves)
-}
-
-// VerifyDirty runs one confirmed refresh batch over the pending reserves, as
-// Rust's dirty_verification_tick does. It reports false when nothing was due.
-func (h *Handler) VerifyDirty(ctx context.Context) (bool, error) {
-	batch, ok := h.schedule.begin()
-	if !ok {
-		return false, nil
-	}
-	h.mu.RLock()
-	targets := make([]Target, 0, len(batch.generations))
-	for _, reserve := range batch.reserves() {
-		if target, watched := h.targets[reserve]; watched {
-			targets = append(targets, target)
-		}
-	}
-	h.mu.RUnlock()
-	if len(targets) == 0 {
-		h.schedule.completeSuccess(batch)
-		return true, nil
-	}
-	_, err := h.verify(ctx, "http_confirmed_refresh", targets, &batch)
-	return true, err
-}
-
-type confirmedState struct {
-	target     Target
-	account    *chain.Account
-	slot       uint64
-	observedAt time.Time
-}
-
-// verify is Rust's ConfirmedReserveVerifier::fetch followed by
-// refresh_confirmed_snapshots. A batch from the dirty schedule admits only the
-// reserves not marked dirty again while their read was in flight.
-func (h *Handler) verify(ctx context.Context, source string, targets []Target, batch *verificationBatch) (uint64, error) {
-	h.mu.RLock()
-	slotDurationMS := h.slotDurationMS
-	h.mu.RUnlock()
-	if len(targets) == 0 {
-		return 0, fmt.Errorf("kamino target catalog is empty")
-	}
-	minimum := uint64(^uint64(0))
-	states := make([]confirmedState, 0, len(targets))
-	for start := 0; start < len(targets); start += 100 {
-		end := min(start+100, len(targets))
-		var err error
-		addresses := make([]solana.PublicKey, end-start)
-		for index := start; index < end && err == nil; index++ {
-			addresses[index-start], err = solana.PublicKeyFromBase58(targets[index].Reserve)
-		}
-		var slot uint64
-		var accounts []*chain.Account
-		if err == nil {
-			slot, accounts, err = h.rpc.Accounts(ctx, addresses, rpc.CommitmentConfirmed, 0)
-		}
-		if err != nil {
-			if batch != nil {
-				h.schedule.completeFailure(*batch)
-			}
-			return 0, fmt.Errorf("verify Kamino accounts: %w", err)
-		}
-		minimum = min(minimum, slot)
-		observedAt := time.Now().UTC()
-		for index, account := range accounts {
-			states = append(states, confirmedState{target: targets[start+index], account: account, slot: slot, observedAt: observedAt})
-		}
-	}
-	var accepted map[string]struct{}
-	if batch != nil {
-		accepted = h.schedule.completeSuccess(*batch)
-		current := states[:0]
-		for _, state := range states {
-			if _, ok := accepted[state.target.Reserve]; ok {
-				current = append(current, state)
-			}
-		}
-		states = current
-	}
-	if err := h.persistConfirmed(ctx, source, states, slotDurationMS); err != nil {
-		if batch != nil {
-			h.schedule.retry(accepted)
-		}
-		return 0, err
-	}
-	return minimum, nil
-}
-
-func (h *Handler) persistConfirmed(ctx context.Context, source string, states []confirmedState, slotDurationMS float64) error {
-	if len(states) == 0 {
-		return nil
-	}
-	type decodedState struct {
-		state    confirmedState
-		snapshot Snapshot
-		hash     string
-		raw      *string
-	}
-	decoded := make(map[string]decodedState, len(states))
-	verifications := make([]Verification, 0, len(states))
-	for _, state := range states {
-		target, account := state.target, state.account
-		verification := Verification{Reserve: target.Reserve, VerifiedSlot: int64(state.slot), VerifiedAt: state.observedAt, Commitment: "confirmed", Source: source}
-		if account != nil {
-			verification.AccountHash = accountHash(account.Data)
-		}
-		if account != nil && account.Owner == klend.ProgramID {
-			snapshot, decodeErr := Decode(target, state.slot, state.observedAt, account, slotDurationMS)
-			if decodeErr == nil {
-				verification.StateValid = true
-				var raw *string
-				if h.storeRaw {
-					value := base64.StdEncoding.EncodeToString(account.Data)
-					raw = &value
-				}
-				decoded[target.Reserve] = decodedState{state, snapshot, verification.AccountHash, raw}
-			} else {
-				h.logger.Error("confirmed Kamino state was malformed", "reserve", target.Reserve, "error", decodeErr)
-			}
-		}
-		verifications = append(verifications, verification)
-	}
-	verificationOutcome, err := h.store.VerifyStates(ctx, verifications)
-	if err != nil {
-		return err
-	}
-	for reserve, value := range decoded {
-		if _, matched := verificationOutcome.Matched[reserve]; matched {
-			h.admitSnapshot(reserve, value.state.slot, value.snapshot)
-			continue
-		}
-		if _, deferred := verificationOutcome.Deferred[reserve]; deferred {
-			continue
-		}
-		h.mu.RLock()
-		previous, hasPrevious := h.snapshots[reserve]
-		h.mu.RUnlock()
-		var diff *Diff
-		summary := "initial_snapshot"
-		if hasPrevious {
-			compared := Compare(previous.snapshot, value.snapshot)
-			diff = &compared
-			if compared.Changed {
-				summary = joinFields(compared.ChangedFields)
-			} else {
-				summary = "none"
-			}
-		}
-		outcome, insertErr := h.store.Insert(ctx, Record{Target: value.state.target, Snapshot: value.snapshot, Diff: diff, DiffSummary: summary, Source: source, SourceCommitment: "confirmed", AccountHash: value.hash, RawBase64: value.raw, ReceivedAt: value.state.observedAt, DecodedAt: time.Now().UTC()})
-		if insertErr != nil {
-			return insertErr
-		}
-		if outcome.CurrentStateAdmitted && outcome.VerificationAdmitted {
-			h.admitSnapshot(reserve, value.state.slot, value.snapshot)
-		}
-	}
-	return nil
-}
-
-func (h *Handler) admitSnapshot(reserve string, slot uint64, snapshot Snapshot) {
-	h.mu.Lock()
-	current, exists := h.snapshots[reserve]
-	if !exists || slot >= current.slot {
-		h.snapshots[reserve] = snapshotRank{slot: slot, snapshot: snapshot}
-	}
-	h.mu.Unlock()
+	return outcome, nil
 }
 
 func bytesKey(data []byte) (string, error) {

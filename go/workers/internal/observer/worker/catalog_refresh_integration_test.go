@@ -73,8 +73,8 @@ func TestObserverRenewsSupportedReserveCatalogThePlannerAdmits(t *testing.T) {
 	}
 	defer pool.Close()
 	schema := fmt.Sprintf("kamino_catalog_%d", time.Now().UnixNano())
-	// supported_reserves is the registered 0001 Timescale DDL; the verified
-	// view is a table with the columns both planners select.
+	// supported_reserves is the registered 0001 Timescale DDL; the reserve
+	// tables carry the columns the planner selects.
 	if _, err = pool.Exec(ctx, fmt.Sprintf(`
 CREATE SCHEMA %[1]s;
 CREATE TABLE %[1]s.supported_reserves (
@@ -82,9 +82,10 @@ CREATE TABLE %[1]s.supported_reserves (
  risk_baskets TEXT[] NOT NULL DEFAULT '{}', source TEXT NOT NULL DEFAULT 'kamino-api', active BOOLEAN NOT NULL DEFAULT TRUE,
  fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
  PRIMARY KEY (market, liquidity_mint));
-CREATE TABLE %[1]s.latest_verified_reserve_updates(
- event_id bigint,account_data_hash text,observed_at timestamptz,slot bigint,verified_at timestamptz,verified_slot bigint,
- verification_commitment text,verification_source text,reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
+CREATE TABLE %[1]s.reserve_update_dedupe(event_id bigint,reserve text,slot bigint);
+CREATE TABLE %[1]s.reserve_updates(
+ event_id bigint,account_data_hash text,observed_at timestamptz,slot bigint,
+ source text,source_commitment text,reserve text,market text,market_name text,liquidity_mint text,symbol text,mint_decimals integer,
  reserve_last_update_slot bigint,reserve_last_update_stale boolean,reserve_price_status smallint,available_amount double precision,
  borrowed_amount double precision,total_supply_amount double precision,market_price_usd double precision,market_price_last_updated_ts bigint,
  utilization double precision,borrow_apy double precision,supply_apy double precision)`, schema)); err != nil {
@@ -93,13 +94,16 @@ CREATE TABLE %[1]s.latest_verified_reserve_updates(
 	defer pool.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
 
 	// State at the swap: the catalog Rust last published 250 s ago, and a
-	// reserve the observer has just verified.
+	// reserve the observer's stream has just written.
 	now := time.Now().UTC()
 	rustFetchedAt := now.Add(-250 * time.Second).Truncate(time.Microsecond)
 	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.supported_reserves(market,liquidity_mint,reserve,market_name,symbol,risk_baskets,source,active,fetched_at) VALUES($1,$2,$3,'Main Market','USDC',ARRAY['safe','medium','aggressive'],'kamino-api',true,$4)`, schema), catalogTestMainMarket, catalogTestUSDC, catalogTestReserve, rustFetchedAt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.latest_verified_reserve_updates VALUES(1,$1,$2,999,$2,1000,'confirmed','http_confirmed_refresh',$3,$4,'Main Market',$5,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008)`, schema), strings.Repeat("a", 64), now, catalogTestReserve, catalogTestMainMarket, catalogTestUSDC); err != nil {
+	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_update_dedupe VALUES(1,$1,999)`, schema), catalogTestReserve); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_updates VALUES(1,$1,$2,999,'laserstream_grpc','confirmed',$3,$4,'Main Market',$5,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008)`, schema), strings.Repeat("a", 64), now, catalogTestReserve, catalogTestMainMarket, catalogTestUSDC); err != nil {
 		t.Fatal(err)
 	}
 	planner, err := fleet.NewMarketEvidenceStoreFromPool(pool, schema)
@@ -157,8 +161,8 @@ CREATE TABLE %[1]s.latest_verified_reserve_updates(
 	if err := epoch.Validate(); err != nil {
 		t.Fatalf("planner rejected the renewed catalog: %v (%+v)", err, epoch.MintCoverage)
 	}
-	if lifetime := epoch.OptimizerEnvelopeExpiresAt().Sub(epoch.CapturedAt); lifetime < 4*time.Minute-5*time.Second {
-		t.Fatalf("optimizer envelope lifetime = %s, want the verification-bound ~240 s", lifetime)
+	if lifetime := epoch.OptimizerEnvelopeExpiresAt().Sub(epoch.CapturedAt); lifetime < 5*time.Minute-5*time.Second {
+		t.Fatalf("optimizer envelope lifetime = %s, want the catalog-bound ~300 s", lifetime)
 	}
 
 	// A topology change is the operator's explicit sync, never a silent

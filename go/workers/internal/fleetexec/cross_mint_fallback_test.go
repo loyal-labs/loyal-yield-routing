@@ -27,7 +27,7 @@ func fallbackEpochFixture(t *testing.T, now time.Time, reserves []fleet.MarketEp
 	for i, r := range reserves {
 		market := *r.Market
 		snapshot.Catalog = append(snapshot.Catalog, fleet.SupportedReserveCatalogRow{Reserve: r.Reserve, Market: market, LiquidityMint: r.LiquidityMint, RiskBaskets: []string{"safe"}, Source: "kamino-api", FetchedAt: now})
-		snapshot.VerifiedReserves = append(snapshot.VerifiedReserves, fleet.VerifiedSupportedReserveRow{StateEventID: int64(i + 1), AccountDataHash: r.AccountDataHash, StateObservedAt: now, StateSlot: r.Slot, VerifiedAt: now, VerifiedSlot: r.Slot, VerificationCommitment: "confirmed", VerificationSource: "http_confirmed_refresh", Reserve: r.Reserve, Market: &market, LiquidityMint: r.LiquidityMint, MintDecimals: 6, ReserveLastUpdateSlot: r.Slot, ReserveLastUpdateStale: !r.TargetEligible, AvailableAmount: 1000000000000, TotalSupplyAmount: 1000000000000, MarketPriceUSD: 1, SupplyAPY: float64(r.SupplyAPYBPS) / 10000})
+		snapshot.ReserveStates = append(snapshot.ReserveStates, fleet.SupportedReserveStateRow{StateEventID: int64(i + 1), AccountDataHash: r.AccountDataHash, StateObservedAt: now, StateSlot: r.Slot, Source: "laserstream_grpc", SourceCommitment: "confirmed", Reserve: r.Reserve, Market: &market, LiquidityMint: r.LiquidityMint, MintDecimals: 6, ReserveLastUpdateSlot: r.Slot, ReserveLastUpdateStale: !r.TargetEligible, AvailableAmount: 1000000000000, TotalSupplyAmount: 1000000000000, MarketPriceUSD: 1, SupplyAPY: float64(r.SupplyAPYBPS) / 10000})
 	}
 	e, err := fleet.BuildImmutableMarketEpoch(snapshot, []string{reserves[0].LiquidityMint})
 	if err != nil {

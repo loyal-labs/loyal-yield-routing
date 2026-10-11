@@ -55,12 +55,12 @@ func TestLookupRequestSatisfiedOnlyByCurrentPublishedActualBanks(t *testing.T) {
 	position.SourceAmountSemantics = "redeemable_liquidity_amount"
 	market := f.Addresses[2]
 	var catalog []fleet.SupportedReserveCatalogRow
-	var verified []fleet.VerifiedSupportedReserveRow
+	var states []fleet.SupportedReserveStateRow
 	for n, reserve := range f.Addresses[:2] {
 		catalog = append(catalog, fleet.SupportedReserveCatalogRow{Market: market, LiquidityMint: fleet.USDCMint, Reserve: reserve, RiskBaskets: []string{"safe"}, Source: "kamino-api", FetchedAt: now})
-		verified = append(verified, fleet.VerifiedSupportedReserveRow{StateEventID: int64(n + 1), AccountDataHash: strings.Repeat(string(rune('a'+n)), 64), StateObservedAt: now, StateSlot: 1000, VerifiedAt: now, VerifiedSlot: 1000, VerificationCommitment: "confirmed", VerificationSource: "http_confirmed_refresh", Reserve: reserve, Market: &market, LiquidityMint: fleet.USDCMint, MintDecimals: 6, ReserveLastUpdateSlot: 1000, AvailableAmount: 1e15, TotalSupplyAmount: 1e15, MarketPriceUSD: 1, SupplyAPY: float64(n+1) / 100})
+		states = append(states, fleet.SupportedReserveStateRow{StateEventID: int64(n + 1), AccountDataHash: strings.Repeat(string(rune('a'+n)), 64), StateObservedAt: now, StateSlot: 1000, Source: "laserstream_grpc", SourceCommitment: "confirmed", Reserve: reserve, Market: &market, LiquidityMint: fleet.USDCMint, MintDecimals: 6, ReserveLastUpdateSlot: 1000, AvailableAmount: 1e15, TotalSupplyAmount: 1e15, MarketPriceUSD: 1, SupplyAPY: float64(n+1) / 100})
 	}
-	epoch, err := fleet.BuildImmutableMarketEpoch(fleet.SupportedReserveMarketSnapshot{CapturedAt: now, Catalog: catalog, VerifiedReserves: verified}, []string{fleet.USDCMint})
+	epoch, err := fleet.BuildImmutableMarketEpoch(fleet.SupportedReserveMarketSnapshot{CapturedAt: now, Catalog: catalog, ReserveStates: states}, []string{fleet.USDCMint})
 	if err != nil {
 		t.Fatal(err)
 	}

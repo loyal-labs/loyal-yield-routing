@@ -69,7 +69,7 @@ func TestNativeYieldHTTPBoundaries(t *testing.T) {
 		t.Fatal("oversized response accepted")
 	}
 }
-func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
+func TestReserveFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	t.Parallel()
 	r, now, body := nativeFixture(t)
 	native, _ := parseNativeYields([]byte(body), []RuntimeRoute{r}, now, 2*time.Hour)
@@ -79,7 +79,7 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	schema := 2
 	supply := 1_000_000_000_000.0
 	borrow := 500_000_000_000.0
-	c := verifiedEconomicReserve{Reserve: r.Kamino.CollateralReserve, Market: r.Kamino.Market, Mint: r.Kamino.CollateralMint, ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), Commitment: "confirmed", Schema: &schema, Status: &zero, Emergency: &no, SupplyAPY: &f.SupplyAPY}
+	c := reserveEconomics{Reserve: r.Kamino.CollateralReserve, Market: r.Kamino.Market, Mint: r.Kamino.CollateralMint, ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), Commitment: "confirmed", Schema: &schema, Status: &zero, Emergency: &no, SupplyAPY: &f.SupplyAPY}
 	d := c
 	d.Reserve = r.Kamino.DebtReserve
 	d.Mint = bridgeUSDC
@@ -95,7 +95,7 @@ func TestVerifiedFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	// (2026-09-26); borrowing must price off the plain curve regardless.
 	inflated := 0.25
 	d.BorrowAPR, d.BorrowAPY = &inflated, &inflated
-	rows := map[string]verifiedEconomicReserve{c.Reserve: c, d.Reserve: d}
+	rows := map[string]reserveEconomics{c.Reserve: c, d.Reserve: d}
 	got := combineEconomics([]RuntimeRoute{r}, rows, native, now, DefaultSelectorPolicy())
 	if len(got) != 1 || got[0].EntryCapacity.Known || got[0].DebtSupplyRaw != supply || got[0].DebtBorrowRaw != borrow {
 		t.Fatalf("feed: %+v", got)
@@ -193,8 +193,8 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	zero, no, schema := 0, false, 2
 	supply, borrow, host := 1_000_000_000_000.0, 500_000_000_000.0, 300.0
 	supplyAPY, borrowAPY := 0.0004, 0.079
-	rows := map[string]verifiedEconomicReserve{}
-	collateral := verifiedEconomicReserve{Reserve: auto.Kamino.CollateralReserve, Market: auto.Kamino.Market, Mint: auto.Kamino.CollateralMint,
+	rows := map[string]reserveEconomics{}
+	collateral := reserveEconomics{Reserve: auto.Kamino.CollateralReserve, Market: auto.Kamino.Market, Mint: auto.Kamino.CollateralMint,
 		ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), Commitment: "confirmed", Schema: &schema, Status: &zero, Emergency: &no, SupplyAPY: &supplyAPY}
 	debt := collateral
 	debt.Reserve = auto.Kamino.DebtReserve
