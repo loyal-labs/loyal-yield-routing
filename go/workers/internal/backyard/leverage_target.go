@@ -147,20 +147,38 @@ type leverageDecision struct {
 	Reason        string
 	BorrowRaw     uint64
 	SourceDebtRaw uint64
+	// RoomRaw is the debt reserve's additional debt room this sample.
+	RoomRaw uint64
 }
 
 // decideLeverageTarget applies the option-1 rule to the funded lane. It runs
 // only on a settled position: no selector SWITCH/unwind, nothing nonterminal,
 // no withdrawal, and the selector itself chose KEEP. An up move needs the
 // level's spread (1% to 1.5x, 2% to 1.75x) and a positive gain over KEEP
-// after the move's own cost and the shared whole-position fee reserve. It
+// after the move's own cost and the performance fee on the extra income. It
 // does not need the selector's MinimumBenefit, which is SWITCH hysteresis
-// against a full unwind, not a cost of borrowing more in place. Unarmed
-// inputs cannot produce an economic UP target.
+// against a full unwind, not a cost of borrowing more in place.
 // DOWN/no-change never use this gate.
+//
+// The move is sized at the whole step to the next level (desiredLeverage
+// Borrow), not at the debt reserve's momentary room, so the approval stands
+// while the reserve is full. Its rate is the curve at the step's utilization,
+// capped at the reserve's utilization borrow limit (leverageRateDebtRaw): no
+// executable part of the step borrows above it. The worker borrows this tick's capacity-sized part of it
+// the moment room opens (leverageBorrowReceive).
+//
+// Borrowing more in place changes the same vault's income by the increment
+// only, so the gain compares like with like: the candidate's and KEEP's
+// gross income over the horizon, the full performance fee on a positive
+// difference (a vault below its high-water mark pays less, never more), then
+// the move's cost. The selector's SWITCH forecast instead reserves fees on
+// the whole position's income against KEEP's fee-favoured upper bound; on a
+// $100k position that asymmetry alone outweighed any in-place borrow the
+// debt reserve could fund (live 2026-10-10: AUTO held 1.01x under a 1.75x
+// target while PYUSD had $3k-$5k of room for five hours).
 // Cost = moved notional x 2 x UncertaintyBPS + 3 fees of 10,000 raw.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy) (leverageDecision, bool) {
-	out := leverageDecision{Lane: s.RouteLane}
+	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
 	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
 		selector.Action != "KEEP" || s.PartialWithdrawalOperationID != "" || s.Unwind || s.UnwindRefreshRequired || s.CutoverDrain || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
 		s.SquadsIdleRaw != 0 || s.DebtIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 ||
@@ -194,7 +212,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		if level <= out.Current {
 			return currentSpread, finite(currentSpread) && market.CurrentBorrowAPY >= 0
 		}
-		raw := leverageBorrowCeiling(s, level)
+		raw := leverageDesiredRaw(s, level)
 		if raw < leverageMinimumBorrowRaw {
 			return 0, false
 		}
@@ -202,7 +220,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		if err != nil {
 			return 0, false
 		}
-		return leverageBorrowSpread(*market, float64(raw+fee))
+		return leverageBorrowSpread(*market, float64(leverageRateDebtRaw(s, raw+fee)))
 	}
 	out.Next = min(nextLiveLeverageLevel(out.Current, spreadAt), leverageMaxLiveLevel)
 	out.SpreadBPS = int64(currentSpread * 10_000)
@@ -210,28 +228,26 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	if out.Next < out.Current {
 		return out, true
 	}
-	// A stored desired ceiling may be above a capacity-limited actual position.
-	// Reprice only the fresh clipped increment, including its entire fee/cost.
+	// A stored desired ceiling may be above the actual position. Price the
+	// whole remaining step, including its entire fee/cost.
 	candidateSnapshot := s
 	candidateSnapshot.LeverageTargetLevel = out.Next
 	level := leverageUpLevel(candidateSnapshot)
-	raw := leverageBorrowCeiling(s, level)
+	raw := leverageDesiredRaw(s, level)
 	if raw < leverageMinimumBorrowRaw {
-		// A wanted up step the debt reserve cannot fund (utilization limit,
-		// caps or liquidity) is not a spread decision.
-		switch {
-		case level > 0 && !s.BorrowCapacityKnown:
+		if level > 0 && !s.BorrowCapacityKnown {
 			out.Reason = "borrow_capacity_unknown"
-		case level > 0:
-			out.Reason = "no_borrow_room"
+		} else if level > 0 {
+			out.Reason = "leverage_step_below_minimum"
 		}
 		return out, true
 	}
 	fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
 	proceeds, priceErr := capacityBorrowValue(s, raw, false)
 	liability, debtErr := capacityBorrowValue(s, raw+fee, true)
-	apr, rateErr := projectedBorrowAPR(*market, float64(raw+fee))
-	spread, allowed := leverageUpAllowed(*market, level, float64(raw+fee))
+	rateDebt := float64(leverageRateDebtRaw(s, raw+fee))
+	apr, rateErr := projectedBorrowAPR(*market, rateDebt)
+	spread, allowed := leverageUpAllowed(*market, level, rateDebt)
 	if err != nil || priceErr != nil || debtErr != nil || rateErr != nil || !allowed {
 		out.Next = out.Current
 		return out, true
@@ -239,8 +255,8 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	out.SpreadBPS = int64(spread * 10_000)
 	moved := float64(proceeds)
 	out.CostRaw = moved*2*float64(p.UncertaintyBPS)/10_000 + 3*10_000
-	if !s.MonitorsArmed || !selectorFeeBaselineKnown(s) {
-		out.Next, out.Reason = out.Current, "fee_hwm_baseline_unavailable"
+	if !s.MonitorsArmed || !approvedVoltrFeeTerms(s) {
+		out.Next, out.Reason = out.Current, "fee_terms_unavailable"
 		return out, true
 	}
 	if p.validate() != nil || s.CollateralIdleRaw > 0 || !finite(out.CostRaw) || out.CostRaw > 1<<53 || s.PositionDebtValueRaw < 0 || !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 {
@@ -251,22 +267,25 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	collateral, debt := float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw)
 	keepGross := forecastGain(collateral, collateral, debt, *market, math.Log1p(market.CurrentBorrowAPY), years)
 	// The held collateral is not reduced by the move; its cost is. Pass the
-	// collateral the move leaves earning, net of that cost, so the forecast's
-	// post-move NAV charges the cost once.
-	cost := int64(math.Ceil(out.CostRaw))
-	candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + float64(liability), Proceeds: moved, APR: apr}, collateral-float64(cost), *market, years, cost)
-	net, known := selectorFeeReservedGain(s, p.Horizon, candidate, float64(s.TotalVaultNAVRaw)-float64(equity))
-	if !known || !finite(keepGross) {
+	// collateral the move leaves earning, net of that cost; the candidate's
+	// income is its gain before the cost is charged.
+	cost := math.Ceil(out.CostRaw)
+	candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + float64(liability), Proceeds: moved, APR: apr}, collateral-cost, *market, years, int64(cost))
+	extra := candidate.Gain + cost - keepGross
+	if !finite(extra) || !finite(keepGross) {
 		out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
 		return out, true
 	}
-	out.GainRaw = net - selectorKeepGainUpper(s, keepGross)
+	if extra > 0 {
+		extra *= 1 - float64(approvedAdminPerformanceFeeBPS)/10_000
+	}
+	out.GainRaw = extra - cost
 	if out.GainRaw <= 0 {
 		out.Next, out.Reason = out.Current, "up_move_not_worth_cost"
 	} else {
+		out.Reason = "up_move_approved"
 		out.BorrowRaw, out.SourceDebtRaw = raw, uint64(s.PositionDebtRaw)
 	}
-
 	return out, true
 }
 
@@ -279,9 +298,27 @@ func (d leverageDecision) changesTarget(stored float64) bool {
 	return d.Next != stored
 }
 
+// storeChanges reports whether d must be written over the stored target:
+// a new level, a consumed approval, an approval granted or revoked, one
+// decided from a different debt, or one whose size moved by more than a
+// tenth. The approved size drifts with prices every sample; rewriting it
+// each time would bump the route generation every 15 s and refuse every
+// other fenced write.
+func (d leverageDecision) storeChanges(s Snapshot) bool {
+	approved, stored := d.BorrowRaw >= leverageMinimumBorrowRaw, s.LeverageApprovedBorrowRaw >= leverageMinimumBorrowRaw
+	if d.changesTarget(s.LeverageTargetLevel) || s.LeverageBorrowOperationID != "" || approved != stored {
+		return true
+	}
+	if !approved {
+		return s.LeverageApprovedBorrowRaw != 0 || s.LeverageSourceDebtRaw != 0
+	}
+	drift := max(d.BorrowRaw, s.LeverageApprovedBorrowRaw) - min(d.BorrowRaw, s.LeverageApprovedBorrowRaw)
+	return !borrowDebtMatches(d.SourceDebtRaw, s.LeverageSourceDebtRaw) || drift > s.LeverageApprovedBorrowRaw/10
+}
+
 func (d leverageDecision) logLine() string {
-	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f borrow=%d reason=%s",
-		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.BorrowRaw, d.Reason)
+	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f borrow=%d room=%d reason=%s",
+		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.BorrowRaw, d.RoomRaw, d.Reason)
 }
 
 // leverageDecisionLog rate-limits the 'leverage decision' line: it prints
@@ -296,14 +333,17 @@ type leverageDecisionLog struct {
 	last    leverageDecisionKey
 }
 
+// The key leaves out the drifting numbers (approved size, room); whether an
+// approval and room exist are in it.
 type leverageDecisionKey struct {
-	next      float64
-	reason    string
-	borrowRaw uint64
+	next     float64
+	reason   string
+	approved bool
+	room     bool
 }
 
 func (l *leverageDecisionLog) due(now time.Time, d leverageDecision) bool {
-	key := leverageDecisionKey{d.Next, d.Reason, d.BorrowRaw}
+	key := leverageDecisionKey{d.Next, d.Reason, d.BorrowRaw > 0, d.RoomRaw >= leverageMinimumBorrowRaw}
 	if key != l.last || now.Sub(l.printed) >= time.Hour {
 		l.printed, l.last = now, key
 		return true

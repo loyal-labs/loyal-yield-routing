@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"log/slog"
+	"math"
 	"regexp"
 	"sync"
 	"time"
@@ -39,6 +40,13 @@ type events struct {
 	snapshot      Snapshot
 	withdrawSince time.Time
 	heartbeatAt   time.Time
+
+	// Leverage watch: per lane below its target, when its borrow room was
+	// first seen at or above the minimum and the last room seen; the lanes
+	// the last tick reported as held.
+	roomOpenedAt map[string]time.Time
+	roomRaw      map[string]uint64
+	heldLanes    map[string]bool
 }
 
 func newEvents(log *slog.Logger, facts *engine.Facts) *events {
@@ -264,32 +272,48 @@ func (e *events) operationReconciled(action Action, amountRaw int64, signature s
 
 // eventOperation reads the facts an operation record carries. Read-only, it
 // runs after the state change committed.
-func (d *Database) eventOperation(ctx context.Context, operationID string) (action Action, amountRaw int64, signature, navBase64 string, broadcast, ok bool) {
+type eventOperationFacts struct {
+	action               Action
+	amountRaw            int64
+	signature, navBase64 string
+	reason, lane         string
+	broadcast            bool
+}
+
+func (d *Database) eventOperation(ctx context.Context, operationID string) (eventOperationFacts, bool) {
+	var f eventOperationFacts
 	if backyardEvents == nil || d == nil || d.pool == nil {
-		return "", 0, "", "", false, false
+		return f, false
 	}
 	var name string
 	err := d.pool.QueryRow(ctx, `SELECT action, COALESCE(transaction_signature,''), broadcast_intent_at IS NOT NULL,
 		COALESCE(CASE WHEN expected_effects->'decision'->>'amountRaw' ~ '^[0-9]+$' THEN (expected_effects->'decision'->>'amountRaw')::bigint END, 0),
-		COALESCE(expected_effects->'expectedEffects'->'returnData'->>'dataBase64','')
-		FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&name, &signature, &broadcast, &amountRaw, &navBase64)
-	return Action(name), amountRaw, signature, navBase64, broadcast, err == nil
+		COALESCE(expected_effects->'expectedEffects'->'returnData'->>'dataBase64',''),
+		COALESCE(expected_effects->'decision'->>'reason',''), COALESCE(strategy_key,'')
+		FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&name, &f.signature, &f.broadcast, &f.amountRaw, &f.navBase64, &f.reason, &f.lane)
+	f.action = Action(name)
+	return f, err == nil
 }
 
 // eventFailedAfterSend reports an operation that ended failed or in manual
 // recovery, only if it was broadcast; pre-send refusals are not reported.
 func (d *Database) eventFailedAfterSend(ctx context.Context, operationID, reason string) {
-	if action, _, signature, _, broadcast, ok := d.eventOperation(ctx, operationID); ok && broadcast {
-		backyardEvents.operationFailedAfterSend(action, reason, signature)
+	if f, ok := d.eventOperation(ctx, operationID); ok && f.broadcast {
+		backyardEvents.operationFailedAfterSend(f.action, reason, f.signature)
 	}
 }
 
 // eventReconciled reports a reconciled money step and, for REPORT_NAV, the NAV
-// its adaptor return data armed.
+// its adaptor return data armed; a landed leverage_up borrow also reports
+// its lane, size and reaction time.
 func (d *Database) eventReconciled(ctx context.Context, operationID string) {
-	action, amountRaw, signature, navBase64, _, ok := d.eventOperation(ctx, operationID)
+	f, ok := d.eventOperation(ctx, operationID)
 	if !ok {
 		return
+	}
+	action, amountRaw, signature, navBase64 := f.action, f.amountRaw, f.signature, f.navBase64
+	if f.action == OpenRouteStep && f.reason == leverageUpReason {
+		backyardEvents.leverageUpLanded(f.lane, f.amountRaw, f.signature)
 	}
 	raw, err := base64.StdEncoding.DecodeString(navBase64)
 	navKnown := err == nil && len(raw) == 8 && int64(binary.LittleEndian.Uint64(raw)) >= 0
@@ -357,4 +381,78 @@ func errorCode(err error) string {
 		return "database_" + pgErr.Code
 	}
 	return "worker_fault"
+}
+
+// roomObserved takes one watched reserve's recomputed room from the account
+// view: the room gauge, and the first time a lane below its leverage target
+// had room for the minimum borrow (the reaction clock's start).
+func (e *events) roomObserved(u roomUpdate) {
+	if e == nil {
+		return
+	}
+	if u.watch.debt && e.facts != nil && !math.IsNaN(u.roomUSD) {
+		e.facts.BackyardLeverageRoom(u.watch.lane, u.roomUSD)
+	}
+	if !u.watch.debt {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.roomOpenedAt == nil {
+		e.roomOpenedAt, e.roomRaw = map[string]time.Time{}, map[string]uint64{}
+	}
+	lane := u.watch.lane
+	e.roomRaw[lane] = u.roomRaw
+	if !u.watch.leverage || !u.open {
+		delete(e.roomOpenedAt, lane)
+		return
+	}
+	if _, started := e.roomOpenedAt[lane]; !started {
+		e.roomOpenedAt[lane] = u.at
+	}
+}
+
+// leverageObserved sets every held lane's leverage gap from one tick's
+// observation and drops lanes no longer held.
+func (e *events) leverageObserved(lanes []laneLeverage) {
+	if e == nil || e.facts == nil {
+		return
+	}
+	held := map[string]bool{}
+	for _, l := range lanes {
+		held[l.lane] = true
+		e.facts.BackyardLeverageGap(l.lane, l.gap, l.targeted)
+	}
+	e.mu.Lock()
+	previous := e.heldLanes
+	e.heldLanes = held
+	e.mu.Unlock()
+	for lane := range previous {
+		if !held[lane] {
+			e.facts.BackyardLeverageLaneGone(lane)
+		}
+	}
+}
+
+// leverageUpLanded reports a landed leverage_up borrow: the counter, the
+// reaction time from the room it used first being seen, and one log line.
+func (e *events) leverageUpLanded(lane string, borrowedRaw int64, signature string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	opened, known := e.roomOpenedAt[lane]
+	room := e.roomRaw[lane]
+	delete(e.roomOpenedAt, lane)
+	now := e.now()
+	e.mu.Unlock()
+	reaction := now.Sub(opened)
+	if known {
+		e.log.Info("backyard_leverage_up_landed", "lane", lane, "borrowed_raw", borrowedRaw, "room_raw", room, "reaction_seconds", reaction.Seconds(), "signature", signature)
+	} else {
+		e.log.Info("backyard_leverage_up_landed", "lane", lane, "borrowed_raw", borrowedRaw, "room_raw", room, "reaction_seconds", "unknown", "signature", signature)
+	}
+	if e.facts != nil {
+		e.facts.BackyardLeverageUpLanded(lane, reaction, known)
+	}
 }

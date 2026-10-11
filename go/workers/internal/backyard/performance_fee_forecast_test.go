@@ -246,7 +246,10 @@ func TestPerformanceFeeReservesHWMPrecisionAtEveryReport(t *testing.T) {
 	}
 }
 
-func TestPerformanceFeeLeverageHWMKEEPDoesNotRaiseTarget(t *testing.T) {
+// An in-place up move charges the full performance fee on its extra income,
+// so it needs no high-water-mark baseline: a vault below its HWM pays less
+// fee on the increment, never more. The SWITCH forecast keeps its HWM gate.
+func TestPerformanceFeeLeverageUPNeedsNoHWMBaseline(t *testing.T) {
 	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_000_000_000, 1_000_000_000, new(big.Int).Lsh(big.NewInt(1), 47))
 	s := in.Snapshot
@@ -261,8 +264,11 @@ func TestPerformanceFeeLeverageHWMKEEPDoesNotRaiseTarget(t *testing.T) {
 	market := leverageMarket(s.RouteLane, .30, math.Log1p(.06))
 	market.CurrentBorrowAPY = .06
 	got, ok := decideLeverageTarget(s, keep, []LaneEconomics{market}, DefaultSelectorPolicy())
-	if !ok || got.Next != 1 || got.Reason != "fee_hwm_baseline_unavailable" {
-		t.Fatalf("HWM-blocked KEEP became an economic UP: %+v ok=%t selector=%+v", got, ok, keep)
+	if keep.Reason != "fee_hwm_baseline_unavailable" {
+		t.Fatalf("fixture HWM is known: %+v", keep)
+	}
+	if !ok || got.Next != 1.5 || got.Reason != "up_move_approved" || got.BorrowRaw == 0 || got.GainRaw <= 0 {
+		t.Fatalf("an unknown HWM baseline blocked an in-place UP: %+v ok=%t", got, ok)
 	}
 	for _, unknown := range []bool{false, true} {
 		s.LeverageTargetLevel = 1.5
@@ -336,12 +342,13 @@ func TestLeverageUPNeedsOnlySpreadAndPositiveGain(t *testing.T) {
 		t.Fatalf("an up move below the 1%% spread was approved: %+v", got)
 	}
 	// As live: the stored target is above the 1x position and the debt
-	// reserve is at its utilization limit.
+	// reserve is at its utilization limit. The approval stands at the whole
+	// step, so the tick that sees room borrows it (leverageBorrowReceive).
 	full := s
 	full.LeverageTargetLevel = 1.75
-	full.LeverageBorrow150Raw, full.LeverageBorrow175Raw = 0, 0
-	if got := decide(full, .12); got.Next != 1.75 || got.BorrowRaw != 0 || got.Reason != "no_borrow_room" {
-		t.Fatalf("a full debt reserve was not reported as no room: %+v", got)
+	full.LeverageBorrow150Raw, full.LeverageBorrow175Raw, full.AdditionalDebtRoomRaw = 0, 0, 0
+	if got := decide(full, .12); got.Next != 1.75 || got.BorrowRaw != full.LeverageDesired150Raw || got.Reason != "up_move_approved" || got.RoomRaw != 0 {
+		t.Fatalf("a full debt reserve withheld the approval: %+v", got)
 	}
 }
 
@@ -381,7 +388,7 @@ func TestPerformanceFeeUnarmedCannotProduceEconomicUP(t *testing.T) {
 	m := leverageMarket(s.RouteLane, .60, math.Log1p(.06))
 	m.CurrentBorrowAPY = .06
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy())
-	if !ok || got.Next != got.Current || got.Reason != "fee_hwm_baseline_unavailable" {
+	if !ok || got.Next != got.Current || got.Reason != "fee_terms_unavailable" || got.BorrowRaw != 0 {
 		t.Fatalf("unarmed projection can raise durable target: %+v ok=%t", got, ok)
 	}
 }

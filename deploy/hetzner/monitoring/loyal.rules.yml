@@ -181,6 +181,26 @@ groups:
           action: "Read the latest kamino_fleet_capacity log line for this reserve (held and movable capital, best destination, its room) and the fleet_opportunity_replanned and fleet_opportunity_deferred events. Find why the published moves do not land; do not raise limits or split holdings to clear it."
           recovery: "Confirm moves from this reserve land and its movable capital reads 0 on a fresh cycle. The series vanishing or a restart is not recovery."
 
+      # Earn Max leverage it could take and does not. Backyard recomputes each
+      # held lane's debt reserve borrow room on every reserve update and sets
+      # its gap to the stored leverage target every tick; a lane below its
+      # target wakes a tick the moment room opens. Room above $1k for 15m on
+      # a lane 0.05x or more below target with no leverage_up landing means
+      # the borrow is refused, failing or never planned.
+      - alert: LoyalBackyardLeverageUnused
+        expr: |
+          loyal_backyard_leverage_borrow_room_usd > 1000
+          and on (lane) loyal_backyard_leverage_gap > 0.05
+          unless on (lane) increase(loyal_backyard_leverage_up_landed_total[15m]) > 0
+        for: 15m
+        labels: {severity: warning}
+        annotations:
+          summary: "Earn Max lane {{ $labels.lane }} has had borrow room below its leverage target for 15m"
+          trigger: "The lane's debt reserve had over $1,000 of borrow room and the lane sat at least 0.05x below its stored leverage target for 15 minutes with no leverage_up borrow landing."
+          impact: "The lane earns less than its stored leverage target would while its debt reserve could fund the borrow; no funds are at risk."
+          action: "Read the latest 'leverage decision' line (reason, gain, cost, borrow, room) and the HOLD reasons journaled for the lane (leverage_up_awaiting_approval, leverage_up_no_borrow_room). An approval refused as up_move_not_worth_cost is the cost model's answer, not a fault; anything else is why the borrow is not planned or does not land. Do not lower the target or raise limits to clear it."
+          recovery: "Confirm a leverage_up borrow lands for the lane (backyard_leverage_up_landed) or the gap closes. The series vanishing or a restart is not recovery."
+
   - name: loyal-units
     rules:
       # A Go unit systemd runs (or is restarting) that does not serve /metrics.

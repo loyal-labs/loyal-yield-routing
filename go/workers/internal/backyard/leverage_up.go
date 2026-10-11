@@ -81,13 +81,24 @@ func leverageDebtFreeStep(s Snapshot) (Action, string, int64) {
 	}
 	receive := leverageBorrowReceive(s, level)
 	if receive < leverageMinimumBorrowRaw {
-		return Hold, "leverage_capacity_settled", 0
+		return Hold, leverageUpHoldReason(s), 0
 	}
 	return OpenRouteStep, leverageUpReason, int64(receive)
 }
 
-// leverageUpStepWithDebt is the 1.5x->1.75x move on a settled leveraged
-// position; ok=false keeps the installed single_loop_position_ready hold.
+// leverageUpHoldReason names why a position below its stored target does not
+// borrow this tick: no live approval from the selector's economics, or no
+// capacity for the minimum borrow.
+func leverageUpHoldReason(s Snapshot) string {
+	if !leverageApprovalLive(s) {
+		return "leverage_up_awaiting_approval"
+	}
+	return "leverage_up_no_borrow_room"
+}
+
+// leverageUpStepWithDebt is the up move on a settled leveraged position below
+// its stored target; ok=false (target reached) keeps the installed
+// single_loop_position_ready hold.
 func leverageUpStepWithDebt(s Snapshot) (Action, string, int64, bool) {
 	level := leverageUpLevel(s)
 	if level == 0 {
@@ -98,7 +109,7 @@ func leverageUpStepWithDebt(s Snapshot) (Action, string, int64, bool) {
 	}
 	receive := leverageBorrowReceive(s, level)
 	if receive < leverageMinimumBorrowRaw {
-		return "", "", 0, false
+		return Hold, leverageUpHoldReason(s), 0, true
 	}
 	return OpenRouteStep, leverageUpReason, int64(receive), true
 }

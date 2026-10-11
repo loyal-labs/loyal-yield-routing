@@ -42,10 +42,10 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 		wantReason string
 	}{
 		{"1x stays below 1 pt", 1, 0.10, math.Log1p(0.095), 1, "spread_rule"},
-		{"1x up with fee-reserved edge", 1, 0.60, math.Log1p(0.06), 1.5, "spread_rule"},
+		{"1x up with fee-reserved edge", 1, 0.60, math.Log1p(0.06), 1.5, "up_move_approved"},
 		{"1.5x stays 1-2 pt", 1.5, 0.10, math.Log1p(0.085), 1.5, "spread_rule"},
 		// Live levels reach 1.75x with the multi-cycle exit; option 1 exactly.
-		{"1.5x qualifying capped loan", 1.5, 0.12, math.Log1p(0.06), 1.75, "spread_rule"},
+		{"1.5x qualifying capped loan", 1.5, 0.12, math.Log1p(0.06), 1.75, "up_move_approved"},
 		{"1.5x down below 0", 1.5, 0.05, math.Log1p(0.06), 1, "spread_rule"},
 		{"1.75x stays in the gap", 1.75, 0.10, math.Log1p(0.085), 1.75, "spread_rule"},
 		{"1.75x down below 1 pt", 1.75, 0.10, math.Log1p(0.095), 1.5, "spread_rule"},
@@ -251,6 +251,7 @@ func armLeverageCapacityFixture(s *Snapshot) {
 	s.LeverageBorrow150Raw, s.LeverageBorrow175Raw = 0, 0
 	s.BorrowCapacityKnown = true
 	s.AdditionalDebtRoomRaw = 1_000_000_000
+	s.BorrowUtilizationHeadroomRaw = math.MaxUint64
 	s.BorrowDebtDecimals = 6
 	copy(s.BorrowDebtPriceSF[:], leverageTestPriceBytes())
 	s.BorrowUSDCPriceSF = s.BorrowDebtPriceSF
@@ -261,6 +262,7 @@ func armLeverageCapacityFixture(s *Snapshot) {
 	if n, err := position.leverageUpBorrowRaw(175); err == nil {
 		s.LeverageBorrow175Raw, _ = leverageUpCapFee(position, n, func(uint64) (uint64, error) { return 0, nil })
 	}
+	s.LeverageDesired150Raw, s.LeverageDesired175Raw = s.LeverageBorrow150Raw, s.LeverageBorrow175Raw
 	s.LeverageApprovedBorrowRaw = s.LeverageBorrow150Raw
 	if currentLeverageLevel(*s) >= 1.5 {
 		s.LeverageApprovedBorrowRaw = s.LeverageBorrow175Raw
