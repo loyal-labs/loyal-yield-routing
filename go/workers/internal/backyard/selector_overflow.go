@@ -92,6 +92,13 @@ var overflowMinimumEquityRaw = int64(math.Ceil(float64(leverageMinimumBorrowRaw)
 
 // overflowSourceSettled: the working lane is a quiet funded source with an
 // overflow lane and nothing in flight.
+// overflowSourceBorrowClosed is the source lane's own borrow room known and
+// under the minimum borrow: the only state in which the overflow room is
+// read, so the only one in which observation captures it.
+func overflowSourceBorrowClosed(s Snapshot) bool {
+	return s.BorrowCapacityKnown && (s.BorrowUtilizationBlocked || kaminoReceiveWithinRoom(s.AdditionalDebtRoomRaw, s.BorrowFeeRate) < leverageMinimumBorrowRaw)
+}
+
 func overflowSourceSettled(s Snapshot) bool {
 	_, ok := overflowLaneOf(s.RouteLane)
 	return ok && trancheSourceSettled(s) && !s.OtherLanesCustodyHeld && s.HasPosition && s.PositionCollateralValueRaw > 0
@@ -149,7 +156,7 @@ func overflowTranche(in SelectorInput, generation int64, now time.Time) (*tranch
 		return nil, "overflow_source_at_target"
 	case !s.BorrowCapacityKnown:
 		return nil, "overflow_source_room_unknown"
-	case !s.BorrowUtilizationBlocked && kaminoReceiveWithinRoom(s.AdditionalDebtRoomRaw, s.BorrowFeeRate) >= leverageMinimumBorrowRaw:
+	case !overflowSourceBorrowClosed(s):
 		return nil, "overflow_source_has_room"
 	case !overflowSourceSettled(s):
 		return nil, "overflow_source_not_settled"
@@ -271,7 +278,9 @@ func overflowInitializationReady(s Snapshot) bool {
 func applyOverflowRoom(ctx context.Context, s *Snapshot, slot int64, route RuntimeRoute, refresh func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)) error {
 	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown = 0, 0, false
 	lane, ok := overflowLaneOf(route.Lane)
-	if !ok {
+	// Only a source holding a position (overflowSourceSettled) that cannot
+	// borrow ever reads the room.
+	if !ok || !s.HasPosition || !overflowSourceBorrowClosed(*s) {
 		return nil
 	}
 	overflow, err := runtimeRoute(lane)
