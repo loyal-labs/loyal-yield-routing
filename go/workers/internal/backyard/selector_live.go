@@ -33,13 +33,34 @@ const selectorLadderBudget = 3 * time.Second
 // delay the canary's own quote. Those lanes keep their market economics and
 // are published as blocked without a quote.
 func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
-	return collectSelectorQuotesWithSource(ctx, rpc, view, client, manifest, o, markets, policy, onlyLane, nil, nil, canaryMaximum...)
+	return collectSelectorQuotesWithSource(ctx, rpc, view, client, manifest, o, markets, policy, onlyLane, nil, canaryMaximum...)
+}
+
+// selectorQuoteCapture is what one sample's quote collection priced beyond
+// its whole-move quotes: the full-exit source quote, the policies it read,
+// and every destination recipe its ladders priced. Tranche quotes are
+// composed from these, so a tranche never prices a destination twice and
+// never runs after the sample's own deadline.
+type selectorQuoteCapture struct {
+	source       selectorSourceQuote
+	policies     installedPolicies
+	mu           sync.Mutex
+	destinations []selectorDestinationQuote
+}
+
+func (c *selectorQuoteCapture) addDestination(d selectorDestinationQuote) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.destinations = append(c.destinations, d)
 }
 
 // collectSelectorQuotesWithSource is collectSelectorQuotesForLane that also
 // hands back the priced full-exit source quote, which tranche pricing scales
 // to a partial exit instead of pricing the source a second time.
-func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, sourceOut *selectorSourceQuote, policiesOut *installedPolicies, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, capture *selectorQuoteCapture, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
 	if err := policy.validate(); err != nil {
@@ -69,8 +90,8 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 		return out, nil, err
 	}
 	o.policies = policies
-	if policiesOut != nil {
-		*policiesOut = policies
+	if capture != nil {
+		capture.policies = policies
 	}
 	// A catalog lane's source quote (non-USDC debt) comes from the candidate
 	// producer through the durable planning observation manifest: idle cash
@@ -90,8 +111,8 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 	if err != nil {
 		return out, nil, err
 	}
-	if sourceOut != nil {
-		*sourceOut = source
+	if capture != nil {
+		capture.source = source
 	}
 	if source.MinimumIdleRaw <= uint64(policy.IdleBufferRaw) {
 		return out, nil, budgetHold("selector_move_has_no_entry_cash")
@@ -136,6 +157,9 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 				if err != nil {
 					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
 					return MoveQuote{}, 0, "complete_entry_quote_unavailable", false, err
+				}
+				if !sameLane {
+					capture.addDestination(destination)
 				}
 				loss := destinationEntrySwapLoss(destination.Recipe)
 				q, err := composeSelectorMove(ctx, view, o, source, destination)
@@ -346,16 +370,24 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 		maximum = []uint64{uint64(min(t.EquityRaw, o.Snapshot.VoltrIdleRaw))}
 		onlyLane = t.Destination
 	}
-	var source selectorSourceQuote
-	var policies installedPolicies
-	enriched, quotes, quoteErr := collectSelectorQuotesWithSource(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, &source, &policies, maximum...)
-	var refusals map[string]string
-	if quoteErr == nil && onlyLane == "" && o.planning.tranche == nil && source.Lane != "" {
+	capture := &selectorQuoteCapture{}
+	enriched, quotes, quoteErr := collectSelectorQuotesWithSource(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, capture, maximum...)
+	var tranches trancheCollection
+	switch {
+	case onlyLane != "":
+		tranches.SetReason = "tranche_collection_paused_for_single_lane_quote"
+	case quoteErr != nil:
+		// The full-exit source quote every tranche scales was not priced.
+		tranches.SetReason = "selector_source_quote_unavailable"
+		var hold *BudgetHold
+		if errors.As(quoteErr, &hold) && selectorQuoteCollectionHoldCodes[hold.Reason] {
+			tranches.SetReason = hold.Reason
+		}
+	default:
 		priced := o
-		priced.policies = policies
-		var tranches []MoveQuote
-		tranches, refusals = collectTrancheQuotes(ctx, rpc, view, productionJupiter, manifest, priced, markets, policy, source)
-		quotes = append(quotes, tranches...)
+		priced.policies = capture.policies
+		tranches = collectTrancheQuotes(ctx, rpc, view, productionJupiter, manifest, priced, markets, policy, capture)
+		quotes = append(quotes, tranches.Quotes...)
 	}
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
@@ -379,6 +411,6 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}
-	result, err := d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request, trancheRefusals: refusals, heldFacts: o.heldFacts}, slot, version)
+	result, err := d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request, trancheRefusals: tranches.Refusals, trancheSetReason: tranches.SetReason, heldFacts: o.heldFacts}, slot, version)
 	return result, o, err
 }

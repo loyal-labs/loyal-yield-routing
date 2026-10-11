@@ -226,6 +226,9 @@ func selectTranche(in SelectorInput, previous map[string]AdvantageWindow) tranch
 	case s.MonitorsArmed && !selectorFeeBaselineKnown(s):
 		sourceReason = "fee_hwm_baseline_unavailable"
 	}
+	if sourceReason == "" && in.trancheSetReason != "" {
+		sourceReason = in.trancheSetReason
+	}
 	sourceMarket, sourceOK := markets[s.RouteLane]
 	if sourceReason == "" && (!sourceOK || sourceMarket.validate(in.Now, p) != nil) {
 		sourceReason = "current_lane_economics_unavailable"
@@ -285,6 +288,12 @@ func selectTranche(in SelectorInput, previous map[string]AdvantageWindow) tranch
 		}
 		if reason := in.trancheRefusals[key]; reason != "" {
 			block(reason)
+			continue
+		}
+		if !destinationHeld && m.EntryBlockedReason != "" {
+			// The flat entry recipe a tranche reuses was refused this sample,
+			// with the whole-move ladder's own sanitized reason.
+			block(m.EntryBlockedReason)
 			continue
 		}
 		var quote *MoveQuote

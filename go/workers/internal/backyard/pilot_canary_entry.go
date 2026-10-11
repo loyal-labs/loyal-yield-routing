@@ -103,7 +103,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	var chosen *MoveQuote
 	for i := range input.Quotes {
 		q := input.Quotes[i]
-		if q.DestinationLane == request.Lane && q.SourceLane == s.RouteLane && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
+		if !q.Tranche && q.DestinationLane == request.Lane && q.SourceLane == s.RouteLane && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
 			if chosen != nil {
 				return result, nil, budgetHold("duplicate_move_quote")
 			}
