@@ -403,7 +403,7 @@ func BuildImmutableMarketEpoch(snapshot SupportedReserveMarketSnapshot, enabledM
 }
 
 // validateReserveState returns the reserve's economic expiry and whether its
-// economics may serve as a target. The economic lag runs from the reserve's
+// economics may serve as a target; a reserve that may not has no expiry. The economic lag runs from the reserve's
 // last refresh to the stream frontier, up to which its row is current.
 func validateReserveState(exact SupportedReserveStateRow, catalog SupportedReserveCatalogRow, frontierSlot int64, frontierObservedAt, publicationMinimum time.Time, hard, refreshable *[]MarketMintBlocker) (time.Time, bool) {
 	reserve := stringPointer(catalog.Reserve)
@@ -422,7 +422,7 @@ func validateReserveState(exact SupportedReserveStateRow, catalog SupportedReser
 	if exact.ReserveLastUpdateStale {
 		*refreshable = append(*refreshable, blocker("explicit_stale_economics", reserve, "reserve last_update.stale is set; admitted as refresh-before-withdraw source only"))
 	}
-	expiry, target := frontierObservedAt.UTC(), false
+	var expiry time.Time
 	if exact.ReserveLastUpdateSlot < 0 || exact.ReserveLastUpdateSlot > exact.StateSlot {
 		*hard = append(*hard, blocker("invalid_economic_slot_order", reserve, fmt.Sprintf("last_update_slot=%d state_slot=%d frontier_slot=%d", exact.ReserveLastUpdateSlot, exact.StateSlot, frontierSlot)))
 	} else {
@@ -430,18 +430,18 @@ func validateReserveState(exact SupportedReserveStateRow, catalog SupportedReser
 		if lag > maximumReserveEconomicSlotLag {
 			*refreshable = append(*refreshable, blocker("economic_slot_lag_exceeded", reserve, fmt.Sprintf("economic slot lag %d exceeds %d; admitted as refresh-before-withdraw source only", lag, maximumReserveEconomicSlotLag)))
 		} else {
-			expiry = expiry.Add(time.Duration((maximumReserveEconomicSlotLag-lag)*reserveEconomicMillisPerSlot) * time.Millisecond)
-			if !expiry.After(publicationMinimum) {
-				*refreshable = append(*refreshable, blocker("economic_insufficient_lifetime", reserve, fmt.Sprintf("economic evidence expires at %s; remaining lifetime is below %d seconds; admitted as refresh-before-withdraw source only", rustDisplayTime(expiry), int64(minimumUsableEpochLifetime/time.Second))))
-			} else {
-				target = !exact.ReserveLastUpdateStale
+			lifetime := frontierObservedAt.UTC().Add(time.Duration((maximumReserveEconomicSlotLag-lag)*reserveEconomicMillisPerSlot) * time.Millisecond)
+			if !lifetime.After(publicationMinimum) {
+				*refreshable = append(*refreshable, blocker("economic_insufficient_lifetime", reserve, fmt.Sprintf("economic evidence expires at %s; remaining lifetime is below %d seconds; admitted as refresh-before-withdraw source only", rustDisplayTime(lifetime), int64(minimumUsableEpochLifetime/time.Second))))
+			} else if !exact.ReserveLastUpdateStale {
+				expiry = lifetime
 			}
 		}
 	}
 	if !finite(exact.AvailableAmount) || exact.AvailableAmount < 0 || !finite(exact.BorrowedAmount) || exact.BorrowedAmount < 0 || !finite(exact.TotalSupplyAmount) || exact.TotalSupplyAmount <= 0 || !finite(exact.MarketPriceUSD) || !finite(exact.Utilization) || exact.Utilization < 0 || exact.Utilization > 1.000001 || !finite(exact.BorrowAPY) || exact.BorrowAPY < 0 || !finite(exact.SupplyAPY) || exact.SupplyAPY < 0 || exact.SupplyAPY >= .5 {
 		*hard = append(*hard, blocker("invalid_economic_fields", reserve, fmt.Sprintf("invalid available=%s borrowed=%s total_supply=%s utilization=%s borrow_apy=%s supply_apy=%s", canonicalFloat(exact.AvailableAmount), canonicalFloat(exact.BorrowedAmount), canonicalFloat(exact.TotalSupplyAmount), canonicalFloat(exact.Utilization), canonicalFloat(exact.BorrowAPY), canonicalFloat(exact.SupplyAPY))))
 	}
-	return expiry, target
+	return expiry, !expiry.IsZero()
 }
 
 func (r *SupportedReserveStateRow) captureFloatBits() {
@@ -841,6 +841,18 @@ func coverageMints(coverages []MarketMintCoverage) []string {
 		result = append(result, coverage.Mint)
 	}
 	return result
+}
+
+// planDirectReads plans each reserve whose direct read differs from its
+// stream row on the direct read: the chain at a known slot. The stream row
+// still lists the catalog and stays the published epoch evidence.
+func planDirectReads(snapshot, direct MarketSnapshot) {
+	for address, reserve := range direct.Reserves {
+		if held, ok := snapshot.Reserves[address]; ok && !strings.EqualFold(held.DataHash, reserve.DataHash) {
+			reserve.ObservedAt = direct.ObservedAt
+			snapshot.Reserves[address] = reserve
+		}
+	}
 }
 
 // DirectObservationHashMismatch distinguishes a changing chain observation

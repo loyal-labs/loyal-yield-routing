@@ -103,11 +103,11 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 	return HandleOutcome{Slot: accountUpdate.GetSlot(), Inserted: outcome.Inserted}, nil
 }
 
-// Seed reads every target once at confirmed commitment and inserts it as an
-// http_snapshot row, the state the stream continues from. It returns the
+// Seed reads targets once at confirmed commitment and inserts each as an
+// http_snapshot row, the state the stream continues from: every target at
+// start-up, each added one when the watched set changes. It returns the
 // lowest slot read.
-func (h *Handler) Seed(ctx context.Context) (uint64, error) {
-	targets := h.Targets()
+func (h *Handler) Seed(ctx context.Context, targets []Target) (uint64, error) {
 	h.mu.RLock()
 	slotDurationMS := h.slotDurationMS
 	h.mu.RUnlock()

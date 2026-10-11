@@ -43,10 +43,9 @@ type EngineConfig struct {
 	Out    io.Writer
 	Logger *slog.Logger
 	Facts  *engine.Facts
-	// Selector and its Timescale economic feed run beside, never inside, the
+	// Selector and its economic feed run beside, never inside, the
 	// transaction loop. Neither collector sends transactions.
-	Selector     SelectorMode
-	TimescaleURL string
+	Selector SelectorMode
 	// Jupiter is the swap/v1 client every quote goes through.
 	Jupiter *jupiter.Client
 }
@@ -72,11 +71,7 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("Backyard engine requires a platform-neutral lease owner")
 	}
 	switch config.Selector {
-	case SelectorOff:
-	case SelectorLive:
-		if config.TimescaleURL == "" {
-			return nil, fmt.Errorf("Backyard selector requires its Timescale economic feed")
-		}
+	case SelectorOff, SelectorLive:
 	default:
 		return nil, fmt.Errorf("unknown Backyard selector mode")
 	}
@@ -105,7 +100,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	productionJupiter = e.runtime.Jupiter
 	if e.runtime.Selector != SelectorOff {
 		// The feed observes every active registry lane.
-		feed, err := NewEconomicFeed(ctx, e.runtime.TimescaleURL)
+		feed, err := NewEconomicFeed(e.view)
 		if err != nil {
 			return err
 		}
@@ -211,5 +206,5 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			}
 		})
 	}()
-	return func() { cancelFeed(); <-feedDone; feed.Close() }
+	return func() { cancelFeed(); <-feedDone }
 }

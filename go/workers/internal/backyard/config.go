@@ -80,7 +80,7 @@ func DefaultConfig() Config {
 // operator commands read. Separately deployed engine instances have
 // independent credentials; neither reads the other's URLs or keys.
 type RuntimeConfig struct {
-	DatabaseURL, RPCURL, TimescaleURL string
+	DatabaseURL, RPCURL string
 	// Jupiter is the swap/v1 client the selector evaluate command quotes
 	// through.
 	Jupiter *jupiter.Client

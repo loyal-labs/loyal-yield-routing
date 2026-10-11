@@ -241,6 +241,14 @@ func (r *Runtime) Run(ctx context.Context) error {
 					start := clampToReplayWindow(*bindingStart, current)
 					bindingStart = &start
 				}
+				// A reserve new to the stream starts from its current chain state.
+				if added := addedTargets(targets, nextTargets); len(added) > 0 {
+					if _, seedErr := r.kamino.Seed(passCtx, added); seedErr != nil {
+						r.facts.Failed(engine.FamilyObserver, "kamino_seed")
+						r.logger.Error("could not seed added Kamino reserves; old stream retained", "error", seedErr)
+						return nil
+					}
+				}
 				r.ata.SetTargets(nextWatch.ATAs)
 				r.earn.SetWatchSet(nextWatch)
 				r.kamino.SetTargets(nextTargets)
@@ -331,7 +339,7 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 	} else {
 		r.kamino.SetSlotDuration(slotDuration)
 	}
-	kaminoSlot, err := r.kamino.Seed(ctx)
+	kaminoSlot, err := r.kamino.Seed(ctx, targets)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("seed Kamino state: %w", err)
 	}
@@ -838,6 +846,21 @@ func (r *Runtime) recoverEarnMaxGaps(ctx context.Context, set *watch.Set) (int64
 		inserted += outcome.InsertedJobs
 	}
 	return inserted, nil
+}
+
+// addedTargets are the reserves next watches and previous does not.
+func addedTargets(previous, next []kamino.Target) []kamino.Target {
+	watched := make(map[string]bool, len(previous))
+	for _, target := range previous {
+		watched[target.Reserve] = true
+	}
+	var added []kamino.Target
+	for _, target := range next {
+		if !watched[target.Reserve] {
+			added = append(added, target)
+		}
+	}
+	return added
 }
 
 func targetFingerprint(targets []kamino.Target) string {

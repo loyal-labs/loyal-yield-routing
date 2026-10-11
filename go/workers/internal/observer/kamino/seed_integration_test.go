@@ -75,9 +75,10 @@ func reserveAccount(market, mint solana.PublicKey, lastUpdateSlot, available uin
 	return data
 }
 
-// The startup seed and the stream are the only Kamino writers: the seed's
-// confirmed read lands as an http_snapshot row and each later stream update as
-// a laserstream_grpc row, both in reserve_updates.
+// The seed and the stream are the only Kamino writers: the seed's confirmed
+// read lands as an http_snapshot row and each later stream update as a
+// laserstream_grpc row, both in reserve_updates. A reserve added mid-run is
+// seeded alone.
 func TestSeedAndStreamUpdatePersistConfirmedRows(t *testing.T) {
 	databaseURL := os.Getenv("TEST_TIMESCALE_DATABASE_URL")
 	if databaseURL == "" {
@@ -101,7 +102,7 @@ func TestSeedAndStreamUpdatePersistConfirmedRows(t *testing.T) {
 	}
 	handler := NewHandler(NewStore(pool, "kamino"), client, slog.New(slog.NewTextHandler(io.Discard, nil)), 400, false)
 	handler.SetTargets([]Target{{Reserve: reserve, Market: &marketString, LiquidityMint: &mintString}})
-	latest := func() (source, hash string, slot int64) {
+	latest := func(reserve string) (source, hash string, slot int64) {
 		t.Helper()
 		if err := pool.QueryRow(ctx, `SELECT source,account_data_hash,slot FROM kamino.reserve_updates WHERE reserve=$1 ORDER BY slot DESC LIMIT 1`, reserve).Scan(&source, &hash, &slot); err != nil {
 			t.Fatal(err)
@@ -112,10 +113,10 @@ func TestSeedAndStreamUpdatePersistConfirmedRows(t *testing.T) {
 	const seedSlot = 1_000
 	seeded := reserveAccount(market, mint, seedSlot, 1_000_000)
 	rpcState.set(seedSlot, seeded)
-	if slot, err := handler.Seed(ctx); err != nil || slot != seedSlot {
+	if slot, err := handler.Seed(ctx, handler.Targets()); err != nil || slot != seedSlot {
 		t.Fatalf("seed = %d, %v", slot, err)
 	}
-	if source, hash, slot := latest(); source != "http_snapshot" || hash != accountHash(seeded) || slot != seedSlot {
+	if source, hash, slot := latest(reserve); source != "http_snapshot" || hash != accountHash(seeded) || slot != seedSlot {
 		t.Fatalf("seed row = %s %s %d", source, hash, slot)
 	}
 
@@ -125,7 +126,21 @@ func TestSeedAndStreamUpdatePersistConfirmedRows(t *testing.T) {
 	if outcome, err := handler.HandleAccount(ctx, update); err != nil || !outcome.Inserted {
 		t.Fatalf("stream update not persisted: %+v %v", outcome, err)
 	}
-	if source, hash, slot := latest(); source != "laserstream_grpc" || hash != accountHash(moved) || slot != streamSlot {
+	if source, hash, slot := latest(reserve); source != "laserstream_grpc" || hash != accountHash(moved) || slot != streamSlot {
 		t.Fatalf("stream row = %s %s %d", source, hash, slot)
+	}
+
+	addedKey := solana.NewWallet().PublicKey()
+	added := addedKey.String()
+	addedState := reserveAccount(market, mint, streamSlot+10, 500_000)
+	rpcState.set(streamSlot+10, addedState)
+	if _, err := handler.Seed(ctx, []Target{{Reserve: added, Market: &marketString, LiquidityMint: &mintString}}); err != nil {
+		t.Fatal(err)
+	}
+	if source, hash, slot := latest(added); source != "http_snapshot" || hash != accountHash(addedState) || slot != streamSlot+10 {
+		t.Fatalf("added reserve row = %s %s %d", source, hash, slot)
+	}
+	if source, _, slot := latest(reserve); source != "laserstream_grpc" || slot != streamSlot {
+		t.Fatalf("seeding an added reserve rewrote a watched one: %s %d", source, slot)
 	}
 }

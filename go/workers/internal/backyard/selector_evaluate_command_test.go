@@ -24,7 +24,6 @@ func (f *stubSelectorEvaluateFeed) Refresh(context.Context) error { return f.ref
 func (f *stubSelectorEvaluateFeed) Snapshot() ([]LaneEconomics, string) {
 	return f.markets, ""
 }
-func (f *stubSelectorEvaluateFeed) Close() {}
 
 // canaryFixtureInput is the priced AUTO candidate at the canary equity: the
 // same admitted 0.9x price evidence the non-par review proved selectable, with

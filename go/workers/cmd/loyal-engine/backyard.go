@@ -49,11 +49,6 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if laserstream.APIKey, err = engine.Credential("BACKYARD_HELIUS_API_KEY"); err != nil {
 		return err
 	}
-	if selector != backyard.SelectorOff {
-		if cfg.TimescaleURL, err = engine.Credential("BACKYARD_TIMESCALE_DATABASE_URL"); err != nil {
-			return err
-		}
-	}
 	lost, err := engine.HoldFamily(ctx, cfg.DatabaseURL, engine.FamilyBackyard)
 	if err != nil {
 		return err
@@ -88,7 +83,7 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	lane, err := backyard.NewEngine(backyard.EngineConfig{
 		Database: database, RPC: cluster, View: view, Credentials: credentials, Config: backyard.DefaultConfig(), Owner: owner,
 		Out: os.Stdout, Logger: slog.Default(), Facts: facts, Jupiter: cfg.Jupiter,
-		Selector: selector, TimescaleURL: cfg.TimescaleURL,
+		Selector: selector,
 	})
 	if err != nil {
 		return err
@@ -188,7 +183,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 	case command == "selector-evaluate" && (len(rest) == 0 || len(rest) == 1 && rest[0] == "--execute"):
 		// --execute performs exactly one locked evaluation under its own
 		// short route lease; the committed entry is durable route state.
-		cfg.TimescaleURL = optionalCredential("BACKYARD_TIMESCALE_DATABASE_URL")
 		return backyard.RunSelectorEvaluate(ctx, out, cfg, len(rest) == 1)
 	case command == "clear-hold":
 		// The only operator path that lifts a durable manual recovery stop.

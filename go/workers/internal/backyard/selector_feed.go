@@ -6,64 +6,36 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 const kaminoStatsEndpoint = "https://api.kamino.finance/reserves/batch/stats"
 
-// Each reserve's latest confirmed row from the observer's stream (or its
-// startup seed), latest by slot as the fleet market epoch reads it: a replay
-// after a restart inserts older slots after the seed. Never use API stats as a
-// substitute for confirmed reserve evidence.
-const selectorReserveSQL = `SELECT jsonb_build_object(
- 'reserve',s.reserve,'market',s.market,'mint',s.liquidity_mint,
- 'observedAt',s.observed_at,'slot',s.slot,'hash',s.account_data_hash,
- 'commitment',s.source_commitment,'supplyApy',s.supply_apy,'borrowApy',s.borrow_apy,
- 'debtSupplyRaw',s.total_supply_amount,'debtBorrowRaw',s.borrowed_amount,
- 'status',s.snapshot->'reserve_status','emergency',s.snapshot->'emergency_mode','curve',s.snapshot->'borrow_rate_curve',
- 'hostBps',s.snapshot->'host_fixed_interest_rate_bps',
- 'borrowApr',s.snapshot->'borrow_apr',
- 'schema',s.snapshot->'observation_schema_version',
- 'priceUsd',s.snapshot->'market_price_usd','decimals',s.snapshot->'mint_decimals')
- FROM unnest($1::text[]) requested(reserve)
- CROSS JOIN LATERAL (
-  SELECT u.* FROM kamino.reserve_update_dedupe d
-  JOIN kamino.reserve_updates u ON u.event_id=d.event_id AND u.reserve=d.reserve AND u.slot=d.slot
-  WHERE d.reserve=requested.reserve AND u.source IN ('laserstream_grpc','http_snapshot')
-  ORDER BY d.slot DESC, d.event_id DESC LIMIT 1) s`
-
+// reserveEconomics is one lane reserve as Backyard's account view holds it:
+// the chain at the view slot, stamped with the chain clock at that slot.
 type reserveEconomics struct {
-	Reserve    string    `json:"reserve"`
-	Market     string    `json:"market"`
-	Mint       string    `json:"mint"`
-	ObservedAt time.Time `json:"observedAt"`
-	Slot       int64     `json:"slot"`
-	Hash       string    `json:"hash"`
-	Commitment string    `json:"commitment"`
-	SupplyAPY  *float64  `json:"supplyApy"`
-	BorrowAPY  *float64  `json:"borrowApy"`
-	// BorrowAPR is the snapshot's own annualized borrow APR from the SAME
-	// row. loyal-kamino-codec scales curve+host by
-	// 500ms/actual slot_duration_ms before publishing it, so it is the
-	// annualization evidence the raw per-slot curve lacks.
-	BorrowAPR *float64           `json:"borrowApr"`
-	SupplyRaw *float64           `json:"debtSupplyRaw"`
-	BorrowRaw *float64           `json:"debtBorrowRaw"`
-	Status    *int               `json:"status"`
-	Emergency *bool              `json:"emergency"`
-	Curve     []BorrowCurvePoint `json:"curve"`
-	HostBPS   *float64           `json:"hostBps"`
-	Schema    *int               `json:"schema"`
+	Reserve, Market, Mint, Hash string
+	Slot                        int64
+	ObservedAt                  time.Time
+	// SupplyAPY is the plain curve at the observed utilization net of the
+	// protocol take: what suppliers accrue, priced as the debt side is.
+	SupplyAPY            float64
+	SupplyRaw, BorrowRaw float64 // raw liquidity units of the reserve's mint
+	Curve                []BorrowCurvePoint
+	HostBPS              float64
+	Status               uint8
+	Emergency            bool
 	// PriceUSD and Decimals are the reserve's own oracle price and liquidity
-	// mint decimals from the same row.
-	PriceUSD *float64 `json:"priceUsd"`
-	Decimals *int     `json:"decimals"`
+	// mint decimals.
+	PriceUSD float64
+	Decimals int
 }
 
 type nativeYield struct {
@@ -150,96 +122,102 @@ func fetchNativeYields(ctx context.Context, client *http.Client, endpoint string
 	return parseNativeYields(body, routes, now, age)
 }
 
-func readReserveEconomics(ctx context.Context, pool *pgxpool.Pool, routes []RuntimeRoute) (map[string]reserveEconomics, error) {
+// readReserveEconomics reads every lane reserve from Backyard's account view,
+// which plans nothing while it is not live. A reserve absent from the chain or
+// not decodable leaves only its lanes out.
+func readReserveEconomics(ctx context.Context, view *View, routes []RuntimeRoute) (map[string]reserveEconomics, error) {
 	// The pinned USDC reserve is the USDC side of every non-USDC debt lane's
 	// price conversion, as in the live borrow capacity observation.
-	ids := make([]string, 0, len(routes)*2+1)
-	ids = append(ids, kaminoDebtReserve)
+	reserves := []string{kaminoDebtReserve}
 	for _, r := range routes {
-		ids = append(ids, r.Kamino.CollateralReserve, r.Kamino.DebtReserve)
+		reserves = append(reserves, r.Kamino.CollateralReserve, r.Kamino.DebtReserve)
 	}
-	rows, err := pool.Query(ctx, selectorReserveSQL, ids)
+	reserves = uniqueNonzero(reserves)
+	slot, accounts, err := view.read(ctx, append([]string{budgetClockAddress}, reserves...), 0, reserves...)
 	if err != nil {
-		return nil, fmt.Errorf("reserve_feed_unavailable")
+		return nil, err
 	}
-	defer rows.Close()
+	observedAt := time.Unix(clockUnixTimestamp(accounts), 0).UTC()
 	out := map[string]reserveEconomics{}
-	for rows.Next() {
-		var raw []byte
-		if err = rows.Scan(&raw); err != nil {
-			return nil, fmt.Errorf("reserve_feed_invalid")
+	for _, account := range accounts[1:] {
+		if r, err := decodeReserveEconomics(account); err == nil {
+			r.Slot, r.ObservedAt = slot, observedAt
+			out[r.Reserve] = r
 		}
-		var r reserveEconomics
-		if json.Unmarshal(raw, &r) != nil {
-			return nil, fmt.Errorf("reserve_feed_invalid")
-		}
-		if _, duplicate := out[r.Reserve]; duplicate {
-			return nil, fmt.Errorf("reserve_feed_duplicate")
-		}
-		// Production boundary: every row must carry the snapshot's own
-		// annualized borrow APR (a completeness check on the row;
-		// combine prices borrowing off the plain curve, see there). Zero stays
-		// valid: collateral reserves that never borrow report zero.
-		if r.BorrowAPR == nil || !finite(*r.BorrowAPR) || *r.BorrowAPR < 0 {
-			return nil, fmt.Errorf("reserve_annualization_invalid")
-		}
-		out[r.Reserve] = r
-	}
-	if rows.Err() != nil {
-		return nil, fmt.Errorf("reserve_feed_interrupted")
 	}
 	return out, nil
+}
+
+func decodeReserveEconomics(account ConfirmedAccount) (reserveEconomics, error) {
+	reserve, err := kamino.DecodeReserve(chainAccount(account, account.Address))
+	if err != nil {
+		return reserveEconomics{}, err
+	}
+	total, err := reserve.TotalLiquiditySF()
+	if err != nil {
+		return reserveEconomics{}, err
+	}
+	r := reserveEconomics{Reserve: account.Address, Market: reserve.LendingMarket.String(), Mint: reserve.LiquidityMint.String(), Hash: sha256Bytes(account.Data),
+		SupplyRaw: scaledFloat(total), BorrowRaw: scaledFloat(kamino.U128(reserve.BorrowedAmountSF)), HostBPS: float64(reserve.HostFixedInterestRateBPS),
+		Status: reserve.Status, Emergency: reserve.EmergencyMode, PriceUSD: scaledFloat(kamino.U128(reserve.MarketPriceSF)), Decimals: int(reserve.MintDecimals)}
+	for _, point := range reserve.BorrowRateCurve {
+		r.Curve = append(r.Curve, BorrowCurvePoint{float64(point.UtilizationRateBPS), float64(point.BorrowRateBPS)})
+	}
+	if r.BorrowRaw > 0 {
+		apr, err := projectedBorrowAPR(LaneEconomics{BorrowCurve: r.Curve, DebtSupplyRaw: r.SupplyRaw, DebtBorrowRaw: r.BorrowRaw}, 0)
+		if err != nil {
+			return reserveEconomics{}, err
+		}
+		r.SupplyAPY = math.Expm1(min(r.BorrowRaw/r.SupplyRaw, 1) * apr * (1 - float64(reserve.ProtocolTakeRatePct)/100))
+	}
+	return r, nil
+}
+
+// scaledFloat is a KLend scaled fraction (60 fractional bits) as a float.
+func scaledFloat(value *big.Int) float64 {
+	f, _ := new(big.Float).SetInt(value).Float64()
+	return math.Ldexp(f, -60)
 }
 
 // combineEconomics joins each route's reserve rows and native yield into
 // its lane economics; only active registry lanes contribute.
 func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomics, yields map[string]nativeYield, now time.Time, p SelectorPolicy) []LaneEconomics {
 	out := make([]LaneEconomics, 0, len(routes))
-	// A quiet reserve's row stays current while the stream is live, so the
-	// economics are as fresh as the stream frontier: the newest row read.
-	var frontier reserveEconomics
-	for _, r := range reserves {
-		if r.Slot > frontier.Slot {
-			frontier = r
-		}
-	}
 	valid := func(r reserveEconomics, reserve, mint, market string) bool {
-		return r.Reserve == reserve && r.Mint == mint && r.Market == market && r.Commitment == "confirmed" && r.Slot > 0 && sha256Pattern.MatchString(r.Hash) && r.Schema != nil && *r.Schema == 2 && r.Status != nil && r.Emergency != nil && freshAt(now, frontier.ObservedAt, p.MarketMaxAge)
+		return r.Reserve == reserve && r.Mint == mint && r.Market == market
 	}
 	priced := func(r reserveEconomics) bool {
-		return r.PriceUSD != nil && finite(*r.PriceUSD) && *r.PriceUSD > 0 && r.Decimals != nil && *r.Decimals >= 0 && *r.Decimals <= 18
+		return finite(r.PriceUSD) && r.PriceUSD > 0 && r.Decimals <= 18
 	}
 	usdc := reserves[kaminoDebtReserve]
-	usdcPriced := valid(usdc, kaminoDebtReserve, bridgeUSDC, kaminoMarket) && priced(usdc) && *usdc.Decimals == 6
+	usdcPriced := valid(usdc, kaminoDebtReserve, bridgeUSDC, kaminoMarket) && priced(usdc) && usdc.Decimals == 6
 	for _, route := range routes {
 		c, d := reserves[route.Kamino.CollateralReserve], reserves[route.Kamino.DebtReserve]
 		y, ok := yields[route.Lane]
-		if !ok || !valid(c, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, route.Kamino.Market) || !valid(d, route.Kamino.DebtReserve, route.Kamino.DebtMint, route.Kamino.Market) || c.SupplyAPY == nil || d.BorrowAPY == nil || d.SupplyRaw == nil || d.BorrowRaw == nil || d.HostBPS == nil {
+		if !ok || !valid(c, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, route.Kamino.Market) || !valid(d, route.Kamino.DebtReserve, route.Kamino.DebtMint, route.Kamino.Market) {
 			continue
 		}
-		// loyal-kamino-codec emits reserve supply and borrowed amounts in raw
-		// debt-mint units. They only ever meet other raw amounts of the same
-		// reserve (utilization) or the priced quote's raw debt, never USDC.
-		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: frontier.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: *c.SupplyAPY, CurrentBorrowAPY: *d.BorrowAPY, BorrowCurve: d.Curve, HostBorrowBPS: *d.HostBPS, DebtSupplyRaw: *d.SupplyRaw, DebtBorrowRaw: *d.BorrowRaw}
+		// Reserve supply and borrowed amounts are raw debt-mint units. They
+		// only ever meet other raw amounts of the same reserve (utilization)
+		// or the priced quote's raw debt, never USDC. Both reserves are the
+		// view at one slot, so the lane is observed at their chain time.
+		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: d.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: c.SupplyAPY, BorrowCurve: d.Curve, HostBorrowBPS: d.HostBPS, DebtSupplyRaw: d.SupplyRaw, DebtBorrowRaw: d.BorrowRaw}
 		// Every lane's debt reserve row carries its own price, so the projected
 		// utilization of a USDC-valued borrow is known for every non-USDC debt
 		// lane, not only the one the vault holds. Missing price evidence leaves
 		// it unknown (0); USDC debt needs no conversion.
 		if route.Kamino.DebtMint != bridgeUSDC && usdcPriced && priced(d) {
-			e.DebtRawPerUSDCRaw = *usdc.PriceUSD / *d.PriceUSD * math.Pow10(*d.Decimals-6)
+			e.DebtRawPerUSDCRaw = usdc.PriceUSD / d.PriceUSD * math.Pow10(d.Decimals-6)
 		}
 		// Feed capacity is deliberately not pair admission. The action-time adapter
 		// supplies exact execution-size capacity after policies, caps and swaps pass.
-		if *c.Status != 0 || *d.Status != 0 || *c.Emergency || *d.Emergency {
+		if c.Status != 0 || d.Status != 0 || c.Emergency || d.Emergency {
 			e.EntryBlockedReason = "reserve_inactive_or_emergency"
 		}
 		// The KLend curve (plus host rate) at the observed utilization IS the
-		// annual borrow APR. loyal-kamino-codec's borrow_apr/borrow_apy
-		// multiply it by 500 ms / actual slot duration (~1.9x on 2026-09-26),
-		// but the on-chain cumulative borrow index grows at the plain curve
-		// (48 hourly samples: Maple USDC 3.70% on chain, 3.69% curve, 6.99%
-		// stored). So price the current debt off the same plain curve the
-		// candidates use; the stored annualized fields are not used.
+		// annual borrow APR: the on-chain cumulative borrow index grows at the
+		// plain curve (48 hourly samples: Maple USDC 3.70% on chain, 3.69%
+		// curve, 6.99% from loyal-kamino-codec's slot-duration annualization).
 		apr, aprErr := projectedBorrowAPR(e, 0)
 		if aprErr != nil {
 			continue
@@ -253,10 +231,10 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomic
 }
 
 // EconomicFeed refreshes off the execution path. Snapshot never waits on HTTP
-// or SQL, and failed refreshes do not make stale entries fresh. Safety and
-// withdrawal decisions can run while enrichment is down.
+// or the view, and failed refreshes do not make stale entries fresh. Safety
+// and withdrawal decisions can run while enrichment is down.
 type EconomicFeed struct {
-	pool    *pgxpool.Pool
+	view    *View
 	client  *http.Client
 	routes  []RuntimeRoute
 	mu      sync.RWMutex
@@ -266,29 +244,12 @@ type EconomicFeed struct {
 
 // NewEconomicFeed observes every active registry lane: the selector scores
 // exactly the lanes it may enter.
-func NewEconomicFeed(ctx context.Context, databaseURL string) (*EconomicFeed, error) {
-	if databaseURL == "" {
-		return nil, fmt.Errorf("TIMESCALEDB_URL is required for economic observations")
-	}
-	cfg, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid economic database configuration")
-	}
-	cfg.MaxConns = 2
-	cfg.ConnConfig.ConnectTimeout = 5 * time.Second
-	// Enforce read-only sessions even if the injected credential can write.
-	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
-	cfg.ConnConfig.RuntimeParams["statement_timeout"] = "5000"
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("economic database unavailable")
-	}
+func NewEconomicFeed(view *View) (*EconomicFeed, error) {
 	routes, err := earnFeedRoutes()
 	if err != nil {
-		pool.Close()
 		return nil, err
 	}
-	return &EconomicFeed{pool: pool, client: &http.Client{Timeout: 5 * time.Second}, routes: routes}, nil
+	return &EconomicFeed{view: view, client: &http.Client{Timeout: 5 * time.Second}, routes: routes}, nil
 }
 
 // earnFeedRoutes are the active registry lanes' routes, in registry order.
@@ -304,13 +265,12 @@ func earnFeedRoutes() ([]RuntimeRoute, error) {
 	}
 	return routes, nil
 }
-func (f *EconomicFeed) Close() { f.pool.Close() }
 func (f *EconomicFeed) Refresh(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	now := time.Now().UTC()
 	p := DefaultSelectorPolicy()
-	reserves, err := readReserveEconomics(ctx, f.pool, f.routes)
+	reserves, err := readReserveEconomics(ctx, f.view, f.routes)
 	var yields map[string]nativeYield
 	if err == nil {
 		yields, err = fetchNativeYields(ctx, f.client, kaminoStatsEndpoint, f.routes, now, p.NativeMaxAge)

@@ -279,3 +279,29 @@ CREATE TABLE %[1]s.reserve_updates(
 		t.Fatal("a stream frontier trailing the chain was accepted")
 	}
 }
+
+// A direct read that differs from the stream row is the chain at a known
+// slot, so it is what gets planned; an agreeing read leaves the stream row.
+func TestPlanningUsesTheDirectReadWhereItDiffersFromTheStreamRow(t *testing.T) {
+	now := time.Now().UTC()
+	source := ReserveIdentity{Address: testIdentity(41), Market: testIdentity(42), Mint: USDCMint}
+	target := ReserveIdentity{Address: testIdentity(43), Market: testIdentity(44), Mint: USDCMint}
+	stream := MarketSnapshot{Slot: 1_000, ObservedAt: now, Reserves: map[string]ReserveState{
+		source.Address: {ReserveIdentity: source, Slot: 1_000, LastUpdateSlot: 999, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 2_000_000_000_000, DataHash: strings.Repeat("a", 64)},
+		target.Address: {ReserveIdentity: target, Slot: 1_000, LastUpdateSlot: 999, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 3_000_000_000_000, DataHash: strings.Repeat("b", 64)},
+	}}
+	epoch := testImmutableMarketEpoch(t, stream, source, target)
+	planned, err := marketSnapshotFromEpoch(epoch, source.Address, target.Address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := ReserveState{ReserveIdentity: target, Slot: 1_010, LastUpdateSlot: 1_010, SupplyAPYBPS: 300, TotalSupplyUSDMicros: 3_100_000_000_000, DataHash: strings.Repeat("c", 64)}
+	direct := MarketSnapshot{Slot: 1_010, ObservedAt: now.Add(time.Second), Reserves: map[string]ReserveState{source.Address: stream.Reserves[source.Address], target.Address: moved}}
+	planDirectReads(planned, direct)
+	if got := planned.Reserves[target.Address]; got.DataHash != moved.DataHash || got.SupplyAPYBPS != 300 || got.Slot != 1_010 || !got.ObservedAt.Equal(direct.ObservedAt) {
+		t.Fatalf("planned target = %+v, want the direct read at slot 1010", got)
+	}
+	if got := planned.Reserves[source.Address]; got.Slot != 1_000 || !got.ObservedAt.Equal(now) {
+		t.Fatalf("agreeing source was replaced: %+v", got)
+	}
+}
