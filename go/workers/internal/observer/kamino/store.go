@@ -36,13 +36,15 @@ func earnMaxObservationTargets() []Target {
 // supplementalObservationTargets is EARN_MAX_SUPPLEMENTAL_OBSERVATION_RESERVES
 // (loyal-actions earn_max.rs) as loyal-kamino-data targets.rs
 // supplemental_observation_targets builds it: the Backyard AUTO collateral and
-// PYUSD debt reserves, pinned, named "Auto Market" and never resolved through
+// PYUSD debt reserves, and the wYLDS debt reserve of AUTO's overflow lane
+// (AUTO/AUTO/wYLDS), pinned, named "Auto Market" and never resolved through
 // the Kamino API catalog.
 func supplementalObservationTargets() []Target {
 	const market, marketName = "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk", "Auto Market"
 	rows := [][2]string{
 		{"G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX", "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm"},
 		{"6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"},
+		{"34GJjXf7jGTdNL8Yw1HtqWSVvfX6JTsft3UsuFFUL7VU", "8fr7WGTVFszfyNWRMXj6fRjZZAnDwmXwEpCrtzmUkdih"},
 	}
 	targets := make([]Target, 0, len(rows))
 	for _, row := range rows {

@@ -164,7 +164,7 @@ func TestPayoffBoundUsesAccrualBasisAndUnroundedDebt(t *testing.T) {
 			accountAt(a, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+7] = 1
 		},
 		func(a []ConfirmedAccount) {
-			accountAt(a, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+920] = 1
+			accountAt(a, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+14] = 101 // protocol take above 100%
 		},
 		func(a []ConfirmedAccount) { clear(accountAt(a, route.Kamino.DebtReserve).Data[28:32]) },
 		func(a []ConfirmedAccount) {

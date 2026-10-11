@@ -8,11 +8,16 @@ package backyard
 // klend-sdk NULL_PUBKEY sentinel while slot 5112 holds the real scope
 // oracle. uniqueNonzero only drops EMPTY keys, so the sentinel reached the
 // oracle fetch as a required account and failed the whole observation.
-// The fix filters exactly that documented sentinel value at the reserve
-// oracle-key extraction (kamino_observe.go decodeKaminoReserve) — nothing
-// else. These tests run the REAL observeKaminoFromFixedAccounts.
+// kamino.DecodeReserve reads that documented sentinel as no oracle, the one
+// place it is interpreted. These tests run the REAL observeKaminoFromFixedAccounts.
 
 import "testing"
+
+// kaminoOracleSentinelPubkey is the pinned klend-sdk's documented NULL_PUBKEY
+// (tools/backyard-voltr/node_modules/@kamino-finance/klend-sdk/src/utils/
+// pubkey.ts), which installed reserves write into unused oracle slots;
+// kamino.DecodeReserve reads it as no oracle.
+const kaminoOracleSentinelPubkey = "nu11111111111111111111111111111111111111111"
 
 // oracleSentinelFixture shapes the route accounts exactly like the probed
 // AUTO reserves: the real scope oracle in slot 5112 of BOTH reserves and the

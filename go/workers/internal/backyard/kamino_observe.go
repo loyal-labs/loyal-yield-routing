@@ -62,17 +62,6 @@ var (
 	errKaminoMarketEmergency = errors.New("kamino_market_emergency")
 )
 
-// kaminoOracleSentinelPubkey is the pinned klend-sdk's documented NULL_PUBKEY
-// (tools/backyard-voltr/node_modules/@kamino-finance/klend-sdk/src/utils/
-// pubkey.ts): the value installed reserves write into UNUSED oracle config
-// slots. keyString already maps all-zero keys to "", so the SDK's
-// DEFAULT_PUBLIC_KEY never surfaces here; this sentinel is a real non-zero
-// pubkey and did reach the oracle account fetch as a required account. It is
-// filtered ONLY at the reserve oracle-key extraction below — no other
-// account selection changes, and a reserve with no remaining configured
-// oracle still fails "Kamino reserve has no configured oracle".
-const kaminoOracleSentinelPubkey = "nu11111111111111111111111111111111111111111"
-
 // kaminoHealthReason maps a reserve-health sentinel to its HOLD reason.
 func kaminoHealthReason(err error) (string, bool) {
 	switch {
@@ -138,6 +127,9 @@ type decodedKaminoObligation struct {
 	debtRaw                uint64
 	debtAmountSF           [16]byte
 	cumulativeBorrowRate   [32]byte
+	// debtBorrow is the debt reserve's borrow slot, whose last borrow time
+	// starts its debt term (kaminoDebtTermEnd); zero without debt.
+	debtBorrow kamino.ObligationLiquidity
 }
 type decodedKaminoReserve struct {
 	refreshedSlot            int64
@@ -156,6 +148,10 @@ type decodedKaminoReserve struct {
 	borrowedLiquiditySF      *big.Int
 	utilizationLimitPct      byte
 	cumulativeBorrowRate     [32]byte
+	// terms is the decoded reserve, whose interest terms
+	// (SupportedInterestTerms) and debt term (DebtMaturityTimestamp,
+	// DebtTermSeconds) kamino_term.go reads.
+	terms kamino.Reserve
 }
 
 func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig) (decodedKaminoObligation, error) {
@@ -170,6 +166,7 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 	var collateralRaw, debtRaw uint64
 	var debtAmountSF [16]byte
 	var cumulativeBorrowRate [32]byte
+	var debtBorrow kamino.ObligationLiquidity
 	for _, deposit := range obligation.Deposits {
 		if !deposit.Reserve.IsZero() && deposit.DepositedAmount > 0 {
 			if !sameKey(deposit.Reserve[:], c.CollateralReserve) {
@@ -185,7 +182,7 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 				return decodedKaminoObligation{}, fmt.Errorf("unsupported Kamino debt reserve")
 			}
 			borrows++
-			debtAmountSF, cumulativeBorrowRate = borrow.BorrowedAmountSF, borrow.CumulativeBorrowRateBSF
+			debtAmountSF, cumulativeBorrowRate, debtBorrow = borrow.BorrowedAmountSF, borrow.CumulativeBorrowRateBSF, borrow
 			if debtRaw, err = ceilScaledFraction(borrow.BorrowedAmountSF[:]); err != nil {
 				return decodedKaminoObligation{}, err
 			}
@@ -197,7 +194,7 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 	return decodedKaminoObligation{
 		refreshedSlot: int64(obligation.LastUpdateSlot), hasPosition: deposits > 0 || borrows > 0,
 		collateralDepositedRaw: collateralRaw, debtRaw: debtRaw,
-		debtAmountSF: debtAmountSF, cumulativeBorrowRate: cumulativeBorrowRate,
+		debtAmountSF: debtAmountSF, cumulativeBorrowRate: cumulativeBorrowRate, debtBorrow: debtBorrow,
 	}, nil
 }
 
@@ -214,13 +211,10 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 	}
 	var oracles []string
 	for _, oracle := range []solana.PublicKey{reserve.ScopePriceFeed, reserve.SwitchboardPriceAggregator, reserve.SwitchboardTWAPAggregator, reserve.PythPrice} {
-		// Drop ONLY the documented klend-sdk NULL_PUBKEY sentinel (see
-		// kaminoOracleSentinelPubkey): an unused oracle slot is not a
-		// configured oracle, and requesting it as an account can only fail
-		// the observation. Every real configured oracle still passes.
-		if key := keyString(oracle[:]); key != kaminoOracleSentinelPubkey {
-			oracles = append(oracles, key)
-		}
+		// kamino.DecodeReserve reads an unused slot (KLend's NULL_PUBKEY or
+		// the default key) as the zero key, which keyString maps to "": an
+		// unused slot is no configured oracle.
+		oracles = append(oracles, keyString(oracle[:]))
 	}
 	totalLiquidity, err := reserve.TotalLiquiditySF()
 	if err != nil {
@@ -243,6 +237,7 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 		borrowedLiquiditySF:     kamino.U128(reserve.BorrowedAmountSF),
 		utilizationLimitPct:     reserve.UtilizationLimitBlockBorrowingAbovePct,
 		cumulativeBorrowRate:    reserve.CumulativeBorrowRateBSF,
+		terms:                   reserve,
 	}, nil
 }
 
