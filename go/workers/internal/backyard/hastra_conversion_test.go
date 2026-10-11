@@ -17,21 +17,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// activeWYLDSLane turns the dormant AUTO/AUTO/wYLDS registry entry on for
-// one sequential test (parallel tests are paused until it ends), as its
-// decisions will.
-func activeWYLDSLane(t *testing.T) {
-	t.Helper()
-	for i := range earnLanes {
-		if earnLanes[i].lane == autoAUTOWYLDSLane {
-			earnLanes[i].dormant = false
-			t.Cleanup(func() { earnLanes[i].dormant = true })
-			return
-		}
-	}
-	t.Fatal("AUTO/AUTO/wYLDS is not registered")
-}
-
 // hastraPriceAccount is a StakePriceConfig at price (wYLDS per AUTO, scale
 // 1e18) verified for timestamp, with Hastra's 3600 s staleness limit.
 func hastraPriceAccount(price *big.Int, timestamp int64) ConfirmedAccount {
@@ -78,7 +63,7 @@ var hastraTestPrice, _ = new(big.Int).SetString("1023948000000000000", 10)
 // debt never converts into USDC. AUTO/AUTO/PYUSD converts exactly as before,
 // every conversion on the installed catalog policies it always used.
 func TestConversionVenueSplitsTheWYLDSLaneAndLeavesPYUSD(t *testing.T) {
-	activeWYLDSLane(t)
+	t.Parallel()
 	wylds := map[Action]byte{SwapDebtToCollateralStep: hastraStakeDepositLeg, SwapCollateralToDebtStep: hastraStakeRedeemLeg, SwapUSDCToDebtStep: hastraMintDepositLeg}
 	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
 		leg, hastraVenue := hastraConversionLeg(action, autoAUTOWYLDSLane)

@@ -170,10 +170,10 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 // collateral and USDC conversions to Jupiter, carrying each decided
 // conversion's identity unchanged through prepare, record, bind and build;
 // AUTO/AUTO/PYUSD keeps dispatching every conversion to Jupiter (above).
-// (Its decisions do not yet emit collateral into debt: laneSwap reads only
-// Jupiter edges; TestEveryHastraLegExecutesAtItsOwnConstraint builds it.)
+// (Collateral into debt is a funding or exit leg whose decision needs a
+// payoff; TestEveryHastraLegExecutesAtItsOwnConstraint builds it.)
 func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
-	activeWYLDSLane(t)
+	t.Parallel()
 	for action, venue := range map[Action]string{SwapStableToCollateralStep: "jupiter", SwapCollateralToStableStep: "jupiter",
 		SwapDebtToCollateralStep: "hastra"} {
 		t.Run(string(action), func(t *testing.T) {

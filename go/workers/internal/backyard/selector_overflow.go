@@ -6,7 +6,6 @@ import (
 	"math"
 	"math/big"
 	"time"
-
 )
 
 // Overflow (owner decision 2026-10-11). AUTO/AUTO/PYUSD is Earn Max's AUTO
