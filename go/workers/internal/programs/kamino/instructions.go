@@ -172,6 +172,29 @@ func OwnedObligation(owner solana.PublicKey) squads.Slot {
 	}}}
 }
 
+// OwnCollateralAllowed is a deposit or withdrawal by owner on any obligation
+// it owns, at reserve and from or into custody: KLend checks the rest (the
+// market and its authority, the reserve's mints and supplies, the farms and
+// the token program all follow from the reserve and obligation). With
+// squads.Unpinned it is the Backyard lanes' collateral leg.
+func OwnCollateralAllowed(owner solana.PublicKey, reserve, custody squads.Slot) CollateralAllowed {
+	free := squads.Any
+	return CollateralAllowed{Owner: squads.Pin(owner), Obligation: OwnedObligation(owner), LendingMarket: free,
+		LendingMarketAuthority: free, Reserve: reserve, LiquidityMint: free, LiquiditySupply: free, CollateralMint: free,
+		CollateralSupply: free, UserLiquidity: custody, LiquidityTokenProgram: free, ObligationFarmUserState: free, ReserveFarmState: free}
+}
+
+// OwnDebtAllowed is a borrow or repayment by owner on any obligation it owns,
+// in market and into or from custody: KLend checks the rest, the reserve
+// among it (a borrow pays only into custody, whatever reserve it draws on).
+// With squads.Unpinned it is the Backyard lanes' debt leg.
+func OwnDebtAllowed(owner solana.PublicKey, market, custody squads.Slot) LiquidityAllowed {
+	free := squads.Any
+	return LiquidityAllowed{Owner: squads.Pin(owner), Obligation: OwnedObligation(owner), LendingMarket: market,
+		LendingMarketAuthority: free, Reserve: free, LiquidityMint: free, LiquiditySupply: free, UserLiquidity: custody,
+		TokenProgram: free, FeeReceiver: free, ObligationFarmUserState: free, ReserveFarmState: free}
+}
+
 // ObligationInit is init_obligation's account set; Seed1 and Seed2 are the
 // zero key for a vanilla obligation.
 type ObligationInit[T any] struct {

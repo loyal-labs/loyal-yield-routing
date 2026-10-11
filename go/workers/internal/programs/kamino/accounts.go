@@ -44,8 +44,10 @@ type Reserve struct {
 	PriceStatus     uint8
 	LendingMarket   solana.PublicKey
 	FarmCollateral  solana.PublicKey // zero when absent
+	FarmDebt        solana.PublicKey // zero when absent
 
 	LiquidityMint, LiquiditySupply, LiquidityTokenProgram   solana.PublicKey
+	FeeReceiver                                             solana.PublicKey // the liquidity fee vault a borrow pays its fee into
 	AvailableAmount, MarketPriceLastUpdatedTS, MintDecimals uint64
 	BorrowedAmountSF, MarketPriceSF                         [16]byte
 	AccumulatedProtocolFeesSF, AccumulatedReferrerFeesSF    [16]byte
@@ -99,9 +101,9 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 	l, c, k := d[reserveLiquidity:], d[reserveCollateral:], d[reserveConfig:]
 	r := Reserve{
 		LastUpdateSlot: u64(d, 16), LastUpdateStale: d[24] != 0, PriceStatus: d[25],
-		LendingMarket: key(d, 32), FarmCollateral: key(d, 64),
+		LendingMarket: key(d, 32), FarmCollateral: key(d, 64), FarmDebt: key(d, 96),
 
-		LiquidityMint: key(l, 0), LiquiditySupply: key(l, 32),
+		LiquidityMint: key(l, 0), LiquiditySupply: key(l, 32), FeeReceiver: key(l, 64),
 		AvailableAmount: u64(l, 96), BorrowedAmountSF: [16]byte(l[104:120]), MarketPriceSF: [16]byte(l[120:136]),
 		MarketPriceLastUpdatedTS: u64(l, 136), MintDecimals: u64(l, 144), CumulativeBorrowRateBSF: [32]byte(l[168:200]),
 		AccumulatedProtocolFeesSF: [16]byte(l[216:232]), AccumulatedReferrerFeesSF: [16]byte(l[232:248]),
@@ -114,7 +116,7 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 		ProtocolTakeRatePct: k[14], LoanToValuePct: k[16], LiquidationThresholdPct: k[17],
 		BorrowFeeSF: u64(k, 40), FlashLoanFeeSF: u64(k, 48), BorrowFactorPct: u64(k, 152),
 		DepositLimit: u64(k, 160), BorrowLimit: u64(k, 168), Name: [32]byte(k[176:208]),
-		ScopePriceFeed: key(k, 256), SwitchboardPriceAggregator: key(k, 304), SwitchboardTWAPAggregator: key(k, 336), PythPrice: key(k, 368),
+		ScopePriceFeed: oracle(k, 256), SwitchboardPriceAggregator: oracle(k, 304), SwitchboardTWAPAggregator: oracle(k, 336), PythPrice: oracle(k, 368),
 		DepositWithdrawalCap: withdrawalCap(k[560:592]), DebtWithdrawalCap: withdrawalCap(k[592:624]),
 		DisableUsageAsCollOutsideEmode: k[644] != 0, UtilizationLimitBlockBorrowingAbovePct: k[645],
 		BorrowLimitOutsideElevationGroup: u64(k, 648),
@@ -367,6 +369,20 @@ func u64(data []byte, offset int) uint64 { return binary.LittleEndian.Uint64(dat
 
 func key(data []byte, offset int) solana.PublicKey {
 	return solana.PublicKeyFromBytes(data[offset : offset+32])
+}
+
+// nullOracle is KLend's NULL_PUBKEY, which a reserve's oracle configuration
+// holds, like the default key, for an oracle it does not use.
+var nullOracle = solana.MustPublicKeyFromBase58("nu11111111111111111111111111111111111111111")
+
+// oracle is the oracle account configured at offset, the zero key when
+// KLend's maybe_null_pk reads none there: refresh_reserve then takes no
+// account in its slot, and refuses one (InvalidPythPriceAccount and the like).
+func oracle(data []byte, offset int) solana.PublicKey {
+	if k := key(data, offset); k != nullOracle {
+		return k
+	}
+	return solana.PublicKey{}
 }
 
 func withdrawalCap(d []byte) WithdrawalCap {
