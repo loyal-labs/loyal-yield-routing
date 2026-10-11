@@ -14,7 +14,8 @@ import (
 
 // Before any slot rate is measured, a Legacy-basis reserve's updates are
 // skipped, logged once, and never fail the shared stream; no store is
-// reached. Term debt is skipped the same way, under its own reason.
+// reached. An early-repay penalty, which no model prices, is skipped the same
+// way, under its own reason.
 func TestUnpriceableReserveRowsAreSkippedAndLoggedOnce(t *testing.T) {
 	var logs bytes.Buffer
 	market, mint, reserveKey := solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey(), solana.NewWallet().PublicKey()
@@ -25,9 +26,9 @@ func TestUnpriceableReserveRowsAreSkippedAndLoggedOnce(t *testing.T) {
 		return &pb.SubscribeUpdate{UpdateOneof: &pb.SubscribeUpdate_Account{Account: &pb.SubscribeUpdateAccount{Slot: slot, Account: &pb.SubscribeUpdateAccountInfo{Pubkey: reserveKey[:], Owner: klend.ProgramID.Bytes(), Data: data, WriteVersion: 1, Lamports: 1}}}}
 	}
 	legacy := reserveAccount(market, mint, 999, 1_000_000)
-	termDebt := reserveAccount(market, mint, 999, 1_000_000)
-	termDebt[4856+920] = 1
-	for slot, data := range map[uint64][]byte{1_000: legacy, 1_001: legacy, 1_002: termDebt, 1_003: termDebt} {
+	earlyRepay := reserveAccount(market, mint, 999, 1_000_000)
+	earlyRepay[4856+7] = 1
+	for slot, data := range map[uint64][]byte{1_000: legacy, 1_001: legacy, 1_002: earlyRepay, 1_003: earlyRepay} {
 		if outcome, err := handler.HandleAccount(context.Background(), update(slot, data)); err != nil || outcome.Inserted || outcome.Malformed {
 			t.Fatalf("slot %d: outcome = %+v, err = %v; want a skipped row", slot, outcome, err)
 		}

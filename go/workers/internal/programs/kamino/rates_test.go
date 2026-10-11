@@ -50,8 +50,8 @@ func TestReserveRatesScaleLegacyAccrualWithTheMeasuredSlotRate(t *testing.T) {
 }
 
 // A Legacy reserve without a measured slot rate is unavailable, never priced
-// at a guessed rate; an unknown basis, term debt, an early-repay penalty or a
-// take above 100% is refused.
+// at a guessed rate; an unknown basis, an early-repay penalty or a take above
+// 100% is refused. Term debt prices on its curve like open-term debt.
 func TestReserveRatesRefuseWhatTheyCannotPrice(t *testing.T) {
 	reserve := ratesFixture()
 	if _, err := reserve.Rates(0); !errors.Is(err, ErrSlotRateUnavailable) {
@@ -59,8 +59,6 @@ func TestReserveRatesRefuseWhatTheyCannotPrice(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*Reserve){
 		"unknown basis":  func(r *Reserve) { r.InterestRateBasis = 2 },
-		"debt term":      func(r *Reserve) { r.DebtTermSeconds = 2_592_000 },
-		"debt maturity":  func(r *Reserve) { r.DebtMaturityTimestamp = 1_800_000_000 },
 		"early repay":    func(r *Reserve) { r.EarlyRepayRemainingInterestPct = 5 },
 		"take above 100": func(r *Reserve) { r.ProtocolTakeRatePct = 101 },
 	} {
@@ -69,5 +67,14 @@ func TestReserveRatesRefuseWhatTheyCannotPrice(t *testing.T) {
 		if _, err := r.Rates(4.6); err == nil || errors.Is(err, ErrSlotRateUnavailable) {
 			t.Fatalf("%s was priced: %v", name, err)
 		}
+	}
+	open, term := ratesFixture(), ratesFixture()
+	term.DebtTermSeconds, term.DebtMaturityTimestamp = 2_592_000, 1_800_000_000
+	openRates, err := open.Rates(4.6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if termRates, err := term.Rates(4.6); err != nil || termRates != openRates {
+		t.Fatalf("term debt rates %+v (%v), want the open-term curve's %+v", termRates, err, openRates)
 	}
 }

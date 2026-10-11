@@ -28,7 +28,7 @@ func kaminoDepositMinimum(accounts []ConfirmedAccount, route RuntimeRoute, slot 
 		return 0, budgetHold("invalid_deposit_clock")
 	}
 	config := a.Data[kaminoReserveConfigOffset:]
-	if config[9] > 1 || config[7] != 0 || !allZero(config[920:936]) {
+	if r.terms.SupportedInterestTerms() != nil {
 		return 0, budgetHold("unsupported_deposit_interest_terms")
 	}
 	rate, err := kaminoMaximumBorrowRate(config)

@@ -42,7 +42,7 @@ func TestCatalogRejectsChangedMintIdentity(t *testing.T) {
 	}
 }
 
-// Rust watches the Backyard AUTO collateral and PYUSD debt reserves as pinned
+// Rust watches the Backyard AUTO collateral, PYUSD and wYLDS debt reserves as pinned
 // supplemental targets appended after the API catalog (loyal-kamino-data
 // supplemental_observation_targets). The Kamino metrics API is never asked for
 // them, so their absence there must not drop them from the watched set.
@@ -65,6 +65,8 @@ func TestObservationTargetsWatchBackyardAutoReservesWithoutAPILookup(t *testing.
 		"reserve": "mint",
 		"G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX": "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
 		"6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM": "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+		// AUTO/AUTO/wYLDS's wYLDS debt reserve.
+		"34GJjXf7jGTdNL8Yw1HtqWSVvfX6JTsft3UsuFFUL7VU": "8fr7WGTVFszfyNWRMXj6fRjZZAnDwmXwEpCrtzmUkdih",
 	}
 	if len(targets) != len(want) {
 		t.Fatalf("watched reserves = %+v, want %d", targets, len(want))

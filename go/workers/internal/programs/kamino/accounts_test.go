@@ -116,8 +116,15 @@ func TestTermDebtFieldsReadLiveAccounts(t *testing.T) {
 	if reserve.DebtTermSeconds != 2_592_000 || reserve.DebtMaturityTimestamp != 0 || reserve.EarlyRepayRemainingInterestPct != 0 {
 		t.Fatalf("reserve term %d maturity %d early repay %d", reserve.DebtTermSeconds, reserve.DebtMaturityTimestamp, reserve.EarlyRepayRemainingInterestPct)
 	}
-	if !errors.Is(reserve.SupportedInterestTerms(), ErrUnsupportedInterestTerms) {
-		t.Fatal("term debt is priced as open-term interest")
+	// Its 30-day term changes when the debt may grow and when it becomes
+	// liquidatable, not what it accrues: the reserve prices on its curve.
+	if err := reserve.SupportedInterestTerms(); err != nil {
+		t.Fatal("term debt is refused a price:", err)
+	}
+	early := reserve
+	early.EarlyRepayRemainingInterestPct = 1
+	if !errors.Is(early.SupportedInterestTerms(), ErrUnsupportedInterestTerms) {
+		t.Fatal("an early-repay penalty is priced as plain interest")
 	}
 	obligation, err := DecodeObligation(account("EsDb54VmT1DsgamjQtnWuZmoLAyrQCr6bsMu3AuZnies"))
 	if err != nil {

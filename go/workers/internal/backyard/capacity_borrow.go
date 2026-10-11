@@ -36,8 +36,13 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 		return 0, fmt.Errorf("pair_capacity_obligation_missing")
 	}
 	if obligation.Lamports != 0 {
-		if _, err := decodeKaminoObligation(obligation, route.Kamino); err != nil {
+		decoded, err := decodeKaminoObligation(obligation, route.Kamino)
+		if err != nil {
 			return 0, err
+		}
+		if !kaminoObligationTermOpen(decoded, debt, clockUnixTimestamp(accounts)) {
+			// Past its debt term the obligation can borrow no more.
+			return 0, nil
 		}
 		if obligation.Data[kaminoObligationElevationGroupOffset] != 0 || !allZero(obligation.Data[2288:2320]) {
 			return 0, nil
@@ -57,7 +62,7 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 // daily net-borrow cap, available liquidity, status). It reads one account,
 // so the account view can recompute it on every update of the reserve.
 func kaminoDebtReserveRoom(debtAccount ConfirmedAccount, debt decodedKaminoReserve, now int64) (uint64, error) {
-	if debtAccount.Data[kaminoReserveConfigOffset+7] != 0 || !allZero(debtAccount.Data[kaminoReserveConfigOffset+920:kaminoReserveConfigOffset+936]) {
+	if !kaminoReserveTermOpen(debt, now) {
 		return 0, nil
 	}
 	// Newer KLend consumes the first trailing padding u64 for queued collateral.
