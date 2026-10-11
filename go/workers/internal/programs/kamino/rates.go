@@ -26,7 +26,7 @@ const (
 // workers do not have: an unknown rate basis, an early-repay penalty, term
 // debt, or a protocol take above 100%.
 func (r Reserve) SupportedInterestTerms() error {
-	if r.InterestRateBasis > trueAPRBasis || r.EarlyRepayRemainingInterestPct != 0 || r.TermDebtConfig != [16]byte{} || r.ProtocolTakeRatePct > 100 {
+	if r.InterestRateBasis > trueAPRBasis || r.EarlyRepayRemainingInterestPct != 0 || r.DebtMaturityTimestamp != 0 || r.DebtTermSeconds != 0 || r.ProtocolTakeRatePct > 100 {
 		return ErrUnsupportedInterestTerms
 	}
 	return nil
