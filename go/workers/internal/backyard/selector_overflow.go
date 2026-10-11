@@ -1,7 +1,9 @@
 package backyard
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -259,49 +261,94 @@ func overflowInitializationReady(s Snapshot) bool {
 }
 
 // applyOverflowRoom stamps, on a lane with an overflow lane, that lane's
-// fee-inclusive receive room and its bridge USDC value from the same batch.
-// A matured or unknown overflow borrow has no room (KLend refuses it).
-// Anything undecodable leaves the room unknown.
-func applyOverflowRoom(s *Snapshot, accounts []ConfirmedAccount, route RuntimeRoute) {
+// fee-inclusive receive room and its bridge USDC value. Nobody but us borrows
+// from the overflow lane's debt reserve, so its raw reserve is usually far
+// past the health age (2026-10-11: wYLDS 34GJ ~9,500 slots), while the
+// borrow that would use the room refreshes it first. A stale raw verdict is
+// therefore judged again on the overflow lane's own refresh simulation, kept
+// apart from the NAV capture so its failure only leaves this room unknown.
+// The returned error says why the room is unknown.
+func applyOverflowRoom(ctx context.Context, s *Snapshot, slot int64, accounts []ConfirmedAccount, route RuntimeRoute, refresh func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)) error {
 	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown = 0, 0, false
 	lane, ok := overflowLaneOf(route.Lane)
 	if !ok {
-		return
+		return nil
 	}
 	overflow, err := runtimeRoute(lane)
 	if err != nil {
-		return
+		return err
 	}
+	receive, value, err := overflowRoom(accounts, overflow)
+	if (errors.Is(err, errKaminoReserveStale) || errors.Is(err, errKaminoOracleStale)) && refresh != nil {
+		addresses, addressErr := overflowRoomAddresses(overflow)
+		if addressErr != nil {
+			return addressErr
+		}
+		_, refreshed, refreshErr := refresh(ctx, []RuntimeRoute{overflow}, addresses, slot)
+		if refreshErr != nil {
+			return refreshErr
+		}
+		receive, value, err = overflowRoom(refreshed, overflow)
+	}
+	if err != nil {
+		return err
+	}
+	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown = receive, value, true
+	return nil
+}
+
+// overflowRoomAddresses are the accounts overflowRoom reads.
+func overflowRoomAddresses(overflow RuntimeRoute) ([]string, error) {
+	reference, err := pinnedKaminoObservationConfig()
+	if err != nil {
+		return nil, err
+	}
+	return []string{overflow.Kamino.CollateralReserve, overflow.Kamino.DebtReserve, overflow.Kamino.Obligation, reference.DebtReserve, budgetClockAddress}, nil
+}
+
+// overflowRoom is the overflow lane's fee-inclusive receive room and its
+// bridge USDC value, judged on accounts. A matured or unknown overflow borrow
+// has no room (KLend refuses it).
+func overflowRoom(accounts []ConfirmedAccount, overflow RuntimeRoute) (uint64, int64, error) {
 	room, err := kaminoAdditionalDebtRoom(accounts, overflow)
 	if err != nil {
-		return
+		return 0, 0, err
 	}
 	debtAccount := accountAt(accounts, overflow.Kamino.DebtReserve)
 	debt, err := decodeKaminoReserve(debtAccount, overflow.Kamino.DebtMint, overflow.Kamino)
-	if err != nil || len(debtAccount.Data) < kaminoReserveConfigOffset+48 {
-		return
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(debtAccount.Data) < kaminoReserveConfigOffset+48 {
+		return 0, 0, fmt.Errorf("overflow debt reserve config is truncated")
 	}
 	receive := kaminoReceiveWithinRoom(room, binary.LittleEndian.Uint64(debtAccount.Data[kaminoReserveConfigOffset+40:]))
 	end, err := observedDebtTermEnd(accounts, overflow)
 	if err != nil {
-		return
+		return 0, 0, err
 	}
 	if now := clockUnixTimestamp(accounts); end == termMaturityUnknown || end > 0 && end <= now {
 		receive = 0
 	}
 	reference, err := pinnedKaminoObservationConfig()
 	if err != nil {
-		return
+		return 0, 0, err
 	}
 	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
-	if err != nil || usdc.mintDecimals != 6 {
-		return
+	if err != nil {
+		return 0, 0, err
+	}
+	if usdc.mintDecimals != 6 {
+		return 0, 0, fmt.Errorf("USDC reference reserve decimals drifted")
 	}
 	value, err := valueBetweenTokenRaw(receive, debt.mintDecimals, 6, debt.marketPriceSF, usdc.marketPriceSF, false)
-	if err != nil || value > math.MaxInt64 {
-		return
+	if err != nil {
+		return 0, 0, err
 	}
-	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown = receive, int64(value), true
+	if value > math.MaxInt64 {
+		return 0, 0, fmt.Errorf("overflow room value exceeds the signed range")
+	}
+	return receive, int64(value), nil
 }
 
 // termDueHeldLane is a held lane, other than the working lane, whose term
