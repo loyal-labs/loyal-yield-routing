@@ -63,6 +63,20 @@ func UserMetadataAddress(owner solana.PublicKey) (solana.PublicKey, error) {
 	return key, err
 }
 
+// ReserveLiquiditySupply is a reserve's liquidity vault, the PDA
+// ["reserve_liq_supply", reserve].
+func ReserveLiquiditySupply(reserve solana.PublicKey) (solana.PublicKey, error) {
+	key, _, err := solana.FindProgramAddress([][]byte{[]byte("reserve_liq_supply"), reserve[:]}, ProgramID)
+	return key, err
+}
+
+// ReserveFeeVault is a reserve's liquidity fee vault, the fee receiver a
+// borrow pays into: the PDA ["fee_receiver", reserve].
+func ReserveFeeVault(reserve solana.PublicKey) (solana.PublicKey, error) {
+	key, _, err := solana.FindProgramAddress([][]byte{[]byte("fee_receiver"), reserve[:]}, ProgramID)
+	return key, err
+}
+
 // ObligationFarmUserState is the Farms PDA ["user", farm, obligation].
 func ObligationFarmUserState(farm, obligation solana.PublicKey) (solana.PublicKey, error) {
 	key, _, err := solana.FindProgramAddress([][]byte{[]byte("user"), farm[:], obligation[:]}, FarmsProgramID)

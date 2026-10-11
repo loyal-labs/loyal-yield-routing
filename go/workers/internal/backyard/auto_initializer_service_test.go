@@ -89,8 +89,8 @@ func assertInitializerAutoScopeMigrationContract(t *testing.T, ctx context.Conte
 // The shipped initializer migrations keep their exact installed boundaries
 // when the candidate AUTO expansion lands after them: same transaction-scoped
 // isolated schema as the migration 0079 proof, with 0082 applied verbatim on
-// top. Only the initializer scope widens; every other row verdict is
-// unchanged.
+// top, then 0102 (AUTO/AUTO/wYLDS). Only the lane scopes widen, by exactly
+// their reviewed lanes; every other row verdict is unchanged.
 func TestInitializerAutoScopeMigrationExpandsOnlyInitializerScope(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
@@ -109,7 +109,7 @@ func TestInitializerAutoScopeMigrationExpandsOnlyInitializerScope(t *testing.T) 
 	  action text,status text NOT NULL,strategy_key text)`); err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{"0079_backyard_rwa_initializer_actions.sql", "0082_backyard_rwa_initializer_auto_scope.sql"} {
+	for _, file := range []string{"0079_backyard_rwa_initializer_actions.sql", "0082_backyard_rwa_initializer_auto_scope.sql", "0102_backyard_rwa_auto_wylds_scope.sql"} {
 		raw, err := os.ReadFile("../../../../migrations/yield/" + file)
 		if err != nil {
 			t.Fatal(err)
@@ -136,6 +136,14 @@ func TestInitializerAutoScopeMigrationExpandsOnlyInitializerScope(t *testing.T) 
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", PhaseOneLaneID, true},
 		{string(InitializeKaminoObligation), "earn_max_v2", autoAUTOPYUSD.Lane, false},
 		{string(OpenRouteStep), "backyard_rwa_v1", "unregistered", false},
+		// 0102 admits AUTO's overflow lane to both lane scopes, and nothing
+		// else: its initializer and its route-neutral steps (a Hastra
+		// conversion journals as a debt/collateral swap step).
+		{string(InitializeKaminoObligation), "backyard_rwa_v1", autoAUTOWYLDSLane, true},
+		{string(SwapDebtToCollateralStep), "backyard_rwa_v1", autoAUTOWYLDSLane, true},
+		{string(SwapCollateralToDebtStep), "backyard_rwa_v1", autoAUTOWYLDSLane, true},
+		{string(SwapDebtToCollateralStep), "backyard_rwa_v1", "AUTO/AUTO/USDG", false},
+		{string(InitializeKaminoObligation), "earn_max_v2", autoAUTOWYLDSLane, false},
 		{string(ReportNAV), "backyard_rwa_v1", SelectedRouteID, true},
 		{"borrow_debt", "earn_max_v2", "legacy", true},
 	} {

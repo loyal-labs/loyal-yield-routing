@@ -4,7 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // Independent retained SDK/account-vector evidence, not output from this Go
@@ -176,5 +181,57 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 	if _, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 77,
 		LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, "unknown/asset/debt"); err == nil {
 		t.Fatal("unknown lane fell back to Prime packet construction")
+	}
+}
+
+// AUTO/AUTO/wYLDS is AUTO's lane with wYLDS debt: its derived accounts are
+// the live reserve's (testdata/wylds-term-debt.json, slot 455559961), its
+// debt custody is the vault's wYLDS account, and it shares AUTO/PYUSD's
+// market, collateral reserve and collateral custody. Registered dormant, it
+// sits outside every lane predicate until its decisions turn it on.
+func TestAUTOWYLDSRouteIsTheLiveReserveAndDormant(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile("../programs/kamino/testdata/wylds-term-debt.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Accounts map[string]struct {
+			Owner    solana.PublicKey
+			Lamports uint64
+			Data     []byte
+		}
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	route, err := runtimeRoute(autoAUTOWYLDSLane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := fixture.Accounts[route.Kamino.DebtReserve]
+	reserve, err := kamino.DecodeReserve(&chain.Account{Key: kaminoKey(route.Kamino.DebtReserve), Owner: a.Owner, Lamports: a.Lamports, Data: a.Data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserve.LendingMarket.String() != route.Kamino.Market || reserve.LiquidityMint.String() != route.Kamino.DebtMint ||
+		reserve.LiquiditySupply.String() != route.DebtLiquiditySupply || reserve.FeeReceiver.String() != route.DebtFeeReceiver ||
+		reserve.LiquidityTokenProgram.String() != route.DebtTokenProgram || !reserve.FarmDebt.IsZero() {
+		t.Fatalf("wYLDS route diverges from its live reserve: %+v", route)
+	}
+	if route.DebtCustody != "4yABxrtZ9kQqckcupQ32M6k9RzyiAk5stmTCFcTRZK8E" || route.CollateralCustody != autoAUTOPYUSD.CollateralCustody ||
+		route.Kamino.CollateralReserve != autoAUTOPYUSD.Kamino.CollateralReserve || route.Kamino.Market != autoAUTOPYUSD.Kamino.Market ||
+		route.Kamino.Obligation == autoAUTOPYUSD.Kamino.Obligation || route.DebtCustody == autoAUTOPYUSD.DebtCustody {
+		t.Fatalf("wYLDS route custody or obligation: %+v", route)
+	}
+	// Its obligation is the one the lane's initializer creates.
+	obligation, err := kamino.ObligationAddress(1, 0, kaminoKey(bridgeVault), kaminoKey(route.Kamino.Market),
+		kaminoKey(route.Kamino.CollateralMint), kaminoKey(route.Kamino.DebtMint))
+	if err != nil || obligation.String() != route.Kamino.Obligation {
+		t.Fatal("wYLDS obligation is not the vault's tag-1 AUTO/wYLDS PDA", obligation, err)
+	}
+	if earnHeldLane(autoAUTOWYLDSLane) || earnActiveLane(autoAUTOWYLDSLane) || earnInitializerLane(autoAUTOWYLDSLane) ||
+		slices.Contains(earnLaneIDs(true), autoAUTOWYLDSLane) || catalogJupiterRoute(autoAUTOWYLDSLane) {
+		t.Fatal("dormant wYLDS lane reached a lane predicate")
 	}
 }
