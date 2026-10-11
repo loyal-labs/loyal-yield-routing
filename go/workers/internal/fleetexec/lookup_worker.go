@@ -81,6 +81,9 @@ func (w *LookupWorker) Tick(parent context.Context) (worked bool, resultErr erro
 	}
 	defer func() { <-w.gate }()
 	worked, resultErr = w.tick(ctx)
+	if errors.Is(resultErr, chain.ErrBehind) {
+		resultErr = nil // Not yet: the operation's lease lapses and a later tick reads again.
+	}
 	if resultErr == nil {
 		var inflight int
 		if resultErr = w.store.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.lookup_table_families f ON f.id=o.family_id WHERE f.cluster=$1 AND o.transaction_signature IS NOT NULL AND o.operation_state NOT IN ('complete','permanent_failure','cancelled')`, w.config.Cluster).Scan(&inflight); resultErr == nil {

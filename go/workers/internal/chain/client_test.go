@@ -88,10 +88,7 @@ func TestTransportFailuresKeepTheKeyOut(t *testing.T) {
 			client := serve(t, func(request) (int, any) {
 				return http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
 			})
-			// A behind node is asked again a slot later, within the caller's deadline.
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-			defer cancel()
-			_, err := client.Slot(ctx, rpc.CommitmentConfirmed)
+			_, err := client.Slot(context.Background(), rpc.CommitmentConfirmed)
 			if !errors.Is(err, ErrBehind) {
 				t.Fatalf("want ErrBehind, got %v", err)
 			}
@@ -328,31 +325,21 @@ func TestSlotSamplesSumOnlyUsableSamples(t *testing.T) {
 	}
 }
 
-// A pooled endpoint's lagging node answers -32016 until it reaches the asked
-// slot: the read gets the caught-up answer, a broadcast is never sent twice,
-// and a node that stays behind is still unavailable.
-func TestLaggingNodeIsAskedAgainForReadsOnly(t *testing.T) {
-	behind := map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
-	calls, lag := 0, 2
-	client := serve(t, func(req request) (int, any) {
+// A pooled endpoint's lagging node answers -32016: the client asks once and
+// says ErrBehind, and the caller's next call reads from a caught-up node.
+func TestLaggingNodeIsNotYetAndNeverAskedAgain(t *testing.T) {
+	calls := 0
+	client := serve(t, func(request) (int, any) {
 		calls++
-		if req.Method == "sendTransaction" || calls <= lag {
-			return http.StatusOK, behind
+		if calls == 1 {
+			return http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": -32016, "message": "Minimum context slot has not been reached"}}
 		}
 		return http.StatusOK, result(map[string]any{"context": map[string]any{"slot": 44}, "value": 5000})
 	})
-	lamports, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42)
-	if err != nil || lamports != 5000 || calls != lag+1 {
-		t.Fatalf("fee %d after %d calls: %v", lamports, calls, err)
+	if _, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42); !errors.Is(err, ErrBehind) || calls != 1 {
+		t.Fatalf("behind node asked %d times: %v", calls, err)
 	}
-	calls = 0
-	if err := client.SendWire(context.Background(), []byte{1, 2, 3}, true); !errors.Is(err, ErrBehind) || calls != 1 {
-		t.Fatalf("broadcast sent %d times: %v", calls, err)
-	}
-	calls, lag = 0, 1_000
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, _, err := client.Fee(ctx, []byte{1}, rpc.CommitmentConfirmed, 42); !errors.Is(err, ErrBehind) {
-		t.Fatalf("a node that stays behind answered: %v", err)
+	if lamports, _, err := client.Fee(context.Background(), []byte{1}, rpc.CommitmentConfirmed, 42); err != nil || lamports != 5000 || calls != 2 {
+		t.Fatalf("next call: fee %d after %d calls: %v", lamports, calls, err)
 	}
 }

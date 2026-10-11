@@ -12,6 +12,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
@@ -236,6 +237,9 @@ func (r *ControlReconciler) Tick(ctx context.Context) (bool, error) {
 		retryCtx, retryCancel := context.WithTimeout(ctx, runtimeHealthTimeout)
 		defer retryCancel()
 		retryErr := r.Store.RetryAutodepositReconciliationRequest(retryCtx, request.TargetID, owner, "control reconciliation proof unavailable", ReconciliationRetryBackoffSeconds(15, request.AttemptCount))
+		if errors.Is(err, chain.ErrBehind) {
+			return true, retryErr // Not yet: the node has not reached the requested slot.
+		}
 		return true, errors.Join(fmt.Errorf("control reconciliation target %d: %w", request.TargetID, err), retryErr)
 	}
 	return true, nil

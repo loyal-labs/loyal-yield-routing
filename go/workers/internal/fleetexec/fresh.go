@@ -48,7 +48,7 @@ func (w *Worker) ExecuteFresh(ctx context.Context, admission fleet.ExecutionAdmi
 		if w.balances == nil {
 			return 0, errors.New("fee-only payer balance reader is not configured")
 		}
-		slot, accounts, err := fleet.ReadAccounts(ctx, w.balances, []string{admission.FeePayer}, rpc.CommitmentConfirmed, admission.Evidence.Slot)
+		slot, accounts, err := fleet.ReadAccounts(ctx, w.balances, []string{admission.FeePayer}, rpc.CommitmentConfirmed, 0)
 		if err != nil || accounts[0] == nil || accounts[0].Lamports > math.MaxInt64 {
 			return 0, fmt.Errorf("fee-only payer balance unavailable: %v", err)
 		}

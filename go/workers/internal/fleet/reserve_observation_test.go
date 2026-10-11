@@ -77,11 +77,11 @@ func TestReserveObservationReplacesWholeInconsistentBatch(t *testing.T) {
 		binary.LittleEndian.PutUint64(accounts[1].Data[16:24], 1002)
 		return 1003, accounts
 	})
-	snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities, 999)
+	snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(*floors, []int64{999, 1002}) {
+	if !reflect.DeepEqual(*floors, []int64{0, 1002}) {
 		t.Fatalf("slot floors: %v", *floors)
 	}
 	if len(snapshot.Reserves) != 2 || snapshot.Slot != 1003 {
@@ -104,12 +104,12 @@ func TestReserveObservationPersistentMismatchFailsClosed(t *testing.T) {
 		binary.LittleEndian.PutUint64(a[0].Data[16:24], uint64(slot+1))
 		return slot, a
 	})
-	snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities, 1000)
+	snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities)
 	var mismatch *ReserveSlotOrderMismatch
 	if !errors.As(err, &mismatch) || len(snapshot.Reserves) != 0 || snapshot.Slot != 0 {
 		t.Fatalf("accepted inconsistent evidence: %+v %v", snapshot, err)
 	}
-	if !reflect.DeepEqual(*floors, []int64{1000, 1001, 1002}) {
+	if !reflect.DeepEqual(*floors, []int64{0, 1001, 1002}) {
 		t.Fatalf("retry bound/floor violated: %v", *floors)
 	}
 	if mismatch.ContextSlot != 1002 || mismatch.LastUpdateSlot != 1003 {
@@ -118,7 +118,7 @@ func TestReserveObservationPersistentMismatchFailsClosed(t *testing.T) {
 }
 
 func TestReserveObservationDoesNotRetryOtherInvalidEvidence(t *testing.T) {
-	for _, failure := range []string{"identity", "layout", "obsolete", "below_minimum_slot"} {
+	for _, failure := range []string{"identity", "layout", "obsolete"} {
 		t.Run(failure, func(t *testing.T) {
 			w, addresses, identities, floors := observationTestWorker(t, func(int) (int64, []chain.Account) {
 				a := observationAccounts()
@@ -130,12 +130,10 @@ func TestReserveObservationDoesNotRetryOtherInvalidEvidence(t *testing.T) {
 					a[1].Data = a[1].Data[:100]
 				case "obsolete":
 					a[1].Data[4856] = 1
-				case "below_minimum_slot":
-					return 998, a
 				}
 				return 1000, a
 			})
-			snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities, 999)
+			snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities)
 			if err == nil || len(snapshot.Reserves) != 0 || len(*floors) != 1 {
 				t.Fatalf("invalid evidence was accepted or retried: %v %v", *floors, err)
 			}
@@ -151,7 +149,7 @@ func TestReserveObservationCancellationStopsBackoff(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	snapshot, err := w.observeConfirmedReserveCatalog(ctx, addresses, identities, 1000)
+	snapshot, err := w.observeConfirmedReserveCatalog(ctx, addresses, identities)
 	if !errors.Is(err, context.DeadlineExceeded) || len(*floors) != 1 || len(snapshot.Reserves) != 0 {
 		t.Fatalf("cancellation ignored: %v %v", *floors, err)
 	}

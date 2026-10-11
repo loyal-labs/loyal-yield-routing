@@ -152,7 +152,7 @@ func TestIneligibleOpportunityIsRecordedAndDoesNotFailTheTick(t *testing.T) {
 		t.Fatalf("one opportunity's outcome failed the tick: %v", err)
 	}
 	state, attempts, owner, reason, later := opportunity(first)
-	if state != "revalidate" || attempts != 1 || owner != nil || reason == nil || !strings.Contains(*reason, "rpc error -32000") || !later {
+	if state != "revalidate" || attempts != 1 || owner != nil || reason == nil || *reason == "" || !later {
 		t.Fatalf("failed opportunity not recorded: state=%s attempts=%d owner=%v reason=%v later=%v", state, attempts, owner, reason, later)
 	}
 	if _, attempts, _, _, _ := opportunity(second); attempts != 0 {

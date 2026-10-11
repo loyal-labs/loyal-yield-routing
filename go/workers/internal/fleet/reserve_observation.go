@@ -13,10 +13,11 @@ import (
 // otherwise readable RPC batch. Each attempt replaces the entire observation;
 // no account bytes or economics from a rejected batch survive into planning.
 // The caller still verifies durable hashes, identities and expiry afterward.
-func (w *Worker) observeConfirmedReserveCatalog(ctx context.Context, addresses []string, identities map[string]ReserveIdentity, minimumSlot int64) (MarketSnapshot, error) {
+func (w *Worker) observeConfirmedReserveCatalog(ctx context.Context, addresses []string, identities map[string]ReserveIdentity) (MarketSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	const attempts = 3
+	minimumSlot := int64(0)
 	for attempt := 1; attempt <= attempts; attempt++ {
 		slot, accounts, err := ReadAccounts(ctx, w.rpc, addresses, rpc.CommitmentConfirmed, minimumSlot)
 		if err != nil {

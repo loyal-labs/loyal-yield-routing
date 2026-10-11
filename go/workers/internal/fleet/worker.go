@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/solana-foundation/solana-go/v2/rpc"
-
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
@@ -20,13 +18,12 @@ type MarketEpochSource interface {
 }
 
 type Worker struct {
-	config            Config
-	store             *Store
-	rpc               *chain.Client
-	marketEvidence    MarketEpochSource
-	revalidator       *Revalidator
-	lastConfirmedSlot int64
-	facts             *engine.Facts
+	config         Config
+	store          *Store
+	rpc            *chain.Client
+	marketEvidence MarketEpochSource
+	revalidator    *Revalidator
+	facts          *engine.Facts
 }
 
 func NewWorker(config Config, store *Store, client *chain.Client, facts *engine.Facts) (*Worker, error) {
@@ -171,15 +168,7 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 		}
 		identities[r.Reserve] = ReserveIdentity{Address: r.Reserve, Market: *r.Market, Mint: r.LiquidityMint}
 	}
-	confirmed, err := w.rpc.Slot(ctx, rpc.CommitmentConfirmed)
-	if err != nil {
-		return fmt.Errorf("observe confirmed slot: %w", err)
-	}
-	minimumSlot := int64(confirmed)
-	if w.lastConfirmedSlot > minimumSlot {
-		minimumSlot = w.lastConfirmedSlot
-	}
-	direct, err := w.observeConfirmedReserveCatalog(ctx, addresses, identities, minimumSlot)
+	direct, err := w.observeConfirmedReserveCatalog(ctx, addresses, identities)
 	if err != nil {
 		return fmt.Errorf("observe complete coherent reserve catalog: %w", err)
 	}
@@ -244,7 +233,6 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	if err := w.store.HeartbeatFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
 		return err
 	}
-	w.lastConfirmedSlot = slot
 	logEvent(map[string]any{"event": "kamino_fleet_planner_cycle", "cluster": w.config.Cluster, "slot": slot, "optimizerEpochFingerprint": epoch.Fingerprint, "catalogReserveCount": epoch.CatalogReserveCount, "routableReserveCount": len(addresses), "migratedVaultCount": len(vaults), "selectedMoveCount": len(fleetPlan.Opportunities), "publishedCount": published, "observationDifferenceCount": observationDifferences, "rejectedVaultCount": len(fleetPlan.Rejections), "rejectionCounts": rejectionCounts(fleetPlan.Rejections)})
 	return nil
 }

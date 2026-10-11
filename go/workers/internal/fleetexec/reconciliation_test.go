@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+	"github.com/prometheus/client_golang/prometheus"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -255,5 +257,75 @@ func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *t
 				}
 			}
 		})
+	}
+}
+
+// A node behind the confirmed bank is "not yet": the tick leaves the landed
+// route exactly as it was, with no failure recorded, and the first tick after
+// its lease lapses reconciles it from a node that caught up.
+func TestReconciliationBehindNodeWaitsForTheNextTick(t *testing.T) {
+	store, pool := integrationStore(t)
+	ctx := context.Background()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	b := seedBaseline(t, ctx, pool, suffix)
+	wire, _ := integrationWire(t, 92)
+	input := fixturePersistInput(t, ctx, pool, b, wire)
+	vaultHash := sha256.Sum256([]byte(suffix + "vault"))
+	vault := sdk.PublicKey(vaultHash).String()
+	ata, _ := associatedCustodyAccount(vault, fleet.USDCMint, sdk.TokenProgramID.String())
+	plan, _ := json.Marshal(map[string]any{"route_kind": "same_mint", "source_kind": "idle_vault_usdc", "settings": "settings:" + suffix, "vault_index": 0, "idle_token_account": ata})
+	target := mustSignedFixture(t).RecentBlockhash
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.managed_vaults SET vault_pubkey=$2 WHERE id=(SELECT vault_id FROM loyal_yield.rebalance_opportunities WHERE id=$1)`, b.OpportunityID, vault); err != nil {
+		t.Fatal(err)
+	}
+	for table, row := range map[string]int64{"rebalance_opportunities": b.OpportunityID, "rebalance_decisions": b.DecisionID} {
+		if _, err := pool.Exec(ctx, `UPDATE loyal_yield.`+table+` SET source_reserve=NULL,target_reserve=$2,liquidity_mint=$3,execution_plan=$4 WHERE id=$1`, row, target, fleet.USDCMint, plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, _, err := store.PersistSignedRoute(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := claimOne(t, ctx, store, b.Cluster, "behind-node")
+	if err := store.ConfirmSameMint(ctx, lease, 1000); err != nil {
+		t.Fatal(err)
+	}
+	lease = claimOne(t, ctx, store, b.Cluster, "behind-node")
+	c, err := store.loadPostContract(ctx, lease.Submission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lapse := func() {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET confirmation_lease_expires_at=clock_timestamp() WHERE id=$1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lapse()
+	registry := prometheus.NewRegistry()
+	worker, err := NewWorker(Config{Cluster: b.Cluster, Owner: "owner-behind", LeaseTTL: time.Minute, BatchSize: 8, TickInterval: time.Second, Facts: engine.NewFacts(registry)}, store, &countingChain{}, &finalizedStatus{receipt: chain.Receipt{Slot: 1000, Wire: wire.SignedTransaction}}, DelegateSigner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tick := func(node fixtureAccounts) (state string, detail *string, decision string) {
+		t.Helper()
+		worker.recovery = &sameMintRecovery{store: store, accounts: node, slotDuration: 400 * time.Millisecond}
+		if err := worker.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		worker.wg.Wait()
+		if err := pool.QueryRow(ctx, `SELECT s.submission_state,s.error_detail,d.status::text FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.id=$1`, id).Scan(&state, &detail, &decision); err != nil {
+			t.Fatal(err)
+		}
+		return state, detail, decision
+	}
+
+	if state, detail, decision := tick(postFixture(t, c, 999, 0, 11)); state != string(StateReconciliationPending) || detail != nil || decision != "confirming" || failedCount(t, registry, "fleet_reconciliation_stalled") != 0 {
+		t.Fatalf("behind node changed the route: %s %v %s", state, detail, decision)
+	}
+	lapse()
+	if state, _, decision := tick(postFixture(t, c, 1001, 0, 11)); state != "reconciled" || decision != "confirmed" {
+		t.Fatalf("next tick did not reconcile: %s %s", state, decision)
 	}
 }

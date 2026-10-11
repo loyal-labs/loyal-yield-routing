@@ -275,7 +275,11 @@ func (w *Worker) reconcileFinalized(ctx context.Context, lease SubmissionLease) 
 	if w.recovery == nil {
 		return errors.New("same-mint chain observer is required; reservation retained")
 	}
-	return w.recovery.reconcile(ctx, lease, receipt)
+	err = w.recovery.reconcile(ctx, lease, receipt)
+	if errors.Is(err, chain.ErrBehind) {
+		return nil // The node has not reached the confirmed bank yet; the next claim reads again.
+	}
+	return err
 }
 
 // Rust's reconciliation schedule (fleet_orchestration/reconciliation.rs):
