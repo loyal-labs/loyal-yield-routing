@@ -349,3 +349,29 @@ func TestTwoAUTOLanesNAVCountsTheSharedAUTOCustodyOnce(t *testing.T) {
 		t.Fatal("the wYLDS debt custody is not in the fingerprinted NAV accounts")
 	}
 }
+
+// Hard LTV runs over both AUTO lanes before the working lane: a wYLDS lane
+// past its hard LTV becomes the tick's view and gets the risk decision,
+// whose repayment buffer converts through Hastra.
+func TestWYLDSLanePastHardLTVIsProtectedFirst(t *testing.T) {
+	manifest, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
+		route, err := runtimeRoute(autoAUTOWYLDSLane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peg := new(big.Int).Lsh(big.NewInt(1), 60)
+		// 5e9 receipts redeem $15 of AUTO; $10 of wYLDS debt is 66.7%,
+		// past the 6000 bps hard LTV.
+		upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.DebtReserve, route.Kamino.DebtMint, 77, peg, 90_000_000, 10_000_000, 100_000_000, 6))
+		upsertConfirmedAccount(accounts, kaminoObligationImage(t, route, 77, 5_000_000_000, 10_000_000))
+	})
+	s := observeMultiLane(t, manifest, accounts).Snapshot
+	if s.RouteLane != autoAUTOWYLDSLane || !s.CrossLaneHardLTV || s.LTVBPS < 6000 {
+		t.Fatalf("risky wYLDS lane was not protected first: %q cross=%t ltv=%d", s.RouteLane, s.CrossLaneHardLTV, s.LTVBPS)
+	}
+	s.MonitorsArmed = false
+	d := Decide(s)
+	if d.StrategyKey != autoAUTOWYLDSLane || d.Reason != "hard_ltv_buffer_swap" || d.Action != SwapCollateralToDebtStep || !hastraConversionAction(d.StrategyKey, d.Action) {
+		t.Fatalf("risky wYLDS lane did not get the hard-LTV decision: %+v", d)
+	}
+}
