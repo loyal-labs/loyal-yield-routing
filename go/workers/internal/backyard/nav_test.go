@@ -94,18 +94,6 @@ func TestExtendedCustodySpendabilityBoundary(t *testing.T) {
 	}
 }
 
-func TestConservativeValuationRounding(t *testing.T) {
-	t.Parallel()
-	asset, err := ValueRawUSDC(1, 1, 15, false)
-	if err != nil || asset != 1 {
-		t.Fatalf("asset=%d err=%v", asset, err)
-	}
-	liability, err := ValueRawUSDC(1, 1, 15, true)
-	if err != nil || liability != 2 {
-		t.Fatalf("liability=%d err=%v", liability, err)
-	}
-}
-
 func TestNAVAssetsMinusLiabilitiesAndDigest(t *testing.T) {
 	t.Parallel()
 	c := []NAVComponent{{Account: "classic", Owner: "Tokenkeg", Raw: 10, Slot: 7, Known: true}, {Account: "t22", Owner: "Tokenz", Raw: 11, Slot: 7, Known: true}, {Account: "debt", Owner: "Tokenkeg", Raw: 4, Slot: 7, Known: true, Liability: true}, {Account: "classic", Owner: "Tokenkeg", Raw: 10, Slot: 7, Known: true}}

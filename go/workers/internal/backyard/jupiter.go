@@ -268,10 +268,6 @@ func jupiterValidateAutoRetainedMinimum(request JupiterSwapRequest) error {
 	return nil
 }
 
-func CompileJupiterMessage(request JupiterSwapRequest) ([]byte, error) {
-	return compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate))
-}
-
 func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publicKey) ([]byte, error) {
 	if request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Jupiter request")

@@ -188,10 +188,6 @@ func navRoutes(working RuntimeRoute, held []string) ([]RuntimeRoute, error) {
 	return routes, nil
 }
 
-func selectRouteNAVAccountsForRoute(accounts []ConfirmedAccount, route RuntimeRoute) ([]ConfirmedAccount, error) {
-	return selectRouteNAVAccountsForRoutes(accounts, []RuntimeRoute{route})
-}
-
 func selectRouteNAVAccountsForRoutes(accounts []ConfirmedAccount, routes []RuntimeRoute) ([]ConfirmedAccount, error) {
 	pinned := pinnedRouteNAVAddressesForRoutes(routes)
 	selected := make([]ConfirmedAccount, 0, len(pinned))

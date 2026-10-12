@@ -3,6 +3,8 @@ package backyard
 import (
 	"encoding/hex"
 	"testing"
+
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 func TestManifestIdentitiesMatchStrategyTwo(t *testing.T) {
@@ -60,11 +62,11 @@ func TestReportTicketIsDerivedFromStrategyTwoConfig(t *testing.T) {
 	// PublicKey.findProgramAddressSync, which returned this exact address and
 	// bump 255 for the pinned config.
 	program := mustKey(bridgeAdaptorProgram)
-	derived, err := findProgramDerivedAddress([]byte("report_ticket"), program[:], config[:])
+	key, bump, err := solana.FindProgramAddress([][]byte{[]byte("report_ticket"), config[:]}, solana.PublicKey(program))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if derived != reportTicketPDA || reportTicketBump != 255 {
+	if derived := key.String(); derived != reportTicketPDA || bump != reportTicketBump || reportTicketBump != 255 {
 		t.Fatalf("strategy-two ticket drift: derived %s bump %d, pinned %s bump %d",
 			derived, reportTicketBump, reportTicketPDA, reportTicketBump)
 	}

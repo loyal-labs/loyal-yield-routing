@@ -13,13 +13,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-// collectSelectorQuotes prices a source once, then at most three independent
-// destinations, each with a biggest-first sizing ladder of at most three
-// exact-size quotes. Nothing here writes a journal row or signs a transaction.
-func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
-	return collectSelectorQuotesForLane(ctx, rpc, view, client, manifest, o, markets, policy, "", canaryMaximum...)
-}
-
 // selectorLadderBudget stops pricing smaller ladder sizes once this much of
 // the quote's 32-slot (~9-13 s) window has passed since the observation; the
 // largest size is always priced. Every lane waits for the slowest ladder, and

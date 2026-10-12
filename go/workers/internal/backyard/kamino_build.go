@@ -54,10 +54,6 @@ const (
 	kaminoLegWithdraw
 )
 
-func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
-	return compileKaminoMessageForDelegate(request, mustKey(bridgeDelegate))
-}
-
 func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
 	route, err := runtimeRoute(request.RouteLane)
 	if err != nil {

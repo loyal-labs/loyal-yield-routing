@@ -12,17 +12,6 @@ type PilotExecutionCost struct {
 	CreditPrice            *BudgetPrice `json:"creditPrice,omitempty"`
 }
 
-// Classify only compiler-supported movements. The existing prestate and final
-// reconciliation gates establish conservation, fees and actual rent ownership.
-// Missing bounds are a refusal, never permission to recycle the entire debit.
-func classifyPilotExecutionCost(request any, effects ExpectedEffects, cost ValuedTransactionCost, credit *BudgetPrice) (PilotExecutionCost, error) {
-	m, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return PilotExecutionCost{}, err
-	}
-	return m.classifyPilotExecutionCost(request, effects, cost, credit)
-}
-
 // The manifest-aware form serves only the internal recipe-pricing path
 // (existing lanes and exact AUTO with a validated binding); the public
 // wrapper above keeps every persisted-build caller on the embedded manifest.
