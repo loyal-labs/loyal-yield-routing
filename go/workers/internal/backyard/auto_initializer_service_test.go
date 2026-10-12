@@ -412,8 +412,15 @@ func autoInitializerServiceRPC(t *testing.T) (*chain.Client, map[string]Confirme
 		case "getSignatureStatuses":
 			return serve(map[string]any{"context": map[string]int{"slot": 42}, "value": []any{nil}}), nil
 		case "simulateTransaction":
-			t.Fatal("authorization must not simulate: no signer exists in this chain")
-			return nil, nil
+			// Only the observation's valuation refresh simulates: unsigned,
+			// capturing accounts. Authorization never does.
+			var options struct {
+				SigVerify bool `json:"sigVerify"`
+			}
+			if len(body.Params) < 2 || json.Unmarshal(body.Params[1], &options) != nil || options.SigVerify {
+				t.Fatal("authorization must not simulate: no signer exists in this chain")
+			}
+			return serve(simulatedCapture(t, body.Params, 42, func(address string) (ConfirmedAccount, bool) { a, ok := prestate[address]; return a, ok })), nil
 		default:
 			t.Fatalf("unexpected RPC %s", body.Method)
 			return nil, nil
