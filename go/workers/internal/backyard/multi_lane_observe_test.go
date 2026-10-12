@@ -68,8 +68,9 @@ func fundLane(t *testing.T, accounts *[]ConfirmedAccount, lane string, collatera
 func observeMultiLane(t *testing.T, manifest RouteManifest, accounts []ConfirmedAccount) Observation {
 	t.Helper()
 	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{
-		read: fixtureBatchRuntime(77, accounts),
-		now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		read:             fixtureBatchRuntime(77, accounts),
+		refreshValuation: fixtureRefresh(77, accounts),
+		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +97,8 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 	}
 	// The same batch through the single-route calculator gives the same
 	// report bytes: the union namespace of one lane is its own namespace.
-	navAccounts, err := selectRouteNAVAccountsForRoute(accounts, autoAUTOPYUSD)
+	_, refreshed, _ := fixtureRefresh(77, accounts)(context.Background(), nil, routeFixedAddresses(), 77)
+	navAccounts, err := selectRouteNAVAccountsForRoute(refreshed, autoAUTOPYUSD)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,10 +119,11 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 
 // The observation identity and report digest the one-lane observer (before
 // multi-lane observation, origin/main 877b297e) gave this test's batch; the
-// digest binds the manifest bytes, whose legacy PRIME/USDC packets P4 removed.
+// digest binds the manifest bytes, whose legacy PRIME/USDC packets P4 removed,
+// and both bind the valuation's refresh provenance, which every batch carries.
 const (
-	oneLaneAUTOObservationID = "d2f0257fb3e4fb86c63671447f66162d942a5dd73f63d0c1cc0f04b118509515"
-	oneLaneAUTOReportDigest  = "d4d1a47a6025d1077d472c8df2f02f1fe44508619e8a082ff808f62ed0c53882"
+	oneLaneAUTOObservationID = "ccb310d607d6fb7d6764ef809ebb38167a6e2bee50443b0c1bccda92651f7177"
+	oneLaneAUTOReportDigest  = "c75ff71d20a7b4ca06e2b1fb8e52c191a8d812e67696e0433ac5fbb002cb5df6"
 )
 
 // Two held lanes are one book: the working lane's view plus every other held

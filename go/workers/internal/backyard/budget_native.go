@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"errors"
 
 	"github.com/solana-foundation/solana-go/v2"
 
@@ -25,14 +24,14 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: budgetSOLMarket}
 	debit := ExecutableDebit{Mint: budgetWrappedSOLMint, TokenProgram: classicTokenProgram, Raw: 1}
 	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, bridgeUSDC, budgetClockAddress}
-	slot, accounts, err := view.read(ctx, addresses, minimumSlot)
+	// The reserves' oracles come from the view; the price is the refreshed
+	// simulation's, like every value.
+	_, accounts, err := view.read(ctx, addresses, minimumSlot)
 	if err != nil {
 		return BudgetPrice{}, err
 	}
-	price, err := decodeBudgetTokenPrice(slot, accounts, config, reference, budgetSOLReserve, debit)
-	var hold *BudgetHold
-	if errors.As(err, &hold) && hold.Reason == "stale_reserve_price" {
-		var instructions []compiledInstruction
+	var instructions []compiledInstruction
+	{
 		for _, row := range []struct {
 			address, mint string
 			config        KaminoObservationConfig
@@ -50,13 +49,12 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 				SwitchboardPrice: reserve.SwitchboardPriceAggregator, SwitchboardTWAP: reserve.SwitchboardTWAPAggregator, Scope: reserve.ScopePriceFeed,
 			})))
 		}
-		slot, accounts, err = simulateBudgetRefreshInstructions(ctx, rpc, instructions, addresses, slot)
-		if err != nil {
-			return BudgetPrice{}, err
-		}
-		price, err = decodeBudgetTokenPrice(slot, accounts, config, reference, budgetSOLReserve, debit)
-		price.Source = "unsigned-reserve-refresh-simulation"
 	}
+	slot, accounts, err := simulateBudgetRefreshInstructions(ctx, rpc, instructions, addresses, minimumSlot)
+	if err != nil {
+		return BudgetPrice{}, err
+	}
+	price, err := decodeBudgetTokenPrice(slot, accounts, config, reference, budgetSOLReserve, debit)
 	if err != nil {
 		return BudgetPrice{}, err
 	}

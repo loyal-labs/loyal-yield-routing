@@ -40,10 +40,11 @@ const (
 	kaminoMarketPriceLastUpdatedTSOffset = 264
 
 	// Audit U5 / monitor M5: a reserve that has not refreshed within the
-	// adaptor's report window, a paused reserve, or a stale oracle price keeps
-	// reporting the last valuation. Every report-bearing action fails closed.
-	kaminoMaxReserveAgeSlots = int64(32)
-	kaminoOracleMaxAgeSecs   = int64(300)
+	// adaptor's report window (adaptorMaxReportAgeSlots), a paused reserve,
+	// or a stale oracle price keeps reporting the last valuation. Every
+	// report-bearing action fails closed. kaminoOracleMaxAgeSecs is the one
+	// price age every valuation is held to.
+	kaminoOracleMaxAgeSecs = int64(300)
 )
 
 // Fail-closed reserve health violations are sentinel errors so the observers
@@ -416,7 +417,7 @@ func decodeKaminoMarketEmergency(account ConfirmedAccount, c KaminoObservationCo
 
 // validateKaminoReserveHealth is the fail-closed gate behind monitor M5. On
 // top of validateKaminoRefresh's relative freshness it requires, at the
-// observation slot: every reserve refreshed within kaminoMaxReserveAgeSlots,
+// observation slot: every reserve refreshed within adaptorMaxReportAgeSlots,
 // ReserveConfig.status 0, and no reserve- or market-level emergency mode.
 func validateKaminoReserveHealth(observedSlot int64, marketEmergencyMode bool, obligation decodedKaminoObligation, reserves ...decodedKaminoReserve) error {
 	if marketEmergencyMode {
@@ -427,7 +428,7 @@ func validateKaminoReserveHealth(observedSlot int64, marketEmergencyMode bool, o
 			return fmt.Errorf("Kamino reserve %d/%t is not active: %w",
 				reserve.status, reserve.emergencyMode, errKaminoReservePaused)
 		}
-		if reserve.refreshedSlot > observedSlot || observedSlot-reserve.refreshedSlot > kaminoMaxReserveAgeSlots {
+		if reserve.refreshedSlot > observedSlot || observedSlot-reserve.refreshedSlot > adaptorMaxReportAgeSlots {
 			return fmt.Errorf("Kamino reserve last refreshed at %d, observation slot %d: %w",
 				reserve.refreshedSlot, observedSlot, errKaminoReserveStale)
 		}

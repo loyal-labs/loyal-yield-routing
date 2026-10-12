@@ -31,7 +31,7 @@ func sfIntervalPrice(mint, program string, decimals byte, slot int64) BudgetPric
 	}
 	return BudgetPrice{
 		Credit:           &BudgetCreditBounds{TokenLowerSF: mk(99, 100), USDCUpperSF: mk(101, 100)},
-		Source:           "confirmed-chain-accounts",
+		Source:           routeRefreshValuationSource,
 		Mint:             mint,
 		TokenProgram:     program,
 		Decimals:         decimals,

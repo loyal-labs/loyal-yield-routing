@@ -38,7 +38,7 @@ func autoDebtPriceFixture(t *testing.T, tokenPriceScale int64) (RuntimeRoute, Bu
 	}
 	if price.Mint != route.Kamino.DebtMint || price.TokenProgram != token2022Program || price.Decimals != 6 ||
 		price.ObservedSlot != 42 || price.ValidThroughSlot != 42+budgetMaxObservationLagSlots ||
-		price.Source != "confirmed-chain-accounts" || len(price.EvidenceSHA256) != 64 || price.Credit == nil {
+		price.Source != routeRefreshValuationSource || len(price.EvidenceSHA256) != 64 || price.Credit == nil {
 		t.Fatalf("price identity: %+v", price)
 	}
 	return route, price, rpc

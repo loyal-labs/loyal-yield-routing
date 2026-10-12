@@ -295,13 +295,6 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	if limit := stepLegCap(route); repay > limit-limit/10 {
 		repay, full = limit-limit/10, false
 	}
-	if full {
-		bound, _, err := observeRawFullPayoff(ctx, view, route, s.Slot)
-		if err != nil {
-			return Observation{}, StepExecutionEvidence{}, err
-		}
-		repay = max(repay, bound.UpperDebtRaw)
-	}
 	receipts, convert, err := planDownStep(s, decision, st, repay)
 	if err != nil {
 		return Observation{}, StepExecutionEvidence{}, err

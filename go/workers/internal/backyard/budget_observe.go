@@ -3,7 +3,6 @@ package backyard
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"math"
 	"strconv"
 
@@ -11,11 +10,11 @@ import (
 )
 
 const budgetClockAddress = "SysvarC1ock11111111111111111111111111111111"
-const budgetPriceMaxAgeSeconds int64 = 60
 const budgetPriceMarginBPS uint16 = 100
 
-// ObserveBudgetTokenPrice reads the bound token reserve and the existing
-// Prime USDC reference in one coherent batch with both mints and chain Clock.
+// ObserveBudgetTokenPrice reads the bound token reserve and the USDC
+// reference in one coherent batch with both mints and chain Clock, valued like
+// the tick's batch: captured after their refreshes (an unsigned simulation).
 // This is valuation-only: it does not broaden execution routes or authority.
 // Native SOL fees need a separate reviewed price observation and cannot fall
 // back to an assumed dollar price when this token observer does not cover them.
@@ -42,24 +41,11 @@ func ObserveBudgetTokenPrice(ctx context.Context, rpc *chain.Client, view *View,
 		return BudgetPrice{}, budgetHold("unbound_valuation_mint")
 	}
 	addresses := uniqueNonzero([]string{reserveAddress, reference.DebtReserve, debit.Mint, bridgeUSDC, budgetClockAddress})
-	slot, accounts, err := view.read(ctx, addresses, minimumSlot)
+	slot, accounts, err := simulateBudgetReserveRefresh(ctx, rpc, lane, addresses, minimumSlot)
 	if err != nil {
 		return BudgetPrice{}, err
 	}
-	price, err := decodeBudgetTokenPrice(slot, accounts, config, reference, reserveAddress, debit)
-	var hold *BudgetHold
-	if !errors.As(err, &hold) || hold.Reason != "stale_reserve_price" {
-		return price, err
-	}
-	// Refresh only in simulation, without loading a signer. This captured
-	// state is neither a landed refresh nor signature-verified evidence.
-	slot, accounts, err = simulateBudgetReserveRefresh(ctx, rpc, lane, addresses, slot)
-	if err != nil {
-		return BudgetPrice{}, err
-	}
-	price, err = decodeBudgetTokenPrice(slot, accounts, config, reference, reserveAddress, debit)
-	price.Source = "unsigned-reserve-refresh-simulation"
-	return price, err
+	return decodeBudgetTokenPrice(slot, accounts, config, reference, reserveAddress, debit)
 }
 
 func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, reference KaminoObservationConfig, reserveAddress string, debit ExecutableDebit) (BudgetPrice, error) {
@@ -85,8 +71,8 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 	}
 	for _, account := range []ConfirmedAccount{tokenAccount, referenceAccount} {
 		updated := int64(binary.LittleEndian.Uint64(account.Data[264:272]))
-		if updated <= 0 || updated > now || now-updated > budgetPriceMaxAgeSeconds {
-			return BudgetPrice{}, &BudgetHold{Reason: "stale_reserve_price", Details: map[string]string{"reserve": account.Address, "chainUnix": strconv.FormatInt(now, 10), "priceUpdatedUnix": strconv.FormatInt(updated, 10), "maximumAgeSeconds": strconv.FormatInt(budgetPriceMaxAgeSeconds, 10)}}
+		if updated <= 0 || updated > now || now-updated > kaminoOracleMaxAgeSecs {
+			return BudgetPrice{}, &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "reserve_price", "reserve": account.Address, "chainUnix": strconv.FormatInt(now, 10), "priceUpdatedUnix": strconv.FormatInt(updated, 10)}}
 		}
 	}
 	mint := accountAt(accounts, debit.Mint)
@@ -119,5 +105,5 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 			return BudgetPrice{}, err
 		}
 	}
-	return BudgetPrice{Credit: &BudgetCreditBounds{tokenLower, usdcUpper}, Source: "confirmed-chain-accounts", Mint: debit.Mint, TokenProgram: mint.Owner, Decimals: token.mintDecimals, TokenUpperSF: upper, USDCLowerSF: lower, ObservedSlot: slot, ValidThroughSlot: slot + observationLagSlots(), EvidenceSHA256: hashConfirmedAccounts(accounts)}, nil
+	return BudgetPrice{Credit: &BudgetCreditBounds{tokenLower, usdcUpper}, Source: routeRefreshValuationSource, Mint: debit.Mint, TokenProgram: mint.Owner, Decimals: token.mintDecimals, TokenUpperSF: upper, USDCLowerSF: lower, ObservedSlot: slot, ValidThroughSlot: slot + observationLagSlots(), EvidenceSHA256: hashConfirmedAccounts(accounts)}, nil
 }

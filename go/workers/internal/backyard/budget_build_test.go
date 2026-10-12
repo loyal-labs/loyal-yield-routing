@@ -86,6 +86,8 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 			}
 		case "getEpochInfo":
 			result = finalizedEpoch(10) // A signed HOLD at this height is not expired in the DB fixture.
+		case "simulateTransaction":
+			result = simulatedCapture(t, body.Params, finalSlot, func(address string) (ConfirmedAccount, bool) { a, ok := accounts[address]; return a, ok })
 		case "getMinimumBalanceForRentExemption":
 			// Read-only fixture of the real RPC: (128+bytes) lamports per byte
 			// year across the two-year exemption threshold at 3480 lamports.

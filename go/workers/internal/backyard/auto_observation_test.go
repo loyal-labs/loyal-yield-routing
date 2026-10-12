@@ -188,8 +188,9 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 func autoObservationForAccounts(manifest RouteManifest, slot int64, accounts []ConfirmedAccount) func(context.Context) (Observation, []ConfirmedAccount, error) {
 	return func(ctx context.Context) (Observation, []ConfirmedAccount, error) {
 		return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
-			read: fixtureBatchRuntime(slot, accounts),
-			now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+			read:             fixtureBatchRuntime(slot, accounts),
+			refreshValuation: fixtureRefresh(slot, accounts),
+			now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 		})
 	}
 }
@@ -263,7 +264,7 @@ func TestAutoCandidateObservationReportsOwnedPYUSDPosition(t *testing.T) {
 	if observation.Snapshot.BorrowUtilizationBlocked || observation.Snapshot.CapacityRaw != 0 || observation.Snapshot.TicketLastConsumedSequenceRaw != 4 {
 		t.Fatalf("unexpected book facts on the healthy candidate batch: %+v", observation.Snapshot)
 	}
-	if observation.Snapshot.ValuationSource != "confirmed" || observation.Snapshot.ValuationSlot != 77 {
+	if observation.Snapshot.ValuationSource != routeRefreshValuationSource || observation.Snapshot.ValuationSlot != 77 {
 		t.Fatalf("valuation provenance drifted: %+v", observation.Snapshot)
 	}
 }
@@ -348,7 +349,7 @@ func TestAutoCandidateForeignReserveIdentityFailsClosed(t *testing.T) {
 // position: the fallback refuses the route outright.
 func TestAutoCandidateStaleValuationHoldsAndNeverDropsToCash(t *testing.T) {
 	stale := func(accounts []ConfirmedAccount) {
-		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	}
 	manifest, route, accounts := autoObservationBatch(t, 77, stale)
 	// Pin the third stale hold in a row, the one that latches.
@@ -420,7 +421,7 @@ func TestAutoEmptyLaneStaleReserveFallsBackToCash(t *testing.T) {
 	t.Parallel()
 	stale := func(accounts []ConfirmedAccount) {
 		flattenAutoPosition(accounts)
-		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	}
 	_, route, accounts := autoObservationBatch(t, 77, stale)
 	position, err := observeKaminoWithCashFallback(77, accounts, route)
@@ -440,7 +441,7 @@ func TestKaminoStaleHealthHoldLatchesOnlyOnThirdInARow(t *testing.T) {
 	kaminoStaleHolds.Store(0)
 	t.Cleanup(func() { kaminoStaleHolds.Store(0) })
 	stale := func(accounts []ConfirmedAccount) {
-		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	}
 	manifest, _, staleAccounts := autoObservationBatch(t, 77, stale)
 	_, _, freshAccounts := autoObservationBatch(t, 77, nil)
@@ -485,7 +486,7 @@ func TestStaleUSDCReferenceTriesRefreshBeforeHealthHold(t *testing.T) {
 	refreshSimulationFailures.Store(0)
 	t.Cleanup(func() { kaminoStaleHolds.Store(0); refreshSimulationFailures.Store(0) })
 	manifest, _, accounts := autoObservationBatch(t, 77, func(accounts []ConfirmedAccount) {
-		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	})
 	refreshCalls := 0
 	_, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{

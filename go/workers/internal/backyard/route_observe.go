@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -136,13 +137,19 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	// Reserve refresh changes valuation inputs only. Capture the complete
-	// bank again so custody, obligations, receipts and Clock are coherent
-	// with those refreshed inputs, including after a landed swap.
+	// One valuation: every value is the refreshed simulation's. The batch is
+	// one bank captured after refreshing every valued lane's reserves (and
+	// the overflow lane of any of them, whose room a source moves into), so
+	// custody, obligations, receipts and Clock are coherent with the refreshed
+	// prices, and the batch's freshness is its slot.
+	if runtime.refreshValuation == nil {
+		return Observation{}, nil, fmt.Errorf("route observation has no valuation refresh")
+	}
 	refreshExhausted := false
-	if routesStale(slot, accounts, routes) && runtime.refreshValuation != nil {
-		captureAddresses := selectorValuationAddresses(routes, addresses)
-		refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, routes, captureAddresses, slot)
+	{
+		refreshRoutes := withOverflowRoutes(routes)
+		captureAddresses := selectorValuationAddresses(refreshRoutes, addresses)
+		refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, refreshRoutes, captureAddresses, slot)
 		if refreshErr == nil {
 			refreshSimulationFailures.Store(0)
 			if err := validateRouteValuationCapture(refreshedSlot, refreshedAccounts, captureAddresses, slot); err != nil {
@@ -188,14 +195,12 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 				refreshSimulationFailures.Add(1) < refreshSimulationLatchAfter {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh rejected, retrying: %w", refreshErr))
 			}
-			// Already rejected that many times in a row: latch now, without a
-			// second streak on the health hold below.
+			// Already rejected that many times in a row: the raw batch's
+			// health hold latches (an empty lane still values as cash);
+			// carry this cause into its alert.
 			refreshExhausted = true
-			// The health hold below latches; carry this cause into its alert.
 			backyardEvents.noteCause(holdDetail(refreshErr))
 		}
-		// On unavailable refresh, cash-only accounting still works. Any
-		// noncash exposure retains the original fail-closed health hold.
 	}
 	views := make([]Observation, 0, len(viewLanes))
 	for _, lane := range viewLanes {
@@ -240,17 +245,19 @@ func flatViewLane(preferred string, in targetInputs) string {
 	return preferred
 }
 
-// routesStale reports whether a valued lane's reserves, or the USDC reference
-// its NAV reads, are past the Kamino age limit, so the one refreshed bank
-// must cover them. Other decode faults are left to the NAV.
-func routesStale(slot int64, accounts []ConfirmedAccount, routes []RuntimeRoute) bool {
+// withOverflowRoutes is routes plus the overflow lane of each, once.
+func withOverflowRoutes(routes []RuntimeRoute) []RuntimeRoute {
+	out := append([]RuntimeRoute(nil), routes...)
 	for _, route := range routes {
-		_, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
-		if errors.Is(err, errKaminoReserveStale) || (err == nil && navUSDCReferenceStale(slot, accounts, route)) {
-			return true
+		lane, ok := overflowLaneOf(route.Lane)
+		if !ok || slices.ContainsFunc(out, func(r RuntimeRoute) bool { return r.Lane == lane }) {
+			continue
+		}
+		if overflow, err := runtimeRoute(lane); err == nil {
+			out = append(out, overflow)
 		}
 	}
-	return false
+	return out
 }
 
 // observeLaneView is one lane's view of the bank: its position, custody and
@@ -413,7 +420,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 	base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
 	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
-		if err := applyOverflowRoom(ctx, &base.Snapshot, slot, route, runtime.refreshValuation); err != nil {
+		if err := applyOverflowRoom(&base.Snapshot, accounts, route); err != nil {
 			fmt.Fprintf(os.Stderr, "backyard-rwa-worker: overflow room unknown lane=%s: %v\n", route.Lane, err)
 		}
 	}
@@ -776,18 +783,6 @@ func staleHealthRetry(hold Observation, err error, refreshExhausted bool) error 
 		return nil
 	}
 	return confirmedObservationUnavailable(fmt.Errorf("kamino health hold, retrying: %w", err))
-}
-
-// navUSDCReferenceStale reports a non-USDC lane whose pinned USDC reference
-// reserve (read by the NAV, not by the position check) is past the Kamino
-// reserve age limit. Decode faults are left to the NAV itself.
-func navUSDCReferenceStale(slot int64, accounts []ConfirmedAccount, route RuntimeRoute) bool {
-	if route.Kamino.DebtMint == "" || route.Kamino.DebtMint == bridgeUSDC {
-		return false
-	}
-	reference := usdcReference
-	reserve, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
-	return err == nil && reserve.refreshedSlot <= slot && slot-reserve.refreshedSlot > kaminoMaxReserveAgeSlots
 }
 
 func refreshSimulationFailed(err error) bool {

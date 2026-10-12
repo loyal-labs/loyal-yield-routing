@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"encoding/binary"
 	"math"
 	"math/big"
@@ -26,36 +25,6 @@ type KaminoPayoffBound struct {
 	ObservedDebtRaw    uint64 `json:"observedDebtRaw"`
 	UpperDebtRaw       uint64 `json:"upperDebtRaw"`
 	AccountsSHA256     string `json:"accountsSha256"`
-}
-
-// payoffWindowAddresses pins the payoff window capture set: obligation, both
-// reserves, both custodies, both liquidity supplies, the Clock, and every
-// registry lane's lending market (its release risk model reads it).
-func payoffWindowAddresses(route RuntimeRoute, additional ...string) []string {
-	addresses := []string{route.Kamino.Obligation, route.Kamino.DebtReserve, route.DebtCustody, route.DebtLiquiditySupply,
-		route.Kamino.CollateralReserve, route.CollateralCustody, route.CollateralLiquiditySupply, budgetClockAddress}
-	if earnHeldLane(route.Lane) {
-		addresses = append(addresses, route.Kamino.Market)
-	}
-	return append(addresses, additional...)
-}
-
-// Funding custody and debt must be captured in the same view read.
-func observeKaminoPayoffWindowAccounts(ctx context.Context, view *View, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	if view == nil || minimumSlot <= 0 {
-		return KaminoPayoffBound{}, nil, budgetHold("payoff_observation_unavailable")
-	}
-	addresses := payoffWindowAddresses(route, additional...)
-	slot, accounts, err := view.read(ctx, addresses, minimumSlot)
-	if err != nil {
-		return KaminoPayoffBound{}, nil, err
-	}
-	bound, err := decodeKaminoPayoffWindow(accounts, route, slot, steps)
-	return bound, accounts, err
-}
-
-func decodeKaminoPayoffBound(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (KaminoPayoffBound, error) {
-	return decodeKaminoPayoffWindow(accounts, route, slot, 1)
 }
 
 // Each not-yet-executed funding/NAV/payoff step needs an accrual window.
@@ -180,13 +149,4 @@ func upperKaminoCompoundedDebtSF(debtSF *big.Int, annualBPS, elapsed, unitsPerYe
 		return 0, budgetHold("payoff_interest_overflow")
 	}
 	return upper.Uint64(), nil
-}
-
-// observeRawFullPayoff sizes a full payoff on a raw capture over three steps.
-// Build and send re-check it on a raw one-step capture; sizing on the
-// refreshed-reserve simulation gave a wire below the send-time upper bound
-// (live 2026-09-24: 99,495,971 < 99,495,984, full_payoff_request_underfunded).
-// The raw observed debt only rises, so the effect minimum stays valid.
-func observeRawFullPayoff(ctx context.Context, view *View, route RuntimeRoute, slot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	return observeKaminoPayoffWindowAccounts(ctx, view, route, slot, 3)
 }

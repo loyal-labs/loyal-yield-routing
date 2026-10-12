@@ -58,7 +58,7 @@ func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfi
 // unchanged.
 func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 	batch := observation.routeBatch
-	if rpc == nil || batch == nil || batch.Slot != observation.Snapshot.Slot || batch.ObservationID != observation.Snapshot.ObservationID || batch.ManifestSHA256 != manifest.SHA256 || observation.Validate() != nil || !freshAt(time.Now().UTC(), observation.ObservedAt, 30*time.Second) {
+	if rpc == nil || batch == nil || batch.Slot != observation.Snapshot.Slot || batch.ObservationID != observation.Snapshot.ObservationID || batch.ManifestSHA256 != manifest.SHA256 || observation.Validate() != nil {
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation is missing or stale"))
 	}
 	slot, err := view.slot(ctx)

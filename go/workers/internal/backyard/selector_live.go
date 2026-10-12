@@ -75,7 +75,7 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 		seen[market.Lane] = true
 	}
 	s := o.Snapshot
-	if s.TotalVaultNAVRaw <= policy.IdleBufferRaw || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) {
+	if s.TotalVaultNAVRaw <= policy.IdleBufferRaw {
 		return out, nil, budgetHold("selector_live_snapshot_unavailable")
 	}
 	if laneExposure(s) {
