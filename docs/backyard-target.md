@@ -1,126 +1,92 @@
-# Backyard full-debt repayment confirmation
+# Backyard target
 
-Ordinary exits that clear all existing borrowing require explicit operator
-confirmation at every utilization level. Borrowing capacity can disappear
-after repayment.
+Every tick Backyard computes where the vault should be, `target(chain, rates,
+inputs)`, and takes one step toward it, `step(chain, target)`. The target is
+never stored. A restart, a lost operation or a changed input needs no
+recovery of a plan: the next tick computes the target again from what is on
+chain.
 
-Automatic liquidation-risk protection remains enabled. It uses the existing
-hard-LTV threshold, `min(6000, liquidationThresholdBPS - 1500)`, and verified
-fresh position and reserve data. This change does not raise borrowing limits,
-change installed policies or enable the separate ONyc flash-exit proof.
+## Inputs
 
-## Actions covered
+| Input | Where it lives | Written by |
+|---|---|---|
+| The chain | one confirmed batch: every registry lane's obligation and custody, the reserves, Voltr | the view |
+| Withdrawal demand | Voltr's withdrawal receipts in the same batch | vault users |
+| The rates | the selector's latest result (`state.selector.result`): the lane a flat vault enters, on a quote current at the batch | the selector sample |
+| A lane's level | `loyal_yield.backyard_lane_levels`: 1, 1.5 or 1.75, and whether the up step toward it is worth its cost at the last sample | the selector sample |
+| An operator exit | `loyal_yield.backyard_lane_exits`: lane X target debt 0, optionally equity 0 | `loyal-engine backyard exit-lane` |
 
-Confirmation is required before the first capital-moving leg of a full exit,
-including an economic route switch, a move to 1x, a withdrawal that falls back
-to full exit, or repayment of the whole debt from idle cash. A series of partial
-repayments that belongs to a full-exit flow needs the same confirmation.
+Nothing else about a move is stored: no unwind intent, tranche,
+partial-withdrawal record, working lane, selector entry or debt-clear
+authority.
 
-Debt-preserving partial withdrawals and risk reduction can continue under their
-existing checks. NAV reports and cost-only forecasts remain automatic. Every
-transaction retains its custody, freshness and protocol checks.
+## Rules, in priority
 
-The worker checks the approval at the locked bind, before signing, and before
-recording broadcast intent. Signed transactions retain the same approval
-requirement across restarts.
+1. **Hard LTV.** A held lane at or past `min(6000, liquidationThresholdBPS -
+   1500)` bps steps down to its level's LTV.
+2. **Term maturity** (wYLDS, 30-day term). Under 1 day left without room for
+   the keep-alive borrow, or past maturity: debt 0. Under 3 days with room:
+   the keep-alive borrow (the minimum up step), unless an approved up step
+   borrows anyway. A term whose end is unknown holds `stale`.
+3. **Operator exit.** Debt 0; with `--equity-zero` the collateral returns to
+   Voltr too.
+4. **Withdrawal demand** beyond Voltr idle. Custody in flight finishes first
+   in the withdrawal's direction, Squads cash stages, and the home lane (the
+   held lane with the most equity) releases the rest plus 1% (at least $1)
+   at its own LTV. A release of 90% of a lane's equity or more is an exit, not
+   a release: it holds `no_room`.
+5. **Selector choices.** An overflow source (AUTO/AUTO/PYUSD) below its level
+   with its own borrowing closed moves the collateral it can release down to
+   the live cap's LTV into its overflow lane, when that lane's level is
+   approved and its reserve has room. New Voltr cash tops up the home lane. A
+   flat vault enters the selector's lane.
+6. **Level.** Down to a stored 1.5 from above it; up toward the stored level
+   when the selector approved the step and the reserve has room.
 
-## Confirm an ordinary exit
+Only rules 1 to 3 ever set debt 0. A stored level of 1 is economic: the lane
+holds at 1.5. Held lanes keep their capital; the selector moves no lane's
+capital to another lane.
 
-Use the existing privileged operator command `loyal-engine backyard
-commit-unwind-intent`. It is a dry run unless `--execute` is supplied.
-Executing now also requires `--confirmation-file <path>`.
+## Steps
 
-The JSON file must contain exactly one object, use no unknown fields, and be
-at most 4096 bytes. Its fields are:
+`Decide` returns the next atomic transaction (`docs/backyard-atomic-step.md`,
+Voltr allocate/stage/restore, a conversion, a report) or a hold:
 
-| Field | Required value |
-| --- | --- |
-| `requestId` | A new lowercase SHA-256-format request ID; never reuse it for another exit. |
-| `confirmedBy` | The operator recording the confirmation, nonempty and at most 256 characters. |
-| `confirmationRecord` | The lowercase SHA-256 hash of the retained explicit confirmation record. |
-| `acknowledgeUnavailableReborrow` | `true`, after acknowledging that reborrowing may be unavailable. |
-| `expiresAt` | An RFC3339 timestamp in the future, at most 15 minutes from acceptance. |
+| Hold | Meaning |
+|---|---|
+| `at_target` | the vault is where the target says |
+| `no_room` | the target wants a move the chain has no room for: a full debt reserve, no withdraw room, a release a lane cannot make; counted on `loyal_backyard_step_no_room_total{lane,rule}` |
+| `stale` | an input is not current: an expired entry quote, an unknown term end, an absent obligation awaiting its initializer |
+| `chain_refused` | the step's signed simulation failed: the row is journaled failed with the simulation error and never sent; the next tick decides again |
 
-The command's existing lane, purpose, observation, evidence, debt and
-collateral arguments define the approved exit. Review those bounds and the dry-run
-output before executing. Use current observed evidence; do not guess amounts or
-reuse an expired observation. Protect credentials through the existing systemd
-credential mechanism.
+## Operator exit
 
-This is a privileged-operator attestation. Host and database access authenticate
-the privileged operator. The `confirmedBy` text and record hash are audit metadata. An automation agent must obtain the explicit confirmation before
-creating or executing an ordinary approval; a deploy request is insufficient.
+```sh
+loyal-engine backyard exit-lane --lane AUTO/AUTO/wYLDS --by "<operator>"                 # debt 0
+loyal-engine backyard exit-lane --lane AUTO/AUTO/wYLDS --by "<operator>" --equity-zero   # debt 0, equity 0
+loyal-engine backyard exit-lane --lane AUTO/AUTO/wYLDS --clear                          # remove the exit
+```
 
-The receipt is retained in route state. An identical active request is
-idempotent. A completed, changed or superseded request cannot authorize another
-exit. Expiry or a larger required envelope needs a new confirmation. The ordinary
-receipt history is capped at 128 entries and is never silently pruned.
+The row is the whole authority: the worker delevers the lane by atomic down
+steps on its next ticks and, with `--equity-zero`, returns the collateral to
+Voltr. Clearing the row stops it at whatever state the chain is in; the
+level rule then applies again. The command reads `NEON_DATABASE_URL` from the
+credential directory like the other operator commands.
 
-## Emergency behavior
+## Deploying the target binary
 
-The worker creates emergency authority internally from fresh coherent account
-observations. Utilization, an operator-supplied reason, withdrawal demand and a
-saved `Fresh` flag do not establish an emergency.
+- Migration 0103 is additive: it creates the two tables and copies each
+  lane's stored level from the old route state (`leverageTargets`), approval
+  off, idempotently. It applies while the old binary still runs, which
+  ignores the tables.
+- The new binary ignores the old route-state keys. Its first selector sample
+  decides each lane's approval again.
+- Migration 0104 (on its own branch, `p2/drop-move-machine-state`) removes the
+  old keys once the new binary is live.
+- Deploy with no Backyard operation in flight.
 
-Term-debt maturity is the second emergency (reason `term_maturity`). A lane
-owing term debt (wYLDS, 30-day term) that is under a day from maturity, with no
-room for the keep-alive borrow, delevers fully without operator confirmation.
-The same account batch must show the obligation's term end and the chain clock;
-a snapshot that only claims the maturity grants nothing. Past maturity KLend
-refuses the keep-alive borrow and the debt becomes liquidatable, so this exit
-cannot wait for an operator.
-
-Emergency authority is limited to the verified risk-reduction flow. After its
-first leg reconciles, the remaining bounded exit may continue if LTV improves.
-That authority cannot fund a new position, switch lanes or grant permission to
-borrow again. Normal confirmations cannot disable a newly verified emergency.
-Existing protocol emergency flags and genuine recovery safety stops still apply.
-
-## Restart and rollout checks
-
-A denied signed transaction retains its exact wire while it can
-still land. Once finalized block height proves expiry, a subsequent signature
-absence check can retire it automatically. This recovery does not wait for
-operator confirmation. Already broadcast or ambiguous work keeps its existing
-reconciliation path and is never blindly resent.
-
-Emergency work must wait for a still-valid signed wire to reconcile or expire.
-Database changes leave that wire valid on-chain. Do not
-start a competing spend to avoid this wait.
-
-Before rollout, review persisted unwind/leverage targets, approvals and signed
-or submitted operations. Old unapproved signed work must not be grandfathered
-into ordinary permission. Older worker binaries do not enforce this gate; a
-rollback alone does not preserve its protection. Follow `deploy/hetzner/README.md`
-for service operations. Keep host addresses and private infrastructure out of
-this public repository.
-
-## Withdrawal-only exclusions and display health
-
-A partial-planner exclusion (including the 90% threshold or round cap) is not
-proof that full repayment is necessary. A debt-bearing withdrawal-only flow
-without a validated partial path holds with `withdrawal_full_exit_unproven`.
-The former $50 residual-equity heuristic no longer excludes otherwise safe
-partials. Positive residual, LTV, custody, cost and policy checks still apply.
-No new automatic full-debt repayment authority is introduced.
-
-`multiply_route_states.state.withdrawalHealth` is a version-1 display projection,
-scoped to the fixed route, mainnet-beta, and canonical Voltr vault/program. It
-is lease-fenced and does not advance the execution generation or state version.
-It records coherent `observedAt`/`observedSlot`, a fixed safe reason, status
-(`none`, `waiting`, `operator_attention`, `unavailable`), and nullable
-`blockedSince`. Current intervention holds with an unfunded withdrawal set
-attention, including prepare/admission refusals before an operation exists.
-No demand clears it; covered withdrawals wait for the user/chain claim flow.
-Neither health nor a NAV report grants claimability or execution permission.
-Failed observations retain prior state and its older observation clock. Failed
-assessments and NAV/recovery-only ticks cannot erase prior attention. Attention
-onset survives process restarts. Metrics publish only after durable commit:
-`loyal_backyard_withdrawal_attention{family="backyard",route="<fixed route>"}` and
-`loyal_backyard_withdrawal_observed_timestamp_seconds` with the same labels.
-
-The 15-minute no-cash-progress escalation is not implemented in this stage:
-existing route state has no durable funding-progress clock. Adding one needs
-confirmed cash-progress evidence; NAV writes or process uptime are not substitutes.
-The exact typed `selector_finish_current_work_first` hold is an expected selector
-deferral, not a failed operation. Unknown selector errors remain failures.
+On the live book (`TestLiveStateRestartComputesTheCurrentState`, read at
+slot 455902661 on 2026-10-12): AUTO/AUTO/PYUSD and AUTO/AUTO/wYLDS both at
+1.75x (LTV 4284 bps), PYUSD borrowing closed. The target is the current state
+right after the deploy and after the next sample approves both levels: no
+step, no overflow move.
