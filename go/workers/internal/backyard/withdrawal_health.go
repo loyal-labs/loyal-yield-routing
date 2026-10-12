@@ -28,17 +28,6 @@ type WithdrawalHealth struct {
 	BlockedSince      *time.Time `json:"blockedSince"`
 }
 
-func withdrawalIntervention(reason string) bool {
-	switch reason {
-	case "withdrawal_full_exit_unproven", "debt_clear_confirmation_required",
-		"debt_clear_confirmation_requires_new_bounds", "debt_clear_receipt_history_full",
-		"squads_spending_limit_exceeded", "repayment_release_exceeds_safe_size",
-		"leverage_exit_cycles_exceeded", "funding_slippage_exceeds_policy":
-		return true
-	}
-	return false
-}
-
 func assessWithdrawalHealth(o Observation, decision Decision, tickErr error) (WithdrawalHealth, bool) {
 	s := o.Snapshot
 	// Health-hold snapshots carry no decoded custody/demand; zero is not evidence.
@@ -55,17 +44,16 @@ func assessWithdrawalHealth(o Observation, decision Decision, tickErr error) (Wi
 	case s.WithdrawalDemandRaw <= s.VoltrIdleRaw:
 		h.Status, h.Reason = "waiting", "withdrawal_covered"
 	default:
+		// A withdrawal the chain refuses or has no room for waits on the
+		// operator, like a manual stop: only outside cash or a person moves it.
 		var hold *BudgetHold
 		reason := decision.Reason
 		if errors.As(tickErr, &hold) {
 			reason = hold.Reason
 		}
 		switch {
-		case withdrawalIntervention(reason) || decision.Action == HoldManualRecovery:
+		case reason == holdNoRoom || reason == holdChainRefused || decision.Action == HoldManualRecovery:
 			h.Status, h.Reason = "operator_attention", "withdrawal_intervention_required"
-			if reason == "withdrawal_full_exit_unproven" {
-				h.Reason = reason
-			}
 		case tickErr != nil || decision.Action == Hold:
 			h.Status, h.Reason = "unavailable", "withdrawal_evidence_unavailable"
 		default:

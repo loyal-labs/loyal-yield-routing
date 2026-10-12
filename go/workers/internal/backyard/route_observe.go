@@ -787,19 +787,18 @@ func staleHealthRetry(hold Observation, err error, refreshExhausted bool) error 
 
 func refreshSimulationFailed(err error) bool {
 	var hold *BudgetHold
-	return errors.As(err, &hold) && hold.Reason == "price_refresh_simulation_failed"
+	return errors.As(err, &hold) && holdCause(hold) == "price_refresh_simulation_failed"
 }
 
 func transientValuationRefreshFailure(err error) bool {
 	var hold *BudgetHold
 	if errors.As(err, &hold) {
-		switch hold.Reason {
-		case "price_refresh_blockhash_unavailable", "price_refresh_simulation_unavailable", "price_refresh_lookup_unavailable":
+		if holdCause(hold) == "price_refresh_simulation_unavailable" {
 			return true
 		}
 		// BlockhashNotFound: the simulating RPC node did not know our fresh
 		// blockhash, so Kamino never evaluated the refresh (09-26 23:18:51).
-		return hold.Reason == "price_refresh_simulation_failed" && strings.Trim(holdTransactionError(err), `"`) == "BlockhashNotFound"
+		return holdCause(hold) == "price_refresh_simulation_failed" && strings.Trim(holdTransactionError(err), `"`) == "BlockhashNotFound"
 	}
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errConfirmedObservationUnavailable)
 }

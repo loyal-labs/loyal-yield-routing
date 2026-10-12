@@ -11,7 +11,7 @@ import (
 func TestWithdrawalHealthPreservesAttentionUntilCurrentRecovery(t *testing.T) {
 	t.Parallel()
 	o := Observation{ObservedAt: time.Unix(1000, 0).UTC(), Snapshot: livePartialSnapshot()}
-	h, ok := assessWithdrawalHealth(o, Decision{Action: Hold, Reason: "withdrawal_full_exit_unproven"}, nil)
+	h, ok := assessWithdrawalHealth(o, Decision{Action: Hold, Reason: holdNoRoom}, nil)
 	if !ok || h.Status != "operator_attention" {
 		t.Fatalf("known blocker: %+v", h)
 	}
@@ -58,13 +58,13 @@ func TestWithdrawalHealthCurrentHoldBeforeOperationExists(t *testing.T) {
 	w := Worker{runtime: tickRuntime{withdrawalHealth: func(_ context.Context, h WithdrawalHealth) error { stored = h; return nil }}}
 	// Prepare may return no observation or operation ID. The tick retains its
 	// earlier coherent snapshot and projects the current admission refusal.
-	w.publishWithdrawalHealth(context.Background(), o, Decision{Action: DeleverRouteStep}, budgetHold("debt_clear_confirmation_required"))
+	w.publishWithdrawalHealth(context.Background(), o, Decision{Action: DeleverRouteStep}, roomHold("step_no_withdraw_room", nil))
 	if stored.Status != "operator_attention" || !stored.ObservedAt.Equal(o.ObservedAt) || stored.ObservedSlot != o.Snapshot.Slot {
 		t.Fatalf("pre-operation hold lost: %+v", stored)
 	}
 	stored = WithdrawalHealth{}
 	o.Snapshot.WithdrawalDemandRaw = 0
-	w.publishWithdrawalHealth(context.Background(), o, Decision{Action: DeleverRouteStep}, budgetHold("debt_clear_confirmation_required"))
+	w.publishWithdrawalHealth(context.Background(), o, Decision{Action: DeleverRouteStep}, roomHold("step_no_withdraw_room", nil))
 	if stored.Status != "none" {
 		t.Fatal("unrelated optimizer hold became withdrawal alert")
 	}
@@ -77,7 +77,7 @@ func TestWithdrawalHealthPersistenceDoesNotChangeAuthority(t *testing.T) {
 	defer db.Close()
 	resetManualRecoveryProductionRoute(t, ctx, db, "withdrawal-health-worker")
 	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
-	h, _ := assessWithdrawalHealth(o, Decision{Action: Hold, Reason: "withdrawal_full_exit_unproven"}, nil)
+	h, _ := assessWithdrawalHealth(o, Decision{Action: Hold, Reason: holdNoRoom}, nil)
 	if err := db.RecordWithdrawalHealth(ctx, h); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return o, nil },
 		prepareStep: func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error) {
-			return Observation{}, StepExecutionEvidence{}, budgetHold("squads_spending_limit_exceeded")
+			return Observation{}, StepExecutionEvidence{}, roomHold("step_no_withdraw_room", nil)
 		},
 		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			recorded = true
@@ -127,7 +127,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 	}}
 	err := w.Tick(context.Background())
 	var hold *BudgetHold
-	if !errors.As(err, &hold) || hold.Reason != "squads_spending_limit_exceeded" || recorded || stored.Status != "operator_attention" {
+	if !errors.As(err, &hold) || holdCause(hold) != "step_no_withdraw_room" || recorded || stored.Status != "operator_attention" {
 		t.Fatalf("pre-operation refusal not projected: err=%v recorded=%v health=%+v", err, recorded, stored)
 	}
 }

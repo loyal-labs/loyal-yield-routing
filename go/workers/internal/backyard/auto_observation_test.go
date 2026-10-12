@@ -471,8 +471,8 @@ func TestKaminoStaleHealthHoldLatchesOnlyOnThirdInARow(t *testing.T) {
 // refresh; it retries without counting toward the rejected-refresh latch.
 func TestRefreshBlockhashNotFoundIsTransient(t *testing.T) {
 	t.Parallel()
-	notFound := &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `"BlockhashNotFound"`}}
-	rejected := &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
+	notFound := &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `"BlockhashNotFound"`}}
+	rejected := &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
 	if !transientValuationRefreshFailure(notFound) || transientValuationRefreshFailure(rejected) || transientValuationRefreshFailure(budgetHold("price_refresh_simulation_failed")) {
 		t.Fatal("BlockhashNotFound classification is wrong")
 	}

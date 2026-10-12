@@ -340,16 +340,16 @@ func holdTransactionError(err error) string {
 	return sanitizedDetail(hold.Details["transactionError"])
 }
 
-// holdDetail is a BudgetHold's reason plus its transaction error, if any.
+// holdDetail is a BudgetHold's cause plus its transaction error, if any.
 func holdDetail(err error) string {
 	var hold *BudgetHold
 	if !errors.As(err, &hold) {
 		return ""
 	}
 	if te := holdTransactionError(err); te != "" {
-		return sanitizedDetail(hold.Reason + " transactionError=" + te)
+		return sanitizedDetail(holdCause(hold) + " transactionError=" + te)
 	}
-	return hold.Reason
+	return sanitizedDetail(holdCause(hold))
 }
 
 // errorCode maps a tick error to a closed, stable snake_case code.

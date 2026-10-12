@@ -63,7 +63,7 @@ func TestUninstalledLiteralHoldsByName(t *testing.T) {
 		}
 		changed[key] = installedPolicy{matches: matches}
 		_, err = manifest.kaminoPacketForRoute(changed, OpenRouteStep, kaminoLegBorrow, 1, blockhash, route.Lane)
-		if hold, ok := err.(*BudgetHold); !ok || hold.Reason != reason {
+		if hold, ok := err.(*BudgetHold); !ok || holdCause(hold) != reason {
 			t.Fatalf("%d installed accounts must hold by name, got %v", matches, err)
 		}
 	}

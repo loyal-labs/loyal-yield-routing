@@ -152,7 +152,7 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 					// Cost beyond equity is an economic outcome smaller sizes can
 					// repair; every other refusal is terminal for this lane.
 					var hold *BudgetHold
-					if errors.As(err, &hold) && hold.Reason == "selector_move_cost_exceeds_equity" {
+					if errors.As(err, &hold) && holdCause(hold) == "selector_move_cost_exceeds_equity" {
 						return MoveQuote{}, loss, "selector_move_cost_exceeds_equity", true, err
 					}
 					return MoveQuote{}, loss, "complete_move_quote_unavailable", false, err
@@ -345,8 +345,8 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 		enriched, quotes = append([]LaneEconomics(nil), markets...), nil
 		reason := "selector_source_quote_unavailable"
 		var hold *BudgetHold
-		if errors.As(quoteErr, &hold) && selectorQuoteCollectionHoldCodes[hold.Reason] {
-			reason = hold.Reason
+		if errors.As(quoteErr, &hold) && selectorQuoteCollectionHoldCodes[holdCause(hold)] {
+			reason = holdCause(hold)
 		}
 		for i := range enriched {
 			enriched[i].EntryCapacity = Capacity{}

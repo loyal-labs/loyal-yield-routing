@@ -38,16 +38,6 @@ import (
 // target, or a hold whose reason is one of a small set: at_target, no_room,
 // stale. A manual recovery hold stops the route.
 
-// Step hold reasons: the closed set a plain hold carries.
-const (
-	holdAtTarget = "at_target"
-	holdNoRoom   = "no_room"
-	holdStale    = "stale"
-	// holdChainRefused: the step's signed simulation failed; the operation is
-	// journaled failed with the simulation error and never sent.
-	holdChainRefused = "chain_refused"
-)
-
 // Target rules.
 const (
 	ruleHardLTV       = "hard_ltv"
@@ -475,11 +465,9 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	}
 	t := s.Target
 	// Risk first: one down step back to the level's LTV.
+	// (LTV is 0 without debt.)
 	if s.HasPosition && s.LTVBPS >= hard {
-		if s.PositionDebtRaw > 0 {
-			return d(DeleverRouteStep, hardLTVDeleverReason, stepDownMarker)
-		}
-		return d(HoldManualRecovery, "hard_ltv_without_debt", 0)
+		return d(DeleverRouteStep, hardLTVDeleverReason, stepDownMarker)
 	}
 	if termDebtUnknown(s) {
 		return d(Hold, holdStale, 0)
@@ -488,12 +476,9 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if s.VoltrStrategyIdleRaw > 0 {
 		return d(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
 	}
-	report := func(reason string) Decision {
-		if hold, blocked := custodyResidueHold(s); blocked {
-			return hold
-		}
-		return d(ReportNAV, reason, 0)
-	}
+	// Strategy custody is empty here (restored above), so a report observes
+	// it empty.
+	report := func(reason string) Decision { return d(ReportNAV, reason, 0) }
 	if s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
 		return report("post_mutation_nav_due")
 	}
@@ -677,19 +662,6 @@ func custodyDiscipline(s Snapshot) (Decision, bool) {
 			StrategyKey:    s.RouteLane}, true
 	}
 	return Decision{}, false
-}
-
-// custodyResidueHold blocks every accounting refresh while a strategy custody
-// balance exists. A report moves no capital, so it must observe custody empty;
-// a residue has to be restored (or recovered manually) instead of being
-// silently reported as current book.
-func custodyResidueHold(s Snapshot) (Decision, bool) {
-	if s.VoltrStrategyIdleRaw == 0 {
-		return Decision{}, false
-	}
-	return Decision{Action: HoldManualRecovery, Reason: "custody_residue", AmountRaw: 0,
-		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, "custody_residue", s.VoltrStrategyIdleRaw),
-		StrategyKey:    s.RouteLane}, true
 }
 
 // obligationAbsentHoldReason marks an observed prerequisite: the lane's

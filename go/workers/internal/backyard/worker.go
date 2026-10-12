@@ -212,7 +212,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
 		},
-		recordBudgetHold: database.RecordPhase3BudgetHold,
+		recordBudgetHold: database.RecordBudgetHold,
 		build: func(ctx context.Context, operationID string, request any, effects ExpectedEffects) error {
 			return buildSimulatePersist(ctx, database, rpc, manifest, operationID, request, effects, credentials)
 		},
@@ -262,7 +262,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		backyardEvents.noteLatch(latched, latch.Reason)
 		if latched {
 			healthDecision = Decision{Action: HoldManualRecovery}
-			w.holds.note(Snapshot{}, "", holdManualRecovery, latch.Reason)
+			w.holds.note(Snapshot{}, "", holdStopped, latch.Reason)
 			return nil
 		}
 	}
@@ -312,7 +312,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		w.holds.note(observation.Snapshot, decision.StrategyKey, decision.Reason, "")
 		return nil
 	case HoldManualRecovery:
-		w.holds.note(observation.Snapshot, decision.StrategyKey, holdManualRecovery, decision.Reason)
+		w.holds.note(observation.Snapshot, decision.StrategyKey, holdStopped, decision.Reason)
 		return w.latchManualRecovery(ctx, observation, decision)
 	}
 	w.holds.note(observation.Snapshot, decision.StrategyKey, "", "")
@@ -326,12 +326,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	logStage("prepare", tickStart)
 	if err != nil {
-		// A step the chain has no room for (no withdraw room) is the
-		// target's no_room, counted like Decide's.
-		var hold *BudgetHold
-		if errors.As(err, &hold) && hold.Reason == holdNoRoom {
-			w.holds.note(observation.Snapshot, decision.StrategyKey, holdNoRoom, "")
-		}
+		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
 		return err
 	}
 	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256)
@@ -348,6 +343,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	logStage("build_sign", tickStart)
 	if err != nil {
+		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
 		return w.journalTickError(ctx, record.OperationID, err)
 	}
 	// The signed wire is persisted: send it now through the same path a
@@ -407,15 +403,19 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 	return nil, ExpectedEffects{}, observation, fmt.Errorf("action %s is not dispatchable", decision.Action)
 }
 
-// journalTickError journals a pre-send hold for the tick's operation once.
-// A hold already recorded durably by its own send path - the pre-broadcast
-// spending-limit refusal - must not be journaled again: the operation row is
-// already failed, so the store would reject the transition, and joining that
-// rejection into the hold would let the run loop treat the whole thing as a
-// pure hold and mask the store failure.
+// noteHold reports a hold the tick's prepare or build ended in: its reason on
+// the gauge (no_room counted too), its cause on the log line.
+func (w *Worker) noteHold(s Snapshot, lane string, err error) {
+	var hold *BudgetHold
+	if errors.As(err, &hold) {
+		w.holds.note(s, lane, hold.Reason, holdCause(hold))
+	}
+}
+
+// journalTickError fails the tick's operation with its pre-send hold.
 func (w *Worker) journalTickError(ctx context.Context, operationID string, err error) error {
 	var hold *BudgetHold
-	if !errors.As(err, &hold) || hold.alreadyJournaled || w.runtime.recordBudgetHold == nil {
+	if !errors.As(err, &hold) || w.runtime.recordBudgetHold == nil {
 		return err
 	}
 	// An endpoint that could not answer says nothing about the operation: it

@@ -131,7 +131,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 	var failure *chain.SimulationError
 	if errors.As(err, &failure) {
 		transactionError, _ := json.Marshal(failure.Err)
-		return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": string(transactionError)}}
+		return 0, nil, &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": string(transactionError)}}
 	}
 	if err != nil {
 		return 0, nil, budgetHoldFrom(err, "price_refresh_simulation_unavailable")

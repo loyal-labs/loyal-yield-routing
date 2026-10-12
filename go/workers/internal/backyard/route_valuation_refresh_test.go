@@ -200,7 +200,7 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 	for _, tc := range []struct {
 		reason    string
 		transient bool
-	}{{"price_refresh_blockhash_unavailable", true}, {"price_refresh_simulation_unavailable", true}, {"price_refresh_simulation_failed", false}} {
+	}{{"price_refresh_simulation_unavailable", true}, {"price_refresh_simulation_failed", false}} {
 		m := readyWorkerManifest(t)
 		m.RuntimeActivation.SelectedLane = PhaseOneLaneID
 		initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
@@ -298,7 +298,7 @@ func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 				if rejected {
-					return 0, nil, &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
+					return 0, nil, &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
 				}
 				return 0, nil, context.DeadlineExceeded // transient: neither counts nor latches
 			},

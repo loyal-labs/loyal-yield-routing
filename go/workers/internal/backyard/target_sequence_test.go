@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -417,16 +416,16 @@ func TestUpStepOverTheLegCapSizesToTheCap(t *testing.T) {
 
 // A step the chain refuses in simulation is the chain_refused hold carrying
 // the simulation error, journaled on the never-sent row; an unavailable
-// endpoint stays a retry and the Squads spending limit keeps its own stop.
+// endpoint stays a retry.
 func TestStepSimulationRefusalIsChainRefused(t *testing.T) {
 	t.Parallel()
-	refused := (&Database{}).simulationRefused(context.Background(), "op", errors.New(`signed transaction simulation failed: slot=1 err={"InstructionError":[3,{"Custom":6098}]}`))
+	refused := simulationRefused(errors.New(`signed transaction simulation failed: slot=1 err={"InstructionError":[3,{"Custom":6098}]}`))
 	var hold *BudgetHold
 	if !errors.As(refused, &hold) || hold.Reason != holdChainRefused || !strings.Contains(hold.Details["simulation"], "6098") {
 		t.Fatalf("refusal: %v", refused)
 	}
 	unavailable := confirmedObservationUnavailable(errors.New("rpc down"))
-	if got := (&Database{}).simulationRefused(context.Background(), "op", unavailable); got != unavailable {
+	if got := simulationRefused(unavailable); got != unavailable {
 		t.Fatalf("%v became %v", unavailable, got)
 	}
 }

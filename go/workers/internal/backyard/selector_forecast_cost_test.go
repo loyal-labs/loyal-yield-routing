@@ -224,7 +224,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	}
 	_, err = composeSelectorMove(context.Background(), fixtureView(t, rpc), o, source, destination)
 	var hold *BudgetHold
-	if !errors.As(err, &hold) || hold.Reason != "selector_move_cost_exceeds_equity" {
+	if !errors.As(err, &hold) || holdCause(hold) != "selector_move_cost_exceeds_equity" {
 		t.Fatal("largest refusal is not the economic cost outcome", err)
 	}
 	// The ladder continues past that refused largest size and stops at the

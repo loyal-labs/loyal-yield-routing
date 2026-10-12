@@ -176,7 +176,7 @@ func (st stepState) stepWithdrawReceipts() (uint64, error) {
 	if err != nil {
 		// Only outside cash can repay now: the target's no_room, counted on
 		// /metrics where its alert lives.
-		return 0, &BudgetHold{Reason: holdNoRoom, Details: map[string]string{"cause": "step_no_withdraw_room"}, cause: err}
+		return 0, roomHold("step_no_withdraw_room", err)
 	}
 	return min(receipts, stepLegCap(st.route)), nil
 }

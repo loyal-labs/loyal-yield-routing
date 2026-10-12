@@ -177,8 +177,8 @@ var selectorEvaluateAdmissionHoldCodes = map[string]bool{
 func sanitizedSelectorEvaluateFailure(err error) string {
 	var hold *BudgetHold
 	if errors.As(err, &hold) {
-		if selectorEvaluateAdmissionHoldCodes[hold.Reason] {
-			return hold.Reason
+		if selectorEvaluateAdmissionHoldCodes[holdCause(hold)] {
+			return holdCause(hold)
 		}
 		return "selector_evaluate_unavailable"
 	}

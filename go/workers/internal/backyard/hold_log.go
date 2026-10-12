@@ -6,10 +6,6 @@ import (
 	"os"
 )
 
-// holdManualRecovery is the hold reason of a manual recovery stop: the
-// operator's latch, lifted only by `loyal-engine backyard clear-hold`.
-const holdManualRecovery = "manual_recovery"
-
 // holdLog reports why a tick did not move the vault. A hold is not a journal
 // row: only transactions are. It is the loyal_backyard_hold{lane,reason}
 // gauge, one log line when it changes, and, for no_room, the
@@ -19,8 +15,9 @@ type holdLog struct {
 	lane, reason string
 }
 
-// note takes one tick's outcome: a hold reason, or "" when the tick acts.
-// detail names a manual stop's own reason.
+// note takes one tick's outcome: a hold reason (the enum, hold.go), or ""
+// when the tick acts. detail is why: a manual stop's own reason, a hold's
+// cause or simulation error.
 func (l *holdLog) note(s Snapshot, lane, reason, detail string) {
 	if reason == holdNoRoom {
 		backyardEvents.stepNoRoom(lane, s.Target.Rule)
@@ -39,6 +36,7 @@ func (l *holdLog) note(s Snapshot, lane, reason, detail string) {
 	}
 	cause := detail
 	switch {
+	case cause != "":
 	case reason == holdNoRoom && s.BorrowUtilizationBlocked:
 		cause = "borrowing blocked by the debt reserve utilization limit"
 	case reason == holdNoRoom:
