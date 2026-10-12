@@ -96,8 +96,7 @@ func ClearManualRecoveryHold(ctx context.Context, databaseURL, routeKey, reason 
 }
 
 // clearManualRecoveryLatch clears the active latch. The generation step is
-// the previous binary's clear fence; it keeps a rollback from re-arming a
-// cleared stop.
+// the previous binary's clear counter.
 func (d *Database) clearManualRecoveryLatch(ctx context.Context, routeKey, reason string) (time.Time, string, error) {
 	var clearedAt time.Time
 	var latched string

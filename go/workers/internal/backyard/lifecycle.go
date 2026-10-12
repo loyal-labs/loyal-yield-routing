@@ -54,7 +54,8 @@ func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Cl
 // never sent. A Squads spending limit and an adaptor report past its age end
 // the row under their own reason; every other refusal is the target's
 // chain_refused hold, which the tick journals; an endpoint that could not
-// answer leaves the row decided for the next tick.
+// answer leaves the row decided, and the next tick fails it and decides
+// again.
 func (d *Database) simulationRefused(ctx context.Context, operationID string, err error) error {
 	var limit *SquadsSpendingLimitError
 	var slot *ReportSlotSimulationError
@@ -102,12 +103,17 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 // row that already recorded it resends the same bytes, which cannot spend
 // twice.
 func (d *Database) land(ctx context.Context, rpc *chain.Client, operation PersistedOperation) error {
+	// The signature landing polls is the wire's own, never a second column.
 	wire, err := chain.OwnSignedWire(operation.SignedWire, operation.SignedWireSHA256)
-	if err != nil || operation.TransactionSignature == "" || operation.LastValidBlockHeight <= 0 {
+	var signature []byte
+	if err == nil {
+		_, signature, err = splitSignedWire(wire.Bytes())
+	}
+	if err != nil || operation.LastValidBlockHeight <= 0 {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "incomplete_persisted_signed_wire")
 	}
 	out, err := chain.Land(ctx, rpc, chain.Attempt{
-		Wire: wire.Bytes(), Signature: operation.TransactionSignature,
+		Wire: wire.Bytes(), Signature: encodeBase58(signature),
 		LastValidBlockHeight: uint64(operation.LastValidBlockHeight), Required: chain.Confirmed,
 	}, landResendEvery, func(ctx context.Context) error {
 		if operation.Status != Signed {

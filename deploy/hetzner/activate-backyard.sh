@@ -107,6 +107,13 @@ fi
 
 backup=/root/40-verified-release.conf.$prev.bak
 rollback() {
+	# The previous release must not inherit a row the new one signed: it may
+	# not know how to send it, and it decides nothing while the row stands.
+	systemctl stop "$unit" || true
+	count=$(in_flight || echo error)
+	if [ "$count" != 0 ]; then
+		fail "$1; $unit stopped on $sha with '$count' operation(s) in flight; start $sha again to land them before rolling back to $prev"
+	fi
 	if cp -p "$backup" "$dropin" && systemctl daemon-reload && systemctl restart "$unit"; then
 		fail "$1; rolled back to $prev"
 	fi

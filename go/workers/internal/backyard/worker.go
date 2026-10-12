@@ -273,6 +273,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	backyardEvents.inflight(operation != nil)
 	if operation != nil {
 		healthDecision = Decision{Action: RecoverTransaction}
+		w.holds.note(Snapshot{}, operation.StrategyKey, "", "")
 		backyardEvents.noteAction(operation.Decision.Action)
 		if err := w.runtime.advance(ctx, *operation); err != nil {
 			if operation.BroadcastIntentRecorded || !preBroadcastStatus(operation.Status) {
@@ -423,7 +424,7 @@ func (w *Worker) journalTickError(ctx context.Context, operationID string, err e
 		return err
 	}
 	// An endpoint that could not answer says nothing about the operation: it
-	// stays decided and the next tick builds it again.
+	// stays decided; the next tick fails it and decides again.
 	if errors.Is(hold, chain.ErrUnavailable) {
 		return confirmedObservationUnavailable(err)
 	}

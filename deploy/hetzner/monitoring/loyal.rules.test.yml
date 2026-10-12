@@ -290,7 +290,7 @@ tests:
         summary: Earn Max lane AUTO/AUTO/PYUSD has had borrow room below its leverage target for 15m
         trigger: The lane's debt reserve had over $1,000 of borrow room and the lane sat at least 0.05x below its stored leverage target for 15 minutes with no leverage_up borrow landing.
         impact: The lane earns less than its stored leverage target would while its debt reserve could fund the borrow; no funds are at risk.
-        action: 'Read the latest ''leverage decision'' line (reason, gain, cost, borrow, room) and the HOLD reasons journaled for the lane (at_target: no approved up step; no_room: the step does not fit the chain). An approval refused as up_move_not_worth_cost is the cost model''s answer, not a fault; anything else is why the borrow is not planned or does not land. Do not lower the target or raise limits to clear it.'
+        action: 'Read the latest ''leverage decision'' line (reason, gain, cost, borrow, room) and the lane's loyal_backyard_hold reason (at_target: no approved up step; no_room: the step does not fit the chain). An approval refused as up_move_not_worth_cost is the cost model''s answer, not a fault; anything else is why the borrow is not planned or does not land. Do not lower the target or raise limits to clear it.'
         recovery: Confirm a leverage_up borrow lands for the lane (backyard_leverage_up_landed) or the gap closes. The series vanishing or a restart is not recovery.
 - interval: 1m
   input_series:
@@ -314,7 +314,7 @@ tests:
         summary: 'Earn Max lane AUTO/AUTO/wYLDS term debt is under 2 days from maturity'
         trigger: 'The lane''s term debt is under 2 days from maturity: its keep-alive borrow (inside 3 days) has not landed.'
         impact: 'Past maturity KLend refuses new borrowing on the lane and its debt becomes liquidatable, ramping to the whole debt over 3 days.'
-        action: 'Read the HOLD reasons journaled for the lane (no_room under rule term_keepalive: the debt reserve has no room for the keep-alive borrow) and the ''leverage decision'' line''s term_days. Under 1 day without room the worker repays the debt by itself (debt_zero); if that step holds no_room too, see LoyalBackyardSafetyStepNoRoom. Do not extend or roll the term by hand.'
+        action: 'Read the lane's loyal_backyard_hold reason (no_room under rule term_keepalive: the debt reserve has no room for the keep-alive borrow) and the ''leverage decision'' line''s term_days. Under 1 day without room the worker repays the debt by itself (debt_zero); if that step holds no_room too, see LoyalBackyardSafetyStepNoRoom. Do not extend or roll the term by hand.'
         recovery: 'A keep-alive or leverage_up borrow lands and the lane''s days to maturity read about 30, or the lane''s debt is repaid and the series is gone.'
 - interval: 1m
   input_series:
