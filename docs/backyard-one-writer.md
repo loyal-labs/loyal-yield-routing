@@ -53,9 +53,9 @@ simulation error and the next tick decides again.
 
 A hold is not a journal row; only transactions are. Why a tick did not move
 the vault is `loyal_backyard_hold{lane,reason}` on `/metrics` (`at_target`,
-`no_room`, `stale`, `manual_recovery`; no series while it acts or lands an
-operation; a tick that fails leaves the last value) and one log line when it
-changes. `no_room` still counts on
+`no_room`, `stale`, `chain_refused`, `stopped`, docs/backyard-one-copy.md; no
+series while it acts or lands an operation; a tick that fails leaves the last
+value) and one log line when it changes, which carries the cause. `no_room` still counts on
 `loyal_backyard_step_no_room_total`, where `LoyalBackyardSafetyStepNoRoom`
 pages.
 
