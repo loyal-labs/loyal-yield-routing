@@ -150,6 +150,14 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		refreshRoutes := withOverflowRoutes(routes)
 		captureAddresses := selectorValuationAddresses(refreshRoutes, addresses)
 		refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, refreshRoutes, captureAddresses, slot)
+		if refreshSimulationFailed(refreshErr) && len(refreshRoutes) > len(routes) {
+			// Kamino refuses to refresh an overflow lane nothing holds: only
+			// its room is unknown (applyOverflowRoom). The valued lanes'
+			// capture stands without it, and its refusal never counts toward
+			// the vault's latch.
+			captureAddresses = selectorValuationAddresses(routes, addresses)
+			refreshedSlot, refreshedAccounts, refreshErr = runtime.refreshValuation(ctx, routes, captureAddresses, slot)
+		}
 		if refreshErr == nil {
 			refreshSimulationFailures.Store(0)
 			if err := validateRouteValuationCapture(refreshedSlot, refreshedAccounts, captureAddresses, slot); err != nil {

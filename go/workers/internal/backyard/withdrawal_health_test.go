@@ -11,7 +11,7 @@ import (
 func TestWithdrawalHealthPreservesAttentionUntilCurrentRecovery(t *testing.T) {
 	t.Parallel()
 	o := Observation{ObservedAt: time.Unix(1000, 0).UTC(), Snapshot: livePartialSnapshot()}
-	h, ok := assessWithdrawalHealth(o, Decision{Action: Hold, Reason: holdNoRoom}, nil)
+	h, ok := assessWithdrawalHealth(o, Decision{Action: HoldManualRecovery, Reason: "custody_mismatch"}, nil)
 	if !ok || h.Status != "operator_attention" {
 		t.Fatalf("known blocker: %+v", h)
 	}
@@ -57,9 +57,10 @@ func TestWithdrawalHealthCurrentHoldBeforeOperationExists(t *testing.T) {
 	var stored WithdrawalHealth
 	w := Worker{runtime: tickRuntime{withdrawalHealth: func(_ context.Context, h WithdrawalHealth) error { stored = h; return nil }}}
 	// Prepare may return no observation or operation ID. The tick retains its
-	// earlier coherent snapshot and projects the current admission refusal.
+	// earlier coherent snapshot and projects the current refusal, which the
+	// next tick may clear: unavailable, not yet the operator's.
 	w.publishWithdrawalHealth(context.Background(), o, Decision{Action: DeleverRouteStep}, roomHold("step_no_withdraw_room", nil))
-	if stored.Status != "operator_attention" || !stored.ObservedAt.Equal(o.ObservedAt) || stored.ObservedSlot != o.Snapshot.Slot {
+	if stored.Status != "unavailable" || !stored.ObservedAt.Equal(o.ObservedAt) || stored.ObservedSlot != o.Snapshot.Slot {
 		t.Fatalf("pre-operation hold lost: %+v", stored)
 	}
 	stored = WithdrawalHealth{}
@@ -77,7 +78,7 @@ func TestWithdrawalHealthPersistenceDoesNotChangeAuthority(t *testing.T) {
 	defer db.Close()
 	resetManualRecoveryProductionRoute(t, ctx, db, "withdrawal-health-worker")
 	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
-	h, _ := assessWithdrawalHealth(o, Decision{Action: Hold, Reason: holdNoRoom}, nil)
+	h, _ := assessWithdrawalHealth(o, Decision{Action: HoldManualRecovery, Reason: "custody_mismatch"}, nil)
 	if err := db.RecordWithdrawalHealth(ctx, h); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +128,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 	}}
 	err := w.Tick(context.Background())
 	var hold *BudgetHold
-	if !errors.As(err, &hold) || holdCause(hold) != "step_no_withdraw_room" || recorded || stored.Status != "operator_attention" {
+	if !errors.As(err, &hold) || holdCause(hold) != "step_no_withdraw_room" || recorded || stored.Status != "unavailable" {
 		t.Fatalf("pre-operation refusal not projected: err=%v recorded=%v health=%+v", err, recorded, stored)
 	}
 }

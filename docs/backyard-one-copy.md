@@ -47,7 +47,10 @@ window is the adaptor's report window (`adaptorMaxReportAgeSlots`).
 
 A refresh the node could not run retries next tick; one Kamino rejects three
 times in a row falls to the raw batch, whose health hold latches (an empty
-lane still values as cash).
+lane still values as cash). An overflow lane nothing holds is refreshed with
+the valued lanes; when Kamino refuses only its refresh, the valued lanes'
+capture stands without it, its room is unknown, and the refusal never counts
+toward that latch.
 
 ## Term
 
@@ -69,10 +72,15 @@ cause and the log line, never the reason:
 | `chain_refused` | the decided transaction's signed simulation failed (a policy, a spending limit, KLend, the adaptor's report age, a minimum output); the row fails with the simulation error |
 | `stopped` | the operator's manual recovery latch |
 
-The gauge `loyal_backyard_hold{lane,reason}`, the journal
-(`recovery_reason` `hold:<reason>`) and the failure code carry only these.
-A withdrawal the chain refuses or has no room for shows as
-`operator_attention` in withdrawal health.
+The gauge `loyal_backyard_hold{lane,reason}` and the journal
+(`recovery_reason` `hold:<reason>`, the cause in the row's `budgetHold`)
+carry only these. A worker exit on a hold (after a broadcast, or joined with
+a store fault) is counted under its cause on `loyal_family_failed_total`, so
+the page names the check.
+
+The policy literals are pinned by name (`policy_installed_test.go`): each is
+the literal installed on chain, so a builder change that would leave a leg
+without its installed account fails there.
 
 ## Deploying
 

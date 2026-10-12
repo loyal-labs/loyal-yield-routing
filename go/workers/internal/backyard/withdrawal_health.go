@@ -3,7 +3,6 @@ package backyard
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -44,15 +43,8 @@ func assessWithdrawalHealth(o Observation, decision Decision, tickErr error) (Wi
 	case s.WithdrawalDemandRaw <= s.VoltrIdleRaw:
 		h.Status, h.Reason = "waiting", "withdrawal_covered"
 	default:
-		// A withdrawal the chain refuses or has no room for waits on the
-		// operator, like a manual stop: only outside cash or a person moves it.
-		var hold *BudgetHold
-		reason := decision.Reason
-		if errors.As(tickErr, &hold) {
-			reason = hold.Reason
-		}
 		switch {
-		case reason == holdNoRoom || reason == holdChainRefused || decision.Action == HoldManualRecovery:
+		case decision.Action == HoldManualRecovery:
 			h.Status, h.Reason = "operator_attention", "withdrawal_intervention_required"
 		case tickErr != nil || decision.Action == Hold:
 			h.Status, h.Reason = "unavailable", "withdrawal_evidence_unavailable"

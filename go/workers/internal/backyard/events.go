@@ -358,6 +358,11 @@ func errorCode(err error) string {
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.As(err, &hold):
+		// The check that held names the failure; its reason (stale,
+		// no_room, chain_refused) alone would not.
+		if cause := holdCause(hold); hold.Details["cause"] != "" {
+			return cause
+		}
 		return hold.Reason
 	case errors.Is(err, errConfirmedObservationUnavailable):
 		return "confirmed_observation_unavailable"

@@ -477,7 +477,7 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	receipts := min(uint64(max(overflowReleaseReceipts(s, decision.AmountRaw), 0)), limit, st.position.CollateralDepositedRaw-1)
 	liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
 	if err != nil || receipts == 0 || liquidity == 0 {
-		return StepExecutionEvidence{}, budgetHoldFrom(err, holdNoRoom)
+		return StepExecutionEvidence{}, roomHold("overflow_move_no_withdraw_room", err)
 	}
 	deposit := st.heldCollateral + liquidity
 	if receipts > stepLegCap(route) || deposit > stepLegCap(destination) {

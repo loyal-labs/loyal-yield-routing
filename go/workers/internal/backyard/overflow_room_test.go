@@ -1,9 +1,11 @@
 package backyard
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"testing"
+	"time"
 )
 
 // overflowRoomBatch is the AUTO observation batch plus the overflow lane's
@@ -64,5 +66,37 @@ func TestOverflowRoomIsJudgedOnTheRefreshedBatch(t *testing.T) {
 	}
 	if got := withOverflowRoutes([]RuntimeRoute{autoAUTOPYUSD, autoAUTOWYLDS}); len(got) != 2 {
 		t.Fatalf("overflow lane refreshed twice: %+v", got)
+	}
+}
+
+// Kamino refusing to refresh an overflow lane nothing holds leaves only its
+// room unknown: the held lanes are valued from their own capture and the
+// refusal never counts toward the vault's refresh latch.
+func TestUnheldOverflowRefreshRefusalNeverLatches(t *testing.T) {
+	refreshSimulationFailures.Store(0)
+	t.Cleanup(func() { refreshSimulationFailures.Store(0) })
+	manifest, accounts := multiLaneFixture(t, nil)
+	valued := fixtureRefresh(77, accounts)
+	calls := 0
+	for i := 0; i < refreshSimulationLatchAfter+1; i++ {
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{
+			read: fixtureBatchRuntime(77, accounts),
+			refreshValuation: func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
+				calls++
+				for _, r := range routes {
+					if r.Lane == autoAUTOWYLDSLane {
+						return 0, nil, &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
+					}
+				}
+				return valued(ctx, routes, addresses, minSlot)
+			},
+			now: func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		})
+		if err != nil || o.Snapshot.ManualReason != "" || o.Snapshot.HeldLanes != autoAUTOPYUSD.Lane || o.Snapshot.OverflowRoomKnown {
+			t.Fatalf("tick %d: %v %q %+v", i, err, o.Snapshot.ManualReason, o.Snapshot)
+		}
+	}
+	if refreshSimulationFailures.Load() != 0 || calls != 2*(refreshSimulationLatchAfter+1) {
+		t.Fatalf("an unheld overflow lane's refusal counted: failures=%d calls=%d", refreshSimulationFailures.Load(), calls)
 	}
 }
