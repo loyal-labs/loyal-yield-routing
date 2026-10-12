@@ -31,9 +31,6 @@ func seedAutoInitializerEntryOperation(t *testing.T, ctx context.Context, db *Da
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":2}',2)`, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, key, "auto-entry-test", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	observation := tickObservation(Snapshot{ObservationID: key + "-obs", Slot: 42, Fresh: true, RouteKind: RouteKind,
 		RouteLane: f.request.RouteLane, StrategyKey: f.request.RouteLane})
 	decision := Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: f.request.RouteLane, IdempotencyKey: "controlled-init"}

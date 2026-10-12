@@ -106,9 +106,6 @@ func seedBoundOperation(t *testing.T, ctx context.Context, db *Database, key, ow
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, key, owner, time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	digest, err := Phase3IntentDigest(request, effects)
 	if err != nil {
 		t.Fatal(err)
@@ -249,9 +246,6 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 		}
 	}
 	insert(op, "decided")
-	if _, err = db.AcquireRouteLease(ctx, key, "writer-a", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	unread, view := newFakeChain(t, nil), accountView(t, 47, nil)
 	request := bridgeTestRequest(ReportNAV, 0)
 	request.LastValidBlockHeight = 10
@@ -316,22 +310,11 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 	hold := &BudgetHold{Reason: "squads_spending_limit_exceeded", Details: map[string]string{"amountRaw": "1"}}
 	assertBudgetHold(t, db.RecordPhase3BudgetHold(ctx, op, hold), "budget_hold_requires_never_submitted_operation")
 
-	// Only the live lease sends: after a restart takes the route, the old
-	// writer can no longer record broadcast intent.
-	if _, err = db.ReleaseRouteLease(ctx); err != nil {
-		t.Fatal(err)
-	}
 	restarted, err := OpenDatabase(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if _, err = restarted.AcquireRouteLease(ctx, key, "writer-b", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if err = markBroadcastIntent(ctx, db, manifest, signed); err == nil {
-		t.Fatal("stale writer retained send authority")
-	}
 	if err = markBroadcastIntent(ctx, restarted, manifest, signed); err != nil {
 		t.Fatal(err)
 	}

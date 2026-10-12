@@ -93,41 +93,39 @@ func TestCurrentAPYWriteThrottle(t *testing.T) {
 	}
 }
 
-// A refused write (lost fence, newer state) only logs: publishCurrentAPY
+// A refused write only logs: publishCurrentAPY
 // returns nothing, keeps the throttle unwritten, and retries next sample.
 func TestCurrentAPYWriteFailureOnlyLogs(t *testing.T) {
 	t.Parallel()
 	s := leverageSnapshot(1.5)
-	o := Observation{Snapshot: s, planning: &routePlanningState{generation: 7}}
+	o := Observation{Snapshot: s, planning: &routePlanningState{}}
 	m := LaneEconomics{Lane: s.RouteLane, NativeAPY: .1, CurrentBorrowAPY: .05, BorrowCurve: []BorrowCurvePoint{{0, 500}, {10_000, 500}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14}
 	var th currentAPYThrottle
 	logged := 0
-	publishCurrentAPY(context.Background(), time.Now(), &th, o, []LaneEconomics{m}, func(context.Context, CurrentAPY, int64) error {
+	publishCurrentAPY(context.Background(), time.Now(), &th, o, []LaneEconomics{m}, func(context.Context, CurrentAPY) error {
 		return budgetHold("current_apy_state_changed")
 	}, func(string, ...any) { logged++ })
 	if logged != 1 || !th.written.IsZero() {
 		t.Fatalf("logged=%d written=%v", logged, th.written)
 	}
 	var stored CurrentAPY
-	var version int64
-	publishCurrentAPY(context.Background(), time.Now(), &th, o, []LaneEconomics{m}, func(_ context.Context, v CurrentAPY, gen int64) error {
-		stored, version = v, gen
+	publishCurrentAPY(context.Background(), time.Now(), &th, o, []LaneEconomics{m}, func(_ context.Context, v CurrentAPY) error {
+		stored = v
 		return nil
 	}, func(string, ...any) { t.Fatal("unexpected log") })
-	if version != 7 || stored.APYBPS == 0 || stored.Level != 1.5 || th.written.IsZero() {
-		t.Fatalf("stored %+v version %d", stored, version)
+	if stored.APYBPS == 0 || stored.Level != 1.5 || th.written.IsZero() {
+		t.Fatalf("stored %+v", stored)
 	}
 	// No planning state (shadow observation): nothing is written.
-	publishCurrentAPY(context.Background(), time.Now(), &currentAPYThrottle{}, Observation{Snapshot: s}, []LaneEconomics{m}, func(context.Context, CurrentAPY, int64) error {
+	publishCurrentAPY(context.Background(), time.Now(), &currentAPYThrottle{}, Observation{Snapshot: s}, []LaneEconomics{m}, func(context.Context, CurrentAPY) error {
 		t.Fatal("wrote without a planning generation")
 		return nil
 	}, func(string, ...any) {})
 }
 
-// The fenced write against Postgres: stored under state.currentApy without
-// advancing the version; a stale version or a lost lease refuses; flat keeps
-// the last APY and sets flat=true.
-func TestRecordCurrentAPYFencedWrite(t *testing.T) {
+// The write against Postgres: stored under state.currentApy without
+// advancing the version; flat keeps the last APY and sets flat=true.
+func TestRecordCurrentAPYWrite(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
@@ -135,12 +133,9 @@ func TestRecordCurrentAPYFencedWrite(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, key, "apy-worker", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	now := time.Date(2026, 9, 29, 21, 0, 0, 0, time.UTC)
 	value := CurrentAPY{Lane: autoAUTOPYUSD.Lane, APYBPS: 1523, Level: 1.75, ObservedAt: now}
-	if err := db.RecordCurrentAPY(ctx, key, value, 1); err != nil {
+	if err := db.RecordCurrentAPY(ctx, key, value); err != nil {
 		t.Fatal(err)
 	}
 	read := func() (CurrentAPY, int64) {
@@ -158,21 +153,12 @@ func TestRecordCurrentAPYFencedWrite(t *testing.T) {
 	if got, version := read(); got != value || version != 1 {
 		t.Fatalf("stored %+v version %d", got, version)
 	}
-	// Stale version: refused, nothing changed.
-	if err := db.RecordCurrentAPY(ctx, key, CurrentAPY{Lane: value.Lane, APYBPS: 1, ObservedAt: now}, 0); err == nil {
-		t.Fatal("stale version accepted")
-	}
 	// Flat: last APY kept, flat set.
-	if err := db.RecordCurrentAPY(ctx, key, CurrentAPY{Lane: value.Lane, Flat: true, ObservedAt: now.Add(time.Minute)}, 1); err != nil {
+	if err := db.RecordCurrentAPY(ctx, key, CurrentAPY{Lane: value.Lane, Flat: true, ObservedAt: now.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := read(); !got.Flat || got.APYBPS != 1523 || !got.ObservedAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("flat write %+v", got)
-	}
-	// Lost lease: refused.
-	db.setLease(nil)
-	if err := db.RecordCurrentAPY(ctx, key, value, 1); err == nil {
-		t.Fatal("write without a lease accepted")
 	}
 }
 
@@ -252,22 +238,22 @@ func TestLeverageWatchMergeKeepsMissingLanes(t *testing.T) {
 func TestLeverageWatchWriteFailureOnlyLogs(t *testing.T) {
 	t.Parallel()
 	watch := &leverageWatch{summary: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane}}}
-	o := Observation{planning: &routePlanningState{generation: 3}}
+	o := Observation{planning: &routePlanningState{}}
 	logged := 0
-	publishLeverageWatch(context.Background(), time.Now(), watch, o, func(context.Context, LeverageWatchSummary, int64) error {
+	publishLeverageWatch(context.Background(), time.Now(), watch, o, func(context.Context, LeverageWatchSummary) error {
 		return budgetHold("leverage_watch_state_changed")
 	}, func(string, ...any) { logged++ })
 	if logged != 1 {
 		t.Fatal("refused write not logged")
 	}
-	publishLeverageWatch(context.Background(), time.Now(), watch, Observation{}, func(context.Context, LeverageWatchSummary, int64) error {
+	publishLeverageWatch(context.Background(), time.Now(), watch, Observation{}, func(context.Context, LeverageWatchSummary) error {
 		t.Fatal("wrote without a planning generation")
 		return nil
 	}, func(string, ...any) {})
 }
 
-// Against Postgres: stored and merged per lane, fenced, no version bump.
-func TestRecordLeverageWatchFencedWrite(t *testing.T) {
+// Against Postgres: stored and merged per lane, no version bump.
+func TestRecordLeverageWatchWrite(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
@@ -275,19 +261,16 @@ func TestRecordLeverageWatchFencedWrite(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, key, "watch-worker", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	old := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
 	both := LeverageWatchSummary{ObservedAt: old, Lanes: []leverageWatchLane{
 		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: watchSpreadFixture(100), APYBPS: map[string]int64{"1.00": 968}, Levels: []float64{1.5, 1.5, 1.5}},
 		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: watchSpreadFixture(200), APYBPS: map[string]int64{"1.00": 1102}, Levels: []float64{1, 1, 1}},
 	}}
-	if err := db.RecordLeverageWatch(ctx, key, both, 1); err != nil {
+	if err := db.RecordLeverageWatch(ctx, key, both); err != nil {
 		t.Fatal(err)
 	}
 	now := old.Add(time.Hour)
-	if err := db.RecordLeverageWatch(ctx, key, LeverageWatchSummary{ObservedAt: now, Lanes: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane, ObservedAt: now, SpreadBPS: watchSpreadFixture(150)}}}, 1); err != nil {
+	if err := db.RecordLeverageWatch(ctx, key, LeverageWatchSummary{ObservedAt: now, Lanes: []leverageWatchLane{{Lane: autoAUTOPYUSD.Lane, ObservedAt: now, SpreadBPS: watchSpreadFixture(150)}}}); err != nil {
 		t.Fatal(err)
 	}
 	var raw []byte
@@ -298,13 +281,6 @@ func TestRecordLeverageWatchFencedWrite(t *testing.T) {
 	var stored LeverageWatchSummary
 	if err := json.Unmarshal(raw, &stored); err != nil || version != 1 || len(stored.Lanes) != 2 || !stored.ObservedAt.Equal(now) {
 		t.Fatalf("stored %s version %d err %v", raw, version, err)
-	}
-	if err := db.RecordLeverageWatch(ctx, key, both, 0); err == nil {
-		t.Fatal("stale version accepted")
-	}
-	db.setLease(nil)
-	if err := db.RecordLeverageWatch(ctx, key, both, 1); err == nil {
-		t.Fatal("write without a lease accepted")
 	}
 }
 

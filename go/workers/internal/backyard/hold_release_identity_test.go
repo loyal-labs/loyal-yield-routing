@@ -155,9 +155,6 @@ func TestHoldReleaseIdentityAcrossManifestRolloverAgainstDatabase(t *testing.T) 
 		 ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, lease_owner = NULL, lease_expires_at = NULL`, routeKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, routeKey, "hold-release-identity", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 
 	manifestA, manifestB, manifestC := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
 	catalogA := strings.Repeat("1", 64)
@@ -275,9 +272,6 @@ func TestLatchedManualRecoveryIdentityIgnoresBindingRolloverAgainstDatabase(t *t
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state)
 		 VALUES($1,'{"generation":1,"cycle":1}')
 		 ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, lease_owner = NULL, lease_expires_at = NULL`, routeKey); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.AcquireRouteLease(ctx, routeKey, "hold-release-identity", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 

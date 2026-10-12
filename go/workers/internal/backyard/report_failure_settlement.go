@@ -214,9 +214,6 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation P
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err = d.lockOperationLease(ctx, tx, operation.ID); err != nil {
-		return err
-	}
 	auth, err := readPhase3AuthorizationTx(ctx, tx, operation.ID)
 	if err != nil {
 		return err

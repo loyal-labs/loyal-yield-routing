@@ -63,10 +63,6 @@ func loadRestartJournal(t *testing.T) restartJournalFixture {
 	if hex.EncodeToString(digest[:]) != journal.Operation.SignedWireSHA256 {
 		t.Fatalf("restart journal wire hash is incoherent: %s", journal.Operation.SignedWireSHA256)
 	}
-	// Drain-and-swap: the Go engine never adopts the Render-era owner dialect.
-	if !ValidLeaseOwner(journal.LeaseOwner) || ValidLeaseOwner(journal.LegacyOwner) {
-		t.Fatalf("restart journal owner identities drifted: %q %q", journal.LeaseOwner, journal.LegacyOwner)
-	}
 	if journal.RouteKey != productionRouteKey {
 		t.Fatalf("restart journal left the fixed production route: %s", journal.RouteKey)
 	}
@@ -206,9 +202,8 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 		"missing credentials":  {func(c *EngineConfig) { c.Credentials = Credentials{} }, ""},
 		"truncated capability": {func(c *EngineConfig) { c.Credentials = Credentials{PolicyKey: unpinned[:ed25519.SeedSize]} }, ""},
 		"unknown selector":     {func(c *EngineConfig) { c.Selector = "both" }, "unknown Backyard selector mode"},
-		"caller lease owner":   {func(c *EngineConfig) { c.Owner = "developer-laptop" }, "platform-neutral lease owner"},
-		"retail lease owner":   {func(c *EngineConfig) { c.Owner = "worker:retail:backyard-eu-1:sha-" + commit }, "platform-neutral lease owner"},
-		"invalid lease config": {func(c *EngineConfig) { c.Config = Config{PollInterval: 0} }, ""},
+		"missing owner":        {func(c *EngineConfig) { c.Owner = "" }, "instance identity"},
+		"invalid poll config":  {func(c *EngineConfig) { c.Config = Config{PollInterval: 0} }, ""},
 	} {
 		config := base
 		tc.mutate(&config)
@@ -237,13 +232,11 @@ func repeat(value byte, count int) []byte {
 // directEngine mirrors how worker tests construct the concrete controller: the
 // production constructor requires the pinned delegated executor secret, which
 // offline tests deliberately never hold.
-func directEngine(t *testing.T, leasing *fakeRouteLeaseRuntime, owner string) *Engine {
+func directEngine(t *testing.T, owner string) *Engine {
 	t.Helper()
 	manifest := readyWorkerManifest(t)
 	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: manifest}
-	return &Engine{worker: worker, leases: leasing, owner: owner, out: io.Discard, config: Config{
-		PollInterval: time.Millisecond, LeaseTTL: 60 * time.Millisecond, LeaseRefreshInterval: 20 * time.Millisecond,
-	}}
+	return &Engine{worker: worker, owner: owner, out: io.Discard, config: Config{PollInterval: time.Millisecond}}
 }
 
 func holdTickRuntime(events *runtimeEvents, cancel context.CancelFunc) tickRuntime {
@@ -266,71 +259,20 @@ func holdTickRuntime(events *runtimeEvents, cancel context.CancelFunc) tickRunti
 
 func TestEngineRunsInjectedRuntimeAndJoinsOnCancellation(t *testing.T) {
 	journal := loadRestartJournal(t)
-	leasing := &fakeRouteLeaseRuntime{}
 	out := &strings.Builder{}
 	ctx, cancel := context.WithCancel(context.Background())
 	events := &runtimeEvents{}
-	engine := directEngine(t, leasing, journal.LeaseOwner)
+	engine := directEngine(t, journal.LeaseOwner)
 	engine.out = out
 	engine.worker.runtime = holdTickRuntime(events, cancel)
 	if err := engine.Run(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("engine did not join on cancellation: %v", err)
 	}
 	banner := out.String()
-	if !strings.Contains(banner, "lease_owner="+journal.LeaseOwner) || !strings.Contains(banner, "route="+productionRouteKey) {
+	if !strings.Contains(banner, "owner="+journal.LeaseOwner) || !strings.Contains(banner, "route="+productionRouteKey) {
 		t.Fatalf("startup banner lost the injected identity: %q", banner)
-	}
-	leaseEvents := leasing.snapshotEvents()
-	if len(leaseEvents) != 2 || !strings.HasPrefix(leaseEvents[0], "acquire:") || leaseEvents[1] != "release" {
-		t.Fatalf("engine lease lifecycle drifted: %v", leaseEvents)
 	}
 	if got := strings.Join(events.snapshot(), ","); got != "tick,observe,journal" {
 		t.Fatalf("engine tick sequence drifted: %s", got)
-	}
-}
-
-func TestEngineRestartsKeepOneOwnerDialectForTheSameFence(t *testing.T) {
-	journal := loadRestartJournal(t)
-	leasing := &fakeRouteLeaseRuntime{}
-	events := &runtimeEvents{}
-	engine := directEngine(t, leasing, journal.LeaseOwner)
-	for generation := 0; generation < 2; generation++ {
-		ctx, cancel := context.WithCancel(context.Background())
-		engine.worker.runtime = holdTickRuntime(events, cancel)
-		if err := engine.Run(ctx); !errors.Is(err, context.Canceled) {
-			t.Fatalf("restart generation %d did not join: %v", generation, err)
-		}
-	}
-	leaseEvents := leasing.snapshotEvents()
-	if len(leaseEvents) != 4 {
-		t.Fatalf("restart lifecycle drifted: %v", leaseEvents)
-	}
-	firstOwner := strings.TrimPrefix(leaseEvents[0], "acquire:"+productionRouteKey+":")
-	secondOwner := strings.TrimPrefix(leaseEvents[2], "acquire:"+productionRouteKey+":")
-	if firstOwner != journal.LeaseOwner || secondOwner != journal.LeaseOwner {
-		t.Fatalf("restart forked the owner identity: %q then %q", firstOwner, secondOwner)
-	}
-	if leaseEvents[1] != "release" || leaseEvents[3] != "release" {
-		t.Fatalf("a restart reacquired before releasing the previous fence: %v", leaseEvents)
-	}
-}
-
-func TestLeaseLossCancelsInFlightEngineWork(t *testing.T) {
-	owner := "worker:backyard:backyard-lease-loss:sha-" + strings.Repeat("b", 40)
-	leasing := &fakeRouteLeaseRuntime{refreshErr: ErrRouteLeaseLost, refreshCalls: make(chan struct{}, 1)}
-	engine := directEngine(t, leasing, owner)
-	engine.worker.runtime = tickRuntime{
-		loadNonterminal: func(ctx context.Context, _ string) (*PersistedOperation, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		},
-	}
-	if err := engine.Run(context.Background()); !errors.Is(err, ErrRouteLeaseLost) {
-		t.Fatalf("lease loss did not stop the engine: %v", err)
-	}
-	select {
-	case <-leasing.refreshCalls:
-	default:
-		t.Fatal("lease was never refreshed before the loss")
 	}
 }

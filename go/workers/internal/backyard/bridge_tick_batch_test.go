@@ -96,7 +96,7 @@ func TestSelectorWakeWaitsForActiveTickAndCoalesces(t *testing.T) {
 	started, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	var calls atomic.Int32
 	go func() {
-		done <- w.runTicks(ctx, make(chan error), func(context.Context) error {
+		done <- w.runTicks(ctx, func(context.Context) error {
 			n := calls.Add(1)
 			if n == 1 {
 				close(started)

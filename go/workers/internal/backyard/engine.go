@@ -36,7 +36,7 @@ type EngineConfig struct {
 	// inside the engine instance; observers and planners never receive it.
 	Credentials Credentials
 	Config      Config
-	// Owner is the platform-neutral scope+instance+release lease identity.
+	// Owner is the platform-neutral scope+instance+release identity, for logs.
 	Owner string
 	// Out receives the human-readable lifecycle lines; Logger the structured
 	// events; Facts the family health facts. Logger and Facts may be nil.
@@ -53,7 +53,6 @@ type EngineConfig struct {
 // Engine is the concrete runtime adapter for process composition.
 type Engine struct {
 	worker   *Worker
-	leases   routeLeaser
 	database *Database
 	rpc      *chain.Client
 	view     *View
@@ -64,11 +63,11 @@ type Engine struct {
 }
 
 // NewEngine validates the complete injected runtime or fails closed. A missing
-// dependency, an unowned lease identity, or a capability that does not match
-// the pinned delegated executor is a startup failure, not a degraded mode.
+// dependency or a capability that does not match the pinned delegated
+// executor is a startup failure, not a degraded mode.
 func NewEngine(config EngineConfig) (*Engine, error) {
-	if !ValidLeaseOwner(config.Owner) {
-		return nil, fmt.Errorf("Backyard engine requires a platform-neutral lease owner")
+	if config.Owner == "" {
+		return nil, fmt.Errorf("Backyard engine requires an instance identity")
 	}
 	switch config.Selector {
 	case SelectorOff, SelectorLive:
@@ -85,15 +84,14 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	if config.Out == nil {
 		config.Out = io.Discard
 	}
-	return &Engine{worker: worker, leases: config.Database, database: config.Database, rpc: config.RPC, view: config.View, owner: config.Owner, config: config.Config, out: config.Out, runtime: config}, nil
+	return &Engine{worker: worker, database: config.Database, rpc: config.RPC, view: config.View, owner: config.Owner, config: config.Config, out: config.Out, runtime: config}, nil
 }
 
-// Run starts the selector collector, acquires the route fence, serializes
-// lifecycle ticks, and releases the exact fencing token on shutdown.
-// Cancellation surfaces as context.Canceled so the owning process runtime can
+// Run starts the selector collector and serializes lifecycle ticks. The
+// caller holds Backyard's one-writer lock for the process. Cancellation surfaces as context.Canceled so the owning process runtime can
 // join the lane without recording a failure.
 func (e *Engine) Run(ctx context.Context) error {
-	if e == nil || e.worker == nil || e.leases == nil {
+	if e == nil || e.worker == nil {
 		return fmt.Errorf("Backyard engine is not constructed")
 	}
 	backyardEvents = newEvents(e.runtime.Logger, e.runtime.Facts)
@@ -108,13 +106,13 @@ func (e *Engine) Run(ctx context.Context) error {
 		defer stop()
 	}
 	if _, err := fmt.Fprintf(e.out,
-		"backyard-rwa-worker: starting serialized confirmed lifecycle route=%s lease_owner=%s manifest_sha256=%s\n",
+		"backyard-rwa-worker: starting serialized confirmed lifecycle route=%s owner=%s manifest_sha256=%s\n",
 		e.worker.routeKey, e.owner, e.worker.manifest.SHA256,
 	); err != nil {
 		return err
 	}
 	backyardEvents.workerStart(e.owner, e.worker.manifest.SHA256)
-	return e.worker.Run(ctx, e.leases, e.owner, e.config)
+	return e.worker.Run(ctx)
 }
 
 // runSelector collects economics off the transaction loop. Live acceptance is
@@ -158,11 +156,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 				backyardEvents.selectorSampleError(err)
 				if code != lastEvaluateFailure {
 					lastEvaluateFailure = code
-					state := "unavailable"
-					if code == "selector_finish_current_work_first" {
-						state = "deferred"
-					}
-					_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector sample %s (%s); retaining current authority\n", state, code)
+					_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector sample unavailable (%s); retaining current authority\n", code)
 					backyardEvents.selectorUnavailable(code)
 				}
 				return
@@ -175,8 +169,8 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			if time.Since(levWatchSummary) >= time.Hour {
 				levWatchSummary = time.Now()
 				// Display only: the same summary numbers, for the admin app.
-				publishLeverageWatch(ctx, time.Now(), levWatch, observed, func(ctx context.Context, summary LeverageWatchSummary, version int64) error {
-					return database.RecordLeverageWatch(ctx, productionRouteKey, summary, version)
+				publishLeverageWatch(ctx, time.Now(), levWatch, observed, func(ctx context.Context, summary LeverageWatchSummary) error {
+					return database.RecordLeverageWatch(ctx, productionRouteKey, summary)
 				}, func(format string, args ...any) { _, _ = fmt.Fprintf(out, format, args...) })
 			}
 			// B2 option 1: each held lane's level, target()'s level input. It
@@ -208,8 +202,8 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 				}
 			}
 			// Display only: the position's current net APY for the web app.
-			publishCurrentAPY(ctx, time.Now(), apyThrottle, observed, markets, func(ctx context.Context, value CurrentAPY, version int64) error {
-				return database.RecordCurrentAPY(ctx, productionRouteKey, value, version)
+			publishCurrentAPY(ctx, time.Now(), apyThrottle, observed, markets, func(ctx context.Context, value CurrentAPY) error {
+				return database.RecordCurrentAPY(ctx, productionRouteKey, value)
 			}, func(format string, args ...any) { _, _ = fmt.Fprintf(out, format, args...) })
 			if result.Action == "ENTER" || result.Action == "CANARY_ENTER" {
 				worker.notifySelectorCommit(result.Action)

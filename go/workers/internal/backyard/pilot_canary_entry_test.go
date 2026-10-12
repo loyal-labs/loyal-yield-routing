@@ -90,7 +90,7 @@ func TestPilotCanaryConfigFailsClosed(t *testing.T) {
 // One request ID is one receipt across restarts; the selector result names
 // the lane target() enters while the vault stays flat, so a restarted
 // evaluation re-accepts the same request with its fresh quote. Nothing bumps
-// the route generation.
+// the route state version.
 func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
@@ -101,43 +101,19 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, key, "canary-a", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	in := pilotCanaryFixture()
 	armFeeAuthorityFixture(t, &in.Snapshot)
-	if _, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 1); err == nil {
-		t.Fatal("lost generation admitted")
-	}
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES($1,$2,'signed','OPEN_ROUTE_STEP','{}')`, key+"-pending", key); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 2); err == nil {
-		t.Fatal("pending operation admitted")
-	}
-	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled' WHERE operation_id=$1`, key+"-pending"); err != nil {
-		t.Fatal(err)
-	}
-	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	result, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 2)
+	result, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot)
 	if err != nil || result.Action != "CANARY_ENTER" {
 		t.Fatal(result, err)
-	}
-	if _, err = db.ReleaseRouteLease(ctx); err != nil {
-		t.Fatal(err)
 	}
 	restarted, err := OpenDatabase(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if _, err = restarted.AcquireRouteLease(ctx, key, "canary-b", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	// The first acceptance advanced the generation once (a new entry choice);
-	// the replay keeps the choice and the generation.
-	result, err = restarted.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 3)
+	result, err = restarted.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot)
 	if err != nil || result.Action != "CANARY_ENTER" || result.DestinationLane != in.canaryRequest.Lane {
 		t.Fatal("restart replay", result, err)
 	}
@@ -146,14 +122,14 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 	if err = restarted.pool.QueryRow(ctx, `SELECT state->'pilotCanaryEntries',state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&history, &version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 {
-		t.Fatal("the replayed entry choice moved the generation", version)
+	if version != 2 {
+		t.Fatal("the entry choice moved the route state version", version)
 	}
 	var receipts map[string]pilotCanaryEntryReceipt
 	if json.Unmarshal(history, &receipts) != nil || len(receipts) != 1 || receipts[in.canaryRequest.ID].QuoteEvidenceID != in.Quotes[0].EvidenceID {
 		t.Fatal("lost one-use receipt")
 	}
-	planning, err := restarted.readRoutePlanningState(ctx, key, true)
+	planning, err := restarted.readRoutePlanningState(ctx, key)
 	if err != nil || planning.inputs.Entry == nil || planning.inputs.Entry.SelectedQuote == nil || planning.inputs.Entry.SelectedQuote.EquityRaw != in.canaryRequest.EquityRaw {
 		t.Fatal("lost exact entry", err)
 	}

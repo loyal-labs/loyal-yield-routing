@@ -279,9 +279,6 @@ func seedAutoInitializerPilotRoute(t *testing.T, ctx context.Context, db *Databa
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":2}',2)`, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, key, "auto-initializer-service", 5*time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	storeTestSelectorEnter(t, ctx, db, key, autoEntryQuoteFixture(time.Now().UTC(), equity, price))
 }
 
@@ -566,7 +563,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	state := productionObserveState{
 		manifest: manifest, routeKey: productionRouteKey, journal: db,
 		batch: func(ctx context.Context) (Observation, error) {
-			planning, err := db.readRoutePlanningStateOnManifest(ctx, manifest, productionRouteKey, true)
+			planning, err := db.readRoutePlanningState(ctx, productionRouteKey)
 			if err != nil {
 				return Observation{}, err
 			}

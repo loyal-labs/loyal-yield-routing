@@ -69,7 +69,7 @@ func (e *events) workerStart(owner, manifestSHA256 string) {
 	if e == nil {
 		return
 	}
-	e.log.Info("backyard_worker_start", "lease_owner", owner, "manifest_sha256", manifestSHA256)
+	e.log.Info("backyard_worker_start", "owner", owner, "manifest_sha256", manifestSHA256)
 }
 
 // noteCause remembers the latest underlying failure so the latch it causes
@@ -209,19 +209,11 @@ func (e *events) selectorUnavailable(code string) {
 	if e == nil {
 		return
 	}
-	if code == "selector_finish_current_work_first" {
-		e.log.Info("backyard_selector_deferred", "code", code)
-		return
-	}
 	e.log.Warn("backyard_selector_unavailable", "code", code)
 }
 
-// selectorSampleError excludes only the exact typed expected deferral.
+// selectorSampleError counts a failed live sample by its sanitized code.
 func (e *events) selectorSampleError(err error) {
-	var hold *BudgetHold
-	if errors.As(err, &hold) && hold.Reason == "selector_finish_current_work_first" {
-		return
-	}
 	e.selectorSampleFailed(sanitizedSelectorEvaluateFailure(err))
 }
 
@@ -372,8 +364,6 @@ func errorCode(err error) string {
 		return blocker.Code
 	case errors.Is(err, errConfirmedObservationUnavailable):
 		return "confirmed_observation_unavailable"
-	case errors.Is(err, ErrRouteLeaseLost):
-		return "route_lease_lost"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	case errors.As(err, &pgErr):

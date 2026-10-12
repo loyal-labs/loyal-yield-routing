@@ -63,17 +63,11 @@ const (
 
 // Config is deliberately fixed for the MVP; route selection is not configurable.
 type Config struct {
-	PollInterval         time.Duration
-	LeaseTTL             time.Duration
-	LeaseRefreshInterval time.Duration
+	PollInterval time.Duration
 }
 
 func DefaultConfig() Config {
-	return Config{
-		PollInterval:         5 * time.Second,
-		LeaseTTL:             30 * time.Second,
-		LeaseRefreshInterval: 10 * time.Second,
-	}
+	return Config{PollInterval: 5 * time.Second}
 }
 
 // RuntimeConfig is the Backyard-only process configuration the one-shot
@@ -93,14 +87,6 @@ func (c RuntimeConfig) Validate() error {
 	u, e := url.Parse(c.RPCURL)
 	if e != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return fmt.Errorf("confirmed RPC URL is required")
-	}
-	return nil
-}
-
-func (c Config) validateLease() error {
-	if c.PollInterval <= 0 || c.LeaseTTL < 30*time.Millisecond || c.LeaseRefreshInterval <= 0 ||
-		c.LeaseRefreshInterval > c.LeaseTTL/3 {
-		return fmt.Errorf("invalid bounded route lease configuration")
 	}
 	return nil
 }

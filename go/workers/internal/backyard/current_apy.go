@@ -3,13 +3,9 @@ package backyard
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"math"
 	"sort"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // CurrentAPY is the vault position's fee-paying APY estimate, published for the
@@ -87,43 +83,25 @@ func (t *currentAPYThrottle) wrote(now time.Time, value CurrentAPY) {
 	t.last, t.written = value, now
 }
 
-// RecordCurrentAPY stores the published APY under the route lease and the
-// state version read with the observation. It changes no money and does NOT
-// advance the generation (display data must not invalidate in-flight
-// quotes or custody proofs). A flat position only sets flat=true and keeps
-// the last APY. A lost fence or a newer state refuses.
-func (d *Database) RecordCurrentAPY(ctx context.Context, routeKey string, value CurrentAPY, expectedVersion int64) error {
-	lease, err := d.currentLease()
-	if err != nil {
-		return err
-	}
-	if lease.RouteKey != routeKey {
-		return fmt.Errorf("current_apy_route_lease_mismatch")
-	}
+// RecordCurrentAPY stores the published APY. It changes no money. A flat
+// position only sets flat=true and keeps the last APY.
+func (d *Database) RecordCurrentAPY(ctx context.Context, routeKey string, value CurrentAPY) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	update := `jsonb_set(state,'{currentApy}',$5::jsonb,true)`
+	update := `jsonb_set(state,'{currentApy}',$2::jsonb,true)`
 	if value.Flat {
 		// Keep the last APY; mark it flat.
-		update = `jsonb_set(state,'{currentApy}',COALESCE(state->'currentApy','{}'::jsonb) || jsonb_build_object('flat',true,'observedAt',$5::jsonb->'observedAt'),true)`
+		update = `jsonb_set(state,'{currentApy}',COALESCE(state->'currentApy','{}'::jsonb) || jsonb_build_object('flat',true,'observedAt',$2::jsonb->'observedAt'),true)`
 	}
-	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=`+update+`,updated_at=clock_timestamp()
-		WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp()`,
-		routeKey, lease.Owner, lease.FencingToken, expectedVersion, string(raw))
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return budgetHold("current_apy_state_changed")
-	}
-	return nil
+	_, err = d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=`+update+`,updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(raw))
+	return err
 }
 
 // publishCurrentAPY is the selector-loop hook: compute, throttle, write.
 // Every failure only logs; it never reaches a tick or a money path.
-func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYThrottle, observed Observation, markets []LaneEconomics, write func(context.Context, CurrentAPY, int64) error, logf func(string, ...any)) {
+func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYThrottle, observed Observation, markets []LaneEconomics, write func(context.Context, CurrentAPY) error, logf func(string, ...any)) {
 	if observed.planning == nil || !earnHeldLane(observed.Snapshot.RouteLane) {
 		return
 	}
@@ -135,7 +113,7 @@ func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYT
 	if !throttle.due(now, value) {
 		return
 	}
-	if err := write(ctx, value, observed.planning.generation); err != nil {
+	if err := write(ctx, value); err != nil {
 		logf("backyard-rwa-worker: current APY not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
 		return
 	}
@@ -170,29 +148,16 @@ func mergeLeverageWatch(previous *LeverageWatchSummary, next LeverageWatchSummar
 }
 
 // RecordLeverageWatch merges and stores the summary under
-// state.leverageWatch with the same fence as RecordCurrentAPY (lease,
-// fencing token, state_version; no generation bump). The per-lane merge
-// reads the stored value in the same statement's row lock.
-func (d *Database) RecordLeverageWatch(ctx context.Context, routeKey string, summary LeverageWatchSummary, expectedVersion int64) error {
-	lease, err := d.currentLease()
-	if err != nil {
-		return err
-	}
-	if lease.RouteKey != routeKey {
-		return fmt.Errorf("leverage_watch_route_lease_mismatch")
-	}
+// state.leverageWatch. The per-lane merge reads the stored value under the
+// statement's row lock.
+func (d *Database) RecordLeverageWatch(ctx context.Context, routeKey string, summary LeverageWatchSummary) error {
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 	var raw []byte
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(state->'leverageWatch','null'::jsonb) FROM loyal_yield.multiply_route_states
-		WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND state_version=$4 AND lease_expires_at>clock_timestamp() FOR UPDATE`,
-		routeKey, lease.Owner, lease.FencingToken, expectedVersion).Scan(&raw); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return budgetHold("leverage_watch_state_changed")
-		}
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(state->'leverageWatch','null'::jsonb) FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, routeKey).Scan(&raw); err != nil {
 		return err
 	}
 	var previous *LeverageWatchSummary
@@ -214,7 +179,7 @@ func (d *Database) RecordLeverageWatch(ctx context.Context, routeKey string, sum
 
 // publishLeverageWatch stores the summary the watch just printed. Every
 // failure only logs.
-func publishLeverageWatch(ctx context.Context, now time.Time, watch *leverageWatch, observed Observation, write func(context.Context, LeverageWatchSummary, int64) error, logf func(string, ...any)) {
+func publishLeverageWatch(ctx context.Context, now time.Time, watch *leverageWatch, observed Observation, write func(context.Context, LeverageWatchSummary) error, logf func(string, ...any)) {
 	if watch == nil || len(watch.summary) == 0 || observed.planning == nil {
 		return
 	}
@@ -223,7 +188,7 @@ func publishLeverageWatch(ctx context.Context, now time.Time, watch *leverageWat
 		lane.ObservedAt = now.UTC()
 		summary.Lanes = append(summary.Lanes, lane)
 	}
-	if err := write(ctx, summary, observed.planning.generation); err != nil {
+	if err := write(ctx, summary); err != nil {
 		logf("backyard-rwa-worker: leverage watch not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
 	}
 }

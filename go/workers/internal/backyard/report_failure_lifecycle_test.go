@@ -76,9 +76,6 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			VALUES($1,$2,'submitted','{}',$3,clock_timestamp())`, id, routeKey, testSignature); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.AcquireRouteLease(ctx, routeKey, "failure-lifecycle-writer", time.Minute); err != nil {
-			t.Fatal(err)
-		}
 		return routeKey, id
 	}
 	// A wire whose signature is testSignature, as an older binary left a

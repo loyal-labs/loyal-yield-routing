@@ -53,9 +53,6 @@ func TestManualRecoveryLatchLifecycleAgainstDatabase(t *testing.T) {
 		 ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = EXCLUDED.state_version, lease_owner = NULL, lease_expires_at = NULL`, routeKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, routeKey, "latch-facts-writer", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 
 	manifest := readyWorkerManifest(t)
 	fault := true
@@ -258,9 +255,6 @@ func resetManualRecoveryProductionRoute(t *testing.T, ctx context.Context, db *D
 		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = EXCLUDED.state_version, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, productionRouteKey, owner, time.Minute); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func ensureManualRecoveryTestSchema(ctx context.Context, db *Database) error {
@@ -347,9 +341,6 @@ func TestManualRecoveryHoldAndLatchAreAtomic(t *testing.T) {
 	}
 	routeKey := fmt.Sprintf("manual-recovery-atomic-%d", time.Now().UnixNano())
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,'{"generation":1,"cycle":1}')`, routeKey); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.AcquireRouteLease(ctx, routeKey, "manual-recovery-atomic", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	observation := manualRecoveryTestObservation("atomic-observation", 901)
@@ -569,9 +560,6 @@ func TestManualRecoveryConstructionRefreshPersistsHoldBeforeDispatch(t *testing.
 	}
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1,"cycle":1}',1)
 		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = EXCLUDED.state_version, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.AcquireRouteLease(ctx, productionRouteKey, "manual-recovery-refresh", time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	manifest := readyWorkerManifest(t)

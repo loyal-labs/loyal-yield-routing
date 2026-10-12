@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,31 +13,16 @@ import (
 
 const productionRouteKey = "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
 
-// leaseOwnerPattern is the shared engine instance identity
-// (engine.InstanceOwner): fixed Backyard scope, unique instance, immutable
-// release. Authority comes from the database fencing token, never this text.
-var leaseOwnerPattern = regexp.MustCompile(`^worker:backyard:[a-zA-Z0-9_-]{1,80}:sha-[0-9a-f]{40}$`)
-
-// ValidLeaseOwner reports whether owner is a deployment identity this runtime
-// accepts; any other string is rejected before it can reach the database.
-func ValidLeaseOwner(owner string) bool { return leaseOwnerPattern.MatchString(owner) }
-
 var errConfirmedObservationUnavailable = errors.New("confirmed route observation is temporarily unavailable")
 
 type Worker struct {
-	wake         chan struct{}
-	routeKey     string
-	interval     time.Duration
-	manifest     RouteManifest
-	runtime      tickRuntime
-	leaseHandoff startupLeaseHandoffRuntime
+	wake     chan struct{}
+	routeKey string
+	interval time.Duration
+	manifest RouteManifest
+	runtime  tickRuntime
 	// noRoom reports a no_room hold: always on /metrics, hourly in the log.
 	noRoom noRoomLog
-}
-
-type startupLeaseHandoffRuntime struct {
-	now  func() time.Time
-	wait func(context.Context, time.Duration) error
 }
 
 type tickRuntime struct {
@@ -61,13 +45,13 @@ type tickRuntime struct {
 	prepareStep    func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
 	recordDecision func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
 	// bind persists the decided operation's integrity record before build.
-	bind                  func(context.Context, string, Observation, Decision, any, ExpectedEffects) error
-	buildBridge           func(context.Context, string, BridgeExecutionEvidence) error
-	buildKamino           func(context.Context, string, KaminoExecutionEvidence) error
-	buildJupiter          func(context.Context, string, JupiterExecutionEvidence) error
-	buildHastra           func(context.Context, string, HastraExecutionEvidence) error
-	buildStep             func(context.Context, string, StepExecutionEvidence) error
-	recordBudgetHold      func(context.Context, string, *BudgetHold) error
+	bind             func(context.Context, string, Observation, Decision, any, ExpectedEffects) error
+	buildBridge      func(context.Context, string, BridgeExecutionEvidence) error
+	buildKamino      func(context.Context, string, KaminoExecutionEvidence) error
+	buildJupiter     func(context.Context, string, JupiterExecutionEvidence) error
+	buildHastra      func(context.Context, string, HastraExecutionEvidence) error
+	buildStep        func(context.Context, string, StepExecutionEvidence) error
+	recordBudgetHold func(context.Context, string, *BudgetHold) error
 	// watchRoom hands the account view the reserves this tick waits on
 	// (leverage_room_watch.go); nil without a streaming view.
 	watchRoom func([]roomWatch, func(roomUpdate))
@@ -107,17 +91,6 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	// Integrity or health failures carry no decodable valuation. Preserve the
 	// last good position projection; the hold decision is the durable record.
 	if observation.Snapshot.StrategyReceiptIntegrityFault || observation.Snapshot.ManualReason != "" {
-		if observation.planning != nil {
-			reader, ok := p.journal.(interface {
-				validateRoutePlanningState(context.Context, string, *routePlanningState) error
-			})
-			if !ok {
-				return Observation{}, fmt.Errorf("planning generation reader unavailable")
-			}
-			if err := reader.validateRoutePlanningState(ctx, p.routeKey, observation.planning); err != nil {
-				return Observation{}, err
-			}
-		}
 		return observation, nil
 	}
 	if err := p.journal.RecordPositionSnapshot(ctx, p.routeKey, observation); err != nil {
@@ -190,7 +163,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		journal: database,
 		batch: func(ctx context.Context) (Observation, error) {
 			refreshObservationLagSlots(ctx, rpc)
-			planning, err := database.readRoutePlanningStateOnManifest(ctx, manifest, productionRouteKey, true)
+			planning, err := database.readRoutePlanningState(ctx, productionRouteKey)
 			if err != nil {
 				return Observation{}, err
 			}
@@ -282,7 +255,7 @@ func confirmedObservationUnavailable(err error) error {
 // capability is injected, validated here, and never derivable from a
 // decision, observation, or recovery input.
 func NewWorker(database *Database, rpc *chain.Client, view *View, config Config, credentials Credentials) (*Worker, error) {
-	if database == nil || database.pool == nil || rpc == nil || view == nil || config.validateLease() != nil {
+	if database == nil || database.pool == nil || rpc == nil || view == nil || config.PollInterval <= 0 {
 		return nil, fmt.Errorf("invalid concrete worker configuration")
 	}
 	key, err := credentials.signer()
@@ -636,75 +609,6 @@ func (w *Worker) persistRefreshedManualRecovery(ctx context.Context, observation
 	return true, w.recordManualRecoveryDecision(ctx, observation, decision)
 }
 
-type routeLeaser interface {
-	AcquireRouteLease(context.Context, string, string, time.Duration) (RouteLease, error)
-	RefreshRouteLease(context.Context, time.Duration) (RouteLease, error)
-	ReleaseRouteLease(context.Context) (bool, error)
-}
-
-func (r startupLeaseHandoffRuntime) acquire(ctx context.Context, leases routeLeaser, routeKey, owner string, ttl time.Duration) error {
-	now := r.now
-	if now == nil {
-		now = time.Now
-	}
-	wait := r.wait
-	if wait == nil {
-		wait = func(ctx context.Context, delay time.Duration) error {
-			timer := time.NewTimer(delay)
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-timer.C:
-				return nil
-			}
-		}
-	}
-	window := 2 * ttl
-	cadence := ttl / 10
-	if cadence < 10*time.Millisecond {
-		cadence = 10 * time.Millisecond
-	}
-	if cadence > time.Second {
-		cadence = time.Second
-	}
-	deadline := now().Add(window)
-	lastUnavailable := ErrRouteLeaseUnavailable
-	for {
-		remaining := deadline.Sub(now())
-		if remaining <= 0 {
-			return lastUnavailable
-		}
-		attemptCtx, cancel := context.WithTimeout(ctx, remaining)
-		_, err := leases.AcquireRouteLease(attemptCtx, routeKey, owner, ttl)
-		cancel()
-		if err == nil {
-			return nil
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return lastUnavailable
-		}
-		if !errors.Is(err, ErrRouteLeaseUnavailable) {
-			return err
-		}
-		lastUnavailable = err
-		remaining = deadline.Sub(now())
-		if remaining <= 0 {
-			return lastUnavailable
-		}
-		delay := cadence
-		if remaining < delay {
-			delay = remaining
-		}
-		if err := wait(ctx, delay); err != nil {
-			return err
-		}
-	}
-}
-
 // afterBroadcastError marks a tick error from advancing an operation whose
 // broadcast intent is already durable. Its holds are never pre-send retries.
 type afterBroadcastError struct{ err error }
@@ -760,16 +664,10 @@ func (w *Worker) notifySelectorCommit(action string) {
 	}
 }
 
-func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick func(context.Context) error) error {
+func (w *Worker) runTicks(ctx context.Context, tick func(context.Context) error) error {
 	for {
 		err := tick(ctx)
 		if err != nil {
-			select {
-			case leaseErr := <-leaseErrors:
-				backyardEvents.tickResult(leaseErr, true)
-				return leaseErr
-			default:
-			}
 			// Confirmed-observation gaps and pre-send holds (the journaled
 			// spending-limit refusal among them) skip this tick's leg and retry
 			// on the next interval; anything else - including a hold joined
@@ -785,10 +683,6 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 		backyardEvents.tickResult(err, false)
 		timer := time.NewTimer(w.interval)
 		select {
-		case err := <-leaseErrors:
-			timer.Stop()
-			backyardEvents.tickResult(err, true)
-			return err
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
@@ -799,63 +693,12 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 	}
 }
 
-// Run acquires the route fence before the first observation, refreshes it on a
-// bounded cadence, and cancels the active tick immediately if ownership is
-// lost. Release is compare-and-clear on the exact fencing token, so a stale
-// process can never clear its successor's lease.
-func (w *Worker) Run(ctx context.Context, leases routeLeaser, owner string, config Config) (runErr error) {
-	if w == nil || leases == nil || !ValidLeaseOwner(owner) || config.validateLease() != nil {
-		return fmt.Errorf("invalid leased worker runtime")
+// Run serializes lifecycle ticks until ctx ends. The process holds
+// Backyard's one-writer lock (the family advisory lock) for its whole life;
+// losing it cancels ctx.
+func (w *Worker) Run(ctx context.Context) error {
+	if w == nil {
+		return fmt.Errorf("invalid worker runtime")
 	}
-	if err := w.leaseHandoff.acquire(ctx, leases, w.routeKey, owner, config.LeaseTTL); err != nil {
-		return err
-	}
-	defer func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, err := leases.ReleaseRouteLease(releaseCtx)
-		if err != nil {
-			if runErr == nil || errors.Is(runErr, context.Canceled) {
-				runErr = err
-			} else {
-				runErr = errors.Join(runErr, fmt.Errorf("release route lease: %w", err))
-			}
-		}
-	}()
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	leaseErrors := make(chan error, 1)
-	refreshStopped := make(chan struct{})
-	go func() {
-		defer close(refreshStopped)
-		ticker := time.NewTicker(config.LeaseRefreshInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-runCtx.Done():
-				return
-			case <-ticker.C:
-				if _, err := leases.RefreshRouteLease(runCtx, config.LeaseTTL); err != nil {
-					select {
-					case leaseErrors <- err:
-					default:
-					}
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-	runErr = w.runTicks(runCtx, leaseErrors, w.Tick)
-	cancel()
-	<-refreshStopped
-	select {
-	case leaseErr := <-leaseErrors:
-		if leaseErr != nil {
-			runErr = leaseErr
-		}
-	default:
-	}
-	return runErr
+	return w.runTicks(ctx, w.Tick)
 }

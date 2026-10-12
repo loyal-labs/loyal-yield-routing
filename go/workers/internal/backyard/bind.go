@@ -203,9 +203,6 @@ func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *V
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err = d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
 	var status, lane, routeKey, action string
 	var bound bool
 	var decisionBytes []byte

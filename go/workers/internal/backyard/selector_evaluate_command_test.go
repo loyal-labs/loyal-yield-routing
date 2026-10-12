@@ -67,7 +67,7 @@ func canaryEvaluateClosure(key string, manifest RouteManifest, input SelectorInp
 		if err := db.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version); err != nil {
 			return SelectorResult{}, err
 		}
-		return db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, version)
+		return db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot)
 	}
 }
 
@@ -109,12 +109,19 @@ func assertNoCanaryOperations(t *testing.T, ctx context.Context, db *Database, k
 	}
 }
 
-func assertCanaryLeaseFree(t *testing.T, ctx context.Context, db *Database, key string) {
+// assertWriterLockFree proves the command released Backyard's writer lock.
+func assertWriterLockFree(t *testing.T, ctx context.Context, db *Database) {
 	t.Helper()
-	if _, err := db.AcquireRouteLease(ctx, key, "canary-probe", time.Minute); err != nil {
-		t.Fatal("route lease was not released by the command:", err)
+	conn, err := db.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := db.ReleaseRouteLease(ctx); err != nil {
+	defer conn.Release()
+	var free bool
+	if err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended('loyal-family:backyard',0))`).Scan(&free); err != nil || !free {
+		t.Fatalf("the command left Backyard's writer lock held: %v", err)
+	}
+	if _, err = conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended('loyal-family:backyard',0))`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -152,9 +159,6 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	// production route, so the seeded candidate row carries that key.
 	key := productionRouteKey
 	resetManualRecoveryProductionRoute(t, ctx, db, "selector-evaluate-cmd-seed")
-	if _, err := db.ReleaseRouteLease(ctx); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_route_states WHERE route_key = $1`, key); err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +230,7 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	if _, receipts, version := canaryRouteStateAssertions(t, ctx, db, key); version != 2 || len(receipts) != 0 {
 		t.Fatalf("dry-run wrote route state: version %d receipts %d", version, len(receipts))
 	}
-	assertCanaryLeaseFree(t, ctx, db, key)
+	assertWriterLockFree(t, ctx, db)
 
 	// Failing feed: execute completes without an entry, and the reported feed
 	// failure is the sanitized fixed string, never the raw error.
@@ -256,7 +260,7 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	if entry, receipts, version := canaryRouteStateAssertions(t, ctx, db, key); entry != nil || len(receipts) != 0 || version != 2 {
 		t.Fatalf("failing feed wrote an entry: entry=%+v receipts=%d version=%d", entry, len(receipts), version)
 	}
-	assertCanaryLeaseFree(t, ctx, db, key)
+	assertWriterLockFree(t, ctx, db)
 
 	// Execute: the one exact canary is consumed and the entry is committed
 	// under the command's own lease, which is released.
@@ -281,15 +285,15 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	if len(receipts) != 1 || receipts[input.canaryRequest.ID].Request.EquityRaw != input.canaryRequest.EquityRaw {
 		t.Fatalf("canary receipt not recorded exactly once: %+v", receipts)
 	}
-	// A new entry choice is a new target input: one generation step.
-	if version != 3 {
-		t.Fatalf("the entry choice did not advance the generation once: %d", version)
+	// The entry choice is an input the next tick reads: no version step.
+	if version != 2 {
+		t.Fatalf("the entry choice moved the route state version: %d", version)
 	}
 	assertNoCanaryOperations(t, ctx, db, key)
-	assertCanaryLeaseFree(t, ctx, db, key)
+	assertWriterLockFree(t, ctx, db)
 
 	// Repeat while the vault is still flat: the same request keeps its lane
-	// with a fresh quote — one receipt, no further generation step.
+	// with a fresh quote — one receipt.
 	out.Reset()
 	if err = runSelectorEvaluate(ctx, &out, true, reviewedDeps); err != nil {
 		t.Fatal("repeat execute failed:", err)
@@ -301,9 +305,9 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 		t.Fatalf("repeat did not keep the request's lane: %+v", done.Result)
 	}
 	entry, receipts, version = canaryRouteStateAssertions(t, ctx, db, key)
-	if entry == nil || entry.EquityRaw != input.canaryRequest.EquityRaw || len(receipts) != 1 || version != 3 {
+	if entry == nil || entry.EquityRaw != input.canaryRequest.EquityRaw || len(receipts) != 1 || version != 2 {
 		t.Fatalf("repeat duplicated state: entry=%+v receipts=%d version=%d", entry, len(receipts), version)
 	}
 	assertNoCanaryOperations(t, ctx, db, key)
-	assertCanaryLeaseFree(t, ctx, db, key)
+	assertWriterLockFree(t, ctx, db)
 }

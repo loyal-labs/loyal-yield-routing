@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -61,7 +60,7 @@ func TestFlatObservationProjectionRetainsConfirmedDashboardTruth(t *testing.T) {
 		projection.AUMUSDMicros != "15" || projection.NAVUSDMicros != "12" || !projection.NAVFresh {
 		t.Fatalf("flat projection lost confirmed route truth: %+v", projection)
 	}
-	for _, required := range []string{"jsonb_set", "'{observation}'", "observedSlot", "<= $5", "lease_owner = $2", "fencing_token = $3"} {
+	for _, required := range []string{"jsonb_set", "'{observation}'", "observedSlot", "<= $3"} {
 		if !strings.Contains(RouteProjectionUpdate, required) {
 			t.Fatalf("route projection update lacks %q", required)
 		}
@@ -240,53 +239,6 @@ func TestMigration0073PermitsOnlyDefinitivePostIntentFailure(t *testing.T) {
 	}
 }
 
-func TestRouteLeaseDatabaseContractIsNonReentrantAndFenced(t *testing.T) {
-	t.Parallel()
-	acquire := normalizeSQL(AcquireRouteLeaseSQL)
-	for _, required := range []string{
-		"lease_owner = $2",
-		"lease_expires_at = clock_timestamp() + ($3 * interval '1 millisecond')",
-		"fencing_token = fencing_token + 1",
-		"lease_owner IS NULL OR lease_expires_at <= clock_timestamp()",
-		"RETURNING fencing_token, lease_expires_at",
-	} {
-		if !strings.Contains(acquire, required) {
-			t.Fatalf("lease acquisition is missing %q", required)
-		}
-	}
-	if strings.Contains(acquire, "lease_owner = $2)") {
-		t.Fatal("lease acquisition is re-entrant for two overlapping instances with the same deployment owner")
-	}
-
-	refresh := normalizeSQL(RefreshRouteLeaseSQL)
-	for _, required := range []string{
-		"lease_owner = $2",
-		"fencing_token = $3",
-		"lease_expires_at > clock_timestamp()",
-	} {
-		if !strings.Contains(refresh, required) {
-			t.Fatalf("lease refresh is missing fence %q", required)
-		}
-	}
-	release := normalizeSQL(ReleaseRouteLeaseSQL)
-	if !strings.Contains(release, "lease_owner = $2 AND fencing_token = $3") ||
-		!strings.Contains(release, "lease_owner = NULL, lease_expires_at = NULL") {
-		t.Fatal("lease release is not compare-and-clear on the exact fence")
-	}
-	for name, query := range map[string]string{
-		"route decision":     RouteStateForUpdate,
-		"operation mutation": OperationRouteForLeaseSQL,
-	} {
-		normalized := normalizeSQL(query)
-		if !strings.Contains(normalized, "lease_owner = $2") ||
-			!strings.Contains(normalized, "fencing_token = $3") ||
-			!strings.Contains(normalized, "lease_expires_at > clock_timestamp()") ||
-			!strings.Contains(normalized, "FOR UPDATE") {
-			t.Fatalf("%s does not lock and verify the live fence: %s", name, normalized)
-		}
-	}
-}
-
 func TestPostMutationNAVCadenceUsesLatestReconciledMoneyMutation(t *testing.T) {
 	t.Parallel()
 	query := normalizeSQL(PostMutationNAVRequiredSQL)
@@ -385,73 +337,6 @@ func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
 	}
 	if strings.Contains(query, "fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe") {
 		t.Fatal("incident identity belongs in the audited migration, not the live decision guard")
-	}
-}
-
-func TestExistingRouteStateMigrationProvidesLeaseFence(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join("..", "..", "..", "..", "migrations", "yield", "0051_multiply_route_state.sql")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sql := normalizeSQL(string(data))
-	for _, required := range []string{
-		"lease_owner TEXT",
-		"lease_expires_at TIMESTAMPTZ",
-		"fencing_token BIGINT NOT NULL DEFAULT 0",
-		"(lease_owner IS NULL) = (lease_expires_at IS NULL)",
-	} {
-		if !strings.Contains(sql, required) {
-			t.Fatalf("existing route table lacks lease contract %q", required)
-		}
-	}
-}
-
-// This integration test is intentionally opt-in: CI and local unit runs do not
-// need credentials, while an activation environment can prove acquisition,
-// non-reentrancy, refresh, and exact-token release against the real schema.
-func TestRouteLeaseAgainstDatabase(t *testing.T) {
-	databaseURL := os.Getenv("BACKYARD_RWA_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("BACKYARD_RWA_TEST_DATABASE_URL is not configured")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	database, err := OpenDatabase(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
-	owner := "worker:backyard:integrationtest:sha-" + strings.Repeat("e", 40)
-	lease, err := database.AcquireRouteLease(ctx, productionRouteKey, owner, 30*time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	released := false
-	defer func() {
-		if !released {
-			_, _ = database.ReleaseRouteLease(context.Background())
-		}
-	}()
-	if lease.Owner != owner || lease.FencingToken <= 0 {
-		t.Fatalf("invalid acquired lease: %+v", lease)
-	}
-	second, err := OpenDatabase(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Close()
-	if _, err := second.AcquireRouteLease(ctx, productionRouteKey, owner, 30*time.Second); !errors.Is(err, ErrRouteLeaseUnavailable) {
-		t.Fatalf("unexpired same-owner lease was re-entered: %v", err)
-	}
-	refreshed, err := database.RefreshRouteLease(ctx, 30*time.Second)
-	if err != nil || !refreshed.ExpiresAt.After(lease.ExpiresAt) {
-		t.Fatalf("lease refresh failed: lease=%+v err=%v", refreshed, err)
-	}
-	released, err = database.ReleaseRouteLease(ctx)
-	if err != nil || !released {
-		t.Fatalf("exact lease release failed: released=%v err=%v", released, err)
 	}
 }
 

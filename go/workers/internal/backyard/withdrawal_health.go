@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
@@ -95,17 +96,11 @@ func mergeWithdrawalHealth(previous *WithdrawalHealth, next WithdrawalHealth) Wi
 	return next
 }
 
-// RecordWithdrawalHealth serializes only this display projection with the route
-// lock and live lease. It does not increment either generation or state_version.
-// It runs after a tick, which may itself have advanced the planning generation.
+// RecordWithdrawalHealth stores this display projection under the route row
+// lock. It changes no money.
 func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHealth) error {
-	lease, err := d.currentLease()
-	if err != nil {
-		return err
-	}
-	if lease.RouteKey != productionRouteKey || next.RouteKey != productionRouteKey ||
-		next.Version != 1 || next.Cluster != "mainnet-beta" || next.Vault != bridgeVoltrVault || next.Program != voltr.ProgramID.String() {
-		return ErrRouteLeaseLost
+	if next.RouteKey != productionRouteKey || next.Version != 1 || next.Cluster != "mainnet-beta" || next.Vault != bridgeVoltrVault || next.Program != voltr.ProgramID.String() {
+		return fmt.Errorf("withdrawal health is not the production route's")
 	}
 	tx, err := d.pool.Begin(ctx)
 	if err != nil {
@@ -113,10 +108,7 @@ func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHe
 	}
 	defer tx.Rollback(ctx)
 	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT state->'withdrawalHealth' FROM loyal_yield.multiply_route_states
-  WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp() FOR UPDATE`,
-		lease.RouteKey, lease.Owner, lease.FencingToken).Scan(&raw)
-	if err != nil {
+	if err = tx.QueryRow(ctx, `SELECT state->'withdrawalHealth' FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, next.RouteKey).Scan(&raw); err != nil {
 		return err
 	}
 	var previous *WithdrawalHealth
@@ -130,14 +122,8 @@ func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHe
 	if err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{withdrawalHealth}',$4::jsonb,true), updated_at=clock_timestamp()
-  WHERE route_key=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`,
-		lease.RouteKey, lease.Owner, lease.FencingToken, string(raw))
-	if err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{withdrawalHealth}',$2::jsonb,true), updated_at=clock_timestamp() WHERE route_key=$1`, next.RouteKey, string(raw)); err != nil {
 		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return ErrRouteLeaseLost
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return err

@@ -71,7 +71,7 @@ func TestWithdrawalHealthCurrentHoldBeforeOperationExists(t *testing.T) {
 }
 
 // Opt-in existing disposable-Postgres harness; never accepts a remote database.
-func TestWithdrawalHealthFencedPersistenceDoesNotChangeAuthority(t *testing.T) {
+func TestWithdrawalHealthPersistenceDoesNotChangeAuthority(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 15*time.Second)
 	defer cancel()
 	defer db.Close()
@@ -106,18 +106,6 @@ func TestWithdrawalHealthFencedPersistenceDoesNotChangeAuthority(t *testing.T) {
 	second, _, _ := read()
 	if !second.BlockedSince.Equal(*first.BlockedSince) {
 		t.Fatal("durable onset reset")
-	}
-	// A different DB lease owner cannot rewrite recovery or publish healthy state.
-	if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET fencing_token=fencing_token+1 WHERE route_key=$1`, productionRouteKey); err != nil {
-		t.Fatal(err)
-	}
-	h.Status, h.Reason = "none", "no_withdrawal_demand"
-	if err := db.RecordWithdrawalHealth(ctx, h); err == nil {
-		t.Fatal("stale fence wrote recovery")
-	}
-	final, version, generation := read()
-	if final.Status != "operator_attention" || version != 1 || generation != 1 {
-		t.Fatal("failed write changed health/authority")
 	}
 }
 

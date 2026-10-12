@@ -9,7 +9,7 @@ import (
 )
 
 // BudgetHold is a pre-send refusal, never an authorization to sign or retry
-// an unchanged intent. The caller journals it under the route lease.
+// an unchanged intent.
 type BudgetHold struct {
 	Reason  string            `json:"reason"`
 	Details map[string]string `json:"details,omitempty"`
@@ -64,8 +64,7 @@ func budgetSum(values ...int64) (int64, error) {
 }
 
 // RecordPhase3BudgetHold preserves a pre-send hold before restart recovery can
-// replace it with a generic reason. Only never-submitted states may fail; the
-// transition's lease and status CAS protect against concurrent progress.
+// replace it with a generic reason. Only never-submitted states may fail.
 func (d *Database) RecordPhase3BudgetHold(ctx context.Context, operationID string, hold *BudgetHold) error {
 	if d == nil || d.pool == nil || operationID == "" || hold == nil || hold.Reason == "" {
 		return fmt.Errorf("invalid budget hold journal input")
@@ -102,9 +101,6 @@ func (d *Database) RecordPhase3SignedBudgetHold(ctx context.Context, operationID
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err = d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
 	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET recovery_reason=$2,expected_effects=jsonb_set(expected_effects,'{budgetHold}',$3::jsonb),updated_at=clock_timestamp() WHERE operation_id=$1 AND status='signed'`, operationID, "phase3_budget_hold:"+hold.Reason, string(encoded))
 	if err != nil {
 		return err

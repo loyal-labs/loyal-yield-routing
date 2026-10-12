@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -24,13 +23,8 @@ func TestSelectorEvaluateFailureCodesAllowlisted(t *testing.T) {
 			t.Fatalf("allowlisted hold %q did not echo itself: %q", reason, got)
 		}
 	}
-	// The stale-planning guard stays visible instead of folding into the
-	// generic code — the exact shape root could not see at 05:27:44Z.
-	if got := sanitizedSelectorEvaluateFailure(budgetHold("selector_state_changed_during_quote")); got != "selector_state_changed_during_quote" {
-		t.Fatalf("stale guard not visible: %q", got)
-	}
-	wrapped := fmt.Errorf("locked persistence: %w", budgetHold("selector_entry_requires_reconciled_idle"))
-	if got := sanitizedSelectorEvaluateFailure(wrapped); got != "selector_entry_requires_reconciled_idle" {
+	wrapped := fmt.Errorf("locked persistence: %w", budgetHold("selector_evaluation_not_current"))
+	if got := sanitizedSelectorEvaluateFailure(wrapped); got != "selector_evaluation_not_current" {
 		t.Fatalf("wrapped hold not visible: %q", got)
 	}
 }
@@ -46,9 +40,6 @@ func TestSelectorEvaluateFailureDatabaseClasses(t *testing.T) {
 	}{
 		{"attempt_deadline", context.DeadlineExceeded, "selector_evaluate_timeout"},
 		{"wrapped_deadline", fmt.Errorf("evaluate: %w", context.DeadlineExceeded), "selector_evaluate_timeout"},
-		{"route_fence", pgx.ErrNoRows, "selector_evaluate_route_fence_unavailable"},
-		{"wrapped_route_fence", fmt.Errorf("version: %w", pgx.ErrNoRows), "selector_evaluate_route_fence_unavailable"},
-		{"record_lock_timeout", &pgconn.PgError{Code: "55P03", Message: "lock_not_available"}, "selector_evaluate_lock_timeout"},
 		{"query_cancelled", &pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"}, "selector_evaluate_query_cancelled"},
 	}
 	for _, tc := range cases {
@@ -101,9 +92,6 @@ func TestSelectorEvaluateExecuteEvaluatorFailureDiagnostic(t *testing.T) {
 		sha256Bytes([]byte("selector-evaluate-failure")), testAutoLane, time.Now().UTC().Add(10*time.Minute).Format(time.RFC3339Nano)))
 	key := productionRouteKey
 	resetManualRecoveryProductionRoute(t, ctx, db, "selector-evaluate-cmd-failure")
-	if _, err := db.ReleaseRouteLease(ctx); err != nil {
-		t.Fatal(err)
-	}
 	_, _, versionBefore := canaryRouteStateAssertions(t, ctx, db, key)
 
 	for _, tc := range []struct {
@@ -111,7 +99,7 @@ func TestSelectorEvaluateExecuteEvaluatorFailureDiagnostic(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"stale_guard", budgetHold("selector_state_changed_during_quote"), "selector_state_changed_during_quote"},
+		{"stale_quote", budgetHold("selector_evaluation_not_current"), "selector_evaluation_not_current"},
 		{"secret_sql", fmt.Errorf("scan: duplicate key dsn=postgresql://backyard:hunter2@10.0.0.7/neon"), "selector_evaluate_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -149,7 +137,7 @@ func TestSelectorEvaluateExecuteEvaluatorFailureDiagnostic(t *testing.T) {
 				t.Fatalf("failure persisted state: version %d (before %d) receipts %d", version, versionBefore, len(receipts))
 			}
 			assertNoCanaryOperations(t, ctx, db, key)
-			assertCanaryLeaseFree(t, ctx, db, key)
+			assertWriterLockFree(t, ctx, db)
 		})
 	}
 }

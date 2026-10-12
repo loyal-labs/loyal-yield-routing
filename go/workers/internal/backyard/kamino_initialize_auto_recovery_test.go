@@ -327,7 +327,6 @@ func TestAutoInitializerLockedSettlementThroughReviewedManifest(t *testing.T) {
 	routeKey := "auto-initializer-recovery-settlement-" + time.Now().Format("150405.000000000")
 	f := newAutoInitializerRecoveryFixture(t)
 	id, _ := seedAutoInitializerReconcilingOperation(t, ctx, db, f, routeKey)
-	defer db.ReleaseRouteLease(ctx)
 
 	for _, drift := range []string{"binding", "wire", "rent", "unfinalized", ""} {
 		receipt := *f.receipt.Initialization
@@ -486,10 +485,6 @@ func TestAutoInitializerBuildPersistsThroughReviewedManifest(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, key, "auto-initializer-build-test", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	defer db.ReleaseRouteLease(ctx)
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects)
 	 VALUES($1,$2,'decided',$3,$4,$5)`, id, key, string(InitializeKaminoObligation), f.request.RouteLane, f.raw); err != nil {
 		t.Fatal(err)

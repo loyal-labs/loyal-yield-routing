@@ -134,9 +134,6 @@ func TestLeverageNAVReportSendsInsideItsWindows(t *testing.T) {
 	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects) VALUES($1,$2,'decided',$3,$4,$5::jsonb)`, id, key, d.Action, d.StrategyKey, string(envelope)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.AcquireRouteLease(ctx, key, "report-window", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 
 	const slotTime, rpcLatency, jupiterLatency = 400 * time.Millisecond, 100 * time.Millisecond, 350 * time.Millisecond
 	// Observation, preparation, custody proof and decision record already

@@ -18,8 +18,6 @@ package backyard
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -41,24 +39,23 @@ type ManualRestoreReprocessRequest struct {
 // journal identity and settlement facts only — never wire bytes, RPC URLs,
 // provider responses, or infra error text.
 type ManualRestoreFailureResult struct {
-	Schema                string `json:"schema"`
-	OperationID           string `json:"operationId"`
-	RouteKey              string `json:"routeKey"`
-	Action                string `json:"action"`
-	Status                string `json:"status"`
-	RecoveryReason        string `json:"recoveryReason"`
-	Signature             string `json:"signature"`
-	Classification        string `json:"classification"`
-	LandingSlot           int64  `json:"landingSlot"`
-	Stage                 string `json:"stage,omitempty"`
-	Executable            bool   `json:"executable"`
-	Executed              bool   `json:"executed"`
-	TerminalStatus        string `json:"terminalStatus,omitempty"`
-	LeaseReleaseConfirmed bool   `json:"leaseReleaseConfirmed,omitempty"`
+	Schema         string `json:"schema"`
+	OperationID    string `json:"operationId"`
+	RouteKey       string `json:"routeKey"`
+	Action         string `json:"action"`
+	Status         string `json:"status"`
+	RecoveryReason string `json:"recoveryReason"`
+	Signature      string `json:"signature"`
+	Classification string `json:"classification"`
+	LandingSlot    int64  `json:"landingSlot"`
+	Stage          string `json:"stage,omitempty"`
+	Executable     bool   `json:"executable"`
+	Executed       bool   `json:"executed"`
+	TerminalStatus string `json:"terminalStatus,omitempty"`
 }
 
 // manualRestoreNoNonterminalSQL is the only route-activity gate for this
-// settlement command: the route lease must cover a route with no nonterminal
+// settlement command: under the writer lock the route has no nonterminal
 // operation. Historical manual rows — including previously resolved strategy
 // resets — are deliberately not consulted here; they stay untouched, and the
 // worker's own UnresolvedCapitalRecoverySQL keeps blocking them for new
@@ -111,10 +108,9 @@ func (d *Database) loadManualRestoreOperation(ctx context.Context, operationID s
 // RunManualRestoreReprocess validates, and with execute writes, the exact
 // already-manual restore failure. Validation is total before the write: the
 // row identity, the stored unclassified marker, and the finalized refusal
-// classification gate the dry-run; the execute path additionally acquires the
-// route lease, re-checks route activity under it, and runs the same
-// settlement the automatic walk uses. The lease is always released once
-// acquired, on every post-acquire error path.
+// classification gate the dry-run; the execute path additionally takes
+// Backyard's writer lock (refused while the worker runs), re-checks route
+// activity under it, and runs the same settlement the automatic walk uses.
 func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, request ManualRestoreReprocessRequest, execute bool) (ManualRestoreFailureResult, error) {
 	result := ManualRestoreFailureResult{Schema: "backyard-manual-restore-reprocess/v1"}
 	if databaseURL == "" || rpcURL == "" {
@@ -167,16 +163,11 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 	if !execute {
 		return result, nil
 	}
-	nonce := make([]byte, 8)
-	if _, err = rand.Read(nonce); err != nil {
-		result.Stage = "lease_owner"
+	release, err := holdWriterLock(ctx, databaseURL)
+	if err != nil {
+		result.Stage = "writer_lock"
 		return result, sanitizedStage(result.Stage)
 	}
-	if _, err = db.AcquireRouteLease(ctx, operation.RouteKey, "manual-restore-reprocess:"+hex.EncodeToString(nonce), 45*time.Second); err != nil {
-		result.Stage = "route_lease"
-		return result, sanitizedStage(result.Stage)
-	}
-	// Every path from here releases the lease exactly once before returning.
 	settleErr := func() error {
 		var blocked bool
 		if err := db.pool.QueryRow(ctx, manualRestoreNoNonterminalSQL, operation.RouteKey).Scan(&blocked); err != nil {
@@ -187,10 +178,7 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		}
 		return db.settleFinalizedReportFailure(ctx, operation, receipt, adaptorReportSlotRefusedReason, true)
 	}()
-	releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	released, releaseErr := db.ReleaseRouteLease(releaseCtx)
-	cancel()
-	result.LeaseReleaseConfirmed = releaseErr == nil && released
+	release()
 	if settleErr != nil {
 		result.Stage = "settlement"
 		var pgErr *pgconn.PgError
@@ -206,12 +194,6 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 			result.Stage = hold.Reason
 		}
 		return result, sanitizedStage(result.Stage)
-	}
-	if releaseErr != nil || !released {
-		// The commit IS durable; only the lease release is unconfirmed.
-		result.Executed = true
-		result.Stage = "lease_release"
-		return result, errors.New("settle-manual-restore: settled but lease release unconfirmed")
 	}
 	var terminalStatus string
 	if err := db.pool.QueryRow(ctx, `SELECT status FROM loyal_yield.multiply_operations

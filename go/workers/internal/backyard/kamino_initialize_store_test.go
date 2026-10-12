@@ -27,10 +27,6 @@ func TestInitializationDatabaseSettlementBindsWire(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1}',1)`, key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, key, "initializer-test", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	defer db.ReleaseRouteLease(ctx)
 	expected, receipt := initializationReconcileFixture(t)
 	message, err := CompileKaminoInitializationMessage(*expected.Initialization)
 	if err != nil {

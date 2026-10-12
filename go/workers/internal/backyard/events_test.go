@@ -85,35 +85,6 @@ func TestLatchedRouteStopsProgress(t *testing.T) {
 	}
 }
 
-func TestSelectorExpectedDeferralDoesNotCountAsFailed(t *testing.T) {
-	t.Parallel()
-	registry := prometheus.NewRegistry()
-	e := newEvents(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), engine.NewFacts(registry))
-	e.selectorSampleError(budgetHold("selector_finish_current_work_first"))
-	e.selectorSampleError(errors.New("selector_finish_current_work_first"))
-	e.selectorSampleError(budgetHold("selector_fee_evidence_unavailable"))
-	families, err := registry.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]float64{}
-	for _, family := range families {
-		if family.GetName() != "loyal_family_failed_total" {
-			continue
-		}
-		for _, metric := range family.GetMetric() {
-			for _, label := range metric.GetLabel() {
-				if label.GetName() == "code" {
-					got[label.GetValue()] = metric.GetCounter().GetValue()
-				}
-			}
-		}
-	}
-	if len(got) != 2 || got["selector_evaluate_unavailable"] != 1 || got["selector_fee_evidence_unavailable"] != 1 {
-		t.Fatalf("deferral/failure classification: %v", got)
-	}
-}
-
 func TestWithdrawalMetricsKeepAttentionAndClockWhenEvidenceUnavailable(t *testing.T) {
 	t.Parallel()
 	registry := prometheus.NewRegistry()

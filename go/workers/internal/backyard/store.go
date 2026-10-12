@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,24 +17,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 // OperationInsert is the only execution journal shape. The SQL uses the existing
 // multiply_operations table; callers must insert it before any transaction work.
 const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, status, idempotency_key, strategy_key, expected_effects, recovery_reason) VALUES ($1, $2, $3, 'backyard_rwa_v1', $4, $5, $6, $7, $8, $9)`
-
-const RouteStateForUpdate = `SELECT state_version, state FROM loyal_yield.multiply_route_states WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() FOR UPDATE`
-
-const AcquireRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_owner = $2, lease_expires_at = clock_timestamp() + ($3 * interval '1 millisecond'), fencing_token = fencing_token + 1, updated_at = clock_timestamp()
-	WHERE route_key = $1 AND (lease_owner IS NULL OR lease_expires_at <= clock_timestamp()) RETURNING fencing_token, lease_expires_at`
-
-const RefreshRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_expires_at = clock_timestamp() + ($4 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() RETURNING lease_expires_at`
-
-const ReleaseRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_owner = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3`
-
-const AssertRouteLeaseSQL = `SELECT lease_expires_at FROM loyal_yield.multiply_route_states WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp()`
-
-const OperationRouteForLeaseSQL = `SELECT operation.route_key FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key = operation.route_key WHERE operation.operation_id = $1 AND route.lease_owner = $2 AND route.fencing_token = $3 AND route.lease_expires_at > clock_timestamp() FOR UPDATE OF route`
 
 // strategyJournalHead opens the journal CTE over one route's operations.
 const strategyJournalHead = "WITH strategy_journal AS (\n SELECT * FROM loyal_yield.multiply_operations WHERE route_key = $1 AND "
@@ -91,26 +78,15 @@ const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status =
 
 const PersistBroadcastIntentUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'broadcast_intent', broadcast_intent_at = now(), updated_at = now() WHERE operation_id = $1 AND status = 'signed' AND signed_wire IS NOT NULL`
 
-const RouteProjectionUpdate = `UPDATE loyal_yield.multiply_route_states SET state = jsonb_set(state, '{observation}', $4::jsonb, true), updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() AND (state -> 'observation' ->> 'observedSlot' IS NULL OR (state -> 'observation' ->> 'observedSlot')::bigint <= $5)`
+const RouteProjectionUpdate = `UPDATE loyal_yield.multiply_route_states SET state = jsonb_set(state, '{observation}', $2::jsonb, true), updated_at = clock_timestamp() WHERE route_key = $1 AND (state -> 'observation' ->> 'observedSlot' IS NULL OR (state -> 'observation' ->> 'observedSlot')::bigint <= $3) RETURNING state_version`
 
 const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapshots (route_key, generation, observed_slot, observed_at, strategy_key, claim_raw, collateral_raw, debt_raw, equity_usd_micros, collateral_value_usd_micros, debt_value_usd_micros, ltv_bps, forecast_apy_bps, valuation_source, valuation_slot, valuation_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $4) ON CONFLICT (route_key, observed_slot) DO NOTHING`
 
-var (
-	ErrRouteLeaseUnavailable = errors.New("route lease is held by another worker")
-	ErrRouteLeaseLost        = errors.New("route lease was lost or expired")
-)
-
-type RouteLease struct {
-	RouteKey     string
-	Owner        string
-	FencingToken int64
-	ExpiresAt    time.Time
-}
-
+// Database is Backyard's store. The process that writes through it holds the
+// family advisory lock (cmd/loyal-engine), so no write here re-checks who
+// the writer is.
 type Database struct {
-	pool    *pgxpool.Pool
-	leaseMu sync.RWMutex
-	lease   *RouteLease
+	pool *pgxpool.Pool
 }
 
 func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
@@ -128,149 +104,23 @@ func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
 	return &Database{pool: pool}, nil
 }
 
+// holdWriterLock takes Backyard's one-writer lock (the family advisory lock
+// the engine holds) for a one-shot operator write. It refuses while the
+// worker runs; release ends the hold.
+func holdWriterLock(ctx context.Context, databaseURL string) (release func(), err error) {
+	lockCtx, cancel := context.WithCancel(ctx)
+	lost, err := engine.HoldFamily(lockCtx, databaseURL, engine.FamilyBackyard)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return func() { cancel(); <-lost }, nil
+}
+
 func (d *Database) Close() {
 	if d != nil && d.pool != nil {
 		d.pool.Close()
 	}
-}
-
-func durationMilliseconds(duration time.Duration) (int64, error) {
-	if duration <= 0 || duration%time.Millisecond != 0 {
-		return 0, fmt.Errorf("lease duration must be a positive whole number of milliseconds")
-	}
-	milliseconds := duration.Milliseconds()
-	if milliseconds <= 0 {
-		return 0, fmt.Errorf("lease duration is too small")
-	}
-	return milliseconds, nil
-}
-
-func (d *Database) setLease(lease *RouteLease) {
-	d.leaseMu.Lock()
-	defer d.leaseMu.Unlock()
-	if lease == nil {
-		d.lease = nil
-		return
-	}
-	copy := *lease
-	d.lease = &copy
-}
-
-func (d *Database) currentLease() (RouteLease, error) {
-	if d == nil || d.pool == nil {
-		return RouteLease{}, fmt.Errorf("database is not configured")
-	}
-	d.leaseMu.RLock()
-	defer d.leaseMu.RUnlock()
-	if d.lease == nil {
-		return RouteLease{}, ErrRouteLeaseLost
-	}
-	return *d.lease, nil
-}
-
-// AcquireRouteLease never treats an unexpired lease as re-entrant, even when
-// its owner text is identical. A rolling deploy can briefly overlap two
-// instances; only an absent or expired row may increment the fencing token.
-func (d *Database) AcquireRouteLease(ctx context.Context, routeKey, owner string, ttl time.Duration) (RouteLease, error) {
-	if d == nil || d.pool == nil || routeKey == "" || owner == "" {
-		return RouteLease{}, fmt.Errorf("database, route key, and lease owner are required")
-	}
-	milliseconds, err := durationMilliseconds(ttl)
-	if err != nil {
-		return RouteLease{}, err
-	}
-	var lease RouteLease
-	lease.RouteKey, lease.Owner = routeKey, owner
-	err = d.pool.QueryRow(ctx, AcquireRouteLeaseSQL, routeKey, owner, milliseconds).
-		Scan(&lease.FencingToken, &lease.ExpiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return RouteLease{}, ErrRouteLeaseUnavailable
-	}
-	if err != nil {
-		return RouteLease{}, fmt.Errorf("acquire route lease: %w", err)
-	}
-	if lease.FencingToken <= 0 || lease.ExpiresAt.IsZero() {
-		return RouteLease{}, fmt.Errorf("database returned an invalid route lease")
-	}
-	d.setLease(&lease)
-	return lease, nil
-}
-
-func (d *Database) RefreshRouteLease(ctx context.Context, ttl time.Duration) (RouteLease, error) {
-	lease, err := d.currentLease()
-	if err != nil {
-		return RouteLease{}, err
-	}
-	milliseconds, err := durationMilliseconds(ttl)
-	if err != nil {
-		return RouteLease{}, err
-	}
-	err = d.pool.QueryRow(ctx, RefreshRouteLeaseSQL, lease.RouteKey, lease.Owner, lease.FencingToken, milliseconds).
-		Scan(&lease.ExpiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		d.setLease(nil)
-		return RouteLease{}, ErrRouteLeaseLost
-	}
-	if err != nil {
-		return RouteLease{}, fmt.Errorf("refresh route lease: %w", err)
-	}
-	d.setLease(&lease)
-	return lease, nil
-}
-
-// ReleaseRouteLease clears only the exact owner/fencing pair. A zero-row result
-// means ownership already changed and must never be overwritten by shutdown.
-func (d *Database) ReleaseRouteLease(ctx context.Context) (bool, error) {
-	lease, err := d.currentLease()
-	if errors.Is(err, ErrRouteLeaseLost) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	result, err := d.pool.Exec(ctx, ReleaseRouteLeaseSQL, lease.RouteKey, lease.Owner, lease.FencingToken)
-	if err != nil {
-		return false, fmt.Errorf("release route lease: %w", err)
-	}
-	d.setLease(nil)
-	return result.RowsAffected() == 1, nil
-}
-
-func (d *Database) AssertRouteLease(ctx context.Context, routeKey string) error {
-	lease, err := d.currentLease()
-	if err != nil {
-		return err
-	}
-	if lease.RouteKey != routeKey {
-		return ErrRouteLeaseLost
-	}
-	var expiresAt time.Time
-	err = d.pool.QueryRow(ctx, AssertRouteLeaseSQL, lease.RouteKey, lease.Owner, lease.FencingToken).Scan(&expiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		d.setLease(nil)
-		return ErrRouteLeaseLost
-	}
-	if err != nil {
-		return fmt.Errorf("assert route lease: %w", err)
-	}
-	return nil
-}
-
-func (d *Database) lockOperationLease(ctx context.Context, tx pgx.Tx, operationID string) error {
-	lease, err := d.currentLease()
-	if err != nil {
-		return err
-	}
-	var routeKey string
-	err = tx.QueryRow(ctx, OperationRouteForLeaseSQL, operationID, lease.Owner, lease.FencingToken).Scan(&routeKey)
-	if errors.Is(err, pgx.ErrNoRows) || routeKey != lease.RouteKey {
-		d.setLease(nil)
-		return ErrRouteLeaseLost
-	}
-	if err != nil {
-		return fmt.Errorf("lock operation lease: %w", err)
-	}
-	return nil
 }
 
 type DecisionRecord struct {
@@ -640,26 +490,6 @@ func (d *Database) recordDecisionTx(
 	decision Decision,
 	manifestSHA256 string,
 ) (DecisionRecord, error) {
-	lease, err := d.currentLease()
-	if err != nil || lease.RouteKey != routeKey {
-		return DecisionRecord{}, ErrRouteLeaseLost
-	}
-	var stateVersion int64
-	var routeState []byte
-	if err := tx.QueryRow(ctx, RouteStateForUpdate, routeKey, lease.Owner, lease.FencingToken).Scan(&stateVersion, &routeState); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			d.setLease(nil)
-			return DecisionRecord{}, ErrRouteLeaseLost
-		}
-		return DecisionRecord{}, fmt.Errorf("lock route: %w", err)
-	}
-	if stateVersion <= 0 || len(routeState) == 0 {
-		return DecisionRecord{}, fmt.Errorf("invalid locked route state")
-	}
-	var setupState map[string]json.RawMessage
-	if json.Unmarshal(routeState, &setupState) != nil {
-		return DecisionRecord{}, budgetHold("invalid_setup_route_state")
-	}
 	operationEpoch := ""
 	if decision.Action != Hold && decision.Action != HoldManualRecovery {
 		var unresolvedCapitalRecovery bool
@@ -749,7 +579,7 @@ func (d *Database) recordDecisionTx(
 const nonterminalStatusSQL = `'decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling'`
 
 // CountNonterminal counts the route's operations a restart would resume. It
-// is the release gate's read: it takes no route lease, so it runs beside the
+// is the release gate's read: it takes no writer lock, so it runs beside the
 // live worker.
 func CountNonterminal(ctx context.Context, databaseURL, routeKey string) (int, error) {
 	database, err := OpenDatabase(ctx, databaseURL)
@@ -768,9 +598,6 @@ func CountNonterminal(ctx context.Context, databaseURL, routeKey string) (int, e
 func (d *Database) LoadNonterminal(ctx context.Context, routeKey string) (*PersistedOperation, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return nil, fmt.Errorf("database is not configured")
-	}
-	if err := d.AssertRouteLease(ctx, routeKey); err != nil {
-		return nil, err
 	}
 	row := d.pool.QueryRow(ctx, `SELECT operation_id, route_key, cycle, action, status, idempotency_key, COALESCE(strategy_key, ''),
 		expected_effects, COALESCE(signed_wire, ''::bytea), COALESCE(signed_wire_sha256, ''), COALESCE(transaction_signature, ''),
@@ -811,9 +638,6 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 	if d == nil || d.pool == nil || routeKey == "" {
 		return false, fmt.Errorf("database is not configured")
 	}
-	if err := d.AssertRouteLease(ctx, routeKey); err != nil {
-		return false, err
-	}
 	var required bool
 	if err := d.pool.QueryRow(ctx, PostMutationNAVRequiredSQL, routeKey).Scan(&required); err != nil {
 		return false, fmt.Errorf("read post-mutation NAV requirement: %w", err)
@@ -851,7 +675,7 @@ type ReconciledBridgeJournalState struct {
 }
 
 // ReconciledBridgeJournalSQL reads every journal fact the fail-closed monitors
-// arm from in one lease-guarded round trip. Rows are reconciled only; the
+// arm from in one round trip. Rows are reconciled only; the
 // ticket-consuming list deliberately excludes STAGE_SQUADS_TO_VOLTR, and every
 // subquery shares one ordering so "after" means the same thing everywhere. The
 // ordering rows additionally return their tie-break columns so the Go side can
@@ -958,14 +782,9 @@ func (d *Database) ReconciledBridgeJournal(ctx context.Context, routeKey string)
 	if d == nil || d.pool == nil || routeKey == "" {
 		return ReconciledBridgeJournalState{}, fmt.Errorf("database is not configured")
 	}
-	if err := d.AssertRouteLease(ctx, routeKey); err != nil {
-		return ReconciledBridgeJournalState{}, err
-	}
 	return d.readReconciledBridgeJournal(ctx, routeKey)
 }
 
-// Read-only inspection shares journal decoding without acquiring an execution
-// lease. Execution callers must use ReconciledBridgeJournal above.
 func (d *Database) readReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error) {
 	var sequence, staged, stageSlot, ticketSlot, mutationSlot, reportSlot pgtype.Int8
 	var stageUpdated, ticketUpdated, mutationUpdated, reportUpdated pgtype.Timestamptz
@@ -1104,7 +923,7 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 }
 
 // RecordPositionSnapshot atomically persists the confirmed route projection and
-// its current position shape under the same live lease fence as decisions. Flat
+// its current position shape. Flat
 // and collateral-only rows are retained so the admin view cannot fall back to a
 // stale leveraged snapshot. APY remains unknown for positions; confirmed idle
 // capital has an exact zero forecast rather than an invented protocol yield.
@@ -1121,39 +940,21 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 	if err != nil {
 		return fmt.Errorf("encode route observation projection: %w", err)
 	}
-	lease, err := d.currentLease()
-	if err != nil || lease.RouteKey != routeKey {
-		return ErrRouteLeaseLost
-	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var generation int64
-	var state []byte
-	if err := tx.QueryRow(ctx, RouteStateForUpdate, routeKey, lease.Owner, lease.FencingToken).Scan(&generation, &state); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			d.setLease(nil)
-			return ErrRouteLeaseLost
-		}
-		return fmt.Errorf("lock route for position snapshot: %w", err)
-	}
-	if err := observation.planning.validateGeneration(routeKey, lease, generation); err != nil {
-		return err
-	}
 	if snapshot.SquadsIdleRaw > math.MaxInt64-snapshot.VoltrStrategyIdleRaw {
 		return fmt.Errorf("position snapshot idle claim overflows")
 	}
 	claimRaw := snapshot.SquadsIdleRaw + snapshot.VoltrStrategyIdleRaw
-	result, err := tx.Exec(ctx, RouteProjectionUpdate,
-		routeKey, lease.Owner, lease.FencingToken, projectionJSON, snapshot.Slot,
-	)
-	if err != nil {
+	var generation int64
+	if err := tx.QueryRow(ctx, RouteProjectionUpdate, routeKey, projectionJSON, snapshot.Slot).Scan(&generation); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("route observation projection regressed")
+		}
 		return fmt.Errorf("persist route observation projection: %w", err)
-	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("route observation projection lost its lease or regressed")
 	}
 	var strategyKey *string
 	var forecastAPYBPS *int64
@@ -1190,9 +991,6 @@ func (d *Database) transition(ctx context.Context, operationID string, from, to 
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
 	query := `UPDATE loyal_yield.multiply_operations SET status = $2, updated_at = now()` + suffix + ` WHERE operation_id = $1 AND status = $3`
 	parameters := []any{operationID, string(to), string(from)}
 	parameters = append(parameters, args...)
@@ -1281,9 +1079,6 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, build 
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
 	if err := bindSignedWireTx(ctx, tx, operationID, build.SignedWireSHA256); err != nil {
 		return err
 	}
@@ -1306,9 +1101,6 @@ func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest R
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
 	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound); err != nil {
 		return err
 	}
@@ -1334,9 +1126,6 @@ func (d *Database) MarkConfirmed(ctx context.Context, operationID string, from O
 			return err
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-			return err
-		}
 		result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'confirmed', confirmed_slot = $2, confirmation_status = 'confirmed', updated_at = now() WHERE operation_id = $1 AND status = 'broadcast_intent'`, operationID, slot)
 		if err != nil {
 			return fmt.Errorf("persist recovered confirmation: %w", err)
@@ -1363,24 +1152,18 @@ func (d *Database) MarkReconciled(ctx context.Context, operationID string, recon
 }
 
 // markReconciledOnManifest is the shared locked-settlement body: identical
-// lease and identity SQL in one transaction, with the journal
+// identity SQL in one transaction, with the journal
 // decode and reconciliation resolved through the explicit reviewed manifest.
 // The public wrapper above loads the embedded reviewed manifest.
 func (d *Database) markReconciledOnManifest(ctx context.Context, manifest RouteManifest, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
 	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) || !receipt.Finalized || receipt.Slot != reconciliation.ConfirmedSlot {
 		return fmt.Errorf("invalid reconciliation evidence")
 	}
-	if _, err := d.currentLease(); err != nil {
-		return err
-	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err = d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
 	var signature string
 	var slot int64
 	var expectedBytes []byte
@@ -1425,9 +1208,6 @@ func (d *Database) MarkManualRecovery(ctx context.Context, operationID string, f
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
 	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'manual_recovery', recovery_reason = $2, updated_at = now() WHERE operation_id = $1 AND status = $3`, operationID, reason, string(from))
 	if err != nil {
 		return fmt.Errorf("persist manual recovery: %w", err)
