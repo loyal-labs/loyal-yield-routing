@@ -139,23 +139,13 @@ func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 	if err != nil {
 		return nil, err
 	}
-	inner, leg, err := kaminoResolvedRouteInstruction(request, route)
+	instructions, leg, err := kaminoPolicyInstructions(request, delegate, route)
 	if err != nil {
 		return nil, err
 	}
 	if request.PilotRepaymentRelease && (leg != kaminoLegWithdraw || request.Action != DeleverRouteStep) {
 		return nil, budgetHold("invalid_pilot_repayment_release")
 	}
-	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) {
-		return nil, fmt.Errorf("Kamino request names no installed policy")
-	}
-	_, index := kaminoPolicyLeg(route, leg)
-	outer, err := wrapSquadsKaminoPolicy(policy, delegate, delegate, index, inner)
-	if err != nil {
-		return nil, err
-	}
-	instructions := append(kaminoRefreshInstructionsForResolvedRoute(leg, request, route), outer)
 	// Installed lanes keep the exact installed legacy bytes; the AUTO lane
 	// carries the reviewed ComputeBudget heap frame ahead of the identical
 	// refresh-plus-policy payload, so the eight-constraint policy parses and
@@ -170,6 +160,28 @@ func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 		return nil, err
 	}
 	return checkedUnsignedMessage(message)
+}
+
+// kaminoPolicyInstructions is one KLend leg as the chain executes it: the
+// route's refresh prefix (two reserve refreshes and the obligation refresh
+// over request's topology) followed by the leg's Squads execute at its
+// policy constraint. KLend's check_refresh counts back from the top-level
+// execute, so the prefix must sit directly in front of it.
+func kaminoPolicyInstructions(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]compiledInstruction, kaminoPrimeUSDCLeg, error) {
+	inner, leg, err := kaminoResolvedRouteInstruction(request, route)
+	if err != nil {
+		return nil, 0, err
+	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil || policy == (publicKey{}) {
+		return nil, 0, fmt.Errorf("Kamino request names no installed policy")
+	}
+	_, index := kaminoPolicyLeg(route, leg)
+	outer, err := wrapSquadsKaminoPolicy(policy, delegate, delegate, index, inner)
+	if err != nil {
+		return nil, 0, err
+	}
+	return append(kaminoRefreshInstructionsForResolvedRoute(leg, request, route), outer), leg, nil
 }
 
 func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedKaminoTransaction, error) {

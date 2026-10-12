@@ -294,22 +294,7 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 	if err != nil {
 		return nil, err
 	}
-	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
-	if err != nil {
-		return nil, err
-	}
-	if err := jupiterValidateAutoRetainedMinimum(request); err != nil {
-		return nil, err
-	}
-	_, index, err := jupiterPolicyLeg(request.RouteLane, request.Action)
-	if err != nil {
-		return nil, err
-	}
-	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) {
-		return nil, fmt.Errorf("Jupiter request names no installed policy")
-	}
-	outer, err := wrapSquadsJupiterPolicy(policy, delegate, delegate, index, inner)
+	outer, err := jupiterPolicyExecute(request, delegate)
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +324,27 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 		return nil, err
 	}
 	return checkedUnsignedMessage(message)
+}
+
+// jupiterPolicyExecute is the request's swap as the Squads execute of its
+// validated instruction at its policy's edge constraint.
+func jupiterPolicyExecute(request JupiterSwapRequest, delegate publicKey) (compiledInstruction, error) {
+	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
+	if err != nil {
+		return compiledInstruction{}, err
+	}
+	if err := jupiterValidateAutoRetainedMinimum(request); err != nil {
+		return compiledInstruction{}, err
+	}
+	_, index, err := jupiterPolicyLeg(request.RouteLane, request.Action)
+	if err != nil {
+		return compiledInstruction{}, err
+	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil || policy == (publicKey{}) {
+		return compiledInstruction{}, fmt.Errorf("Jupiter request names no installed policy")
+	}
+	return wrapSquadsJupiterPolicy(policy, delegate, delegate, index, inner)
 }
 
 func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedJupiterTransaction, error) {

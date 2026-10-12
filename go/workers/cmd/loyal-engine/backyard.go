@@ -147,7 +147,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [in-flight | selector-evaluate [--execute] | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --lane <lane> --dir up|down --amount-raw <n> [--lookup-table <address>]... | selector-evaluate [--execute] | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
@@ -165,6 +165,19 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		}
 		_, err = fmt.Fprintln(out, count)
 		return err
+	}
+	if len(args) > 0 && args[0] == "simulate-step" {
+		// Read-only: builds one atomic leverage step from live chain state and
+		// simulates it unsigned. Needs only the RPC (and Jupiter for a swap).
+		lane, up, amount, tables, err := parseSimulateStepFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		url, err := engine.Credential("BACKYARD_SOLANA_RPC_URL")
+		if err != nil {
+			return err
+		}
+		return backyard.RunSimulateStep(ctx, out, url, backyardJupiter(optionalCredential("JUPITER_API_KEY")), lane, up, amount, tables)
 	}
 	cfg, err := backyardRuntimeConfig()
 	if err != nil {
@@ -220,6 +233,39 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		return encode(result, nil)
 	}
 	return errors.New(backyardUsage)
+}
+
+const simulateStepUsage = `usage: loyal-engine backyard simulate-step --lane <lane> --dir up|down --amount-raw <n> [--lookup-table <address>]...`
+
+// parseSimulateStepFlags is syntactic only; the lane and amount are checked
+// where the step is built.
+func parseSimulateStepFlags(args []string) (lane string, up bool, amount uint64, tables []string, err error) {
+	dir := ""
+	for index := 0; index < len(args); index++ {
+		if index+1 >= len(args) {
+			return "", false, 0, nil, fmt.Errorf("simulate-step: %s requires a value\n%s", args[index], simulateStepUsage)
+		}
+		value := args[index+1]
+		switch args[index] {
+		case "--lane":
+			lane = value
+		case "--dir":
+			dir = value
+		case "--amount-raw":
+			if amount, err = strconv.ParseUint(value, 10, 64); err != nil {
+				return "", false, 0, nil, fmt.Errorf("simulate-step: --amount-raw requires an integer\n%s", simulateStepUsage)
+			}
+		case "--lookup-table":
+			tables = append(tables, value)
+		default:
+			return "", false, 0, nil, fmt.Errorf("simulate-step: unexpected argument %q\n%s", args[index], simulateStepUsage)
+		}
+		index++
+	}
+	if lane == "" || (dir != "up" && dir != "down") || amount == 0 {
+		return "", false, 0, nil, fmt.Errorf("simulate-step: --lane, --dir up|down and a positive --amount-raw are required\n%s", simulateStepUsage)
+	}
+	return lane, dir == "up", amount, tables, nil
 }
 
 // parseSettleManualRestoreFlags is syntactic only; every authority check

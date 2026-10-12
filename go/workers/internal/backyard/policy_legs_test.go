@@ -299,6 +299,27 @@ func fixtureSwapRequest(t *testing.T, lane string, action Action) JupiterSwapReq
 // policy execution, resolving lookup tables.
 func decodeTestExecution(t *testing.T, message []byte, tables []LookupTableSnapshot) squads.ExecuteSync {
 	t.Helper()
+	var found []squads.ExecuteSync
+	for _, ix := range decodeTestInstructions(t, message, tables) {
+		if ix.ProgramID != squads.ProgramID {
+			continue
+		}
+		execution, err := squads.DecodeExecuteTransactionSyncV2(ix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found = append(found, execution)
+	}
+	if len(found) != 1 {
+		t.Fatalf("message carries %d Squads executions, want one", len(found))
+	}
+	return found[0]
+}
+
+// decodeTestInstructions reads a compiled message back into its top-level
+// instructions, resolving lookup tables.
+func decodeTestInstructions(t *testing.T, message []byte, tables []LookupTableSnapshot) []squads.Instruction {
+	t.Helper()
 	wire := append(append([]byte{1}, make([]byte, 64)...), message...)
 	tx, err := solana.TransactionFromBytes(wire)
 	if err != nil {
@@ -322,14 +343,11 @@ func decodeTestExecution(t *testing.T, message []byte, tables []LookupTableSnaps
 			t.Fatal(err)
 		}
 	}
-	var found []squads.ExecuteSync
+	var out []squads.Instruction
 	for _, compiled := range tx.Message.Instructions {
 		program, err := tx.Message.ResolveProgramIDIndex(compiled.ProgramIDIndex)
 		if err != nil {
 			t.Fatal(err)
-		}
-		if program != squads.ProgramID {
-			continue
 		}
 		metas, err := compiled.ResolveInstructionAccounts(&tx.Message)
 		if err != nil {
@@ -339,14 +357,7 @@ func decodeTestExecution(t *testing.T, message []byte, tables []LookupTableSnaps
 		for _, meta := range metas {
 			ix.Accounts = append(ix.Accounts, *meta)
 		}
-		execution, err := squads.DecodeExecuteTransactionSyncV2(ix)
-		if err != nil {
-			t.Fatal(err)
-		}
-		found = append(found, execution)
+		out = append(out, ix)
 	}
-	if len(found) != 1 {
-		t.Fatalf("message carries %d Squads executions, want one", len(found))
-	}
-	return found[0]
+	return out
 }

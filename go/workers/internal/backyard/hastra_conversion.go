@@ -195,15 +195,7 @@ func compileHastraMessageForDelegate(request HastraConversionRequest, delegate p
 	if err != nil {
 		return nil, err
 	}
-	inner, leg, err := hastraInstruction(request)
-	if err != nil {
-		return nil, err
-	}
-	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) {
-		return nil, fmt.Errorf("Hastra request names no installed policy")
-	}
-	outer, err := wrapSquadsPolicy(policy, delegate, []byte{leg}, inner)
+	outer, err := hastraPolicyExecute(request, delegate)
 	if err != nil {
 		return nil, err
 	}
@@ -212,6 +204,20 @@ func compileHastraMessageForDelegate(request HastraConversionRequest, delegate p
 		return nil, err
 	}
 	return checkedUnsignedMessage(message)
+}
+
+// hastraPolicyExecute is the request's conversion as the Squads execute of
+// its Hastra instruction at the Hastra policy's leg.
+func hastraPolicyExecute(request HastraConversionRequest, delegate publicKey) (compiledInstruction, error) {
+	inner, leg, err := hastraInstruction(request)
+	if err != nil {
+		return compiledInstruction{}, err
+	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil || policy == (publicKey{}) {
+		return compiledInstruction{}, fmt.Errorf("Hastra request names no installed policy")
+	}
+	return wrapSquadsPolicy(policy, delegate, []byte{leg}, inner)
 }
 
 // signHastraConversion signs the request's message as the pinned delegate.

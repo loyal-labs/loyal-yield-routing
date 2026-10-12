@@ -50,8 +50,20 @@ func decodeMessageLookupTable(s LookupTableSnapshot) (messageLookupTable, error)
 // and static + all loaded writable + all loaded readonly account indices.
 // Only address representation changes; signers and invoked programs stay static.
 func compileV0Message(payer, blockhash publicKey, instructions []compiledInstruction, snapshots []LookupTableSnapshot, capture ...publicKey) ([]byte, error) {
+	message, _, err := compileV0(payer, blockhash, instructions, snapshots, capture...)
+	return message, err
+}
+
+// v0Layout is how a compiled message addresses its accounts: static keys,
+// keys loaded through tables, and the tables it loads them from.
+type v0Layout struct {
+	static, loaded int
+	tables         []publicKey
+}
+
+func compileV0(payer, blockhash publicKey, instructions []compiledInstruction, snapshots []LookupTableSnapshot, capture ...publicKey) ([]byte, v0Layout, error) {
 	if len(instructions) == 0 || len(instructions) > 255 || len(snapshots) == 0 || len(snapshots) > 256 {
-		return nil, fmt.Errorf("invalid versioned message inputs")
+		return nil, v0Layout{}, fmt.Errorf("invalid versioned message inputs")
 	}
 	accounts := []accountMeta{{key: payer, signer: true, writable: true}}
 	invoked := map[publicKey]bool{}
@@ -66,7 +78,7 @@ func compileV0Message(payer, blockhash publicKey, instructions []compiledInstruc
 		pushOrMergeMeta(&accounts, accountMeta{key: key})
 	}
 	if len(accounts) > 256 {
-		return nil, fmt.Errorf("versioned message exceeds account index space")
+		return nil, v0Layout{}, fmt.Errorf("versioned message exceeds account index space")
 	}
 	type lookup struct {
 		key                publicKey
@@ -78,10 +90,10 @@ func compileV0Message(payer, blockhash publicKey, instructions []compiledInstruc
 	for _, snapshot := range snapshots {
 		table, err := decodeMessageLookupTable(snapshot)
 		if err != nil {
-			return nil, err
+			return nil, v0Layout{}, err
 		}
 		if seenTables[table.key] {
-			return nil, fmt.Errorf("duplicate lookup table")
+			return nil, v0Layout{}, fmt.Errorf("duplicate lookup table")
 		}
 		seenTables[table.key] = true
 		l := lookup{key: table.key}
@@ -118,7 +130,7 @@ func compileV0Message(payer, blockhash publicKey, instructions []compiledInstruc
 	}
 	sort.SliceStable(static, func(i, j int) bool { return accountRank(static[i]) < accountRank(static[j]) })
 	if static[0].key != payer {
-		return nil, fmt.Errorf("versioned fee payer lost first position")
+		return nil, v0Layout{}, fmt.Errorf("versioned fee payer lost first position")
 	}
 	var required, readonlySigned, readonlyUnsigned int
 	for _, a := range static {
@@ -132,7 +144,7 @@ func compileV0Message(payer, blockhash publicKey, instructions []compiledInstruc
 		}
 	}
 	if required > 255 || readonlyUnsigned > 255 {
-		return nil, fmt.Errorf("versioned header overflows")
+		return nil, v0Layout{}, fmt.Errorf("versioned header overflows")
 	}
 	indices := map[publicKey]byte{}
 	all := append(append(append([]accountMeta{}, static...), loadedWritable...), loadedReadonly...)
@@ -156,12 +168,14 @@ func compileV0Message(payer, blockhash publicKey, instructions []compiledInstruc
 		message = append(message, ix.data...)
 	}
 	message = append(message, encodeShortVec(len(lookups))...)
+	layout := v0Layout{static: len(static), loaded: len(loadedWritable) + len(loadedReadonly)}
 	for _, l := range lookups {
+		layout.tables = append(layout.tables, l.key)
 		message = append(message, l.key[:]...)
 		message = append(message, encodeShortVec(len(l.writable))...)
 		message = append(message, l.writable...)
 		message = append(message, encodeShortVec(len(l.readonly))...)
 		message = append(message, l.readonly...)
 	}
-	return message, nil
+	return message, layout, nil
 }
