@@ -107,7 +107,7 @@ func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit 
 			expectedAddresses = append(expectedAddresses, address)
 		}
 		want := map[string]any{"encoding": "base64", "commitment": "confirmed", "minContextSlot": float64(42), "accounts": map[string]any{"encoding": "base64", "addresses": expectedAddresses}}
-		if err != nil || len(wire) < 65 || wire[0] != 1 || !allZero(wire[1:65]) || !bytes.Equal(wire[65:], message) || !reflect.DeepEqual(options, want) {
+		if err != nil || len(wire) < 65 || wire[0] != 0x81 || !allZero(wireSig(wire)) || !bytes.Equal(wireMsg(wire), message) || !reflect.DeepEqual(options, want) {
 			t.Fatal("simulation changed wire, signatures, or closed RPC options")
 		}
 		var rows []any

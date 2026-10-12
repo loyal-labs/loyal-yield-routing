@@ -225,8 +225,7 @@ func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wire := append(make([]byte, 65), message...)
-			wire[0] = 1
+			wire := signedWire(message, make([]byte, 64))
 			origin := UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "economic_rotation", ObservationID: o.Snapshot.ObservationID, MaxCollateralRaw: o.Snapshot.PositionCollateralRaw, MaxDebtRaw: 2000, EvidenceID: strings.Repeat("e", 64), CreatedAt: time.Now().UTC()}
 			revoked, err := newDebtClearAuthority(m, key, strings.Repeat("c", 64), origin)
 			if err != nil {
@@ -241,7 +240,7 @@ func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 			if err = db.pool.QueryRow(ctx, `SELECT expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&envelope); err != nil {
 				t.Fatal(err)
 			}
-			operation := PersistedOperation{Operation: Operation{ID: id, RouteKey: key, Decision: decision}, Status: Signed, ExpectedEffects: envelope, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
+			operation := PersistedOperation{Operation: Operation{ID: id, RouteKey: key, Decision: decision}, Status: Signed, ExpectedEffects: envelope, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wireSig(wire)), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
 			height := int64(99)
 			sends := 0
 			chainReads := rpcOf(base).Transport

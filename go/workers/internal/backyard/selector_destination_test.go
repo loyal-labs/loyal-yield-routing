@@ -1,13 +1,11 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"reflect"
@@ -112,20 +110,10 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 	u.Data[80] = 1
 	putKey(t, u.Data[480:512], route.Kamino.Obligation)
 	add(u)
-	captured, _ := basicJupiterRequest(t, route.Lane, "USDC->"+route.CollateralSymbol)
-	// The exit carries a multi-hop route's venue accounts, so it needs the
-	// API's lookup tables, as the payoff path must read them.
-	reverse, _ := basicJupiterRequest(t, route.Lane, route.CollateralSymbol+"->USDC")
+	captured := basicJupiterRequest(t, route.Lane, "USDC->"+route.CollateralSymbol)
+	reverse := basicJupiterRequest(t, route.Lane, route.CollateralSymbol+"->USDC")
 	for index := range 24 {
 		reverse.Instruction.Accounts = append(reverse.Instruction.Accounts, jupiter.AccountMeta{Pubkey: autoVenueKey(byte(index))})
-	}
-	_, tables := compileTestSwap(t, reverse)
-	if len(tables) == 0 {
-		t.Fatal("the padded exit fits a legacy packet")
-	}
-	for _, table := range tables {
-		binary.LittleEndian.PutUint64(table.Data[12:20], 41)
-		add(ConfirmedAccount{Address: table.Address, Owner: table.Owner, Lamports: table.Lamports, Data: table.Data})
 	}
 	if tweak != nil {
 		tweak(accounts)
@@ -147,16 +135,13 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 			if body.QuoteResponse.InputMint != bridgeUSDC {
 				instruction = reverse.Instruction
 			}
-			if body.QuoteResponse.InputMint == bridgeUSDC {
-				instruction.LookupTableAddresses = nil
-			}
 			data, _ := base64.StdEncoding.DecodeString(instruction.Data)
 			binary.LittleEndian.PutUint64(data[jupiter.V2InAmountOffset:], amount)
 			quotedOut, _ := strconv.ParseUint(body.QuoteResponse.OutAmount, 10, 64)
 			binary.LittleEndian.PutUint64(data[jupiter.V2QuotedOutOffset:], quotedOut)
 			binary.LittleEndian.PutUint16(data[jupiter.V2SlippageOffset:], 50)
 			instruction.Data = base64.StdEncoding.EncodeToString(data)
-			payload = map[string]any{"swapInstruction": instruction, "addressLookupTableAddresses": instruction.LookupTableAddresses}
+			payload = map[string]any{"swapInstruction": instruction}
 		default:
 			t.Fatal("unexpected Jupiter request")
 		}
@@ -294,58 +279,6 @@ func TestSelectorDestinationFullPilotTrancheHasQuotedPayoff(t *testing.T) {
 	if q.PayoffSwap.Request.MinimumOutputRaw < q.PayoffUpperRaw || q.Recipe.CostRaw >= 10_000_000 || len(q.Recipe.Inputs) != 12 {
 		t.Fatal("incomplete full tranche forecast", q)
 	}
-}
-
-func TestSelectorDestinationIncludesPayoffLookupReadInFreshness(t *testing.T) {
-	t.Parallel()
-	m, rpc, client, accounts := selectorDestinationFixture(t)
-	tables := map[string]bool{}
-	for _, a := range accounts {
-		if a.Owner == "AddressLookupTab1e1111111111111111111111111" {
-			tables[a.Address] = true
-		}
-	}
-	original := rpcOf(rpc).Transport
-	changed := false
-	rpcOf(rpc).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		raw, err := io.ReadAll(req.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Body = io.NopCloser(bytes.NewReader(raw))
-		var body struct {
-			Method string
-			Params []json.RawMessage
-		}
-		if json.Unmarshal(raw, &body) != nil {
-			t.Fatal("bad fixture request")
-		}
-		res, err := original.RoundTrip(req)
-		if err != nil {
-			return res, err
-		}
-		if body.Method == "getMultipleAccounts" {
-			var addresses []string
-			_ = json.Unmarshal(body.Params[0], &addresses)
-			if len(addresses) > 0 && tables[addresses[0]] {
-				var envelope map[string]any
-				if json.NewDecoder(res.Body).Decode(&envelope) != nil {
-					t.Fatal("bad fixture response")
-				}
-				_ = res.Body.Close()
-				envelope["result"].(map[string]any)["context"].(map[string]any)["slot"] = 100
-				encoded, _ := json.Marshal(envelope)
-				res = response(string(encoded))
-				changed = true
-			}
-		}
-		return res, nil
-	})
-	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 1_000_000, 42, false, nil)
-	if !changed {
-		t.Fatal("fixture never read payoff lookups")
-	}
-	assertBudgetHold(t, err, "selector_recipe_observation_expired")
 }
 
 func TestSelectorReceiptBoundIncludesPreBorrowInterest(t *testing.T) {

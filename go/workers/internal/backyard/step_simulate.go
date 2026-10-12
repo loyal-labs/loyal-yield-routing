@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -18,18 +16,18 @@ import (
 )
 
 // RunSimulateStep builds lane's atomic up or down step from the chain as it
-// is now, with the delegate as fee payer, and simulates it unsigned
-// (sigVerify off, the cluster's blockhash): the read-only proof that one
-// transaction carries the whole step through the installed policies. It
-// never signs or sends.
+// is now, through the production step assembly (assembleStep), with the
+// delegate as fee payer, and simulates it unsigned (sigVerify off, the
+// cluster's blockhash): the read-only proof that one transaction carries the
+// whole step through the installed policies. It never signs or sends.
 //
 // up borrows amountRaw of debt, converts exactly that into collateral and
 // deposits held collateral plus the conversion's guaranteed output. down
 // withdraws amountRaw of collateral receipt (KLend's withdraw amount),
-// converts the liquidity it redeems at the observed rate into debt and repays
-// held debt plus the conversion's guaranteed output. tables name lookup
-// tables to offer beside the route valuation table and the swap's own.
-func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *jupiter.Client, lane string, up bool, amountRaw uint64, tables []string) error {
+// converts the liquidity it redeems at the observed rate and the held
+// collateral into debt, and repays held debt plus the conversion's
+// guaranteed output.
+func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *jupiter.Client, lane string, up bool, amountRaw uint64) error {
 	route, err := runtimeRoute(lane)
 	if err != nil || !earnHeldLane(lane) {
 		return fmt.Errorf("lane %q is no earn lane", lane)
@@ -59,11 +57,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	heldCollateral, err := stepCustodyRaw(accounts, route.CollateralCustody, route.Kamino.CollateralMint)
-	if err != nil {
-		return err
-	}
-	heldDebt, err := stepCustodyRaw(accounts, route.DebtCustody, route.Kamino.DebtMint)
+	st, err := readStepState(accounts, route, slot)
 	if err != nil {
 		return err
 	}
@@ -75,97 +69,28 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	blockhash, err := latestBlockhash(ctx, cluster)
-	if err != nil {
-		return err
-	}
-	// Open's refresh runs over the obligation as it is: its deposit, then
-	// its debt.
-	var reserves []string
-	if position.CollateralDepositedRaw > 0 {
-		reserves = append(reserves, route.Kamino.CollateralReserve)
-	}
-	if position.DebtRaw > 0 {
-		reserves = append(reserves, route.Kamino.DebtReserve)
-	}
-	kaminoAction, openLeg, closeLeg, conversion := DeleverRouteStep, kaminoLegWithdraw, kaminoLegRepay, SwapCollateralToDebtStep
-	convertRaw, sourceRaw, destinationRaw := uint64(0), heldCollateral, heldDebt
-	if up {
-		if position.CollateralDepositedRaw == 0 {
-			return fmt.Errorf("%s has no collateral deposited to borrow against", lane)
-		}
-		kaminoAction, openLeg, closeLeg, conversion = OpenRouteStep, kaminoLegBorrow, kaminoLegDeposit, SwapDebtToCollateralStep
-		convertRaw, sourceRaw, destinationRaw = amountRaw, heldDebt, heldCollateral
-	} else {
-		if position.DebtRaw == 0 {
-			return fmt.Errorf("%s has no debt to repay", lane)
-		}
-		reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
+	convert := amountRaw
+	if !up {
+		liquidity, err := st.collateral.redeemLiquidityRaw(amountRaw)
 		if err != nil {
 			return err
 		}
-		if convertRaw, err = reserve.redeemLiquidityRaw(amountRaw); err != nil {
-			return err
-		}
+		convert = liquidity + st.heldCollateral
 	}
-	if sourceRaw > math.MaxUint64-convertRaw || convertRaw > math.MaxInt64 {
-		return fmt.Errorf("step source custody overflows")
-	}
-	evidence, err := prepareConversionQuoteEvidence(ctx, cluster, view, client, manifest, policies,
-		Decision{Action: conversion, AmountRaw: int64(convertRaw), StrategyKey: lane}, sourceRaw+convertRaw, destinationRaw, viewSlot)
+	evidence, guaranteed, err := assembleStep(ctx, cluster, view, client, manifest, policies, st, up, amountRaw, convert, viewSlot)
 	if err != nil {
 		return err
 	}
-	guaranteed, err := stepConversionOutput(evidence.Request)
-	if err != nil {
-		return err
-	}
-	closeRaw, err := stepCloseAmount(destinationRaw, evidence.Request)
-	if err != nil {
-		return err
-	}
-	open, err := manifest.kaminoPacketForRoute(policies, kaminoAction, openLeg, amountRaw, blockhash, lane)
-	if err != nil {
-		return err
-	}
-	open.ObligationReserves = reserves
-	closing, err := manifest.kaminoPacketForRoute(policies, kaminoAction, closeLeg, closeRaw, blockhash, lane)
-	if err != nil {
-		return err
-	}
-	// A key loads through the first offered table holding it: the valuation
-	// table first (it holds most of a lane), then the operator's, then the
-	// swap's own.
-	candidates := append([]string{routeValuationLookupTable}, tables...)
-	if swap, ok := evidence.Request.(JupiterSwapRequest); ok {
-		candidates = append(candidates, swap.Instruction.LookupTableAddresses...)
-	}
-	var offered []string
-	for _, address := range candidates {
-		if !slices.Contains(offered, address) {
-			offered = append(offered, address)
-		}
-	}
-	snapshots, err := observeJupiterLookupTables(ctx, cluster, offered, viewSlot)
-	if err != nil {
-		return err
-	}
-	step, err := buildStepMessage(atomicStep{Open: open, Conversion: evidence.Request, Close: closing, Tables: snapshots}, mustKey(bridgeDelegate))
+	step, err := buildStepMessage(evidence.Request, mustKey(bridgeDelegate))
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "lane: %s\ndir: %s\nobserved slot: %d\nLTV before: %d bps\n", lane, map[bool]string{true: "up", false: "down"}[up], slot, ltvBefore)
-	fmt.Fprintf(out, "open %s: %d raw\nconvert %s: %d raw in, %d raw guaranteed out\nclose %s: %d raw (held %d + guaranteed out)\n",
-		openLeg, amountRaw, conversion, convertRaw, guaranteed, closeLeg, closeRaw, destinationRaw)
-	verdict := fmt.Sprintf("fits, %d spare", solanaPacketBytes-step.WireBytes)
-	if !step.Fits() {
-		verdict = fmt.Sprintf("OVER by %d", step.WireBytes-solanaPacketBytes)
-	}
-	fmt.Fprintf(out, "bytes: %d of %d (%s)\naccounts: %d (%d static)\nALTs offered: %s\nALTs used: %s\n",
-		step.WireBytes, solanaPacketBytes, verdict, step.Accounts, step.StaticAccounts, strings.Join(offered, " "), strings.Join(step.Tables, " "))
+	fmt.Fprintf(out, "open: %d raw\nconvert: %d raw in, %d raw guaranteed out\nclose: %d raw\n", amountRaw, convert, guaranteed, evidence.Request.Close.AmountRaw)
+	fmt.Fprintf(out, "v1: %d of %d bytes, %d of %d keys\n", step.WireBytes, maxTransactionBytes, step.Keys, maxTransactionKeys)
 	// An all-zero signature: with sigVerify off the cluster runs the message
 	// as the delegate's without its key, and these bytes can never land.
-	wire := append(append([]byte{1}, make([]byte, 64)...), step.Message...)
+	wire := signedWire(step.Message, make([]byte, 64))
 	capture := []solana.PublicKey{solanaKey(route.Kamino.Obligation), solanaKey(route.Kamino.CollateralReserve), solanaKey(route.Kamino.DebtReserve)}
 	simulated, err := cluster.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, ReplaceRecentBlockhash: true,
 		Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: capture}})
@@ -198,24 +123,6 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	}
 	_, err = fmt.Fprintf(out, "LTV after: %d bps\n", ltvAfter)
 	return err
-}
-
-// stepCustodyRaw is the vault's balance in its custody of mint.
-func stepCustodyRaw(accounts []ConfirmedAccount, address, mint string) (uint64, error) {
-	mintKey, err := decodeBase58PublicKey(mint)
-	if err != nil {
-		return 0, err
-	}
-	authority, err := decodeBase58PublicKey(bridgeVault)
-	if err != nil {
-		return 0, err
-	}
-	account := accountAt(accounts, address)
-	custody, err := DecodeTokenCustody(account.Owner, account.Data, mintKey, authority)
-	if err != nil {
-		return 0, fmt.Errorf("custody %s: %w", address, err)
-	}
-	return custody.Raw, nil
 }
 
 // stepLTVBPS is the obligation's LTV over the simulation's own refreshed

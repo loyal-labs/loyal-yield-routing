@@ -76,10 +76,7 @@ func TestSelectorRecipeValuesActualBasicSwapMinimum(t *testing.T) {
 	t.Parallel()
 	lane := SelectedRouteID
 	route, _ := runtimeRoute(lane)
-	request, _ := basicJupiterRequest(t, lane, "USDC->syrupUSDC")
-	// This recorded leg fits the legacy message; no synthetic lookup account
-	// or execution-state projection is needed for a fee-only forecast.
-	request.Instruction.LookupTableAddresses = nil
+	request := basicJupiterRequest(t, lane, "USDC->syrupUSDC")
 	minimum := request.MinimumOutputRaw
 	effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Accounts: []ExpectedAccountEffect{
 		{Address: bridgeSquadsATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeVault, BeforeRaw: request.AmountRaw, AfterRaw: 0},

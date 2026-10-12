@@ -303,12 +303,6 @@ func TestExportONycOfflineProof(t *testing.T) {
 		if e != nil || custody.Raw < in.Amount {
 			t.Fatal("insufficient swap custody", e)
 		}
-		for _, table := range r.LookupTables {
-			a := accountAt(in.Accounts, table.Address)
-			if a.Owner != table.Owner || a.Lamports != table.Lamports || !bytesEqual(a.Data, table.Data) {
-				t.Fatal("ALT differs from bank")
-			}
-		}
 		message, err = CompileJupiterMessage(r)
 		result["request"] = r
 	case "deposit", "borrow", "repay", "withdraw":
@@ -357,9 +351,8 @@ func TestExportONycOfflineProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(message) > 0 {
-		wire := append(make([]byte, 65), message...)
-		wire[0] = 1
-		if len(wire) > 1232 {
+		wire := signedWire(message, make([]byte, 64))
+		if len(wire) > maxTransactionBytes {
 			t.Fatal("packet overflow")
 		}
 		result["wireBase64"], result["wireSha256"], result["packetBytes"] = base64.StdEncoding.EncodeToString(wire), sha256Bytes(wire), len(wire)

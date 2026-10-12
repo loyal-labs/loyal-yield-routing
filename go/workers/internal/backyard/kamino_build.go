@@ -3,17 +3,13 @@ package backyard
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math"
-	"sort"
 
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // KaminoPrimeUSDCAccounts is the exact account list produced by the checked
@@ -55,16 +51,6 @@ type KaminoPrimeUSDCRequest struct {
 	ObligationReserves []string
 }
 
-type SignedKaminoTransaction struct {
-	message              []byte
-	signedWire           []byte
-	messageSHA256        string
-	signedWireSHA256     string
-	transactionSignature string
-	recentBlockhash      string
-	lastValidBlockHeight int64
-}
-
 const (
 	kaminoPrimeMarket             = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
 	kaminoPrimeMarketAuthority    = "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM"
@@ -81,7 +67,6 @@ const (
 	mapleDebtFarm                 = "87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y"
 	mapleObligationDebtFarm       = "CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr"
 	kaminoInstructions            = "Sysvar1nstructions1111111111111111111111111"
-	solanaPacketBytes             = 1232
 )
 
 type kaminoPrimeUSDCLeg byte
@@ -96,7 +81,7 @@ const (
 // BuildAndSignKaminoPrimeUSDCTransaction creates the legacy Solana wire for
 // one exact Kamino SDK instruction under the supplied confirmed Squads policy.
 // It signs but never simulates, persists, or broadcasts the result.
-func BuildAndSignKaminoPrimeUSDCTransaction(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey) (SignedKaminoTransaction, error) {
+func BuildAndSignKaminoPrimeUSDCTransaction(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey) (SignedTransaction, error) {
 	return buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
 
@@ -146,16 +131,7 @@ func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 	if request.PilotRepaymentRelease && (leg != kaminoLegWithdraw || request.Action != DeleverRouteStep) {
 		return nil, budgetHold("invalid_pilot_repayment_release")
 	}
-	// Installed lanes keep the exact installed legacy bytes; the AUTO lane
-	// carries the reviewed ComputeBudget heap frame ahead of the identical
-	// refresh-plus-policy payload, so the eight-constraint policy parses and
-	// executes on the deployed Squads ELF.
-	var message []byte
-	if autoRoute(route.Lane) {
-		message, err = compileAutoKaminoLegacyMessage(delegate, blockhash, instructions)
-	} else {
-		message, err = compileKaminoLegacyMessage(delegate, blockhash, instructions)
-	}
+	message, err := compileV1Message(delegate, blockhash, instructions, executionBudget(route.Lane, len(instructions)))
 	if err != nil {
 		return nil, err
 	}
@@ -184,127 +160,12 @@ func kaminoPolicyInstructions(request KaminoPrimeUSDCRequest, delegate publicKey
 	return append(kaminoRefreshInstructionsForResolvedRoute(leg, request, route), outer), leg, nil
 }
 
-func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedKaminoTransaction, error) {
-	if len(executor) != ed25519.PrivateKeySize || request.LastValidBlockHeight <= 0 {
-		return SignedKaminoTransaction{}, fmt.Errorf("invalid Kamino signing material")
-	}
-	feePayer := publicKeyFromBytes(executor.Public().(ed25519.PublicKey))
-	if feePayer != expectedDelegate {
-		return SignedKaminoTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
-	}
+func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
 	message, err := compileKaminoMessageForDelegate(request, expectedDelegate)
 	if err != nil {
-		return SignedKaminoTransaction{}, err
+		return SignedTransaction{}, err
 	}
-	signature := ed25519.Sign(executor, message)
-	wire := append(encodeShortVec(1), signature...)
-	wire = append(wire, message...)
-	if len(wire) > solanaPacketBytes {
-		return SignedKaminoTransaction{}, fmt.Errorf("Kamino PRIME/USDC packet is %d bytes, exceeds %d", len(wire), solanaPacketBytes)
-	}
-	messageDigest := sha256.Sum256(message)
-	wireDigest := sha256.Sum256(wire)
-	return SignedKaminoTransaction{
-		message: message, signedWire: wire,
-		messageSHA256: hex.EncodeToString(messageDigest[:]), signedWireSHA256: hex.EncodeToString(wireDigest[:]),
-		transactionSignature: encodeBase58(signature), recentBlockhash: request.RecentBlockhash,
-		lastValidBlockHeight: request.LastValidBlockHeight,
-	}, nil
-}
-
-// compileKaminoLegacyMessage is intentionally separate from the one-inner-
-// instruction bridge compiler. It accepts exactly the reviewed KLend prefix
-// (two reserve refreshes and one obligation refresh) followed by one Squads
-// policy execution; no general multi-instruction transaction API is exposed.
-func compileKaminoLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
-	if err := validateKaminoRefreshSequence(instructions); err != nil {
-		return nil, err
-	}
-	return encodeKaminoLegacyMessageBody(feePayer, blockhash, instructions)
-}
-
-// validateKaminoRefreshSequence is the exact installed gate: the reviewed KLend
-// prefix (two reserve refreshes and one obligation refresh) followed by one
-// Squads policy execution, nothing else. The AUTO resource compiler reuses it
-// unchanged so its heap-carrying messages validate the identical payload.
-func validateKaminoRefreshSequence(instructions []compiledInstruction) error {
-	if len(instructions) != 4 || instructions[0].program != publicKey(kamino.ProgramID) ||
-		instructions[1].program != publicKey(kamino.ProgramID) || instructions[2].program != publicKey(kamino.ProgramID) ||
-		instructions[3].program != publicKey(squads.ProgramID) || !bytesEqual(instructions[0].data, kamino.RefreshReserveDiscriminator[:]) ||
-		!bytesEqual(instructions[1].data, kamino.RefreshReserveDiscriminator[:]) || !bytesEqual(instructions[2].data, kamino.RefreshObligationDiscriminator[:]) {
-		return fmt.Errorf("Kamino transaction is not the exact refresh-plus-policy sequence")
-	}
-	return nil
-}
-
-// compileAutoKaminoLegacyMessage is the closed AUTO variant: the exact
-// refresh-plus-policy sequence validated by the same gate as the installed
-// compiler, prefixed by the canonical ComputeBudget heap frame. The five-slot
-// body encoder is only reachable through this validated combination — the
-// installed compiler keeps its exact-four gate.
-func compileAutoKaminoLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
-	if err := validateKaminoRefreshSequence(instructions); err != nil {
-		return nil, err
-	}
-	heap := autoComputeBudgetHeapInstruction()
-	if !isAutoExecutionHeapInstruction(heap) {
-		return nil, fmt.Errorf("AUTO heap resource drifted from the reviewed frame")
-	}
-	return encodeKaminoLegacyMessageBody(feePayer, blockhash, withAutoExecutionHeap(instructions))
-}
-
-// encodeKaminoLegacyMessageBody serializes an already-validated instruction
-// list into the legacy wire format. Count and sequence admission stay with the
-// callers above; this body never adds or drops instructions.
-func encodeKaminoLegacyMessageBody(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
-	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
-	for _, instruction := range instructions {
-		for _, account := range instruction.accounts {
-			pushOrMergeMeta(&accounts, account)
-		}
-		pushOrMergeMeta(&accounts, accountMeta{key: instruction.program})
-	}
-	sort.SliceStable(accounts[1:], func(i, j int) bool { return accountRank(accounts[i+1]) < accountRank(accounts[j+1]) })
-	if len(accounts) > math.MaxUint8 {
-		return nil, fmt.Errorf("Kamino legacy transaction has too many accounts")
-	}
-	index := make(map[publicKey]byte, len(accounts))
-	var required, readonlySigned, readonlyUnsigned byte
-	for i, account := range accounts {
-		index[account.key] = byte(i)
-		if account.signer {
-			required++
-			if !account.writable {
-				readonlySigned++
-			}
-		} else if !account.writable {
-			readonlyUnsigned++
-		}
-	}
-	message := []byte{required, readonlySigned, readonlyUnsigned}
-	message = append(message, encodeShortVec(len(accounts))...)
-	for _, account := range accounts {
-		message = append(message, account.key[:]...)
-	}
-	message = append(message, blockhash[:]...)
-	message = append(message, encodeShortVec(len(instructions))...)
-	for _, instruction := range instructions {
-		program, ok := index[instruction.program]
-		if !ok || len(instruction.accounts) > math.MaxUint8 {
-			return nil, fmt.Errorf("invalid Kamino compiled instruction")
-		}
-		message = append(message, program, byte(len(instruction.accounts)))
-		for _, account := range instruction.accounts {
-			accountIndex, ok := index[account.key]
-			if !ok {
-				return nil, fmt.Errorf("missing Kamino instruction account")
-			}
-			message = append(message, accountIndex)
-		}
-		message = append(message, encodeShortVec(len(instruction.data))...)
-		message = append(message, instruction.data...)
-	}
-	return message, nil
+	return signMessage(executor, expectedDelegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
 func bytesEqual(left, right []byte) bool {
@@ -503,13 +364,6 @@ func wrapSquadsKaminoPolicy(policy, executor, expectedDelegate publicKey, constr
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads Kamino policy or delegate")
 	}
 	return wrapSquadsPolicy(policy, executor, []byte{constraintIndex}, inner)
-}
-
-func (s SignedKaminoTransaction) BuildResult(simulationSlot int64) (BuildResult, error) {
-	if simulationSlot <= 0 || len(s.signedWire) == 0 {
-		return BuildResult{}, fmt.Errorf("exact signed Kamino transaction was not simulated")
-	}
-	return BuildResult{MessageSHA256: s.messageSHA256, SignedWire: append([]byte(nil), s.signedWire...), SignedWireSHA256: s.signedWireSHA256, TransactionSignature: s.transactionSignature, RecentBlockhash: s.recentBlockhash, LastValidBlockHeight: s.lastValidBlockHeight, SimulationSlot: simulationSlot}, nil
 }
 
 // KaminoExecutionEvidence is intentionally explicit. The observer supplies a

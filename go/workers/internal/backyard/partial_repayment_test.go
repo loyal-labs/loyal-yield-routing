@@ -98,7 +98,7 @@ func partialRepaymentFixtureForMode(t *testing.T, lane, variant string, exitCycl
 			t.Fatal("wire")
 		}
 		wire, err := base64.StdEncoding.Strict().DecodeString(encoded)
-		if err != nil || len(wire) <= 65 || !allZero(wire[1:65]) || !bytes.Equal(wire[65:], message) {
+		if err != nil || len(wire) <= 65 || !allZero(wireSig(wire)) || !bytes.Equal(wireMsg(wire), message) {
 			t.Fatal("changed partial simulation")
 		}
 		var rows []any

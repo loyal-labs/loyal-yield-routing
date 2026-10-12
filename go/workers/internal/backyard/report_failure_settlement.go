@@ -102,7 +102,7 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 	if err != nil || !bytes.Equal(landed, wire) {
 		return fail()
 	}
-	sig, message, _, signer, err := decodeExactLegacyWire(wire)
+	sig, message, _, signer, err := decodeExactWire(wire)
 	if err != nil || !ed25519.Verify(signer[:], message, sig) || encodeBase58(sig) != signature || sha256Bytes(message) != messageHash || signer != expectedDelegate {
 		return fail()
 	}
@@ -112,10 +112,10 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 	if json.Unmarshal(receipt.Meta.Err, &instructionError) != nil || len(instructionError.InstructionError) != 2 {
 		return fail()
 	}
-	// Every account key in the exact legacy wire must have balance metadata.
-	offset := 3
-	count, err := decodeShortVec(message, &offset)
-	if err != nil || count <= 0 || len(receipt.Meta.PreBalances) != count || len(receipt.Meta.PostBalances) != count {
+	// Every account key of the exact wire must have balance metadata.
+	keys, err := messageKeys(message)
+	count := len(keys)
+	if err != nil || len(receipt.Meta.PreBalances) != count || len(receipt.Meta.PostBalances) != count {
 		return fail()
 	}
 	for i, pre := range receipt.Meta.PreBalances {
@@ -140,7 +140,7 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 		delete(canonical, effect.Address)
 		found := -1
 		for i := 0; i < count; i++ {
-			if keyString(message[offset+i*32:offset+(i+1)*32]) == effect.Address {
+			if encodeBase58(keys[i][:]) == effect.Address {
 				found = i
 				break
 			}
@@ -263,7 +263,7 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation P
 	// saved exact wire bytes. The report-only validator itself is unchanged.
 	receiptEffects := effects
 	if restore {
-		if len(wire) <= ed25519.SignatureSize+1 || wire[0] != 1 || !bytes.Equal(message, wire[ed25519.SignatureSize+1:]) {
+		if signed, _, err := splitSignedWire(wire); err != nil || !bytes.Equal(message, signed) {
 			return budgetHold("failed_settlement_requires_exact_report")
 		}
 		rollback := make([]ExpectedAccountEffect, len(effects.Accounts))

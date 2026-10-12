@@ -54,7 +54,7 @@ func TestUnsignedBridgeMessageEqualsSignedMessage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(unsigned, signed.message) || !ed25519.Verify(key.Public().(ed25519.PublicKey), unsigned, signed.signedWire[1:65]) {
+		if !bytes.Equal(unsigned, signed.message) || !ed25519.Verify(key.Public().(ed25519.PublicKey), unsigned, wireSig(signed.signedWire)) {
 			t.Fatalf("%s fee message differs from signed bytes", action)
 		}
 	}
@@ -121,7 +121,7 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 	}
 }
 
-func TestBridgeTransactionSignsExactLegacyWireAndPersistsOnlyAfterSimulation(t *testing.T) {
+func TestBridgeTransactionSignsExactWireAndPersistsOnlyAfterSimulation(t *testing.T) {
 	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
@@ -129,14 +129,14 @@ func TestBridgeTransactionSignsExactLegacyWireAndPersistsOnlyAfterSimulation(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(signed.signedWire) <= ed25519.SignatureSize || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:1+ed25519.SignatureSize]) {
-		t.Fatal("legacy wire did not contain a valid signature over its exact message")
+	if len(signed.signedWire) <= ed25519.SignatureSize || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, wireSig(signed.signedWire)) {
+		t.Fatal("wire did not contain a valid signature over its exact message")
 	}
-	if len(signed.signedWire) != 1027 || signed.messageSHA256 != "bbb62c1fb5addade3de05ebb2d1ffe561e70c544d748e837fefb4b2baf6b4dac" ||
-		signed.signedWireSHA256 != "2ba19228f900c10cf0c9668a88fbe55d190d133438310ca596ddcc90d242a41a" {
+	if len(signed.signedWire) != 1039 || signed.messageSHA256 != "902c6e6937dbfddd70870a606d0f63a600b559394949b4c66e86314090c37167" ||
+		signed.signedWireSHA256 != "07e058e31b79a34882f9d22031a19ea43434db1acb3139e04cd543a9a51f1c60" {
 		t.Fatalf("ticketed NAV packet fingerprint drifted: bytes=%d message=%s wire=%s", len(signed.signedWire), signed.messageSHA256, signed.signedWireSHA256)
 	}
-	if signed.transactionSignature != encodeBase58(signed.signedWire[1:1+ed25519.SignatureSize]) || len(signed.messageSHA256) != 64 || len(signed.signedWireSHA256) != 64 {
+	if signed.transactionSignature != encodeBase58(wireSig(signed.signedWire)) || len(signed.messageSHA256) != 64 || len(signed.signedWireSHA256) != 64 {
 		t.Fatal("transaction evidence was not bound to exact signed bytes")
 	}
 	// The exact ProgramInteraction Borsh envelope carries the NAV policy's

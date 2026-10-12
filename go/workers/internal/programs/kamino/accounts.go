@@ -252,7 +252,11 @@ type Obligation struct {
 	Deposits               [8]ObligationCollateral
 	Borrows                [5]ObligationLiquidity
 	UnhealthyBorrowValueSF [16]byte
-	ElevationGroup         uint8
+	// The values of its last refresh: its deposits, its debt adjusted by the
+	// borrow factors and not, and what it may borrow against its deposits
+	// (each deposit's LTV, or its elevation group's).
+	DepositedValueSF, BorrowFactorAdjustedDebtValueSF, BorrowedAssetsMarketValueSF, AllowedBorrowValueSF [16]byte
+	ElevationGroup                                                                                       uint8
 }
 
 // obligationOwnerOffset is where an obligation account holds its owner.
@@ -266,7 +270,8 @@ func DecodeObligation(a *chain.Account) (Obligation, error) {
 	d := a.Data
 	o := Obligation{
 		LastUpdateSlot: u64(d, 16), LendingMarket: key(d, 32), Owner: key(d, obligationOwnerOffset),
-		UnhealthyBorrowValueSF: [16]byte(d[2256:2272]), ElevationGroup: d[2285],
+		UnhealthyBorrowValueSF: [16]byte(d[2256:2272]), ElevationGroup: d[2285], DepositedValueSF: [16]byte(d[1192:1208]),
+		BorrowFactorAdjustedDebtValueSF: [16]byte(d[2208:2224]), BorrowedAssetsMarketValueSF: [16]byte(d[2224:2240]), AllowedBorrowValueSF: [16]byte(d[2240:2256]),
 	}
 	for i := range o.Deposits {
 		offset := 96 + i*136

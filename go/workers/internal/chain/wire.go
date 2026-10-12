@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // SignedWire owns exact, previously verified transaction bytes. This container
@@ -14,7 +16,7 @@ type SignedWire struct {
 }
 
 func OwnSignedWire(wire []byte, expectedHash string) (SignedWire, error) {
-	if len(wire) == 0 || len(wire) > 1232 {
+	if len(wire) == 0 || len(wire) > solana.MaxTransactionSizeV1 {
 		return SignedWire{}, errors.New("invalid transaction packet size")
 	}
 	owned := append([]byte(nil), wire...)

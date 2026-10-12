@@ -1,13 +1,10 @@
 package backyard
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math"
-	"sort"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -65,10 +62,10 @@ type BridgeBuildRequest struct {
 	LastValidBlockHeight int64
 }
 
-// SignedBridgeTransaction is an exact legacy transaction.  It is suitable for
-// sig-verified RPC simulation, but cannot be persisted as a BuildResult until
-// that simulation returns its confirmed slot.
-type SignedBridgeTransaction struct {
+// SignedTransaction is one exact signed wire (message, then signature). It is
+// suitable for sig-verified RPC simulation, but cannot be persisted as a
+// BuildResult until that simulation returns its slot.
+type SignedTransaction struct {
 	message              []byte
 	signedWire           []byte
 	messageSHA256        string
@@ -78,10 +75,28 @@ type SignedBridgeTransaction struct {
 	lastValidBlockHeight int64
 }
 
+// signMessage signs message as executor, which must be expectedDelegate:
+// the one wire every Backyard build persists.
+func signMessage(executor ed25519.PrivateKey, expectedDelegate publicKey, message []byte, blockhash string, height int64) (SignedTransaction, error) {
+	if len(executor) != ed25519.PrivateKeySize || height <= 0 {
+		return SignedTransaction{}, fmt.Errorf("invalid signing material")
+	}
+	if publicKeyFromBytes(executor.Public().(ed25519.PublicKey)) != expectedDelegate {
+		return SignedTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
+	}
+	signature := ed25519.Sign(executor, message)
+	wire := signedWire(message, signature)
+	if len(wire) > maxTransactionBytes {
+		return SignedTransaction{}, fmt.Errorf("transaction is %d bytes, exceeds %d", len(wire), maxTransactionBytes)
+	}
+	return SignedTransaction{message: message, signedWire: wire, messageSHA256: sha256Bytes(message), signedWireSHA256: sha256Bytes(wire),
+		transactionSignature: encodeBase58(signature), recentBlockhash: blockhash, lastValidBlockHeight: height}, nil
+}
+
 // BuildResult attaches the only post-signing datum: the slot returned from
 // simulating this exact wire.  This prevents callers from accidentally
 // persisting an unsigned, re-built, or differently simulated transaction.
-func (s SignedBridgeTransaction) BuildResult(simulationSlot int64) (BuildResult, error) {
+func (s SignedTransaction) BuildResult(simulationSlot int64) (BuildResult, error) {
 	if simulationSlot <= 0 || len(s.signedWire) == 0 || s.transactionSignature == "" {
 		return BuildResult{}, fmt.Errorf("exact signed transaction was not simulated")
 	}
@@ -147,7 +162,7 @@ const (
 // operation. Capital/NAV payloads contain the atomic ArmReport -> Voltr pair;
 // staging remains one SPL instruction. The only top-level signer is the pinned
 // delegated executor and the Squads vault is signer only for inner execution.
-func BuildAndSignBridgeTransaction(request BridgeBuildRequest, executor ed25519.PrivateKey) (SignedBridgeTransaction, error) {
+func BuildAndSignBridgeTransaction(request BridgeBuildRequest, executor ed25519.PrivateKey) (SignedTransaction, error) {
 	return buildAndSignBridgeTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
 
@@ -177,54 +192,23 @@ func compileBridgeMessageForDelegate(request BridgeBuildRequest, delegate public
 	if err != nil {
 		return nil, err
 	}
-	message, err := compileLegacyMessage(delegate, blockhash, []compiledInstruction{outer})
+	message, err := compileV1Message(delegate, blockhash, []compiledInstruction{outer}, executionBudget("", 1))
 	if err != nil {
 		return nil, err
 	}
 	return checkedUnsignedMessage(message)
 }
 
-func checkedUnsignedMessage(message []byte) ([]byte, error) {
-	legacy := len(message) >= 3 && message[0] == 1
-	v0 := len(message) >= 4 && message[0] == 0x80 && message[1] == 1
-	if (!legacy && !v0) || 1+ed25519.SignatureSize+len(message) > solanaPacketBytes {
-		return nil, fmt.Errorf("unsigned message does not fit the single-signer packet envelope")
-	}
-	return message, nil
-}
-
 // buildAndSignBridgeTransactionForDelegate exists solely so package tests can
 // verify Solana wire encoding with deterministic non-production key material.
 // Production always calls BuildAndSignBridgeTransaction, which pins the real
 // delegated executor above.
-func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedBridgeTransaction, error) {
-	if len(executor) != ed25519.PrivateKeySize || request.LastValidBlockHeight <= 0 {
-		return SignedBridgeTransaction{}, fmt.Errorf("invalid bridge signing material")
-	}
-	feePayer := publicKeyFromBytes(executor.Public().(ed25519.PublicKey))
-	if feePayer != expectedDelegate {
-		return SignedBridgeTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
-	}
+func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
 	message, err := compileBridgeMessageForDelegate(request, expectedDelegate)
 	if err != nil {
-		return SignedBridgeTransaction{}, err
+		return SignedTransaction{}, err
 	}
-	signature := ed25519.Sign(executor, message)
-	wire := append(encodeShortVec(1), signature...)
-	wire = append(wire, message...)
-	if len(wire) > solanaPacketBytes {
-		return SignedBridgeTransaction{}, fmt.Errorf("bridge packet is %d bytes, exceeds %d", len(wire), solanaPacketBytes)
-	}
-	messageDigest := sha256.Sum256(message)
-	wireDigest := sha256.Sum256(wire)
-	return SignedBridgeTransaction{
-		message: message, signedWire: wire,
-		messageSHA256:        hex.EncodeToString(messageDigest[:]),
-		signedWireSHA256:     hex.EncodeToString(wireDigest[:]),
-		transactionSignature: encodeBase58(signature),
-		recentBlockhash:      request.RecentBlockhash,
-		lastValidBlockHeight: request.LastValidBlockHeight,
-	}, nil
+	return signMessage(executor, expectedDelegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
 func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, error) {
@@ -358,85 +342,6 @@ func wrapSquadsPolicy(policy, executor publicKey, constraintIndexes []byte, inne
 		out.accounts = append(out.accounts, accountMeta{key: publicKey(account.PublicKey), signer: account.IsSigner, writable: account.IsWritable})
 	}
 	return out, nil
-}
-
-func compileLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction) ([]byte, error) {
-	if len(instructions) != 1 {
-		return nil, fmt.Errorf("bridge transaction must contain exactly one Squads instruction")
-	}
-	return encodeLegacyMessage(feePayer, blockhash, instructions)
-}
-
-// Encoding is separate from each caller's closed instruction-set validation.
-// The bridge/signing boundary above still permits exactly one instruction, and
-// the installed Kamino compiler keeps its own exact-four gate with its own
-// serializer. The AUTO resource wrappers encode their canonical heap frame plus
-// one already-validated payload — two instructions. The price refresh
-// simulation carries one RefreshReserve per distinct reserve of every valued
-// lane (five for the two AUTO lanes), so the encoder's own bound is the
-// format's, as in compileV0Message; packet size is checkedUnsignedMessage's.
-// Optional capture keys ride along as read-only non-signing static accounts so
-// one unsigned simulation can return a full observed batch; merging through the
-// same table means an instruction's required privileges are never lowered.
-func encodeLegacyMessage(feePayer, blockhash publicKey, instructions []compiledInstruction, capture ...publicKey) ([]byte, error) {
-	if len(instructions) == 0 || len(instructions) > 255 {
-		return nil, fmt.Errorf("unsupported legacy instruction count")
-	}
-	accounts := []accountMeta{{key: feePayer, signer: true, writable: true}}
-	for _, key := range capture {
-		pushOrMergeMeta(&accounts, accountMeta{key: key})
-	}
-	for _, instruction := range instructions {
-		for _, account := range instruction.accounts {
-			pushOrMergeMeta(&accounts, account)
-		}
-		pushOrMergeMeta(&accounts, accountMeta{key: instruction.program})
-	}
-	// Solana's legacy header requires this canonical role ordering.
-	sort.SliceStable(accounts[1:], func(i, j int) bool { return accountRank(accounts[i+1]) < accountRank(accounts[j+1]) })
-	if accounts[0].key != feePayer || !accounts[0].signer || !accounts[0].writable {
-		return nil, fmt.Errorf("fee payer lost canonical position")
-	}
-	if len(accounts) > math.MaxUint8 {
-		return nil, fmt.Errorf("legacy bridge transaction has too many accounts")
-	}
-	index := make(map[publicKey]byte, len(accounts))
-	var required, readonlySigned, readonlyUnsigned byte
-	for i, account := range accounts {
-		index[account.key] = byte(i)
-		if account.signer {
-			required++
-			if !account.writable {
-				readonlySigned++
-			}
-		} else if !account.writable {
-			readonlyUnsigned++
-		}
-	}
-	message := []byte{required, readonlySigned, readonlyUnsigned}
-	message = append(message, encodeShortVec(len(accounts))...)
-	for _, account := range accounts {
-		message = append(message, account.key[:]...)
-	}
-	message = append(message, blockhash[:]...)
-	message = append(message, encodeShortVec(len(instructions))...)
-	for _, instruction := range instructions {
-		program, ok := index[instruction.program]
-		if !ok {
-			return nil, fmt.Errorf("missing program account")
-		}
-		message = append(message, program, byte(len(instruction.accounts)))
-		for _, account := range instruction.accounts {
-			idx, ok := index[account.key]
-			if !ok {
-				return nil, fmt.Errorf("missing instruction account")
-			}
-			message = append(message, idx)
-		}
-		message = append(message, encodeShortVec(len(instruction.data))...)
-		message = append(message, instruction.data...)
-	}
-	return message, nil
 }
 
 func accountRank(account accountMeta) int {
@@ -604,18 +509,7 @@ func (b BuildResult) validateForDelegate(expectedDelegate publicKey) error {
 	if b.SignedWireSHA256 != hex.EncodeToString(wireHash[:]) || len(b.MessageSHA256) != 64 {
 		return fmt.Errorf("transaction hash mismatch")
 	}
-	// Route by the encoded message version byte after the single-signature
-	// section: legacy header 1, versioned header 0x80. Each decoder enforces
-	// its own signature section and header, so any other version — or a
-	// misrouted count — fails closed in the decoder it reaches.
-	var signature, message []byte
-	var recentBlockhash, signer publicKey
-	var err error
-	if len(b.SignedWire) >= 66 && b.SignedWire[65] == 0x80 {
-		signature, message, recentBlockhash, signer, err = decodeExactV0Wire(b.SignedWire)
-	} else {
-		signature, message, recentBlockhash, signer, err = decodeExactLegacyWire(b.SignedWire)
-	}
+	signature, message, recentBlockhash, signer, err := decodeExactWire(b.SignedWire)
 	if err != nil || !ed25519.Verify(signer[:], message, signature) ||
 		b.TransactionSignature != encodeBase58(signature) || b.RecentBlockhash != encodeBase58(recentBlockhash[:]) {
 		return fmt.Errorf("signed transaction wire does not match persisted evidence")
@@ -628,419 +522,6 @@ func (b BuildResult) validateForDelegate(expectedDelegate publicKey) error {
 		return fmt.Errorf("message hash does not match signed wire")
 	}
 	return nil
-}
-
-func decodeExactLegacyWire(wire []byte) ([]byte, []byte, publicKey, publicKey, error) {
-	offset := 0
-	signatureCount, err := decodeShortVec(wire, &offset)
-	if err != nil || signatureCount != 1 || len(wire)-offset < ed25519.SignatureSize+3 {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid legacy transaction signature section")
-	}
-	signature := append([]byte(nil), wire[offset:offset+ed25519.SignatureSize]...)
-	offset += ed25519.SignatureSize
-	message := wire[offset:]
-	messageOffset := 0
-	if len(message) < 3 || message[0] != 1 || message[1] != 0 { // one writable outer policy signer
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid legacy transaction header")
-	}
-	messageOffset = 3
-	accountCount, err := decodeShortVec(message, &messageOffset)
-	if err != nil || accountCount == 0 || len(message)-messageOffset < accountCount*32+32 {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid legacy account keys")
-	}
-	keys := make([]publicKey, accountCount)
-	for index := range keys {
-		copy(keys[index][:], message[messageOffset+index*32:messageOffset+(index+1)*32])
-	}
-	signer := keys[0]
-	messageOffset += accountCount * 32
-	var recentBlockhash publicKey
-	copy(recentBlockhash[:], message[messageOffset:messageOffset+32])
-	messageOffset += 32
-	instructionCount, err := decodeShortVec(message, &messageOffset)
-	if err != nil || (instructionCount != 1 && instructionCount != 2 && instructionCount != 3 &&
-		instructionCount != 4 && instructionCount != 5) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy transaction has an unsupported instruction count")
-	}
-	instructions := make([]decodedLegacyInstruction, instructionCount)
-	for index := range instructions {
-		instruction, nextOffset, err := decodeLegacyInstruction(message, messageOffset, keys)
-		if err != nil {
-			return nil, nil, publicKey{}, publicKey{}, err
-		}
-		instructions[index] = instruction
-		messageOffset = nextOffset
-	}
-	if messageOffset != len(message) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("trailing legacy transaction bytes")
-	}
-	outer := instructions[len(instructions)-1]
-	if outer.program != publicKey(squads.ProgramID) || len(outer.accountIndexes) < 3 ||
-		keys[outer.accountIndexes[0]] == (publicKey{}) ||
-		keys[outer.accountIndexes[1]] != publicKey(squads.ProgramID) || keys[outer.accountIndexes[2]] != signer ||
-		!bytes.HasPrefix(outer.data, squads.ExecuteTransactionSyncV2Discriminator[:]) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy transaction is not an exact Squads policy envelope")
-	}
-	if instructionCount == 4 && !isExactKaminoTransaction(instructions) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy Kamino transaction has an invalid refresh or embedded leg")
-	}
-	// The AUTO resource envelopes are the only other admitted shapes: either
-	// the legacy heap-only persisted envelope — the canonical reviewed
-	// ComputeBudget heap frame leads, alone — or the AUTO swap envelope, the
-	// heap frame plus the canonical compute-unit frame leading the payload. In
-	// both cases the payload behind the resource prefix validates against the
-	// exact existing sequence gates. An arbitrary, duplicated or reordered
-	// compute instruction fails closed.
-	if (instructionCount == 2 || instructionCount == 5) && !isAutoResourceHeapTransaction(instructions) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy AUTO transaction does not carry the exact reviewed heap frame first")
-	}
-	if instructionCount == 3 && !isAutoSwapResourceTransaction(instructions) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy AUTO swap transaction does not carry the exact reviewed heap and compute-unit frames first")
-	}
-	if instructionCount == 5 && !isExactAutoKaminoTransaction(instructions[1:]) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("legacy AUTO Kamino transaction has an invalid refresh or embedded leg")
-	}
-	return signature, message, recentBlockhash, signer, nil
-}
-
-// decodeExactV0Wire is the narrow versioned counterpart of
-// decodeExactLegacyWire: one writable required signer and either the installed
-// single Squads execute, the legacy heap-only AUTO envelope, or the AUTO swap
-// envelope with the canonical heap and compute-unit frames ahead of it.
-// Invoked programs must stay static exactly as the compiler emits them, the Squads authority pins must be static keys, and
-// lookup-resolved venue accounts only need to stay inside the loaded index
-// space.
-func decodeExactV0Wire(wire []byte) ([]byte, []byte, publicKey, publicKey, error) {
-	offset := 0
-	signatureCount, err := decodeShortVec(wire, &offset)
-	if err != nil || signatureCount != 1 || len(wire)-offset < ed25519.SignatureSize+4 {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid versioned transaction signature section")
-	}
-	signature := append([]byte(nil), wire[offset:offset+ed25519.SignatureSize]...)
-	offset += ed25519.SignatureSize
-	message := wire[offset:]
-	if len(message) < 4 || message[0] != 0x80 || message[1] != 1 || message[2] != 0 { // one writable outer policy signer
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid versioned transaction header")
-	}
-	messageOffset := 4
-	staticCount, err := decodeShortVec(message, &messageOffset)
-	if err != nil || staticCount == 0 || len(message)-messageOffset < staticCount*32+32 {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid versioned static account keys")
-	}
-	keys := make([]publicKey, staticCount)
-	for index := range keys {
-		copy(keys[index][:], message[messageOffset+index*32:messageOffset+(index+1)*32])
-	}
-	signer := keys[0]
-	messageOffset += staticCount * 32
-	var recentBlockhash publicKey
-	copy(recentBlockhash[:], message[messageOffset:messageOffset+32])
-	messageOffset += 32
-	instructionCount, err := decodeShortVec(message, &messageOffset)
-	if err != nil || (instructionCount != 1 && instructionCount != 2 && instructionCount != 3) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned transaction has an unsupported instruction count")
-	}
-	type versionedInstruction struct {
-		program        publicKey
-		accountIndexes []byte
-		data           []byte
-	}
-	instructions := make([]versionedInstruction, instructionCount)
-	for index := range instructions {
-		if messageOffset+2 > len(message) {
-			return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("truncated versioned instruction")
-		}
-		programIndex := int(message[messageOffset])
-		messageOffset++
-		if programIndex >= staticCount {
-			return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned instruction program is not static")
-		}
-		accountCount, err := decodeShortVec(message, &messageOffset)
-		if err != nil {
-			return nil, nil, publicKey{}, publicKey{}, err
-		}
-		if messageOffset+accountCount > len(message) {
-			return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("truncated versioned instruction accounts")
-		}
-		accountIndexes := append([]byte(nil), message[messageOffset:messageOffset+accountCount]...)
-		messageOffset += accountCount
-		dataLength, err := decodeShortVec(message, &messageOffset)
-		if err != nil || messageOffset+dataLength > len(message) {
-			return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid versioned instruction data")
-		}
-		instructions[index] = versionedInstruction{program: keys[programIndex], accountIndexes: accountIndexes,
-			data: append([]byte(nil), message[messageOffset:messageOffset+dataLength]...)}
-		messageOffset += dataLength
-	}
-	loaded := 0
-	lookupCount, err := decodeShortVec(message, &messageOffset)
-	if err != nil {
-		return nil, nil, publicKey{}, publicKey{}, err
-	}
-	for index := 0; index < lookupCount; index++ {
-		if messageOffset+32 > len(message) {
-			return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("truncated versioned lookup table key")
-		}
-		messageOffset += 32
-		for _, width := range []string{"writable", "readonly"} {
-			count, err := decodeShortVec(message, &messageOffset)
-			if err != nil || messageOffset+count > len(message) {
-				return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("truncated versioned %s lookup indexes", width)
-			}
-			messageOffset += count
-			loaded += count
-		}
-	}
-	if messageOffset != len(message) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("trailing versioned transaction bytes")
-	}
-	indexSpace := staticCount + loaded
-	outer := instructions[len(instructions)-1]
-	squadsKey := publicKey(squads.ProgramID)
-	if outer.program != squadsKey || len(outer.accountIndexes) < 3 ||
-		int(outer.accountIndexes[0]) >= staticCount || keys[outer.accountIndexes[0]] == (publicKey{}) ||
-		int(outer.accountIndexes[1]) >= staticCount || keys[outer.accountIndexes[1]] != squadsKey ||
-		int(outer.accountIndexes[2]) >= staticCount || keys[outer.accountIndexes[2]] != signer ||
-		!bytes.HasPrefix(outer.data, squads.ExecuteTransactionSyncV2Discriminator[:]) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned transaction is not an exact Squads policy envelope")
-	}
-	for _, instruction := range instructions {
-		for _, accountIndex := range instruction.accountIndexes {
-			if int(accountIndex) >= indexSpace {
-				return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned instruction account index outside the loaded space")
-			}
-		}
-	}
-	if instructionCount == 2 {
-		heap := autoComputeBudgetHeapInstruction()
-		first := instructions[0]
-		if first.program != heap.program || len(first.accountIndexes) != 0 || !bytesEqual(first.data, heap.data) {
-			return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned AUTO transaction does not carry the exact reviewed heap frame first")
-		}
-	}
-	// The three-instruction AUTO swap envelope carries the exact heap frame and
-	// the exact compute-unit frame ahead of the already-pinned Squads outer, so
-	// no extra or reordered budget frame fits. Six-instruction AUTO Kamino
-	// messages stay unadmitted on this path.
-	if instructionCount == 3 &&
-		(!isCanonicalHeapFrame(instructions[0].program, len(instructions[0].accountIndexes), instructions[0].data) ||
-			!isCanonicalUnitLimitFrame(instructions[1].program, len(instructions[1].accountIndexes), instructions[1].data)) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("versioned AUTO swap transaction does not carry the exact reviewed heap and compute-unit frames first")
-	}
-	return signature, message, recentBlockhash, signer, nil
-}
-
-type decodedLegacyInstruction struct {
-	program        publicKey
-	accountIndexes []byte
-	accounts       []publicKey
-	data           []byte
-}
-
-func decodeLegacyInstruction(message []byte, offset int, keys []publicKey) (decodedLegacyInstruction, int, error) {
-	if offset+2 > len(message) {
-		return decodedLegacyInstruction{}, offset, fmt.Errorf("truncated legacy instruction")
-	}
-	programIndex := int(message[offset])
-	offset++
-	accountIndexCount := int(message[offset])
-	offset++
-	// A zero account list is admissible here only so the canonical AUTO heap
-	// frame can decode; every sequence gate below refuses a zero-account
-	// payload instruction (the Squads outer needs its three authority pins and
-	// the refresh comparisons match on account lists).
-	if programIndex >= len(keys) || offset+accountIndexCount > len(message) {
-		return decodedLegacyInstruction{}, offset, fmt.Errorf("invalid legacy instruction accounts")
-	}
-	accountIndexes := append([]byte(nil), message[offset:offset+accountIndexCount]...)
-	offset += accountIndexCount
-	for _, accountIndex := range accountIndexes {
-		if int(accountIndex) >= len(keys) {
-			return decodedLegacyInstruction{}, offset, fmt.Errorf("invalid legacy instruction account index")
-		}
-	}
-	accounts := make([]publicKey, len(accountIndexes))
-	for index, accountIndex := range accountIndexes {
-		accounts[index] = keys[accountIndex]
-	}
-	dataLength, err := decodeShortVec(message, &offset)
-	if err != nil || dataLength < 0 || offset+dataLength > len(message) {
-		return decodedLegacyInstruction{}, offset, fmt.Errorf("invalid legacy instruction data")
-	}
-	data := append([]byte(nil), message[offset:offset+dataLength]...)
-	offset += dataLength
-	return decodedLegacyInstruction{program: keys[programIndex], accountIndexes: accountIndexes, accounts: accounts, data: data}, offset, nil
-}
-
-// isExactKaminoTransaction admits the legacy PRIME/USDC route and every
-// registry lane whose Kamino legs carry no resource frame (all but AUTO, whose
-// eight-constraint policy needs the heap frame: isExactAutoKaminoTransaction).
-func isExactKaminoTransaction(instructions []decodedLegacyInstruction) bool {
-	lanes := []string{RouteID}
-	for _, lane := range earnLaneIDs(true) {
-		if !autoRoute(lane) {
-			lanes = append(lanes, lane)
-		}
-	}
-	return isExactKaminoTransactionForLanes(instructions, lanes)
-}
-
-// isExactAutoKaminoTransaction is the AUTO variant of the exact Kamino gate:
-// the identical refresh-plus-policy matching restricted to the candidate AUTO
-// route, applied only to the payload behind the canonical heap frame. A
-// stripped AUTO wire therefore still fails the installed four-instruction
-// gate, whose lane list never included the candidate route.
-func isExactAutoKaminoTransaction(instructions []decodedLegacyInstruction) bool {
-	lanes := []string{autoAUTOPYUSD.Lane}
-	if earnHeldLane(autoAUTOWYLDS.Lane) {
-		lanes = append(lanes, autoAUTOWYLDS.Lane)
-	}
-	return isExactKaminoTransactionForLanes(instructions, lanes)
-}
-
-func isExactKaminoTransactionForLanes(instructions []decodedLegacyInstruction, lanes []string) bool {
-	if len(instructions) != 4 {
-		return false
-	}
-	for _, lane := range lanes {
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			continue
-		}
-		for _, leg := range []kaminoPrimeUSDCLeg{kaminoLegDeposit, kaminoLegBorrow, kaminoLegRepay, kaminoLegWithdraw} {
-			var topologies [][]string
-			switch leg {
-			case kaminoLegDeposit:
-				// Initial deposit (flat obligation) and leveraged redeposit
-				// (both reserves); active registry lanes also admit the plan B3
-				// top-up deposit into a debt-free obligation (collateral only).
-				topologies = [][]string{{}, {route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
-				if earnActiveLane(lane) {
-					topologies = append(topologies, []string{route.Kamino.CollateralReserve})
-				}
-			case kaminoLegBorrow:
-				topologies = [][]string{{route.Kamino.CollateralReserve}}
-				// B2 leverage_up 1.5x -> 1.75x borrows beside existing debt
-				// (active registry lanes).
-				if earnActiveLane(lane) {
-					topologies = append(topologies, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve})
-				}
-			case kaminoLegWithdraw:
-				topologies = [][]string{
-					{route.Kamino.CollateralReserve},
-					{route.Kamino.CollateralReserve, route.Kamino.DebtReserve},
-				}
-			case kaminoLegRepay:
-				topologies = [][]string{{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
-			}
-			for _, topology := range topologies {
-				expected := kaminoPrimeUSDCRefreshInstructionsForRequest(leg, KaminoPrimeUSDCRequest{RouteLane: lane, ObligationReserves: topology})
-				matches := len(expected) == len(instructions)-1
-				for index := range expected {
-					if !matches || instructions[index].program != expected[index].program ||
-						!bytes.Equal(instructions[index].data, expected[index].data) ||
-						len(instructions[index].accounts) != len(expected[index].accounts) {
-						matches = false
-						break
-					}
-					for accountIndex, account := range instructions[index].accounts {
-						if account != expected[index].accounts[accountIndex].key {
-							matches = false
-							break
-						}
-					}
-				}
-				if matches && isExactKaminoSquadsInnerForRoute(instructions[3], leg, lane) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func isExactKaminoSquadsInnerForRoute(outer decodedLegacyInstruction, leg kaminoPrimeUSDCLeg, lane string) bool {
-	// Exact Borsh envelope emitted by wrapSquadsKaminoPolicy:
-	// discriminator | vault | signer count | policy kind | interaction kind |
-	// Some(constraint indexes) | vec len | index | sync tx | inner vault |
-	// compact payload len | compact payload. The index is the builder's and
-	// Squads checks it against the policy on chain; it is not re-derived here.
-	if lane == "" {
-		lane = RouteID
-	}
-	if len(outer.accounts) < 4 || len(outer.data) < 27 ||
-		!bytes.Equal(outer.data[:8], squads.ExecuteTransactionSyncV2Discriminator[:]) ||
-		!bytes.Equal(outer.data[8:13], []byte{0, 1, 1, 1, 1}) ||
-		readU32LE(outer.data[13:17]) != 1 ||
-		!bytes.Equal(outer.data[18:20], []byte{1, 0}) {
-		return false
-	}
-	compactLength := int(readU32LE(outer.data[20:24]))
-	if compactLength != len(outer.data)-24 {
-		return false
-	}
-	compact := outer.data[24:]
-	if len(compact) < 5 || compact[0] != 1 {
-		return false
-	}
-	transactionAccounts := outer.accounts[3:]
-	programIndex := int(compact[1])
-	accountCount := int(compact[2])
-	if programIndex >= len(transactionAccounts) || transactionAccounts[programIndex] != publicKey(kamino.ProgramID) ||
-		accountCount == 0 || 3+accountCount+2 > len(compact) {
-		return false
-	}
-	wantAccounts := kaminoLegMetasForRoute(leg, lane)
-	if len(wantAccounts) != accountCount {
-		return false
-	}
-	expectedTransactionAccounts := make([]accountMeta, 0, len(wantAccounts)+1)
-	for _, account := range wantAccounts {
-		pushOrMergeMeta(&expectedTransactionAccounts, account)
-	}
-	pushOrMergeMeta(&expectedTransactionAccounts, accountMeta{key: publicKey(kamino.ProgramID)})
-	if len(transactionAccounts) != len(expectedTransactionAccounts) {
-		return false
-	}
-	for index, account := range transactionAccounts {
-		if account != expectedTransactionAccounts[index].key {
-			return false
-		}
-	}
-	for index, compactIndex := range compact[3 : 3+accountCount] {
-		if int(compactIndex) >= len(transactionAccounts) || transactionAccounts[compactIndex] != wantAccounts[index].key {
-			return false
-		}
-	}
-	dataLengthOffset := 3 + accountCount
-	dataLength := int(compact[dataLengthOffset]) | int(compact[dataLengthOffset+1])<<8
-	data := compact[dataLengthOffset+2:]
-	return dataLength == len(data) && len(data) == 16 &&
-		bytes.Equal(data[:8], kaminoLegDiscriminator(leg)) &&
-		readU64(data[8:]) > 0 && readU64(data[8:]) <= bridgeCapRaw
-}
-
-func kaminoLegMetasForRoute(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
-	// Registry lanes use their own route-resolved metas, as the compiler emits
-	// them through kaminoPacketForRoute; the legacy route keeps the installed
-	// PRIME graph.
-	route, err := runtimeRoute(lane)
-	if lane == RouteID || err != nil || !earnHeldLane(lane) {
-		route, _ = runtimeRoute(RouteID)
-	}
-	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
-	switch leg {
-	case kaminoLegDeposit:
-		return deposit
-	case kaminoLegBorrow:
-		return borrow
-	case kaminoLegRepay:
-		return repay
-	case kaminoLegWithdraw:
-		return withdraw
-	default:
-		return nil
-	}
 }
 
 func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
@@ -1056,10 +537,6 @@ func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
 	default:
 		return nil
 	}
-}
-
-func readU32LE(value []byte) uint32 {
-	return uint32(value[0]) | uint32(value[1])<<8 | uint32(value[2])<<16 | uint32(value[3])<<24
 }
 
 func decodeShortVec(data []byte, offset *int) (int, error) {

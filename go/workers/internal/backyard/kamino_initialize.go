@@ -40,7 +40,7 @@ func CompileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	message, err := compileLegacyMessage(mustKey(bridgeDelegate), blockhash, []compiledInstruction{outer})
+	message, err := compileV1Message(mustKey(bridgeDelegate), blockhash, []compiledInstruction{outer}, executionBudget(r.RouteLane, 1))
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 	// during execute as well as during create, so the AUTO initializer leg goes
 	// through the closed resource wrapper; the public compiler above keeps the
 	// exact installed selector-lane bytes.
-	message, err := compileAutoResourceLegacyMessage(mustKey(bridgeDelegate), blockhash, outer)
+	message, err := compileV1Message(mustKey(bridgeDelegate), blockhash, []compiledInstruction{outer}, executionBudget(r.RouteLane, 1))
 	if err != nil {
 		return nil, err
 	}

@@ -46,9 +46,8 @@ func signedBindFixture(t *testing.T) (phase3OperationAuthorization, PersistedOpe
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
-	operation := PersistedOperation{Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: request.LastValidBlockHeight}
+	wire := signedWire(message, make([]byte, 64))
+	operation := PersistedOperation{Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wireSig(wire)), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: request.LastValidBlockHeight}
 	return phase3OperationAuthorization{IntentSHA256: digest, SignedWireSHA256: operation.SignedWireSHA256, BuildInput: input}, operation
 }
 
@@ -290,9 +289,8 @@ func TestBindAndFinalSendFenceAgainstDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
-	signed := PersistedOperation{Operation: Operation{ID: op, RouteKey: key, Decision: decision}, Status: Signed, ExpectedEffects: evidence, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10}
+	wire := signedWire(message, make([]byte, 64))
+	signed := PersistedOperation{Operation: Operation{ID: op, RouteKey: key, Decision: decision}, Status: Signed, ExpectedEffects: evidence, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wireSig(wire)), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10}
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2,signed_wire_sha256=$3,transaction_signature=$4,recent_blockhash=$5,last_valid_block_height=10 WHERE operation_id=$1`, op, wire, signed.SignedWireSHA256, signed.TransactionSignature, signed.RecentBlockhash); err != nil {
 		t.Fatal(err)
 	}

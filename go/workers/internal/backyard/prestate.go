@@ -20,8 +20,7 @@ func validateBuildPrestate(ctx context.Context, rpc *chain.Client, view *View, r
 // against, at build and again at send: the effect graph matches the request,
 // the initializer's obligation is still absent, a full payoff still covers the
 // debt, a borrow still fits capacity and the loop LTV, a repayment release and
-// the leverage, entry and funding swaps still see their custody, the lookup
-// tables are unchanged, and a Hastra conversion's quoted stake price is still
+// the leverage, entry and funding swaps still see their custody, and a Hastra conversion's quoted stake price is still
 // the program's and lands fresh. It returns the view slot of those reads.
 func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.Client, view *View, request any, effects ExpectedEffects) (int64, error) {
 	if _, err := m.measureExecutableDebit(request, effects); err != nil {
@@ -86,9 +85,6 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 				return 0, err
 			}
 			slot = max(slot, bound.ObservedSlot)
-		}
-		if err := revalidateJupiterLookupTables(ctx, rpc, r, slot); err != nil {
-			return 0, err
 		}
 	}
 	if r, ok := request.(HastraConversionRequest); ok {

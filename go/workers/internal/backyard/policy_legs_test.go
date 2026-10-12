@@ -8,7 +8,6 @@ import (
 	"os"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -39,7 +38,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 	blockhash := LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}
 	type row struct {
 		name  string
-		build func(t *testing.T) ([]byte, []LookupTableSnapshot)
+		build func(t *testing.T) []byte
 	}
 	var rows []row
 	for _, lane := range []string{autoAUTOPYUSD.Lane, PhaseOneLaneID, SelectedRouteID, onreONycUSDC, ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, RouteID} {
@@ -52,7 +51,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 			if leg == kaminoLegRepay || leg == kaminoLegWithdraw {
 				action = delever
 			}
-			rows = append(rows, row{fmt.Sprintf("kamino/%s/%s", lane, leg), func(t *testing.T) ([]byte, []LookupTableSnapshot) {
+			rows = append(rows, row{fmt.Sprintf("kamino/%s/%s", lane, leg), func(t *testing.T) []byte {
 				request, err := manifest.kaminoPacketForRoute(policies, action, leg, 1_000_000, blockhash, lane)
 				if err != nil {
 					t.Fatal(err)
@@ -61,12 +60,12 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				return message, nil
+				return message
 			}})
 		}
 	}
 	for _, lane := range []string{autoAUTOPYUSD.Lane, PhaseOneLaneID, SelectedRouteID, onreONycUSDC} {
-		rows = append(rows, row{"initialize/" + lane, func(t *testing.T) ([]byte, []LookupTableSnapshot) {
+		rows = append(rows, row{"initialize/" + lane, func(t *testing.T) []byte {
 			r, err := manifest.initializationRequest(policies, lane, blockhash, 17_637_760, 5000)
 			if err != nil {
 				t.Fatal(err)
@@ -75,11 +74,11 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			return message, nil
+			return message
 		}})
 	}
 	for _, action := range []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV} {
-		rows = append(rows, row{"bridge/" + string(action), func(t *testing.T) ([]byte, []LookupTableSnapshot) {
+		rows = append(rows, row{"bridge/" + string(action), func(t *testing.T) []byte {
 			amount := uint64(1_000_000)
 			if action == ReportNAV {
 				amount = 0
@@ -88,7 +87,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			return message, nil
+			return message
 		}})
 	}
 	swaps := map[string][]Action{autoAUTOPYUSD.Lane: {SwapStableToCollateralStep, SwapDebtToCollateralStep, SwapCollateralToStableStep, SwapCollateralToDebtStep, SwapDebtToUSDCStep},
@@ -101,7 +100,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 	}
 	for lane, actions := range swaps {
 		for _, action := range actions {
-			rows = append(rows, row{"swap/" + lane + "/" + string(action), func(t *testing.T) ([]byte, []LookupTableSnapshot) {
+			rows = append(rows, row{"swap/" + lane + "/" + string(action), func(t *testing.T) []byte {
 				return compileTestSwap(t, fixtureSwapRequest(t, lane, action))
 			}})
 		}
@@ -109,8 +108,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
-			message, tables := r.build(t)
-			execution := decodeTestExecution(t, message, tables)
+			execution := decodeTestExecution(t, r.build(t))
 			key, ok := byAccount[execution.Policy]
 			if !ok {
 				t.Fatalf("executes through %s, which is no installed literal", execution.Policy)
@@ -157,33 +155,14 @@ func vaultObligation(solana.PublicKey) *chain.Account {
 	return &chain.Account{Owner: kamino.ProgramID, Data: data}
 }
 
-// compileTestSwap is the swap's message as production sends it: a legacy
-// packet, or, when that does not fit and the lane takes the swap API's lookup
-// tables, a v0 packet through them, standing in here for the chain's tables by
-// holding the swap's own accounts. A swap that fits neither fails the test.
-func compileTestSwap(t *testing.T, request JupiterSwapRequest) ([]byte, []LookupTableSnapshot) {
+// compileTestSwap is the swap's message as production sends it.
+func compileTestSwap(t *testing.T, request JupiterSwapRequest) []byte {
 	t.Helper()
 	message, err := CompileJupiterMessage(request)
-	if err == nil {
-		return message, request.LookupTables
-	}
-	if !strings.Contains(err.Error(), "does not fit") || len(request.Instruction.LookupTableAddresses) == 0 {
+	if err != nil {
 		t.Fatalf("%s %s does not compile as production sends it: %v", request.RouteLane, request.Action, err)
 	}
-	var accounts []string
-	for _, account := range request.Instruction.Accounts {
-		accounts = append(accounts, account.Pubkey)
-	}
-	for _, address := range request.Instruction.LookupTableAddresses {
-		table := autoFixtureLookupTable(t, accounts)
-		table.Address, accounts = address, nil
-		request.LookupTables = append(request.LookupTables, table)
-	}
-	message, err = CompileJupiterMessage(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return message, request.LookupTables
+	return message
 }
 
 // jupiterV2FixturePath holds a live V2 /swap-instructions answer for the
@@ -275,7 +254,11 @@ func fixtureSwapRequest(t *testing.T, lane string, action Action) JupiterSwapReq
 	if err != nil {
 		t.Fatal(err)
 	}
-	quote, instruction, err := freshSwapForRoute(context.Background(), client, lane, action, amount)
+	maxAccounts, err := jupiterSwapMaxAccounts(lane, action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote, instruction, err := freshSwapForRoute(context.Background(), client, lane, action, amount, maxAccounts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,11 +279,11 @@ func fixtureSwapRequest(t *testing.T, lane string, action Action) JupiterSwapReq
 }
 
 // decodeTestExecution reads a compiled message back into its one Squads
-// policy execution, resolving lookup tables.
-func decodeTestExecution(t *testing.T, message []byte, tables []LookupTableSnapshot) squads.ExecuteSync {
+// policy execution.
+func decodeTestExecution(t *testing.T, message []byte) squads.ExecuteSync {
 	t.Helper()
 	var found []squads.ExecuteSync
-	for _, ix := range decodeTestInstructions(t, message, tables) {
+	for _, ix := range decodeTestInstructions(t, message) {
 		if ix.ProgramID != squads.ProgramID {
 			continue
 		}
@@ -317,31 +300,12 @@ func decodeTestExecution(t *testing.T, message []byte, tables []LookupTableSnaps
 }
 
 // decodeTestInstructions reads a compiled message back into its top-level
-// instructions, resolving lookup tables.
-func decodeTestInstructions(t *testing.T, message []byte, tables []LookupTableSnapshot) []squads.Instruction {
+// instructions, as the cluster decodes it.
+func decodeTestInstructions(t *testing.T, message []byte) []squads.Instruction {
 	t.Helper()
-	wire := append(append([]byte{1}, make([]byte, 64)...), message...)
-	tx, err := solana.TransactionFromBytes(wire)
+	tx, err := solana.TransactionFromBytes(signedWire(message, make([]byte, 64)))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(tables) > 0 {
-		resolved := map[solana.PublicKey]solana.PublicKeySlice{}
-		for _, snapshot := range tables {
-			table, err := decodeMessageLookupTable(snapshot)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, address := range table.addresses {
-				resolved[solana.PublicKey(table.key)] = append(resolved[solana.PublicKey(table.key)], solana.PublicKey(address))
-			}
-		}
-		if err := tx.Message.SetAddressTables(resolved); err != nil {
-			t.Fatal(err)
-		}
-		if err := tx.Message.ResolveLookups(); err != nil {
-			t.Fatal(err)
-		}
 	}
 	var out []squads.Instruction
 	for _, compiled := range tx.Message.Instructions {

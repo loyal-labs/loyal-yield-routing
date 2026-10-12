@@ -103,8 +103,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wire := append(make([]byte, 65), message...)
-		wire[0] = 1
+		wire := signedWire(message, make([]byte, 64))
 		offset := 3
 		if message[0] == 0x80 {
 			offset++
@@ -117,9 +116,6 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 		}
 		for _, a := range e.Request.Instruction.Accounts {
 			addresses[a.Pubkey] = true
-		}
-		for _, table := range e.Request.LookupTables {
-			addresses[table.Address] = true
 		}
 		bindingEdges, bindingLeg, err := catalogEdge(action, ethenaUSDePYUSD.Lane)
 		if err != nil {
@@ -186,11 +182,11 @@ func TestPhase3JupiterProbeMatchesProduction(t *testing.T) {
 	for i, action := range []Action{SwapStableToCollateralStep, SwapCollateralToDebtStep} {
 		step := plan.Steps[i]
 		wire, err := base64.StdEncoding.Strict().DecodeString(step.WireBase64)
-		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != step.WireSHA256 || step.Request.RouteLane != plan.Lane || step.Request.Action != action {
+		if err != nil || len(wire) <= 65 || wire[0] != 0x81 || !allZero(wireSig(wire)) || sha256Bytes(wire) != step.WireSHA256 || step.Request.RouteLane != plan.Lane || step.Request.Action != action {
 			t.Fatal("probe identity or unsigned wire drift")
 		}
 		message, err := CompileJupiterMessage(step.Request)
-		if err != nil || !bytes.Equal(message, wire[65:]) {
+		if err != nil || !bytes.Equal(message, wireMsg(wire)) {
 			t.Fatal("probe does not match current production compiler", err)
 		}
 	}

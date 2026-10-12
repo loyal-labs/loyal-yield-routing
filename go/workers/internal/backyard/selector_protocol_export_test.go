@@ -80,8 +80,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 		for i := 0; i < int(message[3]); i++ {
 			addresses[encodeBase58(message[4+32*i:4+32*(i+1)])] = true
 		}
-		wire := append(make([]byte, 65), message...)
-		wire[0] = 1
+		wire := signedWire(message, make([]byte, 64))
 		rows = append(rows, map[string]any{"leg": step.name, "amount": step.amount, "request": r, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)})
 		key, _ := kaminoPolicyLeg(route, step.leg)
 		policies[r.Policy] = key.String()
@@ -170,8 +169,7 @@ func TestExportSelectorProtocolRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
+	wire := signedWire(message, make([]byte, 64))
 	out, err := json.MarshalIndent(map[string]any{"schema": "selector-kamino-release-probe/v1", "lane": route.Lane, "sourceResultSHA256": sha256Bytes(raw), "bound": bound, "request": r, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -203,11 +201,11 @@ func TestSelectorProtocolMessagesMatchCurrentCompiler(t *testing.T) {
 	verify := func(r record) {
 		t.Helper()
 		wire, err := base64.StdEncoding.Strict().DecodeString(r.WireBase64)
-		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != r.WireSHA256 {
+		if err != nil || len(wire) <= 65 || wire[0] != 0x81 || !allZero(wireSig(wire)) || sha256Bytes(wire) != r.WireSHA256 {
 			t.Fatal("invalid retained unsigned wire")
 		}
 		message, err := CompileKaminoMessage(r.Request)
-		if err != nil || !bytes.Equal(wire[65:], message) {
+		if err != nil || !bytes.Equal(wireMsg(wire), message) {
 			t.Fatal("retained wire differs from current compiler", err)
 		}
 	}
@@ -285,8 +283,7 @@ func TestExportSelectorProtocolPartialRepayment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
+	wire := signedWire(message, make([]byte, 64))
 	output, err := json.MarshalIndent(map[string]any{"schema": "selector-kamino-partial-probe/v1", "sourceResultSHA256": sha256Bytes(raw), "request": r, "amountRaw": amount, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)}, "", "  ")
 	if err != nil {
 		t.Fatal(err)

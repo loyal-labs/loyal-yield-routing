@@ -109,9 +109,9 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 // persistedWireIntact checks the row's wire is the bytes it hashed and signs
 // the signature it names, so landing and expiry are decided for these bytes.
 func persistedWireIntact(operation PersistedOperation) bool {
-	wire := operation.SignedWire
-	return len(wire) > 65 && sha256Bytes(wire) == operation.SignedWireSHA256 &&
-		operation.TransactionSignature == encodeBase58(wire[1:65]) &&
+	_, signature, err := splitSignedWire(operation.SignedWire)
+	return err == nil && sha256Bytes(operation.SignedWire) == operation.SignedWireSHA256 &&
+		operation.TransactionSignature == encodeBase58(signature) &&
 		operation.RecentBlockhash != "" && operation.LastValidBlockHeight > 0
 }
 

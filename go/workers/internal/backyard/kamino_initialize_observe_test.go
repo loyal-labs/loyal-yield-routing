@@ -112,13 +112,12 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append([]byte{1}, bytes.Repeat([]byte{9}, 64)...)
-	wire = append(wire, message...)
+	wire := signedWire(message, bytes.Repeat([]byte{9}, 64))
 	digest, err := Phase3IntentDigest(r, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	op := PersistedOperation{Operation: Operation{Decision: Decision{Action: InitializeKaminoObligation, StrategyKey: r.RouteLane, Reason: "multiply_obligation_missing", IdempotencyKey: "initializer-controlled"}}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
+	op := PersistedOperation{Operation: Operation{Decision: Decision{Action: InitializeKaminoObligation, StrategyKey: r.RouteLane, Reason: "multiply_obligation_missing", IdempotencyKey: "initializer-controlled"}}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wireSig(wire)), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 	auth := phase3OperationAuthorization{IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
 	rpc := newFakeChain(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("the prestate read RPC")

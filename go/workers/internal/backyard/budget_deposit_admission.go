@@ -40,8 +40,7 @@ func simulatePhase3EntryProjection(ctx context.Context, c *chain.Client, message
 	if err != nil {
 		return projection, err
 	}
-	wire := append([]byte{1}, make([]byte, 64)...)
-	wire = append(wire, message...)
+	wire := signedWire(message, make([]byte, 64))
 	minimum := uint64(minimumSlot)
 	simulated, err := c.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, MinContextSlot: &minimum, Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: keys}})
 	var failure *chain.SimulationError

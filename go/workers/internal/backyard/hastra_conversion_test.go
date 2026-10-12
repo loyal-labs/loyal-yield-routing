@@ -155,11 +155,11 @@ func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wire := append(append(encodeShortVec(1), signature[:]...), message...)
-			if _, _, _, _, err := decodeExactLegacyWire(wire); err != nil {
+			wire := signedWire(message, signature[:])
+			if _, _, _, _, err := decodeExactWire(wire); err != nil {
 				t.Fatal("the exact decoder refuses the Hastra wire:", err)
 			}
-			execution := decodeTestExecution(t, message, nil)
+			execution := decodeTestExecution(t, message)
 			if execution.Policy.String() != policy || len(execution.Inner) != 1 || fmt.Sprint(execution.ConstraintIndexes) != fmt.Sprint([]byte{leg}) {
 				t.Fatalf("executes %+v, want one instruction at leg %d of %s", execution, leg, policy)
 			}

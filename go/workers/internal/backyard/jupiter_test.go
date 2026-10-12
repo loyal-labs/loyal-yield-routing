@@ -99,7 +99,7 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 		if err != nil || !bytes.Equal(unsigned, signed.message) {
 			t.Fatalf("unsigned Jupiter fee message differs: %v", err)
 		}
-		if len(signed.signedWire) > solanaPacketBytes || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:65]) {
+		if len(signed.signedWire) > maxTransactionBytes || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, wireSig(signed.signedWire)) {
 			t.Fatalf("%s wire is not a signed bounded packet", test.action)
 		}
 		result, err := signed.BuildResult(9)
@@ -139,7 +139,7 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 		var response string
 		switch r.URL.Path {
 		case "/quote":
-			if r.URL.Query().Get("maxAccounts") != "16" || r.URL.Query().Get("slippageBps") != "50" || r.URL.Query().Get("instructionVersion") != "V2" {
+			if r.URL.Query().Get("maxAccounts") != "32" || r.URL.Query().Get("slippageBps") != "50" || r.URL.Query().Get("instructionVersion") != "V2" {
 				t.Error("quote bounds drifted")
 			}
 			response = `{"inputMint":"` + bridgeUSDC + `","outputMint":"` + kaminoPrimeMint + `","inAmount":"100","outAmount":"99","otherAmountThreshold":"98","swapMode":"ExactIn","slippageBps":50,"platformFee":null,"routePlan":[{}]}`
@@ -167,11 +167,11 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := freshSwapForRoute(context.Background(), client, RouteID, SwapUSDCToPrimeStep, 100); err != nil {
+	if _, _, err := freshSwapForRoute(context.Background(), client, RouteID, SwapUSDCToPrimeStep, 100, 32); err != nil {
 		t.Fatal(err)
 	}
 	companion = true
-	if _, _, err := freshSwapForRoute(context.Background(), client, RouteID, SwapUSDCToPrimeStep, 100); err == nil {
+	if _, _, err := freshSwapForRoute(context.Background(), client, RouteID, SwapUSDCToPrimeStep, 100, 32); err == nil {
 		t.Fatal("accepted a setup instruction outside the policy contract")
 	}
 }

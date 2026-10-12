@@ -73,8 +73,7 @@ func TestPhase3BorrowFeesMatchProduction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
+	wire := signedWire(message, make([]byte, 64))
 	for i, probe := range result.BorrowFeeProbes {
 		if probe.OverrideAccount != route.Kamino.DebtReserve || probe.OverrideOffset != kaminoReserveConfigOffset+40 || probe.WireSHA256 != sha256Bytes(wire) || probe.WireSHA256 != plan.LendingPrelude.Steps[1].WireSHA256 || probe.FeeRaw != []uint64{1, 4}[i] {
 			t.Fatal("fee probe changed the intended wire or override")

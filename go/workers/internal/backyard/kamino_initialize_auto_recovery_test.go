@@ -43,15 +43,15 @@ func newAutoInitializerRecoveryFixture(t *testing.T) autoInitializerRecoveryFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	offset := 3
-	count, err := decodeShortVec(message, &offset)
+	keys, err := messageKeys(message)
+	count := len(keys)
 	if err != nil || count < 3 {
 		t.Fatal("initializer message accounts", err)
 	}
 	pre, post := make([]uint64, count), make([]uint64, count)
 	for i := 0; i < count; i++ {
 		pre[i], post[i] = 1, 1
-		switch keyString(message[offset+i*32 : offset+(i+1)*32]) {
+		switch encodeBase58(keys[i][:]) {
 		case bridgeDelegate:
 			pre[i], post[i] = 1_000_000, 995_000
 		case bridgeVault:
@@ -70,10 +70,9 @@ func newAutoInitializerRecoveryFixture(t *testing.T) autoInitializerRecoveryFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append([]byte{1}, bytes.Repeat([]byte{9}, 64)...)
-	wire = append(wire, message...)
+	wire := signedWire(message, bytes.Repeat([]byte{9}, 64))
 	return autoInitializerRecoveryFixture{manifest: manifest, request: r, effects: effects, raw: raw, message: message, wire: wire,
-		receipt: ConfirmedTransactionEvidence{Finalized: true, Signature: encodeBase58(wire[1:65]), Slot: 77,
+		receipt: ConfirmedTransactionEvidence{Finalized: true, Signature: encodeBase58(wireSig(wire)), Slot: 77,
 			Initialization: &KaminoInitializationReceipt{MessageSHA256: sha256Bytes(message), SignedWireSHA256: sha256Bytes(wire),
 				FeeLamports: 5000, PreBalances: pre, PostBalances: post, AccountReadSlot: 78, Obligation: obligation}}}
 }

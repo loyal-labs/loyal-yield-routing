@@ -66,11 +66,6 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 		}
 		accounts = append(accounts, a)
 	}
-	_, tables := basicJupiterRequest(t, route.Lane, symbol+"->USDC")
-	for _, table := range tables {
-		binary.LittleEndian.PutUint64(table.Data[12:20], 41)
-		accounts = append(accounts, ConfirmedAccount{Address: table.Address, Owner: table.Owner, Lamports: table.Lamports, Data: table.Data})
-	}
 	rpc := budgetBuildRPCWithAccounts(t, 5000, 42, accounts)
 	raw, err := os.ReadFile(jupiterV2FixturePath)
 	if err != nil {
@@ -104,7 +99,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 			}
 			for _, row := range headers.Rows {
 				if row.Key == key {
-					instruction = JupiterSwapInstruction{ProgramID: row.Instruction.ProgramID, Data: row.Instruction.DataBase64, Accounts: row.Instruction.Accounts, LookupTableAddresses: row.LookupTables}
+					instruction = JupiterSwapInstruction{ProgramID: row.Instruction.ProgramID, Data: row.Instruction.DataBase64, Accounts: row.Instruction.Accounts}
 				}
 			}
 			wire, err := base64.StdEncoding.DecodeString(instruction.Data)
@@ -117,7 +112,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 			instruction.Data = base64.StdEncoding.EncodeToString(wire)
 			payload = jupiter.Quote{InputMint: q.Get("inputMint"), OutputMint: q.Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 9950 / 10000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else {
-			payload = map[string]any{"swapInstruction": instruction, "addressLookupTableAddresses": instruction.LookupTableAddresses}
+			payload = map[string]any{"swapInstruction": instruction}
 		}
 		data, _ := json.Marshal(payload)
 		return response(string(data)), nil

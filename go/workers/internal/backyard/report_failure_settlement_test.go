@@ -21,8 +21,8 @@ func failureSettlementFixture(t *testing.T) (finalizedFailureReceipt, []byte, pu
 	if err != nil {
 		t.Fatal(err)
 	}
-	offset := 3
-	count, err := decodeShortVec(signed.message, &offset)
+	keys, err := messageKeys(signed.message)
+	count := len(keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func failureSettlementFixture(t *testing.T) (finalizedFailureReceipt, []byte, pu
 	for _, effect := range effects.Accounts {
 		index := -1
 		for i := 0; i < count; i++ {
-			if keyString(signed.message[offset+i*32:offset+(i+1)*32]) == effect.Address {
+			if encodeBase58(keys[i][:]) == effect.Address {
 				index = i
 				break
 			}
@@ -101,13 +101,13 @@ func TestFinalizedReportFailureRequiresCompleteExactRollbackReceipt(t *testing.T
 			var r finalizedFailureReceipt
 			_ = json.Unmarshal(raw, &r)
 			tc.mutate(&r)
-			err := validateFinalizedFailureReceipt(r, wire, encodeBase58(wire[1:65]), sha256Bytes(wire), sha256Bytes(wire[65:]), delegate, effects)
+			err := validateFinalizedFailureReceipt(r, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), delegate, effects)
 			if (err == nil) != (tc.name == "valid") {
 				t.Fatal("incorrect proof result", err)
 			}
 		})
 	}
-	if err := validateFinalizedFailureReceipt(base, wire, encodeBase58(wire[1:65]), sha256Bytes(wire), sha256Bytes(wire[65:]), mustKey(bridgeDelegate), effects); err == nil {
+	if err := validateFinalizedFailureReceipt(base, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), mustKey(bridgeDelegate), effects); err == nil {
 		t.Fatal("wrong signer admitted")
 	}
 }

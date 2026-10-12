@@ -72,7 +72,7 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 		binary.LittleEndian.PutUint64(r.Data[8:], r.AmountRaw)
 		message, err := CompileKaminoMessage(r)
 		wire, decodeErr := base64.StdEncoding.Strict().DecodeString(probe.WireBase64)
-		if err != nil || decodeErr != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != probe.WireSHA256 || !bytes.Equal(message, wire[65:]) {
+		if err != nil || decodeErr != nil || len(wire) <= 65 || wire[0] != 0x81 || !allZero(wireSig(wire)) || sha256Bytes(wire) != probe.WireSHA256 || !bytes.Equal(message, wireMsg(wire)) {
 			t.Fatal("deposit wire differs from Go", err, decodeErr)
 		}
 		before, after := decode(probe.Before), decode(probe.After)

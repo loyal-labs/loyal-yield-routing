@@ -35,11 +35,6 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 		data[108] = 1
 		extra = append(extra, ConfirmedAccount{Address: bridgeSquadsATA, Owner: classicTokenProgram, Lamports: 1, Data: data})
 	}
-	for _, table := range retainedJupiterLookups(t) {
-		// Controlled clock fixture only: preserve every retained lookup key.
-		binary.LittleEndian.PutUint64(table.Data[12:20], 41)
-		extra = append(extra, ConfirmedAccount{Address: table.Address, Owner: table.Owner, Lamports: table.Lamports, Data: table.Data})
-	}
 	o, _, _, m, rpc, _, accounts := payoffAdmissionFixture(t, 20_000, extra...)
 	route := ethenaUSDePYUSD
 	o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.DebtIdleRaw = 20_000_000, 20_000_000, 1_000

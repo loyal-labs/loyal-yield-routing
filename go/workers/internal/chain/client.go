@@ -170,7 +170,8 @@ func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType, m
 
 // MessageFee is what the cluster charges for the compiled message: 5000 lamports
 // per signature, precompile signatures included, plus ceil(unit price × unit
-// limit / 1e6) from its ComputeBudget instructions.
+// limit / 1e6) from its ComputeBudget instructions, or a v1 message's
+// config priority fee.
 func MessageFee(message []byte) (uint64, error) {
 	var m solana.Message
 	decoder := bin.NewBinDecoder(message)
@@ -178,6 +179,15 @@ func MessageFee(message []byte) (uint64, error) {
 		return 0, fmt.Errorf("message fee: invalid compiled message: %v", err)
 	}
 	signatures, limit, price, limited := uint64(m.Header.NumRequiredSignatures), uint64(0), uint64(0), false
+	if m.GetVersion() == solana.MessageVersionV1 {
+		// A v1 message carries its priority fee as a lamports total in its
+		// config; its ComputeBudget instructions are no-ops.
+		fee := signatures * 5000
+		if p := m.TransactionConfig.PriorityFee; p != nil {
+			fee += *p
+		}
+		return fee, nil
+	}
 	for _, ix := range m.Instructions {
 		if int(ix.ProgramIDIndex) >= len(m.AccountKeys) || len(ix.Data) == 0 {
 			continue
@@ -483,7 +493,7 @@ func atLeast(slot uint64) *uint64 {
 // FinalizedBlockHeightAt is the block height of the finalized block at slot.
 // ErrNotFound means the cluster has no finalized block there.
 func (c *Client) FinalizedBlockHeightAt(ctx context.Context, slot uint64) (uint64, error) {
-	rewards, version := false, uint64(0)
+	rewards, version := false, uint64(anyVersion)
 	out, err := c.rpc.GetBlockWithOpts(ctx, slot, &rpc.GetBlockOpts{TransactionDetails: rpc.TransactionDetailsNone, Rewards: &rewards, Commitment: rpc.CommitmentFinalized, MaxSupportedTransactionVersion: &version})
 	if errors.Is(err, rpc.ErrNotConfirmed) {
 		return 0, ErrNotFound

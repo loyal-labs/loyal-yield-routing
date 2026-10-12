@@ -2,9 +2,7 @@ package backyard
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -14,28 +12,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
-
-// stepLookupTablesPath holds the mainnet contents of the lookup tables a step
-// can address: the route valuation table and every table the Jupiter fixture
-// (jupiterV2FixturePath) names.
-const stepLookupTablesPath = "testdata/step-lookup-tables.json"
-
-func stepTestTables(t testing.TB) map[string]LookupTableSnapshot {
-	t.Helper()
-	var fixture struct{ Tables []LookupTableSnapshot }
-	raw, err := os.ReadFile(stepLookupTablesPath)
-	if err != nil || json.Unmarshal(raw, &fixture) != nil {
-		t.Fatal("step lookup table fixture unavailable", err)
-	}
-	out := map[string]LookupTableSnapshot{}
-	for _, table := range fixture.Tables {
-		if _, err := decodeMessageLookupTable(table); err != nil {
-			t.Fatalf("%s: %v", table.Address, err)
-		}
-		out[table.Address] = table
-	}
-	return out
-}
 
 // stepTestPolicies is the captured policy set, with every literal the capture
 // predates (the wYLDS lane's, Hastra's) at a stand-in account, and each
@@ -57,91 +33,12 @@ func stepTestPolicies(t testing.TB) (installedPolicies, map[solana.PublicKey]pol
 	return policies, byAccount, literals
 }
 
-// A step variant: the Jupiter route as the fixture captured it (0), or a
-// route of maxAccounts venue accounts behind the fixture's twelve fixed
-// shared_accounts_route_v2 accounts, held by a Jupiter table of their own.
-var stepRouteVariants = []int{0, 16, 32}
-
-// stepTestConversion is the step's conversion on lane and the tables it
-// brings: Hastra's at about the mainnet price, or the fixture's Jupiter swap.
-func stepTestConversion(t *testing.T, policies installedPolicies, lane string, up bool, maxAccounts int) (any, []LookupTableSnapshot) {
-	t.Helper()
-	tables := stepTestTables(t)
-	laneTables := []LookupTableSnapshot{tables[routeValuationLookupTable]}
-	action := SwapCollateralToDebtStep
-	if up {
-		action = SwapDebtToCollateralStep
-	}
-	if leg, ok := hastraConversionLeg(action, lane); ok {
-		account, err := policies.account(policyKey{hastra: hastraName()})
-		if err != nil {
-			t.Fatal(err)
-		}
-		price := hastra.StakePrice{Price: hastraTestPrice, Scale: 1_000_000_000_000_000_000, Timestamp: kaminoFixtureUnix}
-		r := HastraConversionRequest{Action: action, AmountRaw: 1_000_000, Price: price.Price.String(), PriceScale: price.Scale, PriceTimestamp: price.Timestamp,
-			Policy: account, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99, RouteLane: lane}
-		if r.OutputRaw, err = hastraOutput(leg, price, r.AmountRaw); err != nil {
-			t.Fatal(err)
-		}
-		return r, laneTables
-	}
-	r := fixtureSwapRequest(t, lane, action)
-	for _, address := range r.Instruction.LookupTableAddresses {
-		table, ok := tables[address]
-		if !ok {
-			t.Fatalf("no fixture contents for Jupiter table %s", address)
-		}
-		laneTables = append(laneTables, table)
-	}
-	if maxAccounts > 0 {
-		head := r.Instruction.Accounts[:12]
-		r.Instruction.Accounts = append([]jupiter.AccountMeta{}, head...)
-		var venue []string
-		for i := range maxAccounts {
-			key := sha256.Sum256(fmt.Appendf(nil, "venue %s %d", lane, i))
-			address := encodeBase58(key[:])
-			venue = append(venue, address)
-			r.Instruction.Accounts = append(r.Instruction.Accounts, jupiter.AccountMeta{Pubkey: address, IsWritable: i%2 == 0})
-		}
-		synthetic := autoFixtureLookupTable(t, venue)
-		synthetic.Address = encodeBase58(fmt.Appendf(nil, "%032d", maxAccounts))
-		laneTables = append(laneTables, synthetic)
-	}
-	return r, laneTables
-}
-
-// stepStaticTable is a stand-in lookup table holding every account step
-// carries as a full key that a table may hold: all but the fee payer and the
-// top-level programs. It measures a step addressed through one Backyard-owned
-// table of its lane's accounts, which does not exist on chain.
-func stepStaticTable(t *testing.T, step stepMessage, tables []LookupTableSnapshot) LookupTableSnapshot {
-	t.Helper()
-	invoked := map[solana.PublicKey]bool{}
-	for _, ix := range decodeTestInstructions(t, step.Message, tables) {
-		invoked[ix.ProgramID] = true
-	}
-	offset := 4
-	count, err := decodeShortVec(step.Message, &offset)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var keys []string
-	for i := 1; i < count; i++ { // the fee payer signs, so it stays static
-		key := solana.PublicKeyFromBytes(step.Message[offset+32*i : offset+32*i+32])
-		if !invoked[key] {
-			keys = append(keys, key.String())
-		}
-	}
-	table := autoFixtureLookupTable(t, keys)
-	table.Address = encodeBase58([]byte("backyard step table stand-in 32b"))
-	return table
-}
-
 // stepTestBuild compiles lane's up or down step through the captured
-// policies: 1,000,000 raw borrowed and converted (up) or withdrawn and
-// converted (down), the close leg the conversion's guaranteed output.
-// extra tables join the captured ones.
-func stepTestBuild(t *testing.T, lane string, up bool, maxAccounts int, extra ...LookupTableSnapshot) (stepMessage, []LookupTableSnapshot) {
+// policies: 1,000,000 raw borrowed or withdrawn and converted, the close leg
+// the conversion's guaranteed output. The conversion is Hastra's at about the
+// mainnet price, or the fixture's Jupiter swap with venue synthetic venue
+// accounts behind its twelve fixed ones (venue < 0 keeps the fixture route).
+func stepTestBuild(t *testing.T, lane string, up bool, venue int) (StepRequest, stepMessage, error) {
 	t.Helper()
 	manifest := embeddedTestManifest(t)
 	policies, _, _ := stepTestPolicies(t)
@@ -149,15 +46,9 @@ func stepTestBuild(t *testing.T, lane string, up bool, maxAccounts int, extra ..
 	if err != nil {
 		t.Fatal(err)
 	}
-	conversion, tables := stepTestConversion(t, policies, lane, up, maxAccounts)
-	tables = append(tables, extra...)
-	closeRaw, err := stepCloseAmount(0, conversion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	openLeg, closeLeg, action := kaminoLegWithdraw, kaminoLegRepay, DeleverRouteStep
+	openLeg, closeLeg, action, conversion := kaminoLegWithdraw, kaminoLegRepay, DeleverRouteStep, SwapCollateralToDebtStep
 	if up {
-		openLeg, closeLeg, action = kaminoLegBorrow, kaminoLegDeposit, OpenRouteStep
+		openLeg, closeLeg, action, conversion = kaminoLegBorrow, kaminoLegDeposit, OpenRouteStep, SwapDebtToCollateralStep
 	}
 	blockhash := LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}
 	open, err := manifest.kaminoPacketForRoute(policies, action, openLeg, 1_000_000, blockhash, lane)
@@ -165,45 +56,62 @@ func stepTestBuild(t *testing.T, lane string, up bool, maxAccounts int, extra ..
 		t.Fatal(err)
 	}
 	open.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	closing, err := manifest.kaminoPacketForRoute(policies, action, closeLeg, closeRaw, blockhash, lane)
+	step := StepRequest{Open: open}
+	var request any
+	if leg, ok := hastraConversionLeg(conversion, lane); ok {
+		account, err := policies.account(policyKey{hastra: hastraName()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		price := hastra.StakePrice{Price: hastraTestPrice, Scale: 1_000_000_000_000_000_000, Timestamp: kaminoFixtureUnix}
+		r := HastraConversionRequest{Action: conversion, AmountRaw: 1_000_000, Price: price.Price.String(), PriceScale: price.Scale, PriceTimestamp: price.Timestamp,
+			Policy: account, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99, RouteLane: lane}
+		if r.OutputRaw, err = hastraOutput(leg, price, r.AmountRaw); err != nil {
+			t.Fatal(err)
+		}
+		step.Hastra, request = &r, r
+	} else {
+		r := fixtureSwapRequest(t, lane, conversion)
+		if venue >= 0 {
+			r.Instruction.Accounts = append([]jupiter.AccountMeta{}, r.Instruction.Accounts[:12]...)
+			for i := range venue {
+				key := sha256.Sum256(fmt.Appendf(nil, "venue %s %d", lane, i))
+				r.Instruction.Accounts = append(r.Instruction.Accounts, jupiter.AccountMeta{Pubkey: encodeBase58(key[:]), IsWritable: i%2 == 0})
+			}
+		}
+		step.Swap, request = &r, r
+	}
+	closeRaw, err := stepCloseAmount(0, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	step, err := buildStepMessage(atomicStep{Open: open, Conversion: conversion, Close: closing, Tables: tables}, mustKey(bridgeDelegate))
-	if err != nil {
+	if step.Close, err = manifest.kaminoPacketForRoute(policies, action, closeLeg, closeRaw, blockhash, lane); err != nil {
 		t.Fatal(err)
 	}
-	return step, tables
+	message, err := buildStepMessage(step, mustKey(bridgeDelegate))
+	return step, message, err
 }
 
-// An atomic step is one message: each KLend execute directly behind its own
-// refresh prefix, the conversion between them, every Squads execute at the
-// one constraint of its installed literal that admits it. Its size against
-// the packet cap is reported.
+// An atomic step is one v1 message: each KLend execute directly behind its
+// own refresh prefix, the conversion between them, every Squads execute at
+// the one constraint of its installed literal that admits it.
 func TestAtomicStepIsOneMessageOfPolicyExecutes(t *testing.T) {
 	t.Parallel()
 	_, byAccount, literals := stepTestPolicies(t)
-	for _, lane := range []string{autoAUTOWYLDSLane, autoAUTOPYUSD.Lane} {
+	for _, lane := range []string{autoAUTOWYLDSLane, autoAUTOPYUSD.Lane, primePRIMEPYUSD.Lane} {
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, up := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/up=%t", lane, up), func(t *testing.T) {
-				step, tables := stepTestBuild(t, lane, up, 0)
-				if step.Fits() {
-					t.Logf("%d bytes, %d under %d; %d accounts (%d static), tables %v", step.WireBytes, solanaPacketBytes-step.WireBytes, solanaPacketBytes, step.Accounts, step.StaticAccounts, step.Tables)
-				} else {
-					t.Logf("%d bytes, %d OVER %d; %d accounts (%d static), tables %v", step.WireBytes, step.WireBytes-solanaPacketBytes, solanaPacketBytes, step.Accounts, step.StaticAccounts, step.Tables)
+				_, step, err := stepTestBuild(t, lane, up, -1)
+				if err != nil {
+					t.Fatal(err)
 				}
-				instructions := decodeTestInstructions(t, step.Message, tables)
-				heap := autoComputeBudgetHeapInstruction()
-				if len(instructions) == 0 || instructions[0].ProgramID != solana.PublicKey(heap.program) || string(instructions[0].Data) != string(heap.data) {
-					t.Fatal("AUTO step does not open with the heap frame")
-				}
-				instructions = instructions[1:]
+				instructions := decodeTestInstructions(t, step.Message)
 				if len(instructions) != 9 {
-					t.Fatalf("step has %d instructions after the heap frame, want 9", len(instructions))
+					t.Fatalf("step has %d instructions, want 9", len(instructions))
 				}
 				open, closeLeg := kamino.BorrowV2Discriminator, kamino.DepositV2Discriminator
 				if !up {
@@ -225,12 +133,9 @@ func TestAtomicStepIsOneMessageOfPolicyExecutes(t *testing.T) {
 				}
 				for i, want := range map[int][]byte{3: open[:], 4: nil, 8: closeLeg[:]} {
 					ix := instructions[i]
-					if ix.ProgramID != squads.ProgramID {
-						t.Fatalf("instruction %d is not a Squads execute", i)
-					}
 					execution, err := squads.DecodeExecuteTransactionSyncV2(ix)
-					if err != nil {
-						t.Fatal(err)
+					if ix.ProgramID != squads.ProgramID || err != nil {
+						t.Fatalf("instruction %d is not a Squads execute: %v", i, err)
 					}
 					key, ok := byAccount[execution.Policy]
 					if !ok || len(execution.Inner) != 1 || len(execution.ConstraintIndexes) != 1 {
@@ -277,35 +182,45 @@ func TestStepCloseAmountIsHeldPlusTheGuaranteedOutput(t *testing.T) {
 	}
 }
 
-// Every earn lane's up and down step, compiled through the captured mainnet
-// tables at the fixture's route and at maxAccounts 16 and 32. Run with -v for
-// the size table; its last column is the same step addressed through one
-// Backyard-owned table of its accounts as well (stepStaticTable).
-func TestAtomicStepSizeEveryEarnLane(t *testing.T) {
+// Every earn lane's up and down step fits one v1 transaction at the route
+// size its swap is quoted at (stepSwapMaxAccounts: the 64 keys less the
+// step's own), and at the captured fixture route; a route past that size is
+// refused, never truncated. Run with -v for the table.
+func TestEveryEarnStepFitsOneV1Transaction(t *testing.T) {
 	t.Parallel()
 	var table strings.Builder
-	fmt.Fprintf(&table, "%-20s %-4s %-8s %5s %6s %8s %6s %6s | %s\n", "lane", "dir", "route", "bytes", "slack", "accounts", "static", "tables", "with a Backyard table")
+	fmt.Fprintf(&table, "%-20s %-4s %-12s %5s %5s\n", "lane", "dir", "route", "keys", "bytes")
 	for _, lane := range earnLaneIDs(true) {
 		for _, up := range []bool{true, false} {
-			for _, variant := range stepRouteVariants {
-				route := fmt.Sprintf("max%d", variant)
-				if variant == 0 {
-					route = "fixture"
+			conversion := map[bool]Action{true: SwapDebtToCollateralStep, false: SwapCollateralToDebtStep}[up]
+			if _, hastra := hastraConversionLeg(conversion, lane); hastra {
+				_, step, err := stepTestBuild(t, lane, up, -1)
+				if err != nil || step.Keys > maxTransactionKeys || step.WireBytes > maxTransactionBytes {
+					t.Errorf("%s up=%t: %d keys, %d bytes: %v", lane, up, step.Keys, step.WireBytes, err)
 				}
-				if _, hastra := hastraConversionLeg(SwapDebtToCollateralStep, lane); hastra {
-					if variant != 0 {
-						continue
-					}
-					route = "hastra"
+				fmt.Fprintf(&table, "%-20s %-4s %-12s %5d %5d\n", lane, map[bool]string{true: "up", false: "down"}[up], "hastra", step.Keys, step.WireBytes)
+				continue
+			}
+			request, _, _ := stepTestBuild(t, lane, up, 0)
+			venue, err := stepSwapMaxAccounts(request, conversion)
+			if err != nil || venue < 16 {
+				t.Fatalf("%s up=%t: route size %d: %v", lane, up, venue, err)
+			}
+			for _, variant := range []int{-1, venue} {
+				_, step, err := stepTestBuild(t, lane, up, variant)
+				name := fmt.Sprintf("max %d", venue)
+				if variant < 0 {
+					name = "fixture"
 				}
-				t.Run(fmt.Sprintf("%s/up=%t/%s", lane, up, route), func(t *testing.T) {
-					step, tables := stepTestBuild(t, lane, up, variant)
-					owned, _ := stepTestBuild(t, lane, up, variant, stepStaticTable(t, step, tables))
-					fmt.Fprintf(&table, "%-20s %-4s %-8s %5d %+6d %8d %6d %6d | %d (%+d)\n", lane, map[bool]string{true: "up", false: "down"}[up], route,
-						step.WireBytes, solanaPacketBytes-step.WireBytes, step.Accounts, step.StaticAccounts, len(step.Tables), owned.WireBytes, solanaPacketBytes-owned.WireBytes)
-				})
+				if err != nil || step.Keys > maxTransactionKeys || step.WireBytes > maxTransactionBytes {
+					t.Errorf("%s up=%t %s: %d keys, %d bytes: %v", lane, up, name, step.Keys, step.WireBytes, err)
+				}
+				fmt.Fprintf(&table, "%-20s %-4s %-12s %5d %5d\n", lane, map[bool]string{true: "up", false: "down"}[up], name, step.Keys, step.WireBytes)
+			}
+			if _, _, err := stepTestBuild(t, lane, up, venue+1); err == nil {
+				t.Errorf("%s up=%t: a route one account past its size compiled", lane, up)
 			}
 		}
 	}
-	t.Cleanup(func() { t.Log("\n" + table.String()) })
+	t.Log("\n" + table.String())
 }

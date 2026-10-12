@@ -1364,8 +1364,8 @@ func TestSharedCustodyUnknownBoundIgnoresInertNAVAndHoldMarkers(t *testing.T) {
 // NAV reports signed by an older compiler stopped recompiling byte for byte,
 // overflowed the unknown bound, and held a 49.7k PYUSD borrow in custody.
 // A wire naming the custody, a v0 wire (lookup tables can load accounts its
-// static keys do not show), or a wire that fails the production validator is
-// not recognized and falls to the expiry classification.
+// static keys do not show), or a wire whose evidence does not verify is not
+// recognized and falls to the expiry classification.
 func TestSignedWireExcludesCustodyJudgesTheSignedBytes(t *testing.T) {
 	t.Parallel()
 	manifest := embeddedTestManifest(t)
@@ -1423,31 +1423,32 @@ func TestSignedWireExcludesCustodyJudgesTheSignedBytes(t *testing.T) {
 		t.Fatal("signed wire naming the shared custody recognized inert")
 	}
 
-	// A v0 wire is refused even when its static keys exclude the custody.
-	v0Request := autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 64-12)
-	inner, err := validateJupiterInstructionForRoute(v0Request.Instruction, v0Request.Action, v0Request.AmountRaw, v0Request.QuotedOutputRaw, v0Request.MinimumOutputRaw, v0Request.RouteLane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	outer, err := wrapSquadsJupiterPolicy(mustKey(v0Request.Policy), delegate, delegate, autoSwapLeg(t, SwapStableToCollateralStep), inner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fillers []string
-	for index, account := range v0Request.Instruction.Accounts {
-		if index >= 12 {
-			fillers = append(fillers, account.Pubkey)
+	// A historical legacy wire is judged by its own keys; a v0 wire, whose
+	// lookup tables can load accounts its static keys do not show, never is.
+	legacy := func(version byte) BuildResult {
+		message := []byte{1, 0, 1}
+		if version != 0 {
+			message = append([]byte{version}, message...)
 		}
+		message = append(message, 2)
+		message = append(message, delegate[:]...)
+		program := mustKey(bridgeSettings)
+		message = append(message, program[:]...)
+		hash := mustKey(bridgeSettings)
+		message = append(message, hash[:]...)
+		message = append(message, 1, 1, 0, 0)
+		if version != 0 {
+			message = append(message, 0)
+		}
+		signature := ed25519.Sign(delegateKey, message)
+		wire := append(append([]byte{1}, signature...), message...)
+		return BuildResult{MessageSHA256: sha256Bytes(message), SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(signature),
+			RecentBlockhash: bridgeSettings, LastValidBlockHeight: 99, SimulationSlot: 500}
 	}
-	v0Message, err := compileV0Message(delegate, mustKey(bridgeSettings), withAutoExecutionHeap([]compiledInstruction{outer}), []LookupTableSnapshot{autoFixtureLookupTable(t, fillers)})
-	if err != nil {
-		t.Fatal(err)
+	if !row(ReportNAV, legacy(0)).signedWireExcludesCustody(cfg) {
+		t.Fatal("custody-free legacy signed wire was not recognized inert")
 	}
-	versioned := signedTestBuildResult(t, delegateKey, v0Message)
-	if err := versioned.validateForDelegate(delegate); err != nil {
-		t.Fatalf("v0 fixture rejected by the production validator: %v", err)
-	}
-	if row(SwapStableToCollateralStep, versioned).signedWireExcludesCustody(cfg) {
+	if row(ReportNAV, legacy(0x80)).signedWireExcludesCustody(cfg) {
 		t.Fatal("v0 signed wire recognized inert")
 	}
 

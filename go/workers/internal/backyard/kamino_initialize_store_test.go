@@ -36,10 +36,9 @@ func TestInitializationDatabaseSettlementBindsWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append([]byte{1}, bytes.Repeat([]byte{9}, 64)...)
-	wire = append(wire, message...)
+	wire := signedWire(message, bytes.Repeat([]byte{9}, 64))
 	receipt.Initialization.SignedWireSHA256 = sha256Bytes(wire)
-	receipt.Signature = encodeBase58(wire[1:65])
+	receipt.Signature = encodeBase58(wireSig(wire))
 	raw, _ := json.Marshal(expected)
 	digest, err := Phase3IntentDigest(*expected.Initialization, raw)
 	if err != nil {

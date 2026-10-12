@@ -135,7 +135,7 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 						t.Fatal("Go packet diverges from independent installed-policy account vector")
 					}
 					message, err := CompileKaminoMessage(request)
-					if err != nil || len(message) == 0 || len(message)+65 > solanaPacketBytes {
+					if err != nil || len(message) == 0 || len(message)+65 > maxTransactionBytes {
 						t.Fatalf("unsigned packet construction failed: bytes=%d err=%v", len(message), err)
 					}
 					// Substituting any identity or privilege must fail before signing.

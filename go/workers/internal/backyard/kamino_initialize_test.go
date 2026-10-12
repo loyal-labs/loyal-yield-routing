@@ -22,7 +22,7 @@ func TestMultiplyInitializerPinnedTopology(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		message, err := compileLegacyMessage(mustKey(bridgeDelegate), mustKey(bridgeVault), []compiledInstruction{outer})
+		message, err := compileV1Message(mustKey(bridgeDelegate), mustKey(bridgeVault), []compiledInstruction{outer}, executionBudget(lane, 1))
 		if err != nil {
 			t.Fatal(err)
 		}

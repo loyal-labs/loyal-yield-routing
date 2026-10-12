@@ -30,14 +30,11 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 			seen[key] = true
 			t.Run(lane+"/"+key, func(t *testing.T) {
 				request := fixtureSwapRequest(t, lane, action)
-				if hinted := len(request.Instruction.LookupTableAddresses) > 0; hinted != acceptsJupiterLookupHints(lane, action) {
-					t.Fatalf("lookup hints kept %v outside their lanes", hinted)
-				}
 				if _, index, err := jupiterPolicyLeg(lane, action); err != nil || index != leg {
 					t.Fatal("policy selector drift", err)
 				}
-				message, tables := compileTestSwap(t, request)
-				packetEvidence, _ := json.Marshal(map[string]any{"lane": lane, "edge": key, "packetBytes": len(message) + 65, "v0": len(tables) > 0})
+				message := compileTestSwap(t, request)
+				packetEvidence, _ := json.Marshal(map[string]any{"lane": lane, "edge": key, "transactionBytes": len(message) + 64})
 				t.Logf("PHASE3_JUPITER_PACKET %s", packetEvidence)
 				data, err := base64.StdEncoding.Strict().DecodeString(request.Instruction.Data)
 				if err != nil {
@@ -52,23 +49,6 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 						t.Fatal("accepted another amount or quote", offset)
 					}
 				}
-				if len(tables) == 0 || !strings.HasPrefix(lane, "Prime/") {
-					return
-				}
-				request.LookupTables = tables
-				rpc, reads := lookupRPC(t, tables, nil, false)
-				unprepared := request
-				unprepared.LookupTables = nil
-				prepared, err := embeddedTestManifest(t).prepareJupiterLookupTables(context.Background(), rpc, unprepared, tables[0].ObservedSlot)
-				if err != nil || *reads != 1 {
-					t.Fatal("Prime preparation did not load the hinted chain tables", err)
-				}
-				if preparedMessage, err := CompileJupiterMessage(prepared); err != nil || !bytesEqual(message, preparedMessage) {
-					t.Fatal("fresh preparation changed Prime packet", err)
-				}
-				rpc, _ = lookupRPC(t, tables, func(s *LookupTableSnapshot) { s.Data[56] ^= 1 }, false)
-				err = revalidateJupiterLookupTables(context.Background(), rpc, request, tables[0].ObservedSlot)
-				assertBudgetHold(t, err, "lookup_mapping_changed")
 			})
 		}
 	}

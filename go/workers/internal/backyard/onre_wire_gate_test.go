@@ -46,7 +46,7 @@ func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
 			t.Errorf("%s: compile: %v", c.name, err)
 			continue
 		}
-		if _, _, _, _, err := decodeExactLegacyWire(signTestWire(t, key, message)); err != nil {
+		if _, _, _, _, err := decodeExactWire(signTestWire(t, key, message)); err != nil {
 			t.Errorf("%s: persisted-wire decode refused: %v", c.name, err)
 		}
 		if err := signedTestBuildResult(t, key, message).validateForDelegate(delegate); err != nil {
@@ -72,108 +72,25 @@ func TestOnReInitializerWirePassesTheDecodeGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{52}, ed25519.SeedSize))
-	if _, _, _, signer, err := decodeExactLegacyWire(signTestWire(t, key, message)); err != nil || signer != mustKey(bridgeDelegate) {
+	if _, _, _, signer, err := decodeExactWire(signTestWire(t, key, message)); err != nil || signer != mustKey(bridgeDelegate) {
 		t.Fatalf("OnRe initializer wire refused: %v", err)
 	}
 }
 
-// Every Kamino leg of every registry lane outside AUTO (whose legs carry the
-// heap frame, gated separately) passes the persisted-wire gate in each
-// topology prepare gives it; the B3 top-up deposit and B2 leverage-up borrow
-// topologies only on active lanes.
-func TestRegistryKaminoWiresPassThePersistedWireGate(t *testing.T) {
-	t.Parallel()
-	manifest := embeddedTestManifest(t)
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{55}, ed25519.SeedSize))
-	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	for _, lane := range earnLaneIDs(true) {
-		if lane == autoAUTOPYUSD.Lane {
-			continue
-		}
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		collateral, debt := route.Kamino.CollateralReserve, route.Kamino.DebtReserve
-		for _, c := range []struct {
-			name     string
-			action   Action
-			leg      kaminoPrimeUSDCLeg
-			reserves []string
-			active   bool
-		}{
-			{"initial deposit", OpenRouteStep, kaminoLegDeposit, []string{}, false},
-			{"top-up deposit", OpenRouteStep, kaminoLegDeposit, []string{collateral}, true},
-			{"redeposit", OpenRouteStep, kaminoLegDeposit, []string{collateral, debt}, false},
-			{"borrow", OpenRouteStep, kaminoLegBorrow, []string{collateral}, false},
-			{"leverage-up borrow", OpenRouteStep, kaminoLegBorrow, []string{collateral, debt}, true},
-			{"repay", DeleverRouteStep, kaminoLegRepay, []string{collateral, debt}, false},
-			{"withdraw with debt", DeleverRouteStep, kaminoLegWithdraw, []string{collateral, debt}, false},
-			{"withdraw debt-free", DeleverRouteStep, kaminoLegWithdraw, []string{collateral}, false},
-		} {
-			request, err := manifest.kaminoPacketForRoute(testPolicies(t), c.action, c.leg, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, lane)
-			if err != nil {
-				t.Fatalf("%s %s: packet: %v", lane, c.name, err)
-			}
-			request.ObligationReserves = c.reserves
-			message, err := compileKaminoMessageForDelegate(request, delegate)
-			if err != nil {
-				t.Fatalf("%s %s: compile: %v", lane, c.name, err)
-			}
-			err = signedTestBuildResult(t, key, message).validateForDelegate(delegate)
-			if want := !c.active || earnActiveLane(lane); want != (err == nil) {
-				t.Errorf("%s %s: persisted-wire gate admitted=%v, want %v (%v)", lane, c.name, err == nil, want, err)
-			}
-		}
-	}
-}
-
-// The top-up topology is open on every active registry lane (B3 follows the
-// registry) and closed on the exit-only Ethena lane.
-func TestTopupDepositTopologyFollowsTheRegistry(t *testing.T) {
-	t.Parallel()
-	manifest := embeddedTestManifest(t)
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{53}, ed25519.SeedSize))
-	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, ethenaUSDePYUSD.Lane} {
-		route, _ := runtimeRoute(lane)
-		request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request.ObligationReserves = []string{route.Kamino.CollateralReserve}
-		message, err := compileKaminoMessageForDelegate(request, delegate)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := signedTestBuildResult(t, key, message).validateForDelegate(delegate); (err == nil) != earnActiveLane(lane) {
-			t.Fatalf("%s collateral-only deposit topology admitted=%v, want %v", lane, err == nil, earnActiveLane(lane))
-		}
-	}
-}
-
-// Both OnRe swap directions from the v2 swap fixture, each as a legacy packet
-// or, when it does not fit, a v0 packet with lookup tables.
-// Each signed wire must pass the gate PersistSigned uses.
+// Both OnRe swap directions from the v2 swap fixture: each signed wire must
+// pass the gate PersistSigned uses.
 func TestOnReSwapWiresPassThePersistedWireGate(t *testing.T) {
 	t.Parallel()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{54}, ed25519.SeedSize))
 	for _, leg := range []string{"USDC->ONyc", "ONyc->USDC"} {
-		request, tables := basicJupiterRequest(t, onreLane, leg)
-		request.LookupTables = tables
+		request := basicJupiterRequest(t, onreLane, leg)
 		message, err := CompileJupiterMessage(request)
 		if err != nil {
 			t.Fatalf("%s: compile: %v", leg, err)
 		}
 		// The compiler pins the production delegate as fee payer, so the
 		// shape is checked with the decoder PersistSigned routes to.
-		var decodeErr error
-		if message[0] == 0x80 {
-			_, _, _, _, decodeErr = decodeExactV0Wire(signTestWire(t, key, message))
-		} else {
-			_, _, _, _, decodeErr = decodeExactLegacyWire(signTestWire(t, key, message))
-		}
-		if decodeErr != nil {
+		if _, _, _, _, decodeErr := decodeExactWire(signTestWire(t, key, message)); decodeErr != nil {
 			t.Errorf("%s (version byte %#x): persisted-wire decode refused: %v", leg, message[0], decodeErr)
 		}
 	}

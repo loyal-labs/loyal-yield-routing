@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"crypto/ed25519"
 	"fmt"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -39,14 +38,14 @@ func BuildSimulateAndPersistKaminoInitialization(ctx context.Context, database *
 	if err != nil {
 		return err
 	}
-	signature := ed25519.Sign(signer, message)
-	wire := append(encodeShortVec(1), signature...)
-	wire = append(wire, message...)
-	signed := SignedKaminoTransaction{message: message, signedWire: wire, messageSHA256: sha256Bytes(message), signedWireSHA256: sha256Bytes(wire), transactionSignature: encodeBase58(signature), recentBlockhash: request.RecentBlockhash, lastValidBlockHeight: request.LastValidBlockHeight}
+	signed, err := signMessage(signer, mustKey(bridgeDelegate), message, request.RecentBlockhash, request.LastValidBlockHeight)
+	if err != nil {
+		return err
+	}
 	if err = database.markBuiltOnManifest(ctx, manifest, operationID, signed.messageSHA256, encoded); err != nil {
 		return err
 	}
-	simulation, err := simulateSigned(ctx, rpc, wire)
+	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
 	if err != nil {
 		return err
 	}

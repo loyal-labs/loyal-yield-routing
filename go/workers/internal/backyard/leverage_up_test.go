@@ -1,8 +1,6 @@
 package backyard
 
 import (
-	"bytes"
-	"crypto/ed25519"
 	"encoding/binary"
 	"testing"
 	"time"
@@ -214,55 +212,6 @@ func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
 	} {
 		if ok, err := leverageUpBypassesEntryFence(c.request, leverageUpReason, c.unwind, c.lane, []byte(c.target)); ok || err == nil {
 			t.Fatalf("%s: leverage_up bypassed the fence", name)
-		}
-	}
-}
-
-// The 1.5x->1.75x borrow refreshes both reserves (debt already open). The
-// real compiler's wire must pass the persisted-wire gate for AUTO and OnRe,
-// and stay refused for Maple and Prime.
-func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
-	t.Parallel()
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{61}, ed25519.SeedSize))
-	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	for _, c := range []struct {
-		lane     string
-		manifest RouteManifest
-		accepted bool
-	}{
-		{autoAUTOPYUSD.Lane, embeddedTestManifest(t), true},
-		{onreONycUSDC, embeddedTestManifest(t), true},
-		{SelectedRouteID, embeddedTestManifest(t), true},
-		{PhaseOneLaneID, embeddedTestManifest(t), true},
-		{primePRIMEPYUSD.Lane, embeddedTestManifest(t), true},
-		{primePRIMEUSDS.Lane, embeddedTestManifest(t), true},
-		{ethenaUSDePYUSD.Lane, embeddedTestManifest(t), false},
-	} {
-		route, err := runtimeRoute(c.lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for name, reserves := range map[string][]string{
-			"first borrow (collateral)":     {route.Kamino.CollateralReserve},
-			"leverage_up (collateral+debt)": {route.Kamino.CollateralReserve, route.Kamino.DebtReserve},
-		} {
-			request, err := c.manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 250_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, c.lane)
-			if err != nil {
-				t.Fatalf("%s %s: packet: %v", c.lane, name, err)
-			}
-			request.ObligationReserves = reserves
-			message, err := compileKaminoMessageForDelegate(request, delegate)
-			if err != nil {
-				t.Fatalf("%s %s: compile: %v", c.lane, name, err)
-			}
-			err = signedTestBuildResult(t, key, message).validateForDelegate(delegate)
-			want := c.accepted || len(reserves) == 1
-			if want && err != nil {
-				t.Errorf("%s %s: PersistSigned gate refused: %v", c.lane, name, err)
-			}
-			if !want && err == nil {
-				t.Errorf("%s %s: gate accepted a leverage_up topology on an exit-only lane", c.lane, name)
-			}
 		}
 	}
 }
