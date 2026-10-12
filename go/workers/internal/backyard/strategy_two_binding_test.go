@@ -7,20 +7,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-func TestManifestIdentitiesMatchStrategyTwo(t *testing.T) {
-	t.Parallel()
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Identities.V2StrategyConfig != bridgeStrategy ||
-		manifest.Identities.ReportTicket != reportTicketPDA ||
-		manifest.Identities.ReportTicketBump != int64(reportTicketBump) {
-		t.Fatalf("manifest identities do not match the pinned strategy-two worker consts: config=%s ticket=%s bump=%d",
-			manifest.Identities.V2StrategyConfig, manifest.Identities.ReportTicket, manifest.Identities.ReportTicketBump)
-	}
-}
-
 func TestStrategyTwoBridgeLegsRespectPerExecutionCap(t *testing.T) {
 	t.Parallel()
 	digest := make([]byte, 32)

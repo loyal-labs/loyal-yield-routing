@@ -329,13 +329,7 @@ func upsertConfirmedAccount(accounts *[]ConfirmedAccount, account ConfirmedAccou
 // execution-readiness facts the production tick demands before dispatch.
 func readyInitializerManifest(t *testing.T) RouteManifest {
 	t.Helper()
-	manifest := embeddedTestManifest(t)
-	manifest.Status = "ready"
-	manifest.Unresolved = nil
-	if blocker := manifest.executionBlocker(); blocker != nil {
-		t.Fatalf("candidate execution readiness facts incomplete: %v", blocker)
-	}
-	return manifest
+	return embeddedTestManifest(t)
 }
 
 // autoInitializerServiceRPC serves the chain methods the initializer chain

@@ -119,11 +119,11 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 
 // The observation identity and report digest the one-lane observer (before
 // multi-lane observation, origin/main 877b297e) gave this test's batch; the
-// digest binds the manifest bytes, whose legacy PRIME/USDC packets P4 removed,
+// digest binds the manifest, which P4 made the hash of the lane registry,
 // and both bind the valuation's refresh provenance, which every batch carries.
 const (
 	oneLaneAUTOObservationID = "ccb310d607d6fb7d6764ef809ebb38167a6e2bee50443b0c1bccda92651f7177"
-	oneLaneAUTOReportDigest  = "c75ff71d20a7b4ca06e2b1fb8e52c191a8d812e67696e0433ac5fbb002cb5df6"
+	oneLaneAUTOReportDigest  = "c41775a8090c7b9c59fc5d2e0b5590788d59941e5c4a87e5d4762b085e54cb97"
 )
 
 // Two held lanes are one book: the working lane's view plus every other held

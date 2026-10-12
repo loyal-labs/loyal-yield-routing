@@ -1,16 +1,18 @@
 package backyard
 
-import (
-	"testing"
-)
+import "testing"
 
-func TestEmbeddedManifestIsExecutable(t *testing.T) {
+// The manifest is the registry's: its identity is the hash of every lane's
+// chain facts, so a changed fact is a new identity.
+func TestManifestIdentityIsTheRegistrysFacts(t *testing.T) {
 	t.Parallel()
 	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !sha256Pattern.MatchString(manifest.SHA256) || manifest.RuntimeActivation.SelectedLane != SelectedRouteID {
+		t.Fatalf("%+v %v", manifest, err)
 	}
-	if blocker := manifest.executionBlocker(); blocker != nil {
-		t.Fatalf("v2 manifest is blocked after the policy install readback: %v", blocker)
+	lanes := append([]earnLane(nil), earnLanes...)
+	lanes[0].route.Kamino.Obligation = bridgeVault
+	if changed, _ := manifestOf(lanes); changed.SHA256 == manifest.SHA256 {
+		t.Fatal("a changed lane fact kept the manifest identity")
 	}
 }

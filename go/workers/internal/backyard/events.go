@@ -355,13 +355,10 @@ func holdDetail(err error) string {
 // errorCode maps a tick error to a closed, stable snake_case code.
 func errorCode(err error) string {
 	var hold *BudgetHold
-	var blocker *RuntimeBlocker
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.As(err, &hold):
 		return hold.Reason
-	case errors.As(err, &blocker):
-		return blocker.Code
 	case errors.Is(err, errConfirmedObservationUnavailable):
 		return "confirmed_observation_unavailable"
 	case errors.Is(err, context.DeadlineExceeded):

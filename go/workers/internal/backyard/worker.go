@@ -316,9 +316,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return w.latchManualRecovery(ctx, observation, decision)
 	}
 	w.holds.note(observation.Snapshot, decision.StrategyKey, "", "")
-	if blocker := w.manifest.executionBlocker(); blocker != nil {
-		return blocker
-	}
 	logStage("observe_decide", tickStart)
 	request, effects, prepared, err := w.prepare(ctx, decision, observation)
 	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.ManualReason == "" && !prepared.Snapshot.StrategyReceiptIntegrityFault {

@@ -2,121 +2,56 @@ package backyard
 
 import (
 	"crypto/sha256"
-	_ "embed"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
-// embeddedBackyardManifest is the reviewed manifest the deployment consumes,
-// next to the binary rather than in deployment variables.
-//
-//go:embed manifest/backyard-rwa-v2.json
-var embeddedBackyardManifest []byte
-
+// RouteManifest is the fact set a decision is taken on: the earnLanes
+// registry, identified by SHA256 (the hash of every lane's chain facts, which
+// binds decision evidence and NAV report digests to it), and the lane a flat
+// vault's view describes before any selector entry orients it (the
+// registry's first lane).
 type RouteManifest struct {
-	Schema                string `json:"schema"`
-	Status                string `json:"status"`
-	Cluster               string `json:"cluster"`
-	GenesisHash           string `json:"genesisHash"`
-	Commitment            string `json:"commitment"`
-	TargetLTVBPS          int64  `json:"targetLtvBps"`
-	HardLTVRule           string `json:"hardLtvRule"`
-	WithdrawalWaitSeconds int64  `json:"withdrawalWaitSeconds"`
-	NAVMaxAgeSeconds      int64  `json:"navMaxAgeSeconds"`
-	VaultCapRaw           string `json:"vaultCapRaw"`
-	Identities            struct {
-		VoltrProgram      string `json:"voltrProgram"`
-		VoltrVault        string `json:"voltrVault"`
-		AdaptorProgram    string `json:"adaptorProgram"`
-		V2StrategyConfig  string `json:"v2StrategyConfig"`
-		ReportTicket      string `json:"reportTicket"`
-		ReportTicketBump  int64  `json:"reportTicketBump"`
-		ReportTicketLen   int64  `json:"reportTicketStateLength"`
-		SquadsProgram     string `json:"squadsProgram"`
-		SquadsSettings    string `json:"squadsSettings"`
-		SquadsVaultIndex  int64  `json:"squadsVaultIndex"`
-		SquadsVault       string `json:"squadsVault"`
-		DelegatedExecutor string `json:"delegatedExecutor"`
-		SquadsUSDCAta     string `json:"squadsUsdcAta"`
-		USDCMint          string `json:"usdcMint"`
-		ClassicToken      string `json:"classicTokenProgram"`
-		Token2022         string `json:"token2022Program"`
-	} `json:"identities"`
-	// RuntimeActivation names the lane a flat route observes before any
-	// selector entry or exposure orients it. The lanes themselves are the
-	// earnLanes registry, never a manifest list.
-	RuntimeActivation RuntimeActivation `json:"runtimeActivation"`
-	Deployment        struct {
-		SourceCommit        *string `json:"sourceCommit"`
-		ImageDigest         *string `json:"imageDigest"`
-		SingleWriterService *string `json:"singleWriterService"`
-	} `json:"deployment"`
-	Unresolved []struct {
-		Code            string `json:"code"`
-		ResumeCondition string `json:"resumeCondition"`
-	} `json:"unresolved"`
-	SHA256 string `json:"-"`
+	RuntimeActivation RuntimeActivation
+	SHA256            string
 }
 
 type RuntimeActivation struct {
-	SelectedLane string `json:"selectedLane"`
+	SelectedLane string
 }
 
-func loadEmbeddedRouteManifest() (RouteManifest, error) {
-	var manifest RouteManifest
-	if err := json.Unmarshal(embeddedBackyardManifest, &manifest); err != nil {
-		return RouteManifest{}, fmt.Errorf("decode embedded Backyard manifest: %w", err)
+func loadEmbeddedRouteManifest() (RouteManifest, error) { return manifestOf(earnLanes) }
+
+func manifestOf(lanes []earnLane) (RouteManifest, error) {
+	routes := make([]RuntimeRoute, len(lanes))
+	for i, l := range lanes {
+		routes[i] = l.route
 	}
-	hash := sha256.Sum256(embeddedBackyardManifest)
-	manifest.SHA256 = hex.EncodeToString(hash[:])
-	if err := manifest.validateBindings(); err != nil {
+	facts, err := json.Marshal(routes)
+	if err != nil {
 		return RouteManifest{}, err
 	}
-	return manifest, nil
+	hash := sha256.Sum256(facts)
+	return RouteManifest{RuntimeActivation: RuntimeActivation{SelectedLane: lanes[0].route.Lane}, SHA256: hex.EncodeToString(hash[:])}, nil
 }
 
-func (m RouteManifest) validateBindings() error {
-	if m.Schema != "loyal-backyard-rwa-manifest/v2" || m.Cluster != "mainnet-beta" ||
-		m.Commitment != "confirmed" || m.TargetLTVBPS != TargetLTVBPS ||
-		m.HardLTVRule != "min(6000, liquidationThresholdBps - 1500)" ||
-		m.WithdrawalWaitSeconds != 600 || m.NAVMaxAgeSeconds != 60 || m.VaultCapRaw != "1000000000000" {
-		return fmt.Errorf("embedded Backyard manifest has an invalid fixed route")
-	}
-	if m.Identities.VoltrProgram != voltr.ProgramID.String() || m.Identities.VoltrVault != bridgeVoltrVault ||
-		m.Identities.AdaptorProgram != bridgeAdaptorProgram || m.Identities.V2StrategyConfig != bridgeStrategy ||
-		m.Identities.ReportTicket != reportTicketPDA || m.Identities.ReportTicketBump != int64(reportTicketBump) ||
-		m.Identities.ReportTicketLen != reportTicketStateLength ||
-		m.Identities.SquadsProgram != squads.ProgramID.String() || m.Identities.SquadsSettings != bridgeSettings ||
-		m.Identities.SquadsVaultIndex != 0 || m.Identities.SquadsVault != bridgeVault ||
-		m.Identities.DelegatedExecutor != bridgeDelegate || m.Identities.SquadsUSDCAta != bridgeSquadsATA ||
-		m.Identities.USDCMint != bridgeUSDC || m.Identities.ClassicToken != classicTokenProgram ||
-		m.Identities.Token2022 != token2022Program {
-		return fmt.Errorf("embedded Backyard manifest does not match pinned bridge identities")
-	}
-	if m.RuntimeActivation.SelectedLane != SelectedRouteID {
-		return fmt.Errorf("embedded Backyard manifest has an invalid selected lane")
-	}
-	return nil
-}
+var errKaminoPacketUnavailable = fmt.Errorf("Kamino packet unavailable")
 
 // kaminoPacketForRoute is lane's packet for leg, for amount, executed through
 // the leg's installed policy.
 func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoPrimeUSDCRequest, error) {
 	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
-		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
 	}
 	route, err := runtimeRoute(lane)
 	if err != nil {
-		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
 	}
 	discriminator := kaminoLegDiscriminator(leg)
 	if discriminator == nil {
-		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
 	}
 	key, _ := kaminoPolicyLeg(route, leg)
 	policy, err := policies.account(key)
@@ -133,27 +68,9 @@ func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action A
 	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: policy, Accounts: accounts, Data: data,
 		RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
 	if _, observedLeg, err := kaminoRouteInstruction(request, lane); err != nil || observedLeg != leg {
-		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
+		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
 	}
 	return request, nil
-}
-
-func (m RouteManifest) executionBlocker() *RuntimeBlocker {
-	if m.Status != "ready" || m.hasPhaseOneUnresolved() {
-		return ErrBridgePrerequisitesUnavailable
-	}
-	return nil
-}
-
-func (m RouteManifest) hasPhaseOneUnresolved() bool {
-	for _, unresolved := range m.Unresolved {
-		// The remaining eleven-lane catalog is installed after the bridge and
-		// fixed PRIME/USDC lifecycle. It must not disable that first release.
-		if unresolved.Code != "UNRESOLVED_CURRENT_POLICY_GRAPH" {
-			return true
-		}
-	}
-	return false
 }
 
 func (m RouteManifest) activeRuntimeRoute() (RuntimeRoute, error) {

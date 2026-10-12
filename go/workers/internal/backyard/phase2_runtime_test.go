@@ -106,11 +106,6 @@ func TestPhase2RuntimeActivationSelectsMaple(t *testing.T) {
 	if manifest.RuntimeActivation.SelectedLane != SelectedRouteID {
 		t.Fatalf("unexpected runtime activation: %+v", manifest.RuntimeActivation)
 	}
-	manifest.RuntimeActivation.SelectedLane = PhaseOneLaneID
-	if manifest.validateBindings() == nil {
-		t.Fatal("a drifted selected lane validated")
-	}
-	manifest.RuntimeActivation.SelectedLane = SelectedRouteID
 	route, err := manifest.activeRuntimeRoute()
 	if err != nil || route.Lane != SelectedRouteID || route.Kamino.CollateralMint != "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj" {
 		t.Fatalf("selected route binding is not Maple/syrupUSDC/USDC: %+v, %v", route, err)
